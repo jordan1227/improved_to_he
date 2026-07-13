@@ -1,4 +1,4 @@
-# Hard Edition for Improved 3.9.1
+# Hard Edition to Improved 3.9.1
 
 Porting Hard Edition to Improved 3.9.1.
 
@@ -22,7 +22,7 @@ Report issues and suggestions through Issues.
 
 ---
 
-# Hard Edition для Improved 3.9.1
+# Hard Edition на Improved 3.9.1
 
 Перенос Hard Edition на Improved 3.9.1.
 
