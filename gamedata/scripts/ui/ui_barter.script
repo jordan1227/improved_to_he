@@ -356,6 +356,215 @@ local barter_tbl = {
     }			
 }
 
+-- [HE-PORT] Every active legacy barter uses the native OGSR trade window.
+-- The table above remains the single source of assortment and exchange rates.
+local native_barter_active = nil
+local native_barter_token = 25200
+local native_barter_ini = nil -- sections are included into system.ltx
+local native_item_aliases = {
+    repair_item_outfit_feik = "repair_itemoutfit_feik",
+}
+
+local function native_proxy_section(info)
+    return "barter_recipe_" .. info:gsub("[^%w_]", "_")
+end
+
+local function native_reward_section(section)
+    if section:sub(1, 5) == "info_" then return native_proxy_section(section) end
+    return native_item_aliases[section] or section
+end
+
+local function native_payment_section(profile, row)
+    local section = row[3]
+    -- In the old table `cheque` was an unresolved global; the actual item is this section.
+    if profile == "zub_4" and section == nil then return "bearer_cheque" end
+    return section
+end
+
+local function native_find_trader(first_speaker, second_speaker)
+    local actor_id = db.actor and db.actor:id() or 0
+    if first_speaker and first_speaker:id() ~= actor_id then return first_speaker end
+    if second_speaker and second_speaker:id() ~= actor_id then return second_speaker end
+    return nil
+end
+
+local function native_build_prices(profile)
+    local rows = barter_tbl[profile] or {}
+    local level_prices = {
+        lvl1 = native_barter_token,
+        lvl2 = native_barter_token * 2,
+        lvl3 = native_barter_token * 4,
+        lvl4 = native_barter_token * 8,
+    }
+    local currency = {}
+    local rewards = {}
+    local recipe_infos = {}
+
+    -- Repeated rewards connect alternative currencies. Multiple passes propagate
+    -- their exact ratios without relying on the ordinary ruble costs of items.
+    for pass = 1, #rows + 2 do
+        local changed = false
+        for _, row in ipairs(rows) do
+            local payment = native_payment_section(profile, row)
+            if payment then
+                local reward = native_reward_section(row[1])
+                if row[1]:sub(1, 5) == "info_" then recipe_infos[reward] = row[1] end
+                local reward_count = tonumber(row[2]) or 1
+                local payment_count = tonumber(row[4]) or 1
+                local pp = currency[payment]
+                if not pp and level_prices[payment] then
+                    pp = level_prices[payment]
+                    currency[payment] = pp
+                end
+                local rp = rewards[reward]
+                if pp and not rp then
+                    rewards[reward] = pp * payment_count / reward_count
+                    changed = true
+                elseif rp and not pp then
+                    currency[payment] = rp * reward_count / payment_count
+                    changed = true
+                elseif not pp and not rp then
+                    currency[payment] = native_barter_token
+                    rewards[reward] = native_barter_token * payment_count / reward_count
+                    changed = true
+                end
+            end
+        end
+        if not changed then break end
+    end
+
+    local accepted = {}
+    for section, price in pairs(currency) do
+        if section:match("^lvl%d+$") then
+            for _, art in ipairs(kotovod.tbl_arts[section] or {}) do
+                accepted[art] = math.floor(price + 0.5)
+            end
+        else
+            accepted[section] = math.floor(price + 0.5)
+        end
+    end
+    for section, price in pairs(rewards) do
+        rewards[section] = math.max(1, math.floor(price + 0.5))
+    end
+    return accepted, rewards, recipe_infos
+end
+
+local function native_start(profile, first_speaker, second_speaker)
+    if native_barter_active then return end
+    local trader = native_find_trader(first_speaker, second_speaker)
+    if not trader then return end
+
+    local accepted, rewards, recipe_infos = native_build_prices(profile)
+    native_barter_active = {
+        profile = profile,
+        npc_name = trader:name(),
+        accepted = accepted,
+        rewards = rewards,
+        recipe_infos = recipe_infos,
+    }
+    if not trade_manager.start_temporary_trade(
+        trader,
+        native_barter_ini,
+        "native_barter_buy",
+        "native_barter_sell",
+        "native_barter_supplies_" .. profile
+    ) then
+        native_barter_active = nil
+        return
+    end
+    gnzi.trade_many_remove()
+end
+
+function start_sidor(first_speaker, second_speaker)
+    native_start("sidor", first_speaker, second_speaker)
+end
+function start_sherstuk(first_speaker, second_speaker)
+    native_start("sherstuk", first_speaker, second_speaker)
+end
+function start_kuzya(first_speaker, second_speaker)
+    native_start("kuzya", first_speaker, second_speaker)
+end
+function start_kruglov(first_speaker, second_speaker)
+    native_start("kruglov", first_speaker, second_speaker)
+end
+function start_saharov(first_speaker, second_speaker)
+    native_start("saharov", first_speaker, second_speaker)
+end
+function start_zub_1(first_speaker, second_speaker)
+    native_start("zub_1", first_speaker, second_speaker)
+end
+function start_zub_2(first_speaker, second_speaker)
+    native_start("zub_2", first_speaker, second_speaker)
+end
+function start_zub_3(first_speaker, second_speaker)
+    native_start("zub_3", first_speaker, second_speaker)
+end
+function start_zub_4(first_speaker, second_speaker)
+    native_start("zub_4", first_speaker, second_speaker)
+end
+function start_eger(first_speaker, second_speaker)
+    native_start("eger", first_speaker, second_speaker)
+end
+function start_ignat(first_speaker, second_speaker)
+    native_start("ignat", first_speaker, second_speaker)
+end
+function start_dan(first_speaker, second_speaker)
+    native_start("dan", first_speaker, second_speaker)
+end
+function start_vahtang(first_speaker, second_speaker)
+    local profile = has_alife_info("volkodav_dt_art_done") and "vahtang_2" or "vahtang"
+    native_start(profile, first_speaker, second_speaker)
+end
+
+function finish(npc_name)
+    if native_barter_active and native_barter_active.npc_name == npc_name then
+        native_barter_active = nil
+    end
+end
+
+local function native_actor_price(section)
+    if not native_barter_active then return nil end
+    local base = sak_inventory.dyn_art_base(section)
+    return native_barter_active.accepted[base] or native_barter_active.accepted[section]
+end
+
+function item_visible_in_trade(obj, actor_side)
+    if not native_barter_active then return nil end
+    if not obj then return false end
+    if actor_side then return native_actor_price(obj:section()) ~= nil end
+
+    local section = obj:section()
+    if not native_barter_active.rewards[section] then return false end
+    local info = native_barter_active.recipe_infos[section]
+    if info and has_alife_info(info) then return false end
+    return trade_manager.is_temporary_trade_item(native_barter_active.npc_name, obj:id())
+end
+
+function trade_get_buy_price(trader, section)
+    if not native_barter_active or trader:name() ~= native_barter_active.npc_name then return nil end
+    return native_actor_price(section)
+end
+
+function trade_get_sell_price(trader, section)
+    if not native_barter_active or trader:name() ~= native_barter_active.npc_name then return nil end
+    return native_barter_active.rewards[section]
+end
+
+function on_trade(item, is_sold)
+    if not native_barter_active or is_sold or not item then return end
+    local info = native_barter_active.recipe_infos[item:section()]
+    if not info then return end
+    if not has_alife_info(info) then
+        db.actor:give_info_portion(info)
+        if info:match("^info_artmod_") then
+            sak.info_artmod()
+        elseif info:match("^info_amk_recipt_") then
+            sak.info_amk_received()
+        end
+    end
+    misc.release_obj(item)
+end
+
 function get_waiting_message( time_left )
     local colored_hours = string.format( "%%c[255,238,153,26]%d%%c[default]", time_left )
     local hour_form = kotovod.declension( time_left, "час", "часа", "часов" )

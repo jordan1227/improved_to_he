@@ -18,6 +18,8 @@ function on_trade(item, is_sold, money)
 	elseif not is_sold and item:section() == "flask_army" then
 		vergas_flask.take_flask_army(item,item:id(),true)
 	end
+	local barter = rawget(_G, "ui_barter")
+	if barter and barter.on_trade then barter.on_trade(item, is_sold, money) end
 end
 
 function on_trade_hide()
@@ -315,89 +317,121 @@ local trader_configs = {
 
 local saved_inventories = {}
 
-function save_trader_inventory(npc_name)
+function save_trader_inventory(npc_name, trader)
     local sobj = g_sim:object(npc_name)
-    if not sobj then
-        --log2("[trade_manager]: Не удалось найти объект для %s", npc_name)
-        return
+    if not sobj then return false end
+
+    trader = trader or level.object_by_id(sobj.id)
+    if not trader then return false end
+
+    local tt = trade_manager[sobj.id]
+    if not tt then return false end
+
+    local original_ids = {}
+    for i = 0, trader:object_count() - 1 do
+        local item = trader:object(i)
+        if item then original_ids[item:id()] = true end
     end
 
---[[
-    local inventory = {}
-    local ids, cnt = registry.inv_objects(sobj.id, true)
-    for n = 1, cnt do
-        local obj = g_sim:object(ids[n])
-        if obj and obj.section_name then
-            local section = obj:section_name()
-            inventory[section] = (inventory[section] or 0) + 1
-        end
-    end
-]]--
-	
-	local trader = level.object_by_id( sobj.id )
-	local inventory = {}
-	for i = 0, trader:object_count() - 1 do
-		local item = trader:object( i )	
-		local sect = item:section()
-		inventory[sect] = (inventory[sect] or 0) + 1
-	end	
-
-    saved_inventories[npc_name] = inventory
-    --log2("[trade_manager]: Сохранен инвентарь для %s", npc_name)
-    --misc.dump_table(inventory)
+    saved_inventories[npc_name] = {
+        original_ids = original_ids,
+        buy_condition = tt.current_buy_condition,
+        sell_condition = tt.current_sell_condition,
+        buy_supplies = tt.current_buy_supplies,
+        update_time = tt.update_time,
+        resuply_time = tt.resuply_time,
+        skip_updates = tt.skip_updates,
+    }
+    return true
 end
+
+function is_temporary_trade_item(npc_name, id)
+    local snapshot = saved_inventories[npc_name]
+    return snapshot ~= nil and snapshot.original_ids[id] ~= true
+end
+
 function restore_trader_inventory(npc_name)
     local sobj = g_sim:object(npc_name)
-    if not sobj then
-        --log2("[trade_manager]: Не удалось найти объект для %s", npc_name)
-        return
-    end
+    local snapshot = saved_inventories[npc_name]
+    if not sobj or not snapshot then return end
 
-    local saved_inventory = saved_inventories[npc_name]
-    if not saved_inventory then
-        --log2("[trade_manager]: Нет сохраненного инвентаря для %s", npc_name)
-        return
-    end
+    local trader = level.object_by_id(sobj.id)
+    if not trader then return end
 
-	local trader = level.object_by_id( sobj.id )
-	for i = 0, trader:object_count() - 1 do
-		local item = trader:object( i )	
-		if item then misc.release_obj( item ) end
-	end	
-	
-    -- Теперь восстановим сохраненный инвентарь
-    for section, count in pairs(saved_inventory) do
-        for i = 1, count do
-            misc.spawn_to(section, sobj.id)
+    -- Original OGSR stock never leaves the trader and is merely hidden.
+    -- Remove only temporary barter stock and artefacts paid by the actor.
+    for i = trader:object_count() - 1, 0, -1 do
+        local item = trader:object(i)
+        if item and not snapshot.original_ids[item:id()] then
+            misc.release_obj(item)
         end
     end
-	saved_inventories = {}
-    --log2("[trade_manager]: Восстановлен инвентарь для %s", npc_name)
+
+    local tt = trade_manager[sobj.id]
+    if tt then
+        tt.current_buy_condition = snapshot.buy_condition
+        tt.current_sell_condition = snapshot.sell_condition
+        tt.current_buy_supplies = snapshot.buy_supplies
+        tt.update_time = snapshot.update_time
+        tt.resuply_time = snapshot.resuply_time
+        tt.skip_updates = snapshot.skip_updates
+
+        if snapshot.buy_condition then
+            trader:buy_condition(tt.config, snapshot.buy_condition)
+        end
+        if snapshot.sell_condition then
+            trader:sell_condition(tt.config, snapshot.sell_condition)
+        end
+    end
+
+    saved_inventories[npc_name] = nil
 end
+-- [HE-PORT] Apply a temporary trade profile from a shared ini to any dialog trader.
+function start_temporary_trade(npc, ini_path, buy_section, sell_section, supplies_section)
+    if not npc then return false end
+    local npc_name = npc:name()
+    local tt = trade_manager[npc:id()]
+    if not tt or not save_trader_inventory(npc_name, npc) then return false end
+
+    local ini = ini_path and dsh.cached_ini_file(ini_path) or system_ini()
+    tt.current_buy_condition = buy_section
+    tt.current_sell_condition = sell_section
+    tt.current_buy_supplies = supplies_section
+    npc:buy_condition(ini, buy_section)
+    npc:sell_condition(ini, sell_section)
+    npc:buy_supplies(ini, supplies_section)
+    -- Keep the regular trade manager from replacing this profile on its next tick.
+    tt.update_time = time_global() + 24 * 60 * 60 * 1000
+    tt.skip_updates = 0
+    tt.resuply_time = game.get_game_time() + seconds2ctime(24 * 60 * 60)
+    trade_subscribe(npc_name)
+    return true
+end
+
 function switch(npc_name, config_name)
     local sobj = alife():object(npc_name)
     if not sobj then 
         --log2("[trade_manager]: Нет объекта alife для %s", npc_name)
-        return 
+        return false
     end
     
     local npc_id = sobj.id
     local npc = level.object_by_id(npc_id)
     if not npc then
         --log2("[trade_manager]: Нет объекта уровня для %s", npc_name)
-        return
+        return false
     end
 
     local tt = trade_manager[npc_id]
     if not tt then
         --log2("[trade_manager]: Нет менеджера торговли для %s", npc_name)
-        return
+        return false
     end
 
     local trader_config = trader_configs[npc_name]
     if not trader_config then
         --log2("[trade_manager]: Нет конфигурации для %s", npc_name)
-        return
+        return false
     end
 
     local new_config = trader_config[config_name]
@@ -411,11 +445,11 @@ function switch(npc_name, config_name)
 	
     if not new_config then
         --log2("[trade_manager]: Нет конфигурации %s для %s", config_name, npc_name)
-        return
+        return false
     end
     
-    if config_name ~= "default" then 
-        save_trader_inventory(npc_name)
+    if config_name ~= "default" and not save_trader_inventory(npc_name) then
+        return false
     end
 
     -- Применяем новую конфигурацию
@@ -449,6 +483,7 @@ function switch(npc_name, config_name)
     --sak.send_tip("Обновили торговлю на " .. config_name, npc_name, 0, 5, "uniq", "no", "yellow")
 
     trade_subscribe(npc_name)
+    return true
 end
 function disable_other_configs(npc_name, active_config)
     local trader_config = trader_configs[npc_name]
@@ -481,9 +516,11 @@ function trade_unsubscribe()
 		for _, s in ipairs( trade_signal ) do
 			sm:unsubscribe( s )	
 		end
-		switch( trade_npc_name, "default" )	
-		--restore_previous_time( trade_manager[ trade_npc_name ] )
-		restore_trader_inventory(trade_npc_name)		
+		restore_trader_inventory(trade_npc_name)
+		disable_other_configs(trade_npc_name, "default")
+
+		local barter = rawget(_G, "ui_barter")
+		if barter and barter.finish then barter.finish(trade_npc_name) end
 
 		trade_signal = nil
 		trade_npc_name = nil
