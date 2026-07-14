@@ -8,7 +8,7 @@ Development is ongoing. Completed tasks are marked with `✅`.
 
 ## Task List
 
-Current list of changes: [лист.txt](лист.txt).
+Current list of changes: [лист.md](лист.md).
 
 ## Releases
 
@@ -32,7 +32,7 @@ Report issues and suggestions through Issues.
 
 ## Список задач
 
-Актуальный список изменений: [лист.txt](лист.txt).
+Актуальный список изменений: [лист.md](лист.md).
 
 ## Релизы
 
