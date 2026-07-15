@@ -8,8 +8,7 @@ Development is ongoing. Completed tasks are marked with `✅`.
 
 > [!CAUTION]
 > **Don't overwrite other contributors' commits.**
-> **Не затирайте коммиты других участников.**
-> Сначала синхронизируйте ветку и проверьте пересечения изменений.
+> Sync your branch first and check for overlapping changes.
 
 ## Task List
 
@@ -34,6 +33,10 @@ Report issues and suggestions through Issues.
 ## Статус
 
 Разработка продолжается. Выполненные задачи отмечены `✅`.
+
+> [!CAUTION]
+> **Не затирайте коммиты других участников.**
+> Сначала синхронизируйте ветку и проверьте пересечения изменений.
 
 ## Список задач
 
