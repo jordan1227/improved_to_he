@@ -6,6 +6,11 @@ Porting Hard Edition to Improved 3.9.1.
 
 Development is ongoing. Completed tasks are marked with `✅`.
 
+> [!CAUTION]
+> **Don't overwrite other contributors' commits.**
+> **Не затирайте коммиты других участников.**
+> Сначала синхронизируйте ветку и проверьте пересечения изменений.
+
 ## Task List
 
 Current list of changes: [лист.md](лист.md).
