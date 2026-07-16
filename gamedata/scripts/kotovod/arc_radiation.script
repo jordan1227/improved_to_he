@@ -1,0 +1,165 @@
+function attach(sm)
+    sm:subscribe({ signal = "on_drop_before_all", fun = this.lose_item })
+    sm:subscribe({ signal = "on_item_to_ruck", fun = this.get_item })
+    sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+end
+
+function on_spawn()
+    dsh.exec_on_update(
+        function()
+            local sm = ogse_signals.get_mgr()
+            sm:subscribe({ signal = "on_item_to_belt", fun = this.lose_item })
+        end
+    )
+end
+
+local changed = false
+local items   = {}
+
+function register_item(id, rrs)
+    if rrs > 0 then
+        items[id] = rrs
+    else
+        items[id] = nil
+    end
+    changed = true
+end
+
+local inv_arts_radiation = 0
+local radiation_v = get_float("actor_condition", "radiation_v")
+
+function get_inv_arts_radiation()
+    if changed then
+        inv_arts_radiation = 0
+        for id, rrs in pairs(items) do
+            inv_arts_radiation = inv_arts_radiation + rrs
+        end
+        changed = false
+    end
+    local belt_rrs = inventory.on_belt_restore_speed("radiation_restore_speed")
+    if belt_rrs < radiation_v then belt_rrs = 0 end
+    return inv_arts_radiation + belt_rrs
+end
+
+function lose_item(obj)
+    local sect = obj:section()
+ --   if get_bool(sect, "arc_usable") then
+ 	if strpos( sect, "arc_art_box_", 1, true ) then
+        register_item(obj:id(), 0)
+    else
+        local rrs = get_float(sect, "radiation_restore_speed", 0)
+        if rrs > 0 then
+            register_item(obj:id(), 0)
+        end
+    end
+end
+
+local radiation_v = get_float("actor_condition", "radiation_v")
+
+function get_item(obj)
+    local sect = obj:section()
+    --if get_bool(sect, "arc_usable") then
+	if strpos( sect, "arc_art_box_", 1, true ) then
+        local protection = get_u32(sect, "container_protection", 0)
+        if protection > 0 then
+            protection      = (protection + 0.1) * radiation_v
+            local sobj      = g_sim:object(obj:id())
+            local artefacts = decode_custom_data(
+                sobj.custom_data, sobj:section_name()
+            )
+            local cnt, rad  = 0, 0
+            local weight    = get_float(sect, "inv_weight")
+            for i, t in ipairs(artefacts) do
+                if t.section then
+                    cnt    = cnt + 1
+                    weight = weight + get_float(t.section, "inv_weight")
+                    if t.condition > 0 then
+                        local rrs = get_float(t.section, "radiation_restore_speed", 0)
+                        if rrs > protection then rad = rad + (rrs - protection) end
+                    end
+                end
+            end
+            register_item(obj:id(), rad)
+            if rad > 0 then
+                local iitem = obj:get_inventory_item()
+                ASSERT(
+                    iitem,
+                    "[%s]: %s not an inventory_item", script_name(), obj:name()
+                )
+                iitem.radiation_restore_speed = rad
+            end
+            ui_arc_container_menu.set_inv_item_weight(obj, weight)
+            if cnt > 0 then
+                ui_arc_container_menu.set_item_ungroupable(obj)
+            else
+                ui_arc_container_menu.set_item_default_grouping(obj)
+            end
+        end
+    else
+        local is_artefact = (obj:is_artefact())
+        if (is_artefact and obj:condition() > 0) or not is_artefact then
+            local rrs = get_float(sect, "radiation_restore_speed", 0)
+            if rrs > 0 then
+                register_item(obj:id(), rrs)
+            end
+        end
+    end
+end
+
+function parse_names(s)
+    return string.explode(",", s, true)
+end
+
+function decode_custom_data(custom_data, sect, slots)
+    if not slots then slots = get_u32(sect, "container_slots") end
+    local artefacts = {}
+    if custom_data and custom_data ~= "" then
+        --log1("custom_data="..custom_data)
+        local cd = this.parse_names(custom_data)
+        ASSERT(
+            table.getn(cd) <= slots * 3,
+            "[%s]: unexpected arts: %s > %s", script_name(), table.getn(cd),
+            slots * 3
+        )
+        for i = 1, slots do
+            local t = {}
+            local sect = cd[i]
+            if sect ~= "_" then
+                t.section         = sect
+                t.condition       = tonumber(cd[slots + i])
+                local custom_data = cd[slots * 2 + i]
+                if custom_data ~= "_" then
+                    t.custom_data = custom_data
+                end
+            end
+            table.insert(artefacts, t)
+        end
+    end
+    return artefacts
+end
+
+function encode_custom_data(artefacts, sect, slots)
+    if not slots then slots = get_u32(sect, "container_slots") end
+    local arts = 0
+    for _, t in ipairs(artefacts) do
+        if t.section then arts = arts + 1 end
+    end
+    local cd = {}
+    if table.getn(artefacts) > 0 and arts > 0 then
+        for _, k in ipairs({ "section", "condition", "custom_data" }) do
+            for i = 1, slots do
+                if i > table.getn(artefacts) then
+                    table.insert(cd, "_")
+                else
+                    local t = artefacts[i]
+                    if t.section then
+                        table.insert(cd, (t[k] or "_"))
+                    else
+                        table.insert(cd, "_")
+                    end
+                end
+            end
+        end
+    end
+    return table.concat(cd, ",")
+end

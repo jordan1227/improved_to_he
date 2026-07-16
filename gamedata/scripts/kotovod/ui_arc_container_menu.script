@@ -1,0 +1,1425 @@
+--\\-- Надо вычищать все - arc_containers, мб из-за этого не применяется нормально радейка и вес? Блэк тип туда же, надо переделывать, сенд типсы
+--\\-- Не забудь в системе прописать текстурки
+--\\-- --	["af_dummy_black_tip"]=true, из-за этого в бинд сталкере она исчезает, надо что-то придумать
+
+local fly_speed = 1
+local sig_inv_hide, sig_inv_drop = nil, nil
+
+function attach(sm)
+    sm:subscribe({ signal = "on_use", fun = this.on_use })
+end
+
+
+function on_use(obj, sobj)
+    local sect = obj:section()
+    --if get_bool(sect, "arc_usable") then
+	if strpos( sect, "arc_art_box_", 1, true ) then
+        show_menu(obj)
+        return true
+    end
+end
+
+local active_menu = false
+
+function show_menu(obj)
+    local spwn  = arc_8container_menu(obj)
+    active_menu = spwn
+    level.start_stop_menu(spwn, true)
+	vergas_lib.s_play( "scripts\\inv_art_container_open", 1 )
+end
+
+function possible_inv_change()
+    if active_menu then
+        active_menu.changed = true
+    end
+end
+
+class "arc_8container_menu" (CUIScriptWnd)
+function arc_8container_menu:__init(obj)
+    super()
+    self.object = obj
+    self:read_params()
+    self:load_artefacts()
+    self:load_inventory()
+    self:load_containers()
+
+    self.xml = CScriptXmlInit()
+    self.xml:ParseFile(self.xml_name)
+    self:DrawBackground()
+    self:draw_weight()
+    self:draw_artefacts()
+    self:draw_inventory()
+    self:subscribe_signals()
+
+    self.flying = {}
+    self.fly_it = {}
+end
+
+function arc_8container_menu:__finalize()
+end
+
+local radiation_v = get_float("actor_condition", "radiation_v")
+
+function arc_8container_menu:read_params()
+    local prefix  = "arc_ui_8container_menu."
+    local sect    = self.object:section()
+    self.xml_name = get_string(sect, prefix .. "xml")
+    self.menu_cfg = {}
+    for _, k1 in ipairs({ "put", "take" }) do
+        local prefix2 = prefix .. k1 .. "."
+        local t = {}
+        self.menu_cfg[k1] = t
+        for _, k2 in ipairs({ "row_size", "space", "x_start", "y_start" }) do
+            t[k2] = get_u32(sect, prefix2 .. k2);
+        end
+        t.space_x = get_u32(sect, prefix2 .. "space_x", t.space);
+        t.space_y = get_u32(sect, prefix2 .. "space_y", t.space);
+    end
+    self.protection = get_u32(sect, "container_protection", 0)
+    if self.protection > 0 then
+        self.protection = (self.protection + 0.1) * radiation_v
+    end
+    self.slots  = get_u32(sect, "container_slots")
+    self.weight = get_float(sect, "inv_weight")
+end
+
+function arc_8container_menu:load_artefacts()
+    local sobj = g_sim:object(self.object:id())
+    self.artefacts = arc_radiation.decode_custom_data(
+        sobj.custom_data, sobj:section_name(), self.slots
+    )
+end
+
+function arc_8container_menu:update_radiation()
+    local rad = 0
+    if self.protection > 0 then
+        for i, t in ipairs(self.artefacts) do
+            if t.section and t.condition > 0 then
+                local rrs = get_float(t.section, "radiation_restore_speed", 0)
+                if rrs > self.protection then rad = rad + (rrs - self.protection) end
+            end
+        end
+        local iitem = self.object:get_inventory_item()
+        ASSERT(
+            iitem, "[%s]: %s not an inventory_item", script_name(), self.object:name()
+        )
+        iitem.radiation_restore_speed = rad
+        arc_radiation.register_item(self.object:id(), rad)		
+    end
+    return rad
+end
+
+function arc_8container_menu:update_grouping()
+    for i, t in ipairs(self.artefacts) do
+        if t.section then
+            set_item_ungroupable(self.object)
+            return
+        end
+    end
+    set_item_default_grouping(self.object)
+end
+
+function arc_8container_menu:save_artefacts()
+    local sobj = g_sim:object(self.object:id())
+    sobj.custom_data = arc_radiation.encode_custom_data(
+        self.artefacts, sobj:section_name(), self.slots
+    )
+    this.set_inv_item_weight(self.object, self.weight + self:draw_weight())
+    self:update_radiation()
+	self:update_grouping()
+end
+
+function arc_8container_menu:detach_button(s)
+    s.button   = nil
+    s.progress = nil
+    if s.flying then
+        for i, t in ipairs(self.flying) do
+            if s == t then
+                table.remove(self.flying, i)
+                s.flying = nil
+                break
+            end
+        end
+        ASSERT(
+            s.flying == nil,
+            "[%s]: %s not found in self.flying", script_name(), s:WindowName()
+        )
+    end
+    self.scrolled:DetachChild(s)
+end
+
+function arc_8container_menu:load_inventory()
+    local idx = {}
+    if self.inventory then
+        for _, t in ipairs(self.inventory) do
+            idx[t.id] = t
+        end
+    end
+
+    self.inventory = {}
+    local changed = false
+    db.actor:iterate_ruck(
+        function(npc, obj)
+            if g_sim:object(obj:id())
+				and (not db.actor:marked_dropped(obj))
+                and obj:is_artefact()
+				and obj:section() ~= "af_full_akkum"
+				and (
+					obj:section() ~= "af_dummy_black_tip"
+					or not get_value( "tried_to_drop_bt", false )
+				)
+            --    and dsh.can_include_into_actor_items(obj) -- не нужно вроде, мб потом проверить
+            --  and get_float(obj:section(), "radiation_restore_speed", 0) > 0 -- только радиактивные арты в контейнер
+            then
+                local t     = {}
+                t.object    = obj
+                t.id        = obj:id()
+                t.section   = obj:section()
+                t.condition = obj:condition()
+                local sobj  = g_sim:object(obj:id())
+                if sobj.custom_data and sobj.custom_data ~= "" then
+                    t.custom_data = sobj.custom_data
+                end
+                table.insert(self.inventory, t)
+                if idx[obj:id()] then
+                    if t.condition < idx[obj:id()].condition then
+                        changed = true
+                    end
+                    t.button = idx[obj:id()].button
+                    idx[obj:id()] = nil
+                else
+                    changed = true
+                end
+            end
+        end,
+        db.actor
+    )
+
+    for id, t in pairs(idx) do
+        local s = t.button
+        self:detach_button(s)
+        changed = true
+    end
+
+    table.sort(
+        self.inventory,
+        function(a, b)
+            if a.section == b.section then
+                return a.condition > b.condition
+            else
+                return a.section < b.section
+            end
+        end
+    )
+
+    return changed
+end
+
+function arc_8container_menu:load_containers()
+    self.containers = {}
+    db.actor:iterate_ruck(
+        function(npc, obj)
+            if obj:section() == self.object:section()
+                and g_sim:object(obj:id())
+                and (not db.actor:marked_dropped(obj))
+            then
+                table.insert(self.containers, obj)
+            end
+        end,
+        db.actor
+    )
+    for i, obj in ipairs(self.containers) do
+        if obj:id() == self.object:id() then
+            if i == table.getn(self.containers) then
+                self.next_n = false
+            else
+                self.next_n = i + 1
+            end
+            if i == 1 then
+                self.prev_n = false
+            else
+                self.prev_n = i - 1
+            end
+            break
+        end
+    end
+end
+
+function arc_8container_menu:DrawBackground()
+    self.xml:InitWindow("main", 0, self)
+    self.xml:InitStatic("background", self)
+    self.info_wnd            = self.xml:InitStatic("info_wnd", self)
+
+    self.arts_weight         = self.xml:InitStatic("arts_weight", self)
+	self.arts_weight:SetTextColor(255,238,155,23)
+	self.arts_weight:SetTextAlign( CGameFont.alCenter )
+	self.arts_weight:SetFont( GetFontLetterica18Russian() )
+
+    local scroll             = self.xml:InitScrollView("scroll", self)
+    self.scrolled            = self.xml:InitStatic("scrolled", scroll)
+    self.min_scrolled_height = self.scrolled:GetHeight()
+    --self.min_scrolled_height = 250
+    local art_box            = self.xml:InitStatic("art_box", self.scrolled)
+
+    self.btn_quit            = self.xml:InitButton("btn_quit", art_box)
+    self:Register(self.btn_quit, self.btn_quit:WindowName())
+    self:AddCallback(
+        self.btn_quit:WindowName(), ui_events.BUTTON_CLICKED,
+        self.on_quit, self
+    )
+
+    self.btn_prev = self.xml:InitButton("btn_prev", art_box)
+    self:Register(self.btn_prev, self.btn_prev:WindowName())
+    self:AddCallback(
+        self.btn_prev:WindowName(), ui_events.BUTTON_CLICKED,
+        self.prev_container, self
+    )
+    self.btn_prev:Show(self.prev_n and true or false)
+
+    self.btn_next = self.xml:InitButton("btn_next", art_box)
+    self:Register(self.btn_next, self.btn_next:WindowName())
+    self:AddCallback(
+        self.btn_next:WindowName(), ui_events.BUTTON_CLICKED,
+        self.next_container, self
+    )
+    self.btn_next:Show(self.next_n and true or false)
+end
+
+function arc_8container_menu:draw_weight()
+    local sum_weight_arts = 0
+    for i, t in ipairs(self.artefacts) do
+        if t.section then
+            sum_weight_arts = sum_weight_arts + get_float(t.section, "inv_weight", 0)
+        end
+    end
+    local container_weight = get_float(self.object:section(), "inv_weight", 0)
+    local total_weight = container_weight + sum_weight_arts
+	local text = string.format( "Артефакты: %.2f кг\n | Всего: %.2f кг", sum_weight_arts, total_weight )
+    self.arts_weight:SetText(text)
+    return sum_weight_arts, container_weight, total_weight
+end
+
+local goodness_data = {
+    [ "dyn1d"    ] = { symbol = "•",    color = { 200, 255,   0,   0 } },
+    [ "dyn2d"    ] = { symbol = "••",   color = { 200, 255, 100,   0 } },
+    [ "dyn3d"    ] = { symbol = "•••",  color = { 200, 255, 255,   0 } },
+    [ "dyn4d"    ] = { symbol = "••••", color = { 200, 160, 255,   0 } },
+    [ "dyn5d"    ] = { symbol = "•••••",color = { 200,   0, 255,   0 } },
+    [ "dyn6d"    ] = { symbol = "°",    color = { 200,   0, 255, 255 } }
+}
+
+function arc_8container_menu:get_goodness_symbol(section)
+    if strpos(section, "capsule", 1, true) then
+        return "", {255, 255, 255, 255}
+    end
+
+    for key, data in pairs(goodness_data) do
+        if strpos(section, key, 1, true) then
+            return data.symbol, data.color
+        end
+    end
+end
+
+function arc_8container_menu:make_art_button(t, act)
+    local s = self.xml:InitStatic("art_" .. act, self.scrolled)
+    local b = self.xml:InitButton("art_button_" .. act, s)
+    s.button = b
+    CIconParams(t.section):set_shader(b)
+
+    local rad_text = ""
+    if t.condition > 0 then
+        local rad = get_float(t.section, "radiation_restore_speed", 0)
+        if rad > 0 then
+            rad_text = string.format("+%.0f", rad / radiation_v)
+            b:SetText(rad_text)
+            b:SetTextAlign(0)   -- слева
+            b:SetVTextAlign(0)  -- сверху
+        end
+    end
+
+    local p = self.xml:InitProgressBar("condition_progess_bar_" .. act, s)
+    s.progress = p
+    p:SetProgressPos(t.condition * 100)
+
+    local symbol, color = self:get_goodness_symbol(t.section)
+    if symbol ~= "" and symbol ~= nil then
+        if rad_text ~= "" then
+            b:SetText(rad_text .. " " .. symbol)
+        else
+            b:SetText(symbol)
+        end
+        b:SetTextY(-4)
+        b:SetTextColor(unpack(color))
+    end
+
+    return s
+end
+
+function arc_8container_menu:get_target_xy(k, pos)
+    local m = self.menu_cfg[k]
+    local x = m.x_start + (m.space_x * math.fmod(pos - 1, m.row_size))
+    local y = m.y_start + (m.space_y * math.floor((pos - 1) / m.row_size))
+    return x, y
+end
+
+--\\-- Функции ДИША !!!
+
+function put_in_art(id, art_section, condition, cust)
+   -- local sobj = level.object_by_id(id)
+	local box = level.object_by_id(id)
+    if not box then 
+        log3("! контейнер " .. id .. " не найден")
+        return false 
+    end
+
+    local pk = get_netpk(box)
+    local box_data = pk:get()
+    local sect = box:section()
+    local slots = get_u32(sect, "container_slots") or 8
+
+    local arts = arc_radiation.decode_custom_data(
+        box_data.custom_data, sect, slots
+    )
+	
+    -- ищем свободный слот
+    local free_slot = nil
+    for i = 1, slots do
+        if not arts[i] or not arts[i].section then
+            free_slot = i
+            break
+        end
+    end
+
+    if not free_slot then
+        log3("! нет свободных слотов в " .. id .. " (" .. slots .. " слотов)")
+        return false
+    end
+
+    -- добавляем
+    arts[free_slot] = {
+        section   = art_section,
+        condition = condition,
+		custom_data = cust ~= nil and cust or nil
+    }
+
+    -- сохраняем обратно
+    box_data.custom_data = arc_radiation.encode_custom_data(
+        arts, sect, slots
+    )
+    pk:set(box_data)
+
+    log3("+ добавлен %s (%.3f) в слот %d контейнера %d", 
+         art_section, condition, free_slot, id)
+
+	arc_recalc_container(id)
+    
+    return true
+end
+
+--[[
+function put_out_art(id, art_section)
+    local box = level.object_by_id(id)
+    if not box then return false end
+
+    local pk = get_netpk(box)
+    local box_data = pk:get()
+    local sect = box:section()
+    local slots = get_u32(sect, "container_slots") or 8
+
+    local arts = arc_radiation.decode_custom_data(box_data.custom_data, sect, slots)
+    local removed = false
+
+    for i = 1, slots do
+        if arts[i] and arts[i].section == art_section then
+            local name = arts[i].section
+            arts[i] = {}
+            removed = true
+            log3("- удалён %s из слота %d", name, i)
+            break
+        end
+    end
+
+    if not removed then
+        log3("артефакт " .. art_section .. " не найден")
+        return false
+    end
+
+    box_data.custom_data = arc_radiation.encode_custom_data(arts, sect, slots)
+    pk:set(box_data)
+	
+	arc_recalc_container(id)
+		
+    return true
+end
+]]--
+
+function put_out_art(id, slot, art_section, condition)
+    local box = level.object_by_id(id)
+    if not box then return false end
+
+    local pk = get_netpk(box)
+    local box_data = pk:get()
+    local sect = box:section()
+    local slots = get_u32(sect, "container_slots") or 8
+
+    local arts = arc_radiation.decode_custom_data(box_data.custom_data, sect, slots)
+    local removed = false
+
+    if slot then
+        -- Удаляем строго по слоту, без проверки секции или условия
+        if slot < 1 or slot > slots then
+            log3("Неверный слот: %d", slot)
+            return false
+        end
+
+        if not arts[slot] or next(arts[slot]) == nil then
+            log3("Слот %d уже пустой", slot)
+            return false
+        end
+
+        local name = arts[slot].section or "неизвестный"
+        arts[slot] = {}
+        removed = true
+        log3("- удалён %s из слота %d", name, slot)
+
+    else
+        -- Итерируем по слотам, ищем по секции и условию
+        for i = 1, slots do
+            if arts[i] and arts[i].section == art_section then
+                if not condition or (arts[i].value and arts[i].value >= condition) then
+                    local name = arts[i].section
+                    arts[i] = {}
+                    removed = true
+                    log3("- удалён %s из слота %d", name, i)
+                    break
+                end
+            end
+        end
+
+        if not removed then
+            log3("артефакт " .. art_section .. " не найден")
+            return false
+        end
+    end
+
+    box_data.custom_data = arc_radiation.encode_custom_data(arts, sect, slots)
+    pk:set(box_data)
+
+    arc_recalc_container(id)
+    return true
+end
+
+function arc_recalc_container(id)
+	log2( "Resitred recalc container" )
+    local obj = level.object_by_id(id)
+    if not obj then return end
+
+    local sobj = g_sim:object(id)
+    if not sobj then return end
+    local sect  = sobj:section_name()
+    local slots = get_u32(sect, "container_slots") or 8
+    local base_weight = get_float(sect, "inv_weight", 0)
+
+    local arts = arc_radiation.decode_custom_data(
+        sobj.custom_data, sect, slots
+    )
+	
+    local sum_weight = 0
+    local rad = 0
+    local protection = get_u32(sect, "container_protection", 0)
+    if protection > 0 then
+        protection = (protection + 0.1) * get_float("actor_condition", "radiation_v")
+    end
+
+    for _, t in ipairs(arts) do
+        if t.section and t.condition > 0 then
+            sum_weight = sum_weight + get_float(t.section, "inv_weight", 0)
+
+            local rrs = get_float(t.section, "radiation_restore_speed", 0)
+            if protection > 0 and rrs > protection then
+                rad = rad + (rrs - protection)
+            end
+        end
+    end
+
+    local iitem = obj:get_inventory_item()
+    if iitem then
+        iitem.inv_weight = base_weight + sum_weight
+        iitem.radiation_restore_speed = rad
+    end
+
+    arc_radiation.register_item(id, rad)
+
+    if sum_weight > 0 then
+        set_item_ungroupable(obj)
+    else
+        set_item_default_grouping(obj)
+    end
+end
+
+function arc_count_slots(decode)
+    local used = 0
+    for _, t in ipairs(decode) do
+        if t.section then
+            used = used + 1
+        end
+    end
+    return used
+end
+
+-- g_loadstring ui_arc_container_menu.add_bad_item( "af_gravi_dyn3d",0.51)
+-- g_loadstring ui_arc_container_menu.kill
+-- g_loadstring ui_arc_container_menu.gg(2232)
+-- g_loadstring ui_arc_container_menu.get_containers_id()
+-- g_loadstring ui_arc_container_menu.put_in_art(1983,"af_compass_dyn5d",0.49,"yan_tele_esc")
+-- g_loadstring ui_arc_container_menu.put_out_art(2232,"af_spirit_8")
+
+function add_bad_item( sect, cond )
+    local obj = misc.spawn_to( sect, db.actor )
+    if obj then
+		local obj_id = level.object_by_id( obj.id )
+		if obj_id and obj_id:is_weapon() then 
+			schedule.add( "unload_weapon", "sak_dialog.weapon_unload( ".. obj.id .." )", 250 )	
+		end	
+        params.upd_condition( obj.id, cond )
+        sak.relocate_item( "in", sect, 1 )
+    end
+end
+
+function get_inv_name(sect)
+    local name = get_string(
+        sect, "inv_name", get_string(sect, "inv_name_short")
+    )
+    if not name then return name end
+    return dsh.strip_quotes(game.translate_string(name))
+end
+
+function set_inv_item_weight(obj, weight)
+    obj:get_inventory_item().inv_weight = weight
+end
+
+function change_inv_item_weight(id, weight, abs_weight)
+    local obj = level.object_by_id(id)
+    if obj then
+        if abs_weight then
+            set_inv_item_weight(obj, weight)
+        else
+            local cur_weight = get_inv_item_weight(obj)
+            set_inv_item_weight(obj, cur_weight + weight)
+        end
+    end
+end
+
+
+-- сделать предмет безусловно негруппируемым в окнах инвентаря
+function set_item_ungroupable(item)
+    local f = item:get_inventory_item_flags()
+    f:set(global_flags.FIAlwaysUngroupable, true)
+    item:set_inventory_item_flags(f)
+end
+
+-- включить движковую группировку для предмета
+function set_item_default_grouping(item)
+    local f = item:get_inventory_item_flags()
+    f:set(global_flags.FIAlwaysUngroupable, false)
+    item:set_inventory_item_flags(f)
+end
+
+-- сделать предмет безусловно непродаваемым в окнах инвентаря
+function set_item_untradable(item)
+    local f = item:get_inventory_item_flags()
+    f:set(global_flags.FIAlwaysUntradable, true)
+    item:set_inventory_item_flags(f)
+end
+
+-- включить движковую продажу для предмета
+function set_item_default_trading(item)
+    local f = item:get_inventory_item_flags()
+    f:set(global_flags.FIAlwaysUntradable, false)
+    item:set_inventory_item_flags(f)
+end
+
+-- сделать предмет невидимым в инвентаре
+function set_item_inv_hidden(item)
+    local f = item:get_inventory_item_flags()
+    f:set(global_flags.FIHiddenForInventory, true)
+    item:set_inventory_item_flags(f)
+end
+
+-----------------------------------------
+
+function arc_8container_menu:show_art_info(wnd, section, condition, data)
+    local text = ""
+
+    local inv_name = this.get_inv_name(section)
+	
+	local dyn_num = tonumber( string.sub( section, -2, -2 ) )
+	if strpos( section, "_dyn", 1, true ) and not strpos( section, "_capsule" ) then
+		inv_name = inv_name .. " [" .. dyn_num .. "]"
+	end	
+	
+    if is_debug_mode then
+        text = inv_name .. " (" .. section .. ")\\n \\n"
+    else
+        text = inv_name .. "\\n \\n"
+    end
+	
+	if condition then 
+		text = text .. string.format( "• Состояние: %d%%\\n \\n", condition * 100 )
+	end
+
+    local af_text = get_art_info_text(section)
+    if af_text then
+        text = text .. af_text .. "\\n \\n%c[default]"
+    end
+	
+	if strpos( section, "af_compass", 1, true ) then 
+		text = text .. "\\n" .. ui_inv_descr.get_compass_way( data )
+	end	
+
+    local cost = get_float(section, "cost", 0)
+    if cost ~= 0 then
+        text = text .. "\\n" .. "Базовая стоимость: " .. cost .. " руб."
+    end
+    local inv_weight = get_float(section, "inv_weight", 0)
+    if inv_weight ~= 0 then
+        text = text .. "\\nВес:" .. string.format("%s%.2f кг", game.translate_string("ui_inv_weight"), inv_weight)
+    end
+	
+    wnd:SetText(text)
+end
+
+function arc_8container_menu:draw_artefacts()
+    for i, t in ipairs(self.artefacts) do
+        if t.section then
+            local s    = self:make_art_button(t, "take")
+            local x, y = self:get_target_xy("take", i)
+            s:SetWndPos(x, y)
+            self:Register(s.button, "art_button_take_" .. i)
+            t.button = s
+        end
+    end
+    for i = 1, self.slots do
+        self:AddCallback(
+            "art_button_take_" .. i, ui_events.BUTTON_CLICKED,
+            function(wnd) wnd:take_artefact(i) end, self
+        )
+        self:AddCallback(
+            "art_button_take_" .. i, ui_events.STATIC_FOCUS_RECEIVED,
+            function()
+                --log1("STATIC_FOCUS_RECEIVED="..t.section)
+                local info = self.info_wnd
+                local src = self.artefacts[i]
+                self:show_art_info(info, src.section, src.condition, src.custom_data)
+            end
+        )
+    end
+end
+
+function arc_8container_menu:take_artefact(n)
+    local src = self.artefacts[n]
+    local s   = src.button
+    if s.flying then return end
+
+    self.artefacts[n] = {}
+    self:save_artefacts()
+
+    local wpos = s:GetWndPos()
+    self:detach_button(s)
+
+    -- Если достали, то не нужно его дополнительно переспавнивать
+    if src.section == "af_dummy_black_tip" then
+        if sig_inv_hide and not sig_inv_hide.unsubscribed then
+            ogse_signals.get_mgr():unsubscribe(sig_inv_hide)
+        end
+        sig_inv_hide = nil
+        if sig_inv_drop and not sig_inv_drop.unsubscribed then
+            ogse_signals.get_mgr():unsubscribe(sig_inv_drop)
+        end
+        sig_inv_drop = nil
+    end
+
+    local sobj = misc.spawn_to( src.section, db.actor )
+    level.client_spawn_manager():add(
+        sobj.id, -1,
+        function( id, sobj )
+            sobj:set_condition( src.condition )	
+            sobj = sobj:get_alife_object()
+            if src.custom_data then
+                log3( "src on take %s", src.custom_data )
+                sobj.custom_data = src.custom_data
+            end		
+            self.fly_it[sobj.id] = vector():set(wpos.x, wpos.y, 0)
+            vergas_lib.s_play( "scripts\\art_move", 1 )
+			-- Таймаут не особо, но проще, чем городить другое
+			dsh.timeout( 15, function() self.info_wnd:SetText("") end )
+        end
+    )
+end
+
+function arc_8container_menu:draw_inventory()
+    local scrolled_h = self.min_scrolled_height
+
+    for i, t in ipairs(self.inventory) do
+        local s    = self:make_art_button(t, "put")
+        local x, y = self:get_target_xy("put", i)
+        s:SetWndPos(x, y)
+        
+        local btn_name = "art_button_put_" .. i
+        s.button:SetWindowName(btn_name)
+        self:Register(s.button, btn_name)
+        
+        self:AddCallback(
+            btn_name, ui_events.BUTTON_CLICKED,
+            function(wnd) 
+                -- Получаем индекс из имени кнопки
+                local idx = tonumber(string.match(btn_name, "%d+"))
+                wnd:put_artefact(idx) 
+            end, self
+        )
+
+        self:AddCallback(
+            btn_name, ui_events.STATIC_FOCUS_RECEIVED,
+            function()
+                -- Получаем индекс из имени кнопки
+                local idx = tonumber(string.match(btn_name, "%d+"))
+                if self.inventory[idx] and self.inventory[idx].section then
+                    self:show_art_info(self.info_wnd, self.inventory[idx].section, self.inventory[idx].condition, self.inventory[idx].custom_data)
+                end
+            end
+        )
+
+        t.button = s
+
+        local max_h = s:GetPosTop() + s:GetHeight()
+        if max_h > scrolled_h then scrolled_h = max_h end
+    end
+
+    if scrolled_h > self.min_scrolled_height then
+        self.scrolled:SetHeight(scrolled_h)
+    end
+
+    self.added_callbacks = table.getn(self.inventory)
+end
+
+function remove_item_from_inventory(remove_item, npc)
+    if not npc then npc = db.actor end
+    if remove_item then
+        -- npc:mark_item_dropped(remove_item)
+        return amk.remove_item(remove_item)
+    end
+    return false
+end
+
+function arc_8container_menu:put_artefact(n)
+    local src = self.inventory[n]
+    if src.button.flying then return end
+
+    local dst, pos
+    for i, t in ipairs(self.artefacts) do
+        if not t.section then
+            dst = t
+            pos = i
+            break
+        end
+    end
+    if not dst then
+        if table.getn(self.artefacts) == self.slots then return end
+        dst = {}
+        table.insert(self.artefacts, dst)
+        pos = table.getn(self.artefacts)
+    end
+
+    for _, k in ipairs({ "section", "condition", "custom_data" }) do
+        dst[k] = src[k]
+    end
+	
+	-- Что-то надо с ней сделать, мб на закрытии возвращать в инвентарь или вообще запретить помещать в конт, тогда удалить все лишнее
+    if src.section == "af_dummy_black_tip" then
+        this.subscribe_black_tip(self.object:id(), src.condition)
+    end
+	
+	-- для радейки
+	if src.section and src.condition > 0 then
+		local rrs = get_float(src.section, "radiation_restore_speed", 0)
+		if rrs > self.protection then
+		   sak.send_tip( "Защита недостаточна.", "Контейнер", 0, 10, "death", "sak", "red" )
+		end
+	end	
+
+    if dst.custom_data then
+		log3( "dst custom_data %s", dst.custom_data )
+        --dst.custom_data = base64.enc(dst.custom_data)
+        dst.custom_data = dst.custom_data
+    end
+    self:save_artefacts()
+
+    local wpos = src.button:GetWndPos()
+    src.button:Show(false)
+    local s    = self:make_art_button(dst, "take")
+    local x, y = self:get_target_xy("take", pos)
+    s.flying   = {
+        progress   = 0.1,
+        start_pos  = vector():set(wpos.x, wpos.y, 0),
+        start_time = time_global(),
+        target_pos = vector():set(x, y, 0),
+    }
+    table.insert(self.flying, s)
+    s:SetWndPos(wpos.x, wpos.y)
+    self:Register(s.button, "art_button_take_" .. pos)
+    dst.button = s
+
+	-- Очищать инфу в окне описания, если закинули последний имеющийся
+	if n == #self.inventory then
+		dsh.timeout( 15, function()
+			self.info_wnd:SetText( "" )
+		end )
+	end
+
+    remove_item_from_inventory(src.object)
+	vergas_lib.s_play( "scripts\\art_move", 1 )
+end
+
+function subscribe_black_tip(container_id, condition)
+    if sig_inv_hide or sig_inv_drop then return end
+
+	local handled_bt = false
+
+    local function cleanup()
+        local hide_sub = sig_inv_hide
+        local drop_sub = sig_inv_drop
+        sig_inv_hide = nil
+        sig_inv_drop = nil
+        if hide_sub and not hide_sub.unsubscribed then
+            ogse_signals.get_mgr():unsubscribe(hide_sub)
+        end
+        if drop_sub and not drop_sub.unsubscribed then
+            ogse_signals.get_mgr():unsubscribe(drop_sub)
+        end
+    end
+
+    sig_inv_hide = ogse_signals.get_mgr():subscribe_once({
+        signal = "on_inventory_hide",
+        fun = function()
+			if handled_bt then return end
+			handled_bt = true
+            cleanup()
+            this.put_out_art(container_id, nil, "af_dummy_black_tip")
+            kotovod.add_bad_item("af_dummy_black_tip", condition)
+            sak.send_tip(
+                "Етижи-пассатижи, вернулась зараза! \\nПохоже, нет никакого смысла помещать её в контейнер...",
+                "Мысли вслух", 2, 10, "g_g", "sak", "red"
+            )
+        end
+    })
+
+    sig_inv_drop = ogse_signals.get_mgr():subscribe_once({
+        signal = "on_drop_before_all",
+        fun = function(obj)
+            if obj:id() ~= container_id then return end
+			if handled_bt then return end
+			handled_bt = true			
+            cleanup()
+			dsh.timeout( 10, function()
+				this.put_out_art(container_id, nil, "af_dummy_black_tip")
+				sak.send_tip(
+					"Етижи-пассатижи, вернулась зараза! \\nПохоже, нет никакого смысла помещать её в контейнер...",
+					"Мысли вслух", 2, 10, "g_g", "sak", "red"
+				)
+			end	)
+        end
+    })
+end
+
+function arc_8container_menu:subscribe_signals()
+    self.signals = {
+        { signal = "on_drop_before_all", fun = self.on_drop, self = self },
+        { signal = "on_take",            fun = self.on_take, self = self },
+    }
+    local sm = ogse_signals.get_mgr()
+    for _, s in ipairs(self.signals) do
+        sm:subscribe(s)
+    end
+end
+
+function arc_8container_menu:unsubscribe_signals()
+    local sm = ogse_signals.get_mgr()
+    for _, s in ipairs(self.signals) do
+        sm:unsubscribe(s)
+    end
+    self.signals = nil
+end
+
+function arc_8container_menu:on_drop(obj)
+    self.changed = true
+end
+
+function arc_8container_menu:on_take(obj)
+    self.changed = true
+end
+
+function arc_8container_menu:reload_inventory()
+    local changed = self:load_inventory()
+    if not changed then 
+        return 
+    end
+
+    local scrolled_h = self.min_scrolled_height
+
+    for i, t in ipairs(self.inventory) do
+        local btn_name = "art_button_put_" .. i
+        local s = t.button
+        local need_recreate = false
+
+        if s then
+            -- Проверяем, изменился ли индекс кнопки
+            local old_btn_name = s.button:WindowName()
+            if old_btn_name ~= btn_name then
+                -- Индекс изменился - пересоздаем кнопку
+                self.scrolled:DetachChild(s)
+                need_recreate = true
+            else
+                self:Register(s.button, btn_name)
+            end
+        else
+            need_recreate = true
+        end
+
+        if need_recreate then
+            s = self:make_art_button(t, "put")
+            s.button:SetWindowName(btn_name)
+            self:Register(s.button, btn_name)
+            
+            self:AddCallback(
+                btn_name, ui_events.BUTTON_CLICKED,
+                function(wnd) 
+                    local idx = tonumber(string.match(btn_name, "%d+"))
+                    wnd:put_artefact(idx) 
+                end, self
+            )
+
+            self:AddCallback(
+                btn_name, ui_events.STATIC_FOCUS_RECEIVED,
+                function()
+                    local idx = tonumber(string.match(btn_name, "%d+"))
+                    if self.inventory[idx] and self.inventory[idx].section then
+                        self:show_art_info(self.info_wnd, self.inventory[idx].section, self.inventory[idx].condition, self.inventory[idx].custom_data)
+                    end
+                end
+            )
+            
+            t.button = s
+        end
+
+        s.progress:SetProgressPos(t.condition * 100)
+
+        local x, y    = self:get_target_xy("put", i)
+        local fly_pos = self.fly_it[t.id]
+
+        if fly_pos then
+            s.flying = {
+                progress   = 0.1,
+                start_pos  = fly_pos,
+                start_time = time_global(),
+                target_pos = vector():set(x, y, 0),
+            }
+            s:SetWndPos(fly_pos.x, fly_pos.y)
+            self.fly_it[t.id] = nil
+            table.insert(self.flying, s)
+        elseif s.flying then
+            s.flying.target_pos = vector():set(x, y, 0)
+        else
+            s:SetWndPos(x, y)
+        end
+
+        local max_h = y + s:GetHeight()
+        if max_h > scrolled_h then scrolled_h = max_h end
+    end
+
+    if scrolled_h > self.min_scrolled_height then
+        self.scrolled:SetHeight(scrolled_h)
+    end
+end
+
+function arc_8container_menu:Update()
+    CUIScriptWnd.Update(self)
+    if self.changed then
+        self:reload_inventory()
+        self.changed = false
+    end
+    if table.getn(self.flying) then
+        self:update_flying()
+    end
+end
+
+function arc_8container_menu:update_flying()
+    for _, s in ipairs(self.flying) do
+        local t    = s.flying
+        local dt   = (time_global() - t.start_time) / 1000
+        t.progress = t.progress + dt * fly_speed
+        if t.progress > 1 then t.progress = 1 end
+        local p = vector():sub(t.target_pos, t.start_pos)
+        p:mul(t.progress)
+        p:add(t.start_pos)
+        s:SetWndPos(math.floor(p.x), math.floor(p.y))
+    end
+    for i = table.getn(self.flying), 1, -1 do
+        local s = self.flying[i]
+        if s.flying.progress == 1 then
+            table.remove(self.flying, i)
+            s.flying = nil
+        end
+    end
+end
+
+function arc_8container_menu:stop_flying()
+    for _, s in ipairs(self.flying) do
+        local t = s.flying
+        s:SetWndPos(t.target_pos.x, t.target_pos.y)
+    end
+    self.flying = {}
+end
+
+function arc_8container_menu:on_quit()
+    self:unsubscribe_signals()
+    self:GetHolder():start_stop_menu(self, true)
+    self:ClearCallbacks()
+    active_menu = false
+	vergas_lib.s_play( "scripts\\inv_art_container_close", 1 )
+end
+
+function arc_8container_menu:OnKeyboard(dik, keyboard_action)
+    CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+    if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+        if dik == DIK_keys.DIK_ESCAPE then
+            self:on_quit()
+        end
+    end
+    return true
+end
+
+function arc_8container_menu:reload_artefacts()
+    self:stop_flying()
+    for _, t in ipairs(self.artefacts) do
+        if t.button then
+            self:detach_button(t.button)
+        end
+    end
+    self:load_artefacts()
+    self:draw_weight()
+	vergas_lib.s_play( "scripts\\inv_art_container_change", 1 )
+    for i, t in ipairs(self.artefacts) do
+        if t.section then
+            local s = self:make_art_button(t, "take")
+            s:SetWndPos(self:get_target_xy("take", i))
+            self:Register(s.button, "art_button_take_" .. i)
+            t.button = s
+        end
+    end
+end
+
+function arc_8container_menu:next_container()
+    self.object = self.containers[self.next_n]
+    self.prev_n = self.next_n - 1
+    if self.next_n == table.getn(self.containers) then
+        self.next_n = false
+    else
+        self.next_n = self.next_n + 1
+    end
+    self.btn_prev:Show(true)
+    self.btn_next:Show(self.next_n and true or false)
+    self:reload_artefacts()
+end
+
+function arc_8container_menu:prev_container()
+    self.object = self.containers[self.prev_n]
+    self.next_n = self.prev_n + 1
+    if self.prev_n == 1 then
+        self.prev_n = false
+    else
+        self.prev_n = self.prev_n - 1
+    end
+    self.btn_prev:Show(self.prev_n and true or false)
+    self.btn_next:Show(true)
+    self:reload_artefacts()
+end
+
+
+
+-- Вынес из левого скрипта
+
+
+local af_actor_cond = {
+    ["bleeding_restore_speed"] = get_float("actor_condition", "wound_incarnation_v", 0),
+    ["health_restore_speed"] = get_float("actor_condition", "satiety_health_v", 0),
+    ["power_restore_speed"] = get_float("actor_condition", "satiety_power_v", 0) * 100,
+    ["satiety_restore_speed"] = get_float("actor_condition", "satiety_v", 0),
+    ["thirst_restore_speed"] = get_float("actor_condition", "thirst_v", 0),
+    ["radiation_restore_speed"] = get_float("actor_condition", "radiation_v", 0) * 100,
+    ["psy_health_restore_speed"] = get_float("actor_condition", "psy_health_v", 0),
+}
+
+local af_absorbs = {
+    "burn_immunity",
+    "strike_immunity",
+    "shock_immunity",
+    "wound_immunity",
+    "radiation_immunity",
+    "telepatic_immunity",
+    "chemical_burn_immunity",
+    "explosion_immunity",
+    "fire_wound_immunity",
+}
+
+local af_ui_name = {
+    ["health_restore_speed"] = "ui_inv_health",
+    ["radiation_restore_speed"] = "ui_inv_radiation",
+    ["satiety_restore_speed"] = "ui_inv_satiety",
+    ["thirst_restore_speed"] = "ui_inv_thirst",
+    ["power_restore_speed"] = "ui_inv_power",
+    ["bleeding_restore_speed"] = "ui_inv_bleeding",
+    ["psy_health_restore_speed"] = "ui_inv_psy_health",
+    ["burn_immunity"] = "ui_inv_outfit_burn_protection",
+    ["strike_immunity"] = "ui_inv_outfit_strike_protection",
+    ["shock_immunity"] = "ui_inv_outfit_shock_protection",
+    ["wound_immunity"] = "ui_inv_outfit_wound_protection",
+    ["radiation_immunity"] = "ui_inv_outfit_radiation_protection",
+    ["telepatic_immunity"] = "ui_inv_outfit_telepatic_protection",
+    ["chemical_burn_immunity"] = "ui_inv_outfit_chemical_burn_protection",
+    ["explosion_immunity"] = "ui_inv_outfit_explosion_protection",
+    ["fire_wound_immunity"] = "ui_inv_outfit_fire_wound_protection",
+    ["additional_inventory_weight"] = "ui_inv_additional_weight",
+    ["additional_inventory_weight2"] = "Переносимый вес:",
+}
+
+function get_art_info_text(sect, condition, data)
+    condition = condition or 1
+    local texts = {}
+    
+	local garbage_rad = nil
+	if data then
+		local props = ui_arc_container_menu.xp_read_from_cust( data )
+		if props and props.rad then
+			garbage_rad = props.rad
+		end
+	end
+
+	for k, v in pairs(af_actor_cond) do
+		local af_val = get_float(sect, k, 0)
+		
+		-- если радейка нулевая в конфиге но есть garbage_rad — всё равно показываем
+		if k == "radiation_restore_speed" and garbage_rad and af_val == 0 then
+			af_val = garbage_rad / v * 100
+			-- Значение показываем только выше 0			
+			if math.abs( af_val ) > 0.000001 then
+				local sn = ""
+				local color = af_val > 0 and "%c[red]" or "%c[green]"
+				table.insert(
+					texts,
+					string.format(
+						"%%c[default]• %s %s%+.0f%s",
+						game.translate_string(af_ui_name[k]), color, af_val, sn
+					)
+				)
+			end
+		elseif af_val ~= 0 then
+			local sn = "%"
+			if k == "radiation_restore_speed" then sn = "" end
+			if k == "radiation_restore_speed" and garbage_rad then
+				af_val = garbage_rad / v * 100
+			else
+				af_val = af_val / v * 100 * condition
+			end
+			if math.abs( af_val ) > 0.000001 then
+				local color
+				if af_val > 0 then
+					color = "%c[green]"
+				else
+					color = "%c[red]"
+				end
+				if k == "bleeding_restore_speed" then
+					af_val = af_val * -1
+				end
+				if k == "bleeding_restore_speed" or k == "radiation_restore_speed" then
+					if af_val > 0 then
+						color = "%c[red]"
+					else
+						color = "%c[green]"
+					end
+				end
+				table.insert(
+					texts,
+					string.format(
+						"%%c[default]• %s %s%+.0f%s",
+						game.translate_string(af_ui_name[k]), color, af_val, sn
+					)
+				)
+			end
+		end
+	end
+    for _, k in ipairs({
+        "additional_inventory_weight", "additional_inventory_weight2"
+    }) do
+        local af_val = get_float(sect, k, 0)
+        if k == "additional_inventory_weight" then
+            local af_val2 = get_float(sect, "additional_inventory_weight2", 0)
+            if af_val == af_val2 then af_val = 0 end
+        end
+        if af_val ~= 0 then
+            af_val = af_val * condition
+            local sn = " кг"
+            local color
+            if af_val > 0 then
+                color = "%c[green]"
+            else
+                color = "%c[red]"
+            end
+            table.insert(
+                texts,
+                string.format(
+                    "%%c[default]• %s %s%+.0f%s",
+                    game.translate_string(af_ui_name[k]), color, af_val, sn
+                )
+            )
+        end
+    end
+    local absorb_sect = get_string(sect, "hit_absorbation_sect")
+    if sys_ini:section_exist(absorb_sect) then
+        for _, k in ipairs(af_absorbs) do
+            local af_val = get_float(absorb_sect, k, 0)
+            if af_val ~= 1 then
+                af_val = (1 - af_val) * 100 * condition
+                local color
+                if af_val > 0 then
+                    color = "%c[green]"
+                else
+                    color = "%c[red]"
+                end
+                table.insert(
+                    texts,
+                    string.format(
+                        "%%c[default]• %s %s%+.0f%s",
+                        game.translate_string(af_ui_name[k]), color, af_val, "%"
+                    )
+                )
+            end
+        end
+    end
+
+    if table.getn(texts) > 0 then
+        return table.concat(texts, "\\n")
+    end
+end
+
+
+-- Универсальная для контейнеров
+--[[
+local tbl_arts = {
+    { sect = kotovod.rnd_rec_art_info( kotovod.tbl_arts, 2 ), cond = 0.73 },
+    { sect = kotovod.rnd_rec_art_info( kotovod.tbl_arts, 5 ), cond = 0.88 },
+    { sect = "af_dummy_spring",                                cond = 0.65 },
+}
+ui_arc_container_menu.fill_container( sobj_cont, tbl_arts )
+
+ui_arc_container_menu.fill_container( sobj_cont, {
+    { sect = "af_compass", cond = 1.0, cust = "yan_tele_esc" }
+})
+]]--
+
+
+function fill_container( sobj_cont, tbl_arts )
+    if not sobj_cont then return end
+    local cont_sect = sobj_cont:section_name()
+    local slots     = get_u32( cont_sect, "container_slots" ) or 8
+    local arts      = {}
+    for i = 1, slots do table.insert( arts, {} ) end
+    for i, v in ipairs( tbl_arts ) do
+        if i > slots then 
+			--log4( "[fill_container] warning: too many arts for %s, slots=%d arts=%d", cont_sect, slots, #tbl_arts )
+			break 
+		end
+        arts[ i ] = {
+            section     = v.sect,
+            condition   = v.cond,
+            custom_data = v.cust or nil
+        }
+    end
+    local pk = get_netpk( sobj_cont, 1 )
+    if pk then
+        local data = pk:get()
+        data.custom_data = arc_radiation.encode_custom_data( arts, cont_sect, slots )
+        pk:set( data )
+    end
+end
+
+-- ============================================================
+-- Универсальная система свойств в custom_data
+-- Формат: xp={key1=val1,key2=val2}
+-- ============================================================
+
+--[[ Переделать потом семецкий капсулы, типо такого
+xp_write( obj:id(), { capsule = "af_night_star_dyn5d_capsule", data = "semeckiy_capsule" } )
+
+local props = xp_read( obj:id() )
+if props then
+    local capsule_sect = props.capsule  -- "af_night_star_dyn5d_capsule"
+    local capsule_data = props.data     -- "semeckiy_capsule"
+end
+]]--
+
+function xp_read_raw( cust )
+    if not cust then return nil end
+    local body = cust:match( "xp={(.-)}" )
+    if not body or body == "" then return nil end
+    local props = {}
+    for pair in body:gmatch( "[^;]+" ) do
+        local k, v = pair:match( "^([%w_]+)=(.*)$" )
+        if k then
+            local num = tonumber( v )
+            props[ k ] = num ~= nil and num or v
+        end
+    end
+    return props
+end
+
+function xp_read( id )
+    local sobj = g_sim:object( id )
+    if not sobj then return nil end
+    local pk = get_netpk( sobj, 1 )
+    if not pk then return nil end
+    return xp_read_raw( pk:get().custom_data )
+end
+
+function xp_read_from_cust( cust )
+    return xp_read_raw( cust )
+end
+
+function xp_write( id, props )
+    local sobj = g_sim:object( id )
+    if not sobj then return end
+    local pk = get_netpk( sobj, 1 )
+    if not pk then return end
+    local data = pk:get()
+    local cust = data.custom_data or ""
+    local existing = xp_read_raw( cust ) or {}
+    for k, v in pairs( props ) do
+        existing[ k ] = v
+    end
+    local parts = {}
+    for k, v in pairs( existing ) do
+        table.insert( parts, k .. "=" .. tostring( v ) )
+    end
+    cust = cust:gsub( "|?xp={[^}]*}", "" )
+    cust = cust:gsub( "^|", "" )
+    -- используем ; вместо , чтобы не ломать parse_names контейнера
+    local xp = "xp={" .. table.concat( parts, ";" ) .. "}"
+    data.custom_data = cust ~= "" and ( cust .. "|" .. xp ) or xp
+    pk:set( data )
+end
+
+function xp_delete( id, key )
+    local props = xp_read( id )
+    if not props then return end
+    props[ key ] = nil
+    xp_write( id, props )
+end
