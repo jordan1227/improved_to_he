@@ -1,0 +1,457 @@
+-- Доделать бинд сталкер, не хватает аргументов в драг-дропе мыши!!!
+
+function attach(sm)
+    sm:subscribe({ signal = "on_inventory_open", fun = this.on_show_inventory })
+    sm:subscribe({ signal = "inv_drag_drop", fun = this.try_drag_drop })
+end
+
+local drop_on_id = false
+local subscribed = false
+
+function on_show_inventory()
+    if not subscribed then
+        subscribed = {
+            { signal = "on_cell_item_focus", fun = this.on_cell_item_focus },
+            { signal = "on_cell_item_focus_lost", fun = this.on_cell_item_focus_lost },
+            { signal = "on_cell_item_mouse", fun = this.on_cell_item_mouse },
+            { signal = "on_drop_before_all", fun = this.on_drop },
+            { signal = "on_inventory_hide", fun = this.on_hide_inventory },
+        }
+        local sm = ogse_signals.get_mgr()
+        for _, s in ipairs(subscribed) do
+            sm:subscribe(s)
+        end
+    end
+    drop_on_id = false
+end
+
+function on_hide_inventory()
+    if subscribed then
+        local sm = ogse_signals.get_mgr()
+        for _, s in ipairs(subscribed) do
+            sm:unsubscribe(s)
+        end
+        subscribed = false
+    end
+    drop_on_id = false
+end
+
+function on_cell_item_focus(obj)
+    drop_on_id = obj:id()
+end
+
+function on_cell_item_focus_lost(obj)
+    if obj:id() == drop_on_id then
+        drop_on_id = false
+    end
+end
+
+function on_drop(obj)
+    on_cell_item_focus_lost(obj)
+end
+
+function on_cell_item_mouse(obj, x, y, action)
+    if action ~= ui_events.DRAG_DROP_ITEM_DROP then return end
+    if drop_on_id then
+        local drop_on_obj = level.object_by_id(drop_on_id)
+        if drop_on_obj then
+            ogse_signals.get_mgr():call("inv_drag_drop", obj, drop_on_obj)
+        end
+        drop_on_id = false
+    end
+end
+
+local drag_drop = {
+    ['batt_torch'] = {
+        target = { 'device_torch', 'detector' },
+        action = function(drag_obj, drop_obj)
+            misc.release_obj(drag_obj)
+            --sak.new_batt_torch()
+			drop_obj:set_condition( 1 )
+			dsh_torch.update_torch_parameters()
+        end
+    },
+    
+    ['flask_army'] = {
+        target = { 'flask_army' },
+        action = function(drag_obj, drop_obj)
+            local flask_from = drag_obj:get_eatable_item()
+            local flask_to = drop_obj:get_eatable_item()
+            
+            if flask_from.eat_portions_num <= 1 then
+                sak.send_tip("А ведь Фляга пуста, что же переливать?!", "Мысли вслух", 0, 5, "g_g", "sak", "red")
+                return
+            end
+            
+            local space_available = 5 - flask_to.eat_portions_num
+            local portions_to_transfer = math.min(flask_from.eat_portions_num - 1, space_available)
+            
+            if portions_to_transfer > 0 then
+                flask_to.eat_portions_num = flask_to.eat_portions_num + portions_to_transfer
+                flask_from.eat_portions_num = flask_from.eat_portions_num - portions_to_transfer
+                
+                vergas_flask.replace_flask_weight(drop_obj:id(), flask_to.eat_portions_num)
+                vergas_flask.replace_flask_weight(drag_obj:id(), flask_from.eat_portions_num)
+                
+                sak.send_tip(string.format("Перелил %d порций воды", portions_to_transfer), "Мысли вслух", 0, 5, "g_g", "sak", "green")
+            else
+                sak.send_tip("Вот ведь, фляга уже заполнена!", "Мысли вслух", 0, 5, "g_g", "sak", "red")
+            end
+            
+            sak_inventory.need_update_inventory()
+        end
+    },
+	
+    [ 'af' ] = {
+        target = 'arc_art_box_',
+        exceptions = {
+            af_full_akkum 		 = false,
+            af_full_akkum_big 	 = false,
+			af_resonator		 = false
+        },
+        target_exceptions = {}, -- Добавляем исключения для целевых объектов
+        action = function( drag_obj, drop_obj )			
+			local container = drop_obj:get_alife_object()
+			if container then 
+				local slots = get_u32( drop_obj:section(), "container_slots" )	
+				local pk = get_netpk( drop_obj, 1 )
+				if pk then 
+					local data = pk:get()	
+					local decode = arc_radiation.decode_custom_data(
+						data.custom_data, drop_obj:section(), slots	
+					)
+					log3( "decode %s", decode )					
+					local used = ui_arc_container_menu.arc_count_slots( decode )
+					local free = slots - used
+					log3( "Free %s - used %s", free, used )
+					if free <= 0 then 
+						sak.send_tip(
+							"Э-э, так ведь туда больше не поместится!",
+							"Мысли вслух", 0, 5, "g_g", "sak", "yellow"
+						)                   
+						return
+					end 
+					local art = drag_obj:section()
+					local con = drag_obj:condition()
+					local cus = get_netpk( drag_obj, 1 )
+					if cus then 
+						local pk = get_netpk( drag_obj, 1 )
+						local data = pk:get()
+						local cust = data.custom_data or nil
+						local ard_rad = drag_obj:get_artefact().radiation_restore_speed
+						local protection = get_u32( drop_obj:section(), "container_protection", 0 ) 
+						local radiation_v = get_float("actor_condition", "radiation_v" )
+						if protection > 0 then protection = ( protection + 0.1 ) * radiation_v end						
+						if ard_rad > protection then
+							sak.send_tip( "Защита недостаточна.", "Контейнер", 0, 10, "death", "sak", "red" )
+						end									
+						ui_arc_container_menu.put_in_art( drop_obj:id(), art, con, cust )
+						misc.release_obj( drag_obj, 'put_in_container ' .. drop_obj:id() )				
+					end
+				end
+			end	
+        end
+    },	
+	
+    [ 'wpn_knife' ] = {
+        target = 'sharper',
+        action = function( drag_obj, drop_obj )		
+			local back = get_value( "inv_full" ) and 2000 or 0		
+			sak.actor_hide_weapon()			
+			dsh.timeout( 20, function()
+				sak.close_window()				
+				dsh.timeout( back, function()				
+					process_sharpering( drag_obj, drop_obj )
+				end )
+			end )	
+        end
+    },
+
+    [ 'vodka' ] = {
+        target = { 'sharper' },
+        target_exceptions = {},
+        action = function( drag_obj, drop_obj )
+			local back = get_value( "inv_full" ) and 2000 or 0
+			sak.actor_hide_weapon()
+			dsh.timeout( 20, function()			
+				sak.close_window()				
+				dsh.timeout( back, function()			
+					clean_sharper( drag_obj, drop_obj )
+				end )
+			end )	
+        end
+    },
+	
+    [ 'energy_drink' ] = {
+        target = { 'sharper' },
+        target_exceptions = {},
+        action = function( drag_obj, drop_obj )
+			local back = get_value( "inv_full" ) and 2000 or 0
+			sak.actor_hide_weapon()
+			dsh.timeout( 20, function()			
+				sak.close_window()				
+				dsh.timeout( back, function()			
+					clean_sharper( drag_obj, drop_obj )
+				end )
+			end )	
+        end
+    },
+	
+    [ 'flask_army' ] = {
+        target = { 'sharper' },
+        target_exceptions = {},
+        action = function( drag_obj, drop_obj )
+			local back = get_value( "inv_full" ) and 2000 or 0
+			sak.actor_hide_weapon()
+			dsh.timeout( 20, function()			
+				sak.close_window()				
+				dsh.timeout( back, function()			
+					clean_sharper( drag_obj, drop_obj )
+				end )
+			end )	
+        end
+    },	
+}
+
+function try_drag_drop( drag_obj, drop_obj )
+    if not ( drag_obj and drop_obj ) then return end
+    if drag_obj:id() == drop_obj:id() then return end
+
+    local drag_sect = drag_obj:section()
+    local drop_sect = drop_obj:section()
+
+    log2( "Попытка перетаскивания: drag_sect = " .. drag_sect .. ", drop_sect = " .. drop_sect )
+
+    local function check_prefix( section, prefix_or_prefixes, exceptions )
+        if exceptions and exceptions[ section ] ~= nil then
+            return exceptions[ section ]
+        end
+        if type( prefix_or_prefixes ) == "table" then
+            for _, prefix in ipairs( prefix_or_prefixes ) do
+                if string.find( section, prefix, 1, true ) then
+                    return true
+                end
+            end
+            return false
+        else
+            return string.find( section, prefix_or_prefixes, 1, true ) ~= nil
+        end
+    end
+
+    for key, combination in pairs( drag_drop ) do
+        if check_prefix( drag_sect, key, combination.exceptions ) and 
+           check_prefix( drop_sect, combination.target, combination.target_exceptions ) then
+
+            local drag_parent = drag_obj:parent()
+            if drag_parent:id() ~= db.actor:id() then    
+                local remember_drag = drag_obj
+                local remember_focused = drop_obj
+                schedule.add("delayed_action", function() 
+                    combination.action( remember_drag, remember_focused ) 
+                    remember_drag = nil 
+                    remember_focused = nil 
+                end, 50)
+            else
+                combination.action( drag_obj, drop_obj )
+            end    
+            return
+        end
+    end
+
+    log2("Перетаскивание не удалось: нет подходящей комбинации.")
+end
+
+local sharpen_params = {
+    vodka = 
+		{ decrease = 0.05, 
+		min = 30,
+		max = 40
+	},
+    energy_drink = { 
+		decrease = 0.10, 
+		min = 15, 
+		max = 25
+	},
+    flask_army = { 
+		decrease = 0.15, 
+		min = 5, 
+		max = 10
+	}
+}
+
+function clean_sharper( drag_obj, drop_obj )
+    local sharp_obj = drop_obj
+    local sharp_cond = sharp_obj:condition()
+    local sharp_id = sharp_obj:id()
+    
+    if sharp_cond >= 1 then 
+        sak.send_tip( 
+			"Точильный камень в идеальном состоянии", 
+			"Мысли вслух", 0, 5, "g_g", "no", "red"
+		)
+		vergas_lib.s_play( [[device\antirad_no]], 1 )		
+        return
+    end
+	
+	local item_type = drag_obj:section()
+    
+    local value = sharpen_params[ item_type ]
+    if not value then return end
+    
+    local max_condition = get_sharper_max_condition( sharp_id )
+    
+    if max_condition ~= 1 and sharp_cond == max_condition then 
+        sak.send_tip( 
+			"Въевшееся уже не отмыть...", 
+			"Мысли вслух", 0, 5, "g_g", "no", "red" 
+		)
+		vergas_lib.s_play( [[device\antirad_no]], 1 )	
+        return
+    end
+    
+    if item_type == "flask_army" then
+        local flask_item = drag_obj:get_eatable_item()
+        if flask_item.eat_portions_num <= 1 then
+            sak.send_tip( 
+				"Фляга пустая", 
+				"Мысли вслух", 0, 5, "g_g", "no", "red" 
+			)
+			vergas_lib.s_play( [[device\antirad_no]], 1 )	
+            return
+        end
+        
+        local water_used = flask_item.eat_portions_num - 1
+        local base_improvement = dsh.get_next_random( "generic_rnd", value.min, value.max ) / 100
+        local total_improvement = base_improvement * water_used
+        
+        -- Обновляем максимальную кондицию
+        max_condition = update_sharper_max_condition( sharp_id, "water" )
+        
+        local new_condition = math.min( max_condition, sharp_cond + total_improvement )
+        
+        params.upd_condition( sharp_id, new_condition )
+        flask_item.eat_portions_num = 1
+        vergas_flask.replace_flask_weight( drag_obj:id(), 1 )
+        
+    elseif item_type == "vodka" or item_type == "energy_drink" then
+        local random = dsh.get_next_random( "generic_rnd", value.min, value.max ) / 100
+        
+        -- Обновляем максимальную кондицию
+        max_condition = update_sharper_max_condition( sharp_id, item_type )
+        
+        local new_condition = math.min( max_condition, sharp_cond + random )
+        params.upd_condition( sharp_id, new_condition )
+        misc.release_obj( drag_obj:id(), true )
+    end
+    
+    local snd = xr_sound.get_safe_sound_object( "device\\masks\\water_flask" )
+    local sound_length = snd:length()
+    snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d )
+    level.add_cam_effector( "camera_effects\\item_use.anm", 9773, false, "" )
+	dsh.timeout( sound_length + 300, function()
+		if snd and snd:playing() then snd:stop() end		
+		level.remove_cam_effector( 9773 )	
+		misc.easy_sound( "device\\sleeping_bag\\sleep_cancel" )
+		sak.restore_weap()
+	end )
+end
+
+function process_sharpering( drag_obj, drop_obj )
+	local knife, sharper = drag_obj, drop_obj
+
+    if not knife then return end	
+	
+    local knife_cond = knife:condition()
+    local knife_sect = knife:section()	
+	
+    if knife_cond >= 0.99 then 
+		sak.send_tip( 
+			"Нож не нуждается в заточке!",
+			"Мысли вслух", 0, 10, "g_g", "sak", "yellow" 
+		) 		
+        return 
+    end	
+
+    local sharp_cond = sharper:condition()
+    local sharp_id = sharper:id()	
+    local knife_num = 1.5
+    local knife_exp = 0.2	
+	
+	if 
+		knife_sect == "wpn_knife_m1" 
+	then 
+		knife_num = 2 
+		knife_exp = 0.3
+	end	
+	
+	new_sharp_cond = ( knife_num / knife_cond ) / 8 	-- Было 10
+	if new_sharp_cond >= 1 then new_sharp_cond = 0.75 end	
+	params.upd_condition( sharp_id, sharp_cond - new_sharp_cond )
+	local will_break = sharp_cond - new_sharp_cond <= 0
+	
+	------------------------------------------			
+	local sharp_exp = get_value( "sharping", 0 )
+	if sharp_exp <= 0.4 then 
+		sharp_exp = sharp_exp + ( ( knife_exp / knife_cond ) / 100 )
+		set_value( "sharping", sharp_exp )
+	end	
+	
+	new_knife_cond = knife_cond + ( ( sharp_cond + sharp_exp ) / ( knife_num * 2 ) )
+	if new_knife_cond >= 1 then new_knife_cond = 1 end
+	
+	params.upd_condition( knife, new_knife_cond )	
+    xr_statistic.add_pts( "otherstats", game.translate_string( "st_pda_otherstats_knife_repairs" ), 1, 1 )
+
+	local snd = sound_object( "scripts\\sharp_" .. lua_random( 1, 3 ) )
+	snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d + sound_object.looped )	
+	misc.last_sound = snd	
+	
+	local max_time = 25000  -- 25 секунд для 0%
+	local min_time = 5000   -- 5 секунд для 100%
+
+	-- Расчет времени заточки
+	local time = max_time * ( 1 - knife_cond ) + min_time * knife_cond	
+	log2( "time is %s", time )
+	
+	set_dof_params( 1, 1, 1, 1 )
+	level.add_cam_effector( "camera_effects\\item_use.anm", 9773, true, "" )
+	
+	dsh.timeout( time, function()
+		if snd and snd:playing() then snd:stop() end	
+		level.remove_cam_effector( 9773 )	
+		set_dof_params( 0, 0, 0, 0 )
+	
+		if will_break then 
+			misc.release_obj( sharp_id, true ) 
+			sak.send_tip( 
+				"Чёрт! Сломался точильный камень \\nТеперь точно новый покупать", 
+				"Мысли вслух", 0, 10, "g_g", "sak", "red" 
+			) 				
+		end 	
+		misc.easy_sound( "device\\sleeping_bag\\sleep_cancel" )
+		sak.restore_weap()		
+	end )
+end
+
+function update_sharper_max_condition(sharp_id, item_type)
+	local sharper_data = get_value( "sharper_max_condition", {} )
+    local current_max = sharper_data[sharp_id] or 1.0
+    
+    local condition_decrease = {
+        water = 0.15,
+        energy = 0.10,
+        vodka = 0.05
+    }
+    
+    local new_max = current_max - (condition_decrease[item_type] or 0)
+    sharper_data[sharp_id] = math.max(0, new_max)
+    set_value( "sharper_max_condition", sharper_data )
+	
+    return new_max
+end
+
+-- Функция для получения максимальной кондиции точильного камня
+function get_sharper_max_condition(sharp_id)
+    local sharper_data = get_value( "sharper_max_condition", {} )
+    return sharper_data[sharp_id] or 1.0
+end
