@@ -638,7 +638,7 @@ local gren_fix_process
 local key_actions = {
 	[key_bindings.kNEW_INVENTORY] = {
 		func = function()
-			--if is_busy_actor_restrictions() then return end
+			if is_busy_actor_restrictions() then return end
 			local wnd = windows.get_active()
 			if db.actor:is_talking() or wnd then
 
@@ -659,10 +659,10 @@ local key_actions = {
 			local gadget = used_items.can_use_gadget()
 
 			if gadget and (not self_weapon_hide) and not get_actor_obj():IsDetectorActive() and not db.actor:ph_capture() then
-				--local activ = db.actor:active_slot()
-				--if activ == NO_ACTIVE_SLOT then
+				local activ = db.actor:active_slot()
+				if activ == NO_ACTIVE_SLOT then
 					used_items.used_inventory()
-				--end
+				end
 			end
 		end
 	},
@@ -712,6 +712,7 @@ local key_actions = {
 			end
 		end
 	},
+	--[[
 	[key_bindings.kUSE_INFO] = {
 		func = function()
 			if
@@ -725,6 +726,26 @@ local key_actions = {
 			end
 		end
 	},
+	]]--
+	
+	-- Удержание
+	[key_bindings.kUSE_INFO] = {
+		on_hold_start = function()
+			if
+				(sak_dialog.have_razgruzka() or sak_dialog.have_razgruzka_new() or sak_dialog.podsumok_have()) and
+					used_items.can_use_gadget() and
+					db.actor:alive() and
+					not db.actor:is_talking() and
+					self_weapon_hide == false
+			then
+				razgruzka.use_info()
+			end
+		end,
+		on_hold_end = function()
+			razgruzka.end_use_info()
+		end,
+	},
+		
 	[key_bindings.kNAME_SAVE] = {
 		func = function()
 			-- if is_busy_actor_restrictions() then return end
@@ -769,10 +790,43 @@ local key_actions = {
 		func = function()
 			pda_cb()
 		end
+	},
+	-- Короткое: переключить прицел/аддон. Долгое: TEST.
+	[key_bindings.kCAM_4] = {
+		func = function()
+			if is_busy_actor_restrictions() then return end
+			sak.actor_hide_weapon()
+			misc.easy_sound("interface\\misery\\inv_open")	
+			dsh.timeout( 450, function()
+				if dsh_switch_addons.switch_addons() then 
+					dsh.timeout( 1500, function()
+						sak.restore_weap()
+					end )
+				else
+					sak.restore_weap()
+					sak.send_tip("Отсутствует подходящий аддон в подсумке", "Мысли вслух", 0, 5, "g_g", "sak", "red" )				
+				end	
+			end )
+		end,
+		long_press = function()
+			sak.send_tip("TEST", "Ептить", 0, 5, "g_g", "sak", "red")
+		end,
+		long_press_timer = 400
 	}
 }
 
-local hold_keys = {}
+local hold_keys        = {}
+local key_press_time   = {}
+local long_press_fired = {}
+local last_action_time = {}
+local ACTION_COOLDOWN  = 200
+
+local function is_input_blocked()
+	return level.main_input_receiver() ~= nil
+		or device():is_paused()
+		or db.actor:ph_capture()
+end
+
 function actor_binder:on_cell_item_focus(obj)
 	self.am:call("on_cell_item_focus", obj)
 end
@@ -804,18 +858,66 @@ function actor_binder:on_key(key, bind)
 	if key == DIK_keys.DIK_ADD or key == DIK_keys.DIK_MULTIPLY then he_info_giver.open() end
 	--
 	local tbl = key_actions[bind]
-	if tbl and not (level.main_input_receiver() or device():is_paused() or db.actor:ph_capture()) then tbl.func() end
+	if tbl and not is_input_blocked() then
+		local now = time_global()
+		if not (last_action_time[bind] and now - last_action_time[bind] < ACTION_COOLDOWN) then
+			key_press_time[bind]   = now
+			long_press_fired[bind] = false
+
+			if not tbl.long_press and not tbl.on_hold_start then
+				-- нет вариантов удержания — срабатывает сразу, как раньше
+				if tbl.func then
+					last_action_time[bind] = now
+					tbl.func()
+				end
+			end
+			-- если есть long_press / on_hold_start — ждём on_key_hold / on_key_free
+		end
+	end
+	--
 	self.am:call("on_key", key, bind)
+end
+
+function actor_binder:on_key_hold(key, bind)
+	local tbl = key_actions[bind]
+	if tbl and not long_press_fired[bind] and not is_input_blocked() then
+		local t = key_press_time[bind]
+		if t then
+			local elapsed = time_global() - t
+
+			if tbl.on_hold_start and elapsed >= 150 then
+				long_press_fired[bind] = true
+				tbl.on_hold_start()
+			elseif tbl.long_press and elapsed >= (tbl.long_press_timer or 500) then
+				long_press_fired[bind] = true
+				if not tbl.no_cooldown then
+					last_action_time[bind] = time_global()
+				end
+				tbl.long_press()
+			end
+		end
+	end
+
+	self.am:call("on_key_hold", key, bind)
 end
 
 function actor_binder:on_key_free(key, bind)
 	hold_keys[key] = nil
-	--
-	self.am:call("on_key_up", key, bind)
-end
 
-function actor_binder:on_key_hold(key, bind)
-	self.am:call("on_key_hold", key, bind)
+	local tbl   = key_actions[bind]
+	local fired = long_press_fired[bind]
+
+	if tbl and tbl.on_hold_end and fired then
+		tbl.on_hold_end()
+	elseif tbl and tbl.long_press and not tbl.on_hold_start and not fired and tbl.func and not is_input_blocked() then
+		last_action_time[bind] = time_global()
+		tbl.func()
+	end
+
+	key_press_time[bind]   = nil
+	long_press_fired[bind] = nil
+
+	self.am:call("on_key_up", key, bind)
 end
 
 function actor_binder:level_changer_action( obj, wnd )
