@@ -4039,6 +4039,17 @@ end
 function garik_schedule()
 	schedule.add( "move_bugged_garik", "kotovod.move_bugged_garik()", 7000 )		
 end
+
+function move_bugged_garik()
+	local sobj = g_sim:object( "bar_garik" )
+	if sobj then 
+		local pos = sobj.m_level_vertex_id
+		if pos ~= 35765 then
+			g_sim:teleport_object( sobj.id, 1236, 35765, sak.v3f( 128.13557434082, -4.82401657104492, 25.2285690307617 ) )		
+		end	
+	end
+end
+
 function gg_1_good_aart_have()
     return gg_good_table_items_have_give( tbl_arts.lvl1, 1, false, nil, 0.75, false )
 end	  
@@ -5011,4 +5022,1385 @@ end
 -- в NLC HE функции не существовало (мёртвый вызов в диалоге Ивара);
 -- заглушка, чтобы восстановленная фраза не падала
 function ivar_bad_art()
+end
+
+
+
+
+function money_have( amount )
+    return db.actor:money() >= amount
+end
+
+function relocate_money( num, type )
+	if db.actor == nil then return end
+	if type == "in" then
+		db.actor:give_money( num )
+	elseif type == "out" then
+		db.actor:give_money( -num )
+    end
+	this.show_relocated_money( type, num )
+end
+
+
+function show_relocated_money( type, amount )
+	local actor = db.actor
+	if actor == nil then return end 
+	
+	local tbl = {
+		[ "in"	] = { colour = "%c[255,105,239,146]", whom = "general_in_money"		},
+		[ "out"	] = { colour = "%c[255,255,085,085]", whom = "general_out_money"	},
+		[ "sah"	] = { colour = "%c[255,20,120,215]",  whom = "general_in_saharov"	},
+		[ "pah"	] = { colour = "%c[255,20,120,215]",  whom = "general_in_pahom"		}
+	}
+	if not tbl[ type ] then return end
+	
+	local pos = { 800, 0, 100, 100 }	
+	
+	local icons = {
+		{    0,  1000,  	400 },
+		{ 1000,  5000, 	 	500 },
+		{ 5000,  10000, 	600 },
+		{ 10000, 20000, 	700 },
+		{ 20000, 40000, 	800 },
+		{ 40000, math.huge, 900 }
+	}	
+	
+	local function get_icon_position( amount )
+		for _, v in ipairs( icons ) do
+			if amount >= v[ 1 ] and amount < v[ 2 ] then
+				return { pos[1], v[3], pos[3], pos[4]}
+			end
+		end
+		return { pos[ 1 ], icons[ #icons ][ 3 ], pos[ 3 ], pos[ 4 ] }
+	end
+	
+	local transfer = tbl[ type ]
+    local is_talking = actor:is_talking()
+    -- local tab = ( is_talking and game_options.IconsDialogue ) and " " or "\\n"	
+	local tab = "\\n"
+
+	local news_text = transfer.colour .. game.translate_string( transfer.whom ) .. tab .. "%c[default]" .. game.translate_string( tonumber( amount ) .. " рублей" )
+	local task_texture, task_rect = get_texture_info( "ui_iconsTotal_found_money" )
+
+--[[
+	if game_options.IconsDialogue then
+		local icon_group = "ui\\ui_icon_equipment_3"
+		local icon_pos = get_icon_position( amount )
+    
+		if is_talking then
+			actor:give_talk_message( news_text, icon_group, Frect():set( unpack( icon_pos ) ), "ico_item_2_2" )
+		else
+			actor:give_game_news( news_text, task_texture, task_rect, 0, 3000 )
+		end
+	else
+		if is_talking then 
+			actor:give_talk_message( news_text, task_texture, task_rect, "iconed_answer_item" )	
+		else
+			actor:give_game_news( news_text, task_texture, task_rect, 0, 3000 )
+		end			
+	end	
+]]--
+
+		if is_talking then 
+			actor:give_talk_message( news_text, task_texture, task_rect, "iconed_answer_item" )	
+		else
+			actor:give_game_news( news_text, task_texture, task_rect, 0, 3000 )
+		end	
+end
+
+
+function respawn_addons( obj )
+	if not obj then return end
+
+	local weapon = obj:get_weapon()
+	if not weapon then return end
+
+	local tbl_addons = {
+		{ name = "scope_name", fun = ogse_wpn_utils.get_scope_flag },
+		{ name = "silencer_name", fun = ogse_wpn_utils.get_silencer_flag },
+		{ name = "grenade_launcher_name", fun = ogse_wpn_utils.get_grenade_launcher_flag }
+	}
+
+	for _, addon in ipairs( tbl_addons ) do
+		if addon.fun( obj ) then
+			local name = weapon[ addon.name ]
+			if name and name ~= "" then
+				sak.create_items( name, 1 )
+			end
+		end
+	end  
+
+	-- Получение типов патронов и их количества
+	local idx_ammo, idx_gl_ammo, cnt_ammo, cnt_gl_ammo
+
+	if obj:get_gl_mode() then
+		idx_ammo = obj:get_underbarrel_ammo_type()
+		idx_gl_ammo = obj:get_ammo_type()
+		cnt_ammo = obj:get_ammo_in_magazine2()
+		cnt_gl_ammo = obj:get_ammo_in_magazine()
+	else
+		idx_ammo = obj:get_ammo_type()
+		idx_gl_ammo = obj:get_underbarrel_ammo_type()
+		cnt_ammo = obj:get_ammo_in_magazine()
+		cnt_gl_ammo = obj:get_ammo_in_magazine2()
+	end        
+
+	local function get_ammo_sect_from_idx( sect, idx, class )
+		local ammo_str = sak_dialog.read_string_if_exist( system_ini(), sect, class )
+		if ammo_str then
+			local ammo_t = vergas_lib.str_explode( ",", ammo_str, true )
+			return ammo_t[ idx + 1 ]
+		end
+	end
+
+	-- Функция для спавна патронов
+	local function spawn_ammo( ammo_count, ammo_type, class_name )
+		if ammo_count > 0 then 
+			local ammo_section = get_ammo_sect_from_idx( obj:section(), ammo_type, class_name )
+			if ammo_section then 
+				vergas_lib.spawn_ammo_in_inv( ammo_section, ammo_count, db.actor )
+				sak.relocate_item( "in", ammo_section, ammo_count, true )	
+			end
+		end
+	end
+
+	spawn_ammo( cnt_ammo, idx_ammo, "ammo_class" )
+	spawn_ammo( cnt_gl_ammo, idx_gl_ammo, "grenade_class" )
+end
+
+function attach()
+    local wpn = db.actor:active_item()
+    if not wpn then return end
+    
+    local wm = wpn:get_weapon_m()
+    if not wm then return end
+    
+    local obj = db.actor:object("wpn_addon_1pso")
+    if obj then
+        local ascope = obj:get_inventory_item()
+        wm:attach_addon(ascope, true)
+        log2("attaching %s to %s", obj:name(), wpn:name())
+    else
+        log2("addon wpn_addon_1pso not found in inventory")
+    end
+end
+
+function dettach()
+    local wpn = db.actor:active_item()
+    if not wpn then return end
+    
+    local wm = wpn:get_weapon_m()
+    if not wm then return end
+    
+    wm:detach_addon( "wpn_addon_1pso", true)
+end
+
+-----------------------------------------------------------
+----------------- Вспомогательные функции -----------------
+-----------------------------------------------------------
+
+function dirt()
+	-- костюм не надет, возврат
+	local armor = db.actor:item_in_slot( 6 )
+	if not armor then return end
+	
+	-- костюм без маски, возврат		
+	local armor_custom = vergas_masks.set_get_armor_custom( 2 )
+	if 
+			not armor_custom 
+		or armor_custom == "none|none|none" 
+	then 
+		return 
+	end 
+	
+	-- маска снята, возврат
+	if vergas_masks.get_flag_mask() == false then 
+        misc.easy_sound( "scripts\\actor_gripp" )
+        level.add_pp_effector( "black_cats.ppe", 1039, false )
+        params.health_add( -0.12 )	
+		return 
+	end
+	
+	local t = vergas_lib.str_explode( "|", armor_custom, true )
+	local number_dirt_phase = tonumber( t[ 2 ] )
+	number_dirt_phase = number_dirt_phase + lua_random( 2 )
+	if number_dirt_phase > 6 then
+		number_dirt_phase = 6
+	end
+	armor_custom = t[ 1 ] .. "|" .. tostring( number_dirt_phase ) .. "|0"
+	vergas_masks.set_get_armor_custom( 1, armor_custom )
+end
+
+function upgrade( slot, cond, mask )
+	local actor = db.actor	
+    local item  = actor:item_in_slot( slot )	
+	local sect 	= item:section()
+	if sect then 
+		params.upd_condition( item, cond )	
+		if slot == 6 then 
+			local outfit = db.actor:get_current_outfit()
+			if outfit and mask then
+				vergas_masks.set_mask_condition( outfit:id(), cond, true)
+			end		
+		end
+	end	
+end
+
+function ct( min )
+	local ms = min * 60 * 1000
+	level.advance_game_time( ms )
+end
+
+-----------------------------------------------------------
+-------------------- Ремонт у Вергаса ---------------------
+-----------------------------------------------------------
+
+local repairer_phrases = {
+	"Стоимость починки:",
+	"По предварительной прикидке ремонт тебе встанет в:",
+	"Шикарная вещь... за ремонт я попрошу:",
+	"Ремонт обойдётся тебе в:",
+	"Стоимость ремонта составит",
+	"За ремонт твоего барахла возьму:",
+	"За всё про всё для тебя:",
+	"За ремонт с тебя, стало быть,",
+	"Ремонт обойдется тебе в",
+	"За починку, по-честному получится:",
+	"Так-с, значит... за работу потребуется:",
+	"Вот, прикинул по-быстрому... ремонт обойдётся в",
+}
+
+local vergas_good_item = {
+	"%s - в идеальном состоянии. Что ты хочешь, чтобы я с ним сделал?",
+	"А зачем тебе потребовался ремонт: %s?",
+	"Смеёшься надо мной? %s в идеальном состоянии. Нечего тут делать.",
+	"%s - вердикт: новьё! Неси когда реально беда случится.",
+	"Ты бы ещё совсем новую вещь принёс! %s в отличном состоянии, не дури старому голову.",
+	"%s - в полном порядке. Ты с дуба рухнул такое ремонтировать?",
+	"Ты что, шутишь? %s - в хорошем состоянии, моя работа тут не требуется.",
+    "У тебя глаза есть? %s в полном порядке. Приходи, когда действительно будет что чинить.",	
+	"В Зоне совсем мозги набекрень? %s даже пылинки ещё не собрало. Что тут ремонтировать?",
+	"Ты что... дюже богатый, Меченный? %s в таком состоянии даже на Большой земле с руками оторвут.",
+	"Вот это да! %s будто только с завода. На что жалуемся-то, сталкер?",
+}
+
+local vergas_bad_wpn = {
+    "Кто же оружие до такого доводит! Тут уже ничем не поможешь! Проще новое купить...",
+    "Мда... Это лом железный, а не оружие! Выбрось! Нельзя до такого состояния доводить ствол, как ты к нему, так и он к тебе...",
+    "Ты этим ещё стрелять пытался? Чудо, что руки целы остались! Этот хлам только на запчасти годится.",
+    "Что ты с этой пушкой делал? Тут уже ничего не спасёшь, только на металлолом.",
+    "Чистить надо своё оружие, Меченный. Тут уже ничего не сделать.",
+    "Это не оружие, а памятник безалаберности! Ни один уважающий себя сталкер так со стволом не обращается.",
+    "Ха! Да эта железяка опаснее для тебя, чем для противника! Выкинь, пока не рвануло в руках.",
+    "Ты бы ещё из болота его выудил! Ржавчина насквозь проела... Тут только отходную молитву читать.",
+    "Затвор заклинило, ствол погнут, приклад того и гляди отвалится... Это уже не оружие, а воспоминание о нём.",
+    "Такое впечатление, что ты из этого ствола не стрелял, а им кровососа дубасил! Тут уже ничего не исправишь.",
+    "Ты что, в киселе его держал? Механизм полностью разъеден! Даже я такое не воскрешу.",
+    "Да на нём живого места нет! Тут уже никакие запчасти не помогут. Лучше новый купи, чем такой хлам таскать.",
+    "Этим только гвозди забивать! О стрельбе и речи быть не может. Посмотри, как затвор разболтан!",
+    "Знаешь, оружие тоже имеет душу. А ты над своим просто издевался! Не возьмусь я за такое...",
+    "Тебе что, жизнь не дорога? С таким оружием только самоубийцы ходят! Выброси от греха подальше..."
+}
+
+local vergas_bad_outfit = {
+    "Да это уже не броня, а решето! Сколько в ней дыр? Проще новую купить, чем эти лохмотья пытаться залатать.",
+    "Эта тряпка даже от дождя не спасёт, не то что от радиации или пули!",
+    "Да на этом комбезе живого места нет! Ты его носил или в нём спал с псевдогигантом?",
+    "Это уже не комбинезон, а история болезни на тканевой основе. Я за такое не возьмусь, не обессудь...",
+    "Ха! Да в этом хламье только на Арене выступать, в роли мишени! Защищать здесь уже нечему.",
+    "Я, конечно, мастер своего дела, но чудес не творю. Этот комбез только на свалку годится.",
+    "Ты хоть знаешь, что броню тоже обслуживать надо? Судя по состоянию – нет. Это хлам, а не снаряга.",
+    "Смотри – защитные пластины все потрескались, ткань протёрлась... В таком только к Монолиту в гости ходить, в виде зомбированного!",
+    "Это даже не броня уже, а воспоминание о ней!",
+    "Да легче новую достать, чем эту реанимировать!",
+    "Ты этот костюм у зомби снял? В таком состоянии даже они бы постеснялись ходить!"
+}
+
+local vergas_go_away_phrases = {
+    "Будь добр, не стой над душой, прогуляйся пока.",
+    "Ты пока не мозоль глаза, иди костерок погрей.",
+    "Не люблю, когда под руку глядят. Потом приходи, всё исправно будет.",
+    "Ты, это, не толкайся тут, сгоняй пока к Сидору, что ли...",
+    "Ну вот, дай мне в тишине повозиться. Не нависай над стариком.",
+    "Не торчи здесь, отдохни пока, всё одно быстрее не сделаю.",
+    "Давай-ка ты пока по своим делам, а я спокойно поработаю.",
+    "Ты сам погуляй пока, а то глядишь, ещё хуже сделаю от твоего надзора.",
+    "Сходи, воздухом подыши, я позову как закончу.",
+    "Развейся пока что... Не люблю, когда мне в затылок сопят при работе.",
+	"Ага, порядок. Всё, не стой над душой теперь."
+}
+
+function vergas_repair_items(dlg)
+    dlg:SetForceReload(true)
+
+    local cfg = sak_dialog.repair_config[r_vergas] 
+    if not cfg then
+        log2("[~T].~C0C #ERROR(uniform_repair_cost):~C07 не указана конфигурация для ремонтника ~C0A %s~C07", r_vergas)
+        misc.dump_table(this.repair_config)
+        return 
+    end
+
+    local phr = task_manager.Dlg_AddPhrase(dlg, "Да вот, подремонтировать нужно кое-что.", "0", "", -10000)
+    local phrase_script = phr:GetPhraseScript()    
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Давай, показывай, это своё \"кое-что\".", "1", "0", -10000)
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddDontHasInfo("vergas_repair_starting")    
+    phrase_script:AddPrecondition("sak_dialog.klava_done()")    
+
+    -- Получаем предметы для ремонта из инвентаря
+    local items = {}
+    
+	local function collect_items_for_repair()
+		local shadow_inv = get_shadow_inv():get_content(true)
+		local result = {}
+		
+		for i, rec in shadow_inv:ipairs() do    
+			local sect = sak_inventory.dyn_art_base(rec.sect)
+			local mask_condition = 1
+			
+			if rec.obj:is_outfit() then
+				_, mask_condition = vergas_masks.manage_armor_mask_params(rec.obj, "get")
+			end
+			
+			if ( (rec.obj:is_weapon() and rec.obj:condition() < 0.999 ) and not str_in_tab(sect, {"wpn_binoc", "wpn_knife", "wpn_flame", "wpn_rpg7", "wpn_gm94"})) or 
+				(rec.obj:is_outfit() and (rec.obj:condition() < 0.999 or mask_condition < 0.94)) then 
+				
+				local item_info = {
+					id = i,
+					rec = rec,
+					sect = sect,
+					condition = rec.obj:condition(),
+					needs = {
+						armor = rec.obj:is_outfit() and rec.obj:condition() < 1,
+						mask = rec.obj:is_outfit() and mask_condition < 0.94,
+						weapon = rec.obj:is_weapon()
+					},
+					repair = {
+						cost = 0,
+						time = 0
+					}
+				}
+				
+				if rec.obj:is_outfit() then
+					item_info.mask_condition = mask_condition
+					item_info.repair.mask_cost = 0
+					item_info.repair.mask_time = 60
+				end
+				
+				-- Рассчитываем стоимость ремонта
+				if item_info.needs.armor or item_info.needs.weapon then
+					item_info.repair.cost = sak_dialog.calc_repair_cost(rec.obj, sak_dialog.get_margin(r_vergas))
+					item_info.repair.time = sak_dialog.uniform_time_repair(item_info.repair.cost, rec.obj:cost(), cfg.price_coefs, cfg.time_repair)
+					log2("Ремонт предмета: %s, стоимость: %d, время: %d", get_inv_name(sect), item_info.repair.cost, item_info.repair.time)
+				end
+				
+				if item_info.needs.mask then
+					local mask, armor = vergas_masks.mask_definition_new(rec.obj)
+					if mask ~= "?" then
+						mask = string.sub(mask, 1, 7)
+					end
+					
+					local mask_cost = {
+						["hud_gas"] = 2500,
+						["hud_sci"] = 7500,
+						["hud_mer"] = 7500,
+						["hud_exo"] = 10000,
+						["hud_mil"] = 5000,
+					}
+					
+					item_info.repair.mask_cost = mask_cost[mask] * sak_dialog.get_margin(r_vergas) or 5000
+					log2("Стоимость ремонта маски: %d", item_info.repair.mask_cost)
+				end
+				
+				table.insert(result, item_info)
+			end
+		end
+		
+		-- Сортируем предметы по кондиции (от лучшей к худшей)
+		table.sort(result, function(a, b)
+			return a.condition > b.condition
+		end)
+
+		return result
+	end
+
+    -- Локальные функции для работы с диалогом
+    local function format_cost_text(cost, time_rep)
+        local cost_phrase = repairer_phrases[lua_random(#repairer_phrases)]
+        local rubles = declension(cost, "рубль", "рубля", "рублей")
+        return string.format("%s %%c[255,238,155,23]%d %%c[default]%s. %s %s", translate(cost_phrase), cost, rubles, time_rep, translate("придётся повозиться."))
+    end
+    
+    local function get_repair_text(item)
+        local rec = item.rec
+        local sect = item.sect
+        local cond = round(item.condition * 100)
+        
+        -- Проверяем особые случаи, которые нельзя ремонтировать
+        if cond >= 100 and not item.needs.mask then
+            return string.format(vergas_good_item[lua_random(#vergas_good_item)], get_inv_name(sect))
+        elseif cond <= 50 then
+            return rec.obj:is_weapon() and vergas_bad_wpn[lua_random(#vergas_bad_wpn)] or vergas_bad_outfit[lua_random(#vergas_bad_outfit)]
+        elseif str_in_tab(sect, {"wpn_pkm", "wpn_ak74_m1"}) then
+            return "Извини, Меченный, на такое моей квалификации не хватит. Ты кого-то другого поищи, может он справится..."
+        elseif rec.obj:is_outfit() and str_in_tab(sect, {"bandit_veteran_", "bandit_master_"}) and item.needs.armor then
+            if item.needs.mask then
+                return "Хм, интересная работа из кожи плотей, но, увы, я не волшебник — для его ремонта нужны особые навыки. \\nМогу лишь стекло на маске заменить за %c[255,238,155,23]" .. 
+                    tostring(item.repair.mask_cost) .. "%c[default] рублей. \\nДумаю, с этим делом я управлюсь примерно за час."
+            else
+                return "Это же плащ из кожи плоти! Я не помощник в этом деле. Тут необходим особый навык. Я не знаю, кто смог бы его привести в божеский вид."
+            end
+        elseif rec.obj:is_outfit() and bind_upg_outfit.is_upgraded(rec.obj) then 
+            return "Странный у тебя какой-то костюмчик, не пойму... Не, не возьмусь я, боюсь только хуже сделаю - ты сам попробуй."
+        end
+        
+        -- Нормальный случай - формируем текст ремонта
+        local text = ""
+        local time_rep = item.repair.time > 0 and sak_dialog.time_desc(item.repair.time) or ""
+
+        if rec.obj:is_outfit() then
+			local mask_time_rep = "Примерно час всей канители."
+            if item.needs.armor and item.needs.mask then
+                text = format_cost_text(item.repair.cost, time_rep)
+                
+                local mask_cost = item.repair.mask_cost
+                local rubles = declension(mask_cost, "рубль", "рубля", "рублей")
+            
+                text = string.format("%s\\n \\nЕсли дыры и прорехи на армированной части я могу залатать, то стекло придётся менять целиком, по деньгам - с тебя %%c[255,238,155,23]%d%%c[default] %s. \\n%s", 
+                    text, 
+                    tostring(mask_cost), 
+                    rubles, 
+                    mask_time_rep
+                )			 
+                
+                local total_cost = item.repair.cost + item.repair.mask_cost
+                local total_time = item.repair.time + item.repair.mask_time
+                local total_time_desc = sak_dialog.time_desc(total_time)
+                local rubles = declension(total_cost, "рубль", "рубля", "рублей")
+
+                text = string.format("%s\\n \\nОбщая стоимость ремонта костюма с маской составит %%c[255,238,155,23]%s%%c[default] %s. %s придётся погулять...", 
+                    text, 
+                    tostring(total_cost), 
+                    rubles, 
+                    total_time_desc
+                )					
+            elseif item.needs.armor then
+                text = format_cost_text(item.repair.cost, time_rep)
+            elseif item.needs.mask then
+                text = "Сам костюм в отличном состоянии, а вот с маской проблемы - стекло требует полной замены. \\nВстанет это тебе в %c[255,238,155,23]" .. 
+                    tostring(item.repair.mask_cost) .. "%c[default] рублей. \\n" .. mask_time_rep
+            end
+        else
+            text = format_cost_text(item.repair.cost, time_rep)
+        end
+        
+        return text
+    end
+
+    local function add_repair_option(dlg, base_index, item_index, option)
+        local current_index = base_index + option.offset
+        local phr = task_manager.Dlg_AddPhrase(dlg, option.text, current_index, item_index + 2000, -10000)
+        local phrase_script = phr:GetPhraseScript()
+        phrase_script:AddPrecondition("kotovod.money_have(" .. option.cost .. ")")
+        phrase_script:AddAction("kotovod.relocate_money(" .. option.cost .. ", 'out')")
+
+        local repair_params = string.format("'%s', %s, '%s', %s", r_vergas, option.time, option.sect, option.obj_id)
+        if option.flag then
+            repair_params = repair_params .. string.format(", '%s'", option.flag)
+        end
+        phrase_script:AddAction("sak_dialog.repair_start(" .. repair_params .. ")")
+
+        local response_index = current_index + 50
+        phr = task_manager.Dlg_AddPhrase(dlg, option.response, response_index, current_index, -10000)
+        phrase_script = phr:GetPhraseScript()
+
+        if option.answer then
+            local answer_index = response_index + 25
+            phr = task_manager.Dlg_AddPhrase(dlg, option.answer, answer_index, response_index, -10000)
+            phrase_script = phr:GetPhraseScript()
+            phrase_script:AddAction("dialogs.break_dialog")
+        end
+        
+        return response_index
+    end
+
+    local function create_repair_options(item, index)
+        local options = {}
+        local rec = item.rec
+        local sect = item.sect
+        local is_bandit_cloak = rec.obj:is_outfit() and str_in_tab(sect, {"bandit_veteran_", "bandit_master_"})
+
+        if item.condition <= 0.5 then
+            return options  -- Возвращаем пустой список, если кондиция плохая
+        end
+
+        if rec.obj:is_outfit() then
+            if item.needs.armor and item.needs.mask then
+                if not is_bandit_cloak then
+                    table.insert(options, {
+                        text = "Почини только костюм, без маски.",
+                        cost = item.repair.cost,
+                        time = item.repair.time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+                        flag = 'a',
+                        response = vergas_go_away_phrases[lua_random(#vergas_go_away_phrases)],
+                        answer = "Ладно, погуляю...",
+                        offset = 100
+                    })
+                    
+                    table.insert(options, {
+                        text = "Почини только маску.",
+                        cost = item.repair.mask_cost,
+                        time = item.repair.mask_time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+                        flag = 'm',
+                        response = "Ага, порядок. Всё, не стой над душой теперь. Сходи погуляй часок.",
+                        answer = "Да не вопрос.",
+                        offset = 200
+                    })
+                    
+                    local total_cost = item.repair.cost + item.repair.mask_cost
+                    local total_time = item.repair.time + item.repair.mask_time
+                    table.insert(options, {
+                        text = "Почини всё полностью - и костюм, и маску.",
+                        cost = total_cost,
+                        time = total_time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+                        flag = 'all',
+                        response = vergas_go_away_phrases[lua_random(#vergas_go_away_phrases)],
+                        answer = "Ухожу-ухожу...",
+                        offset = 300
+                    })
+                else
+                    table.insert(options, {
+                        text = "Хорошо, почини хотя бы маску. Вот деньги.",
+                        cost = item.repair.mask_cost,
+                        time = item.repair.mask_time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+                        flag = 'm',
+                        response = vergas_go_away_phrases[lua_random(#vergas_go_away_phrases)],
+                        answer = "Без проблем.",
+                        offset = 200
+                    })
+                end
+            elseif item.needs.armor then
+                if item.repair.cost > 0 then
+                    table.insert(options, {
+                        text = "Хорошо, я согласен. Вот деньги.",
+                        cost = item.repair.cost,
+                        time = item.repair.time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+						--flag = 'all',	-- Тут нужен флаг, чтобы впоследствии не вылетало из-за отсутствующих фраз под этот случай. Не хочется еще один прекондишн писать						
+						flag = 'a',	-- Здесь нужно восстановить грязь!					
+                        response = vergas_go_away_phrases[lua_random(#vergas_go_away_phrases)],
+                        answer = "Хорошо.",
+                        offset = 100
+                    })
+                end
+            elseif item.needs.mask then
+                if item.repair.mask_cost > 0 then
+                    table.insert(options, {
+                        text = "Хорошо, почини маску. Вот деньги.",
+                        cost = item.repair.mask_cost,
+                        time = item.repair.mask_time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+                        flag = 'm',
+                        response = vergas_go_away_phrases[lua_random(#vergas_go_away_phrases)],
+                        answer = "Понял.",
+                        offset = 100
+                    })
+                end
+            end
+        else
+            if item.repair.cost > 0 then
+                table.insert(options, {
+                    text = "Хорошо, я согласен. Вот деньги.",
+                    cost = item.repair.cost,
+                    time = item.repair.time,
+                    sect = sect,
+                    obj_id = rec.obj:id(),
+                    response = vergas_go_away_phrases[lua_random(#vergas_go_away_phrases)],
+                    answer = "Ухожу...",
+                    offset = 100
+                })
+            end
+        end
+        
+        return options
+    end
+
+    local items = collect_items_for_repair()
+	
+	log3( "items is %s", items )
+    	
+    
+    for index, item in ipairs(items) do
+        local rec = item.rec
+        local sect = item.sect
+        local cond = round(item.condition * 100)
+
+        phr = task_manager.Dlg_AddPhrase(dlg, kotovod.get_inv_name(sect) .. " [%c[255, 238, 153, 26]" .. tostring(cond) .. "%%c[default]]", index + 1000, "1", -10000)
+        phrase_script = phr:GetPhraseScript()
+
+        local text = get_repair_text(item)
+		-- TODO: Разобраться с этим?
+        local text_length = string.len(text)
+        
+        --log2("text_length is %s", text_length)
+        --log2("Text process is %s", text)
+        if text_length > 462 then
+			text = string.sub( text, 1, 462 )
+        end
+		
+        
+        phr = task_manager.Dlg_AddPhrase(dlg, text, index + 2000, index + 1000, -10000)
+        phrase_script = phr:GetPhraseScript()        
+
+        local options = create_repair_options(item, index)
+        
+        for _, option in ipairs(options) do
+            add_repair_option(dlg, index + 3000, index, option)
+        end
+        
+        phr = task_manager.Dlg_AddPhrase(dlg, "У меня пока с деньгами напряг, может в другой раз...", index + 4000, index + 2000, -10000)
+        if item.condition <= 0.5 then 
+            phr:SetText("Понял, жаль.")
+        end
+        
+        phrase_script = phr:GetPhraseScript()	
+        phrase_script:AddAction("dialogs.break_dialog")	 
+    end
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Я немного занят сейчас. Лучше попозже загляни...", "200", "0", -10000)
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddHasInfo("vergas_repair_starting")    
+    phrase_script:AddPrecondition("sak_dialog.klava_done()")    
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Позже, так позже...", "201", "200", -10000)
+    phrase_script = phr:GetPhraseScript()        
+    phrase_script:AddAction("dialogs.break_dialog")        
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "А мне вроде кто-то обещал за блокнот починенный что-то? Слово держать нужно.", "300", "0", -10000)
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddPrecondition("sak_dialog.not_klava_done()")        
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Ну ладно, будет тебе \"что-то\".", "301", "300", -10000)
+    phrase_script = phr:GetPhraseScript()        
+    phrase_script:AddAction("dialogs.break_dialog")    
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Извини за беспокойство. На данный момент ничего не требуется.", "400", "1", -10000)
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddAction("dialogs.break_dialog")    
+
+--[[
+    phr = task_manager.Dlg_AddPhrase(dlg, "Погоди ты, торопыга... Глянем сейчас, что там у тебя, но ты сперва отремонтированное забери.", "500", "0", -10000)
+    phrase_script = phr:GetPhraseScript()
+    phrase_script:AddAction(string.format("sak_dialog.uniform_take('%s')", r_vergas))        
+    phrase_script:AddGiveInfo("vergas_repair_end")        
+    phrase_script:AddHasInfo("vergas_repair_starting")    
+    phrase_script:AddPrecondition("sak_dialog.klava_done()")    
+    phrase_script:AddPrecondition("sak_dialog.vergas_is_ready_repair()")    
+]]--
+
+	-- Возвращаем из ремонта
+    phr = task_manager.Dlg_AddPhrase( dlg, "Погоди ты, торопыга... Глянем сейчас, что там у тебя, но ты сперва отремонтированное забери.", "500", "0", -10000 )
+    phrase_script = phr:GetPhraseScript()
+	phrase_script:AddAction( string.format( "kotovod.additional_message( '%s' )", r_vergas ) )  	
+    phrase_script:AddAction( string.format( "sak_dialog.uniform_take( '%s' )", r_vergas ) )    	
+	phrase_script:AddAction( "sak.post_dialog_exec( sak_dialog.clear_repair_vars() )" )  	
+    phrase_script:AddGiveInfo( "vergas_repair_end" )   	
+	phrase_script:AddHasInfo( "vergas_repair_starting" )    
+    phrase_script:AddPrecondition("sak_dialog.klava_done()")    -- По идее, не нужно, но вдруг сперва отдали на ремонт, а потом завели разговор о кружке. Пусть будет
+    phrase_script:AddPrecondition("sak_dialog.vergas_is_ready_repair()")   
+
+	phr = task_manager.Dlg_AddPhrase( dlg, "Благодарю.", "501", "500", -10000 )
+	phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddAction( "dialogs.break_dialog" ) 	
+end
+
+
+-----------------------------------------------------------
+------------------ Ремонт у Долговязого -------------------
+-----------------------------------------------------------
+
+local dolgovazyi_go_away_phrases = {
+	"Добро. Не стой теперь над душой. Я сообщу Гарику по окончанию.",
+	"Так-с, не крутись тут пока что, мне нужно сосредоточиться. Как закончу - скажу Гарику, пропустит.",
+	"Поехали! Не мешай теперь, как управлюсь, дам знать Гарику, он пропустит.",
+	"Начинаю работу. Подвинься и не лезь под руку... Вон, к Бармену лучше сходи... По завершению сообщу Гарику",
+	"Будь добр, отойди, нужно сконцентрироваться, дабы не напортачить... Всё равно под надзором быстрее не получится.",
+	"Не суетись тут, сходи - выпей чего-нибудь, а по завершению ремонта я маякну Гарику, тот пропустит."
+}
+
+function dolgovyaziy_repair_items( dlg )
+    dlg:SetForceReload( true )
+	
+    local cfg = sak_dialog.repair_config[ r_dolgovjaz ] 
+    if not cfg then
+        log2( "[~T].~C0C #ERROR(uniform_repair_cost):~C07 не указана конфигурация для ремонтника ~C0A %s~C07", r_dolgovjaz )
+        misc.dump_table( sak_dialog.repair_config )
+        return 
+    end	
+
+    local phr = task_manager.Dlg_AddPhrase( dlg, "Ремонтируешь?", "0", "", -10000 )
+    local phrase_script = phr:GetPhraseScript()    
+
+    -- Чиню, могу взяться
+    phr = task_manager.Dlg_AddPhrase( dlg, "Да, чиню помаленьку. Вот, долговскую броньку в божеский вид привожу. Могу и твою подлатать или стекло на разбитой маске заменить, если надо. Что у тебя там?", "100", "0", -10000 )
+    phrase_script = phr:GetPhraseScript()   
+    phrase_script:AddDontHasInfo( "repair_starting" )    
+    phrase_script:AddPrecondition( "sak_dialog.dolgovazyi_not_dolg_for_case()" )  
+	
+    -- Получаем предметы
+    local items = {}
+    
+    local function collect_items_for_repair()
+        local shadow_inv = get_shadow_inv():get_content( true )
+        local result = {}
+        
+        for i, rec in shadow_inv:ipairs() do    
+            local sect = sak_inventory.dyn_art_base( rec.sect )
+            local mask_condition = 1
+            if rec.obj:is_outfit() then
+                _, mask_condition = vergas_masks.manage_armor_mask_params( rec.obj, "get" )
+            end
+            
+            if ( rec.obj:is_outfit() and (rec.obj:condition() < 0.999 or mask_condition < 0.94 ) ) then 
+                
+                local item_info = {
+                    id = i,
+                    rec = rec,
+                    sect = sect,
+                    condition = rec.obj:condition(),
+                    mask_condition = mask_condition,
+                    needs = {
+                        armor = rec.obj:is_outfit() and rec.obj:condition() < 1,
+                        mask = rec.obj:is_outfit() and mask_condition < 0.94
+                    },
+                    repair = {
+                        cost = 0,
+                        time = 0,
+                        mask_cost = 0,
+                        mask_time = 60
+                    }
+                }
+                
+                -- Рассчитываем стоимость ремонта
+                if item_info.needs.armor then
+                    item_info.repair.cost = sak_dialog.calc_repair_cost( rec.obj, sak_dialog.get_margin( r_dolgovjaz ) )
+                    item_info.repair.time = sak_dialog.uniform_time_repair(item_info.repair.cost, rec.obj:cost(), cfg.price_coefs, cfg.time_repair )
+                    log2("Ремонт предмета: %s, стоимость: %d, время: %d", get_inv_name( sect ), item_info.repair.cost, item_info.repair.time )
+                end
+                
+                -- Стоимость ремонта маски
+                if item_info.needs.mask then
+                    local mask, armor = vergas_masks.mask_definition_new( rec.obj )
+                    if mask ~= "?" then
+                        mask = string.sub( mask, 1, 7 )
+                    end
+                    
+                    local mask_cost = {
+                        [ "hud_gas" ] = 3500,
+                        [ "hud_sci" ] = 9000,
+                        [ "hud_mer" ] = 9000,
+                        [ "hud_exo" ] = 12000,
+                        [ "hud_mil" ] = 7000,
+                    }
+                    
+                    item_info.repair.mask_cost = mask_cost[ mask ] * sak_dialog.get_margin( r_dolgovjaz ) or 7500
+                    log2( "Стоимость ремонта маски: %d", item_info.repair.mask_cost)
+                end
+                
+                table.insert( result, item_info )
+            end
+        end
+        
+        -- Сортируем предметы по кондиции (от лучшей к худшей)
+        table.sort(result, function( a, b )
+            return a.condition > b.condition
+        end )
+
+        return result
+    end
+	
+    -- Локальные функции для работы с диалогом
+    local function format_cost_text( cost, time_rep )
+      --  local cost_phrase = repairer_phrases[lua_random(#repairer_phrases)]
+        local cost_phrase = "И не такое доводилось в порядок приводить. Имеешь бабки?"
+        local rubles = declension( cost, "рубль", "рубля", "рублей" )
+        return string.format( "%s %%c[255,238,155,23]%d %%c[default]%s. %s %s", translate(cost_phrase), cost, rubles, time_rep, translate( "придётся повозиться." ) )
+    end	
+	
+    local function get_repair_text( item )
+        local rec = item.rec
+        local sect = item.sect
+        local cond = round( item.condition * 100 )
+
+        if cond >= 100 and not item.needs.mask then
+            return string.format(vergas_good_item[ lua_random( #vergas_good_item ) ], get_inv_name( sect ) )
+        elseif cond <= 42 then
+            return vergas_bad_outfit[ lua_random( #vergas_bad_outfit ) ]
+        elseif rec.obj:is_outfit() and str_in_tab( sect, { "bandit_veteran_", "bandit_master_" } ) and item.needs.armor then
+            if item.needs.mask then
+                return "Плащ из кожи плоти? Сложный случай. Тебе надо особого мастера искать, Степанычем его кличут, должен где-то в области Болот обитать... \\nЯ же могу лишь со стеклом подсобить за %c[255,238,155,23]" .. 
+                    tostring( item.repair.mask_cost ) .. "%c[default] рублей. \\nДумаю, с этим делом я управлюсь примерно за час."
+            else
+                return "Да это ж редкая штука – кожа плоти! Крепче не найдешь. Вот только ремонтировать её могут единицы. В Зоне такой мастак – Степаныч, раньше больше по Болотам мотался. Теперь где его искать – мне неизвестно."
+            end
+        elseif rec.obj:is_outfit() and bind_upg_outfit.is_upgraded( rec.obj ) then 
+            return "Ишь ты... Что-то я не пойму, чем это поверхность обработана?! Ого! Материал вроде привычный, но откуда такая прочность? Не, знаешь, я, пожалуй, не возьмусь. Слишком много возьни предвижу, жалко времени."
+        end
+        
+        local text = ""
+        local time_rep = item.repair.time > 0 and sak_dialog.time_desc( item.repair.time ) or ""
+
+        if rec.obj:is_outfit() then
+			local mask_time_rep = "Примерно час провозиться придётся."
+            if item.needs.armor and item.needs.mask then
+                text = format_cost_text( item.repair.cost, time_rep )
+                
+                local mask_cost = item.repair.mask_cost
+                local rubles = declension( mask_cost, "рубль", "рубля", "рублей" )
+            
+                text = string.format( "%s\\n \\nСтекло под замену. Прям скажу, выйдет: %%c[255,238,155,23]%d%%c[default] %s. \\n%s", 
+                    text, 
+                    tostring( mask_cost ), 
+                    rubles, 
+                    mask_time_rep
+                )			 
+                
+                local total_cost = item.repair.cost + item.repair.mask_cost
+                local total_time = item.repair.time + item.repair.mask_time
+                local total_time_desc = sak_dialog.time_desc( total_time )
+                local rubles = declension( total_cost, "рубль", "рубля", "рублей" )
+
+                text = string.format( "%s\\n \\nЕжели всё сразу хочешь, готовь: %%c[255,238,155,23]%s%%c[default] %s. %s на всё про всё уйдёт.", 
+                    text, 
+                    tostring( total_cost ), 
+                    rubles, 
+                    total_time_desc
+                )					
+            elseif item.needs.armor then
+                text = format_cost_text( item.repair.cost, time_rep )
+            elseif item.needs.mask then
+                text = "С костюмом всё окей, а вот стекло - другое дело. Если не заменишь, на Складах точно надышишься всякой заразы. \\nОбойдётся это в %c[255,238,155,23]" .. 
+                    tostring( item.repair.mask_cost ) .. "%c[default] рублей. \\n" .. mask_time_rep
+            end
+        else
+            text = format_cost_text( item.repair.cost, time_rep )
+        end
+        
+        return text
+    end	
+	
+    local function add_repair_option( dlg, base_index, item_index, option )
+        local current_index = base_index + option.offset
+        local phr = task_manager.Dlg_AddPhrase( dlg, option.text, current_index, item_index + 2000, -10000 )
+        local phrase_script = phr:GetPhraseScript()
+        phrase_script:AddPrecondition( "kotovod.money_have( " .. option.cost .. ")" )
+        phrase_script:AddAction( "kotovod.relocate_money( " .. option.cost .. ", 'out' )" )
+
+        local repair_params = string.format( "'%s', %s, '%s', %s", r_dolgovjaz, option.time, option.sect, option.obj_id )
+        if option.flag then
+            repair_params = repair_params .. string.format( ", '%s'", option.flag )
+        end
+        phrase_script:AddAction( "sak_dialog.repair_start(" .. repair_params .. ")" )
+
+        local response_index = current_index + 50
+        phr = task_manager.Dlg_AddPhrase( dlg, option.response, response_index, current_index, -10000 )
+        phrase_script = phr:GetPhraseScript()
+
+        if option.answer then
+            local answer_index = response_index + 25
+            phr = task_manager.Dlg_AddPhrase( dlg, option.answer, answer_index, response_index, -10000 )
+            phrase_script = phr:GetPhraseScript()
+            phrase_script:AddAction( "dialogs.break_dialog" )
+        end
+        
+        return response_index
+    end
+
+    local function create_repair_options( item, index )
+        local options = {}
+        local rec = item.rec
+        local sect = item.sect
+        local is_bandit_cloak = rec.obj:is_outfit() and str_in_tab( sect, { "bandit_veteran_", "bandit_master_" } )
+
+        if item.condition <= 0.42 then
+            return options  -- Возвращаем пустой список, если кондиция плохая
+        end
+
+        if rec.obj:is_outfit() then
+            if item.needs.armor and item.needs.mask then
+                if not is_bandit_cloak then
+                    table.insert( options, {
+                        text = "Почини только костюм, без маски.",
+                        cost = item.repair.cost,
+                        time = item.repair.time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+                        flag = 'a',
+						response = dolgovazyi_go_away_phrases[ lua_random( #dolgovazyi_go_away_phrases ) ],
+                        answer = "Принял.",
+                        offset = 10000
+                    })
+                    
+                    table.insert( options, {
+                        text = "Почини только маску.",
+                        cost = item.repair.mask_cost,
+                        time = item.repair.mask_time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+                        flag = 'm',
+						response = "Не мельтеши тут, сходи куда-нибудь, развейся...",
+                        answer = "Не вопрос.",
+                        offset = 20000
+                    })
+                    
+                    local total_cost = item.repair.cost + item.repair.mask_cost
+                    local total_time = item.repair.time + item.repair.mask_time
+                    table.insert( options, {
+                        text = "Дорого, однако... Ладно, я нынче при деньгах. Ремонтируй броню и меняй стекло.",
+                        cost = total_cost,
+                        time = total_time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+                        flag = 'all',
+						response = dolgovazyi_go_away_phrases[ lua_random( #dolgovazyi_go_away_phrases ) ],
+                        answer = "Уже ушёл.",
+                        offset = 30000
+                    })
+                else
+                    table.insert( options, {
+                        text = "Меня устраивает. Вот твоя оплата.",
+                        cost = item.repair.mask_cost,
+                        time = item.repair.mask_time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+                        flag = 'm',
+						response = "Порядок. Всё, не стой над душой теперь. Сходи погуляй часик.",
+                        answer = "Без проблем.",
+                        offset = 20000
+                    })
+                end
+            elseif item.needs.armor then
+                if item.repair.cost > 0 then
+                    table.insert( options, {
+                        text = "Мда... дороговато, конечно, но я согласен. Ремонтируй.",
+                        cost = item.repair.cost,
+                        time = item.repair.time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+						flag = 'all',	-- Тут нужен флаг, чтобы впоследствии не вылетало из-за отсутствующих фраз под этот случай. Не хочется еще один прекондишн писать
+						response = dolgovazyi_go_away_phrases[ lua_random( #dolgovazyi_go_away_phrases ) ],
+                        answer = "Хорошо.",
+                        offset = 10000
+                    })
+                end
+            elseif item.needs.mask then
+                if item.repair.mask_cost > 0 then
+                    table.insert( options, {
+                        text = "Договорились, меняй стекло.",
+                        cost = item.repair.mask_cost,
+                        time = item.repair.mask_time,
+                        sect = sect,
+                        obj_id = rec.obj:id(),
+                        flag = 'm',
+						response = dolgovazyi_go_away_phrases[ lua_random( #dolgovazyi_go_away_phrases ) ],
+                        answer = "Понял.",
+                        offset = 10000
+                    })
+                end
+            end
+        end
+        
+        return options
+    end	
+	
+    local items = collect_items_for_repair()
+    
+    for index, item in ipairs( items ) do
+        local rec = item.rec
+        local sect = item.sect
+        local cond = round( item.condition * 100 )
+
+        phr = task_manager.Dlg_AddPhrase( dlg, kotovod.get_inv_name( sect ) .. " [%c[255, 238, 153, 26]" .. tostring( cond ) .. "%%c[default]]", index + 1000, "100", -10000 )
+        phrase_script = phr:GetPhraseScript()
+
+        local text = get_repair_text( item )
+		-- TODO: Пока ограничение существует, потом мб подправить текст кое-где
+        local text_length = string.len( text )
+        if text_length > 462 then
+			text = string.sub( text, 1, 462 )
+        end
+		
+        phr = task_manager.Dlg_AddPhrase( dlg, text, index + 2000, index + 1000, -10000 )
+        phrase_script = phr:GetPhraseScript()        
+
+        local options = create_repair_options( item, index )
+        
+        for _, option in ipairs( options ) do
+            add_repair_option( dlg, index + 3000, index, option )
+        end
+        
+        phr = task_manager.Dlg_AddPhrase( dlg, "Ну, ты и зарядил ценник. Я пока не готов к таким тратам.", index + 4000, index + 2000, -10000 )
+        if item.condition <= 0.42 then 
+            phr:SetText( "Ничего не поделаешь..." )
+        end
+        
+        phrase_script = phr:GetPhraseScript()	
+        phrase_script:AddAction( "dialogs.break_dialog" )	 
+    end	
+
+    -- В процессе ремонта
+    phr = task_manager.Dlg_AddPhrase( dlg, "Не видишь, занят я? Не мешай работать, ладно?", "200", "0", -10000 )
+    phrase_script = phr:GetPhraseScript()   
+    phrase_script:AddHasInfo( "repair_starting" )  
+	phrase_script:AddPrecondition( "sak_dialog.not_ready_repair()" )
+
+    phr = task_manager.Dlg_AddPhrase( dlg, "Ладно, ладно, не гунди.", "201", "200", -10000 )
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddAction("dialogs.break_dialog" )  
+
+    -- Меченный должник
+    phr = task_manager.Dlg_AddPhrase( dlg, "Мы ж договорились, что ты способ зарядки огнемёта узнаешь и мне расскажешь. Сдержи слово, а там и за ремонт поговорим.", "300", "0", -10000 )
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddDontHasInfo( "repair_starting" )  
+    phrase_script:AddHasInfo( "dolgovjazyi_blockpost_case_shurup")  
+
+    phr = task_manager.Dlg_AddPhrase( dlg, "Э-э-э, не узнал я ещё...", "301", "300", -10000 )
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddAction( "dialogs.break_dialog" )  
+
+    -- Верни булыгу
+    phr = task_manager.Dlg_AddPhrase( dlg, "Мы же договорились, что ты мне артефакт \"Булыжник\" достанешь. Было дело? Сдержи слово, а там и за ремонт поговорим.", "400", "0", -10000 )
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddDontHasInfo( "repair_starting" )  
+    phrase_script:AddHasInfo( "dolgovjazyi_blockpost_case_bulyznik" )         
+
+    phr = task_manager.Dlg_AddPhrase( dlg, "Э-э-э, не нашёл пока такого...", "401", "400", -10000 )
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddAction( "dialogs.break_dialog" ) 
+	
+	-- Ничего не требуется
+    phr = task_manager.Dlg_AddPhrase( dlg, "Сейчас мне ничего не нужно чинить. Так, просто поинтересовался на будущее.", "500", "100", -10000 )
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddAction( "dialogs.break_dialog" ) 	
+	
+	-- Возвращаем из ремонта
+    phr = task_manager.Dlg_AddPhrase( dlg, "Давай сперва со старым заказом разберёмся. Забирай свой комбез.", "600", "0", -10000 )
+    phrase_script = phr:GetPhraseScript()
+	phrase_script:AddAction( string.format( "kotovod.additional_message( '%s' )", r_dolgovjaz ) )   		
+	phrase_script:AddAction( string.format( "sak_dialog.uniform_take( '%s' )", r_dolgovjaz ) )    	
+	phrase_script:AddAction( "sak.post_dialog_exec( sak_dialog.clear_repair_vars() )" )  		
+    phrase_script:AddGiveInfo( "repair_end" )        
+    phrase_script:AddHasInfo( "repair_starting" ) 	
+	phrase_script:AddPrecondition( "sak_dialog.is_ready_repair()" )
+
+	phr = task_manager.Dlg_AddPhrase( dlg, "Благодарю.", "601", "600", -10000 )
+	phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddAction( "dialogs.break_dialog" ) 	
+end
+
+function additional_message( repairer )
+    -- Сперва нужно бы проверить это, иначе не будет фразы
+    sak_dialog.is_mask_in_repair( repairer )
+    sak_dialog.is_armor_in_repair( repairer )
+
+    local messages = {
+        [ r_dolgovjaz ] = {
+            { condition = function() return sak_dialog.need_additional_repair_mask end, 
+				text = "Постой минутку... а ты видел, что на нём вся маска разбита? Менять стекло надо, если не хочешь окочуриться, надышавшись всякой отравой на Складах или на Дикой территории." },
+            { condition = function() return sak_dialog.need_additional_repair_armor end, 
+				text = "Кстати, а ты в курсе, что он весь в дырах и прорехах, а стало быть, будет пропускать ядовитую атмосферу? Латать надобно, если не желаешь окочуриться, надышавшись всякой гадостью на Складах или на Дикой территории." }
+        },
+		
+        [ r_vergas ] = {
+            { condition = function() return sak_dialog.need_additional_repair_mask end, 
+				text = "Эй, Меченный, а маска-то твоя — стекло уже в паутину пошло! Всё в сколах, герметичность околонулевая. Чай, не хочешь же лёгкие выплюнуть при первом же вздохе в какой-нибудь подземке или ещё где? Не мешало бы починить..." },
+            { condition = function() return sak_dialog.need_additional_repair_armor end, 
+				text = "Кстати, ты в курсе, что этот комбез весь в дырах и прорехах, а стало быть, в таком дальше Бара не уйдешь... Латать надодобно, иначе все твои вылазки закончатся раньше, чем начнутся." }
+        }
+    }
+
+    local selected_messages = messages[ repairer ] or {}
+
+    for _, message in ipairs( selected_messages ) do
+        if message.condition() then
+            db.actor:give_talk_message( message.text, "ui\\ui_iconstotal", Frect():set( 0, 0, 10, 10 ), "simple_answer_item" )
+            break
+        end
+    end
+end
+
+-----------------------------------------------------------
+------------------- Ремонт у Лисапеда ---------------------
+-----------------------------------------------------------
+
+local lisaped_go_away_phrases = {
+    "Слушай, ты прогуляйся по Бару пока... Терпеть не могу, когда над душой торчат...",
+	"Я займусь ремонтом, а ты пару рюмок можешь в Баре пропустить...",	
+	"Мастер не терпит, когда к нему под руку лезут. Погуляй, развейся...",
+	"Ремонт - дело тонкое. Постарайся пока не отвлекать, а то ненароком испорчу...",
+	"Сходи пока перекинься парой слов в Баре с завсегдатаями..."
+}
+
+function lisaped_repair_items(dlg)
+    dlg:SetForceReload(true)
+
+    local cfg = sak_dialog.repair_config[r_lisaped] 
+    if not cfg then
+        log2("[~T].~C0C #ERROR(uniform_repair_cost):~C07 не указана конфигурация для ремонтника ~C0A %s~C07", r_lisaped)
+        misc.dump_table(this.repair_config)
+        return 
+    end
+
+    local phr = task_manager.Dlg_AddPhrase(dlg, "Посмотри вот, моё оружие. Глянешь?", "0", "", -10000)
+    local phrase_script = phr:GetPhraseScript()    
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Давай, показывай, это своё \"кое-что\".", "1", "0", -10000)
+    phrase_script = phr:GetPhraseScript()   
+    phrase_script:AddDontHasInfo( "lisaped_repair_starting" )   	
+
+    local items = {}
+    
+	local function collect_items_for_repair()
+		local shadow_inv = get_shadow_inv():get_content(true)
+		local result = {}
+		
+		for i, rec in shadow_inv:ipairs() do    
+			local sect = sak_inventory.dyn_art_base(rec.sect)
+			if rec.obj:is_weapon() and rec.obj:condition() < 0.999 and not str_in_tab(sect, {"wpn_binoc", "wpn_knife", "wpn_flame", "wpn_rpg7", "wpn_ak74_m1" }) then 
+				
+				local item_info = {
+					id = i,
+					rec = rec,
+					sect = sect,
+					condition = rec.obj:condition(),
+					needs = {
+						weapon = true
+					},
+					repair = {
+						cost = 0,
+						time = 0
+					}
+				}
+				
+				item_info.repair.cost = sak_dialog.calc_repair_cost(rec.obj, sak_dialog.get_margin(r_lisaped))
+				item_info.repair.time = sak_dialog.uniform_time_repair(item_info.repair.cost, rec.obj:cost(), cfg.price_coefs, cfg.time_repair)
+				log2("Ремонт предмета: %s, стоимость: %d, время: %d", get_inv_name(sect), item_info.repair.cost, item_info.repair.time)
+				
+				table.insert(result, item_info)
+			end
+		end
+
+		table.sort(result, function(a, b)
+			return a.condition > b.condition
+		end)
+
+		return result
+	end
+
+    local function format_cost_text(cost, time_rep)
+        local cost_phrase = "Что же ты, Меченный, совсем не следишь за оружием? Вот и подводит оно тебя! Ствол - он жизнь тебе спасает, а ты его... Нехорошо. Ладно, я чуток подрихтую, смажу, может, боёк поменяю."
+		cost_phrase = cost_phrase .. "\\n \\n" .. repairer_phrases[lua_random(#repairer_phrases)]
+        local rubles = declension(cost, "рубль", "рубля", "рублей")
+        return string.format("%s %%c[255,238,155,23]%d %%c[default]%s. %s %s", translate(cost_phrase), cost, rubles, sak_dialog.time_desc( time_rep ), translate("придётся повозиться."))
+    end
+	
+	
+    local function get_repair_text(item)
+        local rec = item.rec
+        local sect = item.sect
+        local cond = round(item.condition * 100)
+
+        if cond >= 100 then
+            return string.format(vergas_good_item[lua_random(#vergas_good_item)], get_inv_name(sect))
+        elseif cond <= 38 then
+            return vergas_bad_wpn[lua_random(#vergas_bad_wpn)]
+        end
+        
+        -- Нормальный случай - формируем текст ремонта
+        local text = format_cost_text(item.repair.cost, item.repair.time)
+        return text
+    end
+
+    local function add_repair_option(dlg, base_index, item_index, option)
+        local current_index = base_index + option.offset
+        local phr = task_manager.Dlg_AddPhrase(dlg, option.text, current_index, item_index + 2000, -10000)
+        local phrase_script = phr:GetPhraseScript()
+        phrase_script:AddPrecondition("kotovod.money_have(" .. option.cost .. ")")
+        phrase_script:AddAction("kotovod.relocate_money(" .. option.cost .. ", 'out')")
+
+
+        local repair_params = string.format("'%s', %s, '%s', %s", r_lisaped, option.time, option.sect, option.obj_id)
+        if option.flag then
+            repair_params = repair_params .. string.format(", '%s'", option.flag)
+        end
+        phrase_script:AddAction("sak_dialog.repair_start(" .. repair_params .. ")")
+
+        local response_index = current_index + 50
+        phr = task_manager.Dlg_AddPhrase(dlg, option.response, response_index, current_index, -10000)
+        phrase_script = phr:GetPhraseScript()
+
+        if option.answer then
+            local answer_index = response_index + 25
+            phr = task_manager.Dlg_AddPhrase(dlg, option.answer, answer_index, response_index, -10000)
+            phrase_script = phr:GetPhraseScript()
+            phrase_script:AddAction("dialogs.break_dialog")
+        end
+        
+        return response_index
+    end
+
+    local function create_repair_options(item, index)
+        local options = {}
+        local rec = item.rec
+        local sect = item.sect
+
+        if item.condition <= 0.38 then
+            return options  -- Возвращаем пустой список, если кондиция плохая
+        end
+
+        if rec.obj:is_weapon() then
+            table.insert(options, {
+                text = "Ну ладно, согласен я, вот держи деньги.",
+                cost = item.repair.cost,
+                time = item.repair.time,
+                sect = sect,
+                obj_id = rec.obj:id(),
+                response = lisaped_go_away_phrases[ lua_random( #lisaped_go_away_phrases ) ],
+			--	answer = "До встречи!",
+                offset = 10000
+            })
+        end
+        
+        return options
+    end
+
+    local items = collect_items_for_repair()
+    
+    for index, item in ipairs(items) do
+        local rec = item.rec
+        local sect = item.sect
+        local cond = round(item.condition * 100)
+
+        phr = task_manager.Dlg_AddPhrase(dlg, kotovod.get_inv_name(sect) .. " [%c[255, 238, 153, 26]" .. tostring(cond) .. "%%c[default]]", index + 1000, "1", -10000)
+        phrase_script = phr:GetPhraseScript()
+
+        local text = get_repair_text(item)
+        phr = task_manager.Dlg_AddPhrase(dlg, text, index + 2000, index + 1000, -10000)
+        phrase_script = phr:GetPhraseScript()        
+
+        local options = create_repair_options(item, index)
+        
+        for _, option in ipairs(options) do
+            add_repair_option(dlg, index + 3000, index, option)
+        end
+        
+        phr = task_manager.Dlg_AddPhrase(dlg, "Много просишь, нет у меня таких денег...", index + 4000, index + 2000, -10000)
+        if item.condition <= 0.38 then 
+            phr:SetText("Эх, а я надеялся...")
+        end
+        
+        phrase_script = phr:GetPhraseScript()	
+        phrase_script:AddAction("dialogs.break_dialog")	 
+    end
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Давай чуток попозже... У меня заказ ещё не готов.", "200", "0", -10000) -- Я тут пока занят. Ты свой ствол пока прибери. Приходи попозже...
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddHasInfo( "lisaped_repair_starting" )  
+	phrase_script:AddPrecondition( "sak_dialog.lisaped_not_ready_repair()" )
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Позже? Ну смотри...", "201", "200", -10000)
+    phrase_script = phr:GetPhraseScript()        
+    phrase_script:AddAction("dialogs.break_dialog")        
+
+	-- Диалог о ремонте АК-Стрелка --
+    phr = task_manager.Dlg_AddPhrase(dlg, "Мне тут автомат попался в одной подземке, говорят, самого Стрелка...", "300", "1", -10000)
+    phrase_script = phr:GetPhraseScript()	
+	phrase_script:AddPrecondition( string.format( "sak.have_items_count( '%s', 1 )", "wpn_ak74_m1" ) )
+    phrase_script:AddDontHasInfo( "ak_strelok_repair_start" ) 	
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Не может быть! А ну, дай посмотрю.", "301", "300", -10000)
+    phrase_script = phr:GetPhraseScript()   
+	
+    phr = task_manager.Dlg_AddPhrase(dlg, "Смотри.", "302", "301", -10000)
+    phrase_script = phr:GetPhraseScript()       
+	phrase_script:AddAction( string.format( "sak_inventory.release_actor_items( '%s', 1 )", "wpn_ak74_m1" ) )
+	
+    phr = task_manager.Dlg_AddPhrase(dlg, "Да... интересно-интересно, только это уже, считай, не автомат, а так, кучка ржавых запчастей.", "303", "302", -10000)
+    phrase_script = phr:GetPhraseScript()       
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Так я чего к тебе и пришёл. Может, возьмёшся его отремонтировать?", "304", "303", -10000)
+    phrase_script = phr:GetPhraseScript()       
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Может, и возьмусь... Дай мне время разобраться, покумекать, авось, что и придумаю. Я ведь больше по стандартному оружию работаю, а тут такая пушка.", "305", "304", -10000)
+    phrase_script = phr:GetPhraseScript()       
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Так когда подойти?", "306", "305", -10000)
+    phrase_script = phr:GetPhraseScript()       
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Давай завтра, примерно в это же время.", "307", "306", -10000)
+    phrase_script = phr:GetPhraseScript()       
+	phrase_script:AddGiveInfo( "ak_strelok_repair_start" )  	
+    phrase_script:AddAction("sak_dialog.lisaped_start_time")	
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Не буду мешать, работай.", "308", "307", -10000)
+    phrase_script = phr:GetPhraseScript()       	 	
+    phrase_script:AddAction("dialogs.break_dialog")   	
+
+	-- Продолжение и оплата 
+    phr = task_manager.Dlg_AddPhrase(dlg, "Собрал я всё по списку, как ты просил, для ремонта автомата Стрелка.", "310", "1", -10000)
+    phrase_script = phr:GetPhraseScript()       
+	phrase_script:AddPrecondition("sak_dialog.have_lisaped_opt()") 	
+	phrase_script:AddPrecondition( string.format( "sak.have_items_count( '%s', 1 )", "bearer_cheque" ) )	
+	phrase_script:AddHasInfo( "mod_weapon_start" )    	
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Подходи через пару деньков, думаю, справлюсь.", "311", "310", -10000)
+    phrase_script = phr:GetPhraseScript()   
+	phrase_script:AddAction( "kotovod.repair_ak_strelok()" ) 
+	---------------------------------
+    -- Возвращаем из ремонта
+    phr = task_manager.Dlg_AddPhrase(dlg, "Ты ничего не забыл? Забирай своё оружие, мне оно без надобности.", "400", "0", -10000)
+    phrase_script = phr:GetPhraseScript()
+    phrase_script:AddAction(string.format("sak_dialog.uniform_take('%s')", r_lisaped))    	
+    phrase_script:AddAction("sak.post_dialog_exec(sak_dialog.clear_repair_vars())")  	
+    phrase_script:AddGiveInfo("lisaped_repair_end")   
+	phrase_script:AddHasInfo( "lisaped_repair_starting" )    
+    phrase_script:AddPrecondition("sak_dialog.lisaped_is_ready_repair()")   	
+
+    phr = task_manager.Dlg_AddPhrase(dlg, "Спасибо!", "401", "400", -10000)
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddAction("dialogs.break_dialog") 
+	
+    phr = task_manager.Dlg_AddPhrase(dlg, "Извини за беспокойство. На данный момент ничего не требуется.", "500", "1", -10000)
+    phrase_script = phr:GetPhraseScript()    
+    phrase_script:AddAction("dialogs.break_dialog")    	
+end
+
+function repair_ak_strelok()
+	sak_dialog.cond_items_have( "wpn_ak74", 1, 0.75, true )
+	sak_dialog.cond_items_have( "wpn_sig550", 1, 0.75, true ) 
+	sak_inventory.release_actor_items( "bearer_cheque", 1 )
+	
+	-- Нужно сайлентом удалить, чтобы не было дублирования сообщения из-за спавна м2
+	local wpn = db.actor:object( "wpn_ak74_m1" )
+	if wpn and wpn:condition() >= 0.35 then 
+		misc.release_obj( wpn )
+	end
+	
+	local obj = misc.spawn_to( "wpn_ak74_m2", db.actor )
+	if obj then 
+		local sect, id = obj:section_name(), obj.id
+		sak_dialog.repair_start( r_lisaped, 3000, sect, level.object_by_id( id ) )
+		misc.release_obj( obj )
+	end
 end
