@@ -1,0 +1,461 @@
+function attach( sm )
+	sm:subscribe({ signal = "on_late_init_all",  	fun = this.on_late_init_all  	})
+	sm:subscribe({ signal = "on_monster_death", 	fun = this.on_monster_death  	})
+	sm:subscribe({ signal = "on_monster_use", 		fun = this.on_monster_use  		})
+	sm:subscribe({ signal = "on_item_to_slot",	 	fun = this.on_slot				})
+	sm:subscribe({ signal = "on_item_to_ruck", 		fun = this.on_drop				})
+	sm:subscribe({ signal = "on_drop_before_all", 	fun = this.on_drop				})
+	-- sm:subscribe({ signal = "on_hit", 			fun = this.on_hit				})	-- Надо будет добавить стоп таймера и анимок при хите. Надо будет подписываться в нужный момент
+end
+
+local snd 
+
+-- Вроде работает, всяко лучше апдейта. Надо в этот блок с Сяка перетягивать он монстер десы или там доделать типсы, т.к тут мы не обрабатываем доспавненные айтемы
+
+function on_late_init_all()
+	correct_monster_tip()
+end	
+
+function get_monster_part( name )
+	local ini = system_ini()
+	--local part = utils.cfg_get_string( ini, name, "Spawn_Inventory_Item_Section", false, false, false, "" )	
+	local part = get_string( name, "Spawn_Inventory_Item_Section" )
+	return part
+end
+
+function has_knife()
+    local knife = db.actor:item_in_slot( 0 )
+    return knife and strpos( knife:section(), "knife" ) or false
+end
+
+function get_tip_text( obj, can_cut )
+    if obj:object_count() == 0 then
+        return "nothing_to_cut_off"
+    end
+    
+    local is_special = strposx( obj:name(), "burer" ) or strposx( obj:name(), "controller" )
+    
+    if is_special then
+        if not obj:object( get_monster_part( obj:section() ) ) or not can_cut then
+            return "%c[green]Обшарим тело"
+        end
+        return "cut_off_part"
+    end
+    
+    return can_cut and "cut_off_part" or "knife_need"
+end
+
+function correct_monster_tip()
+	local can_cut = has_knife()
+    
+	for id, obj in pairs( db.creatures ) do
+		if g_sim:object( id ) and obj and obj:is_monster() and not obj:alive() then
+			obj:set_tip_text( get_tip_text( obj, can_cut ) )
+		end
+	end
+end
+
+function on_slot( obj )
+	if not obj:is_knife() then return end 
+	-- Как-то бы проверять был ли какой до этого, чтобы зря не гонять... 
+	-- Может на спавне получить активный и с ним проверять? Но вроде все равно заранее надо, т.к при помещении в любом случае обнулится
+	correct_monster_tip()
+end
+
+function on_drop( obj )
+	if not obj:is_knife() then return end 
+--	local slot = obj:get_slot()
+--	log2( "slot is %s", slot )
+--	if slot ~= 0 then return end
+	-- Если дропали не со слота, то не нужно его обновлять
+	if has_knife() then return end
+	correct_monster_tip()
+end
+
+function on_hit( obj, amount, local_direction, who, bone_index )
+	log2( string.format( "%s hitted %s with %s on %s", who:name(), obj:name(), amount, bone_index ) )
+end
+
+local knf_brk_k  = {    
+    [ "mutant_dog_tail"          ] = { 2300, 0.10, - 0.01 },    
+    [ "mutant_face_tushkano"     ] = { 2500, 0.10, - 0.01 },	
+    [ "mutant_zombie_hand"       ] = { 3500, 0.12, - 0.02 },	
+	[ "mutant_boar_leg"          ] = { 3400, 0.12, - 0.02 },
+    [ "mutant_psevdodog_tail"    ] = { 3300, 0.12, - 0.01 },
+    [ "mutant_tail_cat"          ] = { 2900, 0.12, - 0.02 },	
+    [ "mutant_flesh_shkura"      ] = { 5000, 0.12, - 0.03 },	
+    [ "mutant_snork_leg"         ] = { 4000, 0.14, - 0.03 },
+    [ "mutant_chimera_kogot"     ] = { 4000, 0.14, - 0.04 },	
+    [ "mutant_flesh_eye"         ] = { 4000, 0.14, - 0.01 },
+    [ "mutant_burer_hand"        ] = { 5500, 0.14, - 0.03 },	
+    [ "mutant_hand_kontroler"    ] = { 5500, 0.16, - 0.04 },
+    [ "mutant_krovosos_jaw"      ] = { 4500, 0.16, - 0.02 },	
+    [ "mutant_poltergeist_glas"  ] = { 5000, 0.16, - 0.01 },
+    [ "mutant_psevdogigant_hand" ] = { 6500, 0.18, - 0.05 },
+    [ "mutant_e_chimera_kidney"  ] = { 6000, 0.16, - 0.05 }
+}
+
+-- Иначе можно дваджы за раз нажать и творить грязь. Попутно словить вылет
+local is_processing = false
+
+function on_monster_use( monster, who )
+    monster:set_nonscript_usable( false )
+
+	if is_processing then return end
+
+    if monster:object_count() == 0 then return end	
+
+	is_processing = true
+
+    local mutant_items, additional_items = {}, {}	
+    local knife_ready = false
+
+    -- Итерируем объекты моба и заносим по таблицам
+    for i = 0, monster:object_count() - 1 do
+        local item = monster:object( i )
+        if item:section():sub( 1, 6 ) == "mutant" then
+            table.insert( mutant_items, item )
+        else
+            table.insert( additional_items, item )
+        end
+    end
+  
+    -- Проверяем наличие ножа
+    local function is_knife( item )
+        return item and strpos( item:section(), "knife" )
+    end
+
+    local active_item = db.actor:active_item()
+    local knife_slot = db.actor:item_in_slot( 0 )
+    local has_knife = is_knife( active_item ) or is_knife( knife_slot )
+
+	-- Чтобы не прописывать всюду и на разные условия. Должно быть достаточно
+	dsh.timeout( 500, function() is_processing = false end )
+	
+    -- Если есть мутантские части, проверяем нож
+    if #mutant_items > 0 then
+        if has_knife then
+            if not is_knife( active_item ) then
+                db.actor:activate_slot( 0 )
+            end
+            knife_ready = is_knife( active_item )
+        end
+
+        -- Если есть нож и потроха
+        if has_knife then
+			-- Сразу, если нож активен или 1500 мс
+			level.disable_input()
+			local wait = knife_ready and 0 or 1500
+			dsh.timeout( wait, function() process_monster_loot( monster, mutant_items, additional_items ) end )			
+            return
+        end
+    end
+
+    -- Если нет ножа и есть потроха или есть доп. вещи, тогда их и лутаем
+    if not has_knife or #additional_items > 0 then 
+        process_additional_items( monster, additional_items )
+    end	
+end
+
+function process_monster_loot( monster, mutant_items, additional_items )
+	--set_dof_params( 0.25, 0.25, 0.3, 0.25 )
+	local part_to_take = mutant_items[ 1 ]
+	local part_section = part_to_take:section()
+    
+	local knife_item = db.actor:item_in_slot( 0 )
+	local knife_sect = knife_item:section()
+	local active_item = db.actor:active_item()
+    
+	local knf_time_k = knife_sect == "wpn_knife_m1" and 0.5 or 1
+	local time_by_monster = knf_brk_k[ part_section ][ 1 ]
+	local cond_by_monster = knf_brk_k[ part_section ][ 2 ]
+	local reduce_cond = knf_brk_k[ part_section ][ 3 ]
+    
+	local knife_cond = knife_item:condition()
+	local new_cond = ( knife_sect == "wpn_knife_m1" and reduce_cond / 2 ) or reduce_cond 
+	params.add_condition( active_item, new_cond )
+	local will_break = knife_cond + new_cond <= 0
+    
+	local mut_cond = math.max( 1 - ( cond_by_monster / knife_cond ), 0.2 )
+	if knife_cond >= 0.9 then mut_cond = 1 end
+	
+	-- Если нож сломался, то дополнительно портим часть на 10-15%, но не ниже 0.1
+	if will_break then
+		local decrease_percentage = math.random( 10, 15 ) / 100
+		mut_cond = math.max( mut_cond * ( 1 - decrease_percentage), 0.1 )
+	end	
+    
+--[[	
+	sak.actor_hide_weapon()
+	local total_time = will_break and 800 or knf_time_k * ( 1800 + time_by_monster ) + ( 650 / knife_cond )
+	-- Не больше 12 секунд, При <= 0.1 время увеличивается х2, вплоть до минуты
+	total_time = math.min( total_time, 12000 )
+	snd = sound_object( "zwuk_short\\loot_long_" .. lua_random( 1, 2 ) )
+	snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d + sound_object.looped )	
+    
+	level.add_cam_effector( "camera_effects\\item_use.anm", 8553, true, "", total_time / 1000 )		
+	dsh.timeout( total_time, function()
+		monster:transfer_item( part_to_take, db.actor )
+		part_to_take:set_condition( mut_cond )	
+		sak.relocate_item( "in", part_to_take:section(), 1 )	
+
+        if will_break then
+            misc.release_obj( knife_item )
+			db.actor:drop_item( part_to_take )
+            sak.send_tip( 
+                "Чёрт! Совсем нож в негодность пришёл \\nТеперь точно новый покупать...", 
+                "Мысли вслух", 0, 10, "g_g", "no", "red" 
+            )
+			misc.easy_sound( "scripts\\knife_broke" )
+			misc.easy_sound( "scripts\\matches_no_light_2" )
+        end
+		
+		stop_loot_already()
+	end )	
+]]--
+
+	local anim_duration = game.play_hud_motion( 2, "anm_mob_harvest", "anm_show", false, 1 )	
+	dsh.timeout( anim_duration, function() 
+		game.play_hud_motion( 2, "anm_mob_loot", "anm_show", false, 1, true )
+		sak.restore_weap()
+	end )	 
+	
+	
+	monster:set_tip_text( #mutant_items > 1 and "cut_off_part" or 
+		( #mutant_items == 1 and #additional_items > 0 and ( strpos( monster:name(), "burer_", 1, true ) 
+			or strpos( monster:name(), "controller", 1, true ) ) and "%c[green]Обшарим тело" 
+			or "nothing_to_cut_off" ) 
+	)
+end
+
+function actor_look_at_point( target_point )
+	local look_dir = vector():sub( target_point, device().cam_pos )
+	local cam = actor_camera( 0 )
+	if cam then
+		cam.yaw   = -look_dir:getH()
+		cam.pitch = -look_dir:getP()
+	end
+end
+
+function process_additional_items( monster, additional_items )
+    local amnt = #additional_items
+	if amnt == 0 then return end
+	level.disable_input()
+	monster:set_tip_text( "" )
+
+	local prev_active_slot = db.actor:active_slot()
+	db.actor:activate_slot( 255 )
+	
+	dsh.wait_condition( function() return not db.actor:active_item() end, function()
+		level.add_cam_effector( "camera_effects\\hand_help.anm", 8800, false )
+
+		--local target_pos = monster:bone_position( "bip01_spine1" ) or monster:position()
+		local target_pos = monster:bone_position( "bip01_pelvis" ) or monster:position()
+		actor_look_at_point( target_pos )
+		--local fov = db.actor:get_camera_fov()
+		--db.actor:set_camera_fov( 55 )
+		--set_dof_params( 1, 1, 1, 1 )
+		
+		local anim_duration = game.play_hud_motion( 2, "anim_body_search", "anm_show", false, 0.5 )	
+		dsh.timeout( anim_duration, function() 
+			game.play_hud_motion( 2, "anim_body_search", "anm_idle", false, 1, true )				
+		end )	
+		
+		dsh.timeout( 1800, function() 
+			game.stop_hud_motion()
+			game.play_hud_motion( 2, "anim_body_search", "anm_end", false, 1 )	
+			for _, item in ipairs( additional_items ) do
+				monster:transfer_item( item, db.actor )
+				sak.relocate_item( "in", item:section(), 1 )
+			end
+
+			-- Восстанавливаем текст в зависимости от наличия мутантских частей
+			if monster:object_count() > 0 then
+				monster:set_tip_text( "knife_need" )
+			else
+				monster:set_tip_text( "nothing_to_cut_off" )
+			end
+
+			--db.actor:set_camera_fov( fov )
+			--set_dof_params( 0, 0, 0, 0 )
+			
+			dsh.timeout( 600, function() 
+				level.enable_input()
+				db.actor:activate_slot( prev_active_slot )			
+			end )
+		end )		
+	end )	
+end
+
+function stop_loot_already()
+	--nlc_vars.lotted_part = nil
+    if snd and snd:playing() then snd:stop() end
+	level.remove_cam_effector( 8553 )	
+	sak.restore_weap()
+end
+
+function spawn_monster_item(spawn_item, npc)
+    if npc == nil then 
+        npc = db.actor 
+    end
+    if npc:id() == db.actor:id() then
+        return alife():create(spawn_item, 
+            npc:position(),
+            npc:level_vertex_id(),	
+            npc:game_vertex_id(),
+            npc:id())
+    end
+    local se_obj = alife():create(spawn_item, 
+        npc:position(),
+        npc:level_vertex_id(),	
+        npc:game_vertex_id())
+    if not se_obj then return end
+    local npc_id = npc:id()
+    local item_id = se_obj.id
+    dsh.wait_condition(
+        function()
+            return level.object_by_id(item_id) ~= nil
+        end,
+        function()
+            local item = level.object_by_id(item_id)
+            local owner = level.object_by_id(npc_id)
+            if item and owner then
+                owner:transfer_item(item, owner)
+            end
+        end
+    )
+    return se_obj
+end
+
+function spawn_item_if_met( sect, id, cond, obj )
+	if math.fmod( id, cond ) == 0 then
+		local spawned = this.spawn_monster_item( sect, obj )
+		if spawned then 
+			obj:set_tip_text( get_tip_text( obj, has_knife() ) )	
+		else
+			obj:set_tip_text( "nothing_to_cut_off" )			
+		end
+		-- sak.send_tip( sect, "SPAWNED IN" .. id, 0, 5, "saharov", "sak", "green" )			
+	end
+end
+
+function on_monster_death( monster, who )
+	if not monster then return end
+	local section = monster:section()	
+	local id = monster:id()
+	
+	if strpos( section, "controller", 1, true ) then
+		arc_diary.monster_killed( monster, who )
+		--sak.restore_movement()
+		--sak.restore_fire()
+		
+		-- Чтоб уж наверняка, не знаю, иногда багует
+		--schedule.add( "restore_movement", function()	
+			--sak.restore_movement()
+		--	sak.restore_fire()
+		--end, 1000 )		
+	end
+	
+	if strpos( section, "burer_", 1, true ) then		
+		on_burer_kill( monster, who, section, id )
+	end
+	
+	if strpos( section, "flesh_strong", 1, true ) then
+		if has_alife_info( "dsc_greens_flesh_shkura" ) then
+			spawn_item_if_met( "mutant_flesh_shkura", id, 2, monster )
+		end
+	end
+	
+	if strpos( section, "boar_", 1, true ) then
+		spawn_item_if_met( "mutant_boar_leg", id, 10, monster )
+		spawn_item_if_met( "mutant_boar_leg", id, 20, monster )
+		spawn_item_if_met( "mutant_boar_leg", id, 25, monster )
+	end
+	
+	if strpos( section, "chimera_", 1, true ) then
+		spawn_item_if_met( "mutant_chimera_kogot", id, 20, monster )
+		spawn_item_if_met( "mutant_chimera_kogot", id, 30, monster )
+		spawn_item_if_met( "mutant_chimera_kogot", id, 40, monster )
+	end
+	-----------------------------------------------	
+	-- и чтобы наверняка
+	dsh.timeout( 500, function()
+		local has_items = monster:object_count() > 0
+		local tip_text = "nothing_to_cut_off"
+
+		if has_items then
+			tip_text = who:is_stalker() and "%c[255,230,210,30]Убито не мной, может лучше не трогать?" or get_tip_text( monster, has_knife() )
+		end
+
+		monster:set_tip_text( tip_text )
+
+		-- Если убила аномалия или мы, то это нет смысла обрабатывать. Для аномальки будет вылет вообще
+		if who:id() == db.actor:id() or IsAnomaly( who ) then
+			return
+		end
+		
+		-- Если убил моб, то переносится ему с обновлением кондиции 
+		if who:is_monster() and has_items then
+			local condition = dsh.get_next_random( "kotovod.on_monster_kill_check_parts", 55, 95 ) * 0.01
+			
+			for i = 0, monster:object_count() - 1 do
+				local item = monster:object( i )
+				item:set_condition( condition )
+				monster:transfer_item( item, who )
+			end
+			
+			monster:set_tip_text( "nothing_to_cut_off" )
+		end
+	end )
+end
+
+local burer_items = {
+    { "mutant_burer_hand",   25  },
+    { "mfake_af_medus_new",  16  },
+    { "mfake_af_glass_new",  14  },
+    { "mfake_af_crist_new",  12  },
+    { "mfake_af_flower_new", 10  },
+    { "mfake_af_star_new",   8   },
+    { "mfake_af_dummy_fire", 6   },
+    { "mfake_af_battery",    4   },
+    { "mfake_af_ice",        2   },
+    { "mfake_af_sul_new",    1 },
+}
+
+function on_burer_kill( obj, who, section, id )
+    local can_cut = has_knife()
+    obj:set_tip_text( get_tip_text( obj, can_cut ) )
+
+    if section == "burer_hos" then
+        this.spawn_monster_item( "mfake_af_dummy_fire", obj )
+        obj:set_tip_text( "%c[green]Обшарим тело" )
+        return
+    end
+
+  --  if nlc_vars.burer_killed then return end
+  --  if math.fmod( id, 6 ) ~= 0 then return end
+  
+	-- 20 процентов на дроп 100 % рандомной вещи, ибо эта хрень возвращает раз в пятилетку
+	if dsh.get_next_random("burer_drop_chance", 1, 100) > 20 then return end
+
+    local total = 0
+    for _, v in ipairs( burer_items ) do total = total + v[ 2 ] end
+
+    local rnd = dsh.get_next_random( "on_burer_kill", 1, total )
+    local sum = 0
+    for _, v in ipairs( burer_items ) do
+        sum = sum + v[ 2 ]
+        if rnd <= sum then
+            this.spawn_monster_item( v[ 1 ], obj )
+            --if v[ 1 ] ~= "mutant_burer_hand" then
+            --    nlc_vars.burer_killed = true
+            --end
+            if obj:object("mutant_burer_hand") then
+                obj:set_tip_text( "cut_off_part" )
+            else
+                obj:set_tip_text( "%c[green]Обшарим тело" )
+            end
+            return
+        end
+    end
+end
