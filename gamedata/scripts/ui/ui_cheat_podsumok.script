@@ -65,6 +65,16 @@ function pouch_dialog:InitControls()
       end
   end
   
+    local current_addon_id = get_value("pouch_addon_id")  -- Иначе можно будет дюпать! Ведь он формально у игрока остается
+
+    for _, addon in ipairs(dsh_switch_addons.addons) do
+        local actor_addon = db.actor:object( addon )  -- Получаем объект аддона
+        if actor_addon and actor_addon:id() ~= current_addon_id then
+			local rec = razgruzka.make_record(addon, 1)
+			table.insert(inv_items_heavy, rec)
+        end	
+    end  
+  
   -- ќпредел€ю информацию по содержимому подсумка
   razgruzka.update_avail_items() -- боеприпасы могли быть потрачены
   pouch_content = razgruzka.load_pouch_content("ui_cheat_podsumok")
@@ -432,6 +442,29 @@ function pouch_dialog:take_in_podsumok(btn, alt_t)
     local sect = src_rec.sect 
   if sect==nil or sect == "?" or string.find(sect, "^detector") then return end
     
+    -- Проверяем, помещен ли аддон
+    if str_in_tab(sect, dsh_switch_addons.addons) then 
+        if pouch_content(1).sect ~= "?" then
+            wprintf("~C04 #REJECT: cannot add addon, pouch is not empty.")
+            return
+        end
+        pouch_content(1).sect = sect
+        pouch_content(1).count = 1
+
+        local check = db.actor:object( sect )
+        if check then 
+            set_value( "pouch_addon_id", check:id() )
+        end	
+        
+        -- Очищаем запись аддона из массива
+        src_rec.sect = "?"
+        src_rec.count = src_rec.count - 1
+
+        self:set_btn_n(6)
+		self:sound_for_item( "addon", true, "load") 
+        return
+    end	
+	
     wprintf(" trying take~C0A %s~C07 into podsumok ", sect)
     
   --определ€ю состо€ние подсумка(а есть ли что там?)
@@ -485,44 +518,52 @@ function pouch_dialog:take_in_podsumok(btn, alt_t)
   self:set_btn_n(6)
 end
 
-function pouch_dialog:btn_empty()          --  нопка ¬ыгрузить из подсумка
-	if not vergas_rucksack.have() then return end
+function pouch_dialog:btn_empty()          --  нопка выгрузить из подсумка
 	local rec = pouch_content(1)
 	local sect = rec.sect
 
 	if sect == "?" then
-		--в подсумке пусто и выбрасывать нечего
+		-- в подсумке пусто и выбрасывать нечего
 		return
 	end
 
-	--определ€ю: т€желое вынаю или нет
-	local heavy_tmp = vergas_lib.str_explode("|",vergas_lib.set_pr_from_config_str("razgruzka","heavy_weapon_ammo"),true)
-	local flag = false
+	if str_in_tab(sect, dsh_switch_addons.addons) then  
+		-- Переносим аддон в тяжелые предметы
+		inv_items_heavy = razgruzka.reset_records(inv_items_heavy, sect, rec.count)
+    
+		-- Сбрасываем значение аддона
+		set_value("pouch_addon_id", nil)
+    
+		self:set_btn_n(5)  -- обновляем иконку для тяжелых предметов
+		self:sound_for_item( "addon", true, "load") 
+	else
+		-- Проверка на тяжелое оружие
+		local heavy_tmp = vergas_lib.str_explode("|", vergas_lib.set_pr_from_config_str("razgruzka", "heavy_weapon_ammo"), true)
+		local flag = false
 
-	if table.getn(heavy_tmp) ~= 0 then
-		for j = 1, table.getn(heavy_tmp) do
-			if heavy_tmp[j] == sect then
+		for _, heavy_item in ipairs(heavy_tmp) do
+			if heavy_item == sect then
 				flag = true
+				break
 			end
+		end
+
+		if flag then
+			-- тяжелое вынаю
+			inv_items_heavy = razgruzka.reset_records(inv_items_heavy, sect, rec.count)
+			self:set_btn_n(5)  -- обновляем иконку для тяжелых предметов
+		else
+			-- обычное на выброс пошло
+			inv_items = razgruzka.reset_records(inv_items, sect, rec.count)
+			self:reset_windows()  -- обновляем иконки для обычных предметов
 		end
 	end
 
-	if flag then
-		--т€желое вынаю
-		inv_items_heavy = razgruzka.reset_records(inv_items_heavy, sect, rec.count)
-		--обновл€ю иконку 
-		self:set_btn_n(5)
-	else
-		--обычное на выброс пошло
-		inv_items = razgruzka.reset_records(inv_items, sect, rec.count)
-		-- расставл€ю иконки на кнопки
-		self:reset_windows()
-	end
-	--играю звук
+	-- играю звук
 	self:sound_for_item(sect, true, "reload")  
 	rec.sect = "?"
 	rec.count = 0
-	--обновл€ю иконку 
+	-- обновляю иконку	
 	self:set_btn_n(6)
 end
 -------------------------------------------------------------------------
