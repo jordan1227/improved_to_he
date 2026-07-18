@@ -549,11 +549,63 @@ local fdda_headgear_data = {
     ["outfit_killer_m1"]  = { hud_sec = "helm_m50_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_gasmask_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_gasmask_unequip_cam.anm", snd_e = "actor\\headgear_hud\\gasmask_equip" },
 }
 
+-- ==========================================
+-- FDDA blackout tuning: which ppe cover to use and how long it holds.
+-- deimos_short.ppe is the original brief blink; deimos_longer.ppe is the
+-- new ~2s cover for filthy/wrecked masks. Below the threshold we use the
+-- short one (old behavior); at/above it, the long one.
+-- ==========================================
+
+-- EQUIP SEQUENCE (Putting mask on)
+local FADE_LEAD_MIN_EQ = 350   -- ms before anim end to start fade (clean mask)
+local FADE_LEAD_MAX_EQ = 1400  -- ms before anim end to start fade (worst-case dirty mask)
+
+-- UNEQUIP SEQUENCE (Taking mask off)
+local FADE_START_UN    = 50    -- ms after unequip anim starts to trigger fade (fixed)
+local FADE_HOLD_MIN_UN = 200   -- Minimum blackout duration for clean masks
+local FADE_HOLD_MAX_UN = 600   -- Maximum blackout duration for dirty masks
+
+-- POST-PROCESS EFFECTS (PPE) FILES
+local PPE_SHORT_EQ = "deimos_short.ppe" -- Brief blink for clean masks
+local PPE_LONG_EQ  = "deimos_longer.ppe" -- Longer cover (~2s) for filthy/wrecked masks
+
+-- PPE HOLD TIMES (How long the engine enforces the effect)
+local PPE_SHORT_HOLD_EQ = 300   -- ms; matches old working behavior for mild cases
+local PPE_LONG_HOLD_EQ  = 1400  -- ms; matches deimos_longer's authored length
+
+-- THRESHOLDS
+-- Severity is a 0.0 to 1.0 scale based on mask dirt/damage.
+-- If severity is >= 0.35, the engine swaps to the longer PPE and hold times.
+local SEVERITY_LONG_THRESHOLD_EQ = 0.35 
+
+-- Reads severity straight off the string mask_definition() already returns
+-- (format ends "..._<condition 1-6>_<dirt phase 1-6>"), no extra lookups needed.
+local function get_mask_severity(mask)
+    if not mask or mask == "?" then return 0 end
+    local dmg, dirt = mask:match("_(%d)_(%d)$")
+    dmg, dirt = tonumber(dmg), tonumber(dirt)
+    if not dmg or not dirt then return 0 end
+    dmg = math.min(math.max(dmg, 1), 6)
+    dirt = math.min(math.max(dirt, 1), 6)
+    return math.max((dmg - 1) / 5, (dirt - 1) / 5) -- swap to an average if max feels too harsh
+end
+
 local last_mask_toggle = 0 -- Sivol mask 
 local MASK_TOGGLE_COOLDOWN = 3500 -- ms
 
 function is_animating()
     return is_headgear_animating
+end
+
+-- Emergency cleanup to prevent the "busy hands" softlock
+function abort_animation()
+    if is_headgear_animating then
+        bind_stalker.restore_weapon()
+        level.only_allow_movekeys(false)
+        sivol.remove_move_penalty("mask")
+        level.remove_pp_effector(4277) -- Clear any stuck fade
+        is_headgear_animating = false
+    end
 end
 
 function on_off_mask()
@@ -570,7 +622,7 @@ function on_off_mask()
     if not fdda_headgear_data[ms] then
         level.only_allow_movekeys(true)
         bind_stalker.hide_weapon()
-		sivol.add_move_penalty("mask", 0.4) -- NEW
+        sivol.add_move_penalty("mask", 0.4)
         schedule.add("off_mask", "vergas_masks.on_off_mask_end()", 2000)
         return
     end
@@ -578,7 +630,7 @@ function on_off_mask()
     -- Start FDDA Sequence
     is_headgear_animating = true
     level.only_allow_movekeys(true)
-	sivol.add_move_penalty("mask", 0.4) -- NEW
+    sivol.add_move_penalty("mask", 0.4)
 
     -- Check if the player is actually holding something right now
     local has_weapon = db.actor:active_item() ~= nil
@@ -586,18 +638,18 @@ function on_off_mask()
 
     bind_stalker.hide_weapon()
 
-    -- Wait for the weapon to be fully hidden/lowered before playing camera/HUD anims.
-    -- If hands were already empty, WEAPON_HIDE_DELAY is 75 and this fires immediately.
-    -- If a weapon was out, 1200ms gives the engine time to finish the lowering animation.
     dsh.timeout(WEAPON_HIDE_DELAY, function()
+        -- Safety check: did the actor die while waiting for weapon to lower?
+        if not db.actor:alive() then
+            abort_animation()
+            return
+        end
+
         local anim_data = fdda_headgear_data[out:section()] or fdda_headgear_data[ms]
         
         -- If somehow there is still no anim_data, bail out safely
         if not anim_data then
-            bind_stalker.restore_weapon()
-            level.only_allow_movekeys(false)
-            sivol.remove_move_penalty("mask")
-            is_headgear_animating = false
+            abort_animation()
             return
         end
         
@@ -624,33 +676,46 @@ function on_off_mask()
             -- FDDA's camera animation using anim_data's camera path
             level.add_cam_effector(anim_data.cam_e, 7538, false, "", 0, false)
 
-            -- FDDA Fade Trick timing
-            local fade_time = math.max(0, anm_duration - 350)
-            local fade_remove_time = math.max(0, anm_duration - 250)
-            local state_swap_time = math.max(0, anm_duration - 150)
+            -- FDDA Fade Trick timing, scaled by how dirty/damaged the mask is right now.
+            local severity = get_mask_severity(mask)
+            local use_long_ppe = severity >= SEVERITY_LONG_THRESHOLD_EQ
+            local ppe_name = use_long_ppe and PPE_LONG_EQ or PPE_SHORT_EQ
+            local ppe_hold = use_long_ppe and PPE_LONG_HOLD_EQ or PPE_SHORT_HOLD_EQ
+
+            local fade_lead = FADE_LEAD_MIN_EQ + (FADE_LEAD_MAX_EQ - FADE_LEAD_MIN_EQ) * severity
+            fade_lead = math.max(fade_lead, ppe_hold) -- lead must cover at least the ppe's own duration
+
+            local fade_time = math.max(0, anm_duration - fade_lead)
+            local fade_remove_time = fade_time + ppe_hold
+            
+            -- NEW: Swap the 2D HUD state EARLY in the fade hold (200ms in, or halfway if hold is short).
+            -- This guarantees the HUD triggers while the screen is fully black, 
+            -- hiding the pop-up before the fade begins to clear.
+            local swap_offset = math.min(800, ppe_hold * 0.5)
+            local state_swap_time = math.max(fade_time, fade_time + swap_offset)
+            
+            -- Total sequence duration is unchanged, tied to the max of anim end or fade end
+            local cleanup_time = math.max(anm_duration, fade_remove_time)
 
             -- 1. Start Fade
             dsh.timeout(fade_time, function()
-                level.add_pp_effector("deimos_short.ppe", 4277, false)
+                level.add_pp_effector(ppe_name, 4277, false)
             end)
 
-            -- 2. Remove Fade
-            dsh.timeout(fade_remove_time, function()
-                level.remove_pp_effector(4277)
-            end)
-
-            -- 3. Swap State under fade
+            -- 2. Swap State under fade (Now happens early under full cover)
             dsh.timeout(state_swap_time, function()
                 mask_on_off = true
                 flag_blurs, flag_cmd = true, true
             end)
 
+            -- 3. Remove Fade
+            dsh.timeout(fade_remove_time, function()
+                level.remove_pp_effector(4277)
+            end)
+
             -- 4. Cleanup
-            dsh.timeout(anm_duration, function()
-                bind_stalker.restore_weapon()
-                level.only_allow_movekeys(false)
-                is_headgear_animating = false
-                sivol.remove_move_penalty("mask") -- NEW
+            dsh.timeout(cleanup_time, function()
+                abort_animation() -- Safely cleans up and restores weapon
             end)
 
         else
@@ -662,35 +727,48 @@ function on_off_mask()
                 unequip_breath = tip_brth[string.sub(mask, 1, 7)] or "neutral"
             end
 
+            -- 1. Play Sound immediately
             local sound = "device\\masks\\" .. unequip_breath .. "_off"
             snd_obj = xr_sound.get_safe_sound_object(sound)
             snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
 
-            -- Use anim_data's section and camera path here too!
-            local anm_duration = game.play_hud_motion(2, anim_data.hud_sec, "anm_unequip", true, 1, true) or 2500
+            -- 2. Start Camera immediately
             level.add_cam_effector(anim_data.cam_u, 7538, false, "", 0, false)
 
-            -- Drop HUD immediately, not synced to the fade
+            -- 3. Drop HUD state immediately
             mask_on_off = false
             flag_blurs, flag_cmd = false, false
             if nvd_params and nvd_params.off_pnv then
                 nvd_params.off_pnv()
             end
 
-            -- Fade is now purely a cosmetic beat near the end, no state tied to it
-            local fade_time = math.max(0, anm_duration - 350)
-            local fade_remove_time = math.max(0, anm_duration - 250)
+            -- 4. Calculate Fade (runs immediately, doesn't wait for 250ms)
+            local severity = get_mask_severity(mask)
+            local fade_hold = FADE_HOLD_MIN_UN + (FADE_HOLD_MAX_UN - FADE_HOLD_MIN_UN) * severity
+            local fade_time = math.min(FADE_START_UN, 2500) 
+            local fade_remove_time = math.max(fade_time, math.min(2500, fade_time + fade_hold))
+
             dsh.timeout(fade_time, function()
                 level.add_pp_effector("deimos_short.ppe", 4277, false)
             end)
             dsh.timeout(fade_remove_time, function()
                 level.remove_pp_effector(4277)
             end)
-            dsh.timeout(anm_duration, function()
-                bind_stalker.restore_weapon()
-                level.only_allow_movekeys(false)
-                is_headgear_animating = false
-                sivol.remove_move_penalty("mask") -- NEW
+
+            -- 5. Delay ONLY the 3D hands animation by 250ms
+            dsh.timeout(250, function()
+                -- Safety check inside the delay
+                if not db.actor:alive() then
+                    abort_animation()
+                    return
+                end
+                
+                local anm_duration = game.play_hud_motion(2, anim_data.hud_sec, "anm_unequip", true, 1, true) or 2500
+                
+                -- Cleanup only after the 3D animation actually finishes
+                dsh.timeout(anm_duration, function()
+                    abort_animation()
+                end)
             end)
         end
     end)
