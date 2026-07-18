@@ -1,4 +1,5 @@
 local eat_in_mask = 1
+local anm_duration
 
 function UseEnegry()
 	if eat_in_mask > 0 then
@@ -126,7 +127,7 @@ local function play_item_use(item, item_id)
 		snd_in_use:play(db.actor, 0, sound_object.s2d)
 
 		local anm_start = time_global()
-		local anm_duration = game.play_hud_motion(2, item_hud, anim, true, 1, true)
+		anm_duration = game.play_hud_motion(2, item_hud, anim, true, 1, true)
 		if cam_effect then level.add_cam_effector(cam_effect, 7538, false, "", 0, false) end
 
         --[=[]]
@@ -208,9 +209,52 @@ local function on_actor_before_use( obj, sobj )
 	if not get_string(hud, "sound_1") then return end -- Не указан звук
 
 	-- Юзанье с маской
+--[[
 	if eat_in_mask > 0 and vergas_masks.allcore_mask_is_on() and get_bool(sect, "allcore_hide.is_food", false) then
 		sak.send_tip(translate("eat_in_mask"), translate("st_mda"), 1, 10, "g_g", "sak", "red")
 		obj:disable_use()
+		return
+	end
+]]--
+
+	-- Общая часть: снять маску, дождаться анимации снятия, применить предмет, вернуть маску
+	local function use_item_without_mask( sect, id )
+		dsh.timeout( 250, function()
+			animation_on()
+			vergas_masks.on_off_mask()
+			-- Ждём окончания анимации снятия маски
+			dsh.wait_condition(
+				function() return vergas_masks.on_off_mask_end() end,
+				function()
+					animation_on()
+					play_item_use( sect, id )
+					dsh.timeout( 20, function()
+						dsh.timeout( anm_duration, function()
+							vergas_masks.on_off_mask()
+						end )
+					end )
+				end
+			)
+		end )
+	end
+
+	if vergas_masks.allcore_mask_is_on() and get_bool(sect, "allcore_hide.is_food", false) then
+		-- закрываем окно, чтобы не вылетало
+		dsh.timeout( 20, function()
+			sak.close_window()
+			animation_on()
+
+			if get_value( "inv_full" ) then
+				-- открыто через анимацию рюкзака — сначала дожидаемся её закрытия
+				dsh.wait_condition(
+					function() return not get_value( "inv_full" ) end,
+					function() use_item_without_mask( sect, id ) end
+				)
+			else
+				-- обычный инвентарь, ждать закрытия рюкзака не нужно
+				use_item_without_mask( sect, id )
+			end
+		end )
 		return
 	end
 	
@@ -252,7 +296,7 @@ local function on_actor_before_use( obj, sobj )
 	if get_value( "inv_full" ) then
 		dsh.timeout( 20, function()
 			sak.close_window()		
-			db.actor:activate_slot(255)	-- Мб и не нужно?
+			--db.actor:activate_slot(255)	-- Мб и не нужно?
 			dsh.wait_condition(
 				function() return not get_value( "inv_full" ) end, 
 				function()
