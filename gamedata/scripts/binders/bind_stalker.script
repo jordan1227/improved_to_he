@@ -643,60 +643,172 @@ end
 
 local inv_holster_wait = false
 local gren_fix_process
+
+-- [HE-PORT]
+local function he_can_hold()
+	return db.actor and db.actor:alive()
+		and not db.actor:is_talking()
+		and used_items.can_use_gadget()
+		and not is_busy_actor_restrictions()
+end
+
+local function he_open_raz_filter(mode)
+	if not he_can_hold() then return end
+	if not (sak_dialog.have_razgruzka() or sak_dialog.have_razgruzka_new()) then return end
+	bind_stalker.hide_weapon()
+	razgruzka.open_inventory()
+	inv_buttons_use.open_inventory(mode)
+end
+
+local function he_open_raz_full()
+	if not he_can_hold() then return end
+	local sect = nil
+	if db.actor:object("razgruzka_new") then
+		sect = "razgruzka_new"
+	elseif db.actor:object("razgruzka") then
+		sect = "razgruzka"
+	else
+		return
+	end
+	sak.actor_hide_weapon()
+	level.add_cam_effector("camera_effects\\item_use.anm", 9773, false, "")
+	misc.easy_sound("interface\\misery\\inv_open")
+	dsh.timeout(1700, function()
+		level.enable_input()
+		level.remove_cam_effector(9773)
+		if not db.actor or not db.actor:alive() then return end
+		inv_buttons_use.imitation_opening_inventory()
+		used_items.used_podsumok_razgruzka(sect)
+	end)
+end
+
+local function he_open_podsumok()
+	if not he_can_hold() then return end
+	if not db.actor:object("podsumok") then return end
+	sak.actor_hide_weapon()
+	level.add_cam_effector("camera_effects\\item_use.anm", 9773, false, "")
+	misc.easy_sound("interface\\misery\\inv_open")
+	dsh.timeout(800, function()
+		level.enable_input()
+		level.remove_cam_effector(9773)
+		if not db.actor or not db.actor:alive() then return end
+		inv_buttons_use.imitation_opening_inventory()
+		used_items.used_podsumok_razgruzka("podsumok")
+	end)
+end
+
+local function he_equip_accum()
+	if not he_can_hold() then return end
+	if level.main_input_receiver() then return end
+	local accum = sak.get_accum and sak.get_accum() or db.actor:item_in_slot(10)
+	if accum then
+		db.actor:move_to_ruck(accum)
+	else
+		local inv_accum = nil
+		db.actor:iterate_inventory(function(npc, obj)
+			local s = obj:section()
+			if (s == "af_full_akkum" or s == "af_full_akkum_big") and obj:condition() > 0 then
+				if not inv_accum or inv_accum:condition() > obj:condition() then
+					inv_accum = obj
+				end
+			end
+		end)
+		if not inv_accum then
+			sak.send_tip("Н-да, аккумулятор-то где...", "Нету его!", 1, 10, "g_g", "sak", "red")
+			return
+		end
+		db.actor:move_to_slot(inv_accum)
+	end
+	sak.actor_hide_weapon()
+	level.add_cam_effector("camera_effects\\item_use.anm", 9773, false, "")
+	misc.easy_sound("interface\\misery\\inv_open")
+	dsh.timeout(1200, function()
+		level.remove_cam_effector(9773)
+		sak.restore_weap()
+	end)
+end
+
+local function he_open_flask()
+	if not he_can_hold() then return end
+	if self_weapon_hide then return end
+	if get_actor_obj():IsDetectorActive() then return end
+	sak.actor_hide_weapon()
+	level.add_cam_effector("camera_effects\\item_use.anm", 9773, false, "")
+	misc.easy_sound("interface\\misery\\inv_open")
+	dsh.timeout(800, function()
+		level.enable_input()
+		level.remove_cam_effector(9773)
+		if not db.actor or not db.actor:alive() then
+			bind_stalker.restore_weapon()
+			return
+		end
+		used_items.used_flask_army(true)
+	end)
+end
+
+
+
 local key_actions = {
-	[key_bindings.kNEW_INVENTORY] = {
-		func = function()
-			if is_busy_actor_restrictions() then return end
-			local wnd = windows.get_active()
-			if db.actor:is_talking() or wnd then
-
-				if wnd and not level.main_input_receiver() then
-					log2("lost actve_dialog object detected")
-					if wnd.CloseDialog then
-						wnd:CloseDialog()
-					elseif wnd.on_quit then
-						wnd:on_quit()
+-- [HE-PORT]
+[key_bindings.kNEW_INVENTORY] = {
+	func = function()
+		if is_busy_actor_restrictions() then return end
+		local wnd = windows.get_active()
+		if db.actor:is_talking() or wnd then
+			if wnd and not level.main_input_receiver() then
+				log2("lost actve_dialog object detected")
+				if wnd.CloseDialog then
+					wnd:CloseDialog()
+				elseif wnd.on_quit then
+					wnd:on_quit()
+				else
+					windows.set_active(false)
+				end
+			else
+				return
+			end
+		end
+		local gadget = used_items.can_use_gadget()
+		if gadget and (not self_weapon_hide) and not get_actor_obj():IsDetectorActive() and not db.actor:ph_capture() then
+			if inv_holster_wait then return end
+			slot_keeper.remember()
+			if db.actor:active_item() then
+				inv_holster_wait = true
+				db.actor:activate_slot(255)
+				local deadline = time_global() + 2000
+				dsh.wait_condition(function()
+					return not db.actor:active_item() or time_global() > deadline
+				end, function()
+					inv_holster_wait = false
+					if used_items.can_use_gadget() and not db.actor:is_talking() and not level.main_input_receiver() and not get_actor_obj():IsDetectorActive() and not db.actor:ph_capture() then
+						used_items.used_inventory()
 					else
-						windows.set_active(false)
+						slot_keeper.restore()
 					end
-				else
-					return
-				end
-			end
-
-			local gadget = used_items.can_use_gadget()
-
-			if gadget and (not self_weapon_hide) and not get_actor_obj():IsDetectorActive() and not db.actor:ph_capture() then
-				if inv_holster_wait then return end
-				slot_keeper.remember()
-				if db.actor:active_item() then
-					inv_holster_wait = true
-					db.actor:activate_slot(255)
-					local deadline = time_global() + 2000
-					dsh.wait_condition(function()
-						return not db.actor:active_item() or time_global() > deadline
-					end, function()
-						inv_holster_wait = false
-						if used_items.can_use_gadget() and not db.actor:is_talking() and not level.main_input_receiver() and not get_actor_obj():IsDetectorActive() and not db.actor:ph_capture() then
-							used_items.used_inventory()
-						else
-							slot_keeper.restore()
-						end
-					end)
-				else
-					used_items.used_inventory()
-				end
+				end)
+			else
+				used_items.used_inventory()
 			end
 		end
-	},
-	[key_bindings.kMASK_CONTROL] = {
-		func = function()
-			if is_busy_actor_restrictions() then return end
-			if used_items.can_use_gadget() and self_weapon_hide == false then
-				vergas_masks.on_off_mask()
-			end
+	end,
+	long_press = function()
+		he_open_raz_filter(2)
+	end,
+	long_press_timer = 200,
+},
+-- [HE-PORT]
+[key_bindings.kMASK_CONTROL] = {
+	func = function()
+		if is_busy_actor_restrictions() then return end
+		if used_items.can_use_gadget() and self_weapon_hide == false then
+			vergas_masks.on_off_mask()
 		end
-	},
+	end,
+	long_press = function()
+		he_open_flask()
+	end,
+	long_press_timer = 300,
+},
 	[key_bindings.kNEW_QUICKSAVE] = {
 		func = function()
 			-- if is_busy_actor_restrictions() then return end
@@ -707,7 +819,7 @@ local key_actions = {
 		func = function()
 			if is_busy_actor_restrictions() then return end
 			if used_items.can_use_gadget() and self_weapon_hide == false and not db.actor:is_talking() and not get_actor_obj():IsDetectorActive() then
-				used_items.used_flask_army(false)
+				used_items.used_flask_army(true)
 			end
 		end
 	},
@@ -814,28 +926,77 @@ local key_actions = {
 			pda_cb()
 		end
 	},
+-- [HE-PORT]
+[key_bindings.kWPN_RELOAD] = {
+	long_press = function()
+		he_open_raz_full()
+	end,
+	long_press_timer = 600,
+},
+-- [HE-PORT]
+[key_bindings.kTORCH] = {
+	func = function()
+		dsh_torch.switch_torch_impl()
+	end,
+	long_press = function()
+		dsh_torch.torch_switch_mode()
+		dsh_torch.torch_snd()
+	end,
+	long_press_timer = 500,
+	no_cooldown = true,
+},
+-- [HE-PORT]
+[key_bindings.kUSE_MEDKIT] = {
+	long_press = function()
+		he_open_raz_filter(1)
+	end,
+	long_press_timer = 350,
+},
+-- [HE-PORT]
+[key_bindings.kOPN_NZ] = {
+	func = function()
+		if not he_can_hold() then return end
+		if self_weapon_hide then return end
+		used_items.used_bag_on_belt(true, true)
+	end,
+	long_press = function()
+		he_open_raz_filter(12)
+	end,
+	long_press_timer = 220,
+},
+-- [HE-PORT]
+[key_bindings.kEXT_1] = {
+	func = function()
+		he_equip_accum()
+	end,
+	long_press = function()
+		he_open_raz_filter(3)
+	end,
+	long_press_timer = 180,
+},
 	-- пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ/пїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅ: TEST.
-	[key_bindings.kCAM_4] = {
-		func = function()
-			if is_busy_actor_restrictions() then return end
-			sak.actor_hide_weapon()
-			misc.easy_sound("interface\\misery\\inv_open")	
-			dsh.timeout( 450, function()
-				if dsh_switch_addons.switch_addons() then 
-					dsh.timeout( 1500, function()
-						sak.restore_weap()
-					end )
-				else
+-- [HE-PORT]
+[key_bindings.kCAM_4] = {
+	func = function()
+		if is_busy_actor_restrictions() then return end
+		sak.actor_hide_weapon()
+		misc.easy_sound("interface\\misery\\inv_open")
+		dsh.timeout(450, function()
+			if dsh_switch_addons.switch_addons() then
+				dsh.timeout(1500, function()
 					sak.restore_weap()
-					sak.send_tip("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ", "пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ", 0, 5, "g_g", "sak", "red" )				
-				end	
-			end )
-		end,
-		long_press = function()
-			sak.send_tip("TEST", "пїЅпїЅпїЅпїЅпїЅпїЅ", 0, 5, "g_g", "sak", "red")
-		end,
-		long_press_timer = 400
-	}
+				end)
+			else
+				sak.restore_weap()
+				sak.send_tip("Невозможно присоединить прицел к оружию", "Нету места", 0, 5, "g_g", "sak", "red")
+			end
+		end)
+	end,
+	long_press = function()
+		he_open_podsumok()
+	end,
+	long_press_timer = 400,
+},
 }
 
 local hold_keys        = {}
