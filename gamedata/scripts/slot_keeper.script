@@ -1,0 +1,96 @@
+-- [HE-PORT]
+
+local saved_slot = nil
+local anim_defer_since = nil
+local restore_held = false
+
+function ui_is_open()
+	if level.main_input_receiver() then return true end
+	if level.get_inventory_wnd():IsShown() then return true end
+	if level.get_car_body_wnd():IsShown() then return true end
+	return false
+end
+
+function anim_locked()
+	return level.only_movekeys_allowed() or not game.hud_motion_allowed()
+end
+
+function restore_deferred()
+	if restore_held then
+		anim_defer_since = nil
+		return true
+	end
+	if ui_is_open() then
+		anim_defer_since = nil
+		return true
+	end
+	if anim_locked() then
+		if not anim_defer_since then
+			anim_defer_since = time_global()
+		end
+		return time_global() - anim_defer_since < 10000
+	end
+	anim_defer_since = nil
+	return false
+end
+
+function remember()
+	if saved_slot and (restore_held or ui_is_open() or anim_locked()) then return end
+	local slot = db.actor and db.actor:active_slot()
+	if slot and slot ~= NO_ACTIVE_SLOT then
+		saved_slot = slot
+	end
+end
+
+function hold()
+	restore_held = true
+end
+
+local function weapon_blocked()
+	return bind_stalker.self_weapon_hide == true
+end
+
+local function activate_saved(slot, tries)
+	if not db.actor or not db.actor:alive() then return end
+	if db.actor:active_slot() == slot then return end
+	db.actor:activate_slot(slot)
+	if tries <= 0 then return end
+	dsh.timeout(300, function()
+		if not db.actor or not db.actor:alive() then return end
+		if db.actor:active_slot() == slot or db.actor:active_item() then return end
+		if ui_is_open() then return end
+		activate_saved(slot, tries - 1)
+	end)
+end
+
+function restore()
+	if restore_held or not saved_slot then return end
+	local slot = saved_slot
+	saved_slot = nil
+	local deadline = time_global() + 11000
+	dsh.wait_condition(function()
+		if not db.actor or not db.actor:alive() then return true end
+		if ui_is_open() or anim_locked() or weapon_blocked() then
+			return time_global() > deadline
+		end
+		return true
+	end, function()
+		if not db.actor or not db.actor:alive() then return end
+		if ui_is_open() then
+			saved_slot = slot
+			return
+		end
+		activate_saved(slot, 6)
+	end)
+end
+
+function release()
+	restore_held = false
+	restore()
+end
+
+function reset()
+	saved_slot = nil
+	anim_defer_since = nil
+	restore_held = false
+end
