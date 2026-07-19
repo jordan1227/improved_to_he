@@ -16,6 +16,139 @@ function on_late_init_all()
 	correct_monster_tip()
 end	
 
+
+-- g_loadstring monster_parts.ab()
+
+-- кроуч - полуприсяд, крип - глубокий
+function ab()
+	local aobj = get_actor_obj()
+	get_actor_obj():press_action( key_bindings.kCROUCH_TOGGLE )
+    dsh.timeout( 50, function()
+		get_actor_obj():press_action( key_bindings.kCROUCH_TOGGLE )	
+        get_actor_obj():hold_action( key_bindings.kCROUCH_TOGGLE )
+		local aobj = get_actor_obj()
+		if aobj:is_actor_crouch() then
+			log2( "crouch" )
+		end	
+		if aobj:is_actor_creep() then 
+			log2( "creep" )
+		end			
+    end )		
+end
+
+local ease_pitch_sig = nil
+
+-- duration в мс, delta_rad — на сколько сдвинуть pitch (полож. = вверх)
+function ease_camera_pitch(delta_rad, duration, on_complete)
+				log2( "subscribed" )
+	if ease_pitch_sig then
+		ogse_signals.get_mgr():unsubscribe( ease_pitch_sig )
+		ease_pitch_sig = nil
+	end
+
+	local cam = actor_camera(0)
+	if not cam then
+		if on_complete then on_complete() end
+		return
+	end
+
+	local start_pitch = cam.pitch
+	local target_pitch = start_pitch + delta_rad
+	local start_time = time_global()
+
+	ease_pitch_sig = ogse_signals.get_mgr():subscribe({
+		signal = "on_update",
+		fun = function()
+			local c = actor_camera(0)
+			if not c then return end
+
+			local elapsed = time_global() - start_time
+			local progress = math.clamp(elapsed / duration, 0, 1)
+			local k = progress * progress * (3 - 2 * progress) -- smoothstep
+
+			c.pitch = start_pitch + (target_pitch - start_pitch) * k
+
+			if progress >= 1 then
+				ogse_signals.get_mgr():unsubscribe( ease_pitch_sig )
+				ease_pitch_sig = nil
+				log2( "unsubscribed" )
+				if on_complete then on_complete() end
+			end
+		end
+	})
+end
+
+function test_ease_pitch()
+	ease_camera_pitch( -math.rad( 30 ), 500, function()
+		log2("eased up, holding")
+		dsh.timeout( 2200, function()
+			ease_camera_pitch( -math.rad( 25 ), 500, function()
+				log2("eased back down")
+			end)
+		end)
+	end)
+end
+
+local STANCE_NORMAL = 0
+local STANCE_CROUCH = 1
+local STANCE_CREEP  = 2
+local prev_stance
+
+local function get_actor_stance()
+	local a = get_actor_obj()
+	if a:is_actor_creep() then
+		return STANCE_CREEP
+	elseif a:is_actor_crouch() then
+		return STANCE_CROUCH
+	else
+		return STANCE_NORMAL
+	end
+end
+
+-- Переводит актора в крип, запоминает исходную стойку и вызывает callback(prev_stance)
+-- когда переход гарантированно завершён
+function force_full_crouch(callback)
+	local a = get_actor_obj()
+	local prev_stance = get_actor_stance()
+
+	if prev_stance == STANCE_CREEP then
+		if callback then callback(prev_stance) end
+		return prev_stance
+	end
+
+	if prev_stance == STANCE_NORMAL then
+		a:press_action(key_bindings.kCROUCH_TOGGLE)          -- normal -> crouch
+		dsh.timeout(50, function()
+			a:press_action(key_bindings.kCROUCH_TOGGLE)      -- crouch -> creep (нажатие)
+			a:hold_action(key_bindings.kCROUCH_TOGGLE)        -- удерживаем, чтобы остаться в крипе
+			if callback then callback(prev_stance) end
+		end)
+	else -- STANCE_CROUCH
+		a:press_action(key_bindings.kCROUCH_TOGGLE)
+		a:hold_action(key_bindings.kCROUCH_TOGGLE)
+		if callback then callback(prev_stance) end
+	end
+
+	return prev_stance
+end
+
+-- Возврат в исходную стойку, которую вернул force_full_crouch
+function restore_stance(prev_stance)
+	local a = get_actor_obj()
+	if not a then return end
+
+	if prev_stance == STANCE_CREEP then return end -- и так были там
+
+	a:release_action(key_bindings.kCROUCH_TOGGLE) -- creep -> crouch
+
+	if prev_stance == STANCE_NORMAL then
+		dsh.timeout(50, function()
+			local aobj = get_actor_obj()
+			if aobj then aobj:press_action(key_bindings.kCROUCH_TOGGLE) end -- crouch -> normal
+		end)
+	end
+end
+
 function get_monster_part( name )
 	local ini = system_ini()
 	--local part = utils.cfg_get_string( ini, name, "Spawn_Inventory_Item_Section", false, false, false, "" )	
@@ -214,38 +347,47 @@ function process_monster_loot( monster, mutant_items, additional_items )
 	end )	
 ]]--
 
-	local anim = knife_sect == "wpn_knife_m1" and "anm_mob_harvest_m1" or "anm_mob_harvest"
-	local anim_duration = game.play_hud_motion( 2, anim, "anm_show", false, 1, true )	
-	misc.easy_sound("interface\\item_usage\\harvest_use")
-	
-	dsh.timeout( anim_duration, function() 
-		game.play_hud_motion( 2, "anm_mob_loot", "anm_show", false, 1, true )
-		misc.easy_sound("interface\\item_usage\\harvest_use_success")
-		sak.restore_weap()
-		
-		monster:transfer_item( part_to_take, db.actor )
-		part_to_take:set_condition( mut_cond )	
-		sak.relocate_item( "in", part_to_take:section(), 1 )			
-		
-        if will_break then
-            misc.release_obj( knife_item )
-			db.actor:drop_item( part_to_take )
-            sak.send_tip( 
-                "Чёрт! Совсем нож в негодность пришёл \\nТеперь точно новый покупать...", 
-                "Мысли вслух", 0, 10, "g_g", "no", "red" 
-            )
-			misc.easy_sound( "scripts\\knife_broke" )
-			misc.easy_sound( "scripts\\matches_no_light_2" )
-        end
-		
-		stop_loot_already()
-	end )	 
-	
-	monster:set_tip_text( #mutant_items > 1 and "cut_off_part" or 
-		( #mutant_items == 1 and #additional_items > 0 and ( strpos( monster:name(), "burer_", 1, true ) 
-			or strpos( monster:name(), "controller", 1, true ) ) and "%c[green]Обшарим тело" 
-			or "nothing_to_cut_off" ) 
-	)
+	force_full_crouch( function( saved )
+		-- они почти всегда стоя дохнут, плохо...
+		if not strpos( monster:name(), "burer", 1, true ) then
+			test_ease_pitch()
+		end	
+		prev_stance = saved
+
+		local anim = knife_sect == "wpn_knife_m1" and "anm_mob_harvest_m1" or "anm_mob_harvest"
+		local anim_duration = game.play_hud_motion( 2, anim, "anm_show", false, 1, true )	
+		misc.easy_sound("interface\\item_usage\\harvest_use")
+
+		dsh.timeout( anim_duration, function() 
+			game.play_hud_motion( 2, "anm_mob_loot", "anm_show", false, 1, true )
+			misc.easy_sound("interface\\item_usage\\harvest_use_success")
+			sak.restore_weap()
+
+			monster:transfer_item( part_to_take, db.actor )
+			part_to_take:set_condition( mut_cond )	
+			sak.relocate_item( "in", part_to_take:section(), 1 )			
+
+			if will_break then
+				misc.release_obj( knife_item )
+				db.actor:drop_item( part_to_take )
+				sak.send_tip( 
+					"Чёрт! Совсем нож в негодность пришёл \\nТеперь точно новый покупать...", 
+					"Мысли вслух", 0, 10, "g_g", "no", "red" 
+				)
+				misc.easy_sound( "scripts\\knife_broke" )
+				misc.easy_sound( "scripts\\matches_no_light_2" )
+			end
+
+			restore_stance( prev_stance )
+			stop_loot_already()
+		end )
+
+		monster:set_tip_text( #mutant_items > 1 and "cut_off_part" or 
+			( #mutant_items == 1 and #additional_items > 0 and ( strpos( monster:name(), "burer_", 1, true ) 
+				or strpos( monster:name(), "controller", 1, true ) ) and "%c[green]Обшарим тело" 
+				or "nothing_to_cut_off" ) 
+		)
+	end )
 end
 
 function actor_look_at_point( target_point )
@@ -270,8 +412,12 @@ function process_additional_items( monster, additional_items )
 		level.add_cam_effector( "camera_effects\\hand_help.anm", 8800, false )
 
 		--local target_pos = monster:bone_position( "bip01_spine1" ) or monster:position()
-		local target_pos = monster:bone_position( "bip01_pelvis" ) or monster:position()
-		actor_look_at_point( target_pos )
+	--	local bone_name = strpos( monster:name(), "controller", 1, true ) and "bip01_pelvis" or monster:position()
+	--	local target_pos = monster:bone_position( bone_name ) or monster:position()
+		-- А по факту других же и не осматриваем, смысл? Бюрер - косячные кости
+		if strpos( monster:name(), "controller", 1, true ) then 
+			actor_look_at_point( "bip01_pelvis" )
+		end	
 		--local fov = db.actor:get_camera_fov()
 		--db.actor:set_camera_fov( 55 )
 		--set_dof_params( 1, 1, 1, 1 )
@@ -314,42 +460,9 @@ function stop_loot_already()
 	sak.restore_weap()
 end
 
-function spawn_monster_item(spawn_item, npc)
-    if npc == nil then 
-        npc = db.actor 
-    end
-    if npc:id() == db.actor:id() then
-        return alife():create(spawn_item, 
-            npc:position(),
-            npc:level_vertex_id(),	
-            npc:game_vertex_id(),
-            npc:id())
-    end
-    local se_obj = alife():create(spawn_item, 
-        npc:position(),
-        npc:level_vertex_id(),	
-        npc:game_vertex_id())
-    if not se_obj then return end
-    local npc_id = npc:id()
-    local item_id = se_obj.id
-    dsh.wait_condition(
-        function()
-            return level.object_by_id(item_id) ~= nil
-        end,
-        function()
-            local item = level.object_by_id(item_id)
-            local owner = level.object_by_id(npc_id)
-            if item and owner then
-                owner:transfer_item(item, owner)
-            end
-        end
-    )
-    return se_obj
-end
-
 function spawn_item_if_met( sect, id, cond, obj )
 	if math.fmod( id, cond ) == 0 then
-		local spawned = this.spawn_monster_item( sect, obj )
+		local spawned = misc.spawn_to( sect, obj )
 		if spawned then 
 			obj:set_tip_text( get_tip_text( obj, has_knife() ) )	
 		else
@@ -452,7 +565,7 @@ function on_burer_kill( obj, who, section, id )
     obj:set_tip_text( get_tip_text( obj, can_cut ) )
 
     if section == "burer_hos" then
-        this.spawn_monster_item( "mfake_af_dummy_fire", obj )
+		misc.spawn_to( "mfake_af_dummy_fire", obj )
         obj:set_tip_text( "%c[green]Обшарим тело" )
         return
     end
@@ -471,7 +584,7 @@ function on_burer_kill( obj, who, section, id )
     for _, v in ipairs( burer_items ) do
         sum = sum + v[ 2 ]
         if rnd <= sum then
-            this.spawn_monster_item( v[ 1 ], obj )
+            misc.spawn_to( v[ 1 ], obj )
             --if v[ 1 ] ~= "mutant_burer_hand" then
             --    nlc_vars.burer_killed = true
             --end
