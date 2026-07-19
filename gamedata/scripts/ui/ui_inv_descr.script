@@ -5,6 +5,18 @@ local subscribed = false
 local shift_show_descr = 700
 local kScreen = math.min((1024 / 768) / (device().width / device().height), 1)
 
+local protection_descriptions = {
+    burn = "Снижает урон от огня и термических аномалий",
+    chemical_burn = "Защищает от едких испарений и кислотных аномалий",
+    strike = "Смягчает удары, падения и гравитационные аномалии",
+    explosion = "Гасит взрывную волну, направленные акустические удары",
+    fire_wound = "Снижает урон от пуль",
+    wound = "Защищает от колющих и режущих ранений",
+    radiation = "Замедляет накопление радиации в организме",
+    telepatic = "Ослабляет пси-воздействие аномалий и мутантов",
+    shock = "Снижает урон от электрических разрядов",
+}
+
 -- ui_inv_icon_ - где-то тут все иконки лежат
 
 local IsBlocked = false
@@ -440,9 +452,21 @@ function CUIDescriptionWnd:ShowDescription(item)
 		description = description .. vergas_lib.mask_repair_kit_ui(self.item:id())
 	end
 
-	if item:is_outfit() then
-		description = description .. get_add_out_desc(item)
-	end
+    if item:is_outfit() then
+        description = description .. get_add_out_desc(item)
+        
+        -- Call early so protection_info_lines is populated before we SetText
+        self:ShowOutfitParams()
+
+        if self.lalt and self.protection_info_lines and #self.protection_info_lines > 0 then
+            -- Full replacement when LAlt is held
+            description = "%c[UI_orange]Информация о защите:\\n%c[default]"
+                     .. table.concat( self.protection_info_lines, "\\n" )
+        else
+            description = description .. "\\n \\n%c[white]LShift - %c[default]сравнение характеристик c надетым костюмом."
+            description = description .. "\\n%c[white]LAlt - %c[default]информация о защите."
+        end
+    end
 
 	if is_debug_mode then
 		--[=[
@@ -521,7 +545,7 @@ function CUIDescriptionWnd:ShowDescription(item)
 		self:ShowWeaponParams()
 	-- outfits
 	elseif item:is_outfit() then
-		self:ShowOutfitParams()
+		--self:ShowOutfitParams() Do nothing here. ShowOutfitParams() was already called above. so LAlt description text works correctly. Sivol 
 	-- knife
 	elseif item:is_knife() then
 		local d = sys_ini:r_float(self.section, "fire_distance")
@@ -1090,198 +1114,250 @@ end
 ]]--
 
 function CUIDescriptionWnd:ShowOutfitParams()
-	local params = {}
-	local val, txt = 0, ""
-	local outfit_flag, comparison, aoutfit, aoutfit_outfit = false, nil, nil, nil
-	
-	-- Проверяем, нужно ли сравнение
-	if self.lshift then 
-		aoutfit = db.actor:get_current_outfit()
-		if aoutfit and aoutfit:id() ~= self.item:id() then 
-			outfit_flag = true
-			aoutfit_outfit = aoutfit:get_outfit()
-		end	
-	end
-	
-	local outfit = self.item:get_outfit()
-	
-	-- Скрытые свойства костюмов
-	for i, t in ipairs(conditions_params) do
-		val = get_float(self.section, t.prop, 0)
-		if val ~= 0 then
-			val = val * 100 / conditions[t.prop]
-			txt = ""
-			comparison = nil
-			
-			-- Сравнение с надетым
-			if outfit_flag then
-				local aval = get_float(aoutfit:section(), t.prop, 0)
-				if aval ~= 0 then
-					aval = aval * 100 / conditions[t.prop]
-					if aval ~= val then
-						local diff = val - aval
-						comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("%d", math.abs(diff)) .. (t.unit or "%")
-					end
-				end
-			end
-			
-			if t.prop == "bleeding_restore_speed" then
-				txt = txt .. (val > 0 and "%c[green]" or "%c[red]+")
-				val = -val
-			elseif t.prop == "radiation_restore_speed" then
-				txt = txt .. (val > 0 and "%c[red]+" or "%c[green]")
-			else
-				txt = txt .. (val > 0 and "%c[green]+" or "%c[red]")
-			end
-			txt = txt .. string.format("%d", val) .. (t.unit or "%")
-			
-			table.insert(params, {
-				t.tex,
-				t.text,
-				txt,
-				nil,
-				comparison
-			})
-		end
-	end
-	
-	-- Иммунитеты
-	local immunities_sect = sys_ini:r_string(self.section, "immunities_sect")
-	
-	for i, t in ipairs(hit_types) do
-		local real_val = outfit[t.prop .. "_protection"] * 100 * self.condition
-		val = outfit[t.prop .. "_protection"] * 100  -- Используем get_outfit()
-		local val_imm = get_float(immunities_sect, t.prop .. "_immunity")
-		
-		comparison = nil
-		
-		-- Сравнение с надетым
-		if outfit_flag then
-			local areal_val = aoutfit_outfit[t.prop .. "_protection"] * 100
-			if areal_val ~= real_val then
-				local diff = real_val - areal_val
-				comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("%d%%", math.abs(math.round(diff)))
-			end
-		end
-		
-		local v1 = (real_val < 0 and "%c[red]" or real_val == 0 and "%c[gray]" or "%c[green]+") .. string.format("%d%%", math.round(real_val))
-		local v2 = "%c[gray][" .. string.format("%d%%", math.round(val)) .. "]%c[default]"
-		
-		table.insert(params, {
-		--	"ui_inv_icon_" .. t.prop .. "_immunity_hd",
-			"ui_inv_icon_" .. t.prop,
-			t.text,
-			v1,
-			v2,
-			comparison
-		})
-	end
-	
-	-- Доп. вес
-	local cur_weight = outfit.additional_inventory_weight
-	if cur_weight and cur_weight > 0 then
-		comparison = nil
-		local full_weight = get_float(self.section, "additional_inventory_weight2", 0)
-		local displayed_weight = self.condition * full_weight
-		
-		if outfit_flag then
-			local acur_weight = aoutfit_outfit.additional_inventory_weight
-			if acur_weight and acur_weight > 0 and acur_weight ~= cur_weight then
-				local diff = cur_weight - acur_weight
-				comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("%.1f", math.abs(diff)) .. " кг"
-			end
-		end
-		
-		local v1 = string.format("%%c[green]+%.1f", cur_weight) .. " кг"
-		local v2 = "%c[gray][" .. string.format("%.1f", full_weight) .. " кг]%c[default]"
-		
-		table.insert(params, {
-		--	"ui_inv_icon_add_weight_hd",
-			"ui_inv_icon_additional_weight",
-			translate("st_carrying"),
-			v1,
-			v2,
-			comparison
-		})
-	end
-	
-	-- Доп. прыжок
-	val = get_float(self.section, "additional_jump_height", 0)
-	if val > 0 then
-		comparison = nil
-		
-		if outfit_flag then
-			local aval = get_float(aoutfit:section(), "additional_jump_height", 0)
-			if aval ~= val then
-				local diff = val - aval
-				comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("x%.1f", math.abs(diff))
-			end
-		end
-		
-		txt = string.format("%%c[green]x%.1f", val)
-		
-		table.insert(params, {
-			--"ui_inv_icon_power_hd",
-			"ui_inv_icon_jump",
-			translate("ui_inv_jump_height"),
-			txt,
-			nil,
-			comparison
-		})
-	end
-	
-	-- Усталость
-	local pwrl = outfit.power_loss
-	if pwrl and pwrl ~= 1 then
-		comparison = nil
+    self.protection_info_lines = nil  -- Reset per call
+    local params = {}
+    local val, txt = 0, ""
+    local outfit_flag, comparison, aoutfit, aoutfit_outfit = false, nil, nil, nil
+    
+    -- Проверяем, нужно ли сравнение
+    if self.lshift then 
+        aoutfit = db.actor:get_current_outfit()
+        if aoutfit and aoutfit:id() ~= self.item:id() then 
+            outfit_flag = true
+            aoutfit_outfit = aoutfit:get_outfit()
+        end	
+    end
+    
+    local outfit = self.item:get_outfit()
+    
+    -- Скрытые свойства костюмов
+    for i, t in ipairs(conditions_params) do
+        val = get_float(self.section, t.prop, 0)
+        if val ~= 0 then
+            val = val * 100 / conditions[t.prop]
+            txt = ""
+            comparison = nil
+            
+            -- Сравнение с надетым
+            if outfit_flag then
+                local aval = get_float(aoutfit:section(), t.prop, 0)
+                if aval ~= 0 then
+                    aval = aval * 100 / conditions[t.prop]
+                    if aval ~= val then
+                        local diff = val - aval
+                        comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("%d", math.abs(diff)) .. (t.unit or "%")
+                    end
+                end
+            end
+            
+            if t.prop == "bleeding_restore_speed" then
+                txt = txt .. (val > 0 and "%c[green]" or "%c[red]+")
+                val = -val
+            elseif t.prop == "radiation_restore_speed" then
+                txt = txt .. (val > 0 and "%c[red]+" or "%c[green]")
+            else
+                txt = txt .. (val > 0 and "%c[green]+" or "%c[red]")
+            end
+            txt = txt .. string.format("%d", val) .. (t.unit or "%")
+            
+            table.insert(params, {
+                t.tex,
+                t.text,
+                txt,
+                nil,
+                comparison
+            })
+        end
+    end
+    
+    -- Иммунитеты
+    local immunities_sect = sys_ini:r_string(self.section, "immunities_sect")
+    
+    for i, t in ipairs(hit_types) do
+        local real_val = outfit[t.prop .. "_protection"] * 100 * self.condition
+        val = outfit[t.prop .. "_protection"] * 100  -- Используем get_outfit()
+        local val_imm = get_float(immunities_sect, t.prop .. "_immunity")
+        
+        comparison = nil
+        
+        -- Определяем формат: 1 знак после запятой в режиме LAlt, иначе целое число
+        local fmt = self.lalt and "%.1f%%" or "%d%%"
+        local r_func = self.lalt and function(x) return x end or math.round
+        
+        -- Сравнение с надетым
+        if outfit_flag then
+            local areal_val = aoutfit_outfit[t.prop .. "_protection"] * 100
+            if areal_val ~= real_val then
+                local diff = real_val - areal_val
+                comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format(fmt, r_func(math.abs(diff)))
+            end
+        end
+        
+        -- === LALT DESCRIPTION COLLECTION ===
+        if self.lalt then
+            local desc_text = protection_descriptions[t.prop]
+            if desc_text then
+                self.protection_info_lines = self.protection_info_lines or {}
+                local label_clean = t.text:gsub("%%c%[[^%]]*%]", "")
+                label_clean = label_clean:gsub("%s*:%s*$", "")
+                -- Только текст описания, без значений
+                table.insert(self.protection_info_lines, "%c[default]" .. label_clean .. ":%c[gray] " .. desc_text)
+            end
+        end
+        -- ===================================
 
-		local delta   = 1 - pwrl
-		local percent = math.abs(math.floor(delta * 100 + 0.5))
+        local v1 = (real_val < 0 and "%c[red]" or real_val == 0 and "%c[gray]" or "%c[green]+") .. string.format(fmt, r_func(real_val))
+        local v2 = "%c[gray][" .. string.format(fmt, r_func(val)) .. "]%c[default]"
+        
+        table.insert(params, {
+            "ui_inv_icon_" .. t.prop,
+            t.text,
+            v1,
+            v2,
+            comparison
+        })
+    end
+    
+    -- Доп. вес
+    local cur_weight = outfit.additional_inventory_weight
+    if cur_weight and cur_weight > 0 then
+        comparison = nil
+        local full_weight = get_float(self.section, "additional_inventory_weight2", 0)
+        local displayed_weight = self.condition * full_weight
+        
+        if outfit_flag then
+            local acur_weight = aoutfit_outfit.additional_inventory_weight
+            if acur_weight and acur_weight > 0 and acur_weight ~= cur_weight then
+                local diff = cur_weight - acur_weight
+                comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("%.1f", math.abs(diff)) .. " кг"
+            end
+        end
+        
+        local v1 = string.format("%%c[green]+%.1f", cur_weight) .. " кг"
+        local v2 = "%c[gray][" .. string.format("%.1f", full_weight) .. " кг]%c[default]"
+        
+        table.insert(params, {
+            "ui_inv_icon_additional_weight",
+            translate("st_carrying"),
+            v1,
+            v2,
+            comparison
+        })
+    end
+    
+    -- Доп. прыжок
+    val = get_float(self.section, "additional_jump_height", 0)
+    if val > 0 then
+        comparison = nil
+        
+        if outfit_flag then
+            local aval = get_float(aoutfit:section(), "additional_jump_height", 0)
+            if aval ~= val then
+                local diff = val - aval
+                comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("x%.1f", math.abs(diff))
+            end
+        end
+        
+        txt = string.format("%%c[green]x%.1f", val)
+        
+        table.insert(params, {
+            "ui_inv_icon_jump",
+            translate("ui_inv_jump_height"),
+            txt,
+            nil,
+            comparison
+        })
+    end
+    
+    -- Усталость
+    local pwrl = outfit.power_loss
+    if pwrl and pwrl ~= 1 then
+        comparison = nil
 
-		if outfit_flag then
-			local apwrl = aoutfit_outfit.power_loss or 1
-			local diff  = delta - (1 - apwrl)
+        local delta   = 1 - pwrl
+        local percent = math.abs(math.floor(delta * 100 + 0.5))
 
-			if diff ~= 0 then
-			--	comparison = (diff < 0 and "%c[red]> " or "%c[green]< ")
-			--		.. string.format("%d%%", math.abs(math.floor(diff * 100 + 0.5)))
-			
-			--	comparison = (diff < 0 and "%c[red]< " or "%c[green]> ")
-			--		.. string.format("%d%%", math.abs(math.floor(diff * 100 + 0.5)))		
+        if outfit_flag then
+            local apwrl = aoutfit_outfit.power_loss or 1
+            local diff  = delta - (1 - apwrl)
 
-			comparison = (diff > 0 and "%c[green]> " or "%c[red]< ")
-				.. string.format("%d%%", math.abs(math.floor(diff * 100 + 0.5)))		
-			end
-		end
+            if diff ~= 0 then
+                comparison = (diff > 0 and "%c[green]> " or "%c[red]< ")
+                    .. string.format("%d%%", math.abs(math.floor(diff * 100 + 0.5)))		
+            end
+        end
 
---[[
-		txt = string.format(
-			"%%c[%s]%s%d%%",
-			delta < 0 and "red" or "green",
-			delta < 0 and "+" or "-",
-			percent
-		)
-]]--
+        txt = string.format(
+            "%%c[%s]%s%d%%",
+            pwrl < 1 and "green" or "red",  -- меньше 1 = хорошо
+            pwrl < 1 and "-" or "+",         -- меньше 1 = снижение
+            percent
+        )
 
-	txt = string.format(
-		"%%c[%s]%s%d%%",
-		pwrl < 1 and "green" or "red",  -- меньше 1 = хорошо
-		pwrl < 1 and "-" or "+",         -- меньше 1 = снижение
-		percent
-	)
+        table.insert(params, {
+            "ui_inv_icon_power_loss",
+            delta < 0 and "Потеря выносливости" or "Снижение усталости",
+            txt,
+            nil,
+            comparison
+        })
+    end
+    
+    -- === Mask stat modifiers (Sivol) ===
+    local current_sect = self.item:section()
+    local base_sect = _G.sivol and _G.sivol.get_base_section(current_sect) or current_sect
 
-		table.insert(params, {
-			"ui_inv_icon_power_loss",
-			delta < 0 and "Потеря выносливости" or "Снижение усталости",	-- Накопление усталости?
-			txt,
-			nil,
-			comparison
-		})
-	end
-		
-	if #params > 0 then
-		self:ShowPropsOutfit(params)
-	end
+    local mask_str = vergas_lib.set_pr_from_config_str("list_masks", base_sect)
+    if mask_str and mask_str ~= "?" then
+        local mask_root = string.match(mask_str, "(hud_%a+)")
+        local modifiers = _G.sivol and _G.sivol.mask_modifiers
+        local mod = modifiers and (modifiers[base_sect] or modifiers[mask_root])
+
+        if mod then
+            local mask_on = vergas_masks.get_flag_mask()
+            local col_bad = mask_on and "%c[255,255,50,50]" or "%c[200,150,150,150]"
+            local col_good = mask_on and "%c[255,50,255,50]+" or "%c[200,150,150,150]"
+            local col_psy = mask_on and "%c[255,120,200,255]+" or "%c[200,150,150,150]"
+
+            local lalt_pressed = self.lalt or false
+
+            if lalt_pressed then
+                if mod.pwr_mult and mod.pwr_mult ~= 1.0 then
+                    table.insert(params, { "ui_inv_icon_power_loss", "Эффект маски (усталость):", "%c[default]Затрудняет дыхание", nil, nil })
+                end
+                if mod.rad_add and mod.rad_add > 0 then
+                    table.insert(params, { "ui_inv_icon_radiation", "Эффект маски (радиация):", "%c[default]Фильтрует заражённый воздух", nil, nil })
+                end
+                if mod.psy_k and mod.psy_k < 1.0 then
+                    table.insert(params, { "ui_inv_icon_telepatic", "Эффект маски (телепатия):", "%c[default]Некоторые пси-атаки зверья", nil, nil })
+                end
+            else
+                if mod.pwr_mult and mod.pwr_mult ~= 1.0 then
+                    local base_pwr = get_float(base_sect, "power_loss", 0)
+                    local delta_pct = _G.sivol and _G.sivol.round((base_pwr * mod.pwr_mult - base_pwr) * 100) or 0
+                    table.insert(params, { "ui_inv_icon_power_loss", "Расход выносливости (маска):", col_bad .. string.format("+%d%%", delta_pct), nil, nil })
+                end
+
+                if mod.rad_add and mod.rad_add > 0 then
+                    local cond = self.item:condition()
+                    local rad_scale = _G.sivol and _G.sivol.get_condition_rad_scale(cond) or cond
+                    local final_rad_bonus = _G.sivol and _G.sivol.round(mod.rad_add * rad_scale * 100) or 0
+                    table.insert(params, { "ui_inv_icon_radiation", "Радиация (маска):", col_good .. string.format("%d%%", final_rad_bonus), nil, nil })
+                end
+
+                if mod.psy_k and mod.psy_k < 1.0 then
+                    local cond = self.item:condition()
+                    local scale = _G.sivol and _G.sivol.get_condition_rad_scale(cond) or 1.0
+                    local psy_prot_pct = _G.sivol and _G.sivol.round(((1.0 - mod.psy_k) * scale) * 100) or 0
+                    table.insert(params, { "ui_inv_icon_telepatic", "Пси-экранирование (маска):", col_psy .. string.format("%d%%", psy_prot_pct), nil, nil })
+                end
+            end
+        end
+    end
+        
+    if #params > 0 then
+        self:ShowPropsOutfit(params)
+    end
 end
 
 function CUIDescriptionWnd:ShowPropsOutfit( tbl )
@@ -1318,17 +1394,18 @@ function CUIDescriptionWnd:ShowPropsOutfit( tbl )
 end
 
 function CUIDescriptionWnd:Remove()
-	if subscribed then
-		local sm = ogse_signals.get_mgr()
-		for _, s in ipairs(subscribed) do
-			sm:unsubscribe(s)
-		end
-		subscribed = false
-	end
-
-	self.shift_tmr = nil
-	self.owner = nil
-	self.keypressed = nil
+    if subscribed then
+        local sm = ogse_signals.get_mgr()
+        for _, s in ipairs(subscribed) do
+            sm:unsubscribe(s)
+        end
+        subscribed = false
+    end
+    self.shift_tmr = nil
+    self.owner = nil
+    self.keypressed = nil
+    self.lalt = nil
+    self.lshift = nil
 end
 
 function CUIDescriptionWnd:OnItemFocus(obj)
@@ -1389,9 +1466,15 @@ function CUIDescriptionWnd:OnKeyPress(dik, bind)
 			self:HideDescription()
 			self:ShowDescription( level.object_by_id( self.itemInFocus ) )
 		end			
+    elseif dik == DIK_keys.DIK_LMENU then -- LALT
+        if self.item and self.item:is_outfit() then
+            self.lalt = ( self.lalt == nil and true ) or nil
+            self:HideDescription()
+            self:ShowDescription( self.item )
+        end
 --	elseif dik == DIK_keys.DIK_W then 
 --		self:SetItemPrice( self.item )		
-	end	
+    end	
 end
 
 function CUIDescriptionWnd:OnDrop( obj )
