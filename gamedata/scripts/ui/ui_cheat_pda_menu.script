@@ -25,11 +25,11 @@ function cheat:InitControls()
 	-- Положение и размеры окна
 	self:Init(400,225-75,624,543)		--1600x900
 	
-	--определяюсь со стеклами
-	steklo_ok = vergas_pda.set_steklo()
-	steklo_bad = vergas_pda.set_steklo()
 	--определяю служебный номер
 	sn = vergas_pda.get_pda_sn()
+	--определяюсь со стеклами	
+	steklo_ok = vergas_pda.get_or_create_steklo(sn, "ok")
+	steklo_bad = vergas_pda.get_or_create_steklo(sn, "bad")
 	--вывожу ПДА
 	mode_r = 1
 	self:set_wnd_bg(1)
@@ -41,7 +41,11 @@ function cheat:InitControls()
 	--xml:InitStatic("background", self)				--Подложка меню
 	self:Register(xml:Init3tButton("btn_start_1", self),"btn_start")		-- Кнопка Вкл
 	self:Register(xml:Init3tButton("btn_search_1", self),"btn_search")		-- Кнопка Перебор
-	
+
+	-- Без шедулера видно как накладывается грязь, не очень...
+    schedule.add("menu_mask_overlay", function()
+        self:set_wnd_mask()
+    end, 1)	
 end
 
 function cheat:InitCallBacks()
@@ -49,8 +53,8 @@ function cheat:InitCallBacks()
 	self:AddCallback("btn_search", ui_events.BUTTON_CLICKED, self.btn_search, self) 	-- Кнопка Перебор
 end
 
-function cheat:OnKeyboard(dik, keyboard_action)
-	CUIScriptWnd.OnKeyboard(self,dik,keyboard_action)
+function cheat:OnKeyboard( dik, keyboard_action )
+	CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
 	if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
 		-- на выход повесим Esc
 		if dik == DIK_keys.DIK_ESCAPE then
@@ -58,15 +62,19 @@ function cheat:OnKeyboard(dik, keyboard_action)
 				self:btn_stop()
 			else
 				mode_r = 1
-				self:set_wnd_bg(1)
+				self:set_wnd_bg( 1 )
 			end
-		elseif 	dik == DIK_keys.DIK_G then
+        elseif dik == DIK_keys.DIK_RETURN or dik == DIK_keys.DIK_NUMPADENTER then 
+			self:btn_start()
+        elseif dik == DIK_keys.DIK_PRIOR or dik == DIK_keys.DIK_NEXT then 
+			self:btn_search()
+		elseif dik == DIK_keys.DIK_G then
 			--выбрасываю ПДА
 			self:drop_pda()
-			end
-			end
-	return true
 		end
+	end
+	return true
+end
 
 function cheat:btn_stop()								-- Кнопка Выкл
 	
@@ -97,11 +105,12 @@ function cheat:btn_start()
 		self:GetHolder():start_stop_menu (self,true)
 		local spwn=ui_cheat_pda.cheat(get_hud())
 		level.start_stop_menu(spwn,true)
+		self:set_wnd_mask()
 	end
 end
 
 function cheat:btn_search()
-	
+	if vergas_pda.get_tbl_sn_count() <= 1 then return end
 	self:del_windows()
 	vergas_lib.s_play(vergas_lib.set_pr_from_config_str("list_sounds_pda","snd_select_pda_down"),1)
 	schedule.add("stop_chow_pda", "vergas_pda.start_search_pda(1)", 500)
@@ -150,16 +159,34 @@ function cheat:set_wnd_bg(mode)
 	self:set_wnd_steklo(textur)
 	self:set_wnd_sn(sn)
 	--vergas_lib.s_play([[razgruzka\all_scroll]],1)
-	
+    self:set_wnd_mask()    -- маска поверх всего	
+end
+
+function cheat:set_wnd_mask()
+    if not vergas_masks.get_flag_mask() then return end
+    local mask, armor = vergas_masks.mask_definition()
+    if mask == "?" then return end
+    local base = string.match(mask, "^(.-)_%d+_%d+$") or mask
+
+    if wnd_mask ~= nil then
+        get_hud():RemoveDialogToRender(wnd_mask)
+        wnd_mask = nil
+    end
+
+    wnd_mask = CUIStatic()
+    wnd_mask:SetStretchTexture(true)
+    wnd_mask:Init(0, 0, 1024, 1024)
+    -- wnd_mask:InitTexture("verg\\masks\\"..base.."_1_1")
+	wnd_mask:InitTexture("verg\\masks\\"..mask)
+    get_hud():AddDialogToRender(wnd_mask)
 end
 
 function cheat:set_wnd_steklo(textur)
 	local steklo
-	local number = vergas_pda.get_number_pda()
-	local steklo_n = math.fmod(number,9)
-	if steklo_n == 0 then
-		steklo_n = 9
-	end
+	local sn = vergas_pda.get_pda_sn()
+	--log4("set_wnd_steklo sn=%s sub12=%s", tostring(sn), tostring(string.sub(sn, 1, 2)))
+	local steklo_n = math.fmod(tonumber(string.sub(sn, 1, 2)), 9) + 1
+	--log4("set_wnd_steklo steklo_n=%d textur=%s steklo_ok=%s steklo_bad=%s", steklo_n, tostring(textur), tostring(steklo_ok), tostring(steklo_bad))
 	
 	if wnd_steklo ~= nil then
 		self:DetachChild(wnd_steklo)
@@ -214,7 +241,8 @@ function cheat:del_windows()
 	end
 
 	if wnd_mask ~= nil then
-		self:DetachChild(wwnd_mask)
+		-- self:DetachChild(wnd_mask) -- вылетает из-за этого
+		get_hud():RemoveDialogToRender(wnd_mask) -- а так не открывается
 		wnd_mask = nil
 	end
 
@@ -224,3 +252,11 @@ function cheat:del_windows()
 	end
 	
 end
+
+function cheat:open_and_start()
+    local spwn = cheat( get_hud() )
+    level.start_stop_menu( spwn, true )
+	spwn:btn_start()
+end
+
+-- flush !ui_cheat_pda_menu.cheat:open_and_start()

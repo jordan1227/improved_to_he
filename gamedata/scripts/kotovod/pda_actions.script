@@ -1,0 +1,320 @@
+--[[ 
+	flush !mike.add_device_pda_npc(1,"pda_actions.test")
+	flush !mike.add_device_pda_npc(1,"pda_actions.disable_pda")
+	flush !mike.add_device_pda_npc(1,"pda_actions.agro_way")
+	flush !mike.add_device_pda_npc(1,"pda_actions.disable_pda;lvl5u",true)
+	flush !mike.add_device_pda_npc(1,"pda_actions.disable_pda;lvl3u;lvl3u",true)
+	flush !mike.add_device_pda_npc(1,"pda_actions.disable_pda;pda_actions.test;pda_actions.agro_way;lvl5u;lvl4u",true)
+	flush !mike.spawn_in_box("ros_inventory_box_0025",1,"pda_actions.give_something")	
+--]]
+
+local events = {}
+
+events[ "anomaly_info" ] = function()
+	local text = "[Прикреплённые видео аномалий Зоны]:"
+	if has_alife_info( "journal_zone_anomalies" ) then return text end
+	db.actor:give_info_portion( "journal_zone_anomalies" )
+	sak.send_tip( "Хм, должно быть полезная инфа, перекачаю себе в ПДА", "Мысли вслух", 0, 5, "g_g", "no", "yellow" )		
+	return text
+end
+
+events[ "incoming_contracts" ] = function()
+    local task_ini = ini_file( "misc\\task_manager.ltx" )
+    if not task_ini:section_exist( "list" ) then return "Нет данных" end
+
+    local n = task_ini:line_count( "list" )
+    local all_tasks = {}
+    for i = 0, n - 1 do
+        local result, id, value = task_ini:r_line( "list", i, "", "" )
+        if id and id ~= "" then
+            table.insert( all_tasks, id )
+        end
+    end
+
+    if #all_tasks == 0 then return "Нет данных" end
+
+    local type_msg = {
+        artefact        = "Поиск артефакта",
+        monster_part    = "Образец мутанта",
+        courier         = "Курьерское поручение",
+        find_item       = "Поиск предмета",
+        kill_stalker    = "Личное дело",
+        eliminate_lager = "Зачистка территории",
+        defend_lager    = "Охрана периметра",
+    }
+
+    local t = {
+        "[ПДА] Контракт #доступен:",
+        "[ПДА] Новый запрос в сети:",
+        "[ПДА] Активный контракт:",
+        "[ПДА] Обнаружен запрос:",
+        "[ПДА] Входящий контракт:",
+        "[ПДА] Засечена активность:",
+        "[ПДА] Входящая передача:",
+        "[ПДА] Данные в сети:",
+        "[ПДА] Передача принята:",
+    }
+
+	local count = lua_random( 3, 6 )
+    local used  = {}
+    local lines = {}
+
+    for i = 1, count do
+        local idx
+        repeat idx = lua_random( #all_tasks ) until not used[ idx ]
+        used[ idx ] = true
+        local task_id   = all_tasks[ idx ]
+        local task_type = task_ini:r_string( task_id, "type" )
+
+        local mo = lua_random( 1, 4 )
+        local d  = lua_random( 1, 28 )
+        local h  = lua_random( 0, 23 )
+        local m  = lua_random( 0, 59 )
+
+        table.insert( lines, {
+            sort_key = mo * 100000 + d * 1000 + h * 100 + m,
+			text = string.format( "%02d/%02d/2012 %02d:%02d %s\\n%s: %s",
+				d, mo, h, m,
+				t[ lua_random( #t ) ],
+				type_msg[ task_type ] or task_type,
+				game.translate_string( task_id )
+			)
+        })
+    end
+
+    table.sort( lines, function( a, b ) return a.sort_key < b.sort_key end )
+
+    local result = {}
+    for _, v in ipairs( lines ) do
+        table.insert( result, v.text )
+    end
+	
+    sak.send_tip(
+        "Интересно, что это такое... Надо бы поспрашивать у местных кулибиных",
+        "Мысли вслух", 2, 12, "g_g", "sak", "yellow"
+    )	
+
+	give_info( "info_docent_pda_task_known" )
+	-- Повышаем на 1 тут, чтобы последующие нормально работали
+	local nlc_cnt = get_value( "pda_read_count", 0 )
+	pda_read_count = nlc_cnt + 1
+	set_value( "pda_read_count", pda_read_count )
+
+	local pda_id = vergas_pda.get_current_pda_id()
+	schedule.add( "discharge_pda_after_read", function()
+		if not pda_id then return end
+		local sobj = alife():object( pda_id )
+		if not sobj then return end
+		local pk = get_netpk( sobj, 1 )
+		if not pk then return end
+		local data = pk:get()
+		local info = vergas_lib.str_explode( "|", data.custom_data, true )
+		if not info or not info[4] then return end
+
+		-- меняем статус на сломанный
+		info[4] = string.sub( info[4], 1, 12 ) .. "3" .. string.sub( info[4], 14 )
+
+		-- убираем pda_actions.incoming_contracts из записей
+		-- и добавляем рандомные обычные сообщения
+		local grup = vergas_pda.set_community_str()
+		local rang_n = lua_random( 150, 1500 )
+		info[5] = vergas_pda.set_msg( grup, 0, rang_n )
+
+		data.custom_data = table.concat( info, "|" )
+		pk:set( data )
+		nlc_fixes.set_pda_condition( pda_id, 3 )
+	
+		local pda = level.object_by_id( pda_id )
+		if pda then		
+			db.actor:drop_item( pda )
+
+			-- Закрываем и взрываем*
+			if ui_cheat_pda.cheat_instance then
+				vergas_pda.set_tbl_sn_nil()  -- очищаем список чтобы не открылось меню
+				ui_cheat_pda.cheat_instance:btn_stop()
+			end
+		
+			local serial = info[ 4 ]
+			set_value( "pda_docent", serial )
+		end
+	end, 2500 )			
+
+    return table.concat( result, "\\n \\n" )
+end
+
+events[ "gar_lv_way" ] = function()
+	local text = game.translate_string( "ways_info_way184a_text" )
+	if has_alife_info( "info_way184a" ) then return text end
+	sak.add_new_gar_lv_184()
+	sak.add_new_lv_gar_185()
+		
+	local diff = amk_vars.g_diff or tonumber( level.get_game_difficulty() )
+	if diff == 0 then 
+		text = text .. "\\n \\n" .. game.translate_string( "ways_info_way101a_text" )
+		sak.add_new_agroprom_101()	
+		sak.add_new_lost_esc_182()	
+	end	
+    return text
+end
+
+events[ "give_something2" ] = function()
+    local text = game.translate_string( "text_kotovod_secret" )
+    if has_alife_info( "info_fake_green_blood" ) then return text end
+    db.actor:give_info_portion( "info_fake_green_blood" )
+    kotovod.bes_after_resque()
+    return text
+end
+
+events[ "test" ] = function()
+    local text = {
+		"test1", "test2", "test3", "test4", "test5"
+	}
+    return text[ lua_random( #text ) ]
+end
+
+events[ "agro_way" ] = function()
+	local text = game.translate_string( "ways_info_way100a_text" ) -- .. "\\n \\n" .. game.translate_string( "ways_info_way101a_text" )
+	if has_alife_info( "info_way100a" ) then return text end
+	sak.add_new_escape_100()
+	sak.add_new_lost_agr_176()
+    return text
+end
+
+events[ "disable_pda" ] = function()
+    local active_pda = vergas_pda.get_current_pda_id()
+    local pda_data = vergas_pda.get_pda_cdata( active_pda )
+    local info = vergas_lib.str_explode( "|", pda_data, true )
+    local serial = info[4]
+
+    local tbl_disabled_pda = get_value( "tbl_disabled_pda", {} )
+
+    if not tbl_disabled_pda[ serial ] then
+        tbl_disabled_pda[ serial ] = { name = info[1], pass = info[2], login = info[3] }
+		set_value( "tbl_disabled_pda", tbl_disabled_pda )
+
+		local new_name = {
+			"Доступ ограничен владельцем",
+			"Активирована защита персональных данных",
+			"Данные владельца скрыты",	
+			"Личные данные владельца засекречены"			
+		}
+		
+		local new_pass = {
+			"е2д5е1д5е2",       -- reset
+			"д4д5е4д0дбе2",     -- default
+			"е2д5е1е2дде2д5",   -- restore
+			"е2д5д1дддде2",     -- reboot
+			"е2д5е2д8е2д5",     -- revive
+			"е7д8дде5",         -- wipe
+			"д3дбд5д0дд",       -- clean
+			"д6дбе3е8д8",       -- flush
+			"е0е5е2д7д5",       -- purge
+			"д6дее2дгд1е4",     -- format
+			"д9дед9е4",         -- init
+			"ддд5дбдб",         -- null
+			"е6дед9д4",         -- void
+			"д2дбд1дддб",       -- blank
+			"д6е2д5е1д8",       -- fresh
+			"д2дедее4",         -- boot
+		}
+		-- Чет там hex код, плюс буквы замененны на русские, типо шифровки. Без разницы, цифры все равно не получится ввести вручную
+		vergas_pda.set_pda_pass( active_pda, { name = "Неизвестно", pass = new_pass[ lua_random( #new_pass ) ], login = new_name[ lua_random( #new_name ) ] } )
+		log2( "SETTINGN EW PASS ")
+        if ui_cheat_pda.cheat_instance then
+			log2( "LOCKED" )
+            ui_cheat_pda.cheat_instance:lock_navigation()
+        end
+		dsh.timeout( 1700, function() 
+            if ui_cheat_pda.cheat_instance then
+                ui_cheat_pda.cheat_instance:btn_stop()
+            end		
+		end )
+        return "Несанкционированный доступ, в доступе отказано \\n \\nАвтоматическое выключение через 2 секунды"
+    else
+        local saved = tbl_disabled_pda[ serial ]
+        if saved then
+            vergas_pda.set_pda_pass( active_pda, {
+                name          = saved.name,
+                pass          = saved.pass,
+                login         = saved.login,
+                remove_action = "pda_actions.disable_pda",
+            })
+        end
+        tbl_disabled_pda[ serial ] = nil
+        set_value( "tbl_disabled_pda", tbl_disabled_pda )
+
+		if ui_cheat_pda.cheat_instance then
+			ui_cheat_pda.cheat_instance:remove_action_and_refresh( "pda_actions.disable_pda" )
+		end  
+        return "Авторизация пройдена. Память устройства разблокирована"
+    end
+end
+
+
+function run( name )
+    if type( events[ name ] ) == "function" then
+        return events[ name ]()
+    end
+end
+
+function way_event( info_id, obj_names )
+    return function()
+        local text = game.translate_string( "ways_" .. info_id .. "_text" )
+        if has_alife_info( info_id ) then return text end
+        db.actor:give_info_portion( info_id )
+
+        local names = type( obj_names ) == "table" and obj_names or { obj_names }
+
+        for _, obj_name in ipairs( names ) do
+            if obj_name ~= "" then
+                local obj = g_sim:object( obj_name )
+                if obj then
+                    local data  = kotovod.get_lc_data( obj )
+                    local from  = game.translate_string( kotovod.get_level_from_gv( data.game_vertex_id ) ) or ""
+                    local where = game.translate_string( kotovod.get_level_from_gv( data.dest_game_vertex_id ) ) or ""
+                    if from ~= "" and where ~= "" then
+                        local tips = string.gsub( from .. " — " .. where, "[«»]", "\"" )
+                        sak.send_tip(
+                            "%c[255,20,120,215]" .. "«" .. tips .. "»",
+                            "Найдена информация о новом пути!", 0, 10, "nlc", "pda_news", "gray"
+                        )
+                        break
+                    end
+                end
+            end
+        end
+
+        return text
+    end
+end
+
+-- Иногда надо чистить, Не самое изящное решение с хранением в таблице кучи вырубленных ПДА, но хз как еще сделать, в целом, это тестовое все
+function cleanup_disabled_pda()
+    local tbl_disabled_pda = get_value( "tbl_disabled_pda", {} )
+    local changed = false
+    for serial, _ in pairs( tbl_disabled_pda ) do
+        local found = false
+        for i, k in pairs( sak_inventory.eatable ) do
+            if i == "device_pda_npc" then
+                for j = 1, #k do
+                    local sobj = alife():object( k[j] )
+                    if sobj then
+                        local cdata = vergas_pda.get_pda_cdata( sobj.id )
+                        if cdata and strpos( cdata, serial ) then
+                            found = true
+                            break
+                        end
+                    end
+                end
+            end
+            if found then break end
+        end
+        if not found then
+            tbl_disabled_pda[ serial ] = nil
+            changed = true
+        end
+    end
+    if changed then
+        set_value( "tbl_disabled_pda", tbl_disabled_pda )
+    end
+end
