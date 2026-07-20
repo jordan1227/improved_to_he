@@ -14,14 +14,14 @@ function parse_spawns(line)
 		if t[k+1]~=nil then
 			local p = tonumber(t[k+1])
 			if p then
-				spawn.count = p
+				spawn.prob = p
 				k = k + 2
 			else
-				spawn.count = 1
+				spawn.prob = 1
 				k = k + 1
 			end
 		else
-			spawn.count = 1
+			spawn.prob = 1
 			k = k + 1
 		end
 		table.insert(ret_table, spawn)
@@ -48,6 +48,27 @@ function CTreasure:__init()
 		self.treasure_info[id].name			= utils.cfg_get_string(self.ini, id, "name", nil, true, "")
 		self.treasure_info[id].description	= utils.cfg_get_string(self.ini, id, "description"..r_trs_item, nil, true, "")
 		self.treasure_info[id].items		= parse_spawns(utils.cfg_get_string(self.ini, id, "items"..r_trs_item, nil, true, ""))
+        self.treasure_info[id].pda         = utils.cfg_get_string(self.ini, id, "pda"..r_trs_item, nil, false, "", "")
+        -- сохраняем сырую строку condlist для последующих проверок без повторного чтения ini
+        self.treasure_info[id].condlist_raw = utils.cfg_get_string(self.ini, id, "condlist", nil, false, "", "") or ""
+        
+        if self.treasure_info[id].pda and self.treasure_info[id].pda ~= "" then
+            local has_pda = false
+            for _, item in pairs( self.treasure_info[id].items ) do
+                if item.section == "device_pda_npc" then
+                    has_pda = true
+                    break
+                end
+            end
+            if not has_pda then
+                local pda_count = 0
+                for _ in string.gmatch( self.treasure_info[id].pda, "([^|]+)" ) do
+                    pda_count = pda_count + 1
+                end
+                table.insert( self.treasure_info[id].items, { section = "device_pda_npc", prob = pda_count } )
+            end
+        end		
+		
 		local community	= parse_names(utils.cfg_get_string(self.ini, id, "community"..r_trs_item, nil, false, "", "stalker"))
 		self.treasure_info[id].community = {}
 		for k,v in pairs(community) do
@@ -59,13 +80,98 @@ function CTreasure:__init()
 		self.treasure_info[id].condlist		= xr_logic.parse_condlist(db.actor, "treasure_manager", "condlist", utils.cfg_get_string(self.ini, id, "condlist", nil, false, "", ""))
 		self.treasure_info[id].active = false
 		self.treasure_info[id].done = false
+        self.treasure_info[id].treasure_given = false		
 	end
 	self.treasure_by_target = {}
 	for k,v in pairs(self.treasure_info) do
 		self.treasure_by_target[v.target] = k	
 	end
+	
+    -- восстанавливаем treasure_given
+    local given = get_value( "treasure_given_list", {} )
+    for k, _ in pairs( given ) do
+        if self.treasure_info[ k ] then
+            self.treasure_info[ k ].treasure_given = true
+        end
+    end	
+	
 	self.ini:release()
 	self.ini = nil
+end
+
+function CTreasure:offline_give_treasure(npc)
+	local res, boxlist = amk_offline_alife.give_treasure(npc)
+	if res then 
+		if boxlist and table.getn(boxlist) > 0 then
+			for iter, box_story_id in pairs(boxlist) do
+				local k = self.treasure_by_target[box_story_id]
+				if k~=nil then 
+					self.treasure_info[k].active = true
+					self.treasure_info[k].done = true
+				end
+			end
+		end
+		return true
+	end
+	return false
+end
+
+function CTreasure:find_similar(k)
+    local orig = self.treasure_info[k]
+    if not orig then return nil end
+    local avail = {}
+    local tr_sum = 0
+    for id, v in pairs(self.treasure_info) do
+        if v.done==false and v.active==false and v.treasure_given==false then
+            -- исключаем тайники с sak_no_need — они сюжетные и не должны выдаваться как замена
+            if not string.find(v.condlist_raw, "sak_no_need", 1, true) then
+                for comm, _ in pairs(orig.community) do
+                    if v.community[comm] then
+                        table.insert(avail, {k = id, prob = 5})
+                        tr_sum = tr_sum + 5
+                        break
+                    end
+                end
+            end
+        end
+    end
+    if tr_sum == 0 then return nil end
+    local tr_w = lua_random(tr_sum)
+    for _, v in pairs(avail) do
+        tr_w = tr_w - v.prob
+        if tr_w <= 0 then return v.k end
+    end
+    return nil
+end
+
+-- Флаг форс, для передачи прямого тайника
+function CTreasure:reserve_treasure(k, force)
+    if not self.treasure_info[k] then return nil end
+    local target = k
+    if self.treasure_info[k].treasure_given then
+        -- если тайник указан явно — не ищем замену, просто выдаём повторно
+        if force then
+           --log2( "reserve_treasure: '%s' already given, forced reuse", k )
+        else
+            target = self:find_similar(k)
+            if not target then
+                --log2( "reserve_treasure: '%s' already given, no similar found", k )
+                return nil
+            end
+            --log2( "reserve_treasure: '%s' already given, replaced with '%s'", k, target )
+        end
+    end
+    if not force then
+        self.treasure_info[target].treasure_given = true
+        self.treasure_info[target].active = true
+        local given = get_value( "treasure_given_list", {} )
+        if not given[target] then
+            given[target] = true
+            set_value( "treasure_given_list", given )
+            --kotovod.get_nlc( "treasure_given_list" )
+        end
+    end
+    return target
 end
 
 function CTreasure:use(npc)
@@ -101,47 +207,156 @@ function CTreasure:check()
 	end
 end
 
-function CTreasure:give_treasure(k)
-	local v = self.treasure_info[k]
-	-- временная отладка
-	if not v then
-		if type(k) == "table" then -- каким-то боком таблица попала, распечатать
-			log3("k = %s", k)
-		else -- что-то другое, распечатаем в виде строки
-			log2("k = %s", tostring(k))
-		end
-		log3("self.treasure_info = %s", self.treasure_info) -- на всякий случай, распечатаем ещё и эту таблицу
-		-- дальше будет вылет...
-	end
-	--
-	local obj = alife():story_object(v.target)
-	if obj ~= nil and self.treasure_info[k].done ~= true then
-		sak.send_treasure(v.name)
-		local text = "%c[255,238,155,23]"..game.translate_string(v.name).."\\n".."%c[default]"..game.translate_string(v.description)
-		local spot=lua_random(1,4)
-			level.map_add_object_spot_ser(obj.id, "crlc_big_treasure"..spot, text)
-		for kk,vv in pairs(v.items) do
-			for i = 1,vv.count do
-				local outcome = vv.section
-				if vv.section == "art4" then
-					outcome = sak_dialog.table_capsule[dsh.get_next_random( "rnd_treas_dyn", 8, 13 )]
-				elseif vv.section == "art3" then
-					outcome = sak_dialog.table_capsule[dsh.get_next_random( "rnd_treas_dyn", 1, 7 )]
-					outcome = add_rnd_dyn(outcome)
-				elseif vv.section == "art2" then
-					outcome = sak_dialog.table_bart[dsh.get_next_random( "rnd_treas_dyn", 1, 7 )]
-					outcome = add_rnd_dyn(outcome)
-				elseif vv.section == "art1" then
-					outcome = sak_dialog.table_aart[dsh.get_next_random( "rnd_treas_dyn", 1, 7 )]
-					outcome = add_rnd_dyn(outcome)
+function CTreasure:give_treasure( k, show )
+    local v = self.treasure_info[ k ]
+    local obj = alife():story_object( v.target )
+    if obj ~= nil and self.treasure_info[ k ].done ~= true then
+    
+        kotovod.add_box_protection( obj:name() )
+		local diff = tonumber( level.get_game_difficulty() )
+		
+        if diff == 0 or show then 
+            sak.send_treasure( v.name )
+            local text = "%c[255,238,155,23]" .. game.translate_string( v.name ) .. "\\n" .. "%c[default]" .. game.translate_string( v.description )
+            local spot = lua_random(1,4)
+            level.map_add_object_spot_ser( obj.id, "crlc_big_treasure" .. spot, text )     
+        else
+			--[[
+            if db.actor:object( "klava" ) then      
+                local msg_id = "treasure_" .. tostring( vergas_lib.set_pr_from_config( "list_treasure_pda", k ) ) .. "_1"
+                local clean_msg = string.gsub( game.translate_string( msg_id ), "^Схрон:%s*", "")
+                sak.send_tip( 
+                    "%c[ 255, 160, 160, 160 ]" .. clean_msg, 
+                    "Получена информация о схроне:", 0, 15, "nlc", "pda_news", "orange" 
+                )                   
+                vergas_lib.add_record_in_klava( msg_id )
+            end      
+			]]--			
+        end
+
+		--[[ формат pda в конфиге тайника:
+			items1 = device_pda_npc, 3
+			pda1 = 1:ros_secret_0025+enc_artmod_text|2:mar_secret_0059|1
+
+			pda1 соответствует items1, разделитель между пда - |
+			каждый пда: статус:тайник+рецепт+рецепт...
+				статус 1=рабочий, 2=разряженный, 3=битый
+				тайник и рецепты необязательны
+				если пда больше чем записей - остальные рандомные
+				если pda строка не указана - все рандомные
+				
+			pda1 = 1:ros_secret_0025+enc_artmod_vyvert_buzz_text|1:mar_secret_0059|1:lvl1u+lvl2u+lvl3u+lvl3u+lvl3u
+			Данная запись сделает следующее:
+			1. ПДА с тайником на ДТ + фиксированный рецепт выверта
+			2. ПДА с тайником на болотах
+			3. ПДА С уникальным рандомными рецептами первого, второго и 3 третьего уровня 
+			-- Короче, добавляем u к уровню рецепта и получим уникальный, которого нет у игрока! Если же нет, то полностью рандомные
+			pda1 = 1:ros_secret_0025+enc_artmod_vyvert_buzz_desc+lvl3u+lvl3u -- Заряженный ПДА, с тайником на ДТ, фиксированный рецом на выверт, если его нет - выдадим и 2 рандомным уникальных 3 уровня
+			pda2 = 1:lvl3u+only - онли делает тоже самое, что и в Mike, запись только с рецептами или тайниками, без рандомных сообщений
+			pda3 = 1:lvl3u+only|1:lvl2|1:enc_artmod_vyvert_buzz_desc+only - целый пда с уникальным рецептом 3, целый пда с рандомными сообщениями и рандом рецептом, целый пда с фиксированным рецептом выверта
+		--]]        
+        local pda_list = {}
+        if v.pda and v.pda ~= "" then
+            for part in string.gmatch( v.pda, "([^|]+)" ) do
+                table.insert( pda_list, vergas_lib.trim( part ) )
+            end
+        end
+        local pda_idx = 0
+
+        local b = sak.day_shmoney
+        while b > 4 do b = b - 4 end
+        for kk, vv in pairs( v.items ) do
+            for i = 1, vv.prob do
+                if vv.section == "capsule" then vv.section = sak_dialog.treasure_any_capsule() end
+                
+                if 
+                    strpos( vv.section, "art" ) 
+                    and not strpos( vv.section, "dart" ) 
+                    and not strpos( vv.section, "arc_art_box" )
+                    and not strpos( vv.section, "special_art_container" ) 
+                then 
+                    vv.section = rnd_treasure_art( tonumber( string.sub( vv.section, 4, string.len( vv.section ) ) ) )
+                end
+            
+                if 
+                            string.find( vv.section, "^af_" ) 
+                    and not string.find( vv.section, "_dummy_", 1, true ) 
+                    and not string.find( vv.section, "_1", 1, true ) 
+                    and not string.find( vv.section, "_2", 1, true ) 
+                    and not string.find( vv.section, "_3", 1, true ) 
+                    and not string.find( vv.section, "_4", 1, true ) 
+                    and not string.find( vv.section, "_dyn", 1, true ) 
+                    and not string.find( vv.section, "_new", 1, true ) 
+                    and not string.find( vv.section, "af_baloon", 1, true ) 
+                    and not string.find( vv.section, "af_ice", 1, true ) 
+                    and not string.find( vv.section, "af_glassbeads", 1, true ) 
+                    and not string.find( vv.section, "af_battery", 1, true ) 
+                    and not string.find( vv.section, "full_akkum", 1, true ) 
+                then
+                    vv.section = vv.section .. "_dyn" .. b .. "d"
+                    b = b + 1 
+                    if b > 4 then b = 1 end
+                end
+
+                local obj_sp = alife():create( vv.section, obj.position, obj.m_level_vertex_id, obj.m_game_vertex_id, obj.id )
+            
+                if vv.section == "special_art_container" then
+                    local container_arts = { "af_armor", "af_babka", "af_cry", "af_dik", "af_kol", "af_pudd", "af_spirit" }
+                    local pk   = get_netpk( obj_sp )
+                    local data = pk:get()
+                    local art  = container_arts[ dsh.get_next_random( "special_art", 1, #container_arts ) ]
+                    local lvl  = dsh.get_next_random( "generic_rnd", 3, 4 )
+                    data.custom_data = art .. "_" .. lvl
+                    pk:set( data )
+                end
+				
+				if vv.section == "device_pda_npc" then
+					pda_idx = pda_idx + 1
+					local pda_str = pda_list[ pda_idx ] or ""
+					schedule.add("treasure_pda_spawn_" .. obj_sp.id, function()
+						local status_pda, messages
+						local only = false
+						if pda_str ~= "" then
+							local parts = vergas_lib.str_explode( ":", pda_str, true )
+							status_pda = tonumber( parts[1] )
+							if parts[2] then
+								local raw = string.gsub( parts[2], "%+", ";" )
+								-- проверяем флаг only
+								if string.find( raw, ";only$" ) or raw == "only" then
+									only = true
+									raw = string.gsub( raw, ";?only$", "" )
+								end
+								messages = vergas_pda.filter_enc_given(
+									vergas_pda.process_lvl_messages( raw )
+								)
+							end
+						end
+						status_pda = status_pda or vergas_pda.set_status_pda()
+						if not messages and status_pda ~= 3 then
+							--log2( "give_treasure pda_%d: no messages, calling use()", obj_sp.id )
+							local grup_s = vergas_pda.set_community_str()
+							local rang_n = lua_random( 150, 1200 )
+							local shron  = self:use( nil, grup_s, rang_n )
+							if shron and shron ~= 0 then messages = tostring( shron ) end
+						end
+						vergas_pda.add_tbl_pda( obj.id, obj_sp.id, status_pda, messages, only )
+						nlc_fixes.set_pda_condition( obj_sp.id, status_pda )
+					end, 200)
 				end
-				alife():create( outcome, obj.position, obj.m_level_vertex_id, obj.m_game_vertex_id, obj.id )
-			end
-		end
-		self.treasure_info[k].active = true
-		self.treasure_info[k].done = true
-		sak.obj_off_on(obj)
-	end
+				
+            end
+        end  
+        self.treasure_info[ k ].active = true
+        self.treasure_info[ k ].done = true
+        xr_statistic.add_pts( "otherstats", game.translate_string( "st_pda_otherstats_treas_found" ), 1, 1 )     
+        local sim = alife()
+        if obj.online then
+            sim:set_switch_online( obj.id, false )
+            sim:set_switch_offline( obj.id, true )
+            amk.convert_npc[ obj.id ]=1
+        end
+    else
+    end
 end
 
 function CTreasure:treasure_empty(box, box_story_id)
@@ -253,4 +468,9 @@ function CTreasure:dialog(npc)
 			break
 		end
 	end
+end
+
+function rnd_treasure_art( lvl )
+    local sect = kotovod.rnd_rec_art_info( kotovod.tbl_arts, lvl )
+    return sect
 end
