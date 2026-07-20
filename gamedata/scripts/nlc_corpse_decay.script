@@ -1,0 +1,527 @@
+local ROT_SECTION = "rotting"
+local SKELETON_SECTION = "nlc_corpse_skeleton"
+local LEGACY_FAKE_SECTION = "zombie_trup_fc"
+local FLY_SOUND = "anomaly\\rot_flies"
+local ROT_DELAY = 24 * 60 * 60
+local REPLACE_DELAY = 48 * 60 * 60
+local SKELETON_LIFETIME = 72 * 60 * 60
+local ROT_CHANCE = 5
+local SOUND_DISTANCE = 5
+local UPDATE_INTERVAL = 1000
+local PP_EFFECTOR_ID = 5436
+local COUGH_SOUND_COUNT = 14
+local GROUND_RAY_START = 0.5
+local GROUND_RAY_DISTANCE = 2
+local GROUND_SINK = 0.005
+
+local skeleton_visuals = {
+	{ visual = "physics\\dead_body\\skelet_combine_pose_03", min_y = -0.0192 },
+	{ visual = "physics\\dead_body\\skelet_combine_pose_04", min_y = -0.0238 },
+	{ visual = "physics\\dead_body\\skelet_combine_pose_05", min_y = -0.0289 },
+	{ visual = "physics\\dead_body\\skelet_torso", min_y = -0.0037 }
+}
+
+local protected_outfits = {
+	merc_scientific_outfit = true,
+	scientific_outfit = true,
+	dolg_scientific_outfit = true,
+	freedom_scientific_outfit = true,
+	monolit_scientific_outfit = true,
+	protection_outfit = true,
+	ecolog_outfit = true
+}
+
+local corpses = {}
+local skeletons = {}
+local replace_queue = {}
+local legacy_queue = {}
+local next_actor_update = 0
+local actor_effect = nil
+
+function attach(sm)
+	sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
+	sm:subscribe({ signal = "on_npc_death", fun = this.on_npc_death })
+	sm:subscribe({ signal = "on_npc_update", fun = this.on_npc_update })
+	sm:subscribe({ signal = "on_npc_net_destroy", fun = this.on_npc_net_destroy })
+	sm:subscribe({ signal = "on_monster_spawn", fun = this.on_monster_spawn })
+	sm:subscribe({ signal = "on_monster_update", fun = this.on_monster_update })
+	sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_monster_net_destroy })
+	sm:subscribe({ signal = "on_safe_spawn", fun = this.on_safe_spawn })
+	sm:subscribe({ signal = "on_update", fun = this.on_actor_update })
+end
+
+local function now_seconds()
+	return game.get_game_time():diffSec(game.CTime())
+end
+
+local function read_data(sobj)
+	if sobj and sobj.s_storage and sobj.s_storage ~= "_" then
+		return amk.parse_custom_data(sobj.s_storage)
+	end
+	return {}
+end
+
+local function read_state(sobj)
+	local data = read_data(sobj)
+	local state = data[ROT_SECTION]
+	if not state then
+		return nil
+	end
+	local rot_time = tonumber(state.rot_time)
+	local replace_time = tonumber(state.replace_time)
+	local decay_version = tonumber(state.decay_version) or 1
+	if not rot_time then
+		return nil
+	end
+	if decay_version < 2 then
+		replace_time = rot_time + (REPLACE_DELAY - ROT_DELAY)
+	end
+	return {
+		rot_time = rot_time,
+		replace_time = replace_time or rot_time + (REPLACE_DELAY - ROT_DELAY),
+		decay_version = 2,
+		next_update = 0
+	}
+end
+
+local function read_skeleton_remove_time(sobj)
+	if not sobj or not sobj.custom_data then
+		return nil
+	end
+	local data = sobj.custom_data
+	if type(data) ~= "table" then
+		if not string.find(data, "[" .. SKELETON_SECTION .. "]", 1, true) then
+			return nil
+		end
+		data = amk.parse_custom_data(data)
+	end
+	local state = data and data[SKELETON_SECTION]
+	return state and tonumber(state.remove_time) or nil
+end
+
+local function save_state(sobj, entry)
+	local data = read_data(sobj)
+	data[ROT_SECTION] = {
+		rot_time = tostring(entry.rot_time),
+		replace_time = tostring(entry.replace_time),
+		decay_version = "2"
+	}
+	sobj.s_storage = amk.gen_custom_data(data)
+end
+
+local function can_rot(obj, sobj)
+	if not obj or obj:alive() or not sobj then
+		return false
+	end
+	if obj:character_community() == "zombied" then
+		return false
+	end
+	local sid = sobj.m_story_id
+	if sid and sid <= 10000 then
+		return false
+	end
+	return true
+end
+
+local function start_rotting(obj, force)
+	local id = obj:id()
+	local sobj = alife():object(id)
+	if not can_rot(obj, sobj) then
+		return nil
+	end
+	local entry = read_state(sobj)
+	if not entry then
+		if not force and math.random(100) > ROT_CHANCE then
+			return nil
+		end
+		local now = now_seconds()
+		entry = {
+			rot_time = now + ROT_DELAY,
+			replace_time = now + REPLACE_DELAY,
+			decay_version = 2,
+			next_update = 0
+		}
+		save_state(sobj, entry)
+	end
+	corpses[id] = entry
+	return entry
+end
+
+local function stop_sound(entry)
+	if entry then
+		if entry.sound and entry.sound:playing() then
+			entry.sound:stop()
+		end
+		entry.sound = nil
+		entry.near_actor = false
+	end
+end
+
+local function blowout_active()
+	local value = get_value("blowout", 0)
+	if type(value) == "boolean" then
+		return value
+	end
+	return (tonumber(value) or 0) ~= 0
+end
+
+local function update_sound(entry, obj)
+	if not db.actor or not obj then
+		stop_sound(entry)
+		return false
+	end
+	local pos = obj:position()
+	if pos:distance_to(db.actor:position()) >= SOUND_DISTANCE then
+		stop_sound(entry)
+		return false
+	end
+	entry.near_actor = true
+	if not entry.sound then
+		entry.sound = sound_object(FLY_SOUND)
+	end
+	if entry.sound:playing() then
+		entry.sound:set_position(pos)
+	elseif level.rain_factor() < 0.05 and not blowout_active() then
+		entry.sound:play_at_pos(obj, pos, 0)
+	end
+	return true
+end
+
+local function actor_near_rotting()
+	for _, entry in pairs(corpses) do
+		if entry.near_actor then
+			return true
+		end
+	end
+	return false
+end
+
+local function protected_from_cough()
+	if not db.actor then
+		return false
+	end
+	local outfit = db.actor:item_in_slot(6)
+	return outfit and protected_outfits[outfit:section()] or false
+end
+
+local function reset_actor_effect()
+	actor_effect = nil
+	level.remove_pp_effector(PP_EFFECTOR_ID)
+end
+
+local function update_actor_effect(realtime)
+	if not db.actor or not actor_near_rotting() then
+		if actor_effect then
+			reset_actor_effect()
+		end
+		return
+	end
+	if not actor_effect then
+		actor_effect = {
+			next_sound = realtime + math.random(2000, 3000),
+			prev_sound_id = 0,
+			factor = 0.1
+		}
+		level.add_pp_effector("sk_corpse.ppe", PP_EFFECTOR_ID, true)
+		level.set_pp_effector_factor(PP_EFFECTOR_ID, actor_effect.factor)
+	end
+	if realtime < actor_effect.next_sound then
+		return
+	end
+	local length = 0
+	if not protected_from_cough() then
+		local sound_id
+		repeat
+			sound_id = math.random(1, COUGH_SOUND_COUNT)
+		until sound_id ~= actor_effect.prev_sound_id
+		actor_effect.sound = sound_object("rotting\\rotting_" .. sound_id)
+		actor_effect.sound:play(db.actor, 0, sound_object.s2d)
+		actor_effect.prev_sound_id = sound_id
+		length = actor_effect.sound:length()
+	end
+	actor_effect.next_sound = realtime + length + math.random(2000, 3000)
+	if actor_effect.factor < 1 then
+		actor_effect.factor = math.min(1, actor_effect.factor + 0.05)
+		level.set_pp_effector_factor(PP_EFFECTOR_ID, actor_effect.factor)
+	end
+end
+
+local function already_dead(obj)
+	local ok, result = pcall(function()
+		return obj:already_dead()
+	end)
+	return ok and result
+end
+
+local function ground_position(obj)
+	if not obj then
+		return nil
+	end
+	local pos = obj:position()
+	local start = vector():set(pos.x, pos.y + GROUND_RAY_START, pos.z)
+	local rq = level.ray_query(start, vector():set(0, -1, 0), GROUND_RAY_DISTANCE, rq_target.rqtStatic, obj)
+	if rq and rq.result and rq.range and rq.range <= GROUND_RAY_DISTANCE then
+		return vector():set(pos.x, start.y - rq.range, pos.z)
+	end
+	return nil
+end
+
+local function queue_replace(id, obj)
+	local ground = ground_position(obj)
+	if ground then
+		replace_queue[id] = { pos = ground, grounded = true }
+	elseif not replace_queue[id] then
+		replace_queue[id] = true
+	end
+end
+
+local function queue_legacy(obj)
+	if not obj then
+		return
+	end
+	local id = obj:id()
+	local ground = ground_position(obj)
+	if ground then
+		legacy_queue[id] = { pos = ground, grounded = true }
+	elseif not legacy_queue[id] then
+		legacy_queue[id] = true
+	end
+end
+
+local function spawn_skeleton(pos, lvid, gvid, grounded)
+	local skeleton = skeleton_visuals[math.random(#skeleton_visuals)]
+	local spawn_pos = pos
+	if grounded then
+		spawn_pos = vector():set(pos.x, pos.y - skeleton.min_y - GROUND_SINK, pos.z)
+	end
+	local skel = alife():create("breakable_object", spawn_pos, lvid, gvid)
+	if not skel then
+		return nil
+	end
+	local pk = get_netpk(skel, 1)
+	if not pk or not pk:isOk() then
+		alife():release(skel, true)
+		return nil
+	end
+	local data = pk:get()
+	data.visual_name = skeleton.visual
+	data.mass = 5.0
+	data.physic_type = 3
+	data.skeleton_flags = 1
+	data.visual_flags = 1
+	local remove_time = now_seconds() + SKELETON_LIFETIME
+	data.custom_data = amk.gen_custom_data({
+		[SKELETON_SECTION] = {
+			remove_time = tostring(remove_time)
+		}
+	})
+	pk:set(data)
+	skeletons[skel.id] = remove_time
+	return skel
+end
+
+local function update_corpse(obj)
+	local id = obj:id()
+	local entry = corpses[id]
+	if not entry then
+		entry = start_rotting(obj, false)
+	end
+	if not entry then
+		return
+	end
+	local realtime = time_global()
+	if realtime < entry.next_update then
+		return
+	end
+	entry.next_update = realtime + UPDATE_INTERVAL
+	local now = now_seconds()
+	if now < entry.rot_time then
+		return
+	end
+	update_sound(entry, obj)
+	if already_dead(obj) or now >= entry.replace_time then
+		queue_replace(id, obj)
+	end
+end
+
+local function replace_one()
+	for id, queued in pairs(replace_queue) do
+		replace_queue[id] = nil
+		local sobj = alife():object(id)
+		if sobj and IsStalker(sobj) and not sobj.is_alive and read_state(sobj) then
+			local pos = sobj.position
+			local grounded = false
+			if type(queued) == "table" and queued.pos then
+				pos = queued.pos
+				grounded = queued.grounded
+			end
+			local lvid = sobj.m_level_vertex_id
+			local gvid = sobj.m_game_vertex_id
+			if spawn_skeleton(pos, lvid, gvid, grounded) then
+				stop_sound(corpses[id])
+				corpses[id] = nil
+				alife():release(sobj, true)
+			end
+		end
+		return
+	end
+end
+
+local function replace_legacy_one()
+	for id, queued in pairs(legacy_queue) do
+		legacy_queue[id] = nil
+		local sobj = alife():object(id)
+		if sobj and sobj.section == LEGACY_FAKE_SECTION then
+			local pos = sobj.position
+			local grounded = false
+			if type(queued) == "table" and queued.pos then
+				pos = queued.pos
+				grounded = queued.grounded
+			end
+			local lvid = sobj.m_level_vertex_id
+			local gvid = sobj.m_game_vertex_id
+			if spawn_skeleton(pos, lvid, gvid, grounded) then
+				alife():release(sobj, true)
+			end
+		end
+		return
+	end
+end
+
+local function cleanup_skeleton_one()
+	local now = now_seconds()
+	for id, remove_time in pairs(skeletons) do
+		local sobj = alife():object(id)
+		if not sobj then
+			skeletons[id] = nil
+		elseif now >= remove_time then
+			skeletons[id] = nil
+			alife():release(sobj, true)
+			return
+		end
+	end
+end
+
+local function scan_server_corpses()
+	skeletons = {}
+	for id, sobj in alife():objects() do
+		if id ~= 0 and IsStalker(sobj) and not sobj.is_alive then
+			local entry = read_state(sobj)
+			if entry then
+				corpses[id] = entry
+			end
+		elseif id ~= 0 then
+			local remove_time = read_skeleton_remove_time(sobj)
+			if remove_time then
+				skeletons[id] = remove_time
+			end
+		end
+	end
+end
+
+function on_safe_spawn()
+	reset_actor_effect()
+	scan_server_corpses()
+end
+
+function on_npc_spawn(obj)
+	if obj and not obj:alive() then
+		local sobj = alife():object(obj:id())
+		local entry = read_state(sobj)
+		if entry then
+			corpses[obj:id()] = entry
+		else
+			start_rotting(obj, false)
+		end
+	end
+end
+
+function on_npc_death(obj)
+	start_rotting(obj, false)
+end
+
+function on_npc_update(obj)
+	if obj and not obj:alive() then
+		update_corpse(obj)
+	end
+end
+
+function on_npc_net_destroy(obj)
+	if not obj then
+		return
+	end
+	local entry = corpses[obj:id()]
+	stop_sound(entry)
+end
+
+function on_monster_spawn(obj)
+	if obj and obj:section() == LEGACY_FAKE_SECTION then
+		queue_legacy(obj)
+	end
+end
+
+function on_monster_update(obj)
+	if obj and obj:section() == LEGACY_FAKE_SECTION then
+		queue_legacy(obj)
+	end
+end
+
+function on_monster_net_destroy(obj)
+	if obj then
+		legacy_queue[obj:id()] = nil
+	end
+end
+
+function on_actor_update()
+	local realtime = time_global()
+	if realtime < next_actor_update then
+		return
+	end
+	next_actor_update = realtime + UPDATE_INTERVAL
+	replace_one()
+	replace_legacy_one()
+	cleanup_skeleton_one()
+	update_actor_effect(realtime)
+end
+
+function is_rotting_server_object(sobj)
+	return read_state(sobj) ~= nil
+end
+
+function force_start(obj, rot_delay, replace_delay)
+	local entry = start_rotting(obj, true)
+	if not entry then
+		return false
+	end
+	if rot_delay or replace_delay then
+		local now = now_seconds()
+		entry.rot_time = now + (tonumber(rot_delay) or ROT_DELAY)
+		entry.replace_time = now + (tonumber(replace_delay) or REPLACE_DELAY)
+		local sobj = alife():object(obj:id())
+		if sobj then
+			save_state(sobj, entry)
+		end
+	end
+	return true
+end
+
+function force_nearest(rot_delay, replace_delay)
+	if not db.actor then
+		return false, nil
+	end
+	local nearest = nil
+	local nearest_distance = nil
+	for _, obj in pairs(db.creatures) do
+		if obj and IsStalker(obj) and not obj:alive() then
+			local distance = obj:position():distance_to(db.actor:position())
+			if not nearest_distance or distance < nearest_distance then
+				nearest = obj
+				nearest_distance = distance
+			end
+		end
+	end
+	if not nearest then
+		return false, nil
+	end
+	return force_start(nearest, rot_delay, replace_delay), nearest:id()
+end
