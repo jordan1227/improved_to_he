@@ -340,123 +340,214 @@ local wobble_wpn = {
 ["wpn_winchester_m1"] = 1.6
 }
 
-local wobble_x = 0
-local wobble_y = 0
-local last_cond = 1
-local wpn_id = 1
-local flag_wpn = true
-local start_woobl = 0
-zoom_weapon = false -- game_object!
-gg_tired = 1
+local wobble_x    = 0
+local wobble_y    = 0
 local base_wobble = 2
+local base_radius = 0
+local last_cond   = 1
+local wpn_id      = 1
+local flag_wpn    = true
+wpn_params.start_woobl = 0
+wpn_params.current_weight_sens = 0.5
+wpn_params.current_speed_k     = 1.0
+local DEG_TO_RAD  = math.pi / 180
+zoom_weapon       = false
+gg_tired          = 1
+
+
+local ready = false
+function wpn_params.mark_ready() ready = true end
 
 function scope_wobble()
-	ogse_signals.get_mgr():reschedule(70)
-	local eff_obj = wpn_params.get_zie_obj()
-	if eff_obj == nil then
-		-- if wpn_params.zoom_time > 1 and zoom_weapon then
-		-- wpn_params.zoom_time = 1
-		-- params.weapon_mag_size_cond(zoom_weapon, zoom_weapon:condition()) -- восстановление постоянной девиации
-		-- end
-		wpn_params.zoom_time = 1
-		return
-	end
+    ogse_signals.get_mgr():reschedule(70)
 
-	local slot = db.actor:active_slot()
-	zoom_weapon = db.actor:item_in_slot(slot)
-	wpn_params.zoom_weapon = zoom_weapon
+    if not ready then return end
+    local actor = db.actor
+    local sleepiness = sleep_manager.get_sleepiness()
+    local eff_obj = wpn_params.get_zie_obj()
+    if eff_obj == nil then
+        wpn_params.zoom_time = 1
+        return
+    end
+    local slot  = actor:active_slot()
+    zoom_weapon = actor:item_in_slot( slot )
+    wpn_params.zoom_weapon = zoom_weapon
+    local wpn = nil
+    if zoom_weapon then wpn = zoom_weapon:get_weapon() end
 
-	local wpn = nil
-	if zoom_weapon then
-		wpn = zoom_weapon:get_weapon()
-	end
+    -- OGSR: get actor obj once, used for all stance checks below
+    local aobj = get_actor_obj()
 
-	if wpn_params.zoom_time <= 1 then
-		if wpn ~= nil then
-			wpn.const_deviation.pitch = 0
-			wpn.const_deviation.yaw = 0
-		end
-		wpn_params.disp_add[1] = math.random() * 30 - 15
-		wpn_params.disp_add[2] = 12
-		wpn_params.disp_add[3] = -math.random() * 30 + 15
-		base_radius = 0
-		last_cond = 1
-		flag_wpn = true
-		start_woobl = timers.Get_Game_Seconds()
-	end
+    if wpn_params.zoom_time <= 1 then
+        if wpn ~= nil then
+            wpn.const_deviation.pitch = 0
+            wpn.const_deviation.yaw   = 0
+        end
+        local sign1 = (math.random(0, 1) == 0) and 1 or -1
+        local sign3 = (math.random(0, 1) == 0) and 1 or -1
+        wpn_params.disp_add[ 1 ] = sign1 * 12
+        wpn_params.disp_add[ 2 ] = 12
+        wpn_params.disp_add[ 3 ] = sign3 * 12
+        base_radius  = 0
+        last_cond    = 1
+        flag_wpn     = true
+        wpn_params.start_woobl = timers.Get_Game_Seconds() - sivol_weapon.get_breath_debt()
+        sivol_weapon.clear_breath_debt()
+        wpn_params.last_stance = nil
+        wpn_params.stance_bump_y = 0
+    end
+    wobble_x = 0
+    wobble_y = 0
+    if flag_wpn then
+        local wpn = actor:active_item()
+        local sec = wpn and wpn:section()
+        if sec then
+            base_wobble = sivol_weapon.get_base_wobble(sec)
+            wpn_params.current_weight_sens = sivol_weapon.get_weight_sens(sec)
+            wpn_params.mastery_k = sivol_weapon.get_mastery_k(sec)
+            wpn_params.current_speed_k = math.max(0.3, math.min(1.5, 0.375 * base_wobble + 0.175))
 
-	wobble_x = 0
-	wobble_y = 0
-
-	if flag_wpn then
-		local wpn = db.actor:active_item()
-		if wpn and wpn:section() then
-			base_wobble = wobble_wpn[wpn:section()] or 2
-			if sak_dialog.dolgovazyi_exo_quest_start_prec() then
-				local diff = base_wobble - 1
-				if diff > 0 then
-					diff = diff * 0.25
-				else
-					diff = 0
-				end
-				base_wobble = base_wobble - diff
+            local arm6 = actor:item_in_slot( 6 )
+            if arm6 ~= nil and string.find( arm6:section(), "exo" ) then
+                base_wobble = base_wobble * 0.75
+            end
+			local dif = tonumber(level.get_game_difficulty())
+			if dif == 0 then
+				base_wobble = base_wobble * 0.95
 			end
-			wpn_id = wpn:id()
-			flag_wpn = false
-		end
-	end
-	local cond = params.obj_condition(wpn_id)
-	if cond < last_cond then
-		last_cond = cond
-		if wpn_params.zoom_time > 1 then
-			local h, p = coord_params.camera_angles()
-			local hofs = 0.001
-			local pofs = 0.03
-			hofs = hofs * math.random() - hofs / 2
-			pofs = pofs * math.random() - pofs / 2
-			coord_params.camera_angles(h + hofs, p + pofs)
-			base_radius = 0
-			wpn_params.zoom_time = 1
-		end
-	end
 
-	local div_limit = 10
-	local aobj = get_actor_obj()
-	-- local crouch = db.actor:get_crouch_factor()
-	if aobj and aobj:is_actor_crouch() then
-		wpn_params.zoom_time = wpn_params.zoom_time + 0.07
-		div_limit = 12
-	elseif aobj and aobj:is_actor_creep() then
-		wpn_params.zoom_time = wpn_params.zoom_time + 0.25
-		div_limit = 14
-	else
-		wpn_params.zoom_time = wpn_params.zoom_time + 0.01
-	end
+            if nlc_vars and nlc_vars.add_wobble == true then base_wobble = base_wobble * 1.25 end
+            if black_tip and black_tip.have_black_tip() then base_wobble = base_wobble * 1.3 end
 
-	local power = 0.2 + (db.actor.power * 0.8)
-	if timers.Get_Game_Seconds() - start_woobl > 60 * power and zoom_weapon and zoom_weapon:section() ~= "wpn_binoc" then
-		last_cond = 2
-		start_woobl = timers.Get_Game_Seconds()
-		vergas_lib.s_play("actor\\breathout", 1)
-	end
-	base_radius = math.min(1, base_radius + 0.1) * base_wobble * gg_tired / power
-	local dir = vector():set(device().cam_dir)
-	for i, deg in ipairs(disp_angles) do
-		inc_angle(i)
-		local rdiv = math.min(div_limit, wpn_params.zoom_time)
-		local a = math.pi * deg / 180
-		local r = base_radius * disp_radius[i] / rdiv
-		wobble_x = wobble_x + math.cos(a) * r
-		wobble_y = wobble_y + math.sin(a) * r
-	end
-	local m_rot = matrix()
-	m_rot:setHPB(dir:getH(), dir:getP(), 0)
-	local v = vector():set(wobble_x, wobble_y, 0)
-	v = transform_tiny(m_rot, v)
-	switch_zoom_osc(true)
-	zupd("target_point", v, false, eff_obj)
-	zupd("time_passed_int", 0.000, false, eff_obj)
-	zupd("speed_min", 0.001, false, eff_obj)
+            wpn_id   = wpn:id()
+            flag_wpn = false
+        end
+    end
+
+    local cond = params.obj_condition( wpn_id )
+    if cond < last_cond then
+        last_cond = cond
+        if wpn_params.zoom_time > 1 then
+            local h, p = coord_params.camera_angles()
+            local hofs = 0.001 * math.random() - 0.0005
+            local pofs = 0.03 * math.random() - 0.015
+            coord_params.camera_angles( h + hofs, p + pofs )
+            base_radius = 0
+            wpn_params.zoom_time = 1
+        end
+    end
+
+    local div_limit = 10
+
+    -- OGSR: derive stance from native is_actor_crouch()/is_actor_creep()
+    -- instead of HE's get_crouch_factor(). Same 0/1/2 semantics preserved.
+    local current_stance = 0
+    if aobj and aobj:is_actor_creep() then current_stance = 2
+    elseif aobj and aobj:is_actor_crouch() then current_stance = 1 end
+
+    -- === Stance Change Detection & Bump ===
+    if wpn_params.last_stance == nil then
+        wpn_params.last_stance = current_stance
+    end
+
+    if wpn_params.last_stance ~= current_stance then
+        if wpn_params.zoom_time > 1.05 then
+            wpn_params.zoom_time = 1.01
+
+            local bump_mag = 0
+            if current_stance > wpn_params.last_stance then
+                if wpn_params.last_stance == 0 then bump_mag = -0.175
+                else bump_mag = -0.1 end
+            else
+                if current_stance == 0 then bump_mag = 0.175
+                else bump_mag = 0.1 end
+            end
+
+            wpn_params.stance_bump_y = bump_mag
+        end
+        wpn_params.last_stance = current_stance
+    end
+    -- ======================================
+
+    -- NOTE: div_limit 20/40 carried over from HE as a starting point.
+    -- OGSR's native crouch/creep booleans should map onto these the same
+    -- way HE's crouch==1/2 did, but worth a quick in-game feel-check
+    -- since it's still a balance value, not just an API swap.
+    if current_stance == 1 and sleepiness < 170 then
+        wpn_params.zoom_time = wpn_params.zoom_time + 0.07
+        div_limit            = 20
+    elseif current_stance == 2 and sleepiness < 170 then
+        wpn_params.zoom_time = wpn_params.zoom_time + 0.25
+        div_limit            = 40
+    else
+        wpn_params.zoom_time = wpn_params.zoom_time + 0.01
+    end
+
+    wpn_params.zoom_time = math.min(wpn_params.zoom_time, div_limit)
+
+    local power = 0.2 + ( actor.power * 0.8 )
+    local health_k = 1.0
+    if actor.health < 0.5 then
+        local t = (0.5 - actor.health) / 0.5
+        health_k = 1.0 + t * t * 0.5
+    end
+    local breath_speed_k = 1.0 + (1.0 - power) * 0.6
+    local now = timers.Get_Game_Seconds()
+
+    if now - wpn_params.start_woobl > 60 * power then
+        wpn_params.start_woobl = now + 999999
+        vergas_lib.s_play( "actor\\breathout", 1 )
+        wpn_params.zoom_time = 1.01
+    end
+
+    local fatigue_factor = (1.0 - power) / 0.8
+    local stamina_k = 1.0 + ((wpn_params.current_weight_sens or 0.5) * fatigue_factor)
+    -- OGSR: stance_k now driven by current_stance instead of get_crouch_factor()
+    local stance_k = (current_stance == 2) and 0.8 or ((current_stance == 1) and 0.9 or 1.0)
+
+    base_radius = math.min(1, base_radius + 0.1)
+    local effective_radius = base_radius * base_wobble * gg_tired * stance_k * stamina_k * wpn_params.mastery_k * health_k * (sivol_weapon and sivol_weapon.get_artifact_wobble_k() or 1.0)
+
+    local dir = vector():set( device().cam_dir )
+    for i, deg in ipairs( disp_angles ) do
+        local drift = (math.random() * 0.2) - 0.1
+        local base_speed = wpn_params.disp_add[i]
+
+        wpn_params.disp_add[i] = math.max(-25, math.min(25, base_speed + drift))
+
+        local saved_base_speed = wpn_params.disp_add[i]
+        wpn_params.disp_add[i] = saved_base_speed * breath_speed_k * (wpn_params.current_speed_k or 1.0)
+
+        inc_angle( i )
+
+        wpn_params.disp_add[i] = saved_base_speed
+
+        local rdiv = math.min( div_limit, wpn_params.zoom_time )
+        local a    = deg * DEG_TO_RAD
+        local r    = effective_radius * disp_radius[ i ] / rdiv
+
+        local x_weight = (i == 1) and 0.5 or 1.0
+        local y_weight = (i == 1) and 1.5 or 1.0
+
+        wobble_x = wobble_x + math.cos( a ) * r * x_weight
+        wobble_y = wobble_y + math.sin( a ) * r * y_weight
+    end
+
+    local weight_sens = wpn_params.current_weight_sens or 0.5
+    local bump_recovery_speed = math.min(0.92, 0.64 + (weight_sens * 0.135))
+    wpn_params.stance_bump_y = wpn_params.stance_bump_y * bump_recovery_speed
+    if math.abs(wpn_params.stance_bump_y) < 0.0005 then wpn_params.stance_bump_y = 0 end
+
+    local m_rot = matrix()
+    m_rot:setHPB( dir:getH(), dir:getP(), 0 )
+
+    local v = vector():set( wobble_x, wobble_y + wpn_params.stance_bump_y, 0 )
+
+    v = transform_tiny( m_rot, v )
+    switch_zoom_osc( true )
+    zupd( 'target_point',    v,     false, eff_obj )
+    zupd( 'time_passed_int', 0.000, false, eff_obj )
+    zupd( 'speed_min',       0.001, false, eff_obj )
 end
 
 wpn_params.scope_wobble = scope_wobble

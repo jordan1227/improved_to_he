@@ -1,0 +1,935 @@
+-- sivol_weapon.script
+-- Handles weapon-related stamina drain, breath memory, and fatigue loops.
+-- Покачивание оружия и оптики при прицеливании стало более плавным и естественным. Убрана повторяющаяся «шаблонность» движения прицела. Усилена вертикальная составляющая, эффект дыхания стал заметнее.
+-- Переработан базовый баланс покачивания и выносливости при прицеливании:
+-- Лёгкое оружие имеет более выраженное базовое покачивание, но меньше зависит от усталости и медленнее расходует выносливость
+-- Тяжёлое и длинноствольное оружие стабильнее в начале, но быстрее утомляет и сильнее теряет точность при падении выносливости
+-- В положении сидя покачивание и расход выносливости снижен
+-- Добавлена система привыкания к оружию (мастерство), оружие со временем становится стабильнее:
+-- пистолеты и лёгкое оружие осваиваются быстрее. Тяжёлое и специализированное — медленнее. 
+-- первую пару дней Калеченного кошмарит. На 3-ий день лучше. Через неделю еще лучше. Полный эффект достигается через несколько недель и дальше не растёт
+-- Задержка дыхания теперь сильнее зависит от выносливости персонажа.
+-- Добавлена накопительная усталость при прицеливании:
+-- быстрое повторное вскидывание оружия больше не сбрасывает эффект полностью — часть усталости переносится между попытками.
+-- Устранены ошибки и неточности в настройках покачивания. 
+-- Влияние артефактов на раскачку
+
+function attach(sm)
+    sm:subscribe({signal = "on_update", fun = update_ads_fatigue})
+    sm:subscribe({signal = "on_update", fun = run_psy_divert})
+    sm:subscribe({signal = "on_update", fun = run_belt_divert})
+end
+
+sivol_weapon.attach = attach
+
+sivol_weapon = sivol_weapon or {}
+wprintf("[~T]. #DBG sivol_weapon: SCRIPT FILE LOADED. РАСКАЧКА ЗАГРУЖЕНА")  
+local update_interval = 100 -- Run every 100ms
+local last_update = 0
+-- local min_stamina_floor = 0.70 -- 70% stamina floor so aiming doesn't cripple movement. -- I walk back on that idea. 
+
+local breath_debt      = 0
+local ads_drop_time    = 0
+local was_aiming       = false
+local DEBT_DECAY_RATE  = 0.5  -- debt recovers at half the rate it accrues
+local session_start_time = 0
+
+local function update_breath_debt()
+    if not wpn_params then return end
+    local is_aiming = wpn_params.zoom_time > 1.05
+
+    local actor = db.actor
+    local wpn = actor and actor:active_item()
+    local sec = wpn and wpn:section()
+    if sec and sivol_weapon.is_stamina_exempt(sec) then
+        return -- binoculars etc: skip debt accrual/decay entirely
+    end
+
+    if was_aiming and not is_aiming then
+        local session_used = timers.Get_Game_Seconds() - session_start_time
+        breath_debt = breath_debt + math.max(0, session_used)
+        ads_drop_time = timers.Get_Game_Seconds()
+        was_aiming = false
+    elseif not was_aiming and is_aiming then
+        local time_resting = timers.Get_Game_Seconds() - ads_drop_time
+        breath_debt = math.max(0, breath_debt - time_resting * DEBT_DECAY_RATE)
+        session_start_time = timers.Get_Game_Seconds()
+        was_aiming = true
+    end
+end
+
+function sivol_weapon.get_breath_debt()
+    if breath_debt <= 0 then return 0 end
+    if ads_drop_time <= 0 then return breath_debt end
+    local now = timers.Get_Game_Seconds()  -- FIX: was time_global(), unit mismatch
+    local time_resting = now - ads_drop_time
+    return math.max(0, breath_debt - time_resting * DEBT_DECAY_RATE)
+end
+
+function sivol_weapon.clear_breath_debt()
+    breath_debt        = 0
+    ads_drop_time      = 0
+    session_start_time = 0
+end
+
+-- Мастерство оружия. Меченный становится крепче, раскачка с днями меньше. Первые 2-3 дня плохо. 
+-- Each class defines:
+-- debuff: wobble multiplier on day 0 (>1.0 = worse)
+-- cap:    wobble multiplier at full mastery (<1.0 = improvement ceiling)
+-- plateau_day: day full mastery is reached
+local mastery_classes = {
+    pistol  = { debuff = 1.15, cap = 0.75, plateau_day = 28 },  -- Reduced from 1.25 to prevent Day 0 whiplash
+    shotgun = { debuff = 1.25, cap = 0.85, plateau_day = 28 },  -- NEW: Fast plateau, modest cap
+    smg     = { debuff = 1.30, cap = 0.80, plateau_day = 35 },
+    rifle   = { debuff = 1.40, cap = 0.85, plateau_day = 42 },
+    sniper  = { debuff = 1.40, cap = 0.92, plateau_day = 56 },  -- Reduced debuff slightly, raised cap from 0.88
+    lmg     = { debuff = 1.45, cap = 0.94, plateau_day = 56 },  -- Reduced debuff slightly, raised cap from 0.90
+    special = { debuff = 1.40, cap = 0.92, plateau_day = 49 },
+}
+
+-- Оружие, полностью исключённое из выносливости/дыхания при прицеливании. Убираем чтобы Калеченный не пыжился когда смотрел в бинокль.
+-- Раскачка (wobble_wpn) при этом всё равно работает как обычно.
+local no_stamina_no_breath = {
+    [ "wpn_binoc" ] = true,
+}
+
+function sivol_weapon.is_stamina_exempt(sec)
+    return no_stamina_no_breath[sec] == true
+end
+
+-- Сила раскачки каждого оружия. Так же влияет на скорость раскачки каждого оружия (не амплитуду) - чем выше число, тем меньше инерция и быстрее раскачка
+-- Realistic Logic: Light mass = high twitch/sway. Heavy mass = low twitch/steady.
+local wobble_wpn = {
+    -- === MELEE & TOOLS ===
+    [ "wpn_knife"               ] = 1.0,
+    [ "wpn_binoc"               ] = 0.5, -- Held with two hands to the face, extremely steady
+
+    -- === PISTOLS === (High base wobble, no shoulder support)
+    [ "wpn_pm"                  ] = 2.3, -- Was 2.5
+    [ "wpn_pb"                  ] = 2.2, -- Was 2.4
+    [ "wpn_fort"                ] = 2.3,
+    [ "wpn_fort_m1"             ] = 2.3,
+    [ "wpn_aps"                 ] = 2.2,
+    [ "wpn_walther"             ] = 2.2,
+    [ "wpn_glock"               ] = 2.2,
+    [ "wpn_usp"                 ] = 2.2,
+    [ "wpn_sig220"              ] = 2.2,
+    [ "wpn_beretta"             ] = 2.1,
+    [ "wpn_beretta93"           ] = 2.1,
+    [ "wpn_colt1911"            ] = 2.1,
+    [ "wpn_desert_eagle"        ] = 2.0, -- Was 2.0
+    [ "wpn_eagle_m1"            ] = 2.0,
+
+    -- === SMGs === (Lighter than rifles, somewhat twitchy)
+    [ "wpn_mp5"                 ] = 2.0,
+    [ "wpn_mp5_m1"              ] = 2.0,
+    [ "wpn_bizon"               ] = 2.1,
+    [ "wpn_bizon_cobra"         ] = 2.0,
+    [ "wpn_bizon_1p78"          ] = 1.9,
+    [ "wpn_bizon_1pso"          ] = 1.9,
+    [ "wpn_pp19"                ] = 2.1,
+    [ "wpn_pp19_cobra"          ] = 2.0,
+    [ "wpn_pp19_1p78"           ] = 1.9,
+    [ "wpn_pp19_1pso"           ] = 1.9,
+    [ "wpn_ump45"               ] = 1.9, -- Heavier SMG
+    [ "wpn_ump45_eotech"        ] = 1.8,
+    [ "wpn_ump45_acog"          ] = 1.7,
+    [ "wpn_ump45_mt"            ] = 1.7,
+
+    -- === SHOTGUNS === 
+    [ "wpn_bm16"                ] = 2.2, -- Sawn-off, pure arm weight, worst sway
+    [ "wpn_bm16_full"           ] = 1.9, -- Stock added, proper shoulder support
+    [ "wpn_toz34"               ] = 1.8, -- Long heavy hunting barrel
+    [ "wpn_toz34_m1"            ] = 1.8,
+    [ "wpn_hunters_toz_new"     ] = 1.8,
+    [ "wpn_spas12"              ] = 1.9,
+    [ "wpn_wincheaster1300"     ] = 1.9,
+    [ "wpn_winchester_m1"       ] = 1.9,
+    [ "wpn_rem_870"             ] = 1.9,
+    [ "wpn_mp153"               ] = 1.9,
+    [ "wpn_mp153_m1"            ] = 1.9,
+    [ "wpn_mp153_eotech"        ] = 1.8,
+    [ "wpn_mp153_acog"          ] = 1.7,
+    [ "wpn_mp153_mt"            ] = 1.7,
+    [ "wpn_saiga12c"            ] = 1.8, -- AK platform mass
+    [ "wpn_saiga12c_cobra"      ] = 1.7,
+    [ "wpn_saiga12c_1p78"       ] = 1.6,
+    [ "wpn_saiga12c_1pso"       ] = 1.6,
+    [ "wpn_saiga12c_m1"         ] = 1.8,
+    [ "wpn_saiga12c_m1_eotech"  ] = 1.7,
+    [ "wpn_saiga12c_m1_acog"    ] = 1.6,
+    [ "wpn_saiga12c_m1_mt"      ] = 1.6,
+    [ "wpn_saiga12c_m2"         ] = 1.8,
+    [ "wpn_saiga12c_m2_cobra"   ] = 1.7,
+    [ "wpn_saiga12c_m2_1p78"    ] = 1.6,
+    [ "wpn_saiga12c_m2_1pso"    ] = 1.6,
+
+    -- === ASSAULT RIFLES (WARSAW) === (Baseline ~1.7 to 1.8)
+    [ "wpn_ak74u"               ] = 2.0, -- Short barrel, less mass up front
+    [ "wpn_ak74u_old"           ] = 2.0,
+    [ "wpn_ak74"                ] = 1.8,
+    [ "wpn_ak74_old"            ] = 1.8,
+    [ "wpn_ak74m"               ] = 1.8,
+    [ "wpn_ak74m_cobra"         ] = 1.7,
+    [ "wpn_ak74m_1p78"          ] = 1.6,
+    [ "wpn_ak74m_1pso"          ] = 1.6,
+    [ "wpn_ak74pbn"             ] = 1.8,
+    [ "wpn_ak74pbn_cobra"       ] = 1.7,
+    [ "wpn_ak74pbn_1p78"        ] = 1.6,
+    [ "wpn_ak74pbn_1pso"        ] = 1.6,
+    [ "wpn_ak74_m1"             ] = 1.8,
+    [ "wpn_ak74_m1_eotech"      ] = 1.7,
+    [ "wpn_ak74_m1_acog"        ] = 1.6,
+    [ "wpn_ak74_m1_mt"          ] = 1.6,
+    [ "wpn_ak74_m2"             ] = 1.8,
+    [ "wpn_ak74_m2_eotech"      ] = 1.7,
+    [ "wpn_ak74_m2_acog"        ] = 1.6,
+    [ "wpn_ak74_m2_mt"          ] = 1.6,
+    [ "wpn_ak104"               ] = 1.8,
+    [ "wpn_ak104_cobra"         ] = 1.7,
+    [ "wpn_ak104_1p78"          ] = 1.6,
+    [ "wpn_ak104_1pso"          ] = 1.6,
+    [ "wpn_ak108"               ] = 1.8,
+    [ "wpn_ak108_cobra"         ] = 1.7,
+    [ "wpn_ak108_1p78"          ] = 1.6,
+    [ "wpn_ak108_1pso"          ] = 1.6,
+    [ "wpn_ak47"                ] = 1.7, -- 7.62/milled receiver adds mass
+    [ "wpn_ak47_old"            ] = 1.7,
+    [ "wpn_aks47"               ] = 1.7,
+    [ "wpn_akm"                 ] = 1.7,
+    [ "wpn_abakan"              ] = 1.6, -- Complex heavy recoil system
+    [ "wpn_abakan_cobra"        ] = 1.5,
+    [ "wpn_abakan_1p78"         ] = 1.4,
+    [ "wpn_abakan_1pso"         ] = 1.4,
+    [ "wpn_groza"               ] = 1.7, -- Bullpup, slightly twitchier balance
+    [ "wpn_groza_po"            ] = 1.6,
+    [ "wpn_val"                 ] = 1.7, -- Suppressor adds forward weight
+    [ "wpn_val_cobra"           ] = 1.6,
+    [ "wpn_val_1p78"            ] = 1.5,
+    [ "wpn_val_1pso"            ] = 1.5,
+
+    -- === ASSAULT RIFLES (NATO) === (Generally good ergo, ~1.6 to 1.7)
+    [ "wpn_lr300"               ] = 1.7,
+    [ "wpn_lr300_m1"            ] = 1.7,
+    [ "wpn_lr300_eotech"        ] = 1.6,
+    [ "wpn_lr300_acog"          ] = 1.5,
+    [ "wpn_lr300_mt"            ] = 1.5,
+    [ "wpn_lr300_m1_eotech"     ] = 1.6,
+    [ "wpn_lr300_m1_acog"       ] = 1.5,
+    [ "wpn_lr300_m1_mt"         ] = 1.5,
+    [ "wpn_m16a4"               ] = 1.5, -- Longer barrel
+    [ "wpn_m16a4_eotech"        ] = 1.4,
+    [ "wpn_m16a4_acog"          ] = 1.3,
+    [ "wpn_m16a4_mt"            ] = 1.3,
+    [ "wpn_sig550"              ] = 1.6, -- Heavy rifle
+    [ "wpn_sig550_eotech"       ] = 1.5,
+    [ "wpn_sig550_acog"         ] = 1.4,
+    [ "wpn_sig550_mt"           ] = 1.4,
+    [ "wpn_g36"                 ] = 1.6,
+    [ "wpn_g36_g36l"            ] = 1.6,
+    [ "wpn_g36c"                ] = 1.6,
+    [ "wpn_g36c_eotech"         ] = 1.5,
+    [ "wpn_g36c_acog"           ] = 1.4,
+    [ "wpn_g36c_mt"             ] = 1.4,
+    [ "wpn_fn2000"              ] = 1.5, -- Very bulky, steady mass
+    [ "wpn_fn2000_eotech"       ] = 1.4,
+    [ "wpn_fn2000_acog"         ] = 1.3,
+    [ "wpn_fn2000_mt"           ] = 1.3,
+
+    -- === LMGs === (Massive heavy barrels, incredibly steady)
+    [ "wpn_rpk74"               ] = 1.4, -- Was 1.2
+    [ "wpn_rpk74_cobra"         ] = 1.3,
+    [ "wpn_rpk74_1p78"          ] = 1.2,
+    [ "wpn_rpk74_1pso"          ] = 1.2, -- Was 1.0
+    [ "wpn_pkm"                 ] = 1.2, -- Was 1.0
+
+    -- === SNIPERS === (Extremely steady initially)
+    [ "wpn_vintorez"            ] = 1.4, -- Light sniper
+    [ "wpn_vintorez_cobra"      ] = 1.3,
+    [ "wpn_vintorez_1p78"       ] = 1.2,
+    [ "wpn_vintorez_1pso"       ] = 1.2,
+    [ "wpn_vintorez_m1"         ] = 1.4,
+    [ "wpn_vintorez_m1_cobra"   ] = 1.3,
+    [ "wpn_vintorez_m1_1p78"    ] = 1.2,
+    [ "wpn_vintorez_m1_1pso"    ] = 1.2,
+    [ "wpn_svd"                 ] = 1.4, -- Was 1.2
+    [ "wpn_svd_cobra"           ] = 1.3,
+    [ "wpn_svd_1p78"            ] = 1.2,
+    [ "wpn_svd_1pso"            ] = 1.2, -- Was 1.0
+    [ "wpn_svu"                 ] = 1.5,
+    [ "wpn_svu_cobra"           ] = 1.4,
+    [ "wpn_svu_1p78"            ] = 1.3,
+    [ "wpn_svu_1pso"            ] = 1.3,
+    [ "wpn_awm"                 ] = 1.25, -- Was 1.1
+    [ "wpn_awm_eotech"          ] = 1.15,
+    [ "wpn_awm_acog"            ] = 1.1, -- Was 0.9
+    [ "wpn_awm_mt"              ] = 1.1, -- Was 0.9
+    [ "wpn_sv98"                ] = 1.3,
+    [ "wpn_sv98_eotech"         ] = 1.2,
+    [ "wpn_sv98_acog"           ] = 1.15,
+    [ "wpn_sv98_mt"             ] = 1.15,
+    [ "wpn_m110"                ] = 1.2,
+    [ "wpn_m110_eotech"         ] = 1.1,
+    [ "wpn_m110_acog"           ] = 1.0,
+    [ "wpn_m110_mt"             ] = 1.0,
+    [ "wpn_mosin"               ] = 1.4, -- Lighter wooden long rifle
+    [ "wpn_mosin_pe"            ] = 1.2,
+
+    -- === HEAVY / SPECIAL ===
+    [ "wpn_rpg7"                ] = 1.5,
+    [ "wpn_gm94"                ] = 1.6,
+    [ "wpn_flame"               ] = 1.5,
+    [ "wpn_gungauss"            ] = 0.8, -- Extreme mass
+    [ "wpn_gauss"               ] = 0.8,
+    [ "wpn_gauss_auto"          ] = 0.8
+}
+
+-- Как сильно потребляется выносливость при прицеливании. Как сильно выносливость влияет на раскачку. Чем тяжелее оружие, тем сильнее будет качать при низкой выносливости. 
+-- Sensitivity to stamina drain based on weapon weight.
+-- Realistic Logic: Light mass = aim forever (low penalty). Heavy mass = exhausts arms quickly (high penalty).
+local weight_sens_table = {
+    -- === MELEE & TOOLS ===
+    [ "wpn_knife"               ] = 0.1,
+    [ "wpn_binoc"               ] = 0.2,
+
+    -- === PISTOLS === (Light, you can hold them steady for a long time)
+    [ "wpn_pm"                  ] = 0.2,
+    [ "wpn_pb"                  ] = 0.22,
+    [ "wpn_fort"                ] = 0.2,
+    [ "wpn_fort_m1"             ] = 0.2,
+    [ "wpn_aps"                 ] = 0.25,
+    [ "wpn_walther"             ] = 0.2,
+    [ "wpn_glock"               ] = 0.22,
+    [ "wpn_usp"                 ] = 0.25,
+    [ "wpn_sig220"              ] = 0.25,
+    [ "wpn_beretta"             ] = 0.25,
+    [ "wpn_beretta93"           ] = 0.25,
+    [ "wpn_colt1911"            ] = 0.25,
+    [ "wpn_desert_eagle"        ] = 0.4, -- Very heavy for a pistol
+    [ "wpn_eagle_m1"            ] = 0.4,
+
+    -- === SMGs === (Lighter than rifles)
+    [ "wpn_mp5"                 ] = 0.35,
+    [ "wpn_mp5_m1"              ] = 0.35,
+    [ "wpn_bizon"               ] = 0.4,
+    [ "wpn_bizon_cobra"         ] = 0.45,
+    [ "wpn_bizon_1p78"          ] = 0.5,
+    [ "wpn_bizon_1pso"          ] = 0.5,
+    [ "wpn_pp19"                ] = 0.4,
+    [ "wpn_pp19_cobra"          ] = 0.45,
+    [ "wpn_pp19_1p78"           ] = 0.5,
+    [ "wpn_pp19_1pso"           ] = 0.5,
+    [ "wpn_ump45"               ] = 0.42,
+    [ "wpn_ump45_eotech"        ] = 0.47,
+    [ "wpn_ump45_acog"          ] = 0.52,
+    [ "wpn_ump45_mt"            ] = 0.52,
+
+    -- === SHOTGUNS === 
+    [ "wpn_bm16"                ] = 0.3, -- Sawn-off is very light
+    [ "wpn_bm16_full"           ] = 0.6,
+    [ "wpn_toz34"               ] = 0.65,
+    [ "wpn_toz34_m1"            ] = 0.65,
+    [ "wpn_hunters_toz_new"     ] = 0.65,
+    [ "wpn_spas12"              ] = 0.75, -- Bulky and front-heavy
+    [ "wpn_wincheaster1300"     ] = 0.7,
+    [ "wpn_winchester_m1"       ] = 0.7,
+    [ "wpn_rem_870"             ] = 0.7,
+    [ "wpn_mp153"               ] = 0.7,
+    [ "wpn_mp153_m1"            ] = 0.7,
+    [ "wpn_mp153_eotech"        ] = 0.75,
+    [ "wpn_mp153_acog"          ] = 0.8,
+    [ "wpn_mp153_mt"            ] = 0.8,
+    [ "wpn_saiga12c"            ] = 0.7,
+    [ "wpn_saiga12c_cobra"      ] = 0.75,
+    [ "wpn_saiga12c_1p78"       ] = 0.8,
+    [ "wpn_saiga12c_1pso"       ] = 0.8,
+    [ "wpn_saiga12c_m1"         ] = 0.7,
+    [ "wpn_saiga12c_m1_eotech"  ] = 0.75,
+    [ "wpn_saiga12c_m1_acog"    ] = 0.8,
+    [ "wpn_saiga12c_m1_mt"      ] = 0.8,
+    [ "wpn_saiga12c_m2"         ] = 0.7,
+    [ "wpn_saiga12c_m2_cobra"   ] = 0.75,
+    [ "wpn_saiga12c_m2_1p78"    ] = 0.8,
+    [ "wpn_saiga12c_m2_1pso"    ] = 0.8,
+
+    -- === ASSAULT RIFLES (WARSAW) === (Baseline 0.5 to 0.6)
+    [ "wpn_ak74u"               ] = 0.45, -- Short, lighter
+    [ "wpn_ak74u_old"           ] = 0.45,
+    [ "wpn_ak74"                ] = 0.55,
+    [ "wpn_ak74_old"            ] = 0.55,
+    [ "wpn_ak74m"               ] = 0.55,
+    [ "wpn_ak74m_cobra"         ] = 0.6,
+    [ "wpn_ak74m_1p78"          ] = 0.65,
+    [ "wpn_ak74m_1pso"          ] = 0.65,
+    [ "wpn_ak74pbn"             ] = 0.55,
+    [ "wpn_ak74pbn_cobra"       ] = 0.6,
+    [ "wpn_ak74pbn_1p78"        ] = 0.65,
+    [ "wpn_ak74pbn_1pso"        ] = 0.65,
+    [ "wpn_ak74_m1"             ] = 0.55,
+    [ "wpn_ak74_m1_eotech"      ] = 0.6,
+    [ "wpn_ak74_m1_acog"        ] = 0.65,
+    [ "wpn_ak74_m1_mt"          ] = 0.65,
+    [ "wpn_ak74_m2"             ] = 0.55,
+    [ "wpn_ak74_m2_eotech"      ] = 0.6,
+    [ "wpn_ak74_m2_acog"        ] = 0.65,
+    [ "wpn_ak74_m2_mt"          ] = 0.65,
+    [ "wpn_ak104"               ] = 0.55,
+    [ "wpn_ak104_cobra"         ] = 0.6,
+    [ "wpn_ak104_1p78"          ] = 0.65,
+    [ "wpn_ak104_1pso"          ] = 0.65,
+    [ "wpn_ak108"               ] = 0.55,
+    [ "wpn_ak108_cobra"         ] = 0.6,
+    [ "wpn_ak108_1p78"          ] = 0.65,
+    [ "wpn_ak108_1pso"          ] = 0.65,
+    [ "wpn_ak47"                ] = 0.6, -- Milled receiver, heavier
+    [ "wpn_ak47_old"            ] = 0.6,
+    [ "wpn_aks47"               ] = 0.6,
+    [ "wpn_akm"                 ] = 0.6,
+    [ "wpn_abakan"              ] = 0.6, -- Heavy internal mechanism
+    [ "wpn_abakan_cobra"        ] = 0.65,
+    [ "wpn_abakan_1p78"         ] = 0.7,
+    [ "wpn_abakan_1pso"         ] = 0.7,
+    [ "wpn_groza"               ] = 0.55,
+    [ "wpn_groza_po"            ] = 0.65,
+    [ "wpn_val"                 ] = 0.5,
+    [ "wpn_val_cobra"           ] = 0.55,
+    [ "wpn_val_1p78"            ] = 0.6,
+    [ "wpn_val_1pso"            ] = 0.6,
+
+    -- === ASSAULT RIFLES (NATO) === (Baseline 0.45 to 0.55)
+    [ "wpn_lr300"               ] = 0.5,
+    [ "wpn_lr300_m1"            ] = 0.5,
+    [ "wpn_lr300_eotech"        ] = 0.55,
+    [ "wpn_lr300_acog"          ] = 0.6,
+    [ "wpn_lr300_mt"            ] = 0.6,
+    [ "wpn_lr300_m1_eotech"     ] = 0.55,
+    [ "wpn_lr300_m1_acog"       ] = 0.6,
+    [ "wpn_lr300_m1_mt"         ] = 0.6,
+    [ "wpn_m16a4"               ] = 0.45,
+    [ "wpn_m16a4_eotech"        ] = 0.5,
+    [ "wpn_m16a4_acog"          ] = 0.55,
+    [ "wpn_m16a4_mt"            ] = 0.55,
+    [ "wpn_sig550"              ] = 0.55,
+    [ "wpn_sig550_eotech"       ] = 0.6,
+    [ "wpn_sig550_acog"         ] = 0.65,
+    [ "wpn_sig550_mt"           ] = 0.65,
+    [ "wpn_g36"                 ] = 0.5,
+    [ "wpn_g36_g36l"            ] = 0.5,
+    [ "wpn_g36c"                ] = 0.45, -- Compact
+    [ "wpn_g36c_eotech"         ] = 0.5,
+    [ "wpn_g36c_acog"           ] = 0.55,
+    [ "wpn_g36c_mt"             ] = 0.55,
+    [ "wpn_fn2000"              ] = 0.6, -- Bulky
+    [ "wpn_fn2000_eotech"       ] = 0.65,
+    [ "wpn_fn2000_acog"         ] = 0.7,
+    [ "wpn_fn2000_mt"           ] = 0.7,
+
+    -- === LMGs === (Punishing to aim when tired)
+    [ "wpn_rpk74"               ] = 1.4,
+    [ "wpn_rpk74_cobra"         ] = 1.45,
+    [ "wpn_rpk74_1p78"          ] = 1.5,
+    [ "wpn_rpk74_1pso"          ] = 1.5,
+    [ "wpn_pkm"                 ] = 1.6,
+
+    -- === SNIPERS === (Heavy, quickly exhausts the arms)
+    [ "wpn_vintorez"            ] = 0.7, -- VSS is actually relatively light
+    [ "wpn_vintorez_cobra"      ] = 0.75,
+    [ "wpn_vintorez_1p78"       ] = 0.8,
+    [ "wpn_vintorez_1pso"       ] = 0.8,
+    [ "wpn_vintorez_m1"         ] = 0.7,
+    [ "wpn_vintorez_m1_cobra"   ] = 0.75,
+    [ "wpn_vintorez_m1_1p78"    ] = 0.8,
+    [ "wpn_vintorez_m1_1pso"    ] = 0.8,
+    [ "wpn_svd"                 ] = 0.95,
+    [ "wpn_svd_cobra"           ] = 1.0,
+    [ "wpn_svd_1p78"            ] = 1.05,
+    [ "wpn_svd_1pso"            ] = 1.05,
+    [ "wpn_svu"                 ] = 0.8, -- Bullpup format brings weight closer to body
+    [ "wpn_svu_cobra"           ] = 0.85,
+    [ "wpn_svu_1p78"            ] = 0.9,
+    [ "wpn_svu_1pso"            ] = 0.9,
+    [ "wpn_awm"                 ] = 1.1,
+    [ "wpn_awm_eotech"          ] = 1.15,
+    [ "wpn_awm_acog"            ] = 1.2,
+    [ "wpn_awm_mt"              ] = 1.2,
+    [ "wpn_sv98"                ] = 1.05,
+    [ "wpn_sv98_eotech"         ] = 1.1,
+    [ "wpn_sv98_acog"           ] = 1.15,
+    [ "wpn_sv98_mt"             ] = 1.15,
+    [ "wpn_m110"                ] = 1.0,
+    [ "wpn_m110_eotech"         ] = 1.05,
+    [ "wpn_m110_acog"           ] = 1.1,
+    [ "wpn_m110_mt"             ] = 1.1,
+    [ "wpn_mosin"               ] = 0.9,
+    [ "wpn_mosin_pe"            ] = 1.0,
+
+    -- === HEAVY / SPECIAL ===
+    [ "wpn_rpg7"                ] = 1.8,
+    [ "wpn_gm94"                ] = 1.0,
+    [ "wpn_flame"               ] = 1.5,
+    [ "wpn_gungauss"            ] = 1.5,
+    [ "wpn_gauss"               ] = 1.5,
+    [ "wpn_gauss_auto"          ] = 1.5
+}
+
+-- Влияние артефактов на раскачку при прицеливании.
+-- Отрицательные значения = стабилизация. Положительные = дестабилизация. Грузовым артам ухудшить? Семье медузы улучшить? 
+local artifact_wobble_table = {
+    -- === Tierless Artifacts ===
+    -- Works perfectly: matches exactly, skips tier math entirely.
+    af_eye                  = 1.6, 
+
+    -- === Generic Tiered Fallback ===
+    -- All tiers (1d-5d) will scale automatically off this base value.
+    -- Tier 5 gives -0.12, Tier 3 gives 0.0, Tier 1 gives +0.12
+    af_gravi                    = -0.1, 
+
+    -- === Specific Tier Override ===
+    -- If you want Tier 4 Gravi to have an unconventional, manually tuned value:
+    -- Stage 1 finds this exact string first, skipping the generic math entirely.
+    af_gravi_dyn4d              = -0.3, 
+}
+
+local cached_artifact_k = 1.0
+local last_artifact_check = 0
+local ARTIFACT_CHECK_INTERVAL = 2000  -- check every 2sec 
+
+local function update_artifact_wobble_k()
+    local now = time_global()
+    if now - last_artifact_check < ARTIFACT_CHECK_INTERVAL then return end
+    last_artifact_check = now
+
+    -- NEW: NLC 7 Battery System check. 
+    -- If the electronic belt is dead, uncharged, or off, artifacts provide zero properties.
+    if not (sak and sak.arts_operate) then
+        cached_artifact_k = 1.0
+        return
+    end
+
+    local total_mod = 0.0
+
+    if sak_inventory and sak_inventory.belt_items then
+        for sec, items in pairs( sak_inventory.belt_items ) do
+            
+            -- STAGE 1: Exact Match Check
+            local mod = artifact_wobble_table[sec]
+            
+            -- STAGE 2: Generic Suffix Stripping & NLC Dynamic Scaling
+            if not mod then
+                local base_sec = string.match(sec, "^(af_[%w_]+)_dyn%dd") or sec
+                mod = artifact_wobble_table[base_sec]
+                
+                if mod then
+                    local tier_str = string.match(sec, "_dyn(%d)d")
+                    if tier_str then
+                        local tier = tonumber(tier_str) or 3
+                        local tier_scale = 0
+                        
+                        if tier == 6 then
+                            tier_scale = 0.0  
+                        else
+                            -- Tier 5 = 1.0 | Tier 3 = 0.0 | Tier 1 = -1.0
+                            tier_scale = (tier - 3) / 2
+                        end
+                        mod = mod * tier_scale
+                    end
+                end
+            end
+            
+            -- STAGE 3: Condition and Quantity Weighting
+            local num_items = items and table.getn(items) or 0
+            if mod and num_items > 0 then
+                for m = 1, num_items do
+                    local af_id  = items[m]
+                    local af_obj = client_obj and client_obj(af_id)
+                    local cond   = af_obj and af_obj:condition() or 1.0
+                    
+                    total_mod = total_mod + (mod * cond)
+                end
+            end
+        end
+    end
+
+    -- FIXED: Widened constraints for extreme testing thresholds
+    -- -0.75 means a high-tier stabilizing setup can cut weapon sway by up to 75%
+    -- 2.50 means a chaotic setup can increase sway penalties by up to 250%
+    total_mod = math.max(-0.75, math.min(1.60, total_mod))
+    cached_artifact_k = 1.0 + total_mod
+end
+
+function sivol_weapon.get_artifact_wobble_k()
+    return cached_artifact_k
+end
+
+-- Returns the baseline sway multiplier for the weapon
+function sivol_weapon.get_base_wobble(sec)
+    local base_val = wobble_wpn[sec] or 2.0
+    
+    -- === GLOBAL WEAPON SWAY MULTIPLIER ===
+    -- Change this single number to affect EVERY weapon in the game at once:
+    -- 1.25 = 25% MORE sway everywhere (harder aiming)
+    -- 0.80 = 20% LESS sway everywhere (easier aiming)
+    local global_factor = 0.75
+    
+    return base_val * global_factor
+end
+
+-- Returns how severely low stamina affects the weapon's sway
+-- Ordered from most specific (variants) to least specific (base models)
+function sivol_weapon.get_weight_sens(sec)
+    local v = weight_sens_table[sec]
+    if v then return v end
+    -- Fallback pattern matching for anything not explicitly listed
+    if string.find(sec, "wpn_rpk")  then return 1.2  end
+    if string.find(sec, "wpn_svd")  then return 0.85 end
+    if string.find(sec, "wpn_awm")  then return 0.88 end
+    if string.find(sec, "wpn_pm")   then return 0.2  end
+    return 0.5  -- standard rifle baseline
+end
+
+
+-- С присядом  прицеливание меньше вынки потребляет
+function update_ads_fatigue()
+    ogse_signals.get_mgr():reschedule(100)
+    local actor = db.actor
+    if not actor then return end
+
+    update_breath_debt()
+    update_artifact_wobble_k()
+
+
+    if wpn_params and (wpn_params.zoom_time or 1) > 1.05 then
+        local wpn = actor:active_item()
+        local sec = wpn and wpn:section()
+        if not (sec and sivol_weapon.is_stamina_exempt(sec)) then
+            local weight_sens = wpn_params.current_weight_sens or 0.5
+
+            -- OGSR: is_actor_crouch()/is_actor_creep() instead of get_crouch_factor()
+            local aobj = get_actor_obj()
+            local stance_drain_k = 1.0
+            if aobj and aobj:is_actor_creep() then
+                stance_drain_k = 0.75
+            elseif aobj and aobj:is_actor_crouch() then
+                stance_drain_k = 0.87
+            end
+
+            local drain_amount = 0.00675 * weight_sens * stance_drain_k
+            actor.power = -drain_amount
+        end
+    end
+end
+
+-- Оружие и его класс.
+local weapon_class_table = {
+    -- Pistols
+    wpn_pm = "pistol", wpn_pb = "pistol", wpn_aps = "pistol",
+    wpn_fort = "pistol", wpn_fort_m1 = "pistol",
+    wpn_beretta = "pistol", wpn_beretta93 = "pistol",
+    wpn_colt1911 = "pistol", wpn_walther = "pistol",
+    wpn_desert_eagle = "pistol", wpn_eagle_m1 = "pistol",
+    wpn_glock = "pistol", wpn_usp = "pistol", wpn_sig220 = "pistol",
+	-- Shotguns
+    wpn_bm16 = "shotgun", wpn_bm16_full = "shotgun",
+    wpn_toz34 = "shotgun", wpn_toz34_m1 = "shotgun", wpn_hunters_toz_new = "shotgun",
+    wpn_spas12 = "shotgun", wpn_wincheaster1300 = "shotgun",
+    wpn_winchester_m1 = "shotgun", wpn_rem_870 = "shotgun",
+    wpn_mp153 = "shotgun", wpn_mp153_m1 = "shotgun",
+    wpn_mp153_eotech = "shotgun", wpn_mp153_acog = "shotgun", wpn_mp153_mt = "shotgun",
+    wpn_saiga12c = "shotgun", wpn_saiga12c_cobra = "shotgun",
+    wpn_saiga12c_1p78 = "shotgun", wpn_saiga12c_1pso = "shotgun",
+    wpn_saiga12c_m1 = "shotgun", wpn_saiga12c_m1_eotech = "shotgun",
+    wpn_saiga12c_m1_acog = "shotgun", wpn_saiga12c_m1_mt = "shotgun",
+    wpn_saiga12c_m2 = "shotgun", wpn_saiga12c_m2_cobra = "shotgun",
+    wpn_saiga12c_m2_1p78 = "shotgun", wpn_saiga12c_m2_1pso = "shotgun",
+    -- SMGs
+    wpn_mp5 = "smg", wpn_mp5_m1 = "smg",
+    wpn_bizon = "smg", wpn_pp19 = "smg", wpn_ump45 = "smg",
+    -- Snipers
+    wpn_svd = "sniper", wpn_svd_cobra = "sniper",
+    wpn_svd_1pso = "sniper", wpn_svd_1p78 = "sniper",
+    wpn_svu = "sniper", wpn_svu_cobra = "sniper",
+    wpn_svu_1pso = "sniper", wpn_svu_1p78 = "sniper",
+    wpn_awm = "sniper", wpn_awm_acog = "sniper",
+    wpn_awm_mt = "sniper", wpn_awm_eotech = "sniper",
+    wpn_sv98 = "sniper", wpn_sv98_acog = "sniper",
+    wpn_sv98_mt = "sniper", wpn_sv98_eotech = "sniper",
+    wpn_m110 = "sniper", wpn_m110_acog = "sniper",
+    wpn_m110_mt = "sniper", wpn_m110_eotech = "sniper",
+    wpn_mosin = "sniper", wpn_mosin_pe = "sniper",
+    wpn_vintorez = "sniper", wpn_vintorez_cobra = "sniper",
+    wpn_vintorez_1pso = "sniper", wpn_vintorez_1p78 = "sniper",
+    -- LMGs
+    wpn_rpk74 = "lmg", wpn_rpk74_1pso = "lmg",
+    wpn_rpk74_1p78 = "lmg", wpn_rpk74_cobra = "lmg",
+    wpn_pkm = "lmg",
+    -- Special
+    wpn_rpg7 = "special", wpn_gm94 = "special",
+    wpn_flame = "special", wpn_gauss = "special",
+    wpn_gauss_auto = "special", wpn_gungauss = "special",
+}
+
+local function get_weapon_class(sec)
+    local c = weapon_class_table[sec]
+    if c then return c end
+    -- Pattern fallback for unlisted variants
+    if string.find(sec, "wpn_rpk") or string.find(sec, "wpn_pkm") then return "lmg"     end
+    if string.find(sec, "wpn_svd") or string.find(sec, "wpn_awm") or
+       string.find(sec, "wpn_svu") or string.find(sec, "wpn_sv98") then return "sniper"  end
+    if string.find(sec, "wpn_pm")  or string.find(sec, "wpn_pb")  then return "pistol"  end
+    if string.find(sec, "wpn_mp5") or string.find(sec, "wpn_bizon") or
+       string.find(sec, "wpn_pp19") then return "smg" end
+    if string.find(sec, "wpn_saiga") or string.find(sec, "wpn_mp153") or 
+       string.find(sec, "wpn_toz") then return "shotgun" end
+	   
+    return "rifle"
+end
+
+function sivol_weapon.get_mastery_k(sec)
+    local days = timers.Get_Game_Days()
+    local m    = mastery_classes[ get_weapon_class(sec) ]
+    if days < 7 then
+        -- Debuff phase: linear from debuff peak down to 1.0 by day 7
+        local t = days / 7
+		local t_curved = math.sqrt(t) --  Калеченому жоска первые два дня. 
+        return m.debuff + (1.0 - m.debuff) * t_curved
+    elseif days < m.plateau_day then
+        -- Improvement phase: linear from 1.0 down to cap
+        local t = (days - 7) / (m.plateau_day - 7)
+        return 1.0 + (m.cap - 1.0) * t
+    else
+        return m.cap
+    end
+end
+
+
+--  Абилке псевдычей гладкую камеру. Эта камера теперь также используется у некоторых других мутиков, типа контриков - смотреть в bind_monster.script. 
+local psy_divert = {
+    active     = false,
+    delta_h    = 0, delta_p = 0,     -- h = yaw (left/right), p = pitch (up/down)
+    applied_h  = 0, applied_p = 0,
+    duration   = 120,
+    start_time = 0,
+}
+
+function sivol_weapon.start_psy_divert(dh, dp, dur)
+    psy_divert.active     = true
+    psy_divert.delta_h    = dh
+    psy_divert.delta_p    = dp
+    psy_divert.applied_h  = 0
+    psy_divert.applied_p  = 0
+    psy_divert.duration   = dur or 120
+    psy_divert.start_time = time_global()
+end
+
+function run_psy_divert()
+    ogse_signals.get_mgr():reschedule(16)
+    if not psy_divert.active then return end
+	
+    local elapsed = time_global() - psy_divert.start_time
+    local t       = math.min(1.0, elapsed / psy_divert.duration)
+    
+    -- Easing function: "Out Quad". Starts violent, then slows down.
+    local ease_t  = t * (2 - t) 
+
+    local target_h = psy_divert.delta_h * ease_t
+    local target_p = psy_divert.delta_p * ease_t
+
+    local step_h = target_h - psy_divert.applied_h
+    local step_p = target_p - psy_divert.applied_p
+
+    psy_divert.applied_h = target_h
+    psy_divert.applied_p = target_p
+
+    -- Apply directly to the base actor rotation, bypassing effector feedback completely!
+    if coord_params and coord_params.camera_angles then
+        local h, p = coord_params.camera_angles()
+        coord_params.camera_angles(h + step_h, p + step_p)
+    end
+
+    if t >= 1.0 then 
+        psy_divert.active = false 
+    end
+end
+
+--  Плавная камера для пояса аккумулятора: вниз-пауза-назад. Мб куда-нить еще использовать?
+local belt_divert = {
+    active       = false,
+    phase        = "out",
+    delta_h      = 0, delta_p = 0,
+    applied_h    = 0, applied_p = 0,
+    out_time     = 220,
+    hold_time    = 0,
+    back_time    = 220,
+    start_time   = 0,   -- phase-local
+    total_start  = 0,   -- whole-sequence, for wobble continuity
+    on_complete  = nil,
+
+    wobble_amp_h   = 0,
+    wobble_amp_p   = 0,
+	wobble_freq_h  = 0.53,
+	wobble_freq_p  = 0.71,
+    wobble_phase_h = 0,
+    wobble_phase_p = 0,
+}
+
+local function ease_in_out( t )
+    -- smoothstep: zero velocity at t=0 AND t=1, so out->hold->back
+    -- handoffs never snap
+    return t * t * ( 3 - 2 * t )
+end
+
+function sivol_weapon.start_belt_divert( dh, dp, out_time, hold_time, back_time, wobble_h, wobble_p, on_complete )
+    belt_divert.active         = true
+    belt_divert.phase          = "out"
+    belt_divert.delta_h        = dh
+    belt_divert.delta_p        = dp
+    belt_divert.applied_h      = 0
+    belt_divert.applied_p      = 0
+    belt_divert.out_time       = out_time  or 220
+    belt_divert.hold_time      = hold_time or 0
+    belt_divert.back_time      = back_time or 220
+    belt_divert.start_time     = time_global()
+    belt_divert.total_start    = time_global()
+    belt_divert.on_complete    = on_complete
+    belt_divert.wobble_amp_h   = wobble_h or 0
+    belt_divert.wobble_amp_p   = wobble_p or 0
+    belt_divert.wobble_phase_h = math.random() * 6.28
+    belt_divert.wobble_phase_p = math.random() * 6.28
+end
+
+function run_belt_divert()
+    ogse_signals.get_mgr():reschedule(16)
+    if not belt_divert.active then return end
+    local elapsed = time_global() - belt_divert.start_time
+    local envelope, target_h, target_p
+
+    if belt_divert.phase == "out" then
+        local t = math.min( 1.0, elapsed / belt_divert.out_time )
+        envelope = ease_in_out( t )
+        target_h = belt_divert.delta_h * envelope
+        target_p = belt_divert.delta_p * envelope
+        if t >= 1.0 then
+            belt_divert.phase      = "hold"
+            belt_divert.start_time = time_global()
+        end
+
+    elseif belt_divert.phase == "hold" then
+        envelope = 1.0
+        target_h = belt_divert.delta_h
+        target_p = belt_divert.delta_p
+        if elapsed >= belt_divert.hold_time then
+            belt_divert.phase      = "back"
+            belt_divert.start_time = time_global()
+        end
+
+    elseif belt_divert.phase == "back" then
+        local t = math.min( 1.0, elapsed / belt_divert.back_time )
+        envelope = ease_in_out( 1 - t )
+        target_h = belt_divert.delta_h * envelope
+        target_p = belt_divert.delta_p * envelope
+        if t >= 1.0 then
+            belt_divert.active = false
+        end
+    end
+
+    -- layered bobbing, scaled by the same envelope as the main motion
+    if belt_divert.wobble_amp_h ~= 0 or belt_divert.wobble_amp_p ~= 0 then
+        local te = ( time_global() - belt_divert.total_start ) / 1000
+        target_h = target_h + belt_divert.wobble_amp_h * envelope
+            * math.sin( te * belt_divert.wobble_freq_h * 6.28 + belt_divert.wobble_phase_h )
+        target_p = target_p + belt_divert.wobble_amp_p * envelope
+            * math.sin( te * belt_divert.wobble_freq_p * 6.28 + belt_divert.wobble_phase_p )
+    end
+
+    local step_h = target_h - belt_divert.applied_h
+    local step_p = target_p - belt_divert.applied_p
+    belt_divert.applied_h = target_h
+    belt_divert.applied_p = target_p
+
+    if coord_params and coord_params.camera_angles then
+        local h, p = coord_params.camera_angles()
+        coord_params.camera_angles( h + step_h, p + step_p )
+    end
+
+    if not belt_divert.active and belt_divert.on_complete then
+        local cb = belt_divert.on_complete
+        belt_divert.on_complete = nil
+        cb()
+    end
+end
+
+--[[
+-- in sivol_weapon.script:
+function sivol_weapon.on_actor_weapon_fire( obj )
+    wprintf( "[~T]. #DBG sivol_weapon: on_actor_weapon_fire obj=%s", tostring(obj) )
+    if obj and obj.section then
+        wprintf( "[~T]. #DBG sivol_weapon: section=%s id=%s cond=%.4f",
+            tostring(obj:section()), tostring(obj:id()), obj:condition() or -1 )
+    end
+end
+--]]
+
+-- Оружие с глушителем тратит больше прочности на выстрел. В 
+local cached_wpn_id      = nil
+local cached_addon_flags = nil
+local cached_wear_extra  = 0
+
+local function refresh_weapon_wear_cache( obj )
+    local wpn_id = obj:id()
+    local sobj = alife():object( wpn_id )
+    if not sobj then
+        cached_wpn_id = nil
+        cached_wear_extra = 0
+        return
+    end
+
+    local pk = get_netpk( sobj )
+    if not pk then
+        cached_wpn_id = nil
+        cached_wear_extra = 0
+        return
+    end
+
+    local addon_flags = pk:get().addon_flags or 0
+
+    -- cache still valid: same weapon, same addon state, nothing to recompute
+    if wpn_id == cached_wpn_id and addon_flags == cached_addon_flags then
+        return
+    end
+
+    cached_wpn_id      = wpn_id
+    cached_addon_flags = addon_flags
+
+    local sil_on = math.floor( addon_flags / 4 ) % 2 == 1
+    if sil_on then
+        local sect      = obj:section()
+        local sil_name  = get_string( sect, "silencer_name", nil )
+        local wear_k    = sil_name and get_float( sil_name, "condition_shot_dec_k", 1 ) or 1
+        local base_dec  = sys_ini:r_float( sect, "condition_shot_dec" ) or 0
+        cached_wear_extra = base_dec * ( wear_k - 1 )
+    else
+        cached_wear_extra = 0
+    end
+end
+
+function sivol_weapon.on_actor_weapon_fire( obj )
+    if not ( obj and obj.section ) then return end
+
+    refresh_weapon_wear_cache( obj )
+
+    if cached_wear_extra and cached_wear_extra > 0 then
+        local cur = obj:condition()
+        obj:set_condition( math.max( 0, cur - cached_wear_extra ) )
+    end
+end
+
+function sivol_weapon.late_init()
+    if wpn_params and wpn_params.late_init then
+        wpn_params.late_init()
+    end
+    wpn_params.mastery_k = 1.0
+    
+    -- CLAUDE'S OPTIMIZATION: Initialize outside the frame loop to prevent redundant table writes
+    wpn_params.last_stance    = nil
+    wpn_params.stance_bump_y  = 0
+end
