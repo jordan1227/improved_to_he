@@ -272,14 +272,20 @@ function tiredness_add()
 	local state = actor_body_state()
 	local sleep = sleep_manager.is_sleep_active()
 
+	-- [HE-PORT]
+	local thirst_level = thirst.get_thirst()
 	local delta = -0.1
 
 	if state.crouch then delta = delta + 0.1 end
 	if state.sprint then delta = delta + 0.1 end
 	if state.jump   then delta = delta + 0.5 end  
 
+	if thirst_level > 0.8 then
+		delta = delta * ( 1 + ( thirst_level - 0.8 ) * 0.85 )
+	end
+
 	if act.power == act.max_power and ph_t > 5 then
-		ph_t = ph_t * 0.98 -- 2% процентное восстановление при высокой усталости
+		ph_t = ph_t * ( 0.98 * ( 1 - thirst_level * 0.4 ) ) -- 2% процентное восстановление при высокой усталости
 	end  
 								 
 	local have_power = ( act.power + 0.1 ) / act.max_power  -- краткосрочная перегрузка
@@ -290,7 +296,7 @@ function tiredness_add()
 		delta = delta * sleep_manager.restore_coef() -- в защите, с оружием и рюкзаком спать неудобно!
 	else   
 		delta = delta + (act.max_power - act.power)
-		sleepiness = sleepiness + delay / 6.0       -- раз в 360 игровых секунд добавляется 1 пункт сонливости
+		sleepiness = sleepiness + ( delay / 6.0 ) * ( 1 + ( thirst_level > 0.7 and ( thirst_level - 0.5 ) * 0.5 or 0 ) ) -- раз в 360 игровых секунд добавляется 1 пункт сонливости
 	end  
 
 	if delta < 0 and ph_t < 0 then
@@ -311,8 +317,9 @@ function tiredness_add()
 	local diff = sleep_manager.change_sleepiness(sleepiness)
 
 	set_value("ph_tiredness", ph_t)
+	thirst_level = thirst.update_activity( delay, state, act )
 
-	local new_coef = ( 960 + sleepiness + ph_t ) / ( 700 + 100 * have_power + gg_heal )
+	local new_coef = ( 960 + sleepiness + ph_t ) / ( ( 700 + 100 * have_power + gg_heal ) * thirst.tiredness_factor( thirst_level ) )
 	if new_coef < 1 then new_coef = 1 end
 
 	local wpn_wobble = math.min (1.5, new_coef / 1.5)
@@ -331,7 +338,7 @@ function tiredness_add()
 									 -- action, new_coef, sleepiness, have_power, act.max_power, ph_t, diff, delay)
 	-- wprintf("~C0A %s~C07", lua_traceback(' '))
 	ww_power = w_w_power * new_coef
-	act.max_power = 1 - ph_t * 0.02
+	act.max_power = ( 1 - ph_t * 0.02 ) * thirst.max_power_factor( thirst_level )
 
 	if get_console():get_bool("g_god") then
 		new_walk_accel = 17
@@ -342,6 +349,11 @@ function tiredness_add()
 		inert = 0
 	end
 	
+	if thirst_level <= 0.3 and sleepiness <= 120 then
+		new_run_coef = new_run_coef * 1.07
+		new_sprint_koef = new_sprint_koef * 1.07
+	end
+
 	local penalty = 1
 	if db.actor.satiety <= 0.2 then
 		penalty = penalty - 0.1
@@ -371,8 +383,9 @@ end
 local max_weight = system_ini():r_float("inventory", "max_weight")
 local max_walk_weight = system_ini():r_float("actor_condition", "max_walk_weight")
 function max_item_mass_add(add)
-  local new_max_weight = max_weight+add+(sak.mass_add)
-  local new_weight = max_walk_weight+add+(sak.mass_add)
+  local thirst_adjustment = thirst.weight_adjustment()
+  local new_max_weight = max_weight+add+(sak.mass_add)+thirst_adjustment
+  local new_weight = max_walk_weight+add+(sak.mass_add)+thirst_adjustment
   actor_params.inv_prop("max_weight", new_max_weight)
   actor_params.cond_prop("max_walk_weight", new_weight)
 end

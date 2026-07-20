@@ -1,0 +1,144 @@
+-- [HE-PORT]
+
+if nlc_vars == nil then
+    nlc_vars = setmetatable( {}, {
+        __index = function( t, k ) return get_value( "nlc_vars." .. k ) end,
+        __newindex = function( t, k, v ) set_value( "nlc_vars." .. k, v ) end,
+    } )
+end
+
+local food_and_med = {
+    [ "bread" ] = 0.15,
+    [ "kolbasa" ] = 0.10,
+    [ "suhpay" ] = 0.05,
+    [ "green_kolbasa" ] = 0.10,
+    [ "conserva" ] = 0.05,
+    [ "vodka" ] = 0,
+    [ "dimedrol" ] = 0.15,
+    [ "energy_drink" ] = -0.30,
+    [ "flask_army" ] = -0.50,
+    [ "medkit" ] = 0.06,
+    [ "medkit_army" ] = 0.12,
+    [ "medkit_scientic" ] = 0.18,
+    [ "antirad" ] = 0.30,
+}
+
+local condition_affected = {
+    [ "bread" ] = true,
+    [ "kolbasa" ] = true,
+}
+
+local disabled = false
+local last_health_time = 0
+
+local function clamp( value )
+    return math.max( 0, math.min( value or 0, 1 ) )
+end
+
+function attach( sm )
+    sm:subscribe( { signal = "on_update", fun = this.on_update } )
+    sm:subscribe( { signal = "on_use", fun = this.on_food_use } )
+    sm:subscribe( { signal = "on_sleep_finished", fun = this.on_sleep_finished } )
+end
+
+function get_thirst()
+    return clamp( nlc_vars.thirst )
+end
+
+function set_thirst( value )
+    nlc_vars.thirst = clamp( tonumber( value ) or 0 )
+    return nlc_vars.thirst
+end
+
+function thirst_add( value )
+    return set_thirst( get_thirst() + ( tonumber( value ) or 0 ) )
+end
+
+function combo_thirst( value )
+    disabled = value and true or false
+end
+
+local function critical_health()
+    local now = time_global() / 1000
+    if now - last_health_time < 5 then return end
+    last_health_time = now
+    if get_thirst() < 0.9 then return end
+    local health = actor_params.cond_prop( "health" )
+    if health > 0.3 then
+        actor_params.cond_prop( "health", math.max( 0.3, health - 0.001 ) )
+    end
+end
+
+function on_update()
+    ogse_signals.get_mgr():reschedule( 1000 )
+    if disabled or not db.actor or not db.actor:alive() then return end
+    local value = 0.000075
+    if black_tip.have_black_tip() then value = value * 1.3 end
+    nlc_vars.thirst = clamp( get_thirst() + value )
+    critical_health()
+end
+
+function update_activity( delay, state, actor )
+    if disabled then return get_thirst() end
+    local value = 0.001 * math.max( tonumber( delay ) or 0, 0 )
+    if state == "sprint" then value = value * 3 end
+    if state == "jump" then value = value * 2 end
+    if actor and actor.radiation > 0 then value = value * 1.5 end
+    if vergas_masks.get_flag_mask() then value = value * 1.35 end
+    nlc_vars.thirst = clamp( get_thirst() + value )
+    return nlc_vars.thirst
+end
+
+local function calculate_effect( base, condition )
+    if condition >= 0.6 then return base end
+    return base * ( 1 + ( ( 0.6 - condition ) / 0.6 ) * 2 )
+end
+
+function on_food_use( obj )
+    if disabled or not obj then return end
+    local section = obj:section()
+    local value = food_and_med[ section ]
+    if value == nil then return end
+    if condition_affected[ section ] then
+        value = calculate_effect( value, obj:condition() )
+    end
+    if section == "vodka" then
+        timers.start_timer(
+            "on_vodka_use" .. obj:id(), 0, lua_random( 3, 4 ), 0,
+            "thirst.thirst_add( 0.35 )"
+        )
+    end
+    thirst_add( value )
+end
+
+function on_sleep_finished( hours )
+    if disabled then return end
+    hours = math.max( tonumber( hours ) or 0, 0 )
+    thirst_add( 0.1 * ( 1 + hours / 10 ) * hours )
+end
+
+function sleep_quality()
+    return 1 - get_thirst() * 0.5
+end
+
+function tiredness_factor( value )
+    value = clamp( value )
+    if value <= 0.6 then return 1 end
+    return math.max( 0.7, 1 - ( value - 0.6 ) * 0.75 )
+end
+
+function max_power_factor( value )
+    value = clamp( value )
+    if value <= 0.6 then return 1 end
+    return math.max( 0.45, 1 - ( value - 0.6 ) * 1.33 )
+end
+
+function weight_adjustment()
+    local value = get_thirst()
+    if value <= 0.3 then return 2 * ( 1 - value / 0.3 ) end
+    if value >= 0.8 then return -4 * ( ( value - 0.8 ) / 0.2 ) end
+    return 0
+end
+
+function apply_thirst_effects()
+end
