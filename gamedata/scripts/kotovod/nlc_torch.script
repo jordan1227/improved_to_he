@@ -1,0 +1,237 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+-- Снова взята из dsh мода, доработано (с) Котовод
+
+local TORCH_MIN_BRIGHTNESS 				= 0.01 			-- Минимальная Яркость фонаря
+local TORCH_MAX_BRIGHTNESS 				= 1.0 			-- Максимальная Яркость фонаря
+local TORCH_DISCHARGE_RATE 				= 0.0015 		-- Скорость разрядки фонаря
+local TORCH_FLICKER_PROBABILITY_BASE 	= 0.01 			-- Базовая вероятность мерцания
+local TORCH_FLICKER_PROBABILITY_FACTOR 	= 0.25 			-- Фактор увеличения вероятности мерцания при низком заряде
+local TORCH_COLOR_TEMP_MIN 				= 0.7 			-- Минимальная цветовая температура
+local TORCH_COLOR_TEMP_MAX 				= 1.0 			-- Максимальная цветовая температура
+local TORCH_ANGLE_FACTOR_MIN 			= 0.9 			-- Минимальный фактор угла освещения
+local TORCH_ANGLE_FACTOR_MAX 			= 1.1 			-- Максимальный фактор угла освещения
+local TORCH_UPDATE_TIME_BASE 			= 5000 			-- Базовое время обновления (в мс)
+
+local click_snd = sound_object( "device\\light_on" )
+
+local wpn_flags = {
+    [ global_flags.eFire	] = true,
+    [ global_flags.eFire2	] = true,
+    [ global_flags.eReload	] = true,
+    [ global_flags.eShowing	] = true,
+    [ global_flags.eSwitch	] = true,
+    [ global_flags.eMisfire	] = true,
+    [ global_flags.eHiding	] = true
+}
+
+function attach(sm)
+    sm:subscribe({ signal = "on_late_init_all", fun = on_late_init_all 	})
+    sm:subscribe({ signal = "on_update", 		fun = update			})
+end
+
+function switch_torch()
+	if level.main_input_receiver() then return end
+	if not db.actor:alive() then return end
+	
+	local torch = db.actor:item_in_slot( 9 )
+	if torch and torch:is_torch() then
+		local wpn = db.actor:active_item()
+		if wpn and wpn:is_weapon() and wpn_flags[ wpn:get_hud_item_state() ] then 
+			return
+		end
+		click_snd:play( db.actor, 0, sound_object.s2d )
+		torch = get_torch_obj( torch )
+		
+		local torch_mode = get_value( "nlc_torch_state", "off" )
+		log2( "torch_mode is %s", torch_mode )
+		
+		if torch.on then
+			if torch_mode == "near" then
+				set_far_mode( torch )
+				torch:switch( true )
+			else
+				set_off_mode( torch )
+			end
+		else
+			set_near_mode( torch )
+		end
+		play_torch_anim()
+	end
+end
+
+function set_near_mode( torch )
+	set_value( "nlc_torch_state", "near" )
+	update_torch_parameters()
+	log2( "torch_mode near is %s", get_value( "nlc_torch_state" ) )	
+	--sak.send_tip("Ближний", nil, 0, 2, "g_g", "no", "green")				
+end
+
+function set_far_mode(torch)
+	set_value( "nlc_torch_state", "far" )
+	update_torch_parameters()	
+	log2( "torch_mode far is %s", get_value( "nlc_torch_state" ) )	
+	--sak.send_tip("Дальний", nil, 0, 2, "g_g", "no", "yellow")			
+end
+
+function set_off_mode(torch)
+	dsh.timeout( 20, function() torch:enable( false ) end )
+	set_value( "nlc_torch_state", "off" )
+	log2( "torch_mode off is %s", get_value( "nlc_torch_state" ) )	
+	--sak.send_tip( "Выключили", nil, 0, 2, "g_g", "no", "red" )							
+end
+
+function on_late_init_all()
+	dsh.timeout( 500, function() 
+		local torch_mode = get_value( "nlc_torch_state" )	
+		if not torch_mode then return end	
+		local torch = db.actor:item_in_slot(9)
+		if torch and torch:is_torch() then torch = get_torch_obj( torch ) end
+		if not torch then return end
+		if torch_mode == "near" then
+			set_near_mode( torch )
+		elseif torch_mode == "far" then
+			set_far_mode( torch )
+		else
+			set_off_mode( torch )
+		end
+	end)		
+end
+
+function update()
+    ogse_signals.get_mgr():reschedule( TORCH_UPDATE_TIME_BASE )
+    local torch = db.actor:item_in_slot( 9 )
+    if torch and torch:is_torch() then
+        torch_brock()
+    end
+end
+
+function update_torch_parameters()
+    local slot = db.actor:item_in_slot( 9 )
+    if not slot then return end
+
+    local torch_obj = get_torch_obj( slot )
+    if not torch_obj then return end
+
+    local torch_cond = slot:condition()
+	
+    -- Базовые параметры
+    local base_range = 35
+    local base_angle = math.rad( 60 )
+
+    -- Расчет яркости
+    local brightness = TORCH_MIN_BRIGHTNESS + torch_cond * ( TORCH_MAX_BRIGHTNESS - TORCH_MIN_BRIGHTNESS )
+
+    local range_factor = torch_cond ^ 1.4
+    --local angle_factor = TORCH_ANGLE_FACTOR_MIN + (1 - torch_cond) * (TORCH_ANGLE_FACTOR_MAX - TORCH_ANGLE_FACTOR_MIN)	-- Эффект рассеивания, угол увеличивается
+	--local angle_factor = TORCH_ANGLE_FACTOR_MAX - (1 - torch_cond) * (TORCH_ANGLE_FACTOR_MAX - TORCH_ANGLE_FACTOR_MIN)	-- Угол падает
+	
+	local torch_mode = get_value( "nlc_torch_state", "off" )
+	-- Лучше все-таки уменьшение для обоих вариантов?
+	local angle_factor
+	if torch_mode == "near" then
+		angle_factor = TORCH_ANGLE_FACTOR_MIN + ( 1 - torch_cond ) * ( TORCH_ANGLE_FACTOR_MAX - TORCH_ANGLE_FACTOR_MIN )
+	else
+		angle_factor = TORCH_ANGLE_FACTOR_MAX - ( 1 - torch_cond ) * ( TORCH_ANGLE_FACTOR_MAX - TORCH_ANGLE_FACTOR_MIN )
+	end	
+	
+    local color_temp = TORCH_COLOR_TEMP_MIN + torch_cond * (TORCH_COLOR_TEMP_MAX - TORCH_COLOR_TEMP_MIN)
+    
+    local flicker_probability = TORCH_FLICKER_PROBABILITY_BASE + ( 1 - torch_cond ) * TORCH_FLICKER_PROBABILITY_FACTOR
+    if math.random() < flicker_probability then
+        brightness = brightness * math.random( 2, 8 ) / 10
+    end
+    
+    local mode_switch = ( torch_mode == "near" and 1 ) or 2
+    local range = base_range * range_factor * mode_switch
+    local angle = base_angle * angle_factor / mode_switch
+    
+    torch_obj:set_range( range )
+    torch_obj:set_angle( angle )
+    torch_obj:set_brightness( math.min( 255, math.floor( 255 * brightness / TORCH_MAX_BRIGHTNESS ) ) )
+    
+    local r, g, b = color_temp, color_temp * 0.95, color_temp * 0.9
+    torch_obj:set_rgb( r, g, b )
+end
+
+function torch_brock()
+    local slot = db.actor:item_in_slot( 9 )
+    if not slot then return end
+
+    local torch_obj = get_torch_obj( slot )
+    if not torch_obj or not torch_obj.on then return end
+
+    local torch_cond = slot:condition()
+    local condition 
+    
+    if torch_obj.on then
+        local mode_switch = ( torch_mode == "near" and 1 ) or 1.25
+        local val = ( torch_cond - ( TORCH_DISCHARGE_RATE * mode_switch ) )
+        condition = math.max( 0, val )
+        slot:set_condition( condition )
+        if condition <= 0 and torch_obj.on then
+            set_off_mode( torch_obj )
+            return		
+        end		
+    end
+    
+    update_torch_parameters()
+end
+
+function update_torch( cond ) 
+	local slot = db.actor:item_in_slot( 9 )
+	if slot then 
+		slot:set_condition( cond )
+		update_torch_parameters()
+	end	
+end 
+
+function play_torch_anim()
+	level.only_allow_movekeys( true )
+	
+	torch_anm_duration = game.play_hud_motion( 1, "anim_headlamp", "anm_switch", false, 1.1 )
+	level.add_cam_effector( "camera_effects\\headlamp_cam.anm", 7539, false, "", 0, false )
+	
+	dsh.timeout( torch_anm_duration + 10, function()
+		level.only_allow_movekeys( false )
+	end )
+end
+
+function get_torch_state()
+	local torch = db.actor:item_in_slot( 9 )
+	if torch and torch:is_torch() then
+		torch = get_torch_obj( torch )
+		if torch.on then 
+			return true 
+		end	
+	end	
+	return false
+end
+
+function torch_handler( flag )
+	local torch = db.actor:item_in_slot( 9 )
+	if torch and torch:is_torch() then
+		torch = get_torch_obj( torch )
+
+		local state = get_value( "nlc_torch_state" )
+		
+		-- Если нужно выключить и фонарь включен
+		if flag == "off" and torch.on then
+			torch:enable( false )
+			return state -- Возвращаем текущий режим
+		end
+		
+		-- Если нужно включить и режим не был "off"
+		if flag == "on" and state ~= "off" then
+			play_torch_anim()
+			dsh.timeout( 800, function()		
+				torch:switch( true )
+				if state == "far" then
+					set_far_mode( torch )
+				else
+					set_near_mode( torch )
+				end
+			end	)
+		end
+	end	
+end
