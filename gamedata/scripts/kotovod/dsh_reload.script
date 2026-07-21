@@ -1,58 +1,138 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 -- Не забыть добавить в nlc_container hidden_ammo_id и в биндере подрубить on_actor_weapon_reload_end, не будет работать без нее!
-
+--
+-- Объединённая версия:
+--  - механика активации/ожидания/завершения — из проверенной рабочей версии
+--    (activate_slot + wait_condition по id активного айтема, завершение через
+--    ogse_signals on_actor_weapon_reload_end/on_drop_after_all, set_value/get_value
+--    для hidden_ammo_boxes, wpn:reload_next_ammo() для обычного оружия);
+--  - press_action/release_action используются ТОЛЬКО там, где reload_next_ammo()
+--    не работает: переключение в режим подствольника (kWPN_FUNC) и сама
+--    перезарядка подствольника/ГМ-94 (kWPN_RELOAD);
+--  - никаких прямых чтений netpk (get_netpk/upd.grenade_mode/upd.ammo_type/
+--    upd.ammo_elapsed) нет. Там, где есть родной геттер — используется он
+--    (get_ammo_type, get_ammo_in_magazine, get_ammo_in_magazine2). Там, где
+--    родного геттера нет вообще (тип патрона в подствольнике, факт переключения
+--    оружия в режим ГЛ) — скрипт сам отслеживает эти два состояния
+--    движок. Если режим ГЛ переключат в обход этого скрипта, состояние может
+--    разъехаться с реальным до следующей успешной операции через этот скрипт.
 
 function attach( sm )
 	sm:subscribe({ signal = "inv_drag_drop", fun = this.drag_drop_reload_next_ammo })
 end
 
 local sig_reload_end = nil
-local sig_drop = nil
+local sig_drop        = nil
+local hidden_ammo_boxes_local = nil
+local flag_to_remove_additional_vogs = false
 
--- Система с такой зарядкой, аля подсумок мне не очень нравится, но добавил, легко отключить
 local heavy_weapons_reload = {
     [ "wpn_pkm"			] = true,
     [ "wpn_gauss"		] = true,
     [ "wpn_gauss_auto"	] = true,
     [ "wpn_rpg7"		] = true,
-	[ "wpn_flame"		] = true
+--	[ "wpn_flame"		] = true
 }
 
-function switch_gl()
-	-- метод switch_gl что-то не пашет?
-	get_actor_obj():press_action( key_bindings.kWPN_FUNC )
-    dsh.timeout( 300, function()
-        get_actor_obj():release_action( key_bindings.kWPN_FUNC )
-    end )
+-- Секции патронов подствольника/ГМ-94, требующие роутинга в gl_action.
+-- РГ-6 сюда НЕ входит — у него нет grenade_mode, обрабатывается ниже как
+-- exclusive-оружие через обычный wpn:reload_next_ammo().
+local gl_ammo_sections = {
+    [ "ammo_vog-25"  ] = true,
+    [ "ammo_vog-25p" ] = true,
+    [ "ammo_m209"    ] = true,
+}
+
+-- Скриптовое отслеживание типа патрона в подствольнике (не gm94).
+-- Родного геттера типа нет, но есть родной геттер количества (get_ammo_in_magazine2).
+local gl_type_state = {} -- [ weapon_id ] = "ammo_vog-25" | "ammo_vog-25p" | ...
+
+-- new
+function gl_get_mode( weapon_obj )
+    if not weapon_obj:is_weapon_gl() then
+        return false -- у этого оружия вообще нет подствольника как класса
+    end
+    return weapon_obj:get_gl_mode() and true or false
 end
 
-function find_compatible_ammo( sect, ammo_class )
-    for i, ammo_sect in ipairs( ammo_class ) do
-        if sect == ammo_sect then
-            return i - 1, true
-        end
-    end
-    return -1, false
+--[[
+function gl_get_state( weapon_obj, wanted_sect, grenade_class )
+	log2( "Grenade_class is %s", grenade_class )
+    local count      = weapon_obj:get_ammo_in_magazine2() or 0
+    local type_idx    = weapon_obj:get_underbarrel_ammo_type() or 0
+    local known_type  = count > 0 and grenade_class[ type_idx + 1 ] or nil
+
+    local is_same_type = known_type ~= nil and known_type == wanted_sect
+    local is_full       = count > 0 and is_same_type
+
+    log2( "[gl_type] count=%d type_idx=%d known_type=%s wanted=%s is_same_type=%s",
+        count, type_idx, tostring(known_type), tostring(wanted_sect), tostring(is_same_type) )
+
+    return count, is_full, is_same_type
 end
+]]--
+
+
+
+function gl_get_state( weapon_obj, wanted_sect, grenade_class )
+    local sobj = alife():object( weapon_obj:id() )
+    if not sobj then return 0, false, false end
+    local pk = get_netpk( sobj )
+    if not pk then return 0, false, false end
+    local data = pk:get()
+    local upd  = data.upd
+    if not upd then return 0, false, false end
+
+    local count      = upd.ammo_elapsed or 0
+    local type_idx    = upd.ammo_type or 0
+    local known_type  = count > 0 and grenade_class[ type_idx + 1 ] or nil
+
+    local is_same_type = known_type ~= nil and known_type == wanted_sect
+    local is_full       = count > 0 and is_same_type
+
+    log2( "[gl_type] count=%d type_idx=%d known_type=%s wanted=%s is_same_type=%s",
+        count, type_idx, tostring(known_type), tostring(wanted_sect), tostring(is_same_type) )
+
+    return count, is_full, is_same_type
+end
+
 
 function can_reload_heavy_weapon( weapon_section, current_ammo_in_weapon )
     -- Если оружие тяжелое, то перезарядка только при 0 патронов
     return not heavy_weapons_reload[ weapon_section ] or current_ammo_in_weapon == 0
 end
 
+function parse_names( s )
+    return string.explode( ",", s, true )
+end
+
+function find_compatible_ammo( sect, ammo_class )
+    for i, ammo_sect in ipairs( ammo_class ) do
+        if sect == ammo_sect then
+            log2( "[find_ammo] Found compatible: %s at index %d", sect, i-1 )
+            return i - 1, true
+        end
+    end
+    log2( "[find_ammo] NOT FOUND: %s in ammo_class", sect )
+    return -1, false
+end
+
 -- Помещаем в слот
 function try_to_slot( obj )
-    if db.actor:is_in_slot( obj ) then return true end
+    if db.actor:is_in_slot( obj ) then
+        log2( "[rl_slot] already in slot" )
+        return true
+    end
     local itm = obj:get_inventory_item()
     if not itm then
-        log2( "[reload_debug] Нет inventory_item у %s", obj:section() )
+        log2( "[rl_slot] no inventory_item for %s", obj:section() )
         return false
     end
     for _, ns in ipairs( itm.slots ) do
         if db.actor:item_in_slot( ns ) == nil then
             itm.slot = ns
             db.actor:move_to_slot( obj, false )
-            log2( "[reload_debug] Оружие перемещено в свободный слот %d", ns )
+            log2( "[rl_slot] moved to free slot %d", ns )
             return true
         end
     end
@@ -62,315 +142,593 @@ function try_to_slot( obj )
             db.actor:move_to_ruck( occupied )
             itm.slot = ns
             db.actor:move_to_slot( obj, false )
-            log2( "[reload_debug] Слот %d занят, %s вытеснен в рюкзак", ns, occupied:section() )
+            log2( "[rl_slot] slot %d occupied, evicted %s to ruck", ns, occupied:section() )
             return true
         end
     end
-    log2( "[reload_debug] Не нашли слот для %s", obj:section() )
+    log2( "[rl_slot] no suitable slot found for %s", obj:section() )
     return false
 end
 
-function drag_drop_reload_next_ammo( obj, me )
-	if not ( me:is_weapon_magazined() and obj:is_ammo() ) then return end
-	
-	if not db.actor:is_in_slot( me ) then
-		if not try_to_slot( me ) then
-			sak.send_tip( "Некуда положить оружие...", "Мысли вслух", 0, 5, "g_g", "no", "red" )
-			return
+function get_weapon_safe( id, seq, target_id )
+	local wpn = dsh.get_object_by_id_seq( id, seq )
+	if not wpn then
+		local active_wpn = db.actor:active_item()
+		if active_wpn and active_wpn:id() == target_id then
+			wpn = active_wpn
+			log2( "[rl_wpn] fallback to active_item for id=%d", target_id )
 		end
-	end	
-    
-    local max_magazine_capacity = sys_ini:r_u32( me:section(), "ammo_mag_size" )
-    local current_ammo_in_weapon = me:get_ammo_in_magazine()  
-
-    local current_ammo_type = me:get_ammo_type()
-    local ammo_class = parse_names( get_string( me:section(), "ammo_class" ) )
-    local current_ammo_section = ammo_class[ current_ammo_type + 1 ]
-    local sect = obj:section()
-    local weapon_section = me:section()
-	
-    if not can_reload_heavy_weapon( weapon_section, current_ammo_in_weapon ) then
-        --log2( "[reload_debug] Невозможно перезарядить тяжелое оружие с патронами в магазине" )
-        dsh.timeout( 20, function()
-            sak.close_window()
-			sak.send_tip(
-				"Разрядить бы сперва...",
-				"Мысли вслух", 0, 5, "g_g", "no", "red"
-			)			
-			vergas_lib.s_play( [[device\antirad_no]], 1 )
-		end )	
-        return
-    end	
-
-    if max_magazine_capacity == current_ammo_in_weapon and current_ammo_section == sect then 
-        return 
-    end
-    
-    --log2( "[reload_debug] СЕКЦИЯ ОРУЖИЯ: %s", weapon_section )
-    --log2( "[reload_debug] СЕКЦИЯ ПАТРОНА: %s", sect)
-    --log2( "[reload_debug] ТЕКУЩИЙ ТИП ПАТРОНА В СТВОЛЕ: %s", tostring( current_ammo_section ) )
-    --log2( "[reload_debug] ДОПУСТИМЫЕ КЛАССЫ ПАТРОНОВ:")
-    --for i, ammo_sect in ipairs( ammo_class ) do
-        --log2( "[reload_debug]   - %s", ammo_sect )
-    --end
-
-    local next_ammo, is_compatible_ammo = find_compatible_ammo( sect, ammo_class )
-
-    --log2("[reload_debug] Совместимость патрона: %s", tostring( is_compatible_ammo ) )
-
-    if not is_compatible_ammo then
-        --log2( "[reload_debug] КРИТИЧЕСКАЯ ОШИБКА: Несовместимый тип патрона!" )
-        return
-    end
-
-    if current_ammo_section ~= sect then
-        --log2( "[reload_debug] ОБНАРУЖЕНА СМЕНА ТИПА ПАТРОНА!" )
-        current_ammo_in_weapon = 0
-    end
-
-    if next_ammo >= 0 then
-		local hidden_ammo_boxes = {}
-		
-        local size = vergas_lib.get_ammo_size( obj )    
-        
-        --log2( "[reload_debug] Начальные параметры:" )
-        --log2( "[reload_debug] Размер коробки: %d", size )
-        --log2( "[reload_debug] Макс. емкость магазина: %d", max_magazine_capacity )
-        --log2( "[reload_debug] Текущие патроны в стволе: %d", current_ammo_in_weapon )
-        
-        local ammo_to_load = math.min( max_magazine_capacity - current_ammo_in_weapon, size )
-        local remaining_ammo = size - ammo_to_load
-
-        --log2( "[reload_debug] Патронов для загрузки: %d", ammo_to_load )
-        --log2( "[reload_debug] Остаток патронов: %d", remaining_ammo )
-        
-        if remaining_ammo > 0 then
-            vergas_lib.spawn_ammo_in_inv( sect, remaining_ammo, db.actor )
-        end
-
-		-- Болтовки надо обрабатывать иначе, т.к во время перезарядки патроны устанавливаются в 0
-		local class = sak_dialog.read_string_if_exist( system_ini(), weapon_section, "class", nil ) -- Не у всех прописан класс
-        local is_exclusive = class and str_in_tab( class, { "shotgun", "W_SHOTGN", "WP_SHOTG", "WP_RG6" } )
-
-		if weapon_section == "wpn_rg6" then 
-			local current_ammo = current_ammo_in_weapon
-			local ammo_needed = math.min( max_magazine_capacity - current_ammo, max_magazine_capacity )
-			
-			local available_ammo = #sak_inventory.rucksack[ sect ]
-			ammo_to_load = math.min( ammo_needed, available_ammo )
-			
-			--log2( "[reload_debug] RG-6: текущие патроны = %d, требуется = %d, доступно = %d, будет загружено = %d", current_ammo, ammo_needed, available_ammo, ammo_to_load )
-			
-			local removed_count = 0
-			local obj_id = obj:id()
-			
-			for i = 1, #sak_inventory.rucksack[ sect ] do
-				if removed_count >= ammo_to_load - 1 then
-					break
-				end
-				
-				local item_id = sak_inventory.rucksack[ sect ][ i ]
-				if item_id ~= obj_id then
-					hidden_ammo_boxes[ item_id ] = true
-					removed_count = removed_count + 1
-				end
-			end
-		else	
-			obj:set_ammo_box_curr( ammo_to_load )
-		end		
-
-		hidden_ammo_boxes[ obj:id() ] = true
-        set_value( "hidden_ammo_boxes", hidden_ammo_boxes )
-		log3( "my table is %s", hidden_ammo_boxes )
-        
-        -- level.disable_input()
-		level.only_allow_movekeys( true )
-        local id, seq = dsh.assign_obj_seq( me )
-        local target_slot = me:get_slot()
-        local target_weapon_id = me:id()
-		
-		local flag_to_remove_additional_vogs = false
-        
-		-- Подписываемся на окончание релоада, чтобы отписаться от дропа
-        local function check_reload_end( wpn )
-            --log2("[reload_debug] Проверка окончания перезарядки")
-            
-            if not wpn or wpn:id() ~= me:id() then return end
-			ogse_signals.get_mgr():unsubscribe( sig_reload_end )
-			clear_stored_table()			
-			--sak.send_tip( "Отписались от sig_reload_end","ON_RELOAD",0,3,"g_g","no","red")
-			--log2( "[reload_debug] Перезарядка завершена" )
-			if sig_drop then 
-				ogse_signals.get_mgr():unsubscribe( sig_drop )	
-				sig_drop = nil
-				--sak.send_tip( "Отписались от SIG_DROP","ON_RELOAD",0,3,"g_g","no","red")
-			end					
-			sig_reload_end = nil  				
-        end		
-        
-		-- Подписываем на дроп, чтобы сбросить переменную и спрятать патроны
-        local function check_drop_weapon( dropped_obj, sobj )
-			--sak.send_tip( dropped_obj:name(),"ON_DROP",0,3,"g_g","no","yellow")
-			--log2( "[ДРОПАЕМ] %s", dropped_obj:name() )
-			
-			-- Заебали сучьи воги, после каждой перезарядки происходит дроп, надо удалять лишние и сверять с текущей
-			if flag_to_remove_additional_vogs and ( dropped_obj:section() == "ammo_vog-25p" or dropped_obj:section() == "ammo_vog-25" ) then
-				if dropped_obj:section() == sect then
-					misc.release_obj( dropped_obj )
-					--log2( "[УДАЛЯЕМ]: %s", dropped_obj:name() )
-				else
-					--log2( "[ОСТАВЛЯЕМ]: %s, секция не совпадает с текущими патронами", dropped_obj:name() )
-				end
-			end	
-			
-            if not dropped_obj or not dropped_obj:is_weapon() then return end
-            
-            if dropped_obj:id() ~= me:id() then return end
-			
-			ogse_signals.get_mgr():unsubscribe( sig_drop ) 
-			clear_stored_table()
-			--sak.send_tip( "Отписались от SIG_DROP","ON_DROP",0,3,"g_g","no","red")
-			--log2( "[reload_debug] Проверка сброса оружия %s", tostring( dropped_obj:name() ) )
-			
-			if sig_reload_end then 
-				ogse_signals.get_mgr():unsubscribe( sig_reload_end )	
-				sig_reload_end = nil
-				--sak.send_tip( "Отписались от sig_reload_end","ON_DROP",0,3,"g_g","no","red")
-			end	
-			sig_drop = nil 				
-        end
-		
-        dsh.timeout( 20, function()
-            sak.close_window()
-
-            dsh.timeout( 150, function()
-                db.actor:activate_slot( target_slot )
-                
-                dsh.wait_condition(
-                    function() 
-                        local current_weapon = db.actor:active_item()
-                        local current_weapon_id = current_weapon and current_weapon:id() or nil
-						--log2("[reload_debug] wait_condition: current_weapon_id = %s, target_weapon_id = %s", tostring( current_weapon_id ), tostring( target_weapon_id ) )
-                        return current_weapon_id == target_weapon_id
-                    end,
-                    function()
-                        dsh.timeout( 400, function()
-							local wpn = get_weapon_safe( id, seq, target_weapon_id )
-                            if wpn then 
-							
-								-- Подписываемся после активации оружия
-								sig_drop = ogse_signals.get_mgr():subscribe({ 
-									signal = "on_drop_after_all", 
-									fun = check_drop_weapon 
-								})						
-
-								-- Подписываемся уже во время перезарядки, не раньше, вдруг дропнули, смысла не будет
-								sig_reload_end = ogse_signals.get_mgr():subscribe({ 
-									signal = "on_actor_weapon_reload_end", 
-									fun = check_reload_end 
-								})									
-											
-                                wpn:reload_next_ammo( next_ammo )
-								
-								-- Это не нужно, если дисаблить передвижение
-								-- handle_weapon_signals_cleanup( target_weapon_id )
-																
-                                if is_exclusive then
-                                    wpn:set_ammo_elapsed( current_ammo_in_weapon )
-                                    --log2( "[reload_debug] Восстановлено патронов перед перезарядкой: %d", current_ammo_in_weapon )  
-									local new_size = vergas_lib.get_ammo_size( obj ) - current_ammo_in_weapon
-									--log2( "[reload_debug] Установили новую пачку %s is %s", obj:section(), new_size ) 
-									
-									-- для перезарядки рг нужно так, иначе переспавниваются в рюкзак лишние, надо их удалять!
-									if weapon_section == "wpn_rg6" then 
-										flag_to_remove_additional_vogs = true
-									else
-										obj:set_ammo_box_curr( new_size )
-									end	
-                                end
-                            end
-
-							-- level.enable_input()
-
-                        end )
-                    end
-                )
-            end )
-        end )
-        return true
-    end
-end
-
-function parse_names( s )
-	return string.explode( ",", s, true )
-end
-
-function handle_weapon_signals_cleanup( target_weapon_id )
-    dsh.rt_exec_periodic( 200, function( timer )
-        local active_weapon = db.actor:active_item()
-        
-        -- Проверяем, что оружие либо не активно, либо не совпадает с целевым
-        if not active_weapon or not active_weapon:is_weapon() or active_weapon:id() ~= target_weapon_id then
-            --log2("[reload_debug] Заряжаемое оружие не активно, очистка")
-            cleanup_signals( timer )
-			--sak.send_tip( "ОСТАНОВКА ПРОВЕРКИ СМЕНЫ ОРУЖИЯ","cleanup_signals",0,3,"g_g","no","red")
-            return
-        end
-
-        -- Нужно оставить или после дропа или релоада не отпишемся
-        if not sig_reload_end and not sig_drop then
-            --log2("[reload_debug] Перезарядка завершена/прервана, очищаем сигналы")
-			--sak.send_tip( "ДРОПНУЛИ ИЛИ ЗАВЕРШИЛИ","cleanup_signals",0,3,"g_g","no","red")
-            cleanup_signals( timer )
-        end
-    end)
-end
-
-function cleanup_signals( timer )
-    if timer then timer:stop() end
-	
-    if sig_reload_end then 
-        ogse_signals.get_mgr():unsubscribe( sig_reload_end )
-        sig_reload_end = nil
-        --log2( "[reload_debug] Отписались от sig_reload_end" )
-    end
-    
-    if sig_drop then 
-        ogse_signals.get_mgr():unsubscribe( sig_drop )
-        sig_drop = nil
-        --log2( "[reload_debug] Отписались от sig_drop" )
-    end
-
-	clear_stored_table()
-	
-	-- Избыточно. Будем прятать по предметам, правда из-за вогов и рг6 пришлось заменить стринг на это вот все(
-	-- db.shadow_inv:hide_content(2)
+	end
+	return wpn
 end
 
 function clear_stored_table()
 	if not value_exist( "hidden_ammo_boxes" ) then return end
-	level.only_allow_movekeys( false ) -- возвращаем полное управление
-	flag_to_remove_additional_vogs = false	
+	allcore_hide.animation_off()		
+	sivol.remove_move_penalty( "reload" )
+	flag_to_remove_additional_vogs = false
 	local tbl = get_value( "hidden_ammo_boxes", {} )
 	for obj_id, _ in pairs( tbl ) do
 		local obj = level.object_by_id( obj_id )
 		if obj then
 			db.shadow_inv:hide_item( obj )
-		end	
-	end 
-	remove_value( "hidden_ammo_boxes" ) 
-end
-
-function get_weapon_safe( id, seq, target_id )
-	local wpn = dsh.get_object_by_id_seq( id, seq )
-									
-	-- Если не получилось, проверяем активное оружие
-	if not wpn then
-		local active_wpn = db.actor:active_item()
-		if active_wpn and active_wpn:id() == target_id then
-			wpn = active_wpn
-			--log2( "[reload_debug] Используем резервный метод получения оружия для %s", active_wpn:section() )
 		end
 	end
-	return wpn
-end			
+	remove_value( "hidden_ammo_boxes" )
+	hidden_ammo_boxes_local = nil
+	log2( "[rl_done] cleanup done" )
+end
+
+function cleanup_signals()
+    if sig_reload_end then
+        ogse_signals.get_mgr():unsubscribe( sig_reload_end )
+        sig_reload_end = nil
+        log2( "[rl_sig] unsubscribed sig_reload_end" )
+    end
+    if sig_drop then
+        ogse_signals.get_mgr():unsubscribe( sig_drop )
+        sig_drop = nil
+        log2( "[rl_sig] unsubscribed sig_drop" )
+    end
+    clear_stored_table()
+end
+
+    -- params.weapon_id, params.drag_obj
+    -- params.next_ammo          -- индекс патрона для reload_next_ammo (обычное оружие)
+    -- params.is_exclusive       -- shotgun/bolt/rg6/gm94-стиль (set_ammo_elapsed после релоада)
+    -- params.use_gl             -- true для подствольника (не gm94, не rg6)
+    -- params.is_gm94
+    -- params.is_rg6
+    -- params.current_ammo_in_weapon -- для обычного/exclusive пути
+    -- params.sect, params.max_gl_ammo, params.size, params.ammo_type_changed
+    -- params.current_ammo_section, params.original_cur_ammo -- для gm94
+
+local function do_reload( params )
+    log2( "[rl_init] do_reload: weapon_id=%d use_gl=%s is_gm94=%s is_rg6=%s is_exclusive=%s",
+        params.weapon_id, tostring(params.use_gl), tostring(params.is_gm94), tostring(params.is_rg6), tostring(params.is_exclusive) )
+
+    local wpn_obj = level.object_by_id( params.weapon_id )
+    if not wpn_obj then
+        log2( "[rl_init] weapon not found, abort" )
+        cleanup_signals()
+        return
+    end
+
+    if not db.actor:is_in_slot( wpn_obj ) then
+        if not try_to_slot( wpn_obj ) then
+            sak.send_tip( "Некуда положить оружие...", "Мысли вслух", 0, 5, "g_g", "no", "red" )
+            cleanup_signals()
+            return
+        end
+    end
+
+    --level.only_allow_movekeys( true )
+
+    local id, seq          = dsh.assign_obj_seq( wpn_obj )
+    local target_slot      = wpn_obj:get_slot()
+    local target_weapon_id = wpn_obj:id()
+	
+	log2( "id is %s - %s", id, seq )
+	log2( "slot is %s", target_slot )
+	log2( "target_weapon_id %s", target_weapon_id )
+
+    local function check_reload_end( wpn )
+        if not wpn or wpn:id() ~= target_weapon_id then return end
+        log2( "[rl_sig] on_actor_weapon_reload_end matched weapon_id=%d", target_weapon_id )
+        cleanup_signals()
+    end
+
+    local function check_drop_weapon( dropped_obj, sobj )
+        if flag_to_remove_additional_vogs and dropped_obj
+           and ( dropped_obj:section() == "ammo_vog-25p" or dropped_obj:section() == "ammo_vog-25" ) then
+            if dropped_obj:section() == params.sect then
+                misc.release_obj( dropped_obj )
+                log2( "[rl_drop] removed excess dropped vog: %s", dropped_obj:section() )
+            end
+        end
+
+        if not dropped_obj or not dropped_obj:is_weapon() then return end
+        if dropped_obj:id() ~= target_weapon_id then return end
+
+        log2( "[rl_sig] on_drop_after_all matched weapon_id=%d", target_weapon_id )
+        cleanup_signals()
+    end
+
+	log2( "BEFORE TIMEOUT" )
+	
+    dsh.timeout( 20, function()
+		log2( "BEFORE CLOSING" )
+        sak.close_window()
+		
+        log2( "[rl_flow] window closed, scheduling activate_slot" )
+
+        dsh.timeout( 150, function()
+            local already_active = db.actor:active_item() and db.actor:active_item():id() == target_weapon_id
+            if not already_active then
+                db.actor:activate_slot( target_slot )
+                log2( "[rl_flow] activate_slot(%s)", tostring(target_slot) )
+            else
+                log2( "[rl_flow] weapon already active, skip activate_slot" )
+            end
+			
+			allcore_hide.animation_on()		
+			sivol.add_move_penalty( "reload", 0.85 )
+			
+            dsh.wait_condition(
+                function()
+                    local current_weapon = db.actor:active_item()
+                    local current_weapon_id = current_weapon and current_weapon:id() or nil
+                    return current_weapon_id == target_weapon_id
+                end,
+                function()
+                    log2( "[rl_flow] weapon activated, target reached" )
+                    dsh.timeout( 400, function()
+                        local wpn = get_weapon_safe( id, seq, target_weapon_id )
+                        if not wpn then
+                            log2( "[rl_flow] wpn is nil, abort" )
+                            cleanup_signals()
+                            return
+                        end
+
+                        sig_drop = ogse_signals.get_mgr():subscribe({
+                            signal = "on_drop_after_all",
+                            fun = check_drop_weapon
+                        })
+                        sig_reload_end = ogse_signals.get_mgr():subscribe({
+                            signal = "on_actor_weapon_reload_end",
+                            fun = check_reload_end
+                        })
+
+                        local cobj = get_actor_obj()
+                        if not cobj or not cobj.press_action then
+                            log2( "[rl_fire] press_action not available, abort" )
+                            cleanup_signals()
+                            return
+                        end
+
+                        if params.use_gl then
+
+                            -- === Подствольник (не gm94, не rg6) ===
+                            local already_gl = gl_get_mode( wpn )
+                            log2( "[gl_fire] already_gl=%s", tostring(already_gl) )
+
+							local function fire_gl_reload()
+								local gl_ammo_count, is_full, is_same_type = gl_get_state( wpn, params.sect, params.grenade_class )
+								local ammo_type_changed = not is_same_type
+								log2( "[gl_ammo] gl_ammo_count=%d is_same_type=%s", gl_ammo_count, tostring(is_same_type) )
+
+								if is_full then
+									log2( "[gl_ammo] already full same type, abort" )
+									cleanup_signals()
+									return
+								end
+
+								if ammo_type_changed and gl_ammo_count > 0 then
+									-- Определяем реальный текущий тип патрона в стволе через netpk,
+									-- а не через мёртвую gl_type_state
+									local sobj = alife():object( target_weapon_id )
+									local old_sect = nil
+									if sobj then
+										local pk = get_netpk( sobj )
+										if pk then
+											local data = pk:get()
+											local upd = data.upd
+											if upd then
+												old_sect = params.grenade_class[ (upd.ammo_type or 0) + 1 ]
+											end
+										end
+									end
+
+									wpn:unload_magazine()
+									if old_sect then
+										alife():create( old_sect, db.actor:position(),
+											db.actor:level_vertex_id(), db.actor:game_vertex_id() )
+										log2( "[gl_ammo] dropped old gl ammo: 1 x %s", tostring(old_sect) )
+									end
+									gl_ammo_count = 0
+								end
+
+								local ammo_to_load = math.min( params.max_gl_ammo - gl_ammo_count, params.size )
+								local remaining    = params.size - ammo_to_load
+								if remaining > 0 then
+									vergas_lib.spawn_ammo_in_inv( params.sect, remaining, db.actor )
+									log2( "[gl_ammo] spawned remaining %d back", remaining )
+								end
+
+								params.drag_obj:set_ammo_box_curr( ammo_to_load )
+								log2( "[gl_ammo] ammo_to_load=%d", ammo_to_load )
+
+								dsh.timeout( 700, function()
+									cobj:press_action( key_bindings.kWPN_RELOAD )
+									log2( "[gl_fire] kWPN_RELOAD press" )
+									dsh.timeout( 800, function()
+										cobj:release_action( key_bindings.kWPN_RELOAD )
+										log2( "[gl_fire] kWPN_RELOAD release" )
+										--level.only_allow_movekeys( true )
+									end )
+								end	)
+							end
+
+                            if already_gl then
+                                fire_gl_reload()
+                            else
+								-- Обязательно таймаут секунду
+								dsh.timeout( 1000, function()
+									cobj:press_action( key_bindings.kWPN_FUNC )
+									log2( "[gl_fire] kWPN_FUNC press (switch to gl)" )
+									dsh.timeout( 1100, function()
+										cobj:release_action( key_bindings.kWPN_FUNC )
+										log2( "[gl_fire] kWPN_FUNC release" )
+
+										dsh.timeout( 1200, function()
+											local active = db.actor:active_item()
+											if not active or active:id() ~= target_weapon_id then
+												log2( "[gl_flow] weapon changed while switching to gl, abort" )
+												cleanup_signals()
+												return
+											end
+											fire_gl_reload()
+										end )
+									end )
+								end )	
+                            end
+
+                        elseif params.is_gm94 then
+
+                            -- === ГМ-94: нет reload_next_ammo, работаем через press_action ===
+                            if params.ammo_type_changed and params.original_cur_ammo > 0 then
+                                vergas_lib.spawn_ammo_in_inv( params.current_ammo_section, params.original_cur_ammo, db.actor )
+                                log2( "[rl_ammo] gm94: spawned old ammo back: %d x %s", params.original_cur_ammo, params.current_ammo_section )
+                                wpn:unload_magazine()
+                                log2( "[rl_ammo] gm94: unload_magazine done (type changed)" )
+                            end
+
+                            if params.ammo_type_changed then
+                                wpn:set_ammo_elapsed( 0 )
+                                log2( "[rl_ammo] gm94: set_ammo_elapsed(0) before reload" )
+                            else
+                                log2( "[rl_ammo] gm94: same type, top-up from %d to %d", params.original_cur_ammo, params.max_gl_ammo )
+                            end
+
+                            local first = nil
+                            for oid, _ in pairs( hidden_ammo_boxes_local or {} ) do
+                                first = level.object_by_id( oid )
+                                if first then break end
+                            end
+                            if not first then
+                                log2( "[rl_ammo] gm94: no ammo item found, abort" )
+                                cleanup_signals()
+                                return
+                            end
+                            first:set_ammo_box_curr( 1 )
+                            log2( "[rl_ammo] gm94: box id=%d set to 1", first:id() )
+
+                            cobj:press_action( key_bindings.kWPN_RELOAD )
+                            log2( "[rl_fire] kWPN_RELOAD press (gm94)" )
+                            dsh.timeout( 200, function()
+                                cobj:release_action( key_bindings.kWPN_RELOAD )
+                                log2( "[rl_fire] kWPN_RELOAD release" )
+                            end )
+
+                        else
+
+                            -- === Обычное магазинное оружие (в т.ч. shotgun/bolt/rg6) ===
+                            -- Проверенный старый метод: wpn:reload_next_ammo(), без press_action.
+
+                            local function fire_normal_reload()
+								--level.only_allow_movekeys( true )
+                                wpn:reload_next_ammo( params.next_ammo )
+                                log2( "[rl_fire] reload_next_ammo(%d) called", params.next_ammo )
+
+                                if params.is_exclusive then
+                                    wpn:set_ammo_elapsed( params.current_ammo_in_weapon )
+                                    log2( "[rl_ammo] exclusive: restored %d rounds before reload", params.current_ammo_in_weapon )
+                                    if params.is_rg6 then
+                                        flag_to_remove_additional_vogs = true
+                                        log2( "[rl_ammo] rg6: flag_to_remove_additional_vogs set" )
+                                    else
+                                        local new_size = params.size - params.current_ammo_in_weapon
+                                        params.drag_obj:set_ammo_box_curr( new_size )
+                                        log2( "[rl_ammo] exclusive: set new box size=%d", new_size )
+                                    end
+                                end
+                            end
+
+                            if gl_get_mode( wpn ) then
+                                -- Оружие ранее переключено в режим ГЛ этим же скриптом — сначала вернуть обратно
+                                log2( "[rl_fire] weapon tracked as in gl mode, switching back first" )
+								dsh.timeout( 1000, function()							
+									cobj:press_action( key_bindings.kWPN_FUNC )
+									dsh.timeout( 1100, function()
+										cobj:release_action( key_bindings.kWPN_FUNC )
+
+										log2( "[rl_fire] kWPN_FUNC release, mode reset to normal" )
+										dsh.timeout( 1200, function()
+											local a = db.actor:active_item()
+											if not a or a:id() ~= target_weapon_id then
+												log2( "[rl_flow] weapon changed while exiting gl mode, abort" )
+												cleanup_signals()
+												return
+											end
+											fire_normal_reload()
+										end )
+									end )
+								end )	
+                            else
+                                fire_normal_reload()
+                            end
+
+                        end
+                    end )
+                end
+            )
+        end )
+    end )
+end
+
+local function gl_action( drag_obj, drop_obj )
+    local sect     = drag_obj:section()
+    local wpn_sect = drop_obj:section()
+
+    log2( "[gl_init] gl_action called: drag=%s -> drop=%s", sect, wpn_sect )
+
+    local is_gm94 = wpn_sect == "wpn_gm94"
+
+    if not is_gm94 then
+        local gl = get_u32( wpn_sect, "grenade_launcher_status", 0 )
+        log2( "[gl_init] grenade_launcher_status=%d", gl )
+        if gl ~= 2 then
+            log2( "[gl_init] weapon has no attached underbarrel GL, abort" )
+            return
+        end
+    end
+
+    if not db.actor:is_in_slot( drop_obj ) then
+        if not try_to_slot( drop_obj ) then
+            sak.send_tip( "Некуда положить оружие...", "Мысли вслух", 0, 5, "g_g", "no", "red" )
+            return
+        end
+    end
+
+    local sg = is_gm94 and get_string( wpn_sect, "ammo_class" ) or get_string( wpn_sect, "grenade_class" )
+    log2( "[gl_init] ammo/grenade class string=%s", tostring(sg) )
+    if not sg or sg == "" then
+        log2( "[gl_init] empty class string, abort" )
+        return
+    end
+
+    local grenade_class        = parse_names( sg )
+    local next_ammo, is_compat = find_compatible_ammo( sect, grenade_class )
+    log2( "[gl_init] is_compat=%s next_ammo=%d", tostring(is_compat), next_ammo )
+    if not is_compat then
+        log2( "[gl_init] ammo not compatible, abort" )
+        return
+    end
+
+    local max_gl_ammo = is_gm94
+        and sys_ini:r_u32( wpn_sect, "ammo_mag_size" )
+        or sak_dialog.read_if_exist( system_ini(), wpn_sect, "grenade_launcher_ammo_mag_size", 1 )
+    log2( "[gl_ammo] max_gl_ammo=%d", max_gl_ammo )
+
+    local current_ammo_section, original_cur_ammo, ammo_type_changed = nil, 0, false
+
+    if is_gm94 then
+        -- Родные геттеры, без чтения netpk
+        local current_ammo_type = drop_obj:get_ammo_type() or 0
+        original_cur_ammo       = drop_obj:get_ammo_in_magazine() or 0
+        current_ammo_section    = grenade_class[ current_ammo_type + 1 ]
+        ammo_type_changed       = current_ammo_section ~= sect
+
+        log2( "[gl_init] gm94: current_ammo_section=%s sect=%s original_cur_ammo=%d ammo_type_changed=%s",
+            tostring(current_ammo_section), sect, original_cur_ammo, tostring(ammo_type_changed) )
+
+        if not ammo_type_changed and original_cur_ammo >= max_gl_ammo then
+            log2( "[gl_ammo] gm94 already full same type, abort" )
+            return
+        end
+    else
+        -- Проверка заполненности ДО начала флоу: свой gl_type_state + родной get_ammo_in_magazine2.
+        -- Нужно, иначе анимация переключения и релоада запустится впустую.
+        local count, is_full, is_same_type = gl_get_state( drop_obj, sect, grenade_class )
+        log2( "[gl_init] pre-check: count=%d is_full=%s is_same_type=%s", count, tostring(is_full), tostring(is_same_type) )
+        if is_full then
+            log2( "[gl_init] already full same type, abort" )
+            sak.send_tip( "Подствольник и так заряжен...", "Мысли вслух", 0, 5, "g_g", "no", "red" )
+            vergas_lib.s_play( [[device\antirad_no]], 1 )
+            return
+        end
+    end
+
+    local hidden_boxes = {}
+
+    if is_gm94 then
+        local slots_free = max_gl_ammo - ( ammo_type_changed and 0 or original_cur_ammo )
+        local collected  = 0
+        db.actor:iterate_inventory( function( _, item )
+            if item:section() == sect and collected < slots_free then
+                hidden_boxes[ item:id() ] = true
+                collected = collected + vergas_lib.get_ammo_size( item )
+            end
+        end, nil )
+        log2( "[gl_ammo] gm94: slots_free=%d collected=%d", slots_free, collected )
+        if collected == 0 then
+            log2( "[gl_ammo] gm94: nothing to load, abort" )
+            return
+        end
+    else
+        hidden_boxes[ drag_obj:id() ] = true
+    end
+
+    hidden_ammo_boxes_local = hidden_boxes
+    set_value( "hidden_ammo_boxes", hidden_boxes )
+
+    local size = vergas_lib.get_ammo_size( drag_obj )
+    log2( "[gl_ammo] drag obj ammo size=%d", size )
+
+    do_reload({
+        weapon_id             = drop_obj:id(),
+        drag_obj              = drag_obj,
+        use_gl                = not is_gm94,
+        is_gm94               = is_gm94,
+        sect                  = sect,
+		grenade_class         = grenade_class,
+        max_gl_ammo           = max_gl_ammo,
+        size                  = size,
+        ammo_type_changed     = ammo_type_changed,
+        current_ammo_section  = current_ammo_section,
+        original_cur_ammo     = original_cur_ammo,
+        is_exclusive          = is_gm94,
+    })
+end
+
+function drag_drop_reload_next_ammo( obj, me )
+	log2( "[dd_init] drag_drop fired: drag=%s drop=%s", tostring(obj and obj:section()), tostring(me and me:section()) )
+
+	if not obj:is_ammo() then
+		log2( "[dd_init] drag_obj is not ammo, abort" )
+		return
+	end
+
+	-- Роутинг на подствольник/ГМ-94. РГ-6 сюда не попадает — у него нет
+	-- grenade_mode, он идёт по обычному пути ниже (is_exclusive+is_rg6).
+	local drag_sect = obj:section()
+	if gl_ammo_sections[ drag_sect ] and me:section() ~= "wpn_rg6" then
+		log2( "[dd_init] routing to gl_action: %s -> %s", drag_sect, tostring(me:section()) )
+		return gl_action( obj, me )
+	end
+
+	if not me:is_weapon_magazined() then
+		log2( "[dd_init] weapon not magazined, abort: %s", tostring(me:section()) )
+		return
+	end
+
+	if not db.actor:is_in_slot( me ) then
+		if not try_to_slot( me ) then
+			sak.send_tip( "Некуда положить оружие...", "Мысли вслух", 0, 5, "g_g", "no", "red" )
+			return
+		end
+	end
+
+    local max_magazine_capacity  = sys_ini:r_u32( me:section(), "ammo_mag_size" )
+    local current_ammo_in_weapon = me:get_ammo_in_magazine()
+    local current_ammo_type      = me:get_ammo_type()
+    local ammo_class             = parse_names( get_string( me:section(), "ammo_class" ) )
+    local current_ammo_section   = ammo_class[ current_ammo_type + 1 ]
+    local sect                   = obj:section()
+    local weapon_section         = me:section()
+
+    log2( "[rl_ammo] current_ammo_in_weapon=%d current_ammo_section=%s sect=%s max_mag=%d",
+        current_ammo_in_weapon, tostring(current_ammo_section), sect, max_magazine_capacity )
+
+    if not can_reload_heavy_weapon( weapon_section, current_ammo_in_weapon ) then
+        log2( "[dd_init] heavy weapon with ammo still loaded, abort" )
+        dsh.timeout( 20, function()
+            sak.close_window()
+			sak.send_tip(
+				"Разрядить бы сперва...",
+				"Мысли вслух", 0, 5, "g_g", "no", "red"
+			)
+			vergas_lib.s_play( [[device\antirad_no]], 1 )
+		end )
+        return
+    end
+
+    if max_magazine_capacity == current_ammo_in_weapon and current_ammo_section == sect then
+        log2( "[dd_init] magazine already full same type, abort" )
+        return
+    end
+
+    local next_ammo, is_compatible_ammo = find_compatible_ammo( sect, ammo_class )
+    log2( "[dd_init] is_compat=%s next_ammo=%d", tostring(is_compatible_ammo), next_ammo )
+    if not is_compatible_ammo then
+        log2( "[dd_init] ammo not compatible, abort" )
+        return
+    end
+
+    if current_ammo_section ~= sect then
+        log2( "[dd_init] ammo type change detected, treating magazine as empty" )
+        current_ammo_in_weapon = 0
+    end
+
+    if next_ammo < 0 then return end
+
+    local hidden_ammo_boxes = {}
+    local size          = vergas_lib.get_ammo_size( obj )
+    local ammo_to_load  = math.min( max_magazine_capacity - current_ammo_in_weapon, size )
+    local remaining_ammo = size - ammo_to_load
+
+    log2( "[rl_ammo] size=%d ammo_to_load=%d remaining_ammo=%d", size, ammo_to_load, remaining_ammo )
+
+    if remaining_ammo > 0 then
+        vergas_lib.spawn_ammo_in_inv( sect, remaining_ammo, db.actor )
+        log2( "[rl_ammo] spawned remaining %d back to inv", remaining_ammo )
+    end
+
+    -- Болтовки/помпы/РГ-6 обрабатываются иначе, т.к во время перезарядки патроны устанавливаются в 0
+    local class = sak_dialog.read_string_if_exist( system_ini(), weapon_section, "class", nil ) -- Не у всех прописан класс
+    local is_exclusive = class and str_in_tab( class, { "shotgun", "W_SHOTGN", "WP_SHOTG", "WP_RG6" } )
+    local is_rg6 = weapon_section == "wpn_rg6"
+
+    log2( "[rl_ammo] class=%s is_exclusive=%s is_rg6=%s", tostring(class), tostring(is_exclusive), tostring(is_rg6) )
+
+    if is_rg6 then
+        -- РГ-6 заряжается россыпью отдельных гранат, а не одной коробкой
+        local ammo_needed    = math.min( max_magazine_capacity - current_ammo_in_weapon, max_magazine_capacity )
+        local available_ammo = #sak_inventory.rucksack[ sect ]
+        ammo_to_load = math.min( ammo_needed, available_ammo )
+
+        log2( "[rl_ammo] rg6: needed=%d available=%d will_load=%d", ammo_needed, available_ammo, ammo_to_load )
+
+        local removed_count = 0
+        local obj_id = obj:id()
+        for i = 1, #sak_inventory.rucksack[ sect ] do
+            if removed_count >= ammo_to_load - 1 then break end
+            local item_id = sak_inventory.rucksack[ sect ][ i ]
+            if item_id ~= obj_id then
+                hidden_ammo_boxes[ item_id ] = true
+                removed_count = removed_count + 1
+            end
+        end
+    else
+        obj:set_ammo_box_curr( ammo_to_load )
+    end
+
+    hidden_ammo_boxes[ obj:id() ] = true
+    hidden_ammo_boxes_local = hidden_ammo_boxes
+    set_value( "hidden_ammo_boxes", hidden_ammo_boxes )
+    log2( "[dd_init] hidden_ammo_boxes stored" )
+
+    --sak.close_window()
+
+    do_reload({
+        weapon_id              = me:id(),
+        drag_obj               = obj,
+        next_ammo              = next_ammo,
+        use_gl                 = false,
+        is_gm94                = false,
+        is_rg6                 = is_rg6,
+        is_exclusive           = is_exclusive,
+        current_ammo_in_weapon = current_ammo_in_weapon,
+        size                   = size,
+    })
+end
