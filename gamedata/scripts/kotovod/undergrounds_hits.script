@@ -159,57 +159,127 @@ function prepare_ballon_drag( drag_obj, drop_obj )
 	end, 2000 )
 end
 
-function on_ballon_use( obj, sobj )
-	if not obj then return end
-	local sect = obj:section()
-	if sect ~= "ballon" then return end
-	local actor = db.actor	
-    local cond  = obj:condition()		
-	local armor = actor:item_in_slot( 6 )
-	sak.close_window()
-	----------
-	if 
-		not armor 
-		or ( armor and not str_in_tab( armor:section(), { "scientific_", "ecolog_", "protection_", "monolit_exoskeleton", "monolit_q_exoskeleton" } ) ) 
-	then 
-		sak.send_tip(
-			"Отсутствует подходящее крепление для размещения баллона", 
-			"Вот же...", 0, 5, "g_g", "sak", "red" 	
-		)				
-		local eat = obj:get_eatable_item()
-		if eat.eat_portions_num < 1 then 
-			eat.eat_portions_num = 1
-		end	
-		return 
-	end
-	----------	
-	this.on_ballon_stop_use() -- Проверка, если баллон уже на комбезе?	
-	misc.release_obj( obj )	-- Если драг-дропали, то надо удалять
-	local time = ( cond * 120 ) / 60
-	
-	dsh.timeout( 20, function()
-		sak.close_window()
+function on_ballon_use(obj, sobj)
+    if not obj or obj:section() ~= "ballon" then return end
+
+    local actor = db.actor
+    local cond = obj:condition()
+    local armor = actor:item_in_slot(6)
+
+    sak.close_window()
+
+    -- Проверка брони
+    if not armor or (armor and not str_in_tab(armor:section(), {
+        "scientific_", "ecolog_", "protection_", "monolit_exoskeleton", "monolit_q_exoskeleton"
+    })) then
+        sak.send_tip("Отсутствует подходящее крепление для размещения баллона", "Вот же...", 0, 5, "g_g", "sak", "red")
+        local eat = obj:get_eatable_item()
+        if eat.eat_portions_num < 1 then eat.eat_portions_num = 1 end
+        return
+    end
+
+    this.on_ballon_stop_use()
+    misc.release_obj(obj)
+    local time = (cond * 120) / 60
+
+    -- Состояния
+    local prev_torch_mode = false
+    local mask_was_on = false
+
+    -- Задержка 20 мс как в оригинале
+    dsh.timeout(20, function()
+        sak.close_window()
+        sak.actor_hide_weapon()
+
+        -- Функция, которая выполняется после закрытия инвентаря (если он открыт)
+        local function startSequence()
+
+            -- Шаг 4: завершение – одеть маску (если была), включить фонарик, прикрепить баллон
+            local function stepFinish()
+                if mask_was_on then
+                    -- одеваем маску обратно
+                    vergas_masks.on_off_mask()
+                    dsh.wait_condition(
+                        function() return vergas_masks.on_off_mask_end() end,
+                        function()
+                            if prev_torch_mode then 
+								nlc_torch.torch_handler("on")
+								local click_snd = sound_object( "device\\light_on" )	
+								click_snd:play( db.actor, 0, sound_object.s2d )										
+							end
+                            attach_ballon()
+                            timers.start_timer("protection", 0, time, 0, "undergrounds_hits.disable_protection()")
+                        end
+                    )
+                else
+                    -- маски не было – просто восстанавливаем фонарик и крепим баллон
+                    if prev_torch_mode then 
+						nlc_torch.torch_handler("on")
+						local click_snd = sound_object( "device\\light_on" )	
+						click_snd:play( db.actor, 0, sound_object.s2d )								
+					end
+                    attach_ballon()
+                    timers.start_timer("protection", 0, time, 0, "undergrounds_hits.disable_protection()")
+                end				
+            end
+			
+            -- Шаг 3: анимация использования предмета + звук
+            local function stepUse()
+                level.add_cam_effector("camera_effects\\item_use.anm", 9773, false, "")
+                misc.easy_sound("scripts\\inv_kip_change")
+                -- ждём 10 секунд, как в оригинале
+				allcore_hide.animation_on()				
+                dsh.timeout(10000, stepFinish)
+            end
 		
-		local prev_torch_mode
-		if nlc_torch.get_torch_state() then 
-			prev_torch_mode = nlc_torch.torch_handler( "off" )
-			--nlc_torch.play_torch_anim()
-		end	
+            -- Шаг 2: снять маску (если надета)
+            local function stepMask()
+                if vergas_masks.allcore_mask_is_on() then
+                    mask_was_on = true
+                    allcore_hide.animation_on()
+                    vergas_masks.on_off_mask()
+                    dsh.wait_condition(
+                        function() return vergas_masks.on_off_mask_end() end,
+                        function()
+                            allcore_hide.animation_on()
+                            -- Сразу после снятия маски – анимация использования
+                            stepUse()
+                        end
+                    )
+                else
+                    stepUse()
+                end
+            end		
 		
-		dsh.timeout( 2000, function()
-			sak.actor_hide_weapon()		
-			level.add_cam_effector( "camera_effects\\item_use.anm", 9773, false, "" )
-			misc.easy_sound( "scripts\\inv_kip_change" ) 
-			dsh.timeout( 10000, function()
-				attach_ballon()
-				timers.start_timer( "protection", 0, time, 0, "undergrounds_hits.disable_protection()" )
-				
-				if prev_torch_mode then
-					nlc_torch.torch_handler( "on" )
-				end							
-			end )
-		end )	
-	end )
+            -- Шаг 1: выключить фонарик (если включён)
+            local function stepTorch()
+                if nlc_torch.get_torch_state() then
+                    prev_torch_mode = true
+                    nlc_torch.torch_handler("off")
+                    local torch_anm_duration = game.play_hud_motion(1, "anim_headlamp", "anm_switch", false, 1.1)
+                    level.add_cam_effector("camera_effects\\headlamp_cam.anm", 7539, false, "", 0, false)
+					local click_snd = sound_object( "device\\light_on" )	
+					click_snd:play( db.actor, 0, sound_object.s2d )					
+                    dsh.timeout(torch_anm_duration + 500, stepMask)
+                else
+                    stepMask()
+                end
+            end
+
+            -- Запускаем цепочку
+            stepTorch()
+        end
+
+        -- Если инвентарь открыт – ждём его закрытия, иначе стартуем сразу
+        if get_value("inv_full") then
+            dsh.wait_condition(
+                function() return not get_value("inv_full") end,
+                startSequence
+            )
+        else
+            startSequence()
+        end
+    end)
 end
 
 function attach_ballon()
@@ -221,7 +291,6 @@ function attach_ballon()
 		"Подача кислорода восстановлена", 
 		"Датчик костюма", 0, 5, "pribor", "pda_news", "green"
 	)			
-	
     sak.restore_weap()
 	-- Статик вещаем только при использовании баллона в подземках, иначе надо стописят проверок. И так нагружено
 	local lname = level.name()
