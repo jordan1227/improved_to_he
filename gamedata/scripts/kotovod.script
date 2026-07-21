@@ -2215,67 +2215,54 @@ local shurup_cant_repair = {
 ------------------- Обмен Сани-Менялы ---------------------
 -----------------------------------------------------------
 
+-----------------------------------------------------------
+------------------- Обмен Сани-Менялы ---------------------
+-----------------------------------------------------------
+
 local menyala_arts_table = {}
 local level_phrases = {}
 local info_phr
-local menyala_current_required = 3
-local menyala_current_reward = 1
-local menyala_current_next_level = 2
 
+-- Доработать потом
 tbl_translate_price = {
     [ "lvl1"  ] = "Артефакт первого уровня",
     [ "lvl2"  ] = "Артефакт второго уровня",
     [ "lvl3"  ] = "Артефакт третьего уровня",
     [ "lvl4"  ] = "Артефакт класса «Пустышка»",
-    [ "lvl5"  ] = "Капсула артефакта",
-    [ "lvl6"  ] = "Капсула артефакта «Пустышка»",
+	[ "lvl5"  ] = "Капсула артефакта",
+    [ "lvl6"  ] = "Капсула артефакта «Пустышка»",	
     [ "lvl7"  ] = "Модификат",
     [ "lvl8"  ] = "Мезомодификат",
     [ "lvl9"  ] = "Гипермодификат",
     [ "lvl10" ] = "Абсолют",
-    [ "lvl11" ] = "Уникальный артефакт"
+	[ "lvl11" ] = "Уникальный артефакт"
 }
 
 local art_configs = {
     {
         level = 1,
         required_count = 3,
-        reward_count = 1,
         next_level = 2,
         text = "С тебя три артефакта первого уровня.",
         menu_text = "Буду брать второй уровень.",
         start_id = 1000
     },
-	
     {
         level = 2,
         required_count = 3,
-        reward_count = 1,
         next_level = 3,
         text = "С тебя три артефакта второго уровня.",
         menu_text = "Третий уровень интересует.",
         start_id = 2000
     },
-	
     {
         level = 3,
         required_count = 3,
-        reward_count = 1,
         next_level = 4,
         text = "С тебя три артефакта третьего уровня.",
         menu_text = "Пустышка потребовалась.",
         start_id = 3000
-    },
-
-    {
-        level = 4,
-        required_count = 1,
-        reward_count = 2,  -- рандом, без выбора
-        next_level = 3,
-        text = "Получишь два третьего уровня, на мой выбор - из того, что есть в наличии на данный момент.",
-        menu_text = "Два третьего уровня за пустышку.",
-        start_id = 4000
-    },
+    }
 }
 
 local reject_phrases = {
@@ -2283,20 +2270,431 @@ local reject_phrases = {
     "Стой, что-то я запутался. Можно с самого начала?",
     "Нет, эти не подойдут. Давай по-другому попробуем.",
     "Постой, Санёк. Ошибся я с выбором.",
-    "Так, стоп. Пересмотрел я свои потребности.",
-    "Тьфу ты! Не те артефакты тебе подсовываю.",
-    "Слушай, я перепутал. Давай сначала.",
-    "Стоп-стоп. Давай заново.",
-    "Не то, не то... Давай по-новой, Санёк."
+	"Так, стоп. Пересмотрел я свои потребности.",
+	"Тьфу ты! Не те артефакты тебе подсовываю.",
+	"Слушай, я перепутал. Давай сначала.",
+	"Стоп-стоп. Давай заново.",
+	"Не то, не то... Давай по-новой, Санёк."
 }
 
 local color_map = {
-    { 75, 105, 240, 145 },
-    { 50, 255, 255,   0 },
-    { 25, 255, 128,   0 },
-    {  0, 255,  85,  85 }
+	{ 75,   0, 255, 0 },   -- Зеленый для 75-100%
+	{ 50, 255, 255, 0 },   -- Желтый для 50-74%
+	{ 25, 255, 128, 0 },   -- Оранжевый для 25-49%
+	{ 0,  255,   0, 0 }    -- Красный для 0-24%
 }
 
+function get_cond_color( cond )
+    for _, color in ipairs( color_map ) do
+        if cond >= color[ 1 ] then
+            return string.format( "%d, %d, %d", color[ 2 ], color[ 3 ], color[ 4 ] )
+        end
+    end
+    return "255, 0, 0"
+end
+
+
+function add_art_level_phrases( dlg, config )
+    -- Добавляем фразу выбора уровня
+    local phr = task_manager.Dlg_AddPhrase( dlg, config.menu_text, config.start_id, "1", -10000 )
+    local phrase_script = phr:GetPhraseScript()
+    
+    -- Добавляем фразу с требованием артефактов
+    local rem_phr = task_manager.Dlg_AddPhrase( dlg, config.text, config.start_id + 1, config.start_id, -10000 )
+    phrase_script = rem_phr:GetPhraseScript()
+    
+    -- Сохраняем фразу для этого уровня
+    level_phrases[ config.level ] = rem_phr
+    
+    -- Добавляем фразы для выбора артефактов
+    local phrase_id = 1
+    for a = 1, #tbl_arts[ "lvl" .. config.level ] do
+        for i, k in pairs( sak_inventory.rucksack ) do
+            if strpos( i, tbl_arts[ "lvl" .. config.level ][ a ], 1, true ) then
+                local count = #k
+                for m = 1, count do
+                    local obj = client_obj( k[ m ] )
+                    if obj then
+                        local sect = obj:section()
+                        local dyn = tonumber( string.sub( sect, -2, -2 ) ) or 0
+                        local name = get_inv_name( sect )
+                        local cond = round( obj:condition() * 100 )
+                        local id = obj:id()
+
+                        local option_id = tostring( phrase_id + config.start_id + 1 )
+                  --      phr = task_manager.Dlg_AddPhrase( dlg, name .. " [%c[255, 238, 153, 26]" .. dyn .. "%c[default]] - (" .. tostring( cond ) .. "%)", option_id, config.start_id + 1, -10000 )
+						local color = get_cond_color( cond )
+						phr = task_manager.Dlg_AddPhrase(dlg, name .. " [%c[255, 238, 153, 26]" .. dyn .. "%c[default]] %c[" .. color .. "]" .. tostring(cond) .. "%%c[default]", option_id, config.start_id + 1, -10000)				  
+                        phrase_script = phr:GetPhraseScript()
+						phrase_script:AddAction( string.format( "kotovod.add_menyala_arts_table( %s, %s )", id, config.level ) )
+						phrase_script:AddPrecondition( "kotovod.check_arts_limit()" )
+						phrase_script:AddPrecondition( string.format( "kotovod.art_already_selected( %s )", id ) )						
+
+                        -- Добавляем фразу возврата к выбору
+                        phr = task_manager.Dlg_AddPhrase( dlg, "Вернуться к выбору.", config.start_id + 1, option_id, -10000 )
+							
+                        phrase_id = phrase_id + 1
+                    end
+                end
+            end
+        end
+    end
+
+    -- Добавляем список доступных артефактов следующего уровня
+    local phrase_id = config.start_id + 500
+    for a = 1, #tbl_arts[ "lvl" .. config.next_level ] do
+        local art = tbl_arts[ "lvl" .. config.next_level ][ a ]
+        local option_id = tostring( phrase_id )
+        phr = task_manager.Dlg_AddPhrase( dlg, get_inv_name( art ), option_id, config.start_id + 1, -10000 )
+        phrase_script = phr:GetPhraseScript()
+        phrase_script:AddAction( string.format( "kotovod.process_arts_exchange( '%s' )", art ) )
+        phrase_script:AddPrecondition( "kotovod.can_exchange_arts()" ) 
+
+        local next_phrase_id = tostring( phrase_id + 100 )
+        phr = task_manager.Dlg_AddPhrase( dlg, "Я тебе весточку пришлю, как подготовлю заказ. Зайди ко мне позже.", next_phrase_id, option_id, -10000 )
+        phrase_script = phr:GetPhraseScript()
+
+        phrase_id = phrase_id + 1
+    end
+
+    -- Добавляем фразу обнуления
+    phr = task_manager.Dlg_AddPhrase( dlg, reject_phrases[ lua_random( #reject_phrases ) ], tostring( config.start_id + 55 ), config.start_id + 1, -10000 )
+    phrase_script = phr:GetPhraseScript()
+	phrase_script:AddAction( string.format( "kotovod.reset_menyala_arts_table( %s )", config.level ) )	
+	phrase_script:AddPrecondition( "kotovod.check_any_exchange()" ) 
+    
+    phr = task_manager.Dlg_AddPhrase( dlg, "Вернуться к выбору.", config.start_id + 1, tostring( config.start_id + 55 ), -10000 )		
+	
+    -- Добавляем возможность выхода к выбору
+    phr = task_manager.Dlg_AddPhrase( dlg, "Погоди, ошибочка вышла, я другой закажу.", tostring( config.start_id + 56 ), config.start_id + 1, -10000 )	
+    phrase_script = phr:GetPhraseScript()
+	phrase_script:AddAction( string.format( "kotovod.reset_menyala_arts_table( %s )", config.level ) )	
+	
+	phr = task_manager.Dlg_AddPhrase( dlg, "Вернуться к выбору.", "1", tostring( config.start_id + 56 ), -10000 )	
+end
+
+function menyala_exchange_arts( dlg )
+	dlg:SetForceReload( true )
+    
+	menyala_arts_table = {}
+	
+    -- Стартовая фраза
+	local phr = task_manager.Dlg_AddPhrase( dlg, "Слушай, а заказать артефакт можно?", "0", "", -10000 )
+	local phrase_script = phr:GetPhraseScript()
+    
+    -- Фраза с описанием условий
+	info_phr = task_manager.Dlg_AddPhrase( dlg, "А почему нет? Тут вот какая система, Меченный: \\n \\n    • За три арта первого уровня — один второго.\\n    • За три второго — один третьего.\\n\\n    • А за три третьего — «Пустышку», редкая штука.\\n \\nИ учти, качество за качество. Если принесёшь мне дрянь — не обессудь, взамен такое же получишь. За дрянь никто зелень не выдаст, сам понимаешь...", "1", "0", -10000 )
+	phrase_script = info_phr:GetPhraseScript()
+	
+    -- Добавляем фразы для каждого уровня
+	for _, config in ipairs( art_configs ) do
+		add_art_level_phrases( dlg, config )
+	end
+    
+	-- Фраза отказа
+	phr = task_manager.Dlg_AddPhrase( dlg, "Увы, пока обойдусь.", "2", "1", -10000 )
+	phrase_script = phr:GetPhraseScript()
+	phrase_script:AddAction( "dialogs.break_dialog" )
+end
+
+
+function reset_menyala_arts_table( level )
+    menyala_arts_table = {}
+	
+	if info_phr then 
+		info_phr:SetText( "Поспешишь - людей насмешишь. Лучше хорошенько покумекай, прежде чем выбирать." )
+		info_phr = nil
+	end	
+	
+    if level_phrases[ level ] then
+		local tbl_phrases = {
+			"Будь внимательнее, время — ценный ресурс в Зоне.",
+			"Не отвлекайся, сталкер. Каждый твой выбор должен быть обдуманным.",
+			"Эх, ты... Внимательность в Зоне — залог выживания. Давай по новой.",
+			"В следующий раз думай, прежде чем выбирать. Время не ждёт.",
+			"Меченный, не трать моё время. У меня еще дела в баре.",
+			"Смотри внимательнее на то, что выбираешь. В Зоне второго шанса может не быть.",
+			"Так дела не делаются, сталкер. Соберись и давай заново.",
+			"Соберись, Меченный, ты чего мешкаешь? Я тут целый день торчать не буду!",
+			"Эх, чудо-юдо... Я же на месте не сижу, не сегодня, так завтра меня здесь уже не будет. Не трать моё время.",
+			"Эх, Меченный... На Багамы с такой расторопностью я никогда не попаду. Соберись, выбирай с умом!",
+			"Будь внимательнее, дружище. Такое впечатление, что ты после встречи с контролёром.",
+			"Так-так-так... смотри внимательнее, сталкер. В Зоне каждая секунда на счету.",
+			"Ну ты и копуша! Пока ты возишься, я мог бы уже три сделки провернуть!",
+			"Меченный, я на одном месте долго не задерживаюсь. Если хочешь совершить сделку — не тяни кота за хвост.",
+			"На 'большой земле' так дела не делают, сталкер. Быстрее соображай, а то уйду с твоими артами, хе-хе!",
+			"Говорят, ты опытный сталкер, а мнёшься, как новичок на Кордоне. Определись уже!"			
+		}
+        level_phrases[ level ]:SetText( tbl_phrases[ lua_random( #tbl_phrases ) ] )
+    end	
+end
+
+function add_menyala_arts_table( id, level )
+	table.insert( menyala_arts_table, id )
+	
+	-- Обновляем текст для текущего уровня
+	if level_phrases[ level ] then
+		level_phrases[ level ]:SetText( menyala_talk_phrase() )
+	end
+end
+
+function check_arts_limit()
+	return #menyala_arts_table < 3
+end
+
+function can_exchange_arts()
+	return #menyala_arts_table == 3
+end
+
+function check_any_exchange()
+	return #menyala_arts_table >= 1
+end
+
+function menyala_talk_phrase()
+	local text = ""
+	local grey_color = "%c[255,128,128,128]"
+	local default_color = "%c[default]"
+
+	for i, v in pairs( menyala_arts_table ) do 
+		local obj = level.object_by_id( v )
+		if obj then
+			if i > 1 then text = text .. ", " end
+			text = text .. grey_color .. get_inv_name( obj:section() ) .. default_color
+		end
+	end
+
+	local count = #menyala_arts_table
+	if count >= 1 then 
+		text = "Хорошо, ты предлагаешь: " .. text .. " (" .. count .. "/3)"
+	end
+
+	if #menyala_arts_table == 3 then 
+		local final_phrases = {
+			"\\nОтлично, какой артефакт тебя интересует?",
+			"\\nЧто хочешь взамен, Меченный?",
+			"\\nХорошо, какой арт приглянулся?",
+			"\\nВыбирай, что душе угодно.",
+			"\\nТеперь выбор за тобой. Что берём?",
+			"\\nКак и договаривались! Заказывай.",
+			"\\nЯ своё слово держу, выбирай."
+		}
+		text = text .. final_phrases[ lua_random( #final_phrases ) ]
+	end
+
+	return text
+end
+
+function process_arts_exchange( tovar )
+	if #menyala_arts_table ~= 3 then
+		db.actor:give_talk_message( "Недостаточно артефактов для обмена.", "ui\\ui_iconsTotal", Frect():set( 0, 0, 0, 0 ), "simple_answer_item" )
+		return
+	end
+    
+	local dyn, con = 0, 0
+	local arts_to_spawn = {}
+	local artefacts = {}
+    
+	for _, id in pairs( menyala_arts_table ) do
+		local obj = level.object_by_id( id )
+		if obj then
+			local section = obj:section()
+			local dyn_val = 1
+			if strpos( section, "_dyn", 1, true ) then
+				dyn_val = tonumber( string.sub( section, -2, -2 ) )
+			end
+			local con_val = round( obj:condition() * 100 )
+			
+			log2(string.format("Арт ID: %d, Дан: %d, Кондиция: %d", id, dyn_val, con_val))
+            
+			dyn = dyn + dyn_val
+			con = con + con_val
+            
+			misc.release_obj( obj )
+			sak.relocate_item( "out", section, 1 )
+		end
+	end
+    
+	local length = #menyala_arts_table
+	dyn = math.floor( dyn / length )
+	dyn = ( dyn <= 1 and 6 ) or ( dyn >= 5 and 4 ) or dyn
+	con = round( con / length )
+	
+	log2(string.format("Ср. дан: %d, Ср. кондиция: %d", dyn, con))
+    
+	local section = tovar
+	local lvl = menyala_art_lvl( tovar )
+	if lvl ~= 4 then
+		section = section .. "_dyn" .. dyn .. "d"
+	end	
+	
+	table.insert( arts_to_spawn, { section = section, condition = con })
+	table.insert( artefacts, section )	
+    
+	local text = ""
+	for i, section in ipairs( artefacts ) do
+		text = text .. get_inv_name( section )
+		if i < #artefacts then
+			text = text .. ", "
+		end
+	end
+    
+	local menyala_orders = get_value( "menyala_orders", {} )
+	order_id = #menyala_orders + 1
+    
+	menyala_orders[ order_id ] = {
+		arts = arts_to_spawn,
+		completed = false
+	}
+    
+    set_value( "menyala_orders", menyala_orders )
+    
+    local time = ( 5 + dyn ) * con * lvl
+    
+    timers.start_timer( "menyala_timer_" .. order_id, 0, 0, 1, string.format( "kotovod.menyala_timer_end( %d, '%s' )", order_id, text ) )
+    
+    reset_menyala_arts_table()
+    level_phrases = {}
+
+	db.actor:give_info_portion( "art_exchanger_order" )
+end
+
+--\\-- Может эти поитнереснее будут?
+function generate_con_val( base_con )
+    local variation = 0.1 * ( 1.5 - base_con )
+    local min_con = math.max( 0.35, base_con - variation )
+    local max_con = math.min( 1.0, base_con + variation )
+    return round( min_con + lua_random() * ( max_con - min_con ), 2 )
+end
+
+function generate_dyn_val( condition )
+    local dyn_probabilities = {
+        [ 0.4 ] = { 
+            { 6, 0.6 }, 
+            { 1, 0.3 }, 
+            { 2, 0.1 } 
+        },
+        [ 0.6 ] = { 
+            { 1, 0.4 }, 
+            { 2, 0.3 }, 
+            { 6, 0.2 }, 
+            { 3, 0.1 } 
+        },
+        [ 0.8 ] = { 
+            { 3, 0.5 }, 
+            { 2, 0.3 }, 
+            { 1, 0.2 } 
+        },
+        [ 1.0 ] = { 
+            { 3, 0.6 }, 
+            { 2, 0.2 }, 
+            { 4, 0.2 } 
+        }
+    }
+	
+	local range_probs
+	for upper_bound, probs in pairs( dyn_probabilities ) do
+		if condition <= upper_bound then
+			range_probs = probs
+			break
+		end
+	end
+
+	local cumulative = 0
+    
+	for _, prob_pair in ipairs( range_probs ) do
+		cumulative = cumulative + prob_pair[ 2 ]
+		if lua_random() <= cumulative then
+			return prob_pair[ 1 ]
+		end
+	end
+    
+    return range_probs[ 1 ][ 1 ]
+end
+
+function menyala_art_lvl( section )
+	if str_in_tab( section, kotovod.tbl_arts.lvl2 ) then return 2 end     
+	if str_in_tab( section, kotovod.tbl_arts.lvl3 ) then return 3 end 
+	return 4
+end
+
+function get_ready_message( text )
+	local messages = {
+		"Здорово, Меченный! Твой заказ готов: %s. Подваливай, когда время будет",
+		"Эй, Меченный! Я тут достал %s. Заходи, глянешь",
+		"Привет! заказ - %s у меня. Подходи",
+		"Меченный, твой заказ: %s подъехал. Буду ждать, не задерживайся особо",
+		"Меченный! По твоему заказу: %s, всё срослось. Загляни при случае",
+		"Здорово, Меченный. Я по делу, %s подоспел. Подходи, как минутка появится"
+	}
+	return string.format( messages[ math.random( #messages ) ], text )
+end
+
+function get_waiting_message( time_left )
+	local colored_hours = string.format( "%%c[255,238,153,26]%d%%c[default]", time_left )
+	local hour_form = kotovod.declension( time_left, "час", "часа", "часов" )
+	local messages = {
+		"Слушай, Меченный, надо подождать %s %s. Я тебе весточку пришлю, как будет готово.",
+		"Тут такое дело... Примерно через %s %s всё будет. Я маякну, как добуду.",
+		"Потерпи %s %s, лады? Сам знаешь, дело тонкое. Дам знать, как всё срастётся.",
+		"%s %s надо, не раньше. Зона – она такая, спешку не любит. Я свистну, как всё будет.",
+		"Давай так: жди примерно %s %s. Как только, так сразу сообщение пришлю."
+	}
+	return string.format( messages[ math.random( #messages ) ], colored_hours, hour_form )
+end
+
+function menyala_time_info()   
+	if not order_id then return end
+	local menyala_timer = timers.get_timer_info( "menyala_timer_" .. order_id )
+	if menyala_timer and menyala_timer.time_left > 0 then 
+		local hours = math.round( menyala_timer.time_left / 60 )
+		db.actor:give_talk_message(
+			"%c[255,216,186,140]" .. get_waiting_message( hours ),
+			"ui\\ui_iconsTotal", Frect():set( 0, 0, 0, 0 ), "simple_answer_item"
+		)       
+	end    
+end
+
+function menyala_timer_end( order_id, text )
+	local menyala_orders = get_value( "menyala_orders", {} )
+	if menyala_orders[ order_id ] then
+		menyala_orders[ order_id ].completed = true
+		set_value( "menyala_orders", menyala_orders )
+	
+		db.actor:give_info_portion( "art_exchanger_delivered" )
+		sak.send_tip(
+			get_ready_message( text ),
+			"Сообщение от Санька-Менялы", 0, 30, "g_g", "sak", "green"
+		)        
+	end
+end
+
+function menyala_art_gift()
+	local menyala_orders = get_value( "menyala_orders", {} )
+	local orders_to_remove = {}
+    
+	for id, order in pairs( menyala_orders ) do
+		if order.completed then
+			for _, art in pairs( order.arts ) do
+				kotovod.add_bad_item( art.section, art.condition * 0.01 )
+			end
+			table.insert( orders_to_remove, id )
+		end
+	end
+    
+	for _, id in ipairs( orders_to_remove ) do
+		menyala_orders[ id ] = nil
+	end
+    
+	set_value( "menyala_orders", menyala_orders )
+	db.actor:disable_info_portion( "art_exchanger_delivered" )
+end
+
+function art_already_selected( id )
+	for _, v in pairs( menyala_arts_table ) do
+		if v == id then return false end
+	end
+	return true
+end
 
 
 
