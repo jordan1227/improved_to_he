@@ -1,0 +1,491 @@
+local text_pos, text_width, ballon_text = 7, 120, 25
+
+underground_levels = {
+    [ "l04u_labx18" 			] = true,
+    [ "l08u_brainlab" 			] = true,
+    [ "labx8" 					] = true,
+    [ "labx10" 					] = true,
+    [ "warlab" 					] = true,
+    [ "l10u_bunker" 			] = true,
+    [ "l12u_control_monolith"	] = true,
+    [ "l12u_sarcofag"			] = true
+}
+
+function attach( sm )
+	sm:subscribe({ signal = "on_safe_spawn",          fun = this.on_safe_spawn })
+	sm:subscribe({ signal = "on_use",                 fun = this.on_ballon_use })
+	sm:subscribe({ signal = "level_changer_action",   fun = this.on_level_changer_action })
+end
+	
+--//------------------------------------------------
+--//------------- Хиты в лабораториях --------------
+--//------------------------------------------------
+
+-- Иначе заебет спамом на загрузке, пробовал иначе, никак не получалось. Хоть объявляй ее на before_spawn, сенд тип один хер срабатывал. Не знаю...
+-- Там какой-то дроп происходит предметов, Включая броню из-за этого косяк
+
+local is_first_tip = true
+
+function on_safe_spawn()
+	if game_options.UseBallons == false then return end
+	local screen_width = device().width
+	if screen_width >= 2560 then
+		text_pos = 15 
+		text_width = 80
+		ballon_text = 35
+	end
+	local lname = level.name()
+    if not underground_levels[ lname ] then return end
+	
+	local zones = get_value( "lab_safe_zones", nil )
+	if not zones then 
+		create_underground_safe_zones()
+	end
+
+	-- Иначе будет лишний хит во время загрузки, плюсом броня не отработает, она дропается?
+    dsh.wait_condition( function() return amk_mod.sync_done end, function()
+		local sm = ogse_signals.get_mgr()
+        undergrounds_hits.update_ballon_timer() -- Нужно обновить сразу, чтобы не ждать 6 тиков
+		sm:subscribe({ signal = "on_drop_after_all", fun = this.check_outfit 		 })
+        sm:subscribe({ signal = "on_update", 		 fun = this.actor_in_protection  })
+		sm:subscribe({ signal = "on_item_to_ruck", 	 fun = this.check_outfit   		 })
+    end )
+end
+
+local in_safe_zone = false
+local snd
+
+local function play_breath_sound( actor )
+    if snd and snd:playing() then snd:stop() end
+    if not actor or not actor:alive() then return end    
+    snd = xr_sound.get_safe_sound_object( "scripts\\breath_antigas_2" ) 
+    snd:play_at_pos( actor, vector(), 0, sound_object.s2d )
+end
+
+local function play_damage_sound( actor )
+    if snd and snd:playing() then snd:stop() end
+    if not actor or not actor:alive() then return end    
+    snd = xr_sound.get_safe_sound_object( "scripts\\mask_" .. lua_random( 1, 5 ) )
+    snd:play_at_pos( actor, vector(), 0, sound_object.s2d )
+end
+
+-- После 6 тиков пройдет игровая минута, тогда и обновим статик, чтобы не гонять каждые 2 сек
+local tick_counter = 0
+
+function actor_in_protection()
+    ogse_signals.get_mgr():reschedule( 2000 )
+
+    -- Увеличиваем счётчик "тиков"
+    tick_counter = tick_counter + 1
+    
+    -- Количество тиков для обновления статика
+    if tick_counter >= 6 then
+        update_ballon_timer()
+        tick_counter = 0  -- Сбрасываем счётчик
+    end
+    
+    local actor = db.actor
+    local armor = actor:item_in_slot( 6 )
+    
+    local function can_play_breath_sound()
+        return armor 
+            and str_in_tab( armor:section(), { "scientific_", "ecolog_", "protection_", "monolit_exoskeleton", "monolit_q_exoskeleton" } )
+            and armor:condition() >= 0.72 
+			and get_value( "lab_protection" )
+            and vergas_masks.get_flag_mask()
+    end
+    
+    if in_safe_zone then 
+        if can_play_breath_sound() then
+            play_breath_sound( actor )
+        end
+        return 
+    end
+    
+    if not can_play_breath_sound() then
+        level.add_pp_effector( "black_tip_eff.ppe", 1031, false )    
+        actor.health = armor and ( - ( 5 / armor:condition() ) / 75 ) or -0.15
+        play_damage_sound( actor )
+    else
+        play_breath_sound( actor )
+    end
+end
+
+--//------------------------------------------------
+--//---------- Взаимодействие с баллонами ----------
+--//------------------------------------------------
+
+
+-- Всегда из рюкзака, какой смысл?
+local wait = 0
+
+function on_actor_before_use( obj, sobj )
+	if obj:section() == "ballon" then 
+		wait = 2000
+	end
+end
+
+function prepare_ballon_drag( drag_obj, drop_obj )
+	if not drag_obj or not drop_obj then return end
+	if get_value( "lab_protection", false ) then
+		on_ballon_stop_use()
+		return
+	end
+
+	local drag_id = drag_obj:id()
+	local drop_id = drop_obj:id()
+	local actor = db.actor
+	local current = actor:get_current_outfit()
+	if current and current:id() ~= drop_id then
+		actor:move_to_ruck( current )
+	end
+
+	sak.close_window()
+	sak.actor_hide_weapon()
+	schedule.add( "ballon_move_outfit", function()
+		local outfit = level.object_by_id( drop_id )
+		local ballon = level.object_by_id( drag_id )
+		if not outfit or not ballon then
+			sak.restore_weap()
+			return
+		end
+		actor:move_to_slot( outfit )
+		sak.restore_weap()
+		schedule.add(
+			"ballon_drag_use",
+			string.format( "undergrounds_hits.on_ballon_use( level.object_by_id( %d ) )", drag_id ),
+			200
+		)
+	end, 2000 )
+end
+
+function on_ballon_use( obj, sobj )
+	if not obj then return end
+	local sect = obj:section()
+	if sect ~= "ballon" then return end
+	local actor = db.actor	
+    local cond  = obj:condition()		
+	local armor = actor:item_in_slot( 6 )
+	sak.close_window()
+	----------
+	if 
+		not armor 
+		or ( armor and not str_in_tab( armor:section(), { "scientific_", "ecolog_", "protection_", "monolit_exoskeleton", "monolit_q_exoskeleton" } ) ) 
+	then 
+		sak.send_tip(
+			"Отсутствует подходящее крепление для размещения баллона", 
+			"Вот же...", 0, 5, "g_g", "sak", "red" 	
+		)				
+		local eat = obj:get_eatable_item()
+		if eat.eat_portions_num < 1 then 
+			eat.eat_portions_num = 1
+		end	
+		return 
+	end
+	----------	
+	this.on_ballon_stop_use() -- Проверка, если баллон уже на комбезе?	
+	misc.release_obj( obj )	-- Если драг-дропали, то надо удалять
+	local time = ( cond * 120 ) / 60
+	
+	dsh.timeout( 20, function()
+		sak.close_window()
+		
+		local prev_torch_mode
+		if nlc_torch.get_torch_state() then 
+			prev_torch_mode = nlc_torch.torch_handler( "off" )
+			--nlc_torch.play_torch_anim()
+		end	
+		
+		dsh.timeout( 2000, function()
+			sak.actor_hide_weapon()		
+			level.add_cam_effector( "camera_effects\\item_use.anm", 9773, false, "" )
+			misc.easy_sound( "scripts\\inv_kip_change" ) 
+			dsh.timeout( 10000, function()
+				attach_ballon()
+				timers.start_timer( "protection", 0, time, 0, "undergrounds_hits.disable_protection()" )
+				
+				if prev_torch_mode then
+					nlc_torch.torch_handler( "on" )
+				end							
+			end )
+		end )	
+	end )
+end
+
+function attach_ballon()
+	if not vergas_masks.get_flag_mask() then 
+		vergas_masks.on_off_mask_end()
+	end	
+	set_value( "lab_protection", true )
+	sak.send_tip(
+		"Подача кислорода восстановлена", 
+		"Датчик костюма", 0, 5, "pribor", "pda_news", "green"
+	)			
+	
+    sak.restore_weap()
+	-- Статик вещаем только при использовании баллона в подземках, иначе надо стописят проверок. И так нагружено
+	local lname = level.name()
+    if not underground_levels[ lname ] then return end	
+	update_ballon_timer()
+end
+	
+function on_ballon_stop_use()
+	clean_ballon_hud()		-- Чистим статик	
+	if not get_value( "lab_protection" ) then return end
+	local name, time = timers.check_timer( "protection", "undergrounds_hits.disable_protection()" )
+	if not name then return end
+	
+	remove_value( "lab_protection" )	
+	timers.stop_timer( "protection" )
+	sak_dialog.clear_ready_time( "protection" )
+
+	if not is_first_tip then 
+		sak.send_tip(
+			"Зафиксировано прекращение подачи кислорода", 
+			"Датчик костюма", 0, 5, "pribor", "pda_news", "red"
+		)	
+	end
+	is_first_tip = false
+
+	local actor  = db.actor		
+	local cond   = time / 120	
+	local weight = 1 + ( 4 * cond )
+	local ballon = misc.spawn_to( "ballon", actor )	
+	misc.process_spawn()
+	if ballon then
+		params.upd_condition( ballon.id, cond )	
+		params.set_inv_weight( ballon.id, weight ) 					
+	end		
+end
+
+function disable_protection()
+    remove_value( "lab_protection" )
+	clean_ballon_hud()		-- Чистим статик
+	local lname = level.name()
+    if not underground_levels[ lname ] then return end	
+	sak.send_tip(
+		"Зафиксировано прекращение подачи кислорода2", 
+		"Датчик костюма", 0, 5, "pribor", "pda_news", "red"
+	)
+end	
+
+--//------------------------------------------------
+--// Сообщение о необходимости в комбезе перед лабой
+--//------------------------------------------------
+
+function lab_info()	
+    db.actor.health = - 0.2	 
+    level.add_pp_effector( "yantar_underground_psi.ppe", 999, true )
+    misc.easy_sound( "scripts\\mask_1" )	   
+    sak.send_tip(
+		"Э... Нет, в таком виде туда лучше не соваться, необходимо раздобыть скафандр с системой защиты дыхания. \\nНадо бы у торговцев поспрашивать...",
+		"Мысли вслух", 0, 5, "g_g", "sak", "yellow"
+	)	
+	for i = 1, 3 do
+		misc.release_by_name( "val_escort_guard" .. i )	
+	end	
+	schedule.add( "remove_pp", "sleeping_bag.stop_pp( 999 )", 18000 )
+	-- and actor:has_info( "val_escort_scene_add_end" ) and not actor:has_info( "val_escort_scene_end" ) -- Нужны ли?
+end
+
+--//------------------------------------------------
+--//------------- Покидая лабораторию --------------
+--//------------------------------------------------
+
+function on_level_changer_action( obj, wnd )
+	if not obj or not underground_levels[ level.name() ] then return end
+	local sobj = obj:get_alife_object()
+	local lc = sobj and sobj:get_level_changer()
+	if not lc then return end
+	local dest_vertex = game_graph():vertex( lc.dest_game_vertex_id )
+	local dest_lname = dest_vertex and alife():level_name( dest_vertex:level_id() )
+	if dest_lname and const.ground_levels[ dest_lname ] then
+		on_ballon_stop_use()
+	end
+end
+
+function enable_sz_protection()
+    in_safe_zone = true
+    --sak.send_tip( "в сейф зоне", "Мысли вслух", 0, 5, "g_g", "no", "green" )	
+end
+
+function disable_sz_protection()
+    in_safe_zone = false
+    --sak.send_tip( "вышли из зоны", "Мысли вслух", 0, 5, "g_g", "no", "red" )	
+end
+
+function get_sz_protection()
+	return in_safe_zone
+end
+
+function check_outfit(obj, sobj)
+	if not obj then return end
+	if not obj:is_outfit() then return end
+    if get_value("lab_protection") ~= true then return end
+	
+    local outfit = db.actor:get_current_outfit()
+    if outfit then return end
+
+    on_ballon_stop_use()
+end
+
+--//------------------------------------------------
+--//------------- Статик для баллона ---------------
+--//------------------------------------------------
+
+local table_color_thresholds = {
+    { threshold = 30,  color = { 255, 85, 85	} },  -- red
+    { threshold = 60,  color = { 238, 153, 26	} },  -- orange
+    { threshold = 90,  color = { 255, 255, 1	} },  -- yellow
+    { threshold = 120, color = { 105, 240, 145	} }   -- green
+}
+
+local ballon_hud_static = nil
+local ballon_timer = nil
+
+function get_timer_color( minutes_left )
+    for _, level in ipairs( table_color_thresholds ) do
+        if minutes_left <= level.threshold then
+            return string.format( "%%c[ 255, %d, %d, %d ]", level.color[ 1 ], level.color[ 2 ], level.color[ 3 ] )
+        end
+    end
+    return string.format( "%%c[ 255, %d, %d, %d ]", table_color_thresholds[ 1 ].color[ 1 ], table_color_thresholds[ 1 ].color[ 2 ], table_color_thresholds[ 1 ].color[ 3 ] )
+end
+
+function create_ballon_hud()
+    local hud = get_hud()
+    
+    -- Сначала удаляем существующий статик, если он есть
+    if ballon_hud_static then 
+        hud:RemoveCustomStatic( "hud_info_ballon" )
+    end
+    
+    ballon_hud_static = hud:AddCustomStatic( "hud_info_ballon", true )
+    if not ballon_hud_static then return false end
+    
+    local ballon_name = CUIStatic()
+    ballon_name:SetTextComplexMode( true )
+    ballon_name:SetText( "Баллон" )    
+    ballon_name:SetFont( GetFontLetterica16Russian() )
+    ballon_name:SetTextColor( 255, 160, 160, 160 )
+    ballon_name:Init( ballon_text, 35, 40, 40 )
+    ballon_name:SetAutoDelete( false )
+    ballon_name:Show( true )
+    
+    ballon_timer = CUIStatic()
+    ballon_timer:SetTextComplexMode( true )
+    ballon_timer:SetFont( GetFontLetterica25() )
+    ballon_timer:SetAutoDelete( false )
+    ballon_timer:Init( 15, 28, 80, 80 )
+    
+    -- Добавление дочерних элементов
+    local parent_window = ballon_hud_static:wnd()
+    if parent_window then
+        parent_window:AttachChild( ballon_name )
+        parent_window:AttachChild( ballon_timer )
+    end
+    
+    return true
+end
+
+function update_ballon_timer()
+    if not get_value( "lab_protection" ) then
+        clean_ballon_hud()
+        return 
+    end
+
+    if not ballon_hud_static or not ballon_timer then
+        if not create_ballon_hud() then 
+			return
+		end	
+    end
+
+    local total_minutes = timers.get_timer_info( "protection" )    
+    if not total_minutes then 
+        clean_ballon_hud()
+        return
+    end
+
+    local hours = math.floor( total_minutes.time_left / 60 )
+    local minutes = total_minutes.time_left % 60    
+    local time_text
+
+    if hours > 0 then
+        time_text = string.format( "%d ч %02d мин", hours, minutes )
+        ballon_timer:Init( text_pos, 9, text_width, 80 )
+    else
+        time_text = string.format( "%d мин", minutes )
+        ballon_timer:Init( 28, 9, 80, 80 )
+    end    
+
+    local current_color = get_timer_color( total_minutes.time_left )
+    ballon_timer:SetText( current_color .. time_text )
+end
+
+function clean_ballon_hud()
+    if not ballon_hud_static then return end
+    
+    local hud = get_hud()
+    if not hud then return end
+
+    hud:RemoveCustomStatic("hud_info_ballon")
+    
+    ballon_hud_static = nil
+    ballon_timer = nil
+end
+
+function create_underground_safe_zones()
+   local lab_safe_zones = get_value( "lab_safe_zones", {} )
+   
+   local tbl_levels = {
+       "l04u_labx18", 
+	   "l08u_brainlab", 
+	   "labx8", 
+	   "labx10", 
+       "warlab", 
+	   "l10u_bunker", 
+	   "l12u_control_monolith", 
+	   "l12u_sarcofag"
+   }
+   
+   for i = 1, MAX_OBJ_ID do
+       local obj = g_sim:object( i )
+       if obj and str_in_tab( obj.level_name, tbl_levels ) then
+           local name = obj:name()
+           if ( strpos( name, "_koster_", 1, true ) or strpos( name, "_candle_", 1, true ) ) and not strpos( name, "zone", 1, true ) then
+				local radius = strpos( name, "_koster_", 1, true ) and 3.5 or 2.2
+
+				local sr_obj = alife():create( "space_restrictor", obj.position, obj.m_level_vertex_id, obj.m_game_vertex_id )
+
+				if sr_obj then	
+					-- Заодно дадим уникальное имя, чтобы было немного проще
+					--local unique_name = string.format( "safe_zone_%s_%d", obj.level_name, sr_obj.id )
+					local unique_name = string.format( "safe_zone_%d", sr_obj.id )					
+					sr_obj:set_name( unique_name )
+					
+					local custom = [=[
+						[logic]
+						active = sr_idle@wait
+						[sr_idle@wait]
+						on_actor_inside = sr_idle@inside %=undergrounds_hits.enable_sz_protection%
+						[sr_idle@inside]
+						on_actor_outside = sr_idle@wait %=undergrounds_hits.disable_sz_protection%
+					]=]
+				   
+                   kotovod_restrictors.rewrite_restrictor( sr_obj, custom, radius )
+                   
+                   if not lab_safe_zones[ obj.level_name ] then
+                       lab_safe_zones[ obj.level_name ] = {}
+                   end
+                   table.insert( lab_safe_zones[ obj.level_name ], sr_obj.id )
+                   --log2("successfully created restrictor with id %s", sr_obj.id )
+               end
+           end
+       end
+	end
+	set_value( "lab_safe_zones", lab_safe_zones )
+	log2( "created safe_zones" )
+end
+
+
+-- g_loadstring undergrounds_hits.create_underground_safe_zones()
