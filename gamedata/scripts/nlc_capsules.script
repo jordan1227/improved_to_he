@@ -1,0 +1,292 @@
+-- [HE-PORT]
+
+local regular_bases = {
+	"af_night_star",
+	"af_gold_fish",
+	"af_cristall",
+	"af_soul",
+	"af_electra_moonlight",
+	"af_rusty_sea_urchin",
+	"af_ameba_mica",
+	"af_dummy_spring",
+	"af_dummy_dummy",
+	"af_dummy_battery",
+	"af_dummy_pellicle",
+	"af_dummy_kolobok",
+	"af_dummy_glassbeads",
+}
+
+local mayatnik_bases = {
+	"af_mayatnik_les_new",
+	"af_mayatnik_radar_new",
+	"af_mayatnik_tuman_new",
+	"af_mayatnik_tesla_new",
+	"af_mayatnik_stadion_new",
+	"af_mayatnik_chaes_new",
+}
+
+local function clean_value(value)
+	if value == nil then return nil end
+	return tostring(value):gsub("[;{}\r\n]", "")
+end
+
+local function valid_dyn(base, dyn)
+	local value = tonumber(dyn)
+	if not base or not value then return nil end
+	local section = base .. "_dyn" .. tostring(value) .. "d"
+	local ini = system_ini()
+	return ini and ini:section_exist(section) and value or nil
+end
+
+local function block_bounds(custom_data, name)
+	if not custom_data or custom_data == "" then return nil end
+	local needle = name .. "={"
+	local from = 1
+	while true do
+		local first = string.find(custom_data, needle, from, true)
+		if not first then return nil end
+		local previous = first > 1 and string.sub(custom_data, first - 1, first - 1) or ""
+		if previous == "" or not string.find(previous, "[%w_]") then
+			local last = string.find(custom_data, "}", first + string.len(needle), true)
+			if last then return first, last end
+			return nil
+		end
+		from = first + 1
+	end
+end
+
+local function remove_block(custom_data, name)
+	local result = custom_data or ""
+	local first, last = block_bounds(result, name)
+	while first do
+		result = string.sub(result, 1, first - 1) .. string.sub(result, last + 1)
+		first, last = block_bounds(result, name)
+	end
+	result = result:gsub("^%s+", ""):gsub("%s+$", "")
+	return result
+end
+
+local function parse_block(custom_data, name, kind)
+	local first, last = block_bounds(custom_data, name)
+	if not first then return nil end
+	local body = string.sub(custom_data, first + string.len(name) + 2, last - 1)
+	local result = { kind = kind }
+	for key, value in string.gmatch(body, "([%w_]+)=([^;}]*)") do
+		result[key] = value
+	end
+	result.v = tonumber(result.v) or 1
+	if result.base == nil or result.base == "" then return nil end
+	result.dyn = valid_dyn(result.base, result.dyn)
+	return result
+end
+
+function regular(base, dyn, tag)
+	return {
+		kind = "capsule",
+		base = clean_value(base),
+		dyn = valid_dyn(base, dyn),
+		tag = clean_value(tag),
+		v = 1,
+	}
+end
+
+function mayatnik(base, tag)
+	return {
+		kind = "mayatnik_capsule",
+		base = clean_value(base),
+		tag = clean_value(tag),
+		v = 1,
+	}
+end
+
+function descriptor(payload)
+	if not payload or not payload.base then return nil end
+	if payload.kind == "mayatnik_capsule" then
+		return "mayatnik_capsule@" .. payload.base
+	end
+	local result = "capsule@" .. payload.base
+	if payload.dyn then result = result .. "@" .. tostring(payload.dyn) end
+	if payload.tag then result = result .. "@" .. payload.tag end
+	return result
+end
+
+function from_descriptor(value)
+	if type(value) ~= "string" then return nil end
+	local base, tag = string.match(value, "^mayatnik_capsule@([^@]+)@?(.*)$")
+	if base then return mayatnik(base, tag ~= "" and tag or nil) end
+	local regular_base, dyn, regular_tag = string.match(value, "^capsule@([^@]+)@?(%d*)@?(.*)$")
+	if regular_base then
+		return regular(regular_base, dyn ~= "" and tonumber(dyn) or nil, regular_tag ~= "" and regular_tag or nil)
+	end
+	return nil
+end
+
+function read(custom_data)
+	return parse_block(custom_data, "mayatnik_capsule", "mayatnik_capsule")
+		or parse_block(custom_data, "capsule", "capsule")
+end
+
+function encode(payload, custom_data)
+	if not payload or not payload.base then return custom_data end
+	local result = remove_block(custom_data, "capsule")
+	result = remove_block(result, "mayatnik_capsule")
+	local name = payload.kind == "mayatnik_capsule" and "mayatnik_capsule" or "capsule"
+	local fields = { "v=1", "base=" .. clean_value(payload.base) }
+	if payload.dyn then table.insert(fields, "dyn=" .. tostring(payload.dyn)) end
+	if payload.tag then table.insert(fields, "tag=" .. clean_value(payload.tag)) end
+	local block = name .. "={" .. table.concat(fields, ";") .. "}"
+	if result == "" then return block end
+	return result .. "\n" .. block
+end
+
+function shell(payload)
+	return payload and payload.kind == "mayatnik_capsule" and "m_capsule" or "af_capsule"
+end
+
+function content_section(payload)
+	if not payload or not payload.base then return nil end
+	local dyn = valid_dyn(payload.base, payload.dyn)
+	if payload.kind == "capsule" and dyn then
+		return payload.base .. "_dyn" .. tostring(dyn) .. "d"
+	end
+	return payload.base
+end
+
+function random_regular(dyn, tag)
+	local base = regular_bases[dsh.get_next_random("nlc_capsules.regular", 1, #regular_bases)]
+	local selected_dyn = dyn
+	if selected_dyn == true then
+		selected_dyn = dsh.get_next_random("nlc_capsules.regular_dyn", 1, 6)
+	end
+	return regular(base, selected_dyn, tag)
+end
+
+function random_mayatnik(tag)
+	local base = mayatnik_bases[dsh.get_next_random("nlc_capsules.mayatnik", 1, #mayatnik_bases)]
+	return mayatnik(base, tag)
+end
+
+function read_server(object_or_id)
+	local sobj = object_or_id
+	if type(object_or_id) == "number" then sobj = alife():object(object_or_id) end
+	if not sobj then return nil, nil end
+	local pk = get_netpk(sobj, 1)
+	if not pk then return nil, nil end
+	local data = pk:get()
+	return read(data.custom_data), data.custom_data
+end
+
+function write_server(sobj, payload)
+	if not sobj or not payload then return nil end
+	local pk = get_netpk(sobj, 1)
+	if not pk then return nil end
+	local data = pk:get()
+	data.custom_data = encode(payload, data.custom_data)
+	pk:set(data)
+	return sobj
+end
+
+function ensure_server(sobj)
+	if not sobj then return nil end
+	local section = sobj:section_name()
+	if section ~= "af_capsule" and section ~= "m_capsule" then return nil end
+	local payload = read_server(sobj)
+	if payload then return payload end
+	payload = section == "m_capsule" and random_mayatnik() or random_regular(true)
+	write_server(sobj, payload)
+	return payload
+end
+
+function spawn_to(payload, parent)
+	if not payload then return nil end
+	local sobj = misc.spawn_to(shell(payload), parent)
+	if sobj then write_server(sobj, payload) end
+	return sobj
+end
+
+function spawn(payload, position, game_vertex_id, level_vertex_id, parent_id)
+	if not payload then return nil end
+	local sobj = alife():create(shell(payload), position, level_vertex_id, game_vertex_id, parent_id)
+	if sobj then write_server(sobj, payload) end
+	return sobj
+end
+
+function give(payload, condition)
+	local sobj = spawn_to(payload, db.actor)
+	if not sobj then return nil end
+	if condition and condition ~= 1 then params.post_cond_check(sobj.id, condition) end
+	sak.relocate_item("in", shell(payload), 1)
+	return sobj
+end
+
+function give_regular(base, dyn, tag, condition)
+	return give(regular(base, dyn, tag), condition)
+end
+
+function give_regular_random(base, max_dyn, tag, condition)
+	local dyn = dsh.get_next_random("nlc_capsules.give_regular", 1, max_dyn or 6)
+	return give(regular(base, dyn, tag), condition)
+end
+
+function give_mayatnik(base, tag, condition)
+	return give(mayatnik(base, tag), condition)
+end
+
+function actor_items(kind)
+	local result = {}
+	if not db.actor then return result end
+	local wanted = kind == "mayatnik_capsule" and "m_capsule" or "af_capsule"
+	for i = 0, db.actor:object_count() - 1 do
+		local obj = db.actor:object(i)
+		if obj and obj:section() == wanted then
+			local sobj = alife():object(obj:id())
+			local payload = ensure_server(sobj)
+			table.insert(result, { obj = obj, sobj = sobj, payload = payload })
+		end
+	end
+	return result
+end
+
+function have_actor(kind, amount)
+	return #actor_items(kind) >= (amount or 1)
+end
+
+function take_actor(kind)
+	local items = actor_items(kind)
+	if #items == 0 then return nil end
+	local item = items[1]
+	misc.release_obj(item.obj)
+	sak.relocate_item("out", shell(item.payload), 1)
+	return item.payload
+end
+
+function actor_descriptor_items(value)
+	local wanted = from_descriptor(value)
+	local result = {}
+	if not wanted then return result end
+	for _, item in ipairs(actor_items(wanted.kind)) do
+		local payload = item.payload
+		if payload and payload.base == wanted.base and (not wanted.dyn or payload.dyn == wanted.dyn) then
+			table.insert(result, item)
+		end
+	end
+	return result
+end
+
+function have_actor_descriptor(value, amount)
+	return #actor_descriptor_items(value) >= (amount or 1)
+end
+
+function take_actor_descriptor(value, amount)
+	local items = actor_descriptor_items(value)
+	local count = math.min(amount or 1, #items)
+	for i = 1, count do
+		misc.release_obj(items[i].obj)
+		sak.relocate_item("out", shell(items[i].payload), 1)
+	end
+	return count
+end
+
+function is_capsule_section(section)
+	return section == "af_capsule" or section == "m_capsule"
+end
