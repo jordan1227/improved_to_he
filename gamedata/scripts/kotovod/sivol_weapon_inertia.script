@@ -1,0 +1,267 @@
+--[[
+    sivol_weapon_inertia.script
+
+    Ported subset of "Weapon Inertia Expanded" (Anomaly addon) for NLC OGSR HE.
+
+    Implements only:
+      - crouch/stance-change kick (replaces wpn_params.stance_bump_y)
+      - stamina-scaled breathing sway (hip-fire/idle hud hand additive anim)
+      - look-up lowers the gun slightly (shares the crouch lerp/anim, like the source addon)
+      - hit-flinch additive anim
+
+    Deliberately NOT ported: MCM (none in this engine -- see constants below
+    instead), lean L/R sway, noise, jump/land (NLC already has these),
+    device/detector lean, crawl.
+
+    Hook mechanisms used (confirmed against this codebase, not assumed):
+      - Periodic logic: ogse_signals "on_update" subscription (unthrottled).
+      - Hit flinch: "on_actor_before_hit" subscription.
+      - Aim state: Polls wpn_params.get_zie_obj() to prevent ADS desyncs.
+      - Crouch kick: "on_key" / "on_key_up" subscriptions. Firing the kick 
+        on keypress bypasses the engine's movement state machine, which 
+        was instantly overwriting the kick when the player was moving.
+
+    Setup: add "sivol_weapon_inertia" to ogse_signals_addons_list.addons.
+]]
+
+sivol_weapon_inertia = {}
+
+-- ============================================================
+-- Tuning constants (no MCM in this engine -- edit these directly)
+-- ============================================================
+
+local CROUCH_KICK_SPEED  = 1.0   -- playback speed for the one-shot crouch start/end kick
+local CROUCH_KICK_POWER  = 1.0   -- blend weight for the one-shot crouch start/end kick
+
+local CROUCH_HOLD_POWER  = 0.35  -- how pronounced the *held* crouch sway is (separate from the kick)
+
+local BREATH_SPEED_MIN   = 0.5
+local BREATH_SPEED_MAX   = 1.4
+local BREATH_POWER_MIN   = 0.15
+local BREATH_POWER_MAX   = 0.55
+
+local LOOKUP_ENABLED     = true
+local LOOKUP_TRIGGER_AT  = 0.6   -- pitch (radians) at which lowering starts
+local LOOKUP_MAX_PITCH   = 1.5   -- looking straight up
+local LOOKUP_POWER       = 0.5   -- how far the gun dips at max look-up
+
+local HIT_ANM_ENABLED    = true
+
+-- ============================================================
+-- Per-weapon multiplier table (see sivol_weapon_inertia_configs.script)
+-- ============================================================
+
+sivol_weapon_inertia.wpn_all_configs = sivol_weapon_inertia.wpn_all_configs or {}
+
+-- ============================================================
+-- Lerp helpers (simple exponential blend, ported from the addon)
+-- ============================================================
+
+local lerps = {}
+
+local function lerp(from, to, power)
+    return (from * (1 - power)) + (to * power)
+end
+
+local function new_lerp(name, from, to, power)
+    lerps[name] = { from = from, to = to, power = power }
+end
+
+local function set_lerp(name, to, power)
+    local lp = lerps[name]
+    if lp then
+        lp.to = to
+        if power then lp.power = power end
+    end
+end
+
+-- ============================================================
+-- State
+-- ============================================================
+
+local is_initialized  = false
+local is_aiming        = false
+local last_wpn_section = "init"
+local wpn_config       = { c = 1, u = 1 }
+local look_up_factor   = 0
+local last_update_time = 0
+
+local hit_anims = {
+    "liz\\liz_hands_hit1_additive.anm",
+    "liz\\liz_hands_hit2_additive.anm",
+    "liz\\liz_hands_hit3_additive.anm",
+}
+
+-- Standard SHOC/CoP hit-type enum -- same set the source addon filters on
+local valid_hit_types = {}
+local function register_hit_type(name)
+    if hit[name] then valid_hit_types[hit[name]] = true end
+end
+register_hit_type("wound")
+register_hit_type("fire_wound")
+register_hit_type("strike")
+register_hit_type("explosion")
+register_hit_type("wound2")
+
+-- Safely build a table of crouch keybinds.
+-- NLC has distinct binds for hold (kCROUCH) and toggle (kCROUCH_TOGGLE).
+local crouch_binds = {}
+if key_bindings then
+    if key_bindings.kCROUCH then crouch_binds[key_bindings.kCROUCH] = "hold" end
+    if key_bindings.kCROUCH_TOGGLE then crouch_binds[key_bindings.kCROUCH_TOGGLE] = "toggle" end
+end
+
+local function initialize()
+    new_lerp("crouch",          0, 0, 0.5)
+    new_lerp("breathing_speed", 0, 0, 0.8)
+    new_lerp("breathing_power", 0, 0, 0.8)
+    is_initialized = true
+end
+
+-- ============================================================
+-- Per-tick state updates
+-- ============================================================
+
+local function update_weapon_info(actor)
+    local wpn = actor and actor:active_item()
+    local sec = wpn and wpn:section()
+    if sec ~= last_wpn_section then
+        last_wpn_section = sec
+        wpn_config = { c = 1, u = 1 }
+        if sec and sivol_weapon_inertia.wpn_all_configs[sec] then
+            for k, v in pairs(sivol_weapon_inertia.wpn_all_configs[sec]) do
+                wpn_config[k] = v
+            end
+        end
+    end
+end
+
+local function update_stamina_info(actor)
+    if not actor then return end
+    local fatigue = 1 - actor.power -- 0 = fresh, 1 = exhausted
+    set_lerp("breathing_speed", BREATH_SPEED_MIN + (BREATH_SPEED_MAX - BREATH_SPEED_MIN) * fatigue)
+    set_lerp("breathing_power", BREATH_POWER_MIN + (BREATH_POWER_MAX - BREATH_POWER_MIN) * fatigue)
+end
+
+local function update_look_up_factor()
+    local pitch = device().cam_dir:getP() -- -1.5 down, 0 forward, 1.5 up
+    local t = (pitch - LOOKUP_TRIGGER_AT) / (LOOKUP_MAX_PITCH - LOOKUP_TRIGGER_AT)
+    t = math.max(0, math.min(1, t))
+    look_up_factor = t * LOOKUP_POWER
+end
+
+-- Bulletproof aim-state check: polls the scope effector directly.
+local function update_aiming()
+    is_aiming = false
+    if wpn_params and type(wpn_params.get_zie_obj) == "function" then
+        is_aiming = (wpn_params.get_zie_obj() ~= nil)
+    end
+end
+
+local function update_stance(aobj)
+    local current_stance = 0
+    if aobj and aobj:is_actor_creep() then current_stance = 2
+    elseif aobj and aobj:is_actor_crouch() then current_stance = 1 end
+
+    -- Held crouch sway and look-up dip share the same lerp+anim
+    -- This continuous sway is correctly disabled while aiming to prevent displacement.
+    if is_aiming then
+        set_lerp("crouch", 0)
+    elseif current_stance > 0 then
+        set_lerp("crouch", CROUCH_HOLD_POWER * (wpn_config.c or 1))
+    else
+        set_lerp("crouch", LOOKUP_ENABLED and (look_up_factor * (wpn_config.u or 1)) or 0)
+    end
+end
+
+-- ============================================================
+-- Main tick (subscribed to ogse_signals "on_update")
+-- ============================================================
+
+local function on_actor_update()
+    if not is_initialized then initialize() end
+
+    local actor = db.actor
+    if not actor then return end
+
+    -- Preserved from the older working file to ensure exact animation timing
+    local now = timers.Get_Game_Seconds()
+    local dt = (last_update_time == 0) and 0.016 or (now - last_update_time)
+    last_update_time = now
+
+    local aobj = get_actor_obj()
+
+    update_weapon_info(actor)
+    update_stamina_info(actor)
+    update_look_up_factor()
+    update_aiming()
+    update_stance(aobj)
+
+    for _, lp in pairs(lerps) do
+        lp.from = lerp(lp.from, is_aiming and 0 or lp.to, (is_aiming and 0.9 or lp.power) * dt)
+    end
+
+    game.play_hud_anm("liz\\liz_hands_breathing_additive.anm", 2, lerps["breathing_speed"].from, lerps["breathing_power"].from, true, true)
+    game.play_hud_anm("liz\\liz_hands_crouch_additive.anm", 2, 1, lerps["crouch"].from, true, true)
+end
+
+-- ============================================================
+-- Hit flinch (via the "am" dispatch)
+-- ============================================================
+
+local function on_actor_before_hit(obj, hd)
+    if not HIT_ANM_ENABLED then return end
+    if not hd or not valid_hit_types[hd.hit_type] then return end
+    if is_aiming then return end
+    local anm = hit_anims[math.random(1, #hit_anims)]
+    game.play_hud_anm(anm, 2, 1, 1, false, true)
+end
+
+-- ============================================================
+-- Crouch Kick (via "on_key" / "on_key_up")
+-- Mirrors the original Anomaly addon's keypress hook, bypassing the 
+-- movement state machine that was eating the one-shot anims.
+-- ============================================================
+
+local function on_key(key, bind)
+    local mode = crouch_binds[bind]
+    if not mode then return end
+    
+    local aobj = get_actor_obj()
+    if not aobj then return end
+    
+    if mode == "hold" then
+        -- Hold mode: pressing the key always enters crouch
+        game.play_hud_anm("liz\\liz_hands_crouch_start_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
+    else
+        -- Toggle mode: pressing the key flips the state
+        if not aobj:is_actor_crouch() and not aobj:is_actor_creep() then
+            game.play_hud_anm("liz\\liz_hands_crouch_start_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
+        else
+            game.play_hud_anm("liz\\liz_hands_crouch_end_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
+        end
+    end
+end
+
+local function on_key_up(key, bind)
+    local mode = crouch_binds[bind]
+    if not mode then return end
+    
+    -- Only play the end kick on release if we're in Hold mode
+    if mode == "hold" then
+        game.play_hud_anm("liz\\liz_hands_crouch_end_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
+    end
+end
+
+-- ============================================================
+-- ogse_signals attach
+-- ============================================================
+
+function attach(sm)
+    sm:subscribe({ signal = "on_update", fun = on_actor_update })
+    sm:subscribe({ signal = "on_actor_before_hit", fun = on_actor_before_hit })
+    sm:subscribe({ signal = "on_key", fun = on_key })
+    sm:subscribe({ signal = "on_key_up", fun = on_key_up })
+end
+
+sivol_weapon_inertia.attach = attach
