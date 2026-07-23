@@ -114,39 +114,30 @@ function generate_npcs_arts()
 						container = ( art_stat <= 0.0006 and "arc_art_box_8basic" ) or ( art_stat <= 0.0012 and "arc_art_box_basic" ) or "arc_art_box_1basic"								
 					end	
 
-					local obj
-					if capsule_payload then
-						-- art is a capsule descriptor (nlc_capsules) - spawn the proper
-						-- capsule shell (af_capsule / m_capsule) and let nlc_capsules
-						-- write its own custom_data, instead of treating "art" as a
-						-- literal ini section name.
-						obj = nlc_capsules.spawn_to( capsule_payload, npc )
-						misc.process_spawn()
-						if obj then
+					local section = container ~= "" and container or ( capsule_payload and nlc_capsules.shell( capsule_payload ) or art )
+					local obj = misc.spawn_to( section, npc )
+					misc.process_spawn()
+					if obj then 
+						local pk = get_netpk( obj, 1 )             
+						local data = pk:get()
+						if container ~= "" then
+							local slots = get_u32(container, "container_slots") or 8
+							local arts = {}
+							for i = 1, slots do table.insert(arts, {}) end
+							arts[1] = {
+								section = capsule_payload and nlc_capsules.shell( capsule_payload ) or real_section,
+								condition = con * 0.01,
+								custom_data = capsule_payload and nlc_capsules.encode( capsule_payload ) or nil
+							}
+							data.custom_data = arc_radiation.encode_custom_data(arts, container, slots)
+						else	
 							params.upd_condition( obj, con * 0.01 )
-							local pk = get_netpk( obj, 1 )
-							local data = pk:get()
 							data.condition = con * 0.01
-							pk:set( data )
-						end
-					else
-						obj = misc.spawn_to( container ~= "" and container or art, npc )
-						misc.process_spawn()
-						if obj then 
-							local pk = get_netpk( obj, 1 )             
-							local data = pk:get()
-							if container ~= "" then
-								local slots = get_u32(container, "container_slots") or 8
-								local arts = {}
-								for i = 1, slots do table.insert(arts, {}) end
-								arts[1] = { section = real_section, condition = con * 0.01 }
-								data.custom_data = arc_radiation.encode_custom_data(arts, container, slots)
-							else	
-								params.upd_condition( obj, con * 0.01 )
-								data.condition = con * 0.01
-							end	
-							pk:set( data )								
-						end
+							if capsule_payload then
+								data.custom_data = nlc_capsules.encode( capsule_payload, data.custom_data )
+							end
+						end	
+						pk:set( data )								
 					end
 					
 				--	if container ~= "" then 
@@ -168,11 +159,27 @@ local function item_matches_art( obj, art )
 	local sec = obj:section_name()
 	local payload = nlc_capsules.from_descriptor( art )
 	if payload then
-		if not nlc_capsules.is_capsule_section( sec ) then return false end
 		local sobj = g_sim:object( obj.id )
-		local stored = sobj and nlc_capsules.read_server( sobj )
-		if not stored then return false end
-		return stored.base == payload.base and ( not payload.dyn or stored.dyn == payload.dyn )
+		if not sobj then return false end
+		if nlc_capsules.is_capsule_section( sec ) then
+			local stored = nlc_capsules.read_server( sobj )
+			return stored and stored.base == payload.base and ( not payload.dyn or stored.dyn == payload.dyn )
+		end
+		if strpos( sec, "arc_art_box_" ) then
+			local pk = get_netpk( sobj, 1 )
+			if not pk then return false end
+			local slots = get_u32( sec, "container_slots" ) or 8
+			local arts = arc_radiation.decode_custom_data( pk:get().custom_data, sec, slots )
+			for _, stored_art in ipairs( arts ) do
+				if nlc_capsules.is_capsule_section( stored_art.section ) then
+					local stored = nlc_capsules.read( stored_art.custom_data )
+					if stored and stored.base == payload.base and ( not payload.dyn or stored.dyn == payload.dyn ) then
+						return true
+					end
+				end
+			end
+		end
+		return false
 	end
 	return strpos( sec, art ) or strpos( sec, "arc_art_box_" )
 end
