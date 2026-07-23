@@ -1,0 +1,257 @@
+function attach( sm )
+	sm:subscribe({ signal = "on_info",  		fun = this.on_info 			})
+	sm:subscribe({ signal = "on_safe_spawn",  	fun = this.on_safe_spawn  	})	
+end
+
+function on_info( npc, info_id )
+	if info_id == "time_morning" then 
+		if math.fmod( timers.Get_Game_Days(), 3 ) == 0 then	
+			remove_value( "generated_arts_news" )
+			generate_npcs_arts()
+		end	
+	elseif info_id == "time_night" then 
+		unsubscribe()		
+	elseif info_id == "vybros_info" then 
+			remove_value( "generated_arts_news" )	
+		unsubscribe()		
+ 	end	
+end
+
+local timer_general 	= 50
+local news_subscribed 	= false	
+local news_table 		= nil 
+local first_tip   	 	= true
+
+function on_safe_spawn()
+	if has_alife_info( "time_night" ) then return end
+    news_table = get_value( "generated_arts_news", {} )
+	if news_table == nil or #news_table < 1 then return end
+	subscribe()
+end
+	
+function subscribe()
+	if not news_subscribed then
+		news_subscribed = { signal = "on_update", fun = this.generate_art_news }
+		ogse_signals.get_mgr():subscribe( news_subscribed )
+	end	
+end
+
+function unsubscribe()
+	if news_subscribed then
+		ogse_signals.get_mgr():unsubscribe( news_subscribed )
+		news_subscribed = nil
+	end	
+end
+
+local non_tradable_npces = {
+	"mar_crazy",
+	"lim_mih_guard",
+	"sim_diador",
+	"bar_dolg_prapor",
+	"bar_dolg_barin",
+	"sim_stalker_gusarov",
+	"bar_disel",
+	"bar_lelik",
+	"dsc_ecolog1",
+	"dsc_ecolog3",
+	"bar_dolg_lucky"
+}
+
+-- Helper: figure out the *real* ini section name and dyn index for an
+-- art string that may either be:
+--   1) a plain art section, e.g. "af_ameba_mica" or "af_ameba_mica_dyn3d"
+--   2) a capsule descriptor produced by nlc_capsules.descriptor(), e.g.
+--      "capsule@af_ameba_mica@3" or "mayatnik_capsule@af_mayatnik_les_new"
+-- Returns: real_section, dyn, capsule_payload (capsule_payload is nil for plain arts)
+local function resolve_art( art )
+	local payload = nlc_capsules.from_descriptor( art )
+	if payload then
+		local real_section = nlc_capsules.content_section( payload ) or payload.base
+		return real_section, payload.dyn, payload
+	end
+	local dyn = tonumber( string.sub( art, -2, -2 ) )
+	return art, dyn, nil
+end
+
+function generate_npcs_arts()
+	local ini = system_ini()
+	local generated_arts_news = {}
+	for a = 1, MAX_OBJ_ID do
+		local npc = g_sim:object( a )
+		if 
+			npc 
+			and IsStalker( npc ) 
+			and npc.alive 
+			and npc:alive() 
+			and ( npc.m_story_id == nil or npc.m_story_id == NONE_SID or npc.m_story_id == NONE_CL_SID ) 
+			and not str_in_tab( npc:name(), non_tradable_npces )
+			and npc.level_name ~= "l10_radar"
+		then 
+			if str_in_tab( npc:community(), { "dolg", "freedom", "stalker", "green", "ecolog" } ) then
+		
+				local ids, cnt = registry.inv_objects( npc.id, true )
+				for n = 1, cnt do
+					local obj = g_sim:object( ids[ n ] )
+					if obj and obj.section_name then
+						local sec = obj:section_name()
+						if strpos( sec, "^af_" ) or strpos( sec, "arc_art_box_" ) or nlc_capsules.is_capsule_section( sec ) then	
+							-- log2( "art to release is %s", obj:name() )					
+							misc.release_obj( obj )
+						end
+					end
+				end	
+				
+				if lua_random() < 0.07 then 
+					local npc_on_lvl = balance.level_poisoned[ npc.level_name ]
+					local lvl = ( npc_on_lvl < 1.3 and 1 ) or ( npc_on_lvl < 1.5 and 2 ) or 5 
+					local art = kotovod.rnd_rec_art_info( kotovod.tbl_arts, lvl )
+					local con = ( lvl == 5 and lua_random( 70, 99 ) ) or lua_random( 35, 80 )	
+
+					local real_section, dyn, capsule_payload = resolve_art( art )
+					local container = ""
+					local art_stat = sak_dialog.read_if_exist( ini, real_section, "radiation_restore_speed", -1 )
+					if art_stat > 0 then 
+						container = ( art_stat <= 0.0006 and "arc_art_box_8basic" ) or ( art_stat <= 0.0012 and "arc_art_box_basic" ) or "arc_art_box_1basic"								
+					end	
+
+					local obj
+					if capsule_payload then
+						-- art is a capsule descriptor (nlc_capsules) - spawn the proper
+						-- capsule shell (af_capsule / m_capsule) and let nlc_capsules
+						-- write its own custom_data, instead of treating "art" as a
+						-- literal ini section name.
+						obj = nlc_capsules.spawn_to( capsule_payload, npc )
+						misc.process_spawn()
+						if obj then
+							params.upd_condition( obj, con * 0.01 )
+							local pk = get_netpk( obj, 1 )
+							local data = pk:get()
+							data.condition = con * 0.01
+							pk:set( data )
+						end
+					else
+						obj = misc.spawn_to( container ~= "" and container or art, npc )
+						misc.process_spawn()
+						if obj then 
+							local pk = get_netpk( obj, 1 )             
+							local data = pk:get()
+							if container ~= "" then
+								local slots = get_u32(container, "container_slots") or 8
+								local arts = {}
+								for i = 1, slots do table.insert(arts, {}) end
+								arts[1] = { section = real_section, condition = con * 0.01 }
+								data.custom_data = arc_radiation.encode_custom_data(arts, container, slots)
+							else	
+								params.upd_condition( obj, con * 0.01 )
+								data.condition = con * 0.01
+							end	
+							pk:set( data )								
+						end
+					end
+					
+				--	if container ~= "" then 
+						level.map_add_object_spot_ser( npc.id, "crlc_big", npc:name() .. "\\n" .. art .. "\\n" .. container .. "\\n" .. obj.id )
+				--	end
+					table.insert( generated_arts_news, { name = npc:name(), art = art, dyn = dyn } )
+				end				
+			end
+		end	
+	end
+	set_value( "generated_arts_news", generated_arts_news )
+end
+
+-- Checks whether the item currently sitting in the npc's inventory still
+-- corresponds to the art/capsule descriptor that was generated for the news
+-- entry. Handles both plain art sections and nlc_capsules shells.
+local function item_matches_art( obj, art )
+	if not obj or not obj.section_name then return false end
+	local sec = obj:section_name()
+	local payload = nlc_capsules.from_descriptor( art )
+	if payload then
+		if not nlc_capsules.is_capsule_section( sec ) then return false end
+		local sobj = g_sim:object( obj.id )
+		local stored = sobj and nlc_capsules.read_server( sobj )
+		if not stored then return false end
+		return stored.base == payload.base and ( not payload.dyn or stored.dyn == payload.dyn )
+	end
+	return strpos( sec, art ) or strpos( sec, "arc_art_box_" )
+end
+
+function generate_art_news()						
+	ogse_signals.get_mgr():reschedule( lua_random( 60, 150 ) * 6000 ) 	-- 120, 240 10000 Было до этого	
+	if first_tip then 
+		first_tip = false 
+		return
+	end	
+	local rnd = lua_random( #news_table )
+	local npc = g_sim:object( news_table[ rnd ].name )
+	if not npc or not ( npc.alive and npc:alive() ) then return end
+	local art = news_table[ rnd ].art
+	local dyn = news_table[ rnd ].dyn
+	local ids, cnt = registry.inv_objects( npc.id, true )
+	for n = 1, cnt do
+		local obj = g_sim:object( ids[ n ] )
+		if item_matches_art( obj, art ) then	
+			make_art_news( npc, art, dyn )
+			table.remove( news_table, rnd )		
+		end
+	end	
+	if #news_table < 1 then 
+		unsubscribe()
+	end	
+	set_value( "generated_arts_news", news_table )
+end
+
+function make_art_news( npc, item, dyn )
+	local random  = lua_random( 1, 18 ) -- сделаем так, чтобы проще было контролировать склонения артов
+	local m_from  = news_main.get_npc_name( npc )
+	local m_str   = news_data.trade_arts_templates[ random ]
+	local m_level = news_main.get_point_description( news_main.get_object_levelname( npc ), news_main.get_object_position( npc ) )		
+	if m_level == "" then return end	
+
+	-- item may be a plain art section or an nlc_capsules descriptor string
+	-- ("capsule@base@dyn[@tag]" / "mayatnik_capsule@base[@tag]"); resolve to
+	-- the real underlying art section before looking up its display name.
+	local real_section = resolve_art( item )
+	local m_sect = get_inv_name( real_section )
+
+	local m_dyn = {
+		[ 1 ] = { "бесполезный", "отвратительный", "ужасный", "отрицательный", "неудачный", "плохой", "пригодный только для варки" },
+		[ 2 ] = { "сносный", "удовлетворительный", "заурядный", "посредственный", "второсортный", "неважный", "так-себе" },
+		[ 3 ] = { "в основном положительный", "обычный", "средний" },
+		[ 4 ] = { "отличный", "полезный", "потрясный", "интересный", "пригодный", "путный" }
+	}
+	
+	if random == 17 then 
+		if m_sect == "Капля" then 
+			m_str = news_data.trade_arts_templates[ 7 ]
+		end	
+	end
+
+	local t = { [ "level" ] = m_level }
+	if strpos( item, "_capsule" ) then 
+		if random == 10 then 
+			m_str = string.gsub( m_str, "%$dyn%s+(.-)%s+%$item", m_sect )	
+		else	
+			m_str = string.gsub( m_str, "%$dyn%s+(.-)%s+%$item", "капсулу" )
+		end	
+	else
+		t[ "item" ] = m_sect		
+		t[ "dyn"  ] = m_dyn[ dyn ][ lua_random( #m_dyn[ dyn ] ) ]	
+	end	
+	
+	for k, v in pairs( t ) do
+		m_str = string.gsub( m_str, "%$" .. k, v )
+	end	
+	
+	-- log2( "NEWS SHOULD BE %s", m_str .. " " .. m_from .. " " )
+	
+	if m_str ~= "" then	
+		sak.send_tip( m_str, m_from, 1, 10, "trade", "pda_news", "gray" )	
+		-- news_main.do_news( m_str, m_from, lua_random( timer_general, timer_general * 10 ), 15, "trade", npc.id, 1 )
+	end
+end
+
+-- flush !trade_arts_news.generate_npcs_arts 
+-- flush !trade_arts_news.generate_art_news 
+-- flush !trade_arts_news.check_stalker 
