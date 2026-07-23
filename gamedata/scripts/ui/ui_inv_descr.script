@@ -1606,6 +1606,10 @@ function CUIDescriptionWnd:OnKeyPress(dik, bind)
             self:HideDescription()
             self:ShowDescription( self.item )
         end
+	elseif dik == DIK_keys.DIK_T then
+		if self.item then
+			self:OutContainerArts( self.item:id() )
+		end		
 --	elseif dik == DIK_keys.DIK_W then 
 --		self:SetItemPrice( self.item )		
     end	
@@ -1638,4 +1642,199 @@ function CUIDescriptionWnd:SetItemPrice( obj )
 	if tonumber( cost ) > target_money then 
 		item.cost = target_money
 	end	
+end
+
+
+local new_container_id, new_container_data
+local new_container_arts = {}
+local subscribe_on_trading
+
+function CUIDescriptionWnd:OutContainerArts( container_id )
+	log2( "OutContainerArts: called with container_id = %s", tostring( container_id ) )
+
+	if not has_alife_info( "ui_trade" ) then
+		log2( "OutContainerArts: no ui_trade info, abort" )
+		return
+	end
+	if not container_id then
+		log2( "OutContainerArts: container_id is nil, abort" )
+		return
+	end
+
+	local parent = level:get_second_talker()
+	if not parent then
+		log2( "OutContainerArts: no second talker (parent), abort" )
+		return
+	end
+	log2( "OutContainerArts: parent id = %s", tostring( parent:id() ) )
+
+	local box = client_obj( container_id )
+	if not box then
+		log2( "OutContainerArts: client_obj(%s) returned nil, abort", tostring( container_id ) )
+		return
+	end
+	log2( "OutContainerArts: box found, section = %s", tostring( box:section() ) )
+
+	local sect = box:section()
+	if not strpos( sect, "arc_art_box_" ) then
+		log2( "OutContainerArts: section %s is not arc_art_box_, abort", tostring( sect ) )
+		return
+	end
+
+	local sobj = box:get_alife_object()
+	if not sobj then
+		log2( "OutContainerArts: get_alife_object() returned nil, abort" )
+		return
+	end
+	log2( "OutContainerArts: custom_data = [%s]", tostring( sobj.custom_data ) )
+
+	local arts = arc_radiation.decode_custom_data( sobj.custom_data, sect )
+	if not arts then
+		log2( "OutContainerArts: decode_custom_data returned nil, abort" )
+		return
+	end
+	log2( "OutContainerArts: decode_custom_data returned %d entries", #arts )
+	for i, a in ipairs( arts ) do
+		log2( "OutContainerArts: slot %d -> section=[%s] condition=[%s]", i, tostring( a.section ), tostring( a.condition ) )
+	end
+
+	if #arts == 0 then
+		log2( "OutContainerArts: 0 arts decoded, abort" )
+		return
+	end
+
+	local pk = get_netpk( box, 1 )
+	local data = pk and pk:get()
+	if not data then
+		log2( "OutContainerArts: get_netpk/data is nil, abort" )
+		return
+	end
+	log2( "OutContainerArts: got netpk data ok" )
+
+	misc.release_obj( box )
+	log2( "OutContainerArts: released old box" )
+
+	if self.item and self.item:id() == container_id then
+		log2( "OutContainerArts: clearing self.item (was pointing at released box)" )
+		self.item = nil
+	end
+	if self.itemInFocus == container_id then
+		log2( "OutContainerArts: clearing self.itemInFocus (was pointing at released box)" )
+		self.itemInFocus = nil
+	end
+
+	local new_box = misc.spawn_to( sect, parent )
+	if not new_box then
+		log2( "OutContainerArts: misc.spawn_to(%s) for new box FAILED", tostring( sect ) )
+		return
+	end
+	log2( "OutContainerArts: new_box spawned, id = %s", tostring( new_box.id ) )
+
+	new_container_id   = new_box.id
+	new_container_data = data.custom_data
+	new_container_arts = {}
+
+	for i, art_entry in ipairs( arts ) do
+		if art_entry and art_entry.section and art_entry.section ~= "" then
+			log2( "OutContainerArts: spawning art #%d section=[%s]", i, art_entry.section )
+			local obj = misc.spawn_to( art_entry.section, parent )
+			misc.process_spawn()
+			if obj then
+				log2( "OutContainerArts: art #%d spawned OK, id = %s", i, tostring( obj.id ) )
+				local cond      = art_entry.condition or 1
+				local cust_data = art_entry.custom_data
+				local obj_id    = obj.id
+				level.client_spawn_manager():add(
+					obj_id, -1,
+					function( id, spawned_obj )
+						log2( "OutContainerArts: client_spawn_manager callback for id=%s", tostring( id ) )
+						local spk = get_netpk( spawned_obj, 1 )
+						if spk then
+							local sdata = spk:get()
+							sdata.condition = cond
+							if cust_data then
+								sdata.custom_data = cust_data
+							end
+							spk:set( sdata )
+							log2( "OutContainerArts: set condition=%s custom_data=[%s] on id=%s", tostring( cond ), tostring( cust_data ), tostring( id ) )
+						else
+							log2( "OutContainerArts: get_netpk failed for spawned art id=%s", tostring( id ) )
+						end
+					end
+				)
+				table.insert( new_container_arts, obj_id )
+			else
+				log2( "OutContainerArts: art #%d spawn_to(%s) FAILED", i, art_entry.section )
+			end
+		else
+			log2( "OutContainerArts: slot #%d skipped, empty section", i )
+		end
+	end
+
+	log2( "OutContainerArts: finished, spawned_arts_count = %d", #new_container_arts )
+
+	trade_subscribe()
+	self:HideDescription()
+end
+
+function trade_subscribe()
+	if not subscribe_on_trading then
+		subscribe_on_trading = {
+			{ signal = "on_trade",      fun = this.processing_trade },
+			{ signal = "on_trade_hide", fun = this.trade_unsubscribe }, -- уточните точное имя сигнала!
+		}
+		local sm = ogse_signals.get_mgr()
+		for _, s in ipairs(subscribe_on_trading) do
+			sm:subscribe(s)
+		end
+	end
+end
+
+function processing_trade( item, sell_buy, money )
+	log2( "processing_trade: item_id=%s sell_buy=%s money=%s", tostring( item:id() ), tostring( sell_buy ), tostring( money ) )
+	if sell_buy == true then return end
+	local id = item:id()
+	for i = #new_container_arts, 1, -1 do
+		if new_container_arts[ i ] == id then
+			log2( "processing_trade: removing sold item id=%s from tracked list", tostring( id ) )
+			table.remove( new_container_arts, i )
+			break
+		end
+	end
+end
+
+function trade_unsubscribe()
+	if not subscribe_on_trading then return end
+	local sm = ogse_signals.get_mgr()
+	for _, s in ipairs(subscribe_on_trading) do
+		sm:unsubscribe(s)
+	end
+	subscribe_on_trading = nil
+
+	if not new_container_id then
+		log2( "trade_unsubscribe: no new_container_id, abort" )
+		return
+	end
+
+	local sobj = g_sim:object( new_container_id )
+	if sobj then
+		log2( "trade_unsubscribe: restoring custom_data on container id=%s", tostring( new_container_id ) )
+		local pk = get_netpk( sobj, 1 )
+		if pk then
+			local data = pk:get()
+			data.custom_data = new_container_data
+			pk:set( data )
+		else
+			log2( "trade_unsubscribe: get_netpk failed for container id=%s", tostring( new_container_id ) )
+		end
+	else
+		log2( "trade_unsubscribe: container id=%s not found in g_sim", tostring( new_container_id ) )
+	end
+
+	for _, obj_id in ipairs( new_container_arts ) do
+		log2( "trade_unsubscribe: releasing leftover art id=%s", tostring( obj_id ) )
+		misc.release_obj( obj_id )
+	end
+
+	new_container_id, new_container_data, new_container_arts = nil, nil, {}
 end
