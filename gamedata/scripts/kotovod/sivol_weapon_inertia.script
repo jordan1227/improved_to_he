@@ -13,13 +13,15 @@
     instead), lean L/R sway, noise, jump/land (NLC already has these),
     device/detector lean, crawl.
 
-    Hook mechanisms used (confirmed against this codebase, not assumed):
+    Hook mechanisms used (confirmed working in-game):
       - Periodic logic: ogse_signals "on_update" subscription (unthrottled).
       - Hit flinch: "on_actor_before_hit" subscription.
-      - Aim state: Polls wpn_params.get_zie_obj() to prevent ADS desyncs.
-      - Crouch kick: "on_key" / "on_key_up" subscriptions. Firing the kick 
-        on keypress bypasses the engine's movement state machine, which 
-        was instantly overwriting the kick when the player was moving.
+      - Aim state: polls wpn_params.get_zie_obj() (same check scope_wobble
+        already relies on) to prevent ADS desyncs.
+      - Crouch kick: "on_key" / "on_key_up" subscriptions. Firing the kick
+        on keypress bypasses the engine's movement state machine, which was
+        instantly overwriting the kick when triggered from a per-frame
+        on_update stance poll instead.
 
     Setup: add "sivol_weapon_inertia" to ogse_signals_addons_list.addons.
 ]]
@@ -30,10 +32,10 @@ sivol_weapon_inertia = {}
 -- Tuning constants (no MCM in this engine -- edit these directly)
 -- ============================================================
 
-local CROUCH_KICK_SPEED  = 1.0   -- playback speed for the one-shot crouch start/end kick
-local CROUCH_KICK_POWER  = 1.0   -- blend weight for the one-shot crouch start/end kick
+local CROUCH_KICK_SPEED  = 1.05   -- playback speed for the one-shot crouch start/end kick
+local CROUCH_KICK_POWER  = 2.25   -- blend weight for the one-shot crouch start/end kick
 
-local CROUCH_HOLD_POWER  = 0.35  -- how pronounced the *held* crouch sway is (separate from the kick)
+local CROUCH_HOLD_POWER  = 0.45  -- how pronounced the *held* crouch sway is (separate from the kick)
 
 local BREATH_SPEED_MIN   = 0.5
 local BREATH_SPEED_MAX   = 1.4
@@ -92,7 +94,9 @@ local hit_anims = {
     "liz\\liz_hands_hit3_additive.anm",
 }
 
--- Standard SHOC/CoP hit-type enum -- same set the source addon filters on
+-- Standard SHOC/CoP hit-type enum -- same set the source addon filters on.
+-- Built defensively: "wound2" is an Anomaly-only addition and may not exist
+-- in this engine's hit enum, so we skip whatever isn't present.
 local valid_hit_types = {}
 local function register_hit_type(name)
     if hit[name] then valid_hit_types[hit[name]] = true end
@@ -110,6 +114,13 @@ if key_bindings then
     if key_bindings.kCROUCH then crouch_binds[key_bindings.kCROUCH] = "hold" end
     if key_bindings.kCROUCH_TOGGLE then crouch_binds[key_bindings.kCROUCH_TOGGLE] = "toggle" end
 end
+
+-- Tracked independently of the engine's actual is_actor_crouch()/is_actor_creep()
+-- flags for the toggle bind. Spamming the toggle key faster than those flags
+-- settle was causing every other press to read stale state and re-fire the
+-- same-direction kick (which then silently no-ops as a same-clip repeat).
+-- Self-tracking guarantees strict alternation regardless of engine timing.
+local toggle_crouched_state = false
 
 local function initialize()
     new_lerp("crouch",          0, 0, 0.5)
@@ -150,7 +161,8 @@ local function update_look_up_factor()
     look_up_factor = t * LOOKUP_POWER
 end
 
--- Bulletproof aim-state check: polls the scope effector directly.
+-- Bulletproof aim-state check: polls the scope effector directly, same
+-- mechanism scope_wobble already relies on for ADS detection.
 local function update_aiming()
     is_aiming = false
     if wpn_params and type(wpn_params.get_zie_obj) == "function" then
@@ -163,8 +175,8 @@ local function update_stance(aobj)
     if aobj and aobj:is_actor_creep() then current_stance = 2
     elseif aobj and aobj:is_actor_crouch() then current_stance = 1 end
 
-    -- Held crouch sway and look-up dip share the same lerp+anim
-    -- This continuous sway is correctly disabled while aiming to prevent displacement.
+    -- Held crouch sway and look-up dip share the same lerp+anim.
+    -- Correctly disabled while aiming to prevent displacement.
     if is_aiming then
         set_lerp("crouch", 0)
     elseif current_stance > 0 then
@@ -184,7 +196,6 @@ local function on_actor_update()
     local actor = db.actor
     if not actor then return end
 
-    -- Preserved from the older working file to ensure exact animation timing
     local now = timers.Get_Game_Seconds()
     local dt = (last_update_time == 0) and 0.016 or (now - last_update_time)
     last_update_time = now
@@ -206,7 +217,7 @@ local function on_actor_update()
 end
 
 -- ============================================================
--- Hit flinch (via the "am" dispatch)
+-- Hit flinch
 -- ============================================================
 
 local function on_actor_before_hit(obj, hd)
@@ -218,24 +229,25 @@ local function on_actor_before_hit(obj, hd)
 end
 
 -- ============================================================
--- Crouch Kick (via "on_key" / "on_key_up")
--- Mirrors the original Anomaly addon's keypress hook, bypassing the 
--- movement state machine that was eating the one-shot anims.
+-- Crouch kick (via "on_key" / "on_key_up")
+-- Mirrors the original Anomaly addon's keypress hook, bypassing the
+-- movement state machine that was eating the one-shot anims when they
+-- were triggered from a per-frame stance poll instead.
 -- ============================================================
 
 local function on_key(key, bind)
     local mode = crouch_binds[bind]
     if not mode then return end
-    
-    local aobj = get_actor_obj()
-    if not aobj then return end
-    
+
     if mode == "hold" then
         -- Hold mode: pressing the key always enters crouch
         game.play_hud_anm("liz\\liz_hands_crouch_start_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
     else
-        -- Toggle mode: pressing the key flips the state
-        if not aobj:is_actor_crouch() and not aobj:is_actor_creep() then
+        -- Toggle mode: flip OUR tracked state rather than querying
+        -- is_actor_crouch()/is_actor_creep() live -- see toggle_crouched_state
+        -- comment above for why.
+        toggle_crouched_state = not toggle_crouched_state
+        if toggle_crouched_state then
             game.play_hud_anm("liz\\liz_hands_crouch_start_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
         else
             game.play_hud_anm("liz\\liz_hands_crouch_end_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
@@ -246,7 +258,7 @@ end
 local function on_key_up(key, bind)
     local mode = crouch_binds[bind]
     if not mode then return end
-    
+
     -- Only play the end kick on release if we're in Hold mode
     if mode == "hold" then
         game.play_hud_anm("liz\\liz_hands_crouch_end_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
