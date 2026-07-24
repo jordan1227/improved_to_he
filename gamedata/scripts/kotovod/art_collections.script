@@ -1,0 +1,536 @@
+-- [HE-PORT]
+
+local current_belt_artifacts       = {}
+local original_artifact_properties = {}
+local current_active_combo         = nil
+local combo_notification_shown     = {}
+local diff                         = 1
+
+local artifact_combinations = {
+
+	{
+		artifacts = { "af_flower_new", "af_star_new" },
+		effect = function(artifact_ids)
+			if not artifact_ids or #artifact_ids ~= 2 then return end
+			if thirst.disable_thirst then return end
+			thirst.combo_thirst( true )
+		end
+	},
+
+	{
+		artifacts = { "af_soul_dyn1d", "af_soul_dyn1d", "af_soul_dyn1d" },
+		effect = function(artifact_ids)
+			if not artifact_ids then return end
+
+			local soul_count = 0
+			for _, id in ipairs(artifact_ids) do
+				local obj = client_obj(id)
+				if obj and obj:section() == "af_soul_dyn1d" then
+					soul_count = soul_count + 1
+				end
+			end
+
+			if soul_count ~= 3 then return end
+
+			local processed = 0
+			for _, id in ipairs(artifact_ids) do
+				local obj = client_obj(id)
+				if obj and obj.immunities then
+					local condition  = obj:condition()
+					local new_strike = math.min(1, 0.9 + (0.1 * (1 - condition)))
+					obj.immunities["strike_immunity"] = new_strike
+					obj.immunities["wound_immunity"]  = new_strike
+
+					local art = obj:get_artefact()
+					if art then
+						update_prop(art, "health_restore_speed", 0.0001 * condition)
+						processed = processed + 1
+					end
+				end
+			end
+		end
+	},
+
+	{
+		artifacts = { "af_vyvert" },
+		effect = function(artifact_ids)
+			local vyvert_count     = 0
+			local vyvert_artifacts = {}
+
+			for section, ids in pairs(current_belt_artifacts) do
+				if section:match("^af_vyvert_dyn%d+d$") then
+					local dyn = tonumber(section:match("dyn(%d+)d")) or 1
+					if dyn >= 2 then
+						vyvert_artifacts[section] = { ids = ids, dyn = dyn }
+						vyvert_count = vyvert_count + #ids
+					end
+				end
+			end
+
+			if vyvert_count < 2 then return end
+
+			local total_base_weight = 0
+			local total_condition   = 0
+
+			for section, data in pairs(vyvert_artifacts) do
+				for _, id in ipairs(data.ids) do
+					local obj = client_obj(id)
+					if obj then
+						local condition     = obj:condition()
+						total_base_weight   = total_base_weight + data.dyn * condition
+						total_condition     = total_condition + condition
+					end
+				end
+			end
+
+			local bonus_per_artifact = (total_base_weight * 0.2 * (vyvert_count / 3)) / vyvert_count
+
+			for section, data in pairs(vyvert_artifacts) do
+				for _, id in ipairs(data.ids) do
+					local obj = client_obj(id)
+					if obj then
+						save_artifact_properties(obj)
+
+						local af_obj = obj:get_artefact()
+						if af_obj then
+							local condition = obj:condition()
+							af_obj.additional_inventory_weight2 = data.dyn * condition + bonus_per_artifact * condition
+						end
+					end
+				end
+			end
+		end
+	},
+
+	{
+		artifacts = { "af_rusty_sea_urchin_dyn2d", "af_mincer_meat_dyn1d", "af_electra_flash_dyn3d" },
+		effect = function(artifact_ids)
+			if not artifact_ids then return end
+
+			for _, id in ipairs(artifact_ids) do
+				local obj = client_obj(id)
+				if obj then
+					local art = obj:get_artefact()
+					if art then
+						save_artifact_properties(obj)
+
+						if not original_artifact_properties[id] then
+							original_artifact_properties[id] = {}
+						end
+						if not original_artifact_properties[id].additional_params then
+							original_artifact_properties[id].additional_params = {}
+						end
+
+						local additional_params = { "add_jump_speed", "add_satiety" }
+						for _, param_name in ipairs(additional_params) do
+							local current_value = get_float(obj:section(), param_name, 0)
+							local save_condition =
+								(param_name == "add_satiety" and current_value > 1) or
+								(param_name ~= "add_satiety" and current_value ~= 0)
+							if save_condition then
+								original_artifact_properties[id].additional_params[param_name] = current_value
+							end
+						end
+
+						local restore_speeds = {
+							"radiation_restore_speed", "bleeding_restore_speed",
+							"health_restore_speed",    "power_restore_speed"
+						}
+						for _, speed_name in ipairs(restore_speeds) do
+							local current_speed = update_prop(art, speed_name) or 0
+							update_prop(art, speed_name, -current_speed)
+						end
+
+						local immunities = {
+							"telepatic_immunity",     "chemical_burn_immunity",
+							"radiation_immunity",     "explosion_immunity",
+							"fire_wound_immunity",    "wound_immunity",
+							"strike_immunity",        "shock_immunity"
+						}
+						for _, immunity_name in ipairs(immunities) do
+							local current_immunity = obj.immunities[immunity_name]
+							if current_immunity and current_immunity ~= 0 then
+								obj.immunities[immunity_name] = 2 - current_immunity
+							end
+						end
+					end
+				end
+			end
+		end
+	},
+
+	{
+		artifacts = { "af_dummy_green_vyvert", "af_dummy_green_medusa", "af_dummy_green_blood" },
+		effect = function(artifact_ids)
+			if not (artifact_ids and #artifact_ids >= 3) then return end
+
+			local green_arts = {}
+			for section, ids in pairs(current_belt_artifacts) do
+				if section:match("^af_dummy_green_") then
+					for _, id in ipairs(ids) do
+						table.insert(green_arts, { id = id, section = section })
+					end
+				end
+			end
+
+			local used_sections = {}
+			local arts_to_remove = {}
+			for _, req_section in ipairs({ "af_dummy_green_vyvert", "af_dummy_green_medusa", "af_dummy_green_blood" }) do
+				for _, art in ipairs(green_arts) do
+					if art.section == req_section and not used_sections[req_section] then
+						table.insert(arts_to_remove, art.id)
+						used_sections[req_section] = true
+						break
+					end
+				end
+			end
+
+			if #arts_to_remove ~= 3 then return end
+
+			sak.actor_hide_weapon()
+			schedule.add("delay_close", "art_collections.delay_close_inv()", 200)
+
+			local accum = sak.get_accum()
+			if not accum or accum:condition() <= 0.3 then return end
+			params.upd_condition(accum, accum:condition() - 0.3)
+
+			for _, id in ipairs(arts_to_remove) do
+				local obj = client_obj(id)
+				if obj then misc.release_obj(obj) end
+			end
+
+			for section, _ in pairs(current_belt_artifacts) do
+				if section:match("^af_dummy_green_") then
+					current_belt_artifacts[section] = nil
+				end
+			end
+
+			sak.gg_go_down()
+			sak.restore_weap()
+		end
+	}
+}
+
+function attach(sm)
+	sm:subscribe({ signal = "on_item_to_belt", fun = this.on_item_to_belt })
+	sm:subscribe({ signal = "on_item_to_ruck", fun = this.on_item_to_ruck })
+	sm:subscribe({ signal = "on_drop_before_all", fun = this.on_item_to_ruck })
+	sm:subscribe({ signal = "on_safe_spawn", fun = this.on_safe_spawn })
+end
+
+function delay_close_inv()
+	if db.actor and db.actor:has_info("ui_inventory") then sak.close_window() end
+end
+
+function on_safe_spawn()
+	diff = get_value("g_diff") or tonumber(level.get_game_difficulty())
+end
+
+function on_item_to_belt(obj, sobj)
+	if not sak.arts_operate then return end
+
+	local artifact_section = obj:section()
+	local artifact_id      = obj:id()
+
+	if not current_belt_artifacts[artifact_section] then
+		current_belt_artifacts[artifact_section] = {}
+	end
+	table.insert(current_belt_artifacts[artifact_section], artifact_id)
+
+	check_artifact_combinations()
+end
+
+function check_artifact_combinations()
+	local accum = sak.get_accum()
+	if not accum or accum:condition() <= 0.3 then return end
+
+	local belt_artifact_counts = {}
+	for section, ids in pairs(current_belt_artifacts) do
+		belt_artifact_counts[section] = #ids
+	end
+
+	for _, combo in ipairs(artifact_combinations) do
+
+		if combo.artifacts[1] == "af_vyvert" then
+			local vyvert_count = 0
+			local vyvert_ids   = {}
+			for section, ids in pairs(current_belt_artifacts) do
+				if section:match("^af_vyvert_dyn%d+d$") then
+					local dyn = tonumber(section:match("dyn(%d+)d")) or 1
+
+					if dyn >= 2 then
+						vyvert_count = vyvert_count + #ids
+
+						for _, id in ipairs(ids) do
+							table.insert(vyvert_ids, id)
+						end
+					end
+				end
+			end
+
+			if vyvert_count >= 2 then
+				current_active_combo = combo
+				combo.effect(vyvert_ids)
+
+				if not combo_notification_shown["af_vyvert"] then
+					combo_notification_shown["af_vyvert"] = true
+					sak.send_tip(
+						"Вроде как что-то изменилось... Вроде бы артефакты в сборе по иному действуют",
+						"Неужели? Сборка!", 0, 10, "artmod", "rememb", "green"
+					)
+				end
+				break
+			end
+
+		else
+			local sections = {}
+			for _, section in ipairs(combo.artifacts) do
+				sections[section] = (sections[section] or 0) + 1
+			end
+
+			local all_matched = true
+			for section, required_count in pairs(sections) do
+				if (belt_artifact_counts[section] or 0) < required_count then
+					all_matched = false
+					break
+				end
+			end
+
+			if all_matched then
+				local combo_key = table.concat(combo.artifacts, "_")
+
+				if not combo_notification_shown[combo_key] then
+					local matched_ids = {}
+					for section, ids in pairs(current_belt_artifacts) do
+						if table.contains(combo.artifacts, section) then
+							for i = 1, sections[section] do
+								table.insert(matched_ids, ids[i])
+							end
+						end
+					end
+
+					current_active_combo = combo
+
+					for _, id in ipairs(matched_ids) do
+						local obj = client_obj(id)
+						if obj then save_artifact_properties(obj) end
+					end
+
+					combo.effect(matched_ids)
+					combo_notification_shown[combo_key] = true
+
+					sak.send_tip(
+						"Вроде как что-то изменилось... Вроде бы артефакты в сборе по иному действуют",
+						"Неужели? Сборка!", 0, 10, "artmod", "rememb", "green"
+					)
+					break
+				end
+			end
+		end
+	end
+end
+
+function on_item_to_ruck(obj, sobj)
+	if not next(current_belt_artifacts) then return end
+
+	if strpos(obj:section(), "af_full_akkum", 1, true) then
+		local accum = sak.get_accum()
+		if (not accum or accum:condition() <= 0.3) and current_active_combo then
+			local combo_key = table.concat(current_active_combo.artifacts, "_")
+			if current_active_combo.artifacts[1] == "af_vyvert" then
+				combo_key = "af_vyvert"
+			end
+
+			for _, art_section in ipairs(current_active_combo.artifacts) do
+				local art_ids = current_belt_artifacts[art_section] or {}
+				for _, art_id in ipairs(art_ids) do
+					local obj_art = client_obj(art_id)
+					if obj_art then restore_artifact_properties(obj_art) end
+				end
+			end
+
+			combo_notification_shown[combo_key] = nil
+			current_active_combo = nil
+		end
+		return
+	end
+
+	local art = obj:get_artefact()
+	if not art then return end
+
+	local artifact_section = obj:section()
+	local artifact_id      = obj:id()
+
+	local was_on_belt = false
+	if current_belt_artifacts[artifact_section] then
+		for _, id in ipairs(current_belt_artifacts[artifact_section]) do
+			if id == artifact_id then
+				was_on_belt = true
+				break
+			end
+		end
+	end
+	if not was_on_belt then return end
+
+	for i, id in ipairs(current_belt_artifacts[artifact_section]) do
+		if id == artifact_id then
+			table.remove(current_belt_artifacts[artifact_section], i)
+			break
+		end
+	end
+	if #current_belt_artifacts[artifact_section] == 0 then
+		current_belt_artifacts[artifact_section] = nil
+	end
+
+	if (artifact_section == "af_flower_new" or artifact_section == "af_star_new") and
+	   not (current_belt_artifacts["af_flower_new"] and current_belt_artifacts["af_star_new"]) then
+		thirst.combo_thirst(false)
+	end
+
+	if artifact_section:match("^af_vyvert_dyn%d+d$") then
+		restore_artifact_properties(obj)
+
+		local vyvert_count    = 0
+		local vyvert_sections = {}
+		for section, ids in pairs(current_belt_artifacts) do
+			if section:match("^af_vyvert_dyn%d+d$") then
+				vyvert_count = vyvert_count + #ids
+				vyvert_sections[section] = ids
+			end
+		end
+
+		if vyvert_count < 2 then
+			for section, ids in pairs(vyvert_sections) do
+				for _, id in ipairs(ids) do
+					local vyvert_obj = client_obj(id)
+					if vyvert_obj then restore_artifact_properties(vyvert_obj) end
+				end
+			end
+			combo_notification_shown["af_vyvert"] = nil
+			current_active_combo = nil
+		else
+			check_artifact_combinations()
+		end
+		return
+	end
+
+	restore_artifact_properties(obj)
+
+	if current_active_combo then
+		local combo_section    = current_active_combo.artifacts[1]
+		local combo_count      = #current_active_combo.artifacts
+		local current_artifacts = current_belt_artifacts[combo_section] or {}
+
+		if #current_artifacts < combo_count then
+			for _, art_section in ipairs(current_active_combo.artifacts) do
+				local art_ids = current_belt_artifacts[art_section] or {}
+				for _, art_id in ipairs(art_ids) do
+					local obj_art = client_obj(art_id)
+					if obj_art then restore_artifact_properties(obj_art) end
+				end
+			end
+
+			local combo_key = table.concat(current_active_combo.artifacts, "_")
+			combo_notification_shown[combo_key] = nil
+			current_active_combo = nil
+		end
+	end
+
+	check_artifact_combinations()
+end
+
+function save_artifact_properties(obj)
+	local art = obj:get_artefact()
+	local id  = obj:id()
+	if not art then return end
+
+	if original_artifact_properties[id] then return end
+
+	original_artifact_properties[id] = {
+		immunities       = {},
+		restore_speeds   = {},
+		additional_weight = get_float(obj:section(), "additional_inventory_weight2", 0) * obj:condition()
+	}
+
+	local af_imm = obj.immunities
+	local immunities_to_save = {
+		"chemical_burn_immunity", "burn_immunity",       "explosion_immunity",
+		"fire_wound_immunity",    "radiation_immunity",  "shock_immunity",
+		"strike_immunity",        "telepatic_immunity",  "wound_immunity"
+	}
+	for _, k in ipairs(immunities_to_save) do
+		if af_imm[k] and af_imm[k] ~= 1 then
+			original_artifact_properties[id].immunities[k] = af_imm[k]
+		end
+	end
+
+	local restore_speeds = {
+		"bleeding_restore_speed", "health_restore_speed",
+		"power_restore_speed",    "satiety_restore_speed",
+		"radiation_restore_speed"
+	}
+	for _, k in ipairs(restore_speeds) do
+		original_artifact_properties[id].restore_speeds[k] = update_prop(art, k) or 0
+	end
+end
+
+function restore_artifact_properties(obj)
+	local art = obj:get_artefact()
+	local id  = obj:id()
+	if not (art and original_artifact_properties[id]) then return end
+
+	local props = original_artifact_properties[id]
+
+	if props.immunities then
+		for k, value in pairs(props.immunities) do
+			obj.immunities[k] = value
+		end
+	end
+
+	if props.restore_speeds then
+		for k, value in pairs(props.restore_speeds) do
+			update_prop(art, k, value)
+		end
+	end
+
+	if props.additional_weight then
+		art.additional_inventory_weight2 = props.additional_weight
+	end
+
+	original_artifact_properties[id] = nil
+end
+
+function get_inverted_artifact_property(artifact_id, property_name)
+	local props = original_artifact_properties and original_artifact_properties[artifact_id]
+	if props and props.additional_params and props.additional_params[property_name] then
+		return true
+	end
+	return false
+end
+
+function get_active_combo_art(artifact_id, property_name)
+	if not (original_artifact_properties and original_artifact_properties[artifact_id] and current_active_combo) then
+		return false
+	end
+	local obj = client_obj(artifact_id)
+	if not obj then return false end
+	local section = obj:section()
+	for _, combo_section in ipairs(current_active_combo.artifacts) do
+		if section == combo_section then return true end
+	end
+	return false
+end
+
+function table.copy(orig)
+	if type(orig) ~= 'table' then return orig end
+	local copy = {}
+	for k, v in pairs(orig) do copy[k] = v end
+	return copy
+end
+
+function table.contains(tbl, element)
+	for _, value in pairs(tbl) do
+		if value == element then return true end
+	end
+	return false
+end
