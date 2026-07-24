@@ -26,6 +26,27 @@
 #define RVA_GPGAMELEVEL       0x011FACA8ULL
 #define RVA_SHARED_SET        0x0000B020ULL
 
+#define RVA_RUN_ATK_CHECK     0x00AD1A10ULL
+#define RVA_RUN_ATK_CHECK_END 0x00AD1A20ULL
+#define RVA_DEVICE_TIME       0x0122378CULL
+#define RVA_ROTJUMP_NULLWRITE 0x00ACFB03ULL
+
+#define OFF_RA_MAN            0x08
+#define OFF_RA_OBJECT         0x10
+#define OFF_RA_ACTIVE         0x18
+#define OFF_RA_MIN_DIST       0x60
+#define OFF_RA_MAX_DIST       0x64
+#define OFF_RA_TIME_NEXT      0x70
+#define OFF_BM_ENEMY          0xA98
+#define OFF_OBJ_POS           0xC8
+#define OFF_OBJ_XFORM_K_X     0xB8
+#define OFF_OBJ_XFORM_K_Z     0xC0
+#define OFF_MAN_MOVEMENT      0x78
+#define OFF_MOV_VEL_CUR       0x40
+#define BOAR_RETRIG_MS        2200u
+#define BOAR_FACE_COS2        0.329f
+#define BOAR_MIN_VEL          2.0f
+
 #define OFF_LVL_OBJECTS     0x00A0
 #define OFF_OBJ_ID          0x0100
 #define OFF_OBJ_NAME        0x0104
@@ -65,12 +86,14 @@ typedef void (*r_close_t)(void* fs, IReader** pr);
 typedef void (*restrict_t)(void* mgr, unsigned short id, void* out_r, void* in_r);
 typedef int  (*ro_spawn_t)(void* self, void* data);
 typedef void* (*shared_set_t)(void* dst, const char* s);
+typedef unsigned char (*run_atk_check_t)(void* self);
 
 static uintptr_t g_base = 0;
 static execcmd_t g_orig = 0;
 static void* g_console = 0;
 static restrict_t g_orig_restrict = 0;
 static ro_spawn_t g_orig_ro_spawn = 0;
+static run_atk_check_t g_orig_run_atk = 0;
 
 static const char WRAP_PRE[] =
     "local function script_name() return '";
@@ -628,6 +651,64 @@ static int hkRestrictedNetSpawn(void* self, void* data)
     return g_orig_ro_spawn(self, data);
 }
 
+static unsigned char __fastcall hkRunAttackCheck(void* self)
+{
+    if (!self) return 0;
+    unsigned char* ra = (unsigned char*)self;
+    if (ra[OFF_RA_ACTIVE]) return 0;
+
+    void* obj = *(void**)(ra + OFF_RA_OBJECT);
+    if (!obj) return 0;
+    void* enemy = *(void**)((char*)obj + OFF_BM_ENEMY);
+    if (!enemy) return 0;
+
+    unsigned tnow = *(unsigned*)(g_base + RVA_DEVICE_TIME);
+    unsigned tnext = *(unsigned*)(ra + OFF_RA_TIME_NEXT);
+    if (tnext > tnow) return 0;
+
+    float* op = (float*)((char*)obj + OFF_OBJ_POS);
+    float* ep = (float*)((char*)enemy + OFF_OBJ_POS);
+    float dx = ep[0] - op[0];
+    float dz = ep[2] - op[2];
+    float d2 = dx * dx + (ep[1] - op[1]) * (ep[1] - op[1]) + dz * dz;
+    float dist = 0.f;
+    if (d2 > 1e-8f) {
+        union { float f; unsigned u; } u;
+        u.f = d2;
+        u.u = (u.u >> 1) + 0x1fc00000u;
+        float x = u.f;
+        x = 0.5f * (x + d2 / x);
+        x = 0.5f * (x + d2 / x);
+        dist = x;
+    }
+
+    float dmin = *(float*)(ra + OFF_RA_MIN_DIST);
+    float dmax = *(float*)(ra + OFF_RA_MAX_DIST);
+    if (dmin < 2.5f) dmin = 2.5f;
+    if (dmax < dmin + 0.5f) dmax = dmin + 3.0f;
+    if (dmax > 10.0f) dmax = 10.0f;
+    if (dist < dmin || dist > dmax) return 0;
+
+    float fx = *(float*)((char*)obj + OFF_OBJ_XFORM_K_X);
+    float fz = *(float*)((char*)obj + OFF_OBJ_XFORM_K_Z);
+    float fl2 = fx * fx + fz * fz;
+    float tl2 = dx * dx + dz * dz;
+    if (fl2 < 1e-8f || tl2 < 1e-8f) return 0;
+    float dot = fx * dx + fz * dz;
+    if (dot <= 0.f || (dot * dot) < (BOAR_FACE_COS2 * fl2 * tl2)) return 0;
+
+    float vcur = 0.f;
+    void* man = *(void**)(ra + OFF_RA_MAN);
+    if (man) {
+        void* mov = *(void**)((char*)man + OFF_MAN_MOVEMENT);
+        if (mov) vcur = *(float*)((char*)mov + OFF_MOV_VEL_CUR);
+    }
+    if (vcur < BOAR_MIN_VEL) return 0;
+
+    *(unsigned*)(ra + OFF_RA_TIME_NEXT) = tnow + BOAR_RETRIG_MS;
+    return 1;
+}
+
 static void cmd_brz()
 {
     if (!g_orig_restrict) {
@@ -728,6 +809,22 @@ static bool install_hook()
                                                  (void*)&hkRestrictedNetSpawn);
     g_orig_restrict = (restrict_t)install_detour(RVA_RESTRICT, RVA_RESTRICT_END,
                                                  (void*)&hkRestrict);
+
+    g_orig_run_atk = (run_atk_check_t)install_detour(RVA_RUN_ATK_CHECK, RVA_RUN_ATK_CHECK_END,
+                                                     (void*)&hkRunAttackCheck);
+
+    {
+        uint8_t* p = (uint8_t*)(g_base + RVA_ROTJUMP_NULLWRITE);
+        if (p[0] == 0x33 && p[1] == 0xC0) {
+            DWORD oldp;
+            if (VirtualProtect(p, 2, PAGE_EXECUTE_READWRITE, &oldp)) {
+                p[0] = 0xEB;
+                p[1] = 0x03;
+                VirtualProtect(p, 2, oldp, &oldp);
+                FlushInstructionCache(GetCurrentProcess(), p, 2);
+            }
+        }
+    }
     return true;
 }
 
@@ -736,6 +833,11 @@ extern "C" __declspec(dllexport)
 HRESULT WINAPI DirectInput8Create(void* hinst, DWORD ver, void* riid, void** out, void* unk)
 {
     static DI8C_t real = 0;
+    static int hooks_done = 0;
+    if (!hooks_done) {
+        hooks_done = 1;
+        install_hook();
+    }
     if (!real) {
         char path[MAX_PATH];
         UINT n = GetSystemDirectoryA(path, MAX_PATH);
@@ -747,10 +849,9 @@ HRESULT WINAPI DirectInput8Create(void* hinst, DWORD ver, void* riid, void** out
     return real(hinst, ver, riid, out, unk);
 }
 
-BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
+BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
 {
-    if (reason == DLL_PROCESS_ATTACH) {
-        install_hook();
-    }
+    if (reason == DLL_PROCESS_ATTACH)
+        DisableThreadLibraryCalls(h);
     return TRUE;
 }
