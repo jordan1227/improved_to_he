@@ -675,10 +675,33 @@ local afs={
 			-- "energy_drink"
 			}
 
+local arts_added = {}
+
 function check_for_af_drop(obj)
 	if obj and obj:id() then
 		schedule.add("check_af_drop"..obj:id(), "amk_mod.check_af_drop("..obj:id()..")", 200, true) 
 	end
+end
+
+function good_source( af_sect, source )
+    if nil == strposx( source, "_dyn" ) then
+        af_sect = base_art( af_sect )
+    end
+    wprintf( " check ~C0F %s~C07 in ~C0E %s~C07", af_sect, source )
+    return strposx( af_sect, source ) or false
+end
+
+function enough_arts( source )
+    local t = SplitStr( source, ',' )
+    for i, sc in ipairs( t ) do
+        for n, ss in ipairs( arts_added ) do
+            if not good_source( ss, sc ) then
+                wprintf( "[~T]. #DBG: для варки не хватает~C0F %s~C07", sc )
+                return false
+            end
+        end
+    end
+    return true
 end
 
 function check_af_drop(af_id)
@@ -705,10 +728,11 @@ function af_flash(af)
 	amk.remove_item(af)
 end
 
+
 function af_start_transform(v1, v2, af_from, af_target)
-	if v2 == 100 then
-		return af_from
-	end
+	--if v2 == 100 then
+	--	return af_from
+	--end
 	local rnd = dsh.get_next_random("mods_rnd", 1, 100)
 	ASSERT(sys_ini:section_exist(af_target), "Section not found: %s", tostring(af_target))
     
@@ -738,6 +762,10 @@ function check_reciepts(list)
 	return false
 end
 
+function base_art( af_sect )
+	return af_sect:gsub('_dyn[1-4]d', '') -- base section
+end
+
 local artefacts_cooking_tbl
 local function get_artefacts_cooking()
 	if not artefacts_cooking_tbl then
@@ -759,96 +787,155 @@ end
 function check_af_transform(af, anom_id, anom_sect)
 	local af_sect = af:section()
 	local pos     = af:position()
-	gv=client_obj(anom_id):game_vertex_id()
-	lv=client_obj(anom_id):level_vertex_id()
-	if gv==BAD_OBJ_ID then gv = af:game_vertex_id() end
-	if gv==BAD_OBJ_ID then gv = db.actor:game_vertex_id() end
-	if gv==BAD_OBJ_ID then return end
-  
-	if strposx(anom_sect, "_psi_field") and strpos(af_sect, "^af_unknown") then
-		mike.af_transform(af, anom_sect, af_sect)
+	gv = client_obj(anom_id):game_vertex_id()
+	lv = client_obj(anom_id):level_vertex_id()
+
+	log2( "[AMK_MOD]: dropped %s", af_sect )
+
+	if gv == BAD_OBJ_ID then gv = af:game_vertex_id() end
+	if gv == BAD_OBJ_ID then gv = db.actor:game_vertex_id() end
+	if gv == BAD_OBJ_ID then return end
+
+	local tt = mike.af_transform(af, anom_sect)
+	if tt then return tt end
+
+	local cooking_state = get_value("cooking_state", {})
+	local anom_key = tostring(anom_id)
+
+	if strpos(af_sect, "af_unknown", 1, true) then
+		local weight = system_ini():r_float(af_sect, "inv_weight")
+		local weight_bonus = math.max( 0.2, weight * 0.1 )
+		cooking_state[anom_key] = {
+			unknown_id = af:id(),
+			weight_bonus = weight_bonus,
+			condition = af:condition()
+		}
+		set_value("cooking_state", cooking_state)
+		wprintf("[~T]. #DBG: af_unknown registered, id = %s, weight = %s, bonus = %s",
+			af:id(), weight, cooking_state[anom_key].weight_bonus)
+		sak.activate_transmutation_effects()
 		return
 	end
 
+	-- Sn: при новом дропе очищаем список добавленных артефактов
+	arts_added = {}
+
+	if cooking_state[anom_key] and cooking_state[anom_key].unknown_id then
+		local unknown_obj = g_sim:object(cooking_state[anom_key].unknown_id)
+		if not unknown_obj or unknown_obj.parent_id ~= BAD_OBJ_ID then
+			cooking_state[anom_key] = nil
+			set_value("cooking_state", cooking_state)
+		end
+	end
+
+	local ba = base_art(af_sect)
+	table.insert(arts_added, af_sect)
+	log2( "[AMK_MOD] artefact = %s (base = %s), anomaly = %s", af_sect, ba, anom_sect )
+
 	for scn, sc in pairs(get_artefacts_cooking()) do
 		local rlist = sc.recipes or 'nil'
+		local good  = good_source(af_sect, sc.source or '?')
+		local anom_pass = strposx(anom_sect, sc.anomaly or '?')
+
+		log2( "check %s: good=%s anom_pass=%s", scn, tostring(good), tostring(anom_pass) )
+
 		if check_reciepts(rlist) then
-			local good = (af_sect == sc.source)
-			local anom_pass = strposx(anom_sect, sc.anomaly or '?')
 			if good and anom_pass then
 				sc.auto_type = false
 				af_flash(af)
-				local new_sect = scn:gsub("cook.", "") -- секция создаваемого артефакта
-				local required_exp_lvl = tonumber(string.sub(new_sect,string.len(new_sect))) - 1
-				local p1, p2 = split_pair(sc.probability or "80,10", ",")
-				local hh, mm = split_pair(sc['time'], ":")
-				local cur_exp = actor_stats.get_points("artefacts")
-				local threshold = 0
-				threshold = math.modf(cur_exp/5)
-				if threshold < required_exp_lvl then
-					p2 = 100
-				end
-				local time_prob_coeff = (math.modf(cur_exp/10)) - 1
-				if time_prob_coeff < 0 then
-					time_prob_coeff = 0
-				elseif time_prob_coeff > 4 then
-					time_prob_coeff = 4
-				end
-				time_prob_coeff = time_prob_coeff * 5
-				mm = tonumber(mm) - time_prob_coeff
-				p1 = tonumber(p1) + time_prob_coeff
-				local tr = af_start_transform(p1, tonumber(p2), af_sect, new_sect)
-				xr_statistic.addCookingPoints(new_sect)
+				if enough_arts(sc.source or '?') then
+					local new_sect = scn:gsub("cook.", "")
+					local required_exp_lvl = tonumber(string.sub(new_sect, string.len(new_sect))) - 1
+					local p1, p2 = split_pair(sc.probability or "80,10", ",")
+					local hh, mm = split_pair(sc['time'], ":")
+					local cur_exp = actor_stats.get_points("artefacts")
+					local threshold = math.modf(cur_exp / 5)
+					if threshold < required_exp_lvl then
+						p2 = 100
+					end
+					local time_prob_coeff = (math.modf(cur_exp / 10)) - 1
+					if time_prob_coeff < 0 then
+						time_prob_coeff = 0
+					elseif time_prob_coeff > 4 then
+						time_prob_coeff = 4
+					end
+					time_prob_coeff = time_prob_coeff * 5
+					mm = tonumber(mm) - time_prob_coeff
+					p1 = tonumber(p1) + time_prob_coeff
 
-				log2("#AMK_MOD:start cooking %s with time %s:%02d, prob = %s, %s (%s)",
-					new_sect, hh, mm, p1, p2, sc.probability or 'nil')
-				return af_start_transform_timer(tr, pos, 0, tonumber(hh), mm)
-			else
-				-- wprintf("[~T].~C06 #AMK_MOD: ~C0A %-25s~C07 reject, need ~C0E %-25s~C0B (%s)~C07 in~C0F %-15s~C0B (%s)~C07, have ~C0B %s~C07", scn, sc.source, DumpVar(good), sc.anomaly, DumpVar(anom_pass), af_sect)
+					local state = cooking_state[anom_key]
+					local final_condition = af:condition()
+					if state and state.unknown_id then
+						local unknown_obj = g_sim:object(state.unknown_id)
+						if unknown_obj and unknown_obj.parent_id == BAD_OBJ_ID then
+							final_condition = math.min(1.0, final_condition + state.weight_bonus)
+							misc.release_obj(state.unknown_id, 'sak.script:unknown_transform')
+							cooking_state[anom_key] = nil
+							set_value("cooking_state", cooking_state)
+						end
+					end
+
+					arts_added = {}
+
+					local tr = af_start_transform(p1, tonumber(p2), af_sect, new_sect)
+					xr_statistic.addCookingPoints(new_sect)
+					log2("#AMK_MOD:start cooking %s with time %s:%02d, prob = %s, %s (%s)",
+						new_sect, hh, mm, p1, p2, sc.probability or 'nil')
+					return af_start_transform_timer(tr, pos, 0, tonumber(hh), mm, final_condition)
+				else
+					wprintf("[~T].~C0F #AMK_MOD:~C07 cooking accepted ~C0A %s~C07 for mod~C0F %s~C07, but need more artefacts", af_sect, scn)
+				end
 			end
-		else
-			-- wprintf("[~T].~C06 #AMK_MOD: ~C0A %-25s~C07 reject, need one reciept from ~C0E %-25s~C07 ", scn, rlist)
 		end
 	end
 	sak.artmodscheck(anom_id, af, anom_sect) 
 end
 
-function af_start_transform_timer(af, pos, delay_d, delay_h, delay_m)
-	local t={}
-	t.section=af
-	t.pos={}
-	t.pos.x=pos.x
-	t.pos.y=pos.y
-	t.pos.z=pos.z
-	t.gv=gv
-	t.lv=lv
+function af_start_transform_timer(af, pos, delay_d, delay_h, delay_m, condition)
+	-- Булыги всегда полностью целые
+	if af == "af_dummy_buliz" then condition = 1 end
+
+	local t = {}
+	t.section = af
+	t.pos = {}
+	t.pos.x = pos.x
+	t.pos.y = pos.y
+	t.pos.z = pos.z
+	t.gv = gv
+	t.lv = lv
+	t.condition = condition
 	local gtime = misc.game_time_minutes()
-	set_value("p_"..gtime.."_af", t)  
-	timers.start_timer("af_trans_"..gtime, delay_d, delay_h, delay_m, "amk_mod.af_transform_end(\"p_"..gtime.."_af\")")
+	set_value("p_" .. gtime .. "_af", t)
+	timers.start_timer("af_trans_" .. gtime, delay_d, delay_h, delay_m, "amk_mod.af_transform_end(\"p_" .. gtime .. "_af\")")
 end
 
 function af_transform_end(params_string)
 	local prms = get_value(params_string, {})
-	--if nil == prms or type(prms) ~= "table" then return end
 	local sect = prms.section
 	if not sect then
 		wprintf("~C0C #ERROR:~C07 af_transform_end loaded invalid table for~C0A %s~C07 ", params_string)
 		dump_table(prms)
-		return  
+		return
 	end
-    
+
 	local name = amk.get_inv_name(sect)
-	local from_sect=game.translate_string(name)
-	local obj=amk.spawn_item(prms.section,vector():set(prms.pos.x,prms.pos.y+1,prms.pos.z),prms.gv,prms.lv)
+	local from_sect = game.translate_string(name)
+	local obj = amk.spawn_item(prms.section, vector():set(prms.pos.x, prms.pos.y + 1, prms.pos.z), prms.gv, prms.lv)
 	local se_obj = alife():object(obj.id)
 	se_obj:used_ai_locations(false)
+
+	local diff = tonumber( level.get_game_difficulty() )
+	if diff ~= 0 and prms.condition then
+		params.upd_condition( se_obj, prms.condition )	
+	end
+
 	local s
 	local upgr = get_value("pda_upgr_cook")
 	if upgr then
-		s = string.format("[%s]: %s%%c[255,255,0,0]%s",game.translate_string(se_obj.level_name),game.translate_string("trans_finished_title_upgr"),from_sect)
-		level.map_add_object_spot_ser(se_obj.id,"artefact_location",from_sect)
+		s = string.format("[%s]: %s%%c[255,255,0,0]%s", game.translate_string(se_obj.level_name), game.translate_string("trans_finished_title_upgr"), from_sect)
+		level.map_add_object_spot_ser(se_obj.id, "artefact_location", from_sect)
 	else
-		s = string.format("%s",game.translate_string("trans_finished_title"))
+		s = string.format("%s", game.translate_string("trans_finished_title"))
 	end
 	amk.send_tip(s)
 	remove_value(params_string)
