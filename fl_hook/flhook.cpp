@@ -1,3 +1,5 @@
+
+
 #include <windows.h>
 #include <stdint.h>
 
@@ -29,6 +31,21 @@
 #define RVA_RUN_ATK_CHECK     0x00AD1A10ULL
 #define RVA_RUN_ATK_CHECK_END 0x00AD1A20ULL
 #define RVA_DEVICE_TIME       0x0122378CULL
+
+#define RVA_ACTOR_RENDER      0x002E0860ULL
+#define RVA_ACTOR_RENDER_END  0x002E086EULL
+#define RVA_ACTOR_ONHUDDRAW   0x002E09F0ULL
+#define RVA_ACTOR_ONHUDDRAW_END 0x002E0A00ULL
+#define RVA_G_PLAYER_HUD      0x01203A00ULL
+#define RVA_RENDER            0x011FB170ULL
+#define OFF_IR_TO_ACTOR       0x90
+#define OFF_ACTOR_CAM_ACTIVE  0x810
+#define OFF_PH_SCRIPT_PART    0x48
+#define OFF_PH_SCRIPT_ITEM    0x70
+#define OFF_PH_ITEM_POS       0xC0
+#define OFF_VT_ADD_VISUAL     0x60
+#define OFF_VT_DCAST_RVIS     0x120
+
 #define RVA_ROTJUMP_NULLWRITE 0x00ACFB03ULL
 
 #define OFF_RA_MAN            0x08
@@ -37,14 +54,20 @@
 #define OFF_RA_MIN_DIST       0x60
 #define OFF_RA_MAX_DIST       0x64
 #define OFF_RA_TIME_NEXT      0x70
+
 #define OFF_BM_ENEMY          0xA98
 #define OFF_OBJ_POS           0xC8
 #define OFF_OBJ_XFORM_K_X     0xB8
 #define OFF_OBJ_XFORM_K_Z     0xC0
+
 #define OFF_MAN_MOVEMENT      0x78
+
 #define OFF_MOV_VEL_CUR       0x40
+
 #define BOAR_RETRIG_MS        2200u
+
 #define BOAR_FACE_COS2        0.329f
+
 #define BOAR_MIN_VEL          2.0f
 
 #define OFF_LVL_OBJECTS     0x00A0
@@ -87,6 +110,11 @@ typedef void (*restrict_t)(void* mgr, unsigned short id, void* out_r, void* in_r
 typedef int  (*ro_spawn_t)(void* self, void* data);
 typedef void* (*shared_set_t)(void* dst, const char* s);
 typedef unsigned char (*run_atk_check_t)(void* self);
+typedef void (*actor_render_t)(void* self, unsigned context_id, void* root);
+typedef void (*actor_onhuddraw_t)(void* self, void* hud, unsigned context_id, void* root);
+typedef void* (*dcast_rvis_t)(void* self);
+typedef void (*add_visual_t)(void* render, unsigned context_id, void* root,
+                             void* visual, void* xform);
 
 static uintptr_t g_base = 0;
 static execcmd_t g_orig = 0;
@@ -94,6 +122,17 @@ static void* g_console = 0;
 static restrict_t g_orig_restrict = 0;
 static ro_spawn_t g_orig_ro_spawn = 0;
 static run_atk_check_t g_orig_run_atk = 0;
+static actor_render_t g_orig_actor_render = 0;
+static actor_onhuddraw_t g_orig_actor_onhud = 0;
+static int g_bp_ui = 0;
+static int g_skip_body_n = 0;
+static int g_skip_hands_n = 0;
+
+static int   g_boar_ok = 0;
+static int   g_boar_fail = 0;
+static float g_boar_last_dist = -1.f;
+static float g_boar_last_vel = -1.f;
+static int   g_boar_last_reason = 0;
 
 static const char WRAP_PRE[] =
     "local function script_name() return '";
@@ -187,6 +226,7 @@ static int basename_mod(const char* path_or_name, char* out, int outcap)
     for (const char* p = last; *p && *p != '.' && n + 1 < outcap; ++p) {
         char c = *p;
         if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+
         if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))
             break;
         out[n++] = c;
@@ -272,6 +312,7 @@ static int reload_script_file_safe(void* L, void* fs, const char* full_path, con
     cname[ci] = 0;
 
     int rc = loadbuf(L, buf, o, cname, 0);
+
     rclose(fs, &r);
 
     if (rc) {
@@ -442,6 +483,7 @@ static void cmd_rl_ui()
 
 static void cmd_rl_configs()
 {
+
     reload_ini_t fn = (reload_ini_t)(g_base + RVA_RELOADINI);
     void* p = fn();
     if (p)
@@ -491,6 +533,7 @@ static void run_rl(const char* args)
     else if (streq_ci(tok, "help") || streq_ci(tok, "?"))
         cmd_rl_help();
     else {
+
         char buf[512];
         int o = 0;
         for (const char* p = tok; *p && o + 1 < (int)sizeof(buf); ++p)
@@ -608,6 +651,7 @@ static void* brz_filter(void* src)
             }
         }
     }
+
     if (src) InterlockedIncrement((LONG volatile*)src);
     g_brz_src = src;
     g_brz_dst = res;
@@ -653,24 +697,45 @@ static int hkRestrictedNetSpawn(void* self, void* data)
 
 static unsigned char __fastcall hkRunAttackCheck(void* self)
 {
-    if (!self) return 0;
+    if (!self) {
+        g_boar_last_reason = 2;
+        ++g_boar_fail;
+        return 0;
+    }
     unsigned char* ra = (unsigned char*)self;
-    if (ra[OFF_RA_ACTIVE]) return 0;
+    if (ra[OFF_RA_ACTIVE]) {
+        g_boar_last_reason = 1;
+        ++g_boar_fail;
+        return 0;
+    }
 
     void* obj = *(void**)(ra + OFF_RA_OBJECT);
-    if (!obj) return 0;
+    if (!obj) {
+        g_boar_last_reason = 2;
+        ++g_boar_fail;
+        return 0;
+    }
     void* enemy = *(void**)((char*)obj + OFF_BM_ENEMY);
-    if (!enemy) return 0;
+    if (!enemy) {
+        g_boar_last_reason = 3;
+        ++g_boar_fail;
+        return 0;
+    }
 
     unsigned tnow = *(unsigned*)(g_base + RVA_DEVICE_TIME);
     unsigned tnext = *(unsigned*)(ra + OFF_RA_TIME_NEXT);
-    if (tnext > tnow) return 0;
+    if (tnext > tnow) {
+        g_boar_last_reason = 6;
+        ++g_boar_fail;
+        return 0;
+    }
 
     float* op = (float*)((char*)obj + OFF_OBJ_POS);
     float* ep = (float*)((char*)enemy + OFF_OBJ_POS);
     float dx = ep[0] - op[0];
+    float dy = ep[1] - op[1];
     float dz = ep[2] - op[2];
-    float d2 = dx * dx + (ep[1] - op[1]) * (ep[1] - op[1]) + dz * dz;
+    float d2 = dx * dx + dy * dy + dz * dz;
     float dist = 0.f;
     if (d2 > 1e-8f) {
         union { float f; unsigned u; } u;
@@ -681,21 +746,38 @@ static unsigned char __fastcall hkRunAttackCheck(void* self)
         x = 0.5f * (x + d2 / x);
         dist = x;
     }
+    g_boar_last_dist = dist;
+
 
     float dmin = *(float*)(ra + OFF_RA_MIN_DIST);
     float dmax = *(float*)(ra + OFF_RA_MAX_DIST);
     if (dmin < 2.5f) dmin = 2.5f;
     if (dmax < dmin + 0.5f) dmax = dmin + 3.0f;
     if (dmax > 10.0f) dmax = 10.0f;
-    if (dist < dmin || dist > dmax) return 0;
+    if (dist < dmin || dist > dmax) {
+        g_boar_last_reason = 4;
+        ++g_boar_fail;
+        return 0;
+    }
+
 
     float fx = *(float*)((char*)obj + OFF_OBJ_XFORM_K_X);
     float fz = *(float*)((char*)obj + OFF_OBJ_XFORM_K_Z);
     float fl2 = fx * fx + fz * fz;
     float tl2 = dx * dx + dz * dz;
-    if (fl2 < 1e-8f || tl2 < 1e-8f) return 0;
+    if (fl2 < 1e-8f || tl2 < 1e-8f) {
+        g_boar_last_reason = 7;
+        ++g_boar_fail;
+        return 0;
+    }
     float dot = fx * dx + fz * dz;
-    if (dot <= 0.f || (dot * dot) < (BOAR_FACE_COS2 * fl2 * tl2)) return 0;
+
+    if (dot <= 0.f || (dot * dot) < (BOAR_FACE_COS2 * fl2 * tl2)) {
+        g_boar_last_reason = 7;
+        ++g_boar_fail;
+        return 0;
+    }
+
 
     float vcur = 0.f;
     void* man = *(void**)(ra + OFF_RA_MAN);
@@ -703,10 +785,43 @@ static unsigned char __fastcall hkRunAttackCheck(void* self)
         void* mov = *(void**)((char*)man + OFF_MAN_MOVEMENT);
         if (mov) vcur = *(float*)((char*)mov + OFF_MOV_VEL_CUR);
     }
-    if (vcur < BOAR_MIN_VEL) return 0;
+    g_boar_last_vel = vcur;
+    if (vcur < BOAR_MIN_VEL) {
+        g_boar_last_reason = 5;
+        ++g_boar_fail;
+        return 0;
+    }
+
+
 
     *(unsigned*)(ra + OFF_RA_TIME_NEXT) = tnow + BOAR_RETRIG_MS;
+
+    g_boar_last_reason = 0;
+    ++g_boar_ok;
     return 1;
+}
+
+static void cmd_boar()
+{
+    if (!g_orig_run_atk) {
+        log_msg("!! [boar] run-attack hook not installed");
+        return;
+    }
+    log_fmt2i("~ [boar] ok=%d fail=%d", g_boar_ok, g_boar_fail);
+    const char* why = "ok";
+    switch (g_boar_last_reason) {
+    case 1: why = "active"; break;
+    case 2: why = "no_object"; break;
+    case 3: why = "no_enemy"; break;
+    case 4: why = "distance"; break;
+    case 5: why = "standing"; break;
+    case 6: why = "cooldown"; break;
+    case 7: why = "not_facing"; break;
+    }
+    log_fmt1("~ [boar] last_reason [%s]", why);
+
+    log_fmt2i("~ [boar] last_dist_x100=%d last_vel_x100=%d",
+              (int)(g_boar_last_dist * 100.f), (int)(g_boar_last_vel * 100.f));
 }
 
 static void cmd_brz()
@@ -765,8 +880,138 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
             cmd_brz();
             return;
         }
+
+        if (p[0] == 'b' && p[1] == 'o' && p[2] == 'a' && p[3] == 'r' &&
+            (p[4] == 0 || p[4] == ' ' || p[4] == '\t')) {
+            cmd_boar();
+            return;
+        }
+
+        if (p[0] == 'b' && p[1] == 'p' && p[2] == 'u' && p[3] == 'i' &&
+            (p[4] == 0 || p[4] == ' ' || p[4] == '\t')) {
+            msg_t Msg = (msg_t)(g_base + RVA_MSG);
+            const char* a = p + 4;
+            while (*a == ' ' || *a == '\t') ++a;
+            if (*a == '1') g_bp_ui = 1;
+            else if (*a == '0') g_bp_ui = 0;
+            Msg("! [fl] bpui=%d body_skips=%d hands_skips=%d",
+                g_bp_ui, g_skip_body_n, g_skip_hands_n);
+            return;
+        }
+
+        if (p[0] == 'b' && p[1] == 'p' && p[2] == 'b' && p[3] == 'o' &&
+            p[4] == 'd' && p[5] == 'y' &&
+            (p[6] == 0 || p[6] == ' ' || p[6] == '\t')) {
+            msg_t Msg = (msg_t)(g_base + RVA_MSG);
+            void** pph = (void**)(g_base + RVA_G_PLAYER_HUD);
+            void* ph = pph ? *pph : 0;
+            unsigned part = 0xFF;
+            void* item = 0;
+            if (ph) {
+                part = *(unsigned char*)((char*)ph + OFF_PH_SCRIPT_PART);
+                item = *(void**)((char*)ph + OFF_PH_SCRIPT_ITEM);
+            }
+            Msg("! [fl] bpbody: bpui=%d body_skips=%d hands_skips=%d "
+                "g_player_hud=%p part=%u item=%p body_hook=%p hud_hook=%p",
+                g_bp_ui, g_skip_body_n, g_skip_hands_n, ph, part, item,
+                (void*)g_orig_actor_render, (void*)g_orig_actor_onhud);
+            return;
+        }
     }
     g_orig(self, cmd, record, allow);
+}
+
+static void render_script_hud_item_only(void* ph, unsigned context_id, void* root)
+{
+    void* item = *(void**)((char*)ph + OFF_PH_SCRIPT_ITEM);
+    if (!item) return;
+
+    void** pr = (void**)(g_base + RVA_RENDER);
+    void* render = pr ? *pr : 0;
+    if (!render) return;
+
+    void** item_vt = *(void***)item;
+    if (!item_vt) return;
+    dcast_rvis_t dcast = (dcast_rvis_t)item_vt[OFF_VT_DCAST_RVIS / sizeof(void*)];
+    if (!dcast) return;
+    void* visual = dcast(item);
+    if (!visual) return;
+
+    void** r_vt = *(void***)render;
+    if (!r_vt) return;
+    add_visual_t add_vis = (add_visual_t)r_vt[OFF_VT_ADD_VISUAL / sizeof(void*)];
+    if (!add_vis) return;
+
+    void* xform = (char*)ph + OFF_PH_ITEM_POS;
+    add_vis(render, context_id, root, visual, xform);
+}
+
+static void hkActorRenderableRender(void* self, unsigned context_id, void* root)
+{
+    if (g_orig_actor_render && g_base && g_bp_ui) {
+
+        void* actor = (char*)self - OFF_IR_TO_ACTOR;
+        int cam = *(int*)((char*)actor + OFF_ACTOR_CAM_ACTIVE);
+        if (cam == 0) {
+            ++g_skip_body_n;
+            return;
+        }
+    }
+    if (g_orig_actor_render)
+        g_orig_actor_render(self, context_id, root);
+}
+
+static void hkActorOnHUDDraw(void* self, void* hud, unsigned context_id, void* root)
+{
+    if (g_base && g_bp_ui) {
+        void** pph = (void**)(g_base + RVA_G_PLAYER_HUD);
+        void* ph = pph ? *pph : 0;
+        if (ph) {
+            ++g_skip_hands_n;
+            render_script_hud_item_only(ph, context_id, root);
+            return;
+        }
+    }
+    if (g_orig_actor_onhud)
+        g_orig_actor_onhud(self, hud, context_id, root);
+}
+
+static void* install_onhuddraw_detour(void* hook)
+{
+    uint8_t* func = (uint8_t*)(g_base + RVA_ACTOR_ONHUDDRAW);
+    const SIZE_T steal = (SIZE_T)(RVA_ACTOR_ONHUDDRAW_END - RVA_ACTOR_ONHUDDRAW);
+    if (steal != 16) return 0;
+
+    if (!(func[0] == 0x40 && func[1] == 0x53 && func[2] == 0x55 &&
+          func[3] == 0x56 && func[4] == 0x57 &&
+          func[5] == 0x48 && func[6] == 0x83 && func[7] == 0xEC && func[8] == 0x38 &&
+          func[9] == 0x48 && func[10] == 0x8B && func[11] == 0x3D))
+        return 0;
+
+    uint8_t* tramp = (uint8_t*)VirtualAlloc(0, 64,
+        MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) return 0;
+
+    SIZE_T o = 0;
+    for (; o < 9; ++o) tramp[o] = func[o];
+    tramp[o++] = 0x48; tramp[o++] = 0xB8;
+    *(uint64_t*)(tramp + o) = g_base + RVA_G_PLAYER_HUD;
+    o += 8;
+    tramp[o++] = 0x48; tramp[o++] = 0x8B; tramp[o++] = 0x38;
+    tramp[o++] = 0xFF; tramp[o++] = 0x25;
+    *(uint32_t*)(tramp + o) = 0; o += 4;
+    *(uint64_t*)(tramp + o) = (uint64_t)(func + steal);
+
+    DWORD oldp;
+    if (!VirtualProtect(func, steal, PAGE_EXECUTE_READWRITE, &oldp)) return 0;
+    func[0] = 0xFF; func[1] = 0x25;
+    *(uint32_t*)(func + 2) = 0;
+    *(uint64_t*)(func + 6) = (uint64_t)hook;
+    func[14] = 0x90;
+    func[15] = 0x90;
+    VirtualProtect(func, steal, oldp, &oldp);
+    FlushInstructionCache(GetCurrentProcess(), func, steal);
+    return tramp;
 }
 
 static void* install_detour(uintptr_t rva_begin, uintptr_t rva_end, void* hook)
@@ -805,6 +1050,7 @@ static bool install_hook()
                                        (void*)&hkExecuteCommand);
     if (!g_orig) return false;
 
+
     g_orig_ro_spawn = (ro_spawn_t)install_detour(RVA_RO_NET_SPAWN, RVA_RO_NET_SPAWN_END,
                                                  (void*)&hkRestrictedNetSpawn);
     g_orig_restrict = (restrict_t)install_detour(RVA_RESTRICT, RVA_RESTRICT_END,
@@ -813,8 +1059,16 @@ static bool install_hook()
     g_orig_run_atk = (run_atk_check_t)install_detour(RVA_RUN_ATK_CHECK, RVA_RUN_ATK_CHECK_END,
                                                      (void*)&hkRunAttackCheck);
 
+    g_orig_actor_render = (actor_render_t)install_detour(
+        RVA_ACTOR_RENDER, RVA_ACTOR_RENDER_END, (void*)&hkActorRenderableRender);
+    g_orig_actor_onhud = (actor_onhuddraw_t)install_onhuddraw_detour(
+        (void*)&hkActorOnHUDDraw);
+
+
+
     {
         uint8_t* p = (uint8_t*)(g_base + RVA_ROTJUMP_NULLWRITE);
+
         if (p[0] == 0x33 && p[1] == 0xC0) {
             DWORD oldp;
             if (VirtualProtect(p, 2, PAGE_EXECUTE_READWRITE, &oldp)) {
@@ -834,6 +1088,7 @@ HRESULT WINAPI DirectInput8Create(void* hinst, DWORD ver, void* riid, void** out
 {
     static DI8C_t real = 0;
     static int hooks_done = 0;
+
     if (!hooks_done) {
         hooks_done = 1;
         install_hook();
