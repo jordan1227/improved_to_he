@@ -508,19 +508,6 @@ function CUIDescriptionWnd:ShowDescription(item)
 		if cd and cd ~= "" then description = description .. " \\nCD: [" .. cd .. "]" end -- Manool: иногда нужно глянуть кастомдату
 	end
 
---[[
-	local pdacd = (self.section == "device_pda_npc") and vergas_pda.get_pda_cdata(self.item:id())
-	if pdacd then
-		local info = SplitStr(pdacd, '|')
-		local serial = info[4]
-		if serial ~= nil and serial ~= "" then
-			local pda_c = string.sub(serial, 13 , 13)
-			if pda_c ~= "3" then self.dis_cond = true end
-			description = string.format("%%c[255,255,140,0]№ %s (%s) \\n%%c[default]", serial, translate("pda_cond_"..pda_c)) .. description
-		end
-	end
-]]--
-
 	if self.section == "rucksack" then
 		description = nlc_container.get_item_desc(self.item:id()) .. description
 	end
@@ -557,11 +544,14 @@ function CUIDescriptionWnd:ShowDescription(item)
 		description = string.format("%%c[255,255,140,0]%d мл / %d мл\\n%%c[default]%s", math.floor(water_amount), full, description)
 	end
 	
+	if self.section == "sharper" then 
+		inv_name = translate( inv_name ) .. " [макс. " .. math.round( dsh_drag_drop.get_sharper_max_condition( item:id() ) * 100 ) .. "%]"
+	end			
+	
 	if self.section == "device_pda_npc" then
 		local cond = self.item:condition()
 		inv_name = ( ( cond == 1 and "Заряженный " or cond == 0.75 and "Разряженный " ) or "Сломанный " ) .. inv_name
-		description = description .. "\\n \\n%c[UI_orange]Разгруппировать: \\n%c[default]%c[white]Нажмите S и потяните ПДА на свободное поле"
-		
+
 		local data = vergas_pda.get_pda_cdata( self.item:id() )
 		if data then
 			local info = vergas_lib.str_explode( "|", data, true )
@@ -1641,8 +1631,7 @@ function CUIDescriptionWnd:OnKeyPress(dik, bind)
         end
 	elseif dik == DIK_keys.DIK_T then
 		if self.item then
-			self:UpdateAfProp( self.item )
-		--	self:OutContainerArts( self.item:id() )
+			self:OutContainerArts( self.item:id() )
 		end		
 --	elseif dik == DIK_keys.DIK_W then 
 --		self:SetItemPrice( self.item )		
@@ -1678,91 +1667,144 @@ function CUIDescriptionWnd:SetItemPrice( obj )
 	end	
 end
 
+local ungroup_differentiators = {
+	device_pda_npc = function(item) return item:condition() == 1 end,
+}
+
+local function passes_differentiator(item)
+	local sect = item:section()
+	if sect:sub(1, 11) == "arc_art_box" then
+		local inv_w = item:get_inventory_item().inv_weight
+		local ini_w = sys_ini:r_float(sect, "inv_weight")
+		return inv_w ~= ini_w
+	end
+	local fn = ungroup_differentiators[sect]
+	if fn then return fn(item) end
+	return true -- нет спец. критерия — маркируем все предметы этой секции
+end
+
+function can_manual_ungroup( item )
+	if not item then return false end
+	local allowed = get_bool( item:section(), "manual_ungrouping", false )
+	return allowed
+end
+
+function do_manual_ungroup_all( section )
+	local matched = 0
+	db.actor:iterate_inventory( function( _, item )
+		if item:section() == section then
+			if passes_differentiator(item) then
+				set_item_ungroupable( item )
+				matched = matched + 1
+			end
+		end
+	end, nil )
+end
+
+function try_manual_ungroup( item )
+	if has_alife_info("ui_trade") then
+		return false
+	end
+	if has_alife_info("ui_car_body") then
+		return false
+	end
+	if not can_manual_ungroup(item) then
+		return false
+	end
+	do_manual_ungroup_all(item:section())
+	return true
+end
+
+function CUIDescriptionWnd:GroupSelected( section )
+	local matched_boxes, matched_pda = 0, 0
+
+	if strpos( section, "^arc_art_box_" ) then 
+		db.actor:iterate_inventory( function ( dummy, item )
+			if strpos( item:section(), "^arc_art_box_" ) then
+				local inv_w = item:get_inventory_item().inv_weight
+				local ini_w = ini:r_float( item:section(), "inv_weight" )
+				if inv_w ~= ini_w then
+					set_item_ungroupable( item )
+					matched_boxes = matched_boxes + 1
+				end	
+			end 
+		end, nil )
+	end
+	
+	if strpos( section, "^device_pda_npc" ) or section == "anagramm_flash" then
+		db.actor:iterate_inventory( function ( dummy, item )
+			if item:section() == "device_pda_npc" then
+				if item:condition() == 1 then
+					set_item_ungroupable( item )
+					matched_pda = matched_pda + 1
+				end
+			end	
+		end, nil )	
+		full_info_pda = true
+	end	
+end
+
 
 local new_container_id, new_container_data
 local new_container_arts = {}
 local subscribe_on_trading
 
 function CUIDescriptionWnd:OutContainerArts( container_id )
-	log2( "OutContainerArts: called with container_id = %s", tostring( container_id ) )
-
 	if not has_alife_info( "ui_trade" ) then
-		log2( "OutContainerArts: no ui_trade info, abort" )
 		return
 	end
 	if not container_id then
-		log2( "OutContainerArts: container_id is nil, abort" )
 		return
 	end
 
 	local parent = level:get_second_talker()
 	if not parent then
-		log2( "OutContainerArts: no second talker (parent), abort" )
 		return
 	end
-	log2( "OutContainerArts: parent id = %s", tostring( parent:id() ) )
 
 	local box = client_obj( container_id )
 	if not box then
-		log2( "OutContainerArts: client_obj(%s) returned nil, abort", tostring( container_id ) )
 		return
 	end
-	log2( "OutContainerArts: box found, section = %s", tostring( box:section() ) )
 
 	local sect = box:section()
 	if not strpos( sect, "arc_art_box_" ) then
-		log2( "OutContainerArts: section %s is not arc_art_box_, abort", tostring( sect ) )
 		return
 	end
 
 	local sobj = box:get_alife_object()
 	if not sobj then
-		log2( "OutContainerArts: get_alife_object() returned nil, abort" )
 		return
 	end
-	log2( "OutContainerArts: custom_data = [%s]", tostring( sobj.custom_data ) )
 
 	local arts = arc_radiation.decode_custom_data( sobj.custom_data, sect )
 	if not arts then
-		log2( "OutContainerArts: decode_custom_data returned nil, abort" )
 		return
-	end
-	log2( "OutContainerArts: decode_custom_data returned %d entries", #arts )
-	for i, a in ipairs( arts ) do
-		log2( "OutContainerArts: slot %d -> section=[%s] condition=[%s]", i, tostring( a.section ), tostring( a.condition ) )
 	end
 
 	if #arts == 0 then
-		log2( "OutContainerArts: 0 arts decoded, abort" )
 		return
 	end
 
 	local pk = get_netpk( box, 1 )
 	local data = pk and pk:get()
 	if not data then
-		log2( "OutContainerArts: get_netpk/data is nil, abort" )
 		return
 	end
-	log2( "OutContainerArts: got netpk data ok" )
 
 	misc.release_obj( box )
-	log2( "OutContainerArts: released old box" )
 
 	if self.item and self.item:id() == container_id then
-		log2( "OutContainerArts: clearing self.item (was pointing at released box)" )
 		self.item = nil
 	end
 	if self.itemInFocus == container_id then
-		log2( "OutContainerArts: clearing self.itemInFocus (was pointing at released box)" )
 		self.itemInFocus = nil
 	end
 
 	local new_box = misc.spawn_to( sect, parent )
 	if not new_box then
-		log2( "OutContainerArts: misc.spawn_to(%s) for new box FAILED", tostring( sect ) )
 		return
 	end
-	log2( "OutContainerArts: new_box spawned, id = %s", tostring( new_box.id ) )
 
 	new_container_id   = new_box.id
 	new_container_data = data.custom_data
@@ -1770,18 +1812,15 @@ function CUIDescriptionWnd:OutContainerArts( container_id )
 
 	for i, art_entry in ipairs( arts ) do
 		if art_entry and art_entry.section and art_entry.section ~= "" then
-			log2( "OutContainerArts: spawning art #%d section=[%s]", i, art_entry.section )
 			local obj = misc.spawn_to( art_entry.section, parent )
 			misc.process_spawn()
 			if obj then
-				log2( "OutContainerArts: art #%d spawned OK, id = %s", i, tostring( obj.id ) )
 				local cond      = art_entry.condition or 1
 				local cust_data = art_entry.custom_data
 				local obj_id    = obj.id
 				level.client_spawn_manager():add(
 					obj_id, -1,
 					function( id, spawned_obj )
-						log2( "OutContainerArts: client_spawn_manager callback for id=%s", tostring( id ) )
 						local spk = get_netpk( spawned_obj, 1 )
 						if spk then
 							local sdata = spk:get()
@@ -1790,22 +1829,13 @@ function CUIDescriptionWnd:OutContainerArts( container_id )
 								sdata.custom_data = cust_data
 							end
 							spk:set( sdata )
-							log2( "OutContainerArts: set condition=%s custom_data=[%s] on id=%s", tostring( cond ), tostring( cust_data ), tostring( id ) )
-						else
-							log2( "OutContainerArts: get_netpk failed for spawned art id=%s", tostring( id ) )
 						end
 					end
 				)
 				table.insert( new_container_arts, obj_id )
-			else
-				log2( "OutContainerArts: art #%d spawn_to(%s) FAILED", i, art_entry.section )
 			end
-		else
-			log2( "OutContainerArts: slot #%d skipped, empty section", i )
 		end
 	end
-
-	log2( "OutContainerArts: finished, spawned_arts_count = %d", #new_container_arts )
 
 	trade_subscribe()
 	self:HideDescription()
