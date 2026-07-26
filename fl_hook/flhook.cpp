@@ -85,6 +85,7 @@
 #define OFF_MTL_FLAGS      0x14
 #define MTL_FL_BLOODMARK   0x10
 #define BP_RQ_STATIC       2
+#define RVA_WM_ROT_ANGLE   0x001C92D3ULL
 
 #define FS_ListFiles   1u
 #define FS_ListFolders 2u
@@ -868,6 +869,8 @@ static const char* const BP_TEX[] = {
 #define BP_TEX_N (int)(sizeof(BP_TEX) / sizeof(BP_TEX[0]))
 
 static void* g_bp_array = 0;
+static void* g_bp_one[BP_TEX_N] = { 0 };
+static int   g_bp_rotfix = 0;
 static int   g_bp_ok = 0;
 static int   g_bp_fail = 0;
 static int   g_bp_reason = 0;
@@ -881,16 +884,24 @@ static void bp_build_array(void)
     if (!arr) return;
     for (int i = 0; i < BP_TEX_N; ++i)
         append(arr, BP_TEX[i]);
+    for (int i = 0; i < BP_TEX_N; ++i) {
+        void* one = create((void*)(g_base + RVA_RENDERFACTORY));
+        if (!one) break;
+        append(one, BP_TEX[i]);
+        g_bp_one[i] = one;
+    }
     g_bp_array = arr;
 }
 
-static int bp_place(float x, float y, float z, float dist, float size)
+static int bp_place(float x, float y, float z, float dist, float size, int tex)
 {
     uintptr_t lvl = *(uintptr_t*)(g_base + RVA_GPGAMELEVEL);
     if (!lvl) { g_bp_reason = 1; ++g_bp_fail; return 0; }
 
     bp_build_array();
     if (!g_bp_array) { g_bp_reason = 2; ++g_bp_fail; return 0; }
+    void* arr = g_bp_array;
+    if (tex >= 1 && tex <= BP_TEX_N && g_bp_one[tex - 1]) arr = g_bp_one[tex - 1];
 
     float start[3] = { x, y, z };
     float dir[3]   = { 0.f, -1.f, 0.f };
@@ -931,7 +942,7 @@ static int bp_place(float x, float y, float z, float dist, float size)
     void* render = *(void**)(g_base + RVA_RENDER);
     if (!render) { g_bp_reason = 8; ++g_bp_fail; return 0; }
 
-    ((add_static_wm_t)(g_base + RVA_ADD_STATIC_WM))(render, g_bp_array, end, size, tri, verts);
+    ((add_static_wm_t)(g_base + RVA_ADD_STATIC_WM))(render, arr, end, size, tri, verts);
     g_bp_reason = 0; ++g_bp_ok;
     return 1;
 }
@@ -956,22 +967,55 @@ static const char* bp_parse_float(const char* s, float* out)
     return s;
 }
 
+static int bp_set_rotfix(int on)
+{
+    uint8_t* p = (uint8_t*)(g_base + RVA_WM_ROT_ANGLE);
+    const uint8_t orig[3]  = { 0x0F, 0x28, 0xC1 };
+    const uint8_t fixed[3] = { 0x0F, 0x57, 0xC0 };
+    const uint8_t* want = on ? fixed : orig;
+    const uint8_t* have = on ? orig  : fixed;
+    if (p[0] == want[0] && p[1] == want[1] && p[2] == want[2]) {
+        g_bp_rotfix = on;
+        return 1;
+    }
+    if (p[0] != have[0] || p[1] != have[1] || p[2] != have[2]) return 0;
+    DWORD oldp;
+    if (!VirtualProtect(p, 3, PAGE_EXECUTE_READWRITE, &oldp)) return 0;
+    p[0] = want[0]; p[1] = want[1]; p[2] = want[2];
+    VirtualProtect(p, 3, oldp, &oldp);
+    FlushInstructionCache(GetCurrentProcess(), p, 3);
+    g_bp_rotfix = on;
+    return 1;
+}
+
 static void cmd_bpm(const char* a)
 {
     while (*a == ' ' || *a == '\t') ++a;
     if (!*a) {
         log_fmt2i("~ [bpm] ok=%d fail=%d", g_bp_ok, g_bp_fail);
         log_fmt1i("~ [bpm] last_reason=%d (0ok 3no_hit 7not_bloodmark)", g_bp_reason);
+        log_fmt1i("~ [bpm] rotfix=%d (decal rotation jitter off)", g_bp_rotfix);
         return;
     }
-    float x, y, z, dist, size;
+    if (a[0] == 'r' && a[1] == 'o' && a[2] == 't') {
+        const char* b = a + 3;
+        while (*b == ' ' || *b == '\t') ++b;
+        if (*b == '0' || *b == '1') {
+            if (!bp_set_rotfix(*b - '0'))
+                log_msg("!! [bpm] rot: patch site mismatch");
+        }
+        log_fmt1i("~ [bpm] rotfix=%d", g_bp_rotfix);
+        return;
+    }
+    float x, y, z, dist, size, tex = 0.f;
     const char* p = bp_parse_float(a, &x);
     if (p) p = bp_parse_float(p, &y);
     if (p) p = bp_parse_float(p, &z);
     if (p) p = bp_parse_float(p, &dist);
     if (p) p = bp_parse_float(p, &size);
-    if (!p) { log_msg("!! [bpm] usage: bpm x y z dist size"); return; }
-    bp_place(x, y, z, dist, size);
+    if (!p) { log_msg("!! [bpm] usage: bpm x y z dist size [tex]"); return; }
+    bp_parse_float(p, &tex);
+    bp_place(x, y, z, dist, size, (int)tex);
 }
 
 static void hkExecuteCommand(void* self, const char* cmd, char record, char allow)
@@ -1202,6 +1246,8 @@ static bool install_hook()
             }
         }
     }
+
+    bp_set_rotfix(1);
     return true;
 }
 
