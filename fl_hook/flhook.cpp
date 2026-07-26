@@ -1,5 +1,3 @@
-
-
 #include <windows.h>
 #include <stdint.h>
 
@@ -54,20 +52,14 @@
 #define OFF_RA_MIN_DIST       0x60
 #define OFF_RA_MAX_DIST       0x64
 #define OFF_RA_TIME_NEXT      0x70
-
 #define OFF_BM_ENEMY          0xA98
 #define OFF_OBJ_POS           0xC8
 #define OFF_OBJ_XFORM_K_X     0xB8
 #define OFF_OBJ_XFORM_K_Z     0xC0
-
 #define OFF_MAN_MOVEMENT      0x78
-
 #define OFF_MOV_VEL_CUR       0x40
-
 #define BOAR_RETRIG_MS        2200u
-
 #define BOAR_FACE_COS2        0.329f
-
 #define BOAR_MIN_VEL          2.0f
 
 #define OFF_LVL_OBJECTS     0x00A0
@@ -76,6 +68,23 @@
 #define OFF_MGR_DEF_IN      0x0020
 #define OFF_RO_OBJECT       0x0008
 #define STRV_VALUE          20
+
+#define RVA_RAYPICK        0x00044070ULL
+#define RVA_ADD_STATIC_WM  0x0014D9E0ULL
+#define RVA_CREATE_WMA     0x0016FE60ULL
+#define RVA_APPENDMARK     0x001CB820ULL
+#define RVA_RENDERFACTORY  0x010ABFE0ULL
+#define RVA_GMLIB_FIRST    0x01203C88ULL
+#define RVA_GMLIB_LAST     0x01203C90ULL
+#define OFF_LVL_OBJSPACE   0x80150
+#define OFF_LVL_TRIS       0x80160
+#define OFF_LVL_VERTS      0x80170
+#define BP_TRI_SIZE        16
+#define BP_TRI_DUMMY       0x0C
+#define BP_TRI_MATMASK     0x3FFF
+#define OFF_MTL_FLAGS      0x14
+#define MTL_FL_BLOODMARK   0x10
+#define BP_RQ_STATIC       2
 
 #define FS_ListFiles   1u
 #define FS_ListFolders 2u
@@ -115,6 +124,12 @@ typedef void (*actor_onhuddraw_t)(void* self, void* hud, unsigned context_id, vo
 typedef void* (*dcast_rvis_t)(void* self);
 typedef void (*add_visual_t)(void* render, unsigned context_id, void* root,
                              void* visual, void* xform);
+typedef unsigned char (*raypick_t)(void* objspace, const float* start, const float* dir,
+                                   float range, int tgt, void* result, void* ignore);
+typedef void  (*add_static_wm_t)(void* render, void* array, const float* pos,
+                                 float size, void* tri, void* verts);
+typedef void* (*create_wma_t)(void* factory);
+typedef void  (*appendmark_t)(void* array, const char* texture);
 
 static uintptr_t g_base = 0;
 static execcmd_t g_orig = 0;
@@ -226,7 +241,6 @@ static int basename_mod(const char* path_or_name, char* out, int outcap)
     for (const char* p = last; *p && *p != '.' && n + 1 < outcap; ++p) {
         char c = *p;
         if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-
         if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))
             break;
         out[n++] = c;
@@ -312,7 +326,6 @@ static int reload_script_file_safe(void* L, void* fs, const char* full_path, con
     cname[ci] = 0;
 
     int rc = loadbuf(L, buf, o, cname, 0);
-
     rclose(fs, &r);
 
     if (rc) {
@@ -483,7 +496,6 @@ static void cmd_rl_ui()
 
 static void cmd_rl_configs()
 {
-
     reload_ini_t fn = (reload_ini_t)(g_base + RVA_RELOADINI);
     void* p = fn();
     if (p)
@@ -533,7 +545,6 @@ static void run_rl(const char* args)
     else if (streq_ci(tok, "help") || streq_ci(tok, "?"))
         cmd_rl_help();
     else {
-
         char buf[512];
         int o = 0;
         for (const char* p = tok; *p && o + 1 < (int)sizeof(buf); ++p)
@@ -651,7 +662,6 @@ static void* brz_filter(void* src)
             }
         }
     }
-
     if (src) InterlockedIncrement((LONG volatile*)src);
     g_brz_src = src;
     g_brz_dst = res;
@@ -748,7 +758,6 @@ static unsigned char __fastcall hkRunAttackCheck(void* self)
     }
     g_boar_last_dist = dist;
 
-
     float dmin = *(float*)(ra + OFF_RA_MIN_DIST);
     float dmax = *(float*)(ra + OFF_RA_MAX_DIST);
     if (dmin < 2.5f) dmin = 2.5f;
@@ -760,7 +769,6 @@ static unsigned char __fastcall hkRunAttackCheck(void* self)
         return 0;
     }
 
-
     float fx = *(float*)((char*)obj + OFF_OBJ_XFORM_K_X);
     float fz = *(float*)((char*)obj + OFF_OBJ_XFORM_K_Z);
     float fl2 = fx * fx + fz * fz;
@@ -771,13 +779,11 @@ static unsigned char __fastcall hkRunAttackCheck(void* self)
         return 0;
     }
     float dot = fx * dx + fz * dz;
-
     if (dot <= 0.f || (dot * dot) < (BOAR_FACE_COS2 * fl2 * tl2)) {
         g_boar_last_reason = 7;
         ++g_boar_fail;
         return 0;
     }
-
 
     float vcur = 0.f;
     void* man = *(void**)(ra + OFF_RA_MAN);
@@ -791,8 +797,6 @@ static unsigned char __fastcall hkRunAttackCheck(void* self)
         ++g_boar_fail;
         return 0;
     }
-
-
 
     *(unsigned*)(ra + OFF_RA_TIME_NEXT) = tnow + BOAR_RETRIG_MS;
 
@@ -819,7 +823,6 @@ static void cmd_boar()
     case 7: why = "not_facing"; break;
     }
     log_fmt1("~ [boar] last_reason [%s]", why);
-
     log_fmt2i("~ [boar] last_dist_x100=%d last_vel_x100=%d",
               (int)(g_boar_last_dist * 100.f), (int)(g_boar_last_vel * 100.f));
 }
@@ -850,6 +853,125 @@ static void cmd_brz()
     } else {
         log_msg("~ [brz] restrict() not reached for a tracked object yet");
     }
+}
+
+static const char* const BP_TEX[] = {
+    "wm\\wm_blood_pool_1",  "wm\\wm_blood_pool_2",  "wm\\wm_blood_pool_3",
+    "wm\\wm_blood_pool_4",  "wm\\wm_blood_pool_5",  "wm\\wm_blood_pool_6",
+    "wm\\wm_blood_pool_7",  "wm\\wm_blood_pool_8",  "wm\\wm_blood_pool_9",
+    "wm\\wm_blood_pool_10", "wm\\wm_blood_pool_11", "wm\\wm_blood_pool_12",
+    "wm\\wm_blood_pool_13", "wm\\wm_blood_pool_14", "wm\\wm_blood_pool_15",
+    "wm\\wm_blood_pool_16", "wm\\wm_blood_pool_17", "wm\\wm_blood_pool_18",
+    "wm\\wm_blood_pool_19", "wm\\wm_blood_pool_20", "wm\\wm_blood_pool_21",
+    "wm\\wm_blood_pool_22", "wm\\wm_blood_pool_23", "wm\\wm_blood_pool_24",
+};
+#define BP_TEX_N (int)(sizeof(BP_TEX) / sizeof(BP_TEX[0]))
+
+static void* g_bp_array = 0;
+static int   g_bp_ok = 0;
+static int   g_bp_fail = 0;
+static int   g_bp_reason = 0;
+
+static void bp_build_array(void)
+{
+    if (g_bp_array) return;
+    create_wma_t create = (create_wma_t)(g_base + RVA_CREATE_WMA);
+    appendmark_t append = (appendmark_t)(g_base + RVA_APPENDMARK);
+    void* arr = create((void*)(g_base + RVA_RENDERFACTORY));
+    if (!arr) return;
+    for (int i = 0; i < BP_TEX_N; ++i)
+        append(arr, BP_TEX[i]);
+    g_bp_array = arr;
+}
+
+static int bp_place(float x, float y, float z, float dist, float size)
+{
+    uintptr_t lvl = *(uintptr_t*)(g_base + RVA_GPGAMELEVEL);
+    if (!lvl) { g_bp_reason = 1; ++g_bp_fail; return 0; }
+
+    bp_build_array();
+    if (!g_bp_array) { g_bp_reason = 2; ++g_bp_fail; return 0; }
+
+    float start[3] = { x, y, z };
+    float dir[3]   = { 0.f, -1.f, 0.f };
+    unsigned char R[16];
+
+    raypick_t raypick = (raypick_t)(g_base + RVA_RAYPICK);
+    void* objspace = (void*)(lvl + OFF_LVL_OBJSPACE);
+    if (!raypick(objspace, start, dir, dist, BP_RQ_STATIC, R, 0)) {
+        g_bp_reason = 3; ++g_bp_fail; return 0;
+    }
+    if (*(void**)(R + 0)) { g_bp_reason = 4; ++g_bp_fail; return 0; }
+    float range = *(float*)(R + 8);
+    int   element = *(int*)(R + 0xC);
+    if (element < 0) { g_bp_reason = 3; ++g_bp_fail; return 0; }
+
+    float end[3];
+    end[0] = start[0] + range * dir[0];
+    end[1] = start[1] + range * dir[1];
+    end[2] = start[2] + range * dir[2];
+
+    void* tris  = *(void**)(lvl + OFF_LVL_TRIS);
+    void* verts = *(void**)(lvl + OFF_LVL_VERTS);
+    if (!tris || !verts) { g_bp_reason = 5; ++g_bp_fail; return 0; }
+
+    unsigned char* tri = (unsigned char*)tris + (size_t)element * BP_TRI_SIZE;
+    unsigned matid = *(unsigned short*)(tri + BP_TRI_DUMMY) & BP_TRI_MATMASK;
+
+    void** mat_first = *(void***)(g_base + RVA_GMLIB_FIRST);
+    void** mat_last  = *(void***)(g_base + RVA_GMLIB_LAST);
+    if (!mat_first || matid >= (unsigned)(mat_last - mat_first)) {
+        g_bp_reason = 6; ++g_bp_fail; return 0;
+    }
+    void* mtl = mat_first[matid];
+    if (!mtl || !(*(unsigned*)((char*)mtl + OFF_MTL_FLAGS) & MTL_FL_BLOODMARK)) {
+        g_bp_reason = 7; ++g_bp_fail; return 0;
+    }
+
+    void* render = *(void**)(g_base + RVA_RENDER);
+    if (!render) { g_bp_reason = 8; ++g_bp_fail; return 0; }
+
+    ((add_static_wm_t)(g_base + RVA_ADD_STATIC_WM))(render, g_bp_array, end, size, tri, verts);
+    g_bp_reason = 0; ++g_bp_ok;
+    return 1;
+}
+
+static const char* bp_parse_float(const char* s, float* out)
+{
+    while (*s == ' ' || *s == '\t') ++s;
+    int neg = 0;
+    if (*s == '-') { neg = 1; ++s; }
+    else if (*s == '+') ++s;
+    if ((*s < '0' || *s > '9') && *s != '.') return 0;
+    double v = 0.0;
+    int any = 0;
+    while (*s >= '0' && *s <= '9') { v = v * 10.0 + (*s - '0'); ++s; any = 1; }
+    if (*s == '.') {
+        ++s;
+        double f = 0.1;
+        while (*s >= '0' && *s <= '9') { v += (*s - '0') * f; f *= 0.1; ++s; any = 1; }
+    }
+    if (!any) return 0;
+    *out = (float)(neg ? -v : v);
+    return s;
+}
+
+static void cmd_bpm(const char* a)
+{
+    while (*a == ' ' || *a == '\t') ++a;
+    if (!*a) {
+        log_fmt2i("~ [bpm] ok=%d fail=%d", g_bp_ok, g_bp_fail);
+        log_fmt1i("~ [bpm] last_reason=%d (0ok 3no_hit 7not_bloodmark)", g_bp_reason);
+        return;
+    }
+    float x, y, z, dist, size;
+    const char* p = bp_parse_float(a, &x);
+    if (p) p = bp_parse_float(p, &y);
+    if (p) p = bp_parse_float(p, &z);
+    if (p) p = bp_parse_float(p, &dist);
+    if (p) p = bp_parse_float(p, &size);
+    if (!p) { log_msg("!! [bpm] usage: bpm x y z dist size"); return; }
+    bp_place(x, y, z, dist, size);
 }
 
 static void hkExecuteCommand(void* self, const char* cmd, char record, char allow)
@@ -884,6 +1006,12 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
         if (p[0] == 'b' && p[1] == 'o' && p[2] == 'a' && p[3] == 'r' &&
             (p[4] == 0 || p[4] == ' ' || p[4] == '\t')) {
             cmd_boar();
+            return;
+        }
+
+        if (p[0] == 'b' && p[1] == 'p' && p[2] == 'm' &&
+            (p[3] == 0 || p[3] == ' ' || p[3] == '\t')) {
+            cmd_bpm(p + 3);
             return;
         }
 
@@ -949,7 +1077,6 @@ static void render_script_hud_item_only(void* ph, unsigned context_id, void* roo
 static void hkActorRenderableRender(void* self, unsigned context_id, void* root)
 {
     if (g_orig_actor_render && g_base && g_bp_ui) {
-
         void* actor = (char*)self - OFF_IR_TO_ACTOR;
         int cam = *(int*)((char*)actor + OFF_ACTOR_CAM_ACTIVE);
         if (cam == 0) {
@@ -1050,7 +1177,6 @@ static bool install_hook()
                                        (void*)&hkExecuteCommand);
     if (!g_orig) return false;
 
-
     g_orig_ro_spawn = (ro_spawn_t)install_detour(RVA_RO_NET_SPAWN, RVA_RO_NET_SPAWN_END,
                                                  (void*)&hkRestrictedNetSpawn);
     g_orig_restrict = (restrict_t)install_detour(RVA_RESTRICT, RVA_RESTRICT_END,
@@ -1064,11 +1190,8 @@ static bool install_hook()
     g_orig_actor_onhud = (actor_onhuddraw_t)install_onhuddraw_detour(
         (void*)&hkActorOnHUDDraw);
 
-
-
     {
         uint8_t* p = (uint8_t*)(g_base + RVA_ROTJUMP_NULLWRITE);
-
         if (p[0] == 0x33 && p[1] == 0xC0) {
             DWORD oldp;
             if (VirtualProtect(p, 2, PAGE_EXECUTE_READWRITE, &oldp)) {
@@ -1088,7 +1211,6 @@ HRESULT WINAPI DirectInput8Create(void* hinst, DWORD ver, void* riid, void** out
 {
     static DI8C_t real = 0;
     static int hooks_done = 0;
-
     if (!hooks_done) {
         hooks_done = 1;
         install_hook();

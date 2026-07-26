@@ -1,0 +1,164 @@
+local settings = {
+	pool_lifetime  = 180,
+	num_of_updates = 12,
+	update_freq    = 0.25,
+	max_pool_size  = 1.2,
+}
+
+local pool_starts_in = 5
+local pool_trace_dist = 3.0
+
+local function vecSimilar(v1, v2, eps)
+	eps = eps or 0.4
+	local abs = math.abs
+	return abs(v1.x - v2.x) < eps and abs(v1.y - v2.y) < eps and abs(v1.z - v2.z) < eps
+end
+
+local enable_debug = false
+local function printf(...)
+	if enable_debug then
+		_G.printf(...)
+	end
+end
+
+local pool_size_mult = {
+	bloodsucker = 1.2,
+	psysucker   = 1.2,
+	boar        = 1.5,
+	dog         = 1.0,
+	flesh       = 1.25,
+	burer       = 1.25,
+	cat         = 0.8,
+	rat         = 0.3,
+	chimera     = 2.0,
+	bibliotekar = 2.5,
+	lurker      = 1.25,
+	karlik      = 0.8,
+	controller  = 1.0,
+	fracture    = 1.1,
+	gigant      = 2.0,
+	giant       = 2.0,
+	zombi       = 1.0,
+	snork       = 1.0,
+	tushkan     = 0.5,
+}
+
+local boneList = {
+	"bip01_spine",
+	"bip01_spine1",
+	"spine",
+	"spine1",
+}
+
+local function getBloodPoolPos(obj)
+	for _, v in ipairs(boneList) do
+		if obj:get_bone_id(v) ~= 65535 then
+			return obj:bone_position(v)
+		end
+	end
+	return obj:position():add(vector():set(0, 0.5, 0))
+end
+
+local saved_pool = {}
+
+local function start_blood_pool(id)
+	local obj = level.object_by_id(id)
+	if not obj then return end
+
+	local pos = getBloodPoolPos(obj)
+	saved_pool[id] = {}
+	saved_pool[id].pos = pos
+	saved_pool[id].moved = false
+	saved_pool[id].size_mult = 1
+
+	if IsMonster(obj) then
+		for k, v in pairs(pool_size_mult) do
+			if obj:section():find(k) then
+				saved_pool[id].size_mult = v
+				break
+			end
+		end
+	end
+
+	local function draw_pool(size, npc_id, i, size_i)
+		local npc = level.object_by_id(npc_id)
+
+		if not npc or i >= settings.num_of_updates then
+			saved_pool[npc_id] = nil
+			return true
+		end
+
+		if not saved_pool[npc_id] then
+			return true
+		end
+
+		local function genNextEvent()
+			size_i = size_i + 1
+			i = i + 1
+			dsh.timeout(settings.update_freq * 1000, function() draw_pool(size, id, i, size_i) end)
+		end
+
+		local pos = getBloodPoolPos(npc)
+		if saved_pool[npc_id].moved then
+			if vecSimilar(saved_pool[npc_id].pos, pos, 0.01) then
+				printf("body %s settled", npc_id)
+				saved_pool[npc_id].moved = false
+				saved_pool[npc_id].pos = pos
+				size_i = 1
+			else
+				printf("body %s still moving", npc_id)
+				size_i = settings.num_of_updates * 0.08
+				saved_pool[npc_id].pos = pos
+			end
+		else
+			if not vecSimilar(saved_pool[npc_id].pos, pos) then
+				printf("body %s is moved", npc_id)
+				saved_pool[npc_id].moved = true
+				saved_pool[npc_id].pos = pos
+				genNextEvent()
+				return true
+			end
+		end
+
+		local vec_pos = vector():set(
+			saved_pool[npc_id].pos.x,
+			saved_pool[npc_id].pos.y + 1,
+			saved_pool[npc_id].pos.z
+		)
+		size = (size_i / settings.num_of_updates) * saved_pool[npc_id].size_mult * settings.max_pool_size
+		get_console():execute(string.format("bpm %f %f %f %f %f",
+			vec_pos.x, vec_pos.y, vec_pos.z, pool_trace_dist, size))
+
+		genNextEvent()
+		return true
+	end
+
+	local i = 1
+	local size_i = 1
+	local size = (size_i / settings.num_of_updates) * settings.max_pool_size
+	dsh.timeout(pool_starts_in * 1000, function() draw_pool(size, id, i, size_i) end)
+	return true
+end
+
+local function on_death_callback(npc)
+	local npc_id = npc:id()
+	dsh.timeout(3000, function() start_blood_pool(npc_id) end)
+end
+
+local actor_was_alive = true
+
+local function on_update()
+	if not db.actor then return end
+	local alive = db.actor:alive()
+	if actor_was_alive and not alive then
+		printf("actor died, spawn pool")
+		on_death_callback(db.actor)
+	end
+	actor_was_alive = alive
+end
+
+function attach(sm)
+	sm:subscribe({signal = "on_npc_death", fun = on_death_callback})
+	sm:subscribe({signal = "on_monster_death", fun = on_death_callback})
+	sm:subscribe({signal = "on_update", fun = on_update})
+end
