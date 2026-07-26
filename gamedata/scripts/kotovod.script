@@ -1927,84 +1927,228 @@ local notify_check_step = 2
 
 
 
+------------------------------------------------------------
+---------- Инфа о тасках из ПДА, диалог Доцента ------------
+------------------------------------------------------------
 
---[[
-function notify_show_mode()
-    local min = nlc_vars.notify_min or 30
-    local check = nlc_vars.notify_check_interval or 25
-    local cache = nlc_vars.notify_cache or 0
-    
-    local freq_colour
-    if min >= 80 then
-        freq_colour = "%c[255,255,100,100]"
-    elseif min >= 50 then
-        freq_colour = "%c[255,255,180,100]"
-    elseif min >= 30 then
-        freq_colour = "%c[255,255,220,100]"
-    else
-        freq_colour = "%c[255,100,255,100]"
+function docent_contracts_start( broken_pda )
+    local target_hour = 18
+    local pt          = { game.get_game_time():get() }
+    local now         = pt[4] * 3600 + pt[5] * 60 + pt[6]
+    local target      = target_hour * 3600
+    local seconds     = ( 86400 - now ) + target
+    local minutes     = math.floor( seconds / 60 )
+	
+	if broken_pda then 
+        -- послезавтра к вечеру — добавляем ещё сутки, если пдашку отдали и 2 арта
+        minutes = minutes + 1440
     end
+	
+    -- сохраняем минуты ожидания чтобы передать в is_ready_time
+	set_value( "docent_contracts_timer_minutes", minutes )
+    sak_dialog.start_time( "docent_contracts_timer" )
+end
 
-    local freq_desc
-    if min >= 80 then
-        freq_desc = freq_colour .. "очень редко, раз в несколько часов%c[default]"
-    elseif min >= 50 then
-        freq_desc = freq_colour .. "редко, примерно раз в час и больше%c[default]"
-    elseif min >= 30 then
-        freq_desc = freq_colour .. "умеренно, раз в полчаса или час%c[default]"
-    else
-        freq_desc = freq_colour .. "часто, каждые 15-30 минут%c[default]"
-    end
+function docent_contracts_time_left()
+    local gtime = timers.Get_Game_Minutes()
+    local start = sak_dialog.dialog_timer_value( "docent_contracts_timer", 0 )
+    local minutes = get_value( "docent_contracts_timer_minutes", 720 )
+    local left = minutes - ( gtime - start )
     
-    local scan_colour
-    if check >= 30 then
-        scan_colour = "%c[255,255,100,100]"
-    elseif check >= 20 then
-        scan_colour = "%c[255,255,220,100]"
-    else
-        scan_colour = "%c[255,100,255,100]"
-    end
+    if left <= 0 then return end
+    
+    local diff = left / 60
+    local when = ""
 
-    local scan_desc
-    if check >= 30 then
-        scan_desc = "    • Антенна проверяет сеть раз в " .. scan_colour .. check .. " минут%c[default], свежий заказ может прийти с задержкой"
-    elseif check >= 20 then
-        scan_desc = "    • Антенна проверяет сеть раз в " .. scan_colour .. check .. " минут%c[default]"
-    else
-        scan_desc = "    • Антенна проверяет сеть раз в " .. scan_colour .. check .. " минут%c[default], заказы приходят быстро"
-    end
-    
-    local cache_colour
-    if cache >= 75 then
-        cache_colour = "%c[255,255,100,100]"
-    elseif cache >= 50 then
-        cache_colour = "%c[255,255,180,100]"
-    elseif cache > 0 then
-        cache_colour = "%c[255,255,220,100]"
-    else
-        cache_colour = "%c[255,100,255,100]"
-    end
+    if diff < 1 then
+        when = "В течении часа подваливай."
+    elseif diff < 3 then
+        when = "Часа через два-три закончу."
+    elseif diff < 6 then
+        when = "Часов пять-шесть уйдёт, не меньше."
+    elseif diff < 9 then
+        when = "Часов семь-восемь ещё понадобится."
+    elseif diff < 12 then
+        when = "К вечеру будет готово."
+	elseif diff < 24 then
+		when = "Завтра к вечеру управлюсь, не раньше."
+	else
+		when = "Послезавтра к вечеру. Работа тонкая, не торопи."
+	end
 
-    local cache_desc
-    if cache >= 75 then
-        cache_desc = "    • Кэш почти полный (" .. cache_colour .. cache .. "%%c[default]), скоро начнёт тормозить"
-    elseif cache >= 50 then
-        cache_desc = "    • Кэш заполнен на " .. cache_colour .. cache .. "%%c[default]"
-    elseif cache > 0 then
-        cache_desc = "    • Кэш в норме (" .. cache_colour .. cache .. "%%c[default])"
-    else
-        cache_desc = "    • Кэш чистый (" .. cache_colour .. "0%%c[default])"
-    end
-    
     db.actor:give_talk_message(
-        string.format( "    • Уведомления: %s.\\n%s.\\n%s.", freq_desc, scan_desc, cache_desc ),
+        "%c[255,216,186,140]" .. when,
         "ui\\ui_iconsTotal", Frect():set( 0, 0, 0, 0 ), "simple_answer_item"
     )
 end
-]]--
 
+function docent_additional_payment()
+	if not has_alife_info( "info_docent_incoming_broken_talked" ) then return end
+	db.actor:give_talk_message(
+		"Или тащи свой ПДА и два арта второго уровня. Предложение в силе.",
+		"ui\\ui_iconsTotal", Frect():set( 0, 0, 0, 0 ), "simple_answer_item"
+	)
+end
 
+function docent_contracts_ready()
+    local minutes = get_value( "docent_contracts_timer_minutes", 720 )
+    return sak_dialog.is_ready_time( "docent_contracts_timer", minutes )
+end
 
+function docent_contracts_not_ready()
+    return not docent_contracts_ready()
+end
+
+local broken_docent_pda = nil
+
+function docent_broken_pda( flag )
+	if flag == "have" then 
+		for i, k in pairs( sak_inventory.eatable ) do	
+			if strpos( i, "device_pda_npc", 1, true ) then 
+				for m = 1, #k do
+					local pda = alife():object( k[ m ] )
+					if pda then 
+						local pk = get_netpk( pda, 1 )
+						if not pk then return false end
+						local data = pk:get()
+						local info = vergas_lib.str_explode( "|", data.custom_data, true )
+						if not info or not info[4] then return false end
+						local serial = info[ 4 ]
+						local broken_serial = get_value( "pda_docent", nil )
+						if serial == broken_serial then 
+							broken_docent_pda = pda.id
+							return true 
+						end	
+					end
+				end
+			end
+		end		
+		return false
+	end
+	
+	if flag == "give" then 
+		if not broken_docent_pda then return end
+		local obj = client_obj( broken_docent_pda )
+		if not obj then return end
+		misc.release_obj( obj )
+		remove_value( "pda_docent" )
+		broken_docent_pda = nil
+		sak.relocate_item( "out", obj:section(), 1 )
+	end
+end
+
+function notify_is_active()
+    local found = timers.check_timer( "notify_tasks_check" )
+    return found == true
+end
+
+function notify_is_not_active()
+    local found = timers.check_timer( "notify_tasks_check" )
+    return found ~= true
+end
+
+local notify_interval_default = { min = 30, max = 55 }
+local notify_interval_step = 10
+local notify_interval_min_limit = 10
+local notify_interval_max_limit = 90
+local notify_check_interval_default = 25
+local notify_check_step = 2
+
+function notify_mode_increase()
+    local min = get_value( "notify_min" ) or notify_interval_default.min
+    local max = get_value( "notify_max" ) or notify_interval_default.max
+	set_value( "notify_min", math.min( min + notify_interval_step, notify_interval_max_limit ) )
+    set_value( "notify_max", math.min( max + notify_interval_step, notify_interval_max_limit + 20 ) )
+    
+    local check = get_value( "notify_check_interval", notify_check_interval_default )
+    set_value( "notify_check_interval", math.min( check + notify_check_step, 35 ) )
+end
+
+function notify_mode_decrease()
+    local min = get_value( "notify_min" ) or notify_interval_default.min
+    local max = get_value( "notify_max" ) or notify_interval_default.max
+    set_value( "notify_min", math.max( min - notify_interval_step, notify_interval_min_limit ) )
+    set_value( "notify_max", math.max( max - notify_interval_step, notify_interval_min_limit + 15 ) )
+    
+    local check = get_value( "notify_check_interval", notify_check_interval_default )
+    set_value( "notify_check_interval", math.max( check - notify_check_step, 15 ) )
+end
+
+function notify_can_increase()
+    local max = get_value( "notify_max", notify_interval_default.max )
+    return max < notify_interval_max_limit + 20
+end
+
+function notify_can_decrease()
+    local min = get_value( "notify_min", notify_interval_default.min )
+    return min > notify_interval_min_limit
+end
+
+function notify_show_mode()
+    local min   = get_value( "notify_min", 30 )
+    local check = get_value( "notify_check_interval", 25 )
+    local cache = get_value( "notify_cache", 0 )
+    
+    local R = "%c[default]"
+    local colours = { "%c[255,100,255,100]", "%c[255,255,220,100]", "%c[255,255,180,100]", "%c[255,255,100,100]" }
+    
+    local function get_colour( val, thresholds )
+        for i, t in ipairs( thresholds ) do
+            if val < t then return colours[ i ] end
+        end
+        return colours[ #colours ]
+    end
+
+    local freq_tbl = {
+        { 30,  "часто, каждые 15-30 минут"          },
+        { 50,  "умеренно, раз в полчаса или час"     },
+        { 80,  "редко, примерно раз в час и больше"  },
+        { 999, "очень редко, раз в несколько часов"  },
+    }
+    local scan_tbl = {
+        { 20, "раз в %d минут, заказы приходят быстро"                    },
+        { 30, "раз в %d минут"                                            },
+        { 999,"раз в %d минут, свежий заказ может прийти с задержкой"     },
+    }
+    local cache_tbl = {
+        { 1,  "чистый (0%%)"             },
+        { 50, "в норме (%d%%)"           },
+        { 75, "заполнен на %d%%"         },
+        { 999,"почти полный (%d%%), скоро начнёт тормозить" },
+    }
+
+    local function pick( val, tbl )
+        for _, t in ipairs( tbl ) do
+            if val < t[1] then return t[2] end
+        end
+        return tbl[ #tbl ][2]
+    end
+
+    local freq_c  = get_colour( min,   { 30, 50, 80 } )
+    local scan_c  = get_colour( check, { 20, 30 } )
+    local cache_c = get_colour( cache, { 1, 50, 75 } )
+
+    local freq_str  = freq_c  .. pick( min,   freq_tbl )               .. R
+    local scan_str  = scan_c  .. string.format( pick( check, scan_tbl ), check ) .. R
+    local cache_str = cache_c .. string.format( pick( cache, cache_tbl ), cache ) .. R
+
+    db.actor:give_talk_message(
+        string.format( "    • Уведомления: %s.\\n    • Антенна проверяет сеть %s.\\n    • Кэш %s.",
+            freq_str, scan_str, cache_str ),
+        "ui\\ui_iconsTotal", Frect():set( 0, 0, 0, 0 ), "simple_answer_item"
+    )
+end
+
+function notify_mode_reset()
+	local tbl = { "notify_min", "notify_max", "notify_check_interval" }
+	for _, v in pairs( tbl ) do 
+		remove_value( v )
+	end	
+end
+
+function notify_is_not_default()
+    return get_value( "notify_min" ) ~= nil or get_value( "notify_check_interval" ) ~= nil
+end
 
 local notify_cache_drain = {
     -- чем меньше интервал (чаще настройка), тем больше расход
@@ -2013,14 +2157,60 @@ local notify_cache_drain = {
     high = 1,   -- максимальный
 }
 
+function notify_get_cache_drain()
+    local min = get_value( "notify_min", 30 )
+    if min <= 15 then
+        return notify_cache_drain.low
+    elseif min <= 40 then
+        return notify_cache_drain.mid
+    else
+        return notify_cache_drain.high
+    end
+end
 
+function notify_update_cache()
+    local cache = get_value( "notify_cache", 0 )
+    local drain = notify_get_cache_drain()
+    cache = math.min( cache + drain, 100 )
+    set_value( "notify_cache", cache )
 
+    if cache >= 100 then
+        timers.stop_timer( "notify_tasks_check" )
+        sak.send_tip( "Кэш модуля контрактов переполнен. Зайди к Доценту.", "[ПДА]", 0, 7, "g_g", "alarm", "red" )
+        return false
+    elseif cache >= 75 then
+        sak.send_tip( "Кэш модуля контрактов заполнен на " .. cache .. "%. Скоро потребуется очистка.", "[ПДА]", 0, 5, "g_g", "alarm", "yellow" )
+    end
 
+    return true
+end
 
+function notify_get_cache_mult()
+    local cache = get_value( "notify_cache", 0 )
+    if cache < 25 then
+        return 1.0
+    elseif cache < 50 then
+        return 1.2
+    elseif cache < 75 then
+        return 1.5
+    else
+        return 2.0
+    end
+end
 
+function notify_cache_is_filling()
+    local cache = get_value( "notify_cache", 0 )
+    return cache > 0
+end
 
-
-
+function notify_cache_clear()
+    set_value( "notify_cache", 0 )
+    local found = timers.check_timer( "notify_tasks_check" )
+    if not found then
+        local check_interval = get_value( "notify_check_interval", 25 )
+        timers.start_timer( "notify_tasks_check", 0, 0, check_interval, "task_manager.check_all_tasks_notify()" )
+    end
+end
 
 -----------------------------------------------------------
 -------------------- Ремонт у Вергаса ---------------------
