@@ -1,0 +1,350 @@
+-- [HE-PORT]
+
+local last_cam_name, next_cam_t
+local snd, last_sound
+
+local sound_hit = {
+	"arts_hit_1",
+	"arts_hit_2",
+	"arts_hit_3",
+	"pain_1",
+	"pain_2",
+	"pain_3",
+	"pain_4",
+	"pain_5",
+	"pain_6",
+	"pain_7",
+	"pain_8"
+}
+
+function attach( sm )
+	sm:subscribe({ signal = "on_actor_before_hit", fun = this.on_actor_before_hit })
+	sm:subscribe({ signal = "on_key_up",           fun = this.on_key_up           })
+	sm:subscribe({ signal = "on_spawn",            fun = this.on_spawn            })
+end
+
+function on_spawn()
+	clear_legs()
+	clear_wobble()
+end
+
+function on_key_up( key, bind )
+	if key == DIK_keys.DIK_SPACE then
+		dmged_legs()
+	end
+end
+
+function on_actor_before_hit( obj, hd )
+	if not hd then return end
+	check_critical( hd.power, hd.who_id, hd.bone_id, hd.hit_type )
+end
+
+function check_critical( amount, who_id, bone_index, hit_type )
+	if game_options.AdditionalMobHits == false then return end
+	if not db.actor then return end
+	if not amount or not hit_type then return end
+
+	if hit_type == hit.burn then
+		local t = thirst.get_thirst()
+		if t < 0.5 then
+			thirst.set_thirst( math.min( 0.5, t + amount ) )
+		end
+	end
+
+	if amount <= 0.03 or not bone_index then return end
+	if not who_id or who_id <= 0 or who_id >= 65535 then return end
+
+	local who = client_obj( who_id )
+	if not who then return end
+	if not ( who:is_monster() or who:is_stalker() or who:is_anomaly() ) then return end
+
+	local headshot = false
+	local cam, pp
+
+	if who:clsid() == CLID_GIGANT and hit_type ~= hit.strike then
+		break_vodka_bottles( amount )
+	end
+
+	if hit_type == hit.strike or ( hit_type == hit.wound and who:is_anomaly() ) then
+		break_vodka_bottles( amount )
+	end
+
+	if ( hit_type == hit.telepatic or hit_type == hit.chemical_burn ) and who:clsid() == CLID_DOG then
+		return
+	end
+
+	if bone_index == 0 then
+		cam = "hit_front"
+		if hit_type == hit.strike then
+			pelvis_electro_hit( amount )
+		elseif hit_type ~= hit.radiation and hit_type ~= hit.telepatic and hit_type ~= hit.chemical_burn then
+			pelvis_drop_belt( amount )
+		end
+	elseif bone_index < 9 then
+		local tbl = { "hit_front_left", "hit_front_right" }
+		cam = tbl[ lua_random( 1, #tbl ) ]
+		legs_hit( amount )
+	elseif bone_index < 12 then
+		cam = "hit_front"
+		torso_hit( amount )
+	elseif bone_index < 13 then
+		cam = "hit_front"
+		neck_hit( amount )
+	elseif bone_index < 18 then
+		cam = "head_shot"
+		pp  = "black"
+		headshot = true
+	elseif bone_index < 44 then
+		local tbl = { "hit_front_left", "hit_front_right" }
+		cam = tbl[ lua_random( 1, #tbl ) ]
+		hands_hit( amount )
+	else
+		cam = "hit_front"
+	end
+
+	if db.actor:alive() then
+		if pp then
+			level.add_pp_effector( pp .. ".ppe", 99, false )
+		end
+		if cam and ( cam ~= last_cam_name or time_global() >= ( next_cam_t or 0 ) ) then
+			level.add_cam_effector(
+				"camera_effects\\" .. cam .. ".anm", 100, false, ""
+			)
+			if hit_type ~= hit.telepatic then
+				play_hit_sound()
+			end
+			last_cam_name = cam
+			next_cam_t    = time_global() + 1500
+		end
+		if headshot or hit_type == hit.explosion then
+			head_hit()
+		end
+	end
+end
+
+function get_bone_name_by_id( obj, bone_id )
+	return obj:get_bone_name( bone_id )
+end
+
+function play_hit_sound()
+	if snd and snd:playing() then return end
+	if not db.actor or not db.actor:alive() then
+		if snd then snd:stop() end
+		return
+	end
+	local file = sound_hit[ lua_random( 1, #sound_hit ) ]
+	if last_sound == file then return end
+	snd = xr_sound.get_safe_sound_object( "actor\\" .. file )
+	snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d )
+	last_sound = file
+end
+
+local function item_cond( obj, default )
+	if not obj then return default end
+	local c = obj:condition()
+	if not c then return default end
+	return c
+end
+
+local function set_item_cond( obj, value )
+	if not obj then return end
+	if value < 0 then value = 0 end
+	if value > 1 then value = 1 end
+	obj:set_condition( value )
+end
+
+function legs_hit( amount )
+	if lua_random() > 0.3 then return end
+	if get_value( "nlc_vars.speed_disable" ) ~= nil then return end
+	set_value( "nlc_vars.speed_disable", true )
+	sivol.add_move_penalty( "crit_legs", 0.7 )
+	db.actor.cant_sprint = true
+	local time = math.ceil( amount * 100 * 1.15 )
+	timers.start_timer( "disable_speed", 0, 0, time, "ogse_critical_hit.clear_legs()" )
+end
+
+function clear_legs()
+	remove_value( "nlc_vars.speed_disable" )
+	sivol.remove_move_penalty( "crit_legs" )
+	if db.actor then db.actor.cant_sprint = false end
+end
+
+function hands_hit( amount )
+	if lua_random() > 0.2 then return end
+	if get_value( "nlc_vars.add_wobble" ) ~= nil then return end
+	set_value( "nlc_vars.add_wobble", true )
+	local time = math.ceil( amount * 100 )
+	timers.start_timer( "disable_wobble", 0, 0, time, "ogse_critical_hit.clear_wobble()" )
+end
+
+function clear_wobble()
+	remove_value( "nlc_vars.add_wobble" )
+end
+
+function torso_hit( amount )
+	if lua_random() > 0.15 then return end
+	local what = { sak_inventory.eatable, sak_inventory.rucksack }
+	local tbl  = what[ lua_random( 1, #what ) ]
+	if not tbl then return end
+	local item_id_tbl = {}
+	local r = amount * 10
+	if r >= 0.3 then r = 0.3 end
+	for sect, subt in pairs( tbl ) do
+		if not nlc_container.important_items[ sect ] and not str_in_tab( sect, spawner.table_quest_items ) then
+			for j, id in pairs( subt ) do
+				if lua_random() < r then
+					table.insert( item_id_tbl, id )
+				end
+			end
+		end
+	end
+	for j, id in ipairs( item_id_tbl ) do
+		local item = client_obj( id )
+		if item then db.actor:drop_item( item ) end
+	end
+	break_vodka_bottles( amount )
+	item_id_tbl = {}
+end
+
+function say_something()
+	local snd_obj = xr_sound.get_safe_sound_object( "scripts\\matches_no_light_" .. lua_random( 1, 3 ) )
+	snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1.0 )
+end
+
+function neck_hit( amount )
+	if lua_random() > 0.45 then return end
+	local slots  = { 8, 12, 13, 14, 15 }
+	local slot   = slots[ lua_random( 1, #slots ) ]
+	local device = db.actor:item_in_slot( slot )
+	if not device then return end
+	local sect = device:section()
+	if sect:sub( 1, 8 ) ~= "detector" then return end
+	local cond  = item_cond( device, 0.99 )
+	local new_c = cond - ( amount * 1.5 )
+	set_item_cond( device, new_c )
+	if new_c <= 0.05 then
+		misc.release_obj( device:id() )
+		sak.send_tip(
+			"".. get_inv_name( sect ) .." - пришёл в негодность...",
+			"Вот ведь!", 1, 10, "g_g", "no", "red"
+		)
+	end
+end
+
+function pelvis_electro_hit( amount )
+	if lua_random() > 0.8 then return end
+	local accum = sak.get_accum()
+	if not accum then return end
+	set_item_cond( accum, item_cond( accum, 0 ) + ( amount or 0 ) )
+end
+
+function find_belt()
+	local found_belt
+	db.actor:iterate_inventory(
+	function( npc, obj )
+		if
+				( obj:section():sub( 1, 4 ) == "belt" )
+			and (	( not found_belt ) or ( tonumber( found_belt:sub( 6, 6 ) ) < tonumber( obj:section():sub( 6, 6 ) ) )   )
+		then
+			found_belt = obj:section()
+		end
+	end, db.actor)
+	return found_belt or false
+end
+
+function pelvis_drop_belt( amount )
+	if lua_random() > 0.75 then return end
+	local accum = sak.get_accum()
+	if accum then db.actor:drop_item( accum ) end
+	for i, k in pairs( sak_inventory.belt_items ) do
+		for j = 1, #k do
+			local item = client_obj( k[ j ] )
+			if item and lua_random() < 0.5 then
+				db.actor:drop_item( item )
+			end
+		end
+	end
+	local belt = find_belt()
+	if belt == false then return end
+	local obj  = db.actor:object( belt )
+	if obj then
+		local id   = obj:id()
+		local cond = item_cond( obj, 0.99 )
+		if cond <= 0.08 then
+			misc.release_obj( id )
+			sak.send_tip(
+				"Пояс совсем изорвался, придётся новый покупать...",
+				"Ёк-макарёк!", 1, 10, "g_g", "no", "red"
+			)
+			return
+		end
+		if amount >= 0.08 then amount = 0.08 end
+		set_item_cond( obj, cond - amount )
+	end
+end
+
+function head_hit()
+	if lua_random() > 0.4 then return end
+	level.set_snd_volume( 0.1 )
+
+	if lua_random() < 0.15 then
+		nvd_params.disable_NVD()
+	end
+end
+
+function dmged_legs()
+	if not get_value( "nlc_vars.speed_disable" ) then return end
+	local h = hit()
+	h.direction = vector():set( 1, 0, 0 )
+	h.impulse = 0
+	h.draftsman = db.actor
+	h.power = 0.05
+	h.type = hit.shock
+	db.actor:hit( h )
+	level.add_cam_effector( "camera_effects\\hit_front.anm", 999, false, "" )
+	vergas_lib.s_play( "characters_voice\\human_01\\newbie\\fight\\death\\death_" .. lua_random( 1, 3 ), 1 )
+end
+
+function break_vodka_bottle()
+	if lua_random() < 0.25 then return end
+	local vodka = db.actor:object( "vodka" )
+	if vodka then
+		misc.release_obj( vodka )
+		local s = xr_sound.get_safe_sound_object( "material\\bottle\\collide\\bottle_break_1" )
+		s:play( db.actor, 0, sound_object.s2d )
+		schedule.add( "say_fuck", "ogse_critical_hit.say_something()", 250 )
+	end
+end
+
+function break_vodka_bottles( hit_power )
+	local max_bottles = 3
+	local bottles_to_break = math.min( math.ceil( hit_power * 5 ), max_bottles )
+	local bottles_broken = 0
+
+	local vodka_bottles = {}
+	db.actor:iterate_inventory( function( _, obj )
+		if obj:section() == "vodka" then
+			table.insert( vodka_bottles, obj )
+		end
+	end, db.actor )
+
+	for i = 1, math.min( bottles_to_break, #vodka_bottles ) do
+		local vodka = vodka_bottles[ i ]
+		misc.release_obj( vodka:id() )
+		local s = xr_sound.get_safe_sound_object( "material\\bottle\\collide\\bottle_break_1" )
+		s:play( db.actor, 0, sound_object.s2d )
+		bottles_broken = bottles_broken + 1
+	end
+
+	if bottles_broken > 0 then
+		schedule.add( "say_fuck", "ogse_critical_hit.say_something()", 250 )
+	end
+end
+
+function check_pseudogiant_huge_kick()
+	local particles = particles_object( "monsters\\gigant_wave" )
+	if particles and particles:playing() then
+		return true
+	end
+	return false
+end
