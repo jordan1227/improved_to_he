@@ -1,4 +1,5 @@
 local treasure_manager = nil
+local n_rank
 
 function parse_spawns(line)
 	if line==nil then
@@ -174,31 +175,54 @@ function CTreasure:reserve_treasure(k, force)
     return target
 end
 
-function CTreasure:use(npc)
-	local shron
-	local comm
-	local avail = {}
-	for k,v in pairs(self.treasure_info) do
-		if v.done==false and v.active==false then
-			local treasure_prob = xr_logic.pick_section_from_condlist(db.actor, npc, v.condlist)
-			if treasure_prob=="" or treasure_prob==nil then
-				treasure_prob = 5
-			end
-			if tonumber(treasure_prob) > 0 and v.rnd == 1 then
-				table.insert(avail,k)
-			end
-		end
-	end
-	local treas_rnd = dsh.get_next_random("pda_treas_rnd", 1, 100) / 100
-	-- log2("CTreasure:use treas_rnd [%.3f] #avail [%d]",treas_rnd,#avail)
-	if #avail == 0 or treas_rnd < 0.65 then
-		shron = 0
-		return shron
-	end
-	shron = avail[dsh.get_next_random("pda_treas_rnd", 1, #avail)]
-	self.treasure_info[shron].active = true
-	-- log2("CTreasure:use returned shron [%s]",shron)
-	return shron
+function CTreasure:use(npc,community,rang_n)
+    local shron
+    local comm
+    if npc~=nil then
+        if self:offline_give_treasure(npc) then
+            shron = 0
+            return shron
+        end
+        comm = npc:character_community()
+        n_rank = npc:character_rank()
+    else
+        n_rank = rang_n or 0
+        comm = community
+    end
+    local avail = {}
+    local tr_sum = 0
+    for k,v in pairs(self.treasure_info) do
+        if v.done==false and v.active==false and v.treasure_given==false and v.community[comm]==true then
+            -- исключаем тайники с sak_no_need из рандомной выдачи через ПДА
+            if not string.find(v.condlist_raw, "sak_no_need", 1, true) then
+                local treasure_prob = xr_logic.pick_section_from_condlist(db.actor, npc, v.condlist)
+                if treasure_prob=="" or treasure_prob==nil then
+                    treasure_prob = 5
+                end
+                if tonumber(treasure_prob) >= 0 and v.active==false then
+                    if tonumber(treasure_prob)==100 then
+                        shron = k
+                    else
+                        table.insert(avail, {k = k, prob = treasure_prob})
+                        tr_sum = tr_sum + treasure_prob
+                    end
+                end
+            end
+        end
+    end
+    if tr_sum==0 or lua_random() < 0.65 then
+        shron = 0
+        return shron
+    end
+    local tr_w = lua_random(tr_sum)
+    for k,v in pairs(avail) do
+        tr_w = tr_w - v.prob
+        if tr_w <= 0 then
+            shron = v.k
+            break
+        end
+    end
+    return shron
 end
 
 function CTreasure:check()
@@ -213,15 +237,13 @@ function CTreasure:give_treasure( k, show )
     if obj ~= nil and self.treasure_info[ k ].done ~= true then
     
         kotovod.add_box_protection( obj:name() )
-		local diff = tonumber( level.get_game_difficulty() )
-		
-        if diff == 0 or show then 
+
+        if game_options.BalanceValue or show then 
             sak.send_treasure( v.name )
             local text = "%c[255,238,155,23]" .. game.translate_string( v.name ) .. "\\n" .. "%c[default]" .. game.translate_string( v.description )
             local spot = lua_random(1,4)
             level.map_add_object_spot_ser( obj.id, "crlc_big_treasure" .. spot, text )     
         else
-			--[[
             if db.actor:object( "klava" ) then      
                 local msg_id = "treasure_" .. tostring( vergas_lib.set_pr_from_config( "list_treasure_pda", k ) ) .. "_1"
                 local clean_msg = string.gsub( game.translate_string( msg_id ), "^Схрон:%s*", "")
@@ -230,8 +252,7 @@ function CTreasure:give_treasure( k, show )
                     "Получена информация о схроне:", 0, 15, "nlc", "pda_news", "orange" 
                 )                   
                 vergas_lib.add_record_in_klava( msg_id )
-            end      
-			]]--			
+            end
         end
 
 		--[[ формат pda в конфиге тайника:
@@ -346,7 +367,7 @@ function CTreasure:give_treasure( k, show )
 							if shron and shron ~= 0 then messages = tostring( shron ) end
 						end
 						vergas_pda.add_tbl_pda( obj.id, obj_sp.id, status_pda, messages, only )
-						nlc_fixes.set_pda_condition( obj_sp.id, status_pda )
+						vergas_pda.set_pda_condition( obj_sp.id, status_pda )
 					end, 200)
 				end
 				
@@ -371,9 +392,41 @@ function CTreasure:treasure_empty(box, box_story_id)
 		return
 	end
 	self.treasure_info[k].active = false
-	if self.treasure_info[k].rnd==1 then
+	if self:named_treasure(self.treasure_info[k])==false then
 		self.treasure_info[k].done = false
 	end
+	for spot=1,4 do
+		level.map_remove_object_spot(box:id(), "crlc_big_treasure"..spot)
+	end
+end
+
+local named_treasure = {
+	"agr_secret_0000_name", 				-- Тайник Серого
+	"bar_secret_0011_name", 				-- Тайник Арни
+	"esc_secret_0013_name", 				-- Тайник Ворпала
+	"gar_secret_0002_name", 				-- Вещи Гризли
+	"gar_secret_0011_name", 				-- Склад группы Стрелка
+	"gar_secret_0021_name", 				-- Рюкзак Дохляка
+	"pri_secret_0003_name", 				-- Хабар Клыка
+	"pri_secret_0004_name", 				-- Запасы лидера Свободы
+	"rad_secret_0000_name", 				-- Клад Угрюмого
+	"rad_secret_0004_name", 				-- Запас группы отчаянных
+	"ros_secret_0015_name", 				-- Тайник Счастливчика
+	"ros_secret_0018_name", 				-- Ящик с медикаментами
+	"val_secret_0028_name", 				-- Тайник Борова
+	"x18_secret_0000_name", 				-- Тайник Копченого
+	"yan_secret_0011_name", 				-- Тайник учёного
+	"val_secret_krysyk_name",
+	"agr_secret_krysyk_name",
+	"mil_secret_borov_name",
+	"mil_secret_kruglov_name",
+	"yan_secret_kruglov_name",
+	"aver_secret_luber_ammunition_name"
+}
+
+function CTreasure:named_treasure( v )
+	if str_in_tab( v.name, named_treasure ) then return true end
+	return false
 end
 
 function CTreasure:save(p)
