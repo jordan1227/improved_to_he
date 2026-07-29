@@ -424,43 +424,99 @@ function shadow_inventory:drop_storage()
 	end 
 end
 
+local is_pickup_animating = false
+local PICKUP_HARD_LOCK_MS = 1000     -- fully blocked, from when the anim visibly starts
+local PICKUP_MOVE_PENALTY = 0.3      -- speed coefficient during the softer phase
+
+local function abort_pickup_animation()
+    if is_pickup_animating then
+        sak.restore_weap()
+        if level.only_allow_movekeys then
+            level.only_allow_movekeys(false)
+        end
+        sivol.remove_move_penalty("backpack_pickup")
+        is_pickup_animating = false
+    end
+end
+
 function shadow_inventory:update_storage()
-	if self.holder == nil then self.holder = client_obj(0) end
-	if self.holder == nil then return nil end
-	local obj = self.holder:object("shadow_inventory")
-	if self.storage == nil and obj then
-		if sak.game_began then
-			razgruzka.no_shadow_inv_mtv_upd()
-		end
-		--wprintf(" shadow_inventory changing to %d", obj:id())
-		-- обработка поднятия большого рюкзака
-		vergas_lib.s_play([[rykzack\give_rykzak_2]],1)
-		sak_inventory.need_update_inventory()    
-		sak.actor_hide_weapon()
-		schedule.add("wpn_ret", "sak.restore_weap()", 3000)
-		schedule.add("wpn_ret", "inv_buttons_use.transfer_superfluous_in_inventory()", 3100)
-		params.tiredness_add()
-		self.storage = obj
-		obj:set_name("active_rucksack")
-		self.holder:give_info_portion("ui_inventory_hide")
+    if self.holder == nil then self.holder = client_obj(0) end
+    if self.holder == nil then return nil end
+    local obj = self.holder:object("shadow_inventory")
 
-		-- попытка исправить проблему с не обновлением инвентаря после поднятия сброшенного рюкзака
-		inv_buttons_use.imitation_opening_inventory()
-		inv_buttons_use.imitation_closing_inventory(0)
+    if self.storage == nil and obj then
+        if is_pickup_animating then
+            return obj
+        end
+        is_pickup_animating = true
 
-	elseif self.storage and obj and self.storage:id() ~= obj:id() then
-		-- обработка замены одного рюкзака другим: тут можно вывести сообщение
-		--wprintf(" shadow_inventory changing from %d to %d", self.storage:id(), id) 
-		db.actor:give_game_news( "st_rucksack_changed", "ui\\ui_iconsTotal", Frect():set(498,280,83,47), 0, 3000)
-		self.storage:set_name("dropped_rucksack")    
-		self.holder:drop_item(self.storage)            
-	end 
+        if sak.game_began then
+            razgruzka.no_shadow_inv_mtv_upd()
+        end
 
-	self.storage = obj
-	if not obj then
-		self.items_restored = false
-	end 
-	return obj   
+        local has_weapon = db.actor:active_item() ~= nil
+        local WEAPON_HIDE_DELAY = has_weapon and 1200 or 75
+
+        sak.actor_hide_weapon()
+        if level.only_allow_movekeys then
+            level.only_allow_movekeys(true)
+        end
+
+        self.storage = obj
+        obj:set_name("active_rucksack")
+        self.holder:give_info_portion("ui_inventory_hide")
+        sak_inventory.need_update_inventory()
+        params.tiredness_add()
+
+        dsh.timeout(WEAPON_HIDE_DELAY, function()
+            if not is_pickup_animating then return end
+            if not db.actor:alive() then
+                abort_pickup_animation()
+                return
+            end
+
+            level.add_cam_effector("itemuse_anm_effects\\liz_backpack_equip.anm", 9774, false, "")
+            vergas_lib.s_play([[rykzack\give_rykzak_2]], 1)
+            local anim_duration = game.play_hud_motion(2, "backpack_pickup_hud", "anm_equip", false, 1) or 3000
+
+            -- Phase 2: drop from full lock to a soft move-penalty partway through the anim
+            local hard_lock = math.min(PICKUP_HARD_LOCK_MS, anim_duration)
+            dsh.timeout(hard_lock, function()
+                if not is_pickup_animating then return end
+                if not db.actor:alive() then return end
+                if level.only_allow_movekeys then
+                    level.only_allow_movekeys(false)
+                end
+                sivol.add_move_penalty("backpack_pickup", PICKUP_MOVE_PENALTY)
+            end)
+
+            dsh.timeout(anim_duration, function()
+                if not is_pickup_animating then return end
+                if not db.actor:alive() then
+                    abort_pickup_animation()
+                    return
+                end
+                inv_buttons_use.transfer_superfluous_in_inventory()
+                inv_buttons_use.imitation_opening_inventory()
+                inv_buttons_use.imitation_closing_inventory(0)
+                abort_pickup_animation()
+            end)
+        end)
+
+    elseif self.storage and obj and self.storage:id() ~= obj:id() then
+        if is_pickup_animating then
+            abort_pickup_animation()
+        end
+        db.actor:give_game_news("st_rucksack_changed", "ui\\ui_iconsTotal", Frect():set(498, 280, 83, 47), 0, 3000)
+        self.storage:set_name("dropped_rucksack")
+        self.holder:drop_item(self.storage)
+    end
+
+    self.storage = obj
+    if not obj then
+        self.items_restored = false
+    end
+    return obj
 end
 
 function shadow_inventory:check_restored() -- проверка, что в рюкзаке не осталось предметов (вытряхивание в противном случае).
