@@ -307,88 +307,121 @@ function on_item_take( obj, internal )
 end
 
 function check_artefact()
-	consumable_artefacts  = {}
-	belt_size             = 0
-	local ini             = system_ini()
-	-- local ini_obj         = ini:object()
-	check_deleted( inv_arts  )
-	check_deleted( belt_arts )
-	-- регистрация всех артефактов из рюкзака
-  db.actor:iterate_inventory(
-    function(_, obj)
-      on_item_take(obj, true)
+    local _sak_inventory = sak_inventory
+    local _params = params
+    local _sak = sak
+    local _db = db
+    local _ini = system_ini()
+    
+    consumable_artefacts  = {}
+    belt_size             = 0
+    
+    check_deleted( inv_arts  )
+    check_deleted( belt_arts )
+    
+    db.actor:iterate_inventory(
+        function(_, obj)
+            on_item_take(obj, true)
+        end
+    )
+    
+    if g_reg_count + g_del_count > 0 then
+        _sak_inventory.need_update_inventory()
+        g_del_count = 0
+        g_reg_count = 0
     end
-  )
-	if g_reg_count + g_del_count > 0 then
-		sak_inventory.need_update_inventory()
-		g_del_count = 0
-		g_reg_count = 0
-	end
-	local pwr_rst     = 0
-	local jump_speed  = 0
-	local move_speed  = 0
-	local air_param   = 1
-	local add_sat     = 1
-	local reduce_sat  = 1
-	local add_psy     = 0
-	local apply_arts  = ( sak.get_accum() and sak.arts_operate )
-	sak.af_count      = 0
+    
+    local pwr_rst     = 0
+    local jump_speed  = 0
+    local move_speed  = 0
+    local air_param   = 1
+    local add_sat     = 1
+    local reduce_sat  = 1
+    local add_psy     = 0
+    local apply_arts  = ( _sak.get_accum() and _sak.arts_operate )
+    _sak.af_count     = 0
 
-	if apply_arts then
-		add_dog_psy = 1
-		-- dump_table(sak_inventory.belt_items)
-		for i, k in pairs( sak_inventory.belt_items ) do
-			if ini:section_exist( i ) then
-				local class = ini:r_clsid( i, "class" )
-				if class == CLID_ART then
-					for m = 1, table.getn( k ) do
-						sak.af_count = sak.af_count + 1
-						local dog_psy = ini:r_float( i, "add_dog_psy" )
-						local jmp_add = ini:r_float( i, "add_jump_speed" )
-						local mov_add = ini:r_float( i, "add_move_speed" )
-						local pwr_add = ini:r_float( i, "power_restore_speed" )
-						if dog_psy ~= 1 then
-							add_dog_psy = add_dog_psy * dog_psy
-						end
-						if jmp_add > 0 then
-							jump_speed = jump_speed + jmp_add
-						end
-						if mov_add > 0 then
-							move_speed = move_speed + mov_add
-						end
-						if pwr_add ~= 0 then
-							pwr_rst = pwr_rst + pwr_add
-						end
-					end
-				end
-			end
-		end
-	end
-	-- log2("check_artefact: pwr_rst = %s ",pwr_rst)
-	
-	-- применение суммарных параметров
-	if not sleep_manager.sleeping then 
-		params.max_item_mass_add( 0 )
-		params.psy_restore_speed_add( add_psy )
-		params.jump_speed_add( jump_speed )
-		params.move_speed_set( 1 + move_speed )
-		params.pwr_restore = ( pwr_rst * 10 )
-	end
-	bind_monster.dog_shield = add_dog_psy
-	if db.actor:has_info( "pda_is_broken" ) and sak.flag_sah == false then
-		sak.out_many_pda_broken()
-	end
-	-- log2("belt size: %s, %s", last_belt, belt_size)
-	if last_belt ~= belt_size then
-		last_belt = belt_size    
-		params.belt_param_add( belt_size + 1 )
-		level.update_belt_slots_count()
-	end
-	local obj = sak.get_accum()
-	if belt_size == 0 and obj then
-		db.actor:move_to_ruck( obj )
-		update_inventory_window()
-	end
+    if apply_arts then
+        add_dog_psy = 1
+        
+        for section, ids in pairs( _sak_inventory.belt_items ) do
+            if _ini:section_exist( section ) and _ini:r_clsid( section, "class" ) == CLID_ART then
+                
+                local stats_dog_psy = _ini:r_float( section, "add_dog_psy" ) or 1
+                local stats_jmp_add = _ini:r_float( section, "add_jump_speed" ) or 0
+                local stats_mov_add = _ini:r_float( section, "add_move_speed" ) or 0
+                local stats_pwr_add = _ini:r_float( section, "power_restore_speed" ) or 0
+                local stats_sat_add = _ini:r_float( section, "add_satiety" ) or 0
+                
+                for m = 1, #ids do
+                    local af_id = ids[m]
+                    local af_obj = client_obj( af_id )
+                    if af_obj then
+                        _sak.af_count = _sak.af_count + 1
+                        
+                        -- Mutate C++ stats for this active belt item
+                        scale_artefact_stats(af_obj, false)
+                        
+                        local eff_strength = get_effective_strength(af_obj)
+
+                        -- Apply Lua custom stats using eff_strength
+                        local dog_psy = stats_dog_psy * eff_strength
+                        local jmp_add = stats_jmp_add * eff_strength
+                        local mov_add = stats_mov_add * eff_strength
+                        local pwr_add = stats_pwr_add * eff_strength
+                        local sat_add = stats_sat_add * eff_strength
+
+                        if dog_psy ~= 1 then add_dog_psy = add_dog_psy * dog_psy end
+                        if jmp_add > 0  then jump_speed  = jump_speed  + jmp_add  end
+                        if mov_add > 0  then move_speed  = move_speed  + mov_add  end
+                        if pwr_add ~= 0 then pwr_rst     = pwr_rst     + pwr_add  end
+                        if sat_add > 1  then add_sat     = add_sat     + sat_add  end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Reset all non-belt artifacts in actor's inventory to prevent save corruption
+    db.actor:iterate_inventory(function(_, obj)
+        if obj:clsid() == CLID_ART then
+            local on_belt = false
+            for sect, ids in pairs(_sak_inventory.belt_items) do
+                for _, id in ipairs(ids) do
+                    if id == obj:id() then on_belt = true; break end
+                end
+                if on_belt then break end
+            end
+            if not on_belt then
+                scale_artefact_stats(obj, true)
+            end
+        end
+    end)
+    
+    -- применение суммарных параметров
+    if not sleep_manager.sleeping then 
+        _params.max_item_mass_add( 0 )
+        _params.psy_restore_speed_add( add_psy )
+        _params.jump_speed_add( jump_speed )
+        _params.move_speed_set( 1 + move_speed )
+        _params.pwr_restore = ( pwr_rst * 10 )
+    end
+    bind_monster.dog_shield = add_dog_psy
+    if _db.actor:has_info( "pda_is_broken" ) and _sak.flag_sah == false then
+        _sak.out_many_pda_broken()
+    end
+    
+    if last_belt ~= belt_size then
+        last_belt = belt_size    
+        _params.belt_param_add( belt_size + 1 )
+        level.update_belt_slots_count()
+    end
+    
+    local obj = _sak.get_accum()
+    if belt_size == 0 and obj then
+        _db.actor:move_to_ruck( obj )
+        update_inventory_window()
+    end
 end
 
 
@@ -465,8 +498,15 @@ function damage_artefact( obj, coef )
     local damage     = damage_from_sect( section )
     local eff_damage = damage * coef 
     -- wprintf(" corrupt~C0A %s~C07, damage =~C0D %.5f~C07, eff_damage =~C0D %.5f~C07, condition =~C0D %.7f~C07", obj:name(), damage, eff_damage, cond)
-    params.upd_condition( obj_id, cond - eff_damage )
-    return cond - eff_damage         
+        params.upd_condition( obj_id, cond - eff_damage )
+    
+    -- Scale C++ stats immediately upon condition drop
+    local client_item = level.object_by_id(obj_id)
+    if client_item then
+        scale_artefact_stats(client_item, false)
+    end
+    
+    return cond - eff_damage   
   else
     misc.release_obj( obj_id )
     return 0

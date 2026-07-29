@@ -1080,102 +1080,153 @@ end
 
 -- Показываем параметры артефактов
 function CUIDescriptionWnd:ShowAfParams(item)
-	local params = {}
-	local val, txt = 0, ""
-	local sect = item:section()
-	local id = item:id()
-	local condition = item:condition()
-	local af_obj = item:get_artefact()
+    local params = {}
+    local val, txt = 0, ""
+    local sect = item:section()
+    local id = item:id()
+    local af_obj = item:get_artefact()
+    local ini = system_ini()
 
-	-- Вырожденные не обрабатываем
-	if string.find(sect, "dyn6d") then
-		return
-	end
+    -- Вырожденные не обрабатываем
+    if string.find(sect, "dyn6d") then
+        return
+    end
 
-	for i, t in ipairs(conditions_params) do
-		val = af_obj[t.prop] or 0
-		local handle_satiety = t.prop == "satiety_restore_speed"
-		if val ~= 0 then
-			if not handle_satiety then
-				val = val * condition * 100 / conditions[t.prop]
-			else
-				val = val * condition * math.pow(10, 8)
-				val = val / 4455 -- Sn: за единицу берём минимальное значение набрасываемого голода из конфигов
-			end
-			txt = ""
-			if t.prop == "bleeding_restore_speed" then
-				txt = txt .. (val > 0 and "%c[green]" or "%c[red]+")
-				val = -val
-			elseif t.prop == "radiation_restore_speed" then
-				txt = txt .. (val > 0 and "%c[red]+" or "%c[green]")
-			elseif handle_satiety then
-				txt = txt .. "%c[red]"
-			else
-				txt = txt .. (val > 0 and "%c[green]+" or "%c[red]")
-			end
-			if handle_satiety then
-				txt = txt .. string.format("%.2f ", val) .. translate("ui_inv_units")
-			else
-				txt = txt .. string.format("%d", math.round(val)) .. (t.unit or "%")
-			end
-			table.insert(params, {t.tex, t.text, txt})
-		end
-	end
+    -- Calculate effective strength using our shared math engine
+    local eff_strength = get_effective_strength(item)
 
-	-- Иммунитеты берём напрямую из артефакта, если они там прописаны
-	if item.immunities then
-		for i, t in ipairs(hit_types) do
-			local immunity_name = t.prop .. "_immunity"
-			local immunity_value = item.immunities[immunity_name]
-			if immunity_value and immunity_value ~= 1 then
-				val = 100 - immunity_value * 100
-				txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%d%%", math.round(val))
-				table.insert(params, {t.tex, t.text, txt})
-			end
-		end
-	end
+    for i, t in ipairs(conditions_params) do
+        -- Skip satiety_restore_speed — handled later in the combined block
+        if t.prop == "satiety_restore_speed" then
+            -- do nothing
+        else
+            local base_val = get_float(sect, t.prop, 0)
+            val = base_val * eff_strength
 
-	local iw_1 = af_obj.additional_inventory_weight or 0
-	local iw_2 = af_obj.additional_inventory_weight2 or 0
-	if iw_1 ~= 0 or iw_2 ~= 0 then
-		local txt1 = (iw_1 > 0 and "%c[green]+" or "%c[red]") .. string.format("%.1f", iw_1)
-		local txt2 = (iw_2 > 0 and "%c[green]+" or "%c[red]") .. string.format("%.1f", iw_2)
-		txt = string.format("%s%%c[default]|%s %s", txt1, txt2, translate("ui_inv_s_kg"))
-		table.insert(params, {"ui_inv_icon_add_weight_hd", translate("st_carried_weight"), txt})
-	end
+            if val ~= 0 then
+                val = val * 100 / conditions[t.prop]
+                txt = ""
 
-	val = (af_obj.add_jump_speed or 0) * condition
-	if val ~= 0 then
-		val = val * 10
-		txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%.0f", val)
-		table.insert(params, {"ui_inv_icon_add_jump_power_hd", translate("ui_inv_jump_height"), txt})
-	end
+                if t.prop == "bleeding_restore_speed" then
+                    txt = txt .. (val > 0 and "%c[green]" or "%c[red]+")
+                    val = -val
+                elseif t.prop == "radiation_restore_speed" then
+                    txt = txt .. (val > 0 and "%c[red]+" or "%c[green]")
+                else
+                    txt = txt .. (val > 0 and "%c[green]+" or "%c[red]")
+                end
 
-	val = (af_obj.add_move_speed or 0) * condition
-	if val ~= 0 then
-		txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%.0f%%", val * 100)
-		table.insert(params, {"ui_inv_icon_add_jump_power_hd", translate("ui_inv_move_speed"), txt})
-	end
+                txt = txt .. string.format("%d", math.round(val)) .. (t.unit or "%")
+                table.insert(params, {t.tex, t.text, txt})
+            end
+        end
+    end
 
-	-- Пси-судорога
-	if af_obj.add_dog_psy and af_obj.add_dog_psy ~= 1 then
-		val = 1 + (af_obj.add_dog_psy - 1) * condition
-		if val ~= 1 then
-			txt = (val < 1 and "%c[green]+" or "%c[red]") .. string.format("%.0f%%", (1 - val) * 100)
-			table.insert(params, {"ui_inv_icon_dog_psy_hd", translate("ui_inv_spasm_protection"), txt})
-		end
-	end
+    -- Иммунитеты считаем на лету из базовых конфигов
+    if item.immunities then
+        for i, t in ipairs(hit_types) do
+            local immunity_name = t.prop .. "_immunity"
+            local base_immunity = get_artefact_base_immunity(sect, immunity_name)
 
-	-- Сытость
-	if af_obj.add_satiety and af_obj.add_satiety > 1 then
-		val = af_obj.add_satiety * condition
-		txt = "%c[red]-" .. string.format("%d%%", val)
-		table.insert(params, {"ui_inv_icon_add_satiety_hd", translate("ui_inv_satiety"), txt})
-	end
+            if base_immunity and base_immunity ~= 1 then
+                local eff_immunity = 1.0
+                if base_immunity <= 1 then
+                    eff_immunity = 1 - ((1 - base_immunity) * eff_strength)
+                else
+                    eff_immunity = 1 + ((base_immunity - 1) * eff_strength)
+                end
 
-	if #params > 0 then
-		self:ShowPropsAf(params)
-	end
+                val = 100 - eff_immunity * 100
+                txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%d%%", math.round(val))
+                table.insert(params, {t.tex, t.text, txt})
+            end
+        end
+    end
+
+    -- Вес считаем на лету из базовых конфигов
+    local iw_1_base = get_float(sect, "additional_inventory_weight", 0)
+    local iw_2_base = get_float(sect, "additional_inventory_weight2", 0)
+    local iw_1 = iw_1_base * eff_strength
+    local iw_2 = iw_2_base * eff_strength
+
+    if iw_1 ~= 0 or iw_2 ~= 0 then
+        local parts = {}
+        if iw_1 ~= 0 then
+            table.insert(parts,
+                (iw_1 > 0 and "%c[green]+" or "%c[red]") ..
+                string.format("%.1f", iw_1)
+            )
+        end
+        if iw_2 ~= 0 then
+            table.insert(parts,
+                (iw_2 > 0 and "%c[green]+" or "%c[red]") ..
+                string.format("%.1f", iw_2)
+            )
+        end
+        txt = table.concat(parts, "%c[default]|") .. " " .. translate("ui_inv_s_kg")
+        table.insert(params, {"ui_inv_icon_add_weight_hd", translate("st_carried_weight"), txt})
+    end
+
+    -- Кастомные параметры Lua
+    val = get_float(sect, "add_jump_speed", 0) * eff_strength
+    if val ~= 0 then
+        val = val * 10
+        txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%.0f", val)
+        table.insert(params, {"ui_inv_icon_add_jump_power_hd", translate("ui_inv_jump_height"), txt})
+    end
+
+    val = get_float(sect, "add_move_speed", 0) * eff_strength
+    if val ~= 0 then
+        txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%.0f%%", val * 100)
+        table.insert(params, {"ui_inv_icon_add_jump_power_hd", translate("ui_inv_move_speed"), txt})
+    end
+
+    -- Пси-судорога
+    local base_dog_psy = get_float(sect, "add_dog_psy", 1)
+    if base_dog_psy and base_dog_psy ~= 1 then
+        val = 1 + (base_dog_psy - 1) * eff_strength
+        if val ~= 1 then
+            txt = (val < 1 and "%c[green]+" or "%c[red]") .. string.format("%.0f%%", (1 - val) * 100)
+            table.insert(params, {"ui_inv_icon_dog_psy_hd", translate("ui_inv_spasm_protection"), txt})
+        end
+    end
+
+    -- Сытость (combined restore_speed + add_satiety)
+    local base_restore = get_float(sect, "satiety_restore_speed", 0)
+    local base_add_sat = get_float(sect, "add_satiety", 1)
+
+    local sat_units = 0
+    if base_restore ~= 0 then
+        sat_units = (base_restore * eff_strength) * math.pow(10, 8) / 4455
+    end
+
+    local sat_percent = 0
+    if base_add_sat and base_add_sat > 1 then
+        sat_percent = base_add_sat * eff_strength
+    end
+
+    if sat_units ~= 0 or sat_percent ~= 0 then
+        local parts = {}
+
+        if sat_percent ~= 0 then
+            table.insert(parts, "%c[red]-" .. string.format("%d%%", math.round(sat_percent)))
+        end
+
+        if sat_units ~= 0 then
+            table.insert(parts, "%c[red]" .. string.format("%.2f %s", sat_units, translate("ui_inv_units")))
+        end
+
+        txt = table.concat(parts, "%c[default] | ")
+        table.insert(params, {
+            "ui_inv_icon_add_satiety_hd",
+            translate("ui_inv_satiety"),
+            txt
+        })
+    end
+
+    if #params > 0 then
+        self:ShowPropsAf(params)
+    end
 end
 
 

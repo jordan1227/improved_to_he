@@ -2261,3 +2261,139 @@ function set_item_default_grouping( item )
 	f:set( global_flags.FIUngroupable, false )
 	item:set_inventory_item_flags( f )
 end
+
+-- ====================================================================
+-- Sivol. Condition-tier scaling + unique scaling. Tier affects effective property strength.  4 и 5-ый дан дольше живут по свойствам.
+-- ƒругие части в arc_arts.script - check_artefact и в ui_inv_descr.script
+-- ====================================================================
+
+local ARTIFACT_CONFIG = {
+    DYN_BONUS_PER_TIER = 0.05,
+    MODIFICATE_BONUS_PER_LEVEL = 0.08,
+    UNIQUE_BONUSES = {
+        ["af_eye"]                  = 0.15,
+        ["af_mayatnik_chaes_new"]   = 0.20,
+        ["af_mayatnik_tesla_new"]   = 0.25,
+        ["af_mayatnik_les_new"]     = 0.20,
+        ["af_mayatnik_tuman_new"]   = 0.20,
+        ["af_mayatnik_stadion_new"] = 0.15,
+        ["af_mayatnik_radar_new"]   = 0.10,
+    },
+    CATEGORY_BONUSES = {
+        ["capsule"] = 0.10, ["_buliz"]  = 0.10, ["af_ice"]  = 0.08, ["af_sul"]  = 0.12,
+        ["af_electra_"]  = 0.05, ["af_glass"]     = 0.10, ["af_dummy_"]    = 0.05,
+        ["af_star"]      = 0.05, ["af_baloon"]    = 0.100,
+    }
+}
+
+function get_artifact_bonus_percent(section_name)
+    local tier = string.match(section_name, "_dyn(%d)d$")
+    if tier then
+        local tier_num = tonumber(tier)
+        if tier_num and tier_num >= 2 then
+            return (tier_num - 1) * ARTIFACT_CONFIG.DYN_BONUS_PER_TIER
+        end
+    end
+
+    local mod_level = string.match(section_name, "_(%d+)$")
+    if mod_level then
+        local level_num = tonumber(mod_level)
+        if level_num and level_num >= 2 then
+            return (level_num - 1) * ARTIFACT_CONFIG.MODIFICATE_BONUS_PER_LEVEL
+        end
+    end
+
+    if ARTIFACT_CONFIG.UNIQUE_BONUSES[section_name] then
+        return ARTIFACT_CONFIG.UNIQUE_BONUSES[section_name]
+    end
+
+    for artifact_name, bonus in pairs(ARTIFACT_CONFIG.UNIQUE_BONUSES) do
+        if string.find(section_name, artifact_name) then
+            return bonus
+        end
+    end
+
+    for category_str, bonus in pairs(ARTIFACT_CONFIG.CATEGORY_BONUSES) do
+        if string.find(section_name, category_str) then
+            return bonus
+        end
+    end
+
+    return 0.0
+end
+
+function get_effective_strength(item)
+    if not item then return 1.0 end
+    local condition = item:condition()
+    local bonus = get_artifact_bonus_percent(item:section())
+    return math.min(condition + bonus, 1.0)
+end
+
+-- Helper to safely get base config values
+function get_artefact_base_immunity(sect, imm_name)
+    local ini = system_ini()
+    if ini:line_exist(sect, imm_name) then
+        return ini:r_float(sect, imm_name)
+    end
+    if ini:line_exist(sect, "hit_absorbation_sect") then
+        local absorb_sect = ini:r_string(sect, "hit_absorbation_sect")
+        if absorb_sect and ini:section_exist(absorb_sect) and ini:line_exist(absorb_sect, imm_name) then
+            return ini:r_float(absorb_sect, imm_name)
+        end
+    end
+    return 1.0 -- Default no vulnerability/protection
+end
+
+-- Mutates C++ stats based on effective strength, or resets to base
+function scale_artefact_stats(item, reset)
+    if not item then return end
+    local af_obj = item:get_artefact()
+    if not af_obj then return end
+    
+    local sect = item:section()
+    local ini = system_ini()
+    
+    local strength = 1.0
+    if not reset then
+        strength = get_effective_strength(item)
+    end
+
+    -- Standard C++ properties
+    local props = {
+        "health_restore_speed", "bleeding_restore_speed", "power_restore_speed",
+        "satiety_restore_speed", "radiation_restore_speed", "psy_health_restore_speed"
+    }
+    for _, prop in ipairs(props) do
+        if ini:line_exist(sect, prop) then
+            local base = ini:r_float(sect, prop)
+            af_obj[prop] = base * strength
+        end
+    end
+
+    -- Weight
+    for _, prop in ipairs({"additional_inventory_weight", "additional_inventory_weight2"}) do
+        if ini:line_exist(sect, prop) then
+            local base = ini:r_float(sect, prop)
+            af_obj[prop] = base * strength
+        end
+    end
+
+    -- Immunities
+    local af_imm = item.immunities
+    if af_imm then
+        local imm_props = {
+            "chemical_burn_immunity", "burn_immunity", "explosion_immunity", "fire_wound_immunity",
+            "radiation_immunity", "shock_immunity", "strike_immunity", "telepatic_immunity", "wound_immunity"
+        }
+        for _, imm in ipairs(imm_props) do
+            local base = get_artefact_base_immunity(sect, imm)
+            if base <= 1 then
+                -- Protection
+                af_imm[imm] = 1 - ((1 - base) * strength)
+            else
+                -- Vulnerability
+                af_imm[imm] = 1 + ((base - 1) * strength)
+            end
+        end
+    end
+end
