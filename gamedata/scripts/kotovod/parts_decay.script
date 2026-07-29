@@ -1,0 +1,125 @@
+-- [HE-PORT]
+
+local decay_rate = {
+	-- Мягкие редкие части
+	[ "mutant_e_chimera_kidney"  ] = 0.016,
+	[ "mutant_poltergeist_glas"  ] = 0.015,
+	[ "mutant_krovosos_jaw"      ] = 0.014,
+	[ "mutant_flesh_eye"         ] = 0.018,
+	[ "mutant_hand_kontroler"    ] = 0.012,
+
+	-- Твердые редкие части
+	[ "mutant_psevdogigant_hand" ] = 0.014,
+	[ "mutant_burer_hand"        ] = 0.015,
+	[ "mutant_chimera_kogot"     ] = 0.008,
+	[ "mutant_flesh_shkura"      ] = 0.011,
+
+	-- Средние части
+	[ "mutant_psevdodog_tail"    ] = 0.010,
+	[ "mutant_snork_leg"         ] = 0.012,
+	[ "mutant_tail_cat"          ] = 0.010,
+
+	-- Более грубые части
+	[ "mutant_face_tushkano"     ] = 0.020,
+	[ "mutant_dog_tail"          ] = 0.014,
+	[ "mutant_zombie_hand"       ] = 0.013,
+	[ "mutant_boar_leg"          ] = 0.013,
+
+	[ "bread"                    ] = 0.0277,
+	[ "kolbasa"                  ] = 0.0223,
+	[ "green_kolbasa"            ] = 0.0057
+}
+
+local decay_multi = 1.25 -- Ускорение порчи на 25% при кондиции ниже 30%
+local decay_step  = 3600
+local ice_multi   = 0.3
+
+function attach( sm )
+	sm:subscribe( { signal = "on_take", fun = this.on_take } )
+	sm:subscribe( { signal = "on_update", fun = this.on_update } )
+end
+
+function is_decayable( sect )
+	return sect ~= nil and decay_rate[ sect ] ~= nil
+end
+
+function register( id )
+	if not id then return end
+	local data = get_value( "parts_decay_data", {} )
+	if data[ id ] then return end
+	data[ id ] = pack_time_to_string( game.get_game_time() )
+	set_value( "parts_decay_data", data )
+end
+
+function on_take( obj, sobj )
+	if not obj or not obj.section then return end
+	if is_decayable( obj:section() ) then
+		register( obj:id() )
+	end
+end
+
+function scan_inventory()
+	if not db.actor then return end
+	local data = get_value( "parts_decay_data", {} )
+	local changed = false
+	db.actor:iterate_inventory( function( _, item )
+		local id = item:id()
+		if not data[ id ] and is_decayable( item:section() ) then
+			data[ id ] = pack_time_to_string( game.get_game_time() )
+			changed = true
+		end
+	end )
+	if changed then set_value( "parts_decay_data", data ) end
+end
+
+function on_update()
+	ogse_signals.get_mgr():reschedule( 60000 )
+	if not db.actor or not db.actor:alive() then return end
+	scan_inventory()
+	update_parts_condition()
+end
+
+function update_parts_condition()
+	local data = get_value( "parts_decay_data", {} )
+	local has_ice_art = sak.arts_operate == true and sak_inventory.belt_items[ "af_ice" ]
+	local now = game.get_game_time()
+	local changed = false
+
+	for id, last_check in pairs( data ) do
+		local sobj = g_sim:object( id )
+		if not sobj then
+			data[ id ] = nil
+			changed = true
+		else
+			local base_decay = decay_rate[ sobj:section_name() ]
+			if not base_decay then
+				data[ id ] = nil
+				changed = true
+			else
+				local time_diff = now:diffSec( unpack_time_from_string( last_check ) )
+				if time_diff >= decay_step then
+					local steps = math.floor( time_diff / decay_step )
+					local cond = params.get_condition( id, 1 )
+					if cond and cond >= 0 then
+						local decay = base_decay
+						if cond <= 0.3 then decay = decay * decay_multi end
+						if has_ice_art and sobj.parent_id == db.actor:id() then
+							decay = decay * ice_multi
+						end
+						local new_cond = math.max( cond - decay * steps, 0 )
+						params.upd_condition( sobj, new_cond )
+						if new_cond <= 0 then
+							misc.release_obj( sobj )
+							data[ id ] = nil
+						else
+							data[ id ] = pack_time_to_string( now )
+						end
+						changed = true
+					end
+				end
+			end
+		end
+	end
+
+	if changed then set_value( "parts_decay_data", data ) end
+end
