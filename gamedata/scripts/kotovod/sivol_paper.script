@@ -1,0 +1,111 @@
+-- sivol_paper.script
+--
+-- Animation-only port of FDDA's "Read Recipe" document animation into NLC OGSR HE.
+-- Handles the show / idle / hide hand-animation + camera + sound sequence.
+--
+-- Deliberately NOT included here (co-dev's job):
+--   - the CUIScriptWnd-derived reading UI/window itself
+--   - item-type checks (e.g. IsItem("recipe", sec))
+--   - hiding hud_inventory before reading, if NLC needs that
+--   - any keybind wiring
+--
+-- Design note: this codebase doesn't rely on generic "any UI closed" signals
+-- (GUI_on_show/GUI_on_hide, lam2, etc). The reading window is expected to be its
+-- own CUIScriptWnd class (same shape as attention_comp / attention_univers_blank),
+-- and calls play_show_animation() / play_hide_animation() directly from its own
+-- InitControls / on_quit -- same convention as vergas_masks, rummaged:btn_quit, etc.
+
+local is_document_animating = false
+
+-- Must match the anim_items.ltx section name once mod_system_liz_document_animation.ltx
+-- (or its NLC equivalent) is merged in.
+local HUD_SEC = "liz_document_animation_hud"
+
+local SND_SHOW = "interface\\item_usage\\recepie_read_start"
+local SND_HIDE = "interface\\item_usage\\recepie_read_end"
+local CAM_SHOW = "liz\\fddar_document_show.anm"
+local CAM_HIDE = "liz\\fddar_document_hide.anm"
+
+function is_animating()
+    return is_document_animating
+end
+
+-- Emergency cleanup to prevent a stuck-hands softlock, mirrors vergas_masks.abort_animation()
+function abort_animation()
+    if is_document_animating then
+        bind_stalker.restore_weapon()
+        level.only_allow_movekeys(false)
+        is_document_animating = false
+    end
+end
+
+-- ==========================================================================
+-- Call this from wherever the reading window opens (e.g. its InitControls,
+-- or right before level.start_stop_menu(wnd, true)).
+-- Plays show, then transitions into a looping idle once show finishes.
+-- ==========================================================================
+function play_show_animation()
+    if is_document_animating then return end
+    is_document_animating = true
+
+    level.only_allow_movekeys(true)
+    bind_stalker.hide_weapon()
+
+    local snd = xr_sound.get_safe_sound_object(SND_SHOW)
+    if snd then snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0) end
+
+    level.add_cam_effector(CAM_SHOW, 7539, false, "", 0, false)
+    local show_duration = game.play_hud_motion(2, HUD_SEC, "anm_show", true, 1, true) or 1000
+
+    dsh.timeout(show_duration, function()
+        if not db.actor:alive() then
+            abort_animation()
+            return
+        end
+        -- Loop the idle sway while the window stays open. play_hide_animation()
+        -- overwrites this whenever the window actually closes.
+        game.play_hud_motion(2, HUD_SEC, "anm_idle", true, 1, true)
+    end)
+end
+
+-- ==========================================================================
+-- Call this from the reading window's on_quit, before (or instead of) its own
+-- self:GetHolder():start_stop_menu(self, true) close call.
+-- ==========================================================================
+function play_hide_animation()
+    if not is_document_animating then return end
+
+    if not db.actor:alive() then
+        abort_animation()
+        return
+    end
+
+    local snd = xr_sound.get_safe_sound_object(SND_HIDE)
+    if snd then snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0) end
+
+    level.add_cam_effector(CAM_HIDE, 7540, false, "", 0, false)
+    local hide_duration = game.play_hud_motion(2, HUD_SEC, "anm_hide", true, 1, true) or 1000
+
+    dsh.timeout(hide_duration, function()
+        abort_animation()
+    end)
+end
+
+-- ==========================================================================
+-- Standalone test entry point: no UI/window dependency at all. Plays show,
+-- holds the idle for a fixed duration, then hides itself. Useful for validating
+-- the animation assets/config before the reading window exists.
+-- ==========================================================================
+local TEST_IDLE_HOLD_MS = 3000
+
+function play_document_read_animation_test()
+    play_show_animation()
+    dsh.timeout(TEST_IDLE_HOLD_MS, function()
+        play_hide_animation()
+    end)
+end
+
+-- temporary, anywhere that gets loaded, e.g. a debug script fl sivol_paper.test_doc_anim
+function test_doc_anim()
+    sivol_paper.play_document_read_animation_test()
+end
