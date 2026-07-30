@@ -44,6 +44,14 @@
 #define OFF_VT_ADD_VISUAL     0x60
 #define OFF_VT_DCAST_RVIS     0x120
 
+#define OFF_PH_MODEL          0x228
+#define OFF_PH_MODEL_2        0x230
+#define OFF_VT_DCAST_PKIN     0x128
+#define OFF_VT_SET_RFLAG      0x000
+#define OFF_VT_RCHILDCOUNT    0x010
+#define OFF_VT_GETDEBUGNAME   0x018
+#define WM_MAX_IDX            64
+
 #define RVA_ROTJUMP_NULLWRITE 0x00ACFB03ULL
 
 #define OFF_RA_MAN            0x08
@@ -131,6 +139,10 @@ typedef void  (*add_static_wm_t)(void* render, void* array, const float* pos,
                                  float size, void* tri, void* verts);
 typedef void* (*create_wma_t)(void* factory);
 typedef void  (*appendmark_t)(void* array, const char* texture);
+typedef void* (*dcast_pkin_t)(void* self);
+typedef void  (*set_rflag_t)(void* kin, unsigned id, bool state);
+typedef unsigned (*rchildcount_t)(void* kin);
+typedef void* (*getdebugname_t)(void* visual, void* out_shared_str);
 
 static uintptr_t g_base = 0;
 static execcmd_t g_orig = 0;
@@ -143,6 +155,14 @@ static actor_onhuddraw_t g_orig_actor_onhud = 0;
 static int g_bp_ui = 0;
 static int g_skip_body_n = 0;
 static int g_skip_hands_n = 0;
+
+static int g_wm_calls = 0;
+static int g_wm_applied = 0;
+static int g_wm_skipped = 0;
+static int g_wm_last_state = -1;
+static int g_wm_nomodel = 0;
+static int g_wm_mismatch = 0;
+static int g_wm_skipped_model = 0;
 
 static int   g_boar_ok = 0;
 static int   g_boar_fail = 0;
@@ -1018,6 +1038,136 @@ static void cmd_bpm(const char* a)
     bp_place(x, y, z, dist, size, (int)tex);
 }
 
+static void* wm_hands_model(int second)
+{
+    if (!g_base) return 0;
+    void** pph = (void**)(g_base + RVA_G_PLAYER_HUD);
+    void* ph = pph ? *pph : 0;
+    if (!ph) return 0;
+    return *(void**)((char*)ph + (second ? OFF_PH_MODEL_2 : OFF_PH_MODEL));
+}
+
+static void* wm_hands_kin(int second)
+{
+    void* model = wm_hands_model(second);
+    if (!model) return 0;
+    void** vt = *(void***)model;
+    if (!vt) return 0;
+    dcast_pkin_t dcast = (dcast_pkin_t)vt[OFF_VT_DCAST_PKIN / sizeof(void*)];
+    if (!dcast) return 0;
+    return dcast(model);
+}
+
+static const char* wm_visual_name(int second)
+{
+    void* model = wm_hands_model(second);
+    if (!model) return "<none>";
+    void** vt = *(void***)model;
+    if (!vt) return "<no vtbl>";
+    dcast_rvis_t dcast = (dcast_rvis_t)vt[OFF_VT_DCAST_RVIS / sizeof(void*)];
+    if (!dcast) return "<no dcast>";
+    void* vis = dcast(model);
+    if (!vis) return "<no visual>";
+    void** vvt = *(void***)vis;
+    if (!vvt) return "<no vis vtbl>";
+    getdebugname_t f = (getdebugname_t)vvt[OFF_VT_GETDEBUGNAME / sizeof(void*)];
+    if (!f) return "<no getDebugName>";
+    char* sv = 0;
+    f(vis, &sv);
+    return sv ? sv + STRV_VALUE : "<empty>";
+}
+
+static unsigned wm_child_count(void* kin)
+{
+    if (!kin) return 0;
+    void** vt = *(void***)kin;
+    if (!vt) return 0;
+    rchildcount_t f = (rchildcount_t)vt[OFF_VT_RCHILDCOUNT / sizeof(void*)];
+    return f ? f(kin) : 0;
+}
+
+static int wm_set(void* kin, unsigned idx, bool state)
+{
+    if (!kin) return 0;
+    if (idx >= wm_child_count(kin)) { ++g_wm_skipped; return 0; }
+    void** vt = *(void***)kin;
+    if (!vt) return 0;
+    set_rflag_t f = (set_rflag_t)vt[OFF_VT_SET_RFLAG / sizeof(void*)];
+    if (!f) return 0;
+    f(kin, idx, state);
+    ++g_wm_applied;
+    return 1;
+}
+
+static void cmd_wm(const char* a)
+{
+    msg_t Msg = (msg_t)(g_base + RVA_MSG);
+    while (*a == ' ' || *a == '\t') ++a;
+
+    void* k1 = wm_hands_kin(0);
+    void* k2 = wm_hands_kin(1);
+
+    if (!*a) {
+        Msg("~ [wm] m_model=%p children=%u visual=%s",
+            k1, wm_child_count(k1), wm_visual_name(0));
+        Msg("~ [wm] m_model_2=%p children=%u visual=%s",
+            k2, wm_child_count(k2), wm_visual_name(1));
+        Msg("~ [wm] calls=%d applied=%d skipped_idx=%d skipped_model=%d "
+            "nomatch=%d last_state=%d nomodel=%d",
+            g_wm_calls, g_wm_applied, g_wm_skipped, g_wm_skipped_model,
+            g_wm_mismatch, g_wm_last_state, g_wm_nomodel);
+        return;
+    }
+
+    if (*a != '0' && *a != '1') {
+        Msg("!! [wm] usage: wm <0|1> <nchildren> <idx> [idx ...]  |  wm");
+        return;
+    }
+    bool state = (*a == '1');
+    ++a;
+
+    while (*a == ' ' || *a == '\t') ++a;
+    if (*a < '0' || *a > '9') {
+        Msg("!! [wm] usage: wm <0|1> <nchildren> <idx> [idx ...]  |  wm");
+        return;
+    }
+    unsigned want = 0;
+    while (*a >= '0' && *a <= '9') { want = want * 10u + (unsigned)(*a - '0'); ++a; }
+
+    if (!k1 && !k2) {
+        if (++g_wm_nomodel <= 3)
+            Msg("!! [wm] no hands model (g_player_hud/m_model empty), n=%d", g_wm_nomodel);
+        return;
+    }
+
+    unsigned n1 = wm_child_count(k1), n2 = wm_child_count(k2);
+    void* t1 = (want && n1 != want) ? 0 : k1;
+    void* t2 = (want && n2 != want) ? 0 : k2;
+    if ((k1 && !t1) || (k2 && !t2)) ++g_wm_skipped_model;
+    if (!t1 && !t2) {
+        if (++g_wm_mismatch <= 3)
+            Msg("!! [wm] no model with %u children: m_model=%u (%s) m_model_2=%u (%s)",
+                want, n1, wm_visual_name(0), n2, wm_visual_name(1));
+        return;
+    }
+
+    int n = 0;
+    while (*a) {
+        while (*a == ' ' || *a == '\t' || *a == ',') ++a;
+        if (*a < '0' || *a > '9') break;
+        unsigned idx = 0;
+        while (*a >= '0' && *a <= '9') { idx = idx * 10u + (unsigned)(*a - '0'); ++a; }
+        if (idx > WM_MAX_IDX) continue;
+        wm_set(t1, idx, state);
+        wm_set(t2, idx, state);
+        ++n;
+    }
+
+    ++g_wm_calls;
+    g_wm_last_state = state ? 1 : 0;
+    if (!n) Msg("!! [wm] no valid indices in command");
+}
+
 static void hkExecuteCommand(void* self, const char* cmd, char record, char allow)
 {
     g_console = self;
@@ -1056,6 +1206,12 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
         if (p[0] == 'b' && p[1] == 'p' && p[2] == 'm' &&
             (p[3] == 0 || p[3] == ' ' || p[3] == '\t')) {
             cmd_bpm(p + 3);
+            return;
+        }
+
+        if (p[0] == 'w' && p[1] == 'm' &&
+            (p[2] == 0 || p[2] == ' ' || p[2] == '\t')) {
+            cmd_wm(p + 2);
             return;
         }
 
