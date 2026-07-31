@@ -1393,156 +1393,139 @@ function cheat:set_status_pda()
 	vergas_pda.change_info_pda_record( record_old, record_new ) -- защита от повторной установки тайника при повторном включении ПДА в одной сессии
 end
 	
--- Вспомогательная функция для чтения данных флешек
 function readFlashData()
-    local data = ReadIni( db.stor_ltx, "stor", "anagramm_flash" ) or ""
-    local flashData = {}
-    for flashInfo in string.gmatch( data, "([^|]+)" ) do
-        local id, condition = string.match( flashInfo, "(%d+),([%d%.]+)" )
-        if id and condition then
-            flashData[ id ] = tonumber( condition )
-        end
-    end
-    return flashData
+	return anagramm_flash.read_data()
 end
 
--- Вспомогательная функция для записи данных флешек
 function writeFlashData( flashData )
-    local data = {}
-    for id, condition in pairs( flashData ) do
-        table.insert(data, string.format( "%s,%.2f", id, condition ) )
-    end
-    local dataString = table.concat( data, "|" )
-    WriteIni( db.stor_ltx, "stor", "anagramm_flash", dataString )
+	anagramm_flash.write_data( flashData )
 end
 
--- Функция для удаления данных флешки
 function removeFlashData( flashIdToRemove )
-    local flashData = readFlashData()
-    flashData[ tostring( flashIdToRemove ) ] = nil
-    writeFlashData( flashData )
+	anagramm_flash.remove( flashIdToRemove )
 end
 
 function UpdateFlashData( flashIdToUpdate, Cond )
-    local flashData = readFlashData()
-    flashData[ tostring( flashIdToUpdate ) ] = Cond
-    writeFlashData( flashData )
+	anagramm_flash.update( flashIdToUpdate, Cond )
 end
 
 function cheat:SolveAnagramm()
-    local flash = db.actor:object( "anagramm_flash" )
-    if not flash then
-        sak.send_tip( "Флешка не найдена", "Ошибка инициализации устройсва:", 0, 5, "flash", "no", "red" )
-        return
-    end
-
-    local flashId = tostring( flash:id() )
-    local flashData = readFlashData()
-
-	-- Локальная функция для обновления кондиции флешки при первом запуске
-	local function updateFlashCondition()
-		if flashData[flashId] then
-			local storedCondition = flashData[ flashId ]
-			if flash:condition() ~= storedCondition then
-				params.upd_condition( flash, storedCondition )
-				-- sak.send_tip( string.format( "Кондиция флешки обновлена: %.2f", storedCondition), "Информация:", 0, 5, "flash", "no", "yellow" )
-            
-				-- Удаляем запись из хранилища
-				flashData[ flashId ] = nil
-				writeFlashData( flashData )
-            
-				-- sak.send_tip( "Запись о флешке удалена из хранилища", "Информация:", 0, 5, "flash", "no", "yellow" )
-			end
-		end
+	local flash = db.actor:object( "anagramm_flash" )
+	if not flash then
+		sak.send_tip( "Флешка не найдена", "Ошибка инициализации устройсва:", 0, 5, "flash", "no", "red" )
+		return
 	end
 
-    -- Вызываем функцию обновления кондиции
-    updateFlashCondition()
+	local flashId = tostring( flash:id() )
 
-    if flash:condition() == 0 then 
-        sak.send_tip(
-            "Внимание! Очистите устройство!", 
-            "Ошибка инициализации памяти девайса", 0, 5, "flash", "no", "red"
-        )        
-        return
-    else
-        sak.send_tip( 
-            "Процедура подбора пароля запущена", 
-            "Девайс подключен:", 0, 5, "flash", "no", "yellow" 
-        )            
-    end
-    
-    local password = tbl_info[ 2 ]
-    local current = string.rep( "*", #password )
-    local delay = 50
-   -- local alphabet = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
-    local alphabet = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя0123456789"
-    self.solving_anagramm = true
-    
-    local condition_loss_per_char = 0.0025 * ( #password / 3 )	-- 0.002 / 5
-    
-    local function saveCondition()
-        local final_condition = math.floor( flash:condition( ) * 100 ) / 100
-        flashData[ flashId ] = final_condition
-        writeFlashData( flashData )
-    end
-    
-    local function updatePassword()
-        if not self.solving_anagramm or current == password then
-            sak.send_tip(
-                "Процедура подбора пароля успешно завершена", 
-                "Девайс отключён:", 0, 5, "flash", "no", "green"
-            )           
-            vergas_lib.s_play(vergas_lib.set_pr_from_config_str("list_sounds_pda", "snd_pass_ok"), 1)     
-            self.solving_anagramm = false
-            
-            saveCondition()
-			-- Автоматически входим после подбора
-			v_pass = password  -- убедимся что пароль точный
+	local stored = anagramm_flash.get( flashId )
+	if stored and flash:condition() > stored + 0.001 then
+		params.upd_condition( flash, stored )
+	end
+
+	if flash:condition() == 0 then
+		sak.send_tip(
+			"Внимание! Очистите устройство!",
+			"Ошибка инициализации памяти девайса", 0, 5, "flash", "no", "red"
+		)
+		return
+	else
+		sak.send_tip(
+			"Процедура подбора пароля запущена",
+			"Девайс подключен:", 0, 5, "flash", "no", "yellow"
+		)
+	end
+
+	local password = tbl_info[ 2 ]
+	local current = string.rep( "*", #password )
+	local delay = 50
+	local alphabet = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя0123456789abcdefghijklmnopqrstuvwxyz"
+	self.solving_anagramm = true
+
+	local condition_loss_per_char = 0.0025 * ( #password / 3 )
+
+	local function saveCondition()
+		local final_condition = math.floor( flash:condition() * 100 ) / 100
+		anagramm_flash.update( flashId, final_condition )
+	end
+
+	local function aborted()
+		if cheat_instance ~= self or not self.solving_anagramm then
+			self.solving_anagramm = false
+			saveCondition()
+			return true
+		end
+		return false
+	end
+
+	local function updatePassword()
+		if cheat_instance ~= self then
+			self.solving_anagramm = false
+			saveCondition()
+			return
+		end
+		if not self.solving_anagramm or current == password then
+			sak.send_tip(
+				"Процедура подбора пароля успешно завершена",
+				"Девайс отключён:", 0, 5, "flash", "no", "green"
+			)
+			vergas_lib.s_play( vergas_lib.set_pr_from_config_str( "list_sounds_pda", "snd_pass_ok" ), 1 )
+			self.solving_anagramm = false
+
+			saveCondition()
+			v_pass = password
 			self:password_check()
-            return
-        end
-        
-        local index = math.random( 1, #password )
-        while current:sub( index, index ) ~= "*" do
-            index = math.random( 1, #password )
-        end
-        
-        local targetLetter = password:sub( index, index )
-        local currentIndex = 1
-        vergas_lib.s_play( vergas_lib.set_pr_from_config_str( "list_sounds_pda", "snd_klik_pda" ), 1 )
-        
-        local function cycleLetter()
-            if not self.solving_anagramm then
-                saveCondition()
-                return
-            end
-            local currentLetter = alphabet:sub( currentIndex, currentIndex )
-            current = current:sub( 1, index - 1 ) .. currentLetter .. current:sub( index + 1 )
-            v_pass = current
-            self:set_wnd_ps( 2 )
-            if currentLetter ~= targetLetter then
-                currentIndex = currentIndex % #alphabet + 1
-                schedule.add( "cycle_letter", cycleLetter, delay )
-            else
-                local new_condition = params.add_condition(flash, -condition_loss_per_char)
-                if new_condition <= 0 then
-                    self.solving_anagramm = false
-                    sak.send_tip(
-                        "Процедура подбора пароля прервана", 
-                        "Внимание! Закончилось свободное место:", 0, 5, "flash", "no", "red"
-                    )
-                    saveCondition()
-                    return
-                end
-                schedule.add( "next_update", updatePassword, delay * 2 )
-            end
-        end
-        
-        cycleLetter()
-    end
-    
-    updatePassword()
+			return
+		end
+
+		local index = math.random( 1, #password )
+		while current:sub( index, index ) ~= "*" do
+			index = math.random( 1, #password )
+		end
+
+		local targetLetter = password:sub( index, index )
+		local currentIndex = 1
+		local tries = 0
+		vergas_lib.s_play( vergas_lib.set_pr_from_config_str( "list_sounds_pda", "snd_klik_pda" ), 1 )
+
+		local function cycleLetter()
+			if aborted() then return end
+			if tries > #alphabet then
+				self.solving_anagramm = false
+				saveCondition()
+				sak.send_tip(
+					"Процедура подбора пароля прервана",
+					"Внимание! Неизвестный символ в пароле:", 0, 5, "flash", "no", "red"
+				)
+				return
+			end
+			tries = tries + 1
+			local currentLetter = alphabet:sub( currentIndex, currentIndex )
+			current = current:sub( 1, index - 1 ) .. currentLetter .. current:sub( index + 1 )
+			v_pass = current
+			self:set_wnd_ps( 2 )
+			if currentLetter ~= targetLetter then
+				currentIndex = currentIndex % #alphabet + 1
+				dsh.timeout( delay, cycleLetter )
+			else
+				local new_condition = params.add_condition( flash, -condition_loss_per_char )
+				saveCondition()
+				if new_condition <= 0 then
+					self.solving_anagramm = false
+					sak.send_tip(
+						"Процедура подбора пароля прервана",
+						"Внимание! Закончилось свободное место:", 0, 5, "flash", "no", "red"
+					)
+					return
+				end
+				dsh.timeout( delay * 2, updatePassword )
+			end
+		end
+
+		cycleLetter()
+	end
+
+	updatePassword()
 end
 
 local keyboard = {

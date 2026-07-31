@@ -1,0 +1,143 @@
+-- [HE-PORT]
+
+local STOR_FILE    = "nlc_he_stor.ltx"
+local STOR_SECTION = "stor"
+local FLASH_KEY    = "anagramm_flash"
+local UID_KEY      = "he_stor_uid"
+local FLASH_SECT   = "anagramm_flash"
+local EPS          = 0.001
+
+local stor = nil
+
+local function stor_path()
+	return getFS():update_path( "$app_data_root$", STOR_FILE )
+end
+
+local function load_stor()
+	if stor then return stor end
+	stor = {}
+	local f = io.open( stor_path(), "r" )
+	if not f then return stor end
+	local sect = STOR_SECTION
+	for line in f:lines() do
+		local s = string.match( line, "^%s*%[([^%]]+)%]" )
+		if s then
+			sect = s
+		else
+			local k, v = string.match( line, "^%s*([%w_]+)%s*=%s*(.-)%s*$" )
+			if k then
+				stor[ sect ] = stor[ sect ] or {}
+				stor[ sect ][ k ] = v
+			end
+		end
+	end
+	f:close()
+	return stor
+end
+
+local function save_stor()
+	local f = io.open( stor_path(), "w" )
+	if not f then return false end
+	for sect, keys in pairs( stor or {} ) do
+		f:write( "[" .. sect .. "]\n" )
+		for k, v in pairs( keys ) do
+			f:write( k .. " = " .. tostring( v ) .. "\n" )
+		end
+		f:write( "\n" )
+	end
+	f:close()
+	return true
+end
+
+function stor_read( key, sect )
+	local t = load_stor()[ sect or STOR_SECTION ]
+	return t and t[ key ]
+end
+
+function stor_write( key, value, sect )
+	sect = sect or STOR_SECTION
+	local t = load_stor()
+	t[ sect ] = t[ sect ] or {}
+	t[ sect ][ key ] = tostring( value )
+	return save_stor()
+end
+
+function read_data()
+	local data = stor_read( FLASH_KEY ) or ""
+	local res = {}
+	for chunk in string.gmatch( data, "([^|]+)" ) do
+		local id, cond = string.match( chunk, "(%d+),([%d%.]+)" )
+		if id and cond then
+			res[ id ] = tonumber( cond )
+		end
+	end
+	return res
+end
+
+function write_data( t )
+	local out = {}
+	for id, cond in pairs( t or {} ) do
+		if tonumber( cond ) then
+			table.insert( out, string.format( "%s,%.2f", tostring( id ), tonumber( cond ) ) )
+		end
+	end
+	return stor_write( FLASH_KEY, table.concat( out, "|" ) )
+end
+
+function get( id )
+	return read_data()[ tostring( id ) ]
+end
+
+function update( id, cond )
+	local t = read_data()
+	t[ tostring( id ) ] = tonumber( cond )
+	write_data( t )
+end
+
+function remove( id )
+	local t = read_data()
+	t[ tostring( id ) ] = nil
+	write_data( t )
+end
+
+function apply_stored()
+	if not db.actor then return end
+	local data = read_data()
+	if not next( data ) then return end
+	db.actor:iterate_inventory( function( dummy, item )
+		if item and item:section() == FLASH_SECT then
+			local cond = data[ tostring( item:id() ) ]
+			if cond and item:condition() > cond + EPS then
+				params.upd_condition( item, cond )
+			end
+		end
+	end, nil )
+end
+
+local function sync_uid()
+	local uid = get_value( UID_KEY )
+	if not uid then
+		uid = string.format( "%d%d", math.random( 100000, 999999 ), math.random( 100000, 999999 ) )
+		set_value( UID_KEY, uid )
+	end
+	if stor_read( UID_KEY ) ~= uid then
+		write_data( {} )
+		stor_write( UID_KEY, uid )
+	end
+end
+
+local function on_first_update()
+	sync_uid()
+	apply_stored()
+end
+
+local function on_take( obj )
+	if obj and obj:section() == FLASH_SECT then
+		apply_stored()
+	end
+end
+
+function attach( sm )
+	sm:subscribe( { signal = "on_first_update", fun = on_first_update } )
+	sm:subscribe( { signal = "on_take",         fun = on_take } )
+end
