@@ -6399,6 +6399,22 @@ function sak_tele_klyk(path)
     end
 end
 
+-- локация _tele_ локация
+
+function agru_add_compass()
+    local obj_hran = g_sim:story_object( story_ids.u_agr_inventory_box_klyk )
+    if obj_hran then
+        local obj = g_sim:create( "af_compass",
+            obj_hran.position, obj_hran.m_level_vertex_id, obj_hran.m_game_vertex_id, obj_hran.id
+        )
+        local pk         = get_netpk( obj, 1 )
+        local data       = pk:get()
+        data.custom_data = "agru_tele_aver"
+        pk:set( data )
+    end
+    db.actor:give_info_portion( "doctor_said_all_info" )
+end
+
 function sak_tele_mar()   sak_tele_art( "mar"  ) end
 function sak_tele_dsc()   sak_tele_art( "dsc"  ) end
 function sak_tele_mil()   sak_tele_art( "mil"  ) end
@@ -6408,43 +6424,167 @@ function sak_tele_pri()   sak_tele_art( "pri"  ) end
 function sak_tele_agru()  sak_tele_art( "agru" ) end
 function sak_tele_aver()  sak_tele_art( "aver" ) end
 
-function sak_tele_art(path)
-	local start_tele=false
-	local obj_id,obj=-1,nil
-	local inf=""
-	local pk
-	local data
-	for i,k in pairs(sak_inventory.belt_items) do
-		if strpos(i,"af_compass_",1,true) and not strposx(i,"dyn6d") then	
-			obj_id=k[1]
-			obj= g_sim:object(obj_id)
-			pk = get_netpk(obj,1)
-			data = pk:get()
-			inf=data.custom_data or ""
-			if inf~="" and strpos(inf,"^"..path.."_") then
-				start_tele=true 
-				break
-			end
-		end
-	end
-	if obj==nil then
-		return
-	end
-	if arts_operate and start_tele and pk then
-		local sec = obj:section_name()
-		local dyn = tonumber( string.sub(sec,-2,-2) )
-		if dyn == 1 then
-			dyn = 6
-		else
-			dyn = dyn - 1
-		end
-		local new_sec = string.sub(sec,1,-3)..dyn..'d'
-		item_params.set_obj_section(obj.id, new_sec)
-		level.add_pp_effector("blink.ppe", 234, false)
-		level.add_pp_effector("teleport.ppe", 2006, false)
-		eff_vodka()
-		db.actor:set_actor_position(patrol(inf):point(0))
-	end
+-- Новая телепортация
+
+local location_names = {
+    esc = "Кордона",
+    mil = "Складов",
+    yan = "Янтаря",
+    pri = "Припяти",
+    mar = "Болот",
+    dsc = "Кишки"
+}
+
+local unique_points = {
+    esc = { x = -260.327, y = -13.879, z =  -18.308, lv =    6273, gv =   67 },
+    mil = { x = -318.752, y = -22.406, z =  204.328, lv =   27772, gv = 1795 },
+    yan = { x =  -53.906, y = -12.703, z = -246.337, lv =   19795, gv = 1454 },
+    pri = { x =    9.558, y =  -2.982, z =  125.995, lv =  113796, gv = 2147 },
+    mar = { x =  258.743, y =   3.938, z =   67.440, lv =  301624, gv = 3516 },
+    dsc = { x =  596.839, y =   1.016, z =   -7.205, lv = 1080365, gv = 4174 },
+	uag = { x =  -76.940, y =  -6.873, z =  -74.931, lv =    3117, gv =  717 },
+}
+
+local teleport_structure = {
+    l01_escape    = { prefix = "esc", destinations = { "mil", "yan", "pri", "mar", "dsc", "uag" } },
+    marsh         = { prefix = "mar", destinations = { "yan", "pri", "mil", "dsc", "uag" } },
+    l11_pripyat   = { prefix = "pri", destinations = { "esc", "mil", "yan", "uag" } },
+    l08_yantar    = { prefix = "yan", destinations = { "esc", "mil", "pri", "uag" } },
+    l07_military  = { prefix = "mil", destinations = { "esc", "yan", "pri", "uag" } },
+    k01_darkscape = { prefix = "dsc", destinations = { "esc", "yan", "pri", "mil", "mar", "uag" } },
+}
+
+local condition_drop = {
+    esc = { pri = 0.8, yan = 0.3, mil = 0.3, mar = 0.1, dsc = 0.1, uag = 0.5 },
+    yan = { pri = 0.4, esc = 0.3, mil = 0.3, mar = 0.2, dsc = 0.2, uag = 0.5 },
+    pri = { esc = 0.8, yan = 0.3, mil = 0.3, mar = 0.5, dsc = 0.5, uag = 0.5 },
+    mil = { esc = 0.3, yan = 0.2, pri = 0.5, mar = 0.3, dsc = 0.3, uag = 0.5 },
+    mar = { esc = 0.1, yan = 0.3, pri = 0.9, mil = 0.4, dsc = 0.2, uag = 0.5 },
+    dsc = { esc = 0.1, yan = 0.4, pri = 0.9, mil = 0.4, mar = 0.2, uag = 0.5 }
+}
+
+function generate_teleport_points()
+    local result = {}
+    for level, data in pairs( teleport_structure ) do
+        result[ level ] = {}
+        for _, dest in ipairs( data.destinations ) do
+            local key = data.prefix .. "_teleport_" .. dest
+            result[level][key] = unique_points[ dest ]
+        end
+    end
+    return result
+end
+
+-- TODO: Может убрать этот бред с телепортацией только из определнной точки? Настраиваем компас и тп по нужде откуда угодно в эту точку
+
+local teleport_points = generate_teleport_points()
+local last_message_time = 0
+local message_cooldown = 10
+local already_tp = false
+
+function sak_tele_art( path )
+	if already_tp then return end
+    local start_tele = false
+    local obj_id, obj, obj_cond, inf
+    for i, k in pairs( sak_inventory.belt_items ) do
+        if i:find( "af_compass", 1, true ) then
+            obj_id = k[ 1 ]
+            obj = g_sim:object( obj_id )
+            if obj then
+                local pk = get_netpk( obj, 1 )
+                local data = pk:get()
+				obj_cond = data.condition
+                inf = data.custom_data or ""
+                start_tele = true
+                break
+            end
+        end
+    end
+	
+    if not start_tele then return end
+    
+	-- Особый случай для подземки
+    if inf == "" and obj_cond >= 0.8 then
+        local tp = unique_points[ "uag" ]
+        if tp then
+			params.obj_condition( obj_id, 0 )
+            level.add_pp_effector( "blink.ppe", 234, false )
+            level.add_pp_effector( "teleport.ppe", 2006, false )
+            eff_vodka()
+            xr_statistic.add_pts( "otherstats", game.translate_string( "st_pda_otherstats_compass_used" ), 1, 10 )
+            spawner.create_level_changers(tp.lv, tp.gv, vector():set( tp.x, tp.y, tp.z ) )
+			already_tp = true
+            return
+        end
+    end	
+	
+    local current_level = level.name()
+    local compass_level, compass_dest = inf:match("^(%w+)_tele_(%w+)$")
+    
+    if not compass_level or not compass_dest then
+        log2("Некорректные данные компаса: %s", inf)
+        return
+    end
+    
+    -- Проверяем, соответствует ли компас текущей локации
+    if compass_level ~= path then
+        local current_time = time_global()
+        if current_time - last_message_time > message_cooldown * 1000 then
+            local level_name = location_names[compass_level] or ""
+			
+            sak.send_tip(
+                string.format( "Совсем из головы влетело... Я же настраивал данный компас на телепортацию с %s.", level_name ),
+                "Мысли вслух", 0, 5, "g_g", "no", "yellow"
+            )
+            vergas_lib.s_play([[device\antirad_no]], 1)
+
+			local compass = level.object_by_id( obj_id )
+			if compass then 
+				db.actor:move_to_ruck( compass )
+			end	
+			
+            last_message_time = current_time
+        end
+        return
+    end
+    
+    if arts_operate then
+        local tp = unique_points[compass_dest]
+        if not tp then 
+            log2("Телепорт не найден для пункта назначения: %s", compass_dest)
+            return 
+        end
+        
+        local pk = get_netpk(obj, 1)
+        local data = pk:get()
+        
+        -- Получаем требуемую кондицию для данного маршрута
+        local required_condition = condition_drop[compass_level] and condition_drop[compass_level][compass_dest] or 0.1
+        
+        if data.condition < required_condition then 
+			local text = has_alife_info( "doktor_artteleport_info" ) and "Надо бы зарядить компас..." or "Странно, ничего не произошло..."
+			sak.send_tip(
+				text,
+				"Мысли вслух", 0, 5, "g_g", "no", "yellow"
+			)  
+            vergas_lib.s_play([[device\antirad_no]], 1)
+            return 
+        end
+        
+        -- Уменьшаем кондицию на требуемое значение
+        local new_cond = math.max(data.condition - required_condition, 0)
+        params.obj_condition(obj_id, new_cond)
+        data.condition = new_cond
+        data.custom_data = ""
+        pk:set(data)
+        
+        level.add_pp_effector("blink.ppe", 234, false)
+        level.add_pp_effector("teleport.ppe", 2006, false)
+        eff_vodka()
+        
+        xr_statistic.add_pts("otherstats", game.translate_string("st_pda_otherstats_compass_used"), 1, 10)
+        spawner.create_level_changers(tp.lv, tp.gv, vector():set(tp.x, tp.y, tp.z))
+    end
 end
 
 function add_bandit_body()
