@@ -77,6 +77,13 @@
 #define OFF_RO_OBJECT       0x0008
 #define STRV_VALUE          20
 
+#define RVA_UI_ADDITEM       0x00731C50ULL
+#define RVA_UI_ADDITEM_CONT  0x00731C62ULL
+#define RVA_SECURITY_COOKIE  0x010AB940ULL
+#define UI_LBI_TAG           0x510
+#define UI_LBI_PDATA         0x518
+#define UI_TAG_CHARGE_TORCH  77
+
 #define RVA_RAYPICK        0x00044070ULL
 #define RVA_ADD_STATIC_WM  0x0014D9E0ULL
 #define RVA_CREATE_WMA     0x0016FE60ULL
@@ -1168,6 +1175,69 @@ static void cmd_wm(const char* a)
     if (!n) Msg("!! [wm] no valid indices in command");
 }
 
+static int g_blr_on = 0;
+static int g_blr_added = 0;
+
+typedef void* (__fastcall *additem_t)(void* lb, const char* text);
+static additem_t g_orig_additem = 0;
+
+static int str_eq(const char* a, const char* b)
+{
+    while (*a && *a == *b) { ++a; ++b; }
+    return *a == *b;
+}
+
+static void* __fastcall hkListBoxAddItem(void* lb, const char* text)
+{
+    void* item = g_orig_additem(lb, text);
+    if (g_blr_on && item && text && str_eq(text, "st_undress_outfit")) {
+        void* extra = g_orig_additem(lb, "st_ballon_remove");
+        if (extra) {
+            *(uint64_t*)((uint8_t*)extra + UI_LBI_PDATA) = 0;
+            *(uint32_t*)((uint8_t*)extra + UI_LBI_TAG) = UI_TAG_CHARGE_TORCH;
+            ++g_blr_added;
+        }
+    }
+    return item;
+}
+
+static void* install_additem_detour(void* hook)
+{
+    uint8_t* func = (uint8_t*)(g_base + RVA_UI_ADDITEM);
+    const SIZE_T steal = (SIZE_T)(RVA_UI_ADDITEM_CONT - RVA_UI_ADDITEM);
+    if (steal != 18) return 0;
+
+    if (!(func[0] == 0x40 && func[1] == 0x56 && func[2] == 0x41 && func[3] == 0x57 &&
+          func[4] == 0x48 && func[5] == 0x81 && func[6] == 0xEC && func[7] == 0xB8 &&
+          func[8] == 0x00 && func[9] == 0x00 && func[10] == 0x00 &&
+          func[11] == 0x48 && func[12] == 0x8B && func[13] == 0x05))
+        return 0;
+
+    uint8_t* tramp = (uint8_t*)VirtualAlloc(0, 64,
+        MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) return 0;
+
+    SIZE_T o = 0;
+    for (; o < 11; ++o) tramp[o] = func[o];
+    tramp[o++] = 0x48; tramp[o++] = 0xB8;
+    *(uint64_t*)(tramp + o) = g_base + RVA_SECURITY_COOKIE;
+    o += 8;
+    tramp[o++] = 0x48; tramp[o++] = 0x8B; tramp[o++] = 0x00;
+    tramp[o++] = 0xFF; tramp[o++] = 0x25;
+    *(uint32_t*)(tramp + o) = 0; o += 4;
+    *(uint64_t*)(tramp + o) = (uint64_t)(func + steal);
+
+    DWORD oldp;
+    if (!VirtualProtect(func, steal, PAGE_EXECUTE_READWRITE, &oldp)) return 0;
+    func[0] = 0xFF; func[1] = 0x25;
+    *(uint32_t*)(func + 2) = 0;
+    *(uint64_t*)(func + 6) = (uint64_t)hook;
+    for (SIZE_T i = 14; i < steal; ++i) func[i] = 0x90;
+    VirtualProtect(func, steal, oldp, &oldp);
+    FlushInstructionCache(GetCurrentProcess(), func, steal);
+    return tramp;
+}
+
 static void hkExecuteCommand(void* self, const char* cmd, char record, char allow)
 {
     g_console = self;
@@ -1224,6 +1294,18 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
             else if (*a == '0') g_bp_ui = 0;
             Msg("! [fl] bpui=%d body_skips=%d hands_skips=%d",
                 g_bp_ui, g_skip_body_n, g_skip_hands_n);
+            return;
+        }
+
+        if (p[0] == 'b' && p[1] == 'l' && p[2] == 'r' &&
+            (p[3] == 0 || p[3] == ' ' || p[3] == '\t')) {
+            msg_t Msg = (msg_t)(g_base + RVA_MSG);
+            const char* a = p + 3;
+            while (*a == ' ' || *a == '\t') ++a;
+            if (*a == '1') g_blr_on = 1;
+            else if (*a == '0') g_blr_on = 0;
+            else Msg("! [fl] blr=%d added=%d hook=%p",
+                     g_blr_on, g_blr_added, (void*)g_orig_additem);
             return;
         }
 
@@ -1404,6 +1486,8 @@ static bool install_hook()
     }
 
     bp_set_rotfix(1);
+
+    g_orig_additem = (additem_t)install_additem_detour((void*)&hkListBoxAddItem);
     return true;
 }
 

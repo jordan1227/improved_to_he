@@ -15,6 +15,12 @@ function attach( sm )
 	sm:subscribe({ signal = "on_safe_spawn",          fun = this.on_safe_spawn })
 	sm:subscribe({ signal = "on_use",                 fun = this.on_ballon_use })
 	sm:subscribe({ signal = "level_changer_action",   fun = this.on_level_changer_action })
+	sm:subscribe({ signal = "on_inventory_open",      fun = this.sync_ballon_menu })
+end
+
+-- [HE-PORT]
+function sync_ballon_menu()
+	cmd( get_value( "lab_protection" ) and "blr 1" or "blr 0" )
 end
 	
 --//------------------------------------------------
@@ -282,11 +288,112 @@ function on_ballon_use(obj, sobj)
     end)
 end
 
+-- [HE-PORT]
+local removing_ballon = false
+
+function remove_ballon_with_anim()
+    if removing_ballon then return end
+    if not get_value( "lab_protection" ) then return end
+    removing_ballon = true
+
+    local prev_torch_mode = false
+    local mask_was_on = false
+
+    local function finish()
+        removing_ballon = false
+        on_ballon_stop_use()
+        sak_inventory.need_update_inventory()
+        sak.restore_weap()
+    end
+
+    dsh.timeout(20, function()
+        sak.close_window()
+        sak.actor_hide_weapon()
+
+        local function startSequence()
+
+            local function stepFinish()
+                if mask_was_on then
+                    vergas_masks.on_off_mask()
+                    dsh.wait_condition(
+                        function() return vergas_masks.on_off_mask_end() end,
+                        function()
+                            if prev_torch_mode then
+                                nlc_torch.torch_handler("on")
+                                local click_snd = sound_object( "device\\light_on" )
+                                click_snd:play( db.actor, 0, sound_object.s2d )
+                            end
+                            finish()
+                        end
+                    )
+                else
+                    if prev_torch_mode then
+                        nlc_torch.torch_handler("on")
+                        local click_snd = sound_object( "device\\light_on" )
+                        click_snd:play( db.actor, 0, sound_object.s2d )
+                    end
+                    finish()
+                end
+            end
+
+            local function stepUse()
+                level.add_cam_effector("camera_effects\\item_use.anm", 9773, false, "")
+                misc.easy_sound("scripts\\inv_kip_change")
+                allcore_hide.animation_on()
+                dsh.timeout(10000, stepFinish)
+            end
+
+            local function stepMask()
+                if vergas_masks.allcore_mask_is_on() then
+                    mask_was_on = true
+                    allcore_hide.animation_on()
+                    vergas_masks.on_off_mask()
+                    dsh.wait_condition(
+                        function() return vergas_masks.on_off_mask_end() end,
+                        function()
+                            allcore_hide.animation_on()
+                            stepUse()
+                        end
+                    )
+                else
+                    stepUse()
+                end
+            end
+
+            local function stepTorch()
+                if nlc_torch.get_torch_state() then
+                    prev_torch_mode = true
+                    nlc_torch.torch_handler("off")
+                    local torch_anm_duration = game.play_hud_motion(1, "anim_headlamp", "anm_switch", false, 1.1)
+                    level.add_cam_effector("camera_effects\\headlamp_cam.anm", 7539, false, "", 0, false)
+                    local click_snd = sound_object( "device\\light_on" )
+                    click_snd:play( db.actor, 0, sound_object.s2d )
+                    dsh.timeout(torch_anm_duration + 500, stepMask)
+                else
+                    stepMask()
+                end
+            end
+
+            stepTorch()
+        end
+
+        if get_value("inv_full") then
+            dsh.wait_condition(
+                function() return not get_value("inv_full") end,
+                startSequence
+            )
+        else
+            startSequence()
+        end
+    end)
+end
+
 function attach_ballon()
 	if not vergas_masks.get_flag_mask() then 
 		vergas_masks.on_off_mask_end()
 	end	
 	set_value( "lab_protection", true )
+	sync_ballon_menu()
 	sak.send_tip(
 		"Подача кислорода восстановлена", 
 		"Датчик костюма", 0, 5, "pribor", "pda_news", "green"
@@ -305,6 +412,7 @@ function on_ballon_stop_use()
 	if not name then return end
 	
 	remove_value( "lab_protection" )	
+	sync_ballon_menu()
 	timers.stop_timer( "protection" )
 	sak_dialog.clear_ready_time( "protection" )
 
@@ -329,6 +437,7 @@ end
 
 function disable_protection()
     remove_value( "lab_protection" )
+	sync_ballon_menu()
 	clean_ballon_hud()		-- Чистим статик
 	local lname = level.name()
     if not underground_levels[ lname ] then return end	
@@ -396,6 +505,7 @@ local table_color_thresholds = {
 
 local ballon_hud_static = nil
 local ballon_timer = nil
+local ballon_remove_label = nil
 
 function get_timer_color( minutes_left )
     for _, level in ipairs( table_color_thresholds ) do
@@ -437,6 +547,18 @@ function create_ballon_hud()
     if parent_window then
         parent_window:AttachChild( ballon_name )
         parent_window:AttachChild( ballon_timer )
+    end
+    
+    ballon_remove_label = CUIStatic()
+    ballon_remove_label:SetTextComplexMode( true )
+    ballon_remove_label:SetText( translate( "ui_ballon_remove" ) )
+    ballon_remove_label:SetFont( GetFontLetterica16Russian() )
+    ballon_remove_label:SetTextColor( 255, 80, 80, 255 )
+    ballon_remove_label:Init( 15, 60, 120, 30 )
+    ballon_remove_label:SetAutoDelete( false )
+    ballon_remove_label:Show( true )
+    if parent_window then
+        parent_window:AttachChild( ballon_remove_label )
     end
     
     return true
@@ -486,6 +608,7 @@ function clean_ballon_hud()
     
     ballon_hud_static = nil
     ballon_timer = nil
+    ballon_remove_label = nil
 end
 
 function create_underground_safe_zones()
