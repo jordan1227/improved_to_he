@@ -1,0 +1,162 @@
+local RAID_MIN_INTERVAL  = 15 * 60000
+local RAID_MAX_INTERVAL  = 30 * 60000
+local ACTOR_STAY_TIME    = 2 * 60000
+local SPAWN_DISTANCE     = 100
+local MAX_RAID_SIZE      = 5
+
+local time_next_raid     = 0
+local actor_smart_name   = nil
+local actor_smart_enter  = 0
+local enabled            = true
+
+local monster_pools = {
+	weak = {
+		"dog_weak", "dog_normal", "flesh_weak", "flesh_normal",
+		"boar_weak", "boar_normal", "cat_weak",
+	},
+	medium = {
+		"pseudodog_normal", "pseudodog_strong", "snork_weak", "snork_normal",
+		"dog_strong", "cat_normal", "cat_strong",
+		"fracture_weak", "fracture_normal",
+	},
+	strong = {
+		"snork_strong", "bloodsucker_weak", "bloodsucker_normal",
+		"pseudodog_strong", "burer_weak",
+		"fracture_strong", "m_controller_normal",
+	},
+}
+
+local enemy_npc_sections = {
+	"olr_bandit_novice", "olr_bandit_general", "olr_bandit_veteran",
+	"olr_killer_general", "olr_killer_veteran",
+	"olr_soldier_regular", "olr_soldier_specnaz",
+}
+
+local function get_actor_smart()
+	if not db.smart_terrain_by_id then return nil end
+	local actor_pos = db.actor:position()
+	local best_name = nil
+	local best_dist = 50
+	for id, smart in pairs(db.smart_terrain_by_id) do
+		if smart and smart.position then
+			local d = actor_pos:distance_to(smart.position)
+			if d < best_dist then
+				best_dist = d
+				best_name = smart:name()
+			end
+		end
+	end
+	return best_name
+end
+
+local function get_spawn_point(actor_pos, distance)
+	local angle = math.random() * 2 * math.pi
+	local dx = math.cos(angle) * distance
+	local dz = math.sin(angle) * distance
+	local spawn_pos = vector():set(
+		actor_pos.x + dx,
+		actor_pos.y,
+		actor_pos.z + dz
+	)
+	local lvid = level.vertex_id(spawn_pos)
+	if lvid < 4294967295 then
+		spawn_pos = level.vertex_position(lvid)
+	end
+	return spawn_pos, lvid
+end
+
+local function pick_pool()
+	local hours = level.get_time_hours()
+	local roll = math.random(1, 100)
+	if hours >= 22 or hours < 5 then
+		if roll <= 40 then return "strong"
+		elseif roll <= 80 then return "medium"
+		else return "weak" end
+	elseif hours >= 5 and hours < 10 then
+		if roll <= 20 then return "strong"
+		elseif roll <= 60 then return "medium"
+		else return "weak" end
+	else
+		if roll <= 10 then return "strong"
+		elseif roll <= 40 then return "medium"
+		else return "weak" end
+	end
+end
+
+local function spawn_monster_raid(actor_pos)
+	local pool_name = pick_pool()
+	local pool = monster_pools[pool_name]
+	local count = math.random(2, MAX_RAID_SIZE)
+	local spawned = 0
+	local dist = SPAWN_DISTANCE + math.random(-20, 20)
+
+	for i = 1, count do
+		local section = pool[math.random(#pool)]
+		local spawn_pos, lvid = get_spawn_point(actor_pos, dist + math.random(-10, 10))
+		local gvid = db.actor:game_vertex_id()
+		local ok = pcall(function()
+			alife():create(section, spawn_pos, lvid, gvid)
+		end)
+		if ok then spawned = spawned + 1 end
+	end
+	return spawned
+end
+
+local function spawn_npc_raid(actor_pos)
+	local count = math.random(2, 4)
+	local spawned = 0
+	local dist = SPAWN_DISTANCE + math.random(-20, 20)
+
+	for i = 1, count do
+		local section = enemy_npc_sections[math.random(#enemy_npc_sections)]
+		local spawn_pos, lvid = get_spawn_point(actor_pos, dist + math.random(-10, 10))
+		local gvid = db.actor:game_vertex_id()
+		local ok = pcall(function()
+			local obj = alife():create(section, spawn_pos, lvid, gvid)
+			if obj then
+				local pk = get_netpk(obj)
+				if pk then
+					local data = pk:get()
+					if data then
+						data.custom_data = "[smart_terrains]\nnone = true\n"
+						pk:set(data)
+					end
+				end
+			end
+		end)
+		if ok then spawned = spawned + 1 end
+	end
+	return spawned
+end
+
+function update()
+	if not enabled then return end
+	if not db.actor then return end
+	if device().precache_frame > 1 then return end
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+
+	local current_smart = get_actor_smart()
+
+	if current_smart ~= actor_smart_name then
+		actor_smart_name = current_smart
+		actor_smart_enter = time_global()
+	end
+
+	if time_global() < time_next_raid then return end
+	if not actor_smart_name then return end
+	if (time_global() - actor_smart_enter) < ACTOR_STAY_TIME then return end
+
+	time_next_raid = time_global() + math.random(RAID_MIN_INTERVAL, RAID_MAX_INTERVAL)
+
+	local actor_pos = db.actor:position()
+	local roll = math.random(1, 100)
+	if roll <= 70 then
+		spawn_monster_raid(actor_pos)
+	else
+		spawn_npc_raid(actor_pos)
+	end
+end
+
+function set_enabled(val)
+	enabled = val
+end
