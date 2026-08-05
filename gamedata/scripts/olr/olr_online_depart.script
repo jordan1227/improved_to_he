@@ -1,0 +1,284 @@
+-- [HE-PORT]
+local CHECK_INTERVAL     = 15000
+local LEAVE_CHANCE       = 28
+local MAX_LEAVES_PER_TICK = 2
+local SMART_LEAVE_WINDOW = 600000
+local SMART_LEAVE_MAX    = 2
+local REST_MIN_MS        = 30000
+local REST_MAX_MS        = 90000
+local DEPART_COOLDOWN    = 10 * 60000
+
+local time_next_check = 0
+local pending = {}
+local recent_smart_leaves = {}
+local departed_ids = {}
+
+local allowed_comms = {
+	stalker = true,
+	green = true,
+	bandit = true,
+	dolg = true,
+	freedom = true,
+	ecolog = true,
+	killer = true,
+	military = true,
+}
+
+local function now_ms()
+	return time_global()
+end
+
+local function cleanup_departed()
+	local t = now_ms()
+	local sim = g_sim or alife()
+	for id, info in pairs(departed_ids) do
+		if (t - info.t0) > DEPART_COOLDOWN then
+			departed_ids[id] = nil
+		elseif sim then
+			local se = sim:object(id)
+			if not se or not se:alive() then
+				departed_ids[id] = nil
+			end
+		end
+	end
+end
+
+local function is_departed(id)
+	local info = departed_ids[id]
+	if not info then return false end
+	if (now_ms() - info.t0) > DEPART_COOLDOWN then
+		departed_ids[id] = nil
+		return false
+	end
+	return true
+end
+
+local function cleanup_recent_smarts()
+	local t = now_ms()
+	for name, info in pairs(recent_smart_leaves) do
+		if (t - info.t0) > SMART_LEAVE_WINDOW then
+			recent_smart_leaves[name] = nil
+		end
+	end
+end
+
+local function can_leave_smart(smart_name)
+	if not smart_name then return true end
+	cleanup_recent_smarts()
+	local info = recent_smart_leaves[smart_name]
+	if not info then return true end
+	return info.count < SMART_LEAVE_MAX
+end
+
+local function mark_smart_leave(smart_name)
+	if not smart_name then return end
+	local info = recent_smart_leaves[smart_name]
+	if not info then
+		recent_smart_leaves[smart_name] = { t0 = now_ms(), count = 1 }
+	else
+		info.count = info.count + 1
+	end
+end
+
+local function get_smart_name(se)
+	local strn_id = se:smart_terrain_id()
+	if not strn_id or strn_id == BAD_OBJ_ID then return nil end
+	local sim = g_sim or alife()
+	if not sim then return nil end
+	local smart = sim:object(strn_id)
+	if smart then return smart:name() end
+	return nil
+end
+
+local function is_actor_dialog_with(npc)
+	if not db.actor or not db.actor:is_talking() then
+		return false
+	end
+	if not npc then return true end
+	local ok, talking = pcall(function()
+		if npc.is_talking then
+			return npc:is_talking()
+		end
+		return false
+	end)
+	if ok and talking then
+		return true
+	end
+	if db.actor:position():distance_to(npc:position()) <= 3.5 then
+		return true
+	end
+	return false
+end
+
+local function is_eligible_client(npc)
+	if not npc or not npc:alive() then return false end
+	if not IsStalker(npc) then return false end
+	if npc:id() == db.actor:id() then return false end
+	if olr_protected and olr_protected.is_no_offline_alife_obj(npc:name()) then
+		return false
+	end
+	if is_actor_dialog_with(npc) then
+		return false
+	end
+	local ok_w, wounded = pcall(function()
+		if npc.critically_wounded then
+			return npc:critically_wounded()
+		end
+		return false
+	end)
+	if ok_w and wounded then return false end
+	return true
+end
+
+local function pick_mode()
+	local roll = math.random(1, 100)
+	if roll <= 50 then
+		return "job_transfer"
+	elseif roll <= 85 then
+		return "wander"
+	end
+	return "rest_then_leave"
+end
+
+local function migrate_comm(se)
+	local comm = se:community()
+	if comm == "green" or comm == "nebo" then
+		return "stalker"
+	end
+	return comm
+end
+
+local function apply_depart(se, mode)
+	if not se or not se:alive() then return false end
+	if is_departed(se.id) then return false end
+	if olr_protected and olr_protected.is_no_offline_alife_obj(se:name()) then
+		return false
+	end
+
+	local comm = migrate_comm(se)
+	if not allowed_comms[comm] and not allowed_comms[se:community()] then
+		return false
+	end
+	if not olr_smart_index.ensure() then
+		return false
+	end
+
+	local smart_name = get_smart_name(se)
+	if not can_leave_smart(smart_name) then
+		return false
+	end
+
+	local ok = pcall(function()
+		local target
+		if mode == "job_transfer" then
+			target = olr_smart_index.pick_name(comm, smart_name)
+		end
+
+		xrs_utils.set_smart_terrain(se, target or "none")
+		smart_terrain.unregister_npc(se)
+
+		if se.brain then
+			se:brain():can_choose_alife_tasks(true)
+			se:brain():update(true)
+		end
+	end)
+
+	if not ok then
+		return false
+	end
+
+	departed_ids[se.id] = { t0 = now_ms(), mode = mode }
+	mark_smart_leave(smart_name)
+	return true
+end
+
+local function process_pending()
+	local t = now_ms()
+	local sim = g_sim or alife()
+	if not sim then return end
+	local done = {}
+	for id, info in pairs(pending) do
+		if t >= info.at then
+			local se = sim:object(id)
+			local npc = level.object_by_id(id)
+			if se and se:alive() then
+				if npc and is_actor_dialog_with(npc) then
+					info.at = t + 5000
+					pending[id] = info
+				else
+					apply_depart(se, info.mode)
+					table.insert(done, id)
+				end
+			else
+				table.insert(done, id)
+			end
+		end
+	end
+	for _, id in ipairs(done) do
+		pending[id] = nil
+	end
+end
+
+local function try_depart_one(se, npc)
+	if pending[se.id] or is_departed(se.id) then return false end
+	local strn_id = se:smart_terrain_id()
+	if not strn_id or strn_id == BAD_OBJ_ID then return false end
+	local comm = migrate_comm(se)
+	if not allowed_comms[comm] and not allowed_comms[se:community()] then return false end
+
+	local mode = pick_mode()
+	if mode == "rest_then_leave" then
+		pending[se.id] = {
+			at = now_ms() + math.random(REST_MIN_MS, REST_MAX_MS),
+			mode = (math.random(1, 100) <= 60) and "job_transfer" or "wander",
+		}
+		return true
+	end
+	return apply_depart(se, mode)
+end
+
+function update()
+	if not db.actor then return end
+	if device().precache_frame > 1 then return end
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then
+		return
+	end
+
+	process_pending()
+
+	local t = now_ms()
+	if t < time_next_check then return end
+	time_next_check = t + CHECK_INTERVAL
+
+	cleanup_departed()
+
+	local sim = g_sim or alife()
+	if not sim then return end
+	olr_smart_index.ensure()
+
+	local left = 0
+	local checked = 0
+	local MAX_CHECK = 25
+	if db.storage then
+		for id, _ in pairs(db.storage) do
+			if left >= MAX_LEAVES_PER_TICK then break end
+			if checked >= MAX_CHECK then break end
+			if id ~= db.actor:id() and not pending[id] and not is_departed(id) then
+				local npc = level.object_by_id(id)
+				if npc and IsStalker(npc) then
+					checked = checked + 1
+					if is_eligible_client(npc) then
+						local se = sim:object(id)
+						if se and se.online and se:alive() then
+							if math.random(1, 100) <= LEAVE_CHANCE then
+								if try_depart_one(se, npc) then
+									left = left + 1
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+end

@@ -1,0 +1,290 @@
+-- [HE-PORT]
+local index = {}
+local name_to_obj = {}
+local name_to_level = {}
+local built = false
+local last_build = 0
+local BUILD_TTL = 120000
+
+local human_comms = {
+	stalker = true,
+	bandit = true,
+	dolg = true,
+	freedom = true,
+	ecolog = true,
+	killer = true,
+	military = true,
+	green = true,
+	monolith = true,
+	zombied = true,
+	trader = true,
+	stranger = true,
+	nebo = true,
+}
+
+local probe_comms = {
+	"stalker", "bandit", "dolg", "freedom", "ecolog", "killer", "military", "green",
+	"monolith", "zombied",
+	"dog", "pseudodog", "boar", "flesh", "snork", "bloodsucker", "tushkano",
+	"burer", "controller", "poltergeist", "cat", "chimera", "giant", "fracture",
+}
+
+local blacklist_sub = {
+	"arena",
+	"test_",
+}
+
+local function is_blacklisted(name)
+	local n = string.lower(tostring(name or ""))
+	for i = 1, #blacklist_sub do
+		if string.find(n, blacklist_sub[i], 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+local function expand_comm(community)
+	if community == "green" or community == "nebo" then
+		return { community, "stalker", "green" }
+	end
+	if community == "stalker" then
+		return { "stalker", "green" }
+	end
+	if community == "dolg" then
+		return { "dolg", "military" }
+	end
+	if community == "military" then
+		return { "military", "dolg" }
+	end
+	return { community }
+end
+
+local function is_stalker_comm(c)
+	return human_comms[c] == true
+end
+
+local function is_bar_smart(name)
+	local n = string.lower(tostring(name or ""))
+	return string.sub(n, 1, 4) == "bar_"
+end
+
+local function smart_accepts(smart, community)
+	if not smart then return false end
+	if smart.disabled then return false end
+	if smart.population_locked then return false end
+
+	local sname = smart:name()
+	if is_blacklisted(sname) then return false end
+
+	local probes = expand_comm(community)
+	local acc = smart.accepted_communities
+	if acc then
+		for i = 1, #probes do
+			if acc[probes[i]] then
+				return true
+			end
+		end
+		return false
+	end
+
+	local gp = smart.gparams
+	if not gp or not gp.type then
+		return false
+	end
+	local gtype = gp.type
+	for i = 1, #probes do
+		local c = probes[i]
+		local ok, res = pcall(function()
+			return xr_gulag.checkNpc(c, is_stalker_comm(c), gtype, nil, nil)
+		end)
+		if ok and res then
+			return true
+		end
+	end
+	return false
+end
+
+local function smart_level_name(smart)
+	local ok, lname = pcall(function()
+		if smart.get_level_name then
+			return smart:get_level_name()
+		end
+		return smart.level_name
+	end)
+	if ok and lname then return lname end
+	ok, lname = pcall(function()
+		local sim = g_sim or alife()
+		return sim:level_name(game_graph():vertex(smart.m_game_vertex_id):level_id())
+	end)
+	if ok and lname then return lname end
+	return nil
+end
+
+local function add_smart(smart, new_index, new_map, new_level)
+	if not smart or not smart.name then return false end
+	local sname = smart:name()
+	if new_map[sname] then return true end
+	new_map[sname] = smart
+	new_level[sname] = smart_level_name(smart)
+	for i = 1, #probe_comms do
+		local comm = probe_comms[i]
+		if smart_accepts(smart, comm) then
+			if not new_index[comm] then
+				new_index[comm] = {}
+			end
+			table.insert(new_index[comm], sname)
+		end
+	end
+	return true
+end
+
+local function global_registry()
+	if not smart_terrain or not smart_terrain.get_registry_by_name then
+		return nil
+	end
+	local ok, reg = pcall(smart_terrain.get_registry_by_name)
+	if ok and reg then return reg end
+	return nil
+end
+
+function rebuild(force)
+	if not force and built and (time_global() - last_build) < BUILD_TTL then
+		return built
+	end
+
+	local new_index = {}
+	local new_map = {}
+	local new_level = {}
+	local any = false
+
+	local reg = global_registry()
+	if reg then
+		for _, smart in pairs(reg) do
+			if add_smart(smart, new_index, new_map, new_level) then
+				any = true
+			end
+		end
+	end
+
+	if db and db.smart_terrain_by_id then
+		for _, smart in pairs(db.smart_terrain_by_id) do
+			if add_smart(smart, new_index, new_map, new_level) then
+				any = true
+			end
+		end
+	end
+
+	if any then
+		index = new_index
+		name_to_obj = new_map
+		name_to_level = new_level
+		built = true
+		last_build = time_global()
+		return true
+	end
+	return false
+end
+
+local function merge_lists(comms)
+	local out = {}
+	local seen = {}
+	for i = 1, #comms do
+		local list = index[comms[i]]
+		if list then
+			for j = 1, #list do
+				local n = list[j]
+				if not seen[n] then
+					seen[n] = true
+					table.insert(out, n)
+				end
+			end
+		end
+	end
+	return out
+end
+
+function get_names(community)
+	rebuild(false)
+	if not community then
+		return {}
+	end
+	local list
+	if community == "green" or community == "nebo" or community == "stalker"
+		or community == "dolg" or community == "military"
+	then
+		list = merge_lists(expand_comm(community))
+	else
+		list = index[community] or {}
+	end
+	if community == "dolg" or community == "military" then
+		local filtered = {}
+		for i = 1, #list do
+			local n = list[i]
+			if not is_bar_smart(n) then
+				table.insert(filtered, n)
+			end
+		end
+		return filtered
+	end
+	return list
+end
+
+function get_level(name)
+	rebuild(false)
+	return name_to_level[name]
+end
+
+function pick_name(community, exclude_name, exclude_level)
+	local list = get_names(community)
+	if exclude_level then
+		local pool = {}
+		for i = 1, #list do
+			if name_to_level[list[i]] ~= exclude_level then
+				table.insert(pool, list[i])
+			end
+		end
+		if #pool > 0 then
+			list = pool
+		end
+	end
+	local n = #list
+	if n == 0 then
+		return nil
+	end
+	if n == 1 then
+		if list[1] == exclude_name then
+			return nil
+		end
+		return list[1]
+	end
+	for i = 1, 12 do
+		local name = list[math.random(n)]
+		if name ~= exclude_name then
+			return name
+		end
+	end
+	return list[math.random(n)]
+end
+
+function get_obj(name)
+	rebuild(false)
+	local o = name_to_obj[name]
+	if not o then
+		return nil
+	end
+	local sim = g_sim or alife()
+	if sim and sim:object(o.id) then
+		return o
+	end
+	return nil
+end
+
+function ensure()
+	return rebuild(false)
+end
+
+function count(community)
+	local list = get_names(community)
+	return #list
+end

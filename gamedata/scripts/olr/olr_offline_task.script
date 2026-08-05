@@ -1,0 +1,278 @@
+-- [HE-PORT]
+local mutant_clsids = {
+	[clsid.dog_s]          = true,
+	[clsid.dog_red]        = true,
+	[clsid.dog_black]      = true,
+	[clsid.boar_s]         = true,
+	[clsid.boar]           = true,
+	[clsid.flesh_s]        = true,
+	[clsid.flesh]          = true,
+	[clsid.pseudodog_s]    = true,
+	[clsid.bloodsucker_s]  = true,
+	[clsid.bloodsucker]    = true,
+	[clsid.snork_s]        = true,
+	[clsid.tushkano_s]     = true,
+	[clsid.tushkano]       = true,
+	[clsid.gigant_s]       = true,
+	[clsid.pseudo_gigant]  = true,
+	[clsid.burer_s]        = true,
+	[clsid.burer]          = true,
+	[clsid.controller_s]   = true,
+	[clsid.controller]     = true,
+	[clsid.poltergeist_s]  = true,
+	[clsid.poltergeist]    = true,
+}
+
+local monster_comm_by_clsid = {
+	[clsid.dog_s] = "dog",
+	[clsid.dog_red] = "dog",
+	[clsid.dog_black] = "dog",
+	[clsid.boar_s] = "boar",
+	[clsid.boar] = "boar",
+	[clsid.flesh_s] = "flesh",
+	[clsid.flesh] = "flesh",
+	[clsid.pseudodog_s] = "pseudodog",
+	[clsid.bloodsucker_s] = "bloodsucker",
+	[clsid.bloodsucker] = "bloodsucker",
+	[clsid.snork_s] = "snork",
+	[clsid.tushkano_s] = "tushkano",
+	[clsid.tushkano] = "tushkano",
+	[clsid.gigant_s] = "giant",
+	[clsid.pseudo_gigant] = "giant",
+	[clsid.burer_s] = "burer",
+	[clsid.burer] = "burer",
+	[clsid.controller_s] = "controller",
+	[clsid.controller] = "controller",
+	[clsid.poltergeist_s] = "poltergeist",
+	[clsid.poltergeist] = "poltergeist",
+}
+
+local stalker_ids_cache = {}
+local monster_ids_cache = {}
+local zombie_ids_cache = {}
+local cache_time = 0
+local CACHE_TTL = 30000
+local cache_scan_pos = 1
+local CACHE_SCAN_BATCH = 80
+local cache_building = false
+local cache_stalker_tmp = {}
+local cache_monster_tmp = {}
+local cache_zombie_tmp = {}
+
+local function rebuild_cache()
+	if not cache_building and time_global() - cache_time < CACHE_TTL then return end
+	local sim = g_sim
+	if not sim then return end
+
+	if not cache_building then
+		cache_building = true
+		cache_scan_pos = 1
+		cache_stalker_tmp = {}
+		cache_monster_tmp = {}
+		cache_zombie_tmp = {}
+	end
+
+	local scan_end = cache_scan_pos + CACHE_SCAN_BATCH - 1
+	if scan_end > MAX_OBJ_ID then scan_end = MAX_OBJ_ID end
+	for id = cache_scan_pos, scan_end do
+		local obj = sim:object(id)
+		if obj and not obj.online and obj.health and obj:alive() then
+			local cls = obj:clsid()
+			if cls == clsid.script_stalker then
+				if not olr_protected.is_no_offline_alife_obj(obj:name()) then
+					local comm = obj:community()
+					if not cache_stalker_tmp[comm] then cache_stalker_tmp[comm] = {} end
+					table.insert(cache_stalker_tmp[comm], id)
+				end
+			elseif mutant_clsids[cls] then
+				table.insert(cache_monster_tmp, id)
+			elseif cls == clsid.zombie_s or cls == clsid.zombie then
+				table.insert(cache_zombie_tmp, id)
+			end
+		end
+	end
+
+	if scan_end >= MAX_OBJ_ID then
+		stalker_ids_cache = cache_stalker_tmp
+		monster_ids_cache = cache_monster_tmp
+		zombie_ids_cache = cache_zombie_tmp
+		cache_building = false
+		cache_time = time_global()
+		cache_scan_pos = 1
+	else
+		cache_scan_pos = scan_end + 1
+	end
+end
+
+local function current_smart_name(kill)
+	local strn_id = kill:smart_terrain_id()
+	if not strn_id or strn_id == BAD_OBJ_ID then return nil end
+	local sim = g_sim or alife()
+	if not sim then return nil end
+	local smart = sim:object(strn_id)
+	if smart then return smart:name() end
+	return nil
+end
+
+local function migrate_stalker(kill, community_name)
+	local exclude = current_smart_name(kill)
+	local target = olr_smart_index.pick_name(community_name, exclude)
+	if not target then return false end
+
+	xrs_utils.clear_smart_terrain(kill)
+	smart_terrain.unregister_npc(kill)
+	if kill.brain then
+		kill:brain():can_choose_alife_tasks(true)
+		kill:brain():update(true)
+	end
+
+	if not xrs_utils.set_smart_terrain(kill, target) then return false end
+	if kill.brain then
+		kill:brain():can_choose_alife_tasks(true)
+		kill:brain():update(true)
+	end
+	return true
+end
+
+local function migrate_monster(kill, community_name)
+	local exclude = current_smart_name(kill)
+	local target = olr_smart_index.pick_name(community_name, exclude)
+	if not target then return false end
+
+	smart_terrain.unregister_npc(kill)
+	if kill.brain then
+		kill:brain():can_choose_alife_tasks(true)
+	end
+
+	if not xrs_utils.set_smart_terrain(kill, target) then return false end
+	if kill.brain then
+		kill:brain():can_choose_alife_tasks(true)
+		kill:brain():update(true)
+	end
+	return true
+end
+
+local function faction_migration(community_name)
+	if not db.actor then return end
+	if not olr_smart_index.ensure() then return end
+	if olr_smart_index.count(community_name) <= 0 then return end
+	rebuild_cache()
+	local id_list = stalker_ids_cache[community_name]
+	if community_name == "stalker" then
+		local extra = stalker_ids_cache["green"]
+		if extra then
+			local merged = {}
+			if id_list then
+				for _, id in ipairs(id_list) do table.insert(merged, id) end
+			end
+			for _, id in ipairs(extra) do table.insert(merged, id) end
+			id_list = merged
+		end
+	end
+	if not id_list then return end
+	local sim = g_sim
+	if not sim then return end
+
+	for _, id in ipairs(id_list) do
+		local kill = sim:object(id)
+		if kill and kill:alive() and not kill.online then
+			local strn_id = kill:smart_terrain_id()
+			if strn_id ~= BAD_OBJ_ID then
+				if math.random(1, 3) ~= 1 then
+					pcall(migrate_stalker, kill, community_name)
+				end
+			end
+		end
+	end
+end
+
+function ecologs_neutral_task_select()
+	faction_migration("ecolog")
+end
+
+function bandits_neutral_task_select()
+	faction_migration("bandit")
+end
+
+function stalkers_neutral_task_select()
+	faction_migration("stalker")
+end
+
+function dolgs_task_select()
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	faction_migration("dolg")
+end
+
+function freedom_task_select()
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	faction_migration("freedom")
+end
+
+function killers_task_select()
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	faction_migration("killer")
+end
+
+function military_task_select()
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	faction_migration("military")
+end
+
+local function monster_migration()
+	if not db.actor then return end
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if not olr_smart_index.ensure() then return end
+	rebuild_cache()
+	if not monster_ids_cache or #monster_ids_cache == 0 then return end
+	local sim = g_sim
+	if not sim then return end
+
+	for _, id in ipairs(monster_ids_cache) do
+		local kill = sim:object(id)
+		if kill and kill:alive() and not kill.online then
+			local strn_id = kill:smart_terrain_id()
+			if strn_id ~= BAD_OBJ_ID then
+				if math.random(1, 3) ~= 1 then
+					local cls = kill:clsid()
+					local comm = monster_comm_by_clsid[cls]
+					if not comm then
+						local okc, c = pcall(function() return kill:community() end)
+						if okc then comm = c end
+					end
+					if comm then
+						pcall(migrate_monster, kill, comm)
+					end
+				end
+			end
+		end
+	end
+end
+
+function mutants_task_select()
+	monster_migration()
+end
+
+function dogs_task_select()
+	mutants_task_select()
+end
+
+function zombies_task_select()
+	if not db.actor then return end
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if not olr_smart_index.ensure() then return end
+	rebuild_cache()
+	if not zombie_ids_cache or #zombie_ids_cache == 0 then return end
+	local sim = g_sim
+	if not sim then return end
+	for _, id in ipairs(zombie_ids_cache) do
+		local kill = sim:object(id)
+		if kill and kill:alive() and not kill.online then
+			local strn_id = kill:smart_terrain_id()
+			if strn_id ~= BAD_OBJ_ID then
+				if math.random(1, 3) ~= 1 then
+					pcall(migrate_monster, kill, "zombied")
+				end
+			end
+		end
+	end
+end

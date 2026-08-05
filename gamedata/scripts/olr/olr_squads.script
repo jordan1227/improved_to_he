@@ -1,0 +1,227 @@
+-- [HE-PORT]
+local time_next_spawn = 0
+local SPAWN_INTERVAL = 300000
+local MAX_SQUADS_TOTAL = 36
+local spawned_ids = {}
+local squad_counter = 0
+
+local faction_configs = {
+	stalker = {
+		sections = {
+			"olr_stalker_novice", "olr_stalker_novice",
+			"olr_stalker_general", "olr_stalker_general",
+			"olr_stalker_veteran",
+			"olr_stalker_master",
+		},
+		min_size = 2,
+		max_size = 5,
+	},
+	bandit = {
+		sections = {
+			"olr_bandit_novice", "olr_bandit_novice",
+			"olr_bandit_general", "olr_bandit_general",
+			"olr_bandit_veteran",
+			"olr_bandit_master",
+		},
+		min_size = 2,
+		max_size = 6,
+	},
+	dolg = {
+		sections = {
+			"olr_dolg_regular", "olr_dolg_regular",
+			"olr_dolg_veteran", "olr_dolg_veteran",
+			"olr_dolg_master",
+			"olr_dolg_sniper",
+		},
+		min_size = 2,
+		max_size = 5,
+	},
+	freedom = {
+		sections = {
+			"olr_svoboda_regular", "olr_svoboda_regular",
+			"olr_svoboda_specnaz",
+			"olr_svoboda_master",
+			"olr_svoboda_sniper",
+		},
+		min_size = 2,
+		max_size = 5,
+	},
+	ecolog = {
+		sections = {
+			"olr_ecolog", "olr_ecolog",
+		},
+		min_size = 2,
+		max_size = 3,
+	},
+	killer = {
+		sections = {
+			"olr_killer_general", "olr_killer_general",
+			"olr_killer_veteran", "olr_killer_veteran",
+			"olr_killer_master",
+			"olr_killer_sniper",
+		},
+		min_size = 2,
+		max_size = 4,
+	},
+	military = {
+		sections = {
+			"olr_soldier_regular", "olr_soldier_regular", "olr_soldier_regular",
+			"olr_soldier_specnaz",
+			"olr_soldier_sniper",
+			"olr_soldier_commander",
+		},
+		min_size = 3,
+		max_size = 6,
+	},
+}
+
+local faction_weights = {
+	{ "stalker",  30 },
+	{ "bandit",   25 },
+	{ "dolg",     15 },
+	{ "freedom",  12 },
+	{ "killer",   8 },
+	{ "military", 7 },
+	{ "ecolog",   3 },
+}
+
+local total_weight = 0
+for _, fw in ipairs(faction_weights) do
+	total_weight = total_weight + fw[2]
+end
+
+local function pick_random_faction()
+	local roll = math.random(1, total_weight)
+	local cum = 0
+	for _, fw in ipairs(faction_weights) do
+		cum = cum + fw[2]
+		if roll <= cum then
+			return fw[1]
+		end
+	end
+	return "stalker"
+end
+
+local function count_alive_spawned()
+	local sim = g_sim
+	if not sim then return 0 end
+	local alive = 0
+	local dead_ids = {}
+	for id, _ in pairs(spawned_ids) do
+		local obj = sim:object(id)
+		if obj and obj:alive() then
+			alive = alive + 1
+		else
+			table.insert(dead_ids, id)
+		end
+	end
+	for _, id in ipairs(dead_ids) do
+		spawned_ids[id] = nil
+	end
+	return alive
+end
+
+local function get_spawn_location(smart_obj)
+	local sim = g_sim
+	if not sim then return "?" end
+	local gvid = smart_obj.m_game_vertex_id
+	if gvid and game_graph():valid_vertex_id(gvid) then
+		return sim:level_name(game_graph():vertex(gvid):level_id())
+	end
+	return "?"
+end
+
+local function spawn_squad(faction_name)
+	local config = faction_configs[faction_name]
+	if not config then return 0 end
+
+	local sim = g_sim
+	if not sim then return 0 end
+	if not olr_smart_index.ensure() then return 0 end
+
+	local smart_name, smart_obj
+	for attempt = 1, 8 do
+		smart_name = olr_smart_index.pick_name(faction_name, nil)
+		if smart_name then
+			smart_obj = olr_smart_index.get_obj(smart_name)
+			if smart_obj then break end
+		end
+	end
+	if not smart_obj then return 0 end
+
+	local smart_level = get_spawn_location(smart_obj)
+	if smart_level == level.name() then return 0 end
+
+	local size = math.random(config.min_size, config.max_size)
+	local spawned = 0
+	local wander = math.random(1, 10) <= 4
+
+	for i = 1, size do
+		local section = config.sections[math.random(#config.sections)]
+		local ok, result = pcall(function()
+			local pos = smart_obj.position
+			local offset_pos = vector():set(
+				pos.x + math.random(-5, 5),
+				pos.y,
+				pos.z + math.random(-5, 5)
+			)
+			local obj = alife():create(
+				section,
+				offset_pos,
+				smart_obj.m_level_vertex_id,
+				smart_obj.m_game_vertex_id
+			)
+			if obj then
+				local pk = get_netpk(obj)
+				if pk then
+					local data = pk:get()
+					if data then
+						if wander then
+							data.custom_data = "[smart_terrains]\nnone = true\n"
+						else
+							data.custom_data = "[smart_terrains]\n" .. smart_name .. " = true\n"
+						end
+						pk:set(data)
+					end
+				end
+				spawned_ids[obj.id] = faction_name
+				return true
+			end
+			return false
+		end)
+		if ok and result then
+			spawned = spawned + 1
+		end
+	end
+
+	if spawned > 0 then
+		squad_counter = squad_counter + 1
+	end
+
+	return spawned
+end
+
+function update()
+	if not db.actor then return end
+	if device().precache_frame > 1 then return end
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if time_global() < time_next_spawn then return end
+	time_next_spawn = time_global() + SPAWN_INTERVAL
+
+	local sim = g_sim
+	if not sim then return end
+
+	local alive = count_alive_spawned()
+	if alive >= MAX_SQUADS_TOTAL then return end
+
+	local num_squads = math.random(3, 6)
+	for i = 1, num_squads do
+		if count_alive_spawned() >= MAX_SQUADS_TOTAL then break end
+		local faction = pick_random_faction()
+		spawn_squad(faction)
+	end
+end
+
+function get_status()
+	local alive = count_alive_spawned()
+end
