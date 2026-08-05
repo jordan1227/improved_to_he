@@ -18,6 +18,66 @@ local idle_spawn_preset = {
   once   = -100000
 }
 
+-- [HE-PORT]
+local monster_idle_spawn_preset = {
+  seldom = { 60*60*36, 60*60*48 },
+  medium = { 60*60*12, 60*60*18 },
+  often  = { 60*60*5,  60*60*8  },
+}
+
+local function section_is_monster(section)
+  if not section or section == "" then return false end
+  local ok, cls = pcall(function()
+    if system_ini():line_exist(section, "class") then
+      return system_ini():r_string(section, "class")
+    end
+    return nil
+  end)
+  if not ok or not cls then return false end
+  cls = string.upper(tostring(cls))
+  if string.find(cls, "STL", 1, true) or string.find(cls, "ACTOR", 1, true) then
+    return false
+  end
+  if string.find(cls, "SM_", 1, true) or string.find(cls, "AI_ZOM", 1, true) or string.find(cls, "ZOMBIE", 1, true) then
+    return true
+  end
+  return string.find(cls, "DOG", 1, true)
+    or string.find(cls, "BOAR", 1, true)
+    or string.find(cls, "FLESH", 1, true)
+    or string.find(cls, "BLOOD", 1, true)
+    or string.find(cls, "SNORK", 1, true)
+    or string.find(cls, "TUSH", 1, true)
+    or string.find(cls, "GIANT", 1, true)
+    or string.find(cls, "CONTROLLER", 1, true)
+    or string.find(cls, "BURER", 1, true)
+    or string.find(cls, "POLTER", 1, true)
+    or string.find(cls, "CHIMERA", 1, true)
+    or string.find(cls, "PSEUDO", 1, true)
+    or string.find(cls, "CAT", 1, true)
+    or string.find(cls, "FRACTURE", 1, true)
+    or string.find(cls, "RAT", 1, true)
+end
+
+local function respawner_is_monster_only(obj)
+  if not obj or not obj.respawn_section then return false end
+  local any = false
+  for _, tab in pairs(obj.respawn_section) do
+    local section = nil
+    if type(tab) == "table" then
+      section = tab.section
+    elseif type(tab) == "string" then
+      section = tab
+    end
+    if type(section) == "string" then
+      any = true
+      if not section_is_monster(section) then
+        return false
+      end
+    end
+  end
+  return any
+end
+
 local respawners = {}
 local respawners_by_parent = {}
 
@@ -354,6 +414,18 @@ function se_respawn:execute()
   local name = tostring (self:name())
 
   if self.respawn_time < game.get_game_time() then
+    -- [HE-PORT]
+    if db.actor and self.he_monster_respawn and self.level_name and level and level.name and level.name() == self.level_name then
+      local dist2a = db.actor:position():distance_to(self.position) or 0
+      local radius = self.respawn_radius
+      if not radius or radius <= 0 then radius = 120 end
+      if dist2a < radius then
+        local idle_time = game.CTime()
+        idle_time:setHMSms(0, math.random(10, 25), 0, 0)
+        self.respawn_time = game.get_game_time() + idle_time
+        return
+      end
+    end
     local idle_time = game.CTime()
     local now = game.get_game_time()
     local max = self.idle_spawn_max        
@@ -417,8 +489,13 @@ function se_respawn:update_online()
      return
   end
   
-    local dist2a = db.actor:position():distance_to(self.position) or 50
-  if dist2a >= self.respawn_radius or 100 then
+  local dist2a = db.actor:position():distance_to(self.position) or 50
+  local radius = self.respawn_radius
+  if not radius or radius <= 0 then
+    radius = 100
+  end
+  -- [HE-PORT]
+  if dist2a >= radius then
     self:execute()
   else
     sim_statistic.respawn_enabled(self, false)
@@ -565,6 +642,8 @@ function init_respawn_params(obj)
     
 
   --' Вычитка пресетов
+  local preset_key_min = obj.idle_spawn_min
+  local preset_key_max = obj.idle_spawn_max
   if idle_spawn_preset[obj.idle_spawn_min]~=nil then
     obj.idle_spawn_min = idle_spawn_preset[obj.idle_spawn_min]
   else
@@ -576,8 +655,26 @@ function init_respawn_params(obj)
     obj.idle_spawn_max = tonumber(obj.idle_spawn_max)
   end
 
+  -- [HE-PORT]
+  obj.he_monster_respawn = respawner_is_monster_only(obj)
+  if obj.he_monster_respawn then
+    local mmin = monster_idle_spawn_preset[preset_key_min]
+    local mmax = monster_idle_spawn_preset[preset_key_max]
+    if mmin then
+      obj.idle_spawn_min = mmin[1]
+      obj.idle_spawn_max = mmin[2]
+    elseif mmax then
+      obj.idle_spawn_min = mmax[1]
+      obj.idle_spawn_max = mmax[2]
+    else
+      if obj.idle_spawn_max < obj.idle_spawn_min then
+        obj.idle_spawn_max = obj.idle_spawn_min
+      end
+    end
+  else
     obj.idle_spawn_min = obj.idle_spawn_min * 2 -- balance.respawn.idle_coef_min
     obj.idle_spawn_max = obj.idle_spawn_max * 2 -- balance.respawn.idle_coef_max
+  end
     
     if (obj.idle_spawn_min < 3600) and (not obj.spawn_once) then      
     

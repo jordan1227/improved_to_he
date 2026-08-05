@@ -1,8 +1,11 @@
+-- [HE-PORT]
 local RAID_MIN_INTERVAL  = 15 * 60000
 local RAID_MAX_INTERVAL  = 30 * 60000
 local ACTOR_STAY_TIME    = 2 * 60000
-local SPAWN_DISTANCE     = 100
+local SPAWN_DIST_MIN     = 90
+local SPAWN_DIST_MAX     = 160
 local MAX_RAID_SIZE      = 5
+local MAX_POINT_TRIES    = 10
 
 local time_next_raid     = 0
 local actor_smart_name   = nil
@@ -49,20 +52,62 @@ local function get_actor_smart()
 	return best_name
 end
 
-local function get_spawn_point(actor_pos, distance)
-	local angle = math.random() * 2 * math.pi
-	local dx = math.cos(angle) * distance
-	local dz = math.sin(angle) * distance
-	local spawn_pos = vector():set(
-		actor_pos.x + dx,
-		actor_pos.y,
-		actor_pos.z + dz
+local function get_actor_dir()
+	local ok, dir = pcall(function()
+		return device().cam_dir
+	end)
+	if ok and dir then return dir end
+	ok, dir = pcall(function()
+		return db.actor:direction()
+	end)
+	if ok and dir then return dir end
+	return vector():set(0, 0, 1)
+end
+
+local function is_out_of_sight(spawn_pos, actor_pos)
+	local dir = get_actor_dir()
+	local to = vector():set(
+		spawn_pos.x - actor_pos.x,
+		0,
+		spawn_pos.z - actor_pos.z
 	)
-	local lvid = level.vertex_id(spawn_pos)
-	if lvid < 4294967295 then
-		spawn_pos = level.vertex_position(lvid)
+	local len = math.sqrt(to.x * to.x + to.z * to.z)
+	if len < 1 then return false end
+	to.x = to.x / len
+	to.z = to.z / len
+	local flat_dx = dir.x
+	local flat_dz = dir.z
+	local dlen = math.sqrt(flat_dx * flat_dx + flat_dz * flat_dz)
+	if dlen < 0.001 then
+		flat_dx, flat_dz = 0, 1
+		dlen = 1
 	end
-	return spawn_pos, lvid
+	flat_dx = flat_dx / dlen
+	flat_dz = flat_dz / dlen
+	local dot = flat_dx * to.x + flat_dz * to.z
+	return dot < -0.15
+end
+
+local function get_spawn_point(actor_pos)
+	for i = 1, MAX_POINT_TRIES do
+		local distance = math.random(SPAWN_DIST_MIN, SPAWN_DIST_MAX)
+		local angle = math.random() * 2 * math.pi
+		local dx = math.cos(angle) * distance
+		local dz = math.sin(angle) * distance
+		local spawn_pos = vector():set(
+			actor_pos.x + dx,
+			actor_pos.y,
+			actor_pos.z + dz
+		)
+		local lvid = level.vertex_id(spawn_pos)
+		if lvid and lvid < 4294967295 then
+			spawn_pos = level.vertex_position(lvid)
+			if is_out_of_sight(spawn_pos, actor_pos) then
+				return spawn_pos, lvid
+			end
+		end
+	end
+	return nil, nil
 end
 
 local function pick_pool()
@@ -88,11 +133,11 @@ local function spawn_monster_raid(actor_pos)
 	local pool = monster_pools[pool_name]
 	local count = math.random(2, MAX_RAID_SIZE)
 	local spawned = 0
-	local dist = SPAWN_DISTANCE + math.random(-20, 20)
 
 	for i = 1, count do
 		local section = pool[math.random(#pool)]
-		local spawn_pos, lvid = get_spawn_point(actor_pos, dist + math.random(-10, 10))
+		local spawn_pos, lvid = get_spawn_point(actor_pos)
+		if not spawn_pos then break end
 		local gvid = db.actor:game_vertex_id()
 		local ok = pcall(function()
 			alife():create(section, spawn_pos, lvid, gvid)
@@ -105,11 +150,11 @@ end
 local function spawn_npc_raid(actor_pos)
 	local count = math.random(2, 4)
 	local spawned = 0
-	local dist = SPAWN_DISTANCE + math.random(-20, 20)
 
 	for i = 1, count do
 		local section = enemy_npc_sections[math.random(#enemy_npc_sections)]
-		local spawn_pos, lvid = get_spawn_point(actor_pos, dist + math.random(-10, 10))
+		local spawn_pos, lvid = get_spawn_point(actor_pos)
+		if not spawn_pos then break end
 		local gvid = db.actor:game_vertex_id()
 		local ok = pcall(function()
 			local obj = alife():create(section, spawn_pos, lvid, gvid)
@@ -146,9 +191,15 @@ function update()
 	if not actor_smart_name then return end
 	if (time_global() - actor_smart_enter) < ACTOR_STAY_TIME then return end
 
+	local actor_pos = db.actor:position()
+	local test_pos, test_lvid = get_spawn_point(actor_pos)
+	if not test_pos then
+		time_next_raid = time_global() + 60000
+		return
+	end
+
 	time_next_raid = time_global() + math.random(RAID_MIN_INTERVAL, RAID_MAX_INTERVAL)
 
-	local actor_pos = db.actor:position()
 	local roll = math.random(1, 100)
 	if roll <= 70 then
 		spawn_monster_raid(actor_pos)
