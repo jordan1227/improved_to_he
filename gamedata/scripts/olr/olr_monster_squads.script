@@ -1,0 +1,287 @@
+-- [HE-PORT]
+local SPAWN_INTERVAL      = 240000
+local MAX_MONSTERS_TOTAL  = 45
+local MIN_ACTOR_DIST      = 150
+local SAVE_KEY            = "olr_monster_squads.ids"
+
+local time_next_spawn = 0
+local spawned_ids = {}
+local loaded = false
+
+local monster_comms = {
+	"dog", "pseudodog", "boar", "flesh", "snork", "bloodsucker",
+	"tushkano", "burer", "controller", "poltergeist", "cat", "chimera", "giant",
+}
+
+local squad_types = {
+	{ comm = "dog",         tier = "weak",   min = 3, max = 6,
+	  sections = { "dog_weak", "dog_weak", "dog_normal" } },
+	{ comm = "flesh",       tier = "weak",   min = 2, max = 4,
+	  sections = { "flesh_weak", "flesh_normal" } },
+	{ comm = "boar",        tier = "weak",   min = 2, max = 4,
+	  sections = { "boar_weak", "boar_normal" } },
+	{ comm = "tushkano",    tier = "weak",   min = 3, max = 6,
+	  sections = { "tushkano_normal" } },
+	{ comm = "dog",         tier = "weak",   min = 2, max = 5,
+	  sections = { "dog_normal", "dog_weak" } },
+
+	{ comm = "dog",         tier = "medium", min = 3, max = 5,
+	  sections = { "dog_normal", "dog_strong" } },
+	{ comm = "pseudodog",   tier = "medium", min = 2, max = 4,
+	  sections = { "pseudodog_weak", "pseudodog_normal" } },
+	{ comm = "snork",       tier = "medium", min = 2, max = 4,
+	  sections = { "snork_weak", "snork_normal" } },
+	{ comm = "flesh",       tier = "medium", min = 2, max = 4,
+	  sections = { "flesh_normal", "flesh_strong" } },
+	{ comm = "boar",        tier = "medium", min = 2, max = 3,
+	  sections = { "boar_normal", "boar_strong" } },
+	{ comm = "cat",         tier = "medium", min = 2, max = 4,
+	  sections = { "cat_weak", "cat_normal" } },
+
+	{ comm = "pseudodog",   tier = "strong", min = 2, max = 3,
+	  sections = { "pseudodog_normal", "pseudodog_strong" } },
+	{ comm = "snork",       tier = "strong", min = 2, max = 3,
+	  sections = { "snork_normal", "snork_strong" } },
+	{ comm = "cat",         tier = "strong", min = 2, max = 3,
+	  sections = { "cat_normal", "cat_strong" } },
+	{ comm = "bloodsucker", tier = "strong", min = 1, max = 2,
+	  sections = { "bloodsucker_weak", "bloodsucker_normal" } },
+	{ comm = "bloodsucker", tier = "strong", min = 1, max = 2,
+	  sections = { "bloodsucker_normal", "bloodsucker_strong" } },
+	{ comm = "burer",       tier = "strong", min = 1, max = 2,
+	  sections = { "burer_weak", "burer_normal" } },
+	{ comm = "poltergeist", tier = "strong", min = 1, max = 2,
+	  sections = { "m_poltergeist_normal_tele", "m_poltergeist_normal_flame" } },
+	{ comm = "controller",  tier = "strong", min = 1, max = 1,
+	  sections = { "m_controller_normal" } },
+	{ comm = "chimera",     tier = "strong", min = 1, max = 1,
+	  sections = { "chimera_weak", "chimera_normal" } },
+	{ comm = "giant",       tier = "strong", min = 1, max = 1,
+	  sections = { "gigant_normal" } },
+}
+
+local by_tier = { weak = {}, medium = {}, strong = {} }
+for i = 1, #squad_types do
+	local st = squad_types[i]
+	table.insert(by_tier[st.tier], st)
+end
+
+local function tier_weights()
+	local h = level.get_time_hours()
+	if h >= 22 or h < 5 then
+		return 20, 40, 40
+	elseif h < 8 or h >= 20 then
+		return 35, 40, 25
+	elseif h < 10 then
+		return 45, 37, 18
+	end
+	return 55, 33, 12
+end
+
+local function pick_tier()
+	local w, m, s = tier_weights()
+	local roll = math.random(1, w + m + s)
+	if roll <= w then return "weak" end
+	if roll <= w + m then return "medium" end
+	return "strong"
+end
+
+local function is_night()
+	local h = level.get_time_hours()
+	return h >= 21 or h < 6
+end
+
+local function pick_squad_type()
+	local list = by_tier[pick_tier()]
+	if not list or #list == 0 then
+		list = by_tier.weak
+	end
+	if not list or #list == 0 then return nil end
+	return list[math.random(#list)]
+end
+
+local function load_ids()
+	if loaded then return end
+	loaded = true
+	local t = get_value(SAVE_KEY, nil)
+	if type(t) == "table" then
+		for _, id in ipairs(t) do
+			if type(id) == "number" then
+				spawned_ids[id] = true
+			end
+		end
+	end
+end
+
+local function store_ids()
+	local t = {}
+	for id, _ in pairs(spawned_ids) do
+		table.insert(t, id)
+	end
+	set_value(SAVE_KEY, t)
+end
+
+local function count_alive()
+	local sim = g_sim or alife()
+	if not sim then return 0 end
+	local alive = 0
+	local dead = {}
+	for id, _ in pairs(spawned_ids) do
+		local obj = sim:object(id)
+		if obj and obj:alive() then
+			alive = alive + 1
+		else
+			table.insert(dead, id)
+		end
+	end
+	for i = 1, #dead do
+		spawned_ids[dead[i]] = nil
+	end
+	return alive
+end
+
+local function smart_level(smart_obj)
+	local lname = olr_smart_index.get_level(smart_obj:name())
+	if lname then return lname end
+	local sim = g_sim or alife()
+	local gvid = smart_obj.m_game_vertex_id
+	if sim and gvid and game_graph():valid_vertex_id(gvid) then
+		return sim:level_name(game_graph():vertex(gvid):level_id())
+	end
+	return nil
+end
+
+local function target_allowed(smart_obj)
+	local lname = smart_level(smart_obj)
+	if not lname then return false end
+	if lname ~= level.name() then return true end
+	if not db.actor then return false end
+	local ok, d = pcall(function()
+		return db.actor:position():distance_to(smart_obj.position)
+	end)
+	if not ok or not d then return false end
+	return d > MIN_ACTOR_DIST
+end
+
+local function pick_any_monster_name()
+	local pool = {}
+	for i = 1, #monster_comms do
+		local list = olr_smart_index.get_names(monster_comms[i])
+		for j = 1, #list do
+			table.insert(pool, list[j])
+		end
+	end
+	if #pool == 0 then return nil end
+	return pool[math.random(#pool)]
+end
+
+local function pick_target(comm)
+	for attempt = 1, 10 do
+		local sname
+		if attempt <= 6 then
+			sname = olr_smart_index.pick_name(comm, nil)
+		else
+			sname = pick_any_monster_name()
+		end
+		if sname then
+			local sobj = olr_smart_index.get_obj(sname)
+			if sobj and target_allowed(sobj) then
+				return sname, sobj, (attempt <= 6)
+			end
+		end
+	end
+	return nil, nil, false
+end
+
+local function spawn_squad()
+	local st = pick_squad_type()
+	if not st then return 0 end
+	if not olr_smart_index.ensure() then return 0 end
+
+	local smart_name, smart_obj, own_comm = pick_target(st.comm)
+	if not smart_obj then return 0 end
+
+	local size = math.random(st.min, st.max)
+	if is_night() and st.tier ~= "strong" and size < st.max then
+		size = size + 1
+	end
+
+	local bind = own_comm and (math.random(1, 10) <= 6)
+	local spawned = 0
+
+	for i = 1, size do
+		local section = st.sections[math.random(#st.sections)]
+		local ok, res = pcall(function()
+			local pos = smart_obj.position
+			local offset_pos = vector():set(
+				pos.x + math.random(-6, 6),
+				pos.y,
+				pos.z + math.random(-6, 6)
+			)
+			local obj = alife():create(
+				section,
+				offset_pos,
+				smart_obj.m_level_vertex_id,
+				smart_obj.m_game_vertex_id
+			)
+			if not obj then return false end
+			local pk = get_netpk(obj)
+			if pk then
+				local data = pk:get()
+				if data then
+					if bind then
+						data.custom_data = "[smart_terrains]\n" .. smart_name .. " = true\n"
+					else
+						data.custom_data = "[smart_terrains]\nnone = true\n"
+					end
+					pk:set(data)
+				end
+			end
+			spawned_ids[obj.id] = true
+			return true
+		end)
+		if ok and res then
+			spawned = spawned + 1
+		end
+	end
+
+	return spawned
+end
+
+function update()
+	if not db.actor then return end
+	if device().precache_frame > 1 then return end
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if time_global() < time_next_spawn then return end
+	time_next_spawn = time_global() + SPAWN_INTERVAL
+
+	local sim = g_sim or alife()
+	if not sim then return end
+	load_ids()
+
+	if count_alive() >= MAX_MONSTERS_TOTAL then
+		store_ids()
+		return
+	end
+	if not olr_smart_index.ensure() then return end
+
+	local waves
+	if is_night() then
+		waves = math.random(2, 4)
+	else
+		waves = math.random(1, 3)
+	end
+
+	for i = 1, waves do
+		if count_alive() >= MAX_MONSTERS_TOTAL then break end
+		spawn_squad()
+	end
+
+	store_ids()
+end
+
+function get_status()
+	load_ids()
+	local w, m, s = tier_weights()
+	return count_alive(), w, m, s
+end
