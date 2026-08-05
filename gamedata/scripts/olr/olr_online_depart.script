@@ -1,7 +1,7 @@
 -- [HE-PORT]
-local CHECK_INTERVAL     = 30000
-local LEAVE_CHANCE       = 12
-local MAX_LEAVES_PER_TICK = 1
+local CHECK_INTERVAL     = 15000
+local LEAVE_CHANCE       = 28
+local MAX_LEAVES_PER_TICK = 2
 local SMART_LEAVE_WINDOW = 600000
 local SMART_LEAVE_MAX    = 2
 local REST_MIN_MS        = 30000
@@ -12,95 +12,15 @@ local pending = {}
 local recent_smart_leaves = {}
 local departed_ids = {}
 
-local faction_smarts = {
-	stalker = {
-		"esc_stalker_camp", "esc_vlad", "esc_private", "esc_lager",
-		"mar_lager", "baza_mar_lager",
-		"gar_angar", "gar_hellcar_group",
-		"agr_nii", "agr_road_patrol1",
-		"dsc_dom_bridge", "dsc_usadba",
-		"bar_house", "bar_stalker_disel", "bar_visitors", "bar_zastava", "bar_zastava_2",
-		"rost_green",
-		"yan_scientist", "yan_ecolog_crush",
-		"mil_fneutral",
-		"lim_lager_freedom_stalkers",
-		"marsh_base_botan_lager", "marsh_baze_ecolog",
-		"lost_vil_stalker_dom",
-		"dead_lager_botans",
-		"red_forest_exit_mil_2", "rad_stalkers_lager",
-	},
-	bandit = {
-		"esc_fabrika_bandit", "red_scaut", "red_near_bridge",
-		"gar_bandit_blokpost", "gar_bandit_agr", "gar_bandit_post",
-		"gar_bandit_stroyka", "gar_seryi_bandits",
-		"val_lager_bandits", "val_mongol", "val_rob", "val_dram",
-		"bar_evil_veterans",
-		"lim_lager_bandits", "lim_lager2_bandits",
-	},
-	dolg = {
-		"gar_dolg_blokpost",
-		"bar_dolg_general", "bar_dolg_petrenko", "bar_dolg_veterans", "bar_dolg_bunker",
-		"bar_visitors", "bar_zastava", "bar_zastava_2",
-		"val_lager_dolg", "dsc_usadba",
-		"mil_dolg",
-		"yan_scientist",
-		"rost_green",
-		"rad_mil_entrance", "rad_antenna_monolith",
-	},
-	freedom = {
-		"mil_freedom", "mil_fblockpost", "mil_patrol",
-		"lim_lager_freedom_stalkers",
-		"esc_stalker_camp", "esc_lager",
-		"gar_angar",
-		"bar_visitors",
-		"yan_scientist", "yan_ecolog_crush",
-		"marsh_baze_ecolog",
-		"lost_vil_stalker_dom",
-		"dead_lager_botans",
-		"red_forest_exit_mil_2", "rad_stalkers_lager",
-	},
-	ecolog = {
-		"yan_scientist", "yan_ecolog_crush",
-		"marsh_baze_ecolog", "marsh_base_botan_lager",
-		"dead_lager_botans",
-		"esc_stalker_camp", "esc_lager",
-		"gar_angar",
-		"bar_visitors", "bar_ecolog_crush",
-		"agr_nii",
-		"mil_fneutral",
-		"lost_vil_stalker_dom",
-		"lim_lager_freedom_stalkers",
-	},
-	killer = {
-		"mil_killers", "mil_mercs",
-		"bar_killers_ambush",
-		"killer_garbage_larger",
-		"val_escort",
-		"dt_merc_baze",
-		"lim_merc_dom",
-		"rad_merc", "rad_merc_base",
-	},
-	military = {
-		"esc_private", "age_mil_folls", "esc_bridge", "esc_blokpost",
-		"mar_factory",
-		"agr_nii", "agr_road_patrol1", "agr_road_patrol2",
-		"sak_lager_soldier",
-		"mil_village",
-		"mar_military_post",
-	},
-}
-
-local community_alias = {
-	["stalker"] = "stalker",
-	["bandit"] = "bandit",
-	["dolg"] = "dolg",
-	["freedom"] = "freedom",
-	["ecolog"] = "ecolog",
-	["killer"] = "killer",
-	["military"] = "military",
-	["zombied"] = nil,
-	["monolith"] = nil,
-	["trader"] = nil,
+local allowed_comms = {
+	stalker = true,
+	green = true,
+	bandit = true,
+	dolg = true,
+	freedom = true,
+	ecolog = true,
+	killer = true,
+	military = true,
 }
 
 local function now_ms()
@@ -194,11 +114,12 @@ local function pick_mode()
 	return "rest_then_leave"
 end
 
-local function get_faction_smarts(se)
+local function migrate_comm(se)
 	local comm = se:community()
-	local key = community_alias[comm]
-	if not key then return nil end
-	return faction_smarts[key]
+	if comm == "green" or comm == "nebo" then
+		return "stalker"
+	end
+	return comm
 end
 
 local function apply_depart(se, mode)
@@ -208,9 +129,12 @@ local function apply_depart(se, mode)
 		return false
 	end
 
-	local smarts = get_faction_smarts(se)
-	if mode == "job_transfer" and (not smarts or #smarts == 0) then
-		mode = "wander"
+	local comm = migrate_comm(se)
+	if not allowed_comms[comm] and not allowed_comms[se:community()] then
+		return false
+	end
+	if not olr_smart_index.ensure() then
+		return false
 	end
 
 	local smart_name = get_smart_name(se)
@@ -218,7 +142,7 @@ local function apply_depart(se, mode)
 		return false
 	end
 
-	local ok, err = pcall(function()
+	local ok = pcall(function()
 		local params = xrs_utils.read_stalker_params(se)
 		params.custom = ""
 		xrs_utils.write_stalker_params(params, se)
@@ -229,16 +153,13 @@ local function apply_depart(se, mode)
 		end
 
 		params = xrs_utils.read_stalker_params(se)
-		if mode == "job_transfer" and smarts and #smarts > 0 then
-			local target = smart_name
-			for i = 1, 8 do
-				local cand = smarts[math.random(#smarts)]
-				if cand ~= smart_name then
-					target = cand
-					break
-				end
+		if mode == "job_transfer" then
+			local target = olr_smart_index.pick_name(comm, smart_name)
+			if target then
+				params.custom = "\n[smart_terrains]\n" .. target .. " = true\n"
+			else
+				params.custom = "\n[smart_terrains]\nnone = true\n"
 			end
-			params.custom = "\n[smart_terrains]\n" .. target .. " = true\n"
 		else
 			params.custom = "\n[smart_terrains]\nnone = true\n"
 		end
@@ -290,7 +211,8 @@ local function try_depart_one(se, npc)
 	if pending[se.id] or departed_ids[se.id] then return false end
 	local strn_id = se:smart_terrain_id()
 	if not strn_id or strn_id == BAD_OBJ_ID then return false end
-	if not get_faction_smarts(se) then return false end
+	local comm = migrate_comm(se)
+	if not allowed_comms[comm] and not allowed_comms[se:community()] then return false end
 
 	local mode = pick_mode()
 	if mode == "rest_then_leave" then
@@ -318,6 +240,7 @@ function update()
 
 	local sim = g_sim or alife()
 	if not sim then return end
+	olr_smart_index.ensure()
 
 	local left = 0
 	local checked = 0
