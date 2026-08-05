@@ -1,6 +1,7 @@
 -- [HE-PORT]
 local index = {}
 local name_to_obj = {}
+local name_to_level = {}
 local built = false
 local last_build = 0
 local BUILD_TTL = 120000
@@ -104,31 +105,72 @@ local function smart_accepts(smart, community)
 	return false
 end
 
+local function smart_level_name(smart)
+	local ok, lname = pcall(function()
+		if smart.get_level_name then
+			return smart:get_level_name()
+		end
+		return smart.level_name
+	end)
+	if ok and lname then return lname end
+	ok, lname = pcall(function()
+		local sim = g_sim or alife()
+		return sim:level_name(game_graph():vertex(smart.m_game_vertex_id):level_id())
+	end)
+	if ok and lname then return lname end
+	return nil
+end
+
+local function add_smart(smart, new_index, new_map, new_level)
+	if not smart or not smart.name then return false end
+	local sname = smart:name()
+	if new_map[sname] then return true end
+	new_map[sname] = smart
+	new_level[sname] = smart_level_name(smart)
+	for i = 1, #probe_comms do
+		local comm = probe_comms[i]
+		if smart_accepts(smart, comm) then
+			if not new_index[comm] then
+				new_index[comm] = {}
+			end
+			table.insert(new_index[comm], sname)
+		end
+	end
+	return true
+end
+
+local function global_registry()
+	if not smart_terrain or not smart_terrain.get_registry_by_name then
+		return nil
+	end
+	local ok, reg = pcall(smart_terrain.get_registry_by_name)
+	if ok and reg then return reg end
+	return nil
+end
+
 function rebuild(force)
 	if not force and built and (time_global() - last_build) < BUILD_TTL then
 		return built
 	end
-	if not db or not db.smart_terrain_by_id then
-		return false
-	end
 
 	local new_index = {}
 	local new_map = {}
+	local new_level = {}
 	local any = false
 
-	for id, smart in pairs(db.smart_terrain_by_id) do
-		if smart and smart.name then
-			any = true
-			local sname = smart:name()
-			new_map[sname] = smart
-			for i = 1, #probe_comms do
-				local comm = probe_comms[i]
-				if smart_accepts(smart, comm) then
-					if not new_index[comm] then
-						new_index[comm] = {}
-					end
-					table.insert(new_index[comm], sname)
-				end
+	local reg = global_registry()
+	if reg then
+		for _, smart in pairs(reg) do
+			if add_smart(smart, new_index, new_map, new_level) then
+				any = true
+			end
+		end
+	end
+
+	if db and db.smart_terrain_by_id then
+		for _, smart in pairs(db.smart_terrain_by_id) do
+			if add_smart(smart, new_index, new_map, new_level) then
+				any = true
 			end
 		end
 	end
@@ -136,6 +178,7 @@ function rebuild(force)
 	if any then
 		index = new_index
 		name_to_obj = new_map
+		name_to_level = new_level
 		built = true
 		last_build = time_global()
 		return true
@@ -187,8 +230,24 @@ function get_names(community)
 	return list
 end
 
-function pick_name(community, exclude_name)
+function get_level(name)
+	rebuild(false)
+	return name_to_level[name]
+end
+
+function pick_name(community, exclude_name, exclude_level)
 	local list = get_names(community)
+	if exclude_level then
+		local pool = {}
+		for i = 1, #list do
+			if name_to_level[list[i]] ~= exclude_level then
+				table.insert(pool, list[i])
+			end
+		end
+		if #pool > 0 then
+			list = pool
+		end
+	end
 	local n = #list
 	if n == 0 then
 		return nil

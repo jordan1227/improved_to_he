@@ -6,6 +6,7 @@ local SMART_LEAVE_WINDOW = 600000
 local SMART_LEAVE_MAX    = 2
 local REST_MIN_MS        = 30000
 local REST_MAX_MS        = 90000
+local DEPART_COOLDOWN    = 10 * 60000
 
 local time_next_check = 0
 local pending = {}
@@ -25,6 +26,31 @@ local allowed_comms = {
 
 local function now_ms()
 	return time_global()
+end
+
+local function cleanup_departed()
+	local t = now_ms()
+	local sim = g_sim or alife()
+	for id, info in pairs(departed_ids) do
+		if (t - info.t0) > DEPART_COOLDOWN then
+			departed_ids[id] = nil
+		elseif sim then
+			local se = sim:object(id)
+			if not se or not se:alive() then
+				departed_ids[id] = nil
+			end
+		end
+	end
+end
+
+local function is_departed(id)
+	local info = departed_ids[id]
+	if not info then return false end
+	if (now_ms() - info.t0) > DEPART_COOLDOWN then
+		departed_ids[id] = nil
+		return false
+	end
+	return true
 end
 
 local function cleanup_recent_smarts()
@@ -124,7 +150,7 @@ end
 
 local function apply_depart(se, mode)
 	if not se or not se:alive() then return false end
-	if departed_ids[se.id] then return false end
+	if is_departed(se.id) then return false end
 	if olr_protected and olr_protected.is_no_offline_alife_obj(se:name()) then
 		return false
 	end
@@ -161,7 +187,7 @@ local function apply_depart(se, mode)
 		return false
 	end
 
-	departed_ids[se.id] = mode
+	departed_ids[se.id] = { t0 = now_ms(), mode = mode }
 	mark_smart_leave(smart_name)
 	return true
 end
@@ -194,7 +220,7 @@ local function process_pending()
 end
 
 local function try_depart_one(se, npc)
-	if pending[se.id] or departed_ids[se.id] then return false end
+	if pending[se.id] or is_departed(se.id) then return false end
 	local strn_id = se:smart_terrain_id()
 	if not strn_id or strn_id == BAD_OBJ_ID then return false end
 	local comm = migrate_comm(se)
@@ -224,6 +250,8 @@ function update()
 	if t < time_next_check then return end
 	time_next_check = t + CHECK_INTERVAL
 
+	cleanup_departed()
+
 	local sim = g_sim or alife()
 	if not sim then return end
 	olr_smart_index.ensure()
@@ -235,7 +263,7 @@ function update()
 		for id, _ in pairs(db.storage) do
 			if left >= MAX_LEAVES_PER_TICK then break end
 			if checked >= MAX_CHECK then break end
-			if id ~= db.actor:id() and not pending[id] and not departed_ids[id] then
+			if id ~= db.actor:id() and not pending[id] and not is_departed(id) then
 				local npc = level.object_by_id(id)
 				if npc and IsStalker(npc) then
 					checked = checked + 1
