@@ -1,0 +1,500 @@
+-- [HE-PORT]
+
+local PREFIX = "he_magic_box."
+
+paid_boxes = {
+  "esc_sak_box_0001",
+  "mil_sak_box_0001",
+  "dv_sak_box_0001",
+  "bar_sak_box_0001",
+  "bar_sak_box_0002",
+  "bar_sak_box_0003",
+  "pri_sak_box_0001",
+  "pesh_inventory_box_0004",
+}
+
+local ruck_sections = {
+  [ "rucksack" ] = true,
+}
+
+local paid_index = {}
+for _, name in ipairs( paid_boxes ) do paid_index[ name ] = true end
+
+
+function enabled()
+  return game_options.MagicBoxUI == true
+end
+
+
+function is_paid_box( name )
+  return name ~= nil and paid_index[ name ] == true
+end
+
+
+function is_managed( obj )
+  if not obj then return false end
+  if ruck_sections[ obj:section() ] then return true end
+  return is_paid_box( obj:name() )
+end
+
+
+function var_name( id, key )
+  return PREFIX .. id .. "." .. key
+end
+
+
+function is_virtual( id )
+  return get_value( var_name( id, "virtual" ) ) == true
+end
+
+
+function get_max_weight( id )
+  local st = db.storage[ id ]
+  return ( st and st[ "max_weight" ] ) or 50
+end
+
+
+function stored_weight( items )
+  local weight = 0
+  for _, item in ipairs( items ) do
+    local w = get_float( item.section, "inv_weight", 0 )
+    if item.game_type == "ammo" then
+      local box_size = get_ammo_box_size( item.section ) or 1
+      if box_size < 1 then box_size = 1 end
+      weight = weight + w * ( item.count / box_size )
+    else
+      weight = weight + w * item.count
+    end
+  end
+  return weight
+end
+
+
+function item_weight( item )
+  local w = get_float( item.section, "inv_weight", 0 )
+  if item.game_type == "ammo" then
+    local box_size = get_ammo_box_size( item.section ) or 1
+    if box_size < 1 then box_size = 1 end
+    return w / box_size
+  end
+  return w
+end
+
+
+local game_types_cache = {}
+
+function override_game_type( sect )
+  if game_types_cache[ sect ] == nil then
+    local gtype = get_string( sect, "he_magic_box.override_game_type" )
+    if gtype then
+      gtype = ( gtype == "other" ) and "" or gtype
+    elseif
+      string.find( sect, "mutant_", 1, true )
+      or get_bool( sect, "mutant_part", false )
+    then
+      gtype = "mutant_part"
+    elseif string.find( sect, "arc_art_box_", 1, true ) then
+      gtype = "artefact"
+    end
+    game_types_cache[ sect ] = gtype or false
+  end
+  if game_types_cache[ sect ] == false then return nil end
+  return game_types_cache[ sect ]
+end
+
+
+function get_game_type( obj )
+  local override = override_game_type( obj:section() )
+  if override then return override end
+  if     obj:is_ammo()              then return "ammo"
+  elseif obj:is_knife()             then return "knife"
+  elseif obj:is_weapon_magazined()  then return "weapon"
+  elseif obj:is_outfit()            then return "outfit"
+  elseif obj:is_artefact()          then return "artefact"
+  elseif obj:is_grenade()           then return "grenade"
+  elseif obj:is_missile()           then return "missile"
+  elseif obj:is_scope()             then return "scope"
+  elseif obj:is_silencer()          then return "silencer"
+  elseif obj:is_grenade_launcher()  then return "gl"
+  elseif obj:is_medkit()            then return "medkit"
+  elseif obj:is_antirad()           then return "antirad"
+  elseif obj:is_food_item()         then return "food"
+  elseif obj:is_bottle_item()       then return "bottle"
+  elseif obj:is_eatable_item()      then return "eatable"
+  end
+  return ""
+end
+
+
+function keeps_custom_data( sect, obj )
+  if string.find( sect, "arc_art_box_", 1, true ) then return true end
+  if obj and ( obj:is_artefact() or obj:is_outfit() ) then return true end
+  return false
+end
+
+
+function get_wpn_info( wpn )
+  local info = {}
+  local gl_status, has_gl = 0, false
+  if wpn:is_weapon_gl() then
+    if
+      ogse_wpn_utils.get_grenade_launcher_status( wpn ) == 2
+      and ogse_wpn_utils.get_grenade_launcher_flag( wpn )
+    then
+      gl_status = 1
+    end
+    has_gl = (
+      ogse_wpn_utils.get_grenade_launcher_status( wpn ) == 1
+      or gl_status == 1
+    )
+  end
+  if has_gl and ogse_wpn_utils.get_gl_mode( wpn ) then
+    table.insert( info, ogse_wpn_utils.get_hidden_ammo_type( wpn ) )
+    table.insert( info, ogse_wpn_utils.get_ammo_elapsed2( wpn ) )
+    table.insert( info, ogse_wpn_utils.get_active_ammo_type( wpn ) )
+    table.insert( info, wpn:get_ammo_in_magazine() )
+  else
+    table.insert( info, ogse_wpn_utils.get_active_ammo_type( wpn ) )
+    table.insert( info, wpn:get_ammo_in_magazine() )
+    if has_gl then
+      table.insert( info, ogse_wpn_utils.get_hidden_ammo_type( wpn ) )
+      table.insert( info, ogse_wpn_utils.get_ammo_elapsed2( wpn ) )
+    else
+      table.insert( info, 0 )
+      table.insert( info, 0 )
+    end
+  end
+  local scope_status = 0
+  if
+    ogse_wpn_utils.get_scope_status( wpn ) == 2
+    and ogse_wpn_utils.get_scope_flag( wpn )
+  then
+    scope_status = 1
+  end
+  local silencer_status = 0
+  if
+    ogse_wpn_utils.get_silencer_status( wpn ) == 2
+    and ogse_wpn_utils.get_silencer_flag( wpn )
+  then
+    silencer_status = 1
+  end
+  table.insert( info, scope_status    )
+  table.insert( info, gl_status       )
+  table.insert( info, silencer_status )
+  return table.concat( info, "," )
+end
+
+
+function parse_weapon_info_str( info_str )
+  local a1t, a1n, a2t, a2n, scope, gl, silencer =
+    unpack( split_comma_separated_list( info_str ) )
+  return
+    tonumber( a1t ) or 0,
+    tonumber( a1n ) or 0,
+    tonumber( a2t ) or 0,
+    tonumber( a2n ) or 0,
+    scope == "1", gl == "1", silencer == "1"
+end
+
+
+function get_item_info( obj )
+  local sect = obj:section()
+  if keeps_custom_data( sect, obj ) then
+    local sobj = server_obj( obj:id() )
+    return ( sobj and sobj.custom_data ) or ""
+  elseif obj:is_weapon_magazined() then
+    return get_wpn_info( obj )
+  end
+  return ""
+end
+
+
+function get_ammo_box_size( sect )
+  return get_u32( sect, "box_size", 1 )
+end
+
+
+function make_key( sect, cond, info )
+  return sect .. ":" .. string.format( "%.2f", cond ) .. ":" .. info
+end
+
+
+function make_item_name( sect )
+  local name = get_string( sect, "inv_name", get_string( sect, "inv_name_short", sect ) )
+  return dsh.strip_quotes( game.translate_string( name ) )
+end
+
+
+----------------------------------------------------------------------------
+
+function load( id )
+  local sections = get_value( var_name( id, "sections" ) )
+  if not sections then return {} end
+  local conds  = get_value( var_name( id, "conds"  ) ) or {}
+  local counts = get_value( var_name( id, "counts" ) ) or {}
+  local types  = get_value( var_name( id, "types"  ) ) or {}
+  local infos  = get_value( var_name( id, "infos"  ) ) or {}
+  local data, index = {}, {}
+  for i, sect in ipairs( sections ) do
+    local cond = tonumber( conds[ i ] ) or 100
+    local info = infos[ i ] or ""
+    local key  = make_key( sect, cond, info )
+    local item = index[ key ]
+    if item then
+      item.count = item.count + ( tonumber( counts[ i ] ) or 1 )
+    else
+      item = {
+        [ "section"   ] = sect,
+        [ "condition" ] = tonumber( string.format( "%.2f", cond ) ),
+        [ "game_type" ] = override_game_type( sect ) or ( types[ i ] or "" ),
+        [ "count"     ] = tonumber( counts[ i ] ) or 1,
+        [ "info"      ] = info,
+        [ "key"       ] = key,
+      }
+      index[ key ] = item
+      table.insert( data, item )
+    end
+  end
+  return data
+end
+
+
+function save( id, data )
+  local sections, conds, counts, types, infos = {}, {}, {}, {}, {}
+  for _, item in ipairs( data ) do
+    if item.count and item.count > 0 then
+      table.insert( sections, item.section )
+      table.insert( conds,    string.format( "%.2f", item.condition ) )
+      table.insert( counts,   item.count )
+      table.insert( types,    item.game_type or "" )
+      table.insert( infos,    item.info or "" )
+    end
+  end
+  if table.getn( sections ) > 0 then
+    set_value( var_name( id, "sections" ), sections )
+    set_value( var_name( id, "conds"    ), conds    )
+    set_value( var_name( id, "counts"   ), counts   )
+    set_value( var_name( id, "types"    ), types    )
+    set_value( var_name( id, "infos"    ), infos    )
+  else
+    remove_value( var_name( id, "sections" ) )
+    remove_value( var_name( id, "conds"    ) )
+    remove_value( var_name( id, "counts"   ) )
+    remove_value( var_name( id, "types"    ) )
+    remove_value( var_name( id, "infos"    ) )
+  end
+  return table.getn( sections )
+end
+
+
+function drop_storage( id )
+  save( id, {} )
+  remove_value( var_name( id, "virtual" ) )
+end
+
+
+----------------------------------------------------------------------------
+
+function virtualize( box )
+  local id = box:id()
+  if is_virtual( id ) then return false end
+  local items, index, ids = {}, {}, {}
+  for i = 0, box:object_count() - 1 do
+    local obj = box:object( i )
+    if obj and server_obj( obj:id() ) then
+      local sect = obj:section()
+      local cond = tonumber( string.format( "%.2f", obj:condition() * 100 ) )
+      local info = get_item_info( obj )
+      local gt   = get_game_type( obj )
+      local key  = make_key( sect, cond, info )
+      local cnt  = 1
+      if gt == "ammo" then
+        cnt = amk_offline_alife.get_ammo_size( obj ) or 1
+      end
+      local item = index[ key ]
+      if item then
+        item.count = item.count + cnt
+      else
+        item = {
+          [ "section"   ] = sect,
+          [ "condition" ] = cond,
+          [ "game_type" ] = gt,
+          [ "count"     ] = cnt,
+          [ "info"      ] = info,
+          [ "key"       ] = key,
+        }
+        index[ key ] = item
+        table.insert( items, item )
+      end
+      table.insert( ids, obj:id() )
+    end
+  end
+  save( id, items )
+  set_value( var_name( id, "virtual" ), true )
+  for _, oid in ipairs( ids ) do
+    misc.release_obj( oid, "he_magic_box.virtualize" )
+  end
+  return true
+end
+
+
+function devirtualize( box )
+  local id = box:id()
+  if not is_virtual( id ) then return false end
+  for _, item in ipairs( load( id ) ) do
+    local guard = 0
+    while item.count > 0 and guard < 1000 do
+      create_actor_item( item, box )
+      guard = guard + 1
+    end
+  end
+  drop_storage( id )
+  return true
+end
+
+
+----------------------------------------------------------------------------
+
+local function holder_info( who )
+  if not who then who = db.actor end
+  if type( who.id ) == "function" then
+    return who:position(), who:level_vertex_id(), who:game_vertex_id(), who:id()
+  end
+  return who.position, who.m_level_vertex_id, who.m_game_vertex_id, who.id
+end
+
+
+function spawn_ammo_in_inv( sect, box_size, who )
+  local pos, lvid, gvid, id = holder_info( who )
+  return g_sim:create_ammo( sect, pos, lvid, gvid, id, box_size )
+end
+
+
+function spawn_item_in_inv( sect, who )
+  local pos, lvid, gvid, id = holder_info( who )
+  local sobj = g_sim:create( sect, pos, lvid, gvid, id )
+  return sobj and server_obj( sobj.id )
+end
+
+
+function spawn_weapon_in_inv( sect, info_str, who )
+  local sobj = spawn_item_in_inv( sect, who )
+  if not sobj then return nil end
+  if info_str and info_str ~= "" then
+    local a1t, a1n, a2t, a2n, scope, gl, silencer =
+      parse_weapon_info_str( info_str )
+    if a1t > 10   then a1t = 0 end
+    if a1n > 1000 then a1n = 0 end
+    local flags = 0
+    if scope    then flags = flags + 1 end
+    if gl       then flags = flags + 2 end
+    if silencer then flags = flags + 4 end
+    local pk = get_netpk( sobj, 1 )
+    if pk and pk:isOk() then
+      local data = pk:get()
+      data.addon_flags  = flags
+      data.ammo_type    = a1t
+      data.ammo_elapsed = a1n
+      if data.ammo_elapsed_2 ~= nil then
+        data.ammo_type_2    = a2t
+        data.ammo_elapsed_2 = a2n
+      end
+      pk:set( data )
+    end
+  end
+  return sobj
+end
+
+
+function create_actor_item( item, who )
+  local size, sobj
+  if item.game_type == "ammo" then
+    local box_size = get_ammo_box_size( item.section )
+    if box_size < 1 then box_size = 1 end
+    if item.count > box_size then
+      sobj = spawn_ammo_in_inv( item.section, box_size, who )
+      size = box_size
+      item.count = item.count - box_size
+    else
+      sobj = spawn_ammo_in_inv( item.section, item.count, who )
+      size = item.count
+      item.count = 0
+    end
+  else
+    if item.game_type == "weapon" then
+      sobj = spawn_weapon_in_inv( item.section, item.info, who )
+    else
+      sobj = spawn_item_in_inv( item.section, who )
+    end
+    if sobj and item.info and item.info ~= "" then
+      sobj.custom_data = item.info
+    end
+    item.count = item.count - 1
+    size = 1
+  end
+  if sobj and item.condition < 100 then
+    local iitem = sobj:get_inventory_item()
+    if iitem then iitem.item_condition = item.condition / 100 end
+  end
+  return size, sobj
+end
+
+
+----------------------------------------------------------------------------
+
+function can_include_into_actor_items( obj )
+  if not db.actor:is_in_ruck( obj ) then return false end
+  local sect = obj:section()
+  if get_bool( sect, "quest_item", false ) then return false end
+  if get_u32( sect, "inv_grid_width",  0 ) < 1 then return false end
+  if get_u32( sect, "inv_grid_height", 0 ) < 1 then return false end
+  return true
+end
+
+
+function get_actor_items()
+  local items, by_key = {}, {}
+  for i = 0, db.actor:object_count() - 1 do
+    local obj = db.actor:object( i )
+    if
+      obj and server_obj( obj:id() )
+      and ( not db.actor:marked_dropped( obj ) )
+      and can_include_into_actor_items( obj )
+    then
+      local sect = obj:section()
+      local cond = tonumber( string.format( "%.2f", obj:condition() * 100 ) )
+      local info = get_item_info( obj )
+      local key  = make_key( sect, cond, info )
+      local item = by_key[ key ]
+      if item then
+        table.insert( item.game_objs, obj )
+        item.n = item.n + 1
+      else
+        item = {
+          [ "section"   ] = sect,
+          [ "condition" ] = cond,
+          [ "game_objs" ] = { obj },
+          [ "n"         ] = 1,
+          [ "game_type" ] = get_game_type( obj ),
+          [ "info"      ] = info,
+          [ "key"       ] = key,
+        }
+        by_key[ key ] = item
+        table.insert( items, item )
+      end
+      if item.game_type == "ammo" then
+        item.count = ( item.count or 0 ) + ( amk_offline_alife.get_ammo_size( obj ) or 1 )
+      end
+    end
+  end
+  return items
+end
+
+
+----------------------------------------------------------------------------
+
+function open( box )
+  if not ( box and db.actor ) then return end
+  virtualize( box )
+  ui_he_magic_box.show( box:id() )
+end

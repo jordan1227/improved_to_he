@@ -1,0 +1,662 @@
+-- [HE-PORT]
+
+local active_wnd = false
+local inv_open_snd  = sound_object( "interface\\inv_open"  )
+local inv_close_snd = sound_object( "interface\\inv_close" )
+
+
+function show( owner_id )
+  if active_wnd then return end
+  db.actor:hide_weapon()
+  inv_open_snd:play( db.actor, 0, sound_object.s2d )
+  active_wnd = he_magic_box_ui( owner_id )
+  level.start_stop_menu( active_wnd, true )
+end
+
+
+function is_active( id )
+  return active_wnd and active_wnd.owner_id == id
+end
+
+
+-------------------------------------------------------------------------------
+
+local function set_item_icon( sect, s, x, y, sw, sh )
+  local icon = CIconParams( sect )
+  icon:set_shader( s )
+  local rect = icon:original_rect()
+  local tw = rect.x2 - rect.x1
+  local th = rect.y2 - rect.y1
+  if tw <= 0 or th <= 0 then return end
+  local k = math.min( sw / tw, sh / th, 1 )
+  local w = tw * k
+  local h = th * k
+  s:SetWidth ( w )
+  s:SetHeight( h )
+  s:SetWndPos( x + ( sw - w ) / 2, y + ( sh - h ) / 2 )
+end
+
+
+-------------------------------------------------------------------------------
+
+class "magic_box_item" ( CUIListItemEx )
+
+function magic_box_item:__init( xml, name, cond, cnt ) super()
+  xml:InitWindow( "list_item", 0, self )
+
+  self.fc = xml:InitStatic( "list_item_num",  self )
+  self.fc:SetText( tostring( cnt ) )
+
+  self.fn = xml:InitStatic( "list_item_name", self )
+  self.fn:SetText( name )
+
+  self.fq = xml:InitStatic( "list_item_cond", self )
+  self.fq:SetText( string.format( "%.0f%%", cond ) )
+end
+
+
+function magic_box_item:set_count( cnt )
+  self.fc:SetText( tostring( cnt ) )
+end
+
+
+-------------------------------------------------------------------------------
+
+class "box_list_wnd" ( CUIWindow )
+function box_list_wnd:__init() super() end
+
+function box_list_wnd:InitControls( xml, handler, node, reg_name )
+  xml:InitWindow( node, 0, self )
+  self:SetAutoDelete( true )
+  local list = xml:InitList( node .. ":list", self )
+  list:ShowSelectedItem( true )
+  handler:Register( list, reg_name )
+  return list
+end
+
+
+-------------------------------------------------------------------------------
+
+class "he_magic_box_ui" ( CUIScriptWnd )
+
+function he_magic_box_ui:__init( owner_id ) super()
+  self.owner_id    = owner_id
+  self.changed     = false
+  self.moved       = false
+  self.index_other = {}
+  self.index_our   = {}
+  self.spawning    = {}
+  self:InitControls()
+  self:InitCallBacks()
+  self:FillOtherList()
+  self:FillOurList()
+end
+
+
+function he_magic_box_ui:__finalize() end
+
+
+function he_magic_box_ui:InitControls()
+  self:Init( 0, 0, 1024, 768 )
+  local xml = CScriptXmlInit()
+  xml:ParseFile( "ui_he_magic_box.xml" )
+  self.xml = xml
+
+  xml:InitWindow( "main_dialog", 0, self )
+  self.dialog = xml:InitStatic( "main_dialog:dialog", self )
+
+  self.dlg_other = box_list_wnd()
+  self.ui_list_other = self.dlg_other:InitControls( xml, self, "tab_other", "list_other" )
+  self.dialog:AttachChild( self.dlg_other )
+
+  self.dlg_our = box_list_wnd()
+  self.ui_list_our = self.dlg_our:InitControls( xml, self, "tab_our", "list_our" )
+  self.dlg_our:Show( false )
+  self.dialog:AttachChild( self.dlg_our )
+
+  self.edit_amount = xml:InitEditBox( "main_dialog:edit_amount", self.dialog )
+  self:reset_edit_amount()
+  self:Register( self.edit_amount, "edit_amount" )
+
+  self.btn_move = xml:Init3tButton( "main_dialog:btn_move", self.dialog )
+  self:Register( self.btn_move, "btn_move" )
+  self.btn_move:Enable( false )
+
+  self.btn_move_all = xml:Init3tButton( "main_dialog:btn_move_all", self.dialog )
+  self:Register( self.btn_move_all, "btn_move_all" )
+  self.btn_move_all:Enable( false )
+
+  self.label_weight = xml:InitStatic( "main_dialog:label_weight", self.dialog )
+  self:show_cur_weight()
+
+  local btn_quit = xml:Init3tButton( "main_dialog:btn_quit", self.dialog )
+  btn_quit:SetAccelerator( bind_to_dik( key_bindings.kUSE ), 0 )
+  self:Register( btn_quit, "btn_quit" )
+
+  self.tab = xml:InitTab( "main_dialog:tab", self.dialog )
+  self:Register( self.tab, "tab" )
+
+  xml:InitStatic( "main_dialog:label_filter", self.dialog )
+  self.edit_filter = xml:InitEditBox( "main_dialog:edit_filter", self.dialog )
+  self:Register( self.edit_filter, "edit_filter" )
+
+  xml:InitStatic( "main_dialog:label_show", self.dialog )
+  self.radio_show = xml:InitTab( "main_dialog:radio_show", self.dialog )
+  self:Register( self.radio_show, "radio_show" )
+
+  xml:InitStatic( "main_dialog:label_sort", self.dialog )
+  self.radio_sort = xml:InitTab( "main_dialog:radio_sort", self.dialog )
+  self:Register( self.radio_sort, "radio_sort" )
+
+  self.descr_scroll = xml:InitScrollView( "main_dialog:descr_scroll", self.dialog )
+  self.item_icon    = xml:InitStatic( "main_dialog:item_icon", self.dialog )
+  local icon_pos    = self.item_icon:GetWndPos()
+  self.item_icon_x  = icon_pos.x
+  self.item_icon_y  = icon_pos.y
+  self.item_icon_w  = self.item_icon:GetWidth()
+  self.item_icon_h  = self.item_icon:GetHeight()
+end
+
+
+function he_magic_box_ui:InitCallBacks()
+  self:AddCallback( "tab",          ui_events.TAB_CHANGED,            self.OnTabChange,        self )
+  self:AddCallback( "radio_show",   ui_events.TAB_CHANGED,            self.OnShowChange,       self )
+  self:AddCallback( "radio_sort",   ui_events.TAB_CHANGED,            self.OnSortChange,       self )
+  self:AddCallback( "btn_move",     ui_events.BUTTON_CLICKED,         self.OnMoveClicked,      self )
+  self:AddCallback( "btn_move_all", ui_events.BUTTON_CLICKED,         self.OnMoveAllClicked,   self )
+  self:AddCallback( "btn_quit",     ui_events.BUTTON_CLICKED,         self.on_quit,            self )
+  self:AddCallback( "list_other",   ui_events.LIST_ITEM_CLICKED,      self.OnListItemClicked,  self )
+  self:AddCallback( "list_our",     ui_events.LIST_ITEM_CLICKED,      self.OnListItemClicked,  self )
+  self:AddCallback( "list_other",   ui_events.WINDOW_LBUTTON_DB_CLICK, self.OnMoveClicked,     self )
+  self:AddCallback( "list_our",     ui_events.WINDOW_LBUTTON_DB_CLICK, self.OnMoveClicked,     self )
+  self:AddCallback( "edit_amount",  ui_events.EDIT_TEXT_COMMIT,       self.OnMoveClicked,      self )
+  self:AddCallback( "edit_filter",  ui_events.EDIT_TEXT_COMMIT,       self.OnSearchEnter,      self )
+end
+
+
+function he_magic_box_ui:OnKeyboard( dik, keyboard_action )
+  CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
+  if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+    if dik == DIK_keys.DIK_ESCAPE then
+      self:on_quit()
+    end
+  end
+  return true
+end
+
+
+-------------------------------------------------------------------------------
+
+function he_magic_box_ui:FillOtherList()
+  self.items_other = he_magic_box.load( self.owner_id )
+  self:FillList( self.items_other, self.ui_list_other, self.index_other )
+end
+
+
+function he_magic_box_ui:FillOurList()
+  self.items_our = he_magic_box.get_actor_items()
+  self:FillList( self.items_our, self.ui_list_our, self.index_our )
+end
+
+
+function he_magic_box_ui:item_count( item )
+  if item.count then return item.count end
+  return item.n or 0
+end
+
+
+function he_magic_box_ui:FillList( items, ui_list, index )
+  for _, item in ipairs( items ) do
+    local cnt = self:item_count( item )
+    if cnt > 0 then
+      if not item.name then
+        item.name = he_magic_box.make_item_name( item.section )
+      end
+      if not index[ item.key ] then
+        local ui_item = magic_box_item( self.xml, item.name, item.condition, cnt )
+        ui_item.data      = item
+        index[ item.key ] = ui_item
+      end
+      ui_list:AddItem( index[ item.key ] )
+    end
+  end
+end
+
+
+function he_magic_box_ui:clear_all_lists()
+  self.index_other = {}
+  self.index_our   = {}
+  self.ui_list_other:RemoveAll()
+  self.ui_list_our:RemoveAll()
+end
+
+
+function he_magic_box_ui:get_current_list_box()
+  local i = self.tab:GetActiveIndex()
+  if i == 0 then return self.ui_list_other end
+  return self.ui_list_our
+end
+
+
+function he_magic_box_ui:get_selected_item()
+  local list_box = self:get_current_list_box()
+  if list_box:GetSize() > 0 then
+    local idx = list_box:GetSelectedItem()
+    if idx >= 0 then return list_box:GetItem( idx ) end
+  end
+end
+
+
+function he_magic_box_ui:OnTabChange()
+  self.dlg_other:Show( false )
+  self.dlg_our:Show( false )
+  if self.moved then
+    self.filtered_other = nil
+    self.filtered_our   = nil
+    self.items_our      = he_magic_box.get_actor_items()
+    self:show_filtered_items( true )
+    self.moved = false
+  end
+  if self.tab:GetActiveIndex() == 0 then
+    self.dlg_other:Show( true )
+  else
+    self.dlg_our:Show( true )
+  end
+  self:reset_edit_amount()
+  self.btn_move:Enable( false )
+  self.btn_move_all:Enable( false )
+end
+
+
+function he_magic_box_ui:OnListItemClicked()
+  local ui_item = self:get_selected_item()
+  if not ui_item then return end
+  self:show_item_descr( ui_item )
+  self:reset_edit_amount()
+  self.btn_move:Enable( true )
+  self.btn_move_all:Enable( true )
+end
+
+
+-------------------------------------------------------------------------------
+
+function he_magic_box_ui:reset_edit_amount()
+  self.edit_amount:SetText( "1" )
+end
+
+
+function he_magic_box_ui:OnMoveClicked()
+  local amount = tonumber( self.edit_amount:GetText() ) or 1
+  self:move_items( amount )
+end
+
+
+function he_magic_box_ui:OnMoveAllClicked()
+  local ui_item = self:get_selected_item()
+  if ui_item then
+    self:move_items( self:item_count( ui_item.data ), ui_item )
+  end
+end
+
+
+function he_magic_box_ui:move_items( amount, ui_item )
+  if not ui_item then ui_item = self:get_selected_item() end
+  if not ui_item then return end
+  self.changed = true
+  self.moved   = true
+  local from_actor = ui_item.data.game_objs ~= nil
+  while amount > 0 do
+    local moved
+    if from_actor then
+      moved = self:move_from_our( ui_item )
+    else
+      moved = self:move_from_other( ui_item )
+    end
+    if not moved or moved <= 0 then break end
+    amount = amount - moved
+  end
+  self:reset_edit_amount()
+  self:show_cur_weight()
+end
+
+
+function he_magic_box_ui:move_from_other( ui_item )
+  local item = ui_item.data
+  if item.count <= 0 then return 0 end
+
+  local ui_our = self.index_our[ item.key ]
+  local our
+  if ui_our then
+    our = ui_our.data
+  else
+    our = {
+      [ "section"   ] = item.section,
+      [ "condition" ] = item.condition,
+      [ "game_type" ] = item.game_type,
+      [ "game_objs" ] = {},
+      [ "n"         ] = 0,
+      [ "info"      ] = item.info,
+      [ "key"       ] = item.key,
+      [ "name"      ] = item.name,
+    }
+    table.insert( self.items_our, our )
+  end
+
+  local size, sobj = he_magic_box.create_actor_item( item )
+  if not sobj then return 0 end
+  our.n = our.n + 1
+  if item.game_type == "ammo" then
+    our.count = ( our.count or 0 ) + size
+  end
+
+  if ui_our then
+    ui_our:set_count( our.count or our.n )
+  else
+    ui_our = magic_box_item( self.xml, item.name, our.condition, our.count or our.n )
+    ui_our.data = our
+    self.index_our[ our.key ] = ui_our
+    if self.tab:GetActiveIndex() == 1 then
+      self.ui_list_our:AddItem( ui_our )
+    end
+  end
+
+  self.spawning[ sobj.id ] = true
+  level.client_spawn_manager():add(
+    sobj.id, -1,
+    function( id, obj )
+      table.insert( our.game_objs, obj )
+      self.spawning[ id ] = nil
+    end
+  )
+
+  if item.count > 0 then
+    ui_item:set_count( item.count )
+  else
+    local pos = self.ui_list_other:GetItemPos( ui_item )
+    self.index_other[ item.key ] = nil
+    if pos and pos >= 0 then self.ui_list_other:RemoveItem( pos ) end
+    return 0
+  end
+  return size
+end
+
+
+function he_magic_box_ui:move_from_our( ui_item )
+  local item = ui_item.data
+  local obj  = item.game_objs[ 1 ]
+  if not obj then return 0 end
+
+  local size = 1
+  if item.game_type == "ammo" then
+    size = amk_offline_alife.get_ammo_size( obj ) or 1
+  end
+
+  local max_weight = he_magic_box.get_max_weight( self.owner_id )
+  local cur_weight = he_magic_box.stored_weight( self.items_other )
+  local add_weight = he_magic_box.item_weight( item ) * size
+  if cur_weight + add_weight > max_weight then
+    self:no_space()
+    return 0
+  end
+
+  table.remove( item.game_objs, 1 )
+  item.n = ( item.n or 1 ) - 1
+
+  local ui_other = self.index_other[ item.key ]
+  local other
+  if ui_other then
+    other = ui_other.data
+  else
+    other = {
+      [ "section"   ] = item.section,
+      [ "condition" ] = item.condition,
+      [ "game_type" ] = item.game_type,
+      [ "count"     ] = 0,
+      [ "info"      ] = item.info,
+      [ "key"       ] = item.key,
+      [ "name"      ] = item.name,
+    }
+    table.insert( self.items_other, other )
+  end
+  other.count = other.count + size
+
+  if ui_other then
+    ui_other:set_count( other.count )
+  else
+    ui_other = magic_box_item( self.xml, item.name, other.condition, other.count )
+    ui_other.data = other
+    self.index_other[ other.key ] = ui_other
+    if self.tab:GetActiveIndex() == 0 then
+      self.ui_list_other:AddItem( ui_other )
+    end
+  end
+
+  if item.count then item.count = item.count - size end
+
+  misc.release_obj( obj:id(), "he_magic_box.move_from_our" )
+
+  if item.n > 0 then
+    ui_item:set_count( item.count or item.n )
+  else
+    local pos = self.ui_list_our:GetItemPos( ui_item )
+    self.index_our[ item.key ] = nil
+    if pos and pos >= 0 then self.ui_list_our:RemoveItem( pos ) end
+    return 0
+  end
+  return size
+end
+
+
+function he_magic_box_ui:no_space()
+  get_hud():AddCustomStatic( "box_no_space_msg", true )
+  dsh.timeout( 2500, function() get_hud():RemoveCustomStatic( "box_no_space_msg" ) end )
+end
+
+
+-------------------------------------------------------------------------------
+
+function he_magic_box_ui:grep_items_by( items, f )
+  local filtered = {}
+  for _, item in ipairs( items ) do
+    if f( item, self:get_show_type( item ) ) then
+      table.insert( filtered, item )
+    end
+  end
+  return filtered
+end
+
+
+function he_magic_box_ui:get_show_type( item )
+  if not item.show_type then
+    item.show_type = get_string(
+      item.section, "he_magic_box.override_show_type", item.game_type or ""
+    )
+  end
+  return ( item.show_type == "other" ) and "" or item.show_type
+end
+
+
+function he_magic_box_ui:search_items( items )
+  local term = string.lower( self.edit_filter:GetText() or "" )
+  if term == "" then return items end
+  return self:grep_items_by( items, function( item )
+    if not item.name then
+      item.name = he_magic_box.make_item_name( item.section )
+    end
+    return string.find( string.lower( item.name ), term, 1, true ) ~= nil
+  end )
+end
+
+
+function he_magic_box_ui:sort_items( items )
+  local idx = self.radio_sort:GetActiveIndex()
+  local f
+  local function nm( a ) return string.lower( a.name or a.section ) end
+  local function cnt( a ) return a.count or a.n or 0 end
+  if     idx == 1 then f = function( a, b ) return nm( a ) <  nm( b ) end
+  elseif idx == 2 then f = function( a, b ) return nm( a ) >  nm( b ) end
+  elseif idx == 3 then f = function( a, b ) return a.condition < b.condition end
+  elseif idx == 4 then f = function( a, b ) return a.condition > b.condition end
+  elseif idx == 5 then f = function( a, b ) return cnt( a ) < cnt( b ) end
+  elseif idx == 6 then f = function( a, b ) return cnt( a ) > cnt( b ) end
+  end
+  if not f then return items end
+  local sorted = {}
+  for i, v in ipairs( items ) do
+    if not v.name then v.name = he_magic_box.make_item_name( v.section ) end
+    sorted[ i ] = v
+  end
+  table.sort( sorted, f )
+  return sorted
+end
+
+
+function he_magic_box_ui:OnShowChange()
+  self.filtered_other = nil
+  self.filtered_our   = nil
+  self:show_filtered_items()
+end
+
+
+function he_magic_box_ui:OnSortChange()
+  self:show_filtered_items( true )
+end
+
+
+function he_magic_box_ui:OnSearchEnter()
+  self:show_filtered_items( true )
+end
+
+
+local show_filters = {
+  [ 1 ] = function( _, t ) return t == "weapon" or t == "knife" end,
+  [ 2 ] = function( _, t ) return t == "ammo" end,
+  [ 3 ] = function( _, t ) return t == "grenade" or t == "missile" end,
+  [ 4 ] = function( _, t ) return t == "scope" or t == "silencer" or t == "gl" end,
+  [ 5 ] = function( _, t ) return t == "outfit" end,
+  [ 6 ] = function( _, t ) return t == "artefact" end,
+  [ 7 ] = function( _, t ) return t == "food" or t == "bottle" or t == "eatable" end,
+  [ 8 ] = function( _, t ) return t == "medkit" or t == "antirad" end,
+  [ 9 ] = function( _, t ) return t == "mutant_part" end,
+  [ 10 ] = function( _, t ) return t == "" end,
+}
+
+
+function he_magic_box_ui:show_filtered_items( keep_search )
+  self:clear_all_lists()
+  local show_idx = self.radio_show:GetActiveIndex()
+  local filtered_other = self.filtered_other
+  local filtered_our   = self.filtered_our
+  if not ( filtered_other and filtered_our ) then
+    local by_type = show_filters[ show_idx ]
+    if by_type then
+      filtered_other = self:grep_items_by( self.items_other, by_type )
+      filtered_our   = self:grep_items_by( self.items_our,   by_type )
+    else
+      filtered_other = self.items_other
+      filtered_our   = self.items_our
+    end
+    self.filtered_other = filtered_other
+    self.filtered_our   = filtered_our
+  end
+  if keep_search then
+    filtered_other = self:search_items( filtered_other )
+    filtered_our   = self:search_items( filtered_our   )
+  else
+    self.edit_filter:SetText( "" )
+  end
+  filtered_other = self:sort_items( filtered_other )
+  filtered_our   = self:sort_items( filtered_our   )
+  self:FillList( filtered_other, self.ui_list_other, self.index_other )
+  self:FillList( filtered_our,   self.ui_list_our,   self.index_our   )
+end
+
+
+-------------------------------------------------------------------------------
+
+function he_magic_box_ui:show_cur_weight()
+  local inv_weight = db.actor:get_inventory_weight()
+  local max_weight = db.actor:get_max_weight()
+  if inv_weight > max_weight then
+    self.label_weight:SetTextColor( 255, 255, 50, 0 )
+  else
+    self.label_weight:SetTextColor( 255, 238, 153, 26 )
+  end
+  self.label_weight:SetText(
+    string.format(
+      game.translate_string( "ui_he_mbox_weight" ),
+      inv_weight,
+      he_magic_box.stored_weight( self.items_other or {} ),
+      he_magic_box.get_max_weight( self.owner_id )
+    )
+  )
+end
+
+
+function he_magic_box_ui:show_item_descr( ui_item )
+  local sect = ui_item.data.section
+  set_item_icon(
+    sect, self.item_icon,
+    self.item_icon_x, self.item_icon_y, self.item_icon_w, self.item_icon_h
+  )
+  if self.item_descr then
+    self.descr_scroll:Clear()
+    self.item_descr:DetachFromParent()
+  end
+  self.item_descr = self.xml:InitStatic( "main_dialog:descr_text", self.descr_scroll )
+  self.item_descr:SetText( self:get_item_description( ui_item.data ) )
+  self.item_descr:AdjustHeightToText()
+end
+
+
+function he_magic_box_ui:get_item_description( item )
+  local sect = item.section
+  local text = dsh.strip_quotes(
+    game.translate_string( get_string( sect, "description", "" ) )
+  )
+  local cost   = get_float( sect, "cost", 0 ) * ( item.condition / 100 )
+  local weight = get_float( sect, "inv_weight", 0 )
+  if get_string( sect, "af_actor_properties" ) and item.condition > 0 then
+    local af_text = ui_arc_container_menu.get_art_info_text(
+      sect, item.condition / 100, item.info
+    )
+    if af_text then
+      text = af_text .. "\\n%c[default]" .. text
+    end
+  end
+  return string.format(
+    game.translate_string( "ui_he_mbox_descr" ), weight, cost, text
+  )
+end
+
+
+-------------------------------------------------------------------------------
+
+function he_magic_box_ui:save_changed()
+  if self.changed then
+    he_magic_box.save( self.owner_id, self.items_other )
+    self.changed = false
+  end
+end
+
+
+function he_magic_box_ui:clean_spawn_manager()
+  for id, _ in pairs( self.spawning ) do
+    level.client_spawn_manager():remove( id, -1 )
+    self.spawning[ id ] = nil
+  end
+end
+
+
+function he_magic_box_ui:on_quit()
+  self:save_changed()
+  self:clean_spawn_manager()
+  self:clear_all_lists()
+  self:GetHolder():start_stop_menu( self, true )
+  self:ClearCallbacks()
+  self.ui_list_other = nil
+  self.ui_list_our   = nil
+  active_wnd = false
+  db.actor:restore_weapon()
+  inv_close_snd:play( db.actor, 0, sound_object.s2d )
+end
