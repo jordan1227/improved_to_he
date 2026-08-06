@@ -114,9 +114,76 @@ local function current_smart_name(kill)
 	return nil
 end
 
+-- [HE-PORT]
+local WANDER_MIN_H  = 12
+local WANDER_MAX_H  = 24
+local WANDER_SHARE  = 0.5
+local WANDER_ROLL   = 2
+
+-- [HE-PORT]
+function has_wander_record( name )
+	if not name then return false end
+	return ( get_value( "nlc.olr_wanderers" ) or {} )[ name ] ~= nil
+end
+
+-- [HE-PORT]
+function is_wandering( name )
+	if not name then return false end
+	local due = ( get_value( "nlc.olr_wanderers" ) or {} )[ name ]
+	if not due then return false end
+	return timers.Get_Game_Seconds() < due
+end
+
+-- [HE-PORT]
+function set_wandering( name )
+	if not name then return end
+	local t = get_value( "nlc.olr_wanderers" ) or {}
+	t[ name ] = timers.Get_Game_Seconds() + math.random( WANDER_MIN_H, WANDER_MAX_H ) * 3600
+	set_value( "nlc.olr_wanderers", t )
+end
+
+-- [HE-PORT]
+function clear_wandering( name )
+	if not name then return end
+	local t = get_value( "nlc.olr_wanderers" ) or {}
+	if t[ name ] then
+		t[ name ] = nil
+		set_value( "nlc.olr_wanderers", t )
+	end
+end
+
+-- [HE-PORT]
+local function send_wandering( kill )
+	local from = current_smart_name( kill )
+	if olr_smart_index.is_locked( from ) then return false end
+	if not olr_smart_index.can_release( from ) then return false end
+	xrs_utils.clear_smart_terrain( kill )
+	smart_terrain.unregister_npc( kill )
+	if kill.brain then
+		kill:brain():can_choose_alife_tasks( true )
+	end
+	if not xrs_utils.set_smart_terrain( kill, "none" ) then return false end
+	set_wandering( kill:name() )
+	return true
+end
+
+-- [HE-PORT]
+local function wandering_count( id_list, sim )
+	local n = 0
+	for _, id in ipairs( id_list ) do
+		local o = sim:object( id )
+		if o and o:alive() and o:smart_terrain_id() == BAD_OBJ_ID and has_wander_record( o:name() ) then
+			n = n + 1
+		end
+	end
+	return n
+end
+
 local function migrate_stalker(kill, community_name)
 	local exclude = current_smart_name(kill)
 	if olr_smart_index.is_locked(exclude) then return false end
+	-- [HE-PORT]
+	if exclude and not olr_smart_index.can_release(exclude) then return false end
 	local target = olr_smart_index.pick_name(community_name, exclude)
 	if not target then return false end
 
@@ -138,6 +205,8 @@ end
 local function migrate_monster(kill, community_name)
 	local exclude = current_smart_name(kill)
 	if olr_smart_index.is_locked(exclude) then return false end
+	-- [HE-PORT]
+	if exclude and not olr_smart_index.can_release(exclude) then return false end
 	local target = olr_smart_index.pick_name(community_name, exclude)
 	if not target then return false end
 
@@ -175,12 +244,28 @@ local function faction_migration(community_name)
 	local sim = g_sim
 	if not sim then return end
 
+	-- [HE-PORT]
+	local wanderers = wandering_count( id_list, sim )
+	local wander_cap = math.floor( #id_list * WANDER_SHARE )
+
 	for _, id in ipairs(id_list) do
 		local kill = sim:object(id)
 		if kill and kill:alive() and not kill.online then
 			local strn_id = kill:smart_terrain_id()
-			if strn_id ~= BAD_OBJ_ID then
-				if math.random(1, 3) ~= 1 then
+			local nm = kill:name()
+			if strn_id == BAD_OBJ_ID then
+				if has_wander_record( nm ) and not is_wandering( nm ) then
+					local ok, res = pcall( migrate_stalker, kill, community_name )
+					if ok and res then
+						clear_wandering( nm )
+						wanderers = wanderers - 1
+					end
+				end
+			elseif math.random(1, 3) ~= 1 then
+				if wanderers < wander_cap and math.random( 1, WANDER_ROLL ) == 1 then
+					local ok, res = pcall( send_wandering, kill )
+					if ok and res then wanderers = wanderers + 1 end
+				else
 					pcall(migrate_stalker, kill, community_name)
 				end
 			end
