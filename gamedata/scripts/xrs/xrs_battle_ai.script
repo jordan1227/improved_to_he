@@ -1,0 +1,3535 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+-----------------------------------------------------------------------
+--- xrs_battle_ai.script
+--- Модуль боевки
+--- Автор: KamikaZze
+--- Идея, советы: xStream
+--- version 4.38 (10/03/2015)
+-----------------------------------------------------------------------
+--- Настройки:
+-----------------------------------------------------------------------
+
+-- время реации сталкеров, т.е. пауза перед сменой тактики и перед
+-- началом стрельбы в актора.
+local npc_reaction_min = 500
+local npc_reaction_max = 750
+
+-- время замечания гранаты
+local grenade_inertion_min =  500
+local grenade_inertion_max = 3000
+
+-- Параметры адаптивной дисперсии при стрельбе по актору. Дисперсия
+-- будет меняться с коэффициентом от max до min в течении time.
+local firing_actor_disp_max  = 1.2
+local firing_actor_disp_min  = 1
+local firing_actor_disp_time = 1000
+
+-- сколько можно стрелять во врага после его последней видимости
+local fire_make_sense_interval    =  5000
+local fire_make_sense_interval_be = 10000
+local fire_make_sense_interval_rnd = 60000
+
+local total_debug               = false
+local close_combat_distance     = 15 -- дистанция ближнего боя
+-- дистанция когда бой уже не считается ближним
+local distant_combat_distance   = 35
+local cooldown_time             = 20000 -- время запрета лута после боя
+-- интервал реприоретизации, мсек - нельзя делать слишком низким -
+-- будет судорожно метаться между целями
+local reprioritize_timeout      = 1500
+-- время, сколько помнить о появлении врага, миллиссекунд
+local memory_timeout            = 80000
+-- сколько помнить о последнем основном враге (нужно для
+-- предотвращения выхода из боя слишком рано), для неписей умножается
+-- на 2
+local remember_enemy            = 5000
+-- С какого апдейта схема начинает работать. Нельзя чтобы схема
+-- стартовала включенной сразу же, иначе будут глюки на переключении
+-- схем и выборе оружия
+local engage_after_update       = 3
+local visibility_treshold_value = 0.45 -- трешхолд видимости
+
+-- вероятность сказать фразу
+local sound_prob_event = 0.6
+local sound_prob_hero  = 0.1
+local sound_prob_idle  = 0.1
+
+
+-- состояния не готовности к огню, нужно заставить встать перед
+-- началом стрельбы
+local not_ready_states = {
+  [ "busy"     ] = true,
+  [ "sit"      ] = true,
+  [ "sit_knee" ] = true,
+  [ "sit_ass"  ] = true,
+  [ "sleep"    ] = true,
+  [ "wounded_heavy"] = true,
+  [ "guard"    ] = true,
+  [ "patrol"   ] = true,
+}
+
+-- в этих состояниях будем активироваться только для того, что бы
+-- заблокировать движковую боевку, а на самом деле ничего делать не
+-- будем.
+local fake_battle_states = {
+  [ "wounded_heavy" ] = true,
+}
+
+local low_range_npc_aggr = 30
+local far_range_mon_aggr = 50
+local low_range_mon_aggr =  5
+
+local combat_mult_engine  = 0.1 -- 0.75 -- множитель веса движкового врага
+local combat_mult_npc     = 0.5 -- множитель веса ближней цели неписей
+local combat_mult_monster = 0.3 -- множитель веса ближней цели неписей
+
+local max_invisible_range_npc = 25
+local max_invisible_range_mon = 15
+
+local forbidden_comms = {       -- запретные коммунити
+  [ "zombied" ] = true,
+}
+
+local forbidden_schemes = {     -- запретные схемы
+  [ "wounded" ] = true
+}
+
+local forbidden_profiles = {    -- запретные профили и имена
+--[=[
+  [ "aes_Monolit_sniper_gauss" ] = true,
+  [ "Monolit_sniper_gauss"     ] = true,
+  [ "pri_monolith_roof3"       ] = true,
+  [ "pri_stalker_n_2"          ] = true,
+  [ "pri_stalker_n_2_0000"     ] = true,
+  [ "pri_monolith_roof3_0000"  ] = true,
+  [ "pri_monolith_roof3_0001"  ] = true,
+  [ "pri_stalker_n_2_0001"     ] = true,
+  [ "pri_stadium_sniper1"      ] = true,
+  [ "pri_stadium_sniper2"      ] = true,
+  [ "pri_stadium_sniper3"      ] = true,
+  [ "pri_monolith_roof1"       ] = true,
+  [ "pri_monolith_roof2"       ] = true,
+  [ "val_sacrifice_victim"     ] = true,
+  [ "val_prisoner_captive"     ] = true,
+  [ "val_escort_captive"       ] = true,
+  [ "bandit_trader"            ] = true,
+  [ "bandit_trader_spawn"      ] = true,
+  [ "dik_the_drifter"          ] = true,
+  [ "major_wounded"            ] = true,
+  [ "gen_monolit_sniper"       ] = true,
+  [ "aes_Monolit_rpg"          ] = true,
+  [ "hohol"                    ] = true,
+  [ "esc_lekar"                ] = true,
+  [ "first_neutral"            ] = true,
+  [ "esc_buharik"              ] = true,
+  [ "esc_guns_remontnik"       ] = true,
+  -- пацаны в саркофаге должны быть под движковой боевкой
+  [ "sar_monolith_exo"         ] = true,
+  [ "sar_monolith_exo_crystal" ] = true,
+  [ "sar_monolith_specnaz"     ] = true,
+  [ "sar_monolith_commander"   ] = true,
+--]=]
+}
+
+local forbidden_by_lname = {
+  -- [ "l12u_control_monolith" ] = true,
+  -- [ "l12u_sarcofag"         ] = true,
+}
+
+local community_forbidden_locations = {
+  -- [ "monolith" ] = {
+  --   [ "l12_stancia_2" ] = true,
+  -- },
+}
+
+local headshot_prob = {
+  [ "novice"      ] = 0,
+  [ "experienced" ] = 0.05,
+  [ "veteran"     ] = 0.1,
+  [ "master"      ] = 0.2,
+}
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_monster_death", fun = this.on_monster_death })
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_monster_net_destroy })
+  sm:subscribe({ signal = "on_npc_death", fun = this.death_place  })
+  sm:subscribe({ signal = "on_npc_hit",   fun = this.hit_callback })
+  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.go_offline })
+  sm:subscribe({ signal = "on_spawn",     fun = this.on_spawn     })
+  sm:subscribe({ signal = "on_update",    fun = this.on_update    })
+  sm:subscribe({ signal = "on_wounded",   fun = this.on_wounded   })
+end
+
+
+--- время на прицеливание
+--- для эффективной стрельбы из дробовика необходимо,
+--- чтобы выдерживался интервал между выстрелами,
+--- иначе подброс ствола испортит всю картину
+--- для новичков логично этот параметр сделать низким и увеличивать с опытом
+local time_to_aim = {
+  [ "novice"      ] = {
+    shotgun = 350, sniper = 1500, other = 350, rpg = 3500,
+  },
+  [ "experienced" ] = {
+    shotgun = 300, sniper = 1000, other = 300, rpg = 3000,
+  },
+  [ "veteran"     ] = {
+    shotgun = 250, sniper =  800, other = 250, rpg = 2500,
+  },
+  [ "master"      ] = {
+    shotgun = 200, sniper =  500, other = 200, rpg = 2000,
+  },
+}
+
+--- отклонение прицела
+local deviation_table = {
+  [ "novice"      ] = 0.10,
+  [ "experienced" ] = 0.10,
+  [ "veteran"     ] = 0.10,
+  [ "master"      ] = 0.10,
+}
+
+--- коэффициент отклонения по коммунити
+local community_deviation_coeff = {
+  [ "lastday"       ] =  0.8,
+  [ "monolith"      ] =  0.8,
+  [ "trader"        ] =  0.8,
+  [ "killer"        ] =  0.8,
+  [ "military"      ] =  0.8,
+  [ "sniper"        ] =  0.8,
+  [ "vermaht"       ] =  0.8,
+  [ "stalker"       ] =  0.8,
+  [ "zombied"       ] = 15,
+}
+
+--- группировки с улучшенной координацией (имеют радиосвязь, соотв. об
+--- одной цели сразу знают все члены группировки)
+local radio_comms = {
+  [ "military" ] = true,
+  [ "killer"   ] = true,
+  [ "monolith" ] = true,
+  [ "dolg"     ] = true,
+}
+
+local needed_dangers = {
+  [ danger_object.attack_sound    ] = true,
+  [ danger_object.bullet_ricochet ] = true,
+  [ danger_object.attacked        ] = true,
+  [ danger_object.grenade         ] = true,
+  [ danger_object.enemy_sound     ] = true
+}
+
+local targeting_dangers = {
+  [ danger_object.attacked ] = true
+}
+
+
+-----------------------------------------------------------------------
+--- Данные:
+-----------------------------------------------------------------------
+cooldown                        = {}
+in_combat                       = {}
+primary_target                  = {} -- таблица целей
+
+local already_know_about        = {}
+local death_places              = {} -- места смерти союзников, избегать их
+local escape_point              = {}
+local grenka_already_blow       = {}
+local inited                    = {}         -- инициализированы ли
+local known_corpses             = {}
+local last_choosed_path         = {}
+local last_enemy_id             = {}         -- ид последнего врага
+local last_hideout              = {}
+local last_reprioritize         = {} -- время приоретизации
+local last_sent_vertex          = {}
+local last_target               = {} -- последняя цель
+local last_time_send            = {}
+local locked_vertexes           = {} -- занятые вертексы
+local locked_vertexes_r         = {}
+local sound_are_playing         = {}
+local sound_events              = {}
+local sounds_timeout            = {}
+local targets_list              = {} -- список целей
+local time_hide                 = {} -- время ожидания
+
+
+local ignore_enemies = {}
+function check_is_enemy( npc, enemy, fast )
+  if not ( npc and enemy ) then return false end
+  if npc:is_relation_enemy( enemy ) then
+    if
+      ignore_enemies[ npc:name() ]
+      and ignore_enemies[ npc:name() ][ enemy:name() ]
+    then
+      return false
+    elseif fast then
+      return true
+    end
+    return npc:binded_object():enemy_callback( npc, enemy )
+  end
+  return false
+end
+
+
+function on_spawn()
+  local dsh_sect = "dsh.xrs_battle_ai.ignore_enemies"
+  if sys_ini:section_exist( dsh_sect ) then
+    for _, k in ipairs( get_section_keys( dsh_sect ) ) do
+      for _, name in ipairs( parse_names( get_string( dsh_sect, k ) ) ) do
+        ignore_enemies[ k ][ name ] = true
+      end
+    end
+  end
+  prefetch_sounds()
+end
+
+
+function prefetch_sounds()
+  for _, s in ipairs( xrs_battle_ai_data.prefetch_sounds ) do
+    level.prefetch_many_sounds( s )
+  end
+end
+
+
+function is_combat_ignore( npc, enemy )
+  return not xr_combat_ignore.is_enemy( npc, enemy )
+end
+
+
+function get_obj_rank_name( obj )
+  local enemy = get_target( obj )
+  if
+    enemy and enemy:is_actor()
+    and db.actor:character_rank() > obj:character_rank()
+  then
+    obj = db.actor
+  end
+  return ranks.get_obj_rank_name( obj )
+end
+
+
+function get_best_weapon( npc, active )
+  if active then
+    local sl = npc:active_slot()
+    if sl ~= NO_ACTIVE_SLOT and npc:item_in_slot( sl ) then
+      return npc:item_in_slot( sl )
+    end
+  end
+  local wm = nil -- [HE-PORT]
+  return ( wm and wm:get_weapon() ) or npc:best_weapon()
+end
+
+
+function is_not_ready_state( npc )
+  local t = db.storage[ npc:id() ]
+  if t and t.state_mgr then
+    local anim = t.state_mgr.animstate:state()
+    if not_ready_states[ anim ] then return true end
+  end
+  if
+    npc:animation_count() > 0 or npc:body_state() ~= move.standing
+    or npc:is_body_turning()
+  then
+    return true
+  end
+  return false
+end
+
+
+-- продолжаем вооруженное общение до умиротворения объекта
+class "evaluator_check_altcombat" ( property_evaluator )
+function evaluator_check_altcombat:__init( name, storage ) super( nil, name )
+  self.st = storage
+  self.count_update  = 0
+  self.last_memory_check = 0
+
+  self.st.grenadier = {}
+  self.grenadier    = xrs_grenade.evaluator_love_napalm_smell(
+    self.st.grenadier
+  )
+end
+
+
+function evaluator_check_altcombat:evaluate()
+  if self.count_update <= engage_after_update then
+    self.count_update = self.count_update + 1
+    return false
+  end
+
+  if
+    ( not self.object:alive() )
+    or xr_wounded.is_wounded( self.object )
+    or (
+      db.storage[ self.object:id() ].active_scheme
+      and forbidden_schemes[ db.storage[ self.object:id() ].active_scheme ]
+    )
+  then
+    return false
+  end
+
+  if not inited[ self.object:id() ] then
+    -- произведем инициализацию таблиц данных селектора
+    targets_list[ self.object:id() ] = {}        -- список целей
+    last_target[ self.object:id()  ] = nil       -- последняя цель
+    setup_sound_table( self.object )
+    inited[ self.object:id()       ] = true
+    local ini = nil -- [HE-PORT]
+    if ini then
+      local actor_is_enemy = get_bool(
+        "battle", "xrs_battle_ai.actor_is_enemy", false, ini
+      )
+      if actor_is_enemy then
+        register_as_target( self.object, db.actor, true )
+      end
+    end
+  end
+
+  self:check_corpse_danger()
+  self:reprioritize_targets()
+
+  if self:check_for_grenades() then
+    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_gr_evade" )
+    return true
+  end
+
+  local best_enemy = get_target( self.object )
+  if
+    best_enemy and best_enemy:alive()
+    and ( not xr_wounded.is_wounded( best_enemy ) )
+    and get_best_weapon( self.object )
+  then
+    self.st.grenadier_ready = self.grenadier:evaluate( self.object )
+    if self.st.grenadier_ready then
+      ogse_debug.add_active_eval( self.object, script_name(), "altcombat_grenadier" )
+      return true
+    end
+    ogse_debug.add_active_eval( self.object, script_name(), "altcombat" )
+    return true
+  end
+
+  if have_fresh_deadman( self.object ) then
+    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_cooldown" )
+    return true
+  end
+
+  return false
+end
+
+
+function evaluator_check_altcombat:check_corpse_danger()
+  local npc         = self.object
+  local best_danger = npc:best_danger()
+  if best_danger and best_danger:type() == danger_object.entity_corpse then
+    return check_corpse( npc, best_danger:object() )
+  end
+
+  return false
+end
+
+
+function check_corpse( npc, obj )
+  local t = known_corpses[ npc:id() ]
+  if not t then
+    t = {}
+    known_corpses[ npc:id() ] = t
+  end
+  if t[ obj:id() ] then return false end
+  t[ obj:id() ] = true
+  if ( not obj:is_stalker() ) or check_is_enemy( npc, obj ) then
+    return false
+  end
+
+  local killer_id = he_bai_compat.killer_id( obj ) -- [HE-PORT]
+  if
+    killer_id == 65535 or killer_id == obj:id() or killer_id == npc:id()
+  then
+    return false
+  end
+
+  local enemy = level.object_by_id( killer_id )
+  if is_danger_corpse( npc, enemy ) then
+    register_as_target( npc, enemy, enemy:is_actor() )
+    return true
+  end
+
+  return false
+end
+
+
+function is_danger_corpse( npc, enemy )
+  if
+    enemy and ( enemy:is_actor() or enemy:is_custom_monster() )
+    and enemy:alive()
+    and ( not xr_wounded.is_wounded( enemy ) )
+    and check_is_enemy( npc, enemy )
+  then
+    return true
+  end
+  return false
+end
+
+
+function evaluator_check_altcombat:get_grenade_inertion()
+  return time_global()
+    + math.random( grenade_inertion_min, grenade_inertion_max )
+end
+
+
+function evaluator_check_altcombat:check_for_grenades()
+  local npc = self.object
+
+  if self.st.active_grenade then
+    local check = self.st.active_grenade
+    local obj   = level.object_by_id( check.grenade )
+    if
+      check.timeout < time_global()
+      or not ( obj and obj:is_grenade() and not obj:is_ready_to_explode() )
+    then
+      grenka_already_blow[ check.name ] = time_global()
+    end
+  end
+
+  local grenade = self:get_nearest_grenade()
+  if
+    grenade and (
+      ( not self.st.active_grenade )
+      or self.st.active_grenade.grenade ~= grenade.grenade
+    )
+  then
+    local parent = level.object_by_id( grenade.parent )
+    if
+      parent and (
+        parent:id() == npc:id() or not check_is_enemy( npc, parent )
+      )
+    then
+      return false
+    end
+    self.st.active_grenade = grenade
+  end
+
+  grenade = self.st.active_grenade
+  if not grenade then return false end
+  if not grenade.inertion then
+    grenade.inertion = self:get_grenade_inertion()
+    return false
+  end
+  if grenade.inertion > time_global() then return false end
+
+  if not grenade.run then
+    local parent = level.object_by_id( grenade.parent )
+    if parent and check_is_enemy( npc, parent ) then
+      enable_memory_object( npc, parent )
+      process_enemy( npc, parent )
+    end
+    grenade.run = true
+  end
+
+  return true
+end
+
+
+function evaluator_check_altcombat:get_nearest_grenade()
+  local npc = self.object
+
+  local best_danger = npc:best_danger()
+  if best_danger then
+    local bd_type = best_danger:type()
+    if bd_type == danger_object.grenade then
+      local bd_object = best_danger:dependent_object()
+      if
+        bd_object
+        and level.object_by_id( bd_object:id() )
+        and ( bd_object:is_grenade() and not bd_object:is_ready_to_explode() )
+        and (
+          ( not grenka_already_blow[ bd_object:name() ] )
+          or time_global() - grenka_already_blow[ bd_object:name() ] > 5000
+        )
+      then
+        grenka_already_blow[ bd_object:name() ] = nil
+        local dist   = npc:position():distance_to( bd_object:position() )
+        local radius = xrs_grenade.get_grenade_radius( bd_object:section() )
+        if dist < radius * 0.9 then
+          return {
+            [ "grenade" ] = bd_object:id(),
+            [ "name"    ] = bd_object:name(),
+            [ "parent"  ] = best_danger:object():id(),
+            [ "timeout" ] = time_global() + 5000,
+          }
+        end
+      end
+    end
+  end
+end
+
+
+-- обновление основной цели, вызывается из апдейта или любой другой
+-- аналогичной обработки, хоть из эвалуатора
+-- обновим предварительно реестр целей
+function evaluator_check_altcombat:reprioritize_targets()
+  local npc = self.object
+  -- если у нас нет текущей цели, но есть движковая, то нужно
+  -- немедленно обновить список целей, что бы зарегистрировать
+  -- движкового врага. Иначе, если время обновления еще не наступило,
+  -- боевка отключится, т.к. врага нет, и включится движковая боевка,
+  -- т.к. есть движковый враг.
+  local be = get_target( npc )
+  if not ( be and be:alive() and not xr_wounded.is_wounded( be ) ) then
+    local enemy = npc:best_enemy()
+    if enemy and enemy:alive() and not xr_wounded.is_wounded( enemy ) then
+      last_reprioritize[ npc:id() ] = nil
+    end
+  end
+
+  if
+    last_reprioritize[ npc:id() ]
+    and last_reprioritize[ npc:id() ] > time_global()
+  then
+    return
+  end
+
+  self:get_targets_from_memory()
+  refresh_targets( npc )
+
+  if total_debug then
+    print_table_inlog_v2(
+      targets_list[ npc:id() ],
+      string.format( "--XRS_BATTLE_AI: TARGS of %s >>", npc:name() )
+    )
+  end
+
+  local last_range, last_target_id
+  for k, v in pairs( targets_list[ npc:id() ] ) do
+    if v.vis then               -- если цель видит нас
+      local close_combat, far_combat = combat_ranges( npc, v.npc )
+      local mult = combat_multiplier( v.npc )
+      if not v.npc then         -- если она монстр
+        if v.range >= close_combat and v.range < far_combat then
+          -- и цель на средней дистанции
+          v.weight = v.range * mult
+        elseif v.range < close_combat then -- а если вплотную
+          v.weight = v.range * mult
+        elseif check_friends_enemy( npc, k ) then
+          v.weight = v.range * mult * 3
+        end
+      else -- а если непись
+        if v.range >= close_combat and v.range < far_combat then
+          -- если не ближний бой
+          v.weight = v.range
+        elseif v.range < close_combat then -- а если ближний
+          v.weight = v.range * mult
+        elseif v.range > far_combat and v.range < ( npc:range() * 1.5 ) then
+          -- сверхдальний бой
+          v.weight = v.range * mult * 2
+        elseif check_friends_enemy( npc, k ) then
+          v.weight = v.range * mult * 3
+        end
+      end
+    else -- если не видит
+      if primary_target[ npc:id() ] == k then
+        set_primary_target( npc, nil )
+      end
+      local max_invis_range, max_invis_k
+      if v.npc then
+        max_invis_k = 3
+        max_invis_r = max_invisible_range_npc
+      else
+        max_invis_k = 2
+        max_invis_r = max_invisible_range_mon
+      end
+      if v.visible then
+        v.weight = v.range
+      elseif v.range < max_invis_r then
+        v.weight = v.range * max_invis_k
+      elseif
+          v.last_time_seen
+          and v.last_time_seen + memory_timeout > time_global()
+      then
+        -- если видели её не менее минуты назад
+        v.weight = v.range * 5
+      else
+        v.weight = 1000
+      end
+    end
+    if v.engine then
+      if v.actor or v.weight < 1000 then
+        v.weight       = v.weight * combat_mult_engine
+        last_range     = v.range
+        last_target_id = k
+      elseif not v.actor then
+        local enemy = level.object_by_id( k )
+        if
+          enemy and not (
+            v.npc and enemy:alive() and xr_wounded.is_wounded( enemy )
+          )
+        then
+          remove_memory_object( npc, enemy )
+          remove_from_targets( npc, enemy:id() )
+        end
+      end
+    end
+  end
+
+  local last_weight = 1000
+  for k, v in pairs( targets_list[ npc:id() ] ) do
+    if v.weight < last_weight then
+      last_range     = v.range
+      last_target_id = k
+      last_weight    = v.weight
+    end
+  end
+
+  if not last_target_id then
+    for k, v in pairs( targets_list[ npc:id() ] ) do
+      if ( not last_range ) or v.range < last_range then
+        last_range = v.range
+        if
+          v.actor or ( v.engine and not v.dead )
+          or (
+            v.npc and v.range < close_combat_distance
+            and v.last_time_seen
+            and v.last_time_seen + memory_timeout < time_global()
+          )
+        then
+          last_target_id = k
+        end
+      end
+    end
+  end
+  set_primary_target( npc, last_target_id )
+
+  if primary_target[ npc:id() ] then
+    if last_range and last_range > npc:range() then
+      npc:set_range( last_range * 1.1 )
+    end
+  else
+    if not have_fresh_deadman( npc ) then
+      last_enemy_id[ npc:id() ] = nil
+    end
+  end
+  last_reprioritize[ npc:id() ] = time_global() + reprioritize_timeout
+    + math.random( math.floor( reprioritize_timeout / 2 ) )
+end
+
+
+function evaluator_check_altcombat:get_targets_from_memory()
+  -- сбор врагов, вызывается из reprioritize_targets
+  local npc = self.object
+  local checked = {}
+  for o in npc:memory_visible_objects() do
+    if o.first_level_time < self.last_memory_check then break end
+    local obj = o:object()
+    if obj:is_stalker() and not obj:alive() then
+      check_corpse( npc, obj )
+    else
+      process_enemy( npc, obj )
+    end
+    checked[ obj:id() ] = true
+  end
+  for o in npc:memory_sound_objects() do
+    if o.first_level_time < self.last_memory_check then break end
+    local obj = o:object()
+    if not checked[ obj:id() ] then
+      process_enemy( npc, obj )
+      checked[ obj:id() ] = true
+    end
+  end
+  for o in npc:memory_hit_objects() do
+    if o.first_level_time < self.last_memory_check then break end
+    local obj = o:object()
+    if not checked[ obj:id() ] then
+      process_enemy( npc, obj )
+      checked[ obj:id() ] = true
+    end
+  end
+  self.last_memory_check = time_global()
+end
+
+
+class "action_altcombat" ( action_base )
+function action_altcombat:__init( npc, action_name, storage ) super( nil, action_name )
+  self.st = storage
+  self.covers = covers_mgr( self )
+  self.grenadier = xrs_grenade.action_kill_it_with_fire( storage.grenadier )
+  self.objects = {
+    [ game_object.friend  ] = {},
+    [ game_object.neutral ] = {},
+    [ game_object.enemy   ] = {},
+  }
+end
+
+
+function action_altcombat:initialize()
+  -- action_base.initialize( self )
+  if self:fake_battle_state() then
+    self.fake_battle = true
+    return
+  end
+  local npc = self.object
+  xr_sound.set_sound( npc, nil )
+  npc:movement_enabled( true )
+  stop_play_sound( npc )
+  self:set_weapons_idle( get_best_weapon( npc ) )
+  self:check_objects()
+  set_sound_event( npc, "start" )
+  state_mgr.set_state( npc, "idle", nil, nil, nil, { animation = true } )
+
+  if
+    db.storage[ npc:id() ]
+    and db.storage[ npc:id() ].active_scheme == "camper"
+  then
+    local scheme = db.storage[ npc:id() ].active_scheme
+    local st     = db.storage[ npc:id() ][ scheme ]
+    if st and st.path_walk and level.patrol_path_exists( st.path_walk ) then
+      local path_walk = patrol( st.path_walk )
+      self.st.is_camper = path_walk:level_vertex_id( path_walk:count() - 1 )
+    else
+      self.st.is_camper = npc:level_vertex_id()
+    end
+  else
+    self.st.is_camper = nil
+  end
+
+  self.fake_battle       = false
+  self.can_fire          = false
+  self.check_ready_state = true
+  in_combat[ npc:id() ]  = true
+  -- ogse_night.check_night( npc ) -- [HE-PORT]
+  sr_light.check_light( npc )
+
+  npc:set_desired_direction()
+  npc:set_desired_position()
+  npc:set_detail_path_type( move.curve )
+  npc:set_path_type( game_object.level_path )
+  npc:set_mental_state( anim.danger )
+  npc:set_body_state( move.standing )
+  npc:set_dest_level_vertex_id( npc:level_vertex_id() )
+  reset_last_time_send( npc )
+  npc:register_in_combat()
+  -- npc:enable_clutched_hammer( true ) -- [HE-PORT]
+  -- npc:set_fastest_scheduler( true ) -- [HE-PORT]
+  expire_death_places( npc )
+  self:restore_wpn_ammo()
+end
+
+
+function action_altcombat:restore_wpn_ammo()
+  local npc = self.object
+  local bw  = get_best_weapon( npc )
+  if
+    bw and bw:is_weapon_magazined()
+    and bw:get_ammo_in_magazine() < bw:get_magazine_size()
+  then
+    bw:set_ammo_elapsed( bw:get_magazine_size() )
+  end
+end
+
+
+function action_altcombat:fake_battle_state()
+  local npc = self.object
+  local st  = db.storage[ npc:id() ]
+  if st.active_scheme and st.active_scheme == "remark" then
+    return fake_battle_states[ state_mgr.get_state( npc ) ]
+  end
+end
+
+
+function action_altcombat:not_ready_state()
+  local npc = self.object
+  if self.check_ready_state then
+    npc:clear_animations()
+    if is_not_ready_state( npc ) then
+      self.aiming = false
+      return true
+    end
+    self.check_ready_state = nil
+    stop_state_mgr_update( npc )
+  end
+  if npc:critically_wounded() then
+    if not self.critically_wounded then
+      npc:set_movement_type( move.stand )
+      npc:set_mental_state( anim.danger )
+      npc:set_body_state( move.standing )
+      npc:set_dest_level_vertex_id( npc:level_vertex_id() )
+      reset_last_time_send( npc )
+      npc:set_sight( look.cur_dir, true, true )
+      self:set_weapons_idle( get_best_weapon( npc, true ) )
+      npc:play_sound( stalker_ids.sound_injuring )
+      self.critically_wounded = true
+    end
+    return true
+  elseif self.critically_wounded then
+    self.critically_wounded = false
+  end
+  return false
+end
+
+
+function action_altcombat:execute()
+  if self.fake_battle then return end
+  local pt = profile_timer()
+  pt:start()
+  self.firing_actor = false
+  self:_execute()
+  if not self.firing_actor then
+    self.start_firing_actor = false
+  end
+  pt:stop()
+  if pt:time() > 30000 then
+    log2(
+      "[%s]: %s: action_altcombat:execute() too slow: %s",
+      script_name(), self.object:name(), pt:time()
+    )
+  end
+end
+
+
+function reset_last_time_send( npc )
+  last_hideout[ npc:id()     ] = nil
+  last_sent_vertex[ npc:id() ] = nil
+  last_time_send[ npc:id()   ] = nil
+end
+
+
+function action_altcombat:get_npc_reaction_time()
+  return time_global() + math.random( npc_reaction_min, npc_reaction_max )
+end
+
+
+function action_altcombat:_execute()
+  -- action_base.execute( self )
+  local npc = self.object
+
+  if xr_wounded.is_wounded( npc ) or not npc:alive() then
+    reset_everything( npc )
+    return
+  end
+  if self:not_ready_state() then return end
+
+  -- получим текущее оружие
+  local bw    = get_best_weapon( npc )
+  local enemy = get_target( npc, true ) -- текущий враг
+  if self:evade_grenades( bw, enemy ) then return end
+
+  local deadman
+  if not ( enemy or self:has_grenade() ) then
+    deadman = have_fresh_deadman( npc )
+  end
+  if not ( enemy or deadman ) then
+    self:set_weapons_idle( bw )
+    reset_last_time_send( npc )
+    last_enemy_id[ npc:id()     ] = nil
+    primary_target[ npc:id()    ] = nil
+    last_reprioritize[ npc:id() ] = nil
+    return
+  end
+
+  -- пауза перед выходом из боя
+  if deadman then
+    stop_play_sound( npc )
+    local obj = level.object_by_id( deadman )
+    if obj then
+      npc:set_sight( obj, true, true )
+    end
+    self:set_transfer_state( obj, bw )
+    if bw then
+      self.object:set_item( object.aim1, bw )
+      self.aiming = false
+    end
+    last_enemy_id[ npc:id() ] = nil
+    return
+  end
+
+  -- строим список врагов/друзей, проверяем линию огня - в своих и
+  -- нейтралов чтоб не стрелять
+  self:check_objects( bw, enemy )
+
+  -- инициализация боя
+  if
+    enemy
+    and (
+      ( not last_enemy_id[ npc:id() ] )
+      or enemy:id() ~= last_enemy_id[ npc:id() ]
+    )
+  then
+    last_enemy_id[ npc:id() ] = enemy:id()
+    enable_memory_object( self.object, enemy )
+    if bw then self.object:set_item( object.aim1, bw ) end
+    notify_friends_later( npc, enemy )
+    self:set_combat_sight( enemy, bw )
+  end
+
+  if self:throw_grenade() then return end
+
+  process_combat_sound_later( npc )
+  self:set_combat_sight( enemy, bw )
+  self:execute_situation_later( enemy, bw )
+end
+
+
+local combat_situations_args  = {}
+local combat_situations_queue = {}
+
+function action_altcombat:execute_situation_later( be, bw )
+  local npc = self.object
+  if not combat_situations_args[ npc:id() ] then
+    table.insert( combat_situations_queue, npc:id() )
+  end
+  combat_situations_args[ npc:id() ] = function() self:execute_situation() end
+end
+
+function reset_combat_situation( id )
+  combat_situations_args[ id ] = nil
+end
+
+
+function action_altcombat:execute_situation()
+  local npc = self.object
+  local be  = get_target( npc, true ) -- текущий враг
+  if not be then return false end
+  local bw  = get_best_weapon( npc )
+  if not bw then return false end
+  local cur_situation, last_algorythm
+  local lcp     = last_choosed_path[ npc:id() ]
+  local use_lcp = false
+  if lcp and lcp.inertion > time_global() then
+    cur_situation  = lcp.situation
+    last_algorythm = lcp.alg
+    use_lcp        = true
+  else
+    cur_situation, last_algorythm = self:process_situation( be, bw )
+    if
+      lcp and lcp.situation == cur_situation
+      and (
+        lcp.keep
+        or (
+          lcp.be == be:id()
+          and be:position():distance_to( lcp.pos ) < 5
+        )
+      )
+    then
+      if in_hideout( npc ) and not lcp.keep then
+        if lcp.ttl and lcp.ttl > time_global() then
+          use_lcp = true
+          if lcp.alg == "find_cover_10" or lcp.alg == "find_cover_11" then
+            last_algorythm = lcp.alg
+          end
+        elseif not lcp.ttl then
+          use_lcp = true
+          local max_time
+          if lcp.alg == "find_cover_10" or lcp.alg == "find_cover_11" then
+            last_algorythm = lcp.alg
+            local dist = npc:position():distance_to( be:position() )
+            max_time = math.max( 10, math.floor( dist / 150 * 300 ) )
+          else
+            max_time = 60
+          end
+          lcp.ttl = time_global() + ( math.random( max_time ) * 1000 )
+        end
+      else
+        use_lcp = true
+      end
+    end
+  end
+  if not use_lcp then
+    if lcp then
+      lcp.alg       = last_algorythm
+      lcp.be        = be:id()
+      lcp.inertion  = self:get_npc_reaction_time()
+      lcp.pos       = be:position()
+      lcp.situation = cur_situation
+      lcp.ttl       = nil
+    else
+      lcp = {
+        alg       = last_algorythm,
+        be        = be:id(),
+        inertion  = self:get_npc_reaction_time(),
+        pos       = be:position(),
+        situation = cur_situation,
+      }
+      last_choosed_path[ npc:id() ] = lcp
+    end
+    reset_last_time_send( npc )
+  end
+
+  self.covers:set_best_enemy( npc, be )
+  ASSERT(
+    last_algorythm and self.covers[ last_algorythm ],
+    "[%s]: %s: wrong last_algorythm = %s",
+     script_name(), npc:name(), tostring( last_algorythm )
+  )
+  local assist_point = self.covers[ last_algorythm ]( self.covers )
+
+  if assist_point and assist_point ~= 0 then
+    utils.send_to_nearest_accessible_vertex( npc, assist_point )
+  end
+
+  return true
+end
+
+
+function action_altcombat:has_grenade()
+  local grenade = self.st.active_grenade
+  if grenade and grenade.inertion > time_global() then
+    grenade = nil
+  end
+  return grenade
+end
+
+
+function be_can_fire( be )
+  return be:is_actor() or be:is_stalker() or be:clsid() == clsid.burer_s
+end
+
+
+function be_can_fire_to_npc( be, npc )
+  if not ( be:is_stalker() and be:alive() ) then return false end
+  if not is_npc_enemy_of( be, npc ) then return false end
+  return be:can_fire_to_enemy( npc, fire_make_sense_interval_be )
+end
+
+
+function action_altcombat:process_situation( be, bw )
+  local npc      = self.object
+  local be_pos   = be:position()
+  local npc_pos  = npc:position()
+  local distance = be_pos:distance_to( npc_pos ) - be:radius() - npc:radius()
+  local npc_rank = get_obj_rank_name( npc )
+
+  local lcp = last_choosed_path[ npc:id() ]
+  if lcp then lcp.keep = false end
+
+  local cur_situation = 0
+  local last_algorythm
+
+  if self:has_grenade() then
+    time_hide[ npc:id() ] = nil
+    cur_situation  = 1
+    last_algorythm = "grenade"
+    self:set_weapons_fire( be, bw, false, npc_rank )
+
+  elseif                     -- если совсем нет патронов: ищем укрытие
+    ( not bw )
+    or ( bw:is_weapon_magazined() and bw:get_ammo_total() == 0 )
+  then
+    time_hide[ npc:id() ] = nil
+    cur_situation  = 2
+    last_algorythm = "find_cover_2"
+
+    self:set_transfer_state( be, bw, true )
+    choose_idle_scheme( npc, "defence" )
+
+  elseif distance < 5 then
+    time_hide[ npc:id() ] = nil
+    cur_situation  = 3
+    last_algorythm = "find_cover_9"
+    self:set_transfer_and_combat( be, bw, npc_rank )
+    choose_idle_scheme( npc, "defence" )
+
+    -- если враг не умеет стрелять (мутант)
+    if not be_can_fire( be ) then
+      if lcp and lcp.situation == cur_situation then
+        lcp.keep = true
+      end
+    end
+
+  -- если враг не умеет стрелять (мутант)
+  elseif not be_can_fire( be ) then
+    time_hide[ npc:id() ] = nil
+    if npc:can_fire_to_enemy( be, fire_make_sense_interval ) then
+      -- если видим врага
+      if distance < close_combat_distance then
+        cur_situation  = 4
+        last_algorythm = "find_cover_9"
+      else
+        self.st.grenadier.ready_to_grenade = not be:see( npc )
+        cur_situation  = 5
+        last_algorythm = "keep"
+      end
+      if is_enemy_see( be, npc ) then
+        choose_idle_scheme( npc, "attack" )
+      else
+        choose_idle_scheme( npc, "attack_notsee" )
+      end
+    elseif be:see( npc ) or distance < close_combat_distance then
+      -- если НЕ видим врага и он видит нас
+      cur_situation  = 6
+      last_algorythm = "find_cover_9"
+      choose_idle_scheme( npc, "defence" )
+    else
+      -- если НЕ видим врага и он НЕ видит нас
+      self.st.grenadier.ready_to_grenade = true
+      cur_situation  = 7
+      last_algorythm = random_choice( "find_cover_8", "keep" )
+      choose_idle_scheme( npc, "lost" )
+    end
+    self:set_transfer_and_combat( be, bw, npc_rank )
+
+  -- перезарядка
+  elseif bw:get_hud_item_state() == weapon_states.reload then
+    time_hide[ npc:id() ] = nil
+    cur_situation  = 8
+    last_algorythm = "find_cover_2"
+
+    self:set_transfer_and_combat( be, bw, npc_rank )
+    choose_idle_scheme( npc, "defence" )
+
+  -- если видим врага
+  elseif npc:can_fire_to_enemy( be, fire_make_sense_interval ) then
+    -- и он видит нас - стреляем, ищем укрытие
+    if be:see( npc ) or be_can_fire_to_npc( be, npc ) then
+      time_hide[ npc:id() ] = nil
+      cur_situation  = 9
+      last_algorythm = "find_cover_2"
+      self:set_transfer_and_combat( be, bw, npc_rank )
+      choose_idle_scheme( npc, "attack" )
+
+    -- и он НЕ видит нас - стреляем наступая
+    else
+      self.st.grenadier.ready_to_grenade = true
+      time_hide[ npc:id() ] = nil
+      cur_situation = 10
+      if self.st.is_camper then
+        last_algorythm = "find_cover_5"
+      else
+        last_algorythm = random_choice(
+          "find_cover_1", "find_cover_3", "find_cover_4"
+        )
+      end
+      self:set_transfer_and_combat( be, bw, npc_rank )
+      choose_idle_scheme( npc, "attack_notsee" )
+    end
+
+  -- если НЕ видим врага и он видит нас - убегаем, ищем укрытие
+  elseif be:see( npc ) or be_can_fire_to_npc( be, npc ) then
+    time_hide[ npc:id() ] = nil
+    cur_situation  = 11
+    last_algorythm = "find_cover_2"
+    self:set_transfer_and_combat( be, bw, npc_rank )
+    choose_idle_scheme( npc, "defence" )
+
+  -- если НЕ видим врага и он НЕ видит нас - ищем врага
+  elseif self.st.is_camper then
+    self.st.grenadier.ready_to_grenade = true
+    cur_situation  = 12
+    last_algorythm = "find_cover_5"
+    self:set_transfer_and_combat( be, bw, npc_rank )
+    choose_idle_scheme( npc, "lost" )
+
+  else
+    self.st.grenadier.ready_to_grenade = true
+    if not time_hide[ npc:id() ] then
+      if distance > distant_combat_distance then
+        local k = ( distance - distant_combat_distance ) / 150
+        if math.random() < k then
+          time_hide[ npc:id() ] = time_global()
+        end
+      end
+      if not time_hide[ npc:id() ] then
+        time_hide[ npc:id() ] = time_global() + ( math.random( 7, 60 ) * 1000 )
+      end
+    end
+    if time_hide[ npc:id() ] < time_global() then
+      if self:actor_at_height( be ) then
+        cur_situation  = 13
+        last_algorythm = random_choice(
+          "find_cover_2", "find_cover_3", "find_cover_7"
+        )
+      else
+        cur_situation  = 14
+        last_algorythm = random_choice(
+          "find_cover_1", "find_cover_3", "find_cover_4"
+        )
+      end
+    else
+      cur_situation  = 15
+      last_algorythm = random_choice(
+        "find_cover_2", "find_cover_3", "find_cover_7", "find_cover_9",
+        "find_cover_10", "find_cover_11", "keep"
+      )
+    end
+    self:set_transfer_and_combat( be, bw, npc_rank )
+    choose_idle_scheme( npc, "lost" )
+  end
+  return cur_situation, last_algorythm
+end
+
+
+function action_altcombat:find_cover( be, ... )
+  self.covers:set_best_enemy( self.object, be )
+  self.covers:find_cover( ... )
+end
+
+
+function action_altcombat:set_transfer_and_combat( be, bw, npc_rank )
+  if self.can_fire then
+    self:set_combat_state( be, bw )
+    self:set_weapons_fire( be, bw, false, npc_rank )
+  else
+    self:set_transfer_state( be, bw )
+  end
+end
+
+
+function action_altcombat:actor_at_height( be )
+  if not be:is_actor() then return false end
+  local lvid_pos = level.vertex_position( db.actor:level_vertex_id() )
+  local height   = db.actor:position().y - lvid_pos.y
+  if height < 3 then return false end
+  if
+    ( not self.actor_at_height_inert )
+    or self.actor_at_height_inert < time_global()
+  then
+    self.actor_at_height_inert     = time_global() + math.random( 60 ) * 1000
+    self.actor_at_height_threshold = math.random( 2 )
+  end
+  return ( self.actor_at_height_threshold > 1 )
+end
+
+
+function action_altcombat:check_objects( bw, enemy )
+  local npc = self.object
+  if enemy and bw and IsRPG( bw ) then
+    for k, _ in pairs( self.objects ) do
+      self.objects[ k ] = {}
+    end
+    for o in npc:memory_visible_objects() do
+      self:check_single_object( o:object() )
+    end
+    for o in npc:memory_sound_objects() do
+      self:check_single_object( o:object() )
+    end
+    for _, t in ipairs({ game_object.friend, game_object.neutral }) do
+      for k, v in pairs( self.objects[ t ] ) do
+        if self:check_npc_on_fire_line( v, bw, enemy ) then
+          self.can_fire = false
+          return
+        end
+      end
+    end
+  end
+
+  if bw and bw:is_weapon() then
+    if bw:is_weapon_magazined() and bw:get_ammo_total() > 0 then
+      self.can_fire = true
+    else
+      self.can_fire = bw:get_weapon():ready_to_kill()
+    end
+  else
+    self.can_fire = false
+  end
+end
+
+
+function action_altcombat:check_single_object( obj )
+  if not obj then return end
+  if not ( obj:is_actor() or obj:is_stalker() ) then return end
+  local npc = self.object
+  if
+    obj:alive() and npc:id() ~= obj:id()
+    and primary_target[ npc:id() ] ~= obj:id()
+  then
+    self.objects[ npc:relation( obj ) ][ obj:id() ] = obj
+  end
+end
+
+
+function action_altcombat:check_npc_on_fire_line( obj, weapon, be )
+  local npc        = self.object
+  local npc_pos    = npc:position()
+  local be_pos     = be:position()
+  local friend_pos = obj:position()
+  return (
+    be_pos:distance_to( friend_pos ) < 25
+    or be_pos:distance_to( npc_pos ) < 25
+    -- or friend_pos:distance_to( npc_pos ) < 25
+  )
+end
+
+
+local grenka_already_shout = {}
+
+function action_altcombat:evade_grenades( bw, enemy )
+  if not self.st.active_grenade then return false end
+  local npc        = self.object
+  local danger     = self.st.active_grenade
+  local id         = danger.grenade
+  local danger_obj = level.object_by_id( id )
+
+  local blown = grenka_already_blow[ danger.name ]
+  if
+    blown or not (
+      danger_obj
+      and danger_obj:is_grenade() and not danger_obj:is_ready_to_explode()
+    )
+  then
+    self.st.active_grenade = nil
+    npc:set_mental_state( anim.danger )
+    if not blown then
+      grenka_already_blow[ danger.name ] = time_global()
+    end
+    escape_point[ npc:id() ] = nil
+    return false
+  end
+
+  if enemy then
+    local be_pos   = enemy:position()
+    local npc_pos  = npc:position()
+    local distance = be_pos:distance_to( npc_pos ) - enemy:radius() - npc:radius()
+    if distance < 5 then
+      self.st.active_grenade = nil
+      npc:set_mental_state( anim.danger )
+      escape_point[ npc:id() ] = nil
+      return false
+    end
+  end
+
+  if danger.inertion > time_global() then
+    return false
+  end
+
+  local ep = escape_point[ npc:id() ]
+  if ( not ep ) or ep.id ~= id then
+    reset_last_time_send( npc )
+    lock_vertex( npc, nil )
+    local pos   = npc:position()
+    local dist  = pos:distance_to( danger_obj:position() )
+    local dvert = self:find_cover( danger_obj, 2 )
+    if not dvert then
+      dvert = npc:level_vertex_id()
+    end
+    ep = {
+      [ "id"   ] = id,
+      [ "lvid" ] = dvert,
+    }
+    escape_point[ npc:id() ] = ep
+    stop_play_sound( npc )
+    if danger.parent ~= npc:id() and not grenka_already_shout[ id ] then
+      grenka_already_shout[ id ] = true
+      -- stalker_ids.sound_grenade_alarm
+      xr_sound.set_sound_play( npc, "beware_grenade" )
+    end
+  end
+  utils.send_to_nearest_accessible_vertex( npc, ep.lvid )
+
+  if npc:path_completed() and enemy then
+    npc:set_sight( enemy, true, true )
+    return false
+  elseif npc:path_completed() then
+    if not enemy then
+      enemy = level.object_by_id( danger.parent ) or danger_obj
+    end
+    npc:set_sight( enemy, true, true )
+    npc:set_movement_type( move.stand )
+    npc:set_mental_state( anim.danger )
+    npc:set_body_state( move.crouch )
+  else
+    npc:set_sight( look.path_dir, true, true )
+    npc:set_movement_type( move.run )
+    npc:set_mental_state( anim.danger )
+    npc:set_body_state( move.standing )
+  end
+  self:set_weapons_idle( bw )
+
+  return true
+end
+
+
+function action_altcombat:throw_grenade()
+  local npc = self.object
+  if self.st.grenadier_ready then
+    if not self.grenadier_initialized then
+      self.grenadier:initialize( npc )
+      self.grenadier_initialized = true
+    end
+    self.grenadier:execute()
+    return true
+  end
+  self.st.grenadier.ready_to_grenade = false
+  if self.grenadier_initialized then
+    self.grenadier:finalize()
+    self.aiming = false
+    self.grenadier_initialized = false
+    reset_last_time_send( npc )
+    return true
+  end
+  return false
+end
+
+
+function action_altcombat:finalize()
+  if self.grenadier_initialized then
+    self.grenadier:finalize()
+    self.grenadier_initialized = false
+  end
+  local npc = self.object
+  self.aiming              = false
+  self.critically_wounded  = false
+  self.combat_sight        = false
+  self.st.grenadier_ready  = false
+  self.st.grenadier.ready_to_grenade = false
+  self.start_firing_actor  = false
+  reset_everything( npc )
+  cooldown[ npc:id() ] = time_global() + cooldown_time
+  if self.fake_battle then
+    self.fake_battle = false
+    return
+  end
+  xr_sound.set_sound( npc, nil )
+  npc:movement_enabled( true )
+  stop_play_sound( npc )
+  sr_light.check_light( npc )
+  self:set_weapons_idle( get_best_weapon( npc ) )
+  npc:stalker_disp_base( 0 )
+  npc:set_body_state( move.standing )
+  if npc:alive() then
+    npc:unregister_in_combat()
+    -- npc:enable_clutched_hammer( false ) -- [HE-PORT]
+    npc:set_mental_state( anim.free )
+    self:restore_wpn_ammo()
+    -- ogse_night.check_night( npc ) -- [HE-PORT]
+  end
+  -- npc:set_fastest_scheduler( false ) -- [HE-PORT]
+  state_mgr.set_state( npc, "idle", nil, nil, nil, { animation = true } )
+end
+
+
+function friend_is_near( npc, obj )
+  if
+    obj and obj:is_stalker() and obj:alive() and npc:id() ~= obj:id()
+    and not xr_wounded.is_wounded( obj )
+  then
+    if check_is_enemy( npc, obj, true ) then
+      return false
+    end
+
+    if
+      (
+        radio_comms[ npc:character_community() ]
+        and npc:character_community() == obj:character_community()
+      )
+      or (
+        npc:alive() and npc:relation( obj ) == game_object.friend
+        and npc:see_right_now( obj )
+      )
+      or npc:position():distance_to( obj ) < 25
+    then
+      return true
+    end
+  end
+
+  return false
+end
+
+
+function check_friends_enemy( npc, enemy_id )
+  local checked = {}
+  for o in npc:memory_visible_objects() do
+    local obj = o:object()
+    if check_enemy_of( npc, obj, enemy_id ) then return true end
+    checked[ obj:id() ] = true
+  end
+  for o in npc:memory_sound_objects() do
+    local obj = o:object()
+    if not checked[ obj:id() ] then
+      if check_enemy_of( npc, obj, enemy_id ) then return true end
+      checked[ obj:id() ] = true
+    end
+  end
+  return false
+end
+
+function check_enemy_of( npc, obj, enemy_id )
+  if
+    friend_is_near( npc, obj )
+    and primary_target[ obj:id() ]
+    and primary_target[ obj:id() ] == enemy_id
+  then
+    return true
+  end
+  return false
+end
+
+
+function notify_friends( npc, enemy, wounded )
+  local notified = {}
+  if npc:alive() then
+    for o in npc:memory_visible_objects() do
+      local obj = o:object()
+      notify_friend_of( npc, obj, enemy, wounded )
+      notified[ obj:id() ] = true
+    end
+    for o in npc:memory_sound_objects() do
+      local obj = o:object()
+      if not notified[ obj:id() ] then
+        notify_friend_of( npc, obj, enemy, wounded )
+        notified[ obj:id() ] = true
+      end
+    end
+  else
+    for id, cobj in pairs( db.creatures ) do -- [HE-PORT]
+      if cobj and IsStalker( cobj ) then
+        local obj = level.object_by_id( id )
+        if
+          obj and obj:alive() and (
+            obj:see( npc ) or npc:position():distance_to( obj ) < 10
+          )
+        then
+          notify_friend_of( npc, obj, enemy, wounded )
+        end
+      end
+    end
+  end
+end
+
+function notify_friend_of( npc, obj, enemy, wounded )
+  if not friend_is_near( npc, obj ) then return end
+  if wounded then
+    process_wounded( obj, npc )
+  end
+  if not get_target_info( obj, enemy:id() ) then
+    process_enemy( obj, enemy )
+  end
+end
+
+function process_wounded( npc, friend )
+  if
+    npc:relation( friend ) == game_object.friend
+    or npc:character_community() == friend:character_community()
+    or npc:team() == friend:team()
+  then
+    local t = already_know_about[ npc:id() ]
+    if not t then
+      t = {}
+      already_know_about[ npc:id() ] = t
+    end
+    if not friend:alive() then
+      if not t[ friend:id() ] then
+        set_sound_event( npc, "dead" )
+        t[ friend:id() ] = true
+      end
+    elseif xr_wounded.is_wounded( friend ) then
+      if not t[ friend:id() ] then
+        set_sound_event( npc, "fr_hit" )
+        t[ friend:id() ] = true
+      end
+    end
+  end
+end
+
+
+local damage_from_actor = {}
+
+function hit_callback( obj, amount, local_direction, who, bone_index )
+  -- если объект был ранее забыт - очухиваем его, если нету в табличке
+  -- записываем в табличку
+  local npc = obj
+  if who and npc and who:id() == npc:id() then return end
+
+  if in_combat[ npc:id() ] and amount > 0.01 then
+    local lvid = locked_vertexes[ npc:id() ]
+    if lvid and who and not who:is_monster() then
+      local pos = level.vertex_position( lvid )
+      if npc:position():distance_to( pos ) < 2 then
+        register_death_place( lvid, who, math.random( 2, 5 ) * 1000 )
+      end
+      reset_last_time_send( npc )
+    end
+  end
+
+  if
+    amount and amount > 0.01 and npc:alive()
+    and not xr_wounded.is_wounded( npc )
+  then
+    if not targets_list[ npc:id() ] then
+      targets_list[ npc:id() ] = {}
+    end
+    if ( who:is_actor() or who:is_stalker() ) and who:alive() then
+      if not get_target_info( npc, who:id() ) then
+        enable_memory_object( npc, who )
+        if who:is_actor() then
+          if check_is_enemy( npc, who ) then
+            register_as_target( npc, who )
+          else
+            if not damage_from_actor[ npc:id() ] then
+              damage_from_actor[ npc:id() ] = amount
+            else
+              damage_from_actor[ npc:id() ] =
+                damage_from_actor[ npc:id() ] + amount
+            end
+            if damage_from_actor[ npc:id() ] > 0.1 then
+              register_as_target( npc, who )
+            end
+          end
+        else
+          process_enemy( npc, who )
+        end
+      else
+        local enemy_record = get_target_info( npc, who:id() )
+        enemy_record.last_time_seen = time_global()
+        enemy_record.vertex         = who:level_vertex_id()
+        enemy_record.vispoint       = get_vispoint( npc, who, true )
+      end
+      if check_is_enemy( npc, who, true ) or who:is_actor() then
+        if amount > 0.1 then
+          set_primary_target( npc, who:id() )
+        end
+      else
+        set_sound_event( npc, "ff" )
+      end
+    elseif who:is_monster() and who:alive() then
+      if not get_target_info( npc, who:id() ) then
+        enable_memory_object( npc, who )
+        process_enemy( npc, who )
+      else
+        local enemy_record = get_target_info( npc, who:id() )
+        enemy_record.last_time_seen = time_global()
+        enemy_record.vertex         = who:level_vertex_id()
+        enemy_record.vispoint       = get_vispoint( npc, who, true )
+      end
+      if amount > 0.1 then
+        set_primary_target( npc, who:id() )
+      end
+    end
+
+    last_reprioritize[ npc:id() ] = nil
+  end
+end
+
+
+function get_vispoint( npc, enemy, hitted )
+  if npc:see_right_now( enemy ) then
+    vispoint = he_bai_compat.see_vispoint( npc, enemy ) -- [HE-PORT]
+    if enemy:center():distance_to( vispoint ) <= enemy:radius() then
+      return vispoint
+    end
+  elseif hitted then
+    return enemy:center()
+  end
+end
+
+
+function expire_death_places( obj )
+  for k, v in pairs( death_places ) do
+    if v.ttl <= time_global() or v.killer == obj:id() then
+      death_places[ k ] = nil
+    end
+  end
+end
+
+
+function wpn_is_pistol_sil( weapon )
+  if
+    weapon and weapon:is_pistol() and (
+      ogse_wpn_utils.get_silencer_status( weapon ) == 1
+      or (
+        ogse_wpn_utils.get_silencer_status( weapon ) == 2
+        and ogse_wpn_utils.get_silencer_flag( weapon )
+      )
+    )
+  then
+    return true
+  end
+  return false
+end
+
+
+function death_place( npc, who )
+  expire_death_places( npc )
+  local silent_kill = false
+  if who:is_actor() then
+    if wpn_is_pistol_sil( he_bai_compat.who_hit_wpn( npc ) ) then -- [HE-PORT]
+      silent_kill = true
+    else
+      local lvid = locked_vertexes[ npc:id() ]
+      local pos  = level.vertex_position( lvid )
+      if npc:position():distance_to( pos ) < 2 then
+        register_death_place( lvid, who, math.random( 30, 60 ) * 1000 )
+      end
+    end
+  end
+
+  if not silent_kill then notify_friends( npc, who, true ) end
+  reset_everything( npc )
+  target_lost( npc )
+end
+
+
+function register_death_place( lvid, who, ttl )
+  local t = {
+    [ "killer" ] = who:id(),
+    [ "pos"    ] = who:position(),
+    [ "ttl"    ] = time_global() + ttl,
+  }
+  death_places[ lvid ] = t
+  return t
+end
+
+
+function on_monster_death( obj, who )
+  target_lost( obj )
+end
+
+
+function on_monster_net_destroy( obj )
+  target_lost( obj )
+end
+
+
+function on_wounded( npc )
+  local be = he_bai_compat.who_hit( npc ) or get_target( npc ) or npc:best_enemy() -- [HE-PORT]
+  if is_danger_corpse( npc, be ) then
+    notify_friends( npc, be, true )
+  end
+  target_lost( npc )
+end
+
+
+function target_lost( obj )
+  -- если это чья-то главная цель, то ему нужно выбрать нового врага
+  for npc_id, enemy_id in pairs( primary_target ) do
+    if enemy_id == obj:id() then
+      last_reprioritize[ npc_id ] = nil
+    end
+  end
+end
+
+
+function go_offline( obj )
+  reset_everything( obj )
+  target_lost( obj )
+end
+
+
+function reset_everything( npc )
+  cooldown[ npc:id() ] = nil
+  escape_point[ npc:id() ] = nil
+  in_combat[ npc:id() ] = nil
+  inited[ npc:id() ] = nil
+  last_choosed_path[ npc:id() ] = nil
+  last_enemy_id[ npc:id() ] = nil
+  last_reprioritize[ npc:id() ] = nil
+  last_target[ npc:id() ] = nil
+  reset_last_time_send( npc )
+  lock_vertex( npc, nil )
+  primary_target[ npc:id() ] = nil
+  sounds_timeout[ npc:id() ] = nil
+  targets_list[ npc:id() ] = {}
+  time_hide[ npc:id() ] = nil
+  expire_death_places( npc )
+  reset_combat_situation( npc:id() )
+  reset_combat_sounds( npc:id() )
+  reset_friends_notification( npc:id() )
+  restart_state_mgr_update( npc )
+end
+
+
+function its_a_trap( npc, vertex )
+  local t = death_places[ vertex ]
+  if not t then return false end
+  if t.ttl > time_global() then
+    local enemy = level.object_by_id( t.killer )
+    if
+      enemy and (
+        enemy:is_actor()
+        or ( enemy:is_stalker() and not xr_wounded.is_wounded( enemy ) )
+      )
+    then
+      if enemy:position():distance_to( t.pos ) > 5 then
+        return false
+      end
+      return check_is_enemy( npc, enemy )
+    end
+  end
+  death_places[ vertex ] = nil
+  return false
+end
+
+
+function process_enemy( npc, enemy )
+  if not (
+    enemy and npc:id() ~= enemy:id()
+    and ( enemy:is_actor() or enemy:is_custom_monster() )
+  ) then
+    return
+  end
+  if get_target_info( npc, enemy:id() ) then return end
+  if enemy:alive() and not xr_wounded.is_wounded( enemy ) then
+    if we_are_under_attack( npc, enemy ) then
+      register_as_target( npc, enemy )
+    end
+  end
+end
+
+
+function we_are_under_attack( npc, enemy )
+  if not check_is_enemy( npc, enemy ) then return false end
+
+  if enemy:is_actor() then
+    local be = npc:best_enemy()
+    local bd = npc:best_danger()
+    local bd_obj
+    if bd then
+      bd_obj = bd:object()
+    end
+    if be and be:is_actor() then
+      return true
+    elseif bd_obj and bd_obj:is_actor() then
+      local bd_type = bd:type()
+      if needed_dangers[ bd_type ] then
+        return true
+      end
+    end
+    return false
+  end
+
+  local target           = get_target( enemy ) or enemy:best_enemy()
+  local danger_by_engine = enemy:best_danger()
+  local best_danger_object
+  if danger_by_engine then
+    best_danger_object = danger_by_engine:object()
+  end
+  if ( not target ) and best_danger_object then
+    local bd_type = danger_by_engine:type()
+    if targeting_dangers[ bd_type ] then
+      target = best_danger_object
+    end
+  end
+  if not target then return false end
+
+  local npc_sobj    = alife():object( npc:id() )
+  local target_sobj = alife():object( target:id() )
+  if not ( npc_sobj and target_sobj ) then return false end
+
+  if target:id() == npc:id() then
+    return true
+
+  elseif check_is_enemy( npc, target, true ) then
+    return false
+
+  elseif not ( npc:see( target ) or npc:position():distance_to( target ) < 25 ) then
+    return false
+
+  elseif target:is_actor() then
+    local k = nil -- [HE-PORT]
+    if k and k > 0.15 then
+      return npc:relation( target ) == game_object.friend
+        or npc:character_community() == target:character_community()
+    end
+    return false
+
+  elseif target:is_stalker() then
+    if
+      npc:relation( target ) == game_object.friend
+      or npc:character_community() == target:character_community()
+      or npc:team() == target:team()
+    then
+      return true
+
+    elseif
+      target_sobj:smart_terrain_id() ~= 65535
+      and target_sobj:smart_terrain_id() == npc_sobj:smart_terrain_id()
+    then
+      return true
+    end
+
+    return npc:position():distance_to( target ) < 25
+  end
+
+  return false
+end
+
+
+function is_npc_enemy_of( enemy, npc )
+  if enemy:is_stalker() then
+    local be = get_target( enemy )
+    if be then
+      return ( be:id() == npc:id() )
+    end
+  end
+  local be = enemy:best_enemy()
+  if be then
+    return ( be:id() == npc:id() )
+  end
+  return false
+end
+
+
+function is_enemy_see( enemy, npc )
+  if enemy:is_actor() then
+    return enemy:see( npc )
+  end
+  return is_npc_enemy_of( enemy, npc )
+end
+
+
+function register_as_target( npc, enemy, force_vis )
+  if not ( npc and npc:alive() and not xr_wounded.is_wounded( npc ) ) then
+    return
+  end
+  if not targets_list[ npc:id() ] then
+    targets_list[ npc:id() ] = {}
+  end
+  local enemy_record
+  local id = enemy:id()
+  if get_target_info( npc, id ) then
+    local t = get_target_info( npc, id )
+    if force_vis then
+      t.last_time_seen = time_global()
+      t.vertex         = enemy:level_vertex_id()
+      t.vis            = true
+      t.vis_lock       = true
+      t.vispoint       = get_vispoint( npc, enemy )
+    end
+    enemy_record = t
+  else
+    local dist = npc:position():distance_to( enemy:position() )
+    enemy_record = {
+      actor  = enemy:is_actor(),
+      engine = false,
+      npc    = ( enemy:is_actor() or enemy:is_stalker() ),
+      range  = dist,
+      vis    = ( force_vis or is_enemy_see( enemy, npc ) ),
+      vis_lock = force_vis,
+      visible  = npc:see( enemy ),
+      weight = 1000,
+    }
+    if enemy_record.npc and ( enemy_record.vis or enemy_record.visible ) then
+      enemy_record.last_time_seen = time_global()
+      enemy_record.vertex         = enemy:level_vertex_id()
+      enemy_record.vispoint       = get_vispoint( npc, enemy )
+    end
+    targets_list[ npc:id() ][ id ] = enemy_record
+  end
+  return enemy_record
+end
+
+
+function set_primary_target( npc, new_id )
+  local id = primary_target[ npc:id() ]
+  if id and id ~= new_id then
+    local obj     = level.object_by_id( id )
+    local timeout = remember_enemy
+    if obj and ( obj:is_actor() or obj:is_stalker() ) then
+      timeout = timeout * 2
+    end
+    last_target[ npc:id() ] = {
+      [ "id"   ] = id,
+      [ "time" ] = time_global() + timeout,
+    }
+  end
+  primary_target[ npc:id() ] = new_id
+end
+
+
+function remove_from_targets( npc, id )
+  if primary_target[ npc:id() ] == id then
+    set_primary_target( npc, nil )
+  end
+  targets_list[ npc:id() ][ id ] = nil
+end
+
+
+function get_target_info( npc, id )
+  if targets_list[ npc:id() ] then
+    return targets_list[ npc:id() ][ id ]
+  end
+end
+
+
+local scheme_name
+function get_schema_storage( npc )
+  if scheme_name then
+    return db.storage[ npc:id() ][ scheme_name ]
+  end
+end
+
+
+function refresh_targets( npc )
+  -- обновление реестра врагов, вызывается из reprioritize_targets
+  -- добавление движкового врага
+  local st = get_schema_storage( npc )
+  ASSERT( st, "[%s]: %s: storage not found", script_name(), npc:name() )
+  local enemy_by_engine = npc:best_enemy()
+  if
+    enemy_by_engine and enemy_by_engine:alive()
+    and ( not xr_wounded.is_wounded( enemy_by_engine ) )
+    and ( not get_target_info( npc, enemy_by_engine:id() ) )
+  then
+    register_as_target( npc, enemy_by_engine )
+  end
+
+  -- добавление нападающего денжера
+  local danger_by_engine = npc:best_danger()
+  if danger_by_engine then
+    local best_danger_object = danger_by_engine:object()
+    if best_danger_object then
+      local bd_type = danger_by_engine:type()
+      local is_stalker_obj = best_danger_object:is_actor()
+        or best_danger_object:is_stalker()
+      if
+        is_stalker_obj and needed_dangers[ bd_type ]
+        and best_danger_object:alive()
+        and not xr_wounded.is_wounded( best_danger_object )
+      then
+        if not get_target_info( npc, best_danger_object:id() ) then
+          if check_is_enemy( npc, best_danger_object ) then
+            register_as_target( npc, best_danger_object )
+          else
+            disable_memory_object( npc, best_danger_object )
+            if primary_target[ npc:id() ] == best_danger_object:id() then
+              set_primary_target( npc, nil )
+            end
+          end
+        end
+      end
+    end
+  end
+
+  local max_range = npc:range() -- 100
+  for k, v in pairs( targets_list[ npc:id() ] ) do
+    if enemy_by_engine and k == enemy_by_engine:id() then
+      v.engine = true
+    else
+      v.engine = false
+    end
+    local check_target = level.object_by_id( k )
+    if
+      check_target and check_target:alive()
+      and not xr_wounded.is_wounded( check_target )
+    then
+      v.visible = npc:see( check_target )
+      if not v.vis_lock then
+        v.vis = is_enemy_see( check_target, npc )
+      end
+      local dist = npc:position():distance_to( check_target:position() )
+      v.range = dist
+      if not v.vis then
+        if not v.npc then
+          if dist > max_range and not v.visible then
+            if v.engine then
+              remove_memory_object( npc, check_target )
+            else
+              remove_from_targets( npc, k )
+            end
+          end
+        else
+          if check_is_enemy( npc, check_target, v.engine ) then
+            if
+              dist > max_range
+              and not ( v.visible or check_target:is_actor() )
+            then
+              if v.engine then
+                remove_memory_object( npc, check_target )
+              else
+                remove_from_targets( npc, k )
+              end
+            elseif v.visible or st.is_camper then
+              v.last_time_seen = time_global()
+              v.vertex         = check_target:level_vertex_id()
+              v.vispoint       = get_vispoint( npc, check_target )
+            end
+          else
+            if v.engine then
+              remove_memory_object( npc, check_target )
+            else
+              disable_memory_object( npc, check_target )
+              remove_from_targets( npc, k )
+            end
+          end
+        end
+      elseif v.npc then
+        v.last_time_seen = time_global()
+        v.vertex         = check_target:level_vertex_id()
+        v.vispoint       = get_vispoint( npc, check_target )
+      end
+    elseif check_target then
+      if not check_target:alive() then
+        set_sound_event( npc, "killed" )
+        if v.engine then
+          v.dead = true
+          remove_memory_object( npc, check_target )
+        else
+          disable_memory_object( npc, check_target )
+        end
+      elseif xr_wounded.is_wounded( check_target ) then
+        set_sound_event( npc, "hit" )
+      end
+      remove_from_targets( npc, k )
+    else
+      remove_from_targets( npc, k )
+    end
+  end
+end
+
+
+function get_max_weapon_range( npc, bw )
+  -- служебная для проверки достанет ли оружие
+  if npc then
+    if not bw then bw = get_best_weapon( npc ) end
+    local ini = system_ini()
+    if bw then
+      local sect = bw:section()
+      if ini:section_exist( sect ) and ini:line_exist( sect, "max_radius" ) then
+        return ini:r_float( sect, "max_radius" )
+      elseif not ini:section_exist( sect ) then
+        return 36
+      elseif not ini:line_exist( sect, "max_radius" ) then
+        return 36
+      end
+    else
+      return 36
+    end
+  else
+    return 36
+  end
+end
+
+
+function combat_ranges( npc, enemy_is_npc )
+  if npc then
+    local wpn_check_max_range = get_max_weapon_range( npc )
+    -- берем всех
+    if enemy_is_npc then
+      return low_range_npc_aggr, wpn_check_max_range
+    else
+      return low_range_mon_aggr, far_range_mon_aggr
+    end
+  else
+    return 30, alife():switch_distance()
+  end
+end
+
+
+function combat_multiplier( enemy_is_npc )
+  if enemy_is_npc then
+    return combat_mult_npc
+  else
+    return combat_mult_monster
+  end
+end
+
+
+function have_fresh_deadman( npc )
+  local t = last_target[ npc:id() ]
+  if t and t.time > time_global() then
+    return t.id
+  end
+end
+
+
+-- Алгоритм озвучки: неперывно собираем информацию про звуковые
+-- события. Если есть событие - расскажем о нем. Если нет события
+-- врубаем айдл
+
+-- Айдлы ставятся флагами и разворачиваются по ситуации. Те что
+-- ставятся флагами это Атакуем, Защищаемся, Не видим противника.
+
+-- Атакуем разворачивается в: Атакуем (видим и он нас видит), Атакуем
+-- одного/Атакуем группу (видим и он нас НЕ видит)
+
+-- Защищаемся не разворачивается
+
+-- Не видим противника разворачивается в: Грозим близкому врагу/Грозим
+-- далекому врагу (зависимо от расстояния, время потери до 10 секунд),
+-- Ищем врага (от 10 до 20 секунд), Совсем потеряли врага (более 20
+-- секунд)
+
+-- Ставятся они в выброе типа перемещения, разворачивание производится
+-- на основе таблицы целей
+
+-- События добываются следующим образом:
+-- Начало боя из старта боёвки
+-- Идем в обход из выбора перемещения
+-- Завалили врага из refresh_targets(npc), если цель погибла
+-- Ранили врага из refresh_targets(npc), если цель ранена
+-- Ранило друга из get_targets_from_memory(npc), если есть раненый
+-- друг и мы его видим
+-- Убило друга из get_targets_from_memory(npc), если есть убитый друг
+-- и мы его видим
+-- Френдли файр из хит коллбэка
+
+-- События которые надо отыграть звуком
+-- 1. Начало боя            fight_enemy
+-- 2. Идем в обход          fight_detour
+-- 3. Завалили врага        fight_enemy_down
+-- 4. Ранили врага          fight_enemy_hit
+-- 5. Ранило друга          fight_friend_hitted
+-- 6. Убило друга           fight_tolls
+-- 7. Френдли файр          fight_friendly_fire
+
+-- Боевочные идлы
+-- 1. Атакуем               fight_attack
+-- 2. Атакуем одного        fight_attack_one
+-- 3. Атакуем группу        fight_attack_many
+-- 4. Защищаемся            fight_backup
+-- 5. Ищем врага            fight_search
+-- 6. Совсем потеряли врага fight_enemy_lost
+-- 7. Грозим близкому врагу fight_threat_close
+-- 8. Грозим далекому врагу fight_threat_distant
+
+-- Функции: set_sound_event( npc, event ) -- выставить звуковое событие
+-- допустимые значения event:
+-- "start"
+-- "hero"
+-- "killed"
+-- "hit"
+-- "fr_hit"
+-- "dead"
+-- "ff"
+
+-- choose_idle_scheme( npc, scheme ) -- выставить тип идловой озвучки
+-- допустимые значеня scheme:
+-- "attack"
+-- "attack_notsee"
+-- "defence"
+-- "lost"
+
+function setup_sound_table( npc )
+  sound_events[ npc:id() ] = {
+    events = {},
+    idle   = "defence",
+    start  = false,
+    hero   = false,
+    killed = false,
+    hit    = false,
+    fr_hit = false,
+    dead   = false,
+    ff     = false,
+  }
+end
+
+
+function choose_idle_scheme( npc, scheme )
+  -- допустимые значеня scheme:
+  -- "attack"
+  -- "attack_notsee"
+  -- "defence"
+  -- "lost"
+  if not sound_events[ npc:id() ] then
+    setup_sound_table( npc )
+  end
+  sound_events[ npc:id() ].idle = scheme
+end
+
+
+function set_sound_event( npc, event )
+  if not sound_events[ npc:id() ] then
+    setup_sound_table( npc )
+  end
+  -- Если недавно что-то уже говорил, то событие регистрировать не
+  -- будем.
+  if sounds_timeout[ npc:id() ] and sounds_timeout[ npc:id() ] > time_global() then
+    return
+  end
+  local t = sound_events[ npc:id() ]
+  -- Если это событие запрещено некоторе время озвучивать, то
+  -- регистрировать его не будем.
+  local e_timeout = t[ event .. "_timeout" ]
+  if e_timeout and e_timeout > time_global() then return end
+  if not t[ event ] then
+    if event == "hero" then
+      t.hero_timeout = time_global() + math.random( 10000, 30000 )
+      if math.random() > sound_prob_hero then return end
+    end
+    t[ event ] = true
+    table.insert( t.events, event )
+  end
+end
+
+
+function set_combat_sound_playing( npc )
+  sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
+end
+
+
+function set_combat_sound_timeout( npc )
+  sounds_timeout[ npc:id() ] = time_global() + math.random( 6000, 8000 )
+end
+
+
+function process_combat_sound( npc )
+  if
+    sound_are_playing[ npc:id() ]
+    and sound_are_playing[ npc:id() ] > time_global()
+  then
+    return
+  elseif sound_are_playing[ npc:id() ] then
+    sound_are_playing[ npc:id() ] = nil
+    xr_sound.set_sound( npc, nil )
+    return
+  end
+  if
+    sounds_timeout[ npc:id() ]
+    and sounds_timeout[ npc:id() ] > time_global()
+  then
+    return
+  end
+
+  local snd_flags = sound_events[ npc:id() ]
+  if table.getn( snd_flags.events ) > 0 then
+    local e = snd_flags.events[ math.random( table.getn( snd_flags.events ) ) ]
+    for _, k in ipairs( snd_flags.events ) do
+      snd_flags[ k ] = false
+    end
+    snd_flags.events = {}
+    if math.random() < sound_prob_event then
+      local snd_theme
+      if e == "start" then
+        -- stalker_ids.sound_alarm
+        snd_theme = "fight_enemy"
+      elseif e == "dead" then
+        -- stalker_ids.sound_tolls
+        snd_theme = "fight_tolls"
+      elseif e == "fr_hit" then
+        snd_theme = "fight_friend_hitted"
+      elseif e == "ff" then
+        -- stalker_ids.sound_injuring_by_friend
+        snd_theme = "fight_friendly_fire"
+      elseif e == "killed" then
+        -- stalker_ids.sound_enemy_killed_or_wounded
+        snd_theme = "fight_enemy_down"
+      elseif e == "hit" then
+        -- stalker_ids.sound_enemy_critically_wounded
+        snd_theme = "fight_enemy_hit"
+      elseif e == "hero" then
+        -- stalker_ids.sound_detour
+        snd_theme = "fight_detour"
+      end
+      xr_sound.set_sound_play( npc, snd_theme )
+      set_combat_sound_playing( npc )
+      set_combat_sound_timeout( npc )
+      return
+    end
+  end
+
+  if
+    snd_flags.idle_timeout
+    and snd_flags.idle_timeout > time_global()
+  then
+    return
+  end
+  snd_flags.idle_timeout = time_global() + math.random( 10000, 30000 )
+  if math.random() > sound_prob_idle then return end
+
+  set_combat_sound_playing( npc )
+  set_combat_sound_timeout( npc )
+  if snd_flags.idle == "attack" then
+    -- stalker_ids.sound_attack_allies_single_enemy
+    xr_sound.set_sound_play( npc, "fight_attack" )
+  elseif snd_flags.idle == "attack_notsee" then
+    local count = 0
+    for k, v in pairs( targets_list[ npc:id() ] ) do
+      if v.range < 50 then
+        count = count + 1
+      end
+      if count >= 2 then
+        break
+      end
+    end
+    if count == 1 then
+      -- stalker_ids.sound_attack_allies_single_enemy
+      xr_sound.set_sound_play( npc, "fight_attack_one" )
+    elseif count > 1 then
+      -- stalker_ids.sound_attack_allies_several_enemies
+      xr_sound.set_sound_play( npc, "fight_attack_many" )
+    end
+  elseif snd_flags.idle == "defence" then
+    -- stalker_ids.sound_need_backup
+    xr_sound.set_sound_play( npc, "fight_backup" )
+  elseif snd_flags.idle == "lost" then
+    local target = primary_target[ npc:id() ]
+    local target_info = get_target_info( npc, target )
+    if not target_info then return end
+    if target_info and not target_info.last_time_seen then
+      if math.random() < 0.2 then
+        xr_sound.set_sound_play( npc, "fight_threat_close" )
+      elseif math.random() < 0.4 then
+        xr_sound.set_sound_play( npc, "fight_threat_distant" )
+      elseif math.random() < 0.6 then
+        xr_sound.set_sound_play( npc, "fight_search" )
+      else
+        xr_sound.set_sound_play( npc, "fight_enemy_lost" )
+      end
+      return
+    end
+    if time_global() - target_info.last_time_seen <= 5000 then
+      if target_info.range < distant_combat_distance then
+        xr_sound.set_sound_play( npc, "fight_threat_close" )
+      else
+        xr_sound.set_sound_play( npc, "fight_threat_distant" )
+      end
+    elseif time_global() - target_info.last_time_seen <= 12000 then
+      xr_sound.set_sound_play( npc, "fight_search" )
+    else
+      xr_sound.set_sound_play( npc, "fight_enemy_lost" )
+    end
+  end
+end
+
+
+-- Возвращает угол между проекциями векторов vec1 и vec2 на
+-- горизонтальную плоскость.
+-- положительный угол - доворот vec1 до vec2 по часовой.
+function horz_angle( vec1, vec2 )
+  local x =  vec2.x * vec1.x + vec2.z * vec1.z
+  -- повернули систему координат
+  local y = -vec2.z * vec1.x + vec2.x * vec1.z
+  return math.atan2( y, x )     -- угол доворота от -pi до pi
+end
+
+
+function actor_see( npc )
+  -- арктангенс 45 град /npc:position():distance_to(db.actor:position())
+  local dangerang = 1
+  local ang = horz_angle(
+    device().cam_dir, npc:position():sub( device().cam_pos )
+  )
+  local visibility_value = level.cover_in_direction(
+    db.actor:level_vertex_id(), npc:position():sub( db.actor:position() )
+  )
+  local tgt = ang > -dangerang and ang < dangerang
+    and visibility_value > visibility_treshold_value
+  if tgt then
+    return true
+  end
+  return false
+end
+
+
+function get_target( npc, check_alive )
+  local target_id = primary_target[ npc:id() ]
+  local target
+  if target_id then
+    local obj = level.object_by_id( target_id )
+    if obj and ( obj:alive() or not check_alive ) then
+      target = obj
+    end
+  end
+  return target
+end
+
+
+function IsShotgun( object )
+  if object then
+    return get_u32( object:section(), "ef_weapon_type" ) == 7
+  end
+  return false
+end
+
+
+function IsSniperRifle( object )
+  if object then
+    return get_u32( object:section(), "ef_weapon_type" ) == 8
+  end
+  return false
+end
+
+
+function IsRPG( object )
+  if object then
+    return get_u32( object:section(), "ef_weapon_type" ) == 9
+  end
+  return false
+end
+
+
+function in_hideout( npc )
+  local t = last_hideout[ npc:id() ]
+  if t and ( npc:level_vertex_id() == t.vtx or npc:path_completed() ) then
+    return t.vtx
+  end
+end
+
+
+function in_transit( npc )
+  return ( not npc:path_completed() )
+end
+
+
+function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_rank )
+  if not (
+    enemy and enemy:alive() and weapon
+    and not xr_wounded.is_wounded( enemy )
+  ) then
+    return
+  end
+
+  local be_pos = enemy:position()
+  local st     = self.combat_sight
+  if st and st.look_pos then
+    be_pos = st.look_pos
+  end
+
+  local npc      = self.object
+  local npc_pos  = vector():set( 0, 0, 0 )
+  local npc_dir  = vector():set( 0, 0, 0 )
+  npc:g_fireParams( weapon, npc_pos, npc_dir )
+  local distance = npc_pos:distance_to( be_pos )
+
+  local type_of_fire
+  if
+    ( not check_is_enemy( npc, enemy, true ) )
+    or ( not npc:weapon_unstrapped() )
+    or ( IsRPG( weapon ) and distance < 25 )
+  then
+    type_of_fire = object.aim1
+  elseif self:can_fire_to_enemy( enemy ) then
+    if enemy:is_actor() then
+      if self.aiming then
+        if self.aiming < time_global() then
+          type_of_fire = object.fire1
+        else
+          type_of_fire = object.aim1
+        end
+      else
+        self.aiming  = self:get_npc_reaction_time()
+        type_of_fire = object.aim1
+      end
+    else
+      self.aiming  = false
+      type_of_fire = object.fire1
+    end
+  else
+    type_of_fire = object.aim1
+  end
+
+  if type_of_fire == object.fire1 then
+    if distance > 0 and st and st.use_deviation then
+      self:add_deviation( be_pos, weapon, distance, enemy )
+    else
+      npc:stalker_disp_base( 0 )
+    end
+  end
+
+  local time_aim = time_to_aim[ npc_rank ]
+  if IsSniperRifle( weapon ) then
+    local t = time_aim.other
+    if enemy:is_actor() then
+      t = time_aim.sniper
+    end
+    npc:set_item( type_of_fire, weapon, 1, t )
+  elseif IsShotgun( weapon ) then
+    local t = time_aim.other
+    if enemy:is_actor() then
+      t = time_aim.shotgun
+    end
+    t = math.random( t, t + 100 )
+    npc:set_item( type_of_fire, weapon, 1, t )
+  elseif IsRPG( weapon ) then
+    local t = math.random( time_aim.rpg, time_aim.rpg + 100 )
+    npc:set_item( type_of_fire, weapon, 1, t )
+  else
+    local qs = get_u32(
+      weapon:section(), "xrs_battle_ai.preffered_fire_mode", 1
+    )
+    if distance > 50 then
+      if qs < 2 then qs = math.random( qs, 2 ) end
+    elseif distance > 30 then
+      if qs < 3 then qs = math.random( qs, 3 ) end
+    elseif
+      enemy:is_monster()
+      or ( enemy:is_stalker() and enemy:character_community() == "zombied" )
+    then
+      if qs < 10 then qs = math.random( math.max( qs, 4 ), 10 ) end
+    else
+      if qs < 5 then qs = math.random( qs, 5 ) end
+    end
+    local t = math.random( time_aim.other, time_aim.other + 100 )
+    npc:set_item( type_of_fire, weapon, qs, t )
+  end
+end
+
+
+function action_altcombat:can_fire_to_enemy( enemy )
+  local npc = self.object
+  if npc:can_fire_to_enemy( enemy, fire_make_sense_interval ) then
+    return true
+  end
+
+  local t = get_target_info( npc, enemy:id() )
+  if t and t.last_time_seen then
+    local max_time    = fire_make_sense_interval_rnd
+    local unseen_time = time_global() - t.last_time_seen
+    if unseen_time > fire_make_sense_interval and unseen_time < max_time then
+      if t.unseen_fire_time and t.unseen_fire_time > time_global() then
+        if t.unseen_fire_fire then
+          return npc:can_fire_to_enemy( enemy, max_time )
+        end
+      else
+        t.unseen_fire_time = time_global() + fire_make_sense_interval
+        if math.random() > unseen_time / max_time then
+          t.unseen_fire_fire = true
+          return npc:can_fire_to_enemy( enemy, max_time )
+        else
+          t.unseen_fire_fire = false
+        end
+      end
+    end
+  end
+
+  return false
+end
+
+
+function action_altcombat:set_combat_state( enemy, weapon )
+  local npc = self.object
+  npc:set_mental_state( anim.danger )
+  if in_hideout( npc ) then
+    npc:set_movement_type( move.stand )
+    local hide_val = last_hideout[ npc:id() ].value
+    if hide_val <= 0.45 and not enemy:is_monster() then
+      npc:set_body_state( move.crouch )
+    else
+      npc:set_body_state( move.standing )
+    end
+  elseif in_transit( npc ) then
+    npc:set_movement_type( move.walk )
+    npc:set_body_state( move.standing )
+  else
+    npc:set_movement_type( move.stand )
+    local npc_pos  = npc:position()
+    local be_pos   = enemy:position()
+    local distance = be_pos:distance_to( npc_pos )
+    if enemy:is_monster() or distance < close_combat_distance then
+      npc:set_body_state( move.standing )
+    else
+      npc:set_body_state( move.crouch )
+    end
+  end
+end
+
+
+function action_altcombat:set_transfer_state( enemy, wpn, sight )
+  local npc = self.object
+  npc:set_mental_state( anim.danger )
+  if in_hideout( npc ) then
+    npc:set_movement_type( move.stand )
+    local hide_val = last_hideout[ npc:id() ].value
+    if hide_val <= 0.45 and enemy and not enemy:is_monster() then
+      npc:set_body_state( move.crouch )
+    else
+      npc:set_body_state( move.standing )
+    end
+  elseif in_transit( npc ) then
+    if sight then
+      npc:set_sight( look.path_dir, true, true )
+    end
+    npc:set_movement_type( move.run )
+    npc:set_body_state( move.standing )
+  else
+    npc:set_movement_type( move.stand )
+    npc:set_body_state( move.standing )
+  end
+  self:set_weapons_idle( wpn )
+end
+
+
+function action_altcombat:set_weapons_idle( wpn )
+  if wpn then
+    self.object:set_item( object.idle, wpn )
+  end
+  self.aiming = false
+end
+
+
+function action_altcombat:add_deviation( position, weapon, distance, enemy )
+  local npc        = self.object
+  local npc_rank   = get_obj_rank_name( npc )
+  local npc_comm   = npc:character_community()
+  local deviations = deviation_table[ npc_rank ]
+  local dev_coeff  = community_deviation_coeff[ npc_comm ]
+    or community_deviation_coeff.stalker
+  local max = 0
+  if deviations then
+    max = deviations * dev_coeff
+    if enemy:is_actor() then
+      local k = 1 -- [HE-PORT]
+      if k > 0 then
+        max = max * k
+      else
+        max = 0
+      end
+      self.firing_actor = true
+      if self.start_firing_actor and npc:see( enemy ) then
+        local time = time_global() - self.start_firing_actor
+        local k    = 1 - ( time / firing_actor_disp_time )
+        if k > 0 then
+          local min_max = firing_actor_disp_max - firing_actor_disp_min
+          max = max * ( firing_actor_disp_min + min_max * k )
+        else
+          max = max * firing_actor_disp_min
+        end
+      else
+        self.start_firing_actor = time_global()
+        max = max * firing_actor_disp_max
+      end
+    end
+  end
+  npc:stalker_disp_base( distance, max )
+end
+
+
+function action_altcombat:set_combat_sight( enemy, weapon )
+  local npc = self.object
+  if not weapon then
+    npc:set_sight( enemy, true, true )
+    return
+  end
+
+  local enemy_pos = enemy:position()
+  local npc_pos   = npc:position()
+  local distance  = npc_pos:distance_to( enemy_pos )
+
+  local st = self.combat_sight
+  if not st then
+    st = {
+      bone      = false,
+      enemy_id  = false,
+      look_pos  = false,
+      time      = false,
+      use_deviation = false,
+      weapon_id = false,
+    }
+    self.combat_sight = st
+  end
+
+  local bone
+  if
+    st.bone
+    and st.enemy_id == enemy:id() and st.weapon_id == weapon:id()
+    and st.time > time_global()
+  then
+    bone = st.bone
+  else
+    local use_deviation = true
+--[=[
+    if enemy:is_actor() and distance > distant_combat_distance then
+      local rank = get_obj_rank_name( npc )
+      if math.random() < headshot_prob[ rank ] then
+        local bones = { "bip01_head", "bip01_neck" }
+        bone = bones[ math.random( table.getn( bones ) ) ]
+      end
+    end
+--]=]
+    st.bone      = bone
+    st.enemy_id  = enemy:id()
+    st.time      = time_global() + 10000
+    st.use_deviation = use_deviation
+    st.weapon_id = weapon:id()
+  end
+
+  local look_pos
+  if bone then
+    local bone_id = enemy:get_bone_id( bone )
+    ASSERT(
+      bone_id ~= 65535,
+      "[%s]: %s: unknown bone %s", script_name(), enemy:name(), bone
+    )
+    look_pos = enemy:bone_position( bone )
+  end
+
+  if
+    ( not npc:see( enemy ) )
+    and npc:memory_position( enemy ):magnitude() ~= 0
+  then
+    look_pos = npc:memory_position( enemy )
+    local t = get_target_info( npc, enemy:id() )
+    if t and t.vispoint then
+      look_pos = t.vispoint
+    end
+  end
+
+  st.look_pos = look_pos
+  npc:set_desired_direction()
+  if look_pos then
+    npc:set_sight( look.fire_point, look_pos )
+  else
+    npc:set_sight( enemy, true, true )
+  end
+end
+
+
+class "covers_mgr"
+function covers_mgr:__init( act, be )
+  self.st = act.st
+  self.cover_cache = cover_cache_processor( act.object, be )
+  self:set_best_enemy( act.object, be )
+end
+
+function covers_mgr:set_best_enemy( npc, be )
+  self.be     = be
+  self.object = npc
+  self.cover_cache:reset( npc, be )
+end
+
+function covers_mgr:find_cover_0()
+  return self:find_cover( 0 )
+end
+
+function covers_mgr:find_cover_1()
+  return self:find_cover( 1 )
+end
+
+function covers_mgr:find_cover_2()
+  return self:find_cover( 2 )
+end
+
+function covers_mgr:find_cover_3()
+  return self:find_cover( 3 )
+end
+
+function covers_mgr:find_cover_4()
+  return self:find_cover( 4 )
+end
+
+function covers_mgr:find_cover_5()
+  return self:find_cover( 5 )
+end
+
+function covers_mgr:find_cover_6()
+  return self:find_cover( 6 )
+end
+
+function covers_mgr:find_cover_7()
+  return self:find_cover( 7 )
+end
+
+function covers_mgr:find_cover_8()
+  return self:find_cover( 8 )
+end
+
+function covers_mgr:find_cover_9()
+  return self:find_cover( 9 )
+end
+
+function covers_mgr:find_cover_10()
+  return self:find_cover( 10 )
+end
+
+function covers_mgr:find_cover_11()
+  return self:find_cover( 11 )
+end
+
+function covers_mgr:grenade()
+  return 0
+end
+
+function covers_mgr:keep()
+  return 0
+end
+
+-- список режимов:
+-- mode = 0 - оборона (удержание позиции)
+-- mode = 1 - атака
+-- mode = 2 - отступление
+function covers_mgr:find_cover( mode )
+  local enemy = self.be
+  local npc   = self.object
+
+  -- возвращает лучшую точку прикрытия от врага в заданном радиусе от
+  -- своей позиции и на нужном расстояниии от врага
+  -- cover_point* best_cover(vector self_position, vector enemy_position, float radius, float min_enemy_distance, float max_enemy_distance)
+  --
+  -- возвращает лучшую точку прикрытия в заданном радиусе от своей
+  -- позиции и не ближе min_distance. Прикрытость учитывается со всех
+  -- направлений.
+  -- cover_point* safe_cover(const vector& self_position, float radius, float min_distance)
+  --
+  -- C++ class cover_point {
+  --   function level_vertex_id() const;
+  --   function position() const;
+  -- };
+
+  if last_time_send[ npc:id() ] and not npc:path_completed() then
+    return 0
+  end
+  if not ( npc and enemy ) then return end
+
+  local enemy_pos    = enemy:position()
+  local enemy_vertex = enemy:level_vertex_id()
+  local npc_pos      = npc:position()
+  local to_enemy     = npc_pos:distance_to( enemy_pos )
+
+  local cover_cache    = self.cover_cache
+  local cover_callback = cover_cache.callback_f
+
+  local cover, cover_vertex
+  local min_dist = close_combat_distance
+  if mode == 1 then             -- атака по дуге
+    cover, cover_vertex = self:angle_cover( min_dist )
+
+  elseif mode == 2 then         -- отступление
+    for _, r in ipairs({ 10, 30 }) do
+      cover = npc:best_cover(
+        npc_pos, enemy_pos, r, to_enemy, to_enemy + r, cover_callback
+      )
+      if cover then break end
+    end
+    cover = cover_cache:best_cover( cover )
+    if not cover then
+      cover_vertex = self:find_pseudo_cover( false, cover_cache:get_cache() )
+    end
+
+  elseif mode == 3 then         -- атака
+    for _, r in ipairs({ 10, 30 }) do
+      cover = npc:ambush_cover(
+        npc_pos, enemy_pos, r, close_combat_distance, cover_callback
+      )
+      if cover then break end
+    end
+    cover = cover_cache:best_cover( cover )
+    if not cover then
+      cover_vertex = self:find_pseudo_cover( true, cover_cache:get_cache() )
+    end
+
+  elseif mode == 4 then         -- атака
+    for _, r in ipairs({ 10, 30 }) do
+      local max = math.max( to_enemy, min_dist )
+      local min = min_dist
+      cover = npc:best_cover(
+        npc_pos, enemy_pos, r, min, max, cover_callback
+      )
+      if cover then break end
+    end
+    cover = cover_cache:best_cover( cover )
+    if not cover then
+      cover_vertex = self:find_pseudo_cover( true, cover_cache:get_cache() )
+    end
+
+  elseif mode == 5 then         -- возврат кемпера на точку
+    cover_vertex = self.st.is_camper
+
+  elseif mode == 6 then -- срочное отступление, противник очень близко
+    cover_vertex = self:find_pseudo_cover( false, cover_cache:get_cache() )
+
+  elseif mode == 7 then         -- отступление по дуге
+    for _, r in ipairs({ 10, 30 }) do
+      cover = npc:best_cover(
+        npc_pos, enemy_pos, r, to_enemy, to_enemy + r, cover_callback
+      )
+      if cover then break end
+    end
+    cover = cover_cache:best_cover( cover )
+    if not cover then
+      cover_vertex = self:find_pseudo_cover( false, cover_cache:get_cache() )
+    end
+
+  elseif mode == 8 then         -- максимальное приближение к противнику
+    local min_dist = npc:radius() + enemy:radius() + 5
+    for _, r in ipairs({ 10, 30 }) do
+      cover = he_bai_compat.close_cover( -- [HE-PORT]
+        npc, npc_pos, enemy_pos, r, min_dist, 300, 10, cover_callback
+      )
+      if cover then break end
+    end
+    cover = cover_cache:best_cover( cover )
+    if not cover then
+      cover_vertex = self:find_pseudo_cover( true, cover_cache:get_cache() )
+    end
+
+  elseif mode == 9 then         -- максимальное удаление от противника
+    local min_dist = npc:radius() + enemy:radius() + 5
+    for _, r in ipairs({ 10, 30 }) do
+      cover = he_bai_compat.far_cover( -- [HE-PORT]
+        npc, npc_pos, enemy_pos, r, min_dist, 300, 10, cover_callback
+      )
+      if cover then break end
+    end
+    cover = cover_cache:best_cover( cover )
+    if not cover then
+      cover_vertex = self:find_pseudo_cover( false, cover_cache:get_cache() )
+    end
+
+  elseif mode == 10 then        -- пытаемся обойти с одной стороны
+    local dir = vector():sub( enemy_pos, npc_pos )
+    cover_vertex = find_vertex_around(
+      npc, npc:level_vertex_id(), dir, 10, 90, min_dist, min_dist, 1,
+      cover_cache:get_cache()
+    )
+
+  elseif mode == 11 then        -- пытаемся обойти с другой стороны
+    local dir = vector():sub( enemy_pos, npc_pos )
+    cover_vertex = find_vertex_around(
+      npc, npc:level_vertex_id(), dir, 10, 90, min_dist, min_dist, -1,
+      cover_cache:get_cache()
+    )
+
+  elseif mode == 0 then         -- оборона
+    for _, r in ipairs({ 10, 30 }) do
+      cover = npc:safe_cover( npc_pos, r, 0, cover_callback )
+      if cover then break end
+    end
+    cover = cover_cache:best_cover( cover )
+  end
+
+  local cover_pos
+  if cover then
+    cover_pos    = cover:position()
+    cover_vertex = cover:level_vertex_id()
+  elseif cover_vertex then
+    cover_pos    = level.vertex_position( cover_vertex )
+    cover_value = 0
+  else
+    return
+  end
+  local cover_value = level.cover_in_direction(
+    cover_vertex, enemy_pos:sub( cover_pos )
+  )
+
+  last_time_send[ npc:id()   ] = time_global()
+  last_sent_vertex[ npc:id() ] = cover_vertex
+  last_hideout[ npc:id()     ] = {
+    value = cover_value,
+    vtx   = cover_vertex,
+  }
+  lock_vertex( npc, cover_vertex )
+
+  return cover_vertex
+end
+
+
+-- атака по дуге за спину
+function covers_mgr:angle_cover( min_dist )
+  local enemy = self.be
+  local npc   = self.object
+
+  local enemy_pos    = enemy:position()
+  local enemy_vertex = enemy:level_vertex_id()
+  local npc_pos      = npc:position()
+  local to_enemy     = npc_pos:distance_to( enemy_pos )
+  local cover_cache  = self.cover_cache
+
+  local max = math.max( to_enemy, min_dist )
+  local min = min_dist
+
+  local enemy_dir = npc_pos:sub( enemy_pos ):normalize()
+  local check_pos = enemy_pos:mad( enemy_dir, min )
+  local vert_ok   = level.vertex_id_by_pos( check_pos )
+  if level.valid_vertex_id( vert_ok ) then
+    enemy_pos    = check_pos
+    enemy_vertex = vert_ok
+  end
+
+  local cover, cover_vertex
+  for _, r in ipairs({ 10, 30 }) do
+    cover = npc:angle_cover(
+      npc_pos, r, enemy_pos, min, max, enemy_vertex, cover_cache.callback_f
+    )
+    if cover then break end
+  end
+
+  cover = cover_cache:best_cover( cover )
+  if not cover then
+    cover_vertex = self:find_pseudo_cover( true, cover_cache:get_cache() )
+  end
+
+  return cover, cover_vertex
+end
+
+
+function covers_mgr:find_pseudo_cover( attack, cover_cache )
+  local enemy = self.be
+  local npc   = self.object
+  if not cover_cache then cover_cache = {} end
+  local dir = vector():sub( enemy:position(), npc:position() )
+  local rotate_min, rotate_max
+  if attack then
+    rotate_min, rotate_max =  0,  90
+  else
+    rotate_min, rotate_max = 45, 180
+  end
+  local min_dist, max_dist = close_combat_distance, close_combat_distance
+  local node_1_vertex_id = find_vertex_around(
+    npc, npc:level_vertex_id(), dir, rotate_min, rotate_max,
+    min_dist, max_dist,  1, cover_cache
+  )
+  local node_2_vertex_id = find_vertex_around(
+    npc, npc:level_vertex_id(), dir, rotate_min, rotate_max,
+    min_dist, max_dist, -1, cover_cache
+  )
+  if node_1_vertex_id and node_2_vertex_id then
+    local pos   = npc:position()
+    local dist1 = pos:distance_to( level.vertex_position( node_1_vertex_id ) )
+    local dist2 = pos:distance_to( level.vertex_position( node_2_vertex_id ) )
+    if dist1 > dist2 then
+      return node_1_vertex_id
+    elseif dist2 > dist1 then
+      return node_2_vertex_id
+    else
+      return random_choice( node_1_vertex_id, node_2_vertex_id )
+    end
+  elseif node_1_vertex_id then
+    return node_1_vertex_id
+  elseif node_2_vertex_id then
+    return node_2_vertex_id
+  else
+    node_1_vertex_id = find_vertex_around(
+      npc, npc:level_vertex_id(), dir, 0, 360,
+      min_dist, max_dist,  1, cover_cache
+    )
+    node_2_vertex_id = find_vertex_around(
+      npc, npc:level_vertex_id(), dir, 0, 360,
+      min_dist, max_dist, -1, cover_cache
+    )
+    if node_1_vertex_id and node_2_vertex_id then
+      local pos   = npc:position()
+      local dist1 = pos:distance_to( level.vertex_position( node_1_vertex_id ) )
+      local dist2 = pos:distance_to( level.vertex_position( node_2_vertex_id ) )
+      if dist1 > dist2 then
+        return node_1_vertex_id
+      elseif dist2 > dist1 then
+        return node_2_vertex_id
+      else
+        return random_choice( node_1_vertex_id, node_2_vertex_id )
+      end
+    elseif node_1_vertex_id then
+      return node_1_vertex_id
+    else
+      return node_2_vertex_id
+    end
+  end
+end
+
+
+function find_vertex_around( npc, around_vertex, dir, rotate_min, rotate_max, offset_min, offset_max, sign, cover_cache )
+  if not sign then sign = 1 end
+  local ai_step     = 0.7 -- шаг AI сетки
+  local math_pi_180 = 180 / math.pi
+
+  local random_rotate    = math.random( rotate_min, rotate_max )
+  local cur_dir          = vector_rotate_y( dir, random_rotate * sign )
+  local random_offset    = math.random( offset_min, offset_max )
+  local rotate_angle     = math.max(
+    10, math.asin( ai_step / random_offset ) * math_pi_180
+  )
+  local rotate_angle_deg = rotate_angle * sign
+  local cur_angle        = 0
+  local vertex_id
+  while not vertex_id do
+    -- проверяем точку слева
+    vertex_id = level.vertex_in_direction(
+      around_vertex, cur_dir, random_offset
+    )
+    if
+      vertex_id == around_vertex
+      or ( not npc:accessible( vertex_id ) )
+      or cover_cache[ vertex_id ] == false
+      or check_vertex_locked( npc, vertex_id )
+      or its_a_trap( npc, vertex_id )
+    then
+      cover_cache[ vertex_id ] = false
+      vertex_id = nil
+      -- поворачиваем направление поиска
+      cur_angle = cur_angle + rotate_angle
+      if rotate_min + cur_angle > rotate_max then
+        break
+      else
+        cur_dir = vector_rotate_y( cur_dir, rotate_angle_deg )
+      end
+    else
+      break
+    end
+  end
+  return vertex_id
+end
+
+
+class "cover_cache_processor"
+function cover_cache_processor:__init( npc, enemy )
+  self:reset( npc, enemy )
+  self.callback_f = function( cover, next_check )
+    return self:callback( cover, next_check )
+  end
+end
+
+function cover_cache_processor:reset( npc, enemy )
+  self.enemy = enemy
+  self.npc   = npc
+  self:clear()
+end
+
+function cover_cache_processor:clear()
+  self.cache   = {}
+  self.ordered = {}
+  self.ordered_n = 0
+end
+
+function cover_cache_processor:get_cache()
+  return self.cache
+end
+
+function cover_cache_processor:best_cover( cover )
+  if cover then
+    if not self.cache[ cover:level_vertex_id() ] then
+      return self.ordered[ math.random( self.ordered_n ) ]
+    end
+  elseif self.ordered_n > 0 then
+    return self.ordered[ math.random( self.ordered_n ) ]
+  end
+  return cover
+end
+
+function cover_cache_processor:callback( cover, next_check )
+  local cover_vertex = cover:level_vertex_id()
+  local cached       = self.cache[ cover_vertex ]
+  if cached ~= nil then return cached end
+  self.cache[ cover_vertex ] = not (
+    check_vertex_locked( self.npc, cover_vertex )
+    or its_a_trap( self.npc, cover_vertex )
+    or ( next_check and next_check( cover ) )
+    or false
+  )
+--[=[
+  if self.ordered_n == 50 then
+    return true
+  end
+--]=]
+  self.ordered_n = self.ordered_n + 1
+  self.ordered[ self.ordered_n ] = cover
+  return self.cache[ cover_vertex ]
+end
+
+
+function check_vertex_locked( npc, vertex )
+  if vertex == db.actor:level_vertex_id() then
+    return true
+  end
+  local npc_id = is_locked_vertex( npc, vertex )
+  if npc_id then
+    local checking_npc = level.object_by_id( npc_id )
+    if checking_npc then
+      return checking_npc:alive()
+    end
+  end
+  return false
+end
+
+
+function is_locked_vertex( npc, lvid )
+  local npc_id = locked_vertexes_r[ lvid ]
+  if npc_id and npc_id ~= npc:id() then
+    local npc_lvid = locked_vertexes[ npc_id ]
+    if npc_lvid == lvid then
+      return npc_id
+    end
+  end
+end
+
+
+function lock_vertex( npc, lvid )
+  local prev = locked_vertexes[ npc:id() ]
+  if prev then
+    locked_vertexes_r[ prev ] = nil
+  end
+  locked_vertexes[ npc:id() ] = lvid
+  if lvid then
+    locked_vertexes_r[ lvid ] = npc:id()
+  end
+end
+
+
+function has_actor_in_targets( npc )
+  local t = targets_list[ npc:id() ]
+  if t and t[ db.actor:id() ] then
+    return true
+  end
+  return false
+end
+
+
+function stop_state_mgr_update( npc )
+  state_mgr.unsubscribe_update( npc )
+end
+
+function restart_state_mgr_update( npc )
+  state_mgr.subscribe_update( npc )
+end
+
+
+function on_update()
+  local pt = profile_timer()
+  local finish
+  repeat
+    finish = true
+    pt:start()
+    if notify_friends_on_update() then finish = false end
+    if process_combat_sounds_on_update() then finish = false end
+    if process_combat_situations_on_update() then finish = false end
+    pt:stop()
+  until finish or pt:time() > 2500
+end
+
+
+local notify_friends_args  = {}
+local notify_friends_queue = {}
+
+function notify_friends_later( npc, enemy )
+  if not notify_friends_args[ npc:id() ] then
+    table.insert( notify_friends_queue, npc:id() )
+  end
+  notify_friends_args[ npc:id() ] = enemy:id()
+end
+
+function reset_friends_notification( id )
+  notify_friends_args[ id ] = nil
+end
+
+function notify_friends_on_update()
+  while ( table.getn( notify_friends_queue ) > 0 ) do
+    local npc_id   = table.remove( notify_friends_queue, 1 )
+    local enemy_id = notify_friends_args[ npc_id ]
+    if enemy_id then
+      notify_friends_args[ npc_id ] = nil
+      local npc = level.object_by_id( npc_id )
+      if npc then
+        local enemy = get_target( npc )
+        if enemy and enemy:id() == enemy_id then
+          notify_friends( npc, enemy )
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+
+local combat_sounds_args  = {}
+local combat_sounds_queue = {}
+
+function process_combat_sound_later( npc )
+  if not combat_sounds_args[ npc:id() ] then
+    table.insert( combat_sounds_queue, npc:id() )
+  end
+  combat_sounds_args[ npc:id() ] = true
+end
+
+function reset_combat_sounds( id )
+  combat_sounds_args[ id ] = nil
+end
+
+function process_combat_sounds_on_update()
+  while ( table.getn( combat_sounds_queue ) > 0 ) do
+    local npc_id = table.remove( combat_sounds_queue, 1 )
+    if combat_sounds_args[ npc_id ] then
+      combat_sounds_args[ npc_id ] = nil
+      local npc = level.object_by_id( npc_id )
+      if npc then
+        process_combat_sound( npc )
+        return true
+      end
+    end
+  end
+  return false
+end
+
+
+function process_combat_situations_on_update()
+  while ( table.getn( combat_situations_queue ) > 0 ) do
+    local npc_id = table.remove( combat_situations_queue, 1 )
+    local f = combat_situations_args[ npc_id ]
+    if f then
+      combat_situations_args[ npc_id ] = nil
+      if f() then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+
+evid_altcombat  = 18720
+actid_altcombat = evid_altcombat + 1
+
+function add_to_binder( object, ini, scheme, section, storage )
+  local operators  = {
+    [ "gogogo" ] = actid_altcombat,
+  }
+  local properties = {
+    [ "alt_combat_enabled" ] = evid_altcombat,
+  }
+
+  local manager = object:motivation_action_manager()
+
+  local lname = level.name()
+  local comm  = object:character_community()
+  local forbidden_by_comm = community_forbidden_locations[ comm ]
+  if
+    ( not object:alive() )
+    or forbidden_comms[ comm ]
+    or ( forbidden_by_comm and forbidden_by_comm[ lname ] )
+    or forbidden_by_lname[ lname ]
+    or forbidden_profiles[ object:name() ]
+    or forbidden_profiles[ object:profile_name() ]
+    or (
+      comm == "monolith"
+      and string.find( object:name(), "pri_" )
+      and (
+        string.find( object:name(), "sniper" )
+        or string.find( object:name(), "roof" )
+      )
+    )
+  then
+    manager:add_evaluator(
+      properties.alt_combat_enabled, property_evaluator_const( false )
+    )
+    return
+  end
+
+  manager:add_evaluator(
+    properties.alt_combat_enabled,
+    evaluator_check_altcombat( "alt_combat_enabled", storage )
+  )
+
+  local action = action_altcombat( object, "gogogo", storage )
+  action:add_precondition( world_property( stalker_ids.property_alive, true ) )
+  action:add_precondition(
+    world_property( xr_evaluators_id.sidor_wounded_base, false )
+  )
+  action:add_precondition(
+    world_property( blowout_scheme.evid_outside, false )
+  )
+  -- action:add_precondition(
+  --   world_property( blowout_scheme.evid_blowout, false )
+  -- )
+  -- action:add_precondition(
+  --   world_property( blowout_scheme.evid_preblowout, false )
+  -- )
+  action:add_precondition(
+    world_property( properties.alt_combat_enabled, true )
+  )
+  action:add_effect( world_property( properties.alt_combat_enabled, false ) )
+  action:add_effect( world_property( stalker_ids.property_enemy, false ) )
+  manager:add_action( operators.gogogo, action )
+
+  for _, id in ipairs({
+    "action_alife_planner",
+    "action_combat_planner",
+    "action_danger_planner",
+  }) do
+    action = manager:action( stalker_ids[ id ] )
+    action:add_precondition(
+      world_property( properties.alt_combat_enabled, false )
+    )
+  end
+
+  state_mgr.add_to_idle_preconditions(
+    manager, { properties.alt_combat_enabled }
+  )
+end
+
+
+function enable_scheme( npc, ini, scheme, section )
+  scheme_name = scheme
+  local st = xr_logic.assign_storage_and_bind( npc, ini, scheme, section )
+end
+
+
+function disable_scheme( npc, scheme )
+  local st = db.storage[ npc:id() ][ scheme ]
+  if st then
+    st.enabled = false
+  end
+end

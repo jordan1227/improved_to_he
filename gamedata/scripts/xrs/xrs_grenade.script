@@ -795,3 +795,352 @@ function fake_pickup(obj)
 		misc.release_obj(obj)
 	end
 end
+
+
+-- [HE-PORT]
+
+local spawn_grenade_freq = 300 * 1000
+
+local bai_gr_types = {
+  -- "grenade_f1",
+  "grenade_rgd5",
+}
+
+local bai_grenade_max_dist = 60
+
+local bai_snd_replics = {
+  [ "stalker" ] = {
+    "stalker\\ready_1",
+    "stalker\\ready_2",
+    "stalker\\ready_3",
+    "stalker\\ready_4",
+    "stalker\\ready_5",
+    "stalker\\ready_6",
+    "stalker\\ready_7",
+    "stalker\\ready_8",
+  },
+  [ "military" ] = {
+    "voyaki\\ready_1",
+    "voyaki\\ready_2",
+    "voyaki\\ready_3",
+  },
+  [ "bandit" ] = {
+    "bandos\\ready_1",
+    "bandos\\ready_2",
+    "bandos\\ready_3",
+    "bandos\\ready_4",
+    "bandos\\ready_5",
+    "bandos\\ready_6",
+    "bandos\\ready_7",
+    "bandos\\ready_8",
+    "bandos\\ready_9",
+    "bandos\\ready_10",
+  },
+  [ "monolith" ] = {
+    "mono\\ready_1",
+    "mono\\ready_2",
+    "mono\\ready_3",
+  },
+  [ "killer" ] = {
+    "merc\\ready_1",
+    "merc\\ready_2",
+  },
+  [ "vermaht" ] = {
+    "vermaht\\ready_1",
+  },
+  [ "dolg" ] = {
+    "dolgos\\abuse_3",
+    "dolgos\\backup_3",
+    "dolgos\\panic_monster_2",
+    "dolgos\\panic_monster_4",
+    "dolgos\\search_8",
+    "dolgos\\threat_distant_2",
+    "dolgos\\threat_distant_5",
+  },
+  [ "freedom" ] = {
+    "freedom\\freedom1",
+    "freedom\\freedom2",
+    "freedom\\freedom3",
+  },
+}
+bai_snd_replics.lastday = bai_snd_replics.bandit
+bai_snd_replics.sniper  = bai_snd_replics.bandit
+
+local firing = {}
+
+function bai_forget_firing( obj )
+  firing[ obj:id() ] = nil
+end
+
+function on_throw_grenade( npc, obj )
+  local f = firing[ npc:id() ]
+  if f then
+    firing[ npc:id() ] = nil
+    f( obj )
+  end
+end
+
+function check_victims( npc, pos, radius )
+  local fr_inj = false
+  local checked = {}
+  for o in npc:memory_visible_objects() do
+    local obj = o:object()
+    if check_this_victim( npc, pos, radius, obj ) then return true end
+    checked[ obj:id() ] = true
+  end
+  for o in npc:memory_sound_objects() do
+    local obj = o:object()
+    if not checked[ obj:id() ] then
+      if check_this_victim( npc, pos, radius, obj ) then return true end
+    end
+  end
+  return false
+end
+
+function check_this_victim( npc, pos, radius, obj )
+  if ( obj:is_actor() or obj:is_stalker() ) and obj:alive() then
+    local dist = pos:distance_to( obj:position() )
+    if dist < radius then
+      if not xrs_battle_ai.check_is_enemy( npc, obj ) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+class "evaluator_love_napalm_smell"
+function evaluator_love_napalm_smell:__init( storage )
+  self.a = storage
+  self:set_next_check_time()
+end
+
+
+function evaluator_love_napalm_smell:set_next_check_time()
+  self.a.next_check_time = time_global() + math.random( 10, 20 ) * 1000
+end
+
+
+function evaluator_love_napalm_smell:get_grenade( be )
+  local npc = self.object
+  local spawn_grenade = true
+  for i = 1, table.getn( bai_gr_types ) do
+    local v = bai_gr_types[ i ]
+    local curr_gr = npc:object( v )
+    if curr_gr then
+      spawn_grenade = false
+      if self:check_grenade( curr_gr:section(), be ) then
+        return curr_gr
+      end
+    end
+  end
+  if self.next_spawn_grenade and self.next_spawn_grenade > time_global() then
+    spawn_grenade = false
+  end
+  if spawn_grenade then
+    self.next_spawn_grenade = time_global() + spawn_grenade_freq
+    local sobj
+    for i = 1, table.getn( bai_gr_types ) do
+      local sect = bai_gr_types[ i ]
+      local prb = npc:character_rank() / 1500
+      if prb > 0.9  then prb = 0.9  end
+      if prb < 0.01 then prb = 0.01 end
+      if math.random() < prb then
+        sobj = alife():create(
+          sect,
+          npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc:id()
+        )
+        break
+      end
+    end
+  end
+end
+
+
+function evaluator_love_napalm_smell:evaluate( npc )
+  self.object = npc
+  if not npc:alive() then return false end
+
+  if self.a.throwing then
+    ogse_debug.add_active_eval( self.object, script_name(), "love_napalm_smell_2" )
+    return true
+  end
+
+  if self.a.next_check_time > time_global() then return false end
+  self:set_next_check_time()
+
+  if not self.a.ready_to_grenade then return false end
+  local be = xrs_battle_ai.get_target( npc )
+  if not be then return false end
+  if not self:good_target( be ) then return false end
+
+  local curr_gr = self:get_grenade( be )
+  if not curr_gr then return false end
+
+  if
+    be:is_actor() and self.next_actor_grenade
+    and self.next_actor_grenade > time_global()
+  then
+    return false
+  end
+
+  local throw_enabled = npc:throw_target(
+    be:position(), be:level_vertex_id(), be
+  )
+--[=[
+  if level.valid_vertex_id( level.vertex_id( be:position() ) ) then
+    throw_enabled = npc:throw_target( be:position(), be:level_vertex_id(), be )
+  else
+    throw_enabled = npc:throw_target( be:position(), be )
+  end
+--]=]
+  if throw_enabled then
+    if be:is_actor() then
+      self.next_actor_grenade = time_global() + math.random( 60, 300 ) * 1000
+    end
+    self.a.grenade      = curr_gr:id()
+    self.a.target_enemy = be:id()
+    self.a.target_pos   = be:position()
+    self.a.throwing     = true
+    ogse_debug.add_active_eval( self.object, script_name(), "love_napalm_smell" )
+    return true
+  end
+
+  return false
+end
+
+
+function evaluator_love_napalm_smell:good_target( be )
+  local npc = self.object
+  return (
+    npc:is_relation_enemy( be )
+    and (
+      be:is_actor() or be:is_stalker()
+      or get_bool( be:section(), "xrs_grenade.good_target", false )
+    )
+  )
+end
+
+
+function evaluator_love_napalm_smell:check_grenade( section, be )
+  local npc = self.object
+
+  -- далеко кидать никак, мы ж не атлеты...
+  local bp = be:position()
+  if npc:position():distance_to( bp ) > bai_grenade_max_dist then return false end
+
+  -- если накроет взрывом - не будем кидать
+  local radius = get_grenade_radius( section )
+  local fr_inj = check_victims( npc, bp, radius * 0.9 )
+
+  -- можно использовать эту гранату....
+  return ( not fr_inj )
+end
+
+class "action_kill_it_with_fire"
+function action_kill_it_with_fire:__init( storage )
+  self.a = storage
+end
+
+
+function action_kill_it_with_fire:initialize( npc )
+  self.at_pos    = false
+  self.finalized = false
+  self.object    = npc
+  xr_sound.set_sound( npc, nil )
+  stop_play_sound( npc )
+  utils.send_to_nearest_accessible_vertex( npc, npc:level_vertex_id() )
+end
+
+
+function action_kill_it_with_fire:execute()
+  if self.finalized then return end
+
+  local npc = self.object
+  local target_enemy = level.object_by_id( self.a.target_enemy )
+  local dir
+  if target_enemy then
+    npc:set_sight( target_enemy, true, true )
+    dir = vector():sub( target_enemy:position(), npc:position() )
+  else
+    npc:set_sight( look.fire_point, self.a.target_pos )
+    dir = vector():sub( self.a.target_pos, npc:position() )
+  end
+  npc:set_desired_direction( dir )
+
+  if not self.at_pos then
+    npc:set_movement_type( move.stand )
+    npc:set_mental_state( anim.danger )
+    npc:set_body_state( move.standing )
+    npc:set_dest_level_vertex_id( npc:level_vertex_id() )
+    self.at_pos = true
+    self.state  = 0
+    return
+  end
+
+  if self.state == 0 then
+    if
+      npc:animation_count() > 0 or npc:body_state() ~= move.standing
+      or npc:is_body_turning()
+    then
+      return
+    end
+    local obj = level.object_by_id( self.a.grenade )
+    if obj then
+      npc:set_item( object.fire1, obj )
+      firing[ npc:id() ] = function( gr )
+        self:on_throw_grenade( gr )
+      end
+      self.state = self.state + 1
+    else
+      self.state = 3
+    end
+
+  elseif self.state == 1 then
+    if npc:critically_wounded() then
+      firing[ npc:id() ] = nil
+      npc:set_item( object.idle, nil )
+      self.state = 3
+    end
+    return
+
+  elseif self.state == 2 then
+    npc:set_item( object.idle, nil )
+    npc:add_animation( "norm_all_6_attack_2" )
+    self.state = self.state + 1
+
+  elseif self.state == 3 then
+    if npc:animation_count() > 0 then return end
+    self.a.throwing = false
+    self.finalized  = true
+  end
+end
+
+
+function action_kill_it_with_fire:on_throw_grenade( obj )
+  if self.finalized then return end
+  local npc = self.object
+  if math.random() < 0.9 then
+    local snd_sect = bai_snd_replics[ npc:character_community() ]
+      or bai_snd_replics.stalker
+    local snd_rnd  = math.random( table.getn( snd_sect ) )
+    local snd = "grenadier\\" .. snd_sect[ snd_rnd ]
+    snd = xr_sound.get_safe_sound_object( snd )
+    if snd then
+      snd:play_no_feedback( npc, sound_object.s3d, 0, npc:position(), 1.0 )
+    end
+  end
+  self.a.grenade = nil
+  self.state     = self.state + 1
+end
+
+
+function action_kill_it_with_fire:finalize()
+  local npc = self.object
+  firing[ npc:id() ] = nil
+  self.a.next_check_time = time_global() + math.random( 60, 300 ) * 1000
+  self.a.throwing        = false
+  self.at_pos            = false
+  self.finalized         = true
+  self.state             = false
+end

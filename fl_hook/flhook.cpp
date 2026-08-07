@@ -28,6 +28,43 @@
 
 #define RVA_RUN_ATK_CHECK     0x00AD1A10ULL
 #define RVA_RUN_ATK_CHECK_END 0x00AD1A20ULL
+
+#define RVA_AMBUSH_COVER      0x00B1EA40ULL
+#define RVA_AMBUSH_COVER_END  0x00B1EA4FULL
+#define RVA_RTDCAST           0x00D56956ULL
+#define RVA_RTTI_CGAMEOBJECT  0x010BEB70ULL
+#define RVA_RTTI_CAI_STALKER  0x010C0DD8ULL
+#define RVA_SETUP_CE_CLOSE    0x00712190ULL
+#define RVA_BEST_COVER_CLOSE  0x00712530ULL
+#define RVA_AI_SPACE_FN       0x002E7250ULL
+#define RVA_COVER_LAMBDA_VFT  0x00EDB988ULL
+#define RVA_MI_FREE_EX        0x00B6E0D0ULL
+#define RVA_LUA_RAWGETI       0x00C19B30ULL
+#define RVA_LUA_SETTOP2       0x00C18250ULL
+#define RVA_PUSH_COVER_ARG    0x00B2B360ULL
+#define RVA_LUABIND_PCALL     0x00C0CED0ULL
+#define OFF_SGO_GAME_OBJECT   0x08
+#define OFF_STALKER_CE_CLOSE  0xA38
+#define OFF_AISPACE_COVER_MGR 0x30
+#define OFF_FUNCTOR_LUA_STATE 0x00
+#define OFF_FUNCTOR_REF       0x10
+#define OFF_LUA_STATE_TOP     0x28
+#define COVER_MODE_CLOSE      1
+#define COVER_MODE_FAR        2
+#define COVER_MODE_KILLER_ID  3
+#define RVA_RTTI_CENTITY_ALIVE 0x010BE9B0ULL
+#define RVA_LUA_PUSHINTEGER   0x00C18E60ULL
+#define RVA_LUA_SETFIELD      0x00C19E70ULL
+#define OFF_ENTITY_KILLER_ID  0x308
+#define LUA_GLOBALSINDEX      (-10002)
+#define RVA_SETUP_CE_BASE     0x0070A500ULL
+#define RVA_BEST_COVER_FAR    0x00B615C0ULL
+#define OFF_STALKER_CE_FAR    0xA30
+#define OFF_EV_ACTUALITY      0x38
+#define OFF_EV_ENEMY_POS      0x80
+#define OFF_EV_MIN_DISTANCE   0x8C
+#define OFF_EV_MAX_DISTANCE   0x90
+#define OFF_EV_DEVIATION      0x98
 #define RVA_DEVICE_TIME       0x0122378CULL
 
 #define RVA_ACTOR_RENDER      0x002E0860ULL
@@ -151,7 +188,27 @@ typedef void  (*set_rflag_t)(void* kin, unsigned id, bool state);
 typedef unsigned (*rchildcount_t)(void* kin);
 typedef void* (*getdebugname_t)(void* visual, void* out_shared_str);
 
+typedef const void* (*ambush_cover_t)(void* self, const float* pos, const float* enemy,
+                                      float radius, float min_distance, const void* cb);
+typedef void* (*rtdcast_t)(void* p, long vfdelta, void* srct, void* dstt, int isref);
+typedef void  (*setup_ce_close_t)(void* ev, const float* enemy, float mn, float mx,
+                                  float dev, const void* fn);
+typedef const void* (*best_cover_close_t)(void* mgr, const float* pos, float radius, void* ev);
+typedef void* (*ai_space_fn_t)(void);
+typedef void  (*mi_free_ex_t)(void* p, void* unused);
+typedef void  (*lua_rawgeti_t)(void* L, int idx, int n);
+typedef void  (*lua_settop2_t)(void* L, int idx);
+typedef void  (*push_cover_arg_t)(void* L, void* tuple);
+typedef int   (*luabind_pcall_t)(void* L, int nargs, int nres);
+typedef void  (*func_delete_this_t)(void* self, unsigned char dealloc);
+typedef void  (*setup_ce_base_t)(void* ev, const void* fn);
+typedef void  (*lua_pushinteger_t)(void* L, long long n);
+typedef void  (*lua_setfield_t)(void* L, int idx, const char* k);
+typedef const void* (*best_cover_far_t)(void* mgr, const float* pos, float radius, void* ev,
+                                        const void* restrictor);
+
 static uintptr_t g_base = 0;
+static ambush_cover_t g_orig_ambush = 0;
 static execcmd_t g_orig = 0;
 static void* g_console = 0;
 static restrict_t g_orig_restrict = 0;
@@ -1423,6 +1480,159 @@ static void* install_onhuddraw_detour(void* hook)
     return tramp;
 }
 
+struct CoverVecMS { const void** first; const void** last; const void** end; };
+
+static void bai_set_ret(long long v)
+{
+    void* L = lua_state();
+    if (!L) return;
+    ((lua_pushinteger_t)(g_base + RVA_LUA_PUSHINTEGER))(L, v);
+    ((lua_setfield_t)(g_base + RVA_LUA_SETFIELD))(L, LUA_GLOBALSINDEX, "bai_ret");
+}
+
+static void far_evaluator_setup(void* ev, const float* enemy, float mn, float mx,
+                                float dev, const void* fn)
+{
+    ((setup_ce_base_t)(g_base + RVA_SETUP_CE_BASE))(ev, fn);
+    char* e = (char*)ev;
+    *(float*)(e + OFF_EV_ENEMY_POS + 0) = enemy[0];
+    *(float*)(e + OFF_EV_ENEMY_POS + 4) = enemy[1];
+    *(float*)(e + OFF_EV_ENEMY_POS + 8) = enemy[2];
+
+    const float EPS = 0.00001f;
+    unsigned char act = *(unsigned char*)(e + OFF_EV_ACTUALITY);
+    if (act) {
+        float d0 = *(float*)(e + OFF_EV_DEVIATION)    - dev;
+        float d1 = *(float*)(e + OFF_EV_MIN_DISTANCE) - mn;
+        float d2 = *(float*)(e + OFF_EV_MAX_DISTANCE) - mx;
+        if (d0 < 0.0f) d0 = -d0;
+        if (d1 < 0.0f) d1 = -d1;
+        if (d2 < 0.0f) d2 = -d2;
+        act = (unsigned char)((d0 < EPS && d1 < EPS && d2 < EPS) ? 1 : 0);
+    }
+    *(float*)(e + OFF_EV_DEVIATION)    = dev;
+    *(float*)(e + OFF_EV_MIN_DISTANCE) = mn;
+    *(float*)(e + OFF_EV_MAX_DISTANCE) = mx;
+    *(unsigned char*)(e + OFF_EV_ACTUALITY) = act;
+}
+
+static void*    g_pass_member[4]   = {0, 0, 0, 0};
+static void*    g_pass_manager[5]  = {0, 0, 0, 0, 0};
+static void*    g_pass_location[1] = {0};
+static void*    g_pass_agent[4]    = {0, 0, 0, 0};
+static bool     g_pass_ready       = false;
+
+static void build_pass_restrictor(void)
+{
+    if (g_pass_ready) return;
+    g_pass_manager[4]  = (void*)&g_pass_member[0];
+    g_pass_location[0] = (void*)&g_pass_manager[0];
+    g_pass_agent[3]    = (void*)&g_pass_location[0];
+    g_pass_ready = true;
+}
+
+static const void* hkAmbushCover(void* self, const float* pos, const float* enemy,
+                                 float radius, float min_distance, const void* cb)
+{
+    if (!g_orig_ambush) return 0;
+    if (radius >= 0.0f)
+        return g_orig_ambush(self, pos, enemy, radius, min_distance, cb);
+
+    const float packed = -radius;
+    const int   mode   = (int)(packed / 1000.0f);
+    const float r      = packed - (float)mode * 1000.0f;
+    if (r <= 0.0f) return 0;
+
+    void* go = *(void**)((char*)self + OFF_SGO_GAME_OBJECT);
+    if (!go) return 0;
+
+    if (mode == COVER_MODE_KILLER_ID) {
+        void* alive = ((rtdcast_t)(g_base + RVA_RTDCAST))(
+            go, 0, (void*)(g_base + RVA_RTTI_CGAMEOBJECT),
+            (void*)(g_base + RVA_RTTI_CENTITY_ALIVE), 0);
+        bai_set_ret(alive ? (long long)*(unsigned short*)((char*)alive + OFF_ENTITY_KILLER_ID)
+                          : -1);
+        return 0;
+    }
+
+    if (mode != COVER_MODE_CLOSE && mode != COVER_MODE_FAR) return 0;
+    void* stalker = ((rtdcast_t)(g_base + RVA_RTDCAST))(
+        go, 0, (void*)(g_base + RVA_RTTI_CGAMEOBJECT),
+        (void*)(g_base + RVA_RTTI_CAI_STALKER), 0);
+    if (!stalker) return 0;
+    void* ev = *(void**)((char*)stalker + (mode == COVER_MODE_CLOSE
+                                          ? OFF_STALKER_CE_CLOSE
+                                          : OFF_STALKER_CE_FAR));
+    if (!ev) return 0;
+
+    struct CoverVecMS covers;
+    covers.first = 0; covers.last = 0; covers.end = 0;
+
+    void* fn[8];
+    for (int i = 0; i < 8; ++i) fn[i] = 0;
+    fn[0] = (void*)(g_base + RVA_COVER_LAMBDA_VFT);
+    fn[1] = (void*)&covers;
+    fn[7] = (void*)&fn[0];
+
+    if (mode == COVER_MODE_CLOSE)
+        ((setup_ce_close_t)(g_base + RVA_SETUP_CE_CLOSE))(
+            ev, enemy, min_distance, 300.0f, 10.0f, (const void*)fn);
+    else
+        far_evaluator_setup(ev, enemy, min_distance, 300.0f, 10.0f, (const void*)fn);
+    if (fn[7]) {
+        void** vt = (void**)fn[0];
+        ((func_delete_this_t)vt[4])((void*)&fn[0],
+                                    (unsigned char)(fn[7] != (void*)&fn[0]));
+    }
+
+    void* aispace = ((ai_space_fn_t)(g_base + RVA_AI_SPACE_FN))();
+    if (aispace) {
+        void* mgr = *(void**)((char*)aispace + OFF_AISPACE_COVER_MGR);
+        if (mgr && mode == COVER_MODE_CLOSE) {
+            ((best_cover_close_t)(g_base + RVA_BEST_COVER_CLOSE))(mgr, pos, r, ev);
+        } else if (mgr) {
+            build_pass_restrictor();
+            void* restr[3];
+            restr[0] = stalker;
+            restr[1] = (void*)&g_pass_agent[0];
+            restr[2] = 0;
+            ((best_cover_far_t)(g_base + RVA_BEST_COVER_FAR))(mgr, pos, r, ev,
+                                                              (const void*)restr);
+        }
+    }
+
+    const void* result = 0;
+    if (covers.first && covers.last != covers.first) {
+        const long n = (long)(covers.last - covers.first);
+        if (cb) {
+            void* L   = *(void**)((char*)cb + OFF_FUNCTOR_LUA_STATE);
+            int   ref = *(int*)((char*)cb + OFF_FUNCTOR_REF);
+            for (long i = n - 1; i >= 0; --i) {
+                const void*  p     = covers.first[i];
+                const void** tuple = &p;
+                ((lua_rawgeti_t)(g_base + RVA_LUA_RAWGETI))(L, -10000, ref);
+                ((push_cover_arg_t)(g_base + RVA_PUSH_COVER_ARG))(L, (void*)&tuple);
+                if (((luabind_pcall_t)(g_base + RVA_LUABIND_PCALL))(L, 1, 1)) break;
+                unsigned char* top = *(unsigned char**)((char*)L + OFF_LUA_STATE_TOP);
+                unsigned long long tv = *(unsigned long long*)(top - 8);
+                const int accepted = ((unsigned int)(tv >> 47) < 0xFFFFFFFEu);
+                ((lua_settop2_t)(g_base + RVA_LUA_SETTOP2))(L, -2);
+                if (accepted) { result = p; break; }
+            }
+        } else {
+            result = covers.first[n - 1];
+        }
+    }
+
+    if (covers.first) {
+        void* blk = (void*)covers.first;
+        if ((((char*)covers.end - (char*)covers.first) & ~(long long)7) >= 0x1000)
+            blk = *((void**)covers.first - 1);
+        ((mi_free_ex_t)(g_base + RVA_MI_FREE_EX))(blk, 0);
+    }
+    return result;
+}
+
 static void* install_detour(uintptr_t rva_begin, uintptr_t rva_end, void* hook)
 {
     uint8_t* func = (uint8_t*)(g_base + rva_begin);
@@ -1466,6 +1676,9 @@ static bool install_hook()
 
     g_orig_run_atk = (run_atk_check_t)install_detour(RVA_RUN_ATK_CHECK, RVA_RUN_ATK_CHECK_END,
                                                      (void*)&hkRunAttackCheck);
+
+    g_orig_ambush = (ambush_cover_t)install_detour(RVA_AMBUSH_COVER, RVA_AMBUSH_COVER_END,
+                                                   (void*)&hkAmbushCover);
 
     g_orig_actor_render = (actor_render_t)install_detour(
         RVA_ACTOR_RENDER, RVA_ACTOR_RENDER_END, (void*)&hkActorRenderableRender);
