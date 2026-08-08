@@ -6,22 +6,6 @@ local built = false
 local last_build = 0
 local BUILD_TTL = 120000
 
-local human_comms = {
-	stalker = true,
-	bandit = true,
-	dolg = true,
-	freedom = true,
-	ecolog = true,
-	killer = true,
-	military = true,
-	green = true,
-	monolith = true,
-	zombied = true,
-	trader = true,
-	stranger = true,
-	nebo = true,
-}
-
 local probe_comms = {
 	"stalker", "bandit", "dolg", "freedom", "ecolog", "killer", "military", "green",
 	"monolith", "zombied",
@@ -52,65 +36,22 @@ function is_locked(name)
 	return locked_smarts[name] == true
 end
 
-local function expand_comm(community)
-	if community == "green" or community == "nebo" then
-		return { community, "stalker", "green" }
-	end
-	if community == "stalker" then
-		return { "stalker", "green" }
-	end
-	if community == "dolg" then
-		return { "dolg", "military" }
-	end
-	if community == "military" then
-		return { "military", "dolg" }
-	end
-	return { community }
-end
-
-local function is_stalker_comm(c)
-	return human_comms[c] == true
-end
-
 local function is_bar_smart(name)
 	local n = string.lower(tostring(name or ""))
 	return string.sub(n, 1, 4) == "bar_"
 end
 
-local function smart_accepts(smart, community)
+local function smart_open(smart)
 	if not smart then return false end
 	if smart.disabled then return false end
 	if smart.population_locked then return false end
+	if is_blacklisted(smart:name()) then return false end
+	return true
+end
 
-	local sname = smart:name()
-	if is_blacklisted(sname) then return false end
-
-	local probes = expand_comm(community)
-	local acc = smart.accepted_communities
-	if acc then
-		for i = 1, #probes do
-			if acc[probes[i]] then
-				return true
-			end
-		end
-		return false
-	end
-
-	local gp = smart.gparams
-	if not gp or not gp.type then
-		return false
-	end
-	local gtype = gp.type
-	for i = 1, #probes do
-		local c = probes[i]
-		local ok, res = pcall(function()
-			return xr_gulag.checkNpc(c, is_stalker_comm(c), gtype, nil, nil)
-		end)
-		if ok and res then
-			return true
-		end
-	end
-	return false
+local function smart_accepts(smart, community, level_name)
+	if not smart_open(smart) then return false end
+	return olr_faction_policy.accepts(smart, community, level_name)
 end
 
 local function smart_level_name(smart)
@@ -134,10 +75,11 @@ local function add_smart(smart, new_index, new_map, new_level)
 	local sname = smart:name()
 	if new_map[sname] then return true end
 	new_map[sname] = smart
-	new_level[sname] = smart_level_name(smart)
+	local lname = smart_level_name(smart)
+	new_level[sname] = lname
 	for i = 1, #probe_comms do
 		local comm = probe_comms[i]
-		if smart_accepts(smart, comm) then
+		if smart_accepts(smart, comm, lname) then
 			if not new_index[comm] then
 				new_index[comm] = {}
 			end
@@ -221,7 +163,7 @@ function get_names(community)
 	if community == "green" or community == "nebo" or community == "stalker"
 		or community == "dolg" or community == "military"
 	then
-		list = merge_lists(expand_comm(community))
+		list = merge_lists(olr_faction_policy.expand_comm(community))
 	else
 		list = index[community] or {}
 	end
@@ -243,19 +185,7 @@ function get_level(name)
 	return name_to_level[name]
 end
 
-function pick_name(community, exclude_name, exclude_level)
-	local list = get_names(community)
-	if exclude_level then
-		local pool = {}
-		for i = 1, #list do
-			if name_to_level[list[i]] ~= exclude_level then
-				table.insert(pool, list[i])
-			end
-		end
-		if #pool > 0 then
-			list = pool
-		end
-	end
+local function pick_from(list, exclude_name)
 	local n = #list
 	if n == 0 then
 		return nil
@@ -273,6 +203,36 @@ function pick_name(community, exclude_name, exclude_level)
 		end
 	end
 	return list[math.random(n)]
+end
+
+function pick_name(community, exclude_name, exclude_level)
+	local list = get_names(community)
+	if exclude_level then
+		local pool = {}
+		for i = 1, #list do
+			if name_to_level[list[i]] ~= exclude_level then
+				table.insert(pool, list[i])
+			end
+		end
+		if #pool > 0 then
+			list = pool
+		end
+	end
+	return pick_from(list, exclude_name)
+end
+
+-- [HE-PORT]
+function pick_any_on_levels(allowed_levels, exclude_name)
+	rebuild(false)
+	local pool = {}
+	for name, lvl in pairs(name_to_level) do
+		if (not allowed_levels) or allowed_levels[lvl] then
+			if smart_open(name_to_obj[name]) then
+				table.insert(pool, name)
+			end
+		end
+	end
+	return pick_from(pool, exclude_name)
 end
 
 -- [HE-PORT]

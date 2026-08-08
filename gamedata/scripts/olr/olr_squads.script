@@ -73,21 +73,43 @@ local faction_configs = {
 		min_size = 3,
 		max_size = 6,
 	},
+	monolith_north = {
+		comm = "monolith",
+		sections = {
+			"olr_monolith_regular", "olr_monolith_regular",
+			"olr_monolith_specnaz", "olr_monolith_specnaz",
+			"olr_monolith_master",
+			"olr_monolith_sniper",
+		},
+		min_size = 3,
+		max_size = 6,
+		levels = "north",
+		anchor_any = true,
+		wander_only = true,
+		roam = true,
+	},
 }
 
 local faction_weights = {
-	{ "stalker",  30 },
-	{ "bandit",   25 },
-	{ "dolg",     15 },
-	{ "freedom",  12 },
-	{ "killer",   8 },
-	{ "military", 7 },
-	{ "ecolog",   3 },
+	{ "stalker",        30 },
+	{ "bandit",         25 },
+	{ "dolg",           15 },
+	{ "freedom",        12 },
+	{ "killer",         11 },
+	{ "military",        9 },
+	{ "ecolog",          4 },
+	{ "monolith_north",  8 },
 }
 
 local total_weight = 0
 for _, fw in ipairs(faction_weights) do
 	total_weight = total_weight + fw[2]
+end
+
+-- [HE-PORT]
+local function level_set(kind)
+	if kind == "north" then return olr_faction_policy.north_levels end
+	return nil
 end
 
 local function pick_random_faction()
@@ -121,6 +143,20 @@ local function count_alive_spawned()
 	return alive
 end
 
+-- [HE-PORT]
+local ROAM_KEY = "nlc.olr_roam_ids"
+local ROAM_INTERVAL = 10 * 60000
+local ROAM_MAX = 60
+local roam_next = 0
+
+-- [HE-PORT]
+local function roam_track(id)
+	local t = get_value(ROAM_KEY) or {}
+	if #t >= ROAM_MAX then return end
+	table.insert(t, id)
+	set_value(ROAM_KEY, t)
+end
+
 local function get_spawn_location(smart_obj)
 	local sim = g_sim
 	if not sim then return "?" end
@@ -139,9 +175,16 @@ local function spawn_squad(faction_name)
 	if not sim then return 0 end
 	if not olr_smart_index.ensure() then return 0 end
 
+	-- [HE-PORT]
+	local levels = level_set(config.levels)
+
 	local smart_name, smart_obj
 	for attempt = 1, 8 do
-		smart_name = olr_smart_index.pick_name(faction_name, nil)
+		if config.anchor_any then
+			smart_name = olr_smart_index.pick_any_on_levels(levels, nil)
+		else
+			smart_name = olr_smart_index.pick_name(config.comm or faction_name, nil)
+		end
 		if smart_name then
 			smart_obj = olr_smart_index.get_obj(smart_name)
 			if smart_obj then break end
@@ -154,7 +197,7 @@ local function spawn_squad(faction_name)
 
 	local size = math.random(config.min_size, config.max_size)
 	local spawned = 0
-	local wander = math.random(1, 10) <= 4
+	local wander = config.wander_only == true or math.random(1, 10) <= 4
 
 	for i = 1, size do
 		local section = config.sections[math.random(#config.sections)]
@@ -185,6 +228,9 @@ local function spawn_squad(faction_name)
 					end
 				end
 				spawned_ids[obj.id] = faction_name
+				if config.roam then
+					roam_track(obj.id)
+				end
 				return true
 			end
 			return false
@@ -220,6 +266,41 @@ function update()
 		local faction = pick_random_faction()
 		spawn_squad(faction)
 	end
+end
+
+-- [HE-PORT]
+function roam_update()
+	if not db.actor then return end
+	if device().precache_frame > 1 then return end
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if time_global() < roam_next then return end
+	roam_next = time_global() + ROAM_INTERVAL
+
+	local sim = g_sim
+	if not sim then return end
+	if not olr_smart_index.ensure() then return end
+
+	local t = get_value(ROAM_KEY)
+	if not t or #t == 0 then return end
+
+	local levels = olr_faction_policy.north_levels
+	local kept = {}
+	for _, id in ipairs(t) do
+		local obj = sim:object(id)
+		if obj and obj:alive() then
+			table.insert(kept, id)
+			if not obj.online and math.random(1, 3) ~= 1 then
+				local target = olr_smart_index.pick_any_on_levels(levels, nil)
+				local smart = target and olr_smart_index.get_obj(target)
+				if smart then
+					pcall(function()
+						sim:teleport_object(id, smart.m_game_vertex_id, smart.m_level_vertex_id, smart.position)
+					end)
+				end
+			end
+		end
+	end
+	set_value(ROAM_KEY, kept)
 end
 
 function get_status()

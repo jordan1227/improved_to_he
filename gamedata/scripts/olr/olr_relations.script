@@ -1,0 +1,96 @@
+-- [HE-PORT]
+local CHECK_INTERVAL = 6000
+local MAX_SCAN = 40
+local GOODWILL_ACTOR = 2000
+local GOODWILL_NPC = 1500
+
+local time_next = 0
+local pacified = {}
+
+local guest_comms = {
+	military = true,
+}
+
+local friendly_comms = {
+	stalker = true,
+	green = true,
+	ecolog = true,
+	dolg = true,
+	trader = true,
+}
+
+local function smart_of(se)
+	local sid = se:smart_terrain_id()
+	if not sid or sid == BAD_OBJ_ID then return nil end
+	local sim = g_sim or alife()
+	if not sim then return nil end
+	return sim:object(sid)
+end
+
+local function pacify(npc, targets)
+	pcall(function() npc:set_goodwill(GOODWILL_ACTOR, db.actor) end)
+	for i = 1, #targets do
+		pcall(function() npc:set_goodwill(GOODWILL_NPC, targets[i]) end)
+	end
+end
+
+local function restore(npc, targets)
+	local id = npc:id()
+	pcall(function() relation_registry.clear_personal_goodwill(id, db.actor:id()) end)
+	for i = 1, #targets do
+		pcall(function() relation_registry.clear_personal_goodwill(id, targets[i]:id()) end)
+	end
+end
+
+function update()
+	if not db.actor then return end
+	if device().precache_frame > 1 then return end
+	if time_global() < time_next then return end
+	time_next = time_global() + CHECK_INTERVAL
+
+	local sim = g_sim
+	if not sim then return end
+	if not db.storage then return end
+
+	local guests = {}
+	local leavers = {}
+	local targets = {}
+	local scanned = 0
+
+	for id, _ in pairs(db.storage) do
+		if scanned >= MAX_SCAN then break end
+		if id ~= db.actor:id() then
+			local npc = level.object_by_id(id)
+			if npc and npc:alive() and IsStalker(npc) then
+				scanned = scanned + 1
+				local comm = npc:character_community()
+				if friendly_comms[comm] then
+					table.insert(targets, npc)
+				elseif guest_comms[comm] then
+					local se = sim:object(id)
+					local smart = se and smart_of(se)
+					local guest = false
+					if smart then
+						local ok, res = pcall(olr_faction_policy.is_guest_smart, smart, comm)
+						guest = ok and res
+					end
+					if guest then
+						table.insert(guests, npc)
+					elseif pacified[id] then
+						table.insert(leavers, npc)
+					end
+				end
+			end
+		end
+	end
+
+	for i = 1, #guests do
+		pacify(guests[i], targets)
+		pacified[guests[i]:id()] = true
+	end
+
+	for i = 1, #leavers do
+		restore(leavers[i], targets)
+		pacified[leavers[i]:id()] = nil
+	end
+end
