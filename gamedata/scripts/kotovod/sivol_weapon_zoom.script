@@ -1,0 +1,193 @@
+-- sivol_adaptive_zoom.script
+--
+-- Makes ADS zoom (scope_zoom_factor) track the player's FOV slider instead of being a fixed
+-- absolute value.
+--
+-- Engine reference (confirmed from OGSR-Engine-main source, ogse_wpn_zoom_system=false path):
+--   CActor::currentFOV() -> pWeapon->GetZoomFactor() * 0.75f
+--   GetZoomFactor() returns m_fZoomFactor, which snaps to m_fScopeZoomFactor when ADS starts.
+-- So: zoomed_camera_fov = scope_zoom_factor * 0.75, independent of g_fov (the slider) in the
+-- unscoped case -- that disconnect is the bug this script fixes.
+--
+-- Formulas:
+--   Unscoped (iron sights, no scope attached): flat FOV offset from the current slider value.
+--       new_scope_zoom_factor = (current_fov - class_offset) / 0.75
+--   Scoped (integrated or attached detachable scope): preserve the scope's authored
+--   magnification at any slider value -- linear scale against the engine's hardcoded
+--   reference FOV (67.5).
+--       new_scope_zoom_factor = base_scope_zoom_factor * (current_fov / 67.5)
+--
+-- IMPORTANT (compounding-drift avoidance): base_scope_zoom_factor must ALWAYS come from an
+-- immutable ini source, never from wpn.scope_zoom_factor itself once this script has started
+-- writing to it -- that field is the runtime/native value we overwrite every ADS-enter, and
+-- reading it back as a "base" would compound the adaptive formula on top of its own last
+-- output. The two authoritative sources are:
+--   - unscoped: the weapon's own section, e.g. [wpn_ak74]  (weapons.ltx)
+--   - scoped:   the attached scope's addon section, looked up via wpn.scope_name
+--               (e.g. wpn.scope_name == "wpn_addon_1pso" -> [wpn_addon_1pso] in add_scopes.ltx)
+--               NOT the weapon's own section -- a scope's magnification is authored on the
+--               addon, and can differ completely from the weapon's unscoped value.
+
+local REFERENCE_FOV = 67.5 -- engine's hardcoded default g_fov (Actor.cpp)
+
+-- First-pass classification, seeded from a filename/real-world-knowledge guess (NOT sourced
+-- from an in-game class field) -- audit and correct before relying on this for balance.
+local ZOOM_OFFSET_BY_CLASS = {
+	pistol  = -10,
+	rifle   = -5,
+	smg     = -8,
+	shotgun = -4,
+	sniper  = -5,
+	lmg     = -3,
+	default = -4,
+}
+
+-- TODO: audit this mapping -- inferred from filenames, not from an actual ini class/kind field.
+-- Non-weapon / melee / launcher sections deliberately omitted -- they fall through to "default"
+-- but most won't have a scope_zoom_factor at all, so recompute_scope_zoom() no-ops for them.
+local SECTION_TO_CLASS = {
+	-- pistols
+	wpn_1911 = "pistol", wpn_apb = "pistol", wpn_beretta92 = "pistol", wpn_colt_m45a1 = "pistol",
+	wpn_desert_eagle = "pistol", wpn_fn_fnx = "pistol", wpn_fort12 = "pistol",
+	wpn_gauss_pistol = "pistol", wpn_glock17 = "pistol", wpn_pb = "pistol", wpn_pernach = "pistol",
+	wpn_pm = "pistol", wpn_sig220 = "pistol", wpn_taurus = "pistol", wpn_usp = "pistol",
+	wpn_walther = "pistol",
+	-- smgs
+	wpn_bizon2 = "smg", wpn_mp5 = "smg", wpn_mp5_mod = "smg", wpn_ump45 = "smg",
+	wpn_vector = "smg", wpn_vityaz = "smg",
+	-- rifles / carbines
+	wpn_ak74 = "rifle", wpn_abakan = "rifle", wpn_ak103 = "rifle", wpn_ak104 = "rifle",
+	wpn_ak74u = "rifle", wpn_akm = "rifle", wpn_ak_strelok = "rifle", wpn_ak_strelok_rem = "rifle",
+	wpn_fn2000 = "rifle", wpn_sa58 = "rifle", wpn_fn_scar = "rifle", wpn_g36 = "rifle",
+	wpn_groza = "rifle", wpn_m4a1 = "rifle", wpn_sig552 = "rifle", wpn_val = "rifle",
+	wpn_vpo101_hunter = "rifle",
+	-- shotguns
+	wpn_mp133_short = "shotgun", wpn_mp153 = "shotgun", wpn_mp153_short = "shotgun",
+	wpn_oreh_shotgun = "shotgun", wpn_remington870 = "shotgun", wpn_saiga12c = "shotgun",
+	wpn_saiga12_mod = "shotgun", wpn_spas12 = "shotgun", wpn_toz34 = "shotgun",
+	wpn_toz34_hunter = "shotgun", wpn_toz66 = "shotgun", wpn_toz66_short = "shotgun",
+	wpn_usas12 = "shotgun", wpn_usas12_mod = "shotgun",
+	-- sniper / marksman
+	wpn_svd = "sniper", wpn_awm = "sniper", wpn_mosin = "sniper", wpn_sks = "sniper",
+	wpn_sv98 = "sniper", wpn_svu = "sniper", wpn_vintorez = "sniper", wpn_vintorez_mod = "sniper",
+	wpn_gauss_rifle = "sniper",
+	-- lmgs
+	wpn_mg36 = "lmg", wpn_pkm = "lmg", wpn_pkm_mod = "lmg", wpn_rpk16 = "lmg", wpn_rpk74 = "lmg",
+}
+
+local function get_weapon_class(section)
+	return SECTION_TO_CLASS[section] or "default"
+end
+
+local function get_current_fov()
+	return get_console():get_float("fov") or REFERENCE_FOV
+end
+
+local function is_scoped(item)
+	local status = ogse_wpn_utils.get_scope_status(item)
+	if status == 1 then
+		return true -- integrated/fixed scope, always "on"
+	elseif status == 2 then
+		local flag = ogse_wpn_utils.get_scope_flag(item)
+		return flag -- detachable -- only true if currently attached
+	end
+	return false
+end
+
+-- Uses get_float(section, param, default), the existing helper already proven working in this
+-- codebase for this exact field (see sak_minigame.script / rx_ai.script) -- NOT a hand-rolled
+-- ini_file()/section_exist()/line_exist() call, which silently returned nil for every weapon
+-- and made recompute_scope_zoom() bail out before ever writing anything.
+local function get_base_scope_zoom(item, wpn, scoped)
+	if scoped then
+		-- Confirmed via dsh_switch_addons.script precedent (`local scope_name = weapon.scope_name`,
+		-- read off the get_weapon()-result variable, not the raw item) -- scope_name lives on wpn.
+		local scope_section = wpn.scope_name
+		if not scope_section or scope_section == "" then return nil end
+		local v = get_float(scope_section, "scope_zoom_factor", 0)
+		if v == 0 then return nil end
+		return v
+	else
+		local section = item:section()
+		local v = get_float(section, "scope_zoom_factor", 0)
+		if v == 0 then return nil end
+		return v
+	end
+end
+
+local function recompute_scope_zoom(item)
+	if not item then
+		return
+	end
+	local wpn = item:get_weapon() -- CWeapon-bound object -- only needed for the final field write
+	if not wpn then
+		return
+	end
+
+	local scoped = is_scoped(item)
+	local base_szf = get_base_scope_zoom(item, wpn, scoped)
+	if not base_szf then
+		return
+	end -- no ADS zoom authored for this state, nothing to do
+
+	local fov = get_current_fov()
+	local new_szf
+
+	if scoped then
+		new_szf = base_szf * (fov / REFERENCE_FOV)
+	else
+		local offset = ZOOM_OFFSET_BY_CLASS[get_weapon_class(item:section())] or ZOOM_OFFSET_BY_CLASS.default
+		-- offset is a signed delta (e.g. pistol = -5) to ADD to fov, not a positive magnitude to
+		-- subtract -- subtracting a negative offset here previously zoomed OUT instead of in
+		-- (fov=95, offset=-5 gave desired_zoomed_fov=100 instead of the intended 90).
+		new_szf = (fov + offset) / 0.75
+	end
+
+	-- IMPORTANT: for unscoped weapons, the actual ADS-press snap reads m_fIronSightZoomFactor,
+	-- NOT m_fScopeZoomFactor (confirmed via InitAddons() source: "for weapon without any scope -
+	-- scope_zoom_factor will overrider ironsight_zoom_factor" -- it overrides it ONCE at weapon
+	-- load time, not on every snap). Writing scope_zoom_factor here was silently ignored by the
+	-- unscoped snap. Writing zoom_factor directly (an earlier attempt) DID change the FOV but
+	-- caused visible jank -- it's the live, already-snapped, in-flight value, and overwriting it
+	-- after ADS has already started fights whatever camera effector already captured the old
+	-- target and is mid-transition toward it. Writing iron_sight_zoom_factor instead updates the
+	-- SOURCE the *next* snap reads from, never touching an in-progress transition -- costs one
+	-- stale press right after weapon load (before this script has had a chance to run for that
+	-- weapon), but every press after that should be clean.
+	if scoped then
+		wpn.scope_zoom_factor = new_szf
+	else
+		wpn.iron_sight_zoom_factor = new_szf
+	end
+end
+
+-- Equip-time trigger: recompute the moment a weapon becomes the active item, well before any
+-- possible ADS press, so even the FIRST press per weapon reads a corrected iron_sight_zoom_factor
+-- instead of the raw ini default. Confirmed real signal (bind_stalker.script actor_binder:item_to_slot
+-- calls self.am:call("on_item_to_slot", obj, sobj)).
+local function on_item_to_slot(obj, sobj)
+	recompute_scope_zoom(obj)
+end
+
+-- Edge-triggered on the aim-state transition (not-aiming -> aiming) as a secondary safety net --
+-- catches FOV-slider changes made while a weapon is already equipped (on_item_to_slot alone
+-- wouldn't see those). Cheap: one comparison per frame, real work only fires once per ADS-enter.
+local was_aiming = false
+local diag_frames_left = 0
+
+local function on_update()
+    local aiming = wpn_params.get_zie_obj() ~= nil
+
+    if aiming and not was_aiming then
+        local slot = db.actor:active_slot()
+        local item = db.actor:item_in_slot(slot)
+        recompute_scope_zoom(item)
+    end
+
+    was_aiming = aiming
+end
+
+function attach(sm)
+	sm:subscribe({signal = "on_update", fun = on_update})
+	sm:subscribe({signal = "on_item_to_slot", fun = on_item_to_slot})
+end
