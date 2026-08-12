@@ -308,104 +308,141 @@ function on_monster_use( monster, who )
     end	
 end
 
+-- =========================================================
+-- ADAPTIVE RAYCAST
+-- =========================================================
+
+local function cast_ray( pos, dir, range, ignore_obj )
+    local rq = level.ray_query( pos, dir, range, rq_target.rqtBoth, ignore_obj )
+    if not rq or not rq.result or not rq.range or rq.range > range then
+        return { success = false, distance = range }
+    end
+    return {
+        success  = true,
+        distance = rq.range,
+        object   = rq.object,
+        element  = rq.element,
+        position = vector():set( pos ):mad( dir, rq.range ),
+    }
+end
+
+function get_wound_pos( range, ignore_obj, target_obj )
+    local pos0 = device().cam_pos
+    local dirn = vector():set( device().cam_dir ):normalize()
+    local res = cast_ray( pos0, dirn, range, ignore_obj )
+    if res.success and target_obj and res.object and res.object:id() == target_obj:id() then
+        return res.position
+    end
+    return nil
+end
+
+-- =========================================================
+-- PROCESS MONSTER LOOT (INTEGRATION)
+-- =========================================================
+
 function process_monster_loot( monster, mutant_items, additional_items )
-	--set_dof_params( 0.25, 0.25, 0.3, 0.25 )
-	local part_to_take = mutant_items[ 1 ]
-	local part_section = part_to_take:section()
+    local part_to_take = mutant_items[ 1 ]
+    local part_section = part_to_take:section()
     
-	local knife_item = db.actor:item_in_slot( 0 )
-	local knife_sect = knife_item:section()
-	local active_item = db.actor:active_item()
+    local knife_item = db.actor:item_in_slot( 0 )
+    local knife_sect = knife_item:section()
+    local active_item = db.actor:active_item()
     
---	local knf_time_k = knife_sect == "wpn_knife_m1" and 0.5 or 1
---	local time_by_monster = knf_brk_k[ part_section ][ 1 ]
-	local cond_by_monster = knf_brk_k[ part_section ][ 2 ]
-	local reduce_cond = knf_brk_k[ part_section ][ 3 ]
+    local cond_by_monster = knf_brk_k[ part_section ][ 2 ]
+    local reduce_cond = knf_brk_k[ part_section ][ 3 ]
     
-	local knife_cond = knife_item:condition()
-	local new_cond = ( knife_sect == "wpn_knife_m1" and reduce_cond / 2 ) or reduce_cond 
-	params.add_condition( active_item, new_cond )
-	local will_break = knife_cond + new_cond <= 0
+    local knife_cond = knife_item:condition()
+    local new_cond = ( knife_sect == "wpn_knife_m1" and reduce_cond / 2 ) or reduce_cond 
+    params.add_condition( active_item, new_cond )
+    local will_break = knife_cond + new_cond <= 0
     
-	local mut_cond = math.max( 1 - ( cond_by_monster / knife_cond ), 0.2 )
-	if knife_cond >= 0.9 then mut_cond = 1 end
-	
-	-- Если нож сломался, то дополнительно портим часть на 10-15%, но не ниже 0.1
-	if will_break then
-		local decrease_percentage = math.random( 10, 15 ) / 100
-		mut_cond = math.max( mut_cond * ( 1 - decrease_percentage), 0.1 )
-	end	
+    local mut_cond = math.max( 1 - ( cond_by_monster / knife_cond ), 0.2 )
+    if knife_cond >= 0.9 then mut_cond = 1 end
     
---[[	
-	sak.actor_hide_weapon()
-	local total_time = will_break and 800 or knf_time_k * ( 1800 + time_by_monster ) + ( 650 / knife_cond )
-	-- Не больше 12 секунд, При <= 0.1 время увеличивается х2, вплоть до минуты
-	total_time = math.min( total_time, 12000 )
-	snd = sound_object( "zwuk_short\\loot_long_" .. lua_random( 1, 2 ) )
-	snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d + sound_object.looped )	
-    
-	level.add_cam_effector( "camera_effects\\item_use.anm", 8553, true, "", total_time / 1000 )		
-	dsh.timeout( total_time, function()
-		monster:transfer_item( part_to_take, db.actor )
-		part_to_take:set_condition( mut_cond )	
-		sak.relocate_item( "in", part_to_take:section(), 1 )	
+    if will_break then
+        local decrease_percentage = math.random( 10, 15 ) / 100
+        mut_cond = math.max( mut_cond * ( 1 - decrease_percentage), 0.1 )
+    end	
 
-        if will_break then
-            misc.release_obj( knife_item )
-			db.actor:drop_item( part_to_take )
-            sak.send_tip( 
-                "Чёрт! Совсем нож в негодность пришёл \\nТеперь точно новый покупать...", 
-                "Мысли вслух", 0, 10, "g_g", "no", "red" 
-            )
-			misc.easy_sound( "scripts\\knife_broke" )
-			misc.easy_sound( "scripts\\matches_no_light_2" )
+    force_full_crouch( function( saved )
+        prev_stance = saved
+
+        -- 1. Perform Single Raycast to find the exact point on the monster
+        local wound_pos = get_wound_pos( 3.0, db.actor, monster )
+        local pitch_delta = -math.rad( 25 ) -- Fallback if ray misses
+        
+        if wound_pos then
+            local cam_pos = device().cam_pos
+            local look_dir = vector():sub( wound_pos, cam_pos )
+            local target_pitch = look_dir:getP() 
+            local cam = actor_camera(0)
+            if cam then
+                pitch_delta = target_pitch - cam.pitch
+                -- Clamp to sane values so we don't break our neck if standing on the corpse
+                pitch_delta = math.max( -math.rad(60), math.min( math.rad(20), pitch_delta ) )
+            end
         end
-		
-		stop_loot_already()
-	end )	
-]]--
 
-	force_full_crouch( function( saved )
-		-- они почти всегда стоя дохнут, плохо...
-		if not strpos( monster:name(), "burer", 1, true ) then
-			test_ease_pitch()
-		end	
-		prev_stance = saved
+        -- 2. Apply the adaptive pitch
+        if not strpos( monster:name(), "burer", 1, true ) then
+            ease_camera_pitch( pitch_delta, 500 )
+        end
 
-		local anim = knife_sect == "wpn_knife_m1" and "anm_mob_harvest_m1" or "anm_mob_harvest"
-		local anim_duration = game.play_hud_motion( 2, anim, "anm_show", false, 1, true )	
-		misc.easy_sound("interface\\item_usage\\harvest_use")
+        -- 3. Apply FOV using NLC's native smooth_set_fov
+        local saved_fov = db.actor:get_camera_fov()
+        local LOOT_FOV = 58 -- Zoom in
+        if smooth_set_fov then
+            pcall(function() smooth_set_fov(LOOT_FOV, 400) end)
+        else
+            db.actor:set_camera_fov(LOOT_FOV)
+        end
 
-		dsh.timeout( anim_duration, function() 
-			game.play_hud_motion( 2, "anm_mob_loot", "anm_show", false, 1, true )
-			misc.easy_sound("interface\\item_usage\\harvest_use_success")
-			sak.restore_weap()
+        local anim = knife_sect == "wpn_knife_m1" and "anm_mob_harvest_m1" or "anm_mob_harvest"
+        local anim_duration = game.play_hud_motion( 2, anim, "anm_show", false, 1, true )	
+        misc.easy_sound("interface\\item_usage\\harvest_use")
 
-			monster:transfer_item( part_to_take, db.actor )
-			part_to_take:set_condition( mut_cond )	
-			sak.relocate_item( "in", part_to_take:section(), 1 )			
+        dsh.timeout( anim_duration, function() 
+            game.play_hud_motion( 2, "anm_mob_loot", "anm_show", false, 1, true )
+            misc.easy_sound("interface\\item_usage\\harvest_use_success")
+            sak.restore_weap()
 
-			if will_break then
-				misc.release_obj( knife_item )
-				db.actor:drop_item( part_to_take )
-				sak.send_tip( 
-					"Чёрт! Совсем нож в негодность пришёл \\nТеперь точно новый покупать...", 
-					"Мысли вслух", 0, 10, "g_g", "no", "red" 
-				)
-				misc.easy_sound( "scripts\\knife_broke" )
-				misc.easy_sound( "scripts\\matches_no_light_2" )
-			end
+            monster:transfer_item( part_to_take, db.actor )
+            part_to_take:set_condition( mut_cond )	
+            sak.relocate_item( "in", part_to_take:section(), 1 )			
 
-			restore_stance( prev_stance )
-			stop_loot_already()
-		end )
+            if will_break then
+                misc.release_obj( knife_item )
+                db.actor:drop_item( part_to_take )
+                sak.send_tip( 
+                    "Чёрт! Совсем нож в негодность пришёл \\nТеперь точно новый покупать...", 
+                    "Мысли вслух", 0, 10, "g_g", "no", "red" 
+                )
+                misc.easy_sound( "scripts\\knife_broke" )
+                misc.easy_sound( "scripts\\matches_no_light_2" )
+            end
 
-		monster:set_tip_text( #mutant_items > 1 and "cut_off_part" or 
-			( #mutant_items == 1 and #additional_items > 0 and ( strpos( monster:name(), "burer_", 1, true ) 
-				or strpos( monster:name(), "controller", 1, true ) ) and "%c[green]Обшарим тело" 
-				or "nothing_to_cut_off" ) 
-		)
-	end )
+            -- 4. Restore FOV smoothly
+            if smooth_set_fov then
+                pcall(function() smooth_set_fov(saved_fov, 600) end)
+            else
+                db.actor:set_camera_fov(saved_fov)
+            end
+
+            -- Return camera pitch to original angle
+            if not strpos( monster:name(), "burer", 1, true ) then
+                ease_camera_pitch( math.abs(pitch_delta), 500 )
+            end
+
+            restore_stance( prev_stance )
+            stop_loot_already()
+        end ) 
+
+        monster:set_tip_text( #mutant_items > 1 and "cut_off_part" or 
+            ( #mutant_items == 1 and #additional_items > 0 and ( strpos( monster:name(), "burer_", 1, true ) 
+                or strpos( monster:name(), "controller", 1, true ) ) and "%c[green]Обшарим тело" 
+                or "nothing_to_cut_off" ) 
+        )
+    end )
 end
 
 function actor_look_at_point( target_point )

@@ -77,6 +77,7 @@ local SMOOTH_OUT = 2.5
 local last_time = 0
 
 local electra_noise_muted = false -- disable glitch noise from electras specifically
+local NOISE_VOLUME_SCALE = 0.75 -- volume of interference 
 
 -- ======================= ARTIFACT-DRIVEN INTERFERENCE (placeholder) =======================
 -- Same convention as sivol_weapon.script's artifact_wobble_table: exact match first,
@@ -180,12 +181,27 @@ function electra_active()
     return smooth > 0.01
 end
 
--- Helper: Check if 3D PDA is in player's hands
+-- Helper: Check if 3D PDA is in player's hands and active (not holstering)
 local function is_pda_in_hands()
     local active_item = db.actor:active_item()
     if not active_item then return false end
+
     local section = active_item:section()
-    return section == "device_pda" or string.find(section, "device_pda") ~= nil
+    if not (section == "device_pda" or string.find(section, "device_pda") ~= nil) then
+        return false
+    end
+
+    -- OGSR CHudItem State Check:
+    -- 0 = eIdle, 1 = eShowing, 2 = eHiding, 3 = eHidden
+    -- If the PDA is in the middle of playing its holster animation (state 2 or 3), treat as holstered immediately.
+    if active_item.get_state then
+        local state = active_item:get_state()
+        if state == 2 or state == 3 then
+            return false
+        end
+    end
+
+    return true
 end
 
 -- Expose ownership check for bind_stalker / binder_update_7
@@ -309,7 +325,7 @@ local function check_electra_proximity()
     local base_alpha = 0.25 + smoothed_mix * (1.2 - 0.25)
     local alpha_mode = base_alpha + smoothed_blackout * (1.55 - base_alpha)
 
-    -- 6. Validation for driving audio and shader
+	-- 6. Validation for driving audio and shader
     local pda = db.actor:object("device_pda")
     local is_3d_pda = get_console():get_string("g_3d_pda") == 'on'
     local pda_in_hands = is_pda_in_hands()
@@ -318,16 +334,19 @@ local function check_electra_proximity()
     local can_drive = pda and pda_in_hands and is_3d_pda and not broken
 
     if can_drive then
-        -- Audio driven strictly by non-rain intensity
+        -- Audio handling (uses smooth_non_rain + volume scaler)
         if smooth_non_rain > 0.01 and not electra_noise_muted then
             pda_noise.play_noise_sound()
-            pda_noise.set_noise_volume(0.1 + 0.4 * smooth_non_rain)
+            pda_noise.set_noise_volume((0.1 + 0.4 * smooth_non_rain) * NOISE_VOLUME_SCALE)
         else
             pda_noise.stop_noise_sound()
         end
 
         -- Visual Shader driven by full intensity (rain included)
         set_pda_params(vector():set(0.0, smooth, alpha_mode))
+    else
+        -- PDA was holstered, dropped, or broken -> cut audio immediately
+        pda_noise.stop_noise_sound()
     end
 end
 
