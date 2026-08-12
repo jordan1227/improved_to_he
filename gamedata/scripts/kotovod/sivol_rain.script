@@ -1,0 +1,114 @@
+-- ======================================================================
+-- SIVOL_RAIN.SCRIPT. Rain-driven ambient effects for NLC OGSR HE
+-- Shelter check pattern reused from cleaning_masks_if_raining.script (NLC Improved)
+-- ======================================================================
+sivol_rain = sivol_rain or {}
+
+local RAIN_THRESHOLD   = 0.02   -- ignore drizzle
+local SHELTER_RANGE    = 10     -- overhead hit within this range = sheltered
+local RAY_MAX_DIST     = 200
+
+-- ADDITIVE/SUBTRACT, NOT MULTIPLIER 
+local ELECTRIC_RES_MULT = -0.20 -- -20% at full rain intensity
+local BURN_RES_MULT     =  0.10 -- +10% at full rain intensity
+
+local cached_intensity  = 0     -- 0..1, current effective rain exposure (0 if sheltered/no rain)
+local effects_applied   = false
+local active_armor_id   = nil
+local active_base_vals  = {}
+
+-- ======================= SHELTER + INTENSITY =======================
+
+local function is_actor_sheltered()
+    local RP = level.ray_query( db.actor:position(), vector():set( 0, 1, 0 ), RAY_MAX_DIST, rq_target.rqtStatic, nil )
+    local range = ( RP and RP.result ) and RP.range or RAY_MAX_DIST
+    return range <= SHELTER_RANGE
+end
+
+local function update_rain_intensity()
+    local rf = level.rain_factor()
+    if rf <= RAIN_THRESHOLD or not db.actor then
+        cached_intensity = 0
+        return
+    end
+    if is_actor_sheltered() then
+        cached_intensity = 0
+        return
+    end
+    -- Clamp to 0..1. Engine can return >1 (night sections with rain_density > 1),
+    -- but the design target for MULT values is rain_factor ≈ 1 as "full rain".
+    cached_intensity = math.min(math.max(rf, 0), 1.0)
+end
+
+-- Public getter — shared by sivol_pda.script's ambient static and anything else that cares
+function sivol_rain.get_intensity()
+    return cached_intensity
+end
+
+-- ======================= ARMOR STAT EFFECTS =======================
+
+local function apply_rain_armor_effects()
+    local actor = db.actor
+    local armor = actor and actor:item_in_slot( 6 )
+    if not armor then return end
+    local outfit = armor:get_outfit()
+    if not outfit then return end
+
+    -- Re-baseline if armor changed since we last applied, or effects were removed
+    if not effects_applied or active_armor_id ~= armor:id() then
+        active_base_vals = {}
+        local cur_shock = outfit[ "shock_protection" ]
+        local cur_burn  = outfit[ "burn_protection" ]
+        if cur_shock then active_base_vals[ "shock_protection" ] = cur_shock end
+        if cur_burn  then active_base_vals[ "burn_protection" ]  = cur_burn  end
+        active_armor_id  = armor:id()
+        effects_applied  = true
+    end
+
+	if active_base_vals["shock_protection"] then
+		outfit["shock_protection"] = active_base_vals["shock_protection"] + (ELECTRIC_RES_MULT * cached_intensity)
+	end
+	if active_base_vals["burn_protection"] then
+		outfit["burn_protection"]  = active_base_vals["burn_protection"]  + (BURN_RES_MULT * cached_intensity)
+	end
+end
+
+local function remove_rain_armor_effects()
+    if not effects_applied then return end
+
+    local armor = active_armor_id and level.object_by_id( active_armor_id )
+    if armor then
+        local outfit = armor:get_outfit()
+        if outfit then
+            for stat_name, base_val in pairs( active_base_vals ) do
+                outfit[ stat_name ] = base_val
+            end
+        end
+    end
+
+    active_armor_id  = nil
+    active_base_vals = {}
+    effects_applied   = false
+end
+
+-- ======================= UPDATE LOOP =======================
+-- Same 6-second cadence as cleaning_masks_if_raining.script
+
+local function on_upd_if_raining()
+    update_rain_intensity()
+    if cached_intensity > 0 then
+        apply_rain_armor_effects()
+    elseif effects_applied then
+        remove_rain_armor_effects()
+    end
+end
+
+local function on_safe_spawn()
+    if const.ground_levels[ level.name() ] then -- surface levels only
+        ogse_signals.get_mgr():subscribe({ signal = "on_update_6sec", fun = on_upd_if_raining })
+    end
+end
+
+function attach( sm )
+    sm:subscribe({ signal = "on_safe_spawn", fun = on_safe_spawn })
+end

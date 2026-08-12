@@ -51,6 +51,7 @@
 -- among Electra, artifact broadcasting, and location baseline.
 -- Passed as the Y parameter in set_pda_params() and controls audio noise volume.
 local smooth = 0
+local smooth_non_rain = 0 -- sound-gating value only — rain must never drive audio
 
 -- Current exponentially smoothed style blend factor (0.0 = 100% glitch, 1.0 = 100% static).
 -- Electra or artifact broadcasting pulls this towards 0.0,
@@ -144,9 +145,9 @@ end
 -- mix range: 0.0 (glitch-dominant) to 1.0 (static-dominant)
 local LOCATION_FX = {
     aver = { base = 0.85, mix = 0.5 },                    -- mostly static, touch of glitch
-    l03u_agr_underground = { base = 0.125, mix = 0.95 },     -- mostly static. Нужно штуки читать 
+    l03u_agr_underground = { base = 0.15, mix = 0.95 },     -- mostly static. Нужно штуки читать 
 }
-local UNDERGROUND_FX = { base = 0.25, mix = 0.85 } -- Если штуки надо читать в лабах - надо уменьшить
+local UNDERGROUND_FX = { base = 0.275, mix = 0.85 } -- Если штуки надо читать в лабах в ПДА - надо уменьшить
 
 function set_electra_noise_muted(v)
     electra_noise_muted = v
@@ -206,6 +207,26 @@ function owns_pda_params()
 		or ((cached_artifact_pda_glitch or 0) > 0)
 end
 
+-- ======================= RAIN AMBIENT STATIC (conservative, flavor only) =======================
+local RAIN_MAX_INTENSITY = 0.075   -- deliberately low — should never compete with Aver's 0.85 baseline
+local RAIN_MIX = 0.99             -- near-pure static: physical/moisture origin, not data corruption like electra
+local RAIN_CHECK_INTERVAL = 1000
+local last_rain_check = 0
+local cached_rain_intensity = 0
+
+local function update_rain_baseline()
+    local now = time_global()
+    if now - last_rain_check < RAIN_CHECK_INTERVAL then return end
+    last_rain_check = now
+
+    if not (sivol_rain and sivol_rain.get_intensity) then
+        cached_rain_intensity = 0
+        return
+    end
+    cached_rain_intensity = (sivol_rain.get_intensity() or 0) * RAIN_MAX_INTENSITY
+end
+--  =======================
+
 local function check_electra_proximity()
     if not db.actor then return end
 
@@ -214,7 +235,7 @@ local function check_electra_proximity()
     last_time = now
     if dt > 1 or dt < 0 then dt = 0 end
 
-    -- 1. Get targets (Electra/artifact glitch vs. Location baseline)
+    -- 1. Get targets (Electra/artifact glitch vs. Location/rain ambient baseline)
     local electra_target, is_strong = 0, false
     if pda_noise and pda_noise.get_electra_intensity then
         electra_target, is_strong = pda_noise.get_electra_intensity()
@@ -223,33 +244,36 @@ local function check_electra_proximity()
     local loc_base, loc_mix = get_location_baseline()
 
     update_artifact_pda_fx()
+    update_rain_baseline()
+
     local shield = cached_artifact_pda_shield or 0
     local artifact_glitch = cached_artifact_pda_glitch or 0
 
-    -- Shields suppress ambient interference only.
-    -- Artifact broadcasting remains independent.
     local electra_eff = electra_target * (1 - shield)
-    local loc_base_eff = loc_base * (1 - shield)
 
-    -- Electra and artifact interference are both glitch sources.
-    -- Location baseline remains a separate static source.
+    local ambient_base = math.max(loc_base, cached_rain_intensity)
+    local ambient_mix  = (cached_rain_intensity > loc_base) and RAIN_MIX or loc_mix
+    local loc_base_eff = ambient_base * (1 - shield)
+
     local glitch_source = math.max(electra_eff, artifact_glitch)
     local target = math.max(glitch_source, loc_base_eff)
 
-    -- 2. Determine target mix value.
-    -- Location static has its normal mix; either glitch source
-    -- pulls the mix toward 0 as it becomes dominant.
+    -- Sound-gating target excludes rain — location baseline and glitch sources only
+    local loc_base_eff_no_rain = loc_base * (1 - shield)
+    local target_no_rain = math.max(glitch_source, loc_base_eff_no_rain)
+
+    -- 2. Determine target mix value
     local target_mix
     if target <= 0.001 then
-        target_mix = loc_mix
+        target_mix = ambient_mix
     elseif glitch_source >= loc_base_eff then
         local glitch_share = math.min(
             1,
             glitch_source / math.max(target, 0.0001)
         )
-        target_mix = loc_mix * (1 - glitch_share)
+        target_mix = ambient_mix * (1 - glitch_share)
     else
-        target_mix = loc_mix
+        target_mix = ambient_mix
     end
 
     -- 3. Blackout target for point-blank Strong Electras (> 0.85 intensity)
@@ -261,6 +285,12 @@ local function check_electra_proximity()
     -- 4. Exponential smoothing for intensity, mix, and blackout
     local rate = (target > smooth) and SMOOTH_IN or SMOOTH_OUT
     local k = math.min(1, dt * rate)
+
+    local rate_nr = (target_no_rain > smooth_non_rain) and SMOOTH_IN or SMOOTH_OUT
+    local k_nr = math.min(1, dt * rate_nr)
+    smooth_non_rain = smooth_non_rain + (target_no_rain - smooth_non_rain) * k_nr
+    if smooth_non_rain < 0.001 then smooth_non_rain = 0 end
+    if smooth_non_rain > 1 then smooth_non_rain = 1 end
 
     smooth = smooth + (target - smooth) * k
     smoothed_mix = smoothed_mix + (target_mix - smoothed_mix) * k
@@ -276,10 +306,7 @@ local function check_electra_proximity()
     if smoothed_blackout > 1 then smoothed_blackout = 1 end
 
     -- 5. Map values to shader alpha_mode parameter
-    -- Standard mix range capped at 1.2 (safely below 1.5 black threshold)
     local base_alpha = 0.25 + smoothed_mix * (1.2 - 0.25)
-
-    -- Smoothly push alpha_mode past 1.5 when close to a strong Electra
     local alpha_mode = base_alpha + smoothed_blackout * (1.55 - base_alpha)
 
     -- 6. Validation for driving audio and shader
@@ -291,18 +318,15 @@ local function check_electra_proximity()
     local can_drive = pda and pda_in_hands and is_3d_pda and not broken
 
     if can_drive then
-        -- Audio handling
-        if smooth > 0.01 and not electra_noise_muted then
+        -- Audio driven strictly by non-rain intensity
+        if smooth_non_rain > 0.01 and not electra_noise_muted then
             pda_noise.play_noise_sound()
-            pda_noise.set_noise_volume(0.1 + 0.4 * smooth)
+            pda_noise.set_noise_volume(0.1 + 0.4 * smooth_non_rain)
         else
             pda_noise.stop_noise_sound()
         end
 
-        -- Drive 3D PDA Shader
-        -- x = 0.0 (no blowout engine lamp flicker)
-        -- y = smooth (intensity)
-        -- z = alpha_mode (0.25..1.2 normal range, up to 1.55 for strong Electra blackout)
+        -- Visual Shader driven by full intensity (rain included)
         set_pda_params(vector():set(0.0, smooth, alpha_mode))
     end
 end
