@@ -620,41 +620,53 @@ local function is_blowout_active()
 end
 
 local function check_pda_conditions()
-	local pda = db.actor:object("device_pda")
-	if not pda then return 'nil', nil, nil, nil, nil, nil end
-	local is_3d_pda = get_console():get_string("g_3d_pda")
-	local lvl_aver = level.name() == "aver"
-	local lvl_underground = const.ground_levels and const.ground_levels[string.lower(level.name())] == false
-	local blowout = is_blowout_active()
-	local broken = has_alife_info("pda_is_broken")
-	-- [HE-PORT]
-	local flag1 = pda and (lvl_aver or lvl_underground or blowout or broken)
-	local flag2 = not pda and db.actor:object("device_pda_npc_gg")
-	local in_safe_zone = not amk_anoms.check_coordinates(db.actor:position())
-	local cond = (pda and pda:condition()) or 0
-	return flag1, flag2, in_safe_zone, is_3d_pda, cond, broken
+    local pda = db.actor:object("device_pda")
+    if not pda then return 'nil', nil, nil, nil, nil, nil, nil end
+
+    local is_3d_pda = get_console():get_string("g_3d_pda")
+    local lvl_aver = level.name() == "aver"
+    local lvl_underground = const.ground_levels and const.ground_levels[string.lower(level.name())] == false
+    local blowout = is_blowout_active()
+    local broken = has_alife_info("pda_is_broken")
+
+    -- [HE-PORT]
+    -- flag1 retained for legacy 2D PDA / external calls that check locations + blowout
+    local flag1 = pda and (lvl_aver or lvl_underground or blowout or broken)
+    local flag2 = not pda and db.actor:object("device_pda_npc_gg")
+    local in_safe_zone = not amk_anoms.check_coordinates(db.actor:position())
+    local cond = (pda and pda:condition()) or 0
+    local flag_blowout = pda and blowout
+
+    return flag1, flag2, in_safe_zone, is_3d_pda, cond, broken, flag_blowout
 end
 
 local function pda_cb()
-	local flag1, flag2, in_safe_zone, is_3d_pda, _, broken = check_pda_conditions()
-	if is_3d_pda == 'on' then return end
-	if flag1 == 'nil' then return end
-	if flag1 and not flag2 then
-		if pda_on then
-			pda_noise.on_info("off")
-		elseif broken then
-			pda_noise.on_info("on_broken")
-		else
-			pda_noise.on_info("on")
-		end
-	elseif flag2 then
-		if pda_on then
-			pda_noise.on_info("off")
-		else
-			pda_noise.on_info("on")
-		end
-	end
+    local flag1, flag2, in_safe_zone, is_3d_pda, _, broken = check_pda_conditions()
+    if is_3d_pda == 'on' then return end
+    if flag1 == 'nil' then return end
+    
+    -- Re-add the electra check so 2D PDA triggers near anomalies
+    local electra_on = sivol_pda
+        and sivol_pda.electra_active
+        and sivol_pda.electra_active()
+        
+    if (flag1 or electra_on) and not flag2 then
+        if pda_on then
+            pda_noise.on_info("off")
+        elseif broken then
+            pda_noise.on_info("on_broken")
+        else
+            pda_noise.on_info("on")
+        end
+    elseif flag2 then
+        if pda_on then
+            pda_noise.on_info("off")
+        else
+            pda_noise.on_info("on")
+        end
+    end
 end
+
 local is_busy_on = get_bool("features", "busy_actor_restrictions", false)
 function is_busy_actor_restrictions()
 	local wpn = db.actor:active_item()
@@ -1509,40 +1521,44 @@ function actor_binder:binder_update_6 (delta, time)
 end
 
 function actor_binder:binder_update_7 (delta, time)
-	ogse_signals.get_mgr():reschedule(1000)
-		local flag1, flag2, in_safe_zone, is_3d_pda, cond, broken = check_pda_conditions()
-	if is_3d_pda == 'on' then
-		if flag1 == 'nil' then return end
-		-- [HE-PORT]
-		if flag1 and not flag2 and cond > 0 and not broken then
-			set_pda_params(vector():set(0.4,0.5,0.0))
-			if has_alife_info("ui_pda") then
-				pda_noise.play_noise_sound()
-			else
-				pda_noise.stop_noise_sound()
-			end
-		elseif flag2 or cond <= 0 or broken then
-			set_pda_params(vector():set(0.5,0.2,0.0))
-			pda_noise.stop_noise_sound()
-		else
-			set_pda_params(vector():set(0,0,0))
-			pda_noise.stop_noise_sound()
-		end
-	end
-if self.bCheckStart then
-		if not has_alife_info("storyline_actor_start") and
-			(level.name()=="l01_escape")
-			then
-			self.object:give_info_portion("storyline_actor_start")
-		end
-		if not has_alife_info("global_dialogs") then
-			self.object:give_info_portion("global_dialogs")
-		end
-		if not has_alife_info("level_changer_icons") then
-			self.object:give_info_portion("level_changer_icons")
-		end
-		self.bCheckStart = false
-	end
+    ogse_signals.get_mgr():reschedule(1000)
+
+    local flag1, flag2, in_safe_zone, is_3d_pda, cond, broken, flag_blowout = check_pda_conditions()
+    if is_3d_pda == 'on' then
+        if flag1 == 'nil' then return end
+
+        local owns = sivol_pda and sivol_pda.owns_pda_params and sivol_pda.owns_pda_params()
+
+        if flag2 or cond <= 0 or broken then
+            if not owns then set_pda_params(vector():set(0.5, 0.2, 0.0)) end
+            pda_noise.stop_noise_sound()
+        elseif owns then
+            -- sivol_pda drives set_pda_params every frame (handles electra + underground + aver)
+        elseif flag_blowout then
+            set_pda_params(vector():set(0.4, 0.5, 0.0))    -- legacy blowout static + intended lamp flicker
+            if has_alife_info("ui_pda") then 
+                pda_noise.play_noise_sound() 
+            else 
+                pda_noise.stop_noise_sound() 
+            end
+        else
+            set_pda_params(vector():set(0, 0, 0))
+            pda_noise.stop_noise_sound()
+        end
+    end
+
+    if self.bCheckStart then
+        if not has_alife_info("storyline_actor_start") and (level.name()=="l01_escape") then
+            self.object:give_info_portion("storyline_actor_start")
+        end
+        if not has_alife_info("global_dialogs") then
+            self.object:give_info_portion("global_dialogs")
+        end
+        if not has_alife_info("level_changer_icons") then
+            self.object:give_info_portion("level_changer_icons")
+        end
+        self.bCheckStart = false
+    end
 end
 
 function actor_binder:binder_update_8 (delta, time)

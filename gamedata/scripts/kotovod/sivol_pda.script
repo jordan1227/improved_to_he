@@ -1,0 +1,315 @@
+-- ============================================================================
+-- MODULE: sivol_pda.script (OGSR Engine Port)
+-- ============================================================================
+-- OVERVIEW:
+--   Manages 3D PDA visual screen noise, glitch shader effects, and ambient 
+--   interference audio based on level location baselines and proximity to
+--   Electra anomalies.
+--
+-- KEY RESPONSIBILITIES:
+--   1. Calculates location-based noise baselines (static/glitch intensity).
+--   2. Detects Electra proximity and overrides location noise with heavy glitch.
+--   3. Smooths intensity, style mix, and blackout factors over time using 
+--      exponential smoothing (SMOOTH_IN / SMOOTH_OUT).
+--   4. Drives 3D PDA shader parameters via set_pda_params(vector) and controls 
+--      spatial noise audio volume.
+--
+-- SHADER VECTOR CONTRACT (set_pda_params(x, y, z)):
+--   Х Vector.X = Blowout / Lamp Flicker (0.0 in this script; driven elsewhere).
+--   Х Vector.Y = Overall Noise Intensity (smooth: 0.0 = clean, 1.0 = maximum).
+--   Х Vector.Z = Alpha Mode / Shader Style Range (alpha_mode):
+--                - 0.25        = 100% Glitch effect
+--                - 1.20        = 100% Heavy Static effect (normal capped max)
+--                - >= 1.50     = Forced PDA Screen Blackout threshold
+--
+-- MIX PARAMETER CONTRACT (mix / smoothed_mix):
+--   Х mix = 0.0 > Pure Glitch dominant
+--   Х mix = 0.5 > Equal Glitch / Static blend
+--   Х mix = 1.0 > Pure Static dominant
+--   * Note: Electra proximity dynamically pulls mix towards 0.0 (Glitch).
+--
+-- SPECIAL FEATURES:
+--   Х Point-Blank Blackout: Standing near strong Electras (intensity > 0.85) 
+--     smoothly pushes alpha_mode past 1.5 to temporarily cut the screen to black.
+--
+-- RELATED FILES & DEPENDENCIES:
+--   Х pda_noise.script      - Provides get_electra_intensity(), plays/stops 
+--                             noise sounds, controls volume.
+--   Х bind_stalker.script   - Queries owns_pda_params() to allocate shader 
+--                             control during stalker binder updates.
+--   Х const.script          - Read for const.ground_levels table to identify 
+--                             underground maps automatically.
+--   Х amk_anoms.script      - Lower-level anomaly scanner called by pda_noise.
+--   Х Engine / 3D PDA Shader- Receives set_pda_params() vector values when 
+--                             g_3d_pda is 'on' and device_pda is equipped.
+-- ============================================================================
+-- STATE VARIABLES & TIMING CONSTANTS
+-- ============================================================================
+
+-- Current exponentially smoothed total noise intensity (0.0 = clean screen, 1.0 = maximum distortion).
+-- Tracks towards `target`: the strongest effective interference source
+-- among Electra, artifact broadcasting, and location baseline.
+-- Passed as the Y parameter in set_pda_params() and controls audio noise volume.
+local smooth = 0
+
+-- Current exponentially smoothed style blend factor (0.0 = 100% glitch, 1.0 = 100% static).
+-- Electra or artifact broadcasting pulls this towards 0.0,
+-- while location baselines provide the static component.
+-- Maps directly into the standard shader range (0.25 to 1.20).
+local smoothed_mix = 0
+
+-- Current exponentially smoothed blackout factor (0.0 = normal display, 1.0 = full blackout).
+-- Ramps up only when standing point-blank (< 0.15 radius) near strong Electra variants.
+-- Pushes the final shader alpha_mode value past 1.50 to force the screen to black.
+local smoothed_blackout = 0
+
+-- Attack speed multiplier for ramping effects UP (when intensity/glitch is increasing).
+-- Higher value = faster reaction when walking into an Electra zone or noisy location.
+local SMOOTH_IN = 5.0
+
+-- Decay speed multiplier for ramping effects DOWN (when intensity/glitch is fading).
+-- Lower value than SMOOTH_IN = effects linger slightly and fade out smoothly as you walk away.
+local SMOOTH_OUT = 2.5
+
+-- Stores the time_global() timestamp (in ms) from the previous update frame.
+-- Used to compute frame delta time (dt) for framerate-independent smoothing calculations.
+local last_time = 0
+
+local electra_noise_muted = false -- disable glitch noise from electras specifically
+
+-- ======================= ARTIFACT-DRIVEN INTERFERENCE (placeholder) =======================
+-- Same convention as sivol_weapon.script's artifact_wobble_table: exact match first,
+-- then generic _dynNd suffix stripping/scaling. Empty for now Ч add entries when ready.
+-- Value = raw intensity contribution (0..1, same scale as electra_target/loc_base),
+-- NOT a multiplier like the wobble table.
+-- Positive = this artifact broadcasts interference (max of these wins, no stacking)
+-- Negative = this artifact shields against ambient interference (these stack additively)
+local ARTIFACT_PDA_FX = {
+    af_eye       =  0.4,   -- broadcaster
+    -- af_something_dyn   =  0.2,   -- tier-scaled broadcaster
+    af_glassbeads = -0.75,   -- shield, tier-scaled same as broadcasters
+}
+
+local cached_artifact_pda_glitch = 0   -- 0..1, strongest broadcaster present
+local cached_artifact_pda_shield = 0   -- 0..1, combined shielding strength
+local last_artifact_pda_check = 0
+local ARTIFACT_PDA_CHECK_INTERVAL = 5000
+
+local function update_artifact_pda_fx()
+    local now = time_global()
+    if now - last_artifact_pda_check < ARTIFACT_PDA_CHECK_INTERVAL then return end
+    last_artifact_pda_check = now
+
+    if not (sak and sak.arts_operate) then
+        cached_artifact_pda_glitch = 0
+        cached_artifact_pda_shield = 0
+        return
+    end
+
+    local best_glitch = 0.0
+    local total_shield = 0.0
+
+    if sak_inventory and sak_inventory.belt_items then
+        for sec, items in pairs(sak_inventory.belt_items) do
+            local mod = ARTIFACT_PDA_FX[sec]
+            if not mod then
+                local base_sec = string.match(sec, "^(af_[%w_]+)_dyn%dd") or sec
+                mod = ARTIFACT_PDA_FX[base_sec]
+                if mod then
+                    local tier_str = string.match(sec, "_dyn(%d)d")
+                    if tier_str then
+                        local tier = tonumber(tier_str) or 3
+                        local tier_scale = (tier == 6) and 1.0 or (tier - 1) / 4  -- tier1>0 .. tier5>1
+                        mod = mod * tier_scale  -- sign preserved, tier_scale is always ?0
+                    end
+                end
+            end
+            local num_items = items and table.getn(items) or 0
+            if mod and num_items > 0 then
+                if mod > 0 then
+                    best_glitch = math.max(best_glitch, mod)
+				elseif mod < 0 then
+					total_shield = total_shield + (-mod) * num_items
+				end
+            end
+        end
+    end
+
+    cached_artifact_pda_glitch = math.min(1, best_glitch)
+    cached_artifact_pda_shield = math.min(1, total_shield)
+end
+
+-- ======================= LOCATION PDA GLITCH SETTINGS =======================
+-- Location-based baseline noise definitions 
+-- mix range: 0.0 (glitch-dominant) to 1.0 (static-dominant)
+local LOCATION_FX = {
+    aver = { base = 0.85, mix = 0.5 },                    -- mostly static, touch of glitch
+    l03u_agr_underground = { base = 0.125, mix = 0.95 },     -- mostly static. Ќужно штуки читать 
+}
+local UNDERGROUND_FX = { base = 0.25, mix = 0.85 } -- ≈сли штуки надо читать в лабах - надо уменьшить
+
+function set_electra_noise_muted(v)
+    electra_noise_muted = v
+end
+
+function toggle_electra_noise_muted()
+    electra_noise_muted = not electra_noise_muted
+    return electra_noise_muted
+end
+
+-- Returns location baseline (intensity base 0..1, mix float 0..1)
+local function get_location_baseline()
+    local lvl_name = string.lower(level.name())
+    if LOCATION_FX[lvl_name] then
+        return LOCATION_FX[lvl_name].base, LOCATION_FX[lvl_name].mix
+    end
+    local is_underground = const.ground_levels and const.ground_levels[lvl_name] == false
+    if is_underground then
+        return UNDERGROUND_FX.base, UNDERGROUND_FX.mix
+    end
+    return 0, 0
+end
+
+-- Expose current effective intensity for 2D UI / external queries
+function get_smooth()
+    return smooth
+end
+
+function electra_active()
+    return smooth > 0.01
+end
+
+-- Helper: Check if 3D PDA is in player's hands
+local function is_pda_in_hands()
+    local active_item = db.actor:active_item()
+    if not active_item then return false end
+    local section = active_item:section()
+    return section == "device_pda" or string.find(section, "device_pda") ~= nil
+end
+
+-- Expose ownership check for bind_stalker / binder_update_7
+function owns_pda_params()
+    if not db.actor then return false end
+    local pda = db.actor:object("device_pda")
+    local is_3d_pda = get_console():get_string("g_3d_pda") == 'on'
+    local broken = has_alife_info("pda_is_broken")
+    
+    if not (pda and is_pda_in_hands() and is_3d_pda and not broken) then
+        return false
+    end
+
+	local loc_base, _ = get_location_baseline()
+	update_artifact_pda_fx()
+
+	return (smooth > 0.01)
+		or (loc_base > 0)
+		or ((cached_artifact_pda_glitch or 0) > 0)
+end
+
+local function check_electra_proximity()
+    if not db.actor then return end
+
+    local now = time_global()
+    local dt = (now - last_time) / 1000
+    last_time = now
+    if dt > 1 or dt < 0 then dt = 0 end
+
+    -- 1. Get targets (Electra/artifact glitch vs. Location baseline)
+    local electra_target, is_strong = 0, false
+    if pda_noise and pda_noise.get_electra_intensity then
+        electra_target, is_strong = pda_noise.get_electra_intensity()
+    end
+
+    local loc_base, loc_mix = get_location_baseline()
+
+    update_artifact_pda_fx()
+    local shield = cached_artifact_pda_shield or 0
+    local artifact_glitch = cached_artifact_pda_glitch or 0
+
+    -- Shields suppress ambient interference only.
+    -- Artifact broadcasting remains independent.
+    local electra_eff = electra_target * (1 - shield)
+    local loc_base_eff = loc_base * (1 - shield)
+
+    -- Electra and artifact interference are both glitch sources.
+    -- Location baseline remains a separate static source.
+    local glitch_source = math.max(electra_eff, artifact_glitch)
+    local target = math.max(glitch_source, loc_base_eff)
+
+    -- 2. Determine target mix value.
+    -- Location static has its normal mix; either glitch source
+    -- pulls the mix toward 0 as it becomes dominant.
+    local target_mix
+    if target <= 0.001 then
+        target_mix = loc_mix
+    elseif glitch_source >= loc_base_eff then
+        local glitch_share = math.min(
+            1,
+            glitch_source / math.max(target, 0.0001)
+        )
+        target_mix = loc_mix * (1 - glitch_share)
+    else
+        target_mix = loc_mix
+    end
+
+    -- 3. Blackout target for point-blank Strong Electras (> 0.85 intensity)
+    local blackout_target = 0
+    if is_strong and electra_eff > 0.85 then
+        blackout_target = math.min(1, (electra_eff - 0.85) / 0.15)
+    end
+
+    -- 4. Exponential smoothing for intensity, mix, and blackout
+    local rate = (target > smooth) and SMOOTH_IN or SMOOTH_OUT
+    local k = math.min(1, dt * rate)
+
+    smooth = smooth + (target - smooth) * k
+    smoothed_mix = smoothed_mix + (target_mix - smoothed_mix) * k
+    smoothed_blackout = smoothed_blackout + (blackout_target - smoothed_blackout) * k
+
+    if smooth < 0.001 then smooth = 0 end
+    if smooth > 1 then smooth = 1 end
+
+    if smoothed_mix < 0 then smoothed_mix = 0 end
+    if smoothed_mix > 1 then smoothed_mix = 1 end
+
+    if smoothed_blackout < 0 then smoothed_blackout = 0 end
+    if smoothed_blackout > 1 then smoothed_blackout = 1 end
+
+    -- 5. Map values to shader alpha_mode parameter
+    -- Standard mix range capped at 1.2 (safely below 1.5 black threshold)
+    local base_alpha = 0.25 + smoothed_mix * (1.2 - 0.25)
+
+    -- Smoothly push alpha_mode past 1.5 when close to a strong Electra
+    local alpha_mode = base_alpha + smoothed_blackout * (1.55 - base_alpha)
+
+    -- 6. Validation for driving audio and shader
+    local pda = db.actor:object("device_pda")
+    local is_3d_pda = get_console():get_string("g_3d_pda") == 'on'
+    local pda_in_hands = is_pda_in_hands()
+    local broken = has_alife_info("pda_is_broken")
+
+    local can_drive = pda and pda_in_hands and is_3d_pda and not broken
+
+    if can_drive then
+        -- Audio handling
+        if smooth > 0.01 and not electra_noise_muted then
+            pda_noise.play_noise_sound()
+            pda_noise.set_noise_volume(0.1 + 0.4 * smooth)
+        else
+            pda_noise.stop_noise_sound()
+        end
+
+        -- Drive 3D PDA Shader
+        -- x = 0.0 (no blowout engine lamp flicker)
+        -- y = smooth (intensity)
+        -- z = alpha_mode (0.25..1.2 normal range, up to 1.55 for strong Electra blackout)
+        set_pda_params(vector():set(0.0, smooth, alpha_mode))
+    end
+end
+
+function attach(sm)
+    sm:subscribe({
+        signal = "on_update",
+        fun = check_electra_proximity
+    })
+end

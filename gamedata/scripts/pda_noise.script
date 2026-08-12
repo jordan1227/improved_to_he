@@ -1,82 +1,238 @@
+--==============================================================================
+-- SCRIPT: pda_noise.script
+-- PURPOSE:
+--   Renders a 2D static noise overlay over the PDA screen UI based on proximity 
+--   to Electra/Galantine anomalies or external signal intensity metrics. 
+--   Controls a 5-frame static flicker cycle and dynamic 2D/3D audio noise bursts.
+--
+-- CONNECTED SYSTEMS & DEPENDENCIES:
+--   [Engine & Info Portions]
+--     - Info portions "on" / "on_broken" -> Opens PdaNoiseWnd UI
+--     - Info portion  "off"              -> Closes UI and stops audio
+--
+--   [Script Integrations]
+--     - bind_stalker.script : Tracks PDA active state and registers callbacks (set_pda_cb)
+--     - amk_anoms.script    : Scans nearby Electra anomaly lists and distance metrics
+--     - sivol_pda.script    : Optional provider for smoothed PDA signal noise (get_smooth)
+--     - sak.script          : Handles window closure routines (sak.close_window)
+--     - xr_sound.script     : Handles 2D/3D sound object wrappers (get_safe_sound_object)
+--
+--   [Assets & Resources]
+--     - Textures : textures\ui\ui_pda_noise_1.dds through ui_pda_noise_5.dds
+--     - Audio    : sounds\device\pda\noise_on.ogg
+--==============================================================================
+
 local noise_snd = nil
 local noise_snd_3d = nil
 local texture_name = "ui\\ui_pda_noise"
 
+-- ======================= CONFIG =======================
+local BASE_NOISE_RADIUS = 5.0
+
+local NUM_FRAMES    = 5
+local FLICKER_MS    = 33      -- Visual animation refresh (~30fps flicker)
+local SMOOTH_IN     = 5.0
+local SMOOTH_OUT    = 2.5
+
+-- Audio delay tuning (in milliseconds)
+local NOISE_MIN_DELAY = 1000   -- Minimum time between noise bursts (1.0 sec)
+local NOISE_MAX_DELAY = 5000   -- Maximum time between noise bursts (5.0 sec)
+
+local ELECTRA_POWER_TIER = {
+    ["zone_witches_galantine_weak"]        = { radius_mult = -1.0, max_limit = 0.7 },
+    ["zone_witches_galantine_average"]     = { radius_mult =  0.0, max_limit = 0.9 },
+    ["zone_witches_galantine_strong"]      = { radius_mult =  1.5, max_limit = 1.0 },
+    ["zone_witches_galantine"]             = { radius_mult =  0.0, max_limit = 0.9 },
+    ["amk_zone_witches_galantine_weak"]    = { radius_mult = -1.0, max_limit = 0.7 },
+    ["amk_zone_witches_galantine_average"] = { radius_mult =  0.0, max_limit = 0.9 },
+    ["amk_zone_witches_galantine_strong"]  = { radius_mult =  1.5, max_limit = 1.0 },
+    ["amk_zone_witches_galantine"]         = { radius_mult =  0.0, max_limit = 0.9 },
+}
+-- =====================================================
+
+local next_noise_play_time = 0
+
 function on_info( info_id )
-	if info_id == "off" then
-		if noise_snd and noise_snd:playing() then
-			noise_snd:stop()
-		end
-		noise_snd = nil
-		sak.close_window()
-	elseif info_id == "on" then
-		texture_name = "ui\\ui_pda_noise"
-		level.start_stop_menu( PdaNoiseWnd(), true )
-	elseif info_id == "on_broken" then
-		texture_name = "ui\\ui_pda_broken"
-		level.start_stop_menu( PdaNoiseWnd(), true )
-	end
+    if info_id == "off" then
+        if noise_snd and noise_snd:playing() then noise_snd:stop() end
+        noise_snd = nil
+        sak.close_window()
+    elseif info_id == "on" or info_id == "on_broken" then
+        level.start_stop_menu( PdaNoiseWnd(), true )
+    end
 end
 
--- [HE-PORT] 3D PDA noise sound without blocking the 3D model window
 function play_noise_sound()
-	if noise_snd_3d and noise_snd_3d:playing() then return end
-	noise_snd_3d = xr_sound.get_safe_sound_object( "device\\pda\\noise_on" )
-	if noise_snd_3d then
-		noise_snd_3d:play_at_pos( db.actor, vector(), 0.1, sound_object.s2d + sound_object.looped )
-		noise_snd_3d.volume = 0.25
-	end
+    if noise_snd_3d and noise_snd_3d:playing() then return end
+    if time_global() < next_noise_play_time then return end
+    
+    noise_snd_3d = xr_sound.get_safe_sound_object( "device\\pda\\noise_on" )
+    if noise_snd_3d then
+        noise_snd_3d:play_at_pos( db.actor, vector(), 0.1, sound_object.s2d )
+        noise_snd_3d.volume = 0.25
+        next_noise_play_time = time_global() + math.random(NOISE_MIN_DELAY, NOISE_MAX_DELAY)
+    end
 end
 
 function stop_noise_sound()
-	if noise_snd_3d and noise_snd_3d:playing() then
-		noise_snd_3d:stop()
-	end
-	noise_snd_3d = nil
+    if noise_snd_3d and noise_snd_3d:playing() then noise_snd_3d:stop() end
+    noise_snd_3d = nil
 end
 
-class "PdaNoiseWnd" ( CUIScriptWnd )
-function PdaNoiseWnd:__init() super()
-	self:Init( 0, 0, 1024, 768 )
-	self.ClickBtnExit = function() level.start_stop_menu( self, true ) end
-	self.noise = CUIStatic()
-	self.noise:InitTexture( texture_name )
-	self.noise:SetOriginalRect( 0, 0, 1024, 768 )
-	self.noise:Init( 3, 20, 891, 643 )
-	self:AttachChild( self.noise )
-	self.ignore_first_press = true
-	bind_stalker.set_pda_cb(true)
-	-- [HE-PORT]
-	if texture_name == "ui\\ui_pda_noise" then
-		noise_snd = xr_sound.get_safe_sound_object( "device\\pda\\noise_on" )
-		if noise_snd then
-			noise_snd:play_at_pos( db.actor, vector(), 0.1, sound_object.s2d + sound_object.looped )
-			noise_snd.volume = 0.25
-		end
-	end
+function set_noise_volume(v)
+    if v then
+        if noise_snd and noise_snd:playing() then noise_snd.volume = v end
+        if noise_snd_3d and noise_snd_3d:playing() then noise_snd_3d.volume = v end
+    else
+        local intensity = get_noise_intensity()
+        local calculated_vol = 0.05 + 0.45 * intensity
+        if noise_snd and noise_snd:playing() then noise_snd.volume = calculated_vol end
+        if noise_snd_3d and noise_snd_3d:playing() then noise_snd_3d.volume = calculated_vol end
+    end
 end
+
+function reset_noise_schedule()
+    next_noise_play_time = 0
+end
+
+-- ======================= INTENSITY =======================
+function get_electra_intensity()
+    if not db.actor then return 0, false end
+    local pos = db.actor:position()
+
+    local ok, nearby = pcall( amk_anoms.get_anomaly_list_for_pos_realr, pos, BASE_NOISE_RADIUS + 2 )
+    if not ok or not nearby then
+        nearby = amk_anoms.get_anomaly_list_for_pos( pos, BASE_NOISE_RADIUS + 2 ) or {}
+    end
+
+    local best = 0
+    local is_strong = false
+
+    for _, a in ipairs( nearby ) do
+        local obj = client_obj( a.id )
+        if obj then
+            local sec = obj:section() or ""
+            if obj:clsid() == clsid.zone_electra_s or string.find( sec, "galantine" ) or string.find( sec, "electr" ) then
+                local tier = ELECTRA_POWER_TIER[sec] or { radius_mult = 0.0, max_limit = 0.9 }
+                local actual_radius = BASE_NOISE_RADIUS + tier.radius_mult
+                local proximity = 1 - math.max(0, a.dist) / actual_radius
+                local intensity = proximity * tier.max_limit
+                if intensity > best then 
+                    best = intensity 
+                    -- Strong variants are identified by max_limit >= 1.0
+                    is_strong = (tier.max_limit >= 1.0)
+                end
+            end
+        end
+    end
+    return math.min( best, 1 ), is_strong
+end
+
+function get_noise_intensity()
+    if sivol_pda and sivol_pda.get_smooth then
+        local ok, val = pcall(sivol_pda.get_smooth)
+        if ok and type(val) == "number" then
+            return math.min(math.max(val, 0), 1)
+        end
+    end
+    local intensity, _ = get_electra_intensity()
+    return intensity
+end
+
+-- ======================= 2D WINDOW =======================
+class "PdaNoiseWnd" ( CUIScriptWnd )
+
+function PdaNoiseWnd:__init() super()
+	
+    self:Init(0, 0, 1024, 768)
+    self.ClickBtnExit = function() level.start_stop_menu(self, true) end
+
+    -- 5-Frame Noise Loop (Fits precisely inside 2D PDA Screen Viewport)
+    self.frames = {}
+    for i = 1, NUM_FRAMES do
+        local s = CUIStatic()
+        s:InitTexture("ui\\ui_pda_noise_" .. i)
+        s:SetOriginalRect(0, 0, 1024, 768)
+        s:Init(3, 20, 891, 643)
+        s:SetColor(GetARGB(255, 255, 255, 255))
+        s:Show(false)
+        self:AttachChild(s)
+        self.frames[i] = s
+    end
+
+    self.last_update        = time_global()
+    self.smooth             = 0
+    self.next_flicker_time  = 0
+	self.current_frame      = 1       -- Stores active noise frame indexF
+    self.ignore_first_press = true
+    
+    bind_stalker.set_pda_cb(true)
+
+    noise_snd = xr_sound.get_safe_sound_object("device\\pda\\noise_on")
+    if noise_snd then
+        noise_snd:play_at_pos(db.actor, vector(), 0.1, sound_object.s2d + sound_object.looped)
+        noise_snd.volume = 0.1
+    end
+end
+
 function PdaNoiseWnd:OnKeyboard( dik, keyboard_action )
-	if self.ignore_first_press then
-		self.ignore_first_press = false
-		return true
-	end
-	CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
-	if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
-		local bind = dik_to_bind( dik )
-		if dik == DIK_keys.DIK_ESCAPE
-			or bind == key_bindings.kACTIVE_JOBS
-			or bind == key_bindings.kMAP
-			or bind == key_bindings.kPDA_CLOCK
-		then
-			if bind_stalker.get_pda_on() then
-				if noise_snd and noise_snd:playing() then
-					noise_snd:stop()
-				end
-				noise_snd = nil
-				self:ClickBtnExit()
-				bind_stalker.set_pda_cb(false)
-			end
-		end
-	end
-	return true
+    if self.ignore_first_press then
+        self.ignore_first_press = false
+        return true
+    end
+    CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
+    if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+        local bind = dik_to_bind( dik )
+        if dik == DIK_keys.DIK_ESCAPE
+            or bind == key_bindings.kACTIVE_JOBS
+            or bind == key_bindings.kMAP
+            or bind == key_bindings.kPDA_CLOCK
+        then
+            if bind_stalker.get_pda_on() then
+                if noise_snd and noise_snd:playing() then noise_snd:stop() end
+                noise_snd = nil
+                self:ClickBtnExit()
+                bind_stalker.set_pda_cb(false)
+            end
+        end
+    end
+    return true
+end
+
+function PdaNoiseWnd:Update()
+    CUIScriptWnd.Update(self)
+    local now = time_global()
+    local dt  = (now - self.last_update) / 1000
+    self.last_update = now
+
+    local target = get_noise_intensity()
+    local rate   = (target > self.smooth) and SMOOTH_IN or SMOOTH_OUT
+    local k      = math.min(1, dt * rate)
+    self.smooth  = self.smooth + (target - self.smooth) * k
+
+    -- Check if noise threshold is active
+    if self.smooth > 0.05 then
+        -- Cycle frame index every FLICKER_MS (~30 FPS)
+        if now > self.next_flicker_time then
+            self.next_flicker_time = now + FLICKER_MS
+            self.current_frame = math.random(1, NUM_FRAMES)
+        end
+
+        -- Show active frame at 100% solid opacity (255 Alpha)
+        for i = 1, NUM_FRAMES do
+            if i == self.current_frame then
+                self.frames[i]:SetColor(GetARGB(255, 255, 255, 255))
+                self.frames[i]:Show(true)
+            else
+                self.frames[i]:Show(false)
+            end
+        end
+    else
+        -- Hide static completely when away from anomalies
+        for i = 1, NUM_FRAMES do
+            self.frames[i]:Show(false)
+        end
+    end
+
+    if noise_snd then noise_snd.volume = 0.05 + 0.45 * self.smooth end
 end
