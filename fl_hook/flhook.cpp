@@ -81,6 +81,18 @@
 #define OFF_VT_ADD_VISUAL     0x60
 #define OFF_VT_DCAST_RVIS     0x120
 
+#define RVA_ACTOR_KEYPRESS      0x00373860ULL
+#define RVA_ACTOR_KEYPRESS_END  0x00373871ULL
+#define ACT_TORCH               19
+#define ACT_TORCH_MODE          62
+#define OFF_IRCV_INVENTORY      0x98
+#define OFF_INV_ACTIVE_SLOT     0x88
+#define OFF_INV_SLOTS_FIRST     0x60
+#define OFF_INV_SLOTS_LAST      0x68
+#define INV_SLOT_STRIDE         0x20
+#define OFF_INV_SLOT_ITEM       0x08
+#define INV_SLOT_MAX            64
+
 #define OFF_PH_MODEL          0x228
 #define OFF_PH_MODEL_2        0x230
 #define OFF_VT_DCAST_PKIN     0x128
@@ -174,6 +186,7 @@ typedef void* (*shared_set_t)(void* dst, const char* s);
 typedef unsigned char (*run_atk_check_t)(void* self);
 typedef void (*actor_render_t)(void* self, unsigned context_id, void* root);
 typedef void (*actor_onhuddraw_t)(void* self, void* hud, unsigned context_id, void* root);
+typedef void (*actor_kbpress_t)(void* self, unsigned cmd);
 typedef void* (*dcast_rvis_t)(void* self);
 typedef void (*add_visual_t)(void* render, unsigned context_id, void* root,
                              void* visual, void* xform);
@@ -216,6 +229,11 @@ static ro_spawn_t g_orig_ro_spawn = 0;
 static run_atk_check_t g_orig_run_atk = 0;
 static actor_render_t g_orig_actor_render = 0;
 static actor_onhuddraw_t g_orig_actor_onhud = 0;
+static actor_kbpress_t g_orig_actor_kbpress = 0;
+static int g_torch_lua = 1;
+static int g_torch_blocked_n = 0;
+static void* g_actor_ircv = 0;
+static void* ircv_active_item(void* self);
 static int g_bp_ui = 0;
 static int g_skip_body_n = 0;
 static int g_skip_hands_n = 0;
@@ -1366,6 +1384,19 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
             return;
         }
 
+        if (p[0] == 't' && p[1] == 'l' && p[2] == 'u' && p[3] == 'a' &&
+            (p[4] == 0 || p[4] == ' ' || p[4] == '\t')) {
+            msg_t Msg = (msg_t)(g_base + RVA_MSG);
+            const char* a = p + 4;
+            while (*a == ' ' || *a == '\t') ++a;
+            if (*a == '1') g_torch_lua = 1;
+            else if (*a == '0') g_torch_lua = 0;
+            Msg("! [fl] tlua=%d blocked=%d hook=%p active_item=%p",
+                g_torch_lua, g_torch_blocked_n, (void*)g_orig_actor_kbpress,
+                g_actor_ircv ? ircv_active_item(g_actor_ircv) : 0);
+            return;
+        }
+
         if (p[0] == 'b' && p[1] == 'p' && p[2] == 'b' && p[3] == 'o' &&
             p[4] == 'd' && p[5] == 'y' &&
             (p[6] == 0 || p[6] == ' ' || p[6] == '\t')) {
@@ -1633,6 +1664,33 @@ static const void* hkAmbushCover(void* self, const float* pos, const float* enem
     return result;
 }
 
+static void* ircv_active_item(void* self)
+{
+    if (!self) return 0;
+    char* inv = *(char**)((char*)self + OFF_IRCV_INVENTORY);
+    if (!inv) return 0;
+    unsigned slot = *(unsigned*)(inv + OFF_INV_ACTIVE_SLOT);
+    if (slot == 0xFF || slot >= INV_SLOT_MAX) return 0;
+    char* first = *(char**)(inv + OFF_INV_SLOTS_FIRST);
+    char* last = *(char**)(inv + OFF_INV_SLOTS_LAST);
+    if (!first) return 0;
+    char* cell = first + (size_t)slot * INV_SLOT_STRIDE;
+    if (last && cell + INV_SLOT_STRIDE > last) return 0;
+    return *(void**)(cell + OFF_INV_SLOT_ITEM);
+}
+
+static void hkActorKeyboardPress(void* self, unsigned cmd)
+{
+    g_actor_ircv = self;
+    if (g_torch_lua && (cmd == ACT_TORCH || cmd == ACT_TORCH_MODE) &&
+        !ircv_active_item(self)) {
+        ++g_torch_blocked_n;
+        return;
+    }
+    if (g_orig_actor_kbpress)
+        g_orig_actor_kbpress(self, cmd);
+}
+
 static void* install_detour(uintptr_t rva_begin, uintptr_t rva_end, void* hook)
 {
     uint8_t* func = (uint8_t*)(g_base + rva_begin);
@@ -1684,6 +1742,15 @@ static bool install_hook()
         RVA_ACTOR_RENDER, RVA_ACTOR_RENDER_END, (void*)&hkActorRenderableRender);
     g_orig_actor_onhud = (actor_onhuddraw_t)install_onhuddraw_detour(
         (void*)&hkActorOnHUDDraw);
+
+    {
+        uint8_t* f = (uint8_t*)(g_base + RVA_ACTOR_KEYPRESS);
+        if (f[0] == 0x40 && f[1] == 0x55 && f[2] == 0x57 && f[3] == 0x41 &&
+            f[4] == 0x56 && f[5] == 0x48 && f[6] == 0x8D && f[7] == 0x6C)
+            g_orig_actor_kbpress = (actor_kbpress_t)install_detour(
+                RVA_ACTOR_KEYPRESS, RVA_ACTOR_KEYPRESS_END,
+                (void*)&hkActorKeyboardPress);
+    }
 
     {
         uint8_t* p = (uint8_t*)(g_base + RVA_ROTJUMP_NULLWRITE);

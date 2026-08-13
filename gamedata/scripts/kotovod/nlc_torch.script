@@ -57,6 +57,7 @@ local TORCH_COLOR_TEMP_MAX              = 1.0    -- Neutral RGB color temp multi
 local TORCH_ANGLE_FACTOR_MIN            = 0.9    -- Min beam angle scaling factor when battery is nearly dead
 local TORCH_ANGLE_FACTOR_MAX            = 1.1    -- Max beam angle scaling factor when battery is fully charged
 local TORCH_UPDATE_TIME_BASE            = 5000   -- Battery condition discharge update interval in milliseconds (5000 ms = 5 seconds)
+local TORCH_DEVICE_ANIM_LOCK            = 800    -- Input lock in ms while the engine plays the held item's device animation (no motion length available to Lua)
 
 -- ===== upgraded torch (from dsh_torch) — TUNE THESE, not verified in-game =====
 local UPGRADED_RANGE_MULT       = 1.5   -- dsh_torch: near 20->30 (1.5x), far 50->70 (1.4x) — using 1.5x for both as a starting point
@@ -139,11 +140,47 @@ local wpn_flags = {
     [global_flags.eHiding]  = true,
 }
 
+-- [HE-PORT]
+function torch_apply_state( torch, on_off )
+	torch.disable_switch = false
+	nlc_torch_script_switch = true
+	torch:enable( on_off )
+	nlc_torch_script_switch = false
+end
+
+-- [HE-PORT]
+function has_weapon_in_hands()
+	local wpn = db.actor:active_item()
+	return wpn and wpn:is_weapon()
+end
+
+-- [HE-PORT]
+function engine_plays_device_anim()
+	return db.actor:active_item() ~= nil
+end
+
+-- [HE-PORT]
+function lock_torch_input()
+	torch_busy = true
+	dsh.timeout( TORCH_DEVICE_ANIM_LOCK, function() torch_busy = false end )
+end
+
+-- [HE-PORT]
+function on_before_switch_torch()
+	if nlc_torch_script_switch then return end
+	local torch = db.actor:alive() and db.actor:item_in_slot(9)
+	if torch and torch:is_torch() then
+		torch = get_torch_obj(torch)
+		torch.disable_switch = true
+	end
+end
+
 function attach(sm)
     sm:subscribe({ signal = "on_save",          fun = on_save })
     sm:subscribe({ signal = "on_first_update",   fun = on_first_update })
     sm:subscribe({ signal = "on_late_init_all",  fun = on_late_init_all })
     sm:subscribe({ signal = "on_update",         fun = update })
+    sm:subscribe({ signal = "on_before_switch_torch", fun = on_before_switch_torch })
 end
 
 -- ============ persistence (dsh_torch mechanism, kept as safety net) ============
@@ -155,7 +192,7 @@ local restored = false
 local function restore_torch_state()
     if restored then return end
     restored = true
-    local var = get_value(script_name() .. ".save_torch_mode") or get_value("nlc_torch_state")
+    local var = get_value(script_name() .. ".save_torch_mode") or get_value("dsh_torch.save_torch_mode") or get_value("nlc_torch_state")
     upgraded_torch = get_value("upgraded_torch", false)
     if not var then return end
     local torch = db.actor:item_in_slot(9)
@@ -194,9 +231,9 @@ function reassert_torch_state()
     -- Set guard to true so this enable() call doesn't trigger another reassert
     torch_switch_guard = true
     if torch_mode == "off" then
-        t_obj:enable(false)
+        torch_apply_state( t_obj, false )
     else
-        t_obj:enable(true)
+        torch_apply_state( t_obj, true )
         update_torch_parameters()
     end
     torch_switch_guard = false
@@ -234,7 +271,11 @@ function switch_torch()
     end
 
     reassert_torch_state()
-    play_torch_anim()
+    if engine_plays_device_anim() then
+        lock_torch_input()
+    else
+        play_torch_anim()
+    end
 end
 
 -- Hold: only meaningful in alt control mode. Switches near/far regardless of on/off.
@@ -263,14 +304,18 @@ function torch_switch_cone_hold()
     torch_mode = new_cone
     set_value("nlc_torch_state", new_cone)
     reassert_torch_state()
-    play_torch_anim()
+    if engine_plays_device_anim() then
+        lock_torch_input()
+    else
+        play_torch_anim()
+    end
 end
 
 function set_near_mode(torch)
     torch_mode = "near"
     set_value("nlc_torch_state", "near")
     set_value("nlc_torch_last_cone", "near")   -- ADDED
-    torch:enable(true)
+    torch_apply_state( torch, true )
     update_torch_parameters()
 end
 
@@ -278,14 +323,14 @@ function set_far_mode(torch)
     torch_mode = "far"
     set_value("nlc_torch_state", "far")
     set_value("nlc_torch_last_cone", "far")    -- ADDED
-    torch:enable(true)
+    torch_apply_state( torch, true )
     update_torch_parameters()
 end
 
 function set_off_mode(torch)
     log2("[%s] enable(false) called from set_off_mode", tostring(time_global()))
     torch_mode = "off"
-    torch:enable(false)
+    torch_apply_state( torch, false )
     set_value("nlc_torch_state", "off")
 end
 
@@ -497,7 +542,7 @@ function play_torch_anim()
     level.set_actor_allow_ladder(false)
     
     level.add_cam_effector("camera_effects\\headlamp_cam.anm", 7539, false, "", 0, false)
-    local torch_anm_duration = game.play_hud_motion(1, "anim_headlamp", "anm_switch", false, 1.1)
+    local torch_anm_duration = game.play_hud_motion(db.actor:active_item() and 1 or 2, "anim_headlamp", "anm_switch", false, 1.1)
     
     dsh.timeout(torch_anm_duration + 10, function()
         level.only_allow_movekeys(false)
@@ -525,7 +570,7 @@ function torch_handler(flag)
             log2("[%s] enable(false) called from torch_handler", tostring(time_global()))
             -- Save the current mode so we can restore it later
             set_value("nlc_torch_prev_mode", state)
-            torch:enable(false)
+            torch_apply_state( torch, false )
             set_value("nlc_torch_state", "off")
             torch_mode = "off"
             return state
