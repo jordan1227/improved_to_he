@@ -1,238 +1,549 @@
+-- ============================================================================
+-- MODULE: nlc_torch.script (Unified Flashlight System)
+-- ============================================================================
+-- OVERVIEW:
+--    Unified headlamp and flashlight management system (merged dsh_torch + 
+--    kotovod/nlc_torch). Controls dual-mode lighting (Near/Far beam), item
+--    condition decay, dynamic visual scaling (range, spread, color temperature,
+--    flicker), upgraded torch progression, and Electra anomaly electromagnetic 
+--    interference.
+--
+-- KEY RESPONSIBILITIES:
+--    1. Dual-Mode Cone Control: Toggles between Near (wide beam, low range) 
+--       and Far (narrow beam, high range) torch modes with animation lock.
+--    2. Condition-Based Visual Scaling: Dynamically scales light distance, cone 
+--       angle, color temperature, and random low-battery flickering based on 
+--       slot item condition (0.0 to 1.0).
+--    3. Periodic Battery Drain: Periodically degrades flashlight item condition 
+--       every 5 seconds, scaling with mode (near vs far), upgrade tier, and 
+--       location-based modifiers (e.g., Aver map drain boost).
+--    4. Electra Anomaly Electromagnetic Glitch: Intercepts PDA glitch intensity 
+--       metrics from sivol_pda.script to simulate voltage drops, rapid dimming, 
+--       and dark blackout spikes when near Electras.
+--    5. Save/Load Persistence & Safety Net: Maintains persistent torch state and 
+--       upgrade status across save loads with asynchronous initialization fallbacks.
+--
+-- CONNECTED SYSTEMS & DEPENDENCIES:
+--    [Engine & Slot Bindings]
+--      - Actor Item Slot 9 : Expects a flashlight item object (is_torch()).
+--      - Engine Flashlight : Drives C++ torch methods (set_range, set_angle, 
+--                            set_brightness, set_rgb, enable, switch).
+--
+--    [Script Integrations]
+--      - bind_stalker.script / Signal Manager : Subscribes to signals: on_save, 
+--                            on_first_update, on_late_init_all, on_update.
+--      - sivol_pda.script  : Reads sivol_pda.get_glitch_intensity() for Electra 
+--                            interference data.
+--      - dsh.script        : Uses dsh.timeout() for non-blocking state delays.
+--      - ogse_signals / sm : Handles signal-driven updates and persistence callbacks.
+--
+--    [Assets & Resources]
+--      - Sounds    : sound_object("device\\light_on")
+--      - HUD Anims : game.play_hud_motion("anim_headlamp", "anm_switch")
+--      - Effectors : camera_effects\headlamp_cam.anm
+-- ============================================================================
+
 -- -*- mode: lua; coding: windows-1251-dos -*-
+-- nlc_torch.script — unified flashlight (merged dsh_torch.script + kotovod/nlc_torch.script)
 
--- Снова взята из dsh мода, доработано (с) Котовод
+-- ===== BASE LIGHTING & BATTERY CONFIGURATION =====
+local TORCH_MIN_BRIGHTNESS              = 0.01   -- Min brightness multiplier at 0% battery condition (normalized float: 0.0 to 1.0)
+local TORCH_MAX_BRIGHTNESS              = 1.0    -- Max brightness multiplier at 100% battery condition (normalized float: 0.0 to 1.0)
+local TORCH_DISCHARGE_RATE              = 0.0015 -- Base condition loss per 5s tick (~0.15% condition per tick; ~55 mins total lifespan)
+local TORCH_FLICKER_PROBABILITY_BASE    = 0.01   -- Base chance (1%) of random low-battery flickering on fully charged battery
+local TORCH_FLICKER_PROBABILITY_FACTOR  = 0.25   -- Max additional flicker chance added as battery depletes (+25% chance at 0% condition)
+local TORCH_COLOR_TEMP_MIN              = 0.7    -- Warmest RGB color temp multiplier at 0% condition (duller, reddish/yellow tint)
+local TORCH_COLOR_TEMP_MAX              = 1.0    -- Neutral RGB color temp multiplier at 100% condition (bright neutral white)
+local TORCH_ANGLE_FACTOR_MIN            = 0.9    -- Min beam angle scaling factor when battery is nearly dead
+local TORCH_ANGLE_FACTOR_MAX            = 1.1    -- Max beam angle scaling factor when battery is fully charged
+local TORCH_UPDATE_TIME_BASE            = 5000   -- Battery condition discharge update interval in milliseconds (5000 ms = 5 seconds)
 
-local TORCH_MIN_BRIGHTNESS 				= 0.01 			-- Минимальная Яркость фонаря
-local TORCH_MAX_BRIGHTNESS 				= 1.0 			-- Максимальная Яркость фонаря
-local TORCH_DISCHARGE_RATE 				= 0.0015 		-- Скорость разрядки фонаря
-local TORCH_FLICKER_PROBABILITY_BASE 	= 0.01 			-- Базовая вероятность мерцания
-local TORCH_FLICKER_PROBABILITY_FACTOR 	= 0.25 			-- Фактор увеличения вероятности мерцания при низком заряде
-local TORCH_COLOR_TEMP_MIN 				= 0.7 			-- Минимальная цветовая температура
-local TORCH_COLOR_TEMP_MAX 				= 1.0 			-- Максимальная цветовая температура
-local TORCH_ANGLE_FACTOR_MIN 			= 0.9 			-- Минимальный фактор угла освещения
-local TORCH_ANGLE_FACTOR_MAX 			= 1.1 			-- Максимальный фактор угла освещения
-local TORCH_UPDATE_TIME_BASE 			= 5000 			-- Базовое время обновления (в мс)
+-- ===== upgraded torch (from dsh_torch) — TUNE THESE, not verified in-game =====
+local UPGRADED_RANGE_MULT       = 1.5   -- dsh_torch: near 20->30 (1.5x), far 50->70 (1.4x) — using 1.5x for both as a starting point
+local UPGRADED_ANGLE_MULT       = 1.1   -- dsh_torch: near 80->90deg, far 45->55deg (roughly wider when upgraded)
+local UPGRADED_DISCHARGE_MULT   = 1.0    -- Battery drain multiplier for upgraded torch (1.0 = standard 100% discharge rate)
+local BASE_DISCHARGE_MULT       = 0.75   -- Battery drain multiplier for stock starter torch (0.75 = 25% slower discharge)
+local AVER_DISCHARGE_MULT       = 4.0    -- Map-specific battery drain multiplier when on the 'Aver' map (4.0 = 4x faster discharge)
 
-local click_snd = sound_object( "device\\light_on" )
+-- ===== ELECTRA ANOMALY FLICKER TUNING =====
+local ELECTRA_DIM_FACTOR          = 0.8    -- Base dimming factor under Electra interference (higher = deeper drop in light output)
+local ELECTRA_SPIKE_FACTOR        = 1.25   -- Severity multiplier for sudden blackout spikes (higher = harsher temporary cutouts)
+local ELECTRA_SPIKE_COOLDOWN_MIN  = 125    -- Min delay between sharp voltage spikes in ms (lower = more frantic/frequent flickering)
+local ELECTRA_SPIKE_COOLDOWN_MAX  = 575    -- Max delay between sharp voltage spikes in ms
+local ELECTRA_SMOOTH_IN           = 4.0    -- Smoothing rate for rapid onset of Electra glitching when approaching anomaly
+local ELECTRA_SMOOTH_OUT          = 1.5    -- Smoothing rate for light recovery when stepping away from anomaly
+local ELECTRA_TICK_TIME           = 100    -- Electra flicker update frequency in milliseconds (100 ms = 10 updates per second)
+
+-- ===== RUNTIME STATE VARIABLES =====
+local torch_mode           = "off"   -- Active mode state ("off", "near", "far"); kept in sync with set_value("nlc_torch_state")
+local upgraded_torch       = false   -- Boolean tracking whether the actor holds the upgraded torch status
+local base_brightness      = 1.0     -- Cached normalized float brightness (0.0-1.0) serving as baseline for Electra flickering
+local torch_glitch_smooth  = 0       -- Current exponentially smoothed Electra glitch intensity value (0.0 to 1.0)
+local last_battery_tick    = 0       -- Timestamp (time_global) of the last 5-second battery discharge tick
+local last_electra_tick_time = 0     -- Timestamp (time_global) of the last Electra flicker calculation tick
+local last_electra_tick    = 0       -- Timestamp tracking frame delta time (dt) for Electra exponential smoothing calculations
+local last_spike_time      = 0       -- Timestamp tracking when the last Electra brightness drop spike occurred
+local lvl                  = level.name() -- Cached current map/level name for level-based drain calculations
+local torch_busy           = false   -- Prevents input spam while torch animation is playing
+torch_switch_guard         = false   -- Prevents infinite recursion when reasserting torch state
+
+TORCH_ALT_CONTROL_MODE = true  -- false = classic short-press cycle (off->near->far->off)
+                                 -- true  = short press toggles on/off, hold switches cone width
+                                 -- exposed as nlc_torch.TORCH_ALT_CONTROL_MODE for a future settings hook
+
+-- ===== location-based torch interference =====
+local TORCH_LOCATION_BASELINE = {
+    aver = 0.65, -- Aver is a constant heavy interference zone
+}
+
+-- Underground labs get rare, random horror dim-outs instead of a constant buzz
+local TORCH_LOC_FLICKER_FX = {
+    min_interval = 30000,  -- 30 seconds minimum between events
+    max_interval = 90000,  -- 90 seconds maximum between events
+    min_duration = 1750,   -- flicker lasts at least 1.75s
+    max_duration = 4250,   -- flicker lasts at most  4.25s
+    intensity = 0.875,     -- how hard it dims during the event (0.0-1.0)
+}
+
+local is_loc_flickering = false
+local loc_flicker_start = 0
+local loc_flicker_duration = 0
+local next_loc_flicker_time = math.random(30000, 90000)
+
+local function is_underground()
+    local lvl_name = string.lower(level.name())
+    return const.ground_levels and const.ground_levels[lvl_name] == false
+end
+
+local function get_torch_location_baseline()
+    local lvl_name = string.lower(level.name())
+    local base = 0
+    if TORCH_LOCATION_BASELINE[lvl_name] then
+        base = TORCH_LOCATION_BASELINE[lvl_name]
+    end
+    
+    -- Apply artifact shielding to location interference too
+    local shield = (sivol_pda and sivol_pda.get_artifact_shield and sivol_pda.get_artifact_shield()) or 0
+    return base * (1 - shield)
+end
+
+local click_snd = sound_object("device\\light_on")
 
 local wpn_flags = {
-    [ global_flags.eFire	] = true,
-    [ global_flags.eFire2	] = true,
-    [ global_flags.eReload	] = true,
-    [ global_flags.eShowing	] = true,
-    [ global_flags.eSwitch	] = true,
-    [ global_flags.eMisfire	] = true,
-    [ global_flags.eHiding	] = true
+    [global_flags.eFire]    = true,
+    [global_flags.eFire2]   = true,
+    [global_flags.eReload]  = true,
+    [global_flags.eShowing] = true,
+    [global_flags.eSwitch]  = true,
+    [global_flags.eMisfire] = true,
+    [global_flags.eHiding]  = true,
 }
 
 function attach(sm)
-    sm:subscribe({ signal = "on_late_init_all", fun = on_late_init_all 	})
-    sm:subscribe({ signal = "on_update", 		fun = update			})
+    sm:subscribe({ signal = "on_save",          fun = on_save })
+    sm:subscribe({ signal = "on_first_update",   fun = on_first_update })
+    sm:subscribe({ signal = "on_late_init_all",  fun = on_late_init_all })
+    sm:subscribe({ signal = "on_update",         fun = update })
 end
 
-function switch_torch()
-	if level.main_input_receiver() then return end
-	if not db.actor:alive() then return end
-	
-	local torch = db.actor:item_in_slot( 9 )
-	if torch and torch:is_torch() then
-		local wpn = db.actor:active_item()
-		if wpn and wpn:is_weapon() and wpn_flags[ wpn:get_hud_item_state() ] then 
-			return
-		end
-		click_snd:play( db.actor, 0, sound_object.s2d )
-		torch = get_torch_obj( torch )
-		
-		local torch_mode = get_value( "nlc_torch_state", "off" )
-		log2( "torch_mode is %s", torch_mode )
-		
-		if torch.on then
-			if torch_mode == "near" then
-				set_far_mode( torch )
-				torch:switch( true )
-			else
-				set_off_mode( torch )
-			end
-		else
-			set_near_mode( torch )
-		end
-		play_torch_anim()
-	end
+-- ============ persistence (dsh_torch mechanism, kept as safety net) ============
+function on_save()
+    set_value(script_name() .. ".save_torch_mode", torch_mode)
 end
 
-function set_near_mode( torch )
-	set_value( "nlc_torch_state", "near" )
-	update_torch_parameters()
-	log2( "torch_mode near is %s", get_value( "nlc_torch_state" ) )	
-	--sak.send_tip("Ближний", nil, 0, 2, "g_g", "no", "green")				
+local restored = false
+local function restore_torch_state()
+    if restored then return end
+    restored = true
+    local var = get_value(script_name() .. ".save_torch_mode") or get_value("nlc_torch_state")
+    upgraded_torch = get_value("upgraded_torch", false)
+    if not var then return end
+    local torch = db.actor:item_in_slot(9)
+    if not torch or not torch:is_torch() then return end
+    torch = get_torch_obj(torch)
+    if var == "near" then
+        set_near_mode(torch)
+    elseif var == "far" then
+        set_far_mode(torch)
+    else
+        set_off_mode(torch)
+    end
 end
 
-function set_far_mode(torch)
-	set_value( "nlc_torch_state", "far" )
-	update_torch_parameters()	
-	log2( "torch_mode far is %s", get_value( "nlc_torch_state" ) )	
-	--sak.send_tip("Дальний", nil, 0, 2, "g_g", "no", "yellow")			
-end
-
-function set_off_mode(torch)
-	dsh.timeout( 20, function() torch:enable( false ) end )
-	set_value( "nlc_torch_state", "off" )
-	log2( "torch_mode off is %s", get_value( "nlc_torch_state" ) )	
-	--sak.send_tip( "Выключили", nil, 0, 2, "g_g", "no", "red" )							
+function on_first_update()
+    restore_torch_state()
 end
 
 function on_late_init_all()
-	dsh.timeout( 500, function() 
-		local torch_mode = get_value( "nlc_torch_state" )	
-		if not torch_mode then return end	
-		local torch = db.actor:item_in_slot(9)
-		if torch and torch:is_torch() then torch = get_torch_obj( torch ) end
-		if not torch then return end
-		if torch_mode == "near" then
-			set_near_mode( torch )
-		elseif torch_mode == "far" then
-			set_far_mode( torch )
-		else
-			set_off_mode( torch )
-		end
-	end)		
+    dsh.timeout(500, restore_torch_state)  -- nlc_torch's delay, kept as a fallback in case on_first_update fires before the torch is actually in-slot
 end
 
-function update()
-    ogse_signals.get_mgr():reschedule( TORCH_UPDATE_TIME_BASE )
-    local torch = db.actor:item_in_slot( 9 )
-    if torch and torch:is_torch() then
-        torch_brock()
-    end
+-- ============ upgraded torch ============
+function set_upgraded_torch()
+    set_value("upgraded_torch", true)
+    upgraded_torch = true
 end
 
-function update_torch_parameters()
-    local slot = db.actor:item_in_slot( 9 )
+-- ============ mode switching ============
+function reassert_torch_state()
+    local slot = db.actor:item_in_slot(9)
     if not slot then return end
+    local t_obj = get_torch_obj(slot)
+    if not t_obj then return end
 
-    local torch_obj = get_torch_obj( slot )
-    if not torch_obj then return end
-
-    local torch_cond = slot:condition()
-	
-    -- Базовые параметры
-    local base_range = 35
-    local base_angle = math.rad( 60 )
-
-    -- Расчет яркости
-    local brightness = TORCH_MIN_BRIGHTNESS + torch_cond * ( TORCH_MAX_BRIGHTNESS - TORCH_MIN_BRIGHTNESS )
-
-    local range_factor = torch_cond ^ 1.4
-    --local angle_factor = TORCH_ANGLE_FACTOR_MIN + (1 - torch_cond) * (TORCH_ANGLE_FACTOR_MAX - TORCH_ANGLE_FACTOR_MIN)	-- Эффект рассеивания, угол увеличивается
-	--local angle_factor = TORCH_ANGLE_FACTOR_MAX - (1 - torch_cond) * (TORCH_ANGLE_FACTOR_MAX - TORCH_ANGLE_FACTOR_MIN)	-- Угол падает
-	
-	local torch_mode = get_value( "nlc_torch_state", "off" )
-	-- Лучше все-таки уменьшение для обоих вариантов?
-	local angle_factor
-	if torch_mode == "near" then
-		angle_factor = TORCH_ANGLE_FACTOR_MIN + ( 1 - torch_cond ) * ( TORCH_ANGLE_FACTOR_MAX - TORCH_ANGLE_FACTOR_MIN )
-	else
-		angle_factor = TORCH_ANGLE_FACTOR_MAX - ( 1 - torch_cond ) * ( TORCH_ANGLE_FACTOR_MAX - TORCH_ANGLE_FACTOR_MIN )
-	end	
-	
-    local color_temp = TORCH_COLOR_TEMP_MIN + torch_cond * (TORCH_COLOR_TEMP_MAX - TORCH_COLOR_TEMP_MIN)
-    
-    local flicker_probability = TORCH_FLICKER_PROBABILITY_BASE + ( 1 - torch_cond ) * TORCH_FLICKER_PROBABILITY_FACTOR
-    if math.random() < flicker_probability then
-        brightness = brightness * math.random( 2, 8 ) / 10
+    -- Set guard to true so this enable() call doesn't trigger another reassert
+    torch_switch_guard = true
+    if torch_mode == "off" then
+        t_obj:enable(false)
+    else
+        t_obj:enable(true)
+        update_torch_parameters()
     end
-    
-    local mode_switch = ( torch_mode == "near" and 1 ) or 2
-    local range = base_range * range_factor * mode_switch
-    local angle = base_angle * angle_factor / mode_switch
-    
-    torch_obj:set_range( range )
-    torch_obj:set_angle( angle )
-    torch_obj:set_brightness( math.min( 255, math.floor( 255 * brightness / TORCH_MAX_BRIGHTNESS ) ) )
-    
-    local r, g, b = color_temp, color_temp * 0.95, color_temp * 0.9
-    torch_obj:set_rgb( r, g, b )
+    torch_switch_guard = false
 end
 
-function torch_brock()
-    local slot = db.actor:item_in_slot( 9 )
-    if not slot then return end
+function switch_torch()
+    if level.main_input_receiver() then return end
+    if not db.actor:alive() then return end
+    if torch_busy then return end
 
-    local torch_obj = get_torch_obj( slot )
-    if not torch_obj or not torch_obj.on then return end
+    local torch = db.actor:item_in_slot(9)
+    if not (torch and torch:is_torch()) then return end
+    local wpn = db.actor:active_item()
+    if wpn and wpn:is_weapon() and wpn_flags[wpn:get_hud_item_state()] then return end
 
-    local torch_cond = slot:condition()
-    local condition 
-    
-    if torch_obj.on then
-        local mode_switch = ( torch_mode == "near" and 1 ) or 1.25
-        local val = ( torch_cond - ( TORCH_DISCHARGE_RATE * mode_switch ) )
-        condition = math.max( 0, val )
-        slot:set_condition( condition )
-        if condition <= 0 and torch_obj.on then
-            set_off_mode( torch_obj )
-            return		
-        end		
+    click_snd:play(db.actor, 0, sound_object.s2d)
+
+    local state = get_value("nlc_torch_state", "off")
+    local next_state
+
+    if TORCH_ALT_CONTROL_MODE then
+        -- toggle: on <-> off, restoring whichever cone was last used
+        next_state = (state == "off") and get_value("nlc_torch_last_cone", "near") or "off"
+    else
+        -- classic cycle
+        if state == "off" then next_state = "near"
+        elseif state == "near" then next_state = "far"
+        else next_state = "off" end
     end
-    
+
+    torch_mode = next_state
+    set_value("nlc_torch_state", next_state)
+    if next_state ~= "off" then
+        set_value("nlc_torch_last_cone", next_state)
+    end
+
+    reassert_torch_state()
+    play_torch_anim()
+end
+
+-- Hold: only meaningful in alt control mode. Switches near/far regardless of on/off.
+function torch_switch_cone_hold()
+    if not TORCH_ALT_CONTROL_MODE then return end
+    if level.main_input_receiver() then return end
+    if not db.actor:alive() then return end
+    if torch_busy then return end
+
+    local torch = db.actor:item_in_slot(9)
+    if not (torch and torch:is_torch()) then return end
+    local wpn = db.actor:active_item()
+    if wpn and wpn:is_weapon() and wpn_flags[wpn:get_hud_item_state()] then return end
+
+    local state = get_value("nlc_torch_state", "off")
+    local last_cone = get_value("nlc_torch_last_cone", "near")
+    local new_cone = (last_cone == "near") and "far" or "near"
+    set_value("nlc_torch_last_cone", new_cone)
+
+    click_snd:play(db.actor, 0, sound_object.s2d)
+
+    if state == "off" then
+        return  -- light stays off; only the remembered cone changes for next time on
+    end
+
+    torch_mode = new_cone
+    set_value("nlc_torch_state", new_cone)
+    reassert_torch_state()
+    play_torch_anim()
+end
+
+function set_near_mode(torch)
+    torch_mode = "near"
+    set_value("nlc_torch_state", "near")
+    set_value("nlc_torch_last_cone", "near")   -- ADDED
+    torch:enable(true)
     update_torch_parameters()
 end
 
-function update_torch( cond ) 
-	local slot = db.actor:item_in_slot( 9 )
-	if slot then 
-		slot:set_condition( cond )
-		update_torch_parameters()
-	end	
-end 
+function set_far_mode(torch)
+    torch_mode = "far"
+    set_value("nlc_torch_state", "far")
+    set_value("nlc_torch_last_cone", "far")    -- ADDED
+    torch:enable(true)
+    update_torch_parameters()
+end
 
+function set_off_mode(torch)
+    log2("[%s] enable(false) called from set_off_mode", tostring(time_global()))
+    torch_mode = "off"
+    torch:enable(false)
+    set_value("nlc_torch_state", "off")
+end
+
+-- ============ per-parameter update (range/angle/brightness/color/flicker) ============
+function update_torch_parameters()
+    local slot = db.actor:item_in_slot(9)
+    if not slot then return end
+    local torch_obj = get_torch_obj(slot)
+    if not torch_obj then return end
+
+    local torch_cond = slot:condition()
+
+    -- Detect powerful torch via custom_data (in sak.script)
+    local is_powerful = false
+    local pk = get_netpk(slot, 1)
+    if pk then
+        local data = pk:get()
+        if data and data.custom_data and string.find(tostring(data.custom_data), "powerful_torch") then
+            is_powerful = true
+        end
+    end
+    upgraded_torch = is_powerful -- Keep var synced if anything else checks it
+
+    -- Restore old exact values for base_range/base_angle
+    local base_range = is_powerful and 45 or 30
+    local base_angle = is_powerful and math.rad(85) or math.rad(60)
+
+    -- Restore old brightness and range_factor math
+    local brightness = TORCH_MIN_BRIGHTNESS + torch_cond ^ 0.7 * (TORCH_MAX_BRIGHTNESS - TORCH_MIN_BRIGHTNESS)
+    if is_powerful then brightness = brightness * 1.25 end
+
+    local range_factor = 0.2 + torch_cond ^ 1.4 * 0.8
+
+    local mode = get_value("nlc_torch_state", "off")
+    local angle_factor
+    if mode == "near" then
+        angle_factor = TORCH_ANGLE_FACTOR_MIN + (1 - torch_cond) * (TORCH_ANGLE_FACTOR_MAX - TORCH_ANGLE_FACTOR_MIN)
+    else
+        angle_factor = TORCH_ANGLE_FACTOR_MAX - (1 - torch_cond) * (TORCH_ANGLE_FACTOR_MAX - TORCH_ANGLE_FACTOR_MIN)
+    end
+
+    local color_temp = TORCH_COLOR_TEMP_MIN + torch_cond * (TORCH_COLOR_TEMP_MAX - TORCH_COLOR_TEMP_MIN)
+
+    local flicker_probability = TORCH_FLICKER_PROBABILITY_BASE + (1 - torch_cond) * TORCH_FLICKER_PROBABILITY_FACTOR
+    if math.random() < flicker_probability then
+        brightness = brightness * math.random(2, 8) / 10
+    end
+
+    local mode_switch = (mode == "near" and 1) or 2
+    local range = base_range * range_factor * mode_switch
+    local angle = base_angle * angle_factor / mode_switch
+
+    torch_obj:set_range(range)
+    torch_obj:set_angle(angle)
+
+    local final_brightness = brightness -- Use 0.0-1.0 float scale, as dsh_torch did
+    torch_obj:set_brightness( final_brightness )
+    base_brightness = final_brightness
+
+    local r, g, b = color_temp, color_temp * 0.95, color_temp * 0.9
+    torch_obj:set_rgb(r, g, b)
+end
+
+-- ============ battery drain (5s tick, folds in dsh_torch's upgraded/aver modifiers) ============
+function torch_brock()
+    local slot = db.actor:item_in_slot(9)
+    if not slot then return end
+    local torch_obj = get_torch_obj(slot)
+    if not torch_obj or not torch_obj.on then return end
+
+    local mode = get_value("nlc_torch_state", "off")
+    local mode_mult   = (mode == "near" and 1) or 1.25
+    local upgrade_mult = upgraded_torch and UPGRADED_DISCHARGE_MULT or BASE_DISCHARGE_MULT
+    local level_mult   = (lvl == "aver") and AVER_DISCHARGE_MULT or 1.0
+
+    local torch_cond = slot:condition()
+    local val = torch_cond - (TORCH_DISCHARGE_RATE * mode_mult * upgrade_mult * level_mult)
+    local condition = math.max(0, val)
+    slot:set_condition(condition)
+
+    if condition <= 0 then
+        set_off_mode(torch_obj)
+        return
+    end
+
+    update_torch_parameters()
+end
+
+function update_torch(cond)
+    local slot = db.actor:item_in_slot(9)
+    if slot then
+        slot:set_condition(cond)
+        update_torch_parameters()
+    end
+end
+
+-- ============ electra flicker ============
+local function electra_torch_tick()
+    local torch = db.actor:alive() and db.actor:item_in_slot(9)
+    if not (torch and torch:is_torch()) then return end
+
+    local torch_obj = get_torch_obj(torch)
+    if not torch_obj.on then
+        torch_glitch_smooth = 0
+        return
+    end
+
+    local now = time_global()
+    local dt = math.min(1, (now - last_electra_tick) / 1000)
+    last_electra_tick = now
+
+    local target = (sivol_pda and sivol_pda.get_glitch_intensity and sivol_pda.get_glitch_intensity()) or 0
+    target = math.max(target, get_torch_location_baseline()) -- Aver baseline stacks constantly
+
+    -- Underground rare event state machine
+    if is_underground() then
+        if is_loc_flickering then
+            -- Event is active: check if it should end
+            if now - loc_flicker_start > loc_flicker_duration then
+                is_loc_flickering = false
+                next_loc_flicker_time = now + math.random(
+                    TORCH_LOC_FLICKER_FX.min_interval,
+                    TORCH_LOC_FLICKER_FX.max_interval
+                )
+            else
+                -- During the event, apply a chaotic random pattern on top of the electra target
+                local pattern_mult = math.random(4, 10) / 10
+                target = math.max(
+                    target,
+                    TORCH_LOC_FLICKER_FX.intensity * pattern_mult
+                )
+            end
+        else
+            -- Event is dormant: check if it should start
+            if now > next_loc_flicker_time then
+                is_loc_flickering = true
+                loc_flicker_start = now
+                loc_flicker_duration = math.random(
+                    TORCH_LOC_FLICKER_FX.min_duration,
+                    TORCH_LOC_FLICKER_FX.max_duration
+                )
+            end
+        end
+    else
+        -- Reset state machine if player leaves the underground
+        is_loc_flickering = false
+        next_loc_flicker_time = now + math.random(
+            TORCH_LOC_FLICKER_FX.min_interval,
+            TORCH_LOC_FLICKER_FX.max_interval
+        )
+    end
+
+    local rate = (target > torch_glitch_smooth)
+        and ELECTRA_SMOOTH_IN
+        or ELECTRA_SMOOTH_OUT
+
+    local k = math.min(1, dt * rate)
+    torch_glitch_smooth = torch_glitch_smooth + (target - torch_glitch_smooth) * k
+
+    if torch_glitch_smooth < 0.005 then
+        torch_glitch_smooth = 0
+    end
+
+    if torch_glitch_smooth <= 0.005 then
+        torch_obj:set_brightness(base_brightness)
+        return
+    end
+
+    local dim = 1 - torch_glitch_smooth * ELECTRA_DIM_FACTOR
+
+    local cooldown = ELECTRA_SPIKE_COOLDOWN_MAX
+        - (ELECTRA_SPIKE_COOLDOWN_MAX - ELECTRA_SPIKE_COOLDOWN_MIN)
+        * torch_glitch_smooth
+
+    if now - last_spike_time > cooldown then
+        last_spike_time = now
+        dim = dim * (
+            1 - torch_glitch_smooth
+                * ELECTRA_SPIKE_FACTOR
+                * (math.random(6, 10) / 10)
+        )
+    end
+
+    torch_obj:set_brightness(math.max(0.01, base_brightness * dim))
+end
+
+-- ============ single update() — owns both cadences, no reschedule() ============
+function update()
+    local now = time_global()
+
+    if now - last_battery_tick >= TORCH_UPDATE_TIME_BASE then
+        last_battery_tick = now
+        local torch = db.actor:item_in_slot(9)
+        if torch and torch:is_torch() then
+            torch_brock()
+        end
+    end
+
+    if now - last_electra_tick_time >= ELECTRA_TICK_TIME then
+        last_electra_tick_time = now
+        electra_torch_tick()
+    end
+end
+
+-- ============ misc ============
 function play_torch_anim()
-	level.only_allow_movekeys( true )
-	level.set_actor_allow_ladder(false)	
-	torch_anm_duration = game.play_hud_motion( 1, "anim_headlamp", "anm_switch", false, 1.1 )
-	level.add_cam_effector( "camera_effects\\headlamp_cam.anm", 7539, false, "", 0, false )
-	
-	dsh.timeout( torch_anm_duration + 10, function()
-		level.only_allow_movekeys( false )
-		level.set_actor_allow_ladder(true)		
-	end )
+    torch_busy = true
+    level.only_allow_movekeys(true)
+    level.set_actor_allow_ladder(false)
+    
+    level.add_cam_effector("camera_effects\\headlamp_cam.anm", 7539, false, "", 0, false)
+    local torch_anm_duration = game.play_hud_motion(1, "anim_headlamp", "anm_switch", false, 1.1)
+    
+    dsh.timeout(torch_anm_duration + 10, function()
+        level.only_allow_movekeys(false)
+        level.set_actor_allow_ladder(true)
+        torch_busy = false
+    end)
 end
 
 function get_torch_state()
-	local torch = db.actor:item_in_slot( 9 )
-	if torch and torch:is_torch() then
-		torch = get_torch_obj( torch )
-		if torch.on then 
-			return true 
-		end	
-	end	
-	return false
+    local torch = db.actor:item_in_slot(9)
+    if torch and torch:is_torch() then
+        torch = get_torch_obj(torch)
+        if torch.on then return true end
+    end
+    return false
 end
 
-function torch_handler( flag )
-	local torch = db.actor:item_in_slot( 9 )
-	if torch and torch:is_torch() then
-		torch = get_torch_obj( torch )
-
-		local state = get_value( "nlc_torch_state" )
-		
-		-- Если нужно выключить и фонарь включен
-		if flag == "off" and torch.on then
-			torch:enable( false )
-			return state -- Возвращаем текущий режим
-		end
-		
-		-- Если нужно включить и режим не был "off"
-		if flag == "on" and state ~= "off" then
-			play_torch_anim()
-			dsh.timeout( 800, function()		
-				torch:switch( true )
-				if state == "far" then
-					set_far_mode( torch )
-				else
-					set_near_mode( torch )
-				end
-			end	)
-		end
-	end	
+function torch_handler(flag)
+    local torch = db.actor:item_in_slot(9)
+    if torch and torch:is_torch() then
+        torch = get_torch_obj(torch)
+        local state = get_value("nlc_torch_state", "off")
+        
+        if flag == "off" and torch.on then
+            log2("[%s] enable(false) called from torch_handler", tostring(time_global()))
+            -- Save the current mode so we can restore it later
+            set_value("nlc_torch_prev_mode", state)
+            torch:enable(false)
+            set_value("nlc_torch_state", "off")
+            torch_mode = "off"
+            return state
+        end
+        
+        if flag == "on" then
+            local prev_mode = get_value("nlc_torch_prev_mode", "near")
+            if prev_mode ~= "off" then
+                play_torch_anim()
+                dsh.timeout(800, function()
+                    if prev_mode == "far" then
+                        set_far_mode(torch)
+                    else
+                        set_near_mode(torch)
+                    end
+                end)
+            end
+        end
+    end
 end
+
