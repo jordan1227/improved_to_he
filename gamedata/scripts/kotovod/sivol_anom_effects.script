@@ -1,0 +1,165 @@
+-- sivol_anom_effects.script
+
+local EARTHQUAKE_CAM_ID = 98323
+
+-- Smoothing (same convention as sivol_pda.script)
+local SMOOTH_IN  = 5.0   -- ramp-up speed when getting closer
+local SMOOTH_OUT = 2.5   -- ramp-down speed when moving away
+
+-- Hysteresis band avoids flicker right at the edge of the radius
+local START_THRESHOLD = 0.15  -- must exceed this (rising) to start shaking
+local STOP_THRESHOLD  = 0.08  -- must fall below this (falling) to fully stop
+
+-- Per-tier radius + anim file. Matched against section-name suffix.
+-- "killing" folds into strong for now — swap to its own 80/100 tier later if wanted.
+local TIER_CONFIG = {
+    weak    = { radius = 4.0,  anim = "camera_effects\\earthquake_20.anm" },
+    average = { radius = 4.75, anim = "camera_effects\\earthquake_40.anm" },
+    strong  = { radius = 5.5,  anim = "camera_effects\\earthquake_60.anm" },
+}
+local BASE_MAX_TIER_RADIUS = 5.5  -- = TIER_CONFIG.strong.radius, used for the query buffer
+
+-- ======================= USER-FACING SETTINGS =======================
+-- Exposed globally so a console command, MCM/mod-options menu, or key bind can drive these later.
+local enabled        = true
+local intensity_mult  = 1.0  -- 0 = no effect, 1 = normal, >1 = exaggerated
+local distance_mult   = 1.0  -- scales all tier radii; >1 = triggers further out
+
+function set_enabled(v)
+    enabled = v and true or false
+end
+function is_enabled()
+    return enabled
+end
+function set_intensity_mult(v)
+    intensity_mult = math.max(0, tonumber(v) or 1.0)
+end
+function set_distance_mult(v)
+    distance_mult = math.max(0.1, tonumber(v) or 1.0)
+end
+-- =====================================================================
+
+local smooth         = 0
+local last_time       = 0
+local next_shake_time = 0
+local is_shaking      = false
+local current_anim    = nil  -- tracks which .anm is actively playing, for tier-switch handling
+
+-- Matches gravity anomalies by section name and class id
+local function is_gravity_anomaly(sec, clsid_val)
+    if string.find(sec, "gravi") or string.find(sec, "mosquito") or string.find(sec, "mincer")
+        or string.find(sec, "vortex") or string.find(sec, "springboard") then
+        return true
+    end
+    if clsid_val == clsid.zone_mosquito_bald or clsid_val == clsid.zone_mbald_s
+        or clsid_val == clsid.zone_mincer or clsid_val == clsid.zone_mincer_s then
+        return true
+    end
+    return false
+end
+
+-- Determine tier from section-name suffix; falls back to "average" for
+-- base sections with no tier suffix (e.g. plain [zone_gravi_zone]) and
+-- for anomalies only matched via the clsid fallback above.
+local function get_tier(sec)
+    if string.find(sec, "killing") then return "strong" end
+    if string.find(sec, "strong")  then return "strong" end
+    if string.find(sec, "average") then return "average" end
+    if string.find(sec, "weak")    then return "weak" end
+    return "average"
+end
+
+-- Returns best (0..1) proximity and the tier config that produced it
+local function get_best_proximity()
+    if not db.actor then return 0, nil end
+    local pos = db.actor:position()
+
+    local query_radius = BASE_MAX_TIER_RADIUS * distance_mult
+    local ok, nearby = pcall( amk_anoms.get_anomaly_list_for_pos_realr, pos, query_radius + 2 )
+    if not ok or not nearby then
+        nearby = amk_anoms.get_anomaly_list_for_pos( pos, query_radius + 2 ) or {}
+    end
+
+    local best = 0
+    local best_tier = nil
+    for _, a in ipairs( nearby ) do
+        local obj = client_obj( a.id )
+        if obj then
+            local sec = obj:section() or ""
+            local c   = obj:clsid()
+            if is_gravity_anomaly(sec, c) then
+                local tier_name = get_tier(sec)
+                local tier = TIER_CONFIG[tier_name]
+                local eff_radius = tier.radius * distance_mult
+                local proximity = 1 - math.max(0, a.dist) / eff_radius
+                if proximity > best then
+                    best = proximity
+                    best_tier = tier
+                end
+            end
+        end
+    end
+    return math.max(0, math.min(1, best)), best_tier
+end
+
+local function check_gravity_proximity()
+    -- Handles the case where the player disables the effect mid-shake.
+    if not enabled then
+        if is_shaking then
+            is_shaking = false
+            current_anim = nil
+            next_shake_time = 0
+            level.remove_cam_effector(EARTHQUAKE_CAM_ID)
+        end
+        return
+    end
+
+    if not db.actor then return end
+
+    local now = time_global()
+    local dt  = (now - last_time) / 1000
+    last_time = now
+    if dt > 1 or dt < 0 then dt = 0 end -- guard against load/pause spikes
+
+    local raw, tier = get_best_proximity()
+    local target = math.max(0, math.min(1, raw * intensity_mult))
+
+    -- Exponential smoothing, frame-rate independent
+    local rate = (target > smooth) and SMOOTH_IN or SMOOTH_OUT
+    local k    = math.min(1, dt * rate)
+    smooth = smooth + (target - smooth) * k
+    if smooth < 0.001 then smooth = 0 end
+
+    if smooth > START_THRESHOLD and tier then
+        is_shaking = true
+        -- Closer (higher smooth) = shorter interval = more frequent pulses,
+        -- driven by the smoothed value so it ramps gradually within a tier.
+        local shake_interval = 1000 * (1.0 - smooth) + 200
+
+        if now > next_shake_time then
+            next_shake_time = now + shake_interval
+
+            -- If we've crossed into a different tier since the last pulse,
+            -- clear the old effector first rather than layering anims on
+            -- the same cam ID.
+            if current_anim and current_anim ~= tier.anim then
+                level.remove_cam_effector(EARTHQUAKE_CAM_ID)
+            end
+            current_anim = tier.anim
+
+            level.add_cam_effector(tier.anim, EARTHQUAKE_CAM_ID, false, "", 0, false)
+        end
+    elseif smooth < STOP_THRESHOLD and is_shaking then
+        is_shaking = false
+        current_anim = nil
+        next_shake_time = 0
+        level.remove_cam_effector(EARTHQUAKE_CAM_ID)
+    end
+end
+
+function attach(sm)
+    sm:subscribe({
+        signal = "on_update",
+        fun = check_gravity_proximity
+    })
+end
