@@ -95,14 +95,15 @@ local ARTIFACT_PDA_FX = {
     af_glassbeads = -0.75,   -- shield, tier-scaled same as broadcasters
 }
 
+-- sivol_pda.script — replace the local table/constant, keep the caching state and logic:
+
 local cached_artifact_pda_glitch = 0   -- 0..1, strongest broadcaster present
 local cached_artifact_pda_shield = 0   -- 0..1, combined shielding strength
 local last_artifact_pda_check = 0
-local ARTIFACT_PDA_CHECK_INTERVAL = 5000
 
 local function update_artifact_pda_fx()
     local now = time_global()
-    if now - last_artifact_pda_check < ARTIFACT_PDA_CHECK_INTERVAL then return end
+    if now - last_artifact_pda_check < sivol_emp_config.ARTIFACT_PDA_CHECK_INTERVAL then return end
     last_artifact_pda_check = now
 
     if not (sak and sak.arts_operate) then
@@ -116,16 +117,16 @@ local function update_artifact_pda_fx()
 
     if sak_inventory and sak_inventory.belt_items then
         for sec, items in pairs(sak_inventory.belt_items) do
-            local mod = ARTIFACT_PDA_FX[sec]
+            local mod = sivol_emp_config.ARTIFACT_PDA_FX[sec]
             if not mod then
                 local base_sec = string.match(sec, "^(af_[%w_]+)_dyn%dd") or sec
-                mod = ARTIFACT_PDA_FX[base_sec]
+                mod = sivol_emp_config.ARTIFACT_PDA_FX[base_sec]
                 if mod then
                     local tier_str = string.match(sec, "_dyn(%d)d")
                     if tier_str then
                         local tier = tonumber(tier_str) or 3
-                        local tier_scale = (tier == 6) and 1.0 or (tier - 1) / 4  -- tier1>0 .. tier5>1
-                        mod = mod * tier_scale  -- sign preserved, tier_scale is always ?0
+                        local tier_scale = (tier == 6) and 1.0 or (tier - 1) / 4
+                        mod = mod * tier_scale
                     end
                 end
             end
@@ -133,9 +134,9 @@ local function update_artifact_pda_fx()
             if mod and num_items > 0 then
                 if mod > 0 then
                     best_glitch = math.max(best_glitch, mod)
-				elseif mod < 0 then
-					total_shield = total_shield + (-mod) * num_items
-				end
+                elseif mod < 0 then
+                    total_shield = total_shield + (-mod) * num_items
+                end
             end
         end
     end
@@ -278,6 +279,10 @@ local function check_electra_proximity()
 
     local electra_eff = electra_target * (1 - shield)
 
+    if sivol_critical_malfunction then
+        sivol_critical_malfunction.try_roll(is_strong, electra_eff, shield)
+    end
+
     local ambient_base = math.max(loc_base, cached_rain_intensity)
     local ambient_mix  = (cached_rain_intensity > loc_base) and RAIN_MIX or loc_mix
     local loc_base_eff = ambient_base * (1 - shield)
@@ -306,9 +311,10 @@ local function check_electra_proximity()
 
     -- 3. Blackout target for point-blank Strong Electras (> 0.85 intensity)
     local blackout_target = 0
-    if is_strong and electra_eff > 0.85 then
-        blackout_target = math.min(1, (electra_eff - 0.85) / 0.15)
-    end
+	-- sivol_pda.script blackout block
+	if is_strong and electra_eff > sivol_emp_config.BLACKOUT_START then
+		blackout_target = math.min(1, (electra_eff - sivol_emp_config.BLACKOUT_START) / sivol_emp_config.BLACKOUT_BAND)
+	end
 
     -- 4. Exponential smoothing for intensity, mix, and blackout
     local rate = (target > smooth) and SMOOTH_IN or SMOOTH_OUT
@@ -346,18 +352,19 @@ local function check_electra_proximity()
     local can_drive = pda and pda_in_hands and is_3d_pda and not broken
 
     if can_drive then
-        -- Audio handling (uses smooth_non_rain + volume scaler)
-        if smooth_non_rain > 0.01 and not electra_noise_muted then
-            pda_noise.play_noise_sound()
-            pda_noise.set_noise_volume((0.1 + 0.4 * smooth_non_rain) * NOISE_VOLUME_SCALE)
+        if sivol_critical_malfunction and sivol_critical_malfunction.is_active() then
+            pda_noise.stop_noise_sound()  -- dead silence reads more "broken" than more static
+            set_pda_params(vector():set(0.0, 1.0, 1.55))  -- same ceiling as the existing electra blackout
         else
-            pda_noise.stop_noise_sound()
+            if smooth_non_rain > 0.01 and not electra_noise_muted then
+                pda_noise.play_noise_sound()
+                pda_noise.set_noise_volume((0.1 + 0.4 * smooth_non_rain) * NOISE_VOLUME_SCALE)
+            else
+                pda_noise.stop_noise_sound()
+            end
+            set_pda_params(vector():set(0.0, smooth, alpha_mode))
         end
-
-        -- Visual Shader driven by full intensity (rain included)
-        set_pda_params(vector():set(0.0, smooth, alpha_mode))
     else
-        -- PDA was holstered, dropped, or broken -> cut audio immediately
         pda_noise.stop_noise_sound()
     end
 end

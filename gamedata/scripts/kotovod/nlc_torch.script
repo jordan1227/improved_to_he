@@ -93,9 +93,6 @@ TORCH_ALT_CONTROL_MODE = true  -- false = classic short-press cycle (off->near->
                                  -- exposed as nlc_torch.TORCH_ALT_CONTROL_MODE for a future settings hook
 
 -- ===== location-based torch interference =====
-local TORCH_LOCATION_BASELINE = {
-    aver = 0.65, -- Aver is a constant heavy interference zone
-}
 
 -- Underground labs get rare, random horror dim-outs instead of a constant buzz
 local TORCH_LOC_FLICKER_FX = {
@@ -117,13 +114,9 @@ local function is_underground()
 end
 
 local function get_torch_location_baseline()
-    local lvl_name = string.lower(level.name())
-    local base = 0
-    if TORCH_LOCATION_BASELINE[lvl_name] then
-        base = TORCH_LOCATION_BASELINE[lvl_name]
-    end
-    
-    -- Apply artifact shielding to location interference too
+    if level.name() ~= 'aver' then return 0 end
+
+    local base = sivol_emp_config.TORCH_AVER_FLICKER or 0
     local shield = (sivol_pda and sivol_pda.get_artifact_shield and sivol_pda.get_artifact_shield()) or 0
     return base * (1 - shield)
 end
@@ -428,6 +421,31 @@ function update_torch(cond)
 end
 
 -- ============ electra flicker ============
+
+local next_malfunction_roll_time = 0
+
+local function try_critical_malfunction(torch_obj)
+    if torch_glitch_smooth < sivol_emp_config.TORCH_MALFUNCTION.threshold then return end
+
+    local now = time_global()
+    if now < next_malfunction_roll_time then return end
+    next_malfunction_roll_time = now + math.random(
+        sivol_emp_config.TORCH_MALFUNCTION.min_interval,
+        sivol_emp_config.TORCH_MALFUNCTION.max_interval
+    )
+
+    local mode = get_value("nlc_torch_state", "off")
+    if mode == "off" then return end  -- nothing to malfunction
+
+    if math.random() < sivol_emp_config.TORCH_MALFUNCTION.off_chance then
+        set_off_mode(torch_obj)
+    elseif mode == "near" then
+        set_far_mode(torch_obj)
+    else
+        set_near_mode(torch_obj)
+    end
+end
+
 local function electra_torch_tick()
     local torch = db.actor:alive() and db.actor:item_in_slot(9)
     if not (torch and torch:is_torch()) then return end
@@ -442,8 +460,13 @@ local function electra_torch_tick()
     local dt = math.min(1, (now - last_electra_tick) / 1000)
     last_electra_tick = now
 
+    if sivol_critical_malfunction and sivol_critical_malfunction.is_active() then
+        torch_obj:set_brightness(0.01)  -- power failure, not a mode change — recovers on its own
+        return
+    end
+
     local target = (sivol_pda and sivol_pda.get_glitch_intensity and sivol_pda.get_glitch_intensity()) or 0
-    target = math.max(target, get_torch_location_baseline()) -- Aver baseline stacks constantly
+    target = math.max(target, get_torch_location_baseline())
 
     -- Underground rare event state machine
     if is_underground() then
@@ -501,9 +524,20 @@ local function electra_torch_tick()
 
     local dim = 1 - torch_glitch_smooth * ELECTRA_DIM_FACTOR
 
-    local cooldown = ELECTRA_SPIKE_COOLDOWN_MAX
-        - (ELECTRA_SPIKE_COOLDOWN_MAX - ELECTRA_SPIKE_COOLDOWN_MIN)
-        * torch_glitch_smooth
+	local cooldown_base = ELECTRA_SPIKE_COOLDOWN_MAX
+		- (ELECTRA_SPIKE_COOLDOWN_MAX - ELECTRA_SPIKE_COOLDOWN_MIN)
+		* torch_glitch_smooth
+
+	local cooldown = cooldown_base * (math.random(65, 145) / 100)  -- ±35% jitter breaks the metronome
+
+	if now - last_spike_time > cooldown then
+		last_spike_time = now
+		dim = dim * (
+			1 - torch_glitch_smooth
+				* ELECTRA_SPIKE_FACTOR
+				* (math.random(6, 10) / 10)
+		)
+	end
 
     if now - last_spike_time > cooldown then
         last_spike_time = now
@@ -515,6 +549,7 @@ local function electra_torch_tick()
     end
 
     torch_obj:set_brightness(math.max(0.01, base_brightness * dim))
+    try_critical_malfunction(torch_obj)
 end
 
 -- ============ single update() — owns both cadences, no reschedule() ============

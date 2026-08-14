@@ -46,16 +46,15 @@ local eff, obj_id, flag
 -- inside nvd_params.script, additions:
 local sivol_pda_ok = sivol_pda ~= nil
 
-local NVD_AVER_GLITCH_BASE = 0.275  -- tune below nlc_torch's aver value once you confirm it
 local NVD_SMOOTH_IN  = 5.0
 local NVD_SMOOTH_OUT = 2.5
 local nvd_smooth = 0
 local nvd_last_time = 0
+local next_nvd_malfunction_time = 0
+local nvd_dropout_until = 0
 
 -- max-intensity targets to lerp toward; base values come from the currently
 -- equipped device's own ltx section (already read once in apply_pnv/on_slot)
-local NVD_GLITCH_MAX = 0.45   -- explicit target, independent of per-device base (which may be 0)
-local NVD_NOISE_MAX  = 0.7
 local base_pnv_glitch, base_pnv_noise
 
 local last_glitch_val, last_noise_val
@@ -66,10 +65,52 @@ local function snapshot_nvd_base(nv_sect)
     base_pnv_noise  = get_float(nv_sect, "r_pnv_noise",  beef_nv.r_pnv_noise)
 end
 
+local function try_nvd_malfunction()
+    local cfg = sivol_emp_config.TORCH_MALFUNCTION
+    if nvd_smooth < cfg.threshold then return end
+
+    local now = time_global()
+    if now < next_nvd_malfunction_time then return end
+    next_nvd_malfunction_time = now + math.random(cfg.min_interval, cfg.max_interval)
+
+    if math.random() < cfg.off_chance then
+        off_pnv(true)  -- full shutdown, mirrors torch's set_off_mode — manual switch-on required
+    else
+        nvd_dropout_until = now + math.random(cfg.dropout_min, cfg.dropout_max)
+        cmd("r_pnv_mode 0")
+    end
+end
+
 update_nvd_glitch = function()
     if not (flag and eff) then return end
 
     local now = time_global()
+
+    -- Critical malfunction: force NVD glitch/noise off
+    if sivol_critical_malfunction and sivol_critical_malfunction.is_active() then
+        if last_glitch_val ~= 0 then
+            cmd("r_pnv_glitch", 0)
+            last_glitch_val = 0
+        end
+        if last_noise_val ~= 0 then
+            cmd("r_pnv_noise", 0)
+            last_noise_val = 0
+        end
+        return
+    end
+
+    -- NVD dropout recovery/gate
+    -- Skip the normal glitch/noise update while forced off,
+    -- then restore NVD mode immediately when the dropout expires.
+    if nvd_dropout_until > 0 then
+        if now >= nvd_dropout_until then
+            nvd_dropout_until = 0
+            cmd("r_pnv_mode 1")
+        else
+            return
+        end
+    end
+
     local dt = (now - nvd_last_time) / 1000
     nvd_last_time = now
     if dt > 1 or dt < 0 then dt = 0 end
@@ -79,7 +120,7 @@ update_nvd_glitch = function()
 
     local aver_glitch = 0
     if level.name() == 'aver' then
-        aver_glitch = NVD_AVER_GLITCH_BASE * (1 - shield)
+        aver_glitch = sivol_emp_config.NVD_AVER_GLITCH_BASE * (1 - shield)
     end
 
     local target = math.max(electra_glitch, aver_glitch)
@@ -92,8 +133,8 @@ update_nvd_glitch = function()
 
     if not base_pnv_glitch then return end
 
-    local glitch_val = base_pnv_glitch + (NVD_GLITCH_MAX - base_pnv_glitch) * nvd_smooth
-    local noise_val  = base_pnv_noise  + (NVD_NOISE_MAX  - base_pnv_noise) * nvd_smooth
+    local glitch_val = base_pnv_glitch + (sivol_emp_config.NVD_GLITCH_MAX - base_pnv_glitch) * nvd_smooth
+    local noise_val  = base_pnv_noise + (sivol_emp_config.NVD_NOISE_MAX - base_pnv_noise) * nvd_smooth
 
     if not last_glitch_val or math.abs(glitch_val - last_glitch_val) > NVD_CMD_EPSILON then
         cmd("r_pnv_glitch", glitch_val)
@@ -103,6 +144,8 @@ update_nvd_glitch = function()
         cmd("r_pnv_noise", noise_val)
         last_noise_val = noise_val
     end
+
+    try_nvd_malfunction()
 end
 
 local function apply_pnv_mode()
@@ -202,6 +245,7 @@ end
 function off_pnv(snd)
     flag = false
     nvd_smooth = 0
+    nvd_dropout_until = 0
     last_glitch_val, last_noise_val = nil, nil
     cmd("r_pnv_mode 0")
     level.set_min_lumscale_amb(0.001)
