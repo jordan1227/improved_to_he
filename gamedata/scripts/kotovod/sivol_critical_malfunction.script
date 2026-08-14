@@ -1,30 +1,63 @@
--- sivol_critical_malfunction.script (new file)
+-- sivol_critical_malfunction.script
 -- Shared full-device-outage state for PDA + torch. No attach() needed —
 -- it's pure state, driven by sivol_pda.script's already-every-frame tick.
 
 local active_until = 0
-local next_roll_time = 0
+local next_proximity_roll_time = 0
+local glitch_until = 0
+local glitch_intensity = 0
 
 function is_active()
     return time_global() < active_until
 end
 
+function is_glitching()
+    return time_global() < glitch_until
+end
+
+-- 0..1 — folds into sivol_pda's cached_glitch_source via math.max alongside
+-- electra/artifact sources, so it reaches PDA, torch, and NVD glitch
+-- automatically through the existing single funnel.
+function get_hit_glitch_intensity()
+    return is_glitching() and glitch_intensity or 0
+end
+
+local function start_outage(source_type)
+    local cfg = sivol_emp_config.CRITICAL_MALFUNCTION[source_type]
+        or sivol_emp_config.CRITICAL_MALFUNCTION.electra -- fall back of source type is nil 
+    active_until = time_global() + math.random(cfg.duration_min, cfg.duration_max)
+end
+
+-- hit.shock-triggered entry point (called from sivol_hit_shock.script)
+function trigger_from_hit(severity)
+    if is_active() then return end
+    local cfg = sivol_emp_config.CRITICAL_MALFUNCTION.shock_hit
+    local dur = cfg.duration_min + (cfg.duration_max - cfg.duration_min) * severity
+    active_until = time_global() + dur
+end
+
+function trigger_glitch_from_hit(severity)
+    if is_active() or is_glitching() then return end  -- don't stack a second glitch on top of a running one
+    local cfg = sivol_emp_config.SHOCK_HIT_MALFUNCTION
+    local dur = cfg.glitch_duration_min + (cfg.glitch_duration_max - cfg.glitch_duration_min) * severity
+    glitch_intensity = cfg.glitch_intensity_min + (cfg.glitch_intensity_max - cfg.glitch_intensity_min) * severity
+    glitch_until = time_global() + dur
+end
+
+-- proximity-triggered entry point (called from sivol_pda.script's check_electra_proximity)
 -- shield: 0..1, same convention as sivol_pda.get_artifact_shield() — fully
 -- shielded (1.0) means zero chance, no matter how strong the exposure.
-function try_roll(is_strong, electra_eff, shield)
-    if is_active() then return end  -- don't stack/extend an ongoing outage
-
+function try_roll(is_strong, electra_eff, shield, source_type)
+    if is_active() then return end
     local cfg = sivol_emp_config.CRITICAL_MALFUNCTION
     if not (is_strong and electra_eff > cfg.trigger_threshold) then return end
 
     local now = time_global()
-    if now < next_roll_time then return end
-    next_roll_time = now + math.random(cfg.roll_interval_min, cfg.roll_interval_max)
+    if now < next_proximity_roll_time then return end
+    next_proximity_roll_time = now + math.random(cfg.roll_interval_min, cfg.roll_interval_max)
 
     local effective_chance = cfg.chance * (1 - shield)
-    if effective_chance <= 0 then return end
-
-    if math.random() < effective_chance then
-        active_until = now + math.random(cfg.duration_min, cfg.duration_max)
+    if effective_chance > 0 and math.random() < effective_chance then
+        start_outage(source_type)
     end
 end
