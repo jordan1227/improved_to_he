@@ -1,0 +1,247 @@
+-- [HE-PORT]
+
+function attach( sm )
+  sm:subscribe({ signal = "inv_drag_drop", fun = this.inv_drag_drop })
+end
+
+
+local min_repairable_cond = 0.85
+local cond_ok = 0.95
+local fast_repair_inc = 0.05
+
+function is_repairable_weapon( obj )
+  return obj and obj:is_weapon() and not obj:is_binoculars()
+end
+
+
+function rep_tip( text_id )
+  sak.send_tip( game.translate_string( text_id ), game.translate_string( "thinking_out_loud" ), 1, 7, "g_g", "pda_news", "red" )
+end
+
+
+function inv_drag_drop( obj, me )
+  if not ( obj and me ) then return end
+  local sect = obj:section()
+  if
+    not (
+      (
+        sect == "repair_item_weapon"
+        and me:is_weapon_magazined()
+        and is_repairable_weapon( me )
+      )
+      or ( sect == "repair_itemoutfit" and me:is_outfit() )
+    )
+  then
+    return
+  end
+  if not xr_conditions.actor_has_rep_box() then
+    rep_tip( "inv_dd_rep_no_box" )
+    return true
+  end
+  if me:condition() > 0.99 then
+    rep_tip( "inv_dd_rep_dont_need" )
+  elseif me:condition() < 0.2 then
+    rep_tip( "inv_dd_rep_cant" )
+  elseif me:condition() < min_repairable_cond then
+    rep_tip( "inv_dd_rep_cant_need_trader" )
+  else
+    if me:condition() < cond_ok then
+      level.start_stop_menu( repair_dialog( me, obj ), true )
+    else
+      dsh.exec_on_update( function()
+        run_repair_fx( me, function()
+          amk.remove_item( obj )
+          me:set_condition( math.min( 1, me:condition() + fast_repair_inc ) )
+        end )
+      end )
+    end
+  end
+  return true
+end
+
+
+local fx_ppe_id      = 8023
+local fx_cam_fast_id = 8024
+local fx_cam_slow_id = 8025
+local active_snd
+
+
+function close_inventory()
+  if db.actor:has_info( "ui_inventory" ) and level.main_input_receiver() then
+    level.start_stop_menu( level.main_input_receiver(), true )
+  end
+end
+
+
+function cam_fx( anm, id )
+  level.add_cam_effector( "camera_effects\\" .. anm, id, false, "" )
+end
+
+
+function mute_ambience( t )
+  local con = get_console()
+  t.mus_vol = math.max( con:get_float( "snd_volume_music" ), 0 )
+  t.amb_vol = math.max( con:get_float( "snd_volume_eff" ), 0 )
+  con:execute( "snd_volume_music 0" )
+  con:execute( "snd_volume_eff 0" )
+end
+
+
+function restore_ambience( t )
+  local con = get_console()
+  con:execute( "snd_volume_music " .. tostring( t.mus_vol or 1 ) )
+  con:execute( "snd_volume_eff " .. tostring( t.amb_vol or 1 ) )
+end
+
+
+function run_fx_chain( steps, t )
+  local i = 0
+  local function step()
+    i = i + 1
+    local s = steps[ i ]
+    if not s then return end
+    dsh.timeout( s[ 1 ], function()
+      s[ 2 ]( t )
+      step()
+    end )
+  end
+  step()
+end
+
+
+function fx_begin()
+  bind_stalker.hud_fx_busy = true
+  level.disable_input()
+  bind_stalker.hide_weapon( 1000 )
+  close_inventory()
+end
+
+
+function fx_end( t, on_done )
+  if active_snd and active_snd:playing() then
+    active_snd:stop()
+  end
+  active_snd = nil
+  bind_stalker.hud_fx_busy = false
+  bind_stalker.restore_weapon()
+  level.enable_input()
+  on_done()
+end
+
+
+function run_repair_fx( obj, on_done )
+  local t = {}
+  fx_begin()
+  if obj and obj:is_outfit() then
+    run_fx_chain({
+      { 500, function()
+          level.hide_indicators()
+        end },
+      { 0, function( t )
+          if db.actor:is_in_slot( obj ) then
+            t.outfit = db.actor:get_current_outfit()
+            db.actor:move_to_ruck( t.outfit )
+          end
+          level.add_pp_effector( "slow_fade.ppe", fx_ppe_id, false )
+        end },
+      { 1500, function() cam_fx( "item_use_fast.anm", fx_cam_fast_id ) end },
+      {  250, function() play_repair_sound( obj ) end },
+      { 2220, function() cam_fx( "item_use_slow.anm", fx_cam_slow_id ) end },
+      { 3480, mute_ambience },
+      { 3800, restore_ambience },
+      { 2500, function( t )
+          if t.outfit then
+            db.actor:move_to_slot( t.outfit )
+          end
+          level.show_indicators()
+          fx_end( t, on_done )
+        end },
+    }, t )
+  else
+    level.add_pp_effector( "slow_fade.ppe", fx_ppe_id, false )
+    run_fx_chain({
+      {  500, function() bind_stalker.hide_weapon( 1000 ) end },
+      { 1000, function() cam_fx( "item_use_fast.anm", fx_cam_fast_id ) end },
+      {  250, function() play_repair_sound( obj ) end },
+      { 2220, function() cam_fx( "item_use_slow.anm", fx_cam_slow_id ) end },
+      { 3480, mute_ambience },
+      { 3800, restore_ambience },
+      { 2500, function( t ) fx_end( t, on_done ) end },
+    }, t )
+  end
+end
+
+
+class "repair_dialog" ( dsh_ui_simple_craft.ui_simple_craft )
+function repair_dialog:__init( item, rem_obj )
+  super( "ui_dsh_remkit.xml", item )
+  self.rem_obj = rem_obj
+end
+
+
+local min_suitable_cond = 0.3
+
+function repair_dialog:can_include_into_list( item )
+  return
+    item:id() ~= self.item:id() and db.actor:is_in_ruck( item )
+    and (
+      (
+        self.item:is_weapon_magazined()
+        and item:is_weapon_magazined()
+        and is_repairable_weapon( item )
+      )
+      or ( self.item:is_outfit() and item:is_outfit() )
+    )
+    and item:condition() > min_suitable_cond
+end
+
+
+function repair_dialog:calc_shans_bar_height( item, destr_item )
+  local k = math.min(
+    0.9,
+    math.max( 0.01, item:condition() - min_repairable_cond ) / 0.1
+  )
+  local b = 0
+  local d = destr_item:condition() - min_suitable_cond
+  if d > 0 then
+    b = 0.1 * ( d / ( 1 - min_suitable_cond ) )
+  end
+  return ( k + b ) * 100
+end
+
+
+function repair_dialog:do_craft( item )
+  self:on_quit()
+  local rem_obj  = self.rem_obj
+  local rem_sect = rem_obj:section()
+  local target   = self.item
+  local shans    = self:calc_shans_bar_height( target, item )
+  run_repair_fx( target, function()
+    amk.remove_item( item )
+    amk.remove_item( rem_obj )
+    if shans < 100 then
+      local rnd = get_next_random( "dsh_remkit.do_craft." .. rem_sect, 100 )
+      if rnd > shans then
+        rep_tip( "ui_remkit_repair_failure" )
+        return
+      end
+    end
+    local cond_inc = get_float( target:section(), "dsh_remkit.cond_inc2", 0.1 )
+    target:set_condition( math.min( target:condition() + cond_inc, 1 ) )
+  end )
+end
+
+
+function play_repair_sound( obj )
+  local sound
+  if obj and obj:is_outfit() then
+    sound = "device\\tiski_bronik_" .. math.random( 1, 3 )
+  else
+    sound = "device\\tiski_avto_" .. math.random( 1, 3 )
+  end
+  if active_snd and active_snd:playing() then
+    active_snd:stop()
+  end
+  active_snd = xr_sound.get_safe_sound_object( sound )
+  active_snd:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1.0 )
+end
