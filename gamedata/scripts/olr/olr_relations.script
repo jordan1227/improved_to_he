@@ -3,9 +3,13 @@ local CHECK_INTERVAL = 6000
 local MAX_SCAN = 40
 local GOODWILL_ACTOR = 2000
 local GOODWILL_NPC = 1500
+-- [HE-PORT]
+local NEAR_SMART_DIST = 50
+local GUEST_SPOT_TTL = 300000
 
 local time_next = 0
 local pacified = {}
+local guest_spots = {}
 
 local guest_comms = {
 	military = true,
@@ -25,6 +29,29 @@ local function smart_of(se)
 	local sim = g_sim or alife()
 	if not sim then return nil end
 	return sim:object(sid)
+end
+
+-- [HE-PORT]
+local function mark_guest_spot(smart)
+	if not smart then return end
+	local ok, pos = pcall(function() return vector():set(smart.position) end)
+	if not ok or not pos then return end
+	guest_spots[smart.id] = { pos = pos, t = time_global() }
+end
+
+-- [HE-PORT]
+local function is_near_guest_spot(npc)
+	local pos = npc:position()
+	local t = time_global()
+	local res = false
+	for sid, info in pairs(guest_spots) do
+		if (t - info.t) > GUEST_SPOT_TTL then
+			guest_spots[sid] = nil
+		elseif not res and pos:distance_to(info.pos) <= NEAR_SMART_DIST then
+			res = true
+		end
+	end
+	return res
 end
 
 local function pacify(npc, targets)
@@ -55,6 +82,7 @@ function update()
 	local guests = {}
 	local leavers = {}
 	local targets = {}
+	local strays = {}
 	local scanned = 0
 
 	for id, _ in pairs(db.storage) do
@@ -76,8 +104,9 @@ function update()
 					end
 					if guest then
 						table.insert(guests, npc)
-					elseif pacified[id] then
-						table.insert(leavers, npc)
+						mark_guest_spot(smart)
+					else
+						table.insert(strays, npc)
 					end
 				end
 			end
@@ -87,6 +116,17 @@ function update()
 	for i = 1, #guests do
 		pacify(guests[i], targets)
 		pacified[guests[i]:id()] = true
+	end
+
+	-- [HE-PORT]
+	for i = 1, #strays do
+		local npc = strays[i]
+		if is_near_guest_spot(npc) then
+			pacify(npc, targets)
+			pacified[npc:id()] = true
+		elseif pacified[npc:id()] then
+			table.insert(leavers, npc)
+		end
 	end
 
 	for i = 1, #leavers do
