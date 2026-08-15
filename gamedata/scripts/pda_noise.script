@@ -48,7 +48,64 @@ local ELECTRA_POWER_TIER = {
 	["amk_zone_witches_galantine"]         = sivol_emp_config.ELECTRA_TIER.average,
     ["amk_zone_witches_galantine_strong"]  = sivol_emp_config.ELECTRA_TIER.strong,
 }
+
+-- Static Electras are cached from anomaly lifecycle signals. Combined Electra
+-- and monster-source proximity is refreshed at this cadence; visual smoothing
+-- in sivol_pda remains per-frame.
+local ELECTRA_REFRESH_MS = 200
+local electra_cache = {}
+local last_electra_refresh = 0
+local cached_electra_intensity = 0
+local cached_electra_is_strong = false
+local cached_electra_source_type = nil
 -- =====================================================
+
+local function is_electra_anomaly(obj, sec)
+    return obj:clsid() == clsid.zone_electra_s
+        or string.find(sec, "galantine", 1, true) ~= nil
+        or string.find(sec, "electr", 1, true) ~= nil
+end
+
+local function cache_electra(obj)
+    if not obj then return end
+    local sec = obj:section() or ""
+    if not is_electra_anomaly(obj, sec) then return end
+
+    local tier = ELECTRA_POWER_TIER[sec] or {
+        radius_mult = 0.0,
+        max_limit = 0.9,
+    }
+    local shape_ok, shape_radius = pcall(obj.get_shape_radius, obj)
+    local pos = obj:position()
+    electra_cache[obj:id()] = {
+        x = pos.x, y = pos.y, z = pos.z,
+        shape_radius = shape_ok and math.max(0, tonumber(shape_radius) or 0) or 0,
+        radius = BASE_NOISE_RADIUS + tier.radius_mult,
+        max_limit = tier.max_limit,
+        is_strong = tier.max_limit >= 1.0,
+        section = sec,
+    }
+    last_electra_refresh = 0
+    log2(
+        "[pda_noise] cached Electra: section=%s id=%d shape_radius=%.2f effect_radius=%.2f max=%.2f",
+        sec, obj:id(), electra_cache[obj:id()].shape_radius,
+        electra_cache[obj:id()].radius, tier.max_limit
+    )
+end
+
+local function on_anomaly_spawn(obj, binder)
+    cache_electra(obj)
+end
+
+local function on_anomaly_net_destroy(obj, binder)
+    if not obj then return end
+    local id = obj:id()
+    if electra_cache[id] then
+        log2("[pda_noise] removed cached Electra: section=%s id=%d", electra_cache[id].section, id)
+        electra_cache[id] = nil
+        last_electra_refresh = 0
+    end
+end
 
 local next_noise_play_time = 0
 
@@ -98,40 +155,31 @@ end
 -- ======================= INTENSITY =======================
 function get_electra_intensity()
     if not db.actor then return 0, false, nil end
-    local pos = db.actor:position()
-
-    local ok, nearby = pcall(amk_anoms.get_anomaly_list_for_pos_realr, pos, BASE_NOISE_RADIUS + 2)
-    if not ok or not nearby then
-        nearby = amk_anoms.get_anomaly_list_for_pos(pos, BASE_NOISE_RADIUS + 2) or {}
+    local now = time_global()
+    if now - last_electra_refresh < ELECTRA_REFRESH_MS then
+        return cached_electra_intensity, cached_electra_is_strong,
+            cached_electra_source_type
     end
+    last_electra_refresh = now
 
+    local pos = db.actor:position()
     local best = 0
     local is_strong = false
     local source_type = nil
 
-    for _, a in ipairs(nearby) do
-        local obj = client_obj(a.id)
-        if obj then
-            local sec = obj:section() or ""
-            if obj:clsid() == clsid.zone_electra_s
-                or string.find(sec, "galantine")
-                or string.find(sec, "electr")
-            then
-                local tier = ELECTRA_POWER_TIER[sec] or {
-                    radius_mult = 0.0,
-                    max_limit = 0.9
-                }
+    for _, src in pairs(electra_cache) do
+        local dx = pos.x - src.x
+        local dy = pos.y - src.y
+        local dz = pos.z - src.z
+        local center_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        local distance = math.max(0, center_distance - src.shape_radius)
+        local proximity = 1 - distance / src.radius
+        local intensity = proximity * src.max_limit
 
-                local actual_radius = BASE_NOISE_RADIUS + tier.radius_mult
-                local proximity = 1 - math.max(0, a.dist) / actual_radius
-                local intensity = proximity * tier.max_limit
-
-                if intensity > best then
-                    best = intensity
-                    is_strong = (tier.max_limit >= 1.0)
-                    source_type = "electra"
-                end
-            end
+        if intensity > best then
+            best = intensity
+            is_strong = src.is_strong
+            source_type = "electra"
         end
     end
 
@@ -155,7 +203,11 @@ function get_electra_intensity()
         end
     end
 
-    return math.min(best, 1), is_strong, source_type
+    cached_electra_intensity = math.min(math.max(best, 0), 1)
+    cached_electra_is_strong = is_strong
+    cached_electra_source_type = source_type
+    return cached_electra_intensity, cached_electra_is_strong,
+        cached_electra_source_type
 end
 
 function get_noise_intensity()
@@ -265,4 +317,9 @@ function PdaNoiseWnd:Update()
     end
 
     if noise_snd then noise_snd.volume = 0.05 + 0.45 * self.smooth end
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_anomaly_spawn", fun = on_anomaly_spawn })
+    sm:subscribe({ signal = "on_anomaly_net_destroy", fun = on_anomaly_net_destroy })
 end

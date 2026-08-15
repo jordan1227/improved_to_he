@@ -1,6 +1,7 @@
 -- sivol_anom_effects.script
 
 local EARTHQUAKE_CAM_ID = 98323
+local THERMAL_PP_ID      = 98324
 
 -- Smoothing (same convention as sivol_pda.script)
 local SMOOTH_IN  = 5.0   -- ramp-up speed when getting closer
@@ -10,14 +11,39 @@ local SMOOTH_OUT = 2.5   -- ramp-down speed when moving away
 local START_THRESHOLD = 0.15  -- must exceed this (rising) to start shaking
 local STOP_THRESHOLD  = 0.08  -- must fall below this (falling) to fully stop
 
+local THERMAL_START_THRESHOLD = 0.15
+local THERMAL_STOP_THRESHOLD  = 0.08
+
+-- ======================= THERMAL TUNING =======================
+-- Effective burn protection at or above this value removes the extra
+-- thermal thirst penalty. Keep this explicit for the initial balance test.
+local THERMAL_PROTECTION_THRESHOLD = 0.50
+local THERMAL_LOG_INTERVAL          = 2000
+local THERMAL_BURN_TICK_MS           = 1000
+local THERMAL_BURN_PER_EXTRA_PER_SEC = 0.05 -- TUNE IN-GAME
+
+-- Combined suit+artifact protection needed to suppress the scripted burn hit.
+-- 1.01 disables this cutoff; set to 0.50 for immunity at 50% protection.
+-- The engine applies health damage and outfit wear through the same hit, so
+-- suppressing it prevents both. They cannot be toggled independently here.
+local THERMAL_DAMAGE_PROTECTION_THRESHOLD = 1.01
+
+-- Radius is metres beyond the anomaly's actual shape. max_extra is the
+-- maximum extra passive-thirst multiplier at/inside that shape.
+local THERMAL_TIER_CONFIG = {
+    weak    = { radius = 4.0, max_extra = 1.0 },
+    average = { radius = 5.5, max_extra = 2.0 },
+    strong  = { radius = 7.0, max_extra = 3.0 },
+}
+-- ==============================================================
+
 -- Per-tier radius + anim file. Matched against section-name suffix.
--- "killing" folds into strong for now — swap to its own 80/100 tier later if wanted.
+-- "killing" folds into strong for now - swap to its own 80/100 tier later if wanted.
 local TIER_CONFIG = {
     weak    = { radius = 4.0,  anim = "camera_effects\\earthquake_20.anm" },
     average = { radius = 4.75, anim = "camera_effects\\earthquake_40.anm" },
     strong  = { radius = 5.5,  anim = "camera_effects\\earthquake_60.anm" },
 }
-local BASE_MAX_TIER_RADIUS = 5.5  -- = TIER_CONFIG.strong.radius, used for the query buffer
 
 -- ======================= USER-FACING SETTINGS =======================
 -- Exposed globally so a console command, MCM/mod-options menu, or key bind can drive these later.
@@ -39,11 +65,23 @@ function set_distance_mult(v)
 end
 -- =====================================================================
 
-local smooth         = 0
+local gravity_smooth = 0
+local thermal_smooth = 0
 local last_time       = 0
 local next_shake_time = 0
 local is_shaking      = false
 local current_anim    = nil  -- tracks which .anm is actively playing, for tier-switch handling
+local thermal_ppe_active = false
+local thermal_best       = nil
+local thermal_best_key   = nil
+local last_thermal_log   = 0
+local last_art_signature = nil
+local last_probe_protection = nil
+local protection_getter_error_logged = false
+local last_burn_tick = 0
+
+local zharka_cache = {}
+local gravity_cache = {}
 
 -- Matches gravity anomalies strictly by section name.
 -- NLC aliases multiple anomaly types to the same clsid (e.g. 166), so clsid checks are useless here.
@@ -78,97 +116,418 @@ local function get_tier(sec)
     return "average"
 end
 
--- Returns best (0..1) proximity and the tier config that produced it
-local function get_best_proximity()
-    if not db.actor then return 0, nil end
-    local pos = db.actor:position()
+local function clamp01(value)
+    return math.max(0, math.min(1, tonumber(value) or 0))
+end
 
-    local query_radius = BASE_MAX_TIER_RADIUS * distance_mult
-    local ok, nearby = pcall( amk_anoms.get_anomaly_list_for_pos_realr, pos, query_radius + 2 )
-    if not ok or not nearby then
-        nearby = amk_anoms.get_anomaly_list_for_pos( pos, query_radius + 2 ) or {}
+local function is_thermal_anomaly(sec)
+    return string.find(sec, "zharka", 1, true) ~= nil
+end
+
+local function try_cache_anomaly(obj)
+    if not obj then return end
+    local sec = obj:section() or ""
+    local shape_ok, shape_radius = pcall(obj.get_shape_radius, obj)
+    shape_radius = shape_ok and math.max(0, tonumber(shape_radius) or 0) or 0
+    local pos = obj:position()
+    local id = obj:id()
+
+    if is_thermal_anomaly(sec) then
+        local tier_name = get_tier(sec)
+        local tier = THERMAL_TIER_CONFIG[tier_name]
+        zharka_cache[id] = {
+            x = pos.x, y = pos.y, z = pos.z,
+            shape_radius = shape_radius,
+            section = sec,
+            tier_name = tier_name,
+            radius = tier.radius,
+            max_extra = tier.max_extra,
+        }
+        log2(
+            "[sivol_anom_effects] cached Burner: section=%s id=%d tier=%s shape_radius=%.2f aura_radius=%.2f",
+            sec, id, tier_name, shape_radius, tier.radius
+        )
     end
 
-    local best = 0
-    local best_tier = nil
-    for _, a in ipairs( nearby ) do
-        local obj = client_obj( a.id )
-        if obj then
-            local sec = obj:section() or ""
-            local c   = obj:clsid()
-            if is_gravity_anomaly(sec, c) then
-                local tier_name = get_tier(sec)
-                local tier = TIER_CONFIG[tier_name]
-                local eff_radius = tier.radius * distance_mult
-                local proximity = 1 - math.max(0, a.dist) / eff_radius
-                if proximity > best then
-                    best = proximity
-                    best_tier = tier
-                end
+    if is_gravity_anomaly(sec, obj:clsid()) then
+        local tier_name = get_tier(sec)
+        gravity_cache[id] = {
+            x = pos.x, y = pos.y, z = pos.z,
+            shape_radius = shape_radius,
+            section = sec,
+            tier_name = tier_name,
+        }
+        log2(
+            "[sivol_anom_effects] cached gravity anomaly: section=%s id=%d tier=%s shape_radius=%.2f",
+            sec, id, tier_name, shape_radius
+        )
+    end
+end
+
+local function on_anomaly_spawn(obj, binder)
+    try_cache_anomaly(obj)
+end
+
+local function on_anomaly_net_destroy(obj, binder)
+    if not obj then return end
+    local id = obj:id()
+    if zharka_cache[id] then
+        log2(
+            "[sivol_anom_effects] removed cached Burner: section=%s id=%d",
+            zharka_cache[id].section, id
+        )
+        zharka_cache[id] = nil
+    end
+    if gravity_cache[id] then
+        log2(
+            "[sivol_anom_effects] removed cached gravity anomaly: section=%s id=%d",
+            gravity_cache[id].section, id
+        )
+        gravity_cache[id] = nil
+    end
+end
+
+local function get_effective_burn_protection()
+    if not db.actor then return 0 end
+    local ok, value = pcall(function()
+        return db.actor:get_current_outfit_protection(hit.burn)
+    end)
+    if not ok then
+        if not protection_getter_error_logged then
+            log2("[sivol_anom_effects] thermal protection getter failed: %s", tostring(value))
+            protection_getter_error_logged = true
+        end
+        return 0
+    end
+    protection_getter_error_logged = false
+    return clamp01(value)
+end
+
+-- Combined incoming-burn-damage multiplier (0 = fully immune, 1 = no
+-- protection). Artifact multiplication is intentionally isolated here so the
+-- hypothesis can be changed without affecting the suit-only thirst curve.
+local function get_burn_damage_multiplier()
+    if not db.actor then return 1 end
+    local mult = 1 - get_effective_burn_protection()
+    if sak and sak.arts_operate then
+        for i = 0, db.actor:belt_count() - 1 do
+            local item = db.actor:item_on_belt(i)
+            if item and item:clsid() == CLID_ART then
+                local imm = item.immunities and tonumber(item.immunities.burn_immunity)
+                if imm then mult = mult * clamp01(imm) end
             end
         end
     end
-    return math.max(0, math.min(1, best)), best_tier
+    return clamp01(mult)
 end
 
-local function check_gravity_proximity()
-    -- Handles the case where the player disables the effect mid-shake.
-    if not enabled then
-        if is_shaking then
-            is_shaking = false
-            current_anim = nil
-            next_shake_time = 0
-            level.remove_cam_effector(EARTHQUAKE_CAM_ID)
+-- Diagnostic only for this test build. Artifact immunity is deliberately not
+-- included in the thirst calculation until the actor getter is verified.
+local function get_powered_burn_art_signature()
+    if not (sak and sak.arts_operate) then return "unpowered" end
+
+    local arts = {}
+    for i = 0, db.actor:belt_count() - 1 do
+        local item = db.actor:item_on_belt(i)
+        if item and item:clsid() == CLID_ART then
+            local immunities = item.immunities
+            local burn_immunity = immunities and tonumber(immunities.burn_immunity)
+            if burn_immunity and burn_immunity < 0.9999 then
+                table.insert(arts, string.format("%s#%d=%.3f", item:section(), item:id(), burn_immunity))
+            end
         end
+    end
+    table.sort(arts)
+    return #arts > 0 and table.concat(arts, ",") or "none"
+end
+
+local function update_protection_probe(protection)
+    local signature = get_powered_burn_art_signature()
+    if last_art_signature == nil then
+        log2(
+            "[sivol_anom_effects] burn protection probe initial: getter=%.3f powered_burn_arts=%s",
+            protection, signature
+        )
+    elseif signature ~= last_art_signature then
+        log2(
+            "[sivol_anom_effects] burn protection probe changed: getter %.3f -> %.3f, powered_burn_arts %s -> %s",
+            last_probe_protection or protection, protection, last_art_signature, signature
+        )
+    elseif last_probe_protection and math.abs(protection - last_probe_protection) >= 0.005 then
+        log2(
+            "[sivol_anom_effects] burn protection getter changed: %.3f -> %.3f, powered_burn_arts=%s",
+            last_probe_protection, protection, signature
+        )
+    end
+    last_art_signature = signature
+    last_probe_protection = protection
+    return signature
+end
+
+local function get_best_thermal_cached()
+    if not db.actor then return nil end
+    local pos = db.actor:position()
+    local best = nil
+
+    for id, z in pairs(zharka_cache) do
+        local dx = pos.x - z.x
+        local dy = pos.y - z.y
+        local dz = pos.z - z.z
+        local center_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        local distance = math.max(0, center_distance - z.shape_radius)
+        local proximity = clamp01(1 - distance / z.radius)
+        local extra = proximity * z.max_extra
+        if extra > 0 and (not best or extra > best.extra) then
+            best = {
+                id = id,
+                section = z.section,
+                tier_name = z.tier_name,
+                radius = z.radius,
+                max_extra = z.max_extra,
+                distance = distance,
+                proximity = proximity,
+                extra = extra,
+            }
+        end
+    end
+    return best
+end
+
+local function get_best_gravity_cached()
+    if not db.actor then return 0, nil end
+    local pos = db.actor:position()
+    local best = 0
+    local best_tier = nil
+
+    for _, z in pairs(gravity_cache) do
+        local dx = pos.x - z.x
+        local dy = pos.y - z.y
+        local dz = pos.z - z.z
+        local center_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        local distance = math.max(0, center_distance - z.shape_radius)
+        local tier = TIER_CONFIG[z.tier_name]
+        local radius = tier.radius * distance_mult
+        local proximity = clamp01(1 - distance / radius)
+        if proximity > best then
+            best = proximity
+            best_tier = tier
+        end
+    end
+    return best, best_tier
+end
+
+local function get_best_proximities()
+    local gravity, gravity_tier = get_best_gravity_cached()
+    return gravity, gravity_tier, get_best_thermal_cached()
+end
+
+local function stop_gravity_effect()
+    if is_shaking then
+        level.remove_cam_effector(EARTHQUAKE_CAM_ID)
+    end
+    is_shaking = false
+    current_anim = nil
+    next_shake_time = 0
+end
+
+local function stop_thermal_ppe(reason)
+    if not thermal_ppe_active then return end
+    level.remove_pp_effector(THERMAL_PP_ID)
+    thermal_ppe_active = false
+    log2("[sivol_anom_effects] thermal PPE off: reason=%s", tostring(reason or "proximity"))
+end
+
+local function clear_effects(reason)
+    stop_gravity_effect()
+    stop_thermal_ppe(reason)
+    if thermal_best then
+        log2(
+            "[sivol_anom_effects] thermal aura exit: section=%s tier=%s reason=%s",
+            thermal_best.section, thermal_best.tier_name, tostring(reason or "cleanup")
+        )
+    end
+    gravity_smooth = 0
+    thermal_smooth = 0
+    thermal_best = nil
+    thermal_best_key = nil
+end
+
+local function update_thermal_state(best, dt)
+    local new_key = best and string.format("%d:%s", best.id, best.tier_name) or nil
+    if new_key ~= thermal_best_key then
+        if best then
+            log2(
+                "[sivol_anom_effects] thermal aura %s: section=%s id=%d tier=%s dist=%.2f radius=%.2f proximity=%.3f max_extra=%.2f",
+                thermal_best_key and "switch" or "enter",
+                best.section, best.id, best.tier_name, best.distance,
+                best.radius, best.proximity, best.max_extra
+            )
+        elseif thermal_best then
+            log2(
+                "[sivol_anom_effects] thermal aura exit: section=%s id=%d tier=%s",
+                thermal_best.section, thermal_best.id, thermal_best.tier_name
+            )
+        end
+    end
+    thermal_best = best
+    thermal_best_key = new_key
+
+    local target = best and best.proximity or 0
+    local rate = (target > thermal_smooth) and SMOOTH_IN or SMOOTH_OUT
+    local k = math.min(1, dt * rate)
+    thermal_smooth = thermal_smooth + (target - thermal_smooth) * k
+    if thermal_smooth < 0.001 then thermal_smooth = 0 end
+
+    if thermal_smooth > THERMAL_START_THRESHOLD and best and not thermal_ppe_active then
+        level.add_pp_effector("thermal.ppe", THERMAL_PP_ID, true)
+        thermal_ppe_active = true
+        log2(
+            "[sivol_anom_effects] thermal PPE on: section=%s tier=%s proximity=%.3f smooth=%.3f",
+            best.section, best.tier_name, best.proximity, thermal_smooth
+        )
+    elseif thermal_smooth < THERMAL_STOP_THRESHOLD then
+        stop_thermal_ppe("proximity")
+    end
+
+    if thermal_ppe_active then
+        local factor = (thermal_smooth - THERMAL_STOP_THRESHOLD)
+            / (1 - THERMAL_STOP_THRESHOLD)
+        level.set_pp_effector_factor(THERMAL_PP_ID, clamp01(factor))
+    end
+end
+
+function get_thermal_thirst_multiplier()
+    local actor = db.actor
+    if not enabled or not actor or not actor:alive() then return 1 end
+
+    local protection = get_effective_burn_protection()
+    local art_signature = update_protection_probe(protection)
+    if not thermal_best then return 1 end
+
+    local protection_factor = clamp01(
+        1 - protection / THERMAL_PROTECTION_THRESHOLD
+    )
+    local multiplier = 1 + thermal_best.extra * protection_factor
+
+    local now = time_global()
+    if now - last_thermal_log >= THERMAL_LOG_INTERVAL then
+        last_thermal_log = now
+        local armor = actor:item_in_slot(6)
+        local outfit = armor and armor:get_outfit()
+        local raw_outfit = outfit and tonumber(outfit.burn_protection) or 0
+        local condition = armor and armor:condition() or 0
+        local burn_damage_mult = get_burn_damage_multiplier()
+        log2(
+            "[sivol_anom_effects] thermal thirst: section=%s tier=%s dist=%.2f radius=%.2f proximity=%.3f raw_extra=%.3f getter_protection=%.3f raw_outfit=%.3f outfit_cond=%.3f protection_factor=%.3f thirst_mult=%.3f burn_damage_mult=%.3f powered_burn_arts=%s",
+            thermal_best.section, thermal_best.tier_name,
+            thermal_best.distance, thermal_best.radius,
+            thermal_best.proximity, thermal_best.extra,
+            protection, raw_outfit, condition,
+            protection_factor, multiplier, burn_damage_mult, art_signature
+        )
+    end
+    return multiplier
+end
+
+local function apply_thermal_burn_tick(best, now)
+    if not best then return end
+    local actor = db.actor
+    if not actor or not actor:alive() then return end
+    if now - last_burn_tick < THERMAL_BURN_TICK_MS then return end
+    last_burn_tick = now
+
+    local damage_multiplier = get_burn_damage_multiplier()
+    local combined_protection = 1 - damage_multiplier
+    if combined_protection >= THERMAL_DAMAGE_PROTECTION_THRESHOLD then
+        log2(
+            "[sivol_anom_effects] thermal burn tick protection cutoff: section=%s tier=%s protection=%.3f threshold=%.3f",
+            best.section, best.tier_name, combined_protection,
+            THERMAL_DAMAGE_PROTECTION_THRESHOLD
+        )
+        return
+    end
+    local power = THERMAL_BURN_PER_EXTRA_PER_SEC * best.extra
+        * (THERMAL_BURN_TICK_MS / 1000) * damage_multiplier
+    if power <= 0.0005 then
+        log2(
+            "[sivol_anom_effects] thermal burn tick suppressed: section=%s tier=%s extra=%.3f damage_mult=%.3f power=%.5f",
+            best.section, best.tier_name, best.extra, damage_multiplier, power
+        )
         return
     end
 
-    if not db.actor then return end
+    local h = hit()
+    h.type = hit.burn
+    h.direction = vector():set(0, -1, 0)
+    h.impulse = 0
+    h.power = power
+    h.draftsman = actor
+    -- Ambient anomaly damage is not a localized body strike. Using bip_none
+    -- preserves the burn hit while avoiding blood decals and sprint interruption.
+    h:bone("bip_none")
+    actor:hit(h)
+
+    log2(
+        "[sivol_anom_effects] thermal burn tick: section=%s tier=%s extra=%.3f damage_mult=%.3f power=%.5f",
+        best.section, best.tier_name, best.extra, damage_multiplier, power
+    )
+end
+
+local function check_anomaly_proximity()
+    local actor = db.actor
+    if not enabled then
+        clear_effects("disabled")
+        return
+    end
+    if not actor or not actor:alive() then
+        clear_effects("actor_unavailable")
+        return
+    end
 
     local now = time_global()
     local dt  = (now - last_time) / 1000
     last_time = now
     if dt > 1 or dt < 0 then dt = 0 end -- guard against load/pause spikes
 
-    local raw, tier = get_best_proximity()
-    local target = math.max(0, math.min(1, raw * intensity_mult))
+    local raw, tier, best_thermal = get_best_proximities()
+    update_thermal_state(best_thermal, dt)
+    apply_thermal_burn_tick(best_thermal, now)
 
-    -- Exponential smoothing, frame-rate independent
-    local rate = (target > smooth) and SMOOTH_IN or SMOOTH_OUT
-    local k    = math.min(1, dt * rate)
-    smooth = smooth + (target - smooth) * k
-    if smooth < 0.001 then smooth = 0 end
+    local target = clamp01(raw * intensity_mult)
+    local rate = (target > gravity_smooth) and SMOOTH_IN or SMOOTH_OUT
+    local k = math.min(1, dt * rate)
+    gravity_smooth = gravity_smooth + (target - gravity_smooth) * k
+    if gravity_smooth < 0.001 then gravity_smooth = 0 end
 
-    if smooth > START_THRESHOLD and tier then
+    if gravity_smooth > START_THRESHOLD and tier then
         is_shaking = true
-        -- Closer (higher smooth) = shorter interval = more frequent pulses,
-        -- driven by the smoothed value so it ramps gradually within a tier.
-        local shake_interval = 1000 * (1.0 - smooth) + 200
+        -- Closer (higher smooth) = shorter interval = more frequent pulses.
+        local shake_interval = 1000 * (1.0 - gravity_smooth) + 200
 
         if now > next_shake_time then
             next_shake_time = now + shake_interval
-
-            -- If we've crossed into a different tier since the last pulse,
-            -- clear the old effector first rather than layering anims on
-            -- the same cam ID.
             if current_anim and current_anim ~= tier.anim then
                 level.remove_cam_effector(EARTHQUAKE_CAM_ID)
             end
             current_anim = tier.anim
-
             level.add_cam_effector(tier.anim, EARTHQUAKE_CAM_ID, false, "", 0, false)
         end
-    elseif smooth < STOP_THRESHOLD and is_shaking then
-        is_shaking = false
-        current_anim = nil
-        next_shake_time = 0
-        level.remove_cam_effector(EARTHQUAKE_CAM_ID)
+    elseif gravity_smooth < STOP_THRESHOLD then
+        stop_gravity_effect()
     end
 end
 
 function attach(sm)
     sm:subscribe({
         signal = "on_update",
-        fun = check_gravity_proximity
+        fun = check_anomaly_proximity
+    })
+    sm:subscribe({
+        signal = "on_anomaly_spawn",
+        fun = on_anomaly_spawn
+    })
+    sm:subscribe({
+        signal = "on_anomaly_net_destroy",
+        fun = on_anomaly_net_destroy
     })
 end
