@@ -1,0 +1,64 @@
+-- sivol_outfit_stats.script
+
+function attach(sm)
+    -- sivol_outfit_stats has no signals of its own; this only exists
+    -- because ogse_signals_addons_list requires every listed module
+    -- to expose attach(sm).
+end
+
+sivol = sivol or {}
+sivol.outfit_stats = sivol.outfit_stats or {}
+
+local contributions = {}  -- [armor_id][source_name] = { stat = {mode="add"|"mult", value=N}, ... }
+local cached_base    = {}  -- [armor_id][stat] = true unmodified base value
+
+-- Only the authoritative base-writer (upg_outfit_binder) should call this.
+function sivol.outfit_stats.set_base(armor_id, base_vals)
+    cached_base[armor_id] = base_vals
+end
+
+-- Any modifier system (mask, rain, future ones) registers/updates its own
+-- named contribution here. Passing nil deltas clears that source's entry.
+function sivol.outfit_stats.set(source_name, armor_id, deltas)
+    contributions[armor_id] = contributions[armor_id] or {}
+    contributions[armor_id][source_name] = deltas
+end
+
+function sivol.outfit_stats.clear(source_name, armor_id)
+    if contributions[armor_id] then
+        contributions[armor_id][source_name] = nil
+    end
+end
+
+-- Idempotent: always rebuilds from clean cached base + everything currently
+-- registered, so firing order/timing between systems no longer matters.
+function sivol.outfit_stats.recompute(armor)
+    if not armor then return end
+    local outfit = armor:get_outfit()
+    local armor_id = armor:id()
+    local base = cached_base[armor_id]
+    if not outfit or not base then return end
+
+    local final = {}
+    for stat, v in pairs(base) do final[stat] = v end
+
+    local per_armor = contributions[armor_id] or {}
+    for _, deltas in pairs(per_armor) do
+        for stat, mod in pairs(deltas) do
+            if final[stat] and mod.mode == "mult" then
+                final[stat] = final[stat] * mod.value
+            end
+        end
+    end
+    for _, deltas in pairs(per_armor) do
+        for stat, mod in pairs(deltas) do
+            if final[stat] and mod.mode == "add" then
+                final[stat] = final[stat] + mod.value
+            end
+        end
+    end
+
+    for stat, v in pairs(final) do
+        outfit[stat] = v
+    end
+end
