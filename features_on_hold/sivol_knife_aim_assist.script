@@ -1,0 +1,160 @@
+--[[
+	Knife melee aim-assist. NO discrete "about to swing" event exists in
+	this codebase for melee - on_actor_weapon_fire is fire/ammo-event
+	only (never fires for the knife), and entity_alive_before_hit fires
+	on the object RECEIVING a hit, not dealing one. oxy_wnp.script's own
+	knife-condition tracking confirms the whole codebase only ever
+	learns about knife hits reactively, after the engine resolves them.
+
+	So this works as a continuous throttled soft-lock instead of a
+	one-shot correction: while the knife is the active item, on every
+	"on_update" signal tick (throttled below) it cone-scans and nudges
+	actor facing toward the nearest valid target in range. This is a
+	real behavior change from "correct once at swing time" - it will
+	visibly turn the actor toward nearby enemies any time the knife is
+	out, not just mid-swing. Tune UPDATE_INTERVAL_MS / cone size if the
+	auto-turn feels too aggressive off-swing.
+
+	Subscribe via ogse_signals, NOT RegisterScriptCallback:
+		sm:subscribe({ signal = "on_update", fun = knife_aim_assist_update })
+	("on_update" is called every actor_binder:update tick per
+	bind_stalker.script; on_actor_before_hit/sivol_hit_shock.script
+	confirms this subscribe convention works for actor-binder signals.)
+
+	Raycasting mirrors monster_parts.script's private cast_ray via
+	level.ray_query (NOT the old ray_pick object API), per confirmed
+	NLC HE OGSR convention.
+]]
+
+local CONE_ANGLE_H       = 60
+local CONE_ANGLE_V       = 30
+local RAY_COUNT_H        = 12
+local RAY_COUNT_V        = 6
+local UPDATE_INTERVAL_MS = 100 -- throttle: don't cone-scan every single frame
+
+-- Mirrors monster_parts.script's cast_ray exactly (duplicated locally,
+-- same convention used elsewhere in this codebase for this helper).
+local function cast_ray(pos, dir, range, ignore_obj)
+	local rq = level.ray_query(pos, dir, range, rq_target.rqtBoth, ignore_obj)
+	if not rq or not rq.result or not rq.range or rq.range > range then
+		return { success = false, distance = range }
+	end
+	return {
+		success  = true,
+		distance = rq.range,
+		object   = rq.object,
+		element  = rq.element,
+	}
+end
+
+local last_update = 0
+
+-- Subscribe this to the "on_update" ogse_signal. Runs every tick but the
+-- body is throttled internally so the actual scan only happens every
+-- UPDATE_INTERVAL_MS.
+function knife_aim_assist_update(delta, t_global)
+	local actor = db.actor
+	if not actor then return end
+
+	local wpn = actor:active_item()
+	if not (wpn and wpn:clsid() == clsid.wpn_knife_s) then
+		return
+	end
+
+	local now = t_global or time_global()
+	if (now - last_update) < UPDATE_INTERVAL_MS then
+		return
+	end
+	last_update = now
+
+	local sec = wpn:section()
+	local ini = system_ini()
+	local melee_range = ini:line_exist(sec, "fire_distance") and ini:r_float(sec, "fire_distance") or 2.0
+
+	local best_target       = nil
+	local shortest_distance = melee_range
+	local chosen_direction  = nil
+
+	local cam_pos  = device().cam_pos
+	local cam_dir  = device().cam_dir
+	local base_yaw   = cam_dir:getH()
+	local base_pitch = -cam_dir:getP()
+
+	local start_h = -(CONE_ANGLE_H / 2)
+	local step_h  = CONE_ANGLE_H / (RAY_COUNT_H - 1)
+	local start_v = -(CONE_ANGLE_V / 2)
+	local step_v  = CONE_ANGLE_V / (RAY_COUNT_V - 1)
+
+	-- Scan center-out rather than left-to-right/top-to-bottom, so the
+	-- first valid hit found is also the one closest to where the player
+	-- is actually looking.
+	local h_indices = {}
+	for h = 0, RAY_COUNT_H - 1 do table.insert(h_indices, h) end
+	table.sort(h_indices, function(a, b)
+		return math.abs(start_h + (a * step_h)) < math.abs(start_h + (b * step_h))
+	end)
+
+	local v_indices = {}
+	for v = 0, RAY_COUNT_V - 1 do table.insert(v_indices, v) end
+	table.sort(v_indices, function(a, b)
+		return math.abs(start_v + (a * step_v)) < math.abs(start_v + (b * step_v))
+	end)
+
+	log2("kav", "scan_start range=%.2f cam=(%.2f,%.2f,%.2f) yaw=%.2f pitch=%.2f",
+		melee_range, cam_pos.x, cam_pos.y, cam_pos.z, base_yaw, base_pitch)
+
+	for _, h in ipairs(h_indices) do
+		local offset_h  = start_h + (h * step_h)
+		local final_yaw = base_yaw + math.rad(offset_h)
+
+		for _, v in ipairs(v_indices) do
+			local offset_v    = start_v + (v * step_v)
+			local final_pitch = base_pitch + math.rad(offset_v)
+			local cos_p = math.cos(final_pitch)
+
+			local ray_dir = vector():set(
+				-math.sin(final_yaw) * cos_p,
+				math.sin(final_pitch),
+				math.cos(final_yaw) * cos_p
+			):normalize()
+
+			local res = cast_ray(cam_pos, ray_dir, melee_range, actor)
+			if res.success then
+				local hit_obj = res.object
+				if hit_obj and hit_obj:alive() and (IsStalker(hit_obj) or IsMonster(hit_obj)) then
+					log2("kav", "candidate obj=%s dist=%.2f off_h=%.1f off_v=%.1f",
+						tostring(hit_obj.name and hit_obj:name() or hit_obj:id()), res.distance, offset_h, offset_v)
+
+					if res.distance < shortest_distance then
+						shortest_distance = res.distance
+						best_target       = hit_obj
+						chosen_direction  = ray_dir
+						break
+					end
+				end
+			end
+		end
+		if best_target then break end
+	end
+
+	if best_target and chosen_direction then
+		-- Every confirmed set_actor_direction call site in this codebase
+		-- negates getH() - matching that convention here.
+		local new_heading = -chosen_direction:getH()
+		log2("kav", "target_acquired obj=%s dist=%.2f heading=%.2f",
+			tostring(best_target.name and best_target:name() or best_target:id()), shortest_distance, new_heading)
+		actor:set_actor_direction(new_heading)
+	end
+	-- deliberately not logging the no-target case every tick - would spam
+	-- log2 continuously any time the knife is out with nothing nearby.
+	-- Uncomment below for one-off debugging if needed:
+	-- else log2("kav", "no_target_in_cone") end
+end
+
+function attach(sm)
+	sm:subscribe({
+		signal = "on_update",
+		fun = knife_aim_assist_update
+	})
+	log2("kav", "attached: subscribed to on_update")
+end
