@@ -2,6 +2,8 @@
 
 local EARTHQUAKE_CAM_ID = 98323
 local THERMAL_PP_ID      = 98324
+local ACIDIC_PP_ID       = 98325
+local INTOX_PP_ID        = 98326
 
 -- Smoothing (same convention as sivol_pda.script)
 local SMOOTH_IN  = 5.0   -- ramp-up speed when getting closer
@@ -13,6 +15,9 @@ local STOP_THRESHOLD  = 0.08  -- must fall below this (falling) to fully stop
 
 local THERMAL_START_THRESHOLD = 0.15
 local THERMAL_STOP_THRESHOLD  = 0.08
+
+local BUZZ_START_THRESHOLD = 0.15
+local BUZZ_STOP_THRESHOLD  = 0.08
 
 -- ======================= THERMAL TUNING =======================
 -- Effective burn protection at or above this value removes the extra
@@ -26,16 +31,67 @@ local THERMAL_BURN_PER_EXTRA_PER_SEC = 0.05 -- TUNE IN-GAME
 -- 1.01 disables this cutoff; set to 0.50 for immunity at 50% protection.
 -- The engine applies health damage and outfit wear through the same hit, so
 -- suppressing it prevents both. They cannot be toggled independently here.
-local THERMAL_DAMAGE_PROTECTION_THRESHOLD = 1.01
+local THERMAL_DAMAGE_PROTECTION_THRESHOLD = 0.7
 
 -- Radius is metres beyond the anomaly's actual shape. max_extra is the
 -- maximum extra passive-thirst multiplier at/inside that shape.
 local THERMAL_TIER_CONFIG = {
     weak    = { radius = 4.0, max_extra = 1.0 },
-    average = { radius = 5.5, max_extra = 2.0 },
-    strong  = { radius = 7.0, max_extra = 3.0 },
+    average = { radius = 4.5, max_extra = 1.75 },
+    strong  = { radius = 5.0, max_extra = 2.5 },
 }
 -- ==============================================================
+
+-- ======================= BUZZ (fruitpunch/acid) TUNING =======================
+-- Mirrors the thermal aura's tier shape exactly, per your call to keep the
+-- tiering identical to Burner. "extra" here isn't a thirst multiplier - it's
+-- a generic 0..max_extra intensity used to scale acid damage, weapon
+-- degrade rate, and how fast the no-mask intoxication exposure accumulates.
+local BUZZ_TIER_CONFIG = {
+    weak    = { radius = 3.5, max_extra = 1.0 },
+    average = { radius = 4.5, max_extra = 1.75 },
+    strong  = { radius = 6.0, max_extra = 2.5 },
+}
+
+local BUZZ_LOG_INTERVAL = 2000
+
+-- Acid damage tick (hit.chemical_burn). Deliberately tiny - "unnoticeable
+-- passing through, noticeable standing in it for a while".
+local BUZZ_ACID_TICK_MS           = 1000
+local BUZZ_ACID_PER_EXTRA_PER_SEC = 0.015 -- TUNE IN-GAME
+
+-- Combined chemical_burn protection needed to suppress the scripted acid
+-- hit entirely. Same convention as THERMAL_DAMAGE_PROTECTION_THRESHOLD:
+-- 1.01 disables this cutoff; set e.g. 0.50 for immunity at 50% protection.
+-- Set to 0.65 instead of adding a separate mask-off damage multiplier -
+-- mask_modifiers' chemical_burn_add bonus already feeds this same outfit
+-- protection stat, so masked players clear the threshold and unmasked ones
+-- don't, without a second multiplier also inflating outfit wear.
+local BUZZ_DAMAGE_PROTECTION_THRESHOLD = 0.7
+
+-- Weapon condition degrade tick - only applies while a real weapon (per
+-- get_weapon_m()) is the active item; bolt/binoculars/empty hands never
+-- degrade, regardless of what's equipped in weapon slots or the backpack.
+local BUZZ_WEAPON_DEGRADE_TICK_MS           = 1100
+local BUZZ_WEAPON_DEGRADE_PER_EXTRA_PER_SEC = 0.0006 -- TUNE IN-GAME
+
+-- No-mask intoxication: exposure accumulates only while unmasked and inside
+-- the aura, faster the closer/stronger the aura is (scaled by buzz_smooth).
+-- Once the accumulated exposure crosses this, intoxication_1.ppe turns on;
+-- it turns back off as soon as a mask goes on or the aura is left.
+-- intoxication_1.ppe is a placeholder for now per your note - may get swapped.
+local BUZZ_INTOX_EXPOSURE_THRESHOLD_MS = 4200 -- TUNE IN-GAME
+-- ===============================================================================
+
+-- ======================= LINE OF SIGHT (thermal + buzz only) =======================
+-- Gravity is intentionally excluded - it's a physical push/shake effect,
+-- less sensical to gate behind a wall-blocks-it check the way a radiant/
+-- ambient aura is. Only applies to the current winning candidate from
+-- get_best_thermal_cached/get_best_buzz_cached, never to every cached
+-- anomaly, and is throttled rather than recomputed every tick - the
+-- existing smoothing already absorbs the staleness between checks.
+local LOS_CHECK_INTERVAL_MS = 250 -- TUNE IN-GAME
+-- =====================================================================================
 
 -- Per-tier radius + anim file. Matched against section-name suffix.
 -- "killing" folds into strong for now - swap to its own 80/100 tier later if wanted.
@@ -67,6 +123,7 @@ end
 
 local gravity_smooth = 0
 local thermal_smooth = 0
+local buzz_smooth     = 0
 local last_time       = 0
 local next_shake_time = 0
 local is_shaking      = false
@@ -80,8 +137,24 @@ local last_probe_protection = nil
 local protection_getter_error_logged = false
 local last_burn_tick = 0
 
+local buzz_ppe_active   = false
+local buzz_best         = nil
+local buzz_best_key     = nil
+local last_buzz_log     = 0
+local last_acid_tick    = 0
+local last_weapon_degrade_tick = 0
+local buzz_intox_active       = false
+local buzz_intox_exposure_ms  = 0
+local chemical_protection_getter_error_logged = false
+
+local los_state = {
+    thermal = { last_check = 0, last_id = nil, clear = true },
+    buzz    = { last_check = 0, last_id = nil, clear = true },
+}
+
 local zharka_cache = {}
 local gravity_cache = {}
+local buzz_cache = {}
 
 -- Matches gravity anomalies strictly by section name.
 -- NLC aliases multiple anomaly types to the same clsid (e.g. 166), so clsid checks are useless here.
@@ -120,8 +193,76 @@ local function clamp01(value)
     return math.max(0, math.min(1, tonumber(value) or 0))
 end
 
+-- Mirrors monster_parts.script's cast_ray exactly (that one's a private
+-- local there, not reusable across scripts, so duplicated here rather than
+-- reworked into a shared module - small enough not to be worth the churn).
+local function cast_ray(pos, dir, range, ignore_obj)
+    local rq = level.ray_query(pos, dir, range, rq_target.rqtBoth, ignore_obj)
+    if not rq or not rq.result or not rq.range or rq.range > range then
+        return { success = false, distance = range }
+    end
+    return {
+        success  = true,
+        distance = rq.range,
+        object   = rq.object,
+        element  = rq.element,
+    }
+end
+
+-- True if nothing solid sits between from_pos and to_pos. Range is trimmed
+-- slightly short of the target so the anomaly zone's own (usually
+-- collision-less) geometry never registers as "the obstacle".
+local function get_line_of_sight_clear(from_pos, to_pos, ignore_obj)
+    local dx = to_pos.x - from_pos.x
+    local dy = to_pos.y - from_pos.y
+    local dz = to_pos.z - from_pos.z
+    local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if distance <= 0.01 then return true end
+    local dir = vector():set(dx / distance, dy / distance, dz / distance)
+    local range = math.max(0, distance - 0.3)
+    local res = cast_ray(from_pos, dir, range, ignore_obj)
+    return not res.success
+end
+
+-- Throttled LOS gate for whichever anomaly currently won proximity for a
+-- given aura kind ("thermal"/"buzz"). Forces a fresh check on a target
+-- switch even if still inside the throttle window, so LOS never briefly
+-- carries over from a different anomaly instance.
+local function apply_los_gate(best, kind)
+    if not best then return nil end
+    local actor = db.actor
+    if not actor then return best end
+
+    local state = los_state[kind]
+    local now = time_global()
+    if state.last_id ~= best.id or (now - state.last_check) >= LOS_CHECK_INTERVAL_MS then
+        state.last_check = now
+        state.last_id = best.id
+        local actor_pos = actor:position()
+        actor_pos = vector():set(actor_pos.x, actor_pos.y + 1.0, actor_pos.z)
+        local target_pos = vector():set(best.x, best.y + 0.3, best.z)
+        state.clear = get_line_of_sight_clear(actor_pos, target_pos, actor)
+    end
+
+    if not state.clear then return nil end
+    return best
+end
+
 local function is_thermal_anomaly(sec)
     return string.find(sec, "zharka", 1, true) ~= nil
+end
+
+-- sakbuzz (zone_sakbuzz*, amk_zone_sakbuzz*) is a distinct, invisible anomaly
+-- family that happens to contain "buzz" as a substring ("sakbuzz"), so it has
+-- to be rejected before the plain "buzz" match below - not implementing an
+-- aura for it yet.
+local function is_sakbuzz_anomaly(sec)
+    return string.find(sec, "sakbuzz", 1, true) ~= nil
+end
+
+local function is_buzz_anomaly(sec)
+    if is_sakbuzz_anomaly(sec) then return false end
+    return string.find(sec, "buzz", 1, true) ~= nil
 end
 
 local function try_cache_anomaly(obj)
@@ -145,6 +286,23 @@ local function try_cache_anomaly(obj)
         }
         log2(
             "[sivol_anom_effects] cached Burner: section=%s id=%d tier=%s shape_radius=%.2f aura_radius=%.2f",
+            sec, id, tier_name, shape_radius, tier.radius
+        )
+    end
+
+    if is_buzz_anomaly(sec) then
+        local tier_name = get_tier(sec)
+        local tier = BUZZ_TIER_CONFIG[tier_name]
+        buzz_cache[id] = {
+            x = pos.x, y = pos.y, z = pos.z,
+            shape_radius = shape_radius,
+            section = sec,
+            tier_name = tier_name,
+            radius = tier.radius,
+            max_extra = tier.max_extra,
+        }
+        log2(
+            "[sivol_anom_effects] cached Buzz: section=%s id=%d tier=%s shape_radius=%.2f aura_radius=%.2f",
             sec, id, tier_name, shape_radius, tier.radius
         )
     end
@@ -177,6 +335,13 @@ local function on_anomaly_net_destroy(obj, binder)
             zharka_cache[id].section, id
         )
         zharka_cache[id] = nil
+    end
+    if buzz_cache[id] then
+        log2(
+            "[sivol_anom_effects] removed cached Buzz: section=%s id=%d",
+            buzz_cache[id].section, id
+        )
+        buzz_cache[id] = nil
     end
     if gravity_cache[id] then
         log2(
@@ -219,6 +384,27 @@ local function get_burn_damage_multiplier()
         end
     end
     return clamp01(mult)
+end
+
+-- Effective outfit protection against hit.chemical_burn. Deliberately
+-- outfit-only for now, same as thermal's suit-only baseline - artifact
+-- chemical/acid immunity fields aren't confirmed yet, so no belt-artifact
+-- loop here until that's checked (see get_burn_damage_multiplier for the
+-- pattern to extend this with once confirmed).
+local function get_effective_chemical_protection()
+    if not db.actor then return 0 end
+    local ok, value = pcall(function()
+        return db.actor:get_current_outfit_protection(hit.chemical_burn)
+    end)
+    if not ok then
+        if not chemical_protection_getter_error_logged then
+            log2("[sivol_anom_effects] chemical protection getter failed: %s", tostring(value))
+            chemical_protection_getter_error_logged = true
+        end
+        return 0
+    end
+    chemical_protection_getter_error_logged = false
+    return clamp01(value)
 end
 
 -- Diagnostic only for this test build. Artifact immunity is deliberately not
@@ -287,6 +473,37 @@ local function get_best_thermal_cached()
                 distance = distance,
                 proximity = proximity,
                 extra = extra,
+                x = z.x, y = z.y, z = z.z,
+            }
+        end
+    end
+    return best
+end
+
+local function get_best_buzz_cached()
+    if not db.actor then return nil end
+    local pos = db.actor:position()
+    local best = nil
+
+    for id, z in pairs(buzz_cache) do
+        local dx = pos.x - z.x
+        local dy = pos.y - z.y
+        local dz = pos.z - z.z
+        local center_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        local distance = math.max(0, center_distance - z.shape_radius)
+        local proximity = clamp01(1 - distance / z.radius)
+        local extra = proximity * z.max_extra
+        if extra > 0 and (not best or extra > best.extra) then
+            best = {
+                id = id,
+                section = z.section,
+                tier_name = z.tier_name,
+                radius = z.radius,
+                max_extra = z.max_extra,
+                distance = distance,
+                proximity = proximity,
+                extra = extra,
+                x = z.x, y = z.y, z = z.z,
             }
         end
     end
@@ -318,7 +535,7 @@ end
 
 local function get_best_proximities()
     local gravity, gravity_tier = get_best_gravity_cached()
-    return gravity, gravity_tier, get_best_thermal_cached()
+    return gravity, gravity_tier, get_best_thermal_cached(), get_best_buzz_cached()
 end
 
 local function stop_gravity_effect()
@@ -337,19 +554,46 @@ local function stop_thermal_ppe(reason)
     log2("[sivol_anom_effects] thermal PPE off: reason=%s", tostring(reason or "proximity"))
 end
 
+local function stop_buzz_ppe(reason)
+    if not buzz_ppe_active then return end
+    level.remove_pp_effector(ACIDIC_PP_ID)
+    buzz_ppe_active = false
+    log2("[sivol_anom_effects] acidic PPE off: reason=%s", tostring(reason or "proximity"))
+end
+
+local function stop_buzz_intox(reason)
+    if not buzz_intox_active then return end
+    level.remove_pp_effector(INTOX_PP_ID)
+    buzz_intox_active = false
+    buzz_intox_exposure_ms = 0
+    log2("[sivol_anom_effects] intoxication PPE off: reason=%s", tostring(reason or "proximity"))
+end
+
 local function clear_effects(reason)
     stop_gravity_effect()
     stop_thermal_ppe(reason)
+    stop_buzz_ppe(reason)
+    stop_buzz_intox(reason)
     if thermal_best then
         log2(
             "[sivol_anom_effects] thermal aura exit: section=%s tier=%s reason=%s",
             thermal_best.section, thermal_best.tier_name, tostring(reason or "cleanup")
         )
     end
+    if buzz_best then
+        log2(
+            "[sivol_anom_effects] buzz aura exit: section=%s tier=%s reason=%s",
+            buzz_best.section, buzz_best.tier_name, tostring(reason or "cleanup")
+        )
+    end
     gravity_smooth = 0
     thermal_smooth = 0
+    buzz_smooth = 0
     thermal_best = nil
     thermal_best_key = nil
+    buzz_best = nil
+    buzz_best_key = nil
+    buzz_intox_exposure_ms = 0
 end
 
 local function update_thermal_state(best, dt)
@@ -393,6 +637,82 @@ local function update_thermal_state(best, dt)
         local factor = (thermal_smooth - THERMAL_STOP_THRESHOLD)
             / (1 - THERMAL_STOP_THRESHOLD)
         level.set_pp_effector_factor(THERMAL_PP_ID, clamp01(factor))
+    end
+end
+
+local function update_buzz_state(best, dt)
+    local new_key = best and string.format("%d:%s", best.id, best.tier_name) or nil
+    if new_key ~= buzz_best_key then
+        if best then
+            log2(
+                "[sivol_anom_effects] buzz aura %s: section=%s id=%d tier=%s dist=%.2f radius=%.2f proximity=%.3f max_extra=%.2f",
+                buzz_best_key and "switch" or "enter",
+                best.section, best.id, best.tier_name, best.distance,
+                best.radius, best.proximity, best.max_extra
+            )
+        elseif buzz_best then
+            log2(
+                "[sivol_anom_effects] buzz aura exit: section=%s id=%d tier=%s",
+                buzz_best.section, buzz_best.id, buzz_best.tier_name
+            )
+        end
+    end
+    buzz_best = best
+    buzz_best_key = new_key
+
+    local target = best and best.proximity or 0
+    local rate = (target > buzz_smooth) and SMOOTH_IN or SMOOTH_OUT
+    local k = math.min(1, dt * rate)
+    buzz_smooth = buzz_smooth + (target - buzz_smooth) * k
+    if buzz_smooth < 0.001 then buzz_smooth = 0 end
+
+    if buzz_smooth > BUZZ_START_THRESHOLD and best and not buzz_ppe_active then
+        level.add_pp_effector("acidic_new.ppe", ACIDIC_PP_ID, true)
+        buzz_ppe_active = true
+        log2(
+            "[sivol_anom_effects] acidic PPE on: section=%s tier=%s proximity=%.3f smooth=%.3f",
+            best.section, best.tier_name, best.proximity, buzz_smooth
+        )
+    elseif buzz_smooth < BUZZ_STOP_THRESHOLD then
+        stop_buzz_ppe("proximity")
+    end
+
+    if buzz_ppe_active then
+        local factor = (buzz_smooth - BUZZ_STOP_THRESHOLD)
+            / (1 - BUZZ_STOP_THRESHOLD)
+        level.set_pp_effector_factor(ACIDIC_PP_ID, clamp01(factor))
+    end
+end
+
+-- No-mask intoxication exposure. Accumulates only while unmasked and inside
+-- the aura, scaled by buzz_smooth so it's faster/sooner the closer you are.
+-- Resets as soon as the mask goes on or the aura is left, rather than
+-- decaying - simplest MVP behaviour, easy to change to a slow decay later
+-- if hopping in/out of the edge feels too punishing/forgiving.
+local function update_buzz_intoxication(best, dt)
+    local masked = vergas_masks and vergas_masks.get_flag_mask and vergas_masks.get_flag_mask()
+
+    if best and buzz_smooth > BUZZ_START_THRESHOLD and not masked then
+        buzz_intox_exposure_ms = buzz_intox_exposure_ms + dt * 1000 * buzz_smooth
+    else
+        if buzz_intox_exposure_ms > 0 and not buzz_intox_active then
+            buzz_intox_exposure_ms = 0
+        end
+    end
+
+    if not buzz_intox_active and buzz_intox_exposure_ms >= BUZZ_INTOX_EXPOSURE_THRESHOLD_MS then
+        level.add_pp_effector("zevok.ppe", INTOX_PP_ID, true)
+        buzz_intox_active = true
+        log2(
+            "[sivol_anom_effects] intoxication PPE on: exposure_ms=%.0f masked=%s",
+            buzz_intox_exposure_ms, tostring(masked)
+        )
+    elseif buzz_intox_active and (not best or buzz_smooth < BUZZ_STOP_THRESHOLD or masked) then
+        stop_buzz_intox(masked and "mask_on" or "proximity")
+    end
+
+    if buzz_intox_active then
+        level.set_pp_effector_factor(INTOX_PP_ID, clamp01(buzz_smooth))
     end
 end
 
@@ -473,6 +793,103 @@ local function apply_thermal_burn_tick(best, now)
     )
 end
 
+local function apply_buzz_acid_tick(best, now)
+    if not best then return end
+    local actor = db.actor
+    if not actor or not actor:alive() then return end
+    if now - last_acid_tick < BUZZ_ACID_TICK_MS then return end
+    last_acid_tick = now
+
+    local protection = get_effective_chemical_protection()
+    if protection >= BUZZ_DAMAGE_PROTECTION_THRESHOLD then
+        log2(
+            "[sivol_anom_effects] buzz acid tick protection cutoff: section=%s tier=%s protection=%.3f threshold=%.3f",
+            best.section, best.tier_name, protection,
+            BUZZ_DAMAGE_PROTECTION_THRESHOLD
+        )
+        return
+    end
+    local damage_multiplier = clamp01(1 - protection)
+    local power = BUZZ_ACID_PER_EXTRA_PER_SEC * best.extra
+        * (BUZZ_ACID_TICK_MS / 1000) * damage_multiplier
+    if power <= 0.0005 then
+        log2(
+            "[sivol_anom_effects] buzz acid tick suppressed: section=%s tier=%s extra=%.3f damage_mult=%.3f power=%.5f",
+            best.section, best.tier_name, best.extra, damage_multiplier, power
+        )
+        return
+    end
+
+    local h = hit()
+    h.type = hit.chemical_burn
+    h.direction = vector():set(0, -1, 0)
+    h.impulse = 0
+    h.power = power
+    h.draftsman = actor
+    h:bone("bip_none")
+    actor:hit(h)
+
+    if now - last_buzz_log >= BUZZ_LOG_INTERVAL then
+        last_buzz_log = now
+        log2(
+            "[sivol_anom_effects] buzz acid tick: section=%s tier=%s extra=%.3f getter_protection=%.3f damage_mult=%.3f power=%.5f",
+            best.section, best.tier_name, best.extra, protection, damage_multiplier, power
+        )
+    end
+end
+
+-- A weapon is "out" only if the active item exposes a real weapon-model
+-- interface (get_weapon_m() returns non-nil) - bolts and binoculars don't,
+-- so this naturally excludes them along with empty hands, without needing
+-- their clsids. Items merely sitting in weapon slots/backpack never count,
+-- only whatever's actually in the actor's hand right now.
+local function get_active_weapon()
+    local actor = db.actor
+    if not actor then return nil end
+    local item = actor:active_item()
+    if not item then return nil end
+    if item:section() == "bolt" then return nil end
+    local ok, wm = pcall(item.get_weapon_m, item)
+    if not ok or not wm then return nil end
+    return item
+end
+
+local function apply_buzz_weapon_degrade_tick(best, now)
+    if not best then return end
+    if now - last_weapon_degrade_tick < BUZZ_WEAPON_DEGRADE_TICK_MS then return end
+    last_weapon_degrade_tick = now
+
+    local wpn = get_active_weapon()
+    if not wpn then return end
+
+    local degrade = BUZZ_WEAPON_DEGRADE_PER_EXTRA_PER_SEC * best.extra
+        * (BUZZ_WEAPON_DEGRADE_TICK_MS / 1000)
+    if degrade <= 0.00005 then return end
+
+    local old_condition = wpn:condition()
+    local new_condition = math.max(0, old_condition - degrade)
+    params.upd_condition(wpn, new_condition)
+
+    -- One-time, lore-voiced heads-up the first time degrade actually lands -
+    -- fires from here (an applied tick) rather than on aura entry, so it
+    -- lands right after the player's actually felt the cost once.
+    -- Wording is a first pass - please adjust to your own voice/slang.
+    if not has_alife_info("sivol_buzz_weapon_tip_given") then
+        db.actor:give_info_portion("sivol_buzz_weapon_tip_given")
+        sak.send_tip(
+            "Чёрт, ствол ощутимо разъедает этот кислотный смрад... не стоит идти с оружием наизготовку через фруктовый пунш.",
+            "Мысли вслух", 0, 5, "g_g", "no", "yellow"
+        )
+    end
+
+    if now - last_buzz_log >= BUZZ_LOG_INTERVAL then
+        log2(
+            "[sivol_anom_effects] buzz weapon degrade tick: section=%s tier=%s wpn=%s cond %.4f -> %.4f",
+            best.section, best.tier_name, wpn:section(), old_condition, new_condition
+        )
+    end
+end
+
 local function check_anomaly_proximity()
     local actor = db.actor
     if not enabled then
@@ -489,9 +906,16 @@ local function check_anomaly_proximity()
     last_time = now
     if dt > 1 or dt < 0 then dt = 0 end -- guard against load/pause spikes
 
-    local raw, tier, best_thermal = get_best_proximities()
+    local raw, tier, best_thermal, best_buzz = get_best_proximities()
+    best_thermal = apply_los_gate(best_thermal, "thermal")
+    best_buzz = apply_los_gate(best_buzz, "buzz")
     update_thermal_state(best_thermal, dt)
     apply_thermal_burn_tick(best_thermal, now)
+
+    update_buzz_state(best_buzz, dt)
+    apply_buzz_acid_tick(best_buzz, now)
+    apply_buzz_weapon_degrade_tick(best_buzz, now)
+    update_buzz_intoxication(best_buzz, dt)
 
     local target = clamp01(raw * intensity_mult)
     local rate = (target > gravity_smooth) and SMOOTH_IN or SMOOTH_OUT
