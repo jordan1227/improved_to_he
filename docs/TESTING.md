@@ -26,6 +26,10 @@ Automated test commands and log locations: TBD.
   while retaining the aura.
 - Ambient thermal hits use `bip_none` to retain burn behavior without blood
   decals or sprint interruption.
+- Per-surface shell sounds use `fl_step_material()` at the firearm event, normalize
+  `materials\\<name>` to `<name>`, and fall back to generic sounds for unavailable
+  or unmapped materials. Confirmed in-game: mapped material sounds work and knife
+  attacks queue no shell sound.
 - Belt cache invalidation was confirmed immediate for one and two powered burn
   artifacts: `0.550 * 0.75 = 0.413`, then `0.550 * 0.75 * 0.75 = 0.310`.
 - Unarmored proximity stalls were isolated to the native outfit-protection getter,

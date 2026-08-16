@@ -59,6 +59,9 @@ This is the single dispatch mechanism for anything event-like in this fork.
   - `on_actor_weapon_zoom_in`/`on_actor_weapon_zoom_out` — exist, but polling
     `wpn_params.get_zie_obj() ~= nil` directly proved more reliable for aim-state
     detection in practice than trusting these signals.
+  - `on_actor_weapon_fire` is also emitted for knife attacks. Features intended for
+    cartridge firearms must use a confirmed-firearm section whitelist, rather than
+    treating every callback item (or every `wpn_*` section) as a firearm.
   - `on_key`/`on_key_up` — `(key, bind)`, `bind` matches `key_bindings.*`
     (e.g. `key_bindings.kCROUCH`). Prefer these over `on_update` polling for any
     crisp one-shot reaction to a state transition — polling for e.g. stance changes
