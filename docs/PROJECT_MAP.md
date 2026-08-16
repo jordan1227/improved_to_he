@@ -12,12 +12,14 @@ Inspect other `gamedata` folders only when the current task requires them.
 ## Major systems
 
 - Thermal anomaly effects: `gamedata/scripts/kotovod/sivol_anom_effects.script`.
-  It owns Zharka/gravity anomaly lifecycle caches, proximity effects, thermal PPE,
-  scripted burn ticks, and diagnostics.
+  It owns Zharka, Buzz, and gravity anomaly lifecycle caches; proximity/LOS effects;
+  thermal, acidic, and intoxication PPE; scripted burn/acid ticks; protection
+  caching; Buzz weapon degradation; and diagnostics.
 - Thirst integration: `gamedata/scripts/thirst.script` consumes the thermal thirst
   multiplier exposed by `sivol_anom_effects`.
 - PDA/NVD/flashlight Electra interference: `gamedata/scripts/pda_noise.script`
   maintains the shared Electra cache; `sivol_pda.script`, `params/nvd_params.script`,
   and the flashlight path consume its intensity.
 - Signal registration: `gamedata/scripts/ogse/ogse_signals_addons_list.script`.
+- Actor inventory signal forwarding: `gamedata/scripts/binders/bind_stalker.script`.
 - Configuration-to-script relationships beyond these entry points: TBD.

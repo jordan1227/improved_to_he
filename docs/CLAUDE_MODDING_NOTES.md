@@ -72,7 +72,9 @@ This is the single dispatch mechanism for anything event-like in this fork.
     `db.actor:alive()` transitioning true→false inside `on_update`.
   - `on_item_to_slot`, `on_item_to_belt`, `on_item_to_ruck` — equip/belt/unequip
     transitions; good hook points for stat-recompute-on-transition instead of pure
-    polling.
+    polling. Confirmed forwarding is in `binders/bind_stalker.script`. A proven cache
+    pattern is to mark outfit/belt values dirty in these handlers (plus actor spawn
+    and `on_drop_after_all`) and lazily recompute on the next consumer read.
   - `on_take_before_all` / `on_take_after_all` (and drop equivalents) — **NOT a veto
     point.** By the time these fire, the engine has already completed the pickup/drop
     natively. "before/after" only brackets this function's own extra bookkeeping, not
@@ -156,6 +158,10 @@ This is the single dispatch mechanism for anything event-like in this fork.
   off, which is the confirmed state for this build), camera FOV =
   `scope_zoom_factor * 0.75`, fully independent of the player's FOV slider
   (`g_fov`, console var `"fov"`). Engine's hardcoded default `g_fov` is `67.5`.
+- `game_object:get_camera_fov()` / `game_object:set_camera_fov(number)` are working
+  native bindings in this build. `monster_parts.script` uses them for its harvest
+  camera, and repeated `set_camera_fov()` calls can drive a smooth per-frame FOV
+  transition from Lua. Writing `actor_camera(0).fov` is not an equivalent override.
 - `set_pda_params(vector)` is native and takes exactly a **3-component** vector.
   Calling it with 4 args is a confirmed crash.
 - `get_torch_obj(game_object*)` is a native binding — every call is a live engine
@@ -164,6 +170,13 @@ This is the single dispatch mechanism for anything event-like in this fork.
   fields persist and are reflected in a fresh `get_outfit()` call. (Contrast with the
   32-bit HE version's `outfit_params.outfit_prop()`, a raw memory-offset hack with no
   OGSR equivalent — don't try to port that approach.)
+- **Critical performance trap:** do not call
+  `actor:get_current_outfit_protection(hit.burn)` or its `hit.chemical_burn`
+  counterpart when `actor:item_in_slot(6)` is nil. The native no-outfit path was
+  measured at roughly 230 ms per call and caused repeatable periodic frame stalls.
+  Guard slot 6 first and return/cache zero. With an outfit equipped, the getter is
+  fast. The getter covers the outfit layer; tested powered belt-artifact immunity
+  must be composed separately and stacks multiplicatively.
 - `ini_file()` + `section_exist`/`line_exist` proved unreliable for finding known-good
   keys (silently returned nil with no error for real fields). The proven-reliable
   pattern is `get_float(section, param, default)` (same helper used in
@@ -290,6 +303,11 @@ This is worth internalizing as a general pattern, not just a one-off torch fix:
   dropped. Track toggle direction in a local boolean rather than reading live
   engine flags (`is_actor_crouch()` etc.) inside a keypress handler — those flags lag
   behind rapid key-spam and cause every-other-press misfires.
+- **Keep per-frame proximity loops allocation-free.** Cache static anomaly data from
+  spawn/destroy signals, reuse persistent winner-result tables, use numeric IDs for
+  state identity instead of formatting strings, and share one actor-position read
+  across related scans. Short-lived tables and formatted diagnostic strings create
+  GC pressure that can become periodic hitches.
 
 ---
 

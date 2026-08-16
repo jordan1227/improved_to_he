@@ -26,6 +26,13 @@ Automated test commands and log locations: TBD.
   while retaining the aura.
 - Ambient thermal hits use `bip_none` to retain burn behavior without blood
   decals or sprint interruption.
+- Belt cache invalidation was confirmed immediate for one and two powered burn
+  artifacts: `0.550 * 0.75 = 0.413`, then `0.550 * 0.75 * 0.75 = 0.310`.
+- Unarmored proximity stalls were isolated to the native outfit-protection getter,
+  not raycasts, result-table allocation, or `actor:hit`. Guarding slot 6 before both
+  burn and chemical getter calls removes the thermal stall; Buzz uses the same guard.
+- Periodic diagnostics are disabled by default. Optional GC diagnostics should be
+  enabled only for targeted profiling, not ordinary gameplay.
 
 For anomaly reshuffling/emission tests, use the mod's supported console/script
 command mechanism when the relevant function is known; exact command names and

@@ -26,6 +26,17 @@ local THERMAL_PROTECTION_THRESHOLD = 0.50
 local THERMAL_LOG_INTERVAL          = 2000
 local THERMAL_BURN_TICK_MS           = 1000
 local THERMAL_BURN_PER_EXTRA_PER_SEC = 0.05 -- TUNE IN-GAME
+-- Effective outfit protection is cheap, but this script has multiple consumers.
+-- Refreshing it at most five times per second also preserves condition/wear changes.
+local PROTECTION_CACHE_INTERVAL_MS   = 200
+
+-- Periodic logs can cause synchronous console/disk stalls. Cache lifecycle,
+-- aura enter/exit, PPE state changes, and errors remain logged independently.
+local PERIODIC_DIAGNOSTIC_LOGGING = false
+-- Optional hitch investigation. Keep off during normal play; when enabled it
+-- records Lua heap size at a deliberately low frequency while an aura is active.
+local GC_DIAGNOSTICS_ENABLED = false
+local GC_DIAGNOSTICS_INTERVAL_MS = 5000
 
 -- Combined suit+artifact protection needed to suppress the scripted burn hit.
 -- 1.01 disables this cutoff; set to 0.50 for immunity at 50% protection.
@@ -37,8 +48,8 @@ local THERMAL_DAMAGE_PROTECTION_THRESHOLD = 0.7
 -- maximum extra passive-thirst multiplier at/inside that shape.
 local THERMAL_TIER_CONFIG = {
     weak    = { radius = 4.0, max_extra = 1.0 },
-    average = { radius = 4.5, max_extra = 1.75 },
-    strong  = { radius = 5.0, max_extra = 2.5 },
+    average = { radius = 4.5, max_extra = 1.3 },
+    strong  = { radius = 5.0, max_extra = 1.6 },
 }
 -- ==============================================================
 
@@ -49,8 +60,8 @@ local THERMAL_TIER_CONFIG = {
 -- degrade rate, and how fast the no-mask intoxication exposure accumulates.
 local BUZZ_TIER_CONFIG = {
     weak    = { radius = 3.5, max_extra = 1.0 },
-    average = { radius = 4.5, max_extra = 1.75 },
-    strong  = { radius = 6.0, max_extra = 2.5 },
+    average = { radius = 4.5, max_extra = 1.15 },
+    strong  = { radius = 6.0, max_extra = 1.3 },
 }
 
 local BUZZ_LOG_INTERVAL = 2000
@@ -91,6 +102,9 @@ local BUZZ_INTOX_EXPOSURE_THRESHOLD_MS = 4200 -- TUNE IN-GAME
 -- anomaly, and is throttled rather than recomputed every tick - the
 -- existing smoothing already absorbs the staleness between checks.
 local LOS_CHECK_INTERVAL_MS = 250 -- TUNE IN-GAME
+-- Set either switch to false to bypass ray queries for that aura completely.
+local THERMAL_LOS_RAYCAST_ENABLED = true
+local BUZZ_LOS_RAYCAST_ENABLED    = true
 -- =====================================================================================
 
 -- Per-tier radius + anim file. Matched against section-name suffix.
@@ -132,10 +146,21 @@ local thermal_ppe_active = false
 local thermal_best       = nil
 local thermal_best_key   = nil
 local last_thermal_log   = 0
-local last_art_signature = nil
-local last_probe_protection = nil
+local last_gc_diagnostic = 0
 local protection_getter_error_logged = false
 local last_burn_tick = 0
+
+local cached_burn_protection = 0
+local cached_burn_protection_time = -PROTECTION_CACHE_INTERVAL_MS
+local cached_chemical_protection = 0
+local cached_chemical_protection_time = -PROTECTION_CACHE_INTERVAL_MS
+local burn_protection_cache_dirty = true
+local chemical_protection_cache_dirty = true
+
+local cached_belt_burn_mult = 1
+local cached_belt_burn_art_count = 0
+local belt_burn_cache_dirty = true
+local belt_burn_cache_initialized = false
 
 local buzz_ppe_active   = false
 local buzz_best         = nil
@@ -155,6 +180,9 @@ local los_state = {
 local zharka_cache = {}
 local gravity_cache = {}
 local buzz_cache = {}
+-- Reused result objects avoid creating short-lived tables every rendered frame.
+local thermal_result = {}
+local buzz_result = {}
 
 -- Matches gravity anomalies strictly by section name.
 -- NLC aliases multiple anomaly types to the same clsid (e.g. 166), so clsid checks are useless here.
@@ -234,6 +262,19 @@ local function apply_los_gate(best, kind)
     if not actor then return best end
 
     local state = los_state[kind]
+    local raycast_enabled
+    if kind == "thermal" then
+        raycast_enabled = THERMAL_LOS_RAYCAST_ENABLED
+    else
+        raycast_enabled = BUZZ_LOS_RAYCAST_ENABLED
+    end
+    if not raycast_enabled then
+        state.last_check = 0
+        state.last_id = nil
+        state.clear = true
+        return best
+    end
+
     local now = time_global()
     if state.last_id ~= best.id or (now - state.last_check) >= LOS_CHECK_INTERVAL_MS then
         state.last_check = now
@@ -353,9 +394,27 @@ local function on_anomaly_net_destroy(obj, binder)
 end
 
 local function get_effective_burn_protection()
-    if not db.actor then return 0 end
+    local actor = db.actor
+    if not actor then return 0 end
+    local now = time_global()
+    if not burn_protection_cache_dirty
+        and now - cached_burn_protection_time < PROTECTION_CACHE_INTERVAL_MS
+    then
+        return cached_burn_protection
+    end
+
+    -- The native getter has an extremely expensive no-outfit path. An
+    -- unarmored actor has zero outfit protection, so bypass it completely.
+    if not actor:item_in_slot(6) then
+        cached_burn_protection = 0
+        cached_burn_protection_time = now
+        burn_protection_cache_dirty = false
+        protection_getter_error_logged = false
+        return 0
+    end
+
     local ok, value = pcall(function()
-        return db.actor:get_current_outfit_protection(hit.burn)
+        return actor:get_current_outfit_protection(hit.burn)
     end)
     if not ok then
         if not protection_getter_error_logged then
@@ -365,23 +424,60 @@ local function get_effective_burn_protection()
         return 0
     end
     protection_getter_error_logged = false
-    return clamp01(value)
+    cached_burn_protection = clamp01(value)
+    cached_burn_protection_time = now
+    burn_protection_cache_dirty = false
+    return cached_burn_protection
+end
+
+-- Belt artifacts are scanned only after a belt/inventory lifecycle signal.
+-- The actor's outfit getter does not expose the manually verified
+-- multiplicative artifact layer, so that layer remains cached separately.
+local function refresh_belt_burn_cache()
+    if not belt_burn_cache_dirty then return end
+
+    local old_mult = cached_belt_burn_mult
+    local old_count = cached_belt_burn_art_count
+    local mult = 1
+    local count = 0
+    local actor = db.actor
+    if actor then
+        for i = 0, actor:belt_count() - 1 do
+            local item = actor:item_on_belt(i)
+            if item and item:clsid() == CLID_ART then
+                local imm = item.immunities and tonumber(item.immunities.burn_immunity)
+                if imm then
+                    mult = mult * clamp01(imm)
+                    if imm < 0.9999 then count = count + 1 end
+                end
+            end
+        end
+    end
+
+    cached_belt_burn_mult = clamp01(mult)
+    cached_belt_burn_art_count = count
+    belt_burn_cache_dirty = false
+
+    if not belt_burn_cache_initialized
+        or count ~= old_count or math.abs(cached_belt_burn_mult - old_mult) >= 0.0005
+    then
+        log2(
+            "[sivol_anom_effects] burn artifact cache: powered_candidates=%d belt_mult=%.3f",
+            count, cached_belt_burn_mult
+        )
+    end
+    belt_burn_cache_initialized = true
 end
 
 -- Combined incoming-burn-damage multiplier (0 = fully immune, 1 = no
--- protection). Artifact multiplication is intentionally isolated here so the
--- hypothesis can be changed without affecting the suit-only thirst curve.
+-- protection). The hot path reads cached artifact state; sak.arts_operate is
+-- checked live so accumulator power changes need no belt rescan.
 local function get_burn_damage_multiplier()
     if not db.actor then return 1 end
     local mult = 1 - get_effective_burn_protection()
     if sak and sak.arts_operate then
-        for i = 0, db.actor:belt_count() - 1 do
-            local item = db.actor:item_on_belt(i)
-            if item and item:clsid() == CLID_ART then
-                local imm = item.immunities and tonumber(item.immunities.burn_immunity)
-                if imm then mult = mult * clamp01(imm) end
-            end
-        end
+        refresh_belt_burn_cache()
+        mult = mult * cached_belt_burn_mult
     end
     return clamp01(mult)
 end
@@ -392,9 +488,26 @@ end
 -- loop here until that's checked (see get_burn_damage_multiplier for the
 -- pattern to extend this with once confirmed).
 local function get_effective_chemical_protection()
-    if not db.actor then return 0 end
+    local actor = db.actor
+    if not actor then return 0 end
+    local now = time_global()
+    if not chemical_protection_cache_dirty
+        and now - cached_chemical_protection_time < PROTECTION_CACHE_INTERVAL_MS
+    then
+        return cached_chemical_protection
+    end
+
+    -- Same native no-outfit performance trap as the burn getter above.
+    if not actor:item_in_slot(6) then
+        cached_chemical_protection = 0
+        cached_chemical_protection_time = now
+        chemical_protection_cache_dirty = false
+        chemical_protection_getter_error_logged = false
+        return 0
+    end
+
     local ok, value = pcall(function()
-        return db.actor:get_current_outfit_protection(hit.chemical_burn)
+        return actor:get_current_outfit_protection(hit.chemical_burn)
     end)
     if not ok then
         if not chemical_protection_getter_error_logged then
@@ -404,56 +517,16 @@ local function get_effective_chemical_protection()
         return 0
     end
     chemical_protection_getter_error_logged = false
-    return clamp01(value)
+    cached_chemical_protection = clamp01(value)
+    cached_chemical_protection_time = now
+    chemical_protection_cache_dirty = false
+    return cached_chemical_protection
 end
 
--- Diagnostic only for this test build. Artifact immunity is deliberately not
--- included in the thirst calculation until the actor getter is verified.
-local function get_powered_burn_art_signature()
-    if not (sak and sak.arts_operate) then return "unpowered" end
-
-    local arts = {}
-    for i = 0, db.actor:belt_count() - 1 do
-        local item = db.actor:item_on_belt(i)
-        if item and item:clsid() == CLID_ART then
-            local immunities = item.immunities
-            local burn_immunity = immunities and tonumber(immunities.burn_immunity)
-            if burn_immunity and burn_immunity < 0.9999 then
-                table.insert(arts, string.format("%s#%d=%.3f", item:section(), item:id(), burn_immunity))
-            end
-        end
-    end
-    table.sort(arts)
-    return #arts > 0 and table.concat(arts, ",") or "none"
-end
-
-local function update_protection_probe(protection)
-    local signature = get_powered_burn_art_signature()
-    if last_art_signature == nil then
-        log2(
-            "[sivol_anom_effects] burn protection probe initial: getter=%.3f powered_burn_arts=%s",
-            protection, signature
-        )
-    elseif signature ~= last_art_signature then
-        log2(
-            "[sivol_anom_effects] burn protection probe changed: getter %.3f -> %.3f, powered_burn_arts %s -> %s",
-            last_probe_protection or protection, protection, last_art_signature, signature
-        )
-    elseif last_probe_protection and math.abs(protection - last_probe_protection) >= 0.005 then
-        log2(
-            "[sivol_anom_effects] burn protection getter changed: %.3f -> %.3f, powered_burn_arts=%s",
-            last_probe_protection, protection, signature
-        )
-    end
-    last_art_signature = signature
-    last_probe_protection = protection
-    return signature
-end
-
-local function get_best_thermal_cached()
-    if not db.actor then return nil end
-    local pos = db.actor:position()
-    local best = nil
+local function get_best_thermal_cached(pos)
+    if not pos then return nil end
+    local best_extra = 0
+    local found = false
 
     for id, z in pairs(zharka_cache) do
         local dx = pos.x - z.x
@@ -463,27 +536,29 @@ local function get_best_thermal_cached()
         local distance = math.max(0, center_distance - z.shape_radius)
         local proximity = clamp01(1 - distance / z.radius)
         local extra = proximity * z.max_extra
-        if extra > 0 and (not best or extra > best.extra) then
-            best = {
-                id = id,
-                section = z.section,
-                tier_name = z.tier_name,
-                radius = z.radius,
-                max_extra = z.max_extra,
-                distance = distance,
-                proximity = proximity,
-                extra = extra,
-                x = z.x, y = z.y, z = z.z,
-            }
+        if extra > best_extra then
+            found = true
+            best_extra = extra
+            thermal_result.id = id
+            thermal_result.section = z.section
+            thermal_result.tier_name = z.tier_name
+            thermal_result.radius = z.radius
+            thermal_result.max_extra = z.max_extra
+            thermal_result.distance = distance
+            thermal_result.proximity = proximity
+            thermal_result.extra = extra
+            thermal_result.x = z.x
+            thermal_result.y = z.y
+            thermal_result.z = z.z
         end
     end
-    return best
+    return found and thermal_result or nil
 end
 
-local function get_best_buzz_cached()
-    if not db.actor then return nil end
-    local pos = db.actor:position()
-    local best = nil
+local function get_best_buzz_cached(pos)
+    if not pos then return nil end
+    local best_extra = 0
+    local found = false
 
     for id, z in pairs(buzz_cache) do
         local dx = pos.x - z.x
@@ -493,26 +568,27 @@ local function get_best_buzz_cached()
         local distance = math.max(0, center_distance - z.shape_radius)
         local proximity = clamp01(1 - distance / z.radius)
         local extra = proximity * z.max_extra
-        if extra > 0 and (not best or extra > best.extra) then
-            best = {
-                id = id,
-                section = z.section,
-                tier_name = z.tier_name,
-                radius = z.radius,
-                max_extra = z.max_extra,
-                distance = distance,
-                proximity = proximity,
-                extra = extra,
-                x = z.x, y = z.y, z = z.z,
-            }
+        if extra > best_extra then
+            found = true
+            best_extra = extra
+            buzz_result.id = id
+            buzz_result.section = z.section
+            buzz_result.tier_name = z.tier_name
+            buzz_result.radius = z.radius
+            buzz_result.max_extra = z.max_extra
+            buzz_result.distance = distance
+            buzz_result.proximity = proximity
+            buzz_result.extra = extra
+            buzz_result.x = z.x
+            buzz_result.y = z.y
+            buzz_result.z = z.z
         end
     end
-    return best
+    return found and buzz_result or nil
 end
 
-local function get_best_gravity_cached()
-    if not db.actor then return 0, nil end
-    local pos = db.actor:position()
+local function get_best_gravity_cached(pos)
+    if not pos then return 0, nil end
     local best = 0
     local best_tier = nil
 
@@ -534,8 +610,12 @@ local function get_best_gravity_cached()
 end
 
 local function get_best_proximities()
-    local gravity, gravity_tier = get_best_gravity_cached()
-    return gravity, gravity_tier, get_best_thermal_cached(), get_best_buzz_cached()
+    local actor = db.actor
+    if not actor then return 0, nil, nil, nil end
+    local pos = actor:position()
+    local gravity, gravity_tier = get_best_gravity_cached(pos)
+    return gravity, gravity_tier,
+        get_best_thermal_cached(pos), get_best_buzz_cached(pos)
 end
 
 local function stop_gravity_effect()
@@ -597,7 +677,7 @@ local function clear_effects(reason)
 end
 
 local function update_thermal_state(best, dt)
-    local new_key = best and string.format("%d:%s", best.id, best.tier_name) or nil
+    local new_key = best and best.id or nil
     if new_key ~= thermal_best_key then
         if best then
             log2(
@@ -641,7 +721,7 @@ local function update_thermal_state(best, dt)
 end
 
 local function update_buzz_state(best, dt)
-    local new_key = best and string.format("%d:%s", best.id, best.tier_name) or nil
+    local new_key = best and best.id or nil
     if new_key ~= buzz_best_key then
         if best then
             log2(
@@ -719,18 +799,20 @@ end
 function get_thermal_thirst_multiplier()
     local actor = db.actor
     if not enabled or not actor or not actor:alive() then return 1 end
-
-    local protection = get_effective_burn_protection()
-    local art_signature = update_protection_probe(protection)
+    -- This function may be called frequently by thirst.script. Do no protection
+    -- or inventory work at all unless a Burner aura is currently affecting us.
     if not thermal_best then return 1 end
 
+    local protection = get_effective_burn_protection()
     local protection_factor = clamp01(
         1 - protection / THERMAL_PROTECTION_THRESHOLD
     )
     local multiplier = 1 + thermal_best.extra * protection_factor
 
     local now = time_global()
-    if now - last_thermal_log >= THERMAL_LOG_INTERVAL then
+    if PERIODIC_DIAGNOSTIC_LOGGING
+        and now - last_thermal_log >= THERMAL_LOG_INTERVAL
+    then
         last_thermal_log = now
         local armor = actor:item_in_slot(6)
         local outfit = armor and armor:get_outfit()
@@ -738,12 +820,14 @@ function get_thermal_thirst_multiplier()
         local condition = armor and armor:condition() or 0
         local burn_damage_mult = get_burn_damage_multiplier()
         log2(
-            "[sivol_anom_effects] thermal thirst: section=%s tier=%s dist=%.2f radius=%.2f proximity=%.3f raw_extra=%.3f getter_protection=%.3f raw_outfit=%.3f outfit_cond=%.3f protection_factor=%.3f thirst_mult=%.3f burn_damage_mult=%.3f powered_burn_arts=%s",
+            "[sivol_anom_effects] thermal thirst: section=%s tier=%s dist=%.2f radius=%.2f proximity=%.3f raw_extra=%.3f getter_protection=%.3f raw_outfit=%.3f outfit_cond=%.3f protection_factor=%.3f thirst_mult=%.3f burn_damage_mult=%.3f belt_burn_arts=%d belt_mult=%.3f arts_powered=%s",
             thermal_best.section, thermal_best.tier_name,
             thermal_best.distance, thermal_best.radius,
             thermal_best.proximity, thermal_best.extra,
             protection, raw_outfit, condition,
-            protection_factor, multiplier, burn_damage_mult, art_signature
+            protection_factor, multiplier, burn_damage_mult,
+            cached_belt_burn_art_count, cached_belt_burn_mult,
+            tostring(sak and sak.arts_operate or false)
         )
     end
     return multiplier
@@ -759,20 +843,24 @@ local function apply_thermal_burn_tick(best, now)
     local damage_multiplier = get_burn_damage_multiplier()
     local combined_protection = 1 - damage_multiplier
     if combined_protection >= THERMAL_DAMAGE_PROTECTION_THRESHOLD then
-        log2(
-            "[sivol_anom_effects] thermal burn tick protection cutoff: section=%s tier=%s protection=%.3f threshold=%.3f",
-            best.section, best.tier_name, combined_protection,
-            THERMAL_DAMAGE_PROTECTION_THRESHOLD
-        )
+        if PERIODIC_DIAGNOSTIC_LOGGING then
+            log2(
+                "[sivol_anom_effects] thermal burn tick protection cutoff: section=%s tier=%s protection=%.3f threshold=%.3f",
+                best.section, best.tier_name, combined_protection,
+                THERMAL_DAMAGE_PROTECTION_THRESHOLD
+            )
+        end
         return
     end
     local power = THERMAL_BURN_PER_EXTRA_PER_SEC * best.extra
         * (THERMAL_BURN_TICK_MS / 1000) * damage_multiplier
     if power <= 0.0005 then
-        log2(
-            "[sivol_anom_effects] thermal burn tick suppressed: section=%s tier=%s extra=%.3f damage_mult=%.3f power=%.5f",
-            best.section, best.tier_name, best.extra, damage_multiplier, power
-        )
+        if PERIODIC_DIAGNOSTIC_LOGGING then
+            log2(
+                "[sivol_anom_effects] thermal burn tick suppressed: section=%s tier=%s extra=%.3f damage_mult=%.3f power=%.5f",
+                best.section, best.tier_name, best.extra, damage_multiplier, power
+            )
+        end
         return
     end
 
@@ -787,10 +875,12 @@ local function apply_thermal_burn_tick(best, now)
     h:bone("bip_none")
     actor:hit(h)
 
-    log2(
-        "[sivol_anom_effects] thermal burn tick: section=%s tier=%s extra=%.3f damage_mult=%.3f power=%.5f",
-        best.section, best.tier_name, best.extra, damage_multiplier, power
-    )
+    if PERIODIC_DIAGNOSTIC_LOGGING then
+        log2(
+            "[sivol_anom_effects] thermal burn tick: section=%s tier=%s extra=%.3f damage_mult=%.3f power=%.5f",
+            best.section, best.tier_name, best.extra, damage_multiplier, power
+        )
+    end
 end
 
 local function apply_buzz_acid_tick(best, now)
@@ -802,21 +892,25 @@ local function apply_buzz_acid_tick(best, now)
 
     local protection = get_effective_chemical_protection()
     if protection >= BUZZ_DAMAGE_PROTECTION_THRESHOLD then
-        log2(
-            "[sivol_anom_effects] buzz acid tick protection cutoff: section=%s tier=%s protection=%.3f threshold=%.3f",
-            best.section, best.tier_name, protection,
-            BUZZ_DAMAGE_PROTECTION_THRESHOLD
-        )
+        if PERIODIC_DIAGNOSTIC_LOGGING then
+            log2(
+                "[sivol_anom_effects] buzz acid tick protection cutoff: section=%s tier=%s protection=%.3f threshold=%.3f",
+                best.section, best.tier_name, protection,
+                BUZZ_DAMAGE_PROTECTION_THRESHOLD
+            )
+        end
         return
     end
     local damage_multiplier = clamp01(1 - protection)
     local power = BUZZ_ACID_PER_EXTRA_PER_SEC * best.extra
         * (BUZZ_ACID_TICK_MS / 1000) * damage_multiplier
     if power <= 0.0005 then
-        log2(
-            "[sivol_anom_effects] buzz acid tick suppressed: section=%s tier=%s extra=%.3f damage_mult=%.3f power=%.5f",
-            best.section, best.tier_name, best.extra, damage_multiplier, power
-        )
+        if PERIODIC_DIAGNOSTIC_LOGGING then
+            log2(
+                "[sivol_anom_effects] buzz acid tick suppressed: section=%s tier=%s extra=%.3f damage_mult=%.3f power=%.5f",
+                best.section, best.tier_name, best.extra, damage_multiplier, power
+            )
+        end
         return
     end
 
@@ -829,7 +923,9 @@ local function apply_buzz_acid_tick(best, now)
     h:bone("bip_none")
     actor:hit(h)
 
-    if now - last_buzz_log >= BUZZ_LOG_INTERVAL then
+    if PERIODIC_DIAGNOSTIC_LOGGING
+        and now - last_buzz_log >= BUZZ_LOG_INTERVAL
+    then
         last_buzz_log = now
         log2(
             "[sivol_anom_effects] buzz acid tick: section=%s tier=%s extra=%.3f getter_protection=%.3f damage_mult=%.3f power=%.5f",
@@ -882,7 +978,10 @@ local function apply_buzz_weapon_degrade_tick(best, now)
         )
     end
 
-    if now - last_buzz_log >= BUZZ_LOG_INTERVAL then
+    if PERIODIC_DIAGNOSTIC_LOGGING
+        and now - last_buzz_log >= BUZZ_LOG_INTERVAL
+    then
+        last_buzz_log = now
         log2(
             "[sivol_anom_effects] buzz weapon degrade tick: section=%s tier=%s wpn=%s cond %.4f -> %.4f",
             best.section, best.tier_name, wpn:section(), old_condition, new_condition
@@ -909,6 +1008,20 @@ local function check_anomaly_proximity()
     local raw, tier, best_thermal, best_buzz = get_best_proximities()
     best_thermal = apply_los_gate(best_thermal, "thermal")
     best_buzz = apply_los_gate(best_buzz, "buzz")
+
+    if GC_DIAGNOSTICS_ENABLED and (best_thermal or best_buzz)
+        and now - last_gc_diagnostic >= GC_DIAGNOSTICS_INTERVAL_MS
+    then
+        last_gc_diagnostic = now
+        local ok, heap_kb = pcall(collectgarbage, "count")
+        if ok then
+            log2(
+                "[sivol_anom_effects] GC diagnostic: heap_kb=%.1f thermal=%s buzz=%s",
+                heap_kb, tostring(best_thermal ~= nil), tostring(best_buzz ~= nil)
+            )
+        end
+    end
+
     update_thermal_state(best_thermal, dt)
     apply_thermal_burn_tick(best_thermal, now)
 
@@ -941,6 +1054,12 @@ local function check_anomaly_proximity()
     end
 end
 
+local function invalidate_actor_protection_caches(obj, sobj)
+    burn_protection_cache_dirty = true
+    chemical_protection_cache_dirty = true
+    belt_burn_cache_dirty = true
+end
+
 function attach(sm)
     sm:subscribe({
         signal = "on_update",
@@ -953,5 +1072,25 @@ function attach(sm)
     sm:subscribe({
         signal = "on_anomaly_net_destroy",
         fun = on_anomaly_net_destroy
+    })
+    sm:subscribe({
+        signal = "on_spawn",
+        fun = invalidate_actor_protection_caches
+    })
+    sm:subscribe({
+        signal = "on_item_to_belt",
+        fun = invalidate_actor_protection_caches
+    })
+    sm:subscribe({
+        signal = "on_item_to_ruck",
+        fun = invalidate_actor_protection_caches
+    })
+    sm:subscribe({
+        signal = "on_item_to_slot",
+        fun = invalidate_actor_protection_caches
+    })
+    sm:subscribe({
+        signal = "on_drop_after_all",
+        fun = invalidate_actor_protection_caches
     })
 end

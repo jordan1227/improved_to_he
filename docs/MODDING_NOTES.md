@@ -15,12 +15,25 @@ These are concise observations from the thermal-anomaly and device-interference 
 - Save callbacks should perform persistence work only on the real save signal, not
   as an `on_update` callback. Runtime capability checks are safer than caching module
   availability at load time when addon order can vary.
+- `bind_stalker.script` forwards `on_item_to_slot`, `on_item_to_belt`, and
+  `on_item_to_ruck` through `ogse_signals`; `on_drop_before_all` and
+  `on_drop_after_all` bracket its drop bookkeeping. These are reliable cache
+  invalidation hooks for outfit and belt-dependent values. Recompute lazily after
+  invalidation instead of scanning inventory every frame.
 - `log2` state-change and cache lifecycle messages are useful for in-game diagnosis;
-  avoid per-frame logging except when deliberately debugging.
+  avoid per-frame or periodic damage-tick logging except when deliberately debugging.
+  Synchronous log output can itself produce repeatable frame spikes.
 - For ambient actor damage, `hit.burn` with zero impulse, a valid draftsman, and
   `bip_none` preserves the anomaly burn behavior while avoiding localized blood
   decals and sprint interruption.
-- The engine getter `db.actor:get_current_outfit_protection(hit.burn)` was observed
-  to include the tested powered burn-protection artifact. The observed stacking is
-  multiplicative, not additive. Keep manual artifact composition separate until a
-  case is found where the getter omits an artifact source.
+- Never call `db.actor:get_current_outfit_protection(...)` while slot 6 is empty.
+  Its native no-outfit path was measured taking roughly 230 ms and caused periodic
+  stalls near thermal and chemical anomalies. Check `actor:item_in_slot(6)` first
+  and return/cache zero protection when it is nil.
+- `get_current_outfit_protection(hit.burn)` supplies the effective outfit layer;
+  tested powered belt artifacts are not included by this getter. Their immunity
+  factors stack multiplicatively (`outfit_damage_mult * art_1 * art_2`) and are
+  maintained separately by the event-invalidated belt cache.
+- In per-frame proximity loops, reuse persistent result tables and mutate their
+  fields. Avoid table literals, `string.format`, sorting, and concatenation in the
+  steady-state path. Obtain the actor position once and share it across scans.

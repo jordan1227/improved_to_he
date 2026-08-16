@@ -16,8 +16,14 @@ Known clean-game baseline and packed-file inventory: TBD.
   behavior; this avoids repeated global anomaly enumeration and object lookup.
 - Electra/PDA/NVD/flashlight proximity shares one cache and refreshes every 200 ms;
   visual smoothing remains per frame in the consumers.
-- `db.actor:get_current_outfit_protection(hit.burn)` reflects the tested outfit and
-  powered artifact protection stack. Artifact values are multiplicative in the
-  observed setup; no manual artifact composition is currently performed.
+- `db.actor:get_current_outfit_protection(hit.burn)` reflects effective outfit
+  protection but not the tested powered belt-artifact layer. Belt artifact immunity
+  is composed separately and multiplicatively by `sivol_anom_effects`.
+- The native outfit-protection getter has a confirmed pathological no-outfit path.
+  Callers must check slot 6 and return zero before invoking it when unarmored.
+- Thermal/Buzz winner results use persistent scratch tables, and all three anomaly
+  scans share one actor-position read per update to avoid steady-state allocations.
+- Outfit protection is refreshed at most every 200 ms; belt protection is lazily
+  recomputed after spawn/equip/unequip/drop signal invalidation.
 - Scripted ambient burn hits should use `hit.burn`, zero impulse, a valid draftsman,
   and `bip_none` rather than a localized spine bone.

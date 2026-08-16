@@ -1,34 +1,40 @@
--- ON HOLD: requires an engine-level script FOV override binding.
 -- Smooth, speed-driven sprint FOV widening.
 --
--- The console "fov" value is always the player's authoritative base setting.
--- This module never writes it: only the first-person camera's exported FOV
--- field receives the temporary offset. That keeps sivol_weapon_zoom's ADS
--- calculations independent from sprint FOV and makes mid-sprint slider changes
--- safe by construction.
+-- set_camera_fov() is the working camera override in this engine build (also
+-- used by monster_parts.script). It may update the console FOV as a side
+-- effect, so frozen_base_fov keeps the user's real setting separate from our
+-- temporary writes. sivol_weapon_zoom remains authoritative during ADS.
 
-local MAX_FOV_OFFSET       = 3.0
+local MAX_FOV_OFFSET       = 30.0
 local SPEED_DEAD_ZONE      = 0.30 -- metres/second; filters idle physics noise
 local SPEED_SMOOTH_RATE    = 10.0
 local FOV_RISE_RATE        = 6.0
 local FOV_FALL_RATE        = 10.0
-local CALIBRATION_TIME     = 0.45 -- first moving sprint establishes healthy speed
+local CALIBRATION_TIME     = 0.45
+local MAX_SAMPLE_DISTANCE  = 5.0  -- rejects teleports/level-transition jumps
 local CAMERA_MAX_DISTANCE  = 1.50 -- rejects third-person/script cameras
 local CAMERA_MIN_DIR_DOT   = 0.85
 local FOV_WRITE_EPSILON    = 0.01
 local BASE_CHANGE_EPSILON  = 0.01
+local MAX_SAMPLE_DISTANCE_SQ = MAX_SAMPLE_DISTANCE * MAX_SAMPLE_DISTANCE
+local CAMERA_MAX_DISTANCE_SQ = CAMERA_MAX_DISTANCE * CAMERA_MAX_DISTANCE
 
 local base_walk_accel = get_float("actor", "walk_accel", 1)
 local base_sprint_koef = get_float("actor", "sprint_koef", 1)
+local inv_base_walk_accel = 1 / base_walk_accel
+local inv_base_sprint_koef = 1 / base_sprint_koef
 
 local last_actor_id
-local last_position
+local last_position_x
+local last_position_z
 local smoothed_speed = 0
 local smoothed_offset = 0
 local sprint_time = 0
 local peak_reference_candidate = 0
 local reference_speed
+local frozen_base_fov
 local last_base_fov
+local last_written_fov
 local was_active = false
 local speed_source_logged = false
 
@@ -37,28 +43,45 @@ local function clamp(value, low, high)
 end
 
 local function exp_step(current, target, rate, dt)
-	local k = 1 - math.exp(-rate * dt)
-	return current + (target - current) * k
+	return current + (target - current) * (1 - math.exp(-rate * dt))
 end
 
+local function clear_position_sample()
+	last_position_x = nil
+	last_position_z = nil
+end
+
+-- If set_camera_fov changes the cvar, live will equal last_written_fov. Any
+-- other live value is an external slider change and immediately becomes the
+-- new base. If this engine leaves the cvar untouched, live simply stays equal
+-- to frozen_base_fov and the same logic still works.
 local function current_base_fov()
-	return get_console():get_float("fov")
-end
-
-local function first_person_camera()
-	return actor_camera(0)
-end
-
-local function write_camera_fov(camera, value)
-	if camera and math.abs(camera.fov - value) > FOV_WRITE_EPSILON then
-		camera.fov = value
+	local live = get_console():get_float("fov")
+	if not frozen_base_fov then
+		frozen_base_fov = live
+	elseif not last_written_fov or math.abs(live - last_written_fov) > FOV_WRITE_EPSILON then
+		if math.abs(live - frozen_base_fov) > BASE_CHANGE_EPSILON then
+			frozen_base_fov = live
+		end
 	end
+	return frozen_base_fov
+end
+
+local function write_actor_fov(actor, value, force)
+	if not force and last_written_fov
+		and math.abs(last_written_fov - value) <= FOV_WRITE_EPSILON
+	then
+		return
+	end
+	actor:set_camera_fov(value)
+	last_written_fov = value
 end
 
 local function restore_base(reason)
+	local had_override = was_active or smoothed_offset > FOV_WRITE_EPSILON
 	local base = current_base_fov()
-	write_camera_fov(db.actor and first_person_camera() or nil, base)
-	if was_active or smoothed_offset > FOV_WRITE_EPSILON then
+	if had_override and db.actor then
+		write_actor_fov(db.actor, base, true)
 		log2("[sprint_fov] restored base FOV %.2f (%s)", base, reason or "inactive")
 	end
 	was_active = false
@@ -66,69 +89,83 @@ local function restore_base(reason)
 	smoothed_offset = 0
 	sprint_time = 0
 	peak_reference_candidate = 0
+	clear_position_sample()
 end
 
 local function reset_all(reason)
 	restore_base(reason)
 	last_actor_id = nil
-	last_position = nil
 	reference_speed = nil
+	frozen_base_fov = nil
 	last_base_fov = nil
+	last_written_fov = nil
 	speed_source_logged = false
 end
 
 local function aiming(actor_obj)
-	if actor_obj:is_zoom_aiming_mode() then
+	if type(actor_obj.is_zoom_aiming_mode) == "function"
+		and actor_obj:is_zoom_aiming_mode()
+	then
 		return true
 	end
 	return wpn_params and type(wpn_params.get_zie_obj) == "function"
 		and wpn_params.get_zie_obj() ~= nil
 end
 
-local function standard_camera(actor)
-	local camera = first_person_camera()
-	if not camera then return false, nil end
+local function standard_camera(dev)
+	local camera = actor_camera(0)
+	if not camera then return false end
 
-	local dev = device()
 	local cp, dp = camera.position, dev.cam_pos
 	local dx, dy, dz = cp.x - dp.x, cp.y - dp.y, cp.z - dp.z
-	if dx * dx + dy * dy + dz * dz > CAMERA_MAX_DISTANCE * CAMERA_MAX_DISTANCE then
-		return false, camera
+	if dx * dx + dy * dy + dz * dz > CAMERA_MAX_DISTANCE_SQ then
+		return false
 	end
 
 	local cd, dd = camera.direction, dev.cam_dir
-	local dot = cd.x * dd.x + cd.y * dd.y + cd.z * dd.z
-	return dot >= CAMERA_MIN_DIR_DOT, camera
+	return cd.x * dd.x + cd.y * dd.y + cd.z * dd.z >= CAMERA_MIN_DIR_DOT
 end
 
 local function movement_modifier(actor, actor_obj)
 	local walk = tonumber(actor_obj.walk_accel) or base_walk_accel
 	local sprint = tonumber(actor_obj.sprint_koef) or base_sprint_koef
 	local speed_multiplier = tonumber(actor.speed_multiplier) or 1
-	local modifier = (walk / base_walk_accel) * (sprint / base_sprint_koef) * speed_multiplier
-	return clamp(modifier, 0.05, 2.0)
+	return clamp((walk * inv_base_walk_accel) * (sprint * inv_base_sprint_koef)
+		* speed_multiplier, 0.05, 2.0)
 end
 
+-- Numeric component caches avoid allocating a Lua table every frame.
 local function sample_horizontal_speed(actor, dt)
 	local position = actor:position()
 	local speed = 0
-	if last_position and dt > 0 then
-		local dx = position.x - last_position.x
-		local dz = position.z - last_position.z
-		speed = math.sqrt(dx * dx + dz * dz) / dt
+	if last_position_x then
+		local dx = position.x - last_position_x
+		local dz = position.z - last_position_z
+		local distance_sq = dx * dx + dz * dz
+		if distance_sq <= MAX_SAMPLE_DISTANCE_SQ then
+			speed = math.sqrt(distance_sq) / dt
+		end
 	end
-	last_position = {x = position.x, y = position.y, z = position.z}
+	last_position_x = position.x
+	last_position_z = position.z
 	return speed
 end
 
-local function suppression_reason(actor, actor_obj)
+local function suppression_reason(actor, actor_obj, dev)
 	if not actor:alive() then return "actor unavailable" end
-	if not actor_obj then return "native actor unavailable" end
-	if device():is_paused() then return "paused" end
+	if dev:is_paused() then return "paused" end
 	if level.main_input_receiver() then return "menu/UI" end
 	if actor:is_talking() then return "dialogue" end
 	if aiming(actor_obj) then return "ADS" end
+	if not standard_camera(dev) then return "non-standard camera" end
 	return nil
+end
+
+local function update_base_fov_log(base)
+	if not last_base_fov or math.abs(base - last_base_fov) > BASE_CHANGE_EPSILON then
+		log2("[sprint_fov] base FOV detected: %.2f", base)
+		last_base_fov = base
+	end
 end
 
 local function on_update(delta)
@@ -143,45 +180,57 @@ local function on_update(delta)
 		reset_all("actor changed")
 		last_actor_id = actor_id
 	end
+
 	local actor_obj = get_actor_obj()
-
-	local dt = tonumber(delta) or device().f_time_delta or 0.016
-	if dt > 1 then dt = dt / 1000 end
-	if dt <= 0 or dt > 0.20 then
-		last_position = nil
-		dt = 0.016
-	end
-
-	local raw_speed = sample_horizontal_speed(actor, dt)
-	local base = current_base_fov()
-	if not last_base_fov or math.abs(base - last_base_fov) > BASE_CHANGE_EPSILON then
-		log2("[sprint_fov] base FOV detected: %.2f", base)
-		last_base_fov = base
-	end
-
-	local reason = suppression_reason(actor, actor_obj)
-	local is_standard, camera = standard_camera(actor)
-	if not reason and not is_standard then reason = "non-standard camera" end
-	if reason then
-		last_position = nil -- never turn menu/cutscene displacement into speed
-		restore_base(reason)
+	if not actor_obj then
+		if was_active or smoothed_offset > FOV_WRITE_EPSILON then
+			restore_base("native actor unavailable")
+		end
 		return
 	end
 
 	local sprinting = actor_obj:is_actor_sprinting()
+	-- Nearly all frames take this path. Avoid console/camera/position reads,
+	-- allocations, square roots and exponential math while fully idle.
+	if not sprinting and smoothed_offset == 0 then
+		clear_position_sample()
+		sprint_time = 0
+		peak_reference_candidate = 0
+		return
+	end
+
+	local dev = device()
+	local dt = tonumber(delta) or dev.f_time_delta or 0.016
+	if dt > 1 then dt = dt / 1000 end
+	if dt <= 0 or dt > 0.20 then
+		clear_position_sample()
+		dt = 0.016
+	end
+
+	local reason = suppression_reason(actor, actor_obj, dev)
+	if reason then
+		restore_base(reason)
+		return
+	end
+
+	local base = current_base_fov()
+	update_base_fov_log(base)
+
 	if not sprinting then
+		clear_position_sample()
 		smoothed_speed = exp_step(smoothed_speed, 0, SPEED_SMOOTH_RATE, dt)
 		smoothed_offset = exp_step(smoothed_offset, 0, FOV_FALL_RATE, dt)
 		sprint_time = 0
 		peak_reference_candidate = 0
-		write_camera_fov(camera, base + smoothed_offset)
 		if smoothed_offset <= FOV_WRITE_EPSILON then
 			smoothed_offset = 0
-			write_camera_fov(camera, base)
+			write_actor_fov(actor, base, true)
 			if was_active then
 				log2("[sprint_fov] restored base FOV %.2f (sprint ended)", base)
 			end
 			was_active = false
+		else
+			write_actor_fov(actor, base + smoothed_offset)
 		end
 		return
 	end
@@ -191,9 +240,10 @@ local function on_update(delta)
 		speed_source_logged = true
 	end
 
-	local modifier = movement_modifier(actor, actor_obj)
+	local raw_speed = sample_horizontal_speed(actor, dt)
 	if raw_speed > SPEED_DEAD_ZONE then
 		sprint_time = sprint_time + dt
+		local modifier = movement_modifier(actor, actor_obj)
 		peak_reference_candidate = math.max(peak_reference_candidate, raw_speed / modifier)
 		if sprint_time >= CALIBRATION_TIME then
 			if not reference_speed then
@@ -211,15 +261,15 @@ local function on_update(delta)
 	smoothed_speed = exp_step(smoothed_speed, raw_speed, SPEED_SMOOTH_RATE, dt)
 	local intensity = 0
 	if reference_speed and smoothed_speed > SPEED_DEAD_ZONE then
-		intensity = clamp((smoothed_speed - SPEED_DEAD_ZONE) /
-			math.max(reference_speed - SPEED_DEAD_ZONE, 0.01), 0, 1)
+		intensity = clamp((smoothed_speed - SPEED_DEAD_ZONE)
+			/ math.max(reference_speed - SPEED_DEAD_ZONE, 0.01), 0, 1)
 	end
 
 	local target_offset = MAX_FOV_OFFSET * intensity
 	local rate = target_offset > smoothed_offset and FOV_RISE_RATE or FOV_FALL_RATE
 	smoothed_offset = exp_step(smoothed_offset, target_offset, rate, dt)
 	if smoothed_offset < FOV_WRITE_EPSILON then smoothed_offset = 0 end
-	write_camera_fov(camera, base + smoothed_offset)
+	write_actor_fov(actor, base + smoothed_offset)
 
 	if not was_active and smoothed_offset > FOV_WRITE_EPSILON then
 		was_active = true
