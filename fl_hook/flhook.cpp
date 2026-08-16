@@ -67,6 +67,16 @@
 #define OFF_EV_DEVIATION      0x98
 #define RVA_DEVICE_TIME       0x0122378CULL
 
+#define RVA_G_ACTOR            0x012039F0ULL
+#define RVA_GMLIB_MTL_FIRST    0x01203C88ULL
+#define RVA_GMLIB_MTL_LAST     0x01203C90ULL
+#define RVA_LUA_PUSHCCLOSURE   0x00C190E0ULL
+#define OFF_EA_MATERIAL_MGR    0x368
+#define OFF_MM_MY_IDX          0x14
+#define OFF_MM_LAST_IDX        0x48
+#define OFF_SGAMEMTL_NAME      0x04
+#define OFF_STRVALUE_TEXT      0x14
+
 #define RVA_ACTOR_RENDER      0x002E0860ULL
 #define RVA_ACTOR_RENDER_END  0x002E086EULL
 #define RVA_ACTOR_ONHUDDRAW   0x002E09F0ULL
@@ -217,6 +227,7 @@ typedef void  (*func_delete_this_t)(void* self, unsigned char dealloc);
 typedef void  (*setup_ce_base_t)(void* ev, const void* fn);
 typedef void  (*lua_pushinteger_t)(void* L, long long n);
 typedef void  (*lua_setfield_t)(void* L, int idx, const char* k);
+typedef void  (*lua_pushcclosure_t)(void* L, int (*fn)(void*), int n);
 typedef const void* (*best_cover_far_t)(void* mgr, const float* pos, float radius, void* ev,
                                         const void* restrictor);
 
@@ -321,6 +332,59 @@ static void run_fl(const char* args)
     pushstr(L, args);
     rc = pcall(L, 1, 0, 0);
     if (rc) printout(L, "@fl", rc);
+}
+
+static const char* gmtl_name(unsigned idx)
+{
+    char** first = *(char***)(g_base + RVA_GMLIB_MTL_FIRST);
+    char** last  = *(char***)(g_base + RVA_GMLIB_MTL_LAST);
+    if (!first || !last || last <= first) return 0;
+    if (idx >= (unsigned)(last - first)) return 0;
+    char* mtl = first[idx];
+    if (!mtl) return 0;
+    char* s = *(char**)(mtl + OFF_SGAMEMTL_NAME);
+    if (!s) return 0;
+    return s + OFF_STRVALUE_TEXT;
+}
+
+static int step_material_read(const char** ground, const char** self, int* gid)
+{
+    if (!g_base) return 0;
+    void* actor = *(void**)(g_base + RVA_G_ACTOR);
+    if (!actor) return 0;
+    char* mm = *(char**)((char*)actor + OFF_EA_MATERIAL_MGR);
+    if (!mm) return 0;
+    unsigned g = *(unsigned short*)(mm + OFF_MM_LAST_IDX);
+    unsigned s = *(unsigned short*)(mm + OFF_MM_MY_IDX);
+    const char* gn = gmtl_name(g);
+    if (!gn) return 0;
+    *ground = gn;
+    *self   = gmtl_name(s);
+    *gid    = (int)g;
+    return 1;
+}
+
+static int lua_fl_step_material(void* L)
+{
+    const char* ground = 0;
+    const char* self   = 0;
+    int gid = 0;
+    if (!step_material_read(&ground, &self, &gid)) return 0;
+    pushstr_t pushstr = (pushstr_t)(g_base + RVA_PUSHSTR);
+    pushstr(L, ground);
+    ((lua_pushinteger_t)(g_base + RVA_LUA_PUSHINTEGER))(L, gid);
+    pushstr(L, self ? self : "");
+    return 3;
+}
+
+static void* g_lua_api_state = 0;
+static void ensure_lua_api()
+{
+    void* L = lua_state();
+    if (!L || L == g_lua_api_state) return;
+    ((lua_pushcclosure_t)(g_base + RVA_LUA_PUSHCCLOSURE))(L, &lua_fl_step_material, 0);
+    ((lua_setfield_t)(g_base + RVA_LUA_SETFIELD))(L, LUA_GLOBALSINDEX, "fl_step_material");
+    g_lua_api_state = L;
 }
 
 static void ensure_slash(char* path, int cap)
@@ -796,6 +860,7 @@ static void hkRestrict(void* mgr, unsigned short id, void* out_r, void* in_r)
 
 static int hkRestrictedNetSpawn(void* self, void* data)
 {
+    ensure_lua_api();
     if (self) {
         void* obj = *(void**)((char*)self + OFF_RO_OBJECT);
         const char* nm = obj_name(obj);
@@ -1397,6 +1462,22 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
             return;
         }
 
+        if (p[0] == 's' && p[1] == 't' && p[2] == 'e' && p[3] == 'p' &&
+            p[4] == 'm' && p[5] == 't' && p[6] == 'l' &&
+            (p[7] == 0 || p[7] == ' ' || p[7] == '\t')) {
+            msg_t Msg = (msg_t)(g_base + RVA_MSG);
+            ensure_lua_api();
+            const char* ground = 0;
+            const char* self_m = 0;
+            int gid = 0;
+            if (step_material_read(&ground, &self_m, &gid))
+                Msg("! [fl] stepmtl: ground=[%s] id=%d self=[%s] bound=%d",
+                    ground, gid, self_m ? self_m : "", g_lua_api_state ? 1 : 0);
+            else
+                Msg("! [fl] stepmtl: unavailable (no actor / no material lib)");
+            return;
+        }
+
         if (p[0] == 'b' && p[1] == 'p' && p[2] == 'b' && p[3] == 'o' &&
             p[4] == 'd' && p[5] == 'y' &&
             (p[6] == 0 || p[6] == ' ' || p[6] == '\t')) {
@@ -1682,6 +1763,7 @@ static void* ircv_active_item(void* self)
 static void hkActorKeyboardPress(void* self, unsigned cmd)
 {
     g_actor_ircv = self;
+    ensure_lua_api();
     if (g_torch_lua && (cmd == ACT_TORCH || cmd == ACT_TORCH_MODE) &&
         !ircv_active_item(self)) {
         ++g_torch_blocked_n;
