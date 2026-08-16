@@ -1,0 +1,229 @@
+-- [HE-PORT]
+local CHECK_INTERVAL   = 10000
+local RECRUIT_COOLDOWN = 5 * 60000
+
+local watch = {
+	{ smart = "esc_dram", section = "logic@esc_dram_post4", comm = "green" },
+}
+
+local by_smart = {}
+for i = 1, #watch do
+	local w = watch[ i ]
+	if not by_smart[ w.smart ] then by_smart[ w.smart ] = {} end
+	table.insert( by_smart[ w.smart ], w )
+end
+
+local time_next_check = 0
+local recruit_next = {}
+
+local function get_smart( name )
+	if not name then return nil end
+	local smart = olr_smart_index.get_obj( name )
+	if smart then return smart end
+	local sim = g_sim or alife()
+	if not sim then return nil end
+	local zone = db.zone_by_name and db.zone_by_name[ name ]
+	if not zone then return nil end
+	local ok, obj = pcall( function() return sim:object( zone:id() ) end )
+	if ok and obj then return obj end
+	return nil
+end
+
+local function state_jobs( g )
+	if g.Job_avail_in_state and #g.Job_avail_in_state > 0 then
+		return g.Job_avail_in_state
+	end
+	return g.Job or {}
+end
+
+local function find_job( g, section )
+	local jobs = state_jobs( g )
+	for i = 1, #jobs do
+		if jobs[ i ].section == section then
+			return jobs[ i ]
+		end
+	end
+	return nil
+end
+
+local function job_alive( g, obj_id )
+	local info = obj_id and g.npc_info and g.npc_info[ obj_id ]
+	if not info or not info.se_obj then return false end
+	local ok, alive = pcall( function() return info.se_obj:alive() end )
+	return ok and alive == true
+end
+
+local function job_distance( g, obj_id, job )
+	local ok, dist = pcall( function() return g:distance_to_job_location( obj_id, job ) end )
+	if ok and dist then return dist end
+	return 100000
+end
+
+local function pick_donor( g, job )
+	local jobs = state_jobs( g )
+	local best, best_prior, best_dist
+	for i = 1, #jobs do
+		local j = jobs[ i ]
+		if j ~= job and j.object and j.prior < job.prior and job_alive( g, j.object ) then
+			local info = g.npc_info[ j.object ]
+			local suits = true
+			if job.predicate then
+				local okp, res = pcall( job.predicate, info, g )
+				suits = okp and res == true
+			end
+			if suits then
+				local d = job_distance( g, j.object, job )
+				if ( not best ) or j.prior < best_prior or ( j.prior == best_prior and d < best_dist ) then
+					best, best_prior, best_dist = j.object, j.prior, d
+				end
+			end
+		end
+	end
+	return best
+end
+
+local function occupy( g, job, obj_id )
+	return pcall( function()
+		g:free_obj_and_reinit( obj_id )
+		g:setJob( obj_id, job )
+		g:update_beginning_jobs()
+	end )
+end
+
+local function level_of( obj )
+	local sim = g_sim or alife()
+	if not sim then return nil end
+	local ok, lname = pcall( function()
+		return sim:level_name( game_graph():vertex( obj.m_game_vertex_id ):level_id() )
+	end )
+	if ok then return lname end
+	return nil
+end
+
+local function smart_name_of( obj )
+	local strn_id = obj:smart_terrain_id()
+	if not strn_id or strn_id == BAD_OBJ_ID then return nil end
+	local sim = g_sim or alife()
+	if not sim then return nil end
+	local s = sim:object( strn_id )
+	if s then return s:name() end
+	return nil
+end
+
+local function can_take( obj, w )
+	if not obj or not obj:alive() then return false end
+	if obj.online then return false end
+	if olr_protected and olr_protected.is_no_offline_alife_obj( obj:name() ) then return false end
+	local from = smart_name_of( obj )
+	if from == w.smart then return false end
+	if from then
+		if olr_smart_index.is_locked( from ) then return false end
+		if not olr_smart_index.can_release( from ) then return false end
+	end
+	return true
+end
+
+local function recruit( w, smart )
+	local t = time_global()
+	if recruit_next[ w.smart ] and t < recruit_next[ w.smart ] then return false end
+	if not olr_offline_task or not olr_offline_task.cached_stalkers then return false end
+	local sim = g_sim or alife()
+	if not sim then return false end
+
+	local lname = olr_smart_index.get_level( w.smart ) or level_of( smart )
+	local ids = olr_offline_task.cached_stalkers( w.comm )
+	local best, best_dist
+	for i = 1, #ids do
+		local obj = sim:object( ids[ i ] )
+		if obj and can_take( obj, w ) and ( ( not lname ) or level_of( obj ) == lname ) then
+			local d = 100000
+			local okd, dist = pcall( function() return obj.position:distance_to_sqr( smart.position ) end )
+			if okd and dist then d = dist end
+			if ( not best ) or d < best_dist then
+				best, best_dist = obj, d
+			end
+		end
+	end
+	if not best then return false end
+
+	local ok = pcall( function()
+		xrs_utils.clear_smart_terrain( best )
+		smart_terrain.unregister_npc( best )
+		if best.brain then
+			best:brain():can_choose_alife_tasks( true )
+		end
+		xrs_utils.set_smart_terrain( best, w.smart )
+		if best.brain then
+			best:brain():can_choose_alife_tasks( true )
+			best:brain():update( true )
+		end
+	end )
+	if not ok then return false end
+
+	pcall( olr_offline_task.clear_wandering, best:name() )
+	recruit_next[ w.smart ] = t + RECRUIT_COOLDOWN
+	return true
+end
+
+local function check_one( w )
+	local smart = get_smart( w.smart )
+	if not smart then return end
+	if smart.disabled or smart.population_locked then return end
+	local oka, avail = pcall( function() return smart:is_gulag_available() end )
+	if oka and avail == false then return end
+
+	local g = smart.gulag
+	if not g or not g.Job or not smart.gulag_working then
+		recruit( w, smart )
+		return
+	end
+
+	local job = find_job( g, w.section )
+	if not job then return end
+	if job.object then
+		if job_alive( g, job.object ) then return end
+		pcall( function() g:free_obj_and_reinit( job.object ) end )
+	end
+
+	if g:availJob( job ) then
+		local donor = pick_donor( g, job )
+		if donor then
+			occupy( g, job, donor )
+			return
+		end
+	end
+
+	local pop = 0
+	local okp, p = pcall( function() return g:get_population() end )
+	if okp and p then pop = p end
+	if g.capacity and pop >= g.capacity then return end
+	recruit( w, smart )
+end
+
+-- [HE-PORT]
+function may_release( smart_name, obj_id )
+	local list = smart_name and by_smart[ smart_name ]
+	if not list then return true end
+	local smart = get_smart( smart_name )
+	local g = smart and smart.gulag
+	if not g or not g.Job then return true end
+	for i = 1, #list do
+		local job = find_job( g, list[ i ].section )
+		if job and job.object == obj_id then
+			return pick_donor( g, job ) ~= nil
+		end
+	end
+	return true
+end
+
+-- [HE-PORT]
+function update()
+	if not db.actor then return end
+	if device().precache_frame > 1 then return end
+	local t = time_global()
+	if t < time_next_check then return end
+	time_next_check = t + CHECK_INTERVAL
+	for i = 1, #watch do
+		pcall( check_one, watch[ i ] )
+	end
+end
