@@ -262,6 +262,18 @@ This is worth internalizing as a general pattern, not just a one-off torch fix:
 
 ## 6. UI / window conventions
 
+- Gameplay options that are backed by script state (rather than an engine cvar)
+  require all of the following: an XML control in `config/ui/ui_mm_opt.xml`, a
+  six-field `InitCheck` entry with `save_to_handler = true` in
+  `ui_mm_opt_gameplay.script`, load/save calls in `GameSetupMenuLoad()` and
+  `GameSetupMenuSave()` in `ui_mm_opt_main.script`, and a declared global plus
+  matching `defaults` entry in `kotovod/game_options.script`. The option is then
+  persisted automatically by `save_game_options()`.
+- The menu XML and both `ui_st_mm.xml` localization files are encoded as
+  Windows-1251. For Russian strings, write literal Windows-1251 Cyrillic text;
+  do **not** use XML numeric character entities such as `&#1087;`. This UI displays
+  those entities literally instead of decoding them. Preserve the file encoding
+  when editing it.
 - No `lam2`, no generic `GUI_on_show`/`GUI_on_hide` watching for custom windows.
   Convention here: `CUIScriptWnd`-derived window classes own their own `on_quit`,
   and anything needing to react to open/close is called **directly** from that
