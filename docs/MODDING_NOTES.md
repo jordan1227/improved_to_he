@@ -37,3 +37,18 @@ These are concise observations from the thermal-anomaly and device-interference 
 - In per-frame proximity loops, reuse persistent result tables and mutate their
   fields. Avoid table literals, `string.format`, sorting, and concatenation in the
   steady-state path. Obtain the actor position once and share it across scans.
+- For weapon effects, use the zoom effector (`wpn_params.get_zie_obj()`) as the
+  ADS source. It is a temporary rendered-direction overlay, not the actor camera
+  base: preserving the final aim direction at ADS exit requires one controlled
+  rebase of `device().cam_dir` into `actor_camera(0)` (yaw/pitch are the negative
+  direction heading/pitch), plus a last-direction fallback for missed lifecycle
+  signals.
+- Keep hold-breath activation and every exit cause centralized in
+  `sivol_weapon`; FOV/HUD-FOV cleanup, sound policy, cooldown, and mask gates
+  should consume that state rather than duplicating input checks.
+- Cache weapon mass by active item and attachment signature. Use the live weapon
+  mass plus resolved attached addon sections; do not recompute or log it per
+  frame. Diagnostic logging stays behind `sivol_weapon.weapon_breath_diagnostics`.
+- HUD FOV is a console value. Capture the pre-hold value, smoothly approach the
+  temporary target only after ADS settles, and restore that exact captured value;
+  exclude optic-driven adaptive zoom and binocular cases from this visual layer.

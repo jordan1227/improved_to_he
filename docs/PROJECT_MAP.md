@@ -22,4 +22,17 @@ Inspect other `gamedata` folders only when the current task requires them.
   and the flashlight path consume its intensity.
 - Signal registration: `gamedata/scripts/ogse/ogse_signals_addons_list.script`.
 - Actor inventory signal forwarding: `gamedata/scripts/binders/bind_stalker.script`.
+- Manual weapon breath and mass handling:
+  - `gamedata/scripts/kotovod/sivol_weapon.script` owns hold/toggle state,
+    stamina costs, cooldown/timeout, sounds, artifact-effect hooks, and cached
+    live weapon/add-on mass statistics.
+  - `gamedata/scripts/params/wpn_params.script` applies mass-based ADS wobble
+    and retains the final visible aim direction when the zoom effector exits.
+  - `gamedata/scripts/kotovod/sivol_weapon_zoom.script` owns the temporary
+    hold-breath FOV and HUD-FOV transitions.
+  - `gamedata/scripts/kotovod/game_options.script` and the gameplay-options UI
+    expose only the hold-versus-toggle input-mode setting.
+  - `gamedata/scripts/sak/sak.script` and
+    `gamedata/scripts/vergas/vergas_masks.script` suspend mask breath sounds
+    and condensation respectively while breath is held.
 - Configuration-to-script relationships beyond these entry points: TBD.

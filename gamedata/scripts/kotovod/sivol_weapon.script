@@ -18,6 +18,10 @@ function attach(sm)
     sm:subscribe({signal = "on_update", fun = update_ads_fatigue})
     sm:subscribe({signal = "on_update", fun = run_psy_divert})
     sm:subscribe({signal = "on_update", fun = run_belt_divert})
+    sm:subscribe({signal = "on_key", fun = function(key, bind) sivol_weapon.on_key(key, bind) end})
+    sm:subscribe({signal = "on_key_up", fun = function(key, bind) sivol_weapon.on_key_up(key, bind) end})
+    sm:subscribe({signal = "on_first_update", fun = function() sivol_weapon.reset_hold_breath() end})
+    sm:subscribe({signal = "on_stop_modules", fun = function() sivol_weapon.reset_hold_breath() end})
 end
 
 sivol_weapon.attach = attach
@@ -28,55 +32,212 @@ local update_interval = 100 -- Run every 100ms
 local last_update = 0
 -- local min_stamina_floor = 0.70 -- 70% stamina floor so aiming doesn't cripple movement. -- I walk back on that idea. 
 
-local breath_debt      = 0
-local ads_drop_time    = 0
-local was_aiming       = false
-local DEBT_DECAY_RATE  = 0.5  -- debt recovers at half the rate it accrues
-local session_start_time = 0
+-- Manual hold breath is the only weapon-breath system. It keeps the input
+-- request separate from the active state so every exit has one owner.
+local MANUAL_HOLD_BREATH_RISE_RATE = 12.0
+local MANUAL_HOLD_BREATH_FALL_RATE = 8.0
+local MANUAL_HOLD_BREATH_DRAIN_K   = 0.85
+local MANUAL_HOLD_BREATH_MIN_POWER = 0.025
+local MANUAL_HOLD_BREATH_BREATHOUT_MS = 8000
+local MANUAL_HOLD_BREATH_MAX_MS = 15000
+local MANUAL_HOLD_BREATH_COOLDOWN_MS = 2000
+local MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_MS = 2500
+local MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_K = 1.35
 
-local function update_breath_debt()
-    if not wpn_params then return end
-    local is_aiming = wpn_params.zoom_time > 1.05
+-- Set true only while diagnosing weapon-breath/FOV/mass behavior.
+sivol_weapon.weapon_breath_diagnostics = false
+local function weapon_breath_log(fmt, ...)
+    if sivol_weapon.weapon_breath_diagnostics then log2(fmt, ...) end
+end
+
+local manual_hold_requested = false
+local manual_hold_active = false
+local manual_hold_strength = 0
+local manual_hold_last_time = 0
+local manual_hold_actor_id = nil
+local manual_hold_weapon_id = nil
+local manual_hold_started_at = 0
+local manual_hold_cooldown_until = 0
+local manual_hold_timeout_wobble_until = 0
+local update_manual_hold_breath
+local get_artifact_weapon_effects
+
+local function play_breath_sound(name)
+    local effects = get_artifact_weapon_effects and get_artifact_weapon_effects()
+    if effects and effects.suppress_breath_sounds then return end
+    if vergas_lib and vergas_lib.s_play then
+        vergas_lib.s_play(name, 1)
+    end
+end
+function sivol_weapon.is_manual_hold_breath_toggle_mode()
+    return game_options and game_options.ManualHoldBreathToggleMode == true
+end
+
+local function is_zoom_aiming()
+    return wpn_params and type(wpn_params.get_zie_obj) == "function"
+        and wpn_params.get_zie_obj() ~= nil
+end
+
+local function is_sprint_bind(bind)
+    return key_bindings and (bind == key_bindings.kACCEL or bind == key_bindings.kSPRINT_TOGGLE)
+end
+
+local function notify_hold_breath_exit(reason, immediate)
+    if sivol_weapon_zoom and sivol_weapon_zoom.on_manual_hold_breath_exit then
+        sivol_weapon_zoom.on_manual_hold_breath_exit(reason, immediate)
+    end
+end
+
+-- The only normal exit handler. Audio, input clearing, and the hold-zoom
+-- restoration signal all originate here, regardless of why the state ended.
+function sivol_weapon.release_manual_hold_breath(reason, silent, immediate_zoom_restore, force_breathout)
+    local was_active = manual_hold_active
+    manual_hold_requested = false
+    manual_hold_active = false
+
+    if was_active then
+        local now = time_global()
+        local held_ms = math.max(0, now - manual_hold_started_at)
+        if not silent and (force_breathout or held_ms >= MANUAL_HOLD_BREATH_BREATHOUT_MS) then
+            play_breath_sound("actor\\breathout")
+        end
+        if not silent then
+            manual_hold_cooldown_until = now + MANUAL_HOLD_BREATH_COOLDOWN_MS
+        end
+        if force_breathout then
+            manual_hold_timeout_wobble_until = now + MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_MS
+        end
+        weapon_breath_log("[weapon_breath] hold ended: reason=%s duration=%.1fs", reason or "released", held_ms / 1000)
+    end
+
+    if was_active or manual_hold_strength > 0.001 then
+        notify_hold_breath_exit(reason or "released", immediate_zoom_restore)
+    end
+    manual_hold_started_at = 0
+    manual_hold_weapon_id = nil
+end
+
+function sivol_weapon.is_manual_hold_breath_active()
+    update_manual_hold_breath()
+    return manual_hold_active
+end
+
+update_manual_hold_breath = function()
+    local now = time_global() / 1000
+    -- Several consumers query this state per frame; only advance once per clock tick.
+    if manual_hold_last_time == now then return end
+    local dt = (manual_hold_last_time == 0) and 0.016 or (now - manual_hold_last_time)
+    manual_hold_last_time = now
+    if dt <= 0 or dt > 0.25 then dt = 0.016 end
 
     local actor = db.actor
-    local wpn = actor and actor:active_item()
-    local sec = wpn and wpn:section()
-    if sec and sivol_weapon.is_stamina_exempt(sec) then
-        return -- binoculars etc: skip debt accrual/decay entirely
+    if not actor then
+        sivol_weapon.release_manual_hold_breath("actor unavailable", true, true)
+        manual_hold_strength = 0
+        manual_hold_actor_id = nil
+        return
+    end
+    if manual_hold_actor_id ~= actor:id() then
+        sivol_weapon.release_manual_hold_breath("actor changed", true, true)
+        manual_hold_strength = 0
+        manual_hold_actor_id = actor:id()
     end
 
-    if was_aiming and not is_aiming then
-        local session_used = timers.Get_Game_Seconds() - session_start_time
-        breath_debt = breath_debt + math.max(0, session_used)
-        ads_drop_time = timers.Get_Game_Seconds()
-        was_aiming = false
-    elseif not was_aiming and is_aiming then
-        local time_resting = timers.Get_Game_Seconds() - ads_drop_time
-        breath_debt = math.max(0, breath_debt - time_resting * DEBT_DECAY_RATE)
-        session_start_time = timers.Get_Game_Seconds()
-        was_aiming = true
+    local item = actor:active_item()
+    local sec = item and item:section()
+    local usable = sec and not sivol_weapon.is_stamina_exempt(sec)
+        and item:get_weapon() ~= nil
+    local item_id = item and item:id()
+    if manual_hold_active and manual_hold_weapon_id ~= item_id then
+        sivol_weapon.release_manual_hold_breath("weapon changed")
+    end
+    local now_ms = time_global()
+    local timed_out = manual_hold_active
+        and now_ms - manual_hold_started_at >= MANUAL_HOLD_BREATH_MAX_MS
+    if timed_out then
+        sivol_weapon.release_manual_hold_breath("maximum hold duration", false, false, true)
+    end
+    local aiming = is_zoom_aiming()
+    local stamina_depleted = actor.power <= MANUAL_HOLD_BREATH_MIN_POWER
+    local cooling_down = now_ms < manual_hold_cooldown_until
+    local target = manual_hold_requested and usable and aiming and not stamina_depleted
+        and not cooling_down and 1 or 0
+
+    if target == 1 and not manual_hold_active then
+        manual_hold_active = true
+        manual_hold_weapon_id = item:id()
+        manual_hold_started_at = time_global()
+        play_breath_sound("actor\\breathin")
+        weapon_breath_log("[weapon_breath] hold started: section=%s mode=%s", sec,
+            sivol_weapon.is_manual_hold_breath_toggle_mode() and "toggle" or "hold")
+    elseif target == 0 and manual_hold_active then
+        local reason = stamina_depleted and "stamina floor"
+            or not aiming and "ADS ended"
+            or not usable and "weapon changed"
+            or "input released"
+        sivol_weapon.release_manual_hold_breath(reason)
+    end
+
+    local rate = target > manual_hold_strength and MANUAL_HOLD_BREATH_RISE_RATE
+        or MANUAL_HOLD_BREATH_FALL_RATE
+    manual_hold_strength = manual_hold_strength
+        + (target - manual_hold_strength) * (1 - math.exp(-rate * dt))
+    if manual_hold_strength < 0.001 then manual_hold_strength = 0 end
+end
+
+function sivol_weapon.get_manual_hold_breath_strength()
+    update_manual_hold_breath()
+    return manual_hold_strength
+end
+
+function sivol_weapon.on_key(key, bind)
+    if not is_sprint_bind(bind) then return end
+    if time_global() < manual_hold_cooldown_until then
+        weapon_breath_log("[weapon_breath] activation blocked by cooldown")
+        return
+    end
+    if sivol_weapon.is_manual_hold_breath_toggle_mode() then
+        -- Do not turn a normal sprint press outside ADS into a queued hold.
+        if is_zoom_aiming() then
+            if manual_hold_requested then
+                sivol_weapon.release_manual_hold_breath("toggled off")
+            else
+                manual_hold_requested = true
+            end
+        end
+    else
+        manual_hold_requested = true
     end
 end
 
-function sivol_weapon.get_breath_debt()
-    if breath_debt <= 0 then return 0 end
-    if ads_drop_time <= 0 then return breath_debt end
-    local now = timers.Get_Game_Seconds()  -- FIX: was time_global(), unit mismatch
-    local time_resting = now - ads_drop_time
-    return math.max(0, breath_debt - time_resting * DEBT_DECAY_RATE)
+function sivol_weapon.on_key_up(key, bind)
+    if is_sprint_bind(bind) and not sivol_weapon.is_manual_hold_breath_toggle_mode() then
+        sivol_weapon.release_manual_hold_breath("key released")
+    end
 end
 
-function sivol_weapon.clear_breath_debt()
-    breath_debt        = 0
-    ads_drop_time      = 0
-    session_start_time = 0
+function sivol_weapon.reset_hold_breath()
+    sivol_weapon.release_manual_hold_breath("load/reset", true, true)
+    manual_hold_requested = false
+    manual_hold_active = false
+    manual_hold_strength = 0
+    manual_hold_last_time = 0
+    manual_hold_actor_id = nil
+    manual_hold_weapon_id = nil
+    manual_hold_started_at = 0
+    manual_hold_cooldown_until = 0
+    manual_hold_timeout_wobble_until = 0
 end
 
--- Мастерство оружия. Меченный становится крепче, раскачка с днями меньше. Первые 2-3 дня плохо. 
+function sivol_weapon.get_manual_hold_breath_timeout_wobble_k()
+    if time_global() < manual_hold_timeout_wobble_until then
+        return MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_K
+    end
+    return 1.0
+end
 -- Each class defines:
--- debuff: wobble multiplier on day 0 (>1.0 = worse)
--- cap:    wobble multiplier at full mastery (<1.0 = improvement ceiling)
--- plateau_day: day full mastery is reached
+--   debuff: day-zero wobble multiplier, cap: long-term multiplier,
+--   plateau_day: day full mastery is reached.
 local mastery_classes = {
     pistol  = { debuff = 1.15, cap = 0.75, plateau_day = 28 },  -- Reduced from 1.25 to prevent Day 0 whiplash
     shotgun = { debuff = 1.25, cap = 0.85, plateau_day = 28 },  -- NEW: Fast plateau, modest cap
@@ -88,392 +249,41 @@ local mastery_classes = {
 }
 
 -- Оружие, полностью исключённое из выносливости/дыхания при прицеливании. Убираем чтобы Калеченный не пыжился когда смотрел в бинокль.
--- Раскачка (wobble_wpn) при этом всё равно работает как обычно.
+-- Weapon handling is now derived from live mass; exemptions remain explicit.
 local no_stamina_no_breath = {
     [ "wpn_binoc" ] = true,
+    [ "wpn_knife" ] = true,
+    [ "wpn_knife_m1" ] = true,
+}
+local no_wobble_mechanics = {
+    [ "wpn_knife" ] = true,
+    [ "wpn_knife_m1" ] = true,
 }
 
 function sivol_weapon.is_stamina_exempt(sec)
     return no_stamina_no_breath[sec] == true
 end
 
+function sivol_weapon.is_wobble_exempt(sec)
+    return no_wobble_mechanics[sec] == true
+end
+
 -- Сила раскачки каждого оружия. Так же влияет на скорость раскачки каждого оружия (не амплитуду) - чем выше число, тем меньше инерция и быстрее раскачка
 -- Realistic Logic: Light mass = high twitch/sway. Heavy mass = low twitch/steady.
-local wobble_wpn = {
-    -- === MELEE & TOOLS ===
-    [ "wpn_knife"               ] = 1.0,
-    [ "wpn_binoc"               ] = 0.5, -- Held with two hands to the face, extremely steady
-
-    -- === PISTOLS === (High base wobble, no shoulder support)
-    [ "wpn_pm"                  ] = 2.3, -- Was 2.5
-    [ "wpn_pb"                  ] = 2.2, -- Was 2.4
-    [ "wpn_fort"                ] = 2.3,
-    [ "wpn_fort_m1"             ] = 2.3,
-    [ "wpn_aps"                 ] = 2.2,
-    [ "wpn_walther"             ] = 2.2,
-    [ "wpn_glock"               ] = 2.2,
-    [ "wpn_usp"                 ] = 2.2,
-    [ "wpn_sig220"              ] = 2.2,
-    [ "wpn_beretta"             ] = 2.1,
-    [ "wpn_beretta93"           ] = 2.1,
-    [ "wpn_colt1911"            ] = 2.1,
-    [ "wpn_desert_eagle"        ] = 2.0, -- Was 2.0
-    [ "wpn_eagle_m1"            ] = 2.0,
-
-    -- === SMGs === (Lighter than rifles, somewhat twitchy)
-    [ "wpn_mp5"                 ] = 2.0,
-    [ "wpn_mp5_m1"              ] = 2.0,
-    [ "wpn_bizon"               ] = 2.1,
-    [ "wpn_bizon_cobra"         ] = 2.0,
-    [ "wpn_bizon_1p78"          ] = 1.9,
-    [ "wpn_bizon_1pso"          ] = 1.9,
-    [ "wpn_pp19"                ] = 2.1,
-    [ "wpn_pp19_cobra"          ] = 2.0,
-    [ "wpn_pp19_1p78"           ] = 1.9,
-    [ "wpn_pp19_1pso"           ] = 1.9,
-    [ "wpn_ump45"               ] = 1.9, -- Heavier SMG
-    [ "wpn_ump45_eotech"        ] = 1.8,
-    [ "wpn_ump45_acog"          ] = 1.7,
-    [ "wpn_ump45_mt"            ] = 1.7,
-
-    -- === SHOTGUNS === 
-    [ "wpn_bm16"                ] = 2.2, -- Sawn-off, pure arm weight, worst sway
-    [ "wpn_bm16_full"           ] = 1.9, -- Stock added, proper shoulder support
-    [ "wpn_toz34"               ] = 1.8, -- Long heavy hunting barrel
-    [ "wpn_toz34_m1"            ] = 1.8,
-    [ "wpn_hunters_toz_new"     ] = 1.8,
-    [ "wpn_spas12"              ] = 1.9,
-    [ "wpn_wincheaster1300"     ] = 1.9,
-    [ "wpn_winchester_m1"       ] = 1.9,
-    [ "wpn_rem_870"             ] = 1.9,
-    [ "wpn_mp153"               ] = 1.9,
-    [ "wpn_mp153_m1"            ] = 1.9,
-    [ "wpn_mp153_eotech"        ] = 1.8,
-    [ "wpn_mp153_acog"          ] = 1.7,
-    [ "wpn_mp153_mt"            ] = 1.7,
-    [ "wpn_saiga12c"            ] = 1.8, -- AK platform mass
-    [ "wpn_saiga12c_cobra"      ] = 1.7,
-    [ "wpn_saiga12c_1p78"       ] = 1.6,
-    [ "wpn_saiga12c_1pso"       ] = 1.6,
-    [ "wpn_saiga12c_m1"         ] = 1.8,
-    [ "wpn_saiga12c_m1_eotech"  ] = 1.7,
-    [ "wpn_saiga12c_m1_acog"    ] = 1.6,
-    [ "wpn_saiga12c_m1_mt"      ] = 1.6,
-    [ "wpn_saiga12c_m2"         ] = 1.8,
-    [ "wpn_saiga12c_m2_cobra"   ] = 1.7,
-    [ "wpn_saiga12c_m2_1p78"    ] = 1.6,
-    [ "wpn_saiga12c_m2_1pso"    ] = 1.6,
-
-    -- === ASSAULT RIFLES (WARSAW) === (Baseline ~1.7 to 1.8)
-    [ "wpn_ak74u"               ] = 2.0, -- Short barrel, less mass up front
-    [ "wpn_ak74u_old"           ] = 2.0,
-    [ "wpn_ak74"                ] = 1.8,
-    [ "wpn_ak74_old"            ] = 1.8,
-    [ "wpn_ak74m"               ] = 1.8,
-    [ "wpn_ak74m_cobra"         ] = 1.7,
-    [ "wpn_ak74m_1p78"          ] = 1.6,
-    [ "wpn_ak74m_1pso"          ] = 1.6,
-    [ "wpn_ak74pbn"             ] = 1.8,
-    [ "wpn_ak74pbn_cobra"       ] = 1.7,
-    [ "wpn_ak74pbn_1p78"        ] = 1.6,
-    [ "wpn_ak74pbn_1pso"        ] = 1.6,
-    [ "wpn_ak74_m1"             ] = 1.8,
-    [ "wpn_ak74_m1_eotech"      ] = 1.7,
-    [ "wpn_ak74_m1_acog"        ] = 1.6,
-    [ "wpn_ak74_m1_mt"          ] = 1.6,
-    [ "wpn_ak74_m2"             ] = 1.8,
-    [ "wpn_ak74_m2_eotech"      ] = 1.7,
-    [ "wpn_ak74_m2_acog"        ] = 1.6,
-    [ "wpn_ak74_m2_mt"          ] = 1.6,
-    [ "wpn_ak104"               ] = 1.8,
-    [ "wpn_ak104_cobra"         ] = 1.7,
-    [ "wpn_ak104_1p78"          ] = 1.6,
-    [ "wpn_ak104_1pso"          ] = 1.6,
-    [ "wpn_ak108"               ] = 1.8,
-    [ "wpn_ak108_cobra"         ] = 1.7,
-    [ "wpn_ak108_1p78"          ] = 1.6,
-    [ "wpn_ak108_1pso"          ] = 1.6,
-    [ "wpn_ak47"                ] = 1.7, -- 7.62/milled receiver adds mass
-    [ "wpn_ak47_old"            ] = 1.7,
-    [ "wpn_aks47"               ] = 1.7,
-    [ "wpn_akm"                 ] = 1.7,
-    [ "wpn_abakan"              ] = 1.6, -- Complex heavy recoil system
-    [ "wpn_abakan_cobra"        ] = 1.5,
-    [ "wpn_abakan_1p78"         ] = 1.4,
-    [ "wpn_abakan_1pso"         ] = 1.4,
-    [ "wpn_groza"               ] = 1.7, -- Bullpup, slightly twitchier balance
-    [ "wpn_groza_po"            ] = 1.6,
-    [ "wpn_val"                 ] = 1.7, -- Suppressor adds forward weight
-    [ "wpn_val_cobra"           ] = 1.6,
-    [ "wpn_val_1p78"            ] = 1.5,
-    [ "wpn_val_1pso"            ] = 1.5,
-
-    -- === ASSAULT RIFLES (NATO) === (Generally good ergo, ~1.6 to 1.7)
-    [ "wpn_lr300"               ] = 1.7,
-    [ "wpn_lr300_m1"            ] = 1.7,
-    [ "wpn_lr300_eotech"        ] = 1.6,
-    [ "wpn_lr300_acog"          ] = 1.5,
-    [ "wpn_lr300_mt"            ] = 1.5,
-    [ "wpn_lr300_m1_eotech"     ] = 1.6,
-    [ "wpn_lr300_m1_acog"       ] = 1.5,
-    [ "wpn_lr300_m1_mt"         ] = 1.5,
-    [ "wpn_m16a4"               ] = 1.5, -- Longer barrel
-    [ "wpn_m16a4_eotech"        ] = 1.4,
-    [ "wpn_m16a4_acog"          ] = 1.3,
-    [ "wpn_m16a4_mt"            ] = 1.3,
-    [ "wpn_sig550"              ] = 1.6, -- Heavy rifle
-    [ "wpn_sig550_eotech"       ] = 1.5,
-    [ "wpn_sig550_acog"         ] = 1.4,
-    [ "wpn_sig550_mt"           ] = 1.4,
-    [ "wpn_g36"                 ] = 1.6,
-    [ "wpn_g36_g36l"            ] = 1.6,
-    [ "wpn_g36c"                ] = 1.6,
-    [ "wpn_g36c_eotech"         ] = 1.5,
-    [ "wpn_g36c_acog"           ] = 1.4,
-    [ "wpn_g36c_mt"             ] = 1.4,
-    [ "wpn_fn2000"              ] = 1.5, -- Very bulky, steady mass
-    [ "wpn_fn2000_eotech"       ] = 1.4,
-    [ "wpn_fn2000_acog"         ] = 1.3,
-    [ "wpn_fn2000_mt"           ] = 1.3,
-
-    -- === LMGs === (Massive heavy barrels, incredibly steady)
-    [ "wpn_rpk74"               ] = 1.4, -- Was 1.2
-    [ "wpn_rpk74_cobra"         ] = 1.3,
-    [ "wpn_rpk74_1p78"          ] = 1.2,
-    [ "wpn_rpk74_1pso"          ] = 1.2, -- Was 1.0
-    [ "wpn_pkm"                 ] = 1.2, -- Was 1.0
-
-    -- === SNIPERS === (Extremely steady initially)
-    [ "wpn_vintorez"            ] = 1.4, -- Light sniper
-    [ "wpn_vintorez_cobra"      ] = 1.3,
-    [ "wpn_vintorez_1p78"       ] = 1.2,
-    [ "wpn_vintorez_1pso"       ] = 1.2,
-    [ "wpn_vintorez_m1"         ] = 1.4,
-    [ "wpn_vintorez_m1_cobra"   ] = 1.3,
-    [ "wpn_vintorez_m1_1p78"    ] = 1.2,
-    [ "wpn_vintorez_m1_1pso"    ] = 1.2,
-    [ "wpn_svd"                 ] = 1.4, -- Was 1.2
-    [ "wpn_svd_cobra"           ] = 1.3,
-    [ "wpn_svd_1p78"            ] = 1.2,
-    [ "wpn_svd_1pso"            ] = 1.2, -- Was 1.0
-    [ "wpn_svu"                 ] = 1.5,
-    [ "wpn_svu_cobra"           ] = 1.4,
-    [ "wpn_svu_1p78"            ] = 1.3,
-    [ "wpn_svu_1pso"            ] = 1.3,
-    [ "wpn_awm"                 ] = 1.25, -- Was 1.1
-    [ "wpn_awm_eotech"          ] = 1.15,
-    [ "wpn_awm_acog"            ] = 1.1, -- Was 0.9
-    [ "wpn_awm_mt"              ] = 1.1, -- Was 0.9
-    [ "wpn_sv98"                ] = 1.3,
-    [ "wpn_sv98_eotech"         ] = 1.2,
-    [ "wpn_sv98_acog"           ] = 1.15,
-    [ "wpn_sv98_mt"             ] = 1.15,
-    [ "wpn_m110"                ] = 1.2,
-    [ "wpn_m110_eotech"         ] = 1.1,
-    [ "wpn_m110_acog"           ] = 1.0,
-    [ "wpn_m110_mt"             ] = 1.0,
-    [ "wpn_mosin"               ] = 1.4, -- Lighter wooden long rifle
-    [ "wpn_mosin_pe"            ] = 1.2,
-
-    -- === HEAVY / SPECIAL ===
-    [ "wpn_rpg7"                ] = 1.5,
-    [ "wpn_gm94"                ] = 1.6,
-    [ "wpn_flame"               ] = 1.5,
-    [ "wpn_gungauss"            ] = 0.8, -- Extreme mass
-    [ "wpn_gauss"               ] = 0.8,
-    [ "wpn_gauss_auto"          ] = 0.8
+-- Runtime mass-driven weapon handling. CWeapon.inv_weight is the live inventory
+-- mass exposed by the engine; it is deliberately preferred over static ini reads.
+local MASS_MIN_KG = 0.25
+local MASS_MAX_KG = 12.0
+local MASS_STAT_OVERRIDES = {
+    -- Binoculars retain their established special handling. Knives are excluded
+    -- entirely by is_wobble_exempt()/is_stamina_exempt() below.
+    wpn_binoc = { wobble = 0.5 * 0.75, weight_sens = 0.2 },
 }
+local last_mass_log_key = nil
 
--- Как сильно потребляется выносливость при прицеливании. Как сильно выносливость влияет на раскачку. Чем тяжелее оружие, тем сильнее будет качать при низкой выносливости. 
--- Sensitivity to stamina drain based on weapon weight.
--- Realistic Logic: Light mass = aim forever (low penalty). Heavy mass = exhausts arms quickly (high penalty).
-local weight_sens_table = {
-    -- === MELEE & TOOLS ===
-    [ "wpn_knife"               ] = 0.1,
-    [ "wpn_binoc"               ] = 0.2,
-
-    -- === PISTOLS === (Light, you can hold them steady for a long time)
-    [ "wpn_pm"                  ] = 0.2,
-    [ "wpn_pb"                  ] = 0.22,
-    [ "wpn_fort"                ] = 0.2,
-    [ "wpn_fort_m1"             ] = 0.2,
-    [ "wpn_aps"                 ] = 0.25,
-    [ "wpn_walther"             ] = 0.2,
-    [ "wpn_glock"               ] = 0.22,
-    [ "wpn_usp"                 ] = 0.25,
-    [ "wpn_sig220"              ] = 0.25,
-    [ "wpn_beretta"             ] = 0.25,
-    [ "wpn_beretta93"           ] = 0.25,
-    [ "wpn_colt1911"            ] = 0.25,
-    [ "wpn_desert_eagle"        ] = 0.4, -- Very heavy for a pistol
-    [ "wpn_eagle_m1"            ] = 0.4,
-
-    -- === SMGs === (Lighter than rifles)
-    [ "wpn_mp5"                 ] = 0.35,
-    [ "wpn_mp5_m1"              ] = 0.35,
-    [ "wpn_bizon"               ] = 0.4,
-    [ "wpn_bizon_cobra"         ] = 0.45,
-    [ "wpn_bizon_1p78"          ] = 0.5,
-    [ "wpn_bizon_1pso"          ] = 0.5,
-    [ "wpn_pp19"                ] = 0.4,
-    [ "wpn_pp19_cobra"          ] = 0.45,
-    [ "wpn_pp19_1p78"           ] = 0.5,
-    [ "wpn_pp19_1pso"           ] = 0.5,
-    [ "wpn_ump45"               ] = 0.42,
-    [ "wpn_ump45_eotech"        ] = 0.47,
-    [ "wpn_ump45_acog"          ] = 0.52,
-    [ "wpn_ump45_mt"            ] = 0.52,
-
-    -- === SHOTGUNS === 
-    [ "wpn_bm16"                ] = 0.3, -- Sawn-off is very light
-    [ "wpn_bm16_full"           ] = 0.6,
-    [ "wpn_toz34"               ] = 0.65,
-    [ "wpn_toz34_m1"            ] = 0.65,
-    [ "wpn_hunters_toz_new"     ] = 0.65,
-    [ "wpn_spas12"              ] = 0.75, -- Bulky and front-heavy
-    [ "wpn_wincheaster1300"     ] = 0.7,
-    [ "wpn_winchester_m1"       ] = 0.7,
-    [ "wpn_rem_870"             ] = 0.7,
-    [ "wpn_mp153"               ] = 0.7,
-    [ "wpn_mp153_m1"            ] = 0.7,
-    [ "wpn_mp153_eotech"        ] = 0.75,
-    [ "wpn_mp153_acog"          ] = 0.8,
-    [ "wpn_mp153_mt"            ] = 0.8,
-    [ "wpn_saiga12c"            ] = 0.7,
-    [ "wpn_saiga12c_cobra"      ] = 0.75,
-    [ "wpn_saiga12c_1p78"       ] = 0.8,
-    [ "wpn_saiga12c_1pso"       ] = 0.8,
-    [ "wpn_saiga12c_m1"         ] = 0.7,
-    [ "wpn_saiga12c_m1_eotech"  ] = 0.75,
-    [ "wpn_saiga12c_m1_acog"    ] = 0.8,
-    [ "wpn_saiga12c_m1_mt"      ] = 0.8,
-    [ "wpn_saiga12c_m2"         ] = 0.7,
-    [ "wpn_saiga12c_m2_cobra"   ] = 0.75,
-    [ "wpn_saiga12c_m2_1p78"    ] = 0.8,
-    [ "wpn_saiga12c_m2_1pso"    ] = 0.8,
-
-    -- === ASSAULT RIFLES (WARSAW) === (Baseline 0.5 to 0.6)
-    [ "wpn_ak74u"               ] = 0.45, -- Short, lighter
-    [ "wpn_ak74u_old"           ] = 0.45,
-    [ "wpn_ak74"                ] = 0.55,
-    [ "wpn_ak74_old"            ] = 0.55,
-    [ "wpn_ak74m"               ] = 0.55,
-    [ "wpn_ak74m_cobra"         ] = 0.6,
-    [ "wpn_ak74m_1p78"          ] = 0.65,
-    [ "wpn_ak74m_1pso"          ] = 0.65,
-    [ "wpn_ak74pbn"             ] = 0.55,
-    [ "wpn_ak74pbn_cobra"       ] = 0.6,
-    [ "wpn_ak74pbn_1p78"        ] = 0.65,
-    [ "wpn_ak74pbn_1pso"        ] = 0.65,
-    [ "wpn_ak74_m1"             ] = 0.55,
-    [ "wpn_ak74_m1_eotech"      ] = 0.6,
-    [ "wpn_ak74_m1_acog"        ] = 0.65,
-    [ "wpn_ak74_m1_mt"          ] = 0.65,
-    [ "wpn_ak74_m2"             ] = 0.55,
-    [ "wpn_ak74_m2_eotech"      ] = 0.6,
-    [ "wpn_ak74_m2_acog"        ] = 0.65,
-    [ "wpn_ak74_m2_mt"          ] = 0.65,
-    [ "wpn_ak104"               ] = 0.55,
-    [ "wpn_ak104_cobra"         ] = 0.6,
-    [ "wpn_ak104_1p78"          ] = 0.65,
-    [ "wpn_ak104_1pso"          ] = 0.65,
-    [ "wpn_ak108"               ] = 0.55,
-    [ "wpn_ak108_cobra"         ] = 0.6,
-    [ "wpn_ak108_1p78"          ] = 0.65,
-    [ "wpn_ak108_1pso"          ] = 0.65,
-    [ "wpn_ak47"                ] = 0.6, -- Milled receiver, heavier
-    [ "wpn_ak47_old"            ] = 0.6,
-    [ "wpn_aks47"               ] = 0.6,
-    [ "wpn_akm"                 ] = 0.6,
-    [ "wpn_abakan"              ] = 0.6, -- Heavy internal mechanism
-    [ "wpn_abakan_cobra"        ] = 0.65,
-    [ "wpn_abakan_1p78"         ] = 0.7,
-    [ "wpn_abakan_1pso"         ] = 0.7,
-    [ "wpn_groza"               ] = 0.55,
-    [ "wpn_groza_po"            ] = 0.65,
-    [ "wpn_val"                 ] = 0.5,
-    [ "wpn_val_cobra"           ] = 0.55,
-    [ "wpn_val_1p78"            ] = 0.6,
-    [ "wpn_val_1pso"            ] = 0.6,
-
-    -- === ASSAULT RIFLES (NATO) === (Baseline 0.45 to 0.55)
-    [ "wpn_lr300"               ] = 0.5,
-    [ "wpn_lr300_m1"            ] = 0.5,
-    [ "wpn_lr300_eotech"        ] = 0.55,
-    [ "wpn_lr300_acog"          ] = 0.6,
-    [ "wpn_lr300_mt"            ] = 0.6,
-    [ "wpn_lr300_m1_eotech"     ] = 0.55,
-    [ "wpn_lr300_m1_acog"       ] = 0.6,
-    [ "wpn_lr300_m1_mt"         ] = 0.6,
-    [ "wpn_m16a4"               ] = 0.45,
-    [ "wpn_m16a4_eotech"        ] = 0.5,
-    [ "wpn_m16a4_acog"          ] = 0.55,
-    [ "wpn_m16a4_mt"            ] = 0.55,
-    [ "wpn_sig550"              ] = 0.55,
-    [ "wpn_sig550_eotech"       ] = 0.6,
-    [ "wpn_sig550_acog"         ] = 0.65,
-    [ "wpn_sig550_mt"           ] = 0.65,
-    [ "wpn_g36"                 ] = 0.5,
-    [ "wpn_g36_g36l"            ] = 0.5,
-    [ "wpn_g36c"                ] = 0.45, -- Compact
-    [ "wpn_g36c_eotech"         ] = 0.5,
-    [ "wpn_g36c_acog"           ] = 0.55,
-    [ "wpn_g36c_mt"             ] = 0.55,
-    [ "wpn_fn2000"              ] = 0.6, -- Bulky
-    [ "wpn_fn2000_eotech"       ] = 0.65,
-    [ "wpn_fn2000_acog"         ] = 0.7,
-    [ "wpn_fn2000_mt"           ] = 0.7,
-
-    -- === LMGs === (Punishing to aim when tired)
-    [ "wpn_rpk74"               ] = 1.4,
-    [ "wpn_rpk74_cobra"         ] = 1.45,
-    [ "wpn_rpk74_1p78"          ] = 1.5,
-    [ "wpn_rpk74_1pso"          ] = 1.5,
-    [ "wpn_pkm"                 ] = 1.6,
-
-    -- === SNIPERS === (Heavy, quickly exhausts the arms)
-    [ "wpn_vintorez"            ] = 0.7, -- VSS is actually relatively light
-    [ "wpn_vintorez_cobra"      ] = 0.75,
-    [ "wpn_vintorez_1p78"       ] = 0.8,
-    [ "wpn_vintorez_1pso"       ] = 0.8,
-    [ "wpn_vintorez_m1"         ] = 0.7,
-    [ "wpn_vintorez_m1_cobra"   ] = 0.75,
-    [ "wpn_vintorez_m1_1p78"    ] = 0.8,
-    [ "wpn_vintorez_m1_1pso"    ] = 0.8,
-    [ "wpn_svd"                 ] = 0.95,
-    [ "wpn_svd_cobra"           ] = 1.0,
-    [ "wpn_svd_1p78"            ] = 1.05,
-    [ "wpn_svd_1pso"            ] = 1.05,
-    [ "wpn_svu"                 ] = 0.8, -- Bullpup format brings weight closer to body
-    [ "wpn_svu_cobra"           ] = 0.85,
-    [ "wpn_svu_1p78"            ] = 0.9,
-    [ "wpn_svu_1pso"            ] = 0.9,
-    [ "wpn_awm"                 ] = 1.1,
-    [ "wpn_awm_eotech"          ] = 1.15,
-    [ "wpn_awm_acog"            ] = 1.2,
-    [ "wpn_awm_mt"              ] = 1.2,
-    [ "wpn_sv98"                ] = 1.05,
-    [ "wpn_sv98_eotech"         ] = 1.1,
-    [ "wpn_sv98_acog"           ] = 1.15,
-    [ "wpn_sv98_mt"             ] = 1.15,
-    [ "wpn_m110"                ] = 1.0,
-    [ "wpn_m110_eotech"         ] = 1.05,
-    [ "wpn_m110_acog"           ] = 1.1,
-    [ "wpn_m110_mt"             ] = 1.1,
-    [ "wpn_mosin"               ] = 0.9,
-    [ "wpn_mosin_pe"            ] = 1.0,
-
-    -- === HEAVY / SPECIAL ===
-    [ "wpn_rpg7"                ] = 1.8,
-    [ "wpn_gm94"                ] = 1.0,
-    [ "wpn_flame"               ] = 1.5,
-    [ "wpn_gungauss"            ] = 1.5,
-    [ "wpn_gauss"               ] = 1.5,
-    [ "wpn_gauss_auto"          ] = 1.5
-}
-
--- Влияние артефактов на раскачку при прицеливании.
--- Отрицательные значения = стабилизация. Положительные = дестабилизация. Грузовым артам ухудшить? Семье медузы улучшить? 
+local function clamp(v, lo, hi)
+    return math.max(lo, math.min(hi, v))
+end
 local artifact_wobble_table = {
     -- === Tierless Artifacts ===
     -- Works perfectly: matches exactly, skips tier math entirely.
@@ -491,6 +301,25 @@ local artifact_wobble_table = {
 }
 
 local cached_artifact_k = 1.0
+-- Future assignments belong here. Effects stack multiplicatively per powered,
+-- conditioned belt artifact; keep this table empty until an artifact is chosen.
+local artifact_weapon_effect_template = {
+    -- af_example = {
+    --     suppress_breath_sounds = true,
+    --     manual_drain_k = 0.0,
+    --     ads_drain_k = 0.5,
+    --     walking_drain_k = 1.0, -- reserved: no walking-drain change yet
+    -- },
+}
+local cached_artifact_weapon_effects = {
+    suppress_breath_sounds = false,
+    manual_drain_k = 1.0,
+    ads_drain_k = 1.0,
+    walking_drain_k = 1.0,
+}
+get_artifact_weapon_effects = function()
+    return cached_artifact_weapon_effects
+end
 local last_artifact_check = 0
 local ARTIFACT_CHECK_INTERVAL = 2000  -- check every 2sec 
 
@@ -503,17 +332,27 @@ local function update_artifact_wobble_k()
     -- If the electronic belt is dead, uncharged, or off, artifacts provide zero properties.
     if not (sak and sak.arts_operate) then
         cached_artifact_k = 1.0
+        cached_artifact_weapon_effects = {
+            suppress_breath_sounds = false, manual_drain_k = 1.0,
+            ads_drain_k = 1.0, walking_drain_k = 1.0,
+        }
         return
     end
-
     local total_mod = 0.0
-
+    local effects = {
+        suppress_breath_sounds = false,
+        manual_drain_k = 1.0,
+        ads_drain_k = 1.0,
+        walking_drain_k = 1.0,
+    }
     if sak_inventory and sak_inventory.belt_items then
         for sec, items in pairs( sak_inventory.belt_items ) do
             
+            local base_sec = string.match(sec, "^(af_[%w_]+)_dyn%dd") or sec
+            local effect = artifact_weapon_effect_template[sec] or artifact_weapon_effect_template[base_sec]
+
             -- STAGE 1: Exact Match Check
             local mod = artifact_wobble_table[sec]
-            
             -- STAGE 2: Generic Suffix Stripping & NLC Dynamic Scaling
             if not mod then
                 local base_sec = string.match(sec, "^(af_[%w_]+)_dyn%dd") or sec
@@ -538,13 +377,23 @@ local function update_artifact_wobble_k()
             
             -- STAGE 3: Condition and Quantity Weighting
             local num_items = items and table.getn(items) or 0
-            if mod and num_items > 0 then
+            if num_items > 0 then
                 for m = 1, num_items do
                     local af_id  = items[m]
                     local af_obj = client_obj and client_obj(af_id)
                     local cond   = af_obj and af_obj:condition() or 1.0
                     
-                    total_mod = total_mod + (mod * cond)
+                    if mod then total_mod = total_mod + (mod * cond) end
+                    if effect then
+                        if effect.suppress_breath_sounds and cond > 0 then
+                            effects.suppress_breath_sounds = true
+                        end
+                        for _, key in ipairs({ "manual_drain_k", "ads_drain_k", "walking_drain_k" }) do
+                            if effect[key] ~= nil then
+                                effects[key] = effects[key] * (1 + (effect[key] - 1) * cond)
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -555,50 +404,235 @@ local function update_artifact_wobble_k()
     -- 2.50 means a chaotic setup can increase sway penalties by up to 250%
     total_mod = math.max(-0.75, math.min(1.60, total_mod))
     cached_artifact_k = 1.0 + total_mod
+    cached_artifact_weapon_effects = effects
 end
-
 function sivol_weapon.get_artifact_wobble_k()
     return cached_artifact_k
 end
 
 -- Returns the baseline sway multiplier for the weapon
-function sivol_weapon.get_base_wobble(sec)
-    local base_val = wobble_wpn[sec] or 2.0
-    
-    -- === GLOBAL WEAPON SWAY MULTIPLIER ===
-    -- Change this single number to affect EVERY weapon in the game at once:
-    -- 1.25 = 25% MORE sway everywhere (harder aiming)
-    -- 0.80 = 20% LESS sway everywhere (easier aiming)
-    local global_factor = 0.75
-    
-    return base_val * global_factor
+-- Audited base item:section() IDs from gamedata/config/weapons. Do not add
+-- filenames or HUD/addon permutations here: those are not runtime item IDs.
+local AUDITED_SECTION_TO_CLASS = {
+    wpn_ak74_m3 = "pistol", wpn_aps = "pistol", wpn_beretta = "pistol", wpn_beretta93 = "pistol",
+    wpn_colt1911 = "pistol", wpn_desert_eagle = "pistol", wpn_eagle_m1 = "pistol", wpn_fort = "pistol",
+    wpn_fort_m1 = "pistol", wpn_glock = "pistol", wpn_glock_m1 = "pistol", wpn_gungauss = "pistol",
+    wpn_pb = "pistol", wpn_pm = "pistol", wpn_sig220 = "pistol", wpn_usp = "pistol", wpn_walther = "pistol",
+    wpn_aks47 = "smg", wpn_bizon = "smg", wpn_glock_m2 = "smg", wpn_mp5 = "smg",
+    wpn_mp5_m1 = "smg", wpn_mp5_m2 = "smg", wpn_pp19 = "smg", wpn_ump45 = "smg",
+    wpn_abakan = "rifle", wpn_aek971 = "rifle", wpn_ak104 = "rifle", wpn_ak47 = "rifle",
+    wpn_ak74 = "rifle", wpn_ak74_m1 = "rifle", wpn_ak74_m2 = "rifle", wpn_ak74m = "rifle",
+    wpn_ak74u = "rifle", wpn_akm = "rifle", wpn_fn2000 = "rifle", wpn_g36 = "rifle",
+    wpn_groza = "rifle", wpn_groza_nimble = "rifle", wpn_m16a4 = "rifle", wpn_saiga12c_m2 = "rifle",
+    wpn_sig550 = "rifle", wpn_soc308 = "rifle", wpn_soc308_m1 = "rifle", wpn_val = "rifle",
+    wpn_val_nimble = "rifle",
+    wpn_bm16 = "shotgun", wpn_bm16_full = "shotgun", wpn_hunters_toz_new = "shotgun",
+    wpn_mp153 = "shotgun", wpn_mp153_m1 = "shotgun", wpn_saiga12c = "shotgun", wpn_saiga12c_m1 = "shotgun",
+    wpn_spas12 = "shotgun", wpn_spas12_m1 = "shotgun", wpn_spas15 = "shotgun", wpn_spas15_m1 = "shotgun",
+    wpn_toz34 = "shotgun", wpn_toz34_m1 = "shotgun", wpn_wincheaster1300 = "shotgun", wpn_winchester_m1 = "shotgun",
+    wpn_awm = "sniper", wpn_gauss = "sniper", wpn_gauss_auto = "sniper", wpn_m110 = "sniper",
+    wpn_mosin = "sniper", wpn_mr308 = "sniper", wpn_sv98 = "sniper", wpn_svd = "sniper",
+    wpn_svu = "sniper", wpn_vintorez = "sniper", wpn_vintorez_m1 = "sniper",
+    wpn_ak108 = "lmg", wpn_g36c = "lmg", wpn_pkm = "lmg", wpn_pkp = "lmg", wpn_rpk = "lmg", wpn_rpk74 = "lmg",
+    wpn_flame = "default", wpn_gm94 = "default", wpn_knife = "default", wpn_knife_m1 = "default",
+    wpn_rg6 = "default", wpn_rpg7 = "default",
+}
+
+-- Variant sections are generated from an audited base section by the add-on
+-- system. Resolve their existing respawn source instead of logging them as new
+-- weapons; the two LR300 aliases have no respawn field, so keep them explicit.
+local SECTION_BASE_OVERRIDES = {
+    wpn_lr300 = "wpn_m16a4",
+    wpn_lr300_m1 = "wpn_m16a4",
+}
+
+local function get_registered_base_section(sec)
+    if sec and AUDITED_SECTION_TO_CLASS[sec] then return sec end
+    if sec and sys_ini and sys_ini:section_exist(sec) then
+        for _, key in ipairs({ "scope_respawn", "silencer_respawn", "grenade_launcher_respawn" }) do
+            if sys_ini:line_exist(sec, key) then
+                local base = sys_ini:r_string(sec, key)
+                if AUDITED_SECTION_TO_CLASS[base] then return base end
+            end
+        end
+    end
+    return SECTION_BASE_OVERRIDES[sec]
+end
+local last_unknown_section
+
+local function note_unknown_section(sec)
+    if sec and sec ~= last_unknown_section then
+        weapon_breath_log("[sivol_weapon] unregistered weapon section '%s'; using generic mass fallback", sec)
+        last_unknown_section = sec
+    end
 end
 
--- Returns how severely low stamina affects the weapon's sway
--- Ordered from most specific (variants) to least specific (base models)
-function sivol_weapon.get_weight_sens(sec)
-    local v = weight_sens_table[sec]
-    if v then return v end
-    -- Fallback pattern matching for anything not explicitly listed
-    if string.find(sec, "wpn_rpk")  then return 1.2  end
-    if string.find(sec, "wpn_svd")  then return 0.85 end
-    if string.find(sec, "wpn_awm")  then return 0.88 end
-    if string.find(sec, "wpn_pm")   then return 0.2  end
-    return 0.5  -- standard rifle baseline
+local function get_weapon_class(sec)
+    local base_sec = get_registered_base_section(sec)
+    local class = base_sec and AUDITED_SECTION_TO_CLASS[base_sec]
+    if class then
+        last_unknown_section = nil
+        return class == "default" and "special" or class
+    end
+    note_unknown_section(sec)
+    -- Preserve the previous generic fallback behavior for externally-added sections.
+    if string.find(sec, "wpn_rpk") or string.find(sec, "wpn_pkm") then return "lmg" end
+    if string.find(sec, "wpn_svd") or string.find(sec, "wpn_awm")
+        or string.find(sec, "wpn_svu") or string.find(sec, "wpn_sv98") then return "sniper" end
+    if string.find(sec, "wpn_pm") or string.find(sec, "wpn_pb") then return "pistol" end
+    if string.find(sec, "wpn_mp5") or string.find(sec, "wpn_bizon")
+        or string.find(sec, "wpn_pp19") then return "smg" end
+    if string.find(sec, "wpn_saiga") or string.find(sec, "wpn_mp153")
+        or string.find(sec, "wpn_toz") then return "shotgun" end
+    return "rifle"
+end
+local mass_stats_cache = {}
+local ADDON_BITS = { sc = 1, gl = 2, sl = 4 }
+
+local function get_live_addon_flags(item)
+    -- The ALife packet is authoritative for a currently fitted removable
+    -- addon. CWeapon:get_addon_flags() is only a fallback here: some baked
+    -- respawn variants expose zero through that binding.
+    if item and rx_utils and rx_utils.get_addon_flag then
+        return tonumber(rx_utils.get_addon_flag(item, true)) or 0
+    end
+    if item and item.get_addon_flags then
+        return tonumber(item:get_addon_flags()) or 0
+    end
+    return 0
 end
 
+function sivol_weapon.get_weapon_mass_signature(item, sec)
+    sec = sec or (item and item:section()) or "none"
+    local flags = get_live_addon_flags(item)
+    return tostring(item and item:id() or "section") .. ":" .. sec .. ":" .. tostring(flags)
+end
 
--- С присядом  прицеливание меньше вынки потребляет
+local function addon_is_attached(item, sec, addon, flags)
+    -- Respawn variants are already baked with this addon even when their live
+    -- addon flag is zero (for example wpn_akm_pso).
+    local respawn_key = addon == "sc" and "scope_respawn"
+        or addon == "sl" and "silencer_respawn" or "grenade_launcher_respawn"
+    if sec and sys_ini and sys_ini:section_exist(sec) and sys_ini:line_exist(sec, respawn_key) then
+        return true
+    end
+    local get_status = (rx_utils and rx_utils.get_addon_status) or get_addon_status
+    local status = get_status and get_status(item, addon) or 0
+    -- Status 1 is integral/non-detachable. Its authored inv_weight already
+    -- includes that hardware; only status-2 fitted addons are added here.
+    if status ~= 2 then return false end
+    local attached = rx_utils and rx_utils.addon_attached
+    if attached then return attached(item, addon) end
+    local bit = ADDON_BITS[addon]
+    return bit and bit_and(flags or 0, bit) == bit or false
+end
+
+local function get_live_weapon_mass(item, sec)
+    local weapon = item and item:get_weapon()
+    local mass = weapon and tonumber(weapon.inv_weight)
+    local source = "weapon.inv_weight"
+    if not mass or mass <= 0 then
+        local inventory_item = item and item:get_inventory_item()
+        mass = inventory_item and tonumber(inventory_item.inv_weight)
+        source = "inventory_item.inv_weight"
+    end
+    if (not mass or mass <= 0) and sec and sys_ini and sys_ini:section_exist(sec)
+        and sys_ini:line_exist(sec, "inv_weight") then
+        mass = sys_ini:r_float(sec, "inv_weight")
+        source = "section.inv_weight"
+    end
+
+    local flags = get_live_addon_flags(item)
+    local addon_mass = 0
+    local addon_sections = {}
+    local addon_runtime_field = {
+        sc = "scope_name", sl = "silencer_name", gl = "grenade_launcher_name",
+    }
+    for _, addon in ipairs({ "sc", "sl", "gl" }) do
+        if addon_is_attached(item, sec, addon, flags) then
+            -- CWeapon exposes the actual fitted addon's section at runtime. This
+            -- is the same source already used by adaptive scope zoom and works
+            -- for baked respawn variants even when rx_addons is not loaded.
+            local addon_sec = weapon and weapon[addon_runtime_field[addon]]
+            if not addon_sec or addon_sec == "" then
+                addon_sec = get_addon_section and get_addon_section(sec, addon)
+            end
+            if (not addon_sec or addon_sec == "") and sec and sys_ini
+                and sys_ini:section_exist(sec) then
+                local field = addon_runtime_field[addon]
+                if sys_ini:line_exist(sec, field) then
+                    addon_sec = sys_ini:r_string(sec, field)
+                end
+            end
+            local addon_weight = addon_sec and get_float(addon_sec, "inv_weight", 0) or 0
+            if addon_weight > 0 then
+                addon_mass = addon_mass + addon_weight
+                table.insert(addon_sections, addon_sec)
+            end
+        end
+    end
+    if addon_mass > 0 then
+        mass = (mass or 0) + addon_mass
+        source = source .. "+addons"
+    end
+    return mass, source, addon_mass, table.concat(addon_sections, ",")
+end
+
+-- Real-mass curves: a heavier weapon begins steadier, but its sensitivity grows
+-- non-linearly, so low stamina expands heavy-weapon wobble more aggressively.
+function sivol_weapon.get_weapon_mass_stats(item, sec)
+    sec = sec or (item and item:section())
+    if get_registered_base_section(sec) then
+        last_unknown_section = nil
+    else
+        note_unknown_section(sec)
+    end
+
+    local signature = sivol_weapon.get_weapon_mass_signature(item, sec)
+    local cached = mass_stats_cache[signature]
+    if cached then return cached end
+
+    local override = sec and MASS_STAT_OVERRIDES[sec]
+    if override then
+        mass_stats_cache[signature] = override
+        return override
+    end
+
+    local mass, source, addon_mass, addon_sections = get_live_weapon_mass(item, sec)
+    if not mass or mass <= 0 then
+        mass, source, addon_mass, addon_sections = 3.0, "generic", 0, ""
+    end
+    local curve_mass = clamp(mass, MASS_MIN_KG, MASS_MAX_KG)
+    local wobble = (1.05 + 1.45 * math.exp(-0.28 * curve_mass)) * 0.75
+    local weight_sens = clamp(0.10 + 0.14 * curve_mass + 0.008 * curve_mass * curve_mass, 0.20, 1.60)
+    local stats = { wobble = wobble, weight_sens = weight_sens, mass = mass, source = source,
+        addon_mass = addon_mass, addon_sections = addon_sections }
+    mass_stats_cache[signature] = stats
+
+    if signature ~= last_mass_log_key then
+        weapon_breath_log("[weapon_mass] section=%s mass=%.2f addons=%.2f [%s] source=%s wobble=%.3f stamina_sens=%.3f",
+            tostring(sec), mass, addon_mass, addon_sections, source, wobble, weight_sens)
+        last_mass_log_key = signature
+    end
+    return stats
+end
+
+function sivol_weapon.get_base_wobble(sec, item)
+    return sivol_weapon.get_weapon_mass_stats(item, sec).wobble
+end
+
+function sivol_weapon.get_weight_sens(sec, item)
+    return sivol_weapon.get_weapon_mass_stats(item, sec).weight_sens
+end
+
 function update_ads_fatigue()
     ogse_signals.get_mgr():reschedule(100)
     local actor = db.actor
     if not actor then return end
 
-    update_breath_debt()
     update_artifact_wobble_k()
-
-
-    if wpn_params and (wpn_params.zoom_time or 1) > 1.05 then
+    update_manual_hold_breath()
+    if is_zoom_aiming() then
         local wpn = actor:active_item()
         local sec = wpn and wpn:section()
         if not (sec and sivol_weapon.is_stamina_exempt(sec)) then
@@ -613,77 +647,16 @@ function update_ads_fatigue()
                 stance_drain_k = 0.87
             end
 
-            local drain_amount = 0.00675 * weight_sens * stance_drain_k
-            actor.power = -drain_amount
+            -- Keep the established ADS drain unchanged, then add the manual
+            -- stabilization cost in the same actor.power update form.
+            local effects = get_artifact_weapon_effects()
+            local normal_drain = 0.00675 * weight_sens * stance_drain_k * effects.ads_drain_k
+            local manual_drain = normal_drain * MANUAL_HOLD_BREATH_DRAIN_K
+                * manual_hold_strength * effects.manual_drain_k
+            actor.power = -(normal_drain + manual_drain)
         end
     end
 end
-
--- Оружие и его класс.
-local weapon_class_table = {
-    -- Pistols
-    wpn_pm = "pistol", wpn_pb = "pistol", wpn_aps = "pistol",
-    wpn_fort = "pistol", wpn_fort_m1 = "pistol",
-    wpn_beretta = "pistol", wpn_beretta93 = "pistol",
-    wpn_colt1911 = "pistol", wpn_walther = "pistol",
-    wpn_desert_eagle = "pistol", wpn_eagle_m1 = "pistol",
-    wpn_glock = "pistol", wpn_usp = "pistol", wpn_sig220 = "pistol",
-	-- Shotguns
-    wpn_bm16 = "shotgun", wpn_bm16_full = "shotgun",
-    wpn_toz34 = "shotgun", wpn_toz34_m1 = "shotgun", wpn_hunters_toz_new = "shotgun",
-    wpn_spas12 = "shotgun", wpn_wincheaster1300 = "shotgun",
-    wpn_winchester_m1 = "shotgun", wpn_rem_870 = "shotgun",
-    wpn_mp153 = "shotgun", wpn_mp153_m1 = "shotgun",
-    wpn_mp153_eotech = "shotgun", wpn_mp153_acog = "shotgun", wpn_mp153_mt = "shotgun",
-    wpn_saiga12c = "shotgun", wpn_saiga12c_cobra = "shotgun",
-    wpn_saiga12c_1p78 = "shotgun", wpn_saiga12c_1pso = "shotgun",
-    wpn_saiga12c_m1 = "shotgun", wpn_saiga12c_m1_eotech = "shotgun",
-    wpn_saiga12c_m1_acog = "shotgun", wpn_saiga12c_m1_mt = "shotgun",
-    wpn_saiga12c_m2 = "shotgun", wpn_saiga12c_m2_cobra = "shotgun",
-    wpn_saiga12c_m2_1p78 = "shotgun", wpn_saiga12c_m2_1pso = "shotgun",
-    -- SMGs
-    wpn_mp5 = "smg", wpn_mp5_m1 = "smg",
-    wpn_bizon = "smg", wpn_pp19 = "smg", wpn_ump45 = "smg",
-    -- Snipers
-    wpn_svd = "sniper", wpn_svd_cobra = "sniper",
-    wpn_svd_1pso = "sniper", wpn_svd_1p78 = "sniper",
-    wpn_svu = "sniper", wpn_svu_cobra = "sniper",
-    wpn_svu_1pso = "sniper", wpn_svu_1p78 = "sniper",
-    wpn_awm = "sniper", wpn_awm_acog = "sniper",
-    wpn_awm_mt = "sniper", wpn_awm_eotech = "sniper",
-    wpn_sv98 = "sniper", wpn_sv98_acog = "sniper",
-    wpn_sv98_mt = "sniper", wpn_sv98_eotech = "sniper",
-    wpn_m110 = "sniper", wpn_m110_acog = "sniper",
-    wpn_m110_mt = "sniper", wpn_m110_eotech = "sniper",
-    wpn_mosin = "sniper", wpn_mosin_pe = "sniper",
-    wpn_vintorez = "sniper", wpn_vintorez_cobra = "sniper",
-    wpn_vintorez_1pso = "sniper", wpn_vintorez_1p78 = "sniper",
-    -- LMGs
-    wpn_rpk74 = "lmg", wpn_rpk74_1pso = "lmg",
-    wpn_rpk74_1p78 = "lmg", wpn_rpk74_cobra = "lmg",
-    wpn_pkm = "lmg",
-    -- Special
-    wpn_rpg7 = "special", wpn_gm94 = "special",
-    wpn_flame = "special", wpn_gauss = "special",
-    wpn_gauss_auto = "special", wpn_gungauss = "special",
-}
-
-local function get_weapon_class(sec)
-    local c = weapon_class_table[sec]
-    if c then return c end
-    -- Pattern fallback for unlisted variants
-    if string.find(sec, "wpn_rpk") or string.find(sec, "wpn_pkm") then return "lmg"     end
-    if string.find(sec, "wpn_svd") or string.find(sec, "wpn_awm") or
-       string.find(sec, "wpn_svu") or string.find(sec, "wpn_sv98") then return "sniper"  end
-    if string.find(sec, "wpn_pm")  or string.find(sec, "wpn_pb")  then return "pistol"  end
-    if string.find(sec, "wpn_mp5") or string.find(sec, "wpn_bizon") or
-       string.find(sec, "wpn_pp19") then return "smg" end
-    if string.find(sec, "wpn_saiga") or string.find(sec, "wpn_mp153") or 
-       string.find(sec, "wpn_toz") then return "shotgun" end
-	   
-    return "rifle"
-end
-
 function sivol_weapon.get_mastery_k(sec)
     local days = timers.Get_Game_Days()
     local m    = mastery_classes[ get_weapon_class(sec) ]

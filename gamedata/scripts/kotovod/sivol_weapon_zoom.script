@@ -28,6 +28,14 @@
 --               NOT the weapon's own section -- a scope's magnification is authored on the
 --               addon, and can differ completely from the weapon's unscoped value.
 
+sivol_weapon_zoom = sivol_weapon_zoom or {}
+
+local function weapon_zoom_log(fmt, ...)
+	if sivol_weapon and sivol_weapon.weapon_breath_diagnostics then
+		log2(fmt, ...)
+	end
+end
+
 local REFERENCE_FOV = 67.5 -- engine's hardcoded default g_fov (Actor.cpp)
 
 -- First-pass classification, seeded from a filename/real-world-knowledge guess (NOT sourced
@@ -42,38 +50,101 @@ local ZOOM_OFFSET_BY_CLASS = {
 	default = -4,
 }
 
--- TODO: audit this mapping -- inferred from filenames, not from an actual ini class/kind field.
--- Non-weapon / melee / launcher sections deliberately omitted -- they fall through to "default"
--- but most won't have a scope_zoom_factor at all, so recompute_scope_zoom() no-ops for them.
+-- Additional temporary ADS zoom while the manual hold-breath state is active.
+-- Values are absolute FOV reductions; pistols get the strongest benefit.
+local HOLD_BREATH_FOV_REDUCTION = {
+	pistol = 9,
+	smg = 7,
+	rifle = 6,
+	shotgun = 5,
+	sniper = 4,
+	lmg = 4,
+	default = 5,
+}
+local HOLD_ZOOM_RATE = 10.0
+local HOLD_ZOOM_WRITE_EPSILON = 0.01
+local HOLD_ZOOM_MIN_FOV = 2.0
+-- HUD FOV is a separate, global viewmodel scale. A small narrowing makes the
+-- hands/weapon follow the hold-zoom visually without taking over the user's
+-- HUD-FOV setting. It uses the same ADS/optic exclusions as temporary zoom.
+local HOLD_HUD_FOV_MULTIPLIER = 0.90
+local HOLD_HUD_FOV_WRITE_EPSILON = 0.002
+-- Do not touch the live factor while the native ADS transition is still
+-- travelling towards it.  Once it has settled, CActor::currentFOV() consumes
+-- CWeapon.zoom_factor every frame, so it is the correct local overlay point.
+local HOLD_ZOOM_ADS_SETTLE_DELAY = 0.35
+
+-- Audited base-section classification. These are the actual item:section() IDs from
+-- gamedata/config/weapons; addon/HUD permutations are intentionally excluded.
 local SECTION_TO_CLASS = {
 	-- pistols
-	wpn_1911 = "pistol", wpn_apb = "pistol", wpn_beretta92 = "pistol", wpn_colt_m45a1 = "pistol",
-	wpn_desert_eagle = "pistol", wpn_fn_fnx = "pistol", wpn_fort12 = "pistol",
-	wpn_gauss_pistol = "pistol", wpn_glock17 = "pistol", wpn_pb = "pistol", wpn_pernach = "pistol",
-	wpn_pm = "pistol", wpn_sig220 = "pistol", wpn_taurus = "pistol", wpn_usp = "pistol",
+	wpn_ak74_m3 = "pistol", wpn_aps = "pistol", wpn_beretta = "pistol", wpn_beretta93 = "pistol",
+	wpn_colt1911 = "pistol", wpn_desert_eagle = "pistol", wpn_eagle_m1 = "pistol", wpn_fort = "pistol",
+	wpn_fort_m1 = "pistol", wpn_glock = "pistol", wpn_glock_m1 = "pistol", wpn_gungauss = "pistol",
+	wpn_pb = "pistol", wpn_pm = "pistol", wpn_sig220 = "pistol", wpn_usp = "pistol",
 	wpn_walther = "pistol",
 	-- smgs
-	wpn_bizon2 = "smg", wpn_mp5 = "smg", wpn_mp5_mod = "smg", wpn_ump45 = "smg",
-	wpn_vector = "smg", wpn_vityaz = "smg",
+	wpn_aks47 = "smg", wpn_bizon = "smg", wpn_glock_m2 = "smg", wpn_mp5 = "smg",
+	wpn_mp5_m1 = "smg", wpn_mp5_m2 = "smg", wpn_pp19 = "smg", wpn_ump45 = "smg",
 	-- rifles / carbines
-	wpn_ak74 = "rifle", wpn_abakan = "rifle", wpn_ak103 = "rifle", wpn_ak104 = "rifle",
-	wpn_ak74u = "rifle", wpn_akm = "rifle", wpn_ak_strelok = "rifle", wpn_ak_strelok_rem = "rifle",
-	wpn_fn2000 = "rifle", wpn_sa58 = "rifle", wpn_fn_scar = "rifle", wpn_g36 = "rifle",
-	wpn_groza = "rifle", wpn_m4a1 = "rifle", wpn_sig552 = "rifle", wpn_val = "rifle",
-	wpn_vpo101_hunter = "rifle",
+	wpn_abakan = "rifle", wpn_aek971 = "rifle", wpn_ak104 = "rifle", wpn_ak47 = "rifle",
+	wpn_ak74 = "rifle", wpn_ak74_m1 = "rifle", wpn_ak74_m2 = "rifle", wpn_ak74m = "rifle",
+	wpn_ak74u = "rifle", wpn_akm = "rifle", wpn_fn2000 = "rifle", wpn_g36 = "rifle",
+	wpn_groza = "rifle", wpn_groza_nimble = "rifle", wpn_m16a4 = "rifle", wpn_saiga12c_m2 = "rifle",
+	wpn_sig550 = "rifle", wpn_soc308 = "rifle", wpn_soc308_m1 = "rifle", wpn_val = "rifle",
+	wpn_val_nimble = "rifle",
 	-- shotguns
-	wpn_mp133_short = "shotgun", wpn_mp153 = "shotgun", wpn_mp153_short = "shotgun",
-	wpn_oreh_shotgun = "shotgun", wpn_remington870 = "shotgun", wpn_saiga12c = "shotgun",
-	wpn_saiga12_mod = "shotgun", wpn_spas12 = "shotgun", wpn_toz34 = "shotgun",
-	wpn_toz34_hunter = "shotgun", wpn_toz66 = "shotgun", wpn_toz66_short = "shotgun",
-	wpn_usas12 = "shotgun", wpn_usas12_mod = "shotgun",
+	wpn_bm16 = "shotgun", wpn_bm16_full = "shotgun", wpn_hunters_toz_new = "shotgun",
+	wpn_mp153 = "shotgun", wpn_mp153_m1 = "shotgun", wpn_saiga12c = "shotgun", wpn_saiga12c_m1 = "shotgun",
+	wpn_spas12 = "shotgun", wpn_spas12_m1 = "shotgun", wpn_spas15 = "shotgun", wpn_spas15_m1 = "shotgun",
+	wpn_toz34 = "shotgun", wpn_toz34_m1 = "shotgun", wpn_wincheaster1300 = "shotgun", wpn_winchester_m1 = "shotgun",
 	-- sniper / marksman
-	wpn_svd = "sniper", wpn_awm = "sniper", wpn_mosin = "sniper", wpn_sks = "sniper",
-	wpn_sv98 = "sniper", wpn_svu = "sniper", wpn_vintorez = "sniper", wpn_vintorez_mod = "sniper",
-	wpn_gauss_rifle = "sniper",
+	wpn_awm = "sniper", wpn_gauss = "sniper", wpn_gauss_auto = "sniper", wpn_m110 = "sniper",
+	wpn_mosin = "sniper", wpn_mr308 = "sniper", wpn_sv98 = "sniper", wpn_svd = "sniper",
+	wpn_svu = "sniper", wpn_vintorez = "sniper", wpn_vintorez_m1 = "sniper",
 	-- lmgs
-	wpn_mg36 = "lmg", wpn_pkm = "lmg", wpn_pkm_mod = "lmg", wpn_rpk16 = "lmg", wpn_rpk74 = "lmg",
+	wpn_ak108 = "lmg", wpn_g36c = "lmg", wpn_pkm = "lmg", wpn_pkp = "lmg", wpn_rpk = "lmg",
+	wpn_rpk74 = "lmg",
+	-- melee / launchers: included in the base inventory, but use the generic offset
+	wpn_flame = "default", wpn_gm94 = "default", wpn_knife = "default", wpn_knife_m1 = "default",
+	wpn_rg6 = "default", wpn_rpg7 = "default",
 }
+
+-- These scopes own adaptive magnification. Hold breath still stabilizes and
+-- drains stamina there, but must not write an additional temporary FOV layer.
+local HOLD_BREATH_ZOOM_EXCLUDED_SECTIONS = {
+    wpn_binoc = true,
+    wpn_sv98 = true,
+    wpn_awm = true,
+    wpn_toz34_m1 = true,
+    wpn_gauss_auto = true,
+    wpn_gauss = true,
+}
+local HOLD_BREATH_ZOOM_EXCLUDED_SCOPES = {
+    g28_scope = true, specter = true, wpn_addon_1p78 = true,
+    wpn_addon_1pso = true, wpn_addon_pe = true,
+}
+
+local function is_hold_breath_zoom_excluded(item)
+    if not item or HOLD_BREATH_ZOOM_EXCLUDED_SECTIONS[item:section()] then return true end
+    local section = item:section()
+    local baked_scope = section and sys_ini and sys_ini:section_exist(section)
+        and sys_ini:line_exist(section, "scope_respawn")
+    local attached_scope = baked_scope
+        or (rx_utils and rx_utils.addon_attached and rx_utils.addon_attached(item, "sc"))
+    if not attached_scope then return false end
+
+    -- `scope_name` is the actual fitted scope in this engine (and is already
+    -- the source used by the adaptive scope-zoom code below). Resolve the
+    -- variant INI field only when the runtime binding is unavailable.
+    local weapon = item:get_weapon()
+    local scope_section = weapon and weapon.scope_name
+    if (not scope_section or scope_section == "") and section and sys_ini
+        and sys_ini:section_exist(section) and sys_ini:line_exist(section, "scope_name") then
+        scope_section = sys_ini:r_string(section, "scope_name")
+    end
+    return HOLD_BREATH_ZOOM_EXCLUDED_SCOPES[scope_section] == true
+end
 
 local function get_weapon_class(section)
 	return SECTION_TO_CLASS[section] or "default"
@@ -81,6 +152,14 @@ end
 
 local function get_current_fov()
 	return get_console():get_float("fov") or REFERENCE_FOV
+end
+
+local function exp_step(current, target, rate, dt)
+	return current + (target - current) * (1 - math.exp(-rate * dt))
+end
+
+local function clamp(value, low, high)
+	return math.max(low, math.min(high, value))
 end
 
 local function is_scoped(item)
@@ -166,6 +245,9 @@ end
 -- instead of the raw ini default. Confirmed real signal (bind_stalker.script actor_binder:item_to_slot
 -- calls self.am:call("on_item_to_slot", obj, sobj)).
 local function on_item_to_slot(obj, sobj)
+	if sivol_weapon and sivol_weapon.release_manual_hold_breath then
+		sivol_weapon.release_manual_hold_breath("weapon changed")
+	end
 	recompute_scope_zoom(obj)
 end
 
@@ -173,10 +255,204 @@ end
 -- catches FOV-slider changes made while a weapon is already equipped (on_item_to_slot alone
 -- wouldn't see those). Cheap: one comparison per frame, real work only fires once per ADS-enter.
 local was_aiming = false
-local diag_frames_left = 0
+local hold_zoom_active = false
+local hold_zoom_section
+local hold_zoom_weapon
+local hold_zoom_base_factor
+local hold_zoom_current_factor
+local hold_zoom_last_written_factor
+local hold_zoom_ads_started_at
+local hold_zoom_exit_reason
+local hold_hud_fov_active = false
+local hold_hud_fov_base
+local hold_hud_fov_current
+local hold_hud_fov_last_written
 
-local function on_update()
+-- Unlike set_camera_fov(), writing this active weapon factor does not change
+-- the player's global FOV cvar.  The value is restored before the overlay is
+-- discarded, including on an ADS exit or a weapon switch.
+local function get_current_hud_fov()
+	return get_console():get_float("hud_fov")
+end
+
+local function write_hold_hud_fov(value, force)
+	if not force and hold_hud_fov_last_written
+		and math.abs(hold_hud_fov_last_written - value) <= HOLD_HUD_FOV_WRITE_EPSILON
+	then
+		return
+	end
+	get_console():execute(string.format("hud_fov %.4f", value))
+	hold_hud_fov_last_written = value
+end
+
+local function clear_hold_hud_fov(reason)
+	if hold_hud_fov_active and hold_hud_fov_base then
+		write_hold_hud_fov(hold_hud_fov_base, true)
+		weapon_zoom_log("[weapon_hud_fov] hold HUD FOV ended (%s)", reason)
+	end
+	hold_hud_fov_active = false
+	hold_hud_fov_base = nil
+	hold_hud_fov_current = nil
+	hold_hud_fov_last_written = nil
+end
+
+-- Returns true once the smooth restore has reached the captured player value.
+local function update_hold_hud_fov(hold_active, strength, dt)
+	if hold_active and strength > 0.001 then
+		if not hold_hud_fov_active then
+			local base = tonumber(get_current_hud_fov())
+			if not base then return true end
+			hold_hud_fov_active = true
+			hold_hud_fov_base = base
+			hold_hud_fov_current = base
+			hold_hud_fov_last_written = nil
+			weapon_zoom_log("[weapon_hud_fov] hold HUD FOV start: base=%.3f target=%.3f",
+				base, base * HOLD_HUD_FOV_MULTIPLIER)
+		end
+		local target = clamp(hold_hud_fov_base
+			* (1 - (1 - HOLD_HUD_FOV_MULTIPLIER) * strength), 0.05, 0.99)
+		hold_hud_fov_current = exp_step(hold_hud_fov_current, target, HOLD_ZOOM_RATE, dt)
+		write_hold_hud_fov(hold_hud_fov_current)
+		return false
+	end
+
+	if not hold_hud_fov_active then return true end
+	hold_hud_fov_current = exp_step(hold_hud_fov_current, hold_hud_fov_base, HOLD_ZOOM_RATE, dt)
+	write_hold_hud_fov(hold_hud_fov_current)
+	return math.abs(hold_hud_fov_current - hold_hud_fov_base) <= HOLD_HUD_FOV_WRITE_EPSILON
+end
+
+local function write_hold_zoom(wpn, factor)
+	if hold_zoom_last_written_factor
+		and math.abs(hold_zoom_last_written_factor - factor) <= HOLD_ZOOM_WRITE_EPSILON
+	then
+		return
+	end
+	wpn.zoom_factor = factor
+	hold_zoom_last_written_factor = factor
+end
+
+local function clear_hold_zoom(reason)
+	clear_hold_hud_fov(reason)
+	if hold_zoom_active then
+		if db.actor and hold_zoom_weapon and hold_zoom_base_factor then
+			hold_zoom_weapon.zoom_factor = hold_zoom_base_factor
+		end
+		weapon_zoom_log("[weapon_zoom] hold zoom ended (%s)", reason)
+	end
+	hold_zoom_active = false
+	hold_zoom_section = nil
+	hold_zoom_weapon = nil
+	hold_zoom_base_factor = nil
+	hold_zoom_current_factor = nil
+	hold_zoom_last_written_factor = nil
+	hold_zoom_exit_reason = nil
+end
+
+-- sivol_weapon owns the state transition and calls this for every normal exit.
+-- A key release keeps the authored smooth return; ADS/lifecycle exits restore
+-- immediately because the native zoom effector is ending at the same time.
+function sivol_weapon_zoom.on_manual_hold_breath_exit(reason, immediate)
+	hold_zoom_exit_reason = reason or "hold released"
+	if immediate then
+		clear_hold_zoom(hold_zoom_exit_reason)
+	end
+end
+
+local function update_hold_breath_zoom(actor, aiming, dt, now)
+	if not actor or not aiming then
+		if sivol_weapon and sivol_weapon.release_manual_hold_breath then
+			sivol_weapon.release_manual_hold_breath("ADS ended", not actor, true)
+		end
+		-- Restore before leaving the native ADS lifecycle. This restores both
+		-- temporary overlays; the player's global HUD-FOV preference is preserved.
+		clear_hold_zoom("ADS ended")
+		hold_zoom_ads_started_at = nil
+		return
+	end
+	if not hold_zoom_ads_started_at then hold_zoom_ads_started_at = now end
+
+	local item = actor:active_item()
+	local wpn = item and item:get_weapon()
+	local strength = sivol_weapon and sivol_weapon.get_manual_hold_breath_strength
+		and sivol_weapon.get_manual_hold_breath_strength() or 0
+	local hold_active = sivol_weapon and sivol_weapon.is_manual_hold_breath_active
+		and sivol_weapon.is_manual_hold_breath_active() or false
+	if not item or not wpn then
+		clear_hold_zoom("no active weapon")
+		return
+	end
+	-- This covers binoculars, integral optics and the explicitly excluded
+	-- detachable scopes for both weapon FOV and global HUD FOV.
+	if is_hold_breath_zoom_excluded(item) then
+		clear_hold_zoom("scope/binocular exclusion")
+		return
+	end
+
+	if hold_active and strength > 0.001 then
+		if now - hold_zoom_ads_started_at < HOLD_ZOOM_ADS_SETTLE_DELAY then
+			return
+		end
+		local normal_factor = tonumber(wpn.zoom_factor) or 0
+		if normal_factor <= 0 then
+			clear_hold_zoom("no native zoom FOV")
+			return
+		end
+
+		local section = item:section()
+		if hold_zoom_active and hold_zoom_section ~= section then
+			clear_hold_zoom("weapon changed")
+		end
+		if not hold_zoom_active or hold_zoom_section ~= section then
+			hold_zoom_active = true
+			hold_zoom_section = section
+			hold_zoom_weapon = wpn
+			hold_zoom_base_factor = normal_factor
+			hold_zoom_current_factor = normal_factor
+			hold_zoom_last_written_factor = nil
+			weapon_zoom_log("[weapon_zoom] hold zoom start: section=%s base=%.2f extra=%d",
+				section, normal_factor * 0.75,
+				HOLD_BREATH_FOV_REDUCTION[get_weapon_class(section)] or HOLD_BREATH_FOV_REDUCTION.default)
+		end
+
+		local extra = (HOLD_BREATH_FOV_REDUCTION[get_weapon_class(section)]
+			or HOLD_BREATH_FOV_REDUCTION.default) * strength
+		-- Never consume more than 40% of a very narrow authored scope FOV.
+		local base_fov = hold_zoom_base_factor * 0.75
+		local target_fov = base_fov - math.min(extra, base_fov * 0.40)
+		target_fov = clamp(target_fov, HOLD_ZOOM_MIN_FOV, base_fov)
+		local target_factor = target_fov / 0.75
+		hold_zoom_current_factor = exp_step(hold_zoom_current_factor, target_factor, HOLD_ZOOM_RATE, dt)
+		write_hold_zoom(hold_zoom_weapon, hold_zoom_current_factor)
+		update_hold_hud_fov(true, strength, dt)
+		return
+	end
+
+	local hud_restored = update_hold_hud_fov(false, 0, dt)
+	if hold_zoom_active then
+		hold_zoom_current_factor = exp_step(hold_zoom_current_factor, hold_zoom_base_factor, HOLD_ZOOM_RATE, dt)
+		write_hold_zoom(hold_zoom_weapon, hold_zoom_current_factor)
+		if math.abs(hold_zoom_current_factor - hold_zoom_base_factor) <= HOLD_ZOOM_WRITE_EPSILON
+			and hud_restored then
+			write_hold_zoom(hold_zoom_weapon, hold_zoom_base_factor)
+			clear_hold_zoom(hold_zoom_exit_reason or "hold released")
+		end
+	elseif hud_restored then
+		clear_hold_hud_fov(hold_zoom_exit_reason or "hold released")
+	end
+end
+local function reset_hold_zoom(reason)
+	clear_hold_zoom(reason)
+	hold_zoom_ads_started_at = nil
+	was_aiming = false
+end
+
+local function on_update(delta)
     local aiming = wpn_params.get_zie_obj() ~= nil
+	local dt = tonumber(delta) or device().f_time_delta or 0.016
+	if dt > 1 then dt = dt / 1000 end
+	if dt <= 0 or dt > 0.20 then dt = 0.016 end
+	update_hold_breath_zoom(db.actor, aiming, dt, time_global() / 1000)
 
     if aiming and not was_aiming then
         local slot = db.actor:active_slot()
@@ -190,4 +466,7 @@ end
 function attach(sm)
 	sm:subscribe({signal = "on_update", fun = on_update})
 	sm:subscribe({signal = "on_item_to_slot", fun = on_item_to_slot})
+	sm:subscribe({signal = "on_first_update", fun = function() reset_hold_zoom("load/reset") end})
+	sm:subscribe({signal = "on_before_save_game", fun = function() reset_hold_zoom("save") end})
+	sm:subscribe({signal = "on_stop_modules", fun = function() reset_hold_zoom("net_destroy") end})
 end

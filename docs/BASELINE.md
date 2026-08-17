@@ -27,3 +27,18 @@ Known clean-game baseline and packed-file inventory: TBD.
   recomputed after spawn/equip/unequip/drop signal invalidation.
 - Scripted ambient burn hits should use `hit.burn`, zero impulse, a valid draftsman,
   and `bip_none` rather than a localized spine bone.
+- Manual weapon breath is manual-only: sprint while ADS activates it in hold or
+  toggle mode; there is no automatic breath-debt or forced-breath-out system.
+  The only player setting selects the input mode.
+- Hold breath has a 2.5% power floor, a 15-second maximum duration, and a
+  two-second reactivation cooldown. Breath-out is audible only after an
+  eight-second continuous hold, except for the forced 15-second timeout.
+- Weapon handling derives from the active weapon's live base mass plus attached
+  scope, silencer, and launcher mass (ammo excluded). Knives remain outside the
+  system; binoculars keep their existing exemption behavior.
+- The zoom effector applies wobble as a rendered-direction overlay. On zoom-out,
+  `wpn_params` rebases the last rendered direction into the actor camera base so
+  the camera does not return to the ADS-entry aim direction.
+- Open follow-up ideas, not implemented: distinguish hold-breath drain from the
+  aggregate tiredness/max-power path, and investigate optional compensation for
+  the intentional combined ADS-plus-walking stamina drain.

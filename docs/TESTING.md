@@ -37,6 +37,16 @@ Automated test commands and log locations: TBD.
   burn and chemical getter calls removes the thermal stall; Buzz uses the same guard.
 - Periodic diagnostics are disabled by default. Optional GC diagnostics should be
   enabled only for targeted profiling, not ordinary gameplay.
+- Manual weapon breath acceptance testing is complete; the detailed coverage and
+  deferred follow-up items are retained in `WEAPON_BREATH_TEST_PLAN.md`.
+- Confirmed weapon-breath behavior: hold and toggle input modes, 2.5% stamina
+  floor, 15-second forced release, two-second reactivation cooldown, quiet
+  short releases, and breath-out after holds of at least eight seconds.
+- Confirmed weapon handling: real base-plus-addon mass drives ADS drain and
+  low-stamina wobble; scoped/integral-optic and binocular exclusions suppress
+  only the extra hold-breath FOV/HUD-FOV change, not stabilization or costs.
+- Confirmed camera behavior: leaving ADS preserves the final visible aim
+  direction rather than snapping back to the direction present at ADS entry.
 
 For anomaly reshuffling/emission tests, use the mod's supported console/script
 command mechanism when the relevant function is known; exact command names and
