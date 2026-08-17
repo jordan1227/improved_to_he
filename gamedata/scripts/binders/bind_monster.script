@@ -222,21 +222,20 @@ function generic_object_binder:update( delta )
 		if db.actor then
 			local armor = db.actor:item_in_slot(6)
 			if armor and (armor:section() == 'ecolog_outfit' or armor:section() == 'protection_outfit') then
-				bobj:enable_aura(CBaseMonster.ePsyTypeAura, false)
-				bobj:enable_aura(CBaseMonster.eFireTypeAura, false)
 				aura_active = false
 			end
 		end
-		if aura_active then
-			bobj:enable_aura(CBaseMonster.ePsyTypeAura, true)
-			bobj:enable_aura(CBaseMonster.eFireTypeAura, true)
+		if self.sivol_emp_aura_active ~= aura_active then
+			bobj:enable_aura(CBaseMonster.ePsyTypeAura, aura_active)
+			bobj:enable_aura(CBaseMonster.eFireTypeAura, aura_active)
+			self.sivol_emp_aura_active = aura_active
 		end
 
 		-- EMP registration: electric variants only, per-source tier carried along
 		local sec = sfobj:section()
 		local emp_tier = sivol_emp_config.POLTERGEIST_TIER[sec]
 		if emp_tier then
-			sivol_emp_sources.register(sfobj:id(), sfpos, aura_active, emp_tier)
+			sivol_emp_sources.register(sfobj:id(), sfpos, aura_active, emp_tier, "poltergeist")
 		else
 			sivol_emp_sources.unregister(sfobj:id())  -- covers the fire variants, and any leftover stale entry
 		end
@@ -526,16 +525,13 @@ function generic_object_binder:update( delta )
 			local npc = sfobj:get_enemy()
 			local is_electro = strpos(sfobj:section(), "electro_chimera")
 
-			-- EMP registration: always evaluated, independent of the aggro-gated block
-			-- below, so losing aggro/target correctly unregisters instead of leaving
-			-- a stale source radiating from the chimera's last known position.
+			-- Electro-chimera EMP has a passive field independent of its current
+			-- target, plus the separate hit-triggered burst registered below.
 			if is_electro then
-				local seeing_actor = npc and npc:id() == actor:id() and sfobj:see(npc)
-				if seeing_actor then
-					sivol_emp_sources.register(sfobj:id(), sfpos, true, sivol_emp_config.ELECTRO_CHIMERA_TIER)
-				else
-					sivol_emp_sources.unregister(sfobj:id())
-				end
+				sivol_emp_sources.register(
+					sfobj:id(), sfpos, true,
+					sivol_emp_config.ELECTRO_CHIMERA_TIER, "chimera"
+				)
 			end
 
 			if npc and npc:id() == actor:id() then
@@ -551,35 +547,6 @@ function generic_object_binder:update( delta )
 					end
 				end
 
-				if is_electro and time_global() > (self.charge_time or 0) + 5000 then
-					if dist_to_actor < 30 then
-						amk_particle.amk_particle({
-							particle = "anomaly2\\electra2_blast",
-							pos = sfobj:bone_position("spine_1"),
-							sound = "anomaly\\electra_blast1"
-						})
-						if dist_to_actor < 7 then
-							local h = hit()
-							h.impulse = 0
-							h.draftsman = db.actor
-							h.direction = vector():set(0, 0, 0)
-							h.power = 0.5 / dist_to_actor
-							h.type = hit.strike
-							db.actor:hit(h)
-							h.power = 2 / dist_to_actor
-							h.type = hit.shock
-							db.actor:hit(h)
-
-							if sak.arts_operate == true and lua_random(1, 10) > math.modf(dist_to_actor) then
-								local akkum = sak.get_accum()
-								if akkum then
-									params.upd_condition(akkum:id(), 0.02)
-								end
-							end
-						end
-					end
-					self.charge_time = time_global()
-				end
 			end
 		end
 	end
@@ -665,7 +632,46 @@ function generic_object_binder:death_callback(victim, who)
 	end
 end
 
+local function trigger_electro_chimera_discharge(obj)
+	if not (obj and obj:alive() and strpos(obj:section(), "electro_chimera")) then return end
+	local tier = sivol_emp_config.ELECTRO_CHIMERA_BURST
+	if not sivol_emp_sources.trigger_burst(obj:id(), obj:position(), tier, "chimera") then return end
+
+	local actor = db.actor
+	if not actor then return end
+	local dist = obj:position():distance_to(actor:position())
+	if dist >= 30 then return end
+
+	amk_particle.amk_particle({
+		particle = "anomaly2\\electra2_blast",
+		pos = obj:bone_position("spine_1")
+	})
+	local discharge_sound = xr_sound.get_safe_sound_object("anomaly\\electra_blast1")
+	discharge_sound:play_no_feedback(actor, sound_object.s3d, 0, obj:position(), 1.0)
+	if dist >= 7 then return end
+
+	local safe_dist = math.max(dist, 0.25)
+	local h = hit()
+	h.impulse = 0
+	h.draftsman = actor
+	h.direction = vector():set(0, 0, 0)
+	h.power = 0.5 / safe_dist
+	h.type = hit.strike
+	actor:hit(h)
+	h.power = 2 / safe_dist
+	h.type = hit.shock
+	actor:hit(h)
+
+	if sak.arts_operate == true and lua_random(1, 10) > math.modf(dist) then
+		local akkum = sak.get_accum()
+		if akkum then params.upd_condition(akkum:id(), 0.02) end
+	end
+end
+
 function generic_object_binder:hit_callback(obj, amount, local_direction, who, bone_index)
+	if obj:clsid() == CLID_CHIMERA then
+		trigger_electro_chimera_discharge(obj)
+	end
 	if amount<0.015 then
 		if obj:clsid() == CLID_POLTERGEIST and who:id() == db.actor:id() then
 			flamethrower.on_monster_hit(obj, amount, local_direction, who, bone_index)

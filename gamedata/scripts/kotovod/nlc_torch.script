@@ -84,9 +84,17 @@ local last_battery_tick    = 0       -- Timestamp (time_global) of the last 5-se
 local last_electra_tick_time = 0     -- Timestamp (time_global) of the last Electra flicker calculation tick
 local last_electra_tick    = 0       -- Timestamp tracking frame delta time (dt) for Electra exponential smoothing calculations
 local last_spike_time      = 0       -- Timestamp tracking when the last Electra brightness drop spike occurred
-local lvl                  = level.name() -- Cached current map/level name for level-based drain calculations
+local lvl                  = string.lower(level.name())
+local cached_is_aver       = lvl == "aver"
+local cached_is_underground = const.ground_levels and const.ground_levels[lvl] == false or false
 local torch_busy           = false   -- Prevents input spam while torch animation is playing
 torch_switch_guard         = false   -- Prevents infinite recursion when reasserting torch state
+local cached_torch_slot
+local cached_torch_obj
+local torch_cache_dirty = true
+local last_applied_brightness
+local TORCH_BRIGHTNESS_EPSILON = 0.002
+local on_emp_malfunction
 
 TORCH_ALT_CONTROL_MODE = true  -- false = classic short-press cycle (off->near->far->off)
                                  -- true  = short press toggles on/off, hold switches cone width
@@ -109,16 +117,62 @@ local loc_flicker_duration = 0
 local next_loc_flicker_time = math.random(30000, 90000)
 
 local function is_underground()
-    local lvl_name = string.lower(level.name())
-    return const.ground_levels and const.ground_levels[lvl_name] == false
+    return cached_is_underground
 end
 
 local function get_torch_location_baseline()
-    if level.name() ~= 'aver' then return 0 end
+    if not cached_is_aver then return 0 end
 
     local base = sivol_emp_config.TORCH_AVER_FLICKER or 0
     local shield = (sivol_pda and sivol_pda.get_artifact_shield and sivol_pda.get_artifact_shield()) or 0
     return base * (1 - shield)
+end
+
+local function refresh_level_cache()
+    lvl = string.lower(level.name())
+    cached_is_aver = lvl == "aver"
+    cached_is_underground = const.ground_levels and const.ground_levels[lvl] == false or false
+end
+
+local function invalidate_torch_cache()
+    torch_cache_dirty = true
+end
+
+local function refresh_torch_cache()
+    if not torch_cache_dirty then return end
+    torch_cache_dirty = false
+    cached_torch_slot = db.actor and db.actor:item_in_slot(9) or nil
+    if not (cached_torch_slot and cached_torch_slot:is_torch()) then
+        cached_torch_slot, cached_torch_obj = nil, nil
+        upgraded_torch = false
+        last_applied_brightness = nil
+        return
+    end
+
+    cached_torch_obj = get_torch_obj(cached_torch_slot)
+    local is_powerful = false
+    local pk = get_netpk(cached_torch_slot, 1)
+    if pk then
+        local data = pk:get()
+        is_powerful = data and data.custom_data
+            and string.find(tostring(data.custom_data), "powerful_torch") ~= nil or false
+    end
+    upgraded_torch = is_powerful
+    last_applied_brightness = nil
+end
+
+local function get_cached_torch()
+    refresh_torch_cache()
+    return cached_torch_slot, cached_torch_obj
+end
+
+local function set_torch_brightness(torch_obj, value)
+    if not torch_obj then return end
+    if not last_applied_brightness
+        or math.abs(value - last_applied_brightness) > TORCH_BRIGHTNESS_EPSILON then
+        torch_obj:set_brightness(value)
+        last_applied_brightness = value
+    end
 end
 
 local click_snd = sound_object("device\\light_on")
@@ -167,10 +221,9 @@ end
 -- [HE-PORT]
 function on_before_switch_torch()
 	if nlc_torch_script_switch then return end
-	local torch = db.actor:alive() and db.actor:item_in_slot(9)
-	if torch and torch:is_torch() then
-		torch = get_torch_obj(torch)
-		torch.disable_switch = true
+	local _, torch_obj = get_cached_torch()
+	if db.actor:alive() and torch_obj then
+		torch_obj.disable_switch = true
 	end
 end
 
@@ -180,6 +233,14 @@ function attach(sm)
     sm:subscribe({ signal = "on_late_init_all",  fun = on_late_init_all })
     sm:subscribe({ signal = "on_update",         fun = update })
     sm:subscribe({ signal = "on_before_switch_torch", fun = on_before_switch_torch })
+    sm:subscribe({ signal = "on_emp_malfunction", fun = on_emp_malfunction })
+    sm:subscribe({ signal = "on_spawn", fun = function()
+        refresh_level_cache()
+        invalidate_torch_cache()
+    end })
+    sm:subscribe({ signal = "on_item_to_slot", fun = invalidate_torch_cache })
+    sm:subscribe({ signal = "on_item_to_ruck", fun = invalidate_torch_cache })
+    sm:subscribe({ signal = "on_drop_after_all", fun = invalidate_torch_cache })
 end
 
 -- ============ persistence (dsh_torch mechanism, kept as safety net) ============
@@ -194,9 +255,8 @@ local function restore_torch_state()
     local var = get_value(script_name() .. ".save_torch_mode") or get_value("dsh_torch.save_torch_mode") or get_value("nlc_torch_state")
     upgraded_torch = get_value("upgraded_torch", false)
     if not var then return end
-    local torch = db.actor:item_in_slot(9)
-    if not torch or not torch:is_torch() then return end
-    torch = get_torch_obj(torch)
+    local _, torch = get_cached_torch()
+    if not torch then return end
     if var == "near" then
         set_near_mode(torch)
     elseif var == "far" then
@@ -222,9 +282,7 @@ end
 
 -- ============ mode switching ============
 function reassert_torch_state()
-    local slot = db.actor:item_in_slot(9)
-    if not slot then return end
-    local t_obj = get_torch_obj(slot)
+    local _, t_obj = get_cached_torch()
     if not t_obj then return end
 
     -- Set guard to true so this enable() call doesn't trigger another reassert
@@ -345,23 +403,11 @@ end
 
 -- ============ per-parameter update (range/angle/brightness/color/flicker) ============
 function update_torch_parameters()
-    local slot = db.actor:item_in_slot(9)
-    if not slot then return end
-    local torch_obj = get_torch_obj(slot)
-    if not torch_obj then return end
+    local slot, torch_obj = get_cached_torch()
+    if not (slot and torch_obj) then return end
 
     local torch_cond = slot:condition()
-
-    -- Detect powerful torch via custom_data (in sak.script)
-    local is_powerful = false
-    local pk = get_netpk(slot, 1)
-    if pk then
-        local data = pk:get()
-        if data and data.custom_data and string.find(tostring(data.custom_data), "powerful_torch") then
-            is_powerful = true
-        end
-    end
-    upgraded_torch = is_powerful -- Keep var synced if anything else checks it
+    local is_powerful = upgraded_torch
 
     -- Restore old exact values for base_range/base_angle
     local base_range = is_powerful and 45 or 30
@@ -396,7 +442,7 @@ function update_torch_parameters()
     torch_obj:set_angle(angle)
 
     local final_brightness = brightness -- Use 0.0-1.0 float scale, as dsh_torch did
-    torch_obj:set_brightness( final_brightness )
+    set_torch_brightness(torch_obj, final_brightness)
     base_brightness = final_brightness
 
     local r, g, b = color_temp, color_temp * 0.95, color_temp * 0.9
@@ -405,9 +451,7 @@ end
 
 -- ============ battery drain (5s tick, folds in dsh_torch's upgraded/aver modifiers) ============
 function torch_brock()
-    local slot = db.actor:item_in_slot(9)
-    if not slot then return end
-    local torch_obj = get_torch_obj(slot)
+    local slot, torch_obj = get_cached_torch()
     if not torch_obj or not torch_obj.on then return end
 
     local mode = get_value("nlc_torch_state", "off")
@@ -429,7 +473,7 @@ function torch_brock()
 end
 
 function update_torch(cond)
-    local slot = db.actor:item_in_slot(9)
+    local slot = get_cached_torch()
     if slot then
         slot:set_condition(cond)
         update_torch_parameters()
@@ -438,22 +482,15 @@ end
 
 -- ============ electra flicker ============
 
-local next_malfunction_roll_time = 0
-
-local function try_critical_malfunction(torch_obj)
-    if torch_glitch_smooth < sivol_emp_config.TORCH_MALFUNCTION.threshold then return end
-
-    local now = time_global()
-    if now < next_malfunction_roll_time then return end
-    next_malfunction_roll_time = now + math.random(
-        sivol_emp_config.TORCH_MALFUNCTION.min_interval,
-        sivol_emp_config.TORCH_MALFUNCTION.max_interval
-    )
-
+on_emp_malfunction = function(kind, intensity)
+    local _, torch_obj = get_cached_torch()
+    if not (torch_obj and torch_obj.on) then return end
+    local resistance = upgraded_torch and sivol_emp_config.POWERFUL_TORCH_EMP_RESISTANCE or 0
+    if intensity * (1 - resistance) < sivol_emp_config.TORCH_MALFUNCTION.threshold then return end
     local mode = get_value("nlc_torch_state", "off")
-    if mode == "off" then return end  -- nothing to malfunction
+    if mode == "off" then return end
 
-    if math.random() < sivol_emp_config.TORCH_MALFUNCTION.off_chance then
+    if kind == "shutdown" then
         set_off_mode(torch_obj)
     elseif mode == "near" then
         set_far_mode(torch_obj)
@@ -463,10 +500,8 @@ local function try_critical_malfunction(torch_obj)
 end
 
 local function electra_torch_tick()
-    local torch = db.actor:alive() and db.actor:item_in_slot(9)
-    if not (torch and torch:is_torch()) then return end
-
-    local torch_obj = get_torch_obj(torch)
+    local _, torch_obj = get_cached_torch()
+    if not (db.actor:alive() and torch_obj) then return end
     if not torch_obj.on then
         torch_glitch_smooth = 0
         return
@@ -476,13 +511,16 @@ local function electra_torch_tick()
     local dt = math.min(1, (now - last_electra_tick) / 1000)
     last_electra_tick = now
 
-    if sivol_critical_malfunction and sivol_critical_malfunction.is_active() then
-        torch_obj:set_brightness(0.01)  -- power failure, not a mode change — recovers on its own
+    if sivol_critical_malfunction and sivol_critical_malfunction.is_device_active("torch") then
+        set_torch_brightness(torch_obj, 0.01)  -- power failure, not a mode change — recovers on its own
         return
     end
 
     local target = (sivol_pda and sivol_pda.get_glitch_intensity and sivol_pda.get_glitch_intensity()) or 0
     target = math.max(target, get_torch_location_baseline())
+    if upgraded_torch then
+        target = target * (1 - sivol_emp_config.POWERFUL_TORCH_EMP_RESISTANCE)
+    end
 
     -- Underground rare event state machine
     if is_underground() then
@@ -534,7 +572,7 @@ local function electra_torch_tick()
     end
 
     if torch_glitch_smooth <= 0.005 then
-        torch_obj:set_brightness(base_brightness)
+        set_torch_brightness(torch_obj, base_brightness)
         return
     end
 
@@ -555,8 +593,7 @@ local function electra_torch_tick()
 		)
 	end
 
-    torch_obj:set_brightness(math.max(0.01, base_brightness * dim))
-    try_critical_malfunction(torch_obj)
+    set_torch_brightness(torch_obj, math.max(0.01, base_brightness * dim))
 end
 
 -- ============ single update() — owns both cadences, no reschedule() ============
@@ -565,8 +602,8 @@ function update()
 
     if now - last_battery_tick >= TORCH_UPDATE_TIME_BASE then
         last_battery_tick = now
-        local torch = db.actor:item_in_slot(9)
-        if torch and torch:is_torch() then
+        local torch = get_cached_torch()
+        if torch then
             torch_brock()
         end
     end
@@ -594,18 +631,13 @@ function play_torch_anim()
 end
 
 function get_torch_state()
-    local torch = db.actor:item_in_slot(9)
-    if torch and torch:is_torch() then
-        torch = get_torch_obj(torch)
-        if torch.on then return true end
-    end
-    return false
+    local _, torch = get_cached_torch()
+    return torch and torch.on or false
 end
 
 function torch_handler(flag)
-    local torch = db.actor:item_in_slot(9)
-    if torch and torch:is_torch() then
-        torch = get_torch_obj(torch)
+    local _, torch = get_cached_torch()
+    if torch then
         local state = get_value("nlc_torch_state", "off")
         
         if flag == "off" and torch.on then

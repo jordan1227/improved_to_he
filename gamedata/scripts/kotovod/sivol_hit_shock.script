@@ -1,6 +1,26 @@
 -- sivol_hit_shock.script (new file)
 local last_hit_roll_time = 0
 
+local function is_static_electra_hit(hit_data)
+    local source = hit_data.who_id and level.object_by_id(hit_data.who_id) or nil
+    if source then
+        local sec = source:section() or ""
+        if source:clsid() == clsid.zone_electra_s
+            or string.find(sec, "galantine", 1, true)
+            or (string.find(sec, "zone_", 1, true) and string.find(sec, "electr", 1, true)) then
+            return true
+        end
+    end
+
+    -- Some anomaly hit packets do not retain a useful client draftsman. The
+    -- shared proximity cache supplies a safe fallback for those edge contacts.
+    if pda_noise and pda_noise.get_electra_intensity then
+        local _, _, source_type = pda_noise.get_electra_intensity()
+        return source_type == "electra"
+    end
+    return false
+end
+
 local function on_actor_before_hit(obj, hit_data, binder)
     if not hit_data or hit_data.hit_type ~= hit.shock then return end
     if not sivol_critical_malfunction then return end
@@ -8,9 +28,22 @@ local function on_actor_before_hit(obj, hit_data, binder)
 
     local cfg = sivol_emp_config.SHOCK_HIT_MALFUNCTION
     local now = time_global()
-    if now - last_hit_roll_time < cfg.min_cooldown then return end
-
     local power = hit_data.power or 0
+    if is_static_electra_hit(hit_data) then
+        last_hit_roll_time = now
+        local ambient = (sivol_pda and sivol_pda.get_glitch_intensity
+            and sivol_pda.get_glitch_intensity()) or 0
+        local hit_severity = math.min(1, power / math.max(cfg.max_power, 0.001))
+        local severity = math.min(1, ambient + math.max(cfg.electra_hit_severity_floor, hit_severity))
+        log2(
+            "[sivol_hit_shock] static Electra contact -> critical outage: power=%.3f ambient=%.3f severity=%.3f",
+            power, ambient, severity
+        )
+        sivol_critical_malfunction.trigger_from_hit(severity)
+        return
+    end
+
+    if now - last_hit_roll_time < cfg.min_cooldown then return end
     if power < cfg.min_power then return end
     last_hit_roll_time = now
 

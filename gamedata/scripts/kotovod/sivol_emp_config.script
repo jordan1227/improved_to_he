@@ -16,14 +16,23 @@ ELECTRA_TIER = {
 -- regardless of its own max_limit — decoupled on purpose so even the weakest electric
 -- poltergeist is "as dangerous up close" as a strong electra, per design intent.
 POLTERGEIST_TIER = {
-    m_poltergeist_normal       = { radius = 7.0, max_limit = 0.9, critical = true },
+    m_poltergeist_normal       = { radius = 8.0, max_limit = 1.10, critical = true },
     m_poltergeist_normal_tele  = { radius = 8.0, max_limit = 1.10, critical = true },
     m_poltergeist_tele_outdoor = { radius = 9.0, max_limit = 1.20, critical = true },  -- ~33% bigger radius, matches its larger tele_find_radius
 }
 -- m_poltergeist_normal_flame / _strong_flame / _dark_flame intentionally absent —
 -- fire aura still toggles normally in bind_monster.script, just no EMP registration.
 
-ELECTRO_CHIMERA_TIER = { radius = 10.0, max_limit = 0.5, critical = false }
+ELECTRO_CHIMERA_TIER = { radius = 15.0, max_limit = 0.5, critical = false }
+-- Defensive Electra-like pulse triggered when an electro-chimera is hit.
+-- Separate from its passive ambient field and independently cooldown-gated.
+ELECTRO_CHIMERA_BURST = {
+    radius = 10.0,
+    max_limit = 1.0,
+    critical = false,
+    duration = 1500,
+    cooldown = 5000,
+}
 
 BLACKOUT_START = 0.85   -- electra_eff threshold where full-screen blackout begins
 BLACKOUT_BAND  = 0.15   -- how far above START it takes to reach full blackout
@@ -31,6 +40,18 @@ BLACKOUT_BAND  = 0.15   -- how far above START it takes to reach full blackout
 NVD_AVER_GLITCH_BASE = 0.25
 NVD_GLITCH_MAX       = 0.45
 NVD_NOISE_MAX        = 0.6
+
+-- Extra NVD instability layered over the existing smooth glitch/noise response.
+NVD_EMP_VISUAL = {
+    update_interval = 100,
+    spike_interval_min = 650,
+    spike_interval_max = 1800,
+    spike_duration_min = 70,
+    spike_duration_max = 220,
+    gain_drop_max = 0.35,
+    gain_wobble = 0.12,
+    scintillation_drop_max = 0.45,
+}
 
 -- fill in with whatever nlc_torch.script's current aver flicker constant is
 TORCH_AVER_FLICKER = 0.35
@@ -53,17 +74,21 @@ ARTIFACT_PDA_FX = {
 
 ARTIFACT_PDA_CHECK_INTERVAL = 5000
 
--- TORCH_MALFUNCTION — periodic "your gear glitches" event while sustained exposure
--- exceeds `threshold`. Shared by nlc_torch.script (torch_glitch_smooth) AND
--- nvd_params.script (nvd_smooth) — tuning here changes both devices together.
+-- TORCH_MALFUNCTION — shared lesser-EMP event emitted by sivol_pda.script.
+-- NVD and flashlight consume the same event, so failures read as one pulse.
 TORCH_MALFUNCTION = {
-    threshold    = 0.75,     -- 0..1 — smoothed exposure must exceed this before any roll happens. Lower = triggers further from the source; closer to 1.0 = only near point-blank.
-    min_interval = 5000,    -- ms — shortest possible gap between roll attempts while above threshold.
-    max_interval = 15000,   -- ms — longest possible gap between roll attempts. min/max together control how often the device "checks" whether to glitch.
-    off_chance   = 0.55,    -- 0..1 — of a triggered roll, odds it's a FULL shutoff (torch: set_off_mode; NVD: off_pnv — both require the player to manually switch back on) vs. a lesser effect (torch: near/far cone flip; NVD: brief mode dropout, auto-recovers on its own).
+    threshold    = 0.75,     -- 0..1 — shared exposure must exceed this before events become eligible.
+    reset_threshold = 0.65,  -- eligibility remains latched until exposure falls below this value
+    min_interval = 5000,    -- ms — shortest possible gap between shared events while eligible.
+    max_interval = 15000,   -- ms — longest possible gap between shared events while eligible.
+    off_chance   = 0.55,    -- 0..1 — odds the shared event is a full shutdown rather than a lesser dropout/cone flip.
     dropout_min  = 4000,    -- ms — NVD-only: shortest auto-recovery time for the "lesser effect" mode dropout. Unused by torch (its lesser effect is an instant cone flip, not duration-based).
     dropout_max  = 12000,    -- ms — longest auto-recovery time for the NVD dropout.
 }
+
+-- Deterministic attenuation for the quest-upgraded/powerful flashlight.
+-- This reduces flicker intensity and may keep it below shared malfunction eligibility.
+POWERFUL_TORCH_EMP_RESISTANCE = 0.20
 
 -- CRITICAL_MALFUNCTION — rare, severe "your electronics just died" event shared by
 -- PDA and torch (see sivol_critical_malfunction.script). Triggers only very close to
@@ -81,9 +106,18 @@ CRITICAL_MALFUNCTION = {
 	shock_hit = { duration_min = 12500, duration_max = 17500 },  -- scaled by severity, see trigger_from_hit
 }
 
+-- One outage remains a shared causal event, but devices receive it at slightly
+-- different times and recover separately instead of switching in lockstep.
+CRITICAL_DEVICE_STAGGER = {
+    pda   = { onset_min = 0,   onset_max = 180, recovery_min = 0,   recovery_max = 700 },
+    nvd   = { onset_min = 120, onset_max = 480, recovery_min = 350, recovery_max = 1400 },
+    torch = { onset_min = 280, onset_max = 800, recovery_min = 750, recovery_max = 2200 },
+}
+
 SHOCK_HIT_MALFUNCTION = {
-    min_power    = 0.1,   -- hit.power below this never rolls at all — filters trivial/incidental shocks
+    min_power    = 0.1,   -- non-Electra hit.power below this never rolls; static Electra contact is deterministic
     max_power    = 0.8,    -- hit.power at/above this = max severity
+    electra_hit_severity_floor = 0.35, -- direct static-Electra contact always blackouts; this is its minimum duration severity
     chance_min   = 0.95,   -- chance ANYTHING happens, at a hit that just clears min_power
     chance_max   = 1.0,    -- chance ANYTHING happens, at max_power or above
     min_cooldown = 1000,  -- ms between hit-triggered rolls

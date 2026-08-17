@@ -1,5 +1,8 @@
 -- nvd_params.script
+-- FUTURE: when NVD becomes standalone equipment, keep any EMP resistance on
+-- that equipped item here instead of inheriting it from outfit/device state.
 local update_nvd_glitch  -- forward declaration, so attach() below can see it
+local on_emp_malfunction
 
 function attach(sm)
     sm:subscribe({signal = "on_item_to_slot", fun = this.on_slot})
@@ -10,6 +13,7 @@ function attach(sm)
     sm:subscribe({signal = "on_first_update", fun = this.on_first_update})
     sm:subscribe({signal = "on_save", fun = this.on_save})
     sm:subscribe({signal = "on_update", fun = update_nvd_glitch})
+    sm:subscribe({signal = "on_emp_malfunction", fun = on_emp_malfunction})
 end
 
 local snd_on = sound_object("weapons\\nv_start")
@@ -46,33 +50,33 @@ local NVD_SMOOTH_IN  = 5.0
 local NVD_SMOOTH_OUT = 2.5
 local nvd_smooth = 0
 local nvd_last_time = 0
-local next_nvd_malfunction_time = 0
 local nvd_dropout_until = 0
+local nvd_critical_forced_off = false
+local current_level_is_aver = false
+local last_nvd_visual_update = 0
+local next_nvd_visual_spike = 0
+local nvd_visual_spike_until = 0
 
 -- max-intensity targets to lerp toward; base values come from the currently
 -- equipped device's own ltx section (already read once in apply_pnv/on_slot)
-local base_pnv_glitch, base_pnv_noise
+local base_pnv_glitch, base_pnv_noise, base_pnv_scintillation
 
-local last_glitch_val, last_noise_val
+local last_glitch_val, last_noise_val, last_gain_val, last_scintillation_val
 local NVD_CMD_EPSILON = 0.005
 
 local function snapshot_nvd_base(nv_sect)
     base_pnv_glitch = get_float(nv_sect, "r_pnv_glitch", beef_nv.r_pnv_glitch)
     base_pnv_noise  = get_float(nv_sect, "r_pnv_noise",  beef_nv.r_pnv_noise)
+    base_pnv_scintillation = get_float(nv_sect, "r_pnv_scintillation", beef_nv.r_pnv_scintillation)
 end
 
-local function try_nvd_malfunction()
-    local cfg = sivol_emp_config.TORCH_MALFUNCTION
-    if nvd_smooth < cfg.threshold then return end
-
-    local now = time_global()
-    if now < next_nvd_malfunction_time then return end
-    next_nvd_malfunction_time = now + math.random(cfg.min_interval, cfg.max_interval)
-
-    if math.random() < cfg.off_chance then
+on_emp_malfunction = function(kind)
+    if not (flag and eff) then return end
+    if kind == "shutdown" then
         off_pnv(true)  -- full shutdown, mirrors torch's set_off_mode — manual switch-on required
     else
-        nvd_dropout_until = now + math.random(cfg.dropout_min, cfg.dropout_max)
+        local cfg = sivol_emp_config.TORCH_MALFUNCTION
+        nvd_dropout_until = time_global() + math.random(cfg.dropout_min, cfg.dropout_max)
         cmd("r_pnv_mode 0")
     end
 end
@@ -82,8 +86,13 @@ update_nvd_glitch = function()
 
     local now = time_global()
 
-    -- Critical malfunction: force NVD glitch/noise off
-    if sivol_critical_malfunction and sivol_critical_malfunction.is_active() then
+    -- Critical malfunction: force the actual NVD mode off without clearing
+    -- `flag`; this is an outage that auto-recovers, unlike a lesser shutdown.
+    if sivol_critical_malfunction and sivol_critical_malfunction.is_device_active("nvd") then
+        if not nvd_critical_forced_off then
+            cmd("r_pnv_mode 0")
+            nvd_critical_forced_off = true
+        end
         if last_glitch_val ~= 0 then
             cmd("r_pnv_glitch", 0)
             last_glitch_val = 0
@@ -93,6 +102,14 @@ update_nvd_glitch = function()
             last_noise_val = 0
         end
         return
+    elseif nvd_critical_forced_off then
+        nvd_critical_forced_off = false
+        if check_accum() then
+            cmd("r_pnv_mode 1")
+        else
+            off_pnv(false)
+            return
+        end
     end
 
     -- NVD dropout recovery/gate
@@ -117,7 +134,7 @@ update_nvd_glitch = function()
         and sivol_pda.get_artifact_shield()) or 0
 
     local aver_glitch = 0
-    if level.name() == 'aver' then
+    if current_level_is_aver then
         aver_glitch = sivol_emp_config.NVD_AVER_GLITCH_BASE * (1 - shield)
     end
 
@@ -131,8 +148,50 @@ update_nvd_glitch = function()
 
     if not base_pnv_glitch then return end
 
-    local glitch_val = base_pnv_glitch + (sivol_emp_config.NVD_GLITCH_MAX - base_pnv_glitch) * nvd_smooth
-    local noise_val  = base_pnv_noise + (sivol_emp_config.NVD_NOISE_MAX - base_pnv_noise) * nvd_smooth
+    local visual_cfg = sivol_emp_config.NVD_EMP_VISUAL
+    if nvd_smooth > 0.15 then
+        if now >= next_nvd_visual_spike then
+            nvd_visual_spike_until = now + math.random(
+                visual_cfg.spike_duration_min, visual_cfg.spike_duration_max
+            )
+            next_nvd_visual_spike = now + math.random(
+                visual_cfg.spike_interval_min, visual_cfg.spike_interval_max
+            )
+        end
+    else
+        next_nvd_visual_spike = 0
+        nvd_visual_spike_until = 0
+    end
+
+    if now - last_nvd_visual_update < visual_cfg.update_interval then return end
+    last_nvd_visual_update = now
+
+    local spike = now < nvd_visual_spike_until and 1 or 0
+    local phase = 0.5 + 0.5 * math.sin(now * 0.018)
+    local instability = nvd_smooth * nvd_smooth
+
+    local glitch_val = base_pnv_glitch
+        + (sivol_emp_config.NVD_GLITCH_MAX - base_pnv_glitch) * nvd_smooth
+        + spike * 0.12 * nvd_smooth
+    local noise_val = base_pnv_noise
+        + (sivol_emp_config.NVD_NOISE_MAX - base_pnv_noise) * nvd_smooth
+        + spike * 0.18 * nvd_smooth
+    glitch_val = math.min(1, glitch_val)
+    noise_val = math.min(1, noise_val)
+
+    local gain_drop = instability * (
+        visual_cfg.gain_drop_max * (0.55 + 0.45 * phase)
+        + spike * visual_cfg.gain_wobble
+    )
+    local gain_val = math.clamp(
+        r_pnv_gain_current_base + r_pnv_gain_current_mod - gain_drop, 0.1, 3.0
+    )
+    local scintillation_val = math.clamp(
+        base_pnv_scintillation
+            - instability * visual_cfg.scintillation_drop_max * (0.6 + 0.4 * phase)
+            - spike * 0.12 * nvd_smooth,
+        0, 1
+    )
 
     if not last_glitch_val or math.abs(glitch_val - last_glitch_val) > NVD_CMD_EPSILON then
         cmd("r_pnv_glitch", glitch_val)
@@ -142,14 +201,22 @@ update_nvd_glitch = function()
         cmd("r_pnv_noise", noise_val)
         last_noise_val = noise_val
     end
-
-    try_nvd_malfunction()
+    if not last_gain_val or math.abs(gain_val - last_gain_val) > NVD_CMD_EPSILON then
+        cmd("r_pnv_gain_current", gain_val)
+        last_gain_val = gain_val
+    end
+    if not last_scintillation_val
+        or math.abs(scintillation_val - last_scintillation_val) > NVD_CMD_EPSILON then
+        cmd("r_pnv_scintillation", scintillation_val)
+        last_scintillation_val = scintillation_val
+    end
 end
 
 local function apply_pnv_mode()
     -- 0.10000, 3.00000
     local gain = math.clamp(r_pnv_gain_current_base + r_pnv_gain_current_mod, 0.1, 3.0)
     cmd("r_pnv_gain_current", gain)
+    last_gain_val = gain
 end
 
 local function apply_pnv(nv_sect)
@@ -184,6 +251,14 @@ function on_slot(obj)
 end
 
 function on_drop(obj)
+    local sect = obj and obj:section()
+    if sect == "af_full_akkum" or sect == "af_full_akkum_big" then
+        -- Inventory callbacks can arrive while the slot transition is still
+        -- being finalized. Verify on the next task slice before shutting down.
+        dsh.timeout(1, function()
+            if flag and not check_accum() then off_pnv(false) end
+        end)
+    end
     if obj:id() == obj_id then
         local aobj = get_actor_obj()
         if aobj then aobj.can_switch_nv = false end
@@ -233,6 +308,7 @@ end
 function on_pnv(snd)
     if not eff then return end
     flag = true
+    last_nvd_visual_update = 0
     cmd("r_pnv_mode 1")
     level.set_min_lumscale_amb(0.02)
     if snd then
@@ -244,7 +320,12 @@ function off_pnv(snd)
     flag = false
     nvd_smooth = 0
     nvd_dropout_until = 0
+    nvd_critical_forced_off = false
+    next_nvd_visual_spike = 0
+    nvd_visual_spike_until = 0
+    last_nvd_visual_update = 0
     last_glitch_val, last_noise_val = nil, nil
+    last_gain_val, last_scintillation_val = nil, nil
     cmd("r_pnv_mode 0")
     level.set_min_lumscale_amb(0.001)
     if snd then
@@ -256,11 +337,12 @@ function on_spawn()
     local aobj = get_actor_obj()
     if aobj then aobj.can_switch_nv = false end
     flag = get_value("nightvision_en", false)
+    current_level_is_aver = level.name() == 'aver'
     -- if flag and level.name() ~= 'aver' then on_pnv() end
 end
 
 function on_first_update()
-    if flag and level.name() ~= 'aver' then on_pnv() end
+    if flag and not current_level_is_aver then on_pnv() end
 end
 
 function on_save()

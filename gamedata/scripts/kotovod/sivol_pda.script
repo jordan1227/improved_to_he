@@ -82,29 +82,21 @@ local last_time = 0
 local electra_noise_muted = false -- disable glitch noise from electras specifically
 local NOISE_VOLUME_SCALE = 0.62 -- volume of interference 
 
--- ======================= ARTIFACT-DRIVEN INTERFERENCE (placeholder) =======================
--- Same convention as sivol_weapon.script's artifact_wobble_table: exact match first,
--- then generic _dynNd suffix stripping/scaling. Empty for now — add entries when ready.
--- Value = raw intensity contribution (0..1, same scale as electra_target/loc_base),
--- NOT a multiplier like the wobble table.
--- Positive = this artifact broadcasts interference (max of these wins, no stacking)
--- Negative = this artifact shields against ambient interference (these stack additively)
-local ARTIFACT_PDA_FX = {
-    af_eye       =  0.4,   -- broadcaster
-    -- af_something_dyn   =  0.2,   -- tier-scaled broadcaster
-    af_glassbeads = -0.75,   -- shield, tier-scaled same as broadcasters
-}
-
--- sivol_pda.script — replace the local table/constant, keep the caching state and logic:
-
 local cached_artifact_pda_glitch = 0   -- 0..1, strongest broadcaster present
 local cached_artifact_pda_shield = 0   -- 0..1, combined shielding strength
 local last_artifact_pda_check = 0
+local artifact_pda_dirty = true
+
+local function invalidate_artifact_pda_fx()
+    artifact_pda_dirty = true
+end
 
 local function update_artifact_pda_fx()
     local now = time_global()
-    if now - last_artifact_pda_check < sivol_emp_config.ARTIFACT_PDA_CHECK_INTERVAL then return end
+    if not artifact_pda_dirty
+        and now - last_artifact_pda_check < sivol_emp_config.ARTIFACT_PDA_CHECK_INTERVAL then return end
     last_artifact_pda_check = now
+    artifact_pda_dirty = false
 
     if not (sak and sak.arts_operate) then
         cached_artifact_pda_glitch = 0
@@ -153,6 +145,9 @@ local LOCATION_FX = {
     l03u_agr_underground = { base = 0.15, mix = 0.95 },     -- mostly static. Íóæíî øòóêè ÷èòàòü 
 }
 local UNDERGROUND_FX = { base = 0.275, mix = 0.85 } -- Åñëè øòóêè íàäî ÷èòàòü â ëàáàõ â ÏÄÀ - íàäî óìåíüøèòü
+local cached_location_base = 0
+local cached_location_mix = 0
+local location_cache_ready = false
 
 function set_electra_noise_muted(v)
     electra_noise_muted = v
@@ -165,15 +160,19 @@ end
 
 -- Returns location baseline (intensity base 0..1, mix float 0..1)
 local function get_location_baseline()
+    if location_cache_ready then
+        return cached_location_base, cached_location_mix
+    end
     local lvl_name = string.lower(level.name())
     if LOCATION_FX[lvl_name] then
-        return LOCATION_FX[lvl_name].base, LOCATION_FX[lvl_name].mix
+        cached_location_base = LOCATION_FX[lvl_name].base
+        cached_location_mix = LOCATION_FX[lvl_name].mix
+    elseif const.ground_levels and const.ground_levels[lvl_name] == false then
+        cached_location_base = UNDERGROUND_FX.base
+        cached_location_mix = UNDERGROUND_FX.mix
     end
-    local is_underground = const.ground_levels and const.ground_levels[lvl_name] == false
-    if is_underground then
-        return UNDERGROUND_FX.base, UNDERGROUND_FX.mix
-    end
-    return 0, 0
+    location_cache_ready = true
+    return cached_location_base, cached_location_mix
 end
 
 -- Expose current effective intensity for 2D UI / external queries
@@ -241,6 +240,10 @@ local RAIN_MIX = 0.99             -- near-pure static: physical/moisture origin,
 local RAIN_CHECK_INTERVAL = 1000
 local last_rain_check = 0
 local cached_rain_intensity = 0
+local pda_shader_params = vector()
+local emp_signal_mgr
+local lesser_emp_eligible = false
+local next_lesser_emp_event = 0
 
 local function update_rain_baseline()
     local now = time_global()
@@ -254,6 +257,33 @@ local function update_rain_baseline()
     cached_rain_intensity = (sivol_rain.get_intensity() or 0) * RAIN_MAX_INTENSITY
 end
 --  =======================
+
+local function update_lesser_emp_event(intensity, source_type)
+    local cfg = sivol_emp_config.TORCH_MALFUNCTION
+    local now = time_global()
+
+    if lesser_emp_eligible then
+        if intensity < cfg.reset_threshold then
+            lesser_emp_eligible = false
+            next_lesser_emp_event = 0
+            return
+        end
+    elseif intensity >= cfg.threshold then
+        lesser_emp_eligible = true
+        next_lesser_emp_event = now + math.random(cfg.min_interval, cfg.max_interval)
+    else
+        return
+    end
+
+    if sivol_critical_malfunction and sivol_critical_malfunction.is_active() then return end
+    if now < next_lesser_emp_event then return end
+
+    next_lesser_emp_event = now + math.random(cfg.min_interval, cfg.max_interval)
+    local kind = (math.random() < cfg.off_chance) and "shutdown" or "dropout"
+    if emp_signal_mgr then
+        emp_signal_mgr:call("on_emp_malfunction", kind, intensity, source_type)
+    end
+end
 
 local function check_electra_proximity()
     if not db.actor then return end
@@ -290,6 +320,7 @@ local function check_electra_proximity()
 
     local glitch_source = math.max(electra_eff, artifact_glitch, hit_glitch)
     cached_glitch_source = glitch_source
+    update_lesser_emp_event(glitch_source, source_type)
     local target = math.max(glitch_source, loc_base_eff)
 
     -- Sound-gating target excludes rain — location baseline and glitch sources only
@@ -353,9 +384,9 @@ local function check_electra_proximity()
     local can_drive = pda and pda_in_hands and is_3d_pda and not broken
 
     if can_drive then
-        if sivol_critical_malfunction and sivol_critical_malfunction.is_active() then
+        if sivol_critical_malfunction and sivol_critical_malfunction.is_device_active("pda") then
             pda_noise.stop_noise_sound()  -- dead silence reads more "broken" than more static
-            set_pda_params(vector():set(0.0, 1.0, 1.55))  -- same ceiling as the existing electra blackout
+            set_pda_params(pda_shader_params:set(0.0, 1.0, 1.55))  -- same ceiling as the existing electra blackout
         else
             if smooth_non_rain > 0.01 and not electra_noise_muted then
                 pda_noise.play_noise_sound()
@@ -363,7 +394,7 @@ local function check_electra_proximity()
             else
                 pda_noise.stop_noise_sound()
             end
-            set_pda_params(vector():set(0.0, smooth, alpha_mode))
+            set_pda_params(pda_shader_params:set(0.0, smooth, alpha_mode))
         end
     else
         pda_noise.stop_noise_sound()
@@ -371,8 +402,20 @@ local function check_electra_proximity()
 end
 
 function attach(sm)
+    emp_signal_mgr = sm
     sm:subscribe({
         signal = "on_update",
         fun = check_electra_proximity
     })
+    sm:subscribe({signal = "on_spawn", fun = function()
+        artifact_pda_dirty = true
+        location_cache_ready = false
+        cached_location_base, cached_location_mix = 0, 0
+        lesser_emp_eligible = false
+        next_lesser_emp_event = 0
+    end})
+    sm:subscribe({signal = "on_item_to_belt", fun = invalidate_artifact_pda_fx})
+    sm:subscribe({signal = "on_item_to_ruck", fun = invalidate_artifact_pda_fx})
+    sm:subscribe({signal = "on_item_to_slot", fun = invalidate_artifact_pda_fx})
+    sm:subscribe({signal = "on_drop_after_all", fun = invalidate_artifact_pda_fx})
 end
