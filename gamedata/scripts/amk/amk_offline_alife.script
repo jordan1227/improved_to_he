@@ -2545,6 +2545,172 @@ function have_ammo( npc, weapon )
     return result
 end
 
+
+-- [HE-PORT]
+local paid_stash_names = {
+    [ "esc_sak_box_0001" ] = true,
+    [ "mil_sak_box_0001" ] = true,
+    [ "dv_sak_box_0001" ] = true,
+    [ "bar_sak_box_0001" ] = true,
+    [ "bar_sak_box_0002" ] = true,
+    [ "bar_sak_box_0003" ] = true,
+    [ "pri_sak_box_0001" ] = true,
+    [ "pesh_inventory_box_0004" ] = true,
+}
+
+function is_paid_stash_box( box )
+    if not box then return false end
+    local name = box:name()
+    if not name then return false end
+    if _G.he_magic_box and he_magic_box.is_paid_box then
+        if he_magic_box.is_paid_box( name ) then return true end
+    end
+    return paid_stash_names[ name ] == true
+end
+
+function is_unlooted_treasure_box( box )
+    if not box then return false end
+    if level and level.map_has_object_spot then
+        local bid = box.id
+        if
+               level.map_has_object_spot( bid, "crlc_big_treasure1" ) ~= 0
+            or level.map_has_object_spot( bid, "crlc_big_treasure2" ) ~= 0
+            or level.map_has_object_spot( bid, "crlc_big_treasure3" ) ~= 0
+            or level.map_has_object_spot( bid, "crlc_big_treasure4" ) ~= 0
+        then
+            return true
+        end
+    end
+    if _G.treasure_manager and treasure_manager.get_treasure_manager then
+        local trman = treasure_manager.get_treasure_manager()
+        local sid = box.m_story_id
+        if trman and sid and trman.treasure_by_target then
+            local k = trman.treasure_by_target[ sid ]
+            if k and trman.treasure_info and trman.treasure_info[ k ] then
+                local info = trman.treasure_info[ k ]
+                if info.active then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function used_box_var( box_id )
+    return "he_leave_steal_used." .. tostring( box_id )
+end
+
+function mark_box_used( box_id )
+    if not box_id then return end
+    set_value( used_box_var( box_id ), true )
+end
+
+function is_player_used_box( box )
+    if not box or not box.id then return false end
+    return get_value( used_box_var( box.id ), false ) == true
+end
+
+function box_skip_leave_steal( box )
+    if not box then return true end
+    if is_paid_stash_box( box ) then return true end
+    if is_unlooted_treasure_box( box ) then return true end
+    if box_is_protected( box ) then return true end
+    if not is_player_used_box( box ) then return true end
+    return false
+end
+
+local function object_level_name_safe( obj )
+    if not obj or not obj.m_game_vertex_id then return nil end
+    if not game_graph():valid_vertex_id( obj.m_game_vertex_id ) then return nil end
+    return g_sim:level_name( game_graph():vertex( obj.m_game_vertex_id ):level_id() )
+end
+
+function empty_box_for_steal( box, kids )
+    if not box then return 0 end
+    local box_id = box.id
+    local dropped = 0
+    local seen = {}
+
+    if kids then
+        for _, it in ipairs( kids ) do
+            if
+                it
+                and it.id
+                and not seen[ it.id ]
+                and not IsStalker( it )
+                and not IsMonster( it )
+            then
+                seen[ it.id ] = true
+                do_drop_object( it )
+                dropped = dropped + 1
+            end
+        end
+    end
+
+    if items[ box_id ] and #items[ box_id ] > 0 then
+        for a = 1, #items[ box_id ] do
+            local v = items[ box_id ][ a ]
+            if v and v.id and not seen[ v.id ] then
+                local it = g_sim:object( v.id )
+                if it and it.parent_id == box_id then
+                    seen[ v.id ] = true
+                    do_drop_object( it )
+                    dropped = dropped + 1
+                end
+            end
+        end
+    end
+
+    items[ box_id ] = nil
+    set_box_trapped( box_id, 0 )
+    set_box_owner( box_id, BAD_OBJ_ID )
+    return dropped
+end
+
+function steal_level_on_leave( level_name )
+    if not level_name or level_name == "" then return 0 end
+    if not db.actor then return 0 end
+
+    local items_hit = 0
+    local ids, cnt = registry.all_objects( true )
+
+    local boxes = {}
+    local kids_by_box = {}
+
+    for n = 1, cnt do
+        local obj = g_sim:object( ids[ n ] )
+        if obj then
+            if is_box_or_rukzak( obj ) then
+                if
+                    ( obj.parent_id == nil or obj.parent_id == BAD_OBJ_ID )
+                    and object_level_name_safe( obj ) == level_name
+                then
+                    boxes[ obj.id ] = obj
+                end
+            elseif obj.parent_id and obj.parent_id ~= BAD_OBJ_ID then
+                if not kids_by_box[ obj.parent_id ] then
+                    kids_by_box[ obj.parent_id ] = {}
+                end
+                table.insert( kids_by_box[ obj.parent_id ], obj )
+            end
+        end
+    end
+
+    for box_id, box in pairs( boxes ) do
+        if not box_skip_leave_steal( box ) then
+            local d = empty_box_for_steal( box, kids_by_box[ box_id ] )
+            if d > 0 then
+                items_hit = items_hit + d
+            else
+                items[ box_id ] = nil
+            end
+        end
+    end
+
+    return items_hit
+end
+
 function box_is_protected( v )
     if v then
         for k, o in pairs( protected ) do
@@ -2826,11 +2992,20 @@ function on_item_drop( obj )
     local sobj = g_sim:object( obj:id() )
     if sobj and sobj.parent_id then
         set_box_owner( sobj.parent_id, BAD_OBJ_ID )
+        -- [HE-PORT]
+        if sobj.parent_id ~= BAD_OBJ_ID then
+            local parent = g_sim:object( sobj.parent_id )
+            if parent and is_box_or_rukzak( parent ) then
+                mark_box_used( sobj.parent_id )
+            end
+        end
     end
 end
 
 function take_item_from_box(box, item)
     local box_id    = box:id()
+    -- [HE-PORT]
+    mark_box_used( box_id )
     local trman     = treasure_manager.get_treasure_manager()
     local needempty = true
     if trman then
@@ -3595,25 +3770,8 @@ function check_be_enemies()
 end
 
 function get_npc_name( obj )
-    local m_s_name = ""
-    if obj then
-        if news_main.isGameObject( obj ) then
-            if obj.character_name then m_s_name = obj:character_name() end
-        else
-            local ob = news_main.get_obj( obj.id )
-            if ob and ob.character_name then
-                m_s_name = ob:character_name()
-            else
-                local pk   = get_netpk( obj )
-                local data = pk:get()
-                if data and data.checked_characters then
-                    m_s_name = data.checked_characters
-                end
-            end
-        end
-    end
-    if m_s_name == nil then m_s_name = "" end
-    return m_s_name
+    -- [HE-PORT]
+    return news_main.get_npc_name( obj )
 end
 
 function test_event() end
