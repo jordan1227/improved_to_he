@@ -48,6 +48,7 @@ local ELECTRA_POWER_TIER = {
 	["amk_zone_witches_galantine"]         = sivol_emp_config.ELECTRA_TIER.average,
     ["amk_zone_witches_galantine_strong"]  = sivol_emp_config.ELECTRA_TIER.strong,
 }
+local DEFAULT_ELECTRA_TIER = { radius_mult = 0.0, max_limit = 0.9 }
 
 -- Static Electras are cached from anomaly lifecycle signals. Combined Electra
 -- and monster-source proximity is refreshed at this cadence; visual smoothing
@@ -71,25 +72,20 @@ local function cache_electra(obj)
     local sec = obj:section() or ""
     if not is_electra_anomaly(obj, sec) then return end
 
-    local tier = ELECTRA_POWER_TIER[sec] or {
-        radius_mult = 0.0,
-        max_limit = 0.9,
-    }
+    local tier = ELECTRA_POWER_TIER[sec] or DEFAULT_ELECTRA_TIER
     local shape_ok, shape_radius = pcall(obj.get_shape_radius, obj)
     local pos = obj:position()
     electra_cache[obj:id()] = {
         x = pos.x, y = pos.y, z = pos.z,
         shape_radius = shape_ok and math.max(0, tonumber(shape_radius) or 0) or 0,
-        radius = BASE_NOISE_RADIUS + tier.radius_mult,
-        max_limit = tier.max_limit,
-        is_strong = tier.max_limit >= 1.0,
+        tier = tier,
         section = sec,
     }
     last_electra_refresh = 0
     log2(
         "[pda_noise] cached Electra: section=%s id=%d shape_radius=%.2f effect_radius=%.2f max=%.2f",
         sec, obj:id(), electra_cache[obj:id()].shape_radius,
-        electra_cache[obj:id()].radius, tier.max_limit
+        BASE_NOISE_RADIUS + tier.radius_mult, tier.max_limit
     )
 end
 
@@ -173,30 +169,45 @@ function get_electra_intensity()
         local dz = pos.z - src.z
         local center_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
         local distance = math.max(0, center_distance - src.shape_radius)
-        local proximity = 1 - distance / src.radius
-        local intensity = proximity * src.max_limit
+        local tier = src.tier
+        local radius = BASE_NOISE_RADIUS + tier.radius_mult
+        local proximity = 1 - distance / radius
+        local intensity = proximity * tier.max_limit
 
         if intensity > best then
             best = intensity
-            is_strong = src.is_strong
+            is_strong = tier.max_limit >= 1.0
             source_type = "electra"
         end
     end
 
     -- Poltergeist EMP sources
     if sivol_emp_sources and sivol_emp_sources.get_sources then
-        for obj_id, src in pairs(sivol_emp_sources.get_sources()) do
-            if src.active and src.tier then
-                local dist = pos:distance_to(src.pos)
-                local proximity = 1 - math.max(0, dist) / src.tier.radius
+        for _, src in pairs(sivol_emp_sources.get_sources()) do
+            local tier = src.active and src.tier or nil
+            local burst_tier = now < (src.burst_until or 0) and src.burst_tier or nil
 
-                if proximity > 0 then
-                    local intensity = proximity * src.tier.max_limit
-
+            if tier or burst_tier then
+                local dx = pos.x - src.x
+                local dy = pos.y - src.y
+                local dz = pos.z - src.z
+                local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if tier then
+                    local proximity = 1 - dist / tier.radius
+                    local intensity = proximity * tier.max_limit
                     if intensity > best then
                         best = intensity
-                        is_strong = src.tier.critical or false
-                        source_type = "poltergeist"
+                        is_strong = tier.critical or false
+                        source_type = src.source_type
+                    end
+                end
+                if burst_tier then
+                    local proximity = 1 - dist / burst_tier.radius
+                    local intensity = proximity * burst_tier.max_limit
+                    if intensity > best then
+                        best = intensity
+                        is_strong = burst_tier.critical or false
+                        source_type = src.source_type
                     end
                 end
             end
@@ -246,6 +257,7 @@ function PdaNoiseWnd:__init() super()
     self.smooth             = 0
     self.next_flicker_time  = 0
 	self.current_frame      = 1       -- Stores active noise frame indexF
+    self.visible_frame      = 0
     self.ignore_first_press = true
     
     bind_stalker.set_pda_cb(true)
@@ -300,19 +312,18 @@ function PdaNoiseWnd:Update()
             self.current_frame = math.random(1, NUM_FRAMES)
         end
 
-        -- Show active frame at 100% solid opacity (255 Alpha)
-        for i = 1, NUM_FRAMES do
-            if i == self.current_frame then
-                self.frames[i]:SetColor(GetARGB(255, 255, 255, 255))
-                self.frames[i]:Show(true)
-            else
-                self.frames[i]:Show(false)
+        -- Only touch UI visibility when the displayed frame actually changes.
+        if self.visible_frame ~= self.current_frame then
+            if self.visible_frame > 0 then
+                self.frames[self.visible_frame]:Show(false)
             end
+            self.frames[self.current_frame]:Show(true)
+            self.visible_frame = self.current_frame
         end
     else
-        -- Hide static completely when away from anomalies
-        for i = 1, NUM_FRAMES do
-            self.frames[i]:Show(false)
+        if self.visible_frame > 0 then
+            self.frames[self.visible_frame]:Show(false)
+            self.visible_frame = 0
         end
     end
 

@@ -1,14 +1,26 @@
 -- sivol_critical_malfunction.script
--- Shared full-device-outage state for PDA + torch. No attach() needed —
+-- Shared full-device-outage state for PDA + NVD + torch. No attach() needed —
 -- it's pure state, driven by sivol_pda.script's already-every-frame tick.
 
 local active_until = 0
 local next_proximity_roll_time = 0
 local glitch_until = 0
 local glitch_intensity = 0
+local device_windows = {
+    pda = { starts = 0, finishes = 0 },
+    nvd = { starts = 0, finishes = 0 },
+    torch = { starts = 0, finishes = 0 },
+}
 
 function is_active()
     return time_global() < active_until
+end
+
+function is_device_active(device)
+    local window = device_windows[device]
+    if not window then return is_active() end
+    local now = time_global()
+    return now >= window.starts and now < window.finishes
 end
 
 function is_glitching()
@@ -22,10 +34,23 @@ function get_hit_glitch_intensity()
     return is_glitching() and glitch_intensity or 0
 end
 
+local function schedule_outage(duration)
+    local now = time_global()
+    active_until = now + duration
+    for device, window in pairs(device_windows) do
+        local cfg = sivol_emp_config.CRITICAL_DEVICE_STAGGER[device]
+        local onset = math.random(cfg.onset_min, cfg.onset_max)
+        local recovery = math.random(cfg.recovery_min, cfg.recovery_max)
+        window.starts = now + onset
+        window.finishes = now + duration + recovery
+        active_until = math.max(active_until, window.finishes)
+    end
+end
+
 local function start_outage(source_type)
     local cfg = sivol_emp_config.CRITICAL_MALFUNCTION[source_type]
         or sivol_emp_config.CRITICAL_MALFUNCTION.electra -- fall back of source type is nil 
-    active_until = time_global() + math.random(cfg.duration_min, cfg.duration_max)
+    schedule_outage(math.random(cfg.duration_min, cfg.duration_max))
 end
 
 -- hit.shock-triggered entry point (called from sivol_hit_shock.script)
@@ -33,7 +58,7 @@ function trigger_from_hit(severity)
     if is_active() then return end
     local cfg = sivol_emp_config.CRITICAL_MALFUNCTION.shock_hit
     local dur = cfg.duration_min + (cfg.duration_max - cfg.duration_min) * severity
-    active_until = time_global() + dur
+    schedule_outage(dur)
 end
 
 function trigger_glitch_from_hit(severity)
