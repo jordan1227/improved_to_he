@@ -35,4 +35,22 @@ Inspect other `gamedata` folders only when the current task requires them.
   - `gamedata/scripts/sak/sak.script` and
     `gamedata/scripts/vergas/vergas_masks.script` suspend mask breath sounds
     and condensation respectively while breath is held.
+- Mutant abilities and controller overhaul:
+  - `gamedata/scripts/binders/bind_monster.script` owns the ported mutant
+    abilities, controller sensed/targeted pools, cover sampling, cooldowns,
+    reticle/fire reactions, gear integration, phantoms, and diagnostics.
+  - `gamedata/scripts/kotovod/sivol_masks.script` exposes the read-only cached
+    `psy_k` multiplier consumed by mutant psy effects.
+  - `gamedata/scripts/kotovod/sivol_weapon.script` supplies the 16 ms reticle
+    pressure clock, camera diversion, hold-breath interruption, stamina wobble,
+    and controller trigger sound integration.
+  - `gamedata/scripts/kotovod/sivol_weapon_zoom.script` resolves authored
+    scope magnification for controller threat scaling.
+  - `gamedata/scripts/sak/sak.script` owns reversible controller bind
+    scrambling/restoration; `gamedata/scripts/arts/arc_arts.script` maintains
+    condition-aware `dog_shield`; `gamedata/scripts/phantom_manager.script`
+    owns scripted phantom creation and the disabled experimental psy variant.
+  - Native locomotion remains owned by the engine class (`SM_CONTR`) and
+    `gamedata/config/creatures/m_controller.ltx`; the scripted overhaul does
+    not assign controller destinations or disable movement.
 - Configuration-to-script relationships beyond these entry points: TBD.

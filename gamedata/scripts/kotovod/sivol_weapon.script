@@ -43,6 +43,8 @@ local MANUAL_HOLD_BREATH_MAX_MS = 15000
 local MANUAL_HOLD_BREATH_COOLDOWN_MS = 2000
 local MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_MS = 2500
 local MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_K = 1.35
+local CONTROLLER_STAMINA_WOBBLE_MS = 3500
+local CONTROLLER_STAMINA_WOBBLE_K = 1.75
 
 -- Set true only while diagnosing weapon-breath/FOV/mass behavior.
 sivol_weapon.weapon_breath_diagnostics = false
@@ -59,6 +61,8 @@ local manual_hold_weapon_id = nil
 local manual_hold_started_at = 0
 local manual_hold_cooldown_until = 0
 local manual_hold_timeout_wobble_until = 0
+local controller_stamina_wobble_until = 0
+local controller_stamina_wobble_k = 1.0
 local update_manual_hold_breath
 local get_artifact_weapon_effects
 
@@ -68,6 +72,48 @@ local function play_breath_sound(name)
     if vergas_lib and vergas_lib.s_play then
         vergas_lib.s_play(name, 1)
     end
+end
+
+function sivol_weapon.play_controller_false_trigger(item)
+    local actor = db.actor
+    if not actor then return end
+    local configured = item and get_string(item:section(), "snd_empty", "weapons\\ak_empty")
+        or "weapons\\ak_empty"
+    local dry_sound = configured and string.match(configured, "^%s*([^,]+)") or "weapons\\ak_empty"
+    if dry_sound then
+        dry_sound = string.gsub(dry_sound, "%s+$", "")
+        pcall(function()
+            local snd = xr_sound.get_safe_sound_object(dry_sound, sound_object.s2d)
+            snd:play_no_feedback(actor, sound_object.s2d, 0, vector(), 0.9)
+        end)
+    end
+    -- The mechanical click explains the failed trigger; the quiet controller
+    -- layer identifies it as hostile sound manipulation rather than a gun bug.
+    pcall(function()
+        local snd = xr_sound.get_safe_sound_object("monsters\\controller\\controller_control1", sound_object.s2d)
+        snd:play_no_feedback(actor, sound_object.s2d, 0, vector(), 0.35)
+    end)
+end
+
+function sivol_weapon.play_controller_psy_trigger_sound()
+    local actor = db.actor
+    if not actor then return end
+    pcall(function()
+        local snd = xr_sound.get_safe_sound_object("monsters\\controller\\controller_control1", sound_object.s2d)
+        snd:play_no_feedback(actor, sound_object.s2d, 0, vector(), 0.35)
+    end)
+end
+
+function sivol_weapon.start_controller_stamina_wobble(duration_ms, wobble_k)
+    local now = time_global()
+    local duration = math.max(0, tonumber(duration_ms) or CONTROLLER_STAMINA_WOBBLE_MS)
+    local requested_k = math.max(1.0, tonumber(wobble_k) or CONTROLLER_STAMINA_WOBBLE_K)
+    if now >= controller_stamina_wobble_until then
+        controller_stamina_wobble_k = requested_k
+    else
+        controller_stamina_wobble_k = math.max(controller_stamina_wobble_k, requested_k)
+    end
+    controller_stamina_wobble_until = math.max(controller_stamina_wobble_until, now + duration)
 end
 function sivol_weapon.is_manual_hold_breath_toggle_mode()
     return game_options and game_options.ManualHoldBreathToggleMode == true
@@ -191,6 +237,11 @@ function sivol_weapon.get_manual_hold_breath_strength()
 end
 
 function sivol_weapon.on_key(key, bind)
+    if key_bindings and bind == key_bindings.kWPN_FIRE
+        and bind_monster and bind_monster.on_actor_fire_pressed
+    then
+        bind_monster.on_actor_fire_pressed(key)
+    end
     if not is_sprint_bind(bind) then return end
     if time_global() < manual_hold_cooldown_until then
         weapon_breath_log("[weapon_breath] activation blocked by cooldown")
@@ -227,13 +278,19 @@ function sivol_weapon.reset_hold_breath()
     manual_hold_started_at = 0
     manual_hold_cooldown_until = 0
     manual_hold_timeout_wobble_until = 0
+    controller_stamina_wobble_until = 0
+    controller_stamina_wobble_k = 1.0
 end
 
 function sivol_weapon.get_manual_hold_breath_timeout_wobble_k()
+    local wobble_k = 1.0
     if time_global() < manual_hold_timeout_wobble_until then
-        return MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_K
+        wobble_k = MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_K
     end
-    return 1.0
+    if time_global() < controller_stamina_wobble_until then
+        wobble_k = math.max(wobble_k, controller_stamina_wobble_k)
+    end
+    return wobble_k
 end
 -- Each class defines:
 --   debuff: day-zero wobble multiplier, cap: long-term multiplier,
@@ -696,6 +753,9 @@ end
 
 function run_psy_divert()
     ogse_signals.get_mgr():reschedule(16)
+    if bind_monster and bind_monster.update_controller_reticle_pressure then
+        bind_monster.update_controller_reticle_pressure()
+    end
     if not psy_divert.active then return end
 	
     local elapsed = time_global() - psy_divert.start_time

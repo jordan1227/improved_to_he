@@ -52,3 +52,35 @@ These are concise observations from the thermal-anomaly and device-interference 
 - HUD FOV is a console value. Capture the pre-hold value, smoothly approach the
   temporary target only after ADS settles, and restore that exact captured value;
   exclude optic-driven adaptive zoom and binocular cases from this visual layer.
+
+## Mutant and controller integration
+
+- Controller decisions run every 750 ms, but a 60-140 ms reticle dwell cannot
+  be measured reliably from monster-binder updates. Reticle pressure therefore
+  runs from `sivol_weapon`'s existing 16 ms update and calls back into
+  `bind_monster`; keep all balance, ownership, and cooldown state in the binder.
+- Controller cover uses three ray samples. Sensed abilities retain a non-zero
+  pressure floor behind cover; targeted abilities require LOS. An exact reticle
+  hit is treated as effective 3/3 exposure for targeted mechanics, while the
+  sensed pool continues to use physical cover.
+- Psy defenses remain separate by outcome: outfit plus belt artifact telepathic
+  protection produces `gear_mult = (1 - outfit) * belt_mult` and softened
+  manipulation scaling; mask `psy_k` scales camera/damage intensity; artifact
+  `dog_shield` scales weapon-control/drop outcomes. `get_mask_psy_k()` is a
+  read-only cached call with no write-back into mask state.
+- Controller bind scrambling needs ownership-aware snapshots and idempotent
+  re-arming. Restore on timer, death, and destruction; repeated procs must extend
+  one owned scramble rather than snapshot an already-scrambled mapping.
+- `he_bai_compat.script` is a generic `ambush_cover()` compatibility wrapper,
+  not a controller behavior manager. No controller caller was found. Blind-dog
+  unreachable-target cover appears to belong to native `SM_DOG_S` AI; controllers
+  use native `SM_CONTR`, whose LTX selectors are invoked by a different engine
+  state machine. Do not force controller destinations from `bind_monster` without
+  first instrumenting native psy-attack state and movement ownership.
+- The repository and runnable installation contain no `monster_ai.script`.
+  `mob/mob_combat.script` only switches scripted logic sections, and
+  `dsh_battle_radius.script` returns captured monsters to a home radius; neither
+  implements the observed dog cover behavior.
+- `psy_dog_phantom` can be created server-side and produces sound, but was
+  invisible in testing. Its rare spawn path is retained but disabled; regular
+  scripted phantoms remain enabled.
