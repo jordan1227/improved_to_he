@@ -10058,8 +10058,8 @@ controller_fire_actions = {
 }
 
 local controller_bind_state = {
-	movement = { active = false, restoring = false, generation = 0, saved = {} },
-	fire = { active = false, restoring = false, generation = 0, saved = {} },
+	movement = { active = false, restoring = false, generation = 0, saved = {}, last_permutation = nil },
+	fire = { active = false, restoring = false, generation = 0, saved = {}, last_permutation = nil },
 }
 
 local function controller_bind_log(fmt, ...)
@@ -10168,6 +10168,32 @@ function controller_restore_all_binds()
 	controller_restore_state(controller_fire_actions, controller_bind_state.fire)
 end
 
+local function controller_build_derangements(count)
+	local result = {}
+	local current = {}
+	local used = {}
+	local function build(position)
+		if position > count then
+			local permutation = {}
+			for i = 1, count do
+				permutation[i] = current[i]
+			end
+			table.insert(result, permutation)
+			return
+		end
+		for key_index = 1, count do
+			if not used[key_index] and key_index ~= position then
+				current[position] = key_index
+				used[key_index] = true
+				build(position + 1)
+				used[key_index] = nil
+			end
+		end
+	end
+	build(1)
+	return result
+end
+
 local function controller_apply_random_binds(actions, state)
 	local bound_actions = {}
 	local keys = {}
@@ -10179,15 +10205,25 @@ local function controller_apply_random_binds(actions, state)
 		end
 	end
 	if #bound_actions < 2 then return false end
-	local offset = lua_random(1, #bound_actions - 1)
+	local derangements = controller_build_derangements(#bound_actions)
+	if #derangements == 0 then return false end
+	local candidates = {}
+	for _, permutation in ipairs(derangements) do
+		local signature = table.concat(permutation, ",")
+		if #derangements == 1 or signature ~= state.last_permutation then
+			table.insert(candidates, { permutation = permutation, signature = signature })
+		end
+	end
+	local selected = candidates[lua_random(1, #candidates)]
 	for _, v in ipairs(bound_actions) do
 		get_command( "unbind " .. v.action )
 	end
 	for i, v in ipairs(bound_actions) do
-		local key_index = ( ( i + offset - 1 ) % #keys ) + 1
-		get_command( "bind " .. v.action .. " " .. keys[key_index] )
+		get_command( "bind " .. v.action .. " " .. keys[selected.permutation[i]] )
 	end
-	controller_bind_log("scrambled group=%s actions=%d rotation=%d", controller_group_name(actions), #bound_actions, offset)
+	state.last_permutation = selected.signature
+	controller_bind_log("scrambled group=%s actions=%d permutation=%s variants=%d",
+		controller_group_name(actions), #bound_actions, selected.signature, #derangements)
 	return true
 end
 
@@ -10203,12 +10239,12 @@ local function controller_begin_rebind(actions, duration)
 	end
 	local rearming = state.active
 	controller_save_binds(actions, state)
-	if not rearming and not controller_apply_random_binds(actions, state) then
+	if not controller_apply_random_binds(actions, state) then
 		controller_restore_state(actions, state)
 		return
 	end
 	if rearming then
-		controller_bind_log("rearmed group=%s", controller_group_name(actions))
+		controller_bind_log("rerolled group=%s source=original_snapshot", controller_group_name(actions))
 	end
 	state.generation = state.generation + 1
 	local generation = state.generation
