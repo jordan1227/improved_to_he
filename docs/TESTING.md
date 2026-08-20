@@ -47,6 +47,14 @@ Automated test commands and log locations: TBD.
   only the extra hold-breath FOV/HUD-FOV change, not stabilization or costs.
 - Confirmed camera behavior: leaving ADS preserves the final visible aim
   direction rather than snapping back to the direction present at ADS entry.
+- Confirmed Electra ARRIVAL VFX/SFX port: Core idle/blowout and sounds load for
+  base/average/strong; weak retains the original NLC particles and sounds; strong
+  also renders the isolated Aggressive-v2 idle sparks. PDA interference and torch
+  flicker continued to trigger as regression checks.
+- Confirmed Electra idle-light tiering: weak is off, average/base uses range 1.5,
+  and strong uses range 3.0. Full clean level load and
+  `sivol.spawn_anomaly_near("zone_witches_galantine_strong")` both completed
+  without regression after the matching light animation was registered.
 
 ### Mutant/controller session
 

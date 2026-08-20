@@ -52,6 +52,18 @@ These are concise observations from the thermal-anomaly and device-interference 
 - HUD FOV is a console value. Capture the pre-hold value, smoothly approach the
   temporary target only after ADS settles, and restore that exact captured value;
   exclude optic-driven adaptive zoom and binocular cases from this visual layer.
+- Electra's native zone initialization requires an `idle_light` key through its
+  inheritance chain. Preserve the baseline base value (`off`) when a staged port
+  is not enabling the light; weak needs an explicit `off` override when the base
+  is changed to `on`.
+- In this OGSR build, an `idle_light_anim` name must exist in the compiled
+  `lanims.xr` table. The tested `koster_01_electra` entry was added to that table
+  externally; LTX configuration alone is insufficient. Treat a missing animation
+  entry as a deployment prerequisite, not as evidence that the zone feature is
+  optional.
+- Keep ARRIVAL's Aggressive-v2 Electra idle group under a renamed project path and
+  rename its divergent spark child too. This prevents its strong-only look from
+  overwriting the Core idle effect used by average/base.
 
 ## Mutant and controller integration
 
