@@ -48,6 +48,35 @@ Automated test commands and log locations: TBD.
 - Confirmed camera behavior: leaving ADS preserves the final visible aim
   direction rather than snapping back to the direction present at ADS entry.
 
+### Mutant/controller session
+
+- Controller bind scrambling restores movement and fire/ADS mappings without
+  permanent unbinding; repeated scramble ownership and death restoration are
+  logged separately.
+- Author difficulty uses 80 m normal and 100 m strong-controller ranges. Easy
+  applies `0.9x` ability chance and `0.8x` range (64/80 m).
+- Three-ray cover sampling was confirmed at 0/3 behind hard cover. Exact reticle
+  targeting promotes targeted mechanics to effective 3/3 exposure while keeping
+  sensed effects cover-reduced rather than eliminated.
+- Authored magnification resolves correctly: APS is 1.00x/threat 1.00; SV-98 is
+  approximately 7.94x and reaches the threat 2.00 cap. Reticle interception now
+  uses the 16 ms weapon update instead of the irregular monster update.
+- Fire reactions report explicit miss, proc/outcome, ray-loss, attempt, actor,
+  and success-cooldown states. They no longer reject attempts solely because the
+  ordinary controller target/camera pool is cooling down.
+- `dog_shield` stacking and condition direction were confirmed. Three strong
+  artifacts produced `dog_shield=0.275`, `weapon_factor=0.492`, and reduced an
+  APS controller reaction from roughly 27% to roughly 11% in the tested gear set.
+- Mask `psy_k` damage/camera scaling, sensed effects behind cover, close-range
+  native plus scripted pressure, two-controller lockouts, tiered ranges, and the
+  dog-shield condition fix were exercised in game.
+- Native fake/hallucination fields produced no counted scripted phantoms in the
+  standalone observation. Regular scripted phantoms spawn and expire; the
+  experimental `psy_dog_phantom` spawned audibly but was invisible and is disabled.
+- Controller locomotion was not modified or accepted in this session. Occasional
+  stationary combat behavior appears native; do not treat movement as covered by
+  the controller ability acceptance results above.
+
 For anomaly reshuffling/emission tests, use the mod's supported console/script
 command mechanism when the relevant function is known; exact command names and
 log-file locations remain TBD.
