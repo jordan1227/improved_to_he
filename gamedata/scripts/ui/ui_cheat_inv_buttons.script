@@ -23,6 +23,53 @@ class "rummaged" (CUIScriptDialog)
 
 local wnd_icon
 local wnd_rykzack
+local INVENTORY_DOF_BLEND_MS = 300
+local INVENTORY_DOF_OPEN_LEAD_MS = 250
+local inventory_dof_value = 0
+local inventory_dof_signal
+local inventory_dof_generation = 0
+
+local function smoothstep( t )
+	return t * t * ( 3 - 2 * t )
+end
+
+local function blend_inventory_dof( target )
+	inventory_dof_generation = inventory_dof_generation + 1
+	local generation = inventory_dof_generation
+	if inventory_dof_signal then
+		ogse_signals.get_mgr():unsubscribe( inventory_dof_signal )
+		inventory_dof_signal = nil
+	end
+
+	local start_value = inventory_dof_value
+	if math.abs( target - start_value ) <= 0.001 then
+		inventory_dof_value = target
+		set_dof_params( target, target, target, target )
+		return
+	end
+
+	local start_time = time_global()
+	local signal
+	signal = ogse_signals.get_mgr():subscribe({
+		signal = "on_update",
+		fun = function()
+			if generation ~= inventory_dof_generation then return end
+			ogse_signals.get_mgr():reschedule( 16 )
+
+			local t = math.min( 1, ( time_global() - start_time ) / INVENTORY_DOF_BLEND_MS )
+			inventory_dof_value = start_value + ( target - start_value ) * smoothstep( t )
+			set_dof_params( inventory_dof_value, inventory_dof_value, inventory_dof_value, inventory_dof_value )
+
+			if t >= 1 then
+				ogse_signals.get_mgr():unsubscribe( signal )
+				if inventory_dof_signal == signal then
+					inventory_dof_signal = nil
+				end
+			end
+		end
+	})
+	inventory_dof_signal = signal
+end
 
 function rummaged:__init(owner) 
 	super()
@@ -224,11 +271,14 @@ function rummaged:btn_quit(mode)
 		level.add_cam_effector( "camera_effects\\backpack_open.anm", 9773, false, "" ) 		
 		vergas_lib.s_play("interface\\item_usage\\backpack_open",1)				
 		anim_duration = game.play_hud_motion( 2, "item_ea_backpack_open_stalker_hud", "anm_ea_show", false, 0.65 )
+		dsh.timeout( math.max( 0, anim_duration - INVENTORY_DOF_OPEN_LEAD_MS ), function()
+			blend_inventory_dof( 1 )
+		end )
 
 		dsh.timeout( anim_duration, function()
 			game.play_hud_motion( 2, "item_ea_backpack_open_stalker_hud", "anm_ea_idle", false, 1 )
 			inv_buttons_use.open_inventory( 4 )
-			set_dof_params( 1, 1, 1, 1 )
+			-- DOF begins just before this point via blend_inventory_dof().
 			get_console():execute("bpui 1")
 		end )		
 		razgruzka.open_inventory()
@@ -272,7 +322,7 @@ function rummaged:btn_quit(mode)
 					ogse_signals.get_mgr():unsubscribe( sig_bp_ruck )
 					sig_bp_ruck = nil
 				end
-				set_dof_params( 0, 0, 0, 0 )
+				blend_inventory_dof( 0 )
 			    level.only_allow_movekeys( true )
 				level.set_actor_allow_ladder( false )
 				level.add_cam_effector( "camera_effects\\backpack_open.anm", 9773, false, "" )
