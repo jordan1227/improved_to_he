@@ -20,6 +20,10 @@ Inspect other `gamedata` folders only when the current task requires them.
 - PDA/NVD/flashlight Electra interference: `gamedata/scripts/pda_noise.script`
   maintains the shared Electra cache; `sivol_pda.script`, `params/nvd_params.script`,
   and the flashlight path consume its intensity.
+- Electra VFX/SFX tiering: `gamedata/config/misc/zone_witchesgalantine.ltx`.
+  Base/average use ARRIVAL Core assets, weak explicitly retains NLC assets, and
+  strong uses the isolated Aggressive-v2 idle group. `sivol.spawn_anomaly_near()`
+  in `gamedata/scripts/kotovod/sivol.script` is the targeted anomaly-spawn helper.
 - Signal registration: `gamedata/scripts/ogse/ogse_signals_addons_list.script`.
 - Actor inventory signal forwarding: `gamedata/scripts/binders/bind_stalker.script`.
 - Manual weapon breath and mass handling:

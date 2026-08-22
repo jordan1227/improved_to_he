@@ -16,6 +16,12 @@ Known clean-game baseline and packed-file inventory: TBD.
   behavior; this avoids repeated global anomaly enumeration and object lookup.
 - Electra/PDA/NVD/flashlight proximity shares one cache and refreshes every 200 ms;
   visual smoothing remains per frame in the consumers.
+- Observed during the Electra VFX port: `idle_light` is inherited from the Electra
+  base section and is required by native zone initialization. Enabling
+  `idle_light_anim = koster_01_electra` also requires that animation to be present
+  in the compiled `lanims.xr` table; a missing entry caused a load failure in this
+  build. This is an observed build-specific integration requirement, not an
+  assumed engine law.
 - `db.actor:get_current_outfit_protection(hit.burn)` reflects effective outfit
   protection but not the tested powered belt-artifact layer. Belt artifact immunity
   is composed separately and multiplicatively by `sivol_anom_effects`.

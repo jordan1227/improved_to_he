@@ -10,7 +10,7 @@
       - hit-flinch additive anim
 
     Deliberately NOT ported: MCM (none in this engine -- see constants below
-    instead), lean L/R sway, noise, jump/land (NLC already has these),
+    instead), noise, jump/land (NLC already has these),
     device/detector lean, crawl.
 
     Hook mechanisms used (confirmed working in-game):
@@ -44,6 +44,9 @@ local CROUCH_KICK_POWER  = 2.35   -- blend weight for the one-shot crouch start/
 
 local CROUCH_HOLD_POWER  = 0.45  -- how pronounced the *held* crouch sway is (separate from the kick)
 
+local LEAN_L_POWER       = 1.0   -- source addon's default left-lean sway strength
+local LEAN_R_POWER       = 1.0   -- source addon's default right-lean sway strength
+
 local BREATH_SPEED_MIN   = 0.5
 local BREATH_SPEED_MAX   = 1.4
 local BREATH_POWER_MIN   = 0.15
@@ -55,6 +58,12 @@ local LOOKUP_MAX_PITCH   = 1.5   -- looking straight up
 local LOOKUP_POWER       = 0.5   -- how far the gun dips at max look-up
 
 local HIT_ANM_ENABLED    = true
+
+-- Native CActor::get_body_state() flags, confirmed in params.script.
+-- Use flag tests rather than equality: a lookout state can coexist with
+-- movement-state bits while the player is walking or running.
+local BODY_STATE_L_LOOKOUT = 8192
+local BODY_STATE_R_LOOKOUT = 16384
 
 -- Lerp convergence rates (1/seconds) -- how fast each sway/blend chases its
 -- target, independent of framerate. Higher = snappier. These replace the
@@ -100,10 +109,10 @@ end
 local is_initialized  = false
 local is_aiming        = false
 local last_wpn_section = "init"
-local wpn_config       = { c = 1, u = 1 }
+local wpn_config       = { l = 1, r = 1, c = 1, u = 1 }
 local look_up_factor   = 0
 local last_update_time = 0
-local active_is_weapon = false -- true only when the active item is an actual firearm (get_weapon() ~= nil); excludes PDA/torch/binoculars/detector/etc. Used ONLY to gate the continuous crouch/look-up sway below -- kick, breathing, and hit-flinch intentionally stay universal.
+local active_is_weapon = false -- true only when the active item is an actual firearm (get_weapon() ~= nil); excludes PDA/torch/binoculars/detector/etc. Used ONLY to gate the continuous lean/crouch/look-up sway below -- kick, breathing, and hit-flinch intentionally stay universal.
 
 local hit_anims = {
     "liz\\liz_hands_hit1_additive.anm",
@@ -140,6 +149,8 @@ end
 local toggle_crouched_state = false
 
 local function initialize()
+    new_lerp("lean_l",           0, 0, CROUCH_LERP_RATE)
+    new_lerp("lean_r",           0, 0, CROUCH_LERP_RATE)
     new_lerp("crouch",          0, 0, CROUCH_LERP_RATE)
     new_lerp("breathing_speed", 0, 0, BREATHING_SPEED_LERP_RATE)
     new_lerp("breathing_power", 0, 0, BREATHING_POWER_LERP_RATE)
@@ -156,7 +167,7 @@ local function update_weapon_info(actor)
     local sec = wpn and wpn:section()
     if sec ~= last_wpn_section then
         last_wpn_section = sec
-        wpn_config = { c = 1, u = 1 }
+        wpn_config = { l = 1, r = 1, c = 1, u = 1 }
         if sec and sivol_weapon_inertia.wpn_all_configs[sec] then
             for k, v in pairs(sivol_weapon_inertia.wpn_all_configs[sec]) do
                 wpn_config[k] = v
@@ -190,20 +201,35 @@ end
 
 local function update_stance(aobj)
     local current_stance = 0
+    local body_state = aobj and aobj:get_body_state() or 0
     if aobj and aobj:is_actor_creep() then current_stance = 2
     elseif aobj and aobj:is_actor_crouch() then current_stance = 1 end
 
-    -- Held crouch sway and look-up dip share the same lerp+anim.
-    -- Correctly disabled while aiming or when the active item isn't an
-    -- actual weapon (PDA/torch/binoculars/detector, etc.) to prevent
-    -- displacement on non-weapon items. This is the ONLY place
-    -- active_is_weapon gates anything -- kick/breathing/hit-flinch stay
-    -- universal by design.
+    -- Continuous lean, crouch sway, and look-up dip are disabled while
+    -- aiming or when the active item isn't an actual weapon (PDA/torch/
+    -- binoculars/detector, etc.) to prevent displacement on non-weapon
+    -- items. Lean takes precedence over crouch/look-up, matching the source
+    -- addon's block_crouch behavior. This is the ONLY place active_is_weapon
+    -- gates anything -- kick/breathing/hit-flinch stay universal by design.
     if is_aiming or not active_is_weapon then
+        set_lerp("lean_l", 0)
+        set_lerp("lean_r", 0)
+        set_lerp("crouch", 0)
+    elseif bit_and(body_state, BODY_STATE_L_LOOKOUT) ~= 0 then
+        set_lerp("lean_l", LEAN_L_POWER * (wpn_config.l or 1))
+        set_lerp("lean_r", 0)
+        set_lerp("crouch", 0)
+    elseif bit_and(body_state, BODY_STATE_R_LOOKOUT) ~= 0 then
+        set_lerp("lean_l", 0)
+        set_lerp("lean_r", LEAN_R_POWER * (wpn_config.r or 1))
         set_lerp("crouch", 0)
     elseif current_stance > 0 then
+        set_lerp("lean_l", 0)
+        set_lerp("lean_r", 0)
         set_lerp("crouch", CROUCH_HOLD_POWER * (wpn_config.c or 1))
     else
+        set_lerp("lean_l", 0)
+        set_lerp("lean_r", 0)
         set_lerp("crouch", LOOKUP_ENABLED and (look_up_factor * (wpn_config.u or 1)) or 0)
     end
 end
@@ -238,6 +264,8 @@ local function on_actor_update()
 
     game.play_hud_anm("liz\\liz_hands_breathing_additive.anm", 2, lerps["breathing_speed"].from, lerps["breathing_power"].from, true, true)
     game.play_hud_anm("liz\\liz_hands_crouch_additive.anm", 2, 1, lerps["crouch"].from, true, true)
+    game.play_hud_anm("liz\\liz_hands_lean_l_additive.anm", 2, 1, lerps["lean_l"].from, true, true)
+    game.play_hud_anm("liz\\liz_hands_lean_r_additive.anm", 2, 1, lerps["lean_r"].from, true, true)
 end
 
 -- ============================================================
