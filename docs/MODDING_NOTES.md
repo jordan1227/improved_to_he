@@ -64,6 +64,10 @@ These are concise observations from the thermal-anomaly and device-interference 
 - Keep ARRIVAL's Aggressive-v2 Electra idle group under a renamed project path and
   rename its divergent spark child too. This prevents its strong-only look from
   overwriting the Core idle effect used by average/base.
+- Do not infer anomaly identity from similarly named ARRIVAL gravitational assets.
+  `zone_mine_gravitational_*` is the Whirligig presentation set, while
+  `zone_gravi_zone` explicitly keeps Vortex particle overrides. Preserve that
+  visual distinction because NLC players use anomaly recognition for cooking.
 
 ## Mutant and controller integration
 

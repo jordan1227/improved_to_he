@@ -55,6 +55,10 @@ Automated test commands and log locations: TBD.
   and strong uses range 3.0. Full clean level load and
   `sivol.spawn_anomaly_near("zone_witches_galantine_strong")` both completed
   without regression after the matching light animation was registered.
+- Confirmed ARRIVAL Whirligig port: `zone_mincer` weak/average/strong render
+  the separate gravitational tiers; the strong awakening group loads cleanly.
+  Vortex (`zone_gravi_zone`) was returned to its original NLC presentation:
+  weak is sound-only, average has leaves, and strong adds dust.
 
 ### Mutant/controller session
 
