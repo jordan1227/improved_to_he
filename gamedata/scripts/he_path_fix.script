@@ -1,0 +1,78 @@
+-- [HE-PORT]
+local SWEEP_MS   = 60000
+local STILL_RUNS = 3
+
+local seen = {}
+
+local function walker(sobj, actor_id)
+	if not (sobj and sobj.id and sobj.id ~= actor_id) then return false end
+	if sobj.online ~= false then return false end
+	if not (sobj.brain and sobj.m_game_vertex_id and sobj.smart_terrain_id) then return false end
+	if not (IsStalker(sobj) or IsMonster(sobj)) then return false end
+	if not sobj:alive() then return false end
+	local sid = sobj:smart_terrain_id()
+	if not sid or sid == BAD_OBJ_ID then return false end
+	return true
+end
+
+local function detail_of(sobj)
+	local mm = sobj:brain():movement()
+	if not mm then return nil end
+	return mm:detail()
+end
+
+function kick(sobj)
+	local actor_id = db.actor and db.actor:id() or -1
+	if not walker(sobj, actor_id) then return false end
+	local det = detail_of(sobj)
+	if not det then return false end
+	det:target(sobj.m_game_vertex_id)
+	return true
+end
+
+local function level_of(sim, gv)
+	if gv and gv ~= 65535 and game_graph():valid_vertex_id(gv) then
+		return sim:level_name(game_graph():vertex(gv):level_id())
+	end
+	return nil
+end
+
+local function sweep()
+	local sim = alife()
+	if not (sim and db.actor) then return end
+
+	local actor_id = db.actor:id()
+	local lname    = level.name()
+	local fresh    = {}
+
+	for id = 1, MAX_OBJ_ID - 1 do
+		local o = sim:object(id)
+		if walker(o, actor_id) then
+			local gv = o.m_game_vertex_id
+			if level_of(sim, gv) == lname then
+				local rec = seen[id]
+				local n = (rec and rec.gv == gv) and rec.n + 1 or 1
+				if n >= STILL_RUNS then
+					local det = detail_of(o)
+					if det and det:actual() and not det:completed() then
+						det:target(gv)
+						n = 1
+					end
+				end
+				fresh[id] = { gv = gv, n = n }
+			end
+		end
+	end
+
+	seen = fresh
+end
+
+function on_update()
+	ogse_signals.get_mgr():reschedule(SWEEP_MS)
+	if not (db.actor and alife()) then return end
+	pcall(sweep)
+end
+
+function attach(sm)
+	sm:subscribe( { signal = "on_update", fun = this.on_update } )
+end
