@@ -41,6 +41,8 @@
 #define RVA_MI_FREE_EX        0x00B6E0D0ULL
 #define RVA_LUA_RAWGETI       0x00C19B30ULL
 #define RVA_LUA_SETTOP2       0x00C18250ULL
+#define RVA_ALIFE_NOWAY      0x00A93E08ULL
+#define RVA_ALIFE_DROPPATH   0x00A93EBAULL
 #define RVA_PUSH_COVER_ARG    0x00B2B360ULL
 #define RVA_LUABIND_PCALL     0x00C0CED0ULL
 #define OFF_SGO_GAME_OBJECT   0x08
@@ -260,6 +262,7 @@ static int g_wm_skipped_model = 0;
 static int   g_boar_ok = 0;
 static int   g_boar_fail = 0;
 static float g_boar_last_dist = -1.f;
+static int   g_alife_noway_patched = 0;
 static float g_boar_last_vel = -1.f;
 static int   g_boar_last_reason = 0;
 
@@ -1496,6 +1499,15 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
                 (void*)g_orig_actor_render, (void*)g_orig_actor_onhud);
             return;
         }
+
+        if (p[0] == 'a' && p[1] == 'p' && p[2] == 'a' && p[3] == 't' &&
+            p[4] == 'h' && (p[5] == 0 || p[5] == ' ' || p[5] == '	')) {
+            msg_t Msg = (msg_t)(g_base + RVA_MSG);
+            uint8_t* q = (uint8_t*)(g_base + RVA_ALIFE_NOWAY);
+            Msg("! [fl] apath: patched=%d site=%02X %02X %02X %02X %02X (build alifepath-1)",
+                g_alife_noway_patched, q[0], q[1], q[2], q[3], q[4]);
+            return;
+        }
     }
     g_orig(self, cmd, record, allow);
 }
@@ -1848,6 +1860,30 @@ static bool install_hook()
     }
 
     bp_set_rotfix(1);
+
+    {
+        uint8_t* p = (uint8_t*)(g_base + RVA_ALIFE_NOWAY);
+        if (p[0] == 0x45 && p[1] == 0x8B && p[2] == 0xC2 &&
+            p[3] == 0x48 && p[4] == 0x8D && p[5] == 0x15 &&
+            p[10] == 0x48 && p[11] == 0x8D && p[12] == 0x0D &&
+            p[17] == 0xE8 &&
+            p[22] == 0x41 && p[23] == 0x0F && p[24] == 0x28 && p[25] == 0xFB) {
+            const size_t n = 26;
+            DWORD oldp;
+            if (VirtualProtect(p, n, PAGE_EXECUTE_READWRITE, &oldp)) {
+                int32_t rel = (int32_t)(RVA_ALIFE_DROPPATH - (RVA_ALIFE_NOWAY + 5));
+                p[0] = 0xE9;
+                p[1] = (uint8_t)(rel & 0xFF);
+                p[2] = (uint8_t)((rel >> 8) & 0xFF);
+                p[3] = (uint8_t)((rel >> 16) & 0xFF);
+                p[4] = (uint8_t)((rel >> 24) & 0xFF);
+                for (size_t i = 5; i < n; ++i) p[i] = 0x90;
+                VirtualProtect(p, n, oldp, &oldp);
+                FlushInstructionCache(GetCurrentProcess(), p, n);
+                g_alife_noway_patched = 1;
+            }
+        }
+    }
 
     g_orig_additem = (additem_t)install_additem_detour((void*)&hkListBoxAddItem);
     return true;
