@@ -1,0 +1,112 @@
+-- [HE-PORT]
+local BASE_SHOT_COST  = 0.01
+local BASE_KNIFE_COST = 0.02
+local ZOOM_CROUCH_K   = 0.75
+local ZOOM_CREEP_K    = 0.5
+
+local cached = {
+	name        = false,
+	k           = 1,
+	cost        = nil,
+	inv_weight  = 0,
+	hit_power   = 1,
+	hit_power_2 = 1,
+}
+
+local function get_f(sect, field, def)
+	if sys_ini and sys_ini:line_exist(sect, field) then
+		return sys_ini:r_float(sect, field)
+	end
+	return def
+end
+
+local function refresh(sect)
+	if cached.name == sect then return end
+	cached.name        = sect
+	cached.inv_weight  = get_f(sect, "inv_weight", 0)
+	cached.hit_power   = get_f(sect, "hit_power", 1)
+	cached.hit_power_2 = get_f(sect, "hit_power_2", cached.hit_power)
+	cached.k           = get_f(sect, "dsh_wpn.fire_power_loss_k", 1)
+	cached.cost        = get_f(sect, "dsh_wpn.fire_power_loss", nil)
+end
+
+local function drain(v)
+	if db.actor then db.actor.power = -v end
+end
+
+local function stance_k()
+	local wp = wpn_params
+	if not (wp and wp.zoom_time and wp.zoom_time > 1.05) then return 1 end
+	local aobj = get_actor_obj()
+	if not aobj then return 1 end
+	if aobj:is_actor_creep() then return ZOOM_CREEP_K end
+	if aobj:is_actor_crouch() then return ZOOM_CROUCH_K end
+	return 1
+end
+
+local knife_anim_len = {}
+local knife_t        = nil
+
+local function knife_fire(wpn, cost)
+	local sect     = wpn:section()
+	local state    = wpn:get_hud_item_state()
+	local known    = knife_anim_len[sect]
+	local anim_len = known and known[state] or nil
+	if knife_t and not knife_t:stopped() then knife_t:stop() end
+	knife_t = nil
+	if anim_len then
+		knife_t = dsh.timeout(anim_len / 2, function() drain(cost) knife_t = nil end)
+	else
+		drain(cost)
+		local name = wpn:name()
+		local t0   = time_global()
+		knife_t = dsh.wait_condition(
+			function()
+				local item = db.actor and db.actor:active_item()
+				return not (item and item:name() == name
+					and item:get_hud_item_state() == state)
+			end,
+			function()
+				local item = db.actor and db.actor:active_item()
+				if item and item:name() == name then
+					if not knife_anim_len[sect] then knife_anim_len[sect] = {} end
+					knife_anim_len[sect][state] = time_global() - t0
+				end
+				knife_t = nil
+			end
+		)
+	end
+end
+
+local function on_fire(wpn)
+	if not (wpn and wpn.section) then return end
+	if not db.actor then return end
+	local sect = wpn:section()
+	if string.find(sect, "wpn_binoc", 1, true) then return end
+	refresh(sect)
+	local cost = cached.cost or 0
+	if cost == 0 then
+		if wpn:is_knife() then
+			cost = BASE_KNIFE_COST
+		else
+			cost = BASE_SHOT_COST * stance_k()
+		end
+		cost = cost * cached.k
+	end
+	if cost <= 0 then return end
+	if wpn:is_knife() then
+		local weight = cached.inv_weight > 1 and cached.inv_weight or 1
+		local total  = cost * weight
+		if wpn:get_hud_item_state() == global_flags.eFire2 then
+			local hp = (cached.hit_power ~= 0) and cached.hit_power or 1
+			total = total + cost * (cached.hit_power_2 / hp)
+		end
+		knife_fire(wpn, total)
+	else
+		drain(cost)
+	end
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_actor_weapon_fire", fun = on_fire })
+end
