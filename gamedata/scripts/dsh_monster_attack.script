@@ -1,79 +1,297 @@
--- Имитация скриптовой атаки мутантов на ГГ. 
--- При попадании ГГ по любому из мутантов, остальным живым мутам
--- находящимся в радиусе 40 м от ГГ, будет наноситься нулевой хит
--- от имени актора и будет сбрасываться panic_threshold в 0
--- заставляя их бежать в сторону ГГ 
+-- Gunshot alert propagation to eligible nearby monsters.
+-- The alert radii below are detection distances only. The existing
+-- dsh_battle_radius pursuit radius remains unchanged.
 
-function attach( sm )
-sm:subscribe({ signal = "on_monster_hit", fun = this.on_monster_has_been_hit_by_actor })
-sm:subscribe({ signal = "on_monster_update", fun = this.on_alive_monster_has_been_updated })
-end
--- сигнал on_monster_hit генерируется в коллбэке на хит моба в bind_monster
--- сигнал on_monster_update генерируется на апдейте моба в bind_monster
-local last_time_mob_got_hit_by_actor = time_global()
+dsh_monster_attack = dsh_monster_attack or {}
+dsh_monster_attack.diagnostics = false
 
-function  on_monster_has_been_hit_by_actor( obj, amount, local_direction, who, bone_index )
-	if const.underground(level.name()) then
-		return
-	end
-	if obj:alive() and IsMonster(obj) and not string.find(obj:name(),"rat_",1,true) and who:id() == db.actor:id() then
-		local slot = db.actor:active_slot()
-		if slot == WPN1_SLOT or slot == WPN2_SLOT or slot == BINOC_SLOT then
-			local wpn = db.actor:item_in_slot(slot)
-			if wpn then
-				local sobj = server_obj(wpn:id())
-				if sobj then
-					local pk = get_netpk(sobj)
-					local data = pk:get()
-					local add_flags = data.addon_flags
-					-- log2("[on_monster_has_been_hit_by_actor] mob [%s] was hit with [%s] add_flags [%d]",obj:name(),wpn:section(),add_flags)
-					if bit_and(add_flags,4) == 4 or sak_dialog.read_if_exist(system_ini(),wpn:section(),"silencer_status",0) == 1 then
-						-- log2("[on_monster_has_been_hit_by_actor] bit 4 is up --> ignoring hit")
-						return
-					end
-				end
-			end
-		end
-		--установим флажок  last_time_mob_got_hit_by_actor в текущее для хита время
-		last_time_mob_got_hit_by_actor = time_global()
-		--log2 ( "Mob %s was hit by actor on time %s", obj:name(),  tostring( last_time_mob_got_hit_by_actor ))
-	end
+local GUNSHOT_ALERT_WINDOW_MS = 500
+local BATTLE_PURSUIT_RADIUS = 10
+
+local GUNSHOT_ALERT_RADIUS = {
+    loud = 30,
+    pb = 3,
+    val_vintorez = 6,
+    svu = 12,
+    generic_detachable = 15,
+}
+
+local FAMILY_ALERT_RULES = {
+    { prefix = "wpn_pb", radius = GUNSHOT_ALERT_RADIUS.pb, name = "pb" },
+    { prefix = "wpn_val", radius = GUNSHOT_ALERT_RADIUS.val_vintorez, name = "val_family" },
+    { prefix = "wpn_vintorez", radius = GUNSHOT_ALERT_RADIUS.val_vintorez, name = "vintorez_family" },
+    { prefix = "wpn_svu", radius = GUNSHOT_ALERT_RADIUS.svu, name = "svu_family" },
+}
+
+local last_gunshot_at = nil
+local last_gunshot_radius = nil
+local last_gunshot_weapon_section = nil
+local last_gunshot_reason = nil
+
+local function diagnostic_log(fmt, ...)
+    if dsh_monster_attack.diagnostics then
+        log2("[dsh_monster_attack] " .. fmt, ...)
+    end
 end
 
-function on_alive_monster_has_been_updated( obj, delta )
-	if const.underground(level.name()) then
-		return
-	end
-	local dist_between_actor_and_mob
-	local delta_interval = time_global() - last_time_mob_got_hit_by_actor
-	
-	if		( delta_interval > 0 and delta_interval <= 500 )  
-	  and 	obj:alive() 
-	  and	IsMonster( obj )
-	  -- химера и кровосос сильно страшные, не будем их звать
-	  and	( obj:clsid()~= CLID_CHIMERA and obj:clsid()~= CLID_BLOODSUCKER )
-	  -- крысы нам тоже рядышком не нужны
-	  and not string.find( obj:name(), "rat_", 1, true )
-	  then
-				dist_between_actor_and_mob = obj:position():distance_to( db.actor:position() )
-				if dist_between_actor_and_mob <= 40
-				then
-					-- сбросим панику в 0
-					obj:set_custom_panic_threshold(0)
-					-- нанесем нулевой хит от имени актора
-					local h = hit()
-					h.draftsman = db.actor
-					h.direction = db.actor:direction() -- хит от направления, где актор?
-					h.type = hit.fire_wound
-					h.impulse = 0
-					h.power = 0
-					obj:hit(h)
-					-- log2 ( "Zero hit invoked on mob %s", obj:name() )
-					-- но заставит ли это моба "увидеть" актора? 
-					dsh_battle_radius.create_radius( obj, 10, nil, true )
-				end
-
-	end
-	
+local function clear_gunshot_snapshot()
+    last_gunshot_at = nil
+    last_gunshot_radius = nil
+    last_gunshot_weapon_section = nil
+    last_gunshot_reason = nil
 end
 
+local function valid_silencer_section(section)
+    return type(section) == "string"
+        and section ~= ""
+        and string.lower(section) ~= "none"
+        and sys_ini:section_exist(section)
+end
+
+local function get_weapon_silencer_status(item)
+    if not item then return 0 end
+    if ogse_wpn_utils and ogse_wpn_utils.get_silencer_status then
+        local ok, status = pcall(ogse_wpn_utils.get_silencer_status, item)
+        if ok and status ~= nil then return tonumber(status) or 0 end
+    end
+    return tonumber(get_u32(item:section(), "silencer_status", 0)) or 0
+end
+
+local function get_weapon_addon_flags(item)
+    if not item then return 0 end
+    if ogse_wpn_utils and ogse_wpn_utils.get_addon_flags then
+        local ok, flags = pcall(ogse_wpn_utils.get_addon_flags, item)
+        if ok and flags ~= nil then return tonumber(flags) or 0 end
+    end
+    if item.get_addon_flags then
+        local ok, flags = pcall(item.get_addon_flags, item)
+        if ok and flags ~= nil then return tonumber(flags) or 0 end
+    end
+    if rx_utils and rx_utils.get_addon_flag then
+        local ok, flags = pcall(rx_utils.get_addon_flag, item, true)
+        if ok and flags ~= nil then return tonumber(flags) or 0 end
+    end
+    return 0
+end
+
+local function silencer_is_attached(item, status, flags)
+    if status ~= 2 then return false end
+
+    if ogse_wpn_utils and ogse_wpn_utils.get_silencer_flag then
+        local ok, attached = pcall(ogse_wpn_utils.get_silencer_flag, item)
+        if ok then
+            return attached == true or tonumber(attached) == 1
+        end
+    end
+
+    if rx_utils and rx_utils.addon_attached then
+        local ok, attached = pcall(rx_utils.addon_attached, item, "sl", flags)
+        if ok and attached ~= nil then return attached end
+    end
+
+    return bit_and(flags or 0, 4) == 4
+end
+
+local function resolve_silencer_section(item, weapon_section)
+    local weapon = item and item:get_weapon()
+    local runtime_silencer = weapon and weapon.silencer_name
+    if valid_silencer_section(runtime_silencer) then
+        return runtime_silencer, runtime_silencer
+    end
+
+    if get_addon_section and clsid and clsid.wpn_silencer then
+        local ok, resolved = pcall(get_addon_section, weapon_section, clsid.wpn_silencer)
+        if ok and valid_silencer_section(resolved) then
+            return runtime_silencer, resolved
+        end
+    end
+
+    if weapon_section and sys_ini:section_exist(weapon_section)
+        and sys_ini:line_exist(weapon_section, "silencer_name") then
+        local configured = sys_ini:r_string(weapon_section, "silencer_name")
+        if valid_silencer_section(configured) then
+            return runtime_silencer, configured
+        end
+    end
+    return runtime_silencer, nil
+end
+
+local function get_actor_firearm()
+    local actor = db.actor
+    if not actor then return nil end
+
+    local item = actor:active_item()
+    if item and item:is_weapon() and not item:is_knife() and not item:is_binoculars() then
+        return item
+    end
+
+    local slot = actor:active_slot()
+    if slot == WPN1_SLOT or slot == WPN2_SLOT then
+        item = actor:item_in_slot(slot)
+        if item and item:is_weapon() and not item:is_knife() and not item:is_binoculars() then
+            return item
+        end
+    end
+    return nil
+end
+
+local function get_family_alert_radius(section)
+    for _, rule in ipairs(FAMILY_ALERT_RULES) do
+        if section and string.find(section, rule.prefix, 1, true) == 1 then
+            return rule.radius, rule.name
+        end
+    end
+    return nil, nil
+end
+
+local function is_val_nimble_variant(section)
+    return section == "wpn_val_nimble"
+        or (section and string.find(section, "wpn_val_nimble_", 1, true) == 1)
+end
+
+local function choose_alert_radius(section, status, attached)
+    if is_val_nimble_variant(section) and status == 2 then
+        if attached then
+            return GUNSHOT_ALERT_RADIUS.generic_detachable, "val_nimble_attached"
+        end
+        return GUNSHOT_ALERT_RADIUS.loud, "val_nimble_detached"
+    end
+
+    local family_radius, family_name = get_family_alert_radius(section)
+    if family_radius then return family_radius, family_name end
+    if status == 2 and attached then
+        return GUNSHOT_ALERT_RADIUS.generic_detachable, "generic_detachable"
+    end
+    return GUNSHOT_ALERT_RADIUS.loud, "loud"
+end
+
+local function excluded_monster_reason(obj)
+    local name = obj:name()
+    if name and string.find(name, "rat_", 1, true) then return "rat" end
+    local cls = obj:clsid()
+    if cls == CLID_CHIMERA then return "chimera" end
+    if cls == CLID_BLOODSUCKER then return "bloodsucker" end
+    return nil
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_monster_hit", fun = this.on_monster_has_been_hit_by_actor })
+    sm:subscribe({ signal = "on_monster_update", fun = this.on_alive_monster_has_been_updated })
+end
+
+function on_monster_has_been_hit_by_actor(obj, amount, local_direction, who, bone_index)
+    if const.underground(level.name()) then
+        return
+    end
+    if not (obj and obj:alive() and IsMonster(obj)) then
+        return
+    end
+
+    local target_name = obj:name()
+    if target_name and string.find(target_name, "rat_", 1, true) then
+        return
+    end
+    if not (who and db.actor and who:id() == db.actor:id()) then
+        return
+    end
+
+    local weapon = get_actor_firearm()
+    if not weapon then
+        clear_gunshot_snapshot()
+        return
+    end
+
+    local weapon_section = weapon:section()
+    local status = get_weapon_silencer_status(weapon)
+    local flags = get_weapon_addon_flags(weapon)
+    local attached = silencer_is_attached(weapon, status, flags)
+    local active_weapon = weapon:get_weapon()
+    local raw_silencer = active_weapon and active_weapon.silencer_name
+    local silencer_section = nil
+    if status == 1 then
+        silencer_section = "integrated"
+    elseif status == 2 and attached then
+        raw_silencer, silencer_section = resolve_silencer_section(weapon, weapon_section)
+    end
+
+    local radius, reason = choose_alert_radius(weapon_section, status, attached)
+    last_gunshot_at = time_global()
+    last_gunshot_radius = radius
+    last_gunshot_weapon_section = weapon_section
+    last_gunshot_reason = reason
+
+    local mode = status == 1 and "integrated"
+        or attached and "detachable_attached"
+        or status == 2 and "detachable_detached"
+        or "base"
+    diagnostic_log(
+        "hit weapon=%s status=%d flags=%d mode=%s raw_silencer=%s resolved_silencer=%s radius=%.1f reason=%s",
+        tostring(weapon_section),
+        status,
+        flags,
+        mode,
+        tostring(raw_silencer),
+        tostring(silencer_section or "none"),
+        radius,
+        reason
+    )
+end
+
+function on_alive_monster_has_been_updated(obj, delta)
+    if const.underground(level.name()) then
+        return
+    end
+    if not last_gunshot_at or not db.actor then
+        return
+    end
+
+    local delta_interval = time_global() - last_gunshot_at
+    if delta_interval <= 0 then
+        return
+    end
+    if delta_interval > GUNSHOT_ALERT_WINDOW_MS then
+        clear_gunshot_snapshot()
+        return
+    end
+    if not (obj and obj:alive() and IsMonster(obj)) then
+        return
+    end
+
+    local radius = last_gunshot_radius or GUNSHOT_ALERT_RADIUS.loud
+    local distance = obj:position():distance_to(db.actor:position())
+    if distance > radius then
+        return
+    end
+
+    local excluded = excluded_monster_reason(obj)
+    if excluded then
+        diagnostic_log(
+            "candidate=%s distance=%.2f result=excluded:%s weapon=%s radius=%.1f",
+            tostring(obj:section()),
+            distance,
+            excluded,
+            tostring(last_gunshot_weapon_section),
+            radius
+        )
+        return
+    end
+
+    obj:set_custom_panic_threshold(0)
+    local h = hit()
+    h.draftsman = db.actor
+    h.direction = db.actor:direction()
+    h.type = hit.fire_wound
+    h.impulse = 0
+    h.power = 0
+    obj:hit(h)
+    dsh_battle_radius.create_radius(obj, BATTLE_PURSUIT_RADIUS, nil, true)
+
+    diagnostic_log(
+        "candidate=%s distance=%.2f result=alerted weapon=%s radius=%.1f reason=%s",
+        tostring(obj:section()),
+        distance,
+        tostring(last_gunshot_weapon_section),
+        radius,
+        tostring(last_gunshot_reason)
+    )
+end

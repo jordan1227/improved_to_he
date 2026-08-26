@@ -22,6 +22,7 @@ function attach(sm)
     sm:subscribe({signal = "on_key_up", fun = function(key, bind) sivol_weapon.on_key_up(key, bind) end})
     sm:subscribe({signal = "on_first_update", fun = function() sivol_weapon.reset_hold_breath() end})
     sm:subscribe({signal = "on_stop_modules", fun = function() sivol_weapon.reset_hold_breath() end})
+    sm:subscribe({signal = "on_actor_weapon_fire", fun = function(obj) sivol_weapon.on_actor_weapon_fire(obj) end})
 end
 
 sivol_weapon.attach = attach
@@ -48,6 +49,8 @@ local CONTROLLER_STAMINA_WOBBLE_K = 1.75
 
 -- Set true only while diagnosing weapon-breath/FOV/mass behavior.
 sivol_weapon.weapon_breath_diagnostics = false
+-- Set true while measuring native suppressor wear in game.
+sivol_weapon.suppressor_diagnostics = false
 local function weapon_breath_log(fmt, ...)
     if sivol_weapon.weapon_breath_diagnostics then log2(fmt, ...) end
 end
@@ -559,6 +562,12 @@ local function get_live_addon_flags(item)
     return 0
 end
 
+local function valid_addon_section(section)
+    return type(section) == "string"
+        and section ~= ""
+        and string.lower(section) ~= "none"
+        and sys_ini:section_exist(section)
+end
 function sivol_weapon.get_weapon_mass_signature(item, sec)
     sec = sec or (item and item:section()) or "none"
     local flags = get_live_addon_flags(item)
@@ -611,14 +620,30 @@ local function get_live_weapon_mass(item, sec)
             -- is the same source already used by adaptive scope zoom and works
             -- for baked respawn variants even when rx_addons is not loaded.
             local addon_sec = weapon and weapon[addon_runtime_field[addon]]
-            if not addon_sec or addon_sec == "" then
-                addon_sec = get_addon_section and get_addon_section(sec, addon)
+            if not valid_addon_section(addon_sec) then
+                addon_sec = nil
             end
-            if (not addon_sec or addon_sec == "") and sec and sys_ini
+            if not addon_sec then
+                local addon_class = clsid and (
+                    addon == "sc" and clsid.wpn_scope_s
+                    or addon == "sl" and clsid.wpn_silencer
+                    or clsid.wpn_grenade_launcher
+                )
+                if addon_class and get_addon_section then
+                    local resolved = get_addon_section(sec, addon_class)
+                    if valid_addon_section(resolved) then
+                        addon_sec = resolved
+                    end
+                end
+            end
+            if not addon_sec and sec and sys_ini
                 and sys_ini:section_exist(sec) then
                 local field = addon_runtime_field[addon]
                 if sys_ini:line_exist(sec, field) then
-                    addon_sec = sys_ini:r_string(sec, field)
+                    local configured = sys_ini:r_string(sec, field)
+                    if valid_addon_section(configured) then
+                        addon_sec = configured
+                    end
                 end
             end
             local addon_weight = addon_sec and get_float(addon_sec, "inv_weight", 0) or 0
@@ -891,71 +916,119 @@ function run_belt_divert()
     end
 end
 
---[[
--- in sivol_weapon.script:
+-- Native OGSR condition_shot_dec_silencer owns suppressor wear. This callback
+-- only reports configured and observed values when diagnostics are enabled.
+local suppressor_diag_weapon_id = nil
+local suppressor_diag_condition = nil
+local suppressor_diag_mode = nil
+
+
+local function resolve_silencer_section(item, weapon_section)
+    local weapon = item and item:get_weapon()
+    local runtime_silencer = weapon and weapon.silencer_name
+    if valid_addon_section(runtime_silencer) then
+        return runtime_silencer, runtime_silencer
+    end
+
+    if get_addon_section and clsid and clsid.wpn_silencer then
+        local ok, resolved = pcall(get_addon_section, weapon_section, clsid.wpn_silencer)
+        if ok and valid_addon_section(resolved) then
+            return runtime_silencer, resolved
+        end
+    end
+
+    if weapon_section and sys_ini:section_exist(weapon_section)
+        and sys_ini:line_exist(weapon_section, "silencer_name") then
+        local configured = sys_ini:r_string(weapon_section, "silencer_name")
+        if valid_addon_section(configured) then
+            return runtime_silencer, configured
+        end
+    end
+    return runtime_silencer, nil
+end
 function sivol_weapon.on_actor_weapon_fire( obj )
-    wprintf( "[~T]. #DBG sivol_weapon: on_actor_weapon_fire obj=%s", tostring(obj) )
-    if obj and obj.section then
-        wprintf( "[~T]. #DBG sivol_weapon: section=%s id=%s cond=%.4f",
-            tostring(obj:section()), tostring(obj:id()), obj:condition() or -1 )
-    end
-end
---]]
-
--- Оружие с глушителем тратит больше прочности на выстрел. В 
-local cached_wpn_id      = nil
-local cached_addon_flags = nil
-local cached_wear_extra  = 0
-
-local function refresh_weapon_wear_cache( obj )
-    local wpn_id = obj:id()
-    local sobj = alife():object( wpn_id )
-    if not sobj then
-        cached_wpn_id = nil
-        cached_wear_extra = 0
+    if not sivol_weapon.suppressor_diagnostics then
+        suppressor_diag_weapon_id = nil
+        suppressor_diag_condition = nil
+        suppressor_diag_mode = nil
         return
     end
+    if not ( obj and obj.section and obj.condition ) then return end
 
-    local pk = get_netpk( sobj )
-    if not pk then
-        cached_wpn_id = nil
-        cached_wear_extra = 0
-        return
+    local sec = obj:section()
+    local status = tonumber(get_u32(sec, "silencer_status", 0)) or 0
+    local flags = tonumber(get_live_addon_flags(obj)) or 0
+    local attached = status == 2 and addon_is_attached(obj, sec, "sl", flags)
+    local silenced = status == 1 or attached
+    local weapon = obj:get_weapon()
+    local raw_silencer = weapon and weapon.silencer_name
+    local silencer_sec = nil
+
+    if status == 1 then
+        silencer_sec = "integrated"
+    elseif status == 2 and attached then
+        raw_silencer, silencer_sec = resolve_silencer_section(obj, sec)
     end
 
-    local addon_flags = pk:get().addon_flags or 0
-
-    -- cache still valid: same weapon, same addon state, nothing to recompute
-    if wpn_id == cached_wpn_id and addon_flags == cached_addon_flags then
-        return
+    local hit_k = 1
+    local speed_k = 1
+    local dispersion_k = 1
+    local recoil_k = 1
+    local wear_k = 1
+    if silencer_sec and silencer_sec ~= "integrated" then
+        hit_k = get_float(silencer_sec, "bullet_hit_power_k", 1)
+        speed_k = get_float(silencer_sec, "bullet_speed_k", 1)
+        dispersion_k = get_float(silencer_sec, "fire_dispersion_base_k", 1)
+        recoil_k = get_float(silencer_sec, "cam_dispersion_k", 1)
+        wear_k = get_float(silencer_sec, "condition_shot_dec_k", 1)
     end
 
-    cached_wpn_id      = wpn_id
-    cached_addon_flags = addon_flags
-
-    local sil_on = math.floor( addon_flags / 4 ) % 2 == 1
-    if sil_on then
-        local sect      = obj:section()
-        local sil_name  = get_string( sect, "silencer_name", nil )
-        local wear_k    = sil_name and get_float( sil_name, "condition_shot_dec_k", 1 ) or 1
-        local base_dec  = sys_ini:r_float( sect, "condition_shot_dec" ) or 0
-        cached_wear_extra = base_dec * ( wear_k - 1 )
-    else
-        cached_wear_extra = 0
+    local base_dec = get_float(sec, "condition_shot_dec", 0)
+    local native_suppressed_dec = weapon and tonumber(weapon.condition_shot_dec_silencer)
+    if not native_suppressed_dec or native_suppressed_dec <= 0 then
+        native_suppressed_dec = get_float(sec, "condition_shot_dec_silencer", base_dec)
     end
+    local expected_dec = silenced and native_suppressed_dec or base_dec
+    local cond = tonumber(obj:condition()) or -1
+    local observed = -1
+    local previous_mode = "none"
+
+    if suppressor_diag_weapon_id == obj:id() and suppressor_diag_condition then
+        observed = math.max(0, suppressor_diag_condition - cond)
+        previous_mode = suppressor_diag_mode or "unknown"
+    end
+
+    local mode = status == 1 and "integrated"
+        or attached and "detachable_attached"
+        or status == 2 and "detachable_detached"
+        or "base"
+
+    log2(
+        "[sivol_weapon][suppressor] section=%s id=%s status=%d flags=%d mode=%s raw_silencer=%s resolved_silencer=%s hit_k=%.4f speed_k=%.4f dispersion_k=%.4f recoil_k=%.4f wear_profile_k=%.4f base_dec=%.8f native_suppressed_dec=%.8f expected_dec=%.8f condition=%.6f observed_between_callbacks=%.8f previous_mode=%s",
+        tostring(sec),
+        tostring(obj:id()),
+        status,
+        flags,
+        mode,
+        tostring(raw_silencer),
+        tostring(silencer_sec or "none"),
+        hit_k,
+        speed_k,
+        dispersion_k,
+        recoil_k,
+        wear_k,
+        base_dec,
+        native_suppressed_dec,
+        expected_dec,
+        cond,
+        observed,
+        previous_mode
+    )
+
+    suppressor_diag_weapon_id = obj:id()
+    suppressor_diag_condition = cond
+    suppressor_diag_mode = mode
 end
-
-function sivol_weapon.on_actor_weapon_fire( obj )
-    if not ( obj and obj.section ) then return end
-
-    refresh_weapon_wear_cache( obj )
-
-    if cached_wear_extra and cached_wear_extra > 0 then
-        local cur = obj:condition()
-        obj:set_condition( math.max( 0, cur - cached_wear_extra ) )
-    end
-end
-
 function sivol_weapon.late_init()
     if wpn_params and wpn_params.late_init then
         wpn_params.late_init()

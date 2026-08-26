@@ -39,6 +39,16 @@ Inspect other `gamedata` folders only when the current task requires them.
   - `gamedata/scripts/sak/sak.script` and
     `gamedata/scripts/vergas/vergas_masks.script` suspend mask breath sounds
     and condensation respectively while breath is held.
+- Suppressor balance and presentation:
+  - `gamedata/config/weapons/add_silencers.ltx` owns per-suppressor damage,
+    velocity, dispersion, recoil, mass, and wear multipliers.
+  - Compatible detachable-suppressor weapon sections use OGSR's native
+    `condition_shot_dec_silencer`; the value is authored from the weapon's
+    normal wear and its suppressor caliber/profile multiplier.
+  - `gamedata/scripts/ui/ui_inv_descr.script` shows standalone suppressor
+    modifiers and attached base-versus-effective weapon statistics.
+  - `gamedata/scripts/kotovod/sivol_weapon.script` contains disabled-by-default
+    suppressor diagnostics only; it does not apply scripted condition loss.
 - Mutant abilities and controller overhaul:
   - `gamedata/scripts/binders/bind_monster.script` owns the ported mutant
     abilities, controller sensed/targeted pools, cover sampling, cooldowns,
