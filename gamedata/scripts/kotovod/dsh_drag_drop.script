@@ -3,6 +3,24 @@
 local resonator_busy = false
 local resonator_state = nil
 
+local RESONATOR_HUD = "af_resonator_inspect_hud"
+local RESONATOR_SCAN_MS = 4200
+local RESONATOR_CAMERA_ID = 9773
+local RESONATOR_CAM_DRAW = "camera_effects\\weapon\\af_hand_inspect_draw.anm"
+local RESONATOR_CAM_IDLE = "camera_effects\\weapon\\af_hand_inspect_idle.anm"
+local RESONATOR_CAM_HIDE = "camera_effects\\weapon\\af_hand_inspect_hide.anm"
+
+local function resonator_state_active(state)
+    return state and resonator_state == state and not state.cancelled
+end
+
+local function resonator_remove_camera(state)
+    if state and state.camera_active then
+        level.remove_cam_effector( RESONATOR_CAMERA_ID )
+        state.camera_active = false
+    end
+end
+
 local function resonator_cleanup()
     local state = resonator_state
     if not state then
@@ -10,9 +28,12 @@ local function resonator_cleanup()
         return
     end
 
-    if state.camera_active then
-        level.remove_cam_effector( 9773 )
+    state.cancelled = true
+    if state.hud_active then
+        game.stop_hud_motion()
+        state.hud_active = false
     end
+    resonator_remove_camera(state)
     if db.actor then
         sak.restore_weap()
         db.actor.psy_health = state.psy
@@ -315,6 +336,39 @@ local function resonator_send_result( sections, message_id, special, status )
     )
 end
 
+local function resonator_play_camera(state, effect, looped)
+    if not resonator_state_active(state) then return end
+    resonator_remove_camera(state)
+    level.add_cam_effector( effect, RESONATOR_CAMERA_ID, looped, "", 0, false )
+    state.camera_active = true
+end
+
+local function resonator_start_inspection(state, sections, message_id, special, status)
+    if not resonator_state_active(state) then return end
+
+    resonator_play_camera(state, RESONATOR_CAM_DRAW, false)
+    local show_duration = game.play_hud_motion( 2, RESONATOR_HUD, "anm_show", true, 1.1, true ) or 1000
+    state.hud_active = true
+
+    dsh.timeout( show_duration, function()
+        if not resonator_state_active(state) then return end
+        resonator_play_camera(state, RESONATOR_CAM_IDLE, true)
+        game.play_hud_motion( 2, RESONATOR_HUD, "anm_idle", true, 1, true )
+    end )
+
+    dsh.timeout( math.max( RESONATOR_SCAN_MS, show_duration ), function()
+        if not resonator_state_active(state) then return end
+        game.stop_hud_motion()
+        resonator_play_camera(state, RESONATOR_CAM_HIDE, false)
+        local hide_duration = game.play_hud_motion( 2, RESONATOR_HUD, "anm_hide", true, 1, true ) or 1000
+        dsh.timeout( hide_duration, function()
+            if not resonator_state_active(state) then return end
+            resonator_cleanup()
+            resonator_send_result( sections, message_id, special, status )
+        end )
+    end )
+end
+
 local function use_resonator( drag_obj, drop_obj )
     if resonator_busy then
         sak.send_tip(
@@ -340,22 +394,19 @@ local function use_resonator( drag_obj, drop_obj )
 
     params.upd_condition( accum, accum:condition() - 0.07 )
     resonator_busy = true
-    resonator_state = {
+    local state = {
         psy = db.actor.psy_health,
         camera_active = false,
+        hud_active = false,
+        cancelled = false,
     }
+    resonator_state = state
 
     close_and_wait_inventory( function()
-        if not resonator_state then return end
-        level.add_cam_effector( "camera_effects\\item_use.anm", 9773, false, "" )
-        resonator_state.camera_active = true
+        if not resonator_state_active(state) then return end
         db.actor.psy_health = -0.55
-        vergas_lib.s_play( [[actor\\tinnitus3a]], 0.8 )
-        dsh.timeout( 4200, function()
-            if not resonator_state then return end
-            resonator_cleanup()
-            resonator_send_result( sections, message_id, special, status )
-        end )
+        vergas_lib.s_play( [[affects\\tinnitus3a]], 0.8 )
+        resonator_start_inspection( state, sections, message_id, special, status )
     end )
 end
 
