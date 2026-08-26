@@ -5,6 +5,9 @@ local subscribed = false
 local shift_show_descr = 700
 local kScreen = math.min((1024 / 768) / (device().width / device().height), 1)
 
+-- Local presentation policy: "off", "easy", or "all".
+local consumable_effects_mode = "easy"
+
 local protection_descriptions = {
     burn = "Снижает урон от огня и термических аномалий",
     chemical_burn = "Защищает от едких испарений и кислотных аномалий",
@@ -97,16 +100,13 @@ hit_types = {
 
 -- Параметры еды
 eatable_params = {
-	{prop = "mr_time", text = translate("ui_inv_it_works"), tex = "timer"},
-	{prop = "eat_health", text = translate("ui_inv_health"), tex = "health"},
-	{prop = "wounds_heal_perc", text = translate("ui_inv_bleeding"), tex = "bleeding"},
-	{prop = "eat_psy_health", text = translate("ui_inv_psy_health"), tex = "telepatic"},
-	{prop = "eat_satiety", text = translate("ui_inv_satiety"), tex = "satiety"},
-	{prop = "eat_power", text = translate("ui_inv_endurance"), tex = "power"},
-	{prop = "eat_thirst", text = translate("ui_inv_thirst"), tex = "thirst", dec = true},
-	{prop = "eat_alcohol", text = translate("ui_inv_intoxication"), tex = "alcohol"},
-	{prop = "eat_radiation", text = translate("ui_inv_outfit_radiation_protection"), tex = "radiation_2"},
-	{prop = "eat_radiation_arc", text = translate("ui_inv_outfit_radiation_protection"), tex = "radiation_2", unit = "Р"}
+    {prop = "eat_health", text = translate("ui_inv_health"), tex = "health", good_when_positive = true},
+    {prop = "wounds_heal_perc", text = translate("ui_inv_bleeding"), tex = "bleeding", good_when_positive = true, display_multiplier = -1},
+    {prop = "eat_psy_health", text = translate("ui_inv_psy_health"), tex = "telepatic", good_when_positive = true},
+    {prop = "eat_satiety", text = translate("ui_inv_satiety"), tex = "satiety", good_when_positive = true},
+    {prop = "eat_power", text = translate("ui_inv_endurance"), tex = "power", good_when_positive = true},
+    {prop = "eat_alcohol", text = translate("ui_inv_intoxication"), tex = "alcohol", good_when_positive = false},
+    {prop = "eat_radiation", text = translate("ui_inv_outfit_radiation_protection"), tex = "radiation_2", good_when_positive = false},
 }
 
 local function need_show_condition(item)
@@ -118,8 +118,9 @@ g_xml:ParseFile("ui_inv_descr.xml")
 
 --------------------------------------------------------------------------------------------------------
 class "CUIDescriptionWnd"(CUIScriptWnd)
-function CUIDescriptionWnd:__init(st) super()
+function CUIDescriptionWnd:__init(st, context) super()
 	self.owner = level.main_input_receiver() or st
+	self.context = context or "inventory"
 
 	self.scrollPos = 0
 	self.k_icon = cell_size * kScreen / 50
@@ -159,6 +160,7 @@ function CUIDescriptionWnd:__init(st) super()
 		self.cost = self.xml:InitStatic("description:cost_wnd", self.frame)
 	end
 	
+	self.weight_icon = self.xml:InitStatic("description:weight_icon", self.frame)
 	self.weight_static = self.xml:InitStatic("description:weight_wnd", self.frame)
 
 	self.cond_frame = self.xml:InitStatic("description:frame_condition", self.frame)
@@ -201,41 +203,67 @@ function CUIDescriptionWnd:OnMouseWheel(mode)
 	self.scroll_v:SetScrollPos(self.scrollPos)
 end
 
+local function get_property_icon(icon)
+    if not icon or icon == "" then return nil end
+    if string.find(icon, "ui_inv_icon_", 1, true) == 1 then return icon end
+    return "ui_inv_icon_" .. icon
+end
+
 function CUIDescriptionWnd:ShowProps( tbl )
     local st
-    for i, t in ipairs( tbl ) do
-        st = self.xml:InitStatic( "props", self.scroll_v )
-        if t[ 1 ] ~= nil then 
-            st.icon = self.xml:InitStatic( "props:prop_texture", st )
-            st.icon:InitTexture( t[ 1 ] )
-        end	
-        st.text = self.xml:InitStatic( "props:prop_text", st )
-        st.text:SetWndSize( 280, 200 )  -- даём большой запас по высоте
-        st.text:SetText( t[ 2 ] )
-        st.text:AdjustHeightToText()
-        local h = st.text:GetHeight() + 6
-        st:SetWndSize( st:GetWidth(), h )
-        st.text:SetWndSize( 280, h )
-        self.addH = self.addH + h + vert_interval
+    for _, t in ipairs(tbl) do
+        st = self.xml:InitStatic("props_small", self.scroll_v)
+        local icon = get_property_icon(t[1])
+        if icon then
+            st.icon = self.xml:InitStatic("props_small:prop_texture", st)
+            st.icon:InitTexture(icon)
+        end
+
+        st.text = self.xml:InitStatic("props_small:prop_text", st)
+        st.text:SetText(t[2] or "")
+
+        if t[3] ~= nil then
+            st.value = self.xml:InitStatic("props_small:prop_text_2", st)
+            st.value:SetText(t[3])
+            if not icon then
+                st.text:SetWndPos(1, 0)
+                st.text:SetWndSize(271, st:GetHeight())
+            end
+            self.addH = self.addH + st:GetHeight() + vert_interval
+        else
+            local text_x = icon and 24 or 1
+            local text_w = icon and 364 or 388
+            st.text:SetWndPos(text_x, 0)
+            st.text:SetWndSize(text_w, 200)
+            st.text:AdjustHeightToText()
+            local h = math.max(st:GetHeight(), st.text:GetHeight() + 4)
+            st:SetWndSize(st:GetWidth(), h)
+            st.text:SetWndSize(text_w, h)
+            self.addH = self.addH + h + vert_interval
+        end
     end
 end
 
+function CUIDescriptionWnd:ShowPropsHeader(text)
+    local st = self.xml:InitStatic("props_header", self.scroll_v)
+    st:SetText(text)
+    self.addH = self.addH + st:GetHeight() + vert_interval
+end
+
 function CUIDescriptionWnd:ShowPropsAf( tbl )
-	local st
-	for i, t in ipairs( tbl ) do
-		st = self.xml:InitStatic( "props", self.scroll_v )
-		if t[ 1 ] ~= nil then 
-			st.icon = self.xml:InitStatic( "props:prop_texture", st )
-			st.icon:InitTexture( t[ 1 ] )
-		end	
-		st.text = self.xml:InitStatic( "props:prop_text", st )
-		st.text:SetText( t[ 2 ] )              -- подпись (название параметра)
-		st.text_af = self.xml:InitStatic( "props:prop_text", st )	
-		st.text_af:SetText( t[ 3 ] )           -- значение
-		
-		st.text_af:SetTextX( st:GetWidth() / 2 )   -- <-- ФИКСИРОВАННАЯ позиция для значения
-		self.addH = self.addH + st:GetHeight() + vert_interval
-	end
+    local st
+    for _, t in ipairs(tbl) do
+        st = self.xml:InitStatic("props", self.scroll_v)
+        if t[1] ~= nil then
+            st.icon = self.xml:InitStatic("props:prop_texture", st)
+            st.icon:InitTexture(t[1])
+        end
+        st.text = self.xml:InitStatic("props:prop_text", st)
+        st.text:SetText(t[2])
+        st.text_af = self.xml:InitStatic("props:prop_text_2", st)
+        st.text_af:SetText(t[3])
+        self.addH = self.addH + st:GetHeight() + vert_interval
+    end
 end
 
 function CUIDescriptionWnd:ShowPropFromIni(sect, icon, text, text_color, complex, ammo_count)
@@ -327,6 +355,21 @@ function get_dyn_color( sect )
 	return color_t
 end
 
+function CUIDescriptionWnd:ShowInteractionHints(item)
+    local hints = {}
+    if item:is_outfit() then
+        table.insert(hints, translate("ui_inv_hint_outfit_compare"))
+        table.insert(hints, translate("ui_inv_hint_outfit_protection"))
+    end
+    table.insert(hints, translate("st_ui_group_movement_tip"))
+    if get_bool(self.section, "manual_ungrouping", false) then
+        table.insert(hints, translate("st_ui_ungroup_tip"))
+    end
+
+    self:ShowPropsHeader(translate("ui_inv_controls"))
+    self:ShowProps({{nil, table.concat(hints, "\\n")}})
+end
+
 function CUIDescriptionWnd:ShowDescription(item)
 	if (item == nil) or BlockUIDescr() then return end
 
@@ -343,7 +386,7 @@ function CUIDescriptionWnd:ShowDescription(item)
 	self.addH = 0
 
 	local desc_cfg_str = get_string(self.section, "description", self.section .. "<NO_DESCRIPTION!>")
-	local description = translate(desc_cfg_str)
+	local description = self.context == "inventory" and "" or translate(desc_cfg_str)
 	
 	-- Sn: чистим описание артов от дублирующих параметров (прыжок, скорость) и цветовых тегов
 	if strpos(desc_cfg_str,"artifact_") then
@@ -385,10 +428,6 @@ function CUIDescriptionWnd:ShowDescription(item)
 		end		
 	end
 
-	if get_bool(self.section, "manual_ungrouping", false) then
-		description = description..sep_string(translate("st_ui_ungroup_tip"))
-	end
-	description = description..sep_string(translate("st_ui_group_movement_tip"))
 
 	-- Manool: при стаке контейнеров это не имеет смысла]]
 	--[[
@@ -485,9 +524,6 @@ function CUIDescriptionWnd:ShowDescription(item)
             -- Full replacement when LAlt is held
             description = "%c[UI_orange]Информация о защите:\\n%c[default]"
                      .. table.concat( self.protection_info_lines, "\\n" )
-        else
-            description = description .. "\\n \\n%c[white]LShift - %c[default]сравнение характеристик c надетым костюмом."
-            description = description .. "\\n%c[white]LAlt - %c[default]информация о защите."
         end
     end
 
@@ -657,14 +693,6 @@ function CUIDescriptionWnd:ShowDescription(item)
 		end	
 	end
 	
-	self.inv_name:SetTextST(inv_name)
-	self.descr:SetText(description)
-	self.descr:AdjustHeightToText()
-	self.scroll_v:AddWindow(self.descr, true)
-	self.descr:SetAutoDelete(false)
-	self.scroll_v:ScrollToBegin()
-	self.scrollPos = 0
-
 	-- food
 	-- if isEatable(item) then
 	if item:is_eatable_item() and not is_forbidden then
@@ -702,13 +730,23 @@ function CUIDescriptionWnd:ShowDescription(item)
 		self:ShowProps({{"explosion", string.format("%s: %.2f ", translate("ui_inv_ammo_damage"), (kh * bs))}})
 	end
 
+	self.inv_name:SetTextST(inv_name)
+	self.descr:SetText(description)
+	self.descr:AdjustHeightToText()
+	self.scroll_v:AddWindow(self.descr, true)
+	self.descr:SetAutoDelete(false)
+
+	self:ShowInteractionHints(item)
+	self.scroll_v:ScrollToBegin()
+	self.scrollPos = 0
+
 	if self.is_trading then
 		self.cost:SetText(string.format("%s: %s %s", translate("st_base_cost_2"), get_actual_cost(item), translate("ui_st_money_descr")))
 	end
 	
 	self.weight_static:SetText(string.format("%s: %.2f %s", translate("st_weigth"), item:get_weight(), translate("ui_inv_s_kg")))
 
-	if need_show_condition(item) and not self.dis_cond then
+	if (item:is_outfit() or need_show_condition(item)) and not self.dis_cond then
 		self.cond_scale:SetWidth(self.max_cond_w * self.condition)
 		self.cond_scale:SetOriginalRect(
 			self.cond_rect.x1,
@@ -746,74 +784,94 @@ function CUIDescriptionWnd:ShowDescription(item)
 	self.frame:Show(true)
 end
 
+local function should_show_consumable_effects()
+    if consumable_effects_mode == "all" then return true end
+    if consumable_effects_mode == "easy" then
+        return level.get_game_difficulty() == 0
+    end
+    return false
+end
+
+local function format_effect_percent(value, good_when_positive, display_multiplier)
+    local is_good = (value > 0 and good_when_positive) or (value < 0 and not good_when_positive)
+    local shown = value * 100 * (display_multiplier or 1)
+    local sign = shown > 0 and "+" or ""
+    return (is_good and "%c[green]" or "%c[red]") .. sign .. string.format("%.0f%%", shown)
+end
+
+local function format_effect_rate(value, good_when_positive, unit)
+    local is_good = (value > 0 and good_when_positive) or (value < 0 and not good_when_positive)
+    local sign = value > 0 and "+" or ""
+    return (is_good and "%c[green]" or "%c[red]") .. sign .. string.format("%.1f %s", value, unit)
+end
+
 -- Показываем параметры съедобных предметов
 function CUIDescriptionWnd:ShowEatableParams()
-	local params = {}
-	local val, txt = 0, ""
-	local vergas_med = false
-	local heal_time = 0
-	for i, t in ipairs(eatable_params) do
-		if vergas_medical_elastic.med[self.section] and t.prop ~= "mr_time" then
-			vergas_med = (self.section ~= "bandage")
-			val = get_float(self.section, ( vergas_med and "mr_" .. t.prop or t.prop), 0)			
-		else
-			val = get_float(self.section, t.prop, 0)
-		end
+    if not should_show_consumable_effects() then return end
 
-		local sat = get_float(self.section, "eat_satiety", 0)
-		if val == 0 and t.prop == "eat_satiety" and sat then
-			val = sat
-		end
-		if t.prop == "mr_time" then
-			if val >= 1 then 
-				heal_time = val
-			else
-				val = 0
-			end
-		end
+    local immediate = {}
+    for _, t in ipairs(eatable_params) do
+        local val = get_float(self.section, t.prop, 0)
+        if val ~= 0 then
+            table.insert(immediate, {
+                t.tex,
+                t.text,
+                format_effect_percent(val, t.good_when_positive, t.display_multiplier)
+            })
+        end
+    end
 
-		if val ~= 0 then
-			-- txt = t.text .. " "
-			txt = ""
-			if t.prop == "wounds_heal_perc" then
-				txt = txt .. (val > 0 and "%c[green]" or "%c[red]+")
-				val = -val
-			elseif t.prop == "eat_alcohol" or t.prop == "eat_radiation" or t.prop == "eat_radiation_arc" then
-				txt = txt .. (val > 0 and "%c[red]+" or "%c[green]")
-				if t.prop == "eat_radiation_arc" then
-					val = val / 100
-				end
-			else
-				txt = txt .. (val > 0 and "%c[green]+" or "%c[red]")
-			end
-			if vergas_med or t.prop == "mr_time" then
-				local coef = 1
-				if t.prop ~="mr_time" then
-					-- Sn: здесь нужно добавлять коэфф. из init_treatment()
-					coef = 7 / (3 + level.get_game_difficulty())
-					val = val * coef
-				end
-				if t.prop =="eat_health" then
-					txt = txt .. string.format("%.1f %s", val * 100 / heal_time, translate("ui_inv_unit_min"))
-				elseif t.prop =="eat_radiation" then
-					txt = txt .. string.format("%.1f %s", val * 10 / heal_time, translate("ui_inv_roentgen_min"))
-				elseif t.prop =="eat_power" or t.prop =="eat_satiety" then
-					-- Sn: delta_power в init_treatment() считается не за одну секунду, а за 0.33
-					-- отсюда и необходимость домножить переменную на 3, чтобы получить требуемое значение
-					txt = txt .. string.format("%d %s", val * 100 * 3 / heal_time, translate("ui_inv_unit_min"))
-				else
-					txt = string.sub(txt, 1, string.len(txt) - 1) .. val .. (val == 1 and " "..translate("ui_inv_minute_1") or " "..translate("ui_inv_minute_2"))
-				end
-			else
-				txt = txt .. string.format("%d", val * 100) .. (t.unit or "%")
-			end
-			table.insert(params, {t.tex, t.text, txt})
-		end
-	end
+    local thirst_value = thirst.get_item_effect(self.section, self.condition)
+    if thirst_value and thirst_value ~= 0 then
+        table.insert(immediate, {
+            "thirst",
+            translate("ui_inv_thirst"),
+            format_effect_percent(thirst_value, false)
+        })
+    end
 
-	if #params > 0 then
-		self:ShowProps(params)
-	end
+    if #immediate > 0 then
+        self:ShowPropsHeader(translate("ui_inv_effect_immediate"))
+        self:ShowProps(immediate)
+    end
+
+    local preview = vergas_medical_elastic.get_treatment_preview(self.section)
+    if preview then
+        local header_id = self.section == "antirad"
+            and "ui_inv_effect_radiation_treatment"
+            or "ui_inv_effect_treatment"
+        self:ShowPropsHeader(string.format(translate(header_id), preview.duration))
+
+        local timed = {}
+        if preview.health_per_min ~= 0 then
+            table.insert(timed, {
+                "health", translate("ui_inv_health"),
+                format_effect_rate(preview.health_per_min, true, translate("ui_inv_unit_min"))
+            })
+        end
+        if preview.power_per_min ~= 0 then
+            table.insert(timed, {
+                "power", translate("ui_inv_endurance"),
+                format_effect_rate(preview.power_per_min, true, translate("ui_inv_unit_min"))
+            })
+        end
+        if preview.radiation_per_min ~= 0 then
+            table.insert(timed, {
+                "radiation_2", translate("ui_inv_outfit_radiation_protection"),
+                format_effect_rate(preview.radiation_per_min, false, translate("ui_inv_roentgen_min"))
+            })
+        end
+        self:ShowProps(timed)
+    end
+
+    local delayed_value, delay_min, delay_max = thirst.get_delayed_item_effect(self.section)
+    if delayed_value and delayed_value ~= 0 then
+        self:ShowPropsHeader(string.format(translate("ui_inv_effect_delayed"), delay_min, delay_max))
+        self:ShowProps({{
+            "thirst", translate("ui_inv_thirst"),
+            format_effect_percent(delayed_value, false)
+        }})
+    end
 end
 
 local compass_way = {
@@ -1517,13 +1575,13 @@ function CUIDescriptionWnd:ShowOutfitParams()
 
             if lalt_pressed then
                 if mod.pwr_mult and mod.pwr_mult ~= 1.0 then
-                    table.insert(params, { "ui_inv_icon_power_restore_speed_hd", "Эффект маски (усталость):", "%c[default]Затрудняет дыхание", nil, nil })
+                    table.insert(params, { "ui_inv_icon_power_restore_speed_hd", "Эффект маски (усталость): %c[default]Затрудняет дыхание", nil, nil, nil })
                 end
                 if mod.rad_add and mod.rad_add > 0 then
-                    table.insert(params, { "ui_inv_icon_radiation_immunity_hd", "Эффект маски (радиация):", "%c[default]Фильтрует заражённый воздух", nil, nil })
+                    table.insert(params, { "ui_inv_icon_radiation_immunity_hd", "Эффект маски (радиация): %c[default]Фильтрует заражённый воздух", nil, nil, nil })
                 end
                 if mod.psy_k and mod.psy_k < 1.0 then
-                    table.insert(params, { "ui_inv_icon_telepatic_immunity_hd", "Эффект маски (телепатия):", "%c[default]Некоторые пси-атаки зверья", nil, nil })
+                    table.insert(params, { "ui_inv_icon_telepatic_immunity_hd", "Эффект маски (телепатия): %c[default]Некоторые пси-атаки зверья", nil, nil, nil })
                 end
             else
                 if mod.pwr_mult and mod.pwr_mult ~= 1.0 then
@@ -1555,58 +1613,41 @@ function CUIDescriptionWnd:ShowOutfitParams()
 end
 
 function CUIDescriptionWnd:ShowPropsOutfit( tbl )
-	local st
-	for i, t in ipairs( tbl ) do
-		st = self.xml:InitStatic( "props", self.scroll_v )
-		if t[ 1 ] ~= nil then 
-			st.icon = self.xml:InitStatic( "props:prop_texture", st )		-- Иконка
-			st.icon:InitTexture( t[ 1 ] )
-		end	
-		if t[ 2 ] ~= nil then 
-			st.text = self.xml:InitStatic( "props:prop_text", st )			-- Название характеристики
-			st.text:SetText( t[ 2 ] )			
-		end		
-		if t[ 3 ] ~= nil then 
-			st.text_pr = self.xml:InitStatic( "props:prop_text", st )		-- Статы
-			st.text_pr:SetText( t[ 3 ] )	
-			st.text_pr:SetTextX( st:GetWidth() / 2.8 )				
-		end
-		if t[ 4 ] ~= nil then 
-			st.text_full = self.xml:InitStatic( "props:prop_text", st )		-- Статы целого
-			st.text_full:SetText( t[ 4 ] )	
-			st.text_full:SetTextColor( 255, 160, 160, 160 )			
-			st.text_full:SetTextX( st:GetWidth() / 2.0 )	
-		end
+    local st
+    for _, t in ipairs(tbl) do
+        st = self.xml:InitStatic("props", self.scroll_v)
+        if t[1] ~= nil then
+            st.icon = self.xml:InitStatic("props:prop_texture", st)
+            st.icon:InitTexture(t[1])
+        end
 
-		if t[ 5 ] ~= nil then 
-			st.text_comp = self.xml:InitStatic( "props:prop_text", st )		-- Сравнить с надетым
-			st.text_comp:SetText( t[ 5 ] )		
-			st.text_comp:SetTextX( st:GetWidth() / 1.5 )
-		end		
-		self.addH = self.addH + st:GetHeight() + vert_interval
-	end
+        local has_multiple_values = t[4] ~= nil or t[5] ~= nil
+        if t[2] ~= nil then
+            st.text = self.xml:InitStatic("props:prop_text", st)
+            st.text:SetText(t[2])
+            if t[3] == nil and not has_multiple_values then
+                st.text:SetWndSize(364, st:GetHeight())
+            end
+        end
+        if t[3] ~= nil then
+            st.text_pr = self.xml:InitStatic("props:prop_text_2", st)
+            st.text_pr:SetText(t[3])
+        end
+        if t[4] ~= nil then
+            st.text_full = self.xml:InitStatic("props:prop_text_3", st)
+            st.text_full:SetText(t[4])
+            st.text_full:SetTextColor(255, 160, 160, 160)
+        end
+        if t[5] ~= nil then
+            st.text_comp = self.xml:InitStatic("props:prop_text_4", st)
+            st.text_comp:SetText(t[5])
+        end
+        self.addH = self.addH + st:GetHeight() + vert_interval
+    end
 end
 
 function CUIDescriptionWnd:ShowPropsWeapon( tbl )
-    local st
-    for i, t in ipairs( tbl ) do
-        st = self.xml:InitStatic( "props", self.scroll_v )
-        if t[ 1 ] ~= nil then 
-            st.icon = self.xml:InitStatic( "props:prop_texture", st )
-            st.icon:InitTexture( t[ 1 ] )
-            st.icon:SetWndPos( 15, 3 )
-            st.icon:SetWndSize( 13, 13 )
-        end	
-        st.text = self.xml:InitStatic( "props:prop_text", st )
-        st.text:SetWndPos( 35, 0 )    -- двигаем текст правее
-        st.text:SetWndSize( 265, 200 )
-        st.text:SetText( t[ 2 ] )
-        st.text:AdjustHeightToText()
-        local h = st.text:GetHeight() + 6
-        st:SetWndSize( st:GetWidth(), h )
-        st.text:SetWndSize( 265, h )
-        self.addH = self.addH + h + vert_interval
-    end
+    self:ShowProps(tbl)
 end
 
 function CUIDescriptionWnd:Remove()
