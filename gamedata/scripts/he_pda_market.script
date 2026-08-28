@@ -3,6 +3,9 @@
 local HEARTBEAT_MS = 5000
 local MARKET_INFO  = "he_pda_market_open"
 local STARTED_KEY  = "he_pda_started"
+local PENDING_KEY  = "he_pda_drop_pending"
+local START_LEVEL  = "l01_escape"
+local DROP_TRIES   = 6
 local TRADER_IDS   = { 3, 500 }
 
 function attach( sm )
@@ -11,11 +14,21 @@ function attach( sm )
 end
 
 local function drop_actor_pda()
-	local pda = db.actor and db.actor:object( "device_pda" )
-	if pda then
-		misc.release_obj( pda )
-	end
+	local pda = db.actor:object( "device_pda" )
 	level.set_actor_allow_pda( false )
+	if not pda then return false end
+	misc.release_obj( pda )
+	return true
+end
+
+local function sync_actor_pda()
+	local pda = db.actor:object( "device_pda" )
+	if not pda then
+		level.set_actor_allow_pda( false )
+	elseif pda:condition() > 0 and not db.actor:has_info( "pda_is_broken" )
+		and not pda_battery.is_charging() then
+		level.set_actor_allow_pda( true )
+	end
 end
 
 local function sync_trader( sobj, unlocked )
@@ -30,15 +43,29 @@ local function sync_trader( sobj, unlocked )
 end
 
 function on_late_init()
+	if not db.actor then return end
 	if get_value( STARTED_KEY ) ~= nil then return end
 	set_value( STARTED_KEY, true )
-	if not db.actor or db.actor:has_info( "storyline_actor_start" ) then return end
-	drop_actor_pda()
+	if db.actor:has_info( MARKET_INFO ) then return end
+	if level.name() ~= START_LEVEL then return end
+	if not drop_actor_pda() then
+		set_value( PENDING_KEY, DROP_TRIES )
+	end
 end
 
 function on_update()
 	ogse_signals.get_mgr():reschedule( HEARTBEAT_MS )
 	if not db.actor then return end
+	local pending = get_value( PENDING_KEY )
+	if pending then
+		if drop_actor_pda() or pending <= 1 then
+			remove_value( PENDING_KEY )
+		else
+			set_value( PENDING_KEY, pending - 1 )
+		end
+	else
+		sync_actor_pda()
+	end
 	local unlocked = db.actor:has_info( MARKET_INFO )
 	if not unlocked and level.name() == "l03_agroprom" then
 		db.actor:give_info_portion( MARKET_INFO )
