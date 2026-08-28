@@ -1,0 +1,82 @@
+-- [HE-PORT]
+
+local HEARTBEAT_MS = 5000
+local MARKET_INFO  = "he_pda_market_open"
+local STARTED_KEY  = "he_pda_started"
+local PENDING_KEY  = "he_pda_drop_pending"
+local START_LEVEL  = "l01_escape"
+local DROP_TRIES   = 6
+local TRADER_IDS   = { 3, 500 }
+
+function attach( sm )
+	sm:subscribe( { signal = "on_late_init_all", fun = this.on_late_init } )
+	sm:subscribe( { signal = "on_update", fun = this.on_update } )
+end
+
+local function drop_actor_pda()
+	local pda = db.actor:object( "device_pda" )
+	level.set_actor_allow_pda( false )
+	if not pda then return false end
+	misc.release_obj( pda )
+	return true
+end
+
+local function sync_actor_pda()
+	local pda = db.actor:object( "device_pda" )
+	if not pda then
+		level.set_actor_allow_pda( false )
+	elseif pda:condition() > 0 and not db.actor:has_info( "pda_is_broken" )
+		and not pda_battery.is_charging() then
+		level.set_actor_allow_pda( true )
+	end
+end
+
+local function sync_trader( sobj, unlocked )
+	local npc = level.object_by_id( sobj.id )
+	if not npc then return end
+	local pda = npc:object( "device_pda" )
+	if unlocked and not pda then
+		misc.spawn_to( "device_pda", npc )
+	elseif not unlocked and pda then
+		misc.release_obj( pda )
+	end
+end
+
+function on_late_init()
+	if not db.actor then return end
+	if get_value( STARTED_KEY ) ~= nil then return end
+	set_value( STARTED_KEY, true )
+	if db.actor:has_info( MARKET_INFO ) then return end
+	if level.name() ~= START_LEVEL then return end
+	if not drop_actor_pda() then
+		set_value( PENDING_KEY, DROP_TRIES )
+	end
+end
+
+function on_update()
+	ogse_signals.get_mgr():reschedule( HEARTBEAT_MS )
+	if not db.actor then return end
+	local pending = get_value( PENDING_KEY )
+	if pending then
+		if drop_actor_pda() or pending <= 1 then
+			remove_value( PENDING_KEY )
+		else
+			set_value( PENDING_KEY, pending - 1 )
+		end
+	else
+		sync_actor_pda()
+	end
+	local unlocked = db.actor:has_info( MARKET_INFO )
+	if not unlocked and level.name() == "l03_agroprom" then
+		db.actor:give_info_portion( MARKET_INFO )
+		unlocked = true
+	end
+	local sim = alife()
+	if not sim then return end
+	for _, sid in pairs( TRADER_IDS ) do
+		local sobj = sim:story_object( sid )
+		if sobj and sobj.online then
+			sync_trader( sobj, unlocked )
+		end
+	end
+end

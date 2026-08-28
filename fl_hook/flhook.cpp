@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdint.h>
+#include <math.h>
 
 #define RVA_EXECCMD         0x000837a0ULL
 #define RVA_STEAL_END       0x000837b2ULL
@@ -92,6 +93,14 @@
 #define OFF_PH_ITEM_POS       0xC0
 #define OFF_VT_ADD_VISUAL     0x60
 #define OFF_VT_DCAST_RVIS     0x120
+
+#define RVA_DEVICE            0x01223760ULL
+#define OFF_DEV_TIME_GLOBAL   0x2C
+#define OFF_PH_ATTACHED_0     0x250
+#define OFF_AHI_PARENT_ITEM   0x48
+#define OFF_AHI_ITEM_XFORM    0x1D5
+#define RVA_LUA_TONUMBER      0x00C18810ULL
+#define RVA_LUA_PUSHBOOLEAN   0x00C19260ULL
 
 #define RVA_ACTOR_KEYPRESS      0x00373860ULL
 #define RVA_ACTOR_KEYPRESS_END  0x00373871ULL
@@ -230,6 +239,8 @@ typedef void  (*setup_ce_base_t)(void* ev, const void* fn);
 typedef void  (*lua_pushinteger_t)(void* L, long long n);
 typedef void  (*lua_setfield_t)(void* L, int idx, const char* k);
 typedef void  (*lua_pushcclosure_t)(void* L, int (*fn)(void*), int n);
+typedef double (*lua_tonumber_t)(void* L, int idx);
+typedef void  (*lua_pushboolean_t)(void* L, int b);
 typedef const void* (*best_cover_far_t)(void* mgr, const float* pos, float radius, void* ev,
                                         const void* restrictor);
 
@@ -367,6 +378,164 @@ static int step_material_read(const char** ground, const char** self, int* gid)
     return 1;
 }
 
+#define HUDRC_MAX_POS   0.05f
+#define HUDRC_MAX_ROT   0.25f
+#define HUDRC_WATCHDOG  250u
+
+static int      g_hudrc_on     = 0;
+static float    g_hudrc_pos_y  = 0.f;
+static float    g_hudrc_pitch  = 0.f;
+static float    g_hudrc_yaw    = 0.f;
+static void*    g_hudrc_owner  = 0;
+static unsigned g_hudrc_stamp  = 0;
+static int      g_hudrc_frames = 0;
+static int      g_hudrc_clears = 0;
+static int      g_hudrc_expired = 0;
+static int      g_hudrc_rej_nohud = 0;
+static int      g_hudrc_rej_item  = 0;
+static int      g_hudrc_rej_bad   = 0;
+static float    g_hudrc_saved[16];
+static float*   g_hudrc_saved_at = 0;
+
+static inline unsigned hudrc_time_ms()
+{
+    if (!g_base) return 0;
+    return *(unsigned*)(g_base + RVA_DEVICE + OFF_DEV_TIME_GLOBAL);
+}
+
+static inline int hudrc_finite(float v)
+{
+    return v == v && (v - v) == 0.f;
+}
+
+static inline float hudrc_clamp(float v, float lim)
+{
+    return v > lim ? lim : (v < -lim ? -lim : v);
+}
+
+static void* hudrc_item()
+{
+    if (!g_base) return 0;
+    void** pph = (void**)(g_base + RVA_G_PLAYER_HUD);
+    void* ph = pph ? *pph : 0;
+    if (!ph) return 0;
+    void* it = *(void**)((char*)ph + OFF_PH_ATTACHED_0);
+    if (!it) return 0;
+    if (!*(void**)((char*)it + OFF_AHI_PARENT_ITEM)) return 0;
+    return it;
+}
+
+static void hudrc_reset()
+{
+    if (g_hudrc_on) ++g_hudrc_clears;
+    g_hudrc_on    = 0;
+    g_hudrc_pos_y = 0.f;
+    g_hudrc_pitch = 0.f;
+    g_hudrc_yaw   = 0.f;
+    g_hudrc_owner = 0;
+}
+
+static int hudrc_set(float pos_y, float pitch, float yaw)
+{
+    if (!hudrc_finite(pos_y) || !hudrc_finite(pitch) || !hudrc_finite(yaw)) {
+        ++g_hudrc_rej_bad;
+        hudrc_reset();
+        return 0;
+    }
+    void* it = hudrc_item();
+    if (!it) {
+        ++g_hudrc_rej_nohud;
+        hudrc_reset();
+        return 0;
+    }
+    g_hudrc_pos_y = hudrc_clamp(pos_y, HUDRC_MAX_POS);
+    g_hudrc_pitch = hudrc_clamp(pitch, HUDRC_MAX_ROT);
+    g_hudrc_yaw   = hudrc_clamp(yaw,   HUDRC_MAX_ROT);
+    g_hudrc_owner = *(void**)((char*)it + OFF_AHI_PARENT_ITEM);
+    g_hudrc_stamp = hudrc_time_ms();
+    g_hudrc_on    = 1;
+    return 1;
+}
+
+static void hudrc_build(float* r)
+{
+    float cp = cosf(g_hudrc_pitch), sp = sinf(g_hudrc_pitch);
+    float cy = cosf(g_hudrc_yaw),   sy = sinf(g_hudrc_yaw);
+    r[0]  = cy;       r[1]  = 0.f; r[2]  = -sy;      r[3]  = 0.f;
+    r[4]  = sp * sy;  r[5]  = cp;  r[6]  = sp * cy;  r[7]  = 0.f;
+    r[8]  = cp * sy;  r[9]  = -sp; r[10] = cp * cy;  r[11] = 0.f;
+    r[12] = 0.f;      r[13] = g_hudrc_pos_y; r[14] = 0.f; r[15] = 1.f;
+}
+
+static int hudrc_apply()
+{
+    g_hudrc_saved_at = 0;
+    if (!g_hudrc_on) return 0;
+    if ((unsigned)(hudrc_time_ms() - g_hudrc_stamp) > HUDRC_WATCHDOG) {
+        ++g_hudrc_expired;
+        hudrc_reset();
+        return 0;
+    }
+    void* it = hudrc_item();
+    if (!it) {
+        ++g_hudrc_rej_nohud;
+        hudrc_reset();
+        return 0;
+    }
+    if (*(void**)((char*)it + OFF_AHI_PARENT_ITEM) != g_hudrc_owner) {
+        ++g_hudrc_rej_item;
+        hudrc_reset();
+        return 0;
+    }
+    float* m = (float*)((char*)it + OFF_AHI_ITEM_XFORM);
+    for (int i = 0; i < 16; ++i) g_hudrc_saved[i] = m[i];
+
+    float r[16];
+    hudrc_build(r);
+    float o[16];
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) {
+            float s = 0.f;
+            for (int k = 0; k < 4; ++k) s += r[i * 4 + k] * g_hudrc_saved[k * 4 + j];
+            o[i * 4 + j] = s;
+        }
+    for (int i = 0; i < 16; ++i) m[i] = o[i];
+
+    g_hudrc_saved_at = m;
+    ++g_hudrc_frames;
+    return 1;
+}
+
+static void hudrc_restore()
+{
+    if (!g_hudrc_saved_at) return;
+    for (int i = 0; i < 16; ++i) g_hudrc_saved_at[i] = g_hudrc_saved[i];
+    g_hudrc_saved_at = 0;
+}
+
+static int lua_fl_hud_recoil_available(void* L)
+{
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, hudrc_item() ? 1 : 0);
+    return 1;
+}
+
+static int lua_fl_hud_recoil_set(void* L)
+{
+    lua_tonumber_t tonum = (lua_tonumber_t)(g_base + RVA_LUA_TONUMBER);
+    float y = (float)tonum(L, 1);
+    float p = (float)tonum(L, 2);
+    float w = (float)tonum(L, 3);
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, hudrc_set(y, p, w));
+    return 1;
+}
+
+static int lua_fl_hud_recoil_clear(void* L)
+{
+    hudrc_reset();
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, 1);
+    return 1;
+}
+
 static int lua_fl_step_material(void* L)
 {
     const char* ground = 0;
@@ -385,8 +554,17 @@ static void ensure_lua_api()
 {
     void* L = lua_state();
     if (!L || L == g_lua_api_state) return;
-    ((lua_pushcclosure_t)(g_base + RVA_LUA_PUSHCCLOSURE))(L, &lua_fl_step_material, 0);
-    ((lua_setfield_t)(g_base + RVA_LUA_SETFIELD))(L, LUA_GLOBALSINDEX, "fl_step_material");
+    lua_pushcclosure_t pushc = (lua_pushcclosure_t)(g_base + RVA_LUA_PUSHCCLOSURE);
+    lua_setfield_t     setf  = (lua_setfield_t)(g_base + RVA_LUA_SETFIELD);
+    pushc(L, &lua_fl_step_material, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_step_material");
+    pushc(L, &lua_fl_hud_recoil_available, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_hud_recoil_available");
+    pushc(L, &lua_fl_hud_recoil_set, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_hud_recoil_set");
+    pushc(L, &lua_fl_hud_recoil_clear, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_hud_recoil_clear");
+    hudrc_reset();
     g_lua_api_state = L;
 }
 
@@ -1381,6 +1559,37 @@ static void* install_additem_detour(void* hook)
     return tramp;
 }
 
+static void cmd_hudrc(const char* a)
+{
+    msg_t Msg = (msg_t)(g_base + RVA_MSG);
+    while (*a == ' ' || *a == '\t') ++a;
+
+    if (a[0] == 'c' && a[1] == 'l') { hudrc_reset(); Msg("~ [hudrc] cleared"); return; }
+
+    if (a[0] == 't' && a[1] == 'e') {
+        float y = 0.f, p = 0.f, w = 0.f;
+        const char* s = bp_parse_float(a + 4, &y);
+        if (s) s = bp_parse_float(s, &p);
+        if (s) s = bp_parse_float(s, &w);
+        if (!s) { Msg("!! [hudrc] usage: hudrc test <pos_y> <pitch> <yaw>"); return; }
+        Msg("~ [hudrc] test set=%d pos_y=%f pitch=%f yaw=%f",
+            hudrc_set(y, p, w), g_hudrc_pos_y, g_hudrc_pitch, g_hudrc_yaw);
+        return;
+    }
+
+    void* it = hudrc_item();
+    Msg("~ [hudrc] bound=%d player_hud=%p item=%p hud_item=%p owner=%p",
+        g_lua_api_state ? 1 : 0,
+        g_base ? *(void**)(g_base + RVA_G_PLAYER_HUD) : 0, it,
+        it ? *(void**)((char*)it + OFF_AHI_PARENT_ITEM) : 0, g_hudrc_owner);
+    Msg("~ [hudrc] on=%d pos_y=%f pitch=%f yaw=%f age_ms=%u frames=%d",
+        g_hudrc_on, g_hudrc_pos_y, g_hudrc_pitch, g_hudrc_yaw,
+        g_hudrc_on ? (unsigned)(hudrc_time_ms() - g_hudrc_stamp) : 0u, g_hudrc_frames);
+    Msg("~ [hudrc] clears=%d expired=%d rej_nohud=%d rej_item=%d rej_invalid=%d",
+        g_hudrc_clears, g_hudrc_expired, g_hudrc_rej_nohud,
+        g_hudrc_rej_item, g_hudrc_rej_bad);
+}
+
 static void hkExecuteCommand(void* self, const char* cmd, char record, char allow)
 {
     g_console = self;
@@ -1425,6 +1634,12 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
         if (p[0] == 'w' && p[1] == 'm' &&
             (p[2] == 0 || p[2] == ' ' || p[2] == '\t')) {
             cmd_wm(p + 2);
+            return;
+        }
+
+        if (p[0] == 'h' && p[1] == 'u' && p[2] == 'd' && p[3] == 'r' && p[4] == 'c' &&
+            (p[5] == 0 || p[5] == ' ' || p[5] == '\t')) {
+            cmd_hudrc(p + 5);
             return;
         }
 
@@ -1553,17 +1768,21 @@ static void hkActorRenderableRender(void* self, unsigned context_id, void* root)
 
 static void hkActorOnHUDDraw(void* self, void* hud, unsigned context_id, void* root)
 {
+    ensure_lua_api();
+    hudrc_apply();
     if (g_base && g_bp_ui) {
         void** pph = (void**)(g_base + RVA_G_PLAYER_HUD);
         void* ph = pph ? *pph : 0;
         if (ph) {
             ++g_skip_hands_n;
             render_script_hud_item_only(ph, context_id, root);
+            hudrc_restore();
             return;
         }
     }
     if (g_orig_actor_onhud)
         g_orig_actor_onhud(self, hud, context_id, root);
+    hudrc_restore();
 }
 
 static void* install_onhuddraw_detour(void* hook)
