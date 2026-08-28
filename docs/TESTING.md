@@ -92,3 +92,37 @@ Automated test commands and log locations: TBD.
 For anomaly reshuffling/emission tests, use the mod's supported console/script
 command mechanism when the relevant function is known; exact command names and
 log-file locations remain TBD.
+
+## Pending suppressor acceptance checks
+
+Set `sivol_weapon.suppressor_diagnostics = true` only for the measurement run,
+then return it to `false`. Each actor shot logs the weapon section, suppressor
+mode/section, current condition, condition change between callbacks, configured
+normal/suppressed wear, and their ratio. The callback is diagnostic only; native
+OGSR code owns condition loss.
+
+1. Compare a fixed shot count without and with a suppressor on a 9 mm weapon
+   (`1.10x`) and SVD/SV-98 (`1.18x`).
+2. Attach and detach immediately before firing and verify the logged mode and
+   inventory totals update without reopening the inventory.
+3. Save/load with a suppressor attached and repeat the fixed-shot measurement.
+4. Check one OGSR-only profile: .45 ACP, Glock/APB, 9x39, or the Salvo shotgun
+   suppressor.
+5. Verify standalone suppressor modifiers and attached damage, bullet velocity,
+   accuracy, recoil, and service-life totals in both Russian and English.
+6. Test gunshot-alert boundaries with a candidate monster just inside and just
+   outside each effective radius:
+   - PB: 2.9 m alerts; 3.1 m does not.
+   - Integral VAL/Vintorez: 5.9 m alerts; 6.1 m does not.
+   - SVU: 11.9 m alerts; 12.1 m does not.
+   - Generic detachable suppressor: 14.9 m alerts; 15.1 m does not.
+   - Loud weapon: 29.9 m alerts; 30.1 m does not.
+   These are gunshot-detection radii only; the pursuit/return radius remains
+   the fixed 10 m value.
+7. Keep ordinary integral VAL/Vintorez behavior at 6 m. Static source tracing
+   confirms that `wpn_val_nimble` is obtainable through the Sultan treasure flow
+   (`sak_minigame.sultan_weapons` and `load_sultan_weapon_treasure`) and has
+   `silencer_status = 2`; test this detachable exception at 15 m attached and
+   30 m detached.
+8. Recheck ADS stamina/wobble with the lighter 5.45, 5.56, 7.62 NATO, SVD, and
+   Mosin suppressor masses.

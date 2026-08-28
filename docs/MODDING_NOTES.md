@@ -49,6 +49,11 @@ These are concise observations from the thermal-anomaly and device-interference 
 - Cache weapon mass by active item and attachment signature. Use the live weapon
   mass plus resolved attached addon sections; do not recompute or log it per
   frame. Diagnostic logging stays behind `sivol_weapon.weapon_breath_diagnostics`.
+- Prefer OGSR's native `condition_shot_dec_silencer` in weapon sections for
+  suppressor wear. It is an absolute per-shot wear value, so derive it from the
+  effective `condition_shot_dec` and the fitted suppressor profile. Keep
+  `condition_shot_dec_k` on suppressor sections as balance/UI metadata; do not
+  subtract condition again from an actor weapon-fire callback.
 - HUD FOV is a console value. Capture the pre-hold value, smoothly approach the
   temporary target only after ADS settles, and restore that exact captured value;
   exclude optic-driven adaptive zoom and binocular cases from this visual layer.

@@ -42,6 +42,14 @@ Known clean-game baseline and packed-file inventory: TBD.
 - Weapon handling derives from the active weapon's live base mass plus attached
   scope, silencer, and launcher mass (ammo excluded). Knives remain outside the
   system; binoculars keep their existing exemption behavior.
+- Detachable suppressors use caliber/profile-specific ballistic and handling
+  modifiers. Their extra weapon wear is native OGSR behavior through
+  `condition_shot_dec_silencer`, ranging from +7% to +20% per shot in the
+  current profiles. Integral suppressors retain their weapon-authored baseline
+  wear rather than receiving detachable-addon wear a second time.
+- Suppressor diagnostics are disabled by default. Setting
+  `sivol_weapon.suppressor_diagnostics = true` logs base/suppressed configured
+  wear and condition deltas without changing weapon condition.
 - The zoom effector applies wobble as a rendered-direction overlay. On zoom-out,
   `wpn_params` rebases the last rendered direction into the actor camera base so
   the camera does not return to the ADS-entry aim direction.
