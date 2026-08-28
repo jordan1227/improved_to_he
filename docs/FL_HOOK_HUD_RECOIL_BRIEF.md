@@ -223,3 +223,86 @@ APIs. Adding those is a separate project and is not required for HUD-model
 recoil. The already-tested procedural actor-camera implementation should stay
 the default until an effector backend is independently implemented and compared.
 
+## Follow-up API: full transient HUD transform
+
+The first hook implementation provides vertical translation plus pitch/yaw:
+
+```lua
+fl_hud_recoil_set(position_y_m, pitch_rad, yaw_rad)
+```
+
+That is enough for a coherent first pass, but the original Fuzz HUD response
+also uses lateral displacement, rearward shoulder shove and optional roll. Add
+a backward-compatible six-axis entry point rather than changing the existing
+function's contract:
+
+```lua
+fl_hud_recoil_set6(pos_x_m, pos_y_m, pos_z_m,
+                   pitch_rad, yaw_rad, roll_rad) -> boolean
+```
+
+Use the same absolute/non-accumulating state, owner check, watchdog, render-only
+application and restoration rules as `fl_hud_recoil_set`. Suggested hard
+translation limits are +/-0.05 m per axis; retain the current +/-0.25 rad
+rotation limits. Extend `hudrc test` and `hudrc` status output to cover all six
+values.
+
+The useful missing channel is local Z: a small negative impulse creates the
+weapon's rearward shoulder shove while its faster recovery separates the model
+kick from camera climb. Local X supports restrained horizontal weapon movement.
+Roll should default to zero and remain subtle.
+
+Before finalizing axis names, validate matrix order and signs with isolated
+native tests for one non-zero axis at a time. Document the tested local-space
+convention in `flhook.cpp`; Lua should not need weapon-specific sign swaps.
+
+## Follow-up hook: actor weapon before-fire callback
+
+Add a reusable pre-discharge callback for future ballistics, dispersion, ammo,
+heat and weapon-condition systems. It is not required for the current
+post-shot camera/HUD impulse, but it is required when Lua must alter values
+before the engine reads them for the shot.
+
+### Required timing and semantics
+
+- Invoke once per real actor weapon discharge.
+- Invoke after ammo/state/misfire checks have accepted the shot.
+- Invoke before the engine reads shot dispersion and before it creates the
+  projectile(s).
+- Automatic fire invokes once per cartridge discharged.
+- A shotgun discharge invokes once, not once per pellet.
+- Empty clicks, rejected trigger attempts and misfires do not invoke it.
+- Document whether grenade-launcher mode is included; preferably include it and
+  let Lua subscribers filter by mode.
+- The callback is observational/mutating only in its first version. Do not let
+  a Lua return value cancel the shot until cancellation semantics are designed
+  separately.
+
+Hook the per-cartridge weapon-discharge site, not the lower-level per-projectile
+or per-pellet bullet creation routine.
+
+### Suggested bridge
+
+Have the hook invoke one well-known optional Lua global:
+
+```lua
+fl_on_actor_weapon_before_fire()
+```
+
+The Lua bridge can obtain `db.actor:active_item()` at callback time and dispatch
+the existing OGSE-style signal:
+
+```lua
+ogse_signals.get_mgr():call("on_actor_weapon_before_fire", item)
+```
+
+The native caller must preserve/restore the Lua stack, guard against re-entry,
+skip cleanly when the VM/global is unavailable, and report callback errors
+without corrupting or cancelling the engine shot. Avoid loading/compiling a Lua
+chunk per shot; cache a registry reference or perform a guarded global lookup.
+Reset the reference when the Lua state changes, using the same lifecycle as
+`ensure_lua_api()`.
+
+Add bounded diagnostics or a console status command with invocation count,
+skipped-no-actor count, skipped-no-callback count, Lua-error count and the last
+weapon/mode when practical.
