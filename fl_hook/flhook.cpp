@@ -102,6 +102,19 @@
 #define RVA_LUA_TONUMBER      0x00C18810ULL
 #define RVA_LUA_PUSHBOOLEAN   0x00C19260ULL
 
+#define RVA_FIRETRACE         0x004F9F10ULL
+#define RVA_FIRETRACE_END     0x004F9F26ULL
+#define RVA_GL_ONSHOT         0x005FE370ULL
+#define RVA_GL_ONSHOT_END     0x005FE380ULL
+#define OFF_WPN_PARENT        0x27C
+#define OFF_WPN_ADDON_FLAGS   0x928
+#define OFF_WPN_GRENADE_MODE  0x1228
+#define RVA_LUA_GETFIELD      0x00C19A30ULL
+#define RVA_LUA_GETTOP        0x00C18240ULL
+#define RVA_LUA_TYPE          0x00C18560ULL
+#define RVA_LUA_TOLSTRING     0x00C188F0ULL
+#define LUA_TFUNCTION         6
+
 #define RVA_ACTOR_KEYPRESS      0x00373860ULL
 #define RVA_ACTOR_KEYPRESS_END  0x00373871ULL
 #define ACT_TORCH               19
@@ -241,6 +254,12 @@ typedef void  (*lua_setfield_t)(void* L, int idx, const char* k);
 typedef void  (*lua_pushcclosure_t)(void* L, int (*fn)(void*), int n);
 typedef double (*lua_tonumber_t)(void* L, int idx);
 typedef void  (*lua_pushboolean_t)(void* L, int b);
+typedef void  (*lua_getfield_t)(void* L, int idx, const char* k);
+typedef int   (*lua_gettop_t)(void* L);
+typedef int   (*lua_type_t)(void* L, int idx);
+typedef const char* (*lua_tolstring_t)(void* L, int idx, size_t* len);
+typedef void  (*fire_trace_t)(void* self, const float* P, const float* D);
+typedef void  (*gl_onshot_t)(void* self);
 typedef const void* (*best_cover_far_t)(void* mgr, const float* pos, float radius, void* ev,
                                         const void* restrictor);
 
@@ -254,6 +273,8 @@ static run_atk_check_t g_orig_run_atk = 0;
 static actor_render_t g_orig_actor_render = 0;
 static actor_onhuddraw_t g_orig_actor_onhud = 0;
 static actor_kbpress_t g_orig_actor_kbpress = 0;
+static fire_trace_t g_orig_fire_trace = 0;
+static gl_onshot_t  g_orig_gl_onshot = 0;
 static int g_torch_lua = 1;
 static int g_torch_blocked_n = 0;
 static void* g_actor_ircv = 0;
@@ -383,9 +404,8 @@ static int step_material_read(const char** ground, const char** self, int* gid)
 #define HUDRC_WATCHDOG  250u
 
 static int      g_hudrc_on     = 0;
-static float    g_hudrc_pos_y  = 0.f;
-static float    g_hudrc_pitch  = 0.f;
-static float    g_hudrc_yaw    = 0.f;
+static float    g_hudrc_pos[3] = {0.f, 0.f, 0.f};
+static float    g_hudrc_rot[3] = {0.f, 0.f, 0.f};
 static void*    g_hudrc_owner  = 0;
 static unsigned g_hudrc_stamp  = 0;
 static int      g_hudrc_frames = 0;
@@ -394,6 +414,8 @@ static int      g_hudrc_expired = 0;
 static int      g_hudrc_rej_nohud = 0;
 static int      g_hudrc_rej_item  = 0;
 static int      g_hudrc_rej_bad   = 0;
+static int      g_hudrc_lock   = 0;
+static int      g_hudrc_rej_lock = 0;
 static float    g_hudrc_saved[16];
 static float*   g_hudrc_saved_at = 0;
 
@@ -428,50 +450,77 @@ static void* hudrc_item()
 static void hudrc_reset()
 {
     if (g_hudrc_on) ++g_hudrc_clears;
-    g_hudrc_on    = 0;
-    g_hudrc_pos_y = 0.f;
-    g_hudrc_pitch = 0.f;
-    g_hudrc_yaw   = 0.f;
+    g_hudrc_on = 0;
+    for (int i = 0; i < 3; ++i) { g_hudrc_pos[i] = 0.f; g_hudrc_rot[i] = 0.f; }
     g_hudrc_owner = 0;
 }
 
-static int hudrc_set(float pos_y, float pitch, float yaw)
+static int hudrc_set6(float px, float py, float pz,
+                      float pitch, float yaw, float roll)
 {
-    if (!hudrc_finite(pos_y) || !hudrc_finite(pitch) || !hudrc_finite(yaw)) {
-        ++g_hudrc_rej_bad;
-        hudrc_reset();
-        return 0;
-    }
+    float in[6] = {px, py, pz, pitch, yaw, roll};
+    for (int i = 0; i < 6; ++i)
+        if (!hudrc_finite(in[i])) {
+            ++g_hudrc_rej_bad;
+            hudrc_reset();
+            return 0;
+        }
     void* it = hudrc_item();
     if (!it) {
         ++g_hudrc_rej_nohud;
         hudrc_reset();
         return 0;
     }
-    g_hudrc_pos_y = hudrc_clamp(pos_y, HUDRC_MAX_POS);
-    g_hudrc_pitch = hudrc_clamp(pitch, HUDRC_MAX_ROT);
-    g_hudrc_yaw   = hudrc_clamp(yaw,   HUDRC_MAX_ROT);
+    for (int i = 0; i < 3; ++i) {
+        g_hudrc_pos[i] = hudrc_clamp(in[i],     HUDRC_MAX_POS);
+        g_hudrc_rot[i] = hudrc_clamp(in[3 + i], HUDRC_MAX_ROT);
+    }
     g_hudrc_owner = *(void**)((char*)it + OFF_AHI_PARENT_ITEM);
     g_hudrc_stamp = hudrc_time_ms();
     g_hudrc_on    = 1;
     return 1;
 }
 
+static int hudrc_set(float pos_y, float pitch, float yaw)
+{
+    return hudrc_set6(0.f, pos_y, 0.f, pitch, yaw, 0.f);
+}
+
+static void hudrc_mul(float* o, const float* a, const float* b)
+{
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) {
+            float s = 0.f;
+            for (int k = 0; k < 4; ++k) s += a[i * 4 + k] * b[k * 4 + j];
+            o[i * 4 + j] = s;
+        }
+}
+
 static void hudrc_build(float* r)
 {
-    float cp = cosf(g_hudrc_pitch), sp = sinf(g_hudrc_pitch);
-    float cy = cosf(g_hudrc_yaw),   sy = sinf(g_hudrc_yaw);
-    r[0]  = cy;       r[1]  = 0.f; r[2]  = -sy;      r[3]  = 0.f;
-    r[4]  = sp * sy;  r[5]  = cp;  r[6]  = sp * cy;  r[7]  = 0.f;
-    r[8]  = cp * sy;  r[9]  = -sp; r[10] = cp * cy;  r[11] = 0.f;
-    r[12] = 0.f;      r[13] = g_hudrc_pos_y; r[14] = 0.f; r[15] = 1.f;
+    float cp = cosf(g_hudrc_rot[0]), sp = sinf(g_hudrc_rot[0]);
+    float cy = cosf(g_hudrc_rot[1]), sy = sinf(g_hudrc_rot[1]);
+    float cr = cosf(g_hudrc_rot[2]), sr = sinf(g_hudrc_rot[2]);
+    float rx[16] = { 1.f, 0.f, 0.f, 0.f,   0.f,  cp,  sp, 0.f,
+                     0.f, -sp,  cp, 0.f,   0.f, 0.f, 0.f, 1.f };
+    float ry[16] = {  cy, 0.f, -sy, 0.f,   0.f, 1.f, 0.f, 0.f,
+                      sy, 0.f,  cy, 0.f,   0.f, 0.f, 0.f, 1.f };
+    float rz[16] = {  cr,  sr, 0.f, 0.f,   -sr,  cr, 0.f, 0.f,
+                     0.f, 0.f, 1.f, 0.f,   0.f, 0.f, 0.f, 1.f };
+    float t[16];
+    hudrc_mul(t, rx, ry);
+    hudrc_mul(r, t, rz);
+    r[12] = g_hudrc_pos[0];
+    r[13] = g_hudrc_pos[1];
+    r[14] = g_hudrc_pos[2];
+    r[15] = 1.f;
 }
 
 static int hudrc_apply()
 {
     g_hudrc_saved_at = 0;
     if (!g_hudrc_on) return 0;
-    if ((unsigned)(hudrc_time_ms() - g_hudrc_stamp) > HUDRC_WATCHDOG) {
+    if (!g_hudrc_lock && (unsigned)(hudrc_time_ms() - g_hudrc_stamp) > HUDRC_WATCHDOG) {
         ++g_hudrc_expired;
         hudrc_reset();
         return 0;
@@ -490,15 +539,9 @@ static int hudrc_apply()
     float* m = (float*)((char*)it + OFF_AHI_ITEM_XFORM);
     for (int i = 0; i < 16; ++i) g_hudrc_saved[i] = m[i];
 
-    float r[16];
+    float r[16], o[16];
     hudrc_build(r);
-    float o[16];
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j) {
-            float s = 0.f;
-            for (int k = 0; k < 4; ++k) s += r[i * 4 + k] * g_hudrc_saved[k * 4 + j];
-            o[i * 4 + j] = s;
-        }
+    hudrc_mul(o, r, g_hudrc_saved);
     for (int i = 0; i < 16; ++i) m[i] = o[i];
 
     g_hudrc_saved_at = m;
@@ -521,6 +564,11 @@ static int lua_fl_hud_recoil_available(void* L)
 
 static int lua_fl_hud_recoil_set(void* L)
 {
+    if (g_hudrc_lock) {
+        ++g_hudrc_rej_lock;
+        ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, 0);
+        return 1;
+    }
     lua_tonumber_t tonum = (lua_tonumber_t)(g_base + RVA_LUA_TONUMBER);
     float y = (float)tonum(L, 1);
     float p = (float)tonum(L, 2);
@@ -529,9 +577,24 @@ static int lua_fl_hud_recoil_set(void* L)
     return 1;
 }
 
+static int lua_fl_hud_recoil_set6(void* L)
+{
+    if (g_hudrc_lock) {
+        ++g_hudrc_rej_lock;
+        ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, 0);
+        return 1;
+    }
+    lua_tonumber_t tonum = (lua_tonumber_t)(g_base + RVA_LUA_TONUMBER);
+    float v[6];
+    for (int i = 0; i < 6; ++i) v[i] = (float)tonum(L, i + 1);
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(
+        L, hudrc_set6(v[0], v[1], v[2], v[3], v[4], v[5]));
+    return 1;
+}
+
 static int lua_fl_hud_recoil_clear(void* L)
 {
-    hudrc_reset();
+    if (!g_hudrc_lock) hudrc_reset();
     ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, 1);
     return 1;
 }
@@ -562,10 +625,81 @@ static void ensure_lua_api()
     setf(L, LUA_GLOBALSINDEX, "fl_hud_recoil_available");
     pushc(L, &lua_fl_hud_recoil_set, 0);
     setf(L, LUA_GLOBALSINDEX, "fl_hud_recoil_set");
+    pushc(L, &lua_fl_hud_recoil_set6, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_hud_recoil_set6");
     pushc(L, &lua_fl_hud_recoil_clear, 0);
     setf(L, LUA_GLOBALSINDEX, "fl_hud_recoil_clear");
     hudrc_reset();
     g_lua_api_state = L;
+}
+
+#define WBF_NAME "fl_on_actor_weapon_before_fire"
+
+static int g_wbf_calls   = 0;
+static int g_wbf_no_vm   = 0;
+static int g_wbf_no_cb   = 0;
+static int g_wbf_err     = 0;
+static int g_wbf_skip_np = 0;
+static int g_wbf_skip_mf = 0;
+static int g_wbf_busy    = 0;
+static int g_wbf_last_gl = -1;
+
+static void wbf_call(int is_gl)
+{
+    if (g_wbf_busy) return;
+    void* L = lua_state();
+    if (!L) { ++g_wbf_no_vm; return; }
+
+    g_wbf_busy = 1;
+    int top = ((lua_gettop_t)(g_base + RVA_LUA_GETTOP))(L);
+    ((lua_getfield_t)(g_base + RVA_LUA_GETFIELD))(L, LUA_GLOBALSINDEX, WBF_NAME);
+    if (((lua_type_t)(g_base + RVA_LUA_TYPE))(L, -1) != LUA_TFUNCTION) {
+        ++g_wbf_no_cb;
+    } else {
+        ((lua_pushinteger_t)(g_base + RVA_LUA_PUSHINTEGER))(L, is_gl);
+        if (((pcall_t)(g_base + RVA_PCALL))(L, 1, 0, 0)) {
+            if (++g_wbf_err <= 3) {
+                const char* e = ((lua_tolstring_t)(g_base + RVA_LUA_TOLSTRING))(L, -1, 0);
+                ((msg_t)(g_base + RVA_MSG))("!! [wbf] %s: %s", WBF_NAME, e ? e : "?");
+            }
+        } else {
+            ++g_wbf_calls;
+        }
+    }
+    ((lua_settop2_t)(g_base + RVA_LUA_SETTOP2))(L, top);
+    g_wbf_last_gl = is_gl;
+    g_wbf_busy = 0;
+}
+
+static int wbf_is_actor_weapon(void* wpn)
+{
+    if (!wpn || !g_base) return 0;
+    void* actor = *(void**)(g_base + RVA_G_ACTOR);
+    if (!actor) return 0;
+    return *(void**)((char*)wpn + OFF_WPN_PARENT) == actor;
+}
+
+static void hkFireTrace(void* self, const float* P, const float* D)
+{
+    if (wbf_is_actor_weapon(self)) {
+        if (*(unsigned char*)((char*)self + OFF_WPN_ADDON_FLAGS) & 0x20)
+            ++g_wbf_skip_mf;
+        else
+            wbf_call(0);
+    } else {
+        ++g_wbf_skip_np;
+    }
+    if (g_orig_fire_trace)
+        g_orig_fire_trace(self, P, D);
+}
+
+static void hkGrenadeOnShot(void* self)
+{
+    if (self && *(unsigned char*)((char*)self + OFF_WPN_GRENADE_MODE) &&
+        wbf_is_actor_weapon(self))
+        wbf_call(1);
+    if (g_orig_gl_onshot)
+        g_orig_gl_onshot(self);
 }
 
 static void ensure_slash(char* path, int cap)
@@ -1566,14 +1700,36 @@ static void cmd_hudrc(const char* a)
 
     if (a[0] == 'c' && a[1] == 'l') { hudrc_reset(); Msg("~ [hudrc] cleared"); return; }
 
+    if (a[0] == 'l' && a[1] == 'o') {
+        const char* s = a + 4;
+        while (*s == ' ' || *s == '\t') ++s;
+        if (*s == '1') g_hudrc_lock = 1;
+        else if (*s == '0') { g_hudrc_lock = 0; hudrc_reset(); }
+        Msg("~ [hudrc] lock=%d (Lua writes ignored, watchdog frozen)", g_hudrc_lock);
+        return;
+    }
+
     if (a[0] == 't' && a[1] == 'e') {
-        float y = 0.f, p = 0.f, w = 0.f;
-        const char* s = bp_parse_float(a + 4, &y);
-        if (s) s = bp_parse_float(s, &p);
-        if (s) s = bp_parse_float(s, &w);
-        if (!s) { Msg("!! [hudrc] usage: hudrc test <pos_y> <pitch> <yaw>"); return; }
-        Msg("~ [hudrc] test set=%d pos_y=%f pitch=%f yaw=%f",
-            hudrc_set(y, p, w), g_hudrc_pos_y, g_hudrc_pitch, g_hudrc_yaw);
+        float v[6] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+        const char* s = a + 4;
+        int n = 0;
+        while (n < 6 && s) {
+            const char* nxt = bp_parse_float(s, &v[n]);
+            if (!nxt) break;
+            s = nxt;
+            ++n;
+        }
+        int ok;
+        if (n == 3)      ok = hudrc_set(v[0], v[1], v[2]);
+        else if (n == 6) ok = hudrc_set6(v[0], v[1], v[2], v[3], v[4], v[5]);
+        else {
+            Msg("!! [hudrc] usage: hudrc test <py> <pitch> <yaw>"
+                "  |  hudrc test <px> <py> <pz> <pitch> <yaw> <roll>");
+            return;
+        }
+        Msg("~ [hudrc] test set=%d pos=%f %f %f rot=%f %f %f", ok,
+            g_hudrc_pos[0], g_hudrc_pos[1], g_hudrc_pos[2],
+            g_hudrc_rot[0], g_hudrc_rot[1], g_hudrc_rot[2]);
         return;
     }
 
@@ -1582,12 +1738,26 @@ static void cmd_hudrc(const char* a)
         g_lua_api_state ? 1 : 0,
         g_base ? *(void**)(g_base + RVA_G_PLAYER_HUD) : 0, it,
         it ? *(void**)((char*)it + OFF_AHI_PARENT_ITEM) : 0, g_hudrc_owner);
-    Msg("~ [hudrc] on=%d pos_y=%f pitch=%f yaw=%f age_ms=%u frames=%d",
-        g_hudrc_on, g_hudrc_pos_y, g_hudrc_pitch, g_hudrc_yaw,
+    Msg("~ [hudrc] on=%d pos=%f %f %f rot=%f %f %f age_ms=%u frames=%d",
+        g_hudrc_on,
+        g_hudrc_pos[0], g_hudrc_pos[1], g_hudrc_pos[2],
+        g_hudrc_rot[0], g_hudrc_rot[1], g_hudrc_rot[2],
         g_hudrc_on ? (unsigned)(hudrc_time_ms() - g_hudrc_stamp) : 0u, g_hudrc_frames);
-    Msg("~ [hudrc] clears=%d expired=%d rej_nohud=%d rej_item=%d rej_invalid=%d",
-        g_hudrc_clears, g_hudrc_expired, g_hudrc_rej_nohud,
-        g_hudrc_rej_item, g_hudrc_rej_bad);
+    Msg("~ [hudrc] lock=%d clears=%d expired=%d rej_nohud=%d rej_item=%d "
+        "rej_invalid=%d rej_locked=%d",
+        g_hudrc_lock, g_hudrc_clears, g_hudrc_expired, g_hudrc_rej_nohud,
+        g_hudrc_rej_item, g_hudrc_rej_bad, g_hudrc_rej_lock);
+}
+
+static void cmd_wbf(void)
+{
+    msg_t Msg = (msg_t)(g_base + RVA_MSG);
+    Msg("~ [wbf] name=%s hooks: fire_trace=%p gl_onshot=%p",
+        WBF_NAME, (void*)g_orig_fire_trace, (void*)g_orig_gl_onshot);
+    Msg("~ [wbf] calls=%d no_vm=%d no_callback=%d lua_errors=%d",
+        g_wbf_calls, g_wbf_no_vm, g_wbf_no_cb, g_wbf_err);
+    Msg("~ [wbf] skipped_not_actor=%d skipped_misfire=%d last_gl=%d",
+        g_wbf_skip_np, g_wbf_skip_mf, g_wbf_last_gl);
 }
 
 static void hkExecuteCommand(void* self, const char* cmd, char record, char allow)
@@ -1640,6 +1810,12 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
         if (p[0] == 'h' && p[1] == 'u' && p[2] == 'd' && p[3] == 'r' && p[4] == 'c' &&
             (p[5] == 0 || p[5] == ' ' || p[5] == '\t')) {
             cmd_hudrc(p + 5);
+            return;
+        }
+
+        if (p[0] == 'w' && p[1] == 'b' && p[2] == 'f' &&
+            (p[3] == 0 || p[3] == ' ' || p[3] == '\t')) {
+            cmd_wbf();
             return;
         }
 
@@ -2055,6 +2231,23 @@ static bool install_hook()
         RVA_ACTOR_RENDER, RVA_ACTOR_RENDER_END, (void*)&hkActorRenderableRender);
     g_orig_actor_onhud = (actor_onhuddraw_t)install_onhuddraw_detour(
         (void*)&hkActorOnHUDDraw);
+
+    {
+        uint8_t* f = (uint8_t*)(g_base + RVA_FIRETRACE);
+        if (f[0] == 0x48 && f[1] == 0x8B && f[2] == 0xC4 &&
+            f[3] == 0x53 && f[4] == 0x55 && f[5] == 0x56 && f[6] == 0x57 &&
+            f[7] == 0x41 && f[8] == 0x54 &&
+            f[15] == 0x48 && f[16] == 0x81 && f[17] == 0xEC)
+            g_orig_fire_trace = (fire_trace_t)install_detour(
+                RVA_FIRETRACE, RVA_FIRETRACE_END, (void*)&hkFireTrace);
+
+        uint8_t* g = (uint8_t*)(g_base + RVA_GL_ONSHOT);
+        if (g[0] == 0x40 && g[1] == 0x56 &&
+            g[2] == 0x48 && g[3] == 0x83 && g[4] == 0xEC && g[5] == 0x40 &&
+            g[6] == 0x80 && g[7] == 0xB9)
+            g_orig_gl_onshot = (gl_onshot_t)install_detour(
+                RVA_GL_ONSHOT, RVA_GL_ONSHOT_END, (void*)&hkGrenadeOnShot);
+    }
 
     {
         uint8_t* f = (uint8_t*)(g_base + RVA_ACTOR_KEYPRESS);
