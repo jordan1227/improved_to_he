@@ -1,0 +1,790 @@
+local BODY_NO_OUTFIT = "actor_legs"
+local BODY_EXO = "actor_legs_exo"
+
+local function body_section(mesh)
+	return "actor_legs_" .. mesh
+end
+
+local HIDE_DISTANCE_SQ = 4.0
+local CAMERA_DISTANCE_SQ = 2.25
+local CAMERA_DIRECTION_DOT = 0.85
+local LADDER_HEIGHT = -0.1
+
+local FORWARD_OFFSET = -0.65
+local SIDE_OFFSET = 0.0
+local HEIGHT_OFFSET = 0.0
+
+-- Test-build master switch. Set false to disable every diagnostic callback,
+-- level-object scan, and VISIBLE_BODY_DIAG log line.
+local DIAGNOSTICS = true
+local DIAGNOSTIC_SCAN_INTERVAL = 1000
+local DIAGNOSTIC_RADIUS_SQ = 25.0 * 25.0
+
+local outfit_to_body = {
+	["novice_outfit"] = body_section("jacket_loner"),
+	["neytral_novice_gaz_outfit_m1"] = body_section("jacket_loner"),
+	["stalker_outfit"] = body_section("stalker_outfit"),
+	["stalker_guard_outfit"] = body_section("stalker_outfit"),
+	["neytral_gaz_outfit_m1"] = body_section("stalker_outfit"),
+	["neytral_gaz_outfit_m2"] = body_section("stalker_outfit"),
+	["outfit_stalker_m1"] = body_section("stalker_outfit"),
+	["outfit_stalker_m2"] = body_section("stalker_outfit"),
+	["stalker_outfit_m3"] = body_section("stalker_outfit"),
+	["scientific_outfit"] = body_section("seva_outfit"),
+	["exo_outfit"] = BODY_EXO,
+	["exo_outfit_m1"] = BODY_EXO,
+	["outfit_exo_m1"] = BODY_EXO,
+	["neytral_exo_antigas_outfit"] = BODY_EXO,
+	["broken_exoskeleton"] = BODY_EXO,
+	["bandit_outfit"] = body_section("jacket_bandit"),
+	["bandit_gaz_outfit_m1"] = body_section("jacket_bandit"),
+	["outfit_bandit_m1"] = body_section("jacket_bandit"),
+	["bandit_veteran_outfit"] = body_section("plash_outfit_brown"),
+	["bandit_veteran_outfit_gas"] = body_section("plash_outfit_brown"),
+	["bandit_veteran_outfit_m1"] = body_section("plash_outfit_brown"),
+	["bandit_master_outfit"] = body_section("plash_outfit_black"),
+	["bandit_master_outfit_gas"] = body_section("plash_outfit_black"),
+	["bandit_master_outfit_m1"] = body_section("plash_outfit_black"),
+	["exo_bandit_outfit"] = body_section("exo_bandit_outfit"),
+	["dolg_outfit"] = body_section("ps5_duty"),
+	["dolg_gaz_outfit_m1"] = body_section("ps5_duty"),
+	["outfit_dolg_m1"] = body_section("ps5_duty"),
+	["dolg_scientific_outfit"] = body_section("seva_duty"),
+	["dolg_black_exoskeleton"] = body_section("exo_duty_outfit"),
+	["ecolog_outfit"] = body_section("eco_outfit_red"),
+	["protection_outfit"] = body_section("eco_outfit_green"),
+	["killer_outfit"] = body_section("merc_outfit"),
+	["killer_gaz_outfit_m1"] = body_section("merc_outfit"),
+	["outfit_killer_m1"] = body_section("merc_outfit"),
+	["merc_scientific_outfit"] = body_section("seva_merc"),
+	["super_scientific_outfit"] = body_section("seva_merc"),
+	["ecolog_outfit_m1"] = body_section("seva_merc"),
+	["killer_blue_exoskeleton"] = body_section("exo_merc_outfit"),
+	["svoboda_light_outfit"] = body_section("sts_freedom"),
+	["outfit_svoboda_m1"] = body_section("sts_freedom"),
+	["svoboda_gaz_outfit_m1"] = body_section("sts_freedom"),
+	["svoboda_heavy_outfit"] = body_section("berill_freedom"),
+	["svoboda_heavy_gaz_outfit_m1"] = body_section("berill_freedom"),
+	["freedom_scientific_outfit"] = body_section("seva_freedom"),
+	["svoboda_exoskeleton"] = body_section("exo_freedom_outfit"),
+	["svoboda_yellow_exo_outfit_m1"] = body_section("exo_freedom_outfit"),
+	["outfit_soldier_m1"] = body_section("army_basic"),
+	["soldier_outfit"] = body_section("army_basic"),
+	["specops_outfit"] = body_section("berill_army"),
+	["outfit_specnaz_m1"] = body_section("berill_army"),
+	["military_outfit"] = body_section("skat_army"),
+	["militaryspec_outfit"] = body_section("skat_merc"),
+	["cs_light_outfit"] = body_section("csky_light"),
+	["cs_heavy_outfit"] = body_section("cs3_hard"),
+	["monolit_outfit"] = body_section("seva_monolith"),
+	["monolit_gaz_outfit_m1"] = body_section("seva_monolith"),
+	["monolit_scientific_outfit"] = body_section("seva_monolith"),
+	["monolit_exoskeleton"] = body_section("exo_monolith_outfit")
+}
+
+local body_server_id
+local body_section
+local body_level_name
+local body_present = false
+local desired_body_section
+local policy_dirty = true
+local module_ready = false
+local spawn_retry_at = 0
+local active_body_binder
+local last_body_enabled
+
+local function visible_body_enabled()
+	return not game_options or game_options.VisibleBody ~= false
+end
+
+local function diagnostic_log(format, ...)
+	if DIAGNOSTICS then
+		log2("[VISIBLE_BODY_DIAG] " .. format, ...)
+	end
+end
+
+local function diagnostic_name(obj)
+	if obj and type(obj.name) == "function" then
+		return obj:name()
+	end
+	return "<none>"
+end
+
+local function diagnostic_relation(from, to)
+	if from and to and type(from.relation) == "function" then
+		return from:relation(to)
+	end
+	return -1
+end
+
+local function diagnostic_relation_name(relation)
+	if relation == game_object.enemy then
+		return "enemy"
+	elseif relation == game_object.friend then
+		return "friend"
+	elseif relation == game_object.neutral then
+		return "neutral"
+	end
+	return tostring(relation)
+end
+
+local function diagnostic_memory_contains(npc, method_name, target_id)
+	local method = npc and npc[method_name]
+	if type(method) ~= "function" then
+		return false
+	end
+	for record in method(npc) do
+		local remembered = record:object()
+		if remembered and remembered:id() == target_id then
+			return true
+		end
+	end
+	return false
+end
+
+local function legs_table()
+	if se_legs then
+		return se_legs.LegsTbl
+	end
+	return nil
+end
+
+local function current_level_name()
+	if level and level.name then
+		return level.name()
+	end
+	return nil
+end
+
+local function read_actor_body_state(actor)
+	if not actor or type(actor.get_body_state) ~= "function" then
+		return nil
+	end
+
+	local ok, state = pcall(actor.get_body_state, actor)
+	if ok and type(state) == "number" then
+		return state
+	end
+	return nil
+end
+
+local function actor_body_state(actor)
+	-- This is the original addon's packed movement-state source. It is not
+	-- declared in every lua_help build, so keep it capability-gated.
+	if level and type(level.actor_moving_state) == "function" then
+		local ok, state = pcall(level.actor_moving_state)
+		if ok and type(state) == "number" then
+			return state
+		end
+	end
+
+	-- db.actor is a generic CGameObject wrapper in this build. The native
+	-- CActor wrapper returned by get_actor_obj() may expose the same method.
+	local state = read_actor_body_state(actor)
+	if state ~= nil then
+		return state
+	end
+	if type(get_actor_obj) == "function" then
+		local ok, actor_obj = pcall(get_actor_obj)
+		if ok then
+			state = read_actor_body_state(actor_obj)
+			if state ~= nil then
+				return state
+			end
+		end
+	end
+
+	-- Last-resort fallback for wrappers that expose only actor predicates.
+	-- Directional bits are unavailable here, so a moving actor is treated as
+	-- moving forward; the native packed-state paths above preserve strafing,
+	-- backward movement, jumping, climbing, and lookout flags.
+	state = 0
+	local function predicate(name)
+		if type(actor[name]) ~= "function" then
+			return false
+		end
+		local ok, value = pcall(actor[name], actor)
+		return ok and value == true
+	end
+
+	if predicate("is_actor_crouch") or predicate("is_actor_crouching") then
+		state = state + 16
+	end
+	if predicate("is_actor_creep") or predicate("is_actor_creeping") then
+		state = state + 32
+	end
+	if predicate("is_actor_climb") or predicate("is_actor_climbing") then
+		return state + 2048
+	end
+	if predicate("is_actor_sprinting") then
+		return state + 1 + 4096
+	end
+	if predicate("is_actor_running") or predicate("is_actor_walking") or predicate("is_actor_moving") then
+		return state + 1
+	end
+	return state
+end
+
+local function refresh_policy()
+	local actor = db and db.actor
+	if not visible_body_enabled() then
+		desired_body_section = nil
+		policy_dirty = false
+		return
+	end
+	if not actor then
+		desired_body_section = nil
+		policy_dirty = false
+		return
+	end
+
+	local outfit = actor:item_in_slot(6)
+	if not outfit then
+		desired_body_section = BODY_NO_OUTFIT
+	else
+		local section = outfit:section()
+		if section == "without_outfit" then
+			desired_body_section = BODY_NO_OUTFIT
+		else
+			desired_body_section = outfit_to_body[section]
+		end
+	end
+
+	policy_dirty = false
+end
+
+local function can_show_body()
+	local actor = db and db.actor
+	if not actor or not actor:alive() then
+		return false
+	end
+
+	local level_vertex = actor:level_vertex_id()
+	local game_vertex = actor:game_vertex_id()
+	if level_vertex == nil or game_vertex == nil or level_vertex < 0 or game_vertex < 0 then
+		return false
+	end
+
+	local dev = device()
+	if not dev or not dev.cam_pos or not dev.cam_dir then
+		return false
+	end
+
+	local actor_pos = actor:position()
+	local cam_pos = dev.cam_pos
+	local dx = cam_pos.x - actor_pos.x
+	local dy = cam_pos.y - actor_pos.y
+	local dz = cam_pos.z - actor_pos.z
+	if dx * dx + dy * dy + dz * dz > HIDE_DISTANCE_SQ then
+		return false
+	end
+
+	local camera = actor_camera(0)
+	if not camera or not camera.position or not camera.direction then
+		return false
+	end
+
+	local standard_pos = camera.position
+	local standard_dir = camera.direction
+	local cdx = standard_pos.x - cam_pos.x
+	local cdy = standard_pos.y - cam_pos.y
+	local cdz = standard_pos.z - cam_pos.z
+	if cdx * cdx + cdy * cdy + cdz * cdz > CAMERA_DISTANCE_SQ then
+		return false
+	end
+
+	local dot = standard_dir.x * dev.cam_dir.x
+		+ standard_dir.y * dev.cam_dir.y
+		+ standard_dir.z * dev.cam_dir.z
+	return dot >= CAMERA_DIRECTION_DOT
+end
+
+local function clear_body_state()
+	body_server_id = nil
+	body_section = nil
+	body_level_name = nil
+	body_present = false
+end
+
+local function release_body()
+	local id = body_server_id
+	local map = legs_table()
+	if not id and map and body_level_name then
+		id = map[body_level_name]
+	end
+
+	if id then
+		diagnostic_log("release id=%s section=%s", tostring(id), tostring(body_section))
+		local sim = alife()
+		if sim then
+			local server_body = sim:object(id)
+			if server_body then
+				sim:release(server_body, true)
+			end
+		end
+
+		if map and body_level_name and map[body_level_name] == id then
+			map[body_level_name] = nil
+		end
+	end
+
+	clear_body_state()
+end
+
+local function adopt_existing_body()
+	local map = legs_table()
+	local level_name = current_level_name()
+	if not map or not level_name then
+		return false
+	end
+
+	local id = map[level_name]
+	if not id then
+		return false
+	end
+
+	local sim = alife()
+	local server_body = sim and sim:object(id)
+	if not server_body then
+		if map[level_name] == id then
+			map[level_name] = nil
+		end
+		return false
+	end
+
+	body_server_id = id
+	body_section = server_body:section_name()
+	body_level_name = level_name
+	body_present = true
+	return true
+end
+
+local function spawn_body()
+	if not desired_body_section then
+		return false
+	end
+
+	local actor = db and db.actor
+	local sim = alife()
+	local level_name = current_level_name()
+	if not actor or not actor:alive() or not sim or not level_name then
+		spawn_retry_at = time_global() + 1000
+		return false
+	end
+
+	local level_vertex = actor:level_vertex_id()
+	local game_vertex = actor:game_vertex_id()
+	if level_vertex == nil or game_vertex == nil or level_vertex < 0 or game_vertex < 0 then
+		spawn_retry_at = time_global() + 1000
+		return false
+	end
+
+	local created = sim:create(desired_body_section, actor:position(), level_vertex, game_vertex)
+	if not created or not created.id then
+		spawn_retry_at = time_global() + 1000
+		return false
+	end
+
+	body_server_id = created.id
+	body_section = desired_body_section
+	body_level_name = level_name
+	body_present = true
+	spawn_retry_at = 0
+	diagnostic_log("spawn id=%d section=%s level=%s", body_server_id, body_section, body_level_name)
+	return true
+end
+
+local function reconcile_body()
+	local enabled = visible_body_enabled()
+	if enabled ~= last_body_enabled then
+		last_body_enabled = enabled
+		policy_dirty = true
+	end
+
+	if policy_dirty then
+		refresh_policy()
+	end
+
+	local visible = can_show_body()
+	if not visible or not desired_body_section then
+		if body_present then
+			release_body()
+		end
+		return
+	end
+
+	if body_present and body_section ~= desired_body_section then
+		release_body()
+	end
+
+	if not body_present then
+		local now = time_global()
+		if spawn_retry_at == 0 or now >= spawn_retry_at then
+			spawn_body()
+		end
+	end
+end
+
+local function on_init_modules()
+	clear_body_state()
+	desired_body_section = nil
+	policy_dirty = true
+	module_ready = false
+	spawn_retry_at = 0
+end
+
+local function on_first_update()
+	module_ready = true
+	policy_dirty = true
+	refresh_policy()
+
+	local visible = can_show_body()
+	if adopt_existing_body() then
+		if not visible or not desired_body_section or body_section ~= desired_body_section then
+			release_body()
+		end
+	end
+
+	if visible and desired_body_section and not body_present then
+		spawn_body()
+	end
+end
+
+local function on_item_change()
+	policy_dirty = true
+	spawn_retry_at = 0
+end
+
+local function on_before_save_game()
+	release_body()
+	spawn_retry_at = 0
+end
+
+local function on_stop_modules()
+	release_body()
+	clear_body_state()
+	module_ready = false
+	spawn_retry_at = 0
+end
+
+local function on_update()
+	if module_ready then
+		reconcile_body()
+	end
+	if DIAGNOSTICS and body_present and active_body_binder then
+		active_body_binder:diagnostic_scan(time_global())
+	end
+end
+
+class "visible_body_binder" (object_binder)
+
+local function animation_for_state(state)
+	if bit_and(state, 64) ~= 0 then
+		state = state - 64
+	end
+	if bit_and(state, 8192) ~= 0 then
+		state = state - 8192
+	end
+	if bit_and(state, 16384) ~= 0 then
+		state = state - 16384
+	end
+
+	if bit_and(state, 2048) ~= 0 then
+		if bit_and(state, 1) ~= 0 or bit_and(state, 2) ~= 0 then
+			return "leg_ladder_up"
+		end
+		return "leg_ladder_idle"
+	end
+
+	local crouch = bit_and(state, 16) ~= 0
+	local slow = bit_and(state, 32) ~= 0
+	local jump_start = bit_and(state, 128) ~= 0
+	local jump_idle = bit_and(state, 256) ~= 0
+	local jump_end = bit_and(state, 512) ~= 0 or bit_and(state, 1024) ~= 0
+	if jump_start or jump_idle or jump_end then
+		if jump_start then
+			if crouch and slow then
+				return "lancew_legs_jump_start_sc"
+			end
+			return "lancew_legs_jump_start"
+		end
+		if jump_idle then
+			if crouch and slow then
+				return "lancew_legs_jump_idle_sc"
+			end
+			if crouch or slow then
+				return "lancew_legs_jump_idle_c"
+			end
+			return "lancew_legs_jump_idle"
+		end
+		return "lancew_legs_jump_end"
+	end
+
+	local forward = bit_and(state, 1) ~= 0
+	local back = bit_and(state, 2) ~= 0
+	local left = bit_and(state, 4) ~= 0
+	local right = bit_and(state, 8) ~= 0
+
+	if forward and bit_and(state, 4096) ~= 0 then
+		return "lancew_legs_sprint"
+	end
+
+	if forward then
+		if slow and crouch then
+			return "lancew_legs_walk_sc"
+		elseif slow then
+			return "lancew_legs_walk"
+		elseif crouch then
+			return "lancew_legs_moving_c"
+		elseif left then
+			return "lancew_legs_moving_fl"
+		elseif right then
+			return "lancew_legs_moving_fr"
+		end
+		return "lancew_legs_moving"
+	end
+
+	if back then
+		if slow and crouch then
+			return "lancew_legs_walk_b_sc"
+		elseif slow then
+			return "lancew_legs_walk_b"
+		elseif crouch then
+			return "lancew_legs_moving_b_c"
+		elseif left then
+			return "lancew_legs_moving_bl"
+		elseif right then
+			return "lancew_legs_moving_br"
+		end
+		return "lancew_legs_moving_b"
+	end
+
+	if left then
+		if slow and crouch then
+			return "lancew_legs_walk_l_sc"
+		elseif slow then
+			return "lancew_legs_walk_l"
+		elseif crouch then
+			return "lancew_legs_moving_l_c"
+		end
+		return "lancew_legs_moving_l"
+	end
+
+	if right then
+		if slow and crouch then
+			return "lancew_legs_walk_r_sc"
+		elseif slow then
+			return "lancew_legs_walk_r"
+		elseif crouch then
+			return "lancew_legs_moving_r_c"
+		end
+		return "lancew_legs_moving_r"
+	end
+
+	if slow and crouch then
+		return "lancew_legs_idle_sc"
+	elseif crouch then
+		return "lancew_legs_idle_c"
+	end
+	return "lancew_legs_idle"
+end
+
+function visible_body_binder:__init(obj)
+	super(obj)
+	active_body_binder = self
+	if db and db.storage then
+		db.storage[obj:id()] = db.storage[obj:id()] or {}
+	end
+	-- This monster-class object is only a rendered body puppet. Do not let it
+	-- build visual memory or distribute enemy contacts while it is online.
+	self.object:enable_vision(false)
+	self.object:skip_transfer_enemy(true)
+	self.position = vector()
+	self.last_state = nil
+	self.last_animation = nil
+	self.diagnostic_next_scan = 0
+	self.diagnostic_npc_states = {}
+	self.diagnostic_body_enemy_id = -1
+	if DIAGNOSTICS then
+		self.object:set_callback(callback.hit, self.hit_callback, self)
+		diagnostic_log("binder id=%d section=%s team=%s", self.object:id(), self.object:section(), tostring(self.object:team()))
+	end
+	self.object:set_fastcall(self.fastcall, self)
+end
+
+function visible_body_binder:hit_callback(obj, amount, local_direction, who, bone_index)
+	diagnostic_log(
+		"body_hit amount=%.4f bone=%s health=%s attacker_id=%s attacker=%s body_to_attacker=%s attacker_to_body=%s",
+		amount,
+		tostring(bone_index),
+		tostring(obj.health),
+		who and tostring(who:id()) or "<none>",
+		diagnostic_name(who),
+		diagnostic_relation_name(diagnostic_relation(obj, who)),
+		diagnostic_relation_name(diagnostic_relation(who, obj))
+	)
+end
+
+function visible_body_binder:diagnostic_scan(now)
+	if not DIAGNOSTICS or now < self.diagnostic_next_scan then
+		return
+	end
+	self.diagnostic_next_scan = now + DIAGNOSTIC_SCAN_INTERVAL
+
+	local body = self.object
+	local body_id = body:id()
+	local actor = db and db.actor
+	local body_enemy = body:best_enemy()
+	local body_enemy_id = body_enemy and body_enemy:id() or -1
+	if body_enemy_id ~= self.diagnostic_body_enemy_id then
+		diagnostic_log("body_best_enemy id=%s name=%s", tostring(body_enemy_id), diagnostic_name(body_enemy))
+		self.diagnostic_body_enemy_id = body_enemy_id
+	end
+
+	local present = {}
+	level.iterate_level_objects(function(npc)
+		if npc
+			and npc:id() ~= body_id
+			and (not actor or npc:id() ~= actor:id())
+			and npc:clsid() == CLID_STALKER
+			and npc:alive()
+		then
+			local distance_sq = npc:position():distance_to_sqr(body:position())
+			if distance_sq <= DIAGNOSTIC_RADIUS_SQ then
+				local npc_id = npc:id()
+				local npc_enemy = npc:best_enemy()
+				local npc_best_body = npc_enemy and npc_enemy:id() == body_id or false
+				local npc_best_actor = npc_enemy and actor and npc_enemy:id() == actor:id() or false
+				local sees = npc:see(body)
+				local sees_actor = actor and npc:see(actor) or false
+				local memory_visible = diagnostic_memory_contains(npc, "memory_visible_objects", body_id)
+				local memory_sound = diagnostic_memory_contains(npc, "memory_sound_objects", body_id)
+				local memory_hit = diagnostic_memory_contains(npc, "memory_hit_objects", body_id)
+				local npc_to_body = diagnostic_relation_name(diagnostic_relation(npc, body))
+				local body_to_npc = diagnostic_relation_name(diagnostic_relation(body, npc))
+				local state = sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%s",
+					tostring(npc_to_body), tostring(body_to_npc), tostring(sees),
+					tostring(sees_actor),
+					tostring(memory_visible), tostring(memory_sound), tostring(memory_hit),
+					tostring(npc_best_body), tostring(npc_best_actor))
+
+				present[npc_id] = true
+				if self.diagnostic_npc_states[npc_id] ~= state then
+					diagnostic_log(
+						"npc id=%d name=%s dist=%.1f npc_to_body=%s body_to_npc=%s see_body=%s see_actor=%s mem_visible=%s mem_sound=%s mem_hit=%s npc_best_body=%s npc_best_actor=%s",
+						npc_id, diagnostic_name(npc), math.sqrt(distance_sq),
+						tostring(npc_to_body), tostring(body_to_npc), tostring(sees), tostring(sees_actor),
+						tostring(memory_visible), tostring(memory_sound), tostring(memory_hit),
+						tostring(npc_best_body), tostring(npc_best_actor))
+					self.diagnostic_npc_states[npc_id] = state
+				end
+			end
+		end
+	end)
+
+	for npc_id in pairs(self.diagnostic_npc_states) do
+		if not present[npc_id] then
+			self.diagnostic_npc_states[npc_id] = nil
+		end
+	end
+end
+
+function visible_body_binder:fastcall()
+	local actor = db and db.actor
+	if not actor or not actor:alive() or not self.object then
+		return true
+	end
+
+	-- Keep the creature out of native monster navigation/logic. Its position
+	-- and animation are driven entirely by this binder.
+	if xr_logic and type(xr_logic.mob_capture) == "function" then
+		xr_logic.mob_capture(self.object, true)
+	end
+
+	local dev = device()
+	if not dev or not dev.cam_pos or not dev.cam_dir then
+		return true
+	end
+
+	local state = actor_body_state(actor)
+
+	local actor_pos = actor:position()
+	local body_y = actor_pos.y + HEIGHT_OFFSET
+	if bit_and(state, 2048) ~= 0 then
+		body_y = body_y + LADDER_HEIGHT
+	end
+
+	local forward_x = dev.cam_dir.x
+	local forward_z = dev.cam_dir.z
+	local horizontal_length = math.sqrt(forward_x * forward_x + forward_z * forward_z)
+	if horizontal_length <= 0.0001 then
+		local actor_direction = actor:direction()
+		forward_x = actor_direction.x
+		forward_z = actor_direction.z
+		horizontal_length = math.sqrt(forward_x * forward_x + forward_z * forward_z)
+	end
+	if horizontal_length > 0.0001 then
+		forward_x = forward_x / horizontal_length
+		forward_z = forward_z / horizontal_length
+	end
+
+	local right_x = forward_z
+	local right_z = -forward_x
+	local body_x = dev.cam_pos.x + forward_x * FORWARD_OFFSET + right_x * SIDE_OFFSET
+	local body_z = dev.cam_pos.z + forward_z * FORWARD_OFFSET + right_z * SIDE_OFFSET
+	self.position:set(body_x, body_y, body_z)
+	self.object:set_npc_position(self.position, true)
+
+	-- The body is a scripted visual puppet, so its facing must be driven by
+	-- the same look action used by the original SWM implementation. Keep this
+	-- before play_cycle: the animation command can reset the puppet's facing.
+	local body_direction = actor:direction()
+	if dev.cam_dir.y > -0.65 then
+		body_direction = vector():setHP(dev.cam_dir:getH(), 0)
+	end
+
+	local look_direction = look()
+	look_direction:type(2)
+	look_direction:direct(body_direction)
+	action(self.object, look_direction, cond(cond.look_end))
+
+	if state ~= self.last_state then
+		local animation = animation_for_state(state)
+		if animation ~= self.last_animation then
+			self.object:play_cycle(animation, true)
+			self.last_animation = animation
+		end
+		self.last_state = state
+	end
+end
+
+function visible_body_binder:net_destroy()
+	if active_body_binder == self then
+		active_body_binder = nil
+	end
+	if self.object then
+		if DIAGNOSTICS then
+			self.object:set_callback(callback.hit, nil)
+			diagnostic_log("binder_destroy id=%d section=%s", self.object:id(), self.object:section())
+		end
+		if db and db.storage then
+			db.storage[self.object:id()] = nil
+		end
+	end
+	object_binder.net_destroy(self)
+end
+
+function bind(obj)
+	obj:bind_object(visible_body_binder(obj))
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_init_modules", fun = on_init_modules })
+	sm:subscribe({ signal = "on_first_update", fun = on_first_update })
+	sm:subscribe({ signal = "on_update", fun = on_update })
+	sm:subscribe({ signal = "on_item_to_slot", fun = on_item_change })
+	sm:subscribe({ signal = "on_item_to_ruck", fun = on_item_change })
+	sm:subscribe({ signal = "on_drop_after_all", fun = on_item_change })
+	sm:subscribe({ signal = "on_before_save_game", fun = on_before_save_game })
+	sm:subscribe({ signal = "on_stop_modules", fun = on_stop_modules })
+end
