@@ -257,6 +257,24 @@ local function get_property_icon(icon)
     return "ui_inv_icon_" .. icon
 end
 
+local function modifier_percent_text(value, positive_is_good)
+    local good = positive_is_good and value > 0 or not positive_is_good and value < 0
+    local color = good and "%c[green]" or "%c[red]"
+    return string.format("%s%+.1f%%%%c[default]", color, value)
+end
+
+local function round_to_step(value, step)
+    if value >= 0 then return math.floor(value / step + 0.5) * step end
+    return math.ceil(value / step - 0.5) * step
+end
+
+local function rounded_modifier_percent_text(value, positive_is_good)
+    value = round_to_step(value, 5)
+    local good = positive_is_good and value > 0 or not positive_is_good and value < 0
+    local color = good and "%c[green]" or "%c[red]"
+    return string.format("%s%+.0f%%%%c[default]", color, value)
+end
+
 function CUIDescriptionWnd:ShowProps( tbl )
     local st
     for _, t in ipairs(tbl) do
@@ -765,10 +783,7 @@ function CUIDescriptionWnd:ShowDescription(item)
 		self:ShowProps({{"hit_power", string.format("%s: %.2f | %.2f", translate("ui_inv_impact_force_damage_dealt"), p1, p2)}})
 	-- scope
 	elseif item:is_scope() or item:is_binoculars() then
-		local zf = get_float(self.section, "scope_zoom_factor", 0)
-		-- zf = device().fov / (zf * 0.75)
-		zf = 67.5 / (zf * 0.75)
-		self:ShowProps({{"scope", string.format("x%.1f", zf)}})
+		self:ShowScopeParams()
 	-- grenade
 	elseif item:is_grenade() and not is_forbidden then
 		local fr = sys_ini:r_float(self.section, "frags_r")
@@ -1208,11 +1223,21 @@ function CUIDescriptionWnd:ShowWeaponParams()
 		table.insert(v, {"ui_inv_icon_accuracy", text})
 	end
 
+	local recoil_breakdown
+	if sil_section and sivol_fuzz_recoil
+		and type(sivol_fuzz_recoil.get_recoil_modifier_breakdown) == "function" then
+		local ok, result = pcall(
+			sivol_fuzz_recoil.get_recoil_modifier_breakdown, self.item, self.section)
+		if ok and type(result) == "table" then recoil_breakdown = result end
+	end
+
 	local base_recoil = get_float(self.section, "cam_dispersion", 0) or 0
 	if base_recoil > 0 then
 		text = string.format("%s: %.2f", translate("ui_inv_recoil"), base_recoil)
 		if sil_section then
-			local effective_recoil = base_recoil * get_float(sil_section, "cam_dispersion_k", 1)
+			local recoil_k = recoil_breakdown and recoil_breakdown.combined_k
+				or get_float(sil_section, "cam_dispersion_k", 1)
+			local effective_recoil = base_recoil * recoil_k
 			local color = effective_recoil <= base_recoil and "%c[green]" or "%c[red]"
 			text = string.format("%s: %.2f, %s: %s%.2f%%c[default]",
 				translate("ui_inv_recoil"), base_recoil, silencer_label, color, effective_recoil)
@@ -1256,9 +1281,26 @@ function get_accuracy(section, dispersion_k)
 end
 
 local function suppressor_modifier_text(value, positive_is_good)
-	local good = positive_is_good and value > 0 or not positive_is_good and value < 0
-	local color = good and "%c[green]" or "%c[red]"
-	return string.format("%s%+.1f%%%%c[default]", color, value)
+	return modifier_percent_text(value, positive_is_good)
+end
+
+function CUIDescriptionWnd:ShowScopeParams()
+	local zf = get_float(self.section, "scope_zoom_factor", 0)
+	local params = {}
+	if zf > 0 then
+		table.insert(params, {"scope", string.format("x%.1f", 67.5 / (zf * 0.75))})
+	end
+	if not self.item:is_binoculars() and sivol_weapon_aim_speed
+		and type(sivol_weapon_aim_speed.get_scope_aim_profile) == "function" then
+		local ok, profile = pcall(
+			sivol_weapon_aim_speed.get_scope_aim_profile, self.section)
+		if ok and type(profile) == "table" then
+			table.insert(params, {"ui_inv_icon_rpm",
+				string.format("%s: %s", translate("ui_inv_aim_speed"),
+					rounded_modifier_percent_text(profile.speed_percent, true))})
+		end
+	end
+	if #params > 0 then self:ShowProps(params) end
 end
 
 -- Показываем параметры отдельного глушителя.
@@ -1269,6 +1311,14 @@ function CUIDescriptionWnd:ShowSilencerParams()
 	local dispersion_k = get_float(self.section, "fire_dispersion_base_k", 1)
 	local recoil_k = get_float(self.section, "cam_dispersion_k", 1)
 	local wear_k = get_float(self.section, "condition_shot_dec_k", 1)
+	local mass = get_float(self.section, "inv_weight", 0)
+	local mass_effects
+	if sivol_fuzz_recoil_profiles
+		and type(sivol_fuzz_recoil_profiles.get_attachment_mass_effects) == "function" then
+		local ok, effects = pcall(
+			sivol_fuzz_recoil_profiles.get_attachment_mass_effects, mass)
+		if ok and type(effects) == "table" then mass_effects = effects end
+	end
 
 	if hit_k ~= 1 then
 		table.insert(params, {
@@ -1291,11 +1341,13 @@ function CUIDescriptionWnd:ShowSilencerParams()
 				suppressor_modifier_text((1 - dispersion_k) * 100, true))
 		})
 	end
-	if recoil_k ~= 1 then
+	local combined_recoil_k = recoil_k
+	if mass_effects then combined_recoil_k = combined_recoil_k * mass_effects.stability_k end
+	if combined_recoil_k ~= 1 then
 		table.insert(params, {
 			"ui_inv_icon_accuracy",
-			string.format("%s: %s", translate("ui_inv_recoil"),
-				suppressor_modifier_text((recoil_k - 1) * 100, false))
+			string.format("%s: %s", translate("ui_inv_combined_recoil"),
+				rounded_modifier_percent_text((1 - combined_recoil_k) * 100, true))
 		})
 	end
 	if wear_k ~= 1 then

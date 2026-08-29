@@ -25,6 +25,12 @@ Inspect other `gamedata` folders only when the current task requires them.
   strong uses the isolated Aggressive-v2 idle group. `sivol.spawn_anomaly_near()`
   in `gamedata/scripts/kotovod/sivol.script` is the targeted anomaly-spawn helper.
 - Signal registration: `gamedata/scripts/ogse/ogse_signals_addons_list.script`.
+- Scripted recoil: `gamedata/scripts/kotovod/sivol_fuzz_recoil.script` owns
+  reversible camera/HUD recoil and lifecycle cleanup;
+  `sivol_fuzz_recoil_profiles.script` owns global/class/weapon balance;
+  `sivol_weapon.script` supplies cached equipment/artifact context; and
+  `fl_hook/flhook.cpp` supplies the transient six-axis HUD transform. Read
+  `docs/RECOIL_SYSTEM.md` before changing this cross-module system.
 - Actor inventory signal forwarding: `gamedata/scripts/binders/bind_stalker.script`.
 - Manual weapon breath and mass handling:
   - `gamedata/scripts/kotovod/sivol_weapon.script` owns hold/toggle state,

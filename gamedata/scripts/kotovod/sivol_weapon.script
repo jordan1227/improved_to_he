@@ -344,23 +344,17 @@ local last_mass_log_key = nil
 local function clamp(v, lo, hi)
     return math.max(lo, math.min(hi, v))
 end
-local artifact_wobble_table = {
-    -- === Tierless Artifacts ===
-    -- Works perfectly: matches exactly, skips tier math entirely.
-    af_eye                  = 1.6, 
-
-    -- === Generic Tiered Fallback ===
-    -- All tiers (1d-5d) will scale automatically off this base value.
-    -- Tier 5 gives -0.12, Tier 3 gives 0.0, Tier 1 gives +0.12
-    af_gravi                    = -0.1, 
-
-    -- === Specific Tier Override ===
-    -- If you want Tier 4 Gravi to have an unconventional, manually tuned value:
-    -- Stage 1 finds this exact string first, skipping the generic math entirely.
-    af_gravi_dyn4d              = -0.3, 
+-- One artifact lookup feeds both the existing wobble system and recoil. Dynamic
+-- Gravi tiers apply the same signed tier scale to each member; exact overrides
+-- continue to bypass generic tier math.
+local artifact_handling_table = {
+    af_eye = { wobble = 1.60, recoil = 0.15 },
+    af_gravi = { wobble = -0.10, recoil = -0.05 },
+    af_gravi_dyn4d = { wobble = -0.30, recoil = -0.10 },
 }
 
 local cached_artifact_k = 1.0
+local cached_artifact_recoil_k = 1.0
 -- Future assignments belong here. Effects stack multiplicatively per powered,
 -- conditioned belt artifact; keep this table empty until an artifact is chosen.
 local artifact_weapon_effect_template = {
@@ -392,6 +386,7 @@ local function update_artifact_wobble_k()
     -- If the electronic belt is dead, uncharged, or off, artifacts provide zero properties.
     if not (sak and sak.arts_operate) then
         cached_artifact_k = 1.0
+        cached_artifact_recoil_k = 1.0
         cached_artifact_weapon_effects = {
             suppress_breath_sounds = false, manual_drain_k = 1.0,
             ads_drain_k = 1.0, walking_drain_k = 1.0,
@@ -399,6 +394,7 @@ local function update_artifact_wobble_k()
         return
     end
     local total_mod = 0.0
+    local total_recoil_mod = 0.0
     local effects = {
         suppress_breath_sounds = false,
         manual_drain_k = 1.0,
@@ -409,31 +405,23 @@ local function update_artifact_wobble_k()
         for sec, items in pairs( sak_inventory.belt_items ) do
             
             local base_sec = string.match(sec, "^(af_[%w_]+)_dyn%dd") or sec
-            local effect = artifact_weapon_effect_template[sec] or artifact_weapon_effect_template[base_sec]
+            local effect = artifact_weapon_effect_template[sec]
+                or artifact_weapon_effect_template[base_sec]
 
-            -- STAGE 1: Exact Match Check
-            local mod = artifact_wobble_table[sec]
-            -- STAGE 2: Generic Suffix Stripping & NLC Dynamic Scaling
-            if not mod then
-                local base_sec = string.match(sec, "^(af_[%w_]+)_dyn%dd") or sec
-                mod = artifact_wobble_table[base_sec]
-                
-                if mod then
-                    local tier_str = string.match(sec, "_dyn(%d)d")
-                    if tier_str then
-                        local tier = tonumber(tier_str) or 3
-                        local tier_scale = 0
-                        
-                        if tier == 6 then
-                            tier_scale = 0.0  
-                        else
-                            -- Tier 5 = 1.0 | Tier 3 = 0.0 | Tier 1 = -1.0
-                            tier_scale = (tier - 3) / 2
-                        end
-                        mod = mod * tier_scale
-                    end
+            -- Exact dynamic sections bypass tier scaling. Otherwise the generic
+            -- artifact entry receives the established NLC 1d-6d tier factor.
+            local handling = artifact_handling_table[sec]
+            local tier_scale = 1.0
+            if not handling then
+                handling = artifact_handling_table[base_sec]
+                local tier_str = handling and string.match(sec, "_dyn(%d)d")
+                if tier_str then
+                    local tier = tonumber(tier_str) or 3
+                    tier_scale = tier == 6 and 0.0 or (tier - 3) / 2
                 end
             end
+            local mod = handling and handling.wobble * tier_scale
+            local recoil_mod = handling and handling.recoil * tier_scale
             
             -- STAGE 3: Condition and Quantity Weighting
             local num_items = items and table.getn(items) or 0
@@ -444,6 +432,9 @@ local function update_artifact_wobble_k()
                     local cond   = af_obj and af_obj:condition() or 1.0
                     
                     if mod then total_mod = total_mod + (mod * cond) end
+                    if recoil_mod then
+                        total_recoil_mod = total_recoil_mod + (recoil_mod * cond)
+                    end
                     if effect then
                         if effect.suppress_breath_sounds and cond > 0 then
                             effects.suppress_breath_sounds = true
@@ -463,11 +454,89 @@ local function update_artifact_wobble_k()
     -- -0.75 means a high-tier stabilizing setup can cut weapon sway by up to 75%
     -- 2.50 means a chaotic setup can increase sway penalties by up to 250%
     total_mod = math.max(-0.75, math.min(1.60, total_mod))
+    total_recoil_mod = math.max(-0.30, math.min(0.50, total_recoil_mod))
     cached_artifact_k = 1.0 + total_mod
+    cached_artifact_recoil_k = 1.0 + total_recoil_mod
     cached_artifact_weapon_effects = effects
 end
 function sivol_weapon.get_artifact_wobble_k()
     return cached_artifact_k
+end
+
+-- Returns scalar components rather than allocating a table on every shot.
+-- Artifact state is cached by the existing two-second belt scan; health, stance
+-- and outfit condition remain live because they are inexpensive actor reads.
+function sivol_weapon.get_recoil_context(actor, weapon_section)
+    actor = actor or db.actor
+    if not actor then return 1.0, 1.0, 1.0, 1.0, 1.0, "none", "unavailable", 1.0 end
+
+    local health = clamp(tonumber(actor.health) or 1.0, 0.0, 1.0)
+    local health_k = 1.0
+    if health < 0.5 then
+        local t = (0.5 - health) / 0.5
+        health_k = 1.0 + t * t * 0.20
+    end
+
+    -- db.actor is the script game object and does not expose the native actor
+    -- movement predicates in this build. Match wpn_params and the established
+    -- stamina-drain path by querying the native actor object instead.
+    local stance_k = 1.0
+    local stance_state = "unavailable"
+    local stance_actor
+    if type(get_actor_obj) == "function" then
+        local ok_actor, native_actor = pcall(get_actor_obj)
+        if ok_actor then stance_actor = native_actor end
+    end
+    if stance_actor then
+        local ok_creep, is_creep = pcall(function()
+            return stance_actor:is_actor_creep()
+        end)
+        local ok_crouch, is_crouch = pcall(function()
+            return stance_actor:is_actor_crouch()
+        end)
+        if ok_creep and ok_crouch then
+            if is_creep then
+                stance_k = 0.84
+                stance_state = "creep"
+            elseif is_crouch then
+                stance_k = 0.92
+                stance_state = "crouch"
+            else
+                stance_state = "standing"
+            end
+        else
+            stance_state = "api_error"
+        end
+    end
+
+    local outfit_k = 1.0
+    local outfit_section = "none"
+    local ok_outfit, outfit = pcall(actor.item_in_slot, actor, 6)
+    if ok_outfit and outfit then
+        local ok_section, section = pcall(outfit.section, outfit)
+        outfit_section = ok_section and tostring(section) or "unknown"
+        if ok_section and section and string.find(section, "exo", 1, true) then
+            local base_k = section == "broken_exoskeleton" and 0.96 or 0.88
+            local ok_condition, condition = pcall(outfit.condition, outfit)
+            condition = clamp(ok_condition and tonumber(condition) or 1.0, 0.0, 1.0)
+            outfit_k = 1.0 - (1.0 - base_k) * condition
+        end
+    end
+
+    local artifact_k = cached_artifact_recoil_k
+    local mastery_k = 1.0
+    if weapon_section and type(sivol_weapon.get_mastery_k) == "function" then
+        local ok_mastery, resolved_mastery = pcall(
+            sivol_weapon.get_mastery_k, weapon_section)
+        if ok_mastery and tonumber(resolved_mastery) then
+            mastery_k = clamp(tonumber(resolved_mastery), 0.50, 1.60)
+        end
+    end
+    local total = clamp(
+        health_k * stance_k * outfit_k * artifact_k * mastery_k,
+        0.70, 1.50)
+    return total, health_k, stance_k, outfit_k, artifact_k, outfit_section,
+        stance_state, mastery_k
 end
 
 -- Returns the baseline sway multiplier for the weapon

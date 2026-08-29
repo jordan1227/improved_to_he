@@ -1,5 +1,16 @@
 # FL Hook: transient HUD recoil API brief
 
+> **Implementation status (2026-08-30): completed and accepted in game.** The
+> hook now exports `fl_hud_recoil_available`, the backward-compatible
+> `fl_hud_recoil_set`, six-axis `fl_hud_recoil_set6`, and
+> `fl_hud_recoil_clear`. It applies an owner-checked, clamped, watchdog-protected
+> transform around HUD rendering and restores the original matrix afterward.
+> `sivol_fuzz_recoil.script` uses the six-axis API and clears it at neutral. The
+> hook also invokes the optional `fl_on_actor_weapon_before_fire(is_gl)` global;
+> no Lua definition of that pre-fire bridge is currently present. This file
+> preserves the original implementation brief and acceptance contract; use
+> `RECOIL_SYSTEM.md` for the current system architecture and balance.
+
 ## Goal
 
 Give `sivol_fuzz_recoil.script` a safe, additive way to move the currently
@@ -35,8 +46,9 @@ also omits the methods. The built-in `player_hud::tune`, `HUD_POS`, `HUD_ROT`,
 and `hud_adjust_*` console settings are an interactive alignment editor, not a
 transient per-frame Lua recoil channel.
 
-The Lua module therefore runs with `HUD_RECOIL_ENABLED = false` and reports
-camera-only capability.
+The pre-hook Lua prototype therefore ran with `HUD_RECOIL_ENABLED = false` and
+reported camera-only capability. The implemented hook and current controller
+remove this historical limitation.
 
 ## Existing hook facilities to reuse
 
@@ -166,7 +178,7 @@ hudrc clear
 This lets the developer verify transform direction and restoration without
 loading the Lua recoil module.
 
-## Lua integration after the hook is ready
+## Historical Lua integration checklist
 
 The Lua port should be changed to:
 
@@ -219,9 +231,10 @@ then be removed once the hook API passes acceptance.
 The original Fuzz add-on uses `onerad.anm` with dynamic camera-effector factor
 control and `oneshove.anm` for positional/FOV punch. This target does not expose
 the required Fuzz-style `check_cam_effector` and `set_cam_effector_factor` Lua
-APIs. Adding those is a separate project and is not required for HUD-model
-recoil. The already-tested procedural actor-camera implementation should stay
-the default until an effector backend is independently implemented and compared.
+APIs. The accepted controller instead has an on/off experiment using safely
+pre-scaled `sivol_onerad_006.anm` and `sivol_oneshove_004.anm` copies with fixed
+effector IDs. Procedural actor-camera recoil remains authoritative; this is not
+a dynamic-factor port of the original backend.
 
 ## Follow-up API: full transient HUD transform
 

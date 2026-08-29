@@ -49,6 +49,17 @@ These are concise observations from the thermal-anomaly and device-interference 
 - Cache weapon mass by active item and attachment signature. Use the live weapon
   mass plus resolved attached addon sections; do not recompute or log it per
   frame. Diagnostic logging stays behind `sivol_weapon.weapon_breath_diagnostics`.
+- Keep scripted camera recoil and HUD-model recoil as separate channels. Normalize
+  HUD pitch against the global camera-pitch multiplier so broad camera balance
+  changes preserve accepted viewmodel motion; use effective-section personality
+  fields for intentional weapon-to-weapon HUD differences.
+- Equipment recoil context belongs beside the existing `sivol_weapon` artifact
+  and mass caches. Return scalar factors on a real shot; do not allocate a table
+  or scan the belt from the recoil frame loop. Preserve outfit-condition scaling
+  and the powered-artifact gate.
+- The FL-hook HUD transform is an absolute transient contribution. Clear it once
+  at identity and stop writing while idle; retain owner checks, watchdog cleanup,
+  and render-time restoration across every Lua lifecycle/error path.
 - Prefer OGSR's native `condition_shot_dec_silencer` in weapon sections for
   suppressor wear. It is an absolute per-shot wear value, so derive it from the
   effective `condition_shot_dec` and the fitted suppressor profile. Keep

@@ -1,0 +1,338 @@
+-- [HE-PORT] Attachment-aware ADS transition timing.
+--
+-- Only the live CWeapon zoom_rotate_time property is changed. Its authored
+-- value is cached per item and restored on addon changes, item switches,
+-- save/load boundaries, shutdown and any write failure.
+
+sivol_weapon_aim_speed = sivol_weapon_aim_speed or {}
+
+local M = sivol_weapon_aim_speed
+
+local ENABLED = true
+local DIAGNOSTICS = true
+local WRITE_EPSILON = 0.0001
+
+-- Absolute transition times keep the sight classes consistent even where HUD
+-- sections inherit different engine defaults. Smaller values enter ADS faster.
+local AIM_TIMES = {
+    red_dot = 0.17,
+    low_mag = 0.34,
+    lpvo = 0.40,
+    medium_mag = 0.48,
+    high_mag = 0.58,
+}
+local BASELINE_AIM_TIME = 0.25
+local LAUNCHER_AIM_PENALTY = 0.05
+
+-- These weapons present a built-in sight in their HUD model despite declaring
+-- scope_status = 0. Section IDs are technical and may not name the actual gun.
+local INTEGRATED_OPTIC_OVERRIDES = {
+    wpn_beretta93 = { scope = "integrated_collimator", class = "red_dot", zoom = 75 },
+}
+
+local state = {
+    item = nil,
+    item_id = nil,
+    weapon = nil,
+    section = nil,
+    signature = nil,
+    original = nil,
+    applied = false,
+    disabled = false,
+}
+
+M.enabled = ENABLED
+M.active_scope = nil
+M.active_class = "naked"
+M.original_time = nil
+M.applied_time = nil
+M.last_error = nil
+
+local function aim_log(fmt, ...)
+    if DIAGNOSTICS then log2(fmt, ...) end
+end
+
+local function valid_number(value)
+    local n = tonumber(value)
+    return n ~= nil and n == n and n > 0.01 and n < 10
+end
+
+local function object_id(object)
+    if not object then return nil end
+    local ok, id = pcall(object.id, object)
+    return ok and id or nil
+end
+
+local function read_zoom_time(weapon)
+    local ok, value = pcall(function() return weapon.zoom_rotate_time end)
+    if not ok or not valid_number(value) then return nil end
+    return tonumber(value)
+end
+
+local function write_zoom_time(weapon, value)
+    local ok = pcall(function() weapon.zoom_rotate_time = value end)
+    if not ok then return false end
+    local actual = read_zoom_time(weapon)
+    return actual and math.abs(actual - value) <= WRITE_EPSILON or false
+end
+
+local function clear_public_state()
+    M.active_scope = nil
+    M.active_class = "naked"
+    M.original_time = nil
+    M.applied_time = nil
+end
+
+local function restore_current(reason)
+    if not state.applied then return true end
+    local ok = state.weapon and state.original
+        and write_zoom_time(state.weapon, state.original)
+    if not ok then
+        M.last_error = "restoration failed: " .. tostring(reason or "unknown")
+        aim_log("[sivol_aim_speed][restore_failure] section=%s item_id=%s original=%.4f reason=%s",
+            tostring(state.section), tostring(state.item_id), tonumber(state.original) or -1,
+            tostring(reason or "unknown"))
+        return false
+    end
+    aim_log("[sivol_aim_speed][restore] section=%s item_id=%s value=%.4f reason=%s",
+        tostring(state.section), tostring(state.item_id), state.original,
+        tostring(reason or "unknown"))
+    state.applied = false
+    return true
+end
+
+local function reset_current(reason)
+    local ok = restore_current(reason)
+    state.item = nil
+    state.item_id = nil
+    state.weapon = nil
+    state.section = nil
+    state.signature = nil
+    state.original = nil
+    clear_public_state()
+    return ok
+end
+
+local function read_addon_flags(item)
+    local ok, flags = pcall(item.get_addon_flags, item)
+    return ok and tonumber(flags) or 0
+end
+
+local function section_string(section, field)
+    if not sys_ini or not section then return nil end
+    local ok_exists, exists = pcall(sys_ini.line_exist, sys_ini, section, field)
+    if not ok_exists or not exists then return nil end
+    local ok_value, value = pcall(sys_ini.r_string, sys_ini, section, field)
+    return ok_value and value or nil
+end
+
+local function read_weapon_string(weapon, field)
+    if not weapon then return nil end
+    local ok, value = pcall(function() return weapon[field] end)
+    if not ok or type(value) ~= "string" or value == "" then return nil end
+    return value
+end
+
+local function resolve_scope(item, weapon, section, flags)
+    -- Respawn variants have the sight baked into their section and may carry
+    -- zero live addon flags.
+    local respawn = section_string(section, "scope_respawn")
+    local scope = section_string(section, "scope_name")
+    if respawn and scope then return scope, "baked" end
+
+    local status = 0
+    if ogse_wpn_utils and type(ogse_wpn_utils.get_scope_status) == "function" then
+        local ok, value = pcall(ogse_wpn_utils.get_scope_status, item)
+        if ok then status = tonumber(value) or 0 end
+    end
+    if status == 1 then
+        local runtime_scope = read_weapon_string(weapon, "scope_name")
+        -- Some integral sights (for example the scoped TOZ-34) have no
+        -- separate scope_name at all. The weapon section still owns the FOV.
+        return runtime_scope or scope or section, "integral"
+    end
+    if status == 2 and bit_and(flags, 1) ~= 0 then
+        local runtime_scope = read_weapon_string(weapon, "scope_name")
+        return runtime_scope or scope, "attached"
+    end
+    return nil, "naked"
+end
+
+local function read_scope_zoom(scope)
+    if not sys_ini or not scope then return nil end
+    local ok_exists, exists = pcall(sys_ini.line_exist, sys_ini, scope, "scope_zoom_factor")
+    if not ok_exists or not exists then return nil end
+    local ok_value, value = pcall(sys_ini.r_float, sys_ini, scope, "scope_zoom_factor")
+    return ok_value and tonumber(value) or nil
+end
+
+local function classify_scope(scope, mode, weapon_section)
+    -- Match sivol_weapon_zoom.get_controller_magnification(): integral sights
+    -- own their authored FOV on the weapon section. Their runtime scope_name
+    -- can be only a render preset (SV-98 and AWM both report "specter").
+    local zoom_section = mode == "integral" and weapon_section or scope
+    local zoom = read_scope_zoom(zoom_section)
+    if not zoom then return nil, nil end
+    if mode ~= "integral" and scope == "specter" then return "lpvo", zoom end
+    if zoom >= 60 then return "red_dot", zoom end
+    if zoom >= 30 then return "low_mag", zoom end
+    if zoom >= 15 then return "medium_mag", zoom end
+    return "high_mag", zoom
+end
+
+-- Standalone scope tooltips use the same classification and targets as the
+-- runtime controller. Positive speed_percent means faster than naked baseline.
+function sivol_weapon_aim_speed.get_scope_aim_profile(scope_section)
+    local sight_class, zoom = classify_scope(scope_section, "attached", nil)
+    local target = sight_class and AIM_TIMES[sight_class]
+    if not target or target <= 0 then return nil end
+    return {
+        class = sight_class,
+        zoom = zoom,
+        target = target,
+        baseline = BASELINE_AIM_TIME,
+        speed_percent = (BASELINE_AIM_TIME / target - 1.0) * 100,
+    }
+end
+
+local function has_launcher(item, section, flags)
+    if section_string(section, "grenade_launcher_respawn") then return true end
+    if bit_and(flags, 2) ~= 0 then return true end
+    if ogse_wpn_utils and type(ogse_wpn_utils.get_grenade_launcher_status) == "function" then
+        local ok, status = pcall(ogse_wpn_utils.get_grenade_launcher_status, item)
+        return ok and tonumber(status) == 1 or false
+    end
+    return false
+end
+
+local function make_signature(item, section, flags, scope, mode)
+    return table.concat({ tostring(object_id(item)), tostring(section), tostring(flags),
+        tostring(scope), tostring(mode) }, ":")
+end
+
+local function prepare(item, item_id)
+    local ok_weapon, weapon = pcall(item.get_weapon, item)
+    if not ok_weapon or not weapon then
+        return not state.item_id or reset_current("non-firearm item")
+    end
+    local ok_section, section = pcall(item.section, item)
+    if not ok_section then
+        return not state.item_id or reset_current("section unavailable")
+    end
+    local flags = read_addon_flags(item)
+    local optic_override = INTEGRATED_OPTIC_OVERRIDES[section]
+    local scope, mode
+    if optic_override then
+        scope, mode = optic_override.scope, "integrated_override"
+    else
+        scope, mode = resolve_scope(item, weapon, section, flags)
+    end
+    local signature = make_signature(item, section, flags, scope, mode)
+    if state.item_id == item_id and state.signature == signature then return true end
+
+    if not reset_current("state change") then return false end
+    state.item = item
+    state.item_id = item_id
+    state.weapon = weapon
+    state.section = section
+    state.signature = signature
+
+    if not scope then return true end
+    local sight_class, zoom
+    if optic_override then
+        sight_class, zoom = optic_override.class, optic_override.zoom
+    else
+        sight_class, zoom = classify_scope(scope, mode, section)
+    end
+    local class_target = sight_class and AIM_TIMES[sight_class]
+    if not class_target then
+        aim_log("[sivol_aim_speed][skip] section=%s scope=%s mode=%s reason=no_zoom_factor",
+            tostring(section), tostring(scope), tostring(mode))
+        return true
+    end
+
+    local original = read_zoom_time(weapon)
+    if not original then
+        M.last_error = "zoom_rotate_time unavailable"
+        aim_log("[sivol_aim_speed][skip] section=%s scope=%s mode=%s reason=property_unavailable",
+            tostring(section), tostring(scope), tostring(mode))
+        return true
+    end
+    -- Never make an already-fast red dot slower or an already-slow magnified
+    -- optic faster. Authored outliers therefore keep the stronger effect.
+    local target = sight_class == "red_dot"
+        and math.min(original, class_target) or math.max(original, class_target)
+    local launcher = has_launcher(item, section, flags)
+    if launcher then target = target + LAUNCHER_AIM_PENALTY end
+    -- Probe writability with a no-op before applying a gameplay change.
+    if not write_zoom_time(weapon, original) then
+        M.last_error = "zoom_rotate_time is not writable"
+        aim_log("[sivol_aim_speed][skip] section=%s scope=%s mode=%s reason=property_not_writable",
+            tostring(section), tostring(scope), tostring(mode))
+        return true
+    end
+
+    state.original = original
+    if not write_zoom_time(weapon, target) then
+        write_zoom_time(weapon, original)
+        M.last_error = "aim-speed application failed"
+        return false
+    end
+    state.applied = true
+    M.active_scope = scope
+    M.active_class = sight_class
+    M.original_time = original
+    M.applied_time = target
+    aim_log("[sivol_aim_speed][apply] section=%s item_id=%s scope=%s mode=%s class=%s zoom=%.3f launcher=%s original=%.4f target=%.4f",
+        tostring(section), tostring(item_id), tostring(scope), tostring(mode),
+        sight_class, zoom, tostring(launcher), original, target)
+    return true
+end
+
+local function on_update()
+    if state.disabled or not ENABLED then return end
+    if not db or not db.actor then
+        if state.item_id and not reset_current("actor unavailable") then state.disabled = true end
+        return
+    end
+    local ok_item, item = pcall(db.actor.active_item, db.actor)
+    if not ok_item then
+        if state.item_id then reset_current("active item query failed") end
+        state.disabled = true
+        return
+    end
+    local item_id = object_id(item)
+    if not item or not item_id then
+        if state.item_id and not reset_current("no active item") then state.disabled = true end
+        return
+    end
+    local ok, result = pcall(prepare, item, item_id)
+    if not ok or not result then
+        M.last_error = "update failed: " .. tostring(result)
+        reset_current("update failure")
+        state.disabled = true
+    end
+end
+
+local function on_first_update()
+    state.disabled = not reset_current("load/reset")
+    if not state.disabled then M.last_error = nil end
+end
+
+local function on_before_save_game()
+    if not reset_current("save") then state.disabled = true end
+end
+
+local function on_stop_modules()
+    reset_current("shutdown")
+    state.disabled = true
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_first_update", fun = on_first_update })
+    sm:subscribe({ signal = "on_update", fun = on_update })
+    sm:subscribe({ signal = "on_before_save_game", fun = on_before_save_game })
+    sm:subscribe({ signal = "on_stop_modules", fun = on_stop_modules })
+end
+
+M.attach = attach

@@ -6,8 +6,8 @@
 --   * keeps camera and HUD contributions separately reversible;
 --   * restores native fields on item changes, saves, errors and shutdown.
 --
--- Deliberately deferred: bloom, FOV changes, camera effectors, menu tuning,
--- runtime inertia changes, external balance patches and upgrade iteration.
+-- Deliberately deferred: ballistic bloom, FOV changes, menu tuning, external
+-- balance patches and upgrade iteration.
 
 sivol_fuzz_recoil = sivol_fuzz_recoil or {}
 
@@ -19,14 +19,26 @@ local HUD_RECOIL_ENABLED = true
 -- Set true only while validating this port in game. Logging is intentionally
 -- bounded to capability/prepare events, the first three shots per weapon, and
 -- restoration failures.
-local RECOIL_DIAGNOSTICS = false
+local RECOIL_DIAGNOSTICS = true
 local STAMINA_RECOIL_PENALTY = 0.35
+
+-- Experimental camera-animation layer. OGSR HE has no runtime camera-effector
+-- factor setter, so these point at safely pre-scaled copies of the original
+-- Fuzz unit tracks. Disable this one switch to compare script/hook recoil alone.
+local ANM_RECOIL_EXPERIMENT_ENABLED = true
+local ANM_CAMERA_EFFECT = "camera_effects\\sivol_onerad_006.anm"
+local ANM_SHOVE_EFFECT = "camera_effects\\sivol_oneshove_004.anm"
+local ANM_CAMERA_EFFECT_ID = 7897
+local ANM_SHOVE_EFFECT_ID = 7900
 
 local function recoil_log(fmt, ...)
     if RECOIL_DIAGNOSTICS then log2(fmt, ...) end
 end
 
 local DEG_TO_RAD = math.pi / 180.0
+-- CCameraBase.pitch is inverted relative to the visible camera direction's
+-- getP() value in this OGSR build. A negative member delta therefore produces
+-- positive on-screen muzzle rise.
 local PITCH_SIGN = -1.0
 local PROBE_CAMERA_DELTA = 0.002 * DEG_TO_RAD
 local CAMERA_EPSILON = 0.001 * DEG_TO_RAD
@@ -34,10 +46,41 @@ local WRITE_EPSILON = 0.000001
 
 local DEFAULT_DT = 0.016
 local MAX_DT = 0.25
-local BURST_DECAY_RATE = 6.0
+local BURST_END_DELAY = 0.60
+local BURST_CONTINUITY_DECAY_RATE = 8.0
+local BURST_CONTINUITY_THRESHOLD = 0.15
+local BURST_CLIMB_STEP = 0.18
+local BURST_CLIMB_MAX = 1.80
+local RECOIL_HEAT_DECAY_RATE = 1.25
+local RECOIL_HEAT_GRACE_GAIN_SCALE = 0.20
+local ACTIVE_BURST_RETURN_SCALE = 0.40
+local PITCH_IMMEDIATE_SHARE = 0.40
+local PITCH_VELOCITY_DECAY_RATE = 14.0
+local RECOVERY_REPORT_EPSILON = 0.00005
 local HANDLING_RECOVERY_RATE = 1.65
 local MOUSE_TRACK_MAX_DELTA = 0.35
-local HUD_POSITION_PER_RAD = 0.008
+-- The hook applies a conventional X-axis rotation, whose positive direction
+-- pitches this build's weapon model down. Camera pitch uses the opposite live
+-- convention, so keep the two signs independent.
+local HUD_PITCH_SIGN = -1.0
+-- A small upward hand translation supports the visual muzzle rise without
+-- replacing the faster rearward Z shove.
+local HUD_VERTICAL_LIFT_PER_RAD = 0.018
+local HUD_MAX_POS_X = 0.0025
+local HUD_MAX_POS_Y = 0.0035
+local HUD_MAX_POS_Z = 0.0200
+local HUD_MAX_PITCH = 0.090
+local HUD_MAX_YAW = 0.060
+local HUD_MAX_ROLL = 0.035
+local HUD_Z_RECOVERY = 9.0
+local HUD_LATERAL_RECOVERY_SCALE = 0.72
+local HUD_SPRING_ENABLED = true
+local HUD_SPRING_PITCH_SHARE = 0.22
+local HUD_SPRING_YAW_SHARE = 0.15
+local HUD_SPRING_FREQUENCY = 18.0
+-- A velocity impulse of share * frequency * e gives the critically damped
+-- channel a peak displacement close to the authored share of the shot kick.
+local HUD_SPRING_PEAK_VELOCITY_GAIN = math.exp(1.0)
 
 -- These are the native recoil inputs that are temporarily neutralized. The
 -- exact values are cached by item ID before the first write and restored as a
@@ -74,10 +117,30 @@ local state = {
     applied_yaw = 0,
     recoil_pitch = 0,
     recoil_yaw = 0,
-    burst = 0,
+    burst_continuity = 0,
+    recoil_heat = 0,
+    pitch_velocity = 0,
+    burst_shots = 0,
+    burst_start_ms = nil,
+    burst_summary_logged = false,
+    recovery_logged = false,
+    yaw_sign = -1,
+    peak_camera_pitch = 0,
+    peak_camera_yaw = 0,
+    peak_hud_pos = 0,
+    peak_hud_rot = 0,
+    peak_hud_spring_rot = 0,
+    peak_heat = 0,
+    camera_clamp_hits = 0,
+    hud_clamp_hits = 0,
     fatigue = 0,
     handling = 0,
     last_shot_ms = nil,
+    camera_return_scale = 1.0,
+    direction_guard_hits = 0,
+    anm_shots = 0,
+    anm_disabled = false,
+    anm_last_error = nil,
     last_update_ms = nil,
     last_ammo = nil,
     shot_count = 0,
@@ -86,6 +149,17 @@ local state = {
     measured_mouse_pitch = 0,
     measured_mouse_yaw = 0,
     hud_item = nil,
+    hud_pos_x = 0,
+    hud_pos_y = 0,
+    hud_pos_z = 0,
+    hud_pitch = 0,
+    hud_yaw = 0,
+    hud_roll = 0,
+    hud_spring_pitch = 0,
+    hud_spring_yaw = 0,
+    hud_spring_pitch_velocity = 0,
+    hud_spring_yaw_velocity = 0,
+    hud_api = "none",
 }
 
 M.enabled = ENABLED
@@ -102,6 +176,9 @@ M.recoil_pitch = 0
 M.recoil_yaw = 0
 M.external_pitch = 0
 M.external_yaw = 0
+M.burst_continuity = 0
+M.recoil_heat = 0
+M.pitch_velocity = 0
 
 local function valid_number(value)
     local ok, number = pcall(function() return tonumber(value) end)
@@ -116,6 +193,28 @@ local function exp_step(current, target, rate, dt)
     if rate <= 0 or dt <= 0 then return current end
     local factor = 1.0 - math.exp(-rate * dt)
     return current + (target - current) * factor
+end
+
+local function critically_damped_step(position, velocity, frequency, dt)
+    if frequency <= 0 or dt <= 0 then return position, velocity end
+    -- Exact solution of x'' + 2*w*x' + w^2*x = 0. Unlike a frame-stepped
+    -- Euler spring, this remains critically damped and stable across FPS dips.
+    local coupled = velocity + frequency * position
+    local decay = math.exp(-frequency * dt)
+    local next_position = (position + coupled * dt) * decay
+    local next_velocity = (velocity - frequency * coupled * dt) * decay
+    return next_position, next_velocity
+end
+
+local function clamp_hud_spring_axis(direct, spring, velocity, limit)
+    local combined = direct + spring
+    if math.abs(combined) <= limit then return spring, velocity, false end
+    local bounded = clamp(combined, -limit, limit)
+    spring = bounded - direct
+    if bounded >= limit and velocity > 0 or bounded <= -limit and velocity < 0 then
+        velocity = 0
+    end
+    return spring, velocity, true
 end
 
 local function object_id(object)
@@ -171,6 +270,11 @@ local function publish_state()
     M.recoil_yaw = state.recoil_yaw
     M.external_pitch = state.measured_mouse_pitch
     M.external_yaw = state.measured_mouse_yaw
+    M.burst_continuity = state.burst_continuity
+    M.recoil_heat = state.recoil_heat
+    M.pitch_velocity = state.pitch_velocity
+    M.hud_spring_pitch = state.hud_spring_pitch
+    M.hud_spring_yaw = state.hud_spring_yaw
 end
 
 local function reset_dynamics(keep_applied)
@@ -180,16 +284,44 @@ local function reset_dynamics(keep_applied)
     end
     state.recoil_pitch = 0
     state.recoil_yaw = 0
-    state.burst = 0
+    state.burst_continuity = 0
+    state.recoil_heat = 0
+    state.pitch_velocity = 0
+    state.burst_shots = 0
+    state.burst_start_ms = nil
+    state.burst_summary_logged = false
+    state.recovery_logged = false
+    state.yaw_sign = -1
+    state.peak_camera_pitch = 0
+    state.peak_camera_yaw = 0
+    state.peak_hud_pos = 0
+    state.peak_hud_rot = 0
+    state.peak_hud_spring_rot = 0
+    state.peak_heat = 0
+    state.camera_clamp_hits = 0
+    state.hud_clamp_hits = 0
     state.fatigue = 0
     state.handling = 0
     state.last_shot_ms = nil
+    state.camera_return_scale = 1.0
+    state.direction_guard_hits = 0
+    state.anm_shots = 0
     state.last_ammo = nil
     state.last_base_pitch = nil
     state.last_base_yaw = nil
     state.measured_mouse_pitch = 0
     state.measured_mouse_yaw = 0
     state.shot_count = 0
+    state.hud_pos_x = 0
+    state.hud_pos_y = 0
+    state.hud_pos_z = 0
+    state.hud_pitch = 0
+    state.hud_yaw = 0
+    state.hud_roll = 0
+    state.hud_spring_pitch = 0
+    state.hud_spring_yaw = 0
+    state.hud_spring_pitch_velocity = 0
+    state.hud_spring_yaw_velocity = 0
 end
 
 local function remove_camera_contribution()
@@ -208,6 +340,50 @@ local function remove_camera_contribution()
     state.applied_pitch = 0
     state.applied_yaw = 0
     return ok
+end
+
+local function remove_anm_effectors()
+    if not level or type(level.remove_cam_effector) ~= "function" then return true end
+    local camera_ok = pcall(level.remove_cam_effector, ANM_CAMERA_EFFECT_ID)
+    local shove_ok = pcall(level.remove_cam_effector, ANM_SHOVE_EFFECT_ID)
+    return camera_ok and shove_ok
+end
+
+local function disable_anm_experiment(reason)
+    if state.anm_disabled then return end
+    state.anm_disabled = true
+    state.anm_last_error = tostring(reason or "unknown camera-effector failure")
+    remove_anm_effectors()
+    recoil_log("[sivol_fuzz_recoil][anm] state=disabled reason=%s",
+        state.anm_last_error)
+end
+
+local function play_anm_recoil()
+    if not ANM_RECOIL_EXPERIMENT_ENABLED or state.anm_disabled then return end
+    if not level or type(level.add_cam_effector) ~= "function" then
+        disable_anm_experiment("level.add_cam_effector is unavailable")
+        return
+    end
+
+    -- Reusing two reserved IDs makes the experiment non-stacking: a new shot
+    -- restarts each short track instead of leaving an unbounded effector list.
+    remove_anm_effectors()
+    local camera_ok, camera_error = pcall(
+        level.add_cam_effector, ANM_CAMERA_EFFECT, ANM_CAMERA_EFFECT_ID, false, "")
+    local shove_ok, shove_error = pcall(
+        level.add_cam_effector, ANM_SHOVE_EFFECT, ANM_SHOVE_EFFECT_ID, false, "")
+    if not camera_ok or not shove_ok then
+        disable_anm_experiment(string.format("camera=%s shove=%s",
+            tostring(camera_error), tostring(shove_error)))
+        return
+    end
+
+    state.anm_shots = state.anm_shots + 1
+    if state.anm_shots <= 3 then
+        recoil_log(
+            "[sivol_fuzz_recoil][anm] state=played shot=%d camera=%s shove=%s",
+            state.anm_shots, ANM_CAMERA_EFFECT, ANM_SHOVE_EFFECT)
+    end
 end
 
 local function read_native_value(weapon, field)
@@ -318,18 +494,18 @@ local function restore_all_native()
 end
 
 local function hud_api_type()
-    return type(fl_hud_recoil_set), type(fl_hud_recoil_clear)
+    return type(fl_hud_recoil_set6), type(fl_hud_recoil_set), type(fl_hud_recoil_clear)
 end
 
 local function write_hud_neutral(item)
-    local set_type, clear_type = hud_api_type()
-    if clear_type ~= "function" or set_type ~= "function" then
+    local set6_type, set_type, clear_type = hud_api_type()
+    if clear_type ~= "function" or (set6_type ~= "function" and set_type ~= "function") then
         local reason = "fl_hud_recoil_* is not registered by the engine hook"
-        return false, set_type, clear_type, reason, reason
+        return false, set6_type, set_type, clear_type, reason
     end
     local ok, err = pcall(fl_hud_recoil_clear)
     local reason = ok and "none" or tostring(err)
-    return ok, set_type, clear_type, reason, reason
+    return ok, set6_type, set_type, clear_type, reason
 end
 
 local function restore_hud()
@@ -340,18 +516,18 @@ local function restore_hud()
 end
 
 local function probe_hud(item)
-    local ok, offset_type, rotate_type, offset_error, rotate_error = write_hud_neutral(item)
+    local ok, set6_type, set_type, clear_type, api_error = write_hud_neutral(item)
     local ok_hud_item, is_hud_item = pcall(function()
         if type(item.is_hud_item) ~= "function" then return "unavailable" end
         return item:is_hud_item()
     end)
     recoil_log(
-        "[sivol_fuzz_recoil][hud_probe] section=%s is_hud_item=%s offset_type=%s rotate_type=%s offset_ok=%s rotate_ok=%s offset_error=%s rotate_error=%s",
+        "[sivol_fuzz_recoil][hud_probe] section=%s is_hud_item=%s api=%s set6_type=%s set_type=%s clear_type=%s ok=%s error=%s",
         tostring(state.profile and state.profile.section or "unknown"),
         tostring(ok_hud_item and is_hud_item or "query_error"),
-        tostring(offset_type), tostring(rotate_type),
-        tostring(offset_error == "none"), tostring(rotate_error == "none"),
-        tostring(offset_error), tostring(rotate_error)
+        set6_type == "function" and "six_axis" or "three_axis",
+        tostring(set6_type), tostring(set_type), tostring(clear_type),
+        tostring(ok), tostring(api_error)
     )
     if not ok then
         -- A setter failure blocks only the HUD layer. Camera recoil remains
@@ -361,21 +537,42 @@ local function probe_hud(item)
         return false
     end
     state.hud_enabled = true
+    state.hud_api = set6_type == "function" and "six_axis" or "three_axis"
     M.hud_capability = "ready"
     return true
 end
 
-local function write_hud_recoil(item, pitch, yaw)
-    local class = state.profile and state.profile.class
-    local pitch_scale = class and class.hud_pitch_scale or 0.45
-    local yaw_scale = class and class.hud_yaw_scale or 0.34
-    local position_y = pitch * HUD_POSITION_PER_RAD * (pitch_scale / 0.50)
-    local rotate_x = pitch * pitch_scale
-    local rotate_y = yaw * yaw_scale
-    if type(fl_hud_recoil_set) ~= "function" then
+local function write_hud_recoil(item)
+    local ok, applied
+    local hud_pitch = state.hud_pitch + state.hud_spring_pitch
+    local hud_yaw = state.hud_yaw + state.hud_spring_yaw
+    local neutral = math.abs(state.hud_pos_x) <= WRITE_EPSILON
+        and math.abs(state.hud_pos_y) <= WRITE_EPSILON
+        and math.abs(state.hud_pos_z) <= WRITE_EPSILON
+        and math.abs(hud_pitch) <= WRITE_EPSILON
+        and math.abs(hud_yaw) <= WRITE_EPSILON
+        and math.abs(state.hud_roll) <= WRITE_EPSILON
+    if neutral then
+        -- Do not keep the hook's render transform active with an identity
+        -- matrix after recoil has settled. Clear it once, then make idle
+        -- updates a Lua-only branch with no hook call.
+        if not state.hud_item then return true end
+        local cleared = write_hud_neutral(item)
+        if cleared then state.hud_item = nil end
+        return cleared
+    end
+    if type(fl_hud_recoil_set6) == "function" then
+        ok, applied = pcall(
+            fl_hud_recoil_set6,
+            state.hud_pos_x, state.hud_pos_y, state.hud_pos_z,
+            hud_pitch, hud_yaw, state.hud_roll)
+    elseif type(fl_hud_recoil_set) == "function" then
+        ok, applied = pcall(
+            fl_hud_recoil_set,
+            state.hud_pos_y, hud_pitch, hud_yaw)
+    else
         return false
     end
-    local ok, applied = pcall(fl_hud_recoil_set, position_y, rotate_x, rotate_y)
     if not ok then
         write_hud_neutral(item)
         return false
@@ -440,6 +637,7 @@ local function disable_session(reason)
     state.camera_enabled = false
     state.hud_enabled = false
     local camera_removed = remove_camera_contribution()
+    remove_anm_effectors()
     restore_hud()
     if not restore_all_native() then
         M.last_error = M.last_error .. "; native restoration still pending"
@@ -499,6 +697,93 @@ local function resolve_suppressor_profile(item, profile)
     return clamp(tonumber(recoil_k), 0, 2), mode or "base", resolved_section
 end
 
+local function resolve_attachment_profile(item, profile)
+    profile.addon_mass = 0
+    profile.addon_sections = ""
+    profile.attachment_stability_k = 1.0
+    profile.attachment_recovery_k = 1.0
+
+    if not sivol_weapon or type(sivol_weapon.get_weapon_mass_stats) ~= "function" then
+        return
+    end
+    local ok, stats = pcall(sivol_weapon.get_weapon_mass_stats, item, profile.section)
+    if not ok or type(stats) ~= "table" then return end
+
+    local addon_mass = tonumber(stats.addon_mass) or 0
+    profile.addon_mass = math.max(0, addon_mass)
+    profile.addon_sections = tostring(stats.addon_sections or "")
+    local adapter = get_profile_adapter()
+    if adapter and type(adapter.get_attachment_mass_effects) == "function" then
+        local effects = adapter.get_attachment_mass_effects(profile.addon_mass)
+        profile.attachment_stability_k = effects.stability_k
+        profile.attachment_recovery_k = effects.recovery_k
+        return
+    end
+
+    local global = profile.global_recoil or {}
+    profile.attachment_stability_k = clamp(1.0 - profile.addon_mass
+        * (global.attachment_stability_per_kg or 0),
+        global.attachment_stability_min or 0.88, 1.0)
+    profile.attachment_recovery_k = clamp(1.0 - profile.addon_mass
+        * (global.attachment_recovery_per_kg or 0),
+        global.attachment_recovery_min or 0.90, 1.0)
+end
+
+local function read_ini_float(section, key, default)
+    if not sys_ini or not section then return default end
+    local ok_exists, exists = pcall(sys_ini.line_exist, sys_ini, section, key)
+    if not ok_exists or not exists then return default end
+    local ok_value, value = pcall(sys_ini.r_float, sys_ini, section, key)
+    value = ok_value and tonumber(value) or nil
+    return value or default
+end
+
+-- Returns the same suppressor and attachment-mass multipliers used by gameplay.
+-- Suppressor mass values are marginal: current attachment load with the
+-- suppressor divided by the same load with only the suppressor removed.
+function M.get_recoil_modifier_breakdown(item, section)
+    if not item or not section or not sivol_weapon
+        or type(sivol_weapon.get_suppressor_recoil_k) ~= "function"
+        or type(sivol_weapon.get_weapon_mass_stats) ~= "function" then
+        return nil
+    end
+
+    local ok_sil, gas_k, mode, silencer_section = pcall(
+        sivol_weapon.get_suppressor_recoil_k, item, section)
+    gas_k = ok_sil and tonumber(gas_k) or nil
+    if not gas_k then return nil end
+
+    local ok_stats, stats = pcall(sivol_weapon.get_weapon_mass_stats, item, section)
+    if not ok_stats or type(stats) ~= "table" then return nil end
+    local total_mass = math.max(0, tonumber(stats.addon_mass) or 0)
+    local silencer_mass = 0
+    if mode == "detachable_attached" and silencer_section then
+        silencer_mass = math.max(0, read_ini_float(silencer_section, "inv_weight", 0))
+    end
+
+    local adapter = get_profile_adapter()
+    if not adapter or type(adapter.get_attachment_mass_effects) ~= "function" then
+        return nil
+    end
+    local with_silencer = adapter.get_attachment_mass_effects(total_mass)
+    local without_silencer = adapter.get_attachment_mass_effects(
+        math.max(0, total_mass - silencer_mass))
+    local mass_k = with_silencer.stability_k / without_silencer.stability_k
+    local recovery_k = with_silencer.recovery_k / without_silencer.recovery_k
+
+    return {
+        mode = mode,
+        silencer_section = silencer_section,
+        gas_k = gas_k,
+        silencer_mass = silencer_mass,
+        mass_k = mass_k,
+        combined_k = gas_k * mass_k,
+        recovery_k = recovery_k,
+        total_attachment_stability_k = with_silencer.stability_k,
+        total_attachment_recovery_k = with_silencer.recovery_k,
+    }
+end
+
 local function prepare_active_item(item)
     if not item then return true end
     local profile_adapter = get_profile_adapter()
@@ -543,18 +828,35 @@ local function prepare_active_item(item)
     profile.suppressor_recoil_k = suppressor_k
     profile.suppressor_mode = suppressor_mode
     profile.suppressor_section = suppressor_section
+    resolve_attachment_profile(item, profile)
+    profile.recovery_rate = profile.recovery_rate * profile.attachment_recovery_k
 
     local raw = profile.live_raw
     local live = profile.live
     recoil_log(
-        "[sivol_fuzz_recoil][prepare] section=%s class=%s cam_dispersion_rad=%.6f cam_dispersion_deg=%.4f cam_dispersion_inc_rad=%.6f cam_dispersion_inc_deg=%.4f cam_relax_rad=%.6f cam_relax_deg=%.4f cam_step_rad=%.6f cam_step_deg=%.4f recovery=%.4f fire_interval=%.6f suppressor_k=%.4f suppressor_mode=%s suppressor_section=%s",
-        tostring(profile.section), tostring(profile.class_name),
+        "[sivol_fuzz_recoil][prepare] section=%s base=%s class=%s cam_dispersion_rad=%.6f cam_dispersion_deg=%.4f cam_dispersion_inc_rad=%.6f cam_dispersion_inc_deg=%.4f cam_relax_rad=%.6f cam_relax_deg=%.4f cam_step_rad=%.6f cam_step_deg=%.4f recovery=%.4f fire_interval=%.6f suppressor_k=%.4f suppressor_mode=%s suppressor_section=%s addon_mass=%.3f addon_stability_k=%.4f addon_recovery_k=%.4f addon_sections=%s",
+        tostring(profile.section), tostring(profile.base_section), tostring(profile.class_name),
         raw.cam_dispersion, live.cam_dispersion,
         raw.cam_dispersion_inc, live.cam_dispersion_inc,
         raw.cam_relax_speed, live.cam_relax_speed,
         raw.cam_step_angle_horz, live.cam_step_angle_horz,
         profile.recovery_rate, live.time_to_fire, suppressor_k,
-        tostring(suppressor_mode), tostring(suppressor_section or "none"))
+        tostring(suppressor_mode), tostring(suppressor_section or "none"),
+        profile.addon_mass, profile.attachment_stability_k,
+        profile.attachment_recovery_k, profile.addon_sections)
+    local personality = profile.personality or {}
+    local global = profile.global_recoil or {}
+    recoil_log(
+        "[sivol_fuzz_recoil][tuning] section=%s global=(%.3f,%.3f,%.3f,%.3f,%.3f) personality=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f) heat=(%d,%.3f,%.3f) yaw_persistence=%.3f shove=%.3f hip_override=%s",
+        tostring(profile.section), global.overall or 1.0,
+        global.camera_pitch or 1.0, global.camera_yaw or 1.0,
+        global.hud_rotation or 1.0, global.hud_translation or 1.0,
+        personality.pitch or 1.0, personality.yaw or 1.0,
+        personality.first or 1.0, personality.second or 1.0,
+        personality.sustained or 1.0, personality.recovery or 1.0,
+        personality.heat_grace or 6, personality.heat_rate or 0.055,
+        personality.heat_max or 1.55, personality.yaw_persistence or 0.62,
+        personality.shove or 1.0, tostring(personality.hip_multiplier or "class"))
 
     local id = object_id(item)
     if not id then return false, "active firearm ID unavailable" end
@@ -575,6 +877,7 @@ local function prepare_active_item(item)
 end
 
 local function clear_active_item(keep_applied)
+    remove_anm_effectors()
     state.item_id = nil
     state.item = nil
     state.weapon = nil
@@ -658,19 +961,165 @@ local function sample_base_camera(camera)
     return pitch, yaw
 end
 
+local function reset_burst_metrics(start_ms)
+    state.burst_shots = 0
+    state.burst_start_ms = start_ms
+    state.burst_summary_logged = false
+    state.recovery_logged = false
+    state.peak_camera_pitch = 0
+    state.peak_camera_yaw = 0
+    state.peak_hud_pos = 0
+    state.peak_hud_rot = 0
+    state.peak_hud_spring_rot = 0
+    state.peak_heat = state.recoil_heat
+    state.camera_clamp_hits = 0
+    state.hud_clamp_hits = 0
+end
+
+local function update_burst_peaks()
+    local hud_pitch = state.hud_pitch + state.hud_spring_pitch
+    local hud_yaw = state.hud_yaw + state.hud_spring_yaw
+    state.peak_camera_pitch = math.max(state.peak_camera_pitch, math.abs(state.recoil_pitch))
+    state.peak_camera_yaw = math.max(state.peak_camera_yaw, math.abs(state.recoil_yaw))
+    state.peak_hud_pos = math.max(
+        state.peak_hud_pos,
+        math.abs(state.hud_pos_x), math.abs(state.hud_pos_y), math.abs(state.hud_pos_z))
+    state.peak_hud_rot = math.max(
+        state.peak_hud_rot,
+        math.abs(hud_pitch), math.abs(hud_yaw), math.abs(state.hud_roll))
+    state.peak_hud_spring_rot = math.max(
+        state.peak_hud_spring_rot,
+        math.abs(state.hud_spring_pitch), math.abs(state.hud_spring_yaw))
+    state.peak_heat = math.max(state.peak_heat, state.recoil_heat)
+end
+
+local function log_burst_summary(now, reason)
+    if state.burst_shots <= 0 or state.burst_summary_logged then return end
+    local elapsed = state.burst_start_ms and math.max(0, now - state.burst_start_ms) or 0
+    recoil_log(
+        "[sivol_fuzz_recoil][burst] section=%s shots=%d duration_ms=%d peak_camera_deg=(%.4f,%.4f) peak_hud_pos=%.6f peak_hud_rot_deg=%.4f peak_hud_spring_rot_deg=%.4f peak_heat=%.3f camera_clamps=%d hud_clamps=%d reason=%s",
+        tostring(state.profile and state.profile.section or "unknown"),
+        state.burst_shots, elapsed,
+        math.deg(state.peak_camera_pitch), math.deg(state.peak_camera_yaw),
+        state.peak_hud_pos, math.deg(state.peak_hud_rot),
+        math.deg(state.peak_hud_spring_rot), state.peak_heat,
+        state.camera_clamp_hits, state.hud_clamp_hits, tostring(reason or "idle"))
+    state.burst_summary_logged = true
+end
+
+local function maybe_log_recovery(now)
+    if not state.burst_summary_logged or state.recovery_logged then return end
+    local peak = math.max(
+        math.abs(state.recoil_pitch), math.abs(state.recoil_yaw),
+        math.abs(state.pitch_velocity) / PITCH_VELOCITY_DECAY_RATE,
+        math.abs(state.hud_pos_x), math.abs(state.hud_pos_y), math.abs(state.hud_pos_z),
+        math.abs(state.hud_pitch + state.hud_spring_pitch),
+        math.abs(state.hud_yaw + state.hud_spring_yaw), math.abs(state.hud_roll),
+        math.abs(state.hud_spring_pitch_velocity) / HUD_SPRING_FREQUENCY,
+        math.abs(state.hud_spring_yaw_velocity) / HUD_SPRING_FREQUENCY)
+    if peak > RECOVERY_REPORT_EPSILON then return end
+    local elapsed = state.burst_start_ms and math.max(0, now - state.burst_start_ms) or 0
+    recoil_log(
+        "[sivol_fuzz_recoil][recovered] section=%s shots=%d elapsed_ms=%d",
+        tostring(state.profile and state.profile.section or "unknown"),
+        state.burst_shots, elapsed)
+    state.recovery_logged = true
+end
+
+local function get_camera_return_scale()
+    if state.burst_continuity >= BURST_CONTINUITY_THRESHOLD then
+        return ACTIVE_BURST_RETURN_SCALE
+    end
+    return 1.0
+end
+
 local function recover_recoil(dt)
     local profile = state.profile
     if not profile then return end
     local class = profile.class
-    state.recoil_pitch = exp_step(state.recoil_pitch, 0, profile.recovery_rate, dt)
-    state.recoil_yaw = exp_step(state.recoil_yaw, 0, profile.recovery_rate * 1.18, dt)
-    state.burst = exp_step(state.burst, 0, BURST_DECAY_RATE, dt)
+    local velocity_decay = math.exp(-PITCH_VELOCITY_DECAY_RATE * dt)
+    local velocity_delta = state.pitch_velocity
+        * (1.0 - velocity_decay) / PITCH_VELOCITY_DECAY_RATE
+    state.pitch_velocity = state.pitch_velocity * velocity_decay
+    local velocity_pitch = state.recoil_pitch + velocity_delta
+    local max_pitch = class.max_pitch_deg * DEG_TO_RAD
+    if math.abs(velocity_pitch) > max_pitch then
+        state.camera_clamp_hits = state.camera_clamp_hits + 1
+        velocity_pitch = clamp(velocity_pitch, -max_pitch, max_pitch)
+        if velocity_pitch <= -max_pitch and state.pitch_velocity < 0
+            or velocity_pitch >= max_pitch and state.pitch_velocity > 0 then
+            state.pitch_velocity = 0
+        end
+    end
+    state.recoil_pitch = velocity_pitch
+
+    state.camera_return_scale = get_camera_return_scale()
+    local camera_recovery_rate = profile.recovery_rate * state.camera_return_scale
+    state.recoil_pitch = exp_step(state.recoil_pitch, 0, camera_recovery_rate, dt)
+    state.recoil_yaw = exp_step(state.recoil_yaw, 0, camera_recovery_rate * 1.18, dt)
+    local hud_vertical_rate = profile.recovery_rate * 1.12
+    local hud_lateral_rate = profile.recovery_rate * HUD_LATERAL_RECOVERY_SCALE
+    state.hud_pos_x = exp_step(state.hud_pos_x, 0, hud_lateral_rate, dt)
+    state.hud_pos_y = exp_step(state.hud_pos_y, 0, hud_vertical_rate, dt)
+    state.hud_pos_z = exp_step(state.hud_pos_z, 0, math.max(HUD_Z_RECOVERY, profile.recovery_rate * 1.8), dt)
+    state.hud_pitch = exp_step(state.hud_pitch, 0, hud_vertical_rate, dt)
+    state.hud_yaw = exp_step(state.hud_yaw, 0, hud_lateral_rate, dt)
+    state.hud_roll = exp_step(state.hud_roll, 0, hud_lateral_rate * 1.15, dt)
+    local global = profile.global_recoil or {}
+    local spring_frequency = clamp(
+        global.hud_spring_frequency or HUD_SPRING_FREQUENCY, 8.0, 30.0)
+    if HUD_SPRING_ENABLED then
+        state.hud_spring_pitch, state.hud_spring_pitch_velocity = critically_damped_step(
+            state.hud_spring_pitch, state.hud_spring_pitch_velocity,
+            spring_frequency, dt)
+        state.hud_spring_yaw, state.hud_spring_yaw_velocity = critically_damped_step(
+            state.hud_spring_yaw, state.hud_spring_yaw_velocity,
+            spring_frequency, dt)
+        local pitch_clamped, yaw_clamped
+        state.hud_spring_pitch, state.hud_spring_pitch_velocity, pitch_clamped =
+            clamp_hud_spring_axis(
+                state.hud_pitch, state.hud_spring_pitch,
+                state.hud_spring_pitch_velocity, HUD_MAX_PITCH)
+        state.hud_spring_yaw, state.hud_spring_yaw_velocity, yaw_clamped =
+            clamp_hud_spring_axis(
+                state.hud_yaw, state.hud_spring_yaw,
+                state.hud_spring_yaw_velocity, HUD_MAX_YAW)
+        if pitch_clamped or yaw_clamped then
+            state.hud_clamp_hits = state.hud_clamp_hits + 1
+        end
+    else
+        state.hud_spring_pitch = 0
+        state.hud_spring_yaw = 0
+        state.hud_spring_pitch_velocity = 0
+        state.hud_spring_yaw_velocity = 0
+    end
+    state.burst_continuity = exp_step(
+        state.burst_continuity, 0, BURST_CONTINUITY_DECAY_RATE, dt)
+    state.recoil_heat = exp_step(state.recoil_heat, 0, RECOIL_HEAT_DECAY_RATE, dt)
     state.handling = exp_step(state.handling, 0, HANDLING_RECOVERY_RATE, dt)
     state.fatigue = exp_step(state.fatigue, 0, class.fatigue_recovery, dt)
 
     if math.abs(state.recoil_pitch) < WRITE_EPSILON then state.recoil_pitch = 0 end
     if math.abs(state.recoil_yaw) < WRITE_EPSILON then state.recoil_yaw = 0 end
-    if state.burst < WRITE_EPSILON then state.burst = 0 end
+    if math.abs(state.hud_pos_x) < WRITE_EPSILON then state.hud_pos_x = 0 end
+    if math.abs(state.hud_pos_y) < WRITE_EPSILON then state.hud_pos_y = 0 end
+    if math.abs(state.hud_pos_z) < WRITE_EPSILON then state.hud_pos_z = 0 end
+    if math.abs(state.hud_pitch) < WRITE_EPSILON then state.hud_pitch = 0 end
+    if math.abs(state.hud_yaw) < WRITE_EPSILON then state.hud_yaw = 0 end
+    if math.abs(state.hud_roll) < WRITE_EPSILON then state.hud_roll = 0 end
+    if math.abs(state.hud_spring_pitch) < WRITE_EPSILON
+        and math.abs(state.hud_spring_pitch_velocity) < WRITE_EPSILON * spring_frequency then
+        state.hud_spring_pitch = 0
+        state.hud_spring_pitch_velocity = 0
+    end
+    if math.abs(state.hud_spring_yaw) < WRITE_EPSILON
+        and math.abs(state.hud_spring_yaw_velocity) < WRITE_EPSILON * spring_frequency then
+        state.hud_spring_yaw = 0
+        state.hud_spring_yaw_velocity = 0
+    end
+    if math.abs(state.pitch_velocity) < WRITE_EPSILON then state.pitch_velocity = 0 end
+    if state.burst_continuity < WRITE_EPSILON then state.burst_continuity = 0 end
+    if state.recoil_heat < WRITE_EPSILON then state.recoil_heat = 0 end
 end
 
 local function apply_camera_contribution(camera)
@@ -745,6 +1194,7 @@ local function on_update_impl(delta)
     local gl_mode, gl_reason = read_gl_mode(state.item)
     if gl_mode == nil then return false, gl_reason end
     if gl_mode then
+        remove_anm_effectors()
         restore_hud()
         reset_dynamics()
         publish_state()
@@ -757,8 +1207,15 @@ local function on_update_impl(delta)
     if base_pitch == nil or base_yaw == nil then
         return false, "camera angle read failed" end
 
+    local update_now = now_ms()
     local dt = get_dt(delta)
     recover_recoil(dt)
+    if state.burst_shots > 0 then update_burst_peaks() end
+    if state.last_shot_ms and update_now >= state.last_shot_ms
+        and (update_now - state.last_shot_ms) / 1000.0 > BURST_END_DELAY then
+        log_burst_summary(update_now, "idle")
+        maybe_log_recovery(update_now)
+    end
 
     local ammo = get_ammo(state.item)
     if ammo ~= nil then state.last_ammo = ammo end
@@ -768,14 +1225,14 @@ local function on_update_impl(delta)
     end
 
     if HUD_RECOIL_ENABLED and state.hud_enabled then
-        if not write_hud_recoil(state.item, state.recoil_pitch, state.recoil_yaw) then
+        if not write_hud_recoil(state.item) then
             state.hud_enabled = false
             M.hud_capability = "blocked"
             state.capability_state = "camera_only"
         end
     end
 
-    state.last_update_ms = now_ms()
+    state.last_update_ms = update_now
     publish_state()
     return true
 end
@@ -796,67 +1253,253 @@ local function add_shot_impulse()
     local class = profile.class
     local live = profile.live
     local now = now_ms()
-    local gap = nil
-    if state.last_shot_ms and now >= state.last_shot_ms then
-        gap = (now - state.last_shot_ms) / 1000.0
+    local continuity_before = state.burst_continuity
+    local continuing_burst = state.burst_shots > 0
+        and continuity_before >= BURST_CONTINUITY_THRESHOLD
+    if not continuing_burst then
+        if state.burst_shots > 0 then log_burst_summary(now, "continuity_expired") end
+        reset_burst_metrics(now)
     end
-    if gap == nil or gap > 0.55 then state.burst = 0 end
-    state.burst = clamp(state.burst * math.exp(-(gap or 0.0) * BURST_DECAY_RATE) + 1.0, 1.0, class.max_burst)
+    state.burst_continuity = 1.0
     state.last_shot_ms = now
     state.shot_count = state.shot_count + 1
+    state.burst_shots = state.burst_shots + 1
 
-    local burst_index = clamp(state.burst - 1.0, 0, math.max(0, class.max_burst - 1.0))
+    -- Shot ordinal selects personality, while this bounded ramp controls how
+    -- much of cam_dispersion_inc enters the impulse. Using the raw ordinal here
+    -- would make long bursts grow without limit before the normal class clamp.
+    local burst_index = clamp(
+        (state.burst_shots - 1.0) * BURST_CLIMB_STEP,
+        0,
+        math.min(BURST_CLIMB_MAX, math.max(0, class.max_burst - 1.0)))
+    local personality = profile.personality or {}
+    local global = profile.global_recoil or {}
+    local shot_stage = state.burst_shots == 1 and (personality.first or 1.0)
+        or (state.burst_shots == 2 and (personality.second or 1.0)
+        or (personality.sustained or 1.0))
+    local heat_gain = personality.heat_rate or 0.055
+    if state.burst_shots <= (personality.heat_grace or 6) then
+        heat_gain = heat_gain * RECOIL_HEAT_GRACE_GAIN_SCALE
+    end
+    state.recoil_heat = clamp(state.recoil_heat + heat_gain, 0, 1)
+    local heat = 1.0 + state.recoil_heat * ((personality.heat_max or 1.55) - 1.0)
+    local attachment_stability_k = profile.attachment_stability_k or 1.0
     local vertical_deg = math.max(0, live.cam_dispersion) * class.dispersion_scale
         + math.max(0, live.cam_dispersion_inc) * class.dispersion_increment_scale * burst_index
     vertical_deg = vertical_deg * profile.magazine_factor
     vertical_deg = vertical_deg * (1.0 + class.burst_scale * burst_index * profile.fire_rate_factor)
+    vertical_deg = vertical_deg * (personality.pitch or 1.0) * shot_stage
+        * (1.0 + (heat - 1.0) * 0.65)
 
     local horizontal_deg = math.max(
         math.max(0, live.cam_step_angle_horz) * class.horizontal_step_scale,
         math.max(0, live.cam_dispersion) * class.horizontal_dispersion_scale
     )
     horizontal_deg = horizontal_deg * (1.0 + class.burst_scale * burst_index * 0.35)
+    local lateral_heat_strength = 1.35 + 0.45 * (personality.wander or 1.0)
+    horizontal_deg = horizontal_deg * (personality.yaw or 1.0)
+        * (1.0 + (heat - 1.0) * lateral_heat_strength)
 
     local aiming = get_aiming()
-    local aim_multiplier = aiming and class.ads_multiplier or class.hip_multiplier
+    local hip_multiplier = personality.hip_multiplier or class.hip_multiplier
+    local aim_multiplier = aiming and class.ads_multiplier or hip_multiplier
     local actor_power = get_actor_power(current_actor())
     -- Exhaustion worsens control; full stamina remains neutral at 1.0.
     local actor_multiplier = 1.0 + (1.0 - actor_power) * STAMINA_RECOIL_PENALTY
+    local context_k, health_k, stance_k, outfit_k, artifact_k, outfit_section,
+        stance_state, mastery_k =
+        1.0, 1.0, 1.0, 1.0, 1.0, "none", "unavailable", 1.0
+    if sivol_weapon and type(sivol_weapon.get_recoil_context) == "function" then
+        local ok_context
+        ok_context, context_k, health_k, stance_k, outfit_k, artifact_k,
+            outfit_section, stance_state, mastery_k = pcall(
+                sivol_weapon.get_recoil_context, current_actor(),
+                profile.base_section or profile.section)
+        if not ok_context then
+            context_k, health_k, stance_k, outfit_k, artifact_k, outfit_section,
+                stance_state, mastery_k =
+                1.0, 1.0, 1.0, 1.0, 1.0, "context_error", "context_error", 1.0
+        end
+    end
+    context_k = valid_number(context_k) and tonumber(context_k) or 1.0
+    health_k = valid_number(health_k) and tonumber(health_k) or 1.0
+    stance_k = valid_number(stance_k) and tonumber(stance_k) or 1.0
+    outfit_k = valid_number(outfit_k) and tonumber(outfit_k) or 1.0
+    artifact_k = valid_number(artifact_k) and tonumber(artifact_k) or 1.0
+    mastery_k = valid_number(mastery_k) and tonumber(mastery_k) or 1.0
     local handling_multiplier = 1.0 - class.handling_strength * state.handling
     handling_multiplier = clamp(handling_multiplier, 0.52, 1.0)
     local fatigue_multiplier = 1.0 + state.fatigue * 0.42
     local total_multiplier = aim_multiplier * actor_multiplier
-        * handling_multiplier * fatigue_multiplier
+        * handling_multiplier * fatigue_multiplier * context_k
 
-    vertical_deg = math.min(vertical_deg * total_multiplier, class.max_pitch_deg)
-    horizontal_deg = math.min(horizontal_deg * total_multiplier, class.max_yaw_deg)
+    -- The floor is an authored pre-global minimum. Keeping it before the
+    -- global controls makes camera_pitch affect first shots as well as bursts.
+    if state.burst_shots == 1 then
+        vertical_deg = math.max(vertical_deg, personality.first_pitch_floor or 0)
+    end
+    vertical_deg = vertical_deg * total_multiplier * attachment_stability_k
+        * (global.overall or 1.0) * (global.camera_pitch or 1.0)
+    vertical_deg = math.min(vertical_deg, class.max_pitch_deg)
+    horizontal_deg = math.min(
+        horizontal_deg * total_multiplier * attachment_stability_k
+            * (global.overall or 1.0) * (global.camera_yaw or 1.0),
+        class.max_yaw_deg)
 
-    local pattern = ((state.shot_count * 37) % 19) / 100.0
-    local horizontal_sign = (state.shot_count % 2 == 0) and 1.0 or -1.0
+    -- Correlated deterministic wander replaces the old forced left/right
+    -- alternation. A weapon can keep pushing to one side for several shots,
+    -- but bounded selector changes prevent a permanent scripted bias.
+    local selector = ((state.shot_count * 37 + (state.item_id or 0) * 11) % 101) / 100.0
+    local yaw_persistence = clamp(
+        (personality.yaw_persistence or 0.62)
+            + state.recoil_heat * 0.16 * (personality.wander or 1.0),
+        0.45,
+        0.92)
+    if state.burst_shots == 1 then
+        state.yaw_sign = selector < 0.5 and -1 or 1
+    elseif selector > yaw_persistence then
+        state.yaw_sign = -state.yaw_sign
+    end
+    local yaw_magnitude = 0.68 + 0.32
+        * (((state.shot_count * 29 + (state.item_id or 0) * 7) % 97) / 96.0)
     local suppressor_recoil_k = profile.suppressor_recoil_k or 1.0
-    local pitch_deg = PITCH_SIGN * vertical_deg * suppressor_recoil_k
-    local yaw_deg = horizontal_sign * horizontal_deg * (0.88 + pattern) * suppressor_recoil_k
+    -- Direction is invariant in this engine build: every scripted shot adds an
+    -- upward camera-member impulse. Recovery is the only path allowed toward
+    -- the pre-shot angle.
+    local pitch_deg = PITCH_SIGN * math.abs(vertical_deg * suppressor_recoil_k)
+    local yaw_deg = state.yaw_sign * horizontal_deg * yaw_magnitude * suppressor_recoil_k
     local pitch_impulse = pitch_deg * DEG_TO_RAD
+    local pitch_immediate_share = PITCH_IMMEDIATE_SHARE
+    if state.burst_shots == 1 then
+        pitch_immediate_share = clamp(
+            personality.first_immediate_share or class.first_immediate_share
+                or PITCH_IMMEDIATE_SHARE,
+            PITCH_IMMEDIATE_SHARE,
+            0.75)
+    end
+    local pitch_immediate = pitch_impulse * pitch_immediate_share
+    local pitch_tail = pitch_impulse - pitch_immediate
     local yaw_impulse = yaw_deg * DEG_TO_RAD
 
-    if state.shot_count <= 3 then
-        recoil_log(
-            "[sivol_fuzz_recoil][shot] section=%s shot=%d impulse_pitch_rad=%.6f impulse_yaw_rad=%.6f pitch_deg=%.4f yaw_deg=%.4f ads=%s burst=%.2f stamina=%.3f suppressor_k=%.4f",
-            tostring(profile.section), state.shot_count, pitch_impulse, yaw_impulse,
-            pitch_deg, yaw_deg, tostring(aiming), state.burst, actor_power,
-            suppressor_recoil_k)
-    end
+    -- HUD recoil is an independent visual channel. Most rotation is immediate;
+    -- a smaller velocity-fed channel adds a short, critically damped follow-
+    -- through without delaying the shoulder shove or the fast Z recovery.
+    local hud_mode_multiplier = aiming and 0.88 or 1.08
+    local wander_phase = ((state.shot_count * 29) % 17) / 16.0 * 2.0 - 1.0
+    local hud_rotation_k = global.hud_rotation or 1.0
+    local hud_translation_k = (global.hud_translation or 1.0) * (personality.shove or 1.0)
+    local hud_pitch_source = pitch_impulse / math.max(global.camera_pitch or 1.0, 0.01)
+        * hud_rotation_k
+    local hud_yaw_source = yaw_impulse / math.max(global.camera_yaw or 1.0, 0.01)
+        * hud_rotation_k
+    local hud_pitch_impulse = HUD_PITCH_SIGN * hud_pitch_source
+        * class.hud_pitch_scale * hud_mode_multiplier
+    local hud_yaw_impulse = hud_yaw_source * class.hud_yaw_scale * hud_mode_multiplier
+    local hud_x_impulse = clamp(
+        hud_yaw_source * 0.055 + wander_phase * 0.00018 * heat
+            * (personality.wander or 1.0) * hud_mode_multiplier,
+        -0.00065, 0.00065)
+    local hud_y_impulse = math.abs(hud_pitch_source) * HUD_VERTICAL_LIFT_PER_RAD
+        * hud_mode_multiplier * hud_translation_k
+    local hud_z_impulse = -clamp(
+        0.0024 + math.abs(hud_pitch_source) * 0.42,
+        0.0024, 0.0075) * hud_mode_multiplier * hud_translation_k
+    local hud_roll_impulse = -hud_yaw_impulse * 0.24 * (personality.roll or 1.0)
 
+    local hud_spring_pitch_share = HUD_SPRING_ENABLED and clamp(
+        global.hud_spring_pitch_share or HUD_SPRING_PITCH_SHARE, 0, 0.35) or 0
+    local hud_spring_yaw_share = HUD_SPRING_ENABLED and clamp(
+        global.hud_spring_yaw_share or HUD_SPRING_YAW_SHARE, 0, 0.30) or 0
+    local hud_spring_frequency = clamp(
+        global.hud_spring_frequency or HUD_SPRING_FREQUENCY, 8.0, 30.0)
+    local hud_pitch_direct_impulse = hud_pitch_impulse * (1.0 - hud_spring_pitch_share)
+    local hud_yaw_direct_impulse = hud_yaw_impulse * (1.0 - hud_spring_yaw_share)
+    state.hud_spring_pitch_velocity = state.hud_spring_pitch_velocity
+        + hud_pitch_impulse * hud_spring_pitch_share * hud_spring_frequency
+            * HUD_SPRING_PEAK_VELOCITY_GAIN
+    state.hud_spring_yaw_velocity = state.hud_spring_yaw_velocity
+        + hud_yaw_impulse * hud_spring_yaw_share * hud_spring_frequency
+            * HUD_SPRING_PEAK_VELOCITY_GAIN
+
+    local raw_hud_pos_x = state.hud_pos_x + hud_x_impulse
+    local raw_hud_pos_y = state.hud_pos_y + hud_y_impulse
+    local raw_hud_pos_z = state.hud_pos_z + hud_z_impulse
+    local raw_hud_pitch = state.hud_pitch + hud_pitch_direct_impulse
+    local raw_hud_yaw = state.hud_yaw + hud_yaw_direct_impulse
+    local raw_hud_roll = state.hud_roll + hud_roll_impulse
+    local raw_hud_pitch_combined = raw_hud_pitch + state.hud_spring_pitch
+    local raw_hud_yaw_combined = raw_hud_yaw + state.hud_spring_yaw
+    if math.abs(raw_hud_pos_x) > HUD_MAX_POS_X or math.abs(raw_hud_pos_y) > HUD_MAX_POS_Y
+        or math.abs(raw_hud_pos_z) > HUD_MAX_POS_Z
+        or math.abs(raw_hud_pitch_combined) > HUD_MAX_PITCH
+        or math.abs(raw_hud_yaw_combined) > HUD_MAX_YAW
+        or math.abs(raw_hud_roll) > HUD_MAX_ROLL then
+        state.hud_clamp_hits = state.hud_clamp_hits + 1
+    end
+    state.hud_pos_x = clamp(raw_hud_pos_x, -HUD_MAX_POS_X, HUD_MAX_POS_X)
+    state.hud_pos_y = clamp(raw_hud_pos_y, -HUD_MAX_POS_Y, HUD_MAX_POS_Y)
+    state.hud_pos_z = clamp(raw_hud_pos_z, -HUD_MAX_POS_Z, HUD_MAX_POS_Z)
+    state.hud_pitch = clamp(
+        raw_hud_pitch_combined, -HUD_MAX_PITCH, HUD_MAX_PITCH)
+        - state.hud_spring_pitch
+    state.hud_yaw = clamp(
+        raw_hud_yaw_combined, -HUD_MAX_YAW, HUD_MAX_YAW)
+        - state.hud_spring_yaw
+    state.hud_roll = clamp(raw_hud_roll, -HUD_MAX_ROLL, HUD_MAX_ROLL)
+
+    local camera_pitch_before = state.recoil_pitch
+    state.pitch_velocity = state.pitch_velocity
+        + pitch_tail * PITCH_VELOCITY_DECAY_RATE
+    local raw_camera_pitch = camera_pitch_before + pitch_immediate
+    local raw_camera_yaw = state.recoil_yaw + yaw_impulse
+    if raw_camera_pitch > camera_pitch_before + WRITE_EPSILON then
+        state.direction_guard_hits = state.direction_guard_hits + 1
+        recoil_log(
+            "[sivol_fuzz_recoil][direction_guard] section=%s shot=%d before_deg=%.4f raw_after_deg=%.4f",
+            tostring(profile.section), state.shot_count,
+            math.deg(camera_pitch_before), math.deg(raw_camera_pitch))
+        raw_camera_pitch = camera_pitch_before - math.abs(pitch_immediate)
+    end
+    if math.abs(raw_camera_pitch) > class.max_pitch_deg * DEG_TO_RAD
+        or math.abs(raw_camera_yaw) > class.max_yaw_deg * DEG_TO_RAD then
+        state.camera_clamp_hits = state.camera_clamp_hits + 1
+    end
     state.recoil_pitch = clamp(
-        state.recoil_pitch + pitch_impulse,
+        raw_camera_pitch,
         -class.max_pitch_deg * DEG_TO_RAD,
         class.max_pitch_deg * DEG_TO_RAD
     )
+    if state.recoil_pitch <= -class.max_pitch_deg * DEG_TO_RAD
+        and state.pitch_velocity < 0 then
+        state.pitch_velocity = 0
+    end
     state.recoil_yaw = clamp(
-        state.recoil_yaw + yaw_impulse,
+        raw_camera_yaw,
         -class.max_yaw_deg * DEG_TO_RAD,
         class.max_yaw_deg * DEG_TO_RAD
     )
+    local screen_step_deg = math.deg(camera_pitch_before - state.recoil_pitch)
+    if state.shot_count <= 3 then
+        recoil_log(
+            "[sivol_fuzz_recoil][shot] section=%s shot=%d burst_shot=%d stage=%.3f camera_member_pitch_rad=%.6f impulse_yaw_rad=%.6f camera_member_pitch_deg=%.4f screen_pitch_up_deg=%.4f immediate_share=%.3f immediate_pitch_deg=%.4f tail_pitch_deg=%.4f yaw_deg=%.4f camera_before_deg=%.4f camera_after_deg=%.4f screen_step_deg=%.4f screen_pitch_velocity_deg_s=%.4f return_scale=%.2f ads=%s mode_k=%.3f continuity_before=%.3f climb=%.3f heat=%.3f stamina=%.3f context_k=%.3f health_k=%.3f stance_k=%.3f stance=%s outfit_k=%.3f artifact_k=%.3f mastery_k=%.3f outfit=%s suppressor_k=%.4f attachment_k=%.4f hud_api=%s hud_pos=(%.6f,%.6f,%.6f) hud_rot_hook_xyz=(%.6f,%.6f,%.6f) hud_spring_share=(%.3f,%.3f) hud_spring_rot=(%.6f,%.6f) hud_spring_velocity=(%.6f,%.6f)",
+            tostring(profile.section), state.shot_count, state.burst_shots, shot_stage,
+            pitch_impulse, yaw_impulse, pitch_deg, -pitch_deg,
+            pitch_immediate_share, -math.deg(pitch_immediate), -math.deg(pitch_tail), yaw_deg,
+            math.deg(camera_pitch_before), math.deg(state.recoil_pitch), screen_step_deg,
+            -math.deg(state.pitch_velocity), state.camera_return_scale,
+            tostring(aiming), aim_multiplier, continuity_before, burst_index, heat, actor_power,
+            context_k, health_k, stance_k, tostring(stance_state), outfit_k, artifact_k,
+            mastery_k,
+            tostring(outfit_section), suppressor_recoil_k, attachment_stability_k,
+            tostring(state.hud_api),
+            state.hud_pos_x, state.hud_pos_y, state.hud_pos_z,
+            state.hud_pitch + state.hud_spring_pitch,
+            state.hud_yaw + state.hud_spring_yaw, state.hud_roll,
+            hud_spring_pitch_share, hud_spring_yaw_share,
+            state.hud_spring_pitch, state.hud_spring_yaw,
+            state.hud_spring_pitch_velocity, state.hud_spring_yaw_velocity)
+    end
+    update_burst_peaks()
 
     state.handling = clamp(
         state.handling + class.handling_rise * (1.0 - state.handling),
@@ -864,11 +1507,17 @@ local function add_shot_impulse()
         1
     )
     state.fatigue = clamp(
-        state.fatigue + class.fatigue_per_shot * (0.82 + state.burst * 0.06)
+        state.fatigue + class.fatigue_per_shot * (0.88 + state.recoil_heat * 0.30)
             * (1.0 + (1.0 - actor_power) * 0.45),
         0,
         1
     )
+    if HUD_RECOIL_ENABLED and state.hud_enabled and not write_hud_recoil(state.item) then
+        state.hud_enabled = false
+        M.hud_capability = "blocked"
+        state.capability_state = "camera_only"
+    end
+    play_anm_recoil()
     M.aiming = aiming
 end
 
@@ -885,6 +1534,7 @@ local function on_actor_weapon_fire_impl(callback_item)
     local gl_mode, gl_reason = read_gl_mode(state.item)
     if gl_mode == nil then return false, gl_reason end
     if gl_mode then
+        remove_anm_effectors()
         reset_dynamics()
         return true
     end
@@ -930,6 +1580,7 @@ end
 local function cleanup_boundary()
     local camera_removed = remove_camera_contribution()
     local ok = camera_removed
+    if not remove_anm_effectors() then ok = false end
     if not restore_hud() then ok = false end
     if not restore_all_native() then ok = false end
     clear_active_item(not camera_removed)
