@@ -47,6 +47,23 @@ Automated test commands and log locations: TBD.
   only the extra hold-breath FOV/HUD-FOV change, not stabilization or costs.
 - Confirmed camera behavior: leaving ADS preserves the final visible aim
   direction rather than snapping back to the direction present at ADS entry.
+- Scripted recoil acceptance completed on 2026-08-30. Baseline AK-103 first-shot
+  pitch was `1.5260` degrees with context `1.000`; isolated recovery was
+  approximately 1.25 seconds. A 27-round burst peaked at `9.5434` degrees pitch
+  and `1.4344` degrees yaw with zero camera or HUD clamps.
+- Composite recoil evidence matched authored arithmetic: full-condition
+  exoskeleton plus Eye produced `0.880 * 1.150 = 1.012`; exoskeleton plus
+  stabilizing Gravi produced `0.880 * 0.950 = 0.836`. Separate low-health samples
+  logged `health_k=1.029` and `1.047`. A subsequent explicit low-crouch test
+  remained at `stance_k=1.000`, exposing that the recoil context queried movement
+  predicates on `db.actor` instead of the native `get_actor_obj()` used by the
+  working wobble path. After correction, the focused retest logged low crouch as
+  `stance=creep`, `stance_k=0.840`, and ordinary crouch as `stance=crouch`,
+  `stance_k=0.920`; stance recoil is accepted.
+- P99, Glock 17, standard MP5, and 9x18 MP5 personalities were accepted by feel:
+  the P99 is controllable with a clean return, and the two MP5 variants are
+  perceptibly distinct. Full architecture and regression coverage are recorded
+  in `RECOIL_SYSTEM.md`.
 - Confirmed Electra ARRIVAL VFX/SFX port: Core idle/blowout and sounds load for
   base/average/strong; weak retains the original NLC particles and sounds; strong
   also renders the isolated Aggressive-v2 idle sparks. PDA interference and torch

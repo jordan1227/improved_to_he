@@ -7,6 +7,249 @@
 
 sivol_fuzz_recoil_profiles = sivol_fuzz_recoil_profiles or {}
 
+-- Global balance controls. Per-weapon personalities below are multiplied by
+-- these values, so overall strength can be adjusted without flattening the
+-- differences between weapons.
+local GLOBAL_RECOIL = {
+    overall = 1.00,
+    camera_pitch = 2.90,
+    camera_yaw = 0.72,
+    hud_rotation = 1.12,
+    hud_translation = 1.08,
+    -- Route a restrained share of viewmodel rotation through the critically
+    -- damped spring in sivol_fuzz_recoil. Set both shares to 0 to compare the
+    -- former immediate-only HUD response without changing camera recoil.
+    hud_spring_pitch_share = 0.22,
+    hud_spring_yaw_share = 0.15,
+    hud_spring_frequency = 18.0,
+    recovery = 1.00,
+    attachment_stability_per_kg = 0.07,
+    attachment_recovery_per_kg = 0.04,
+    attachment_stability_min = 0.88,
+    attachment_recovery_min = 0.90,
+}
+
+local DEFAULT_PERSONALITY = {
+    pitch = 1.00,
+    yaw = 1.00,
+    first = 1.00,
+    second = 1.00,
+    sustained = 1.00,
+    first_pitch_floor = 0.0,
+    recovery = 1.00,
+    heat_grace = 6,
+    heat_rate = 0.055,
+    heat_max = 1.55,
+    yaw_persistence = 0.62,
+    wander = 1.00,
+    shove = 1.00,
+    roll = 1.00,
+    hip_multiplier = nil,
+    first_immediate_share = nil,
+}
+
+local WEAPON_PERSONALITY = {}
+
+local function register_personality(ids, values)
+    for _, id in ipairs(ids) do WEAPON_PERSONALITY[id] = values end
+end
+
+-- Pistols: light service weapons snap sharply and settle quickly; large-bore
+-- pistols trade a heavier first impulse for a slower follow-up cadence.
+register_personality({ "wpn_pm", "wpn_pb", "wpn_fort" },
+    { pitch = 1.20, yaw = 0.85, first = 1.18, second = 0.94, sustained = 0.90,
+      first_pitch_floor = 0.36, recovery = 1.18, heat_grace = 2, heat_rate = 0.08,
+      yaw_persistence = 0.48, wander = 0.85, shove = 0.82, roll = 0.85 })
+-- The P99's inherited LTX cam_dispersion is an extreme 1.25 degrees. Give it
+-- an explicit low-kick service-pistol identity and a quicker return instead of
+-- inheriting the PM/Fort multiplier on top of that outlier input.
+register_personality({ "wpn_walther" },
+    { pitch = 0.38, yaw = 0.72, first = 0.88, second = 0.92, sustained = 0.90,
+      first_pitch_floor = 0.28, recovery = 1.55, heat_grace = 3, heat_rate = 0.06,
+      yaw_persistence = 0.46, wander = 0.72, shove = 0.62, roll = 0.75 })
+-- The Glock 17 remains a sharp, light 9x19 pistol, but its 0.8-degree native
+-- dispersion no longer makes it approach magnum-pistol camera movement.
+register_personality({ "wpn_glock" },
+    { pitch = 0.72, yaw = 0.82, first = 1.05, second = 0.98, sustained = 0.94,
+      first_pitch_floor = 0.36, recovery = 1.25, heat_grace = 2, heat_rate = 0.07,
+      yaw_persistence = 0.48, wander = 0.84, shove = 0.78, roll = 0.84 })
+register_personality({ "wpn_beretta" },
+    { pitch = 1.15, yaw = 0.88, first = 1.14, second = 0.98, sustained = 0.94,
+      first_pitch_floor = 0.42, recovery = 1.12, heat_grace = 2, heat_rate = 0.08,
+      yaw_persistence = 0.50, wander = 0.90, shove = 0.90, roll = 0.90 })
+register_personality({ "wpn_sig220", "wpn_colt1911", "wpn_usp", "wpn_ak74_m3",
+    "wpn_beretta93" },
+    { pitch = 1.22, yaw = 0.92, first = 1.20, second = 1.00, sustained = 0.98,
+      first_pitch_floor = 0.55, recovery = 0.98, heat_grace = 2, heat_rate = 0.09,
+      yaw_persistence = 0.54, wander = 0.95, shove = 1.08, roll = 0.95 })
+register_personality({ "wpn_desert_eagle", "wpn_eagle_m1" },
+    { pitch = 1.35, yaw = 1.02, first = 1.28, second = 1.08, sustained = 1.04,
+      first_pitch_floor = 0.92, recovery = 0.82, heat_grace = 1, heat_rate = 0.11,
+      yaw_persistence = 0.58, wander = 1.00, shove = 1.35, roll = 1.05 })
+-- Glock 18C, APB and Pernach are automatic-capable pistols.
+register_personality({ "wpn_glock_m1", "wpn_aps", "wpn_fort_m1" },
+    { pitch = 1.08, yaw = 1.00, first = 0.95, second = 1.00, sustained = 1.13,
+      first_pitch_floor = 0.30, recovery = 1.05, heat_grace = 3, heat_rate = 0.09,
+      yaw_persistence = 0.60, wander = 1.15, shove = 0.88, roll = 1.05 })
+
+-- SMGs: restrained vertical movement, with personality coming primarily from
+-- cadence, lateral persistence and sustained-fire heat.
+register_personality({ "wpn_mp5", "wpn_bizon" },
+    { pitch = 1.10, yaw = 0.92, first = 0.96, second = 0.98, sustained = 1.04,
+      first_pitch_floor = 0.25, recovery = 1.15, heat_grace = 5, heat_rate = 0.065,
+      yaw_persistence = 0.58, wander = 0.95, shove = 0.82, roll = 0.92,
+      hip_multiplier = 0.88 })
+-- The 9x18 variant overrides the MP5's config with 2.5x the base camera
+-- dispersion and slower recovery. Counter that inherited anomaly so the lower
+-- impulse cartridge is calmer than the standard 9x19 weapon in actual play.
+register_personality({ "wpn_mp5_m1" },
+    { pitch = 0.45, yaw = 0.78, first = 0.78, second = 0.88, sustained = 0.82,
+      first_pitch_floor = 0.14, recovery = 1.95, heat_grace = 6, heat_rate = 0.05,
+      yaw_persistence = 0.54, wander = 0.78, shove = 0.65, roll = 0.82,
+      hip_multiplier = 0.84 })
+register_personality({ "wpn_aks47" },
+    { pitch = 0.96, yaw = 1.02, first = 0.88, second = 0.94, sustained = 1.10,
+      first_pitch_floor = 0.22, recovery = 1.22, heat_grace = 4, heat_rate = 0.085,
+      yaw_persistence = 0.52, wander = 1.25, shove = 0.78, roll = 1.05,
+      hip_multiplier = 0.90 })
+register_personality({ "wpn_glock_m2", "wpn_mp5_m2", "wpn_pp19" },
+    { pitch = 1.12, yaw = 1.00, first = 0.94, second = 1.00, sustained = 1.12,
+      first_pitch_floor = 0.28, recovery = 1.08, heat_grace = 4, heat_rate = 0.08,
+      yaw_persistence = 0.62, wander = 1.15, shove = 0.86, roll = 1.00,
+      hip_multiplier = 0.90 })
+register_personality({ "wpn_ump45" },
+    { pitch = 1.22, yaw = 0.96, first = 1.08, second = 1.02, sustained = 1.08,
+      first_pitch_floor = 0.34, recovery = 0.98, heat_grace = 4, heat_rate = 0.075,
+      yaw_persistence = 0.64, wander = 1.00, shove = 1.00, roll = 0.96,
+      hip_multiplier = 0.90 })
+
+-- Intermediate rifles.
+register_personality({ "wpn_abakan" },
+    { pitch = 1.10, yaw = 0.86, first = 0.88, second = 0.82, sustained = 1.08,
+      first_pitch_floor = 0.28, recovery = 1.10, heat_grace = 4, heat_rate = 0.075,
+      yaw_persistence = 0.62, wander = 0.90, shove = 0.92, roll = 0.90 })
+-- Despite its section ID, this is the short 7.62x39 AK-104 Tactical.
+register_personality({ "wpn_aek971" },
+    { pitch = 1.54, yaw = 0.98, first = 1.25, second = 1.08, sustained = 1.16,
+      first_pitch_floor = 0.52, recovery = 0.88, heat_grace = 3, heat_rate = 0.095,
+      yaw_persistence = 0.72, wander = 1.18, shove = 1.18, roll = 1.15,
+      first_immediate_share = 0.62 })
+register_personality({ "wpn_ak74", "wpn_ak74m" },
+    { pitch = 1.34, yaw = 0.76, first = 1.20, second = 1.05, sustained = 1.12,
+      first_pitch_floor = 0.40, recovery = 0.98, heat_grace = 5, heat_rate = 0.075,
+      yaw_persistence = 0.70, wander = 1.08, shove = 1.05, roll = 1.12,
+      first_immediate_share = 0.56 })
+-- Strelok's two rifles are tuned builds rather than ordinary AK-74 aliases.
+register_personality({ "wpn_ak74_m1", "wpn_ak74_m2" },
+    { pitch = 1.18, yaw = 0.72, first = 0.98, second = 0.98, sustained = 1.02,
+      first_pitch_floor = 0.31, recovery = 1.12, heat_grace = 6, heat_rate = 0.060,
+      yaw_persistence = 0.66, wander = 0.92, shove = 1.00, roll = 1.00 })
+register_personality({ "wpn_ak74u" },
+    { pitch = 1.28, yaw = 0.92, first = 1.08, second = 1.10, sustained = 1.18,
+      first_pitch_floor = 0.47, recovery = 0.84, heat_grace = 3, heat_rate = 0.095,
+      yaw_persistence = 0.72, wander = 1.25, shove = 1.12, roll = 1.20,
+      first_immediate_share = 0.60 })
+register_personality({ "wpn_m16a4" },
+    { pitch = 1.25, yaw = 1.18, first = 1.25, second = 0.98, sustained = 0.92,
+      first_pitch_floor = 0.36, recovery = 1.15, heat_grace = 6, heat_rate = 0.055,
+      yaw_persistence = 0.56, wander = 0.82, shove = 0.94, roll = 0.82,
+      first_immediate_share = 0.58 })
+register_personality({ "wpn_fn2000" },
+    { pitch = 1.12, yaw = 0.98, first = 0.96, second = 0.94, sustained = 0.94,
+      first_pitch_floor = 0.26, recovery = 1.18, heat_grace = 7, heat_rate = 0.05,
+      yaw_persistence = 0.55, wander = 0.75, shove = 0.90, roll = 0.78 })
+register_personality({ "wpn_g36" },
+    { pitch = 1.20, yaw = 1.04, first = 1.02, second = 0.98, sustained = 1.00,
+      first_pitch_floor = 0.30, recovery = 1.10, heat_grace = 6, heat_rate = 0.06,
+      yaw_persistence = 0.60, wander = 0.90, shove = 0.96, roll = 0.88 })
+-- SIG 552 is compact and livelier than the full-size G36.
+register_personality({ "wpn_sig550" },
+    { pitch = 1.30, yaw = 1.02, first = 1.08, second = 1.04, sustained = 1.10,
+      first_pitch_floor = 0.36, recovery = 0.96, heat_grace = 4, heat_rate = 0.080,
+      yaw_persistence = 0.66, wander = 1.08, shove = 1.06, roll = 1.05 })
+-- Despite its section ID, this is the full-size 7.62x39 AK-103.
+register_personality({ "wpn_ak104" },
+    { pitch = 1.72, yaw = 0.98, first = 1.42, second = 1.10, sustained = 1.22,
+      first_pitch_floor = 0.64, recovery = 0.74, heat_grace = 4, heat_rate = 0.095,
+      yaw_persistence = 0.74, wander = 1.18, shove = 1.22, roll = 1.14,
+      first_immediate_share = 0.68 })
+register_personality({ "wpn_akm" },
+    { pitch = 1.05, yaw = 0.90, first = 1.18, second = 1.10, sustained = 1.15,
+      first_pitch_floor = 0.58, recovery = 0.82, heat_grace = 4, heat_rate = 0.09,
+      yaw_persistence = 0.74, wander = 1.18, shove = 1.28, roll = 1.18,
+      first_immediate_share = 0.64 })
+register_personality({ "wpn_groza", "wpn_groza_nimble" },
+    { pitch = 1.32, yaw = 0.92, first = 1.08, second = 1.04, sustained = 1.10,
+      first_pitch_floor = 0.43, recovery = 0.92, heat_grace = 4, heat_rate = 0.085,
+      yaw_persistence = 0.68, wander = 1.10, shove = 1.14, roll = 1.10 })
+register_personality({ "wpn_val", "wpn_val_nimble" },
+    { pitch = 1.28, yaw = 0.86, first = 0.96, second = 1.00, sustained = 1.12,
+      first_pitch_floor = 0.36, recovery = 1.02, heat_grace = 5, heat_rate = 0.08,
+      yaw_persistence = 0.66, wander = 1.00, shove = 1.08, roll = 1.00 })
+
+-- Semi-auto and full-power rifles.
+register_personality({ "wpn_ak47", "wpn_saiga12c_m2" },
+    { pitch = 1.12, yaw = 0.90, first = 1.18, second = 1.02, sustained = 1.04,
+      first_pitch_floor = 0.56, recovery = 0.88, heat_grace = 2, heat_rate = 0.08,
+      yaw_persistence = 0.66, wander = 0.95, shove = 1.18, roll = 1.00 })
+register_personality({ "wpn_soc308", "wpn_soc308_m1" },
+    { pitch = 1.12, yaw = 0.92, first = 1.16, second = 1.08, sustained = 1.12,
+      first_pitch_floor = 0.68, recovery = 0.82, heat_grace = 3, heat_rate = 0.095,
+      yaw_persistence = 0.70, wander = 1.08, shove = 1.30, roll = 1.08 })
+register_personality({ "wpn_m110", "wpn_mr308" },
+    { pitch = 1.14, yaw = 0.94, first = 1.18, second = 1.08, sustained = 1.10,
+      first_pitch_floor = 0.70, recovery = 0.84, heat_grace = 3, heat_rate = 0.09,
+      yaw_persistence = 0.68, wander = 1.02, shove = 1.32, roll = 1.05 })
+register_personality({ "wpn_vintorez", "wpn_vintorez_m1" },
+    { pitch = 1.22, yaw = 0.82, first = 1.08, second = 1.00, sustained = 1.06,
+      first_pitch_floor = 0.42, recovery = 0.96, heat_grace = 3, heat_rate = 0.075,
+      yaw_persistence = 0.62, wander = 0.85, shove = 1.10, roll = 0.88 })
+register_personality({ "wpn_svd", "wpn_svu" },
+    { pitch = 1.16, yaw = 0.94, first = 1.18, second = 1.06, sustained = 1.08,
+      first_pitch_floor = 0.78, recovery = 0.80, heat_grace = 2, heat_rate = 0.09,
+      yaw_persistence = 0.68, wander = 0.98, shove = 1.34, roll = 1.05 })
+register_personality({ "wpn_awm", "wpn_mosin", "wpn_sv98" },
+    { pitch = 1.18, yaw = 0.90, first = 1.22, second = 1.00, sustained = 1.00,
+      first_pitch_floor = 1.15, recovery = 0.72, heat_grace = 1, heat_rate = 0.0,
+      yaw_persistence = 0.58, wander = 0.85, shove = 1.55, roll = 1.00 })
+
+-- Light and general-purpose machine guns begin firmly but gain sustained
+-- wander rather than receiving an oversized first-shot penalty.
+register_personality({ "wpn_ak108", "wpn_rpk", "wpn_rpk74" },
+    { pitch = 1.18, yaw = 0.82, first = 1.08, second = 0.98, sustained = 1.02,
+      first_pitch_floor = 0.36, recovery = 0.88, heat_grace = 9, heat_rate = 0.055,
+      yaw_persistence = 0.74, wander = 0.92, shove = 1.12, roll = 0.92 })
+register_personality({ "wpn_g36c" },
+    { pitch = 1.10, yaw = 0.86, first = 1.04, second = 0.96, sustained = 0.98,
+      first_pitch_floor = 0.32, recovery = 0.94, heat_grace = 10, heat_rate = 0.05,
+      yaw_persistence = 0.70, wander = 0.82, shove = 1.08, roll = 0.86 })
+register_personality({ "wpn_pkm", "wpn_pkp" },
+    { pitch = 1.10, yaw = 0.86, first = 1.16, second = 1.00, sustained = 1.04,
+      first_pitch_floor = 0.58, recovery = 0.78, heat_grace = 11, heat_rate = 0.05,
+      yaw_persistence = 0.76, wander = 0.95, shove = 1.35, roll = 0.96 })
+
+-- Shotguns. Manual actions get a large discrete shove; self-loaders trade a
+-- smaller first impulse for heat during rapid follow-up shots.
+register_personality({ "wpn_bm16", "wpn_bm16_full", "wpn_toz34", "wpn_toz34_m1" },
+    { pitch = 1.08, yaw = 0.90, first = 1.22, second = 1.12, sustained = 1.08,
+      first_pitch_floor = 1.30, recovery = 0.76, heat_grace = 1, heat_rate = 0.12,
+      yaw_persistence = 0.58, wander = 1.00, shove = 1.55, roll = 1.05 })
+register_personality({ "wpn_hunters_toz_new", "wpn_mp153", "wpn_mp153_m1",
+    "wpn_wincheaster1300" },
+    { pitch = 1.04, yaw = 0.88, first = 1.16, second = 1.04, sustained = 1.06,
+      first_pitch_floor = 1.05, recovery = 0.82, heat_grace = 1, heat_rate = 0.10,
+      yaw_persistence = 0.60, wander = 0.95, shove = 1.42, roll = 1.00 })
+-- MP-153, Saiga-12, SPAS-12 and Benelli M4 are self-loading shotguns.
+register_personality({ "wpn_winchester_m1", "wpn_saiga12c", "wpn_saiga12c_m1",
+    "wpn_spas12", "wpn_spas12_m1" },
+    { pitch = 1.00, yaw = 0.90, first = 1.10, second = 1.04, sustained = 1.12,
+      first_pitch_floor = 0.92, recovery = 0.88, heat_grace = 2, heat_rate = 0.11,
+      yaw_persistence = 0.66, wander = 1.08, shove = 1.30, roll = 1.05 })
+register_personality({ "wpn_spas15", "wpn_spas15_m1" },
+    { pitch = 0.96, yaw = 0.92, first = 1.02, second = 1.06, sustained = 1.16,
+      first_pitch_floor = 0.86, recovery = 0.92, heat_grace = 3, heat_rate = 0.12,
+      yaw_persistence = 0.70, wander = 1.15, shove = 1.24, roll = 1.08 })
+
 local CLASS_PROFILES = {
     pistol = {
         dispersion_scale = 0.86,
@@ -23,6 +266,7 @@ local CLASS_PROFILES = {
         ads_multiplier = 0.84,
         hud_pitch_scale = 0.42,
         hud_yaw_scale = 0.30,
+        first_immediate_share = 0.55,
         max_burst = 4,
         max_pitch_deg = 7.0,
         max_yaw_deg = 3.5,
@@ -42,6 +286,7 @@ local CLASS_PROFILES = {
         ads_multiplier = 0.90,
         hud_pitch_scale = 0.52,
         hud_yaw_scale = 0.34,
+        first_immediate_share = 0.68,
         max_burst = 2,
         max_pitch_deg = 10.0,
         max_yaw_deg = 4.5,
@@ -61,6 +306,7 @@ local CLASS_PROFILES = {
         ads_multiplier = 0.78,
         hud_pitch_scale = 0.46,
         hud_yaw_scale = 0.34,
+        first_immediate_share = 0.50,
         max_burst = 16,
         max_pitch_deg = 12.0,
         max_yaw_deg = 6.5,
@@ -80,6 +326,7 @@ local CLASS_PROFILES = {
         ads_multiplier = 0.84,
         hud_pitch_scale = 0.50,
         hud_yaw_scale = 0.38,
+        first_immediate_share = 0.46,
         max_burst = 22,
         max_pitch_deg = 15.0,
         max_yaw_deg = 8.0,
@@ -99,6 +346,7 @@ local CLASS_PROFILES = {
         ads_multiplier = 0.88,
         hud_pitch_scale = 0.58,
         hud_yaw_scale = 0.36,
+        first_immediate_share = 0.70,
         max_burst = 1,
         max_pitch_deg = 12.0,
         max_yaw_deg = 5.0,
@@ -256,6 +504,20 @@ local function clamp(value, low, high)
     return math.max(low, math.min(high, value))
 end
 
+function sivol_fuzz_recoil_profiles.get_attachment_mass_effects(addon_mass)
+    local mass = math.max(0, tonumber(addon_mass) or 0)
+    return {
+        stability_k = clamp(
+            1.0 - mass * (GLOBAL_RECOIL.attachment_stability_per_kg or 0),
+            GLOBAL_RECOIL.attachment_stability_min or 0.88,
+            1.0),
+        recovery_k = clamp(
+            1.0 - mass * (GLOBAL_RECOIL.attachment_recovery_per_kg or 0),
+            GLOBAL_RECOIL.attachment_recovery_min or 0.90,
+            1.0),
+    }
+end
+
 function sivol_fuzz_recoil_profiles.resolve(item, weapon)
     if not item or not weapon then return nil, "weapon object unavailable" end
 
@@ -302,7 +564,12 @@ function sivol_fuzz_recoil_profiles.resolve(item, weapon)
 
     local magazine_factor = clamp(1.0 + (30.0 - live.ammo_mag_size) / 30.0 * 0.10, 0.88, 1.12)
     local fire_rate_factor = clamp(0.10 / live.time_to_fire, 0.78, 1.24)
-    local recovery_rate = clamp(live.cam_relax_speed * class_profile.recovery_scale, 0.55, 16.0)
+    local personality = WEAPON_PERSONALITY[base_section] or DEFAULT_PERSONALITY
+    local recovery_rate = clamp(
+        live.cam_relax_speed * class_profile.recovery_scale
+            * (personality.recovery or 1.0) * GLOBAL_RECOIL.recovery,
+        0.55,
+        16.0)
 
     return {
         section = section,
@@ -314,7 +581,116 @@ function sivol_fuzz_recoil_profiles.resolve(item, weapon)
         magazine_factor = magazine_factor,
         fire_rate_factor = fire_rate_factor,
         recovery_rate = recovery_rate,
+        personality = personality,
+        global_recoil = GLOBAL_RECOIL,
     }
+end
+
+-- A neutral, attachment-free ADS comparison for the inventory tooltip. This
+-- deliberately mirrors the gameplay impulse terms rather than averaging raw
+-- personality multipliers, whose units and directions differ. Temporary actor
+-- state, mastery and attachments belong to their own systems and are excluded.
+function sivol_fuzz_recoil_profiles.get_handling_score(
+    item, weapon, recoil_k, recovery_k)
+    local profile, reason = sivol_fuzz_recoil_profiles.resolve(item, weapon)
+    if not profile then
+        return nil, reason
+    end
+
+    local class = profile.class
+    local live = profile.live
+    local personality = profile.personality or {}
+    local global_recoil = profile.global_recoil or {}
+    local heat = 0
+    local vertical_total = 0
+    local horizontal_total = 0
+    local first_vertical = 0
+    recoil_k = clamp(tonumber(recoil_k) or 1.0, 0.50, 1.50)
+    recovery_k = clamp(tonumber(recovery_k) or 1.0, 0.50, 1.50)
+
+    for shot = 1, 6 do
+        local burst_index = clamp(
+            (shot - 1.0) * 0.18,
+            0,
+            math.min(1.80, math.max(0, class.max_burst - 1.0)))
+        local stage = personality.sustained or 1.0
+        if shot == 1 then
+            stage = personality.first or 1.0
+        elseif shot == 2 then
+            stage = personality.second or 1.0
+        end
+        local heat_gain = personality.heat_rate or 0.055
+        if shot <= (personality.heat_grace or 6) then
+            heat_gain = heat_gain * 0.20
+        end
+        heat = clamp(heat + heat_gain, 0, 1)
+        local heat_k = 1.0 + heat * ((personality.heat_max or 1.55) - 1.0)
+
+        local vertical = math.max(0, live.cam_dispersion) * class.dispersion_scale
+            + math.max(0, live.cam_dispersion_inc)
+                * class.dispersion_increment_scale * burst_index
+        vertical = vertical * profile.magazine_factor
+        vertical = vertical
+            * (1.0 + class.burst_scale * burst_index * profile.fire_rate_factor)
+        vertical = vertical * (personality.pitch or 1.0) * stage
+            * (1.0 + (heat_k - 1.0) * 0.65)
+        if shot == 1 then
+            vertical = math.max(vertical, personality.first_pitch_floor or 0)
+        end
+        vertical = math.min(
+            vertical * class.ads_multiplier * (global_recoil.overall or 1.0)
+                * (global_recoil.camera_pitch or 1.0),
+            class.max_pitch_deg) * recoil_k
+
+        local horizontal = math.max(
+            math.max(0, live.cam_step_angle_horz) * class.horizontal_step_scale,
+            math.max(0, live.cam_dispersion) * class.horizontal_dispersion_scale)
+        horizontal = horizontal * (1.0 + class.burst_scale * burst_index * 0.35)
+        horizontal = horizontal * (personality.yaw or 1.0)
+            * (1.0 + (heat_k - 1.0)
+                * (1.35 + 0.45 * (personality.wander or 1.0)))
+        horizontal = math.min(
+            horizontal * class.ads_multiplier * (global_recoil.overall or 1.0)
+                * (global_recoil.camera_yaw or 1.0),
+            class.max_yaw_deg) * recoil_k
+
+        if shot == 1 then
+            first_vertical = vertical
+        end
+        if shot >= 3 then
+            vertical_total = vertical_total + vertical
+        end
+        horizontal_total = horizontal_total + horizontal
+    end
+
+    local sustained_vertical = vertical_total / 4.0
+    local horizontal_mean = horizontal_total / 6.0
+    local first_score = 100 * (1.0 - clamp((first_vertical - 0.25) / 2.75, 0, 1))
+    local sustained_score = 100
+        * (1.0 - clamp((sustained_vertical - 0.20) / 2.10, 0, 1))
+    local horizontal_score = 100
+        * (1.0 - clamp((horizontal_mean - 0.10) / 0.80, 0, 1))
+    local recovery_score = 100
+        * clamp((profile.recovery_rate * recovery_k - 2.0) / 10.0, 0, 1)
+
+    local fire_modes = ""
+    if sys_ini and sys_ini:section_exist(profile.section)
+        and sys_ini:line_exist(profile.section, "fire_modes") then
+        fire_modes = sys_ini:r_string(profile.section, "fire_modes") or ""
+    end
+    local automatic_fire = string.find(fire_modes, "%-1") ~= nil
+    local score
+    if automatic_fire then
+        score = first_score * 0.30 + sustained_score * 0.30
+            + horizontal_score * 0.20 + recovery_score * 0.20
+    else
+        score = first_score * 0.45 + sustained_score * 0.15
+            + horizontal_score * 0.15 + recovery_score * 0.25
+    end
+
+    -- Five-point steps communicate comparison without implying laboratory
+    -- precision. Leave room at both ends for future balance changes.
+    return clamp(math.floor(score / 5.0 + 0.5) * 5, 10, 95)
 end
 
 function sivol_fuzz_recoil_profiles.get_class(section)
@@ -324,6 +700,10 @@ end
 
 function sivol_fuzz_recoil_profiles.get_coverage()
     return SECTION_CLASS, EXCLUDED_SECTIONS, SECTION_BASE_OVERRIDES
+end
+
+function sivol_fuzz_recoil_profiles.get_tuning()
+    return GLOBAL_RECOIL, WEAPON_PERSONALITY, DEFAULT_PERSONALITY
 end
 
 function attach(sm)

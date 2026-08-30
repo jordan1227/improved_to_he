@@ -42,6 +42,19 @@ Known clean-game baseline and packed-file inventory: TBD.
 - Weapon handling derives from the active weapon's live base mass plus attached
   scope, silencer, and launcher mass (ammo excluded). Knives remain outside the
   system; binoculars keep their existing exemption behavior.
+- Scripted recoil replaces native camera recoil only for reviewed firearms and
+  keeps camera and first-person HUD contributions separately reversible. The
+  accepted global camera multipliers are pitch `2.90` and yaw `0.72`; HUD pitch
+  is normalized against global camera pitch so camera-strength tuning does not
+  automatically exaggerate the weapon model.
+- Recoil context composes live low-health, stance, conditioned exoskeleton,
+  cached powered-artifact, and the existing class/day weapon-mastery factors.
+  Artifact recoil shares the existing
+  condition-aware two-second belt pass with wobble; the shot path does not scan
+  the belt or allocate a result table.
+- The accepted FL hook exposes absolute, non-accumulating three- and six-axis HUD
+  transforms with owner checks, input clamps, render-time restoration, and a
+  watchdog. Lua clears the hook at neutral and leaves it idle after recovery.
 - Detachable suppressors use caliber/profile-specific ballistic and handling
   modifiers. Their extra weapon wear is native OGSR behavior through
   `condition_shot_dec_silencer`, ranging from +7% to +20% per shot in the
