@@ -169,9 +169,9 @@ register_personality({ "wpn_sig550" },
       yaw_persistence = 0.66, wander = 1.08, shove = 1.06, roll = 1.05 })
 -- Despite its section ID, this is the full-size 7.62x39 AK-103.
 register_personality({ "wpn_ak104" },
-    { pitch = 1.72, yaw = 0.94, first = 1.42, second = 1.08, sustained = 1.13,
-      first_pitch_floor = 0.64, recovery = 0.84, heat_grace = 4, heat_rate = 0.09,
-      yaw_persistence = 0.72, wander = 1.12, shove = 1.22, roll = 1.14,
+    { pitch = 1.72, yaw = 0.98, first = 1.42, second = 1.10, sustained = 1.22,
+      first_pitch_floor = 0.64, recovery = 0.74, heat_grace = 4, heat_rate = 0.095,
+      yaw_persistence = 0.74, wander = 1.18, shove = 1.22, roll = 1.14,
       first_immediate_share = 0.68 })
 register_personality({ "wpn_akm" },
     { pitch = 1.05, yaw = 0.90, first = 1.18, second = 1.10, sustained = 1.15,
@@ -584,6 +584,113 @@ function sivol_fuzz_recoil_profiles.resolve(item, weapon)
         personality = personality,
         global_recoil = GLOBAL_RECOIL,
     }
+end
+
+-- A neutral, attachment-free ADS comparison for the inventory tooltip. This
+-- deliberately mirrors the gameplay impulse terms rather than averaging raw
+-- personality multipliers, whose units and directions differ. Temporary actor
+-- state, mastery and attachments belong to their own systems and are excluded.
+function sivol_fuzz_recoil_profiles.get_handling_score(
+    item, weapon, recoil_k, recovery_k)
+    local profile, reason = sivol_fuzz_recoil_profiles.resolve(item, weapon)
+    if not profile then
+        return nil, reason
+    end
+
+    local class = profile.class
+    local live = profile.live
+    local personality = profile.personality or {}
+    local global_recoil = profile.global_recoil or {}
+    local heat = 0
+    local vertical_total = 0
+    local horizontal_total = 0
+    local first_vertical = 0
+    recoil_k = clamp(tonumber(recoil_k) or 1.0, 0.50, 1.50)
+    recovery_k = clamp(tonumber(recovery_k) or 1.0, 0.50, 1.50)
+
+    for shot = 1, 6 do
+        local burst_index = clamp(
+            (shot - 1.0) * 0.18,
+            0,
+            math.min(1.80, math.max(0, class.max_burst - 1.0)))
+        local stage = personality.sustained or 1.0
+        if shot == 1 then
+            stage = personality.first or 1.0
+        elseif shot == 2 then
+            stage = personality.second or 1.0
+        end
+        local heat_gain = personality.heat_rate or 0.055
+        if shot <= (personality.heat_grace or 6) then
+            heat_gain = heat_gain * 0.20
+        end
+        heat = clamp(heat + heat_gain, 0, 1)
+        local heat_k = 1.0 + heat * ((personality.heat_max or 1.55) - 1.0)
+
+        local vertical = math.max(0, live.cam_dispersion) * class.dispersion_scale
+            + math.max(0, live.cam_dispersion_inc)
+                * class.dispersion_increment_scale * burst_index
+        vertical = vertical * profile.magazine_factor
+        vertical = vertical
+            * (1.0 + class.burst_scale * burst_index * profile.fire_rate_factor)
+        vertical = vertical * (personality.pitch or 1.0) * stage
+            * (1.0 + (heat_k - 1.0) * 0.65)
+        if shot == 1 then
+            vertical = math.max(vertical, personality.first_pitch_floor or 0)
+        end
+        vertical = math.min(
+            vertical * class.ads_multiplier * (global_recoil.overall or 1.0)
+                * (global_recoil.camera_pitch or 1.0),
+            class.max_pitch_deg) * recoil_k
+
+        local horizontal = math.max(
+            math.max(0, live.cam_step_angle_horz) * class.horizontal_step_scale,
+            math.max(0, live.cam_dispersion) * class.horizontal_dispersion_scale)
+        horizontal = horizontal * (1.0 + class.burst_scale * burst_index * 0.35)
+        horizontal = horizontal * (personality.yaw or 1.0)
+            * (1.0 + (heat_k - 1.0)
+                * (1.35 + 0.45 * (personality.wander or 1.0)))
+        horizontal = math.min(
+            horizontal * class.ads_multiplier * (global_recoil.overall or 1.0)
+                * (global_recoil.camera_yaw or 1.0),
+            class.max_yaw_deg) * recoil_k
+
+        if shot == 1 then
+            first_vertical = vertical
+        end
+        if shot >= 3 then
+            vertical_total = vertical_total + vertical
+        end
+        horizontal_total = horizontal_total + horizontal
+    end
+
+    local sustained_vertical = vertical_total / 4.0
+    local horizontal_mean = horizontal_total / 6.0
+    local first_score = 100 * (1.0 - clamp((first_vertical - 0.25) / 2.75, 0, 1))
+    local sustained_score = 100
+        * (1.0 - clamp((sustained_vertical - 0.20) / 2.10, 0, 1))
+    local horizontal_score = 100
+        * (1.0 - clamp((horizontal_mean - 0.10) / 0.80, 0, 1))
+    local recovery_score = 100
+        * clamp((profile.recovery_rate * recovery_k - 2.0) / 10.0, 0, 1)
+
+    local fire_modes = ""
+    if sys_ini and sys_ini:section_exist(profile.section)
+        and sys_ini:line_exist(profile.section, "fire_modes") then
+        fire_modes = sys_ini:r_string(profile.section, "fire_modes") or ""
+    end
+    local automatic_fire = string.find(fire_modes, "%-1") ~= nil
+    local score
+    if automatic_fire then
+        score = first_score * 0.30 + sustained_score * 0.30
+            + horizontal_score * 0.20 + recovery_score * 0.20
+    else
+        score = first_score * 0.45 + sustained_score * 0.15
+            + horizontal_score * 0.15 + recovery_score * 0.25
+    end
+
+    -- Five-point steps communicate comparison without implying laboratory
+    -- precision. Leave room at both ends for future balance changes.
+    return clamp(math.floor(score / 5.0 + 0.5) * 5, 10, 95)
 end
 
 function sivol_fuzz_recoil_profiles.get_class(section)

@@ -122,6 +122,23 @@ calling the hook while idle.
 uses the post-discharge `on_actor_weapon_fire` signal; no Lua definition of the
 pre-fire bridge is present in the repository as of 2026-08-30.
 
+## Inventory handling score
+
+The weapon tooltip includes a compact `Handling` / `Удобность` score in
+five-point steps from 10 to 95. It simulates a neutral six-shot ADS sequence
+from the same live weapon fields, class profile, global tuning, and personality
+terms used by gameplay. Automatic weapons weight first-shot vertical movement,
+sustained vertical movement, horizontal movement, and recovery at 30/30/20/20.
+Weapons without a full-auto fire mode shift the weighting to 45/15/15/25 so a
+bolt action or shotgun is not primarily judged as a sustained-fire weapon.
+
+The base score describes the weapon itself and intentionally excludes health,
+stance, outfit, artifacts, and mastery. With a detachable suppressor fitted,
+the same row also shows a final score using the gameplay suppressor gas/mass
+recoil coefficient and its attachment-mass recovery coefficient. The score is
+computed only while the description is built; it adds no per-frame or per-shot
+work.
+
 ## Diagnostics and performance
 
 `RECOIL_DIAGNOSTICS` logs capability/preparation, tuning, the first three shots
