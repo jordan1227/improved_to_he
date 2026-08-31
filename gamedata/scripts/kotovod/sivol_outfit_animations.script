@@ -1,0 +1,334 @@
+-- FDDA Redone outfit animation presentation adapted for NLC OGSR HE.
+--
+-- Inventory transactions remain native. This module observes a completed manual
+-- slot-6 change, closes the inventory, and presents the matching hands animation.
+-- Outfit changes use the normal equip clip after the destination hands model settles.
+
+local OUTFIT_SLOT = 6
+local RESOLVE_DELAY_MS = 350
+local START_DELAY_MS = 75
+
+local HUD_EQUIP = "outfit_animation_hud"
+local HUD_INSPECT = "outfit_animation_inspect_hud"
+local HUD_KEY = "anm_equip"
+
+local CAM_EQUIP = "itemuse_anm_effects\\liz_outfit_equip.anm"
+local CAM_INSPECT = "itemuse_anm_effects\\liz_outfit_inspect.anm"
+local CAMERA_ID = 9781
+
+local SND_EQUIP = "actor\\liz_outfit_equip"
+local SND_INSPECT = "actor\\liz_outfit_inspect"
+
+local FALLBACK_EQUIP_MS = 3500
+local FALLBACK_INSPECT_MS = 3500
+
+local diagnostics = true
+local inventory_open = false
+local inventory_start_id = nil
+local resolve_generation = 0
+local animation_generation = 0
+local animation_state = nil
+local pending_full_backpack = nil
+
+local function diag(fmt, ...)
+    if diagnostics then log2("[OUTFIT_ANIM_DIAG] " .. fmt, ...) end
+end
+
+local function current_outfit()
+    local actor = db.actor
+    return actor and actor:item_in_slot(OUTFIT_SLOT) or nil
+end
+
+local function object_id(obj)
+    return obj and obj:id() or nil
+end
+
+local function object_section(obj)
+    return obj and obj:section() or nil
+end
+
+local function now()
+    return time_global()
+end
+
+local function is_outfit(obj)
+    return obj and isOutfit(obj) or false
+end
+
+local function inventory_is_open()
+    if inventory_open then return true end
+    return db.actor and db.actor:has_info("ui_inventory") or false
+end
+
+local function remove_visual_effects()
+    level.remove_cam_effector(CAMERA_ID)
+end
+
+local function cleanup(reason)
+    local state = animation_state
+    if not state then return end
+
+    animation_generation = animation_generation + 1
+    animation_state = nil
+
+    if state.hud_started then game.stop_hud_motion() end
+    remove_visual_effects()
+    if state.sound and state.sound:playing() then state.sound:stop() end
+
+    bind_stalker.restore_weapon()
+    if state.owns_hud_busy then hud_fx_busy = false end
+    diag("cleanup reason=%s kind=%s outfit=%s elapsed_ms=%s hud_started=%s",
+        tostring(reason), tostring(state.kind), tostring(state.section),
+        tostring(state.requested_at and (now() - state.requested_at) or nil),
+        tostring(state.hud_started))
+end
+
+local function can_start()
+    local actor = db.actor
+    if not actor or not actor:alive() then return false end
+    if animation_state or hud_fx_busy then return false end
+    if actor:is_talking() or actor:ph_capture() then return false end
+    return true
+end
+
+local function play_sound(path)
+    local snd = xr_sound.get_safe_sound_object(path)
+    if snd then snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0) end
+    return snd
+end
+
+local function start_animation(kind, section)
+    if not can_start() then
+        local actor = db.actor
+        diag("skip kind=%s section=%s actor=%s alive=%s animation_state=%s hud_busy=%s talking=%s captured=%s",
+            tostring(kind), tostring(section), tostring(actor ~= nil),
+            tostring(actor and actor:alive() or false), tostring(animation_state ~= nil),
+            tostring(hud_fx_busy), tostring(actor and actor:is_talking() or false),
+            tostring(actor and actor:ph_capture() ~= nil or false))
+        return false
+    end
+
+    local hud, cam, snd, fallback
+    if kind == "inspect" then
+        hud, cam, snd, fallback = HUD_INSPECT, CAM_INSPECT, SND_INSPECT, FALLBACK_INSPECT_MS
+    else
+        hud, cam, snd, fallback = HUD_EQUIP, CAM_EQUIP, SND_EQUIP, FALLBACK_EQUIP_MS
+    end
+
+    animation_generation = animation_generation + 1
+    local generation = animation_generation
+    animation_state = {
+        generation = generation,
+        kind = kind,
+        section = section,
+        owns_hud_busy = true,
+        hud_started = false,
+        sound = nil,
+        requested_at = now(),
+    }
+
+    local actor = db.actor
+    local active = actor and actor:active_item() or nil
+    local equipped = current_outfit()
+    diag("request kind=%s outfit=%s hud=%s key=%s cam=%s active_item=%s equipped_id=%s equipped=%s start_delay_ms=%d",
+        tostring(kind), tostring(section), tostring(hud), tostring(HUD_KEY), tostring(cam),
+        tostring(object_section(active)), tostring(object_id(equipped)),
+        tostring(object_section(equipped)), START_DELAY_MS)
+
+    hud_fx_busy = true
+    bind_stalker.hide_weapon()
+
+    dsh.timeout(START_DELAY_MS, function()
+        local state = animation_state
+        if not state or state.generation ~= generation then return end
+        if not db.actor or not db.actor:alive() then
+            cleanup("actor unavailable")
+            return
+        end
+
+
+        local equipped_now = current_outfit()
+        diag("play_begin kind=%s outfit=%s hud=%s equipped_id=%s equipped=%s elapsed_ms=%d",
+            tostring(kind), tostring(section), tostring(hud), tostring(object_id(equipped_now)),
+            tostring(object_section(equipped_now)), now() - state.requested_at)
+
+        state.sound = play_sound(snd)
+        level.add_cam_effector(cam, CAMERA_ID, false, "", 0, false)
+        local raw_duration = game.play_hud_motion(2, hud, HUD_KEY, true, 1, true)
+        local duration = tonumber(raw_duration) or fallback
+        state.hud_started = true
+
+        -- Keep bpui's body/hands suppression active until the HUD motion is
+        -- already installed. Closing first exposes the freshly swapped visible
+        -- body for several frames before the outfit hands animation begins.
+        sak.close_window()
+
+        diag("play_result kind=%s outfit=%s hud=%s key=%s raw_duration=%s duration_ms=%d fallback=%s",
+            tostring(kind), tostring(section), tostring(hud), tostring(HUD_KEY),
+            tostring(raw_duration), duration, tostring(tonumber(raw_duration) == nil))
+
+        dsh.timeout(duration, function()
+            local current = animation_state
+            if current and current.generation == generation then cleanup("complete") end
+        end)
+    end)
+
+    return true
+end
+
+local function resolve_manual_outfit_change(generation, start_id, event_name, queued_at)
+    if generation ~= resolve_generation then
+        diag("resolve_stale event=%s generation=%d current_generation=%d", tostring(event_name), generation, resolve_generation)
+        return
+    end
+
+    local outfit = current_outfit()
+    local final_id = object_id(outfit)
+    local section = object_section(outfit)
+    diag("resolve event=%s generation=%d start_id=%s final_id=%s final_outfit=%s elapsed_ms=%d",
+        tostring(event_name), generation, tostring(start_id), tostring(final_id),
+        tostring(section), now() - queued_at)
+    if final_id == start_id then
+        diag("resolve_skip event=%s reason=unchanged", tostring(event_name))
+        return
+    end
+
+    inventory_start_id = final_id
+
+    -- The full-backpack UI owns a closing HUD animation after inventory hide.
+    -- Defer outfit playback until that animation reports completion, otherwise
+    -- the two play_hud_motion calls overwrite each other.
+    if get_value("inv_full") then
+        pending_full_backpack = {
+            section = section,
+            deferred_at = now(),
+        }
+        diag("defer_full_backpack outfit=%s reason=wait_for_close", tostring(section))
+        sak.close_window()
+        return
+    end
+
+    start_animation("equip", section)
+end
+
+local function queue_outfit_resolution(obj, event_name)
+    if not is_outfit(obj) then return end
+    if not inventory_is_open() then
+        diag("queue_skip event=%s object_id=%s object=%s reason=inventory_closed",
+            tostring(event_name), tostring(object_id(obj)), tostring(object_section(obj)))
+        return
+    end
+
+    resolve_generation = resolve_generation + 1
+    local generation = resolve_generation
+    local start_id = inventory_start_id
+    local queued_at = now()
+    diag("queue event=%s generation=%d object_id=%s object=%s start_id=%s delay_ms=%d",
+        tostring(event_name), generation, tostring(object_id(obj)), tostring(object_section(obj)),
+        tostring(start_id), RESOLVE_DELAY_MS)
+    dsh.timeout(RESOLVE_DELAY_MS, function()
+        resolve_manual_outfit_change(generation, start_id, event_name, queued_at)
+    end)
+end
+
+function on_inventory_open()
+    if animation_state then cleanup("inventory reopened") end
+    if pending_full_backpack then
+        diag("pending_clear reason=inventory_reopened outfit=%s", tostring(pending_full_backpack.section))
+        pending_full_backpack = nil
+    end
+    inventory_open = true
+    local outfit = current_outfit()
+    inventory_start_id = object_id(outfit)
+    diag("inventory_open outfit_id=%s outfit=%s", tostring(inventory_start_id), tostring(object_section(outfit)))
+end
+
+function on_inventory_hide()
+    inventory_open = false
+    diag("inventory_hide")
+end
+
+function on_full_backpack_close_complete()
+    local pending = pending_full_backpack
+    if not pending then
+        diag("full_backpack_close_complete pending=false")
+        return
+    end
+
+    pending_full_backpack = nil
+    diag("full_backpack_close_complete pending=true outfit=%s deferred_ms=%d",
+        tostring(pending.section), now() - pending.deferred_at)
+    start_animation("equip", pending.section)
+end
+
+function on_item_to_slot(obj)
+    if not is_outfit(obj) then return end
+    queue_outfit_resolution(obj, "slot")
+end
+
+function on_item_to_ruck(obj)
+    queue_outfit_resolution(obj, "ruck")
+end
+
+function on_drop_before_all(obj)
+    queue_outfit_resolution(obj, "drop")
+end
+
+function on_first_update()
+    cleanup("load/reset")
+    pending_full_backpack = nil
+    inventory_open = false
+    local outfit = current_outfit()
+    inventory_start_id = object_id(outfit)
+    diag("first_update outfit_id=%s outfit=%s", tostring(inventory_start_id), tostring(object_section(outfit)))
+end
+
+function on_update()
+    if animation_state and (not db.actor or not db.actor:alive()) then
+        cleanup("actor died")
+    end
+    if pending_full_backpack and (not db.actor or not db.actor:alive()) then
+        diag("pending_clear reason=actor_died outfit=%s", tostring(pending_full_backpack.section))
+        pending_full_backpack = nil
+    end
+end
+
+function on_before_save_game()
+    cleanup("save")
+    pending_full_backpack = nil
+end
+
+function on_stop_modules()
+    cleanup("shutdown")
+    pending_full_backpack = nil
+    inventory_open = false
+end
+
+function on_level_changer_action()
+    cleanup("level change")
+    pending_full_backpack = nil
+end
+
+function inspect()
+    local outfit = current_outfit()
+    if not outfit or level.main_input_receiver() then return false end
+    return start_animation("inspect", outfit:section())
+end
+
+function set_diagnostics(enabled)
+    diagnostics = enabled == true
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_inventory_open", fun = on_inventory_open })
+    sm:subscribe({ signal = "on_inventory_hide", fun = on_inventory_hide })
+    sm:subscribe({ signal = "on_full_backpack_close_complete", fun = on_full_backpack_close_complete })
+    sm:subscribe({ signal = "on_item_to_slot", fun = on_item_to_slot })
+    sm:subscribe({ signal = "on_item_to_ruck", fun = on_item_to_ruck })
+    sm:subscribe({ signal = "on_drop_before_all", fun = on_drop_before_all })
+    sm:subscribe({ signal = "on_first_update", fun = on_first_update })
+    sm:subscribe({ signal = "on_update", fun = on_update })
+    sm:subscribe({ signal = "on_before_save_game", fun = on_before_save_game })
+    sm:subscribe({ signal = "on_stop_modules", fun = on_stop_modules })
+    sm:subscribe({ signal = "level_changer_action", fun = on_level_changer_action })
+end
