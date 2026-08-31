@@ -1,11 +1,15 @@
 function attach( sm )
-	sm:subscribe({ signal = "on_late_init_all",  	fun = this.on_late_init_all  	})
-	sm:subscribe({ signal = "on_monster_death", 	fun = this.on_monster_death  	})
-	sm:subscribe({ signal = "on_monster_use", 		fun = this.on_monster_use  		})
-	sm:subscribe({ signal = "on_item_to_slot",	 	fun = this.on_slot				})
-	sm:subscribe({ signal = "on_item_to_ruck", 		fun = this.on_drop				})
-	sm:subscribe({ signal = "on_drop_before_all", 	fun = this.on_drop				})
-	-- sm:subscribe({ signal = "on_hit", 			fun = this.on_hit				})	-- Надо будет добавить стоп таймера и анимок при хите. Надо будет подписываться в нужный момент
+	sm:subscribe({ signal = "on_late_init_all",    fun = this.on_late_init_all    })
+	sm:subscribe({ signal = "on_monster_death",    fun = this.on_monster_death    })
+	sm:subscribe({ signal = "on_monster_use",      fun = this.on_monster_use      })
+	sm:subscribe({ signal = "on_item_to_slot",     fun = this.on_slot             })
+	sm:subscribe({ signal = "on_item_to_ruck",     fun = this.on_drop             })
+	sm:subscribe({ signal = "on_drop_before_all",  fun = this.on_drop             })
+	sm:subscribe({ signal = "on_update",           fun = this.on_update           })
+	sm:subscribe({ signal = "on_actor_before_hit", fun = this.on_actor_before_hit })
+	sm:subscribe({ signal = "on_before_save_game", fun = this.on_before_save_game })
+	sm:subscribe({ signal = "on_stop_modules",     fun = this.on_stop_modules     })
+	sm:subscribe({ signal = "level_changer_action",fun = this.on_level_changer_action })
 end
 
 local snd 
@@ -37,14 +41,23 @@ function ab()
 end
 
 local ease_pitch_sig = nil
+local ease_pitch_target = nil
 
--- duration в мс, delta_rad — на сколько сдвинуть pitch (полож. = вверх)
-function ease_camera_pitch(delta_rad, duration, on_complete)
-				log2( "subscribed" )
+local function cancel_camera_pitch_ease(complete)
 	if ease_pitch_sig then
 		ogse_signals.get_mgr():unsubscribe( ease_pitch_sig )
 		ease_pitch_sig = nil
 	end
+	if complete and ease_pitch_target then
+		local cam = actor_camera(0)
+		if cam then cam.pitch = ease_pitch_target end
+	end
+	ease_pitch_target = nil
+end
+
+-- Smoothly approaches an absolute pitch so cleanup can restore the exact saved angle.
+function ease_camera_pitch_to(target_pitch, duration, on_complete)
+	cancel_camera_pitch_ease(false)
 
 	local cam = actor_camera(0)
 	if not cam then
@@ -53,7 +66,7 @@ function ease_camera_pitch(delta_rad, duration, on_complete)
 	end
 
 	local start_pitch = cam.pitch
-	local target_pitch = start_pitch + delta_rad
+	ease_pitch_target = target_pitch
 	local start_time = time_global()
 
 	ease_pitch_sig = ogse_signals.get_mgr():subscribe({
@@ -64,20 +77,27 @@ function ease_camera_pitch(delta_rad, duration, on_complete)
 
 			local elapsed = time_global() - start_time
 			local progress = math.clamp(elapsed / duration, 0, 1)
-			local k = progress * progress * (3 - 2 * progress) -- smoothstep
-
+			local k = progress * progress * (3 - 2 * progress)
 			c.pitch = start_pitch + (target_pitch - start_pitch) * k
 
 			if progress >= 1 then
 				ogse_signals.get_mgr():unsubscribe( ease_pitch_sig )
 				ease_pitch_sig = nil
-				log2( "unsubscribed" )
+				ease_pitch_target = nil
 				if on_complete then on_complete() end
 			end
 		end
 	})
 end
 
+function ease_camera_pitch(delta_rad, duration, on_complete)
+	local cam = actor_camera(0)
+	if not cam then
+		if on_complete then on_complete() end
+		return
+	end
+	ease_camera_pitch_to(cam.pitch + delta_rad, duration, on_complete)
+end
 function test_ease_pitch()
 	ease_camera_pitch( -math.rad( 30 ), 500, function()
 		log2("eased up, holding")
@@ -92,7 +112,6 @@ end
 local STANCE_NORMAL = 0
 local STANCE_CROUCH = 1
 local STANCE_CREEP  = 2
-local prev_stance
 
 local function get_actor_stance()
 	local a = get_actor_obj()
@@ -107,7 +126,7 @@ end
 
 -- Переводит актора в крип, запоминает исходную стойку и вызывает callback(prev_stance)
 -- когда переход гарантированно завершён
-function force_full_crouch(callback)
+function force_full_crouch(callback, can_continue)
 	local a = get_actor_obj()
 	local prev_stance = get_actor_stance()
 
@@ -119,8 +138,11 @@ function force_full_crouch(callback)
 	if prev_stance == STANCE_NORMAL then
 		a:press_action(key_bindings.kCROUCH_TOGGLE)          -- normal -> crouch
 		dsh.timeout(50, function()
-			a:press_action(key_bindings.kCROUCH_TOGGLE)      -- crouch -> creep (нажатие)
-			a:hold_action(key_bindings.kCROUCH_TOGGLE)        -- удерживаем, чтобы остаться в крипе
+			if can_continue and not can_continue() then return end
+			local aobj = get_actor_obj()
+			if not aobj then return end
+			aobj:press_action(key_bindings.kCROUCH_TOGGLE)   -- crouch -> creep (нажатие)
+			aobj:hold_action(key_bindings.kCROUCH_TOGGLE)     -- удерживаем, чтобы остаться в крипе
 			if callback then callback(prev_stance) end
 		end)
 	else -- STANCE_CROUCH
@@ -149,6 +171,300 @@ function restore_stance(prev_stance)
 	end
 end
 
+local HARVEST_HUD_FOV_REGULAR = 0.84
+local HARVEST_HUD_FOV_IMPROVED = 0.94
+local HARVEST_DOF_TARGET = 0.65
+local HARVEST_DOF_DELAY_MS = 250
+local HARVEST_VISUAL_IN_MS = 300
+local HARVEST_VISUAL_OUT_MS = 400
+local HUD_FOV_EPSILON = 0.003
+
+local HARVEST_REGULAR_SPEED = 0.95
+local HARVEST_IMPROVED_SPEED = 1.10
+local HARVEST_REGULAR_DELAY_MIN = 600
+local HARVEST_REGULAR_DELAY_MAX = 1100
+local HARVEST_IMPROVED_DELAY_MIN = 100
+local HARVEST_IMPROVED_DELAY_MAX = 200
+local HARVEST_COMPLEXITY_MIN = 2300
+local HARVEST_COMPLEXITY_MAX = 6500
+local HARVEST_TRANSITION_SOUND_DELAY_MIN = 500
+local HARVEST_STOW_TRANSFER_FRACTION = 0.55
+local HARVEST_STOW_DURATION_FALLBACK = 1033
+
+local is_processing = false
+local harvest_generation = 0
+local harvest_state = nil
+local harvest_visual = nil
+harvest_diagnostics = false
+
+local function harvest_log(fmt, ...)
+	if harvest_diagnostics then log2(fmt, ...) end
+end
+
+local function smoothstep(value)
+	return value * value * (3 - 2 * value)
+end
+
+local function read_hud_fov()
+	local ok, value = pcall(function() return get_console():get_float("hud_fov") end)
+	return ok and tonumber(value) or nil
+end
+
+local function write_harvest_hud_fov(visual, value)
+	if not visual.hud_owned or not value then return end
+
+	if visual.last_hud_written and math.abs(value - visual.last_hud_written) <= 0.0005 then
+		return
+	end
+
+	local live = read_hud_fov()
+	if visual.last_hud_written and live
+		and math.abs(live - visual.last_hud_written) > HUD_FOV_EPSILON
+	then
+		visual.hud_owned = false
+		log2("[monster_parts] HUD FOV ownership lost; external value preserved")
+		return
+	end
+
+	local ok = pcall(function()
+		get_console():execute(string.format("hud_fov %.4f", value))
+	end)
+	if ok then
+		visual.last_hud_written = value
+	else
+		visual.hud_owned = false
+	end
+end
+local function update_harvest_visual()
+	local visual = harvest_visual
+	if not visual then return end
+
+	local elapsed = time_global() - visual.started_at
+	local duration = visual.restoring and HARVEST_VISUAL_OUT_MS or HARVEST_VISUAL_IN_MS
+	local progress = math.min(1, elapsed / duration)
+	local k = smoothstep(progress)
+	local hud_target = visual.restoring and visual.base_hud_fov or visual.target_hud_fov
+	local dof_target = visual.restoring and 0 or HARVEST_DOF_TARGET
+	if visual.hud_owned then
+		visual.current_hud_fov = visual.start_hud_fov + (hud_target - visual.start_hud_fov) * k
+		write_harvest_hud_fov(visual, visual.current_hud_fov)
+	end
+
+	local dof_progress = progress
+	if not visual.restoring then
+		dof_progress = math.max(0, math.min(1, (elapsed - HARVEST_DOF_DELAY_MS) / HARVEST_VISUAL_IN_MS))
+	end
+	local dof_k = smoothstep(dof_progress)
+	visual.current_dof = visual.start_dof + (dof_target - visual.start_dof) * dof_k
+
+	if not visual.last_dof_written or math.abs(visual.current_dof - visual.last_dof_written) > 0.005 then
+		set_dof_params(visual.current_dof, visual.current_dof, visual.current_dof, visual.current_dof)
+		visual.last_dof_written = visual.current_dof
+	end
+
+	if visual.restoring and progress >= 1 then
+		if visual.hud_owned then write_harvest_hud_fov(visual, visual.base_hud_fov) end
+		set_dof_params(0, 0, 0, 0)
+		harvest_visual = nil
+	end
+end
+
+local function begin_harvest_visual(hud_fov_multiplier)
+	if harvest_visual then
+		if harvest_visual.hud_owned then
+			write_harvest_hud_fov(harvest_visual, harvest_visual.base_hud_fov)
+		end
+		set_dof_params(0, 0, 0, 0)
+	end
+
+	local base_hud_fov = read_hud_fov()
+	harvest_visual = {
+		base_hud_fov = base_hud_fov,
+		target_hud_fov = base_hud_fov and math.max(0.05, math.min(0.99, base_hud_fov * hud_fov_multiplier)) or nil,
+		current_hud_fov = base_hud_fov,
+		start_hud_fov = base_hud_fov,
+		current_dof = 0,
+		start_dof = 0,
+		started_at = time_global(),
+		hud_owned = base_hud_fov ~= nil,
+		last_hud_written = nil,
+		last_dof_written = nil,
+		restoring = false,
+	}
+end
+
+local function restore_harvest_visual(immediate)
+	local visual = harvest_visual
+	if not visual then return end
+
+	if immediate then
+		if visual.hud_owned then write_harvest_hud_fov(visual, visual.base_hud_fov) end
+		set_dof_params(0, 0, 0, 0)
+		harvest_visual = nil
+		return
+	end
+
+	visual.start_hud_fov = visual.current_hud_fov
+	visual.start_dof = visual.current_dof
+	visual.started_at = time_global()
+	visual.restoring = true
+end
+
+local function is_harvest_active(token)
+	return harvest_state and harvest_state.token == token
+end
+
+local function begin_harvest(monster)
+	harvest_generation = harvest_generation + 1
+	harvest_state = {
+		token = harvest_generation,
+		monster = monster,
+		monster_id = monster and monster:id() or nil,
+		input_disabled = true,
+		saved_stance = get_actor_stance(),
+		stance_started = false,
+	}
+	is_processing = true
+	return harvest_generation
+end
+
+local function cleanup_harvest(reason, interrupted)
+	local state = harvest_state
+	if not state then
+		if interrupted then restore_harvest_visual(true) end
+		return
+	end
+
+	harvest_state = nil
+	harvest_generation = harvest_generation + 1
+	is_processing = false
+	cancel_camera_pitch_ease(false)
+
+	if interrupted then
+		pcall(function() game.stop_hud_motion() end)
+	end
+
+	local cam = actor_camera(0)
+	if cam and state.saved_pitch then
+		if interrupted then
+			cam.pitch = state.saved_pitch
+		else
+			ease_camera_pitch_to(state.saved_pitch, 500)
+		end
+	end
+
+	if db.actor and state.saved_fov then
+		if interrupted or not smooth_set_fov then
+			pcall(function() db.actor:set_camera_fov(state.saved_fov) end)
+		else
+			pcall(function() smooth_set_fov(state.saved_fov, 600) end)
+		end
+	end
+
+	restore_harvest_visual(interrupted)
+
+	local actor_alive = db.actor and db.actor:alive()
+	if actor_alive and state.stance_started and state.saved_stance ~= nil then
+		restore_stance(state.saved_stance)
+	end
+	if level.present() then pcall(function() level.enable_input() end) end
+	if actor_alive then pcall(function() sak.restore_weap() end) end
+	if snd and snd:playing() then snd:stop() end
+	if level.present() then pcall(function() level.remove_cam_effector(8553) end) end
+	if interrupted then
+		log2("[monster_parts] harvest cleanup reason=%s interrupted=true", reason)
+	else
+		harvest_log("[monster_parts] harvest cleanup reason=%s interrupted=false", reason)
+	end
+end
+
+local function begin_harvest_stow(state, now)
+	local stow_duration = game.play_hud_motion(2, "anm_mob_loot", "anm_show", false, 1, true)
+	stow_duration = tonumber(stow_duration) or HARVEST_STOW_DURATION_FALLBACK
+	state.phase = "stow"
+	state.transfer_at = now + stow_duration * HARVEST_STOW_TRANSFER_FRACTION
+	state.phase_due_at = now + stow_duration
+	harvest_log("[monster_parts] stow knife=%s part=%s anim=anm_mob_loot duration=%s transfer_ms=%s",
+		state.knife_sect, state.part_section, tostring(stow_duration),
+		tostring(math.floor(stow_duration * HARVEST_STOW_TRANSFER_FRACTION + 0.5)))
+end
+
+local function update_harvest_phase()
+	local state = harvest_state
+	if not state or not state.phase then return end
+
+	local now = time_global()
+	if state.phase == "skinning" and now >= state.phase_due_at then
+		if state.stow_delay > 0 then
+			state.phase = "transition"
+			state.phase_due_at = now + state.stow_delay
+			if state.stow_delay >= HARVEST_TRANSITION_SOUND_DELAY_MIN then
+				misc.easy_sound("razgruzka\\bag_scroll")
+			end
+		else
+			begin_harvest_stow(state, now)
+		end
+	elseif state.phase == "transition" and now >= state.phase_due_at then
+		begin_harvest_stow(state, now)
+	elseif state.phase == "stow" then
+		if not state.transferred and now >= state.transfer_at then
+			state.transfer()
+		end
+		if now >= state.phase_due_at then
+			if not state.transferred then state.transfer() end
+			cleanup_harvest("complete", false)
+		end
+	end
+end
+
+function on_update()
+	update_harvest_visual()
+	if harvest_state and (not db.actor or not db.actor:alive()) then
+		cleanup_harvest("actor_dead", true)
+	elseif harvest_state then
+		local token = harvest_state.token
+		local ok, err = pcall(update_harvest_phase)
+		if not ok and is_harvest_active(token) then
+			log2("[monster_parts] harvest error stage=phase error=%s", tostring(err))
+			cleanup_harvest("error_phase", true)
+		end
+	end
+end
+
+function on_actor_before_hit(obj, hit_data)
+	if harvest_state and hit_data and hit_data.hit_type ~= hit.radiation
+		and (not hit_data.power or hit_data.power > 0)
+	then
+		cleanup_harvest("actor_hit", true)
+	end
+end
+
+function on_before_save_game()
+	if harvest_state then
+		cleanup_harvest("save", true)
+	else
+		restore_harvest_visual(true)
+		cancel_camera_pitch_ease(true)
+	end
+end
+
+function on_stop_modules()
+	if harvest_state then
+		cleanup_harvest("net_destroy", true)
+	else
+		restore_harvest_visual(true)
+		cancel_camera_pitch_ease(true)
+	end
+end
+
+function on_level_changer_action()
+	if harvest_state then
+		cleanup_harvest("level_change", true)
+	else
+		restore_harvest_visual(true)
+		cancel_camera_pitch_ease(true)
+	end
+end
 function get_monster_part( name )
 	local ini = system_ini()
 	local part = get_string( name, "Spawn_Inventory_Item_Section" )
@@ -246,13 +562,12 @@ local knf_brk_k  = {
     [ "mutant_e_chimera_kidney"  ] = { 6000, 0.16, - 0.05 }
 }
 
--- Иначе можно дваджы за раз нажать и творить грязь. Попутно словить вылет
-local is_processing = false
+-- A harvest stays locked until completion or guarded cleanup.
 
 function on_monster_use( monster, who )
-    monster:set_nonscript_usable( false )
-
 	if is_processing then return end
+
+    monster:set_nonscript_usable( false )
 
     if monster:object_count() == 0 then return end	
 
@@ -280,8 +595,11 @@ function on_monster_use( monster, who )
     local knife_slot = db.actor:item_in_slot( 0 )
     local has_knife = is_knife( active_item ) or is_knife( knife_slot )
 
-	-- Чтобы не прописывать всюду и на разные условия. Должно быть достаточно
-	dsh.timeout( 500, function() is_processing = false end )
+	-- Non-harvest interactions keep the old short debounce. Active harvesting owns
+	-- the lock until completion or interruption cleanup.
+	dsh.timeout( 500, function()
+		if not harvest_state then is_processing = false end
+	end )
 	
     -- Если есть мутантские части, проверяем нож
     if #mutant_items > 0 then
@@ -296,8 +614,22 @@ function on_monster_use( monster, who )
         if has_knife then
 			-- Сразу, если нож активен или 1500 мс
 			level.disable_input()
+			local token = begin_harvest(monster)
 			local wait = knife_ready and 0 or 1500
-			dsh.timeout( wait, function() process_monster_loot( monster, mutant_items, additional_items ) end )			
+			dsh.timeout(wait, function()
+				if not is_harvest_active(token) then return end
+				if not db.actor or not db.actor:alive() then
+					cleanup_harvest("actor_unavailable", true)
+					return
+				end
+				local ok, err = pcall(function()
+					process_monster_loot(monster, mutant_items, additional_items, token)
+				end)
+				if not ok and is_harvest_active(token) then
+					log2("[monster_parts] harvest error stage=prepare error=%s", tostring(err))
+					cleanup_harvest("error_prepare", true)
+				end
+			end)
             return
         end
     end
@@ -330,119 +662,160 @@ function get_wound_pos( range, ignore_obj, target_obj )
     local pos0 = device().cam_pos
     local dirn = vector():set( device().cam_dir ):normalize()
     local res = cast_ray( pos0, dirn, range, ignore_obj )
-    if res.success and target_obj and res.object and res.object:id() == target_obj:id() then
-        return res.position
+    if res.success and target_obj and res.object then
+        local ok, same_target = pcall(function() return res.object:id() == target_obj:id() end)
+        if ok and same_target then return res.position, "ray" end
     end
-    return nil
+
+    -- AdaptiveSkinningCamera uses the selected corpse center when its ray misses.
+    -- This API is native in this checkout and avoids mutant-specific bone names.
+    if target_obj then
+        local ok, center = pcall(function() return target_obj:center() end)
+        if ok and center and center.x == center.x and center.y == center.y and center.z == center.z
+            and pos0:distance_to(center) <= range + 2.0
+        then
+            return vector():set(center), "center"
+        end
+
+        local pos_ok, object_pos = pcall(function() return target_obj:position() end)
+        if pos_ok and object_pos and object_pos.x == object_pos.x and object_pos.y == object_pos.y and object_pos.z == object_pos.z
+            and pos0:distance_to(object_pos) <= range + 2.0
+        then
+            return vector():set(object_pos), "position"
+        end
+    end
+
+    return nil, "fixed"
 end
 
 -- =========================================================
 -- PROCESS MONSTER LOOT (INTEGRATION)
 -- =========================================================
 
-function process_monster_loot( monster, mutant_items, additional_items )
+function process_monster_loot( monster, mutant_items, additional_items, token )
+    if not is_harvest_active(token) then return end
+
     local part_to_take = mutant_items[ 1 ]
     local part_section = part_to_take:section()
-    
+
     local knife_item = db.actor:item_in_slot( 0 )
+    if not knife_item then
+        cleanup_harvest("knife_missing", true)
+        return
+    end
     local knife_sect = knife_item:section()
-    local active_item = db.actor:active_item()
-    
+
+    local time_by_monster = knf_brk_k[ part_section ][ 1 ]
     local cond_by_monster = knf_brk_k[ part_section ][ 2 ]
     local reduce_cond = knf_brk_k[ part_section ][ 3 ]
-    
+
     local knife_cond = knife_item:condition()
-    local new_cond = ( knife_sect == "wpn_knife_m1" and reduce_cond / 2 ) or reduce_cond 
-    params.add_condition( active_item, new_cond )
+    local new_cond = ( knife_sect == "wpn_knife_m1" and reduce_cond / 2 ) or reduce_cond
     local will_break = knife_cond + new_cond <= 0
-    
+
     local mut_cond = math.max( 1 - ( cond_by_monster / knife_cond ), 0.2 )
     if knife_cond >= 0.9 then mut_cond = 1 end
-    
+
     if will_break then
         local decrease_percentage = math.random( 10, 15 ) / 100
         mut_cond = math.max( mut_cond * ( 1 - decrease_percentage), 0.1 )
-    end	
+    end
 
-    force_full_crouch( function( saved )
-        prev_stance = saved
+    local function start_animation(saved)
+        if not is_harvest_active(token) then return end
 
-        -- 1. Perform Single Raycast to find the exact point on the monster
-        local wound_pos = get_wound_pos( 3.0, db.actor, monster )
-        local pitch_delta = -math.rad( 25 ) -- Fallback if ray misses
-        
-        if wound_pos then
+        local state = harvest_state
+        state.saved_stance = saved
+
+        local cam = actor_camera(0)
+        state.saved_pitch = cam and cam.pitch or nil
+
+        local wound_pos, target_source = get_wound_pos(5.0, db.actor, monster)
+        local pitch_delta = -math.rad(25)
+
+        if wound_pos and cam then
             local cam_pos = device().cam_pos
-            local look_dir = vector():sub( wound_pos, cam_pos )
-            local target_pitch = look_dir:getP() 
-            local cam = actor_camera(0)
-            if cam then
-                pitch_delta = target_pitch - cam.pitch
-                -- Clamp to sane values so we don't break our neck if standing on the corpse
-                pitch_delta = math.max( -math.rad(60), math.min( math.rad(20), pitch_delta ) )
-            end
+            local look_dir = vector():sub(wound_pos, cam_pos)
+            local target_pitch = look_dir:getP()
+            pitch_delta = target_pitch - state.saved_pitch
+            pitch_delta = math.max(-math.rad(45), math.min(math.rad(10), pitch_delta))
         end
 
-        -- 2. Apply the adaptive pitch
-        if not strpos( monster:name(), "burer", 1, true ) then
-            ease_camera_pitch( pitch_delta, 500 )
+        if state.saved_pitch and not strpos(monster:name(), "burer", 1, true) then
+            ease_camera_pitch_to(state.saved_pitch + pitch_delta, 500)
         end
 
-        -- 3. Apply FOV using NLC's native smooth_set_fov
-        local saved_fov = db.actor:get_camera_fov()
-        local LOOT_FOV = 58 -- Zoom in
+        state.saved_fov = db.actor:get_camera_fov()
+        local LOOT_FOV = 58
         if smooth_set_fov then
             pcall(function() smooth_set_fov(LOOT_FOV, 400) end)
         else
             db.actor:set_camera_fov(LOOT_FOV)
         end
 
-        local anim = knife_sect == "wpn_knife_m1" and "anm_mob_harvest_m1" or "anm_mob_harvest"
-        local anim_duration = game.play_hud_motion( 2, anim, "anm_show", false, 1, true )	
+        local improved_knife = knife_sect == "wpn_knife_m1"
+        local anim = improved_knife and "anm_mob_harvest_m1" or "anm_mob_harvest_hoc"
+        local anim_speed = improved_knife and HARVEST_IMPROVED_SPEED or HARVEST_REGULAR_SPEED
+        local hud_fov_multiplier = improved_knife and HARVEST_HUD_FOV_IMPROVED or HARVEST_HUD_FOV_REGULAR
+        local complexity = math.max(0, math.min(1,
+            (time_by_monster - HARVEST_COMPLEXITY_MIN) / (HARVEST_COMPLEXITY_MAX - HARVEST_COMPLEXITY_MIN)))
+        local delay_min = improved_knife and HARVEST_IMPROVED_DELAY_MIN or HARVEST_REGULAR_DELAY_MIN
+        local delay_max = improved_knife and HARVEST_IMPROVED_DELAY_MAX or HARVEST_REGULAR_DELAY_MAX
+        local stow_delay = math.floor(delay_min + (delay_max - delay_min) * complexity + 0.5)
+
+        begin_harvest_visual(hud_fov_multiplier)
+
+        local anim_duration = game.play_hud_motion(2, anim, "anm_show", false, anim_speed, true)
         misc.easy_sound("interface\\item_usage\\harvest_use")
+        harvest_log("[monster_parts] harvest knife=%s part=%s anim=%s speed=%.2f duration=%s stow_delay=%s complexity=%.2f camera_target=%s pitch_delta=%.1f",
+            knife_sect, part_section, anim, anim_speed, tostring(anim_duration), stow_delay, complexity, target_source, math.deg(pitch_delta))
 
-        dsh.timeout( anim_duration, function() 
-            game.play_hud_motion( 2, "anm_mob_loot", "anm_show", false, 1, true )
+        state.transfer = function()
+            if state.transferred then return end
+            params.add_condition(knife_item, new_cond)
+
+
             misc.easy_sound("interface\\item_usage\\harvest_use_success")
-            sak.restore_weap()
-
-            monster:transfer_item( part_to_take, db.actor )
-            part_to_take:set_condition( mut_cond )	
-            sak.relocate_item( "in", part_to_take:section(), 1 )			
+            monster:transfer_item(part_to_take, db.actor)
+            part_to_take:set_condition(mut_cond)
+            sak.relocate_item("in", part_to_take:section(), 1)
 
             if will_break then
-                misc.release_obj( knife_item )
-                db.actor:drop_item( part_to_take )
-                sak.send_tip( 
-                    "Чёрт! Совсем нож в негодность пришёл \\nТеперь точно новый покупать...", 
-                    "Мысли вслух", 0, 10, "g_g", "no", "red" 
+                misc.release_obj(knife_item)
+                db.actor:drop_item(part_to_take)
+                sak.send_tip(
+                    "Чёрт! Совсем нож в негодность пришёл \\nТеперь точно новый покупать...",
+                    "Мысли вслух", 0, 10, "g_g", "no", "red"
                 )
-                misc.easy_sound( "scripts\\knife_broke" )
-                misc.easy_sound( "scripts\\matches_no_light_2" )
+                misc.easy_sound("scripts\\knife_broke")
+                misc.easy_sound("scripts\\matches_no_light_2")
             end
 
-            -- 4. Restore FOV smoothly
-            if smooth_set_fov then
-                pcall(function() smooth_set_fov(saved_fov, 600) end)
-            else
-                db.actor:set_camera_fov(saved_fov)
-            end
+            state.transferred = true
+        end
 
-            -- Return camera pitch to original angle
-            if not strpos( monster:name(), "burer", 1, true ) then
-                ease_camera_pitch( math.abs(pitch_delta), 500 )
-            end
+        state.phase = "skinning"
+        state.phase_due_at = time_global() + anim_duration
+        state.stow_delay = stow_delay
+        state.knife_sect = knife_sect
+        state.part_section = part_section
+        state.transferred = false
 
-            restore_stance( prev_stance )
-            stop_loot_already()
-        end ) 
-
-        monster:set_tip_text( #mutant_items > 1 and "cut_off_part" or 
-            ( #mutant_items == 1 and #additional_items > 0 and ( strpos( monster:name(), "burer_", 1, true ) 
-                or strpos( monster:name(), "controller", 1, true ) ) and "%c[green]Обшарим тело" 
-                or "nothing_to_cut_off" ) 
+        monster:set_tip_text(#mutant_items > 1 and "cut_off_part" or
+            (#mutant_items == 1 and #additional_items > 0 and (strpos(monster:name(), "burer_", 1, true)
+                or strpos(monster:name(), "controller", 1, true)) and "%c[green]Обшарим тело"
+                or "nothing_to_cut_off")
         )
-    end )
+    end
+
+    harvest_state.stance_started = true
+    force_full_crouch(function(saved)
+        local ok, err = pcall(function() start_animation(saved) end)
+        if not ok and is_harvest_active(token) then
+            log2("[monster_parts] harvest error stage=start error=%s", tostring(err))
+            cleanup_harvest("error_start", true)
+        end
+    end, function() return is_harvest_active(token) end)
 end
 
 function actor_look_at_point( target_point )
