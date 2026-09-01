@@ -2,43 +2,181 @@
 -- Real-AI psy-phantom pilot. Ordinary monsters are tracked and released
 -- before normal death handling so they cannot leave corpses or loot.
 
-local DOG_SECTION = "dog_weak"
-local DOG_LIFETIME_MS = 20000
-local DOG_PSY_HIT_POWER = 0.025
+local MUTANT_VARIANTS = {
+	dog = {
+		section = "dog_weak", lifetime_ms = 20000,
+		psy_hit_power = 0.025, psy_hit_cooldown_ms = 650,
+	},
+	flesh = {
+		section = "flesh_weak", lifetime_ms = 18000,
+		psy_hit_power = 0.020, psy_hit_cooldown_ms = 750,
+	},
+	boar = {
+		section = "boar_weak_psy_phantom", lifetime_ms = 20000,
+		psy_hit_power = 0.027, psy_hit_cooldown_ms = 800,
+	},
+	tushkano = {
+		section = "tushkano_normal", lifetime_ms = 12000,
+		psy_hit_power = 0.012, psy_hit_cooldown_ms = 450,
+	},
+	pseudodog = {
+		section = "pseudodog_weak", lifetime_ms = 20000,
+		psy_hit_power = 0.028, psy_hit_cooldown_ms = 800,
+	},
+	snork = {
+		section = "snork_weak", lifetime_ms = 18000,
+		psy_hit_power = 0.030, psy_hit_cooldown_ms = 850,
+	},
+	bloodsucker = {
+		section = "bloodsucker_weak_psy_phantom", lifetime_ms = 20000,
+		psy_hit_power = 0.035, psy_hit_cooldown_ms = 900,
+	},
+}
+local MUTANT_VARIANT_KEYS = { "dog", "flesh", "boar", "tushkano", "pseudodog", "snork" }
 local STALKER_VARIANTS = {
 	bandit = {
 		section = "olr_bandit_novice", community = "bandit", rank = 150,
 		profile_pool = "sim_bandit_novice",
+		loadouts = {
+			{ weapon = "wpn_pm", ammo = "ammo_9x18_fmj", ammo_boxes = 2 },
+			{ weapon = "wpn_fort", ammo = "ammo_9x18_fmj", ammo_boxes = 2 },
+			{ weapon = "wpn_bm16", ammo = "ammo_12x70_buck", ammo_boxes = 2 },
+			{ weapon = "wpn_ak74u", ammo = "ammo_5.45x39_fmj", ammo_boxes = 2 },
+		},
 		lifetime_ms = 18000, psy_hit_power = 0.015, psy_hit_cooldown_ms = 700,
 	},
 	dolg = {
 		section = "olr_dolg_veteran", community = "dolg", rank = 550,
 		profile_pool = "sim_dolg_veteran",
+		loadouts = {
+			{ weapon = "wpn_val", ammo = "ammo_9x39_sp5", ammo_boxes = 2 },
+			{ weapon = "wpn_groza", ammo = "ammo_9x39_sp5", ammo_boxes = 2 },
+			{ weapon = "wpn_ak74", ammo = "ammo_5.45x39_ap", ammo_boxes = 2 },
+			{ weapon = "wpn_abakan", ammo = "ammo_5.45x39_fmj", ammo_boxes = 2 },
+		},
 		lifetime_ms = 24000, psy_hit_power = 0.020, psy_hit_cooldown_ms = 850,
 	},
 	freedom = {
 		section = "olr_svoboda_specnaz", community = "freedom", rank = 500,
 		profile_pool = "sim_Svoboda_specnaz",
+		loadouts = {
+			{ weapon = "wpn_m16a4", ammo = "ammo_5.56x45_ss190", ammo_boxes = 2 },
+			{ weapon = "wpn_lr300", ammo = "ammo_5.56x45_ss190", ammo_boxes = 2 },
+			{ weapon = "wpn_akm", ammo = "ammo_7.62x39_fmj", ammo_boxes = 2 },
+			{ weapon = "wpn_ak74", ammo = "ammo_5.45x39_fmj", ammo_boxes = 2 },
+		},
 		lifetime_ms = 22000, psy_hit_power = 0.018, psy_hit_cooldown_ms = 750,
 	},
+	zombied = {
+		section = "rad_zombied_respawn_2", community = "zombied", rank = 350,
+		profile_pool = "sim_zombied_veteran",
+		loadouts = {
+			{ weapon = "wpn_pm", ammo = "ammo_9x18_fmj", ammo_boxes = 2 },
+			{ weapon = "wpn_bm16", ammo = "ammo_12x70_buck", ammo_boxes = 2 },
+			{ weapon = "wpn_ak74u", ammo = "ammo_5.45x39_fmj", ammo_boxes = 2 },
+			{ weapon = "wpn_ak74", ammo = "ammo_5.45x39_fmj", ammo_boxes = 2 },
+		},
+		lifetime_ms = 22000, psy_hit_power = 0.018, psy_hit_cooldown_ms = 850,
+	},
 }
-local STALKER_VARIANT_KEYS = { "bandit", "dolg", "freedom" }
+local STALKER_VARIANT_KEYS = { "bandit", "dolg", "freedom", "zombied" }
+-- Controller personalities. Snorks and bloodsuckers are reserved for strong
+-- controllers; tushkano packs remain ambient-only so one request cannot fill
+-- the entire active-phantom budget.
+local CONTROLLER_VARIANTS_NORMAL = {
+	{ kind = "monster", key = "dog", weight = 25 },
+	{ kind = "monster", key = "flesh", weight = 20 },
+	{ kind = "monster", key = "boar", weight = 15 },
+	{ kind = "monster", key = "pseudodog", weight = 10 },
+	{ kind = "npc", key = "bandit", weight = 12 },
+	{ kind = "npc", key = "zombied", weight = 8 },
+	{ kind = "npc", key = "dolg", weight = 5 },
+	{ kind = "npc", key = "freedom", weight = 5 },
+}
+local CONTROLLER_VARIANTS_STRONG = {
+	{ kind = "monster", key = "dog", weight = 10 },
+	{ kind = "monster", key = "boar", weight = 10 },
+	{ kind = "monster", key = "pseudodog", weight = 10 },
+	{ kind = "monster", key = "snork", weight = 20 },
+	{ kind = "monster", key = "bloodsucker", weight = 20 },
+	{ kind = "npc", key = "bandit", weight = 5 },
+	{ kind = "npc", key = "dolg", weight = 10 },
+	{ kind = "npc", key = "freedom", weight = 10 },
+	{ kind = "npc", key = "zombied", weight = 5 },
+}-- Ambient hallucinations deliberately exclude snorks and bloodsuckers; those
+-- remain personality variants reserved for strong controllers.
+local AMBIENT_VARIANTS_MILD = {
+	{ kind = "monster", key = "dog", weight = 25 },
+	{ kind = "monster", key = "flesh", weight = 30 },
+	{ kind = "monster", key = "boar", weight = 15 },
+	{ kind = "monster", key = "tushkano", weight = 20 },
+	{ kind = "npc", key = "bandit", weight = 5 },
+	{ kind = "npc", key = "zombied", weight = 5 },
+}
+local AMBIENT_VARIANTS_MID = {
+	{ kind = "monster", key = "dog", weight = 20 },
+	{ kind = "monster", key = "flesh", weight = 20 },
+	{ kind = "monster", key = "boar", weight = 20 },
+	{ kind = "monster", key = "pseudodog", weight = 15 },
+	{ kind = "monster", key = "tushkano", weight = 10 },
+	{ kind = "npc", key = "bandit", weight = 8 },
+	{ kind = "npc", key = "zombied", weight = 7 },
+}
+local AMBIENT_VARIANTS_SEVERE = {
+	{ kind = "monster", key = "dog", weight = 15 },
+	{ kind = "monster", key = "flesh", weight = 10 },
+	{ kind = "monster", key = "boar", weight = 20 },
+	{ kind = "monster", key = "pseudodog", weight = 20 },
+	{ kind = "npc", key = "bandit", weight = 10 },
+	{ kind = "npc", key = "dolg", weight = 10 },
+	{ kind = "npc", key = "freedom", weight = 8 },
+	{ kind = "npc", key = "zombied", weight = 7 },
+}
+
+local AMBIENT_PSY_THRESHOLD = 0.50
+local AMBIENT_CHECK_MS = 15000
+local AMBIENT_INITIAL_DELAY_MS = 60000
+local AMBIENT_MAX_CHANCE = 0.30
+local AMBIENT_COOLDOWN_MIN_MS = 60000
+local AMBIENT_COOLDOWN_SPAN_MS = 90000
+local AMBIENT_COOLDOWN_JITTER_MS = 30000
 local MIN_SPAWN_DISTANCE = 12
 local MAX_SPAWN_DISTANCE = 18
-local MAX_ACTIVE = 2
+local MAX_ACTIVE = 4
 local MAX_PER_SOURCE = 1
 local OUTSIDE_FOV_DOT = 0.20
 local AWARENESS_REFRESH_MS = 500
+local INVENTORY_AUDIT_FAST_MS = 250
+local INVENTORY_AUDIT_SLOW_MS = 1000
+local INVENTORY_AUDIT_FAST_WINDOW_MS = 5000
 local DISAPPEAR_PARTICLE = "monsters\\phantom_death"
+local HAND_GRENADES = {
+	grenade_f1 = true,
+	grenade_rgd5 = true,
+}
 
 local enabled = true
 local active = {}
 local pending_release = {}
 local pending_psy_hits = {}
 local forcing_awareness_id = nil
+local ambient_enabled = true
+local ambient_diagnostics = false
+local ambient_initialized = false
+local ambient_next_check = 0
+local ambient_next_spawn_time = 0
+local ambient_last_skip_reason = nil
+local ambient_force_next_spawn = false
 
 local function log(fmt, ...)
 	log2("[sivol_psy_phantoms] " .. fmt, ...)
+end
+
+local function get_mask_psy_k()
+	if not (sivol and sivol.get_mask_psy_k) then return 1.0 end
+	local ok, value = pcall(sivol.get_mask_psy_k)
+	if not ok then return 1.0 end
+	return math.max(0, math.min(1.5, tonumber(value) or 1.0))
 end
 
 local function entry_count(source_id)
@@ -131,7 +269,9 @@ local function release_id(id, reason)
 		-- its pelvis so shot and timeout disappearances use the same visible path.
 		play_disappear(fx_pos)
 	end
-	log("released id=%s reason=%s", tostring(id), tostring(reason))
+	log("released id=%s reason=%s tracked_children=%d grenades_removed=%d collateral_blocked=%d",
+		tostring(id), tostring(reason), #(entry.child_ids or {}), entry.grenades_removed or 0,
+		entry.collateral_hits_blocked or 0)
 end
 
 local function queue_release(id, reason)
@@ -141,11 +281,109 @@ local function queue_release(id, reason)
 end
 
 local function track_child(entry, child_id)
-	if not entry or not child_id then return end
+	if not entry or not child_id then return false end
 	entry.child_id_set = entry.child_id_set or {}
-	if entry.child_id_set[child_id] then return end
+	if entry.child_id_set[child_id] then return false end
 	entry.child_id_set[child_id] = true
 	table.insert(entry.child_ids, child_id)
+	return true
+end
+
+local function audit_stalker_inventory(obj, entry, now, initial)
+	if not obj or not entry or entry.kind ~= "npc" then return end
+	local newly_tracked = 0
+	local grenade_ids = {}
+	local seen_grenades = {}
+	local active_section = "nil"
+	local profile_item_ids = {}
+	local profile_item_set = {}
+	local found_profile_weapon = false
+
+	local function inspect_item(item)
+		if not item then return end
+		if track_child(entry, item:id()) then newly_tracked = newly_tracked + 1 end
+		local section = item:section()
+		if entry.loadout and not entry.loadout_applied then
+			local replace = false
+			pcall(function()
+				if item:is_ammo() then replace = true end
+				if item:is_weapon() and not item:is_knife() and not item:is_binoculars() then
+					replace = true
+					found_profile_weapon = true
+				end
+			end)
+			if replace and not profile_item_set[item:id()] then
+				profile_item_set[item:id()] = true
+				table.insert(profile_item_ids, item:id())
+			end
+		end
+		if HAND_GRENADES[section] and not seen_grenades[item:id()] then
+			seen_grenades[item:id()] = true
+			table.insert(grenade_ids, item:id())
+		end
+	end
+
+	pcall(function()
+		obj:iterate_inventory(function(_, item) inspect_item(item) end)
+	end)
+	pcall(function()
+		local item = obj:active_item()
+		if item then
+			active_section = item:section()
+			inspect_item(item)
+		end
+	end)
+
+	if entry.loadout and not entry.loadout_applied and found_profile_weapon then
+		local parent = alife():object(obj:id())
+		local created = 0
+		if parent then
+			local sections = { entry.loadout.weapon }
+			for _ = 1, entry.loadout.ammo_boxes or 0 do
+				table.insert(sections, entry.loadout.ammo)
+			end
+			for _, section in ipairs(sections) do
+				local child = alife():create(section, parent.position,
+					parent.m_level_vertex_id, parent.m_game_vertex_id, parent.id)
+				if child then
+					if track_child(entry, child.id) then newly_tracked = newly_tracked + 1 end
+					created = created + 1
+				end
+			end
+		end
+		if created > 0 then
+			for _, item_id in ipairs(profile_item_ids) do
+				local item = alife():object(item_id)
+				if item then alife():release(item, true) end
+			end
+			entry.loadout_applied = true
+			entry.profile_items_removed = #profile_item_ids
+		end
+		log("loadout apply id=%s success=%s visual=%s weapon=%s ammo=%s boxes=%d removed_profile_items=%d created=%d",
+			tostring(obj:id()), tostring(created > 0), tostring(obj:get_visual_name()), entry.loadout.weapon,
+			entry.loadout.ammo, entry.loadout.ammo_boxes or 0,
+			created > 0 and #profile_item_ids or 0, created)
+	end
+
+	local removed = 0
+	for _, grenade_id in ipairs(grenade_ids) do
+		local grenade = alife():object(grenade_id)
+		if grenade then
+			alife():release(grenade, true)
+			removed = removed + 1
+		end
+	end
+	entry.grenades_removed = (entry.grenades_removed or 0) + removed
+	entry.inventory_audit_count = (entry.inventory_audit_count or 0) + 1
+	local elapsed = now - entry.spawn_time
+	entry.next_inventory_audit = now + (elapsed < INVENTORY_AUDIT_FAST_WINDOW_MS
+		and INVENTORY_AUDIT_FAST_MS or INVENTORY_AUDIT_SLOW_MS)
+
+	if initial or newly_tracked > 0 or removed > 0 then
+		log("inventory audit id=%s pass=%d elapsed_ms=%d newly_tracked=%d total_tracked=%d grenades_removed=%d active_item=%s",
+			tostring(obj:id()), entry.inventory_audit_count, elapsed, newly_tracked,
+			#entry.child_ids, removed, active_section)
+	end
 end
 
 local function configure_client(obj, entry)
@@ -154,12 +392,8 @@ local function configure_client(obj, entry)
 	if entry.kind == "npc" and entry.variant then
 		pcall(function() obj:set_character_community(entry.variant.community, 0, 0) end)
 		pcall(function() obj:set_character_rank(entry.variant.rank) end)
-		pcall(function()
-			obj:iterate_inventory(function(_, item)
-				if item then track_child(entry, item:id()) end
-			end)
-		end)
-		log("configured npc id=%s visual=%s community=%s rank=%s inventory_children=%d profile_pool=%s",
+		audit_stalker_inventory(obj, entry, time_global(), true)
+		log("configured npc id=%s visual=%s community=%s rank=%s tracked_children=%d profile_pool=%s",
 			tostring(obj:id()), tostring(obj:get_visual_name()), tostring(obj:character_community()),
 			tostring(obj:character_rank()), #entry.child_ids, tostring(entry.variant.profile_pool))
 	end
@@ -189,6 +423,14 @@ local function force_actor_awareness(obj, entry, now)
 	end
 
 	if entry.kind == "monster" then
+		local enemy = obj:best_enemy()
+		if enemy and enemy:id() == actor:id() then
+			if not entry.awareness_acquired then
+				entry.awareness_acquired = true
+				log("mutant awareness acquired id=%s delay_ms=%d", tostring(obj:id()), now - entry.spawn_time)
+			end
+			return
+		end
 		-- Mutants need the same zero-power alert trigger used by
 		-- dsh_monster_attack. Stalkers must not receive it: human AI treats even
 		-- a zero-power hit as a stagger animation and becomes permanently locked.
@@ -211,10 +453,12 @@ local function release_all(reason)
 	for _, id in ipairs(ids) do release_id(id, reason) end
 end
 
-local function spawn_phantom(section, kind, source_id, reason, lifetime_ms, variant)
+local function spawn_phantom(section, kind, source_id, reason, lifetime_ms, variant, source_limit)
 	if not enabled or not db.actor or not db.actor:alive() then return nil end
 	local total, source_total = entry_count(source_id)
-	if total >= MAX_ACTIVE or (source_id and source_total >= MAX_PER_SOURCE) then return nil end
+	local effective_source_limit = source_limit or MAX_PER_SOURCE
+	if total >= MAX_ACTIVE
+		or (source_id and source_total >= effective_source_limit) then return nil end
 
 	local pos, lvid, gvid = find_offscreen_spawn(db.actor)
 	if not pos then
@@ -236,36 +480,137 @@ local function spawn_phantom(section, kind, source_id, reason, lifetime_ms, vari
 		next_awareness_time = 0,
 		child_ids = {},
 		child_id_set = {},
+		inventory_audit_count = 0,
+		next_inventory_audit = 0,
+		grenades_removed = 0,
+		collateral_hits_blocked = 0,
+		loadout = nil,
+		loadout_applied = false,
+		profile_items_removed = 0,
 	}
 	log("spawned id=%s reason=%s source=%s distance=%.1f outside_fov=true",
 		tostring(sobj.id), tostring(reason), tostring(source_id), pos:distance_to(db.actor:position()))
 	return sobj.id
 end
 
-local function spawn_dog(source_id, reason)
-	return spawn_phantom(DOG_SECTION, "monster", source_id, reason, DOG_LIFETIME_MS, nil)
-end
-
-local function spawn_stalker(source_id, reason, variant_key)
-	local key = variant_key and STALKER_VARIANTS[variant_key] and variant_key
-		or STALKER_VARIANT_KEYS[lua_random(1, #STALKER_VARIANT_KEYS)]
-	local variant = STALKER_VARIANTS[key]
-	local id = spawn_phantom(variant.section, "npc", source_id, reason, variant.lifetime_ms, variant)
+local function spawn_single_mutant(source_id, reason, key, source_limit)
+	local variant = MUTANT_VARIANTS[key]
+	local id = spawn_phantom(variant.section, "monster", source_id, reason,
+		variant.lifetime_ms, variant, source_limit)
 	if id then
-		log("spawned stalker id=%s variant=%s section=%s profile_pool=%s lifetime_ms=%d",
-			tostring(id), key, variant.section, tostring(variant.profile_pool), variant.lifetime_ms)
+		log("spawned mutant id=%s variant=%s section=%s lifetime_ms=%d psy_power=%.3f",
+			tostring(id), key, variant.section, variant.lifetime_ms, variant.psy_hit_power)
 	end
 	return id
 end
 
+local function spawn_mutant(source_id, reason, variant_key, source_limit)
+	local key = variant_key and MUTANT_VARIANTS[variant_key] and variant_key
+		or MUTANT_VARIANT_KEYS[lua_random(1, #MUTANT_VARIANT_KEYS)]
+	if key ~= "tushkano" then return spawn_single_mutant(source_id, reason, key, source_limit) end
+
+	local requested = lua_random(2, 4)
+	local ids = {}
+	for index = 1, requested do
+		local id = spawn_single_mutant(source_id, reason .. "_group_" .. index, key, requested)
+		if not id then break end
+		table.insert(ids, id)
+	end
+	log("spawned mutant group variant=tushkano requested=%d spawned=%d ids=%s",
+		requested, #ids, table.concat(ids, ","))
+	return ids[1]
+end
+
+local function spawn_stalker(source_id, reason, variant_key, source_limit)
+	local key = variant_key and STALKER_VARIANTS[variant_key] and variant_key
+		or STALKER_VARIANT_KEYS[lua_random(1, #STALKER_VARIANT_KEYS)]
+	local variant = STALKER_VARIANTS[key]
+	local id = spawn_phantom(variant.section, "npc", source_id, reason,
+		variant.lifetime_ms, variant, source_limit)
+	if id then
+		local entry = active[id]
+		entry.loadout = variant.loadouts[lua_random(1, #variant.loadouts)]
+		log("spawned stalker id=%s variant=%s section=%s profile_pool=%s loadout=%s lifetime_ms=%d",
+			tostring(id), key, variant.section, tostring(variant.profile_pool),
+			entry.loadout.weapon, variant.lifetime_ms)
+	end
+	return id
+end
+
+local function spawn_controller_choice(controller, strong)
+	local source_id = controller and controller:id() or nil
+	local roster = strong and CONTROLLER_VARIANTS_STRONG or CONTROLLER_VARIANTS_NORMAL
+	local source_limit = strong and 2 or 1
+	local roll = lua_random(1, 100)
+	local cumulative = 0
+	for _, choice in ipairs(roster) do
+		cumulative = cumulative + choice.weight
+		if roll <= cumulative then
+			local id
+			if choice.kind == "npc" then
+				id = spawn_stalker(source_id, "controller", choice.key, source_limit)
+			else
+				id = spawn_mutant(source_id, "controller", choice.key, source_limit)
+			end
+			log("controller roster tier=%s roll=%d kind=%s variant=%s spawned=%s source=%s source_limit=%d",
+				strong and "strong" or "normal", roll, choice.kind, choice.key,
+				tostring(id ~= nil), tostring(source_id), source_limit)
+			return id, choice.kind .. "_" .. choice.key
+		end
+	end
+	return nil, "invalid_roll"
+end
+
+function spawn_controller_phantom(controller, strong)
+	return spawn_controller_choice(controller, strong == true)
+end
+
+-- Console sampling without requiring a live controller object.
+function spawn_test_controller_normal()
+	return spawn_controller_choice(nil, false)
+end
+
+function spawn_test_controller_strong()
+	return spawn_controller_choice(nil, true)
+end
+
+-- Compatibility for existing console calls and any external addon caller.
 function spawn_controller_dog(controller)
-	return spawn_dog(controller and controller:id() or nil, "controller")
+	return spawn_mutant(controller and controller:id() or nil, "controller", "dog")
 end
 
 -- Console test command:
 -- fl sivol_psy_phantoms.spawn_test()
 function spawn_test()
-	return spawn_dog(nil, "console_test")
+	return spawn_mutant(nil, "console_test", "dog")
+end
+
+function spawn_test_mutant(variant_key)
+	return spawn_mutant(nil, "console_test_mutant", variant_key)
+end
+
+function spawn_test_flesh()
+	return spawn_mutant(nil, "console_test_flesh", "flesh")
+end
+
+function spawn_test_boar()
+	return spawn_mutant(nil, "console_test_boar", "boar")
+end
+
+function spawn_test_tushkano()
+	return spawn_mutant(nil, "console_test_tushkano", "tushkano")
+end
+
+function spawn_test_pseudodog()
+	return spawn_mutant(nil, "console_test_pseudodog", "pseudodog")
+end
+
+function spawn_test_snork()
+	return spawn_mutant(nil, "console_test_snork", "snork")
+end
+
+function spawn_test_bloodsucker()
+	return spawn_mutant(nil, "console_test_bloodsucker", "bloodsucker")
 end
 
 -- Console stalker pilot:
@@ -285,6 +630,157 @@ end
 
 function spawn_test_stalker_freedom()
 	return spawn_stalker(nil, "console_test_stalker_freedom", "freedom")
+end
+
+function spawn_test_stalker_zombied()
+	return spawn_stalker(nil, "console_test_stalker_zombied", "zombied")
+end
+
+local function choose_weighted_variant(roster)
+	local roll = lua_random(1, 100)
+	local cumulative = 0
+	for _, choice in ipairs(roster) do
+		cumulative = cumulative + choice.weight
+		if roll <= cumulative then return choice, roll end
+	end
+	return roster[#roster], roll
+end
+
+local function ambient_safe_reason(actor)
+	if not ambient_enabled then return "disabled" end
+	if not actor or not actor:alive() then return "actor_unavailable" end
+	if actor.psy_health >= AMBIENT_PSY_THRESHOLD then return "psy_above_threshold" end
+	if entry_count(nil) > 0 then return "real_phantom_active" end
+	if phantom_manager and phantom_manager.phantom_count
+		and phantom_manager.phantom_count() > 0 then return "classic_phantom_active" end
+	if actor:is_talking() then return "dialogue" end
+	if level.main_input_receiver() then return "menu_or_ui" end
+	if sleep_manager and sleep_manager.sleeping then return "sleeping" end
+
+	local ok_enemy, enemy = pcall(function() return actor:best_enemy() end)
+	if ok_enemy and enemy then return "combat" end
+
+	if ogse_campfire and ogse_campfire.check_near_en_flame then
+		local ok_fire, near_fire = pcall(ogse_campfire.check_near_en_flame)
+		if ok_fire and near_fire then return "campfire" end
+	end
+	return nil
+end
+
+local function ambient_roster(psy_health)
+	if psy_health >= 0.35 then return AMBIENT_VARIANTS_MILD, "mild" end
+	if psy_health >= 0.20 then return AMBIENT_VARIANTS_MID, "mid" end
+	return AMBIENT_VARIANTS_SEVERE, "severe"
+end
+
+local function ambient_update(now)
+	if not ambient_initialized then
+		ambient_initialized = true
+		ambient_next_check = now + AMBIENT_INITIAL_DELAY_MS
+		ambient_next_spawn_time = ambient_next_check
+		log("ambient initialized delay_ms=%d threshold=%.2f", AMBIENT_INITIAL_DELAY_MS,
+			AMBIENT_PSY_THRESHOLD)
+		return
+	end
+	if now < ambient_next_check then return end
+	ambient_next_check = now + AMBIENT_CHECK_MS
+	if now < ambient_next_spawn_time then return end
+
+	local actor = db.actor
+	local reason = ambient_safe_reason(actor)
+	if reason then
+		if ambient_diagnostics and reason ~= ambient_last_skip_reason then
+			log("ambient skipped reason=%s", reason)
+		end
+		ambient_last_skip_reason = reason
+		return
+	end
+	ambient_last_skip_reason = nil
+
+	local psy_health = math.max(0, math.min(1, tonumber(actor.psy_health) or 1))
+	local severity = math.max(0, math.min(1,
+		(AMBIENT_PSY_THRESHOLD - psy_health) / AMBIENT_PSY_THRESHOLD))
+	local mask_k = get_mask_psy_k()
+	-- Halve the mask's protection for spawn frequency: psy_k 0.7 becomes 0.85,
+	-- exactly 15% fewer attempts rather than 30% fewer.
+	local frequency_mult = math.max(0.5, math.min(1.25, 0.5 + 0.5 * mask_k))
+	local chance = AMBIENT_MAX_CHANCE * severity * frequency_mult
+	local forced = ambient_force_next_spawn
+	ambient_force_next_spawn = false
+	local chance_roll = lua_random()
+	if not forced and chance_roll >= chance then
+		if ambient_diagnostics then
+			log("ambient attempt result=miss psy=%.3f severity=%.3f mask_k=%.3f frequency_mult=%.3f chance=%.3f roll=%.3f",
+				psy_health, severity, mask_k, frequency_mult, chance, chance_roll)
+		end
+		return
+	end
+
+	local roster, tier = ambient_roster(psy_health)
+	local choice, roster_roll = choose_weighted_variant(roster)
+	local id
+	if choice.kind == "npc" then
+		id = spawn_stalker(nil, "ambient_low_psy", choice.key)
+	else
+		id = spawn_mutant(nil, "ambient_low_psy", choice.key)
+	end
+	if id then
+		local cooldown = math.floor(AMBIENT_COOLDOWN_MIN_MS
+			+ AMBIENT_COOLDOWN_SPAN_MS * (1 - severity)
+			+ lua_random(0, AMBIENT_COOLDOWN_JITTER_MS))
+		ambient_next_spawn_time = now + cooldown
+		log("ambient spawned id=%s tier=%s kind=%s variant=%s forced=%s psy=%.3f severity=%.3f mask_k=%.3f frequency_mult=%.3f chance=%.3f chance_roll=%.3f roster_roll=%d cooldown_ms=%d",
+			tostring(id), tier, choice.kind, choice.key, tostring(forced), psy_health, severity, mask_k,
+			frequency_mult, chance, chance_roll, roster_roll, cooldown)
+	else
+		ambient_next_spawn_time = now + 30000
+		log("ambient spawn failed tier=%s kind=%s variant=%s psy=%.3f retry_ms=30000",
+			tier, choice.kind, choice.key, psy_health)
+	end
+end
+
+function set_ambient_enabled(value)
+	ambient_enabled = value == true
+	log("ambient enabled=%s", tostring(ambient_enabled))
+end
+
+function set_ambient_diagnostics(value)
+	ambient_diagnostics = value == true
+	log("ambient diagnostics=%s", tostring(ambient_diagnostics))
+end
+
+function trigger_ambient_check()
+	ambient_initialized = true
+	ambient_next_check = 0
+	ambient_next_spawn_time = 0
+	log("ambient check forced")
+end
+
+function trigger_ambient_spawn()
+	ambient_initialized = true
+	ambient_force_next_spawn = true
+	ambient_next_check = 0
+	ambient_next_spawn_time = 0
+	log("ambient spawn forced; waiting for safe eligible update")
+end
+
+function ambient_status()
+	local actor = db.actor
+	local psy_health = actor and actor.psy_health or 1
+	local mask_k = get_mask_psy_k()
+	local frequency_mult = math.max(0.5, math.min(1.25, 0.5 + 0.5 * mask_k))
+	log("ambient status enabled=%s diagnostics=%s psy=%.3f mask_k=%.3f frequency_mult=%.3f active=%d next_check_ms=%d next_spawn_ms=%d",
+		tostring(ambient_enabled), tostring(ambient_diagnostics), psy_health, mask_k,
+		frequency_mult, entry_count(nil), math.max(0, ambient_next_check - time_global()),
+		math.max(0, ambient_next_spawn_time - time_global()))
+end
+
+local function reset_ambient()
+	ambient_initialized = false
+	ambient_next_check = 0
+	ambient_next_spawn_time = 0
+	ambient_last_skip_reason = nil
+	ambient_force_next_spawn = false
 end
 
 function is_phantom(obj_or_id)
@@ -307,6 +803,7 @@ end
 local function on_update()
 	local now = time_global()
 	local releases = {}
+	ambient_update(now)
 	for id, power in pairs(pending_psy_hits) do
 		pending_psy_hits[id] = nil
 		local actor = db.actor
@@ -333,9 +830,13 @@ local function on_update()
 			else
 				local obj = level.object_by_id(id)
 				configure_client(obj, entry)
+				if obj and entry.kind == "npc" and entry.configured
+					and now >= (entry.next_inventory_audit or 0) then
+					audit_stalker_inventory(obj, entry, now, false)
+				end
 				force_actor_awareness(obj, entry, now)
 			end
-			if sobj and now - entry.spawn_time >= (entry.lifetime_ms or DOG_LIFETIME_MS) then
+			if sobj and now - entry.spawn_time >= (entry.lifetime_ms or 20000) then
 				table.insert(releases, { id = id, reason = "timeout" })
 			elseif sobj and entry.source_id then
 				local source = alife():object(entry.source_id)
@@ -352,23 +853,37 @@ local function on_actor_before_hit(actor, hit_data)
 	local entry = hit_data and active[hit_data.who_id]
 	if not entry or hit_data.ignore_hit or hit_data.hit_type == hit.telepatic then return end
 
-	-- Replace the real dog's physical bite with one controlled telepathic hit.
+	-- Replace every phantom physical attack with one controlled telepathic hit.
 	-- Apply it on the next update rather than re-entering actor:hit from inside
 	-- the engine's before-hit callback.
 	hit_data.ignore_hit = true
 	local now = time_global()
-	if entry.kind ~= "npc" or (entry.next_psy_hit_time or 0) <= now then
-		local psy_power = entry.kind == "npc" and entry.variant.psy_hit_power or DOG_PSY_HIT_POWER
-		entry.next_psy_hit_time = entry.kind == "npc" and now + entry.variant.psy_hit_cooldown_ms or 0
+	if (entry.next_psy_hit_time or 0) <= now then
+		local psy_power = entry.variant.psy_hit_power
+		entry.next_psy_hit_time = now + (entry.variant.psy_hit_cooldown_ms or 0)
 		pending_psy_hits[hit_data.who_id] = psy_power
 		if entry.kind == "npc" then
-			log("converted npc attack id=%s physical_ignored=true psy_power=%.3f", tostring(hit_data.who_id), psy_power)
+			log("converted npc attack id=%s physical_ignored=true psy_power=%.3f protection=engine_telepatic",
+				tostring(hit_data.who_id), psy_power)
+		else
+			log("converted mutant attack id=%s section=%s physical_ignored=true psy_power=%.3f protection=engine_telepatic",
+				tostring(hit_data.who_id), tostring(entry.section), psy_power)
 		end
 	end
 end
 
 local function on_monster_before_hit(obj, hit_data)
-	if not obj or not active[obj:id()] or not hit_data then return end
+	if not obj or not hit_data then return end
+	local source_entry = active[hit_data.who_id]
+	if source_entry and not active[obj:id()] then
+		hit_data.ignore_hit = true
+		source_entry.collateral_hits_blocked = (source_entry.collateral_hits_blocked or 0) + 1
+		log("blocked collateral hit source=%s victim=%s victim_kind=monster power=%.4f total=%d",
+			tostring(hit_data.who_id), tostring(obj:id()), tonumber(hit_data.power) or 0,
+			source_entry.collateral_hits_blocked)
+		return
+	end
+	if not active[obj:id()] then return end
 	if forcing_awareness_id == obj:id() then return end
 	local power = tonumber(hit_data.power) or 0
 	local full_power = tonumber(hit_data.full_power) or 0
@@ -378,7 +893,17 @@ local function on_monster_before_hit(obj, hit_data)
 end
 
 local function on_npc_before_hit(obj, hit_data)
-	if not obj or not active[obj:id()] or not hit_data then return end
+	if not obj or not hit_data then return end
+	local source_entry = active[hit_data.who_id]
+	if source_entry and not active[obj:id()] then
+		hit_data.ignore_hit = true
+		source_entry.collateral_hits_blocked = (source_entry.collateral_hits_blocked or 0) + 1
+		log("blocked collateral hit source=%s victim=%s victim_kind=npc power=%.4f total=%d",
+			tostring(hit_data.who_id), tostring(obj:id()), tonumber(hit_data.power) or 0,
+			source_entry.collateral_hits_blocked)
+		return
+	end
+	if not active[obj:id()] then return end
 	local power = tonumber(hit_data.power) or 0
 	local full_power = tonumber(hit_data.full_power) or 0
 	if math.max(power, full_power) <= 0 then return end
@@ -449,6 +974,6 @@ function attach(sm)
 	sm:subscribe({ signal = "on_monster_net_destroy", fun = on_monster_net_destroy })
 	sm:subscribe({ signal = "on_npc_net_destroy", fun = on_npc_net_destroy })
 	sm:subscribe({ signal = "on_before_save_game", fun = function() release_all("before_save") end })
-	sm:subscribe({ signal = "on_stop_modules", fun = function() release_all("stop_modules") end })
-	sm:subscribe({ signal = "level_changer_action", fun = function() release_all("level_change") end })
+	sm:subscribe({ signal = "on_stop_modules", fun = function() release_all("stop_modules") reset_ambient() end })
+	sm:subscribe({ signal = "level_changer_action", fun = function() release_all("level_change") reset_ambient() end })
 end
