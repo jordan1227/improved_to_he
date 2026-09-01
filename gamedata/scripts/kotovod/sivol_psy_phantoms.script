@@ -1,0 +1,454 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+-- Real-AI psy-phantom pilot. Ordinary monsters are tracked and released
+-- before normal death handling so they cannot leave corpses or loot.
+
+local DOG_SECTION = "dog_weak"
+local DOG_LIFETIME_MS = 20000
+local DOG_PSY_HIT_POWER = 0.025
+local STALKER_VARIANTS = {
+	bandit = {
+		section = "olr_bandit_novice", community = "bandit", rank = 150,
+		profile_pool = "sim_bandit_novice",
+		lifetime_ms = 18000, psy_hit_power = 0.015, psy_hit_cooldown_ms = 700,
+	},
+	dolg = {
+		section = "olr_dolg_veteran", community = "dolg", rank = 550,
+		profile_pool = "sim_dolg_veteran",
+		lifetime_ms = 24000, psy_hit_power = 0.020, psy_hit_cooldown_ms = 850,
+	},
+	freedom = {
+		section = "olr_svoboda_specnaz", community = "freedom", rank = 500,
+		profile_pool = "sim_Svoboda_specnaz",
+		lifetime_ms = 22000, psy_hit_power = 0.018, psy_hit_cooldown_ms = 750,
+	},
+}
+local STALKER_VARIANT_KEYS = { "bandit", "dolg", "freedom" }
+local MIN_SPAWN_DISTANCE = 12
+local MAX_SPAWN_DISTANCE = 18
+local MAX_ACTIVE = 2
+local MAX_PER_SOURCE = 1
+local OUTSIDE_FOV_DOT = 0.20
+local AWARENESS_REFRESH_MS = 500
+local DISAPPEAR_PARTICLE = "monsters\\phantom_death"
+
+local enabled = true
+local active = {}
+local pending_release = {}
+local pending_psy_hits = {}
+local forcing_awareness_id = nil
+
+local function log(fmt, ...)
+	log2("[sivol_psy_phantoms] " .. fmt, ...)
+end
+
+local function entry_count(source_id)
+	local total = 0
+	local source_total = 0
+	for _, entry in pairs(active) do
+		total = total + 1
+		if source_id and entry.source_id == source_id then
+			source_total = source_total + 1
+		end
+	end
+	return total, source_total
+end
+
+local function is_server_object_alive(obj)
+	if not obj then return false end
+	local ok, result = pcall(function() return obj:alive() end)
+	return ok and result == true
+end
+
+local function is_outside_fov(pos)
+	local dev = device()
+	if not dev or not dev.cam_pos or not dev.cam_dir then return false end
+	local to_pos = vector():sub(pos, dev.cam_pos)
+	if to_pos:magnitude() < 0.01 then return false end
+	to_pos:normalize()
+	local cam_dir = vector():set(dev.cam_dir):normalize()
+	return cam_dir:dotproduct(to_pos) <= OUTSIDE_FOV_DOT
+end
+
+local function find_offscreen_spawn(actor)
+	if not actor then return nil end
+	local dev = device()
+	if not dev or not dev.cam_dir then return nil end
+
+	local forward = vector():set(dev.cam_dir.x, 0, dev.cam_dir.z)
+	if forward:magnitude() < 0.01 then
+		forward = vector():set(actor:direction())
+		forward.y = 0
+	end
+	forward:normalize()
+
+	for _ = 1, 12 do
+		-- Select only the rear 140-degree arc. The final dot-product check uses
+		-- the rendered camera direction, so wide/zoomed FOV changes stay safe.
+		local angle = math.rad(lua_random(110, 250))
+		local c = math.cos(angle)
+		local s = math.sin(angle)
+		local dir = vector():set(
+			forward.x * c + forward.z * s,
+			0.0001,
+			-forward.x * s + forward.z * c
+		)
+		local radius = lua_random(MIN_SPAWN_DISTANCE, MAX_SPAWN_DISTANCE)
+		local lvid = level.vertex_in_direction(actor:level_vertex_id(), dir, radius)
+		if lvid and lvid < NONE_SID then
+			local pos = level.vertex_position(lvid)
+			local distance = pos:distance_to(actor:position())
+			if distance >= MIN_SPAWN_DISTANCE - 1 and is_outside_fov(pos) then
+				return pos, lvid, actor:game_vertex_id()
+			end
+		end
+	end
+	return nil
+end
+
+local function play_disappear(pos)
+	if pos then particles_object(DISAPPEAR_PARTICLE):play_at_pos(pos) end
+end
+
+local function release_id(id, reason)
+	local entry = active[id]
+	if not entry then return end
+	local obj = level.object_by_id(id)
+	local sobj = alife():object(id)
+	local pos = obj and obj:position() or (sobj and sobj.position)
+	local fx_pos = pos and vector():set(pos.x, pos.y + (entry.kind == "npc" and 0.5 or 0), pos.z)
+
+	active[id] = nil
+	pending_release[id] = nil
+	pending_psy_hits[id] = nil
+	for _, child_id in ipairs(entry.child_ids or {}) do
+		local child = alife():object(child_id)
+		if child then alife():release(child, true) end
+	end
+	if sobj then alife():release(sobj, true) end
+	if reason == "hit" or reason == "hit_fallback" or reason == "timeout" or reason == "source_gone" then
+		-- Human models can cover a particle started at their origin during the
+		-- hit frame. Remove the phantom first and play the copied position above
+		-- its pelvis so shot and timeout disappearances use the same visible path.
+		play_disappear(fx_pos)
+	end
+	log("released id=%s reason=%s", tostring(id), tostring(reason))
+end
+
+local function queue_release(id, reason)
+	if active[id] and not pending_release[id] then
+		pending_release[id] = reason or "hit"
+	end
+end
+
+local function track_child(entry, child_id)
+	if not entry or not child_id then return end
+	entry.child_id_set = entry.child_id_set or {}
+	if entry.child_id_set[child_id] then return end
+	entry.child_id_set[child_id] = true
+	table.insert(entry.child_ids, child_id)
+end
+
+local function configure_client(obj, entry)
+	if not obj or not entry or entry.configured then return end
+	pcall(function() obj:get_custom_monster().visible_for_zones = false end)
+	if entry.kind == "npc" and entry.variant then
+		pcall(function() obj:set_character_community(entry.variant.community, 0, 0) end)
+		pcall(function() obj:set_character_rank(entry.variant.rank) end)
+		pcall(function()
+			obj:iterate_inventory(function(_, item)
+				if item then track_child(entry, item:id()) end
+			end)
+		end)
+		log("configured npc id=%s visual=%s community=%s rank=%s inventory_children=%d profile_pool=%s",
+			tostring(obj:id()), tostring(obj:get_visual_name()), tostring(obj:character_community()),
+			tostring(obj:character_rank()), #entry.child_ids, tostring(entry.variant.profile_pool))
+	end
+	entry.configured = true
+end
+
+local function force_actor_awareness(obj, entry, now)
+	local actor = db.actor
+	if not obj or not entry or not actor or not actor:alive() then return end
+	if (entry.next_awareness_time or 0) > now then return end
+	entry.next_awareness_time = now + AWARENESS_REFRESH_MS
+
+	obj:set_relation(game_object.enemy, actor)
+	obj:set_custom_panic_threshold(0)
+	obj:enable_memory_object(actor, true)
+	if entry.kind == "npc" then
+		local enemy = obj:best_enemy()
+		if not enemy or enemy:id() ~= actor:id() then
+			-- Direct the human sight manager at the known hostile until the engine
+			-- promotes the actor to best_enemy. Stop forcing sight afterwards so
+			-- ordinary combat aiming remains engine-owned.
+			pcall(function() obj:set_sight(actor, true, true) end)
+		elseif not entry.awareness_acquired then
+			entry.awareness_acquired = true
+			log("npc awareness acquired id=%s delay_ms=%d", tostring(obj:id()), now - entry.spawn_time)
+		end
+	end
+
+	if entry.kind == "monster" then
+		-- Mutants need the same zero-power alert trigger used by
+		-- dsh_monster_attack. Stalkers must not receive it: human AI treats even
+		-- a zero-power hit as a stagger animation and becomes permanently locked.
+		local h = hit()
+		h.draftsman = actor
+		h.direction = vector():sub(obj:position(), actor:position()):normalize()
+		h.type = hit.fire_wound
+		h.impulse = 0
+		h.power = 0
+		forcing_awareness_id = obj:id()
+		obj:hit(h)
+		forcing_awareness_id = nil
+	end
+
+end
+
+local function release_all(reason)
+	local ids = {}
+	for id in pairs(active) do table.insert(ids, id) end
+	for _, id in ipairs(ids) do release_id(id, reason) end
+end
+
+local function spawn_phantom(section, kind, source_id, reason, lifetime_ms, variant)
+	if not enabled or not db.actor or not db.actor:alive() then return nil end
+	local total, source_total = entry_count(source_id)
+	if total >= MAX_ACTIVE or (source_id and source_total >= MAX_PER_SOURCE) then return nil end
+
+	local pos, lvid, gvid = find_offscreen_spawn(db.actor)
+	if not pos then
+		log("spawn rejected: no off-screen navigation vertex")
+		return nil
+	end
+	local sobj = alife():create(section, pos, lvid, gvid)
+	if not sobj then return nil end
+	pcall(function() sobj:can_switch_offline(false) end)
+
+	active[sobj.id] = {
+		section = section,
+		kind = kind,
+		variant = variant,
+		source_id = source_id,
+		spawn_time = time_global(),
+		lifetime_ms = lifetime_ms,
+		configured = false,
+		next_awareness_time = 0,
+		child_ids = {},
+		child_id_set = {},
+	}
+	log("spawned id=%s reason=%s source=%s distance=%.1f outside_fov=true",
+		tostring(sobj.id), tostring(reason), tostring(source_id), pos:distance_to(db.actor:position()))
+	return sobj.id
+end
+
+local function spawn_dog(source_id, reason)
+	return spawn_phantom(DOG_SECTION, "monster", source_id, reason, DOG_LIFETIME_MS, nil)
+end
+
+local function spawn_stalker(source_id, reason, variant_key)
+	local key = variant_key and STALKER_VARIANTS[variant_key] and variant_key
+		or STALKER_VARIANT_KEYS[lua_random(1, #STALKER_VARIANT_KEYS)]
+	local variant = STALKER_VARIANTS[key]
+	local id = spawn_phantom(variant.section, "npc", source_id, reason, variant.lifetime_ms, variant)
+	if id then
+		log("spawned stalker id=%s variant=%s section=%s profile_pool=%s lifetime_ms=%d",
+			tostring(id), key, variant.section, tostring(variant.profile_pool), variant.lifetime_ms)
+	end
+	return id
+end
+
+function spawn_controller_dog(controller)
+	return spawn_dog(controller and controller:id() or nil, "controller")
+end
+
+-- Console test command:
+-- fl sivol_psy_phantoms.spawn_test()
+function spawn_test()
+	return spawn_dog(nil, "console_test")
+end
+
+-- Console stalker pilot:
+-- fl sivol_psy_phantoms.spawn_test_stalker()
+-- fl sivol_psy_phantoms.spawn_test_stalker_dolg()
+function spawn_test_stalker(variant_key)
+	return spawn_stalker(nil, "console_test_stalker", variant_key)
+end
+
+function spawn_test_stalker_bandit()
+	return spawn_stalker(nil, "console_test_stalker_bandit", "bandit")
+end
+
+function spawn_test_stalker_dolg()
+	return spawn_stalker(nil, "console_test_stalker_dolg", "dolg")
+end
+
+function spawn_test_stalker_freedom()
+	return spawn_stalker(nil, "console_test_stalker_freedom", "freedom")
+end
+
+function is_phantom(obj_or_id)
+	local id = type(obj_or_id) == "number" and obj_or_id
+		or (obj_or_id and obj_or_id:id())
+	return id ~= nil and active[id] ~= nil
+end
+
+function set_enabled(value)
+	enabled = value == true
+	if not enabled then release_all("disabled") end
+	log("enabled=%s", tostring(enabled))
+end
+
+function active_count()
+	local total = entry_count(nil)
+	return total
+end
+
+local function on_update()
+	local now = time_global()
+	local releases = {}
+	for id, power in pairs(pending_psy_hits) do
+		pending_psy_hits[id] = nil
+		local actor = db.actor
+		local source = active[id] and level.object_by_id(id)
+		if actor and actor:alive() and source then
+			local h = hit()
+			h.type = hit.telepatic
+			h.power = power
+			h.impulse = 0
+			h:bone("bip01_spine")
+			h.draftsman = source
+			h.direction = source:direction()
+			actor:hit(h)
+		end
+	end
+	for id, reason in pairs(pending_release) do
+		table.insert(releases, { id = id, reason = reason })
+	end
+	for id, entry in pairs(active) do
+		if not pending_release[id] then
+			local sobj = alife():object(id)
+			if not sobj then
+				active[id] = nil
+			else
+				local obj = level.object_by_id(id)
+				configure_client(obj, entry)
+				force_actor_awareness(obj, entry, now)
+			end
+			if sobj and now - entry.spawn_time >= (entry.lifetime_ms or DOG_LIFETIME_MS) then
+				table.insert(releases, { id = id, reason = "timeout" })
+			elseif sobj and entry.source_id then
+				local source = alife():object(entry.source_id)
+				if not is_server_object_alive(source) then
+					table.insert(releases, { id = id, reason = "source_gone" })
+				end
+			end
+		end
+	end
+	for _, item in ipairs(releases) do release_id(item.id, item.reason) end
+end
+
+local function on_actor_before_hit(actor, hit_data)
+	local entry = hit_data and active[hit_data.who_id]
+	if not entry or hit_data.ignore_hit or hit_data.hit_type == hit.telepatic then return end
+
+	-- Replace the real dog's physical bite with one controlled telepathic hit.
+	-- Apply it on the next update rather than re-entering actor:hit from inside
+	-- the engine's before-hit callback.
+	hit_data.ignore_hit = true
+	local now = time_global()
+	if entry.kind ~= "npc" or (entry.next_psy_hit_time or 0) <= now then
+		local psy_power = entry.kind == "npc" and entry.variant.psy_hit_power or DOG_PSY_HIT_POWER
+		entry.next_psy_hit_time = entry.kind == "npc" and now + entry.variant.psy_hit_cooldown_ms or 0
+		pending_psy_hits[hit_data.who_id] = psy_power
+		if entry.kind == "npc" then
+			log("converted npc attack id=%s physical_ignored=true psy_power=%.3f", tostring(hit_data.who_id), psy_power)
+		end
+	end
+end
+
+local function on_monster_before_hit(obj, hit_data)
+	if not obj or not active[obj:id()] or not hit_data then return end
+	if forcing_awareness_id == obj:id() then return end
+	local power = tonumber(hit_data.power) or 0
+	local full_power = tonumber(hit_data.full_power) or 0
+	if math.max(power, full_power) <= 0 then return end
+	hit_data.ignore_hit = true
+	queue_release(obj:id(), "hit")
+end
+
+local function on_npc_before_hit(obj, hit_data)
+	if not obj or not active[obj:id()] or not hit_data then return end
+	local power = tonumber(hit_data.power) or 0
+	local full_power = tonumber(hit_data.full_power) or 0
+	if math.max(power, full_power) <= 0 then return end
+	hit_data.ignore_hit = true
+	queue_release(obj:id(), "hit")
+end
+
+local function on_monster_hit(obj, amount)
+	-- Fallback for engine hit paths that do not invoke entity_alive_before_hit.
+	if obj and active[obj:id()] and (tonumber(amount) or 0) > 0 then
+		queue_release(obj:id(), "hit_fallback")
+	end
+end
+
+local function on_npc_hit(obj, amount)
+	if obj and active[obj:id()] and (tonumber(amount) or 0) > 0 then
+		queue_release(obj:id(), "hit_fallback")
+	end
+end
+
+local function on_monster_spawn(obj)
+	if not obj or not active[obj:id()] then return end
+	configure_client(obj, active[obj:id()])
+end
+
+local function on_npc_spawn(obj)
+	if not obj or not active[obj:id()] then return end
+	configure_client(obj, active[obj:id()])
+end
+
+local function enemy_callback(obj, enemy, result)
+	if not obj or not enemy then return end
+	local obj_is_phantom = active[obj:id()] ~= nil
+	local enemy_is_phantom = active[enemy:id()] ~= nil
+	if enemy_is_phantom then
+		table.insert(result, false)
+		return true
+	end
+	if obj_is_phantom and (not db.actor or enemy:id() ~= db.actor:id()) then
+		table.insert(result, false)
+		return true
+	end
+end
+
+local function on_monster_net_destroy(obj)
+	if not obj then return end
+	local id = obj:id()
+	active[id] = nil
+	pending_release[id] = nil
+	pending_psy_hits[id] = nil
+end
+
+local function on_npc_net_destroy(obj)
+	on_monster_net_destroy(obj)
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = on_update })
+	sm:subscribe({ signal = "on_actor_before_hit", fun = on_actor_before_hit })
+	sm:subscribe({ signal = "on_monster_before_hit", fun = on_monster_before_hit })
+	sm:subscribe({ signal = "on_npc_before_hit", fun = on_npc_before_hit })
+	sm:subscribe({ signal = "on_monster_hit", fun = on_monster_hit })
+	sm:subscribe({ signal = "on_npc_hit", fun = on_npc_hit })
+	sm:subscribe({ signal = "on_monster_spawn", fun = on_monster_spawn })
+	sm:subscribe({ signal = "on_npc_spawn", fun = on_npc_spawn })
+	sm:subscribe({ signal = "on_monster_enemy_callback", fun = enemy_callback })
+	sm:subscribe({ signal = "on_npc_enemy_callback", fun = enemy_callback })
+	sm:subscribe({ signal = "on_monster_net_destroy", fun = on_monster_net_destroy })
+	sm:subscribe({ signal = "on_npc_net_destroy", fun = on_npc_net_destroy })
+	sm:subscribe({ signal = "on_before_save_game", fun = function() release_all("before_save") end })
+	sm:subscribe({ signal = "on_stop_modules", fun = function() release_all("stop_modules") end })
+	sm:subscribe({ signal = "level_changer_action", fun = function() release_all("level_change") end })
+end

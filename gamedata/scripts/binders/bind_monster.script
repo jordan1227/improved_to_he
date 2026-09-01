@@ -25,9 +25,10 @@ local game_difficulty = tonumber( level.get_game_difficulty()  )
 diagnostics = false
 local diagnostic_last = {}
 local scripted_controller_phantoms_enabled = true
--- CPsyDogPhantom creates an audible/server-side entity here but has no usable
--- visible representation. Keep its spawn path for a future engine-side pass.
-local scripted_controller_psy_dog_enabled = false
+-- The engine CPsyDogPhantom path remains unusable here. This switch instead
+-- enables the scripted real-AI dog pilot owned by sivol_psy_phantoms.
+local scripted_controller_psy_dog_enabled = true
+local scripted_controller_real_phantom_chance = 0.25
 local controller_actor_lockout_until = 0
 local controller_last_phantom_count = 0
 local controller_last_scripted_phantom_request = -10000
@@ -662,6 +663,8 @@ function generic_object_binder:update( delta )
 	local dist = sfpos:distance_to( self.last_pos )
 	local mask_k = get_cached_mask_k()
 	local balance_conf = get_monster_balance()
+	local scripted_psy_phantom = sivol_psy_phantoms and sivol_psy_phantoms.is_phantom
+		and sivol_psy_phantoms.is_phantom( sfobj )
 
 	if math.abs( dist ) > 0.05 then  -- оптимизация обработки перемещений
 		self:on_move( dist )
@@ -788,7 +791,7 @@ function generic_object_binder:update( delta )
 		return
 	end
 	
-	if classid == CLID_DOG and sfobj:alive() and sfobj.health>0.05 then
+	if classid == CLID_DOG and not scripted_psy_phantom and sfobj:alive() and sfobj.health>0.05 then
 		local npc = sfobj:get_enemy()
 		if npc and npc:id() == actor:id() then
 			if sfobj:see(npc) then
@@ -925,19 +928,18 @@ function generic_object_binder:update( delta )
 				local radius = 10 * ( lua_random() + 0.5 )
 				local pos = vector():set( math.sin( yaw ) * radius + act_pos.x, act_pos.y + 2, math.cos( yaw ) * radius + act_pos.z )
 				controller_last_scripted_phantom_request = now
-				local rare_psy_dog = scripted_controller_psy_dog_enabled
-					and lua_random() < 0.05 and phantom_manager.psy_variant_count() < 1
-				if rare_psy_dog then
-					local variant_id = phantom_manager.spawn_psy_variant( "psy_dog_phantom", pos,
-						actor:level_vertex_id(), actor:game_vertex_id() )
+				local real_ai_phantom = scripted_controller_psy_dog_enabled
+					and sivol_psy_phantoms and lua_random() < scripted_controller_real_phantom_chance
+				if real_ai_phantom then
+					local variant_id = sivol_psy_phantoms.spawn_controller_dog( sfobj )
 					if variant_id then
 						diagnostic_log( "controller_phantom_request_" .. sfobj:id(), 0,
-							"controller id=%d scripted phantom variant=psy_dog_phantom spawned=true variant_id=%s dist=%.1f",
+							"controller id=%d scripted phantom variant=real_dog spawned=true variant_id=%s dist=%.1f",
 							sfobj:id(), tostring( variant_id ), dist_to_actor )
 					else
 						phantom_manager.spawn_phantom( pos )
 						diagnostic_log( "controller_phantom_request_" .. sfobj:id(), 0,
-							"controller id=%d scripted phantom variant=psy_dog_phantom spawned=false fallback=regular dist=%.1f",
+							"controller id=%d scripted phantom variant=real_dog spawned=false fallback=regular dist=%.1f",
 							sfobj:id(), dist_to_actor )
 					end
 				else
@@ -1179,7 +1181,7 @@ function generic_object_binder:update( delta )
 		end
 	end
 
-	if classid == CLID_DOG and sfobj:alive() and sfobj.health > 0.05 and ( self.dog_psy_timer or 0 ) < time_global() then
+	if classid == CLID_DOG and not scripted_psy_phantom and sfobj:alive() and sfobj.health > 0.05 and ( self.dog_psy_timer or 0 ) < time_global() then
 		self.dog_psy_timer = time_global() + 1513
 		local npc = sfobj:get_enemy()
 		if npc and npc:id() == actor:id() and sfobj:see( npc ) then
@@ -1364,6 +1366,10 @@ function generic_object_binder:waypoint_callback(obj, action_type, index)
   if self.st.active_section~=nil then
     xr_logic.issue_event(self.object, self.st[self.st.active_scheme], "waypoint_callback", obj, action_type, index)
   end
+end
+
+function generic_object_binder:before_hit_callback(hit_data)
+	self.am:call( "on_monster_before_hit", self.object, hit_data, self )
 end
 
 function generic_object_binder:death_callback(victim, who)
@@ -1608,6 +1614,7 @@ function generic_object_binder:net_spawn( sobject )
 	
 	if self.object:alive() then
 		self.object:set_enemy_callback( self.enemy_callback, self )
+		self.object:set_callback(callback.entity_alive_before_hit, self.before_hit_callback, self)
 	end
   
 	xr_gulag.setup_gulag_and_logic_on_spawn(self.object, self.st, sobject, modules.stype_mobile, self.loaded)
@@ -1630,6 +1637,7 @@ end
 
 function generic_object_binder:clear_callbacks()
 	self.object:set_enemy_callback()
+	self.object:set_callback(callback.entity_alive_before_hit, nil)
 end
 
 function generic_object_binder:net_destroy()
