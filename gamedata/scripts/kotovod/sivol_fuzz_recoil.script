@@ -17,10 +17,15 @@ local ENABLED = true
 local CAMERA_RECOIL_ENABLED = true
 local HUD_RECOIL_ENABLED = true
 -- Set true only while validating this port in game. Logging is intentionally
--- bounded to capability/prepare events, the first three shots per weapon, and
--- restoration failures.
+-- bounded to capability/prepare events, the first three shots per weapon,
+-- mastery-day transitions, and restoration failures.
 local RECOIL_DIAGNOSTICS = true
 local STAMINA_RECOIL_PENALTY = 0.35
+
+-- Balance-only multipliers applied to the scripted vertical impulse. The
+-- second factor is only used on the opening shot of a full-auto-capable gun.
+local VERTICAL_RECOIL_MULTIPLIER = 1.20
+local AUTOMATIC_FIRST_SHOT_MULTIPLIER = 1.20
 
 -- Experimental camera-animation layer. OGSR HE has no runtime camera-effector
 -- factor setter, so these point at safely pre-scaled copies of the original
@@ -144,6 +149,7 @@ local state = {
     last_update_ms = nil,
     last_ammo = nil,
     shot_count = 0,
+    mastery_log_day = nil,
     last_base_pitch = nil,
     last_base_yaw = nil,
     measured_mouse_pitch = 0,
@@ -312,6 +318,7 @@ local function reset_dynamics(keep_applied)
     state.measured_mouse_pitch = 0
     state.measured_mouse_yaw = 0
     state.shot_count = 0
+    state.mastery_log_day = nil
     state.hud_pos_x = 0
     state.hud_pos_y = 0
     state.hud_pos_z = 0
@@ -680,6 +687,28 @@ local function get_profile_adapter()
     return sivol_fuzz_recoil_profiles
 end
 
+local function section_has_full_auto(section)
+    if not sys_ini or not section then return false end
+    local ok, result = pcall(function()
+        if not sys_ini:section_exist(section)
+            or not sys_ini:line_exist(section, "fire_modes") then
+            return false
+        end
+        local fire_modes = sys_ini:r_string(section, "fire_modes") or ""
+        return string.find(fire_modes, "%-1") ~= nil
+    end)
+    return ok and result or false
+end
+
+local function profile_has_full_auto(profile)
+    if not profile then return false end
+    if section_has_full_auto(profile.section) then return true end
+    if profile.base_section ~= profile.section then
+        return section_has_full_auto(profile.base_section)
+    end
+    return false
+end
+
 local function resolve_suppressor_profile(item, profile)
     if not sivol_weapon or type(sivol_weapon.get_suppressor_recoil_k) ~= "function" then
         return nil, "suppressor recoil resolver unavailable"
@@ -806,6 +835,7 @@ local function prepare_active_item(item)
 
     state.weapon = weapon
     state.profile = profile
+    profile.automatic_fire = profile_has_full_auto(profile)
 
     if not state.probe_done then
         local probe_ok, probe_reason = probe_capabilities(item, weapon)
@@ -834,8 +864,9 @@ local function prepare_active_item(item)
     local raw = profile.live_raw
     local live = profile.live
     recoil_log(
-        "[sivol_fuzz_recoil][prepare] section=%s base=%s class=%s cam_dispersion_rad=%.6f cam_dispersion_deg=%.4f cam_dispersion_inc_rad=%.6f cam_dispersion_inc_deg=%.4f cam_relax_rad=%.6f cam_relax_deg=%.4f cam_step_rad=%.6f cam_step_deg=%.4f recovery=%.4f fire_interval=%.6f suppressor_k=%.4f suppressor_mode=%s suppressor_section=%s addon_mass=%.3f addon_stability_k=%.4f addon_recovery_k=%.4f addon_sections=%s",
+        "[sivol_fuzz_recoil][prepare] section=%s base=%s class=%s automatic_fire=%s cam_dispersion_rad=%.6f cam_dispersion_deg=%.4f cam_dispersion_inc_rad=%.6f cam_dispersion_inc_deg=%.4f cam_relax_rad=%.6f cam_relax_deg=%.4f cam_step_rad=%.6f cam_step_deg=%.4f recovery=%.4f fire_interval=%.6f suppressor_k=%.4f suppressor_mode=%s suppressor_section=%s addon_mass=%.3f addon_stability_k=%.4f addon_recovery_k=%.4f addon_sections=%s",
         tostring(profile.section), tostring(profile.base_section), tostring(profile.class_name),
+        tostring(profile.automatic_fire),
         raw.cam_dispersion, live.cam_dispersion,
         raw.cam_dispersion_inc, live.cam_dispersion_inc,
         raw.cam_relax_speed, live.cam_relax_speed,
@@ -847,7 +878,7 @@ local function prepare_active_item(item)
     local personality = profile.personality or {}
     local global = profile.global_recoil or {}
     recoil_log(
-        "[sivol_fuzz_recoil][tuning] section=%s global=(%.3f,%.3f,%.3f,%.3f,%.3f) personality=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f) heat=(%d,%.3f,%.3f) yaw_persistence=%.3f shove=%.3f hip_override=%s",
+        "[sivol_fuzz_recoil][tuning] section=%s global=(%.3f,%.3f,%.3f,%.3f,%.3f) personality=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f) heat=(%d,%.3f,%.3f) yaw_persistence=%.3f shove=%.3f hip_override=%s vertical_k=%.2f auto_first_k=%.2f",
         tostring(profile.section), global.overall or 1.0,
         global.camera_pitch or 1.0, global.camera_yaw or 1.0,
         global.hud_rotation or 1.0, global.hud_translation or 1.0,
@@ -856,7 +887,8 @@ local function prepare_active_item(item)
         personality.sustained or 1.0, personality.recovery or 1.0,
         personality.heat_grace or 6, personality.heat_rate or 0.055,
         personality.heat_max or 1.55, personality.yaw_persistence or 0.62,
-        personality.shove or 1.0, tostring(personality.hip_multiplier or "class"))
+        personality.shove or 1.0, tostring(personality.hip_multiplier or "class"),
+        VERTICAL_RECOIL_MULTIPLIER, AUTOMATIC_FIRST_SHOT_MULTIPLIER)
 
     local id = object_id(item)
     if not id then return false, "active firearm ID unavailable" end
@@ -1274,6 +1306,8 @@ local function add_shot_impulse()
         math.min(BURST_CLIMB_MAX, math.max(0, class.max_burst - 1.0)))
     local personality = profile.personality or {}
     local global = profile.global_recoil or {}
+    local automatic_first_shot = state.burst_shots == 1
+        and profile.automatic_fire == true
     local shot_stage = state.burst_shots == 1 and (personality.first or 1.0)
         or (state.burst_shots == 2 and (personality.second or 1.0)
         or (personality.sustained or 1.0))
@@ -1327,6 +1361,14 @@ local function add_shot_impulse()
     outfit_k = valid_number(outfit_k) and tonumber(outfit_k) or 1.0
     artifact_k = valid_number(artifact_k) and tonumber(artifact_k) or 1.0
     mastery_k = valid_number(mastery_k) and tonumber(mastery_k) or 1.0
+    local mastery_days = -1
+    if timers and type(timers.Get_Game_Days) == "function" then
+        local ok_days, days = pcall(timers.Get_Game_Days)
+        if ok_days and valid_number(days) then
+            mastery_days = math.max(0, math.floor(tonumber(days)))
+        end
+    end
+    local mastery_delta_pct = (mastery_k - 1.0) * 100.0
     local handling_multiplier = 1.0 - class.handling_strength * state.handling
     handling_multiplier = clamp(handling_multiplier, 0.52, 1.0)
     local fatigue_multiplier = 1.0 + state.fatigue * 0.42
@@ -1338,6 +1380,11 @@ local function add_shot_impulse()
     if state.burst_shots == 1 then
         vertical_deg = math.max(vertical_deg, personality.first_pitch_floor or 0)
     end
+    local vertical_balance_k = VERTICAL_RECOIL_MULTIPLIER
+    if automatic_first_shot then
+        vertical_balance_k = vertical_balance_k * AUTOMATIC_FIRST_SHOT_MULTIPLIER
+    end
+    vertical_deg = vertical_deg * vertical_balance_k
     vertical_deg = vertical_deg * total_multiplier * attachment_stability_k
         * (global.overall or 1.0) * (global.camera_pitch or 1.0)
     vertical_deg = math.min(vertical_deg, class.max_pitch_deg)
@@ -1479,17 +1526,19 @@ local function add_shot_impulse()
         class.max_yaw_deg * DEG_TO_RAD
     )
     local screen_step_deg = math.deg(camera_pitch_before - state.recoil_pitch)
-    if state.shot_count <= 3 then
+    if state.shot_count <= 3 or state.mastery_log_day ~= mastery_days then
+        state.mastery_log_day = mastery_days
         recoil_log(
-            "[sivol_fuzz_recoil][shot] section=%s shot=%d burst_shot=%d stage=%.3f camera_member_pitch_rad=%.6f impulse_yaw_rad=%.6f camera_member_pitch_deg=%.4f screen_pitch_up_deg=%.4f immediate_share=%.3f immediate_pitch_deg=%.4f tail_pitch_deg=%.4f yaw_deg=%.4f camera_before_deg=%.4f camera_after_deg=%.4f screen_step_deg=%.4f screen_pitch_velocity_deg_s=%.4f return_scale=%.2f ads=%s mode_k=%.3f continuity_before=%.3f climb=%.3f heat=%.3f stamina=%.3f context_k=%.3f health_k=%.3f stance_k=%.3f stance=%s outfit_k=%.3f artifact_k=%.3f mastery_k=%.3f outfit=%s suppressor_k=%.4f attachment_k=%.4f hud_api=%s hud_pos=(%.6f,%.6f,%.6f) hud_rot_hook_xyz=(%.6f,%.6f,%.6f) hud_spring_share=(%.3f,%.3f) hud_spring_rot=(%.6f,%.6f) hud_spring_velocity=(%.6f,%.6f)",
+            "[sivol_fuzz_recoil][shot] section=%s shot=%d burst_shot=%d stage=%.3f vertical_balance_k=%.2f automatic_first=%s camera_member_pitch_rad=%.6f impulse_yaw_rad=%.6f camera_member_pitch_deg=%.4f screen_pitch_up_deg=%.4f immediate_share=%.3f immediate_pitch_deg=%.4f tail_pitch_deg=%.4f yaw_deg=%.4f camera_before_deg=%.4f camera_after_deg=%.4f screen_step_deg=%.4f screen_pitch_velocity_deg_s=%.4f return_scale=%.2f ads=%s mode_k=%.3f continuity_before=%.3f climb=%.3f heat=%.3f stamina=%.3f context_k=%.3f health_k=%.3f stance_k=%.3f stance=%s outfit_k=%.3f artifact_k=%.3f mastery_days=%d mastery_delta_pct=%+.1f mastery_k=%.3f outfit=%s suppressor_k=%.4f attachment_k=%.4f hud_api=%s hud_pos=(%.6f,%.6f,%.6f) hud_rot_hook_xyz=(%.6f,%.6f,%.6f) hud_spring_share=(%.3f,%.3f) hud_spring_rot=(%.6f,%.6f) hud_spring_velocity=(%.6f,%.6f)",
             tostring(profile.section), state.shot_count, state.burst_shots, shot_stage,
+            vertical_balance_k, tostring(automatic_first_shot),
             pitch_impulse, yaw_impulse, pitch_deg, -pitch_deg,
             pitch_immediate_share, -math.deg(pitch_immediate), -math.deg(pitch_tail), yaw_deg,
             math.deg(camera_pitch_before), math.deg(state.recoil_pitch), screen_step_deg,
             -math.deg(state.pitch_velocity), state.camera_return_scale,
             tostring(aiming), aim_multiplier, continuity_before, burst_index, heat, actor_power,
             context_k, health_k, stance_k, tostring(stance_state), outfit_k, artifact_k,
-            mastery_k,
+            mastery_days, mastery_delta_pct, mastery_k,
             tostring(outfit_section), suppressor_recoil_k, attachment_stability_k,
             tostring(state.hud_api),
             state.hud_pos_x, state.hud_pos_y, state.hud_pos_z,
