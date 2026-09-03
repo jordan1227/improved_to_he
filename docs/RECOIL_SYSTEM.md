@@ -122,10 +122,12 @@ calling the hook while idle.
 uses the post-discharge `on_actor_weapon_fire` signal; no Lua definition of the
 pre-fire bridge is present in the repository as of 2026-08-30.
 
-## Inventory handling score
+## Inventory weapon-control score
 
-The weapon tooltip includes a compact `Handling` / `Удобность` score in
-five-point steps from 10 to 95. It simulates a neutral six-shot ADS sequence
+The weapon tooltip includes a single compact `Weapon control` / `Управляемость`
+score in five-point steps from 10 to 95. It replaces the old raw
+`cam_dispersion` row, whose direction and scale were not comparable between
+weapon classes. The score simulates a neutral six-shot ADS sequence
 from the same live weapon fields, class profile, global tuning, and personality
 terms used by gameplay. Automatic weapons weight first-shot vertical movement,
 sustained vertical movement, horizontal movement, and recovery at 30/30/20/20.

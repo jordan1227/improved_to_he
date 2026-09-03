@@ -26,9 +26,11 @@ diagnostics = false
 local diagnostic_last = {}
 local scripted_controller_phantoms_enabled = true
 -- The engine CPsyDogPhantom path remains unusable here. This switch instead
--- enables the scripted real-AI dog pilot owned by sivol_psy_phantoms.
-local scripted_controller_psy_dog_enabled = true
-local scripted_controller_real_phantom_chance = 0.25
+-- enables the weighted real-AI roster owned by sivol_psy_phantoms.
+local scripted_controller_real_ai_enabled = true
+-- Strong controllers favor real-AI phantoms; both tiers retain classic phantoms.
+local scripted_controller_real_phantom_chance_normal = 0.50
+local scripted_controller_real_phantom_chance_strong = 0.65
 local controller_actor_lockout_until = 0
 local controller_last_phantom_count = 0
 local controller_last_scripted_phantom_request = -10000
@@ -735,7 +737,7 @@ function generic_object_binder:update( delta )
 		xr_logic.issue_event(sfobj, self.st[self.st.active_scheme], "update", delta)
 	end
  
-	if classid == CLID_TUSHKANO and sfobj:alive() then
+	if classid == CLID_TUSHKANO and not scripted_psy_phantom and sfobj:alive() then
 		local posit = sfobj:position()
 		local enemy = sfobj:best_enemy()
 		if not enemy then return end
@@ -804,7 +806,7 @@ function generic_object_binder:update( delta )
 		end
 	end
 
-	if classid == CLID_BLOODSUCKER and sfobj:alive() and sfobj.health > 0.05 then
+	if classid == CLID_BLOODSUCKER and not scripted_psy_phantom and sfobj:alive() and sfobj.health > 0.05 then
 		local npc = sfobj:get_enemy()
 		local active_baloon = baloon_on_belt()  -- кто из семьи Балончиковых на поясе
 		if npc and npc:id() == actor:id() then
@@ -819,7 +821,7 @@ function generic_object_binder:update( delta )
 		end
 	end
 
-	if classid == CLID_PSEUDODOG and sfobj:alive() and sfobj.health > 0.05 then
+	if classid == CLID_PSEUDODOG and not scripted_psy_phantom and sfobj:alive() and sfobj.health > 0.05 then
 		local npc = sfobj:get_enemy()
 		if npc and npc:id() == actor:id() then
 			if
@@ -912,7 +914,8 @@ function generic_object_binder:update( delta )
 		local easy_mult = game_difficulty == 0 and 0.9 or 1.0
 		local range_mult = game_difficulty == 0 and 0.8 or 1.0
 		local configured_range = balance_conf.controller_dist or bconf.controller_dist or 80
-		local tier_range = controller_is_strong( sfobj ) and 100 or 80
+		local strong_controller = controller_is_strong( sfobj )
+		local tier_range = strong_controller and 100 or 80
 		local controller_range = math.max( configured_range, tier_range ) * range_mult
 		local normalized_dist = clamp( dist_to_actor / controller_range, 0, 1 )
 		local defense = get_psy_defense_context()
@@ -928,25 +931,31 @@ function generic_object_binder:update( delta )
 				local radius = 10 * ( lua_random() + 0.5 )
 				local pos = vector():set( math.sin( yaw ) * radius + act_pos.x, act_pos.y + 2, math.cos( yaw ) * radius + act_pos.z )
 				controller_last_scripted_phantom_request = now
-				local real_ai_phantom = scripted_controller_psy_dog_enabled
-					and sivol_psy_phantoms and lua_random() < scripted_controller_real_phantom_chance
+				local real_phantom_chance = strong_controller
+					and scripted_controller_real_phantom_chance_strong
+					or scripted_controller_real_phantom_chance_normal
+				local real_ai_phantom = scripted_controller_real_ai_enabled
+					and sivol_psy_phantoms and lua_random() < real_phantom_chance
 				if real_ai_phantom then
-					local variant_id = sivol_psy_phantoms.spawn_controller_dog( sfobj )
+					local variant_id, variant_name = sivol_psy_phantoms.spawn_controller_phantom( sfobj, strong_controller )
 					if variant_id then
 						diagnostic_log( "controller_phantom_request_" .. sfobj:id(), 0,
-							"controller id=%d scripted phantom variant=real_dog spawned=true variant_id=%s dist=%.1f",
-							sfobj:id(), tostring( variant_id ), dist_to_actor )
+							"controller id=%d scripted phantom variant=%s spawned=true variant_id=%s dist=%.1f real_chance=%.2f",
+							sfobj:id(), tostring( variant_name ), tostring( variant_id ), dist_to_actor,
+							real_phantom_chance )
 					else
 						phantom_manager.spawn_phantom( pos )
 						diagnostic_log( "controller_phantom_request_" .. sfobj:id(), 0,
-							"controller id=%d scripted phantom variant=real_dog spawned=false fallback=regular dist=%.1f",
-							sfobj:id(), dist_to_actor )
+							"controller id=%d scripted phantom variant=%s spawned=false fallback=regular dist=%.1f real_chance=%.2f",
+							sfobj:id(), tostring( variant_name ), dist_to_actor,
+							real_phantom_chance )
 					end
 				else
 					phantom_manager.spawn_phantom( pos )
 					diagnostic_log( "controller_phantom_request_" .. sfobj:id(), 0,
-						"controller id=%d scripted phantom variant=regular dist=%.1f count_before=%d",
-						sfobj:id(), dist_to_actor, phantom_manager.phantom_count() )
+						"controller id=%d scripted phantom variant=regular tier=%s dist=%.1f count_before=%d real_chance=%.2f",
+						sfobj:id(), strong_controller and "strong" or "normal", dist_to_actor,
+						phantom_manager.phantom_count(), real_phantom_chance )
 				end
 			end
 		end
@@ -1148,7 +1157,7 @@ function generic_object_binder:update( delta )
 			normalized_dist, controller_range, easy_mult )
 		return
 	end
-	if classid == CLID_BOAR and sfobj:alive() and ( self.boar_rad_timer or 0 ) < time_global() then
+	if classid == CLID_BOAR and not scripted_psy_phantom and sfobj:alive() and ( self.boar_rad_timer or 0 ) < time_global() then
 		self.boar_rad_timer = time_global() + 500
 		if dist_to_actor < ( balance_conf.boar_radiation_dist or 2.5 ) then
 			local h = hit()
@@ -1230,7 +1239,7 @@ function generic_object_binder:update( delta )
 	if self.chtime<time_global() then
 		self.chtime=time_global()+3000
 			
-		if classid==CLID_TUSHKANO and sfobj:alive() then
+		if classid==CLID_TUSHKANO and not scripted_psy_phantom and sfobj:alive() then
 			local posit = sfobj:position()
 			local enemy = sfobj:best_enemy()
 			if not enemy then return end
@@ -1291,7 +1300,7 @@ function generic_object_binder:update( delta )
 			return
 		end
 
-		if classid==CLID_BLOODSUCKER and sfobj:alive() and sfobj.health>0.05 then
+		if classid==CLID_BLOODSUCKER and not scripted_psy_phantom and sfobj:alive() and sfobj.health>0.05 then
 			local npc=sfobj:get_enemy()
 			if npc and npc:id()==actor:id() then
 				if sfobj:see(npc) and dist_to_actor<15 and lua_random()<0.5 then
