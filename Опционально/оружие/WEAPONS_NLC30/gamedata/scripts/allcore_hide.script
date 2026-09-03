@@ -1,0 +1,315 @@
+local eat_in_mask = 1
+local anm_duration
+
+function UseEnegry()
+	if eat_in_mask > 0 then
+		if vergas_masks.allcore_mask_is_on() or get_actor_obj():IsDetectorActive() then
+			if vergas_masks.allcore_mask_is_on() then
+				sak.send_tip(translate("eat_in_mask"), translate("st_mda"), 1, 10, "g_g", "sak", "red")
+			else
+				sak.send_tip(game.translate_string("use_antirad_1"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
+			end
+			vergas_lib.s_play([[device\antirad_no]],1)
+			return
+		end
+	end
+	if db.actor:object("energy_drink") ~= nil then
+			db.actor:eat(db.actor:object("energy_drink"))
+	else
+		sak.send_tip(translate("no_en_drink"), translate("edred_baton"), 1, 10, "g_g", "sak", "red")
+		vergas_lib.s_play([[device\antirad_no]],1)
+	end
+end
+
+function sleeping_pill_used()
+	if has_alife_info("sleep_abuse_timer_info") then return end
+	sleep_manager.reduce_need_sleep()
+	local slp = sleep_manager.get_sleepiness()
+	if slp < 175 then
+		local val = slp + 175
+		if val > 240 then
+			val = 240
+		end
+		sleep_manager.change_sleepiness(val)
+	end
+end
+
+local ANIMS_ENABLED = true
+
+local cfg = {
+	["eat_health"]		= function(v) db.actor.health = v end,
+	["eat_power"]		= function(v) db.actor.power = v end,
+	["eat_radiation"]	= function(v) db.actor.radiation = v end,
+	["eat_satiety"]		= function(v) db.actor.satiety = v end,
+	["eat_thirst"]		= function(v) db.actor.thirst = v end,
+	["eat_alcohol"]		= function(v) db.actor.alcohol = v end,
+	["eat_psy_health"]	= function(v) db.actor.psy_health = v end,
+	["wounds_heal_perc"]= function(v) db.actor:heal_wounds( v ) end,
+}
+
+function apply_item_prop( sect, id )
+	for line, func in pairs( cfg ) do
+		local val = get_float( sect, line )
+		if val ~= 0	then
+			func(val)
+		end
+	end
+	apply_item( sect, id )
+end
+
+function apply_item( sect, id )
+	if sect == "mixture" then
+		sak.mixture_check()
+		return
+	elseif sect == "drag_cat_eyes" then
+		sak.add_cat_eyes()
+	elseif sect == "sleeping_pill" then
+		sleeping_pill_used()
+		local obj = client_obj(id)
+		if obj then
+			local cond = obj:condition()
+			if cond > 0.66 then
+				obj:set_condition(cond - 0.33)
+			end
+		end
+		return
+	elseif sect == "flask_army" then
+		local obj = client_obj(id)
+		local current_water = vergas_flask.get_flask_water( obj )
+		vergas_flask.set_flask_water( obj, current_water )
+	end
+	vergas_medical_elastic.use_item(sect, id, true)
+end
+
+local snd_in_use = false
+local def_used_timing = 5000
+
+local function play_item_use(item, item_id)
+    local anim = "anm_show"
+    local item_hud = get_string(item, "hud")
+    local cam_effect = get_string(item, "cam_effect")
+    local used_time = get_u32(item, "item_used_timing", def_used_timing)
+    local snd = get_string(item_hud, "sound_1")
+
+    local outfit = db.actor:item_in_slot(6)
+
+    if outfit then
+        if string.find(outfit:section(), "_exo") then
+
+			local exo_anim_section = get_string(item_hud, "exo_anim_section")
+			if exo_anim_section then
+				item_hud = exo_anim_section
+			end
+
+            used_time = get_u32(item, "item_used_timing_exo", def_used_timing)
+            snd = get_string(item_hud, "sound_1")
+
+            cam_effect = get_string(item, "cam_effect_exo")
+        end
+    end
+
+	if level.get_inventory_wnd():IsShown() then
+		level.start_stop_menu(level.get_inventory_wnd(), true)
+	elseif level.get_car_body_wnd():IsShown() then
+		level.start_stop_menu(level.get_car_body_wnd(), true)
+	end
+
+	local act_it = db.actor:active_item()
+	local act_it_slot = act_it and get_u32(act_it:section(), "slot", false) or false
+	local is_det_active = get_actor_obj():IsDetectorActive()
+
+	slot_keeper.remember()
+	db.actor:activate_slot(255)
+
+	dsh.wait_condition(function() return not db.actor:active_item() end, function()
+		snd_in_use = sound_object(snd)
+		snd_in_use:play(db.actor, 0, sound_object.s2d)
+
+		local anm_start = time_global()
+		anm_duration = game.play_hud_motion(2, item_hud, anim, true, 1, true)
+		if cam_effect then level.add_cam_effector(cam_effect, 7538, false, "", 0, false) end
+
+		dsh.timeout(math.min(used_time, anm_duration), function()
+			apply_item_prop(item, item_id)
+		end)
+
+		local tmr = dsh.timeout(anm_duration, function()
+			animation_off()
+
+			if is_det_active and act_it and not (act_it_slot == 0 or act_it_slot == 1 or act_it_slot == 5) then
+				local det = db.actor:item_in_slot(8)
+				if det then
+					db.actor:move_to_ruck(det)
+					db.actor:move_to_slot(det, true)
+				end
+			end
+
+			slot_keeper.release()
+
+			anim_progress = false
+		end)
+
+		dsh.wait_condition(function() return not tmr.slot_desc end, function() end, function()
+			if anim_progress then
+				anim_progress:SetProgressPos( 100 - 100 * ( ((anm_start + anm_duration) - time_global()) / anm_duration ) )
+			end
+		end)
+	end)
+end
+
+local function on_actor_before_use( obj, sobj )
+
+	if db.actor:is_talking() then return end
+
+    local sect, id = obj:section(), obj:id()
+
+	if sect == "flask_army" then
+		if vergas_flask.get_flask_water( obj ) == 1 then
+			obj:disable_use()
+			sak.send_tip(
+				"Уже пустая",
+				"Ёк-макарёк!", 0, 5, "g_g", "no", "red"
+			)
+			return
+		end
+	end
+
+	local hud = get_string(sect, "hud")
+
+	if hud == "no_hud" or not hud then return end
+	if not get_string(hud, "sound_1") then return end
+
+	local function use_item_without_mask( sect, id )
+		dsh.timeout( 250, function()
+			animation_on()
+			vergas_masks.on_off_mask()
+
+			dsh.wait_condition(
+				function() return vergas_masks.on_off_mask_end() end,
+				function()
+					animation_on()
+					play_item_use( sect, id )
+					dsh.timeout( 20, function()
+						dsh.timeout( anm_duration, function()
+							vergas_masks.on_off_mask()
+						end )
+					end )
+				end
+			)
+		end )
+	end
+
+	if vergas_masks.allcore_mask_is_on() and get_bool(sect, "allcore_hide.is_food", false) then
+
+		dsh.timeout( 20, function()
+			sak.close_window()
+			animation_on()
+
+			if get_value( "inv_full" ) then
+				slot_keeper.hold()
+
+				dsh.wait_condition(
+					function() return not get_value( "inv_full" ) end,
+					function() use_item_without_mask( sect, id ) end
+				)
+			else
+
+				use_item_without_mask( sect, id )
+			end
+		end )
+		return
+	end
+
+	if get_actor_obj():IsDetectorActive() then
+		sak.send_tip(game.translate_string("use_antirad_1"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
+		obj:disable_use()
+		return
+	end
+
+	if get_value( "inv_full" ) then
+		slot_keeper.hold()
+		dsh.timeout( 20, function()
+			sak.close_window()
+
+			dsh.wait_condition(
+				function() return not get_value( "inv_full" ) end,
+				function()
+					animation_on()
+					dsh.timeout( 250, function()
+						play_item_use( sect, id )
+					end )
+				end
+			)
+		end	)
+		return
+	end
+
+	if level.only_movekeys_allowed() or not game.hud_motion_allowed() then
+		obj:disable_use()
+		return
+	end
+
+	animation_on()
+	obj:zero_effects()
+	dsh.timeout(200, function()
+		play_item_use(sect, id)
+	end)
+end
+
+function animation_off()
+	level.only_allow_movekeys(false)
+	level.set_actor_allow_ladder(true)
+end
+
+function animation_on()
+	level.only_allow_movekeys(true)
+	level.set_actor_allow_ladder(false)
+end
+
+watch_is_active = nil
+local function show_watch(key, bind)
+	if bind ~= key_bindings.kWATCH then return end
+	-- [HE-PORT]
+	if not watch_gate.has_watch() then return end
+
+	if get_actor_obj():IsDetectorActive()
+		or db.actor:is_talking()
+		or level.main_input_receiver()
+		or level.only_movekeys_allowed()
+		or not game.hud_motion_allowed()
+		or db.actor:ph_capture()
+	then return end
+
+	animation_on()
+	watch_is_active = true
+	local prev_active_slot = db.actor:active_slot()
+	db.actor:activate_slot(255)
+
+	dsh.wait_condition(function() return not db.actor:active_item() end, function()
+		local anm_sec, anm_in, anm_idle, anm_out = "switch_watch", "anm_start", "anm_idle", "anm_end"
+		local snd = xr_sound.get_safe_sound_object("device\\watch_start_beep")
+		snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
+		local anm_watch_time = game.play_hud_motion(2, anm_sec, anm_in, true, 1)
+		dsh.timeout(anm_watch_time, function()
+			game.play_hud_motion(2, anm_sec, anm_idle, true, 1)
+			dsh.wait_condition(function() return key_state(bind_to_dik(key_bindings.kWATCH)) == 0 end, function()
+				local snd = xr_sound.get_safe_sound_object("device\\watch_end")
+				snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
+				game.stop_hud_motion()
+				anm_watch_time = game.play_hud_motion(2, anm_sec, anm_out, true, 1)
+				dsh.timeout(anm_watch_time, function()
+					db.actor:activate_slot(prev_active_slot)
+					animation_off()
+					watch_is_active = nil
+				end)
+			end)
+		end)
+	end)
+end
+
+function attach( sm )
+	sm:subscribe({ signal = "on_actor_before_use", fun = on_actor_before_use })
+	sm:subscribe({ signal = "on_first_update",     fun = animation_off       })
+	-- [HE-PORT]
+
+end
