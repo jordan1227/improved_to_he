@@ -946,6 +946,35 @@ local function get_aiming()
     return ok and effector ~= nil
 end
 
+-- Hold breath is a transient ADS state, so keep it outside the persistent
+-- health/stance/equipment context. Sample it only when a real shot is being
+-- built; the strength getter already advances at most once per clock tick.
+local function get_hold_breath_recoil(profile, aiming)
+    if not aiming or not sivol_weapon
+        or type(sivol_weapon.is_manual_hold_breath_active) ~= "function"
+        or type(sivol_weapon.get_manual_hold_breath_strength) ~= "function" then
+        return 1.0, false, 0.0
+    end
+
+    local ok_active, active = pcall(sivol_weapon.is_manual_hold_breath_active)
+    if not ok_active or not active then
+        return 1.0, false, 0.0
+    end
+
+    local ok_strength, strength = pcall(sivol_weapon.get_manual_hold_breath_strength)
+    if not ok_strength or not valid_number(strength) then
+        return 1.0, true, 0.0
+    end
+    strength = clamp(tonumber(strength), 0.0, 1.0)
+
+    local global = profile and profile.global_recoil or {}
+    local full_hold_k = clamp(
+        tonumber(global.hold_breath_recoil_k) or 1.0,
+        0.50, 1.0)
+    local recoil_k = 1.0 - (1.0 - full_hold_k) * strength
+    return recoil_k, true, strength
+end
+
 local function get_actor_power(actor)
     if not actor then return 1.0 end
     local ok, power = pcall(function() return actor.power end)
@@ -1335,6 +1364,8 @@ local function add_shot_impulse()
         * (1.0 + (heat - 1.0) * lateral_heat_strength)
 
     local aiming = get_aiming()
+    local hold_breath_k, hold_breath_active, hold_breath_strength =
+        get_hold_breath_recoil(profile, aiming)
     local hip_multiplier = personality.hip_multiplier or class.hip_multiplier
     local aim_multiplier = aiming and class.ads_multiplier or hip_multiplier
     local actor_power = get_actor_power(current_actor())
@@ -1373,7 +1404,7 @@ local function add_shot_impulse()
     handling_multiplier = clamp(handling_multiplier, 0.52, 1.0)
     local fatigue_multiplier = 1.0 + state.fatigue * 0.42
     local total_multiplier = aim_multiplier * actor_multiplier
-        * handling_multiplier * fatigue_multiplier * context_k
+        * handling_multiplier * fatigue_multiplier * context_k * hold_breath_k
 
     -- The floor is an authored pre-global minimum. Keeping it before the
     -- global controls makes camera_pitch affect first shots as well as bursts.
@@ -1529,14 +1560,15 @@ local function add_shot_impulse()
     if state.shot_count <= 3 or state.mastery_log_day ~= mastery_days then
         state.mastery_log_day = mastery_days
         recoil_log(
-            "[sivol_fuzz_recoil][shot] section=%s shot=%d burst_shot=%d stage=%.3f vertical_balance_k=%.2f automatic_first=%s camera_member_pitch_rad=%.6f impulse_yaw_rad=%.6f camera_member_pitch_deg=%.4f screen_pitch_up_deg=%.4f immediate_share=%.3f immediate_pitch_deg=%.4f tail_pitch_deg=%.4f yaw_deg=%.4f camera_before_deg=%.4f camera_after_deg=%.4f screen_step_deg=%.4f screen_pitch_velocity_deg_s=%.4f return_scale=%.2f ads=%s mode_k=%.3f continuity_before=%.3f climb=%.3f heat=%.3f stamina=%.3f context_k=%.3f health_k=%.3f stance_k=%.3f stance=%s outfit_k=%.3f artifact_k=%.3f mastery_days=%d mastery_delta_pct=%+.1f mastery_k=%.3f outfit=%s suppressor_k=%.4f attachment_k=%.4f hud_api=%s hud_pos=(%.6f,%.6f,%.6f) hud_rot_hook_xyz=(%.6f,%.6f,%.6f) hud_spring_share=(%.3f,%.3f) hud_spring_rot=(%.6f,%.6f) hud_spring_velocity=(%.6f,%.6f)",
+            "[sivol_fuzz_recoil][shot] section=%s shot=%d burst_shot=%d stage=%.3f vertical_balance_k=%.2f automatic_first=%s camera_member_pitch_rad=%.6f impulse_yaw_rad=%.6f camera_member_pitch_deg=%.4f screen_pitch_up_deg=%.4f immediate_share=%.3f immediate_pitch_deg=%.4f tail_pitch_deg=%.4f yaw_deg=%.4f camera_before_deg=%.4f camera_after_deg=%.4f screen_step_deg=%.4f screen_pitch_velocity_deg_s=%.4f return_scale=%.2f ads=%s mode_k=%.3f hold_breath=%s hold_breath_strength=%.3f hold_breath_k=%.3f continuity_before=%.3f climb=%.3f heat=%.3f stamina=%.3f context_k=%.3f health_k=%.3f stance_k=%.3f stance=%s outfit_k=%.3f artifact_k=%.3f mastery_days=%d mastery_delta_pct=%+.1f mastery_k=%.3f outfit=%s suppressor_k=%.4f attachment_k=%.4f hud_api=%s hud_pos=(%.6f,%.6f,%.6f) hud_rot_hook_xyz=(%.6f,%.6f,%.6f) hud_spring_share=(%.3f,%.3f) hud_spring_rot=(%.6f,%.6f) hud_spring_velocity=(%.6f,%.6f)",
             tostring(profile.section), state.shot_count, state.burst_shots, shot_stage,
             vertical_balance_k, tostring(automatic_first_shot),
             pitch_impulse, yaw_impulse, pitch_deg, -pitch_deg,
             pitch_immediate_share, -math.deg(pitch_immediate), -math.deg(pitch_tail), yaw_deg,
             math.deg(camera_pitch_before), math.deg(state.recoil_pitch), screen_step_deg,
             -math.deg(state.pitch_velocity), state.camera_return_scale,
-            tostring(aiming), aim_multiplier, continuity_before, burst_index, heat, actor_power,
+            tostring(aiming), aim_multiplier, tostring(hold_breath_active),
+            hold_breath_strength, hold_breath_k, continuity_before, burst_index, heat, actor_power,
             context_k, health_k, stance_k, tostring(stance_state), outfit_k, artifact_k,
             mastery_days, mastery_delta_pct, mastery_k,
             tostring(outfit_section), suppressor_recoil_k, attachment_stability_k,

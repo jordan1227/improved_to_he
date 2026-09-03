@@ -334,6 +334,52 @@ local function append_weapon_comparison(text, current, equipped, unit, higher_is
     end
     return text
 end
+
+local native_name_header_nodes = {
+    inventory = {line = "native_inventory_line", text = "native_inventory_text"},
+    trade = {line = "native_trade_line", text = "native_trade_text"},
+    body = {line = "native_body_line", text = "native_body_text"},
+}
+
+local function update_native_name_header(self, name)
+    local line = self.native_name_line
+    local title = self.native_name_text
+    if not line or not title then return end
+
+    local text = translate(name or "")
+    if text == "" then
+        line:Show(false)
+        title:Show(false)
+        return
+    end
+
+    local max_w = self.native_name_header_max_width
+    local line_w = max_w
+
+    title:SetWndSize(max_w, self.native_name_header_height)
+    title:SetText(text)
+    local ok = pcall(function()
+        title:AdjustWidthToText()
+        local measured_w = title:GetWidth()
+        if measured_w > 0 and measured_w < max_w then
+            line_w = measured_w + 12
+        end
+    end)
+
+    if not ok then line_w = max_w end
+    line_w = math.max(50, math.min(max_w, line_w))
+    local line_x = math.floor(self.native_name_header_center_x - line_w / 2)
+
+    line:SetWndPos(line_x + self.native_name_line_offset, self.native_name_header_y + self.native_name_line_y_offset)
+    line:SetWidth(line_w)
+    line:Show(true)
+
+    title:SetWndPos(line_x, self.native_name_header_y)
+    title:SetWndSize(line_w, self.native_name_header_height)
+    title:SetText(text)
+    title:SetTextColor(255, 238, 155, 23)
+    title:Show(true)
+end
 class "CUIDescriptionWnd"(CUIScriptWnd)
 function CUIDescriptionWnd:__init(st, context) super()
 	self.owner = level.main_input_receiver() or st
@@ -365,6 +411,35 @@ function CUIDescriptionWnd:__init(st, context) super()
 
 	self.xml = g_xml
 
+	local native_header_nodes = native_name_header_nodes[self.context]
+	if native_header_nodes then
+		local native_wnd
+		if self.context == "trade" then
+			native_wnd = level.get_trade_wnd()
+		elseif self.context == "inventory" then
+			native_wnd = level.get_inventory_wnd()
+		else
+			native_wnd = self.owner
+		end
+		local native_panel_node = self.context == "trade" and "desc_static" or "descr_static"
+		local native_panel = native_wnd and native_wnd:FindChild(native_panel_node)
+		if native_panel then
+			self.native_engine_name = native_panel:FindChild("static_name") or native_wnd:FindChild("static_name")
+			if self.native_engine_name then self.native_engine_name:Show(false) end
+			self.native_name_line = self.xml:InitLabel(native_header_nodes.line, native_panel)
+			self.native_name_text = self.xml:InitStatic(native_header_nodes.text, native_panel)
+			local line_pos = self.native_name_line:GetWndPos()
+			local text_pos = self.native_name_text:GetWndPos()
+			self.native_name_header_max_width = self.native_name_text:GetWidth()
+			self.native_name_header_height = self.native_name_line:GetHeight()
+			self.native_name_header_center_x = text_pos.x + self.native_name_header_max_width / 2
+			self.native_name_header_y = text_pos.y
+			self.native_name_line_offset = line_pos.x - text_pos.x
+			self.native_name_line_y_offset = line_pos.y - text_pos.y
+			self.native_name_line:Show(false)
+			self.native_name_text:Show(false)
+		end
+	end
 	self.frame = self.xml:InitFrame("description", st)
 
 	self.inv_name_line = self.xml:InitLabel("description:inv_name_line", self.frame)
@@ -464,7 +539,9 @@ local function configure_description_width(self, weapon_layout)
     local scroll_w = frame_w - 14
     local content_w = frame_w - 30
     local header_w = math.min(390, frame_w - 14)
-    local condition_x = frame_w - 184
+    -- Only the player-inventory popup needs this small logical nudge at 16:9.
+    local inventory_nudge = self.context == "inventory" and 4 or 0
+    local condition_x = frame_w - 184 + inventory_nudge
     local condition_w = 172
     local weight_w = math.min(176, math.max(120, condition_x - 39))
 
@@ -481,7 +558,7 @@ local function configure_description_width(self, weapon_layout)
     self.descr:SetWidth(frame_w - 29)
 
     -- Keep the weight and condition labels on the same baseline without overlap.
-    self.weight_static:SetWndPos(31, 57)
+    self.weight_static:SetWndPos(31 + (self.context == "inventory" and 3 or 0), 57)
     self.weight_static:SetWidth(weight_w)
     self.condition_static:SetWndPos(condition_x, 57)
     self.condition_static:SetWidth(condition_w)
@@ -532,10 +609,17 @@ local function init_props_header(self)
     return st
 end
 
+local function add_post_header_spacing(self)
+    local spacer = self.xml:InitStatic("section_gap", self.scroll_v)
+    spacer:SetHeight(1)
+    self.addH = self.addH + spacer:GetHeight() + vert_interval
+end
+
 function CUIDescriptionWnd:ShowPropsHeader(text)
     local st = init_props_header(self)
     st:SetText(text)
     self.addH = self.addH + st:GetHeight() + vert_interval
+    add_post_header_spacing(self)
 end
 
 local function update_name_line(self, inv_name)
@@ -579,10 +663,14 @@ function CUIDescriptionWnd:ShowPropsAf( tbl )
     end
 end
 
-function CUIDescriptionWnd:ShowPropFromIni(sect, icon, text, text_color, complex, ammo_count)
+function CUIDescriptionWnd:ShowPropFromIni(sect, icon, text, text_color, complex, ammo_count, x_offset, icon_x_offset)
 	local st = self.xml:InitStatic("props_ini", self.scroll_v)
 	st:SetWidth(self.content_width or 390)
 	st:SetHeight(cell_size)
+	if x_offset and x_offset ~= 0 then
+		st:SetWndPos(x_offset, 0)
+		st:SetWidth(st:GetWidth() - x_offset)
+	end
 
 	local ww = 0
 	if icon then
@@ -595,7 +683,7 @@ function CUIDescriptionWnd:ShowPropFromIni(sect, icon, text, text_color, complex
 		st:AttachChild(st.icon)
 		CIconParams(sect):set_shader(st.icon)
 
-		st.icon:Init((ww - w) / 2, 0, w, cell_size)
+		st.icon:Init((ww - w) / 2 + (icon_x_offset or 0), 0, w, cell_size)
 	end
 
 	ww = ww + 1
@@ -688,7 +776,7 @@ function CUIDescriptionWnd:ShowInteractionHints(item)
     self:ShowProps({{nil, table.concat(hints, "\\n")}})
 end
 
-function CUIDescriptionWnd:ShowDescription(item)
+function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	if (item == nil) or BlockUIDescr() then return end
 
 	self.item = item
@@ -712,7 +800,7 @@ function CUIDescriptionWnd:ShowDescription(item)
 	self.addH = 0
 
 	local desc_cfg_str = get_string(self.section, "description", self.section .. "<NO_DESCRIPTION!>")
-	local description = (self.context == "inventory" or self.context == "body") and "" or translate(desc_cfg_str)
+	local description = (self.context == "inventory" or self.context == "body" or self.context == "trade") and "" or translate(desc_cfg_str)
 	
 	-- Sn: чистим описание артов от дублирующих параметров (прыжок, скорость) и цветовых тегов
 	if strpos(desc_cfg_str,"artifact_") then
@@ -1062,6 +1150,7 @@ function CUIDescriptionWnd:ShowDescription(item)
 		description = "%c[default]" .. table.concat(self.weapon_info_lines, "\\n")
 	end
 
+	if update_native_header then update_native_name_header(self, inv_name) end
 	update_name_line(self, inv_name)
 	self.descr:SetText(description)
 	self.descr:AdjustHeightToText()
@@ -1274,6 +1363,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 
 	st:SetText(translate("Ammo") .. ":")
 	self.addH = self.addH + stH
+	add_post_header_spacing(self)
 
 	-- Боеприпасы
 	local s = sys_ini:r_string(self.section, "ammo_class")
@@ -1289,7 +1379,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 				clr = {255, 160, 255, 160} -- зелёный цвет для патронов в стволе
 				ammo_in_mag = self.item:get_ammo_in_magazine()
 			end
-			self:ShowPropFromIni(a, CIconParams(a), g_inv_name(a), clr, false, ammo_in_mag)
+			self:ShowPropFromIni(a, CIconParams(a), g_inv_name(a), clr, false, ammo_in_mag, -3, -5)
 			ammo_index = ammo_index + 1
 		end
 	end
@@ -1308,7 +1398,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 					clr = {255, 160, 255, 160} -- зелёный цвет если есть гранаты
 					grenades_in_mag = grenade_ammo
 				end
-				self:ShowPropFromIni(a, CIconParams(a), g_inv_name(a), clr, false, grenades_in_mag)
+				self:ShowPropFromIni(a, CIconParams(a), g_inv_name(a), clr, false, grenades_in_mag, -3, -5)
 			end
 		end
 	end
@@ -1324,6 +1414,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 	local n = get_u32(self.section, "scope_status", 0)
 	if n ~= 0 then
 		st2 = init_props_header(self)
+		add_post_header_spacing(self)
 
 		local addon1 = get_string_wq(self.section, "scope_name", "wpn_addon_1pso")
 		addon = get_string_wq(self.section, "scope_names", addon1)
@@ -1346,7 +1437,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 			if n == 1 or ogse_wpn_utils.get_scope_flag(self.item) and (a == addon1) then
 				clr = {255, 160, 255, 160}
 			end
-			self:ShowPropFromIni(a, v, text, clr)
+			self:ShowPropFromIni(a, v, text, clr, nil, nil, -3, -5)
 			if n == 1 then break end
 		end
 		--
@@ -1355,7 +1446,10 @@ function CUIDescriptionWnd:ShowWeaponParams()
 	-- Глушитель
 	n = get_u32(self.section, "silencer_status", 0)
 	if n ~= 0 then
-		if st2 == nil then st2 = init_props_header(self) end
+		if st2 == nil then
+			st2 = init_props_header(self)
+			add_post_header_spacing(self)
+		end
 		addon = get_string(self.section, "silencer_name", "wpn_addon_sil_545_ar")
 		v = CIconParams(addon)
 		if n == 1 then
@@ -1368,12 +1462,15 @@ function CUIDescriptionWnd:ShowWeaponParams()
 		if n == 1 or ogse_wpn_utils.get_silencer_flag(self.item) then
 			clr = {255, 160, 255, 160}
 		end
-		self:ShowPropFromIni(addon, v, text, clr)
+		self:ShowPropFromIni(addon, v, text, clr, nil, nil, -3, -5)
 	end
 
 	-- Подствольник
 	if gl ~= 0 then
-		if st2 == nil then st2 = init_props_header(self) end
+		if st2 == nil then
+			st2 = init_props_header(self)
+			add_post_header_spacing(self)
+		end
 		addon = get_string(self.section, "grenade_launcher_name", "wpn_addon_grenade_launcher")
 		v = CIconParams(addon)
 		if gl == 1 then
@@ -1386,7 +1483,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 		if gl == 1 or ogse_wpn_utils.get_grenade_launcher_flag(self.item) then
 			clr = {255, 160, 255, 160}
 		end
-		self:ShowPropFromIni(addon, v, text, clr)
+		self:ShowPropFromIni(addon, v, text, clr, nil, nil, -3, -5)
 	end
 	if st2 then
 		-- Добавляем отступ ТОЛЬКО если были навесы
@@ -1401,6 +1498,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 	local st3 = init_props_header(self)
 	st3:SetText(translate("ui_inv_characteristics") .. ":")
 	self.addH = self.addH + stH
+	add_post_header_spacing(self)
 
 	-- Активный съёмный глушитель и его модификаторы.
 	local sil_status = get_u32(self.section, "silencer_status", 0)
@@ -1596,7 +1694,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 	text = table.concat(tbl, " | ")
 	text = string.gsub(text, "-1", "A")
 	text = string.format("%s: %s", translate("st_fire_modes"), text)
-	table.insert(v, {"ui_inv_icon_f_mode", text})
+	table.insert(v, {"ui_inv_icon_f_mode_weapon", text})
 	add_weapon_characteristic_help(self, "st_fire_modes", "ui_inv_help_fire_modes")
 
 	self:ShowPropsWeapon(v)
@@ -2241,6 +2339,17 @@ function CUIDescriptionWnd:Remove()
         subscribed = false
     end
     self.shift_tmr = nil
+    if self.native_name_line then
+        self.native_name_line:DetachFromParent()
+        self.native_name_line = nil
+    end
+    if self.native_name_text then
+        self.native_name_text:DetachFromParent()
+        self.native_name_text = nil
+    end
+    self.native_engine_name = nil
+    self.native_name_line_offset = nil
+    self.native_name_line_y_offset = nil
     self.owner = nil
     self.keypressed = nil
     self.lalt = nil
@@ -2252,6 +2361,7 @@ function CUIDescriptionWnd:Remove()
 end
 
 function CUIDescriptionWnd:OnItemFocus(obj)
+	if self.native_engine_name then self.native_engine_name:Show(false) end
 	self.itemInFocus = obj:id()
 	--self.shift_tmr = time_global() + shift_show_descr
 end
@@ -2266,6 +2376,7 @@ function CUIDescriptionWnd:OnItemFocusLost(obj)
 end
 
 function CUIDescriptionWnd:OnUpdate(delta) --Если сюда передали аргументом передали true - обновление будет форсировано.
+	if self.native_engine_name then self.native_engine_name:Show(false) end
 	if self.itemInFocus and not client_obj(self.itemInFocus) then
 		self.itemInFocus = nil
 		self:HideDescription()
@@ -2313,7 +2424,7 @@ function CUIDescriptionWnd:OnKeyPress(dik, bind)
 ]]--
     if dik == DIK_keys.MOUSE_1 then
         if self.itemInFocus and (self.itemInFocus > 65535 or g_sim:object(self.itemInFocus)) then
-			self:ShowDescription( level.object_by_id( self.itemInFocus ) )
+			self:ShowDescription( level.object_by_id( self.itemInFocus ), true )
         elseif self.itemInFocus == nil then 
             self:HideDescription()
         end

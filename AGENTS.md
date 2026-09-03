@@ -8,6 +8,7 @@
 - `docs/CLAUDE_MODDING_NOTES.md` is a high-value local reference. Search it selectively for the current task; never load, summarize, or process the entire archive unless explicitly requested.
 - For dialogue work, read `docs/DIALOGUE_MODDING.md` first; trace the loaded dialogue root, character binding, infoportion declarations, localization keys, and runtime overrides rather than editing only a `dialogs_*.xml` file.
 - For recoil or FL-hook HUD-transform work, read `docs/RECOIL_SYSTEM.md` first; preserve camera/HUD separation, hook-owned lifecycle cleanup, effective weapon-section personalities, and the cached artifact/equipment context.
+- For inventory, trade, corpse-looting, or `ui_inv_descr.script` layout work, read `docs/INVENTORY_UI.md` first. Keep 16:9 overrides, native panel coordinates, adaptive `ui_brokenline` construction, and row/text/icon offsets separate.
 - For legacy runtime UI/config files, follow `docs/ENCODING_AND_LINE_ENDINGS.md`: preserve Windows-1251/no-BOM encoding and existing line endings, and use explicit-encoding read/write methods when patch tooling cannot safely handle the file.
 - When the user asks to test or deploy, copy only the relevant changed repository files to `C:\Games\NLC_OGSR_HE` and report exactly which files were deployed.
 - For documentation-only, analysis-only, or setup tasks, do not deploy, modify, delete, link, or mirror files in the runnable installation.
