@@ -20,6 +20,12 @@
 #define OFF_SCRENG          0x38
 #define OFF_LUAVM           0x98
 
+#define RVA_RDEV_INSTANCE   0x0013A890ULL
+#define RVA_CREATE_TEXTURE  0x001E9620ULL
+#define RVA_TEX_UNLOAD      0x0025BE80ULL
+#define RVA_TEX_LOAD        0x0025AD60ULL
+#define OFS_RDEV_RESOURCES  0x08
+
 #define RVA_RESTRICT          0x00421D50ULL
 #define RVA_RESTRICT_END      0x00421D63ULL
 #define RVA_RO_NET_SPAWN      0x006E7620ULL
@@ -216,6 +222,10 @@ typedef IReader* (*r_open_t)(void* fs, const char* path, const char* fname);
 typedef void (*r_close_t)(void* fs, IReader** pr);
 typedef void (*restrict_t)(void* mgr, unsigned short id, void* out_r, void* in_r);
 typedef int  (*ro_spawn_t)(void* self, void* data);
+typedef void* (*rdev_instance_t)(void);
+typedef void* (*create_texture_t)(void* resources, const char* name);
+typedef void  (*tex_unload_t)(void* tex);
+typedef void  (*tex_load_t)(void* tex, const char* name);
 typedef void* (*shared_set_t)(void* dst, const char* s);
 typedef unsigned char (*run_atk_check_t)(void* self);
 typedef void (*actor_render_t)(void* self, unsigned context_id, void* root);
@@ -599,6 +609,78 @@ static int lua_fl_hud_recoil_clear(void* L)
     return 1;
 }
 
+static int texture_exists(const char* name)
+{
+    void* fs = locator_fs();
+    if (!fs || !name || !name[0]) return 0;
+
+    char rel[520];
+    int i = 0;
+    for (; name[i] && i < (int)sizeof(rel) - 6; ++i)
+        rel[i] = (name[i] == '/') ? '\\' : name[i];
+    rel[i] = 0;
+    if (i < 4 || rel[i - 4] != '.') {
+        rel[i++] = '.'; rel[i++] = 'd'; rel[i++] = 'd'; rel[i++] = 's'; rel[i] = 0;
+    }
+
+    r_open_t  ropen  = (r_open_t)(g_base + RVA_R_OPEN);
+    r_close_t rclose = (r_close_t)(g_base + RVA_R_CLOSE);
+    IReader* r = ropen(fs, "$game_textures$", rel);
+    if (!r) return 0;
+    rclose(fs, &r);
+    return 1;
+}
+
+static int tex_swap(const char* reg, const char* file)
+{
+    if (!reg || !reg[0] || !file || !file[0]) return 0;
+    if (!texture_exists(reg) || !texture_exists(file)) return 0;
+
+    void* rdev = ((rdev_instance_t)(g_base + RVA_RDEV_INSTANCE))();
+    if (!rdev) return 0;
+    void* res = *(void**)((uintptr_t)rdev + OFS_RDEV_RESOURCES);
+    if (!res) return 0;
+
+    void* tex = ((create_texture_t)(g_base + RVA_CREATE_TEXTURE))(res, reg);
+    if (!tex) return 0;
+    ((tex_unload_t)(g_base + RVA_TEX_UNLOAD))(tex);
+    ((tex_load_t)(g_base + RVA_TEX_LOAD))(tex, file);
+    return 1;
+}
+
+static int lua_fl_tex_swap(void* L)
+{
+    lua_tolstring_t tostr = (lua_tolstring_t)(g_base + RVA_LUA_TOLSTRING);
+    const char* reg  = tostr(L, 1, 0);
+    const char* file = tostr(L, 2, 0);
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, tex_swap(reg, file) ? 1 : 0);
+    return 1;
+}
+
+static void cmd_tex(const char* args)
+{
+    char reg[260], file[260];
+    int n = 0, i = 0;
+    while (*args == ' ' || *args == '\t') ++args;
+    while (args[i] && args[i] != ' ' && args[i] != '\t' && n < (int)sizeof(reg) - 1)
+        reg[n++] = args[i++];
+    reg[n] = 0;
+    while (args[i] == ' ' || args[i] == '\t') ++i;
+    n = 0;
+    while (args[i] && args[i] != ' ' && args[i] != '\t' && n < (int)sizeof(file) - 1)
+        file[n++] = args[i++];
+    file[n] = 0;
+    if (!reg[0]) {
+        log_msg("~ [tex] usage: tex <texture> [file]   (file omitted = restore)");
+        return;
+    }
+    const char* target = file[0] ? file : reg;
+    if (tex_swap(reg, target))
+        ((msg_t)(g_base + RVA_MSG))("~ [tex] [%s] <- [%s]", reg, target);
+    else
+        ((msg_t)(g_base + RVA_MSG))("!! [tex] failed: [%s] <- [%s]", reg, target);
+}
+
 static int lua_fl_step_material(void* L)
 {
     const char* ground = 0;
@@ -629,6 +711,8 @@ static void ensure_lua_api()
     setf(L, LUA_GLOBALSINDEX, "fl_hud_recoil_set6");
     pushc(L, &lua_fl_hud_recoil_clear, 0);
     setf(L, LUA_GLOBALSINDEX, "fl_hud_recoil_clear");
+    pushc(L, &lua_fl_tex_swap, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_tex_swap");
     hudrc_reset();
     g_lua_api_state = L;
 }
@@ -1798,6 +1882,12 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
         if (p[0] == 'b' && p[1] == 'p' && p[2] == 'm' &&
             (p[3] == 0 || p[3] == ' ' || p[3] == '\t')) {
             cmd_bpm(p + 3);
+            return;
+        }
+
+        if (p[0] == 't' && p[1] == 'e' && p[2] == 'x' &&
+            (p[3] == 0 || p[3] == ' ' || p[3] == '\t')) {
+            cmd_tex(p + 3);
             return;
         }
 
