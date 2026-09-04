@@ -22,15 +22,10 @@ local HUD_RECOIL_ENABLED = true
 local RECOIL_DIAGNOSTICS = true
 local STAMINA_RECOIL_PENALTY = 0.35
 
--- Balance-only multipliers applied to the scripted vertical impulse. The
--- second factor is only used on the opening shot of a full-auto-capable gun.
-local VERTICAL_RECOIL_MULTIPLIER = 1.20
-local AUTOMATIC_FIRST_SHOT_MULTIPLIER = 1.20
-
 -- Experimental camera-animation layer. OGSR HE has no runtime camera-effector
 -- factor setter, so these point at safely pre-scaled copies of the original
 -- Fuzz unit tracks. Disable this one switch to compare script/hook recoil alone.
-local ANM_RECOIL_EXPERIMENT_ENABLED = true
+local ANM_RECOIL_EXPERIMENT_ENABLED = false
 local ANM_CAMERA_EFFECT = "camera_effects\\sivol_onerad_006.anm"
 local ANM_SHOVE_EFFECT = "camera_effects\\sivol_oneshove_004.anm"
 local ANM_CAMERA_EFFECT_ID = 7897
@@ -54,8 +49,6 @@ local MAX_DT = 0.25
 local BURST_END_DELAY = 0.60
 local BURST_CONTINUITY_DECAY_RATE = 8.0
 local BURST_CONTINUITY_THRESHOLD = 0.15
-local BURST_CLIMB_STEP = 0.18
-local BURST_CLIMB_MAX = 1.80
 local RECOIL_HEAT_DECAY_RATE = 1.25
 local RECOIL_HEAT_GRACE_GAIN_SCALE = 0.20
 local ACTIVE_BURST_RETURN_SCALE = 0.40
@@ -137,6 +130,7 @@ local state = {
     peak_hud_spring_rot = 0,
     peak_heat = 0,
     camera_clamp_hits = 0,
+    return_guard_hits = 0,
     hud_clamp_hits = 0,
     fatigue = 0,
     handling = 0,
@@ -230,6 +224,14 @@ local function object_id(object)
     return id
 end
 
+-- Inventory scoring uses these values while the equipped weapon's native
+-- camera recoil is temporarily neutralized by this controller.
+function M.get_original_recoil_fields(item)
+    local id = object_id(item)
+    local entry = id and native_cache[id] or nil
+    return entry and entry.values or nil
+end
+
 local function current_actor()
     if not db then return nil end
     return db.actor
@@ -305,6 +307,7 @@ local function reset_dynamics(keep_applied)
     state.peak_hud_spring_rot = 0
     state.peak_heat = 0
     state.camera_clamp_hits = 0
+    state.return_guard_hits = 0
     state.hud_clamp_hits = 0
     state.fatigue = 0
     state.handling = 0
@@ -687,28 +690,6 @@ local function get_profile_adapter()
     return sivol_fuzz_recoil_profiles
 end
 
-local function section_has_full_auto(section)
-    if not sys_ini or not section then return false end
-    local ok, result = pcall(function()
-        if not sys_ini:section_exist(section)
-            or not sys_ini:line_exist(section, "fire_modes") then
-            return false
-        end
-        local fire_modes = sys_ini:r_string(section, "fire_modes") or ""
-        return string.find(fire_modes, "%-1") ~= nil
-    end)
-    return ok and result or false
-end
-
-local function profile_has_full_auto(profile)
-    if not profile then return false end
-    if section_has_full_auto(profile.section) then return true end
-    if profile.base_section ~= profile.section then
-        return section_has_full_auto(profile.base_section)
-    end
-    return false
-end
-
 local function resolve_suppressor_profile(item, profile)
     if not sivol_weapon or type(sivol_weapon.get_suppressor_recoil_k) ~= "function" then
         return nil, "suppressor recoil resolver unavailable"
@@ -804,6 +785,7 @@ function M.get_recoil_modifier_breakdown(item, section)
         mode = mode,
         silencer_section = silencer_section,
         gas_k = gas_k,
+        total_attachment_mass = total_mass,
         silencer_mass = silencer_mass,
         mass_k = mass_k,
         combined_k = gas_k * mass_k,
@@ -835,7 +817,6 @@ local function prepare_active_item(item)
 
     state.weapon = weapon
     state.profile = profile
-    profile.automatic_fire = profile_has_full_auto(profile)
 
     if not state.probe_done then
         local probe_ok, probe_reason = probe_capabilities(item, weapon)
@@ -888,7 +869,8 @@ local function prepare_active_item(item)
         personality.heat_grace or 6, personality.heat_rate or 0.055,
         personality.heat_max or 1.55, personality.yaw_persistence or 0.62,
         personality.shove or 1.0, tostring(personality.hip_multiplier or "class"),
-        VERTICAL_RECOIL_MULTIPLIER, AUTOMATIC_FIRST_SHOT_MULTIPLIER)
+        global.vertical_multiplier or 1.0,
+        global.automatic_first_shot_multiplier or 1.0)
 
     local id = object_id(item)
     if not id then return false, "active firearm ID unavailable" end
@@ -1034,6 +1016,7 @@ local function reset_burst_metrics(start_ms)
     state.peak_hud_spring_rot = 0
     state.peak_heat = state.recoil_heat
     state.camera_clamp_hits = 0
+    state.return_guard_hits = 0
     state.hud_clamp_hits = 0
 end
 
@@ -1058,13 +1041,14 @@ local function log_burst_summary(now, reason)
     if state.burst_shots <= 0 or state.burst_summary_logged then return end
     local elapsed = state.burst_start_ms and math.max(0, now - state.burst_start_ms) or 0
     recoil_log(
-        "[sivol_fuzz_recoil][burst] section=%s shots=%d duration_ms=%d peak_camera_deg=(%.4f,%.4f) peak_hud_pos=%.6f peak_hud_rot_deg=%.4f peak_hud_spring_rot_deg=%.4f peak_heat=%.3f camera_clamps=%d hud_clamps=%d reason=%s",
+        "[sivol_fuzz_recoil][burst] section=%s shots=%d duration_ms=%d peak_camera_deg=(%.4f,%.4f) peak_hud_pos=%.6f peak_hud_rot_deg=%.4f peak_hud_spring_rot_deg=%.4f peak_heat=%.3f camera_clamps=%d return_guards=%d hud_clamps=%d reason=%s",
         tostring(state.profile and state.profile.section or "unknown"),
         state.burst_shots, elapsed,
         math.deg(state.peak_camera_pitch), math.deg(state.peak_camera_yaw),
         state.peak_hud_pos, math.deg(state.peak_hud_rot),
         math.deg(state.peak_hud_spring_rot), state.peak_heat,
-        state.camera_clamp_hits, state.hud_clamp_hits, tostring(reason or "idle"))
+        state.camera_clamp_hits, state.return_guard_hits, state.hud_clamp_hits,
+        tostring(reason or "idle"))
     state.burst_summary_logged = true
 end
 
@@ -1088,10 +1072,12 @@ local function maybe_log_recovery(now)
 end
 
 local function get_camera_return_scale()
-    if state.burst_continuity >= BURST_CONTINUITY_THRESHOLD then
-        return ACTIVE_BURST_RETURN_SCALE
-    end
-    return 1.0
+    -- Keep the slower active-burst return at full continuity, then blend back
+    -- to normal recovery as the burst expires. The former hard threshold
+    -- jumped from 0.40 to 1.00 and made otherwise identical returns appear to
+    -- change speed according to shot/frame timing.
+    local continuity = clamp(state.burst_continuity, 0, 1)
+    return 1.0 - continuity * (1.0 - ACTIVE_BURST_RETURN_SCALE)
 end
 
 local function recover_recoil(dt)
@@ -1117,6 +1103,14 @@ local function recover_recoil(dt)
     state.camera_return_scale = get_camera_return_scale()
     local camera_recovery_rate = profile.recovery_rate * state.camera_return_scale
     state.recoil_pitch = exp_step(state.recoil_pitch, 0, camera_recovery_rate, dt)
+    -- Script-owned camera pitch uses negative values for upward recoil. Never
+    -- allow its tail/recovery channel to cross through neutral and push the
+    -- view below the player's pre-shot aim point.
+    if state.recoil_pitch > 0 then
+        state.recoil_pitch = 0
+        state.pitch_velocity = math.min(0, state.pitch_velocity)
+        state.return_guard_hits = state.return_guard_hits + 1
+    end
     state.recoil_yaw = exp_step(state.recoil_yaw, 0, camera_recovery_rate * 1.18, dt)
     local hud_vertical_rate = profile.recovery_rate * 1.12
     local hud_lateral_rate = profile.recovery_rate * HUD_LATERAL_RECOVERY_SCALE
@@ -1312,7 +1306,6 @@ local function add_shot_impulse()
     if not profile then return end
 
     local class = profile.class
-    local live = profile.live
     local now = now_ms()
     local continuity_before = state.burst_continuity
     local continuing_burst = state.burst_shots > 0
@@ -1326,42 +1319,16 @@ local function add_shot_impulse()
     state.shot_count = state.shot_count + 1
     state.burst_shots = state.burst_shots + 1
 
-    -- Shot ordinal selects personality, while this bounded ramp controls how
-    -- much of cam_dispersion_inc enters the impulse. Using the raw ordinal here
-    -- would make long bursts grow without limit before the normal class clamp.
-    local burst_index = clamp(
-        (state.burst_shots - 1.0) * BURST_CLIMB_STEP,
-        0,
-        math.min(BURST_CLIMB_MAX, math.max(0, class.max_burst - 1.0)))
     local personality = profile.personality or {}
     local global = profile.global_recoil or {}
-    local automatic_first_shot = state.burst_shots == 1
-        and profile.automatic_fire == true
-    local shot_stage = state.burst_shots == 1 and (personality.first or 1.0)
-        or (state.burst_shots == 2 and (personality.second or 1.0)
-        or (personality.sustained or 1.0))
     local heat_gain = personality.heat_rate or 0.055
     if state.burst_shots <= (personality.heat_grace or 6) then
         heat_gain = heat_gain * RECOIL_HEAT_GRACE_GAIN_SCALE
     end
     state.recoil_heat = clamp(state.recoil_heat + heat_gain, 0, 1)
-    local heat = 1.0 + state.recoil_heat * ((personality.heat_max or 1.55) - 1.0)
+    local heat = 1.0 + state.recoil_heat
+        * ((personality.heat_max or 1.55) - 1.0)
     local attachment_stability_k = profile.attachment_stability_k or 1.0
-    local vertical_deg = math.max(0, live.cam_dispersion) * class.dispersion_scale
-        + math.max(0, live.cam_dispersion_inc) * class.dispersion_increment_scale * burst_index
-    vertical_deg = vertical_deg * profile.magazine_factor
-    vertical_deg = vertical_deg * (1.0 + class.burst_scale * burst_index * profile.fire_rate_factor)
-    vertical_deg = vertical_deg * (personality.pitch or 1.0) * shot_stage
-        * (1.0 + (heat - 1.0) * 0.65)
-
-    local horizontal_deg = math.max(
-        math.max(0, live.cam_step_angle_horz) * class.horizontal_step_scale,
-        math.max(0, live.cam_dispersion) * class.horizontal_dispersion_scale
-    )
-    horizontal_deg = horizontal_deg * (1.0 + class.burst_scale * burst_index * 0.35)
-    local lateral_heat_strength = 1.35 + 0.45 * (personality.wander or 1.0)
-    horizontal_deg = horizontal_deg * (personality.yaw or 1.0)
-        * (1.0 + (heat - 1.0) * lateral_heat_strength)
 
     local aiming = get_aiming()
     local hold_breath_k, hold_breath_active, hold_breath_strength =
@@ -1405,24 +1372,22 @@ local function add_shot_impulse()
     local fatigue_multiplier = 1.0 + state.fatigue * 0.42
     local total_multiplier = aim_multiplier * actor_multiplier
         * handling_multiplier * fatigue_multiplier * context_k * hold_breath_k
-
-    -- The floor is an authored pre-global minimum. Keeping it before the
-    -- global controls makes camera_pitch affect first shots as well as bursts.
-    if state.burst_shots == 1 then
-        vertical_deg = math.max(vertical_deg, personality.first_pitch_floor or 0)
+    local suppressor_recoil_k = profile.suppressor_recoil_k or 1.0
+    local profile_adapter = get_profile_adapter()
+    if not profile_adapter
+        or type(profile_adapter.calculate_shot_impulse) ~= "function" then
+        fail_runtime("shared recoil impulse calculator unavailable")
+        return
     end
-    local vertical_balance_k = VERTICAL_RECOIL_MULTIPLIER
-    if automatic_first_shot then
-        vertical_balance_k = vertical_balance_k * AUTOMATIC_FIRST_SHOT_MULTIPLIER
+    local vertical_deg, horizontal_deg, shot_stage, burst_index,
+        automatic_first_shot, vertical_balance_k =
+        profile_adapter.calculate_shot_impulse(
+            profile, state.burst_shots, state.recoil_heat, total_multiplier,
+            attachment_stability_k, suppressor_recoil_k)
+    if not valid_number(vertical_deg) or not valid_number(horizontal_deg) then
+        fail_runtime("shared recoil impulse calculation failed")
+        return
     end
-    vertical_deg = vertical_deg * vertical_balance_k
-    vertical_deg = vertical_deg * total_multiplier * attachment_stability_k
-        * (global.overall or 1.0) * (global.camera_pitch or 1.0)
-    vertical_deg = math.min(vertical_deg, class.max_pitch_deg)
-    horizontal_deg = math.min(
-        horizontal_deg * total_multiplier * attachment_stability_k
-            * (global.overall or 1.0) * (global.camera_yaw or 1.0),
-        class.max_yaw_deg)
 
     -- Correlated deterministic wander replaces the old forced left/right
     -- alternation. A weapon can keep pushing to one side for several shots,
@@ -1440,12 +1405,11 @@ local function add_shot_impulse()
     end
     local yaw_magnitude = 0.68 + 0.32
         * (((state.shot_count * 29 + (state.item_id or 0) * 7) % 97) / 96.0)
-    local suppressor_recoil_k = profile.suppressor_recoil_k or 1.0
     -- Direction is invariant in this engine build: every scripted shot adds an
     -- upward camera-member impulse. Recovery is the only path allowed toward
     -- the pre-shot angle.
-    local pitch_deg = PITCH_SIGN * math.abs(vertical_deg * suppressor_recoil_k)
-    local yaw_deg = state.yaw_sign * horizontal_deg * yaw_magnitude * suppressor_recoil_k
+    local pitch_deg = PITCH_SIGN * math.abs(vertical_deg)
+    local yaw_deg = state.yaw_sign * horizontal_deg * yaw_magnitude
     local pitch_impulse = pitch_deg * DEG_TO_RAD
     local pitch_immediate_share = PITCH_IMMEDIATE_SHARE
     if state.burst_shots == 1 then

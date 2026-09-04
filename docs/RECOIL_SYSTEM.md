@@ -13,7 +13,9 @@
 - `gamedata/scripts/ogse/ogse_signals_addons_list.script` loads the controller.
 - `fl_hook/flhook.cpp` supplies the transient HUD transform API used by Lua.
 - `gamedata/anims/camera_effects/sivol_onerad_006.anm` and
-  `sivol_oneshove_004.anm` are optional, pre-scaled camera-effector accents.
+  `sivol_oneshove_004.anm` are retained experimental assets. Their runtime
+  layer is disabled because a fixed camera-effector track can finish below the
+  player's pre-shot aim point.
 
 The repository is authoritative. A matching `dinput8.dll` must be built and
 deployed from the compatible `fl_hook` source for six-axis HUD recoil.
@@ -32,7 +34,13 @@ on every controller exit path. Each accepted actor shot then contributes:
 
 Burst continuity is short-lived and distinct from longer-lived recoil heat.
 This allows isolated shots to regain first-shot behavior while long bursts gain
-climb and lateral wander. The active-burst camera return scale is `0.40`.
+climb and lateral wander. Camera recovery starts at the active-burst return
+scale of `0.40` and continuously blends toward `1.00` as continuity fades; do
+not restore the former hard `0.40`/`1.00` threshold.
+
+The reversible scripted pitch contribution is constrained to the upward side
+of neutral and cannot cross into a downward return. Burst diagnostics report
+`return_guards`; any non-zero value means the invariant prevented a crossing.
 
 Camera pitch uses the target build's inverted member sign: a negative
 `actor_camera(0).pitch` delta produces visible upward movement. Do not change
@@ -48,6 +56,8 @@ camera_pitch = 2.90
 camera_yaw = 0.72
 hud_rotation = 1.12
 hud_translation = 1.08
+vertical_multiplier = 1.20
+automatic_first_shot_multiplier = 1.10
 ```
 
 HUD pitch is normalized by the global camera-pitch value. Raising global
@@ -124,22 +134,35 @@ pre-fire bridge is present in the repository as of 2026-08-30.
 
 ## Inventory weapon-control score
 
-The weapon tooltip includes a single compact `Weapon control` / `Управляемость`
-score in five-point steps from 10 to 95. It replaces the old raw
-`cam_dispersion` row, whose direction and scale were not comparable between
-weapon classes. The score simulates a neutral six-shot ADS sequence
-from the same live weapon fields, class profile, global tuning, and personality
-terms used by gameplay. Automatic weapons weight first-shot vertical movement,
-sustained vertical movement, horizontal movement, and recovery at 30/30/20/20.
-Weapons without a full-auto fire mode shift the weighting to 45/15/15/25 so a
-bolt action or shotgun is not primarily judged as a sustained-fire weapon.
+The weapon tooltip includes a compact `Weapon control` / `Управляемость` index
+in whole-number steps up to 95. It replaces the old raw `cam_dispersion` row,
+whose direction and scale were not comparable between weapon classes. The score
+simulates a neutral six-shot ADS sequence through the shared pure
+shot-impulse calculation used by gameplay, including the live weapon fields,
+class profile, global vertical and automatic-first-shot tuning, and personality
+terms. Continuous reciprocal curves keep large shotgun impulses distinct rather
+than saturating multiple components at zero. Single-fire control weights the
+opening impulse, lateral movement, and recovery at 55/15/30. Automatic control
+weights opening impulse, sustained movement, lateral movement, and recovery at
+20/50/15/15. Full-auto-capable weapons display both indices; other weapons show
+only single-fire control. The UI renders the result as an index out of 100, not
+as a literal percentage.
 
 The base score describes the weapon itself and intentionally excludes health,
-stance, outfit, artifacts, and mastery. With a detachable suppressor fitted,
-the same row also shows a final score using the gameplay suppressor gas/mass
-recoil coefficient and its attachment-mass recovery coefficient. The score is
+stance, outfit, artifacts, and mastery. The equipped value uses total attachment
+mass plus suppressor gas recoil, in the same pre-clamp attachment and post-clamp
+suppressor order as live recoil. Attachment mass steadies the immediate impulse
+but slows recovery, so an under-barrel launcher can lower the final score. The
+score is
 computed only while the description is built; it adds no per-frame or per-shot
-work.
+work. LAlt deliberately explains the shared mass and attachment relationships
+instead of exposing the internal four-component calculation: attachment mass
+steadies the impulse but slows recovery; optics and launchers increase ADS time
+and therefore reduce readiness; suppressor gas behavior remains independent.
+
+The audited shotgun identities are easy to confuse: `wpn_winchester_m1` is the
+full MP-153, `wpn_mp153_m1` is its shortened version, `wpn_mp153` is the
+Remington 870, and `wpn_spas12_m1` is the Benelli M4.
 
 ## Diagnostics and performance
 
@@ -191,7 +214,9 @@ After changing controller math, profiles, or the hook, test:
    exoskeleton, Eye, and representative Gravi tiers.
 4. Suppressor attach/detach and attachment-mass changes without reopening the
    inventory.
-5. P99, Glock 17, standard MP5, 9x18 MP5, AK-74, AK-103, one shotgun, and one
-   bolt-action rifle.
+5. P99, Glock 17, standard MP5, 9x18 MP5, AK-74, AK-103, RPK-74, one shotgun,
+   and one bolt-action rifle. For the RPK-74, explicitly compare the first shot,
+   shots 3-6, and shots 7-10; its intended identity is a hard opening impulse
+   followed by comparatively controllable automatic fire.
 6. Burst summaries for direction guards, camera/HUD clamps, and restoration
    errors. Static validation and deployment hashes do not replace this test.

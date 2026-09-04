@@ -179,12 +179,12 @@ local function get_ready_motion_speed(hud_section, alias)
     return get_float(hud_section, alias .. "_speed_k", 1)
 end
 
-local function get_weapon_ready_speed(item, section)
+local function get_weapon_ready_speed(item, section, weapon)
     local base_section = resolve_ready_speed_base_section(section)
     local base_hud = get_string(base_section, "hud", nil)
     local current_hud = get_string(section, "hud", base_hud)
-    local base_speed = (get_ready_motion_speed(base_hud, "anm_show")
-        + get_ready_motion_speed(base_hud, "anm_hide")) * 0.5
+    local base_draw = get_ready_motion_speed(base_hud, "anm_show")
+    local base_holster = get_ready_motion_speed(base_hud, "anm_hide")
 
     local show_alias, hide_alias = "anm_show", "anm_hide"
     local gl_status = get_u32(section, "grenade_launcher_status", 0)
@@ -197,11 +197,37 @@ local function get_weapon_ready_speed(item, section)
         show_alias, hide_alias = "anm_show_w_gl", "anm_hide_w_gl"
     end
 
-    local current_speed = (get_ready_motion_speed(current_hud, show_alias)
-        + get_ready_motion_speed(current_hud, hide_alias)) * 0.5
-    local changed_by_addon = (section ~= base_section or gl_attached)
-        and math.abs(current_speed - base_speed) >= 0.005
-    return base_speed, current_speed, changed_by_addon
+    local current_draw = get_ready_motion_speed(current_hud, show_alias)
+    local current_holster = get_ready_motion_speed(current_hud, hide_alias)
+    local base_aim_time, current_aim_time = 0.25, 0.25
+    if weapon and sivol_weapon_aim_speed
+        and type(sivol_weapon_aim_speed.get_weapon_aim_profile) == "function" then
+        local ok, profile = pcall(
+            sivol_weapon_aim_speed.get_weapon_aim_profile, item, weapon, section)
+        if ok and type(profile) == "table" then
+            base_aim_time = tonumber(profile.base_target) or base_aim_time
+            current_aim_time = tonumber(profile.target) or base_aim_time
+            if profile.mode == "integral" or profile.mode == "integrated_override" then
+                base_aim_time = base_aim_time * (tonumber(profile.scope_multiplier) or 1)
+            end
+            if gl_status == 1 then base_aim_time = current_aim_time end
+        end
+    end
+
+    local function composite(draw, holster, aim_time)
+        local aim_speed = 0.25 / math.max(0.05, aim_time)
+        return math.pow(math.max(0.05, draw), 0.40)
+            * math.pow(math.max(0.05, holster), 0.20)
+            * math.pow(math.max(0.05, aim_speed), 0.40)
+    end
+    local base_speed = composite(base_draw, base_holster, base_aim_time)
+    local current_speed = composite(current_draw, current_holster, current_aim_time)
+    local changed_by_addon = math.abs(current_speed - base_speed) >= 0.005
+    return base_speed, current_speed, changed_by_addon, {
+        draw = current_draw,
+        holster = current_holster,
+        aim_time = current_aim_time,
+    }
 end
 local function add_weapon_characteristic_help(self, label_id, help_id)
     if not self.lalt then return end
@@ -291,18 +317,25 @@ local function get_effective_weapon_metrics(item)
     metrics.accuracy = get_accuracy(section, sil_section
         and get_float(sil_section, "fire_dispersion_base_k", 1) or 1)
     if sivol_fuzz_recoil_profiles and type(sivol_fuzz_recoil_profiles.get_handling_score) == "function" then
-        local recoil_k, recovery_k
-        if sil_section and sivol_fuzz_recoil and type(sivol_fuzz_recoil.get_recoil_modifier_breakdown) == "function" then
-            local ok_breakdown, breakdown = pcall(sivol_fuzz_recoil.get_recoil_modifier_breakdown, item, section)
+        local gas_k, recovery_k, attachment_k
+        if sivol_fuzz_recoil and type(sivol_fuzz_recoil.get_recoil_modifier_breakdown) == "function" then
+            local ok_breakdown, breakdown = pcall(
+                sivol_fuzz_recoil.get_recoil_modifier_breakdown, item, section)
             if ok_breakdown and type(breakdown) == "table" then
-                recoil_k, recovery_k = breakdown.combined_k, breakdown.recovery_k
+                gas_k, recovery_k, attachment_k = breakdown.gas_k,
+                    breakdown.total_attachment_recovery_k,
+                    breakdown.total_attachment_stability_k
             end
         end
-        local ok_score, score = pcall(sivol_fuzz_recoil_profiles.get_handling_score,
-            item, weapon, recoil_k, recovery_k)
-        if ok_score then metrics.handling = score end
+        local ok_score, score, details = pcall(
+            sivol_fuzz_recoil_profiles.get_handling_score,
+            item, weapon, gas_k, recovery_k, attachment_k)
+        if ok_score then
+            metrics.handling = score
+            metrics.handling_details = details
+        end
     end
-    local _, ready = get_weapon_ready_speed(item, section)
+    local _, ready = get_weapon_ready_speed(item, section, weapon)
     metrics.ready = ready * 100
     if sivol_weapon_aim_speed and type(sivol_weapon_aim_speed.get_weapon_scope_profile) == "function" then
         local ok_scope, profile = pcall(sivol_weapon_aim_speed.get_weapon_scope_profile, item, weapon, section)
@@ -315,8 +348,20 @@ local function metric_text(value, unit)
     if unit == "x" then return string.format("x%.1f", value) end
     local rounded = math.floor(value + 0.5001)
     if unit == "%" then return string.format("%d%%", rounded) end
+    if unit == "score" then return string.format("%d/100", rounded) end
     if unit and unit ~= "" then return string.format("%d %s", rounded, unit) end
     return tostring(rounded)
+end
+
+local function handling_values_text(score, details)
+    local single = type(details) == "table" and tonumber(details.single) or score
+    local automatic = type(details) == "table" and tonumber(details.automatic) or nil
+    if automatic then
+        return string.format("%d/100 %s | %d/100 %s", single,
+            translate("ui_inv_control_single_short"), automatic,
+            translate("ui_inv_control_auto_short"))
+    end
+    return string.format("%d/100", single)
 end
 
 local function append_weapon_comparison(text, current, equipped, unit, higher_is_better)
@@ -1617,45 +1662,50 @@ function CUIDescriptionWnd:ShowWeaponParams()
 		add_weapon_characteristic_help(self, "ui_inv_accuracy", "ui_inv_help_accuracy")
 	end
 
+	local weapon = self.item:get_weapon()
 	local recoil_breakdown
-	if sil_section and sivol_fuzz_recoil
+	if sivol_fuzz_recoil
 		and type(sivol_fuzz_recoil.get_recoil_modifier_breakdown) == "function" then
 		local ok, result = pcall(
 			sivol_fuzz_recoil.get_recoil_modifier_breakdown, self.item, self.section)
 		if ok and type(result) == "table" then recoil_breakdown = result end
 	end
 
-
 	if sivol_fuzz_recoil_profiles
 		and type(sivol_fuzz_recoil_profiles.get_handling_score) == "function" then
-		local weapon = self.item:get_weapon()
-		local ok, handling_score = pcall(
+		local ok, handling_score, handling_details = pcall(
 			sivol_fuzz_recoil_profiles.get_handling_score, self.item, weapon)
 		if ok and type(handling_score) == "number" then
-			text = string.format("%s: %d%%",
-				translate("ui_inv_weapon_handling"), handling_score)
-			if sil_section and recoil_breakdown then
-				local ok_sil, suppressed_score = pcall(
+			text = translate("ui_inv_weapon_handling") .. ": "
+				.. handling_values_text(handling_score, handling_details)
+			local has_addon_effect = recoil_breakdown
+				and ((tonumber(recoil_breakdown.total_attachment_mass) or 0) > 0.001
+					or math.abs((tonumber(recoil_breakdown.gas_k) or 1) - 1) > 0.001)
+			if has_addon_effect then
+				local ok_current, current_score, current_details = pcall(
 					sivol_fuzz_recoil_profiles.get_handling_score,
-					self.item, weapon, recoil_breakdown.combined_k,
-					recoil_breakdown.recovery_k)
-				if ok_sil and type(suppressed_score) == "number" then
-					local color = suppressed_score >= handling_score
+					self.item, weapon, recoil_breakdown.gas_k,
+					recoil_breakdown.total_attachment_recovery_k,
+					recoil_breakdown.total_attachment_stability_k)
+				local base_values = handling_values_text(handling_score, handling_details)
+				local current_values = ok_current and type(current_score) == "number"
+					and handling_values_text(current_score, current_details) or base_values
+				if current_values ~= base_values then
+					local color = current_score >= handling_score
 						and "%c[green]" or "%c[red]"
-					if suppressed_score ~= handling_score then
-						text = string.format("%s: %d%% -> %s%d%%",
-							translate("ui_inv_weapon_handling"), handling_score,
-							color, suppressed_score) .. "%c[default] " .. translate("ui_inv_suppressor_short")
-					end
+					text = translate("ui_inv_weapon_handling") .. ": " .. base_values
+						.. " -> " .. color .. current_values .. "%c[default] "
+						.. translate("ui_inv_addons_short")
 				end
 			end
 			text = append_weapon_comparison(text, current_metrics and current_metrics.handling,
-				comparison_metrics and comparison_metrics.handling, "%", true)
+				comparison_metrics and comparison_metrics.handling, "score", true)
 			table.insert(v, {"ui_inv_icon_otdaca", text})
 			add_weapon_characteristic_help(self, "ui_inv_weapon_handling", "ui_inv_help_weapon_control")
+			add_weapon_characteristic_help(self, "ui_inv_weapon_system", "ui_inv_help_weapon_system")
 		end
 	end
-	local ready_base, ready_current, ready_has_addon = get_weapon_ready_speed(self.item, self.section)
+	local ready_base, ready_current, ready_has_addon = get_weapon_ready_speed(self.item, self.section, weapon)
 	local ready_base_percent = math.floor(ready_base * 100 + 0.5001)
 	local ready_current_percent = math.floor(ready_current * 100 + 0.5001)
 	text = string.format("%s: %d%%", translate("ui_inv_weapon_ready_speed"), ready_base_percent)
@@ -1673,21 +1723,17 @@ function CUIDescriptionWnd:ShowWeaponParams()
 	local scope_profile = current_metrics and current_metrics.scope
 	if scope_profile then
 		local compare_scope = comparison_metrics and comparison_metrics.scope
-		text = string.format("%s: x%.1f", translate("ui_inv_scope_magnification"),
-			scope_profile.magnification)
+		text = string.format("%s: x%.1f | %s %.2f %s",
+			translate("ui_inv_scope_magnification"), scope_profile.magnification,
+			translate("ui_inv_scope_aim_time_short"), scope_profile.target,
+			translate("ui_inv_seconds_short"))
 		text = append_weapon_comparison(text, scope_profile.magnification,
 			compare_scope and compare_scope.magnification, "x", nil)
 		table.insert(v, {"scope", text})
 		add_weapon_characteristic_help(self, "ui_inv_scope_magnification",
 			"ui_inv_help_scope_magnification")
 
-		local aim_percent = round_to_step(scope_profile.speed_percent, 5)
-		text = string.format("%s: %s", translate("ui_inv_aim_speed"),
-			rounded_modifier_percent_text(scope_profile.speed_percent, true))
-		text = append_weapon_comparison(text, aim_percent,
-			compare_scope and round_to_step(compare_scope.speed_percent, 5), "%", true)
-		table.insert(v, {"ui_inv_icon_rpm", text})
-		add_weapon_characteristic_help(self, "ui_inv_aim_speed", "ui_inv_help_scope_aim_speed")
+
 	end
 
 	local tbl = string.explode(",", get_string(self.section, "fire_modes", "1"), true)

@@ -89,6 +89,22 @@ that prefix only to shorthand names. `ShowPropFromIni` follows a different
 section-icon path through `CIconParams`, so verify which renderer consumes a
 row before changing an icon key.
 
+## Weapon readiness
+
+`Готовность оружия` / `Weapon readiness` is a single geometric composite of
+draw speed (40%), ADS speed (40%), and holster speed (20%). ADS timing comes
+from `sivol_weapon_aim_speed.script`: naked times are owned by the effective
+weapon class, optic classes multiply that base, and an attached UBGL adds its
+penalty afterward. This prevents a sight from making a heavy machine gun aim
+faster than a naked pistol. The base-to-equipped comparison includes semantic
+HUD aliases such as `_w_gl`, the current optic, and the launcher penalty.
+
+When an optic is present, its compact row is `Оптика: xN.N | наведение N.NN с`
+(`Optics: xN.N | aim N.NN s`). This is the same effective ADS time used by the
+readiness composite, including the current weapon class, optic class, and UBGL
+penalty. LAlt also adds a general system-link explanation covering attachment
+mass, recoil stability/recovery, suppressor behavior, ADS, and readiness.
+
 ## Safe edit and verification checklist
 
 These legacy UI XML and Lua files are normally Windows-1251 without a BOM and
