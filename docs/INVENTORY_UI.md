@@ -1,5 +1,9 @@
 # Inventory UI guidance
 
+Document class: current layout ownership and visual-verification rules for
+inventory, trade, corpse-looting, and item-popup UI. Static XML/hash checks do
+not replace the separate runtime contexts described below.
+
 This document records the confirmed layout and implementation rules for the
 item description UI shared by player inventory, trade, corpse looting, and the
 standalone item popup.

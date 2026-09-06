@@ -1,5 +1,10 @@
 # Scripted recoil system
 
+Document class: current recoil architecture, accepted evidence, and regression
+requirements. This is the canonical current system document; use
+`FL_HOOK_HUD_RECOIL_BRIEF.md` only for native hook implementation details and
+historical handoff context.
+
 ## Ownership and files
 
 - `gamedata/scripts/kotovod/sivol_fuzz_recoil.script` owns runtime camera and

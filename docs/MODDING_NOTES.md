@@ -1,5 +1,9 @@
 # Modding notes
 
+Document class: current cross-cutting implementation patterns. These notes are
+source-grounded guidance, not standalone proof of live runtime behavior; use
+the labels and report format in `WORKFLOW.md`.
+
 These are concise observations from the thermal-anomaly and device-interference work.
 
 - Prefer existing lifecycle signals (`on_anomaly_spawn` and

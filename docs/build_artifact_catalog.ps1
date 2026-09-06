@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $outPath = Join-Path $PSScriptRoot 'artifact_catalog.md'
+$generatedOn = Get-Date -Format 'yyyy-MM-dd'
 
 function Rel([string]$path) {
     $p = $path.Replace('\','/')
@@ -528,7 +529,7 @@ function Row-Stash($row) {
 $md = New-Object System.Text.StringBuilder
 [void]$md.AppendLine('# NLC 7 Hard Edition / OGSR artifact catalog')
 [void]$md.AppendLine('')
-[void]$md.AppendLine('Generated from the repository source on 2026-08-20. This is a source catalog, not a claim about an uninspected runnable installation.')
+[void]$md.AppendLine(('Generated from the repository source on ' + $generatedOn + '. This is a source catalog, not a claim about an uninspected runnable installation.'))
 [void]$md.AppendLine('')
 [void]$md.AppendLine('## Scope and reading rules')
 [void]$md.AppendLine('')
@@ -542,7 +543,7 @@ $md = New-Object System.Text.StringBuilder
 [void]$md.AppendLine('')
 [void]$md.AppendLine(('- Catalog rows: **' + $artifactRows.Count + '** artifact sections; helper/support sections excluded from the main rows: **' + $helperSections.Count + '**.'))
 [void]$md.AppendLine(('- Parsed world levels: **' + $levels.Count + '**; cooking sections: **' + $cookSections.Count + '**; artmod recipes: **' + $artmodRows.Count + '**; direct/indirect artifact-bearing dialogue actions: **' + $dialogRows.Count + '**; artifact-bearing `sak_dialog` functions: **' + $stashRows.Count + '**.'))
-[void]$md.AppendLine('- The repo guidance names `docs/CLAUDE_MODDING_NOTES.md`, but that exact path is absent in this checkout; the similarly named root file `CLAUDE_MODDING_NOTES.md` exists and was not used as a substitute for source data.')
+[void]$md.AppendLine('- This file is generated reference data. The canonical notes path is `docs/CLAUDE_MODDING_NOTES.md`; the notes are not used as artifact source data.')
 [void]$md.AppendLine('- Any display/quest string shown as `[MISSING RUS STRING: …]` has no matching `<string id>` in the scanned `gamedata/config/text/rus/*.xml`; no translation was invented.')
 [void]$md.AppendLine('- A blank or “No matching…” acquisition field is an explicit source result: this catalog found no exact source reference in the scanned tables, XML actions, or `sak_dialog.script` function bodies.')
 [void]$md.AppendLine('')

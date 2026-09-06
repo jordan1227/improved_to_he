@@ -6,6 +6,10 @@ Review snapshot: repository HEAD 3140670, 2026-09-03
 Document date: 2026-09-04
 Status: analysis and proposed direction only; no gameplay changes are prescribed by this document and nothing has been deployed to the runnable installation.
 
+Canonical document for weapon-balance redesign discussion. Use `WORKFLOW.md`
+for task modes and `VALIDATION.md` before turning any proposal into an
+implementation plan.
+
 ## 1. Executive summary
 
 The weapon system is not suffering from one universal “all guns are wrong” problem. The current direction already has several good foundations:

@@ -1,5 +1,8 @@
 # Testing workflow
 
+Use `WORKFLOW.md` for task modes and deployment gates, `VALIDATION.md` for
+static checks, and `EVIDENCE_TEMPLATE.md` for recording a runtime result.
+
 For a gameplay change requested for testing:
 
 1. Edit the canonical files in `C:\Games\NLC_OGSR_HE files\improved_to_he`.
@@ -12,7 +15,9 @@ For a gameplay change requested for testing:
 
 Loose files in the runnable installation's `gamedata` override packed game files. Do not deploy anything for documentation-only, analysis-only, or setup tasks.
 
-Automated test commands and log locations: TBD.
+Targeted validators are listed in `VALIDATION.md`; there is no unified
+automated runtime suite. Log locations and launch commands are not assumed by
+this document, so record the actual path and command in each evidence record.
 
 ## Confirmed manual checks
 
@@ -107,8 +112,8 @@ Automated test commands and log locations: TBD.
   the controller ability acceptance results above.
 
 For anomaly reshuffling/emission tests, use the mod's supported console/script
-command mechanism when the relevant function is known; exact command names and
-log-file locations remain TBD.
+command mechanism when the relevant function is known. Record the exact command
+and log-file location in the evidence record because they are not standardized.
 
 ## Pending suppressor acceptance checks
 

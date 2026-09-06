@@ -1,11 +1,16 @@
 # Baseline
 
+Document class: repository/test-install boundary and observed implementation
+invariants. Read `WORKFLOW.md` before using this as runtime evidence.
+
 - Canonical editable repository: `C:\Games\NLC_OGSR_HE files\improved_to_he`
 - Runnable test installation: `C:\Games\NLC_OGSR_HE`
 - Loose files under the runnable installation's `gamedata` override packed game files.
 - Repository edits are the source of truth; runnable-installation copies are deployment artifacts for requested testing only.
 
-Known clean-game baseline and packed-file inventory: TBD.
+Known clean-game baseline and packed-file inventory are not yet maintained in a
+versioned manifest. Until that exists, treat runtime comparisons as
+checkout/test-install specific and record target hashes in the evidence record.
 
 ## Observed implementation baseline
 

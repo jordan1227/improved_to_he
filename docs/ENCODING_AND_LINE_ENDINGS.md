@@ -1,5 +1,8 @@
 # Encoding and line-ending guidance
 
+Canonical legacy-file safety rules. Use `WORKFLOW.md` for task gates and
+`VALIDATION.md` for the evidence limits of byte/XML checks.
+
 This repository contains legacy game assets that are not interchangeable with
 modern UTF-8 text files. The menu XML, localization XML, and many related
 runtime scripts use Windows-1251 and are consumed by an older engine/parser.

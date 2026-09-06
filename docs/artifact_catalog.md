@@ -1,6 +1,6 @@
 # NLC 7 Hard Edition / OGSR artifact catalog
 
-Generated from the repository source on 2026-08-20. This is a source catalog, not a claim about an uninspected runnable installation.
+Generated from the repository source on 2026-08-20. This is a source catalog, not a claim about an uninspected runnable installation. Rebuild with `build_artifact_catalog.ps1` after source changes.
 
 ## Scope and reading rules
 
@@ -14,7 +14,7 @@ Generated from the repository source on 2026-08-20. This is a source catalog, no
 
 - Catalog rows: **337** artifact sections; helper/support sections excluded from the main rows: **19**.
 - Parsed world levels: **21**; cooking sections: **28**; artmod recipes: **47**; direct/indirect artifact-bearing dialogue actions: **99**; artifact-bearing `sak_dialog` functions: **337**.
-- The repo guidance names `docs/CLAUDE_MODDING_NOTES.md`, but that exact path is absent in this checkout; the similarly named root file `CLAUDE_MODDING_NOTES.md` exists and was not used as a substitute for source data.
+- This file is generated reference data. The canonical notes path is `docs/CLAUDE_MODDING_NOTES.md`; the notes are not used as artifact source data.
 - Any display/quest string shown as `[MISSING RUS STRING: …]` has no matching `<string id>` in the scanned `gamedata/config/text/rus/*.xml`; no translation was invented.
 - A blank or “No matching…” acquisition field is an explicit source result: this catalog found no exact source reference in the scanned tables, XML actions, or `sak_dialog.script` function bodies.
 

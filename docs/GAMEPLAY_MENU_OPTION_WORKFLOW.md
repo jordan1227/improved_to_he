@@ -1,5 +1,8 @@
 # Gameplay menu option workflow
 
+Task-specific implementation pattern. Read `WORKFLOW.md` first and run the
+targeted options audit listed in `VALIDATION.md` after changing the menu path.
+
 Use this procedure for a custom Lua-backed gameplay checkbox. It records the
 project-specific pattern supplied by the maintainer on 2026-08-16.
 

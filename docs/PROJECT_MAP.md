@@ -1,11 +1,15 @@
 # Project map
 
+This is the current system-owner map, not a complete dependency catalog. Start
+with `README.md` and `WORKFLOW.md`, then trace only the subsystem relevant to
+the task.
+
 ## Priority locations
 
 - `gamedata/scripts` — gameplay scripts and integration logic.
 - `gamedata/config` — configuration files. The default-scope name supplied as `gamedata/configs` does not exist in this checkout.
 - `gamedata/scripts/kotovod` — common location for the user's scripts; `sivol` identifies the user's work.
-- `docs/claude-notes/claude_notes_export.txt` — high-value reference archive; search selectively for the current task only.
+- `docs/CLAUDE_MODDING_NOTES.md` — high-value reference archive; search selectively for the current task only.
 
 Inspect other `gamedata` folders only when the current task requires them.
 
@@ -73,4 +77,6 @@ Inspect other `gamedata` folders only when the current task requires them.
   - Native locomotion remains owned by the engine class (`SM_CONTR`) and
     `gamedata/config/creatures/m_controller.ltx`; the scripted overhaul does
     not assign controller destinations or disable movement.
-- Configuration-to-script relationships beyond these entry points: TBD.
+- Configuration-to-script relationships beyond these entry points are not
+  exhaustively cataloged. Record newly discovered owners and load paths in the
+  task report or the relevant system document.

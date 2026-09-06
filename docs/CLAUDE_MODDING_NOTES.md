@@ -1,15 +1,18 @@
 # Claude Modding Notes — NLC OGSR HE
 
 This file distills reusable technical knowledge gathered across many modding/porting
-sessions on this codebase. It's meant to complement `PROJECT MAP`, `MODDING NOTES`,
-`TESTING`, and `BASELINE` — those cover current architecture and workflow; this one
-is a "gotchas and confirmed facts" cheat sheet so a fresh LLM instance doesn't
-re-derive things that have already been proven true or false the hard way.
+sessions on this codebase. It complements `PROJECT_MAP`, `MODDING_NOTES`,
+`TESTING`, and `BASELINE`; those cover current architecture and workflow, while
+this file is a selectively searchable gotchas and rationale reference.
 
-Treat everything below as **confirmed by grep/source/in-game test** unless marked
-"unconfirmed" or "hypothesis." When in doubt, grep the actual scripts before trusting
-an assumption carried over from Anomaly/GAMMA — this is a SoC-lineage OGSR fork, not
-a Monolith-engine fork, and a lot of Anomaly-isms simply don't exist here.
+Use `WORKFLOW.md` evidence labels when adding material here: `Static`,
+`Runtime accepted`, `Runtime pending`, `Proposal`, or `Historical`. Existing
+unlabeled entries are useful leads, but must be checked against the current
+source and target build before implementation or an acceptance claim.
+
+When in doubt, inspect the actual scripts before trusting an assumption carried
+over from Anomaly/GAMMA — this is a SoC-lineage OGSR fork, not a Monolith-engine
+fork, and many Anomaly conventions do not exist here.
 
 ---
 

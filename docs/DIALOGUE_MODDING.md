@@ -1,5 +1,8 @@
 # Dialogue modding in this STALKER/OGSR checkout
 
+Task-specific guidance. Read `WORKFLOW.md` first and classify XML/reference
+checks separately from in-game dialogue evidence.
+
 ## The main rule
 
 A dialogue is not contained in one `dialogs_*.xml` file. A working dialogue is

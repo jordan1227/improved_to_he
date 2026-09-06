@@ -11,6 +11,10 @@
 > preserves the original implementation brief and acceptance contract; use
 > `RECOIL_SYSTEM.md` for the current system architecture and balance.
 
+Document class: native hook implementation brief and acceptance contract. The
+current runtime status above is authoritative for completed hook behavior;
+older prototype limitations below are historical context, not current blockers.
+
 ## Goal
 
 Give `sivol_fuzz_recoil.script` a safe, additive way to move the currently

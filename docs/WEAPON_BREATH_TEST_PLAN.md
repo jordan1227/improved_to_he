@@ -1,5 +1,9 @@
 # Manual weapon breath and mass-handling test plan
 
+Document class: focused runtime acceptance plan. Use `WORKFLOW.md` for
+deployment gates and `EVIDENCE_TEMPLATE.md` to record each accepted or pending
+result.
+
 Acceptance status: all implemented steps were confirmed in-game, including the
 final-direction camera rebase in step 16. Step 14 remains explicitly deferred
 for a later, separately scoped investigation.
