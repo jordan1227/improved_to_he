@@ -1,44 +1,70 @@
--- Gunshot alert propagation to eligible nearby monsters.
--- The alert radii below are detection distances only. The existing
--- dsh_battle_radius pursuit radius remains unchanged.
+-- Gunshot perception for eligible nearby monsters.
+-- Detection uses a weapon/ammunition signature with guaranteed inner range and
+-- probabilistic outer falloff. The existing pursuit radius remains separate.
 
 dsh_monster_attack = dsh_monster_attack or {}
-dsh_monster_attack.diagnostics = false
+dsh_monster_attack.diagnostics = true
 
 local GUNSHOT_ALERT_WINDOW_MS = 500
+local BURST_ACCUMULATION_WINDOW_MS = 1500
+local BURST_CHANCE_PER_SHOT = 0.08
+local BURST_CHANCE_CAP = 1.35
+local AI_OBSERVATION_DELAY_MS = 100
 local BATTLE_PURSUIT_RADIUS = 10
 
-local GUNSHOT_ALERT_RADIUS = {
-    loud = 30,
-    pb = 3,
-    val_vintorez = 6,
-    svu = 12,
-    generic_detachable = 15,
+local NOISE_PROFILES = {
+    integral_pistol = { inner = 2, outer = 5 },
+    integral_9x39 = { inner = 4, outer = 8 },
+    suppressed_pistol = { inner = 4, outer = 8 },
+    suppressed_intermediate = { inner = 6, outer = 12 },
+    suppressed_medium = { inner = 8, outer = 15 },
+    suppressed_full_power = { inner = 10, outer = 18 },
+    loud_pistol = { inner = 15, outer = 25 },
+    loud_longarm = { inner = 20, outer = 30 },
 }
 
-local FAMILY_ALERT_RULES = {
-    { prefix = "wpn_pb", radius = GUNSHOT_ALERT_RADIUS.pb, name = "pb" },
-    { prefix = "wpn_val", radius = GUNSHOT_ALERT_RADIUS.val_vintorez, name = "val_family" },
-    { prefix = "wpn_vintorez", radius = GUNSHOT_ALERT_RADIUS.val_vintorez, name = "vintorez_family" },
-    { prefix = "wpn_svu", radius = GUNSHOT_ALERT_RADIUS.svu, name = "svu_family" },
+local AMMO_PROFILE_RULES = {
+    { token = "9x18", profile = "pistol" },
+    { token = "9x19", profile = "pistol" },
+    { token = "11.43x23", profile = "pistol" },
+    { token = "5.7x28", profile = "pistol" },
+    { token = "9x33", profile = "pistol" },
+    { token = "5.45x39", profile = "intermediate" },
+    { token = "5.56x45", profile = "intermediate" },
+    { token = "7.62x39", profile = "medium" },
+    { token = "9x39", profile = "medium" },
+    { token = "7.62x51", profile = "full_power" },
+    { token = "7.62x54", profile = "full_power" },
+    { token = "8.6x70", profile = "full_power" },
+    { token = "12x", profile = "full_power" },
 }
 
-local last_gunshot_at = nil
-local last_gunshot_radius = nil
-local last_gunshot_weapon_section = nil
-local last_gunshot_reason = nil
+-- Species affect falloff probability, never the authored outer maximum.
+local SPECIES_HEARING_RULES = {
+    { prefix = "psy_dog", multiplier = 1.20, name = "psy_dog" },
+    { prefix = "pseudodog", multiplier = 1.15, name = "pseudodog" },
+    { prefix = "dog", multiplier = 1.20, name = "dog" },
+    { prefix = "cat", multiplier = 1.15, name = "cat" },
+    { prefix = "snork", multiplier = 1.10, name = "snork" },
+    { prefix = "tushkano", multiplier = 1.10, name = "tushkano" },
+    { prefix = "flesh", multiplier = 0.85, name = "flesh" },
+    { prefix = "zombie", multiplier = 0.80, name = "zombie" },
+    { prefix = "burer", multiplier = 0.90, name = "burer" },
+    { prefix = "controller", multiplier = 0.90, name = "controller" },
+    { prefix = "poltergeist", multiplier = 0.90, name = "poltergeist" },
+}
+
+local last_gunshot = nil
+local shot_serial = 0
+local last_noise_shot_at = nil
+local burst_shot_count = 0
+local processed_candidates = {}
+local pending_ai_observations = {}
 
 local function diagnostic_log(fmt, ...)
     if dsh_monster_attack.diagnostics then
         log2("[dsh_monster_attack] " .. fmt, ...)
     end
-end
-
-local function clear_gunshot_snapshot()
-    last_gunshot_at = nil
-    last_gunshot_radius = nil
-    last_gunshot_weapon_section = nil
-    last_gunshot_reason = nil
 end
 
 local function valid_silencer_section(section)
@@ -76,93 +102,130 @@ end
 
 local function silencer_is_attached(item, status, flags)
     if status ~= 2 then return false end
-
     if ogse_wpn_utils and ogse_wpn_utils.get_silencer_flag then
         local ok, attached = pcall(ogse_wpn_utils.get_silencer_flag, item)
-        if ok then
-            return attached == true or tonumber(attached) == 1
-        end
+        if ok then return attached == true or tonumber(attached) == 1 end
     end
-
     if rx_utils and rx_utils.addon_attached then
         local ok, attached = pcall(rx_utils.addon_attached, item, "sl", flags)
         if ok and attached ~= nil then return attached end
     end
-
     return bit_and(flags or 0, 4) == 4
 end
 
 local function resolve_silencer_section(item, weapon_section)
     local weapon = item and item:get_weapon()
     local runtime_silencer = weapon and weapon.silencer_name
-    if valid_silencer_section(runtime_silencer) then
-        return runtime_silencer, runtime_silencer
-    end
-
+    if valid_silencer_section(runtime_silencer) then return runtime_silencer end
     if get_addon_section and clsid and clsid.wpn_silencer then
         local ok, resolved = pcall(get_addon_section, weapon_section, clsid.wpn_silencer)
-        if ok and valid_silencer_section(resolved) then
-            return runtime_silencer, resolved
-        end
+        if ok and valid_silencer_section(resolved) then return resolved end
     end
-
     if weapon_section and sys_ini:section_exist(weapon_section)
         and sys_ini:line_exist(weapon_section, "silencer_name") then
         local configured = sys_ini:r_string(weapon_section, "silencer_name")
-        if valid_silencer_section(configured) then
-            return runtime_silencer, configured
-        end
-    end
-    return runtime_silencer, nil
-end
-
-local function get_actor_firearm()
-    local actor = db.actor
-    if not actor then return nil end
-
-    local item = actor:active_item()
-    if item and item:is_weapon() and not item:is_knife() and not item:is_binoculars() then
-        return item
-    end
-
-    local slot = actor:active_slot()
-    if slot == WPN1_SLOT or slot == WPN2_SLOT then
-        item = actor:item_in_slot(slot)
-        if item and item:is_weapon() and not item:is_knife() and not item:is_binoculars() then
-            return item
-        end
+        if valid_silencer_section(configured) then return configured end
     end
     return nil
 end
 
-local function get_family_alert_radius(section)
-    for _, rule in ipairs(FAMILY_ALERT_RULES) do
+local function get_current_ammo_section(item, weapon_section)
+    if not item or not weapon_section or not sys_ini:section_exist(weapon_section)
+        or not sys_ini:line_exist(weapon_section, "ammo_class") then
+        return nil
+    end
+    local ok_type, ammo_type = pcall(item.get_ammo_type, item)
+    ammo_type = ok_type and tonumber(ammo_type) or 0
+    ammo_type = math.max(0, math.floor(ammo_type or 0))
+    local ammo_list = sys_ini:r_string(weapon_section, "ammo_class")
+    local first = nil
+    local index = 0
+    for ammo_section in string.gmatch(ammo_list, "([%w%._%-]+)") do
+        if not first then first = ammo_section end
+        if index == ammo_type then return ammo_section end
+        index = index + 1
+    end
+    return first
+end
+
+local function get_ammo_profile(ammo_section)
+    local lowered = string.lower(tostring(ammo_section or ""))
+    for _, rule in ipairs(AMMO_PROFILE_RULES) do
+        if string.find(lowered, rule.token, 1, true) then return rule.profile end
+    end
+    return "longarm"
+end
+
+local function weapon_is_in_gl_mode(item)
+    local ok_gl, has_gl = pcall(item.is_weapon_gl, item)
+    if not ok_gl or not has_gl then return false end
+    if not ogse_wpn_utils or type(ogse_wpn_utils.get_gl_mode) ~= "function" then
+        return false
+    end
+    local ok_mode, mode = pcall(ogse_wpn_utils.get_gl_mode, item)
+    return ok_mode and mode == true
+end
+
+local function resolve_noise_profile(item)
+    local weapon_section = item:section()
+    local ammo_section = get_current_ammo_section(item, weapon_section)
+    local ammo_profile = get_ammo_profile(ammo_section)
+    local status = get_weapon_silencer_status(item)
+    local flags = get_weapon_addon_flags(item)
+    local attached = silencer_is_attached(item, status, flags)
+    local silencer_section = status == 2 and attached
+        and resolve_silencer_section(item, weapon_section) or nil
+    local profile_name = nil
+    local mode = "base"
+
+    if status == 1 then
+        mode = "integrated"
+        if ammo_profile == "pistol" then
+            profile_name = "integral_pistol"
+        elseif ammo_profile == "medium"
+            and string.find(string.lower(tostring(ammo_section)), "9x39", 1, true) then
+            profile_name = "integral_9x39"
+        elseif ammo_profile == "intermediate" then
+            profile_name = "suppressed_intermediate"
+        elseif ammo_profile == "medium" then
+            profile_name = "suppressed_medium"
+        else
+            profile_name = "suppressed_full_power"
+        end
+    elseif status == 2 and attached then
+        mode = "detachable_attached"
+        if ammo_profile == "pistol" then
+            profile_name = "suppressed_pistol"
+        elseif ammo_profile == "intermediate" then
+            profile_name = "suppressed_intermediate"
+        elseif ammo_profile == "medium" then
+            profile_name = "suppressed_medium"
+        else
+            profile_name = "suppressed_full_power"
+        end
+    elseif string.find(weapon_section, "wpn_svu", 1, true) == 1 then
+        -- Preserve the existing SVU suppressed personality despite its authored
+        -- silencer_status=0 configuration.
+        mode = "integrated_legacy"
+        profile_name = "suppressed_full_power"
+    elseif ammo_profile == "pistol" then
+        profile_name = "loud_pistol"
+    else
+        profile_name = "loud_longarm"
+    end
+
+    local profile = NOISE_PROFILES[profile_name] or NOISE_PROFILES.loud_longarm
+    return profile.inner, profile.outer, profile_name, mode, ammo_section,
+        silencer_section, status, attached
+end
+
+local function get_species_hearing(section)
+    for _, rule in ipairs(SPECIES_HEARING_RULES) do
         if section and string.find(section, rule.prefix, 1, true) == 1 then
-            return rule.radius, rule.name
+            return rule.multiplier, rule.name
         end
     end
-    return nil, nil
-end
-
-local function is_val_nimble_variant(section)
-    return section == "wpn_val_nimble"
-        or (section and string.find(section, "wpn_val_nimble_", 1, true) == 1)
-end
-
-local function choose_alert_radius(section, status, attached)
-    if is_val_nimble_variant(section) and status == 2 then
-        if attached then
-            return GUNSHOT_ALERT_RADIUS.generic_detachable, "val_nimble_attached"
-        end
-        return GUNSHOT_ALERT_RADIUS.loud, "val_nimble_detached"
-    end
-
-    local family_radius, family_name = get_family_alert_radius(section)
-    if family_radius then return family_radius, family_name end
-    if status == 2 and attached then
-        return GUNSHOT_ALERT_RADIUS.generic_detachable, "generic_detachable"
-    end
-    return GUNSHOT_ALERT_RADIUS.loud, "loud"
+    return 1.0, "default"
 end
 
 local function excluded_monster_reason(obj)
@@ -174,108 +237,75 @@ local function excluded_monster_reason(obj)
     return nil
 end
 
-function attach(sm)
-    sm:subscribe({ signal = "on_monster_hit", fun = this.on_monster_has_been_hit_by_actor })
-    sm:subscribe({ signal = "on_monster_update", fun = this.on_alive_monster_has_been_updated })
+local function danger_type_name(danger)
+    if not danger then return "none" end
+    local ok, danger_type = pcall(danger.type, danger)
+    if not ok then return "unavailable" end
+    if danger_type == danger_object.attack_sound then return "attack_sound" end
+    if danger_type == danger_object.bullet_ricochet then return "bullet_ricochet" end
+    if danger_type == danger_object.entity_attacked then return "entity_attacked" end
+    if danger_type == danger_object.attacked then return "attacked" end
+    if danger_type == danger_object.enemy_sound then return "enemy_sound" end
+    return tostring(danger_type)
 end
 
-function on_monster_has_been_hit_by_actor(obj, amount, local_direction, who, bone_index)
-    if const.underground(level.name()) then
-        return
-    end
-    if not (obj and obj:alive() and IsMonster(obj)) then
-        return
-    end
+local function safe_object_name(obj)
+    if not obj then return "none" end
+    local ok, name = pcall(obj.name, obj)
+    return ok and tostring(name) or "unavailable"
+end
 
-    local target_name = obj:name()
-    if target_name and string.find(target_name, "rat_", 1, true) then
-        return
+local function get_ai_snapshot(obj)
+    local enemy = nil
+    local danger = nil
+    local ok_enemy, value_enemy = pcall(obj.best_enemy, obj)
+    if ok_enemy then enemy = value_enemy end
+    local ok_danger, value_danger = pcall(obj.best_danger, obj)
+    if ok_danger then danger = value_danger end
+    local danger_object_value = nil
+    if danger then
+        local ok_object, value_object = pcall(danger.object, danger)
+        if ok_object then danger_object_value = value_object end
+        if not danger_object_value then
+            local ok_dependent, value_dependent = pcall(danger.dependent_object, danger)
+            if ok_dependent then danger_object_value = value_dependent end
+        end
     end
-    if not (who and db.actor and who:id() == db.actor:id()) then
-        return
-    end
+    return safe_object_name(enemy), danger_type_name(danger),
+        safe_object_name(danger_object_value)
+end
 
-    local weapon = get_actor_firearm()
-    if not weapon then
-        clear_gunshot_snapshot()
-        return
-    end
+local function queue_ai_observation(obj, result, serial)
+    pending_ai_observations[obj:id()] = {
+        due_at = time_global() + AI_OBSERVATION_DELAY_MS,
+        result = result,
+        serial = serial,
+    }
+end
 
-    local weapon_section = weapon:section()
-    local status = get_weapon_silencer_status(weapon)
-    local flags = get_weapon_addon_flags(weapon)
-    local attached = silencer_is_attached(weapon, status, flags)
-    local active_weapon = weapon:get_weapon()
-    local raw_silencer = active_weapon and active_weapon.silencer_name
-    local silencer_section = nil
-    if status == 1 then
-        silencer_section = "integrated"
-    elseif status == 2 and attached then
-        raw_silencer, silencer_section = resolve_silencer_section(weapon, weapon_section)
-    end
-
-    local radius, reason = choose_alert_radius(weapon_section, status, attached)
-    last_gunshot_at = time_global()
-    last_gunshot_radius = radius
-    last_gunshot_weapon_section = weapon_section
-    last_gunshot_reason = reason
-
-    local mode = status == 1 and "integrated"
-        or attached and "detachable_attached"
-        or status == 2 and "detachable_detached"
-        or "base"
+local function maybe_log_ai_observation(obj)
+    local observation = pending_ai_observations[obj:id()]
+    if not observation or time_global() < observation.due_at then return end
+    local enemy, danger_type, danger_source = get_ai_snapshot(obj)
     diagnostic_log(
-        "hit weapon=%s status=%d flags=%d mode=%s raw_silencer=%s resolved_silencer=%s radius=%.1f reason=%s",
-        tostring(weapon_section),
-        status,
-        flags,
-        mode,
-        tostring(raw_silencer),
-        tostring(silencer_section or "none"),
-        radius,
-        reason
-    )
+        "ai_observe phase=post candidate=%s shot=%d result=%s best_enemy=%s best_danger=%s danger_source=%s",
+        tostring(obj:section()), observation.serial, observation.result,
+        enemy, danger_type, danger_source)
+    pending_ai_observations[obj:id()] = nil
 end
 
-function on_alive_monster_has_been_updated(obj, delta)
-    if const.underground(level.name()) then
-        return
-    end
-    if not last_gunshot_at or not db.actor then
-        return
-    end
+local function deterministic_roll(object_id, serial)
+    return ((object_id * 73 + serial * 37 + (object_id % 17) * serial) % 997) / 997
+end
 
-    local delta_interval = time_global() - last_gunshot_at
-    if delta_interval <= 0 then
-        return
-    end
-    if delta_interval > GUNSHOT_ALERT_WINDOW_MS then
-        clear_gunshot_snapshot()
-        return
-    end
-    if not (obj and obj:alive() and IsMonster(obj)) then
-        return
-    end
+local function falloff_chance(distance, inner, outer)
+    if distance <= inner then return 1.0 end
+    if distance >= outer or outer <= inner then return 0 end
+    local t = (distance - inner) / (outer - inner)
+    return 1.0 - t * t * (3.0 - 2.0 * t)
+end
 
-    local radius = last_gunshot_radius or GUNSHOT_ALERT_RADIUS.loud
-    local distance = obj:position():distance_to(db.actor:position())
-    if distance > radius then
-        return
-    end
-
-    local excluded = excluded_monster_reason(obj)
-    if excluded then
-        diagnostic_log(
-            "candidate=%s distance=%.2f result=excluded:%s weapon=%s radius=%.1f",
-            tostring(obj:section()),
-            distance,
-            excluded,
-            tostring(last_gunshot_weapon_section),
-            radius
-        )
-        return
-    end
-
+local function force_combat_handoff(obj)
     obj:set_custom_panic_threshold(0)
     local h = hit()
     h.draftsman = db.actor
@@ -285,13 +315,110 @@ function on_alive_monster_has_been_updated(obj, delta)
     h.power = 0
     obj:hit(h)
     dsh_battle_radius.create_radius(obj, BATTLE_PURSUIT_RADIUS, nil, true)
+end
 
+local function clear_expired_snapshot()
+    if last_gunshot and time_global() - last_gunshot.at > GUNSHOT_ALERT_WINDOW_MS then
+        last_gunshot = nil
+        processed_candidates = {}
+    end
+end
+
+function on_actor_weapon_fire(item)
+    if const.underground(level.name()) or not db.actor then return end
+    if not (item and item:is_weapon() and not item:is_knife() and not item:is_binoculars()) then
+        return
+    end
+    if weapon_is_in_gl_mode(item) then
+        diagnostic_log("shot result=ignored_gl weapon=%s", tostring(item:section()))
+        return
+    end
+    local weapon = item:get_weapon()
+    if not weapon then return end
+    local ok_misfire, misfire = pcall(weapon.misfire_status, weapon)
+    if ok_misfire and misfire then return end
+
+    local now = time_global()
+    if last_noise_shot_at and now - last_noise_shot_at <= BURST_ACCUMULATION_WINDOW_MS then
+        burst_shot_count = burst_shot_count + 1
+    else
+        burst_shot_count = 1
+    end
+    last_noise_shot_at = now
+    local burst_k = math.min(
+        BURST_CHANCE_CAP, 1.0 + (burst_shot_count - 1) * BURST_CHANCE_PER_SHOT)
+
+    local inner, outer, profile_name, mode, ammo_section, silencer_section,
+        status, attached = resolve_noise_profile(item)
+    shot_serial = shot_serial + 1
+    last_gunshot = {
+        at = now,
+        serial = shot_serial,
+        position = vector():set(db.actor:position()),
+        weapon_section = item:section(),
+        ammo_section = ammo_section,
+        silencer_section = silencer_section,
+        profile_name = profile_name,
+        mode = mode,
+        inner = inner,
+        outer = outer,
+        burst_k = burst_k,
+    }
+    processed_candidates = {}
     diagnostic_log(
-        "candidate=%s distance=%.2f result=alerted weapon=%s radius=%.1f reason=%s",
-        tostring(obj:section()),
-        distance,
-        tostring(last_gunshot_weapon_section),
-        radius,
-        tostring(last_gunshot_reason)
-    )
+        "shot=%d weapon=%s ammo=%s silencer_status=%d attached=%s silencer=%s mode=%s profile=%s inner=%.1f outer=%.1f burst_count=%d burst_k=%.2f",
+        shot_serial, tostring(item:section()), tostring(ammo_section or "unknown"),
+        status, tostring(attached), tostring(silencer_section or "none"), mode,
+        profile_name, inner, outer, burst_shot_count, burst_k)
+end
+
+function on_alive_monster_has_been_updated(obj, delta)
+    if not (obj and obj:alive() and IsMonster(obj)) then return end
+    maybe_log_ai_observation(obj)
+    if const.underground(level.name()) or not db.actor then return end
+    clear_expired_snapshot()
+    local shot = last_gunshot
+    if not shot then return end
+
+    local object_id = obj:id()
+    if processed_candidates[object_id] == shot.serial then return end
+    processed_candidates[object_id] = shot.serial
+    local distance = obj:position():distance_to(shot.position)
+    if distance > shot.outer then return end
+    local excluded = excluded_monster_reason(obj)
+    if excluded then
+        diagnostic_log(
+            "candidate=%s shot=%d distance=%.2f result=excluded:%s profile=%s",
+            tostring(obj:section()), shot.serial, distance, excluded, shot.profile_name)
+        return
+    end
+
+    local species_k, species_name = get_species_hearing(obj:section())
+    local base_chance = falloff_chance(distance, shot.inner, shot.outer)
+    local chance = math.min(1.0, base_chance * species_k * shot.burst_k)
+    local roll = deterministic_roll(object_id, shot.serial)
+    local detected = roll < chance
+    local pre_enemy, pre_danger, pre_source = get_ai_snapshot(obj)
+    diagnostic_log(
+        "candidate=%s shot=%d distance=%.2f inner=%.1f outer=%.1f base_chance=%.3f species=%s species_k=%.2f burst_k=%.2f final_chance=%.3f roll=%.3f result=%s pre_enemy=%s pre_danger=%s pre_source=%s",
+        tostring(obj:section()), shot.serial, distance, shot.inner, shot.outer,
+        base_chance, species_name, species_k, shot.burst_k, chance, roll,
+        detected and "detected" or "not_detected", pre_enemy, pre_danger, pre_source)
+
+    if detected then
+        force_combat_handoff(obj)
+        diagnostic_log(
+            "handoff candidate=%s shot=%d method=attributed_zero_hit pursuit_radius=%.1f",
+            tostring(obj:section()), shot.serial, BATTLE_PURSUIT_RADIUS)
+        queue_ai_observation(obj, "forced_handoff", shot.serial)
+    else
+        -- This untouched candidate is the useful control for determining
+        -- whether the engine created an unattributed sound/danger state itself.
+        queue_ai_observation(obj, "natural_control", shot.serial)
+    end
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_actor_weapon_fire", fun = this.on_actor_weapon_fire })
+    sm:subscribe({ signal = "on_monster_update", fun = this.on_alive_monster_has_been_updated })
 end

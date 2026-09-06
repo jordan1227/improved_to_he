@@ -94,6 +94,17 @@ local mass_signature = nil
 local wobble_overlay_active = false
 local wobble_exit_rebased = false
 local wobble_last_render_dir = nil
+local WOBBLE_SHOT_HOLD_MS = 100
+local WOBBLE_SHOT_RESUME_RATE = 8.0
+local WOBBLE_DIRECTION_EPSILON = 0.0000001
+local wobble_output_y = 0
+local wobble_previous_output_y = 0
+local wobble_vertical_velocity = 0
+local wobble_vertical_direction = "still"
+local wobble_shot_hold_y = 0
+local wobble_shot_hold_until = 0
+local wobble_shot_resume_active = false
+local wobble_damper_state = "idle"
 wpn_params.current_weight_sens = 0.5
 wpn_params.current_speed_k     = 1.0
 local DEG_TO_RAD  = math.pi / 180
@@ -114,6 +125,45 @@ end
 
 local function exp_lerp(current, target, rate, dt)
     return current + (target - current) * (1 - math.exp(-rate * dt))
+end
+
+local function get_rendered_pitch()
+    local ok, pitch = pcall(function()
+        return device().cam_dir:getP()
+    end)
+    if ok and type(pitch) == "number" then return pitch end
+    return 0
+end
+
+-- Shared, shot-only state for the recoil controller's cross-system probe.
+-- wobble_y is the final local vertical offset sent to CEffectorZoomInertion;
+-- velocity/direction describe that offset rather than the actor camera.
+function wpn_params.get_wobble_debug_state()
+    return {
+        rendered_pitch = get_rendered_pitch(),
+        wobble_y = wobble_output_y,
+        wobble_vertical_velocity = wobble_vertical_velocity,
+        wobble_vertical_direction = wobble_vertical_direction,
+        effective_radius = smoothed_wobble_radius,
+        damper_state = wobble_damper_state,
+        overlay_active = wobble_overlay_active,
+    }
+end
+
+-- Hold the present vertical wobble position briefly after a real firearm shot,
+-- then converge back to the continuously advancing raw phase. Horizontal sway
+-- and the underlying phase keep moving, so release cannot create a phase reset.
+function wpn_params.on_recoil_shot()
+    local snapshot = wpn_params.get_wobble_debug_state()
+    if wobble_overlay_active then
+        wobble_shot_hold_y = wobble_output_y
+        wobble_shot_hold_until = time_global() + WOBBLE_SHOT_HOLD_MS
+        wobble_shot_resume_active = true
+        wobble_vertical_velocity = 0
+        wobble_vertical_direction = "still"
+        wobble_damper_state = "hold"
+    end
+    return snapshot
 end
 
 -- Bake the final displayed wobble direction into the actor camera once. The
@@ -145,6 +195,13 @@ function scope_wobble()
         wobble_overlay_active = false
         wobble_exit_rebased = false
         wobble_last_render_dir = nil
+        wobble_output_y = 0
+        wobble_previous_output_y = 0
+        wobble_vertical_velocity = 0
+        wobble_vertical_direction = "still"
+        wobble_shot_hold_until = 0
+        wobble_shot_resume_active = false
+        wobble_damper_state = "idle"
         wpn_params.zoom_time = 1
         return
     end
@@ -171,6 +228,13 @@ function scope_wobble()
         wpn_params.disp_add[ 3 ] = sign3 * 12
         base_radius  = 0
         smoothed_wobble_radius = 0
+        wobble_output_y = 0
+        wobble_previous_output_y = 0
+        wobble_vertical_velocity = 0
+        wobble_vertical_direction = "still"
+        wobble_shot_hold_until = 0
+        wobble_shot_resume_active = false
+        wobble_damper_state = "idle"
         last_cond    = 1
         flag_wpn     = true
         wpn_params.last_stance = nil
@@ -322,6 +386,37 @@ function scope_wobble()
         wobble_x = wobble_x + math.cos( a ) * r * x_weight
         wobble_y = wobble_y + math.sin( a ) * r * y_weight
     end
+
+    local raw_wobble_y = wobble_y
+    local now_ms = time_global()
+    if wobble_shot_hold_until > now_ms then
+        wobble_output_y = wobble_shot_hold_y
+        wobble_damper_state = "hold"
+    elseif wobble_shot_resume_active then
+        wobble_output_y = exp_lerp(
+            wobble_output_y, raw_wobble_y, WOBBLE_SHOT_RESUME_RATE, dt)
+        wobble_damper_state = "resume"
+        if math.abs(wobble_output_y - raw_wobble_y) < WOBBLE_DIRECTION_EPSILON then
+            wobble_output_y = raw_wobble_y
+            wobble_shot_resume_active = false
+            wobble_damper_state = "idle"
+        end
+    else
+        wobble_output_y = raw_wobble_y
+        wobble_damper_state = "idle"
+    end
+
+    local wobble_delta_y = wobble_output_y - wobble_previous_output_y
+    wobble_vertical_velocity = wobble_delta_y / math.max(dt, 0.001)
+    if wobble_delta_y > WOBBLE_DIRECTION_EPSILON then
+        wobble_vertical_direction = "up"
+    elseif wobble_delta_y < -WOBBLE_DIRECTION_EPSILON then
+        wobble_vertical_direction = "down"
+    else
+        wobble_vertical_direction = "still"
+    end
+    wobble_previous_output_y = wobble_output_y
+    wobble_y = wobble_output_y
 
     local m_rot = matrix()
     m_rot:setHPB( dir:getH(), dir:getP(), 0 )

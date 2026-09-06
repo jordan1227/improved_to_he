@@ -160,6 +160,7 @@ local state = {
     hud_spring_pitch_velocity = 0,
     hud_spring_yaw_velocity = 0,
     hud_api = "none",
+    render_probes = {},
 }
 
 M.enabled = ENABLED
@@ -332,6 +333,7 @@ local function reset_dynamics(keep_applied)
     state.hud_spring_yaw = 0
     state.hud_spring_pitch_velocity = 0
     state.hud_spring_yaw_velocity = 0
+    state.render_probes = {}
 end
 
 local function remove_camera_contribution()
@@ -1196,6 +1198,90 @@ local function apply_camera_contribution(camera)
     return true
 end
 
+local function get_wobble_debug_state()
+    if not wpn_params or type(wpn_params.get_wobble_debug_state) ~= "function" then
+        return nil
+    end
+    local ok, snapshot = pcall(wpn_params.get_wobble_debug_state)
+    if ok and type(snapshot) == "table" then return snapshot end
+    return nil
+end
+
+local function begin_wobble_shot_probe()
+    local snapshot = nil
+    if wpn_params and type(wpn_params.on_recoil_shot) == "function" then
+        local ok, result = pcall(wpn_params.on_recoil_shot)
+        if ok and type(result) == "table" then
+            snapshot = result
+        elseif RECOIL_DIAGNOSTICS then
+            recoil_log(
+                "[sivol_fuzz_recoil][wobble_probe] phase=pre state=error reason=%s",
+                tostring(result))
+        end
+    else
+        snapshot = get_wobble_debug_state()
+    end
+
+    local shot = state.shot_count + 1
+    if not RECOIL_DIAGNOSTICS or shot > 3 then return end
+    snapshot = snapshot or {}
+    local rendered_pitch = tonumber(snapshot.rendered_pitch) or 0
+    local wobble_y = tonumber(snapshot.wobble_y) or 0
+    recoil_log(
+        "[sivol_fuzz_recoil][wobble_probe] phase=pre section=%s shot=%d rendered_pitch_rad=%.6f rendered_pitch_deg=%.4f wobble_y=%.8f wobble_vertical_velocity=%.8f wobble_direction=%s effective_radius=%.6f damper=%s overlay=%s",
+        tostring(state.profile and state.profile.section or "unknown"),
+        shot,
+        rendered_pitch,
+        math.deg(rendered_pitch),
+        wobble_y,
+        tonumber(snapshot.wobble_vertical_velocity) or 0,
+        tostring(snapshot.wobble_vertical_direction or "unavailable"),
+        tonumber(snapshot.effective_radius) or 0,
+        tostring(snapshot.damper_state or "unavailable"),
+        tostring(snapshot.overlay_active == true))
+    state.render_probes[#state.render_probes + 1] = {
+        shot = shot,
+        started_at = now_ms(),
+        updates = 0,
+        rendered_pitch = rendered_pitch,
+        wobble_y = wobble_y,
+    }
+end
+
+local function update_wobble_render_probes(update_now)
+    if not RECOIL_DIAGNOSTICS or #state.render_probes == 0 then return end
+    local i = 1
+    while i <= #state.render_probes do
+        local probe = state.render_probes[i]
+        probe.updates = probe.updates + 1
+        -- The first controller update applies the new camera contribution.
+        -- device().cam_dir exposes that rendered result on the following update.
+        if probe.updates >= 2 then
+            local snapshot = get_wobble_debug_state() or {}
+            local rendered_pitch = tonumber(snapshot.rendered_pitch) or 0
+            local wobble_y = tonumber(snapshot.wobble_y) or 0
+            recoil_log(
+                "[sivol_fuzz_recoil][wobble_probe] phase=post_render section=%s shot=%d elapsed_ms=%d rendered_pitch_rad=%.6f rendered_pitch_deg=%.4f rendered_delta_deg=%+.4f wobble_y=%.8f wobble_delta_y=%+.8f wobble_vertical_velocity=%.8f wobble_direction=%s effective_radius=%.6f damper=%s overlay=%s",
+                tostring(state.profile and state.profile.section or "unknown"),
+                probe.shot,
+                math.max(0, update_now - probe.started_at),
+                rendered_pitch,
+                math.deg(rendered_pitch),
+                math.deg(rendered_pitch - probe.rendered_pitch),
+                wobble_y,
+                wobble_y - probe.wobble_y,
+                tonumber(snapshot.wobble_vertical_velocity) or 0,
+                tostring(snapshot.wobble_vertical_direction or "unavailable"),
+                tonumber(snapshot.effective_radius) or 0,
+                tostring(snapshot.damper_state or "unavailable"),
+                tostring(snapshot.overlay_active == true))
+            table.remove(state.render_probes, i)
+        else
+            i = i + 1
+        end
+    end
+end
+
 local function on_update_impl(delta)
     -- Always remove only our last contribution first. Any mouse movement or
     -- another camera writer that happened since the previous frame remains.
@@ -1286,6 +1372,8 @@ local function on_update_impl(delta)
             state.capability_state = "camera_only"
         end
     end
+
+    update_wobble_render_probes(update_now)
 
     state.last_update_ms = update_now
     publish_state()
@@ -1593,6 +1681,7 @@ local function on_actor_weapon_fire_impl(callback_item)
         return true
     end
 
+    begin_wobble_shot_probe()
     add_shot_impulse()
     return true
 end
