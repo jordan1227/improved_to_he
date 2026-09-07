@@ -186,6 +186,36 @@ local buzz_cache = {}
 local thermal_result = {}
 local buzz_result = {}
 
+local ARTIFACT_AURA_CACHE_INTERVAL_MS = 200
+local ARTIFACT_AURA_DIAGNOSTICS_ENABLED = false
+local THERMAL_AURA_ARTIFACTS = {
+    af_electra_moonlight_new = true,
+    af_ice = true,
+    af_ice_dyn1d = true,
+    af_ice_dyn2d = true,
+    af_ice_dyn3d = true,
+    af_ice_dyn4d = true,
+    af_ice_dyn5d = true,
+    af_dummy_dummy = true,
+    af_pudd_1 = true,
+    af_pudd_2 = true,
+    af_pudd_3 = true,
+    af_pudd_4 = true,
+}
+local BUZZ_AURA_ARTIFACTS = {
+    af_dummy_pellicle = true,
+    af_red_dummy_pellicle = true,
+    af_armor_1 = true,
+    af_armor_2 = true,
+    af_armor_3 = true,
+    af_armor_4 = true,
+}
+local artifact_aura_cache_time = -ARTIFACT_AURA_CACHE_INTERVAL_MS
+local artifact_aura_cache_powered = nil
+local artifact_aura_cache_dirty = true
+local cached_artifact_thermal_blocked = false
+local cached_artifact_buzz_blocked = false
+
 -- Matches gravity anomalies strictly by section name.
 -- NLC aliases multiple anomaly types to the same clsid (e.g. 166), so clsid checks are useless here.
 local function is_gravity_anomaly(sec, clsid_val)
@@ -221,6 +251,97 @@ end
 
 local function clamp01(value)
     return math.max(0, math.min(1, tonumber(value) or 0))
+end
+
+local function is_artifact_powered()
+    return sak and sak.arts_operate == true
+end
+
+local function reset_artifact_aura_cache()
+    artifact_aura_cache_time = -ARTIFACT_AURA_CACHE_INTERVAL_MS
+    artifact_aura_cache_powered = nil
+    artifact_aura_cache_dirty = true
+    cached_artifact_thermal_blocked = false
+    cached_artifact_buzz_blocked = false
+end
+
+-- Scan only the exact candidate lists maintained by sak_inventory. A live
+-- object and a positive condition are required; copies are redundant.
+local function has_live_belt_artifact(allowlist, belt_items)
+    if not belt_items then return false end
+    for section in pairs(allowlist) do
+        local ids = belt_items[section]
+        if ids then
+            for _, id in ipairs(ids) do
+                local obj = client_obj(id)
+                if obj then
+                    local ok, live_section, condition = pcall(function()
+                        return obj:section(), obj:condition()
+                    end)
+                    if ok and live_section == section and (tonumber(condition) or 0) > 0 then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function refresh_artifact_aura_cache(force)
+    local now = time_global()
+    local powered = is_artifact_powered()
+    local power_changed = artifact_aura_cache_powered ~= powered
+    if not force
+        and not artifact_aura_cache_dirty
+        and not power_changed
+        and now - artifact_aura_cache_time < ARTIFACT_AURA_CACHE_INTERVAL_MS
+    then
+        return
+    end
+
+    local old_powered = artifact_aura_cache_powered
+    local old_thermal = cached_artifact_thermal_blocked
+    local old_buzz = cached_artifact_buzz_blocked
+    local thermal_blocked = false
+    local buzz_blocked = false
+    local actor = db.actor
+    if powered and actor and actor:alive() then
+        local belt_items = sak_inventory and sak_inventory.belt_items or nil
+        thermal_blocked = has_live_belt_artifact(THERMAL_AURA_ARTIFACTS, belt_items)
+        buzz_blocked = has_live_belt_artifact(BUZZ_AURA_ARTIFACTS, belt_items)
+    end
+
+    cached_artifact_thermal_blocked = thermal_blocked
+    cached_artifact_buzz_blocked = buzz_blocked
+    artifact_aura_cache_powered = powered
+    artifact_aura_cache_time = now
+    artifact_aura_cache_dirty = false
+
+    if ARTIFACT_AURA_DIAGNOSTICS_ENABLED
+        and (old_powered ~= powered
+            or old_thermal ~= thermal_blocked
+            or old_buzz ~= buzz_blocked)
+    then
+        log2(
+            "[sivol_anom_effects] artifact aura cache: power=%s thermal=%s buzz=%s",
+            tostring(powered), tostring(thermal_blocked), tostring(buzz_blocked)
+        )
+    end
+end
+
+-- These guards deliberately read sak.arts_operate directly before consulting
+-- the bounded cache, so switching the accumulator off takes effect immediately.
+local function is_thermal_aura_blocked()
+    if not is_artifact_powered() then return false end
+    refresh_artifact_aura_cache(false)
+    return is_artifact_powered() and cached_artifact_thermal_blocked
+end
+
+local function is_buzz_aura_blocked()
+    if not is_artifact_powered() then return false end
+    refresh_artifact_aura_cache(false)
+    return is_artifact_powered() and cached_artifact_buzz_blocked
 end
 
 -- Mirrors monster_parts.script's cast_ray exactly (that one's a private
@@ -649,14 +770,17 @@ local function stop_buzz_ppe(reason)
 end
 
 local function stop_buzz_intox(reason)
-    if not buzz_intox_active then return end
-    level.remove_pp_effector(INTOX_PP_ID)
-    buzz_intox_active = false
+    if buzz_intox_active then
+        level.remove_pp_effector(INTOX_PP_ID)
+        buzz_intox_active = false
+        log2("[sivol_anom_effects] intoxication PPE off: reason=%s", tostring(reason or "proximity"))
+    end
+    -- Clear partial exposure even when the intoxication PPE has not started.
     buzz_intox_exposure_ms = 0
-    log2("[sivol_anom_effects] intoxication PPE off: reason=%s", tostring(reason or "proximity"))
 end
 
 local function clear_effects(reason)
+    reset_artifact_aura_cache()
     stop_gravity_effect()
     stop_thermal_ppe(reason)
     stop_buzz_ppe(reason)
@@ -703,6 +827,12 @@ local function update_thermal_state(best, dt)
     thermal_best = best
     thermal_best_key = new_key
 
+    if is_thermal_aura_blocked() then
+        stop_thermal_ppe("artifact")
+        thermal_smooth = 0
+        return
+    end
+
     local target = best and best.proximity or 0
     local rate = (target > thermal_smooth) and SMOOTH_IN or SMOOTH_OUT
     local k = math.min(1, dt * rate)
@@ -747,6 +877,13 @@ local function update_buzz_state(best, dt)
     buzz_best = best
     buzz_best_key = new_key
 
+    if is_buzz_aura_blocked() then
+        stop_buzz_ppe("artifact")
+        stop_buzz_intox("artifact")
+        buzz_smooth = 0
+        return
+    end
+
     local target = best and best.proximity or 0
     local rate = (target > buzz_smooth) and SMOOTH_IN or SMOOTH_OUT
     local k = math.min(1, dt * rate)
@@ -777,6 +914,10 @@ end
 -- decaying - simplest MVP behaviour, easy to change to a slow decay later
 -- if hopping in/out of the edge feels too punishing/forgiving.
 local function update_buzz_intoxication(best, dt)
+    if is_buzz_aura_blocked() then
+        stop_buzz_intox("artifact")
+        return
+    end
     local masked = vergas_masks and vergas_masks.get_flag_mask and vergas_masks.get_flag_mask()
 
     if best and buzz_smooth > BUZZ_START_THRESHOLD and not masked then
@@ -809,6 +950,7 @@ function get_thermal_thirst_multiplier()
     -- This function may be called frequently by thirst.script. Do no protection
     -- or inventory work at all unless a Burner aura is currently affecting us.
     if not thermal_best then return 1 end
+    if is_thermal_aura_blocked() then return 1 end
 
     local protection = get_effective_burn_protection()
     local protection_factor = clamp01(
@@ -844,6 +986,10 @@ local function apply_thermal_burn_tick(best, now)
     if not best then return end
     local actor = db.actor
     if not actor or not actor:alive() then return end
+    if is_thermal_aura_blocked() then
+        last_burn_tick = now
+        return
+    end
     if now - last_burn_tick < THERMAL_BURN_TICK_MS then return end
     last_burn_tick = now
 
@@ -902,6 +1048,10 @@ local function apply_buzz_acid_tick(best, now)
     if not best then return end
     local actor = db.actor
     if not actor or not actor:alive() then return end
+    if is_buzz_aura_blocked() then
+        last_acid_tick = now
+        return
+    end
     if now - last_acid_tick < BUZZ_ACID_TICK_MS then return end
     last_acid_tick = now
 
@@ -973,6 +1123,10 @@ end
 
 local function apply_buzz_weapon_degrade_tick(best, now)
     if not best then return end
+    if is_buzz_aura_blocked() then
+        last_weapon_degrade_tick = now
+        return
+    end
     if now - last_weapon_degrade_tick < BUZZ_WEAPON_DEGRADE_TICK_MS then return end
     last_weapon_degrade_tick = now
 
@@ -1085,6 +1239,12 @@ local function invalidate_actor_protection_caches(obj, sobj)
     burn_protection_cache_dirty = true
     chemical_protection_cache_dirty = true
     belt_burn_cache_dirty = true
+    artifact_aura_cache_dirty = true
+end
+
+local function reset_actor_protection_caches(obj, sobj)
+    invalidate_actor_protection_caches(obj, sobj)
+    reset_artifact_aura_cache()
 end
 
 function attach(sm)
@@ -1102,7 +1262,11 @@ function attach(sm)
     })
     sm:subscribe({
         signal = "on_spawn",
-        fun = invalidate_actor_protection_caches
+        fun = reset_actor_protection_caches
+    })
+    sm:subscribe({
+        signal = "on_game_loaded",
+        fun = reset_actor_protection_caches
     })
     sm:subscribe({
         signal = "on_item_to_belt",

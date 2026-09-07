@@ -1,0 +1,223 @@
+-- Passive Pudding insulation for the currently worn outfit.
+-- This module owns only the outfit immunity writes; protection fields remain
+-- owned by bind_upg_outfit/sivol_outfit_stats.
+
+local PUDDING_REDUCTION = {
+    af_pudd_1 = 0.20,
+    af_pudd_2 = 0.30,
+    af_pudd_3 = 0.40,
+    af_pudd_4 = 0.50,
+}
+
+local MAX_REDUCTION = 0.50
+local SCALE_WITH_CONDITION = true
+local REFRESH_INTERVAL = 500
+local DIAGNOSTICS_ENABLED = false
+
+local active_outfit = nil
+local refresh_dirty = true
+local next_refresh = 0
+
+local function clamp(value, low, high)
+    return math.max(low, math.min(high, value))
+end
+sivol_pudding_outfit = sivol_pudding_outfit or {}
+
+function sivol_pudding_outfit.get_reduction(section, condition)
+    local stage_reduction = PUDDING_REDUCTION[section]
+    local live_condition = clamp(tonumber(condition) or 0, 0, 1)
+    if not stage_reduction or live_condition <= 0 then return 0 end
+
+    local reduction = SCALE_WITH_CONDITION
+        and stage_reduction * live_condition
+        or stage_reduction
+    return math.min(reduction, MAX_REDUCTION)
+end
+
+function sivol_pudding_outfit.is_condition_scaled()
+    return SCALE_WITH_CONDITION
+end
+
+-- game_object has no __eq in this build; compare its string identity token instead.
+local function object_token(obj)
+    return obj and tostring(obj) or nil
+end
+
+local function diagnostic(event_name, armor, baseline, reduction, selected_section, selected_artifact_id)
+    if not DIAGNOSTICS_ENABLED then return end
+
+    local armor_id = armor and armor:id() or -1
+    local armor_section = armor and armor:section() or "none"
+    local current_burn = armor and armor.immunities and tonumber(armor.immunities.burn_immunity) or 0
+    local current_shock = armor and armor.immunities and tonumber(armor.immunities.shock_immunity) or 0
+    local base_burn = baseline and baseline.burn or 0
+    local base_shock = baseline and baseline.shock or 0
+    local selected = selected_section or "none"
+    local selected_id = selected_artifact_id or -1
+    log2(
+        "[sivol_pudding_outfit] %s armor=%s section=%s selected=%s artifact_id=%s base_burn=%.4f base_shock=%.4f current_burn=%.4f current_shock=%.4f reduction=%.4f",
+        event_name, tostring(armor_id), tostring(armor_section),
+        tostring(selected), tostring(selected_id),
+        base_burn, base_shock, current_burn, current_shock, reduction or 0
+    )
+end
+
+local function write_outfit_immunities(armor, baseline, reduction)
+    if not armor or not armor.immunities or not baseline then return false end
+
+    armor.immunities["burn_immunity"] = baseline.burn * (1 - reduction)
+    armor.immunities["shock_immunity"] = baseline.shock * (1 - reduction)
+    return true
+end
+
+local function clean_immunities_for(armor)
+    if not armor then return nil end
+
+    local ini = system_ini()
+    local armor_section = armor:section()
+    if not ini:section_exist(armor_section)
+        or not ini:line_exist(armor_section, "immunities_sect")
+    then
+        return nil
+    end
+
+    local immunity_section = ini:r_string(armor_section, "immunities_sect")
+    if not immunity_section or not ini:section_exist(immunity_section) then
+        return nil
+    end
+
+    if not ini:line_exist(immunity_section, "burn_immunity")
+        or not ini:line_exist(immunity_section, "shock_immunity")
+    then
+        return nil
+    end
+
+    return {
+        burn = ini:r_float(immunity_section, "burn_immunity"),
+        shock = ini:r_float(immunity_section, "shock_immunity"),
+    }
+end
+
+local function restore_active_outfit(event_name)
+    if not active_outfit then return end
+
+    local armor = level.object_by_id(active_outfit.id)
+    local armor_token = object_token(armor)
+    if armor
+        and armor:id() == active_outfit.id
+        and armor:section() == active_outfit.section
+        and armor_token == active_outfit.object_token
+    then
+        write_outfit_immunities(armor, active_outfit.baseline, 0)
+        diagnostic(event_name or "reset", armor, active_outfit.baseline, 0)
+    end
+
+    active_outfit = nil
+end
+
+local function strongest_pudding_reduction()
+    if not (sak and sak_inventory and sak.arts_operate and sak.get_accum and sak.get_accum()) then
+        return 0
+    end
+
+    local belt_items = sak_inventory.belt_items
+    if not belt_items then return 0 end
+
+    local strongest = 0
+    local strongest_section = nil
+    local strongest_artifact_id = nil
+    for section, ids in pairs(belt_items) do
+        local stage_reduction = PUDDING_REDUCTION[section]
+        if stage_reduction then
+            for _, artifact_id in ipairs(ids) do
+                local artifact = client_obj(artifact_id)
+                if artifact and artifact:section() == section then
+                    local condition = clamp(tonumber(artifact:condition()) or 0, 0, 1)
+                    local contribution = sivol_pudding_outfit.get_reduction(section, condition)
+                    if contribution > strongest then
+                        strongest = contribution
+                        strongest_section = section
+                        strongest_artifact_id = artifact_id
+                    end
+                end
+            end
+        end
+    end
+
+    return math.min(strongest, MAX_REDUCTION), strongest_section, strongest_artifact_id
+end
+
+local function refresh_outfit_insulation()
+    if not db or not db.actor then
+        restore_active_outfit("actor unavailable")
+        return
+    end
+
+    local armor = db.actor:item_in_slot(6)
+    local reduction, selected_section, selected_artifact_id = strongest_pudding_reduction()
+    if not armor or reduction <= 0 then
+        restore_active_outfit("insulation inactive")
+        return
+    end
+
+    local armor_id = armor:id()
+    local armor_section = armor:section()
+    local armor_token = object_token(armor)
+    if not armor.immunities then
+        restore_active_outfit("outfit unavailable")
+        return
+    end
+
+    if active_outfit
+        and (active_outfit.id ~= armor_id
+            or active_outfit.section ~= armor_section
+            or active_outfit.object_token ~= armor_token)
+    then
+        restore_active_outfit("outfit changed")
+    end
+
+    if not active_outfit then
+        local baseline = clean_immunities_for(armor)
+        if not baseline then return end
+
+        active_outfit = {
+            id = armor_id,
+            section = armor_section,
+            object_token = armor_token,
+            baseline = baseline,
+        }
+    end
+
+    if write_outfit_immunities(armor, active_outfit.baseline, reduction) then
+        diagnostic("insulation active", armor, active_outfit.baseline, reduction, selected_section, selected_artifact_id)
+    end
+end
+
+local function invalidate()
+    refresh_dirty = true
+    next_refresh = 0
+end
+
+local function reset()
+    restore_active_outfit("lifecycle reset")
+    invalidate()
+end
+
+local function on_update()
+    local now = time_global()
+    if not refresh_dirty and now < next_refresh then return end
+
+    refresh_dirty = false
+    next_refresh = now + REFRESH_INTERVAL
+    refresh_outfit_insulation()
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_update", fun = on_update })
+    sm:subscribe({ signal = "on_spawn", fun = reset })
+    sm:subscribe({ signal = "on_game_loaded", fun = reset })
+    sm:subscribe({ signal = "on_item_to_belt", fun = invalidate })
+    sm:subscribe({ signal = "on_item_to_ruck", fun = invalidate })
+    sm:subscribe({ signal = "on_item_to_slot", fun = invalidate })
+    sm:subscribe({ signal = "on_drop_after_all", fun = invalidate })
+end

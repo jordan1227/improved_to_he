@@ -578,19 +578,35 @@ local function rounded_modifier_percent_text(value, positive_is_good)
     return string.format("%s%+.0f%%%%c[default]", color, value)
 end
 
-local function configure_description_width(self, weapon_layout)
-    -- Based on the measured result, 420 -> 412 logical pixels targets about 59 rendered pixels.
-    local frame_w = weapon_layout and 412 or 420
+local function configure_description_width(self, weapon_layout, compact_layout)
+    -- Artifact and consumable properties use a compact popup so labels stay paired with their values.
+    local frame_w = compact_layout and 240 or (weapon_layout and 412 or 420)
     local scroll_w = frame_w - 14
-    local content_w = frame_w - 30
+    local content_w = compact_layout and 224 or frame_w - 30
     local header_w = math.min(390, frame_w - 14)
-    -- Only the player-inventory popup needs this small logical nudge at 16:9.
-    local inventory_nudge = self.context == "inventory" and 4 or 0
-    local condition_x = frame_w - 184 + inventory_nudge
-    local condition_w = 172
-    local weight_w = math.min(176, math.max(120, condition_x - 39))
+    -- Keep the condition label and the condition bar independently positioned per inventory context.
+    local condition_w = compact_layout and 100 or 172
+    local condition_x = compact_layout and (frame_w - condition_w - 14)
+        or (frame_w - 184 + (self.context == "inventory" and 4 or 0))
+    local condition_bar_x = condition_x
+    local condition_bar_y = 72
+    local weight_x = 28
+    local weight_y = 57
+    local weight_icon_x = 9
+    local weight_w = compact_layout and math.max(80, condition_x - weight_x - 8)
+        or math.min(176, math.max(120, condition_x - 39))
+    if not compact_layout and self.context == "body" then
+        condition_bar_x = condition_bar_x - 1
+    elseif not compact_layout and self.context == "inventory" then
+        condition_bar_x = condition_bar_x - 14
+        condition_bar_y = condition_bar_y + 2
+        weight_x = 28
+        weight_y = 60
+        weight_icon_x = 9
+    end
 
     self.weapon_layout = weapon_layout
+    self.compact_layout = compact_layout
     self.content_width = content_w
     self.header_width = header_w
     self.scroll_v_normal:Show(not weapon_layout)
@@ -603,17 +619,19 @@ local function configure_description_width(self, weapon_layout)
     self.descr:SetWidth(frame_w - 29)
 
     -- Keep the weight and condition labels on the same baseline without overlap.
-    self.weight_static:SetWndPos(31 + (self.context == "inventory" and 3 or 0), 57)
+    self.weight_icon:SetWndPos(weight_icon_x, 57)
+    self.weight_static:SetWndPos(weight_x, weight_y)
     self.weight_static:SetWidth(weight_w)
     self.condition_static:SetWndPos(condition_x, 57)
     self.condition_static:SetWidth(condition_w)
-    self.cond_frame:SetWndPos(condition_x, 72)
+    self.cond_frame:SetWndPos(condition_bar_x, condition_bar_y)
     self.cond_frame:SetWidth(condition_w)
+    self.max_cond_w = condition_w
 end
 
 function CUIDescriptionWnd:ShowProps( tbl )
     local st
-    local template = self.weapon_layout and "props_weapon" or "props_small"
+    local template = self.weapon_layout and "props_weapon" or (self.compact_layout and "props_artifact" or "props_small")
     for _, entry in ipairs(tbl) do
         st = self.xml:InitStatic(template, self.scroll_v)
         st:SetWidth(self.content_width or 390)
@@ -627,7 +645,7 @@ function CUIDescriptionWnd:ShowProps( tbl )
         if entry[3] ~= nil then
             st.value = self.xml:InitStatic(template .. ":prop_text_2", st)
             st.value:SetText(entry[3])
-            local value_x = self.weapon_layout and 230 or 216
+            local value_x = self.weapon_layout and 230 or (self.compact_layout and 146 or 216)
             local text_x = icon and 21 or 1
             st.text:SetWndPos(text_x, 0)
             st.text:SetWndSize(math.max(1, value_x - text_x - 2), st:GetHeight())
@@ -694,16 +712,23 @@ end
 
 function CUIDescriptionWnd:ShowPropsAf( tbl )
     local st
+    local value_x = 146
     for _, t in ipairs(tbl) do
-        st = self.xml:InitStatic("props_compact", self.scroll_v)
+        st = self.xml:InitStatic("props_artifact", self.scroll_v)
+        st:SetWidth(self.content_width or 224)
         if t[1] ~= nil then
-            st.icon = self.xml:InitStatic("props_compact:prop_texture", st)
+            st.icon = self.xml:InitStatic("props_artifact:prop_texture", st)
             st.icon:InitTexture(get_compact_property_icon(t[1]))
         end
-        st.text = self.xml:InitStatic("props_compact:prop_text", st)
+        local text_x = t[1] ~= nil and 21 or 1
+        st.text = self.xml:InitStatic("props_artifact:prop_text", st)
         st.text:SetText(t[2])
-        st.text_af = self.xml:InitStatic("props_compact:prop_text_2", st)
+        st.text:SetWndPos(text_x, 0)
+        st.text:SetWndSize(math.max(1, value_x - text_x - 2), st:GetHeight())
+        st.text_af = self.xml:InitStatic("props_artifact:prop_text_2", st)
         st.text_af:SetText(t[3])
+        st.text_af:SetWndPos(value_x, 0)
+        st.text_af:SetWndSize(math.max(1, st:GetWidth() - value_x - 2), st:GetHeight())
         self.addH = self.addH + st:GetHeight() + vert_interval
     end
 end
@@ -827,7 +852,7 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	self.item = item
 	self.section = item:section()
 	self.condition = item:condition()
-	configure_description_width(self, item:is_weapon() and not item:is_knife())
+	configure_description_width(self, item:is_weapon() and not item:is_knife(), item:is_artefact() or item:is_eatable_item())
 	self.scroll_v_normal:Clear()
 	self.scroll_v_weapon:Clear()
 	local signature = get_weapon_addon_signature(item)
@@ -981,8 +1006,8 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 
         if self.lalt and self.protection_info_lines and #self.protection_info_lines > 0 then
             -- Full replacement when LAlt is held
-            description = "%c[UI_orange]Информация о защите:\\n%c[default]"
-                     .. table.concat( self.protection_info_lines, "\\n" )
+            self:ShowPropsHeader(translate("ui_inv_outfit_protection_info") .. ":")
+            description = "%c[default]" .. table.concat( self.protection_info_lines, "\\n" )
         end
     end
 

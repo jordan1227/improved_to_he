@@ -344,14 +344,72 @@ local last_mass_log_key = nil
 local function clamp(v, lo, hi)
     return math.max(lo, math.min(hi, v))
 end
--- One artifact lookup feeds both the existing wobble system and recoil. Dynamic
--- Gravi tiers apply the same signed tier scale to each member; exact overrides
--- continue to bypass generic tier math.
+-- One artifact lookup feeds both the existing wobble system and recoil.
+-- Explicit dynamic rows bypass tier scaling; other artifact families continue
+-- to use the established signed generic tier factor.
 local artifact_handling_table = {
-    af_eye = { wobble = 1.60, recoil = 0.15 },
-    af_gravi = { wobble = -0.10, recoil = -0.05 },
-    af_gravi_dyn4d = { wobble = -0.30, recoil = -0.10 },
+    af_vyvert = { wobble = -0.05, recoil = 0 },
+    af_vyvert_dyn1d = { wobble = 0, recoil = 0 },
+    af_vyvert_dyn2d = { wobble = -0.0125, recoil = 0 },
+    af_vyvert_dyn3d = { wobble = -0.025, recoil = 0 },
+    af_vyvert_dyn4d = { wobble = -0.0375, recoil = 0 },
+    af_vyvert_dyn5d = { wobble = -0.05, recoil = 0 },
+    af_vyvert_dyn6d = { wobble = 0, recoil = 0 },
+    af_gravi = { wobble = -0.10, recoil = 0 },
+    af_gravi_dyn1d = { wobble = 0, recoil = 0 },
+    af_gravi_dyn2d = { wobble = -0.025, recoil = 0 },
+    af_gravi_dyn3d = { wobble = -0.05, recoil = 0 },
+    af_gravi_dyn4d = { wobble = -0.075, recoil = 0 },
+    af_gravi_dyn5d = { wobble = -0.10, recoil = 0 },
+    af_gravi_dyn6d = { wobble = 0, recoil = 0 },
+    af_gold_fish = { wobble = -0.15, recoil = 0 },
+    af_gold_fish_dyn1d = { wobble = 0, recoil = 0 },
+    af_gold_fish_dyn2d = { wobble = -0.0375, recoil = 0 },
+    af_gold_fish_dyn3d = { wobble = -0.075, recoil = 0 },
+    af_gold_fish_dyn4d = { wobble = -0.1125, recoil = 0 },
+    af_gold_fish_dyn5d = { wobble = -0.15, recoil = 0 },
+    af_gold_fish_dyn6d = { wobble = 0, recoil = 0 },
+    af_eye = { wobble = 0.30, recoil = 0 },
+    af_eye_dyn1d = { wobble = 0.20, recoil = 0 },
+    af_eye_dyn2d = { wobble = 0.25, recoil = 0 },
+    af_eye_dyn3d = { wobble = 0.30, recoil = 0 },
+    af_eye_dyn4d = { wobble = 0.35, recoil = 0 },
+    af_eye_dyn5d = { wobble = 0.40, recoil = 0 },
+    af_eye_dyn6d = { wobble = 0, recoil = 0 },
+    af_dummy_spring = { wobble = 0, recoil = -0.08 },
+    af_red_dummy_spring = { wobble = 0, recoil = -0.12 },
+    af_electra_flash_new = { wobble = 0, recoil = -0.04 },
+    af_babka_1 = { wobble = 0, recoil = -0.20 },
+    af_babka_2 = { wobble = 0, recoil = -0.25 },
+    af_babka_3 = { wobble = 0, recoil = -0.30 },
+    af_babka_4 = { wobble = 0, recoil = -0.35 },
 }
+
+local function resolve_artifact_handling(section)
+    if type(section) ~= "string" then return nil, 1.0 end
+
+    local base_section = string.match(section, "^(af_[%w_]+)_dyn%dd") or section
+    local handling = artifact_handling_table[section]
+    local tier_scale = 1.0
+    if not handling then
+        handling = artifact_handling_table[base_section]
+        local tier_str = handling and string.match(section, "_dyn(%d)d")
+        if tier_str then
+            local tier = tonumber(tier_str) or 3
+            tier_scale = tier == 6 and 0.0 or (tier - 3) / 2
+        end
+    end
+    return handling, tier_scale
+end
+
+function sivol_weapon.get_artifact_handling_preview(section, condition)
+    local handling, tier_scale = resolve_artifact_handling(section)
+    if not handling then return 0, 0 end
+
+    local live_condition = clamp(tonumber(condition) or 0, 0, 1)
+    return (handling.recoil or 0) * tier_scale * live_condition,
+        (handling.wobble or 0) * tier_scale * live_condition
+end
 
 local cached_artifact_k = 1.0
 local cached_artifact_recoil_k = 1.0
@@ -395,6 +453,7 @@ local function update_artifact_wobble_k()
     end
     local total_mod = 0.0
     local total_recoil_mod = 0.0
+    local strongest_babka_recoil = 0.0
     local effects = {
         suppress_breath_sounds = false,
         manual_drain_k = 1.0,
@@ -409,17 +468,8 @@ local function update_artifact_wobble_k()
                 or artifact_weapon_effect_template[base_sec]
 
             -- Exact dynamic sections bypass tier scaling. Otherwise the generic
-            -- artifact entry receives the established NLC 1d-6d tier factor.
-            local handling = artifact_handling_table[sec]
-            local tier_scale = 1.0
-            if not handling then
-                handling = artifact_handling_table[base_sec]
-                local tier_str = handling and string.match(sec, "_dyn(%d)d")
-                if tier_str then
-                    local tier = tonumber(tier_str) or 3
-                    tier_scale = tier == 6 and 0.0 or (tier - 3) / 2
-                end
-            end
+            -- artifact entry receives the established 1d-6d tier factor.
+            local handling, tier_scale = resolve_artifact_handling(sec)
             local mod = handling and handling.wobble * tier_scale
             local recoil_mod = handling and handling.recoil * tier_scale
             
@@ -429,11 +479,25 @@ local function update_artifact_wobble_k()
                 for m = 1, num_items do
                     local af_id  = items[m]
                     local af_obj = client_obj and client_obj(af_id)
-                    local cond   = af_obj and af_obj:condition() or 1.0
+                    local cond = 0.0
+                    if af_obj then
+                        local ok_section, live_section = pcall(af_obj.section, af_obj)
+                        if ok_section and live_section == sec then
+                            local ok_condition, live_condition = pcall(af_obj.condition, af_obj)
+                            if ok_condition then
+                                cond = tonumber(live_condition) or 0.0
+                            end
+                        end
+                    end
                     
                     if mod then total_mod = total_mod + (mod * cond) end
                     if recoil_mod then
-                        total_recoil_mod = total_recoil_mod + (recoil_mod * cond)
+                        local contribution = recoil_mod * cond
+                        if string.match(sec, "^af_babka_[1-4]$") then
+                            strongest_babka_recoil = math.min(strongest_babka_recoil, contribution)
+                        else
+                            total_recoil_mod = total_recoil_mod + contribution
+                        end
                     end
                     if effect then
                         if effect.suppress_breath_sounds and cond > 0 then
@@ -450,11 +514,11 @@ local function update_artifact_wobble_k()
         end
     end
 
-    -- FIXED: Widened constraints for extreme testing thresholds
-    -- -0.75 means a high-tier stabilizing setup can cut weapon sway by up to 75%
-    -- 2.50 means a chaotic setup can increase sway penalties by up to 250%
+    -- Keep the established artifact contribution bounds.
+    -- Stabilizing sway is capped at -0.75; disruptive sway at +1.60.
     total_mod = math.max(-0.75, math.min(1.60, total_mod))
-    total_recoil_mod = math.max(-0.30, math.min(0.50, total_recoil_mod))
+    total_recoil_mod = total_recoil_mod + strongest_babka_recoil
+    total_recoil_mod = math.max(-0.40, math.min(0.50, total_recoil_mod))
     cached_artifact_k = 1.0 + total_mod
     cached_artifact_recoil_k = 1.0 + total_recoil_mod
     cached_artifact_weapon_effects = effects
