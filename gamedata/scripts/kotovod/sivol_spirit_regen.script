@@ -1,0 +1,247 @@
+sivol_spirit_regen = sivol_spirit_regen or {}
+local M = sivol_spirit_regen
+
+local STAGE_NOMINAL = {
+    af_spirit_1 = 0.00012,
+    af_spirit_2 = 0.00016,
+    af_spirit_3 = 0.00024,
+    af_spirit_4 = 0.00032,
+}
+
+local SCAN_INTERVAL = 200
+local UPDATE_INTERVAL = 200
+local DIAGNOSTIC_INTERVAL = 250
+local DIAGNOSTICS_ENABLED = false
+
+local candidates = {}
+local scan_dirty = true
+local last_scan = 0
+local last_health = nil
+local last_signature = nil
+local last_diagnostic = 0
+
+local function clamp(value, low, high)
+    return math.max(low, math.min(high, value))
+end
+
+local function belt_is_powered()
+    if not (sak and sak_inventory and sak.arts_operate
+        and sak.get_accum and sak_inventory.belt_items) then
+        return false
+    end
+
+    local ok, accumulator = pcall(sak.get_accum)
+    return ok and accumulator ~= nil and sak.arts_operate == true
+end
+
+function M.is_supported_section(section)
+    return STAGE_NOMINAL[section] ~= nil
+end
+
+function M.get_low_health_factor(health)
+    local h = clamp(tonumber(health) or 0, 0, 1)
+    return clamp((0.60 - h) / 0.35, 0, 1)
+end
+
+function M.get_multiplier(health)
+    return 1 + 2 * M.get_low_health_factor(health)
+end
+
+function M.get_health_multiplier()
+    if not (db and db.actor) then return 1.0 end
+    local ok, health = pcall(function() return db.actor.health end)
+    if not ok then return 1.0 end
+    return M.get_multiplier(health)
+end
+
+function M.get_nominal(section, condition)
+    local base = STAGE_NOMINAL[section]
+    if not base then return 0.0 end
+
+    local strength = 1.0
+    if type(get_effective_strength_raw) == "function" then
+        local ok, value = pcall(
+            get_effective_strength_raw, clamp(tonumber(condition) or 0, 0, 1),
+            section, true, "health_restore_speed")
+        if ok and tonumber(value) then strength = tonumber(value) end
+    end
+    return base * strength
+end
+
+function M.get_preview(section, condition)
+    if not M.is_supported_section(section) then
+        return 0.0
+    end
+    return M.get_nominal(section, condition)
+end
+
+function M.is_active_for(item)
+    if not item or not belt_is_powered() then return false end
+
+    local ok_section, section = pcall(item.section, item)
+    if not ok_section or not M.is_supported_section(section) then return false end
+
+    local ok_condition, condition = pcall(item.condition, item)
+    return ok_condition and tonumber(condition) and tonumber(condition) > 0
+end
+
+function M.get_runtime_multiplier(item)
+    if not M.is_active_for(item) then return 1.0 end
+    return M.get_health_multiplier()
+end
+
+function M.set_diagnostics(enabled)
+    DIAGNOSTICS_ENABLED = enabled == true
+end
+
+local function invalidate()
+    scan_dirty = true
+    last_scan = 0
+end
+
+local function scan_candidates(now)
+    if not scan_dirty and now - last_scan < SCAN_INTERVAL then return end
+
+    candidates = {}
+    last_scan = now
+    scan_dirty = false
+    if not (sak_inventory and sak_inventory.belt_items) then return end
+
+    for section, ids in pairs(sak_inventory.belt_items) do
+        if M.is_supported_section(section) and type(ids) == "table" then
+            for _, artifact_id in ipairs(ids) do
+                table.insert(candidates, { section = section, id = artifact_id })
+            end
+        end
+    end
+end
+
+local function live_candidate(candidate)
+    local ok_object, artifact = pcall(client_obj, candidate.id)
+    if not ok_object or not artifact then return nil end
+
+    local ok_section, section = pcall(artifact.section, artifact)
+    if not ok_section or section ~= candidate.section then return nil end
+
+    local ok_condition, condition = pcall(artifact.condition, artifact)
+    if not ok_condition then return nil end
+
+    return artifact, clamp(tonumber(condition) or 0, 0, 1)
+end
+
+local function refresh_signature(now, powered)
+    scan_candidates(now)
+    local signature = powered and "powered" or "off"
+    for _, candidate in ipairs(candidates) do
+        local artifact, condition = live_candidate(candidate)
+        if artifact then
+            signature = signature .. string.format("|%s:%d:%.4f", candidate.section,
+                tonumber(candidate.id) or -1, condition)
+        end
+    end
+    return signature
+end
+
+local function diagnostic(now, health)
+    if not DIAGNOSTICS_ENABLED or now - last_diagnostic < DIAGNOSTIC_INTERVAL then return end
+    last_diagnostic = now
+
+    for _, candidate in ipairs(candidates) do
+        local artifact, condition = live_candidate(candidate)
+        if artifact then
+            local nominal = M.get_nominal(candidate.section, condition)
+            local strength = 1.0
+            if type(get_effective_strength) == "function" then
+                local ok, value = pcall(get_effective_strength, artifact, true,
+                    "health_restore_speed")
+                if ok and tonumber(value) then strength = tonumber(value) end
+            end
+            local runtime_value = 0
+            local ok_runtime, runtime = pcall(artifact.get_artefact, artifact)
+            if ok_runtime and runtime then
+                runtime_value = tonumber(runtime.health_restore_speed) or 0
+            end
+            log2(
+                "[sivol_spirit_regen] hp=%.4f section=%s artifact_id=%d condition=%.4f strength=%.4f nominal=%.7f multiplier=%.4f runtime=%.7f powered=%s",
+                clamp(tonumber(health) or 0, 0, 1), candidate.section,
+                tonumber(candidate.id) or -1,
+                condition, strength, nominal, M.get_runtime_multiplier(artifact),
+                runtime_value, tostring(belt_is_powered()))
+            return
+        end
+    end
+end
+
+local function refresh_runtime(now, health)
+    for _, candidate in ipairs(candidates) do
+        local artifact = live_candidate(candidate)
+        if artifact and type(scale_artefact_stats) == "function" then
+            pcall(scale_artefact_stats, artifact, false)
+        end
+    end
+    diagnostic(now, health)
+end
+
+local function reset_runtime()
+    last_health = nil
+    last_signature = nil
+    last_diagnostic = 0
+    invalidate()
+end
+
+function M.on_update()
+    if ogse_signals and ogse_signals.get_mgr then
+        ogse_signals.get_mgr():reschedule(UPDATE_INTERVAL)
+    end
+
+    local now = time_global()
+    if not (db and db.actor) then
+        reset_runtime()
+        return
+    end
+
+    local ok_health, health = pcall(function() return db.actor.health end)
+    if not ok_health then return end
+    health = clamp(tonumber(health) or 0, 0, 1)
+
+    local powered = belt_is_powered()
+    local signature = refresh_signature(now, powered)
+    if last_health == nil
+        or math.abs(health - last_health) >= 0.0005
+        or signature ~= last_signature
+    then
+        refresh_runtime(now, health)
+        last_health = health
+        last_signature = signature
+    end
+end
+
+function M.on_first_update()
+    reset_runtime()
+end
+
+function M.on_game_loaded()
+    reset_runtime()
+end
+
+function M.on_spawn()
+    reset_runtime()
+end
+
+function M.on_level_changer_action()
+    reset_runtime()
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_update", fun = M.on_update })
+    sm:subscribe({ signal = "on_first_update", fun = M.on_first_update })
+    sm:subscribe({ signal = "on_game_loaded", fun = M.on_game_loaded })
+    sm:subscribe({ signal = "on_spawn", fun = M.on_spawn })
+    sm:subscribe({ signal = "level_changer_action", fun = M.on_level_changer_action })
+    sm:subscribe({ signal = "on_item_to_belt", fun = invalidate })
+    sm:subscribe({ signal = "on_item_to_ruck", fun = invalidate })
+    sm:subscribe({ signal = "on_item_to_slot", fun = invalidate })
+    sm:subscribe({ signal = "on_drop_after_all", fun = invalidate })
+end
+
+M.attach = attach

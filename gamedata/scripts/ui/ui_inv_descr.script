@@ -237,11 +237,39 @@ local function add_weapon_characteristic_help(self, label_id, help_id)
     table.insert(self.weapon_info_lines,
         "%c[default]" .. label .. ":%c[gray] " .. translate(help_id))
 end
+local function add_artifact_note(self, label_id, help_id)
+    if not self.lalt then return end
+    local label = translate(label_id)
+    label = label:gsub("%%c%[[^%]]*%]", ""):gsub("%s*:%s*$", "")
+    self.artifact_info_lines = self.artifact_info_lines or {}
+    table.insert(self.artifact_info_lines,
+        "%c[default]" .. label .. ":%c[gray] " .. translate(help_id))
+end
 local function safe_item_kind(item)
-    if not item then return false, false end
+    if not item then return false, false, false end
     local ok_weapon, is_weapon = pcall(item.is_weapon, item)
     local ok_outfit, is_outfit = pcall(item.is_outfit, item)
-    return ok_weapon and is_weapon or false, ok_outfit and is_outfit or false
+    local ok_artifact, is_artifact = pcall(item.is_artefact, item)
+    return ok_weapon and is_weapon or false,
+        ok_outfit and is_outfit or false,
+        ok_artifact and is_artifact or false
+end
+
+
+local SUPPORTED_ARTIFACT_HELP = {
+    af_cry_1 = true, af_cry_2 = true, af_cry_3 = true, af_cry_4 = true,
+    af_pudd_1 = true, af_pudd_2 = true, af_pudd_3 = true, af_pudd_4 = true,
+    af_babka_1 = true, af_babka_2 = true, af_babka_3 = true, af_babka_4 = true,
+    af_kol_1 = true, af_kol_2 = true, af_kol_3 = true, af_kol_4 = true,
+    af_spirit_1 = true, af_spirit_2 = true, af_spirit_3 = true, af_spirit_4 = true,
+}
+
+local function artifact_help_supported(item)
+    if not item then return false end
+    local ok_artifact, is_artifact = pcall(item.is_artefact, item)
+    if not ok_artifact or not is_artifact then return false end
+    local ok_section, section = pcall(item.section, item)
+    return ok_section and SUPPORTED_ARTIFACT_HELP[section] == true
 end
 
 local function safe_is_knife(item)
@@ -829,13 +857,15 @@ end
 
 function CUIDescriptionWnd:ShowInteractionHints(item)
     local hints = {}
-    local is_weapon, is_outfit = safe_item_kind(item)
+    local is_weapon, is_outfit, is_artifact = safe_item_kind(item)
     if is_outfit then
         table.insert(hints, translate("ui_inv_hint_outfit_compare"))
         table.insert(hints, translate("ui_inv_hint_outfit_protection"))
     elseif is_weapon and not safe_is_knife(item) then
         table.insert(hints, translate("ui_inv_hint_weapon_compare"))
         table.insert(hints, translate("ui_inv_hint_weapon_characteristics"))
+    elseif artifact_help_supported(item) then
+        table.insert(hints, translate("ui_inv_hint_artifact_notes"))
     end
     table.insert(hints, translate("st_ui_group_movement_tip"))
     if get_bool(self.section, "manual_ungrouping", false) then
@@ -848,6 +878,26 @@ end
 
 function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	if (item == nil) or BlockUIDescr() then return end
+
+
+	local old_item_id = nil
+	local old_item_section = nil
+	if self.item then
+		local ok_old, value = pcall(self.item.id, self.item)
+		if ok_old then old_item_id = value end
+		local ok_old_section, section = pcall(self.item.section, self.item)
+		if ok_old_section then old_item_section = section end
+	end
+	local ok_new, new_item_id = pcall(item.id, item)
+	local ok_new_section, new_item_section = pcall(item.section, item)
+	if old_item_id and ok_new and old_item_id ~= new_item_id
+		or old_item_section and ok_new_section and old_item_section ~= new_item_section then
+		self.lalt = nil
+		self.lshift = nil
+		self.weapon_info_lines = nil
+		self.artifact_info_lines = nil
+		self.protection_info_lines = nil
+	end
 
 	self.item = item
 	self.section = item:section()
@@ -1219,6 +1269,11 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 		self:ShowPropsHeader(translate("ui_inv_weapon_help_header") .. ":")
 		description = "%c[default]" .. table.concat(self.weapon_info_lines, "\\n")
 	end
+    if artifact_help_supported(item) and self.lalt
+        and self.artifact_info_lines and #self.artifact_info_lines > 0 then
+        self:ShowPropsHeader(translate("ui_inv_artifact_notes") .. ":")
+        description = "%c[default]" .. table.concat(self.artifact_info_lines, "\\n")
+    end
 
 	if update_native_header then update_native_name_header(self, inv_name) end
 	update_name_line(self, inv_name)
@@ -1887,7 +1942,9 @@ function CUIDescriptionWnd:ShowSilencerParams()
 end
 -- Показываем параметры артефактов
 function CUIDescriptionWnd:ShowAfParams(item)
+    self.artifact_info_lines = nil
     local params = {}
+    local handling_params = {}
     local val, txt = 0, ""
     local sect = item:section()
     local id = item:id()
@@ -2030,8 +2087,96 @@ function CUIDescriptionWnd:ShowAfParams(item)
         table.insert(params, {"ui_inv_icon_add_satiety_hd", translate("ui_inv_satiety"), txt})
     end
 
+    if type(sivol_pudding_outfit) == "table"
+        and type(sivol_pudding_outfit.get_reduction) == "function" then
+        local ok, reduction = pcall(
+            sivol_pudding_outfit.get_reduction, sect, item:condition())
+        reduction = ok and tonumber(reduction) or 0
+        if reduction and reduction > 0 then
+            local percent = math.round(reduction * 100)
+            local value = string.format("%%c[green]-%d%%%%c[default]", percent)
+            table.insert(params, {
+                "ui_inv_icon_burn_immunity_hd",
+                translate("ui_inv_outfit_wear_fire"),
+                value
+            })
+            table.insert(params, {
+                "ui_inv_icon_shock_immunity_hd",
+                translate("ui_inv_outfit_wear_shock"),
+                value
+            })
+            add_artifact_note(self, "ui_inv_outfit_wear", "ui_inv_pudding_help")
+        end
+    end
+
+    if type(sivol_cry_sprint) == "table"
+        and type(sivol_cry_sprint.get_preview) == "function" then
+        local ok, fresh, sustained = pcall(
+            sivol_cry_sprint.get_preview, sect, item:condition())
+        fresh = ok and tonumber(fresh) or 0
+        sustained = ok and tonumber(sustained) or 0
+        if fresh and sustained and fresh > 0 then
+            local low = math.round(sustained * 100)
+            local high = math.round(fresh * 100)
+            local value = string.format(
+                "%%c[green]+%d-%d%%%%c[default]", low, high)
+            table.insert(params, {
+                "ui_inv_icon_power_restore_speed_hd",
+                translate("ui_inv_sprint_speed"),
+                value
+            })
+            add_artifact_note(self, "ui_inv_sprint_speed", "ui_inv_sprint_help")
+        end
+    end
+
+    if type(sivol_kolobok) == "table"
+        and type(sivol_kolobok.is_supported_section) == "function"
+        and sivol_kolobok.is_supported_section(sect) then
+        add_artifact_note(self, "ui_inv_kolobok", "ui_inv_kolobok_help")
+    end
+
+    if type(sivol_spirit_regen) == "table"
+        and type(sivol_spirit_regen.get_preview) == "function" then
+        local ok, nominal = pcall(
+            sivol_spirit_regen.get_preview, sect, item:condition())
+        nominal = ok and tonumber(nominal) or 0
+        if nominal and nominal > 0 then
+            add_artifact_note(self, "ui_inv_spirit_regen", "ui_inv_spirit_help")
+        end
+    end
+
+    if type(sivol_weapon) == "table"
+        and type(sivol_weapon.get_artifact_handling_preview) == "function" then
+        local ok, recoil, sway = pcall(
+            sivol_weapon.get_artifact_handling_preview, sect, item:condition())
+        recoil = ok and tonumber(recoil) or 0
+        sway = ok and tonumber(sway) or 0
+        if math.abs(recoil) > 0.0001 then
+            table.insert(handling_params, {
+                "ui_inv_icon_otdaca",
+                translate("ui_inv_recoil"),
+                modifier_percent_text(recoil * 100, false)
+            })
+        end
+        if math.abs(sway) > 0.0001 then
+            table.insert(handling_params, {
+                "ui_inv_icon_otdaca",
+                translate("ui_inv_sway"),
+                modifier_percent_text(sway * 100, false)
+            })
+        end
+        if #handling_params > 0 then
+            add_artifact_note(
+                self, "ui_inv_weapon_handling", "ui_inv_artifact_handling_help")
+        end
+    end
+
     if #params > 0 then
         self:ShowPropsAf(params)
+    end
+    if #handling_params > 0 then
+        self:ShowPropsHeader(translate("ui_inv_weapon_handling") .. ":")
+        self:ShowPropsAf(handling_params)
     end
 end
 
@@ -2428,6 +2573,7 @@ function CUIDescriptionWnd:Remove()
     self.weapon_pending_signature = nil
     self.weapon_refresh_at = nil
     self.weapon_info_lines = nil
+    self.artifact_info_lines = nil
     self.lshift = nil
 end
 
@@ -2512,8 +2658,8 @@ function CUIDescriptionWnd:OnKeyPress(dik, bind)
 		end
     elseif dik == DIK_keys.DIK_LMENU then -- LALT
 		local live_item = get_live_focused_item(self)
-		local is_weapon, is_outfit = safe_item_kind(live_item)
-        if is_outfit or (is_weapon and not safe_is_knife(live_item)) then
+		local is_weapon, is_outfit, is_artifact = safe_item_kind(live_item)
+        if artifact_help_supported(live_item) or is_outfit or (is_weapon and not safe_is_knife(live_item)) then
             self.lalt = (self.lalt == nil and true) or nil
             self:HideDescription()
             self:ShowDescription(live_item)
