@@ -772,6 +772,130 @@ function generate_anomaly(status)
 	return spawn_rand_anom(pos, new_gv, new_lv, status) 
 end
 
+-- The artifact generation boundary is amk_mod.Blowout_pp phase 4 or the
+-- sak level-load recovery at the call sites below. The event record is
+-- created before its first choice and survives a save/reload. It is also
+-- deliberately separate from dsh.get_next_random: generation replay must
+-- not consume or perturb any other persistent random stream.
+local ART_GENERATION_EVENT_KEY = "amk_anoms.art_generation_event"
+local ART_GENERATION_SEQUENCE_KEY = "amk_anoms.art_generation_sequence"
+
+
+local function art_hash_text(text)
+	local hash = 2166131
+	for i = 1, string.len(text or "") do
+		hash = (hash * 65599 + string.byte(text, i)) % 2147483647
+	end
+	return hash
+end
+
+local function art_rng_next(event)
+	event.rng_state = (event.rng_state * 1664525 + 1013904223) % 4294967296
+	return event.rng_state / 4294967296
+end
+
+local function art_rng_legacy_int(event, low, high)
+	if low >= high then return low end
+	return low + round(art_rng_next(event) * (high - low))
+end
+
+
+local function art_event_persist(event)
+	set_value(ART_GENERATION_EVENT_KEY, event)
+end
+
+local function art_event_diagnostic(message, ...)
+	if sivol_unknown_arts and sivol_unknown_arts.diagnostics == true then
+		log2("[amk_anoms.art_generation] " .. message, ...)
+	end
+end
+
+function set_art_generation_diagnostics(enabled)
+	if sivol_unknown_arts and sivol_unknown_arts.set_diagnostics then
+		sivol_unknown_arts.set_diagnostics(enabled)
+	end
+end
+
+local function begin_art_generation_event(lname)
+	local current = get_value(ART_GENERATION_EVENT_KEY)
+	local had_event = type(current) == "table"
+	local pending = get_value("need_art_spawn", {})
+	local pending_for_level = type(pending) == "table" and pending[lname] == true
+	if type(current) == "table" and current.status == "pending" and current.level == lname then
+		current.results = current.results or {}
+		current.rng_state = current.rng_state or current.seed
+		return current, false, false
+	end
+	if type(current) == "table" and current.status == "complete"
+		and current.level == lname and pending_for_level
+	then
+		art_event_diagnostic("reused completed identity=%s level=%s", tostring(current.identity), lname)
+		return current, true, true
+	end
+
+	local sequence = (tonumber(get_value(ART_GENERATION_SEQUENCE_KEY, 0)) or 0) + 1
+	local seed = (art_hash_text(lname .. "|" .. tostring(sequence)) % 4294967295) + 1
+	local event = {
+		version = 1,
+		status = "pending",
+		identity = sequence,
+		level = lname,
+		seed = seed,
+		rng_state = seed,
+		attempts = 0,
+		successes = 0,
+		results = {},
+		fallback_seed = not had_event,
+	}
+	set_value(ART_GENERATION_SEQUENCE_KEY, sequence)
+	art_event_persist(event)
+	art_event_diagnostic("started identity=%s level=%s seed=%s", tostring(sequence), lname, tostring(seed))
+	return event, false, false
+end
+
+local function sorted_weight_keys(weights)
+	local keys = {}
+	for key in pairs(weights or {}) do table.insert(keys, key) end
+	table.sort(keys)
+	return keys
+end
+
+local function event_level_point(lname, event)
+	local count = const.level_vertices and const.level_vertices[lname]
+	if not count or count <= 0 then return nil, nil end
+	local lv = art_rng_legacy_int(event, 1, count)
+	return lv, level.vertex_position(lv)
+end
+
+local function event_object_matches(sobj, result)
+	if not sobj or not result then return false end
+	local section = sobj.section_name and sobj:section_name() or nil
+	if section ~= result.display_section then return false end
+	if sobj.m_level_vertex_id ~= result.lv or sobj.m_game_vertex_id ~= result.gv then return false end
+	local p = sobj.position
+	if not p then return false end
+	if math.abs((p.x or 0) - result.x) > 0.01
+		or math.abs((p.y or 0) - result.y) > 0.01
+		or math.abs((p.z or 0) - result.z) > 0.01
+	then
+		return false
+	end
+	if result.descriptor then
+		local payload = nlc_capsules.read_server(sobj)
+		if not payload or nlc_capsules.descriptor(payload) ~= result.descriptor then return false end
+	end
+	return true
+end
+
+local function event_result_signature(result)
+	return string.format(
+		"%s|%s|%s|%s|%.3f|%.3f|%.3f|%s",
+		tostring(result.display_section), tostring(result.gv), tostring(result.lv),
+		tostring(result.attempt), result.x, result.y, result.z,
+		tostring(result.descriptor or "")
+	)
+end
+
 function generate_arts()
 	local lname=level.name()
 	local v=level_arts[lname]
@@ -779,29 +903,51 @@ function generate_arts()
 		return
 	end
 	total_arts, string_arts = 0, ""
+	local event, _, acknowledged = begin_art_generation_event(lname)
+	if acknowledged then return end
+
 	local sem_art_check
-	local cnt, mxx = 0, dsh.get_next_random( "amk_anoms.generate_arts", v[ 1 ],( v[ 2 ] ) ) 
-	local sem_art = get_value("sem_art")
-	if sem_art ~= nil and sem_art == lname then
-		mxx = mxx + 1
-		remove_value("sem_art")
-		sem_art_check = true
+	local mxx = event.target_count
+	if mxx == nil then
+		mxx = art_rng_legacy_int(event, v[ 1 ], v[ 2 ])
+		local sem_art = get_value("sem_art")
+		if sem_art ~= nil and sem_art == lname then
+			mxx = mxx + 1
+			remove_value("sem_art")
+			sem_art_check = true
+		end
+
+		if black_tip.have_black_tip() then
+			mxx = mxx - 1
+			if mxx < 0 then mxx = 0 end
+		end
+		event.target_count = mxx
+		event.sem_art = sem_art_check == true
+		art_event_persist(event)
+	else
+		sem_art_check = event.sem_art == true
 	end
 
-	if black_tip.have_black_tip() then
-		mxx = mxx - 1
-		if mxx < 0 then
-			mxx = 0
+	local cnt = event.successes or 0
+	while cnt < mxx do
+		if generate_art(lname, event, cnt + 1) then
+			cnt = cnt + 1
+			event.successes = cnt
+			art_event_persist(event)
 		end
 	end
-	while cnt<mxx do
-		if generate_art(lname) then 
-			cnt=cnt+1
-		end 
+	event.status = "complete"
+	event.reproducible_signature = ""
+	for i, result in ipairs(event.results) do
+		if i > 1 then event.reproducible_signature = event.reproducible_signature .. ";" end
+		event.reproducible_signature = event.reproducible_signature .. event_result_signature(result)
 	end
+	art_event_persist(event)
 	if is_debug_mode then
 		string_arts = string.sub(string_arts, 1, -3)
-		log2("~~[%s.generate_arts]: %s arts created: [%s], sem_art: [%s]", script_name(), total_arts, string_arts, tostring(sem_art_check))
+		log2("~~[%s.generate_arts]: %s arts created: [%s], sem_art: [%s] identity=%s seed=%s signature=%s",
+			script_name(), total_arts, string_arts, tostring(sem_art_check),
+			tostring(event.identity), tostring(event.seed), tostring(event.reproducible_signature))
 	end
 end
 function check_coordinates_arts(pos,lname)
@@ -848,11 +994,12 @@ function check_coordinates_arts(pos,lname)
 	end 
 	return true 
 end
-function is_lv_valid_for_art(pos)
+function is_lv_valid_for_art(pos, event)
 	if pos == nil then return false, nil, false end
 	local all_lv = {}
 	local good_lv = {}
 	level.iterate_vertices_inside(pos,15,true,function(lvid) table.insert(all_lv,lvid) end)
+	table.sort(all_lv)
 	local all_cnt = #all_lv
 	if all_cnt == 0 then return false, nil, false end
 	for _,v in ipairs(all_lv) do
@@ -861,7 +1008,9 @@ function is_lv_valid_for_art(pos)
 			table.insert(good_lv,v)
 		end
 	end
+	table.sort(good_lv)
 	local good_cnt = #good_lv
+	if good_cnt == 0 then return false, nil, false end
 	if all_cnt == good_cnt then
 		return true, pos, false
 	else
@@ -873,26 +1022,34 @@ function is_lv_valid_for_art(pos)
 			if level.valid_vertex_id(pos) then
 				return true, pos, false
 			else
-				return true, good_lv[lua_random(1,good_cnt)], true
+				return true, good_lv[event and art_rng_legacy_int(event, 1, good_cnt) or lua_random(1,good_cnt)], true
 			end
 		else
 			return false, nil, false
 		end
 	end
 end
-function generate_art(lname)  
-	local lv, pos = const.random_level_point(lname)
-	local is_valid_lv, new_lv, lv_changed = is_lv_valid_for_art(pos)
-	if ( lv == nil ) or not check_coordinates_arts(pos,lname) or not is_valid_lv then return false end
+function generate_art(lname, event, result_index)
+	event.attempts = (event.attempts or 0) + 1
+	local lv, pos = event_level_point(lname, event)
+	local is_valid_lv, new_lv, lv_changed = is_lv_valid_for_art(pos, event)
+	if ( lv == nil ) or not check_coordinates_arts(pos,lname) or not is_valid_lv then
+		art_event_persist(event)
+		return false
+	end
 	if lv_changed then
 		pos = level.vertex_position(new_lv)
 		if not check_coordinates_arts(pos,lname) then
+			art_event_persist(event)
 			return false
 		end
+		lv = new_lv
 	end
-	local new_gw = const.best_game_vertex(pos)
+	local new_gw = const.best_game_vertex(pos, lname)
   
-	return spawn_rand_arts (pos,new_gw,lv,lname) 
+	local result = spawn_rand_arts (pos,new_gw,lv,lname,event,result_index)
+	art_event_persist(event)
+	return result and true or false
 end
 -- [HE-PORT] mayatnik capsules spawn after emission on their NLC 3.0 levels
 local mayat_caps_by_level = {
@@ -916,7 +1073,7 @@ local new_arts = {
 	"af_sul_new"
 }
 
-function get_dynamic_section( base_section, is_capsule )
+function get_dynamic_section( base_section, is_capsule, event )
     local ranges = {
         { min = 1,  max = 3,  suffix = "_dyn1d" },
         { min = 4,  max = 9,  suffix = "_dyn2d" },
@@ -925,7 +1082,8 @@ function get_dynamic_section( base_section, is_capsule )
         { min = 21, max = 21, suffix = "_dyn5d" }
     }
     
-    local rand = dsh.get_next_random( "amk_anoms.spawn_rand_arts", is_capsule and 15 or 1, 21 )
+    local rand = event and art_rng_legacy_int(event, is_capsule and 15 or 1, 21)
+        or dsh.get_next_random( "amk_anoms.spawn_rand_arts", is_capsule and 15 or 1, 21 )
     
 	for _, range in ipairs( ranges ) do
 		if rand >= range.min and rand <= range.max then
@@ -936,24 +1094,32 @@ function get_dynamic_section( base_section, is_capsule )
 	return base_section
 end
 
-function get_new_section()
-    if dsh.get_next_random( "amk_anoms.spawn_rand_arts" ) > 0.5 then
-        return new_arts[ dsh.get_next_random( "amk_anoms.spawn_rand_arts", #new_arts ) ]
+function get_new_section(event)
+    local chance = event and art_rng_next(event) or dsh.get_next_random( "amk_anoms.spawn_rand_arts" )
+    if chance > 0.5 then
+        local index = event and art_rng_legacy_int(event, 1, #new_arts) or dsh.get_next_random( "amk_anoms.spawn_rand_arts", #new_arts )
+        return new_arts[index]
     else
-        return string.format( "af_unknown_%d_new", dsh.get_next_random( "amk_anoms.spawn_rand_arts", 1, 31 ) )
+        -- Unknown section selection already existed before the event stream;
+        -- retain the legacy rounded endpoint conversion here.
+        local index = event and art_rng_legacy_int(event, 1, 31) or dsh.get_next_random( "amk_anoms.spawn_rand_arts", 1, 31 )
+        return string.format( "af_unknown_%d_new", index )
     end
 end
 
 -- [HE-PORT] NLC 3.0 spawn_rand_arts adapted for Live capsules
-function spawn_rand_arts( pos, gv, lv, lname )
-    local rnd = dsh.get_next_random( "amk_anoms.spawn_rand_arts", 100 )
+function spawn_rand_arts( pos, gv, lv, lname, event, result_index )
+    local rnd = event and art_rng_legacy_int(event, 1, 100)
+        or dsh.get_next_random( "amk_anoms.spawn_rand_arts", 100 )
     local section
 
     if not level_arts[lname] or not level_arts[lname][3] then
         return false
     end
 
-    for art_section, v in pairs( level_arts[ lname ][ 3 ] ) do
+    local weights = level_arts[ lname ][ 3 ]
+    for _, art_section in ipairs(sorted_weight_keys(weights)) do
+        local v = weights[art_section]
         if rnd <= v then
             local sec = art_section
             if lname == "generators" then
@@ -961,13 +1127,13 @@ function spawn_rand_arts( pos, gv, lv, lname )
             end
 
             if sec == "_new" then
-                section = get_new_section()
+                section = get_new_section(event)
             elseif string.find( sec, "af_dummy_", 1, true ) then
                 section = sec
             elseif string.find( sec, "_capsule", 1, true ) then
-                section = get_dynamic_section( sec, true )
+                section = get_dynamic_section( sec, true, event )
             else
-                section = get_dynamic_section( sec, false )
+                section = get_dynamic_section( sec, false, event )
             end
             break
         end
@@ -979,11 +1145,11 @@ function spawn_rand_arts( pos, gv, lv, lname )
         return false
     end
 
-    return spawn_art( section, pos, gv, lv )
+    return spawn_art( section, pos, gv, lv, event, result_index )
 end
 
 -- [HE-PORT] Convert capsule section names into Live nlc_capsules custom_data payload
-function capsule_payload_from_section(section)
+function capsule_payload_from_section(section, event)
 	if type(section) ~= "string" or section == "" then
 		return nil
 	end
@@ -991,9 +1157,18 @@ function capsule_payload_from_section(section)
 		return nil
 	end
 	if section == "m_capsule" then
+		if event and nlc_capsules.mayatnik_base_count and nlc_capsules.mayatnik_by_index then
+			return nlc_capsules.mayatnik_by_index(art_rng_legacy_int(event, 1, nlc_capsules.mayatnik_base_count()))
+		end
 		return nlc_capsules.random_mayatnik()
 	end
 	if section == "af_capsule" then
+		if event and nlc_capsules.regular_base_count and nlc_capsules.regular_by_index then
+			return nlc_capsules.regular_by_index(
+				art_rng_legacy_int(event, 1, nlc_capsules.regular_base_count()),
+				art_rng_legacy_int(event, 1, 6)
+			)
+		end
 		return nlc_capsules.random_regular(true)
 	end
 	local base, dyn = string.match(section, "^(.-)_dyn(%d+)d$")
@@ -1013,17 +1188,47 @@ function capsule_payload_from_section(section)
 	return nil
 end
 
-function spawn_art(section, pos, gv, lv)
+function spawn_art(section, pos, gv, lv, event, result_index)
 	if section==nil then return end
 	local payload = type(section) == "table" and section or nlc_capsules.from_descriptor(section)
 	if not payload then
-		payload = capsule_payload_from_section(section)
+		payload = capsule_payload_from_section(section, event)
+	end
+	local display_section = payload and nlc_capsules.shell(payload) or section
+	local result = event and event.results[result_index]
+	if result then
+		local existing = alife():object(result.id)
+		if event_object_matches(existing, result) then
+			total_arts = total_arts + 1
+			string_arts = string_arts .. game.translate_string(news_manager.get_inv_name(display_section)) .. ", "
+			art_event_diagnostic("reused result=%s id=%s", tostring(result_index), tostring(result.id))
+			return existing
+		end
+		art_event_diagnostic("result mismatch index=%s id=%s; recreating deterministic result", tostring(result_index), tostring(result.id))
 	end
 	local sobj = payload and nlc_capsules.spawn(payload, pos, gv, lv) or amk.spawn_item(section, pos, gv, lv)
-	local display_section = payload and nlc_capsules.shell(payload) or section
 	if sobj then
 		local se_obj = alife():object(sobj.id)
-		se_obj:used_ai_locations(false)
+		if se_obj then se_obj:used_ai_locations(false) end
+		if not payload and sivol_unknown_arts and sivol_unknown_arts.initialize_new then
+			sivol_unknown_arts.initialize_new(sobj)
+		end
+		if event then
+			local stored = {
+				id = sobj.id,
+				display_section = display_section,
+				gv = gv,
+				lv = lv,
+				x = pos.x,
+				y = pos.y,
+				z = pos.z,
+				attempt = event.attempts,
+				descriptor = payload and nlc_capsules.descriptor(payload) or nil,
+			}
+			stored.signature = event_result_signature(stored)
+			event.results[result_index] = stored
+			art_event_diagnostic("result index=%s id=%s signature=%s", tostring(result_index), tostring(sobj.id), stored.signature)
+		end
 
 		total_arts = total_arts + 1
 		string_arts = string_arts .. game.translate_string(news_manager.get_inv_name(display_section)) .. ", "

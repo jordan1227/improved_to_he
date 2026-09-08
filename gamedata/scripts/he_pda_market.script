@@ -7,8 +7,18 @@ local PENDING_KEY  = "he_pda_drop_pending"
 local START_LEVEL  = "l01_escape"
 local DROP_TRIES   = 6
 local TRADER_IDS   = { 3, 500 }
+local trader_states = {}
+local spawn_reported = {}
+local last_update_state
+
+local function report_trader( sid, state )
+	if trader_states[ sid ] == state then return end
+	trader_states[ sid ] = state
+	log2( "[he_pda_market] trader=%s %s", tostring( sid ), state )
+end
 
 function attach( sm )
+	log2( "[he_pda_market] attach" )
 	sm:subscribe( { signal = "on_late_init_all", fun = this.on_late_init } )
 	sm:subscribe( { signal = "on_update", fun = this.on_update } )
 end
@@ -31,19 +41,46 @@ local function sync_actor_pda()
 	end
 end
 
-local function sync_trader( sobj, unlocked )
+local function sync_trader( sid, sobj, unlocked )
+	if not sobj then
+		spawn_reported[ sid ] = nil
+		report_trader( sid, "story_object=nil" )
+		return
+	end
+	if not sobj.online then
+		spawn_reported[ sid ] = nil
+		report_trader( sid, string.format( "online=0 info=%s", tostring( unlocked ) ) )
+		return
+	end
 	local npc = level.object_by_id( sobj.id )
-	if not npc then return end
+	if not npc then
+		spawn_reported[ sid ] = nil
+		report_trader( sid, string.format( "online=1 client=nil info=%s", tostring( unlocked ) ) )
+		return
+	end
 	local pda = npc:object( "device_pda" )
 	if unlocked and not pda then
-		misc.spawn_to( "device_pda", npc )
+		local spawned = misc.spawn_to( "device_pda", npc )
+		local after = npc:object( "device_pda" )
+		if not spawn_reported[ sid ] then
+			log2( "[he_pda_market] trader=%s name=%s action=spawn spawn_id=%s after_pda=%s", tostring( sid ), npc:name(), tostring( spawned and spawned.id or nil ), tostring( after ~= nil ) )
+			spawn_reported[ sid ] = true
+		end
+		pda = after
 	elseif not unlocked and pda then
 		misc.release_obj( pda )
+		spawn_reported[ sid ] = nil
+		report_trader( sid, string.format( "name=%s online=1 client=1 info=0 pda=released", npc:name() ) )
+		return
+	else
+		if pda then spawn_reported[ sid ] = nil end
 	end
+	report_trader( sid, string.format( "name=%s online=1 client=1 info=%s pda=%s", npc:name(), tostring( unlocked ), tostring( pda ~= nil ) ) )
 end
 
 function on_late_init()
 	if not db.actor then return end
+	log2( "[he_pda_market] late_init level=%s info=%s started=%s", level.name(), tostring( db.actor:has_info( MARKET_INFO ) ), tostring( get_value( STARTED_KEY ) ~= nil ) )
 	if get_value( STARTED_KEY ) ~= nil then return end
 	set_value( STARTED_KEY, true )
 	if db.actor:has_info( MARKET_INFO ) then return end
@@ -56,6 +93,11 @@ end
 function on_update()
 	ogse_signals.get_mgr():reschedule( HEARTBEAT_MS )
 	if not db.actor then return end
+	local update_state = string.format( "level=%s info=%s", level.name(), tostring( db.actor:has_info( MARKET_INFO ) ) )
+	if last_update_state ~= update_state then
+		last_update_state = update_state
+		log2( "[he_pda_market] update %s", update_state )
+	end
 	local pending = get_value( PENDING_KEY )
 	if pending then
 		if drop_actor_pda() or pending <= 1 then
@@ -68,15 +110,16 @@ function on_update()
 	end
 	local unlocked = db.actor:has_info( MARKET_INFO )
 	if not unlocked and level.name() == "l03_agroprom" then
+		local before = db.actor:has_info( MARKET_INFO )
 		db.actor:give_info_portion( MARKET_INFO )
+		local after = db.actor:has_info( MARKET_INFO )
+		log2( "[he_pda_market] auto_give info=%s before=%s after=%s", MARKET_INFO, tostring( before ), tostring( after ) )
 		unlocked = true
 	end
 	local sim = alife()
 	if not sim then return end
 	for _, sid in pairs( TRADER_IDS ) do
 		local sobj = sim:story_object( sid )
-		if sobj and sobj.online then
-			sync_trader( sobj, unlocked )
-		end
+		sync_trader( sid, sobj, unlocked )
 	end
 end
