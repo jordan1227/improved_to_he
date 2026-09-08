@@ -2,6 +2,198 @@
 local move_penalties = {} -- [name] = coef (0..1)
 local MOVE_PENALTY_FLOOR = 0.2 -- нижний предел суммарного коэффициента, чтобы несколько штрафов разом не занулили скорость
 
+-- Actor-hit diagnostics are temporary investigation tooling. They log the
+-- incoming SHit packet and two bounded actor-state samples after the callback.
+local ACTOR_HIT_DIAGNOSTICS = false
+local ACTOR_HIT_SAMPLE_DELAY = 100
+local ACTOR_HIT_LATE_SAMPLE_DELAY = 600
+local ACTOR_HIT_MAX_PENDING = 8
+
+local actor_hit_sequence = 0
+local actor_hit_observations = {}
+local actor_hit_type_names = {}
+
+local function register_actor_hit_type(name)
+	if hit and hit[name] ~= nil then
+		actor_hit_type_names[hit[name]] = name
+	end
+end
+
+for _, name in ipairs({
+	"burn", "shock", "strike", "wound", "radiation", "telepatic",
+	"chemical_burn", "explosion", "fire_wound", "wound_2"
+}) do
+	register_actor_hit_type(name)
+end
+
+local function actor_hit_type_name(hit_type)
+	return actor_hit_type_names[hit_type] or "unknown"
+end
+
+local function read_actor_hit_vitals(actor)
+	if not actor then return nil, nil, nil end
+
+	local ok_health, health = pcall(function() return actor.health end)
+	local ok_bleeding, bleeding = pcall(function() return actor:get_bleeding() end)
+	local ok_radiation, radiation = pcall(function() return actor.radiation end)
+
+	return
+		(ok_health and tonumber(health) or nil),
+		(ok_bleeding and tonumber(bleeding) or nil),
+		(ok_radiation and tonumber(radiation) or nil)
+end
+
+local function read_actor_hit_god_mode()
+	if type(get_console) ~= "function" then return nil end
+	local ok, value = pcall(function() return get_console():get_bool("g_god") end)
+	if ok then return value end
+	return nil
+end
+
+local function actor_hit_source(hit_data)
+	local source = hit_data and hit_data.who
+	if source then return source end
+
+	local source_id = tonumber(hit_data and hit_data.who_id)
+	if not source_id or source_id <= 0 or source_id >= 65535 then return nil end
+	if not level or type(level.object_by_id) ~= "function" then return nil end
+
+	local ok, object = pcall(level.object_by_id, source_id)
+	if ok then return object end
+	return nil
+end
+
+local function actor_hit_source_field(source, method, default)
+	if not source then return default end
+	local ok_method, fn = pcall(function() return source[method] end)
+	if not ok_method or type(fn) ~= "function" then return default end
+
+	local ok, value = pcall(fn, source)
+	if ok and value ~= nil then return tostring(value) end
+	return default
+end
+
+local function actor_hit_bone_name(actor, bone_id)
+	if not actor or bone_id < 0 then return "none" end
+	local ok, value = pcall(function() return actor:get_bone_name(bone_id) end)
+	if ok and value ~= nil then return tostring(value) end
+	return "unknown"
+end
+
+local function new_actor_hit_observation(actor, hit_data)
+	actor_hit_sequence = actor_hit_sequence + 1
+
+	local now = time_global()
+	local health, bleeding, radiation = read_actor_hit_vitals(actor)
+	local source = actor_hit_source(hit_data)
+	local hit_type = tonumber(hit_data.hit_type) or -1
+	local bone_id = tonumber(hit_data.bone_id) or -1
+
+	return {
+		sequence = actor_hit_sequence,
+		created_at = now,
+		next_sample = now + ACTOR_HIT_SAMPLE_DELAY,
+		sample_count = 0,
+		hit_type = hit_type,
+		hit_type_name = actor_hit_type_name(hit_type),
+		power = tonumber(hit_data.power) or 0,
+		full_power = tonumber(hit_data.full_power) or 0,
+		impulse = tonumber(hit_data.impulse) or 0,
+		bone_id = bone_id,
+		bone_name = actor_hit_bone_name(actor, bone_id),
+		who_id = tonumber(hit_data.who_id) or -1,
+		source_section = actor_hit_source_field(source, "section", "none"),
+		source_name = actor_hit_source_field(source, "name", "none"),
+		source_clsid = actor_hit_source_field(source, "clsid", "none"),
+		sender_id = tonumber(hit_data.sender_id) or -1,
+		dest_id = tonumber(hit_data.dest_id) or -1,
+		weapon_id = tonumber(hit_data.weapon_id) or -1,
+		bullet_id = tonumber(hit_data.bullet_id) or -1,
+		packet_type = tonumber(hit_data.packet_type) or -1,
+		ap = tonumber(hit_data.ap) or 0,
+		aim_bullet = tostring(hit_data.aim_bullet),
+		ignore_hit = tostring(hit_data.ignore_hit),
+		god_mode = tostring(read_actor_hit_god_mode()),
+		before_health = health,
+		before_bleeding = bleeding,
+		before_radiation = radiation,
+	}
+end
+
+local function log_actor_hit_observation(observation, stage, health, bleeding, radiation)
+	local health_delta = health and observation.before_health
+		and health - observation.before_health or 0
+	local bleeding_delta = bleeding and observation.before_bleeding
+		and bleeding - observation.before_bleeding or 0
+	local radiation_delta = radiation and observation.before_radiation
+		and radiation - observation.before_radiation or 0
+	local age = math.max(0, time_global() - observation.created_at)
+
+	log2(
+		"[sivol.actor_hit] seq=%d age_ms=%d stage=%s type=%s(%d) power=%.6f full=%.6f impulse=%.3f bone=%d[%s] who=%d source=%s name=%s clsid=%s ignore=%s god=%s hp=%.6f bleed=%.6f rad=%.6f dhp=%.6f dbleed=%.6f drad=%.6f sender=%d dest=%d weapon=%d bullet=%d packet=%d ap=%.3f aim=%s",
+		observation.sequence, age, stage, observation.hit_type_name, observation.hit_type,
+		observation.power, observation.full_power, observation.impulse,
+		observation.bone_id, observation.bone_name, observation.who_id,
+		observation.source_section, observation.source_name, observation.source_clsid,
+		observation.ignore_hit, observation.god_mode,
+		health or -1, bleeding or -1, radiation or -1,
+		health_delta, bleeding_delta, radiation_delta,
+		observation.sender_id, observation.dest_id, observation.weapon_id,
+		observation.bullet_id, observation.packet_type, observation.ap,
+		observation.aim_bullet
+	)
+end
+
+local function reset_actor_hit_observations()
+	actor_hit_observations = {}
+end
+
+function set_actor_hit_diagnostics(enabled)
+	ACTOR_HIT_DIAGNOSTICS = enabled == true
+	reset_actor_hit_observations()
+	log2("[sivol.actor_hit] diagnostics=%s", tostring(ACTOR_HIT_DIAGNOSTICS))
+end
+
+function sivol_on_actor_before_hit(obj, hit_data)
+	if not ACTOR_HIT_DIAGNOSTICS or not hit_data then return end
+
+	local observation = new_actor_hit_observation(obj or (db and db.actor), hit_data)
+	while table.getn(actor_hit_observations) >= ACTOR_HIT_MAX_PENDING do
+		table.remove(actor_hit_observations, 1)
+	end
+	table.insert(actor_hit_observations, observation)
+	log_actor_hit_observation(
+		observation, "before", observation.before_health,
+		observation.before_bleeding, observation.before_radiation
+	)
+end
+
+function sivol_on_actor_hit_update()
+	if not ACTOR_HIT_DIAGNOSTICS then return end
+	if not db or not db.actor then
+		reset_actor_hit_observations()
+		return
+	end
+	if table.getn(actor_hit_observations) == 0 then return end
+
+	local now = time_global()
+	local health, bleeding, radiation = read_actor_hit_vitals(db.actor)
+	for i = table.getn(actor_hit_observations), 1, -1 do
+		local observation = actor_hit_observations[i]
+		if now >= observation.next_sample then
+			local stage = observation.sample_count == 0 and "after" or "late"
+			log_actor_hit_observation(observation, stage, health, bleeding, radiation)
+			if observation.sample_count == 0 then
+				observation.sample_count = 1
+				observation.next_sample = now + ACTOR_HIT_LATE_SAMPLE_DELAY
+			else
+				table.remove(actor_hit_observations, i)
+			end
+		end
+	end
+end
+
+
 function add_move_penalty(name, coef)
 	local old_coef = get_move_penalty_coef()
 	move_penalties[name] = coef
@@ -36,9 +228,15 @@ function attach(sm)
     sm:subscribe({ signal = "on_item_to_ruck",   fun = sivol_on_belt_leave })
     sm:subscribe({ signal = "on_drop_before_all", fun = sivol_on_belt_leave })
     sm:subscribe({ signal = "on_spawn",          fun = sivol_on_actor_spawn })
+    sm:subscribe({ signal = "on_actor_before_hit", fun = sivol_on_actor_before_hit })
+    sm:subscribe({ signal = "on_update",            fun = sivol_on_actor_hit_update })
+    sm:subscribe({ signal = "on_game_loaded",       fun = reset_actor_hit_observations })
+    sm:subscribe({ signal = "level_changer_action",  fun = reset_actor_hit_observations })
+    sm:subscribe({ signal = "on_stop_modules",       fun = reset_actor_hit_observations })
 end
 
 function sivol_on_actor_spawn()
+    reset_actor_hit_observations()
     dsh.exec_on_update(
         function()
             local sm = ogse_signals.get_mgr()
