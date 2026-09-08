@@ -936,6 +936,13 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	
 	if strpos(description,"$carrying") then
 		local val = get_float(self.section, "additional_inventory_weight2", 0)
+		if type(sivol_unknown_arts) == "table"
+			and type(sivol_unknown_arts.get_nominal_property) == "function"
+		then
+			local resolved = sivol_unknown_arts.get_nominal_property(
+				self.item, "additional_inventory_weight2")
+			if resolved ~= nil then val = resolved end
+		end
 		val = string.format("%.1f", val)
 		description = string.gsub(description,"$carrying",val)
 	end
@@ -1958,6 +1965,12 @@ function CUIDescriptionWnd:ShowAfParams(item)
             -- do nothing
         else
             local base_val = get_float(sect, t.prop, 0)
+            if type(sivol_unknown_arts) == "table"
+                and type(sivol_unknown_arts.get_nominal_property) == "function"
+            then
+                local resolved = sivol_unknown_arts.get_nominal_property(item, t.prop)
+                if resolved ~= nil then base_val = resolved end
+            end
             
             local is_buff = true
             if t.prop == "radiation_restore_speed" then
@@ -1997,7 +2010,15 @@ function CUIDescriptionWnd:ShowAfParams(item)
     if item.immunities then
         for i, t in ipairs(hit_types) do
             local immunity_name = t.prop .. "_immunity"
-            local base_immunity = get_artefact_base_immunity(sect, immunity_name)
+            local base_immunity = nil
+            if type(sivol_unknown_arts) == "table"
+                and type(sivol_unknown_arts.get_nominal_property) == "function"
+            then
+                base_immunity = sivol_unknown_arts.get_nominal_property(item, immunity_name)
+            end
+            if base_immunity == nil then
+                base_immunity = get_artefact_base_immunity(sect, immunity_name)
+            end
 
             if base_immunity and base_immunity ~= 1 then
                 local is_buff = (base_immunity <= 1)
@@ -2017,8 +2038,16 @@ function CUIDescriptionWnd:ShowAfParams(item)
         end
     end
 
-    local iw_1_base = get_float(sect, "additional_inventory_weight", 0)
-    local iw_2_base = get_float(sect, "additional_inventory_weight2", 0)
+    local iw_1_base = nil
+    local iw_2_base = nil
+    if type(sivol_unknown_arts) == "table"
+        and type(sivol_unknown_arts.get_nominal_property) == "function"
+    then
+        iw_1_base = sivol_unknown_arts.get_nominal_property(item, "additional_inventory_weight")
+        iw_2_base = sivol_unknown_arts.get_nominal_property(item, "additional_inventory_weight2")
+    end
+    if iw_1_base == nil then iw_1_base = get_float(sect, "additional_inventory_weight", 0) end
+    if iw_2_base == nil then iw_2_base = get_float(sect, "additional_inventory_weight2", 0) end
     -- Pass prop_name
     local iw_1 = iw_1_base * get_effective_strength(item, iw_1_base > 0, "additional_inventory_weight")
     local iw_2 = iw_2_base * get_effective_strength(item, iw_2_base > 0, "additional_inventory_weight2")
@@ -2061,6 +2090,12 @@ function CUIDescriptionWnd:ShowAfParams(item)
     end
 
     local base_restore = get_float(sect, "satiety_restore_speed", 0)
+    if type(sivol_unknown_arts) == "table"
+        and type(sivol_unknown_arts.get_nominal_property) == "function"
+    then
+        local resolved = sivol_unknown_arts.get_nominal_property(item, "satiety_restore_speed")
+        if resolved ~= nil then base_restore = resolved end
+    end
     local base_add_sat = get_float(sect, "add_satiety", 1)
 
     local sat_units = 0
@@ -2087,6 +2122,28 @@ function CUIDescriptionWnd:ShowAfParams(item)
         table.insert(params, {"ui_inv_icon_add_satiety_hd", translate("ui_inv_satiety"), txt})
     end
 
+    if type(sivol_unknown_arts) == "table"
+        and type(sivol_unknown_arts.is_unknown_section) == "function"
+        and sivol_unknown_arts.is_unknown_section(sect)
+        and type(sivol_unknown_arts.get_outfit_wear) == "function"
+    then
+        local unknown_wear = {
+            { damage = "burn", property = "outfit_wear_burn", icon = "ui_inv_icon_burn_immunity_hd", label = "ui_inv_outfit_wear_fire" },
+            { damage = "shock", property = "outfit_wear_shock", icon = "ui_inv_icon_shock_immunity_hd", label = "ui_inv_outfit_wear_shock" },
+            { damage = "chemical", property = "outfit_wear_chemical", icon = "ui_inv_icon_chemical_burn_immunity_hd", label = "ui_inv_outfit_wear_chemical" },
+        }
+        for _, row in ipairs(unknown_wear) do
+            local nominal = sivol_unknown_arts.get_outfit_wear(item, row.damage)
+            local effective = nominal * get_effective_strength(item, true, row.property)
+            if effective > 0 then
+                table.insert(params, {
+                    row.icon,
+                    translate(row.label),
+                    string.format("%%c[green]-%d%%%%c[default]", math.round(effective * 100))
+                })
+            end
+        end
+    end
     if type(sivol_pudding_outfit) == "table"
         and type(sivol_pudding_outfit.get_reduction) == "function" then
         local ok, reduction = pcall(
@@ -2827,6 +2884,31 @@ function CUIDescriptionWnd:OutContainerArts( container_id )
 		return
 	end
 
+	-- Migrate legacy Unknown entries while the original container identity
+	-- and slot ordinals are still stable, then persist the updated bytes.
+	local migrated_container_data = data.custom_data
+	local migrated_container = false
+	for i, art_entry in ipairs( arts ) do
+		if art_entry and art_entry.section and art_entry.section ~= ""
+			and sivol_unknown_arts
+			and sivol_unknown_arts.is_unknown_section( art_entry.section )
+		then
+			local cond = art_entry.condition or 1
+			local cust_data = art_entry.custom_data
+			local payload, status = sivol_unknown_arts.migrate_container_entry(
+				art_entry.section, cond, container_id, i, cust_data
+			)
+			if payload and status == "migrated" then
+				art_entry.custom_data = sivol_unknown_arts.encode( payload, cust_data )
+				migrated_container = true
+			end
+		end
+	end
+	if migrated_container then
+		migrated_container_data = arc_radiation.encode_custom_data( arts, sect )
+		data.custom_data = migrated_container_data
+	end
+
 	misc.release_obj( box )
 
 	if self.item and self.item:id() == container_id then
@@ -2842,7 +2924,16 @@ function CUIDescriptionWnd:OutContainerArts( container_id )
 	end
 
 	new_container_id   = new_box.id
-	new_container_data = data.custom_data
+	new_container_data = migrated_container_data
+	local new_sobj = g_sim:object( new_container_id )
+	local new_pk = new_sobj and get_netpk( new_sobj, 1 )
+	if new_pk then
+		local new_data = new_pk:get()
+		new_data.custom_data = new_container_data
+		new_pk:set( new_data )
+	else
+		log2( "OutContainerArts: get_netpk failed for replacement container id=%s", tostring( new_container_id ) )
+	end
 	new_container_arts = {}
 
 	for i, art_entry in ipairs( arts ) do
@@ -2853,6 +2944,9 @@ function CUIDescriptionWnd:OutContainerArts( container_id )
 				local cond      = art_entry.condition or 1
 				local cust_data = art_entry.custom_data
 				local obj_id    = obj.id
+				if cust_data and sivol_unknown_arts then
+					sivol_unknown_arts.restore_server( alife():object( obj_id ), cust_data )
+				end
 				level.client_spawn_manager():add(
 					obj_id, -1,
 					function( id, spawned_obj )
@@ -2871,7 +2965,6 @@ function CUIDescriptionWnd:OutContainerArts( container_id )
 			end
 		end
 	end
-
 	trade_subscribe()
 	self:HideDescription()
 end

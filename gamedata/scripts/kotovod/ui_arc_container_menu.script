@@ -56,6 +56,18 @@ end
 
 local radiation_v = get_float("actor_condition", "radiation_v")
 
+local function nominal_art_property(target, property, custom_data)
+    local section = type(target) == "string" and target or target:section()
+    local value = get_float(section, property, 0)
+    if type(sivol_unknown_arts) == "table"
+        and type(sivol_unknown_arts.get_nominal_property) == "function"
+    then
+        local resolved = sivol_unknown_arts.get_nominal_property(target, property, custom_data)
+        if resolved ~= nil then value = resolved end
+    end
+    return value
+end
+
 function arc_8container_menu:read_params()
     local prefix  = "arc_ui_8container_menu."
     local sect    = self.object:section()
@@ -91,7 +103,7 @@ function arc_8container_menu:update_radiation()
     if self.protection > 0 then
         for i, t in ipairs(self.artefacts) do
 			if t.section and t.condition > 0 then
-				local base_rrs = get_float(t.section, "radiation_restore_speed", 0)
+				local base_rrs = nominal_art_property(t.section, "radiation_restore_speed", t.custom_data)
 				local rrs = base_rrs * get_effective_strength_raw(t.condition, t.section, base_rrs < 0, "radiation_restore_speed")
 				if rrs > self.protection then rad = rad + (rrs - self.protection) end
 			end
@@ -336,7 +348,7 @@ function arc_8container_menu:make_art_button(t, act)
 
     local rad_text = ""
     if t.condition > 0 then
-		local base_rrs = get_float(t.section, "radiation_restore_speed", 0)
+		local base_rrs = nominal_art_property(t.section, "radiation_restore_speed", t.custom_data)
 		local rad = base_rrs * get_effective_strength_raw(t.condition, t.section, base_rrs < 0, "radiation_restore_speed")
         if rad > 0 then
             rad_text = string.format("+%.0f", rad / radiation_v)
@@ -544,7 +556,7 @@ function arc_recalc_container(id)
 		if t.section and (t.condition or 0) > 0 then
 			sum_weight = sum_weight + get_float(t.section, "inv_weight", 0)
 
-			local base_rrs = get_float(t.section, "radiation_restore_speed", 0)
+			local base_rrs = nominal_art_property(t.section, "radiation_restore_speed", t.custom_data)
 			local rrs = base_rrs * get_effective_strength_raw(t.condition or 0, t.section, base_rrs < 0, "radiation_restore_speed")
 			if protection > 0 and rrs > protection then
 				rad = rad + (rrs - protection)
@@ -743,6 +755,15 @@ end
 
 function arc_8container_menu:take_artefact(n)
     local src = self.artefacts[n]
+    if src and src.section and sivol_unknown_arts
+        and sivol_unknown_arts.is_unknown_section(src.section)
+        and not sivol_unknown_arts.read_custom(src.custom_data or "")
+    then
+        local payload = sivol_unknown_arts.migrate_container_entry(
+            src.section, src.condition, self.object:id(), n, src.custom_data
+        )
+        if payload then src.custom_data = sivol_unknown_arts.encode(payload, src.custom_data) end
+    end
     local s   = src.button
     if s.flying then return end
 
@@ -764,7 +785,10 @@ function arc_8container_menu:take_artefact(n)
         sig_inv_drop = nil
     end
 
-	local sobj = misc.spawn_to( src.section, db.actor )
+    local sobj = misc.spawn_to( src.section, db.actor )
+    if sobj and src.custom_data and sivol_unknown_arts then
+        sivol_unknown_arts.restore_server(alife():object(sobj.id), src.custom_data)
+    end
 	level.client_spawn_manager():add(
 		sobj.id, -1,
 		function( id, sobj )
@@ -870,6 +894,15 @@ function arc_8container_menu:put_artefact(n)
         pos = table.getn(self.artefacts)
     end
 
+    local source_server = g_sim:object(src.id)
+    if source_server and type(sivol_unknown_arts) == "table"
+        and type(sivol_unknown_arts.initialize_new) == "function"
+        and sivol_unknown_arts.is_unknown_section(src.section)
+    then
+        sivol_unknown_arts.initialize_new(source_server)
+        local _, stored_data = sivol_unknown_arts.read_server(source_server)
+        src.custom_data = stored_data
+    end
     for _, k in ipairs({ "section", "condition", "custom_data" }) do
         dst[k] = src[k]
     end
@@ -881,7 +914,7 @@ function arc_8container_menu:put_artefact(n)
 	
 	-- для радейки
 		if src.section and src.condition > 0 then
-			local base_rrs = get_float(src.section, "radiation_restore_speed", 0)
+			local base_rrs = nominal_art_property(src.section, "radiation_restore_speed", src.custom_data)
 			local rrs = base_rrs * get_effective_strength_raw(src.condition, src.section, base_rrs < 0, "radiation_restore_speed")
 			if rrs > self.protection then
 			   sak.send_tip( "Защита недостаточна.", "Контейнер", 0, 10, "death", "sak", "red" )
@@ -1246,7 +1279,7 @@ function get_art_info_text(sect, condition, data)
     end
 
     for k, v in pairs(af_actor_cond) do
-        local base_val = get_float(sect, k, 0)
+        local base_val = nominal_art_property(sect, k, data)
         local af_val
 
         if k == "radiation_restore_speed" and garbage_rad then
@@ -1290,9 +1323,9 @@ function get_art_info_text(sect, condition, data)
     for _, k in ipairs({
         "additional_inventory_weight", "additional_inventory_weight2"
     }) do
-        local af_val = get_float(sect, k, 0)
+        local af_val = nominal_art_property(sect, k, data)
         if k == "additional_inventory_weight" then
-            local af_val2 = get_float(sect, "additional_inventory_weight2", 0)
+            local af_val2 = nominal_art_property(sect, "additional_inventory_weight2", data)
             if af_val == af_val2 then af_val = 0 end
         end
         if af_val ~= 0 then
@@ -1312,7 +1345,10 @@ function get_art_info_text(sect, condition, data)
     local absorb_sect = get_string(sect, "hit_absorbation_sect")
     if sys_ini:section_exist(absorb_sect) then
         for _, k in ipairs(af_absorbs) do
-            local af_val = get_float(absorb_sect, k, 0)
+            local af_val = nominal_art_property(sect, k, data)
+            if af_val == 0 then
+                af_val = get_float(absorb_sect, k, 0)
+            end
             if af_val ~= 1 then
                 local is_buff = (af_val <= 1)
                 af_val = (1 - af_val) * 100 * get_effective_strength_raw(condition, sect, is_buff, k)
@@ -1328,6 +1364,23 @@ function get_art_info_text(sect, condition, data)
         end
     end
 
+    for _, wear in ipairs({
+        { property = "outfit_wear_burn", label = "ui_inv_outfit_wear_fire" },
+        { property = "outfit_wear_shock", label = "ui_inv_outfit_wear_shock" },
+        { property = "outfit_wear_chemical", label = "ui_inv_outfit_wear_chemical" },
+    }) do
+        local wear_value = nominal_art_property(sect, wear.property, data)
+        if wear_value and wear_value > 0 then
+            wear_value = wear_value * get_effective_strength_raw(condition, sect, true, wear.property)
+            table.insert(
+                texts,
+                string.format(
+                    "%%c[default]? %s %%c[green]-%0.f%%",
+                    game.translate_string(wear.label), wear_value * 100
+                )
+            )
+        end
+    end
     if table.getn(texts) > 0 then
         return table.concat(texts, "\\n")
     end

@@ -300,12 +300,29 @@ function virtualize( box )
   local id = box:id()
   if is_virtual( id ) then return false end
   local items, index, ids = {}, {}, {}
+  local storage_ordinal = 0
   for i = 0, box:object_count() - 1 do
     local obj = box:object( i )
     if obj and server_obj( obj:id() ) then
+      storage_ordinal = storage_ordinal + 1
       local sect = obj:section()
       local cond = tonumber( string.format( "%.2f", obj:condition() * 100 ) )
-      local info = get_item_info( obj )
+      local stored_obj = server_obj( obj:id() )
+      local info
+      if stored_obj and sivol_unknown_arts
+          and type(sivol_unknown_arts.migrate_storage_entry) == "function"
+          and sivol_unknown_arts.is_unknown_section( sect )
+      then
+          local _, stored_data = sivol_unknown_arts.read_server( stored_obj )
+          local payload, status = sivol_unknown_arts.migrate_storage_entry(
+              sect, cond, id, storage_ordinal, stored_data
+          )
+          if payload and status == "migrated" then
+              info = sivol_unknown_arts.encode( payload, stored_data )
+              sivol_unknown_arts.restore_server( stored_obj, info )
+          end
+      end
+      if info == nil then info = get_item_info( obj ) end
       local gt   = get_game_type( obj )
       local key  = make_key( sect, cond, info )
       local cnt  = 1
@@ -342,10 +359,24 @@ end
 function devirtualize( box )
   local id = box:id()
   if not is_virtual( id ) then return false end
+  local storage_ordinal = 0
   for _, item in ipairs( load( id ) ) do
     local guard = 0
     while item.count > 0 and guard < 1000 do
-      create_actor_item( item, box )
+      storage_ordinal = storage_ordinal + 1
+      local info_override = item.info
+      if sivol_unknown_arts
+          and type(sivol_unknown_arts.migrate_storage_entry) == "function"
+          and sivol_unknown_arts.is_unknown_section( item.section )
+      then
+          local payload, status = sivol_unknown_arts.migrate_storage_entry(
+              item.section, item.condition, id, storage_ordinal, item.info
+          )
+          if payload and status == "migrated" then
+              info_override = sivol_unknown_arts.encode( payload, item.info )
+          end
+      end
+      create_actor_item( item, box, info_override )
       guard = guard + 1
     end
   end
@@ -407,7 +438,7 @@ function spawn_weapon_in_inv( sect, info_str, who )
 end
 
 
-function create_actor_item( item, who )
+function create_actor_item( item, who, info_override )
   local size, sobj
   if item.game_type == "ammo" then
     local box_size = get_ammo_box_size( item.section )
@@ -427,8 +458,14 @@ function create_actor_item( item, who )
     else
       sobj = spawn_item_in_inv( item.section, who )
     end
-    if sobj and item.info and item.info ~= "" then
-      sobj.custom_data = item.info
+    local item_info = info_override
+    if item_info == nil then item_info = item.info end
+    if sobj and item_info and item_info ~= "" then
+      local restored = false
+      if sivol_unknown_arts and type(sivol_unknown_arts.restore_server) == "function" then
+        restored = sivol_unknown_arts.restore_server(sobj, item_info)
+      end
+      if not restored then sobj.custom_data = item_info end
     end
     item.count = item.count - 1
     size = 1
@@ -464,6 +501,7 @@ function get_actor_items()
     then
       local sect = obj:section()
       local cond = tonumber( string.format( "%.2f", obj:condition() * 100 ) )
+
       local info = get_item_info( obj )
       local key  = make_key( sect, cond, info )
       local item = by_key[ key ]

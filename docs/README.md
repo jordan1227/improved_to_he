@@ -12,6 +12,7 @@ documents relevant to the feature.
 - `BASELINE.md` — repository/test-install boundary and observed invariants.
 - `TESTING.md` — current manual checks and pending acceptance work.
 - `VALIDATION.md` — static checks and the limits of each kind of evidence.
+- `ARTIFACT_BACKLOG.md` — artifact decisions, deferred candidates, and Unknown persistence/autosave investigation.
 
 ## Task routing
 

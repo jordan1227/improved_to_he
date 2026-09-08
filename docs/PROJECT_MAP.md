@@ -24,6 +24,12 @@ Inspect other `gamedata` folders only when the current task requires them.
 - PDA/NVD/flashlight Electra interference: `gamedata/scripts/pda_noise.script`
   maintains the shared Electra cache; `sivol_pda.script`, `params/nvd_params.script`,
   and the flashlight path consume its intensity.
+- PDA model and screen assets: `gamedata/config/misc/items.ltx` selects
+  `dev_pda_0.ogf`/`dev_pda_0_hud.ogf` and `dev_pda_hud.omf`; the r3 glass uses
+  `pda_screen.ps/.s/.vs`, while `pda_overlay_0.s` routes the display through the
+  existing `models_pda_screen` shader pair. Keep `models_pda_screen.ps` as the
+  owner of interactive display/glitch behavior, with the corresponding PDA glass
+  and body textures present as loose overrides.
 - Electra VFX/SFX tiering: `gamedata/config/misc/zone_witchesgalantine.ltx`.
   Base/average use ARRIVAL Core assets, weak explicitly retains NLC assets, and
   strong uses the isolated Aggressive-v2 idle group. `sivol.spawn_anomaly_near()`
