@@ -31,6 +31,10 @@ this document, so record the actual path and command in each evidence record.
   while retaining the aura.
 - Ambient thermal hits use `bip_none` to retain burn behavior without blood
   decals or sprint interruption.
+- Runtime accepted on 2026-09-08: radioactive anomaly hits no longer trigger
+  the generic `ogse_critical_hit` sound or camera effect; the targeted guard is
+  in `gamedata/scripts/ogse_critical_hit.script`. The original diagnosis is
+  recorded in `C:\Games\NLC_OGSR_HE\appdata\logs\xray_hawkl_08-09-26_13-08-50.log`.
 - Per-surface shell sounds use `fl_step_material()` at the firearm event, normalize
   `materials\\<name>` to `<name>`, and fall back to generic sounds for unavailable
   or unmapped materials. Confirmed in-game: mapped material sounds work and knife
