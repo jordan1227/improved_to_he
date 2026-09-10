@@ -1,0 +1,591 @@
+--- before/gamedata/scripts/actor_take_item.script
++++ after/gamedata/scripts/actor_take_item.script
+@@ -31,6 +31,8 @@
+ 	kotovod.sms_recipt_found( "info_amk_recipt_simbion" )
+ end
+ 
++check_item_tbl["pda_chip_rad"] = function() he_pda_access.module_pickup() end
++
+ function check_taked_item( obj, sobj )
+ 	local sect = obj:section()
+ 	if check_item_tbl[ sect ] then
+--- before/gamedata/scripts/allcore_hide.script
++++ after/gamedata/scripts/allcore_hide.script
+@@ -5,9 +5,9 @@
+ 	if eat_in_mask > 0 then
+ 		if vergas_masks.allcore_mask_is_on() or get_actor_obj():IsDetectorActive() then
+ 			if vergas_masks.allcore_mask_is_on() then
+-				sak.send_tip(translate("eat_in_mask"), translate("st_mda"), 1, 10, "g_g", "sak", "red")
++				sak.send_tip_local(translate("eat_in_mask"), translate("st_mda"), 1, 10, "g_g", "sak", "red")
+ 			else
+-				sak.send_tip(game.translate_string("use_antirad_1"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
++				sak.send_tip_local(game.translate_string("use_antirad_1"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
+ 			end
+ 			vergas_lib.s_play([[device\antirad_no]],1)
+ 			return 
+@@ -16,7 +16,7 @@
+ 	if db.actor:object("energy_drink") ~= nil then
+ 			db.actor:eat(db.actor:object("energy_drink"))
+ 	else
+-		sak.send_tip(translate("no_en_drink"), translate("edred_baton"), 1, 10, "g_g", "sak", "red")
++		sak.send_tip_local(translate("no_en_drink"), translate("edred_baton"), 1, 10, "g_g", "sak", "red")
+ 		vergas_lib.s_play([[device\antirad_no]],1)
+ 	end
+ end
+@@ -182,7 +182,7 @@
+ 	if sect == "flask_army" then 
+ 		if vergas_flask.get_flask_water( obj ) == 1 then 
+ 			obj:disable_use()
+-			sak.send_tip( 
++			sak.send_tip_local(
+ 				"Уже пустая", 
+ 				"Ёк-макарёк!", 0, 5, "g_g", "no", "red"
+ 			)			
+@@ -198,7 +198,7 @@
+ 	-- Юзанье с маской
+ --[[
+ 	if eat_in_mask > 0 and vergas_masks.allcore_mask_is_on() and get_bool(sect, "allcore_hide.is_food", false) then
+-		sak.send_tip(translate("eat_in_mask"), translate("st_mda"), 1, 10, "g_g", "sak", "red")
++		sak.send_tip_local(translate("eat_in_mask"), translate("st_mda"), 1, 10, "g_g", "sak", "red")
+ 		obj:disable_use()
+ 		return
+ 	end
+@@ -248,7 +248,7 @@
+ 	
+ 	-- Юзанье с детектором
+ 	if get_actor_obj():IsDetectorActive() then
+-		sak.send_tip(game.translate_string("use_antirad_1"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
++		sak.send_tip_local(game.translate_string("use_antirad_1"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
+ 		obj:disable_use()
+ 		return
+ 	end
+--- before/gamedata/scripts/he_pda_access.script
++++ after/gamedata/scripts/he_pda_access.script
+@@ -8,6 +8,7 @@
+ 
+ local function actor_ready() return db and db.actor ~= nil end
+ local function saved_true(key) return get_value(key) == true or get_value(key) == 1 end
++function has_notes() return has_upgrade() or saved_true("he_pda_notes_installed") end
+ local function pending() return get_value(TX_KEY) end
+ function is_busy() return type(pending()) == "table" end
+ function has_upgrade() return saved_true(UPGRADE_KEY) end
+@@ -25,7 +26,7 @@
+ function radiation_eligible() return has_upgrade() end
+ function custom_marker_eligible()
+     local pda = actor_ready() and he_pda_model.get_pda()
+-    return pda ~= nil and has_upgrade() and pda:condition() > 0 and not permanent_blocked() and not custody()
++    return pda ~= nil and has_notes() and pda:condition() > 0 and not permanent_blocked() and not custody()
+ end
+ function sidor_inquiry_available() return can_acquire_base() end
+ function base_purchase_available() return can_acquire_base() and db.actor:money() >= PRICE end
+@@ -91,9 +92,11 @@
+     if status == 1 or status == 2 then return obj end
+ end
+ local function valid(r)
+-    local obj = (r.kind == "toz" or r.kind == "donor") and inventory_owned(r.id,r.section) or owned(r.id,r.section)
++    local obj = (r.kind == "toz" or r.kind == "donor" or r.kind == "module") and inventory_owned(r.id,r.section) or owned(r.id,r.section)
+     local sobj = obj and alife():object(r.id)
+     if not obj or not sobj or sobj:name() ~= r.name then return false end
++    if r.kind == "module" then return r.section == "pda_chip_rad" end
++    if r.kind == "notes_art" then return artifact_matches(r.section,"lvl1") and obj:condition() >= 0.5 end
+     if r.kind == "donor" then return donor_valid(r.id) ~= nil and vergas_pda.get_pda_cdata(r.id) == r.cdata end
+     if r.kind == "toz" then return obj:condition() >= (tonumber(level.get_game_difficulty()) == 0 and 0.475 or 0.95) end
+     return artifact_matches(r.section, r.kind) and obj:condition() >= artifact_minimum()
+@@ -212,6 +215,34 @@
+         tostring(alarm and alarm.d),tostring(alarm and alarm.f))
+ end
+ 
++local function module_record()
++    for _, rec in get_shadow_inv():get_content(true):ipairs() do
++        if rec.sect == "pda_chip_rad" then return record(rec.obj,"module") end
++    end
++end
++function module_dialog_available() return actor_ready() and not has_notes() and module_record() ~= nil end
++function module_install_available()
++    local pda=he_pda_model.get_pda()
++    return module_dialog_available() and not is_busy() and not permanent_blocked() and not custody()
++        and pda ~= nil and pda:section() == PDA and pda:condition() > 0
++        and #collect_artifacts("lvl1",1,0.5) == 1
++end
++function module_install_unavailable() return not module_install_available() end
++function module_use_hint()
++    sak.send_tip_local(game.translate_string("he_pda_module_pickup"),game.translate_string("thinking_out_loud"),0,7,"g_g","no","yellow")
++end
++function module_pickup()
++    if saved_true("he_pda_module_seen") then return end
++    set_value("he_pda_module_seen",true)
++    module_use_hint()
++end
++function before_use(item)
++    if item and item:section() == "pda_chip_rad" then
++        item:disable_use()
++        module_use_hint()
++    end
++end
++
+ local function save_tx(tx) set_value(TX_KEY,tx) end
+ local function fail_unpaid(tx, reason)
+     -- Only our own uncommitted spawn may be removed. Existing PDAs and payment remain intact.
+@@ -239,6 +270,14 @@
+     log2("[he_pda_access] confirmed kind=%s items=%d cash=%d",kind,#items,cash)
+     return true
+ end
++function install_notes_module()
++    set_value(RESULT_KEY,false)
++    if not module_install_available() then return false end
++    local artifact=collect_artifacts("lvl1",1,0.5)[1]
++    artifact.kind="notes_art"
++    return start_transaction("notes",{module_record(),artifact},0)
++end
++
+ function buy_base()
+     set_value(RESULT_KEY,false)
+     return base_purchase_available() and start_transaction("base",{},PRICE)
+@@ -326,10 +365,10 @@
+         db.actor:give_info_portion("esc_petruha_toz_done")
+     end
+     if tx.kind == "reflash" then set_value("he_pda_vergas_reflash_done",true) end
+-    pda:set_condition(1)
++    if tx.kind == "notes" then set_value("he_pda_notes_installed",true) else pda:set_condition(1) end
+     local empty = db.actor:object("device_pda_discharged_gg")
+     if empty then misc.release_obj(empty,true) end
+-    pda_battery.reset_discharge_clock()
++    if tx.kind ~= "notes" then pda_battery.reset_discharge_clock() end
+     he_pda_market.cancel_startup_removal()
+     bind_pda.enable_pda()
+     vergas_pda.set_tbl_sn_nil()
+@@ -340,7 +379,7 @@
+     spawn_wait_started = nil
+     log2("[he_pda_access] completed kind=%s pda=%s",tx.kind,tostring(pda:id()))
+     diagnostics(tx.kind .. "_after")
+-    local_notice("he_pda_transaction_done")
++    local_notice(tx.kind == "notes" and "he_pda_module_done" or "he_pda_transaction_done")
+ end
+ function on_update()
+     ogse_signals.get_mgr():reschedule(200)
+@@ -363,6 +402,7 @@
+     remove_value("he_pda_vergas_preview") -- obsolete unconfirmed previews are never resumed
+ end
+ function attach(sm)
++    sm:subscribe({signal="on_actor_before_use",fun=this.before_use})
+     sm:subscribe({signal="on_update",fun=this.on_update})
+     sm:subscribe({signal="on_late_init_all",fun=this.on_load})
+ end
+--- before/gamedata/scripts/he_pda_model.script
++++ after/gamedata/scripts/he_pda_model.script
+@@ -21,6 +21,18 @@
+     local obj = id and alife():object(id)
+     return obj and obj:name() == name and obj or nil
+ end
++local function ensure_slot(pda)
++    local current = db.actor:item_in_slot(7)
++    if current and current:id() == pda:id() then return true end
++    if current then return false end
++    db.actor:move_to_slot(pda, false)
++    current = db.actor:item_in_slot(7)
++    if current and current:id() == pda:id() then
++        log2("[he_pda_model] equipped slot=7 pda=%s",tostring(pda:id()))
++        return true
++    end
++    return false
++end
+ local function cancel(tx, reason)
+     local target = identity(tx.new_id,tx.new_name)
+     if target then alife():release(target,true) end
+@@ -32,6 +44,8 @@
+     local tx = get_value(KEY)
+     if not tx then
+         if not he_pda_access.has_upgrade() then return end
++        local advanced = db.actor:object(ADVANCED)
++        if advanced then ensure_slot(advanced); return end
+         local original = db.actor:object(BASE)
+         if not original or db.actor:object(ADVANCED) then return end
+         local server = alife():object(original:id())
+@@ -68,6 +82,8 @@
+         if not original then error("original model moved during commit") end
+         alife():release(old_server,true)
+     end
++    -- GetPDA() reads slot 7, not the rucksack. Keep the transfer until slotted.
++    if not ensure_slot(owned(tx.new_id,ADVANCED)) then return end
+     remove_value(KEY)
+     started = nil
+     sak_inventory.need_update_inventory()
+--- before/gamedata/config/gameplay/character_desc_nlc30_spawn.xml
++++ after/gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+@@ -5563,6 +5563,7 @@
+ 	
+ 	<actor_dialog>he_pda_charge_vergas</actor_dialog>
+ 	<actor_dialog>he_pda_vergas_reflash</actor_dialog>
++	<actor_dialog>he_pda_vergas_module</actor_dialog>
+ 	<actor_dialog>he_pda_charge_vergas_done</actor_dialog>
+ </specific_character>
+ 
+--- before/gamedata/config/gameplay/dialogs_he_pda_access.xml
++++ after/gamedata/config/gameplay/dialogs_he_pda_access.xml
+@@ -10,6 +10,7 @@
+ 			<text>he_pda_sidor_offer</text>
+ 			<next>2</next>
+ 			<next>10</next>
++			<next>30</next>
+ 			<next>20</next>
+ 		</phrase>
+ 		<phrase id="2">
+@@ -32,22 +33,17 @@
+ 		<phrase id="10">
+ 			<text>he_pda_other_way</text>
+ 			<next>11</next>
+-			<next>12</next>
+ 		</phrase>
+ 		<phrase id="11">
+-			<precondition>he_pda_access.vergas_known</precondition>
+ 			<text>he_pda_sidor_vergas</text>
+ 			<next>20</next>
+ 		</phrase>
+-		<phrase id="12">
+-			<precondition>he_pda_access.vergas_unknown</precondition>
+-			<text>he_pda_sidor_unknown</text>
+-			<next>20</next>
+-		</phrase>
+ 		<phrase id="20">
+ 			<text>he_pda_not_now</text>
+ 			<action>dialogs.break_dialog</action>
+ 		</phrase>
++        <phrase id="30"><text>he_pda_sidor_strelok_ask</text><next>31</next></phrase>
++        <phrase id="31"><text>he_pda_sidor_strelok_answer</text><next>20</next></phrase>
+ 	</phrase_list>
+ </dialog>
+ 
+@@ -85,16 +81,9 @@
+ 		<phrase id="10">
+ 			<text>he_pda_other_way</text>
+ 			<next>11</next>
+-			<next>12</next>
+ 		</phrase>
+ 		<phrase id="11">
+-			<precondition>he_pda_access.vergas_known</precondition>
+ 			<text>he_pda_barman_vergas</text>
+-			<next>20</next>
+-		</phrase>
+-		<phrase id="12">
+-			<precondition>he_pda_access.vergas_unknown</precondition>
+-			<text>he_pda_barman_unknown</text>
+ 			<next>20</next>
+ 		</phrase>
+ 		<phrase id="20">
+@@ -268,3 +257,25 @@
+ 		</phrase>
+ 	</phrase_list>
+ </dialog>
++
++<dialog id="he_pda_vergas_module">
++    <precondition>dialogs.is_not_wounded</precondition>
++    <precondition>he_pda_access.module_dialog_available</precondition>
++    <phrase_list>
++        <phrase id="0"><text>he_pda_module_ask</text><next>1</next></phrase>
++        <phrase id="1"><text>he_pda_module_lore</text><next>2</next><next>20</next></phrase>
++        <phrase id="2"><text>he_pda_module_features_ask</text><next>3</next></phrase>
++        <phrase id="3"><text>he_pda_module_offer</text><next>4</next><next>10</next><next>20</next></phrase>
++        <phrase id="4">
++            <precondition>he_pda_access.module_install_available</precondition>
++            <text>he_pda_module_accept</text><action>he_pda_access.install_notes_module</action>
++            <next>5</next><next>6</next>
++        </phrase>
++        <phrase id="5"><precondition>he_pda_access.last_transaction_pending</precondition><text>he_pda_module_wait</text><next>21</next></phrase>
++        <phrase id="6"><precondition>he_pda_access.last_transaction_failed</precondition><text>he_pda_no_deal</text><next>20</next></phrase>
++        <phrase id="10"><precondition>he_pda_access.module_install_unavailable</precondition><text>he_pda_module_missing_ask</text><next>11</next></phrase>
++        <phrase id="11"><text>he_pda_module_missing_answer</text><next>20</next></phrase>
++        <phrase id="20"><text>he_pda_not_now</text><action>dialogs.break_dialog</action></phrase>
++        <phrase id="21"><text>he_pda_module_finish</text><action>dialogs.break_dialog</action></phrase>
++    </phrase_list>
++</dialog>
+--- before/gamedata/config/misc/items.ltx
++++ after/gamedata/config/misc/items.ltx
+@@ -2562,9 +2562,9 @@
+ 
+ [pda_chip_rad]:matras
+ visual 				= equipments\item_battery_02.ogf
+-inv_name   			= pda_chip_name
+-inv_name_short  	= pda_chip_name
+-description  		= pda_chip_rad_desc
++inv_name   			= he_pda_notes_module_name
++inv_name_short  	= he_pda_notes_module_name
++description  		= he_pda_notes_module_desc
+ inv_weight			= 0.1
+ inv_grid_width      = 1
+ inv_grid_height     = 1
+@@ -2574,16 +2574,22 @@
+ cost				= 4000
+ 
+ [pda_chip_spot]:pda_chip_rad
++inv_name = pda_chip_name
++inv_name_short = pda_chip_name
+ description  		= pda_chip_spot_desc
+ inv_grid_x          = 14
+ cost				= 10000
+ 
+ [pda_chip_cook]:pda_chip_rad
++inv_name = pda_chip_name
++inv_name_short = pda_chip_name
+ description  		= pda_chip_cook_desc
+ inv_grid_x          = 15
+ cost				= 50000
+ 
+ [pda_chip_hack]:pda_chip_rad
++inv_name = pda_chip_name
++inv_name_short = pda_chip_name
+ description  		= pda_chip_hack_desc
+ inv_grid_x          = 15
+ inv_grid_y          = 3
+--- before/gamedata/config/text/eng/script_strings.xml
++++ after/gamedata/config/text/eng/script_strings.xml
+@@ -3686,9 +3686,9 @@
+ <string id="he_pda_barman_offer"><text>I have a working one. Fifteen thousand, configured and fully charged. If you want it, I will check it here with you.</text></string>
+ <string id="he_pda_base_accept"><text>All right. Fifteen thousand. I will take it.</text></string>
+ <string id="he_pda_other_way"><text>Any cheaper way? Could someone rework an old one?</text></string>
+-<string id="he_pda_sidor_vergas"><text>Show it to Vergas. He works on those if the electronics are intact. He does not work for free either. Ask him his price.</text></string>
++<string id="he_pda_sidor_vergas"><text>Try Vergas, just nearby. He works on other people's PDAs and can piece together a working one. He will want something for the parts and the trouble, though.</text></string>
+ <string id="he_pda_sidor_unknown"><text>An old one might do. But I am not the one who will reflash it. Find a technician and make your arrangements with him.</text></string>
+-<string id="he_pda_barman_vergas"><text>Ask Vergas. He works on other people's PDAs, provided they have not burnt out. Decide beforehand which ones you are willing to hand over.</text></string>
++<string id="he_pda_barman_vergas"><text>Vergas handles that sort of work on the Cordon, near Sidorovich. He can adapt someone else's PDA for you. If you have the parts, it can work out cheaper than a new one.</text></string>
+ <string id="he_pda_barman_unknown"><text>A used PDA can sometimes be reworked. You need a technician willing to do it. I do not do that work.</text></string>
+ <string id="he_pda_not_now"><text>I will think about it. Not now.</text></string>
+ <string id="he_pda_sidor_wait"><text>Agreed. Let me check the device, then we will settle up.</text></string>
+@@ -3724,4 +3724,21 @@
+ <string id="he_pda_wolf_answer_unknown"><text>Sidorovich sells them, but they are not cheap. Or find a technician who can rework a used one. Finding a PDA does not make it yours: it still has someone else's password and configuration.</text></string>
+ <string id="he_pda_vergas_poor_ask"><text>What is wrong with this artifact?</text></string>
+ <string id="he_pda_vergas_poor_answer"><text>Look how little life it has left. I need it to power equipment, not sit on a shelf. Bring me one in better condition and we can talk.</text></string>
++<string id="he_local_no_medkit"><text>No medkit. Should have checked earlier.</text></string>
++<string id="he_local_no_bandage"><text>Out of bandages. Bad timing...</text></string>
++<string id="he_pda_notes_module_name"><text>Route annotation module</text></string>
++<string id="he_pda_notes_module_desc"><text>A memory board from a field navigator. Scraps of a paper route sketch and pencilled corrections remain on its casing. Its connector resembles a PDA connector, but it cannot be fitted directly. Vergas may be able to adapt it for custom map annotations.</text></string>
++<string id="he_pda_module_pickup"><text>A board from some kind of navigator. That connector looks familiar... Worth showing Vergas.</text></string>
++<string id="he_pda_module_ask"><text>Vergas, have a look at this. Could it fit a PDA?</text></string>
++<string id="he_pda_module_lore"><text>I know these. Field navigators used them: survey an area, record the points, take the data away. See the paper on the casing? The previous owner was correcting a route by hand. Looks like he hoped to transplant the memory into another device. The connectors look alike, but the wiring differs. Plug it in blindly and you could burn out both boards.</text></string>
++<string id="he_pda_module_features_ask"><text>Could you adapt it?</text></string>
++<string id="he_pda_module_offer"><text>I can. An adapter and a firmware adjustment will let you place and label your own map markers. It will not enlarge the battery or add a radiation meter. My fee is one first-tier artifact with at least half its condition remaining. You supply this board and a working PDA. I can do it while you wait.</text></string>
++<string id="he_pda_module_accept"><text>Agreed. Here are the board, PDA and artifact.</text></string>
++<string id="he_pda_module_wait"><text>Put them here. Keep your hands off the wires while I check it.</text></string>
++<string id="he_pda_module_finish"><text>All right. I will leave you to it.</text></string>
++<string id="he_pda_module_missing_ask"><text>What else do you need?</text></string>
++<string id="he_pda_module_missing_answer"><text>This board, a working charged PDA, and a first-tier artifact with at least half its condition. I will not take a spent artifact. If someone is servicing your PDA, collect it first.</text></string>
++<string id="he_pda_sidor_strelok_ask"><text>You looked at the PDA I arrived with. What was on it?</text></string>
++<string id="he_pda_sidor_strelok_answer"><text>One line stuck with me: "Kill Strelok." You could not tell me who you were, let alone who Strelok was. I do not sort out other people's orders, Marked One. Get back on your feet first. Then find out who wrote it.</text></string>
++<string id="he_pda_module_done"><text>Module installed. You can now place your own map annotations.</text></string>
+ </string_table>--- before/gamedata/config/text/rus/script_strings.xml
++++ after/gamedata/config/text/rus/script_strings.xml
+@@ -3867,9 +3867,9 @@
+ <string id="he_pda_barman_offer"><text>Есть один исправный. Пятнадцать тысяч, с настройкой и полной батареей. Если берёшь — проверю при тебе.</text></string>
+ <string id="he_pda_base_accept"><text>Ладно. Вот пятнадцать тысяч, беру.</text></string>
+ <string id="he_pda_other_way"><text>А подешевле никак? Может, старый переделать?</text></string>
+-<string id="he_pda_sidor_vergas"><text>Вергазу покажи. Если начинка цела, он с такими возится. Только даром и он работать не станет. Цену у него спросишь.</text></string>
++<string id="he_pda_sidor_vergas"><text>Зайди к Вергасу, он тут неподалёку. Чужие ПДА перебирает, из нескольких один живой собирает. Только даром и он работать не станет: что-нибудь за детали и возню попросит.</text></string>
+ <string id="he_pda_sidor_unknown"><text>Можно и старый. Только перепрошивать его будешь не у меня. Найдёшь мастера — с ним и договаривайся.</text></string>
+-<string id="he_pda_barman_vergas"><text>Спроси Вергаза. Он берётся за чужие ПДА, если они не сгорели. Только заранее реши, какие готов ему отдать.</text></string>
++<string id="he_pda_barman_vergas"><text>На Кордоне Вергас такими делами занимается, рядом с Сидоровичем. Может чужой ПДА под тебя переделать. Если есть из чего собирать, обойдётся дешевле нового.</text></string>
+ <string id="he_pda_barman_unknown"><text>Чужой ПДА иногда удаётся переделать. Нужен мастер, который за это возьмётся. Я таким не занимаюсь.</text></string>
+ <string id="he_pda_not_now"><text>Подумаю. Пока не надо.</text></string>
+ <string id="he_pda_sidor_wait"><text>Договорились. Сейчас проверю аппарат и оформим расчёт.</text></string>
+@@ -3905,4 +3905,21 @@
+ <string id="he_pda_wolf_answer_unknown"><text>Сидорович продаёт, но недёшево. Или ищи мастера, который чужой переделает. Сам по себе найденный ПДА твоим не станет: там и пароль, и чужая настройка.</text></string>
+ <string id="he_pda_vergas_poor_ask"><text>А этот артефакт тебя чем не устраивает?</text></string>
+ <string id="he_pda_vergas_poor_answer"><text>Посмотри, сколько в нём жизни осталось. Мне не сувенир нужен: от него ещё аппаратуру питать. Принесёшь такой же, но посвежее — поговорим.</text></string>
++<string id="he_local_no_medkit"><text>Аптечки-то и нет. Надо было проверить заранее.</text></string>
++<string id="he_local_no_bandage"><text>Бинты кончились. Вот не вовремя...</text></string>
++<string id="he_pda_notes_module_name"><text>Модуль путевых заметок</text></string>
++<string id="he_pda_notes_module_desc"><text>Плата памяти от полевого навигатора. На корпусе сохранились обрывки бумажной схемы и карандашные поправки к маршруту. Разъём похож на разъём обычного ПДА, но напрямую плата не подключается. Возможно, Вергас сможет приспособить её для собственных пометок на карте.</text></string>
++<string id="he_pda_module_pickup"><text>Плата от какого-то навигатора. Разъём знакомый... Стоит показать Вергасу.</text></string>
++<string id="he_pda_module_ask"><text>Вергас, посмотри, что нашёл. К ПДА такое подойдёт?</text></string>
++<string id="he_pda_module_lore"><text>Знакомая штука. Такие ставили в полевые навигаторы: промерил участок, записал точки, унёс данные с собой. Видишь бумагу на корпусе? Прежний хозяин маршрут от руки поправлял. Похоже, таскал плату в надежде пересадить память в другой аппарат. Только разъёмы похожи, а разводка разная. Воткнуть наугад — обе платы спалишь.</text></string>
++<string id="he_pda_module_features_ask"><text>А ты сможешь приспособить?</text></string>
++<string id="he_pda_module_offer"><text>Смогу. Переходник соберу, прошивку подправлю — будешь сам ставить пометки на карте и подписывать их. Батарею это больше не сделает, радиометр тоже не появится. За работу возьму один простой артефакт первого уровня, не выработанный больше чем наполовину. Плата и рабочий ПДА, само собой, твои. Сделаю при тебе.</text></string>
++<string id="he_pda_module_accept"><text>Договорились. Вот плата, ПДА и артефакт.</text></string>
++<string id="he_pda_module_wait"><text>Клади сюда. Только за провода не хватайся, пока проверяю.</text></string>
++<string id="he_pda_module_finish"><text>Хорошо, не буду мешать.</text></string>
++<string id="he_pda_module_missing_ask"><text>Чего тебе не хватает для работы?</text></string>
++<string id="he_pda_module_missing_answer"><text>Нужны эта плата, исправный заряженный ПДА и простой артефакт первого уровня — минимум половина ресурса. Дохлый артефакт не возьму. Если ПДА сейчас у мастера, сначала забери его.</text></string>
++<string id="he_pda_sidor_strelok_ask"><text>Ты ведь смотрел тот ПДА, с которым меня привезли. Что там было?</text></string>
++<string id="he_pda_sidor_strelok_answer"><text>Одну надпись запомнил: «Убить Стрелка». Ты мне тогда ни себя объяснить не мог, ни кто такой Стрелок. Я чужие поручения не разбираю, Меченый. Сначала на ноги встань, потом уж выясняй, кто тебе чего написал.</text></string>
++<string id="he_pda_module_done"><text>Модуль установлен. Теперь можно ставить собственные пометки на карте.</text></string>
+ </string_table>--- before/gamedata/scripts/amk/amk_mod.script
++++ after/gamedata/scripts/amk/amk_mod.script
+@@ -483,7 +483,7 @@
+ 				["sak_resiver2_yantar"]="sak.add_skaner_2_saharoff()",
+ 				["scanner_artefact"]="sak.add_scanner_artefact()",
+ 				["aver_monolith_scanner"]="sak.set_aver_monolith_scanner()",
+-				["pda_chip_rad"]="amk_mod.handle_pda_chip('pda_upgr_rad')",
++				["pda_chip_rad"]="he_pda_access.module_use_hint()",
+ 				["pda_chip_spot"]="amk_mod.handle_pda_chip('pda_upgr_spot')",
+ 				["pda_chip_cook"]="amk_mod.handle_pda_chip('pda_upgr_cook')",
+ 				["pda_chip_hack"]="amk_mod.handle_pda_chip('pda_upgr_hack')",
+--- before/gamedata/scripts/binders/bind_stalker.script
++++ after/gamedata/scripts/binders/bind_stalker.script
+@@ -762,7 +762,7 @@
+ 			end
+ 		end)
+ 		if not inv_accum then
+-			sak.send_tip("Н-да, аккумулятор-то где...", "Нету его!", 1, 10, "g_g", "sak", "red")
++			sak.send_tip_local("Н-да, аккумулятор-то где...", "Нету его!", 1, 10, "g_g", "sak", "red")
+ 			return
+ 		end
+ 		db.actor:move_to_slot(inv_accum)
+@@ -1042,7 +1042,7 @@
+ 				end)
+ 			else
+ 				sak.restore_weap()
+-				sak.send_tip("Невозможно присоединить прицел к оружию", "Нету места", 0, 5, "g_g", "sak", "red")
++				sak.send_tip_local("Невозможно присоединить прицел к оружию", "Нету места", 0, 5, "g_g", "sak", "red")
+ 			end
+ 		end)
+ 	end,
+--- before/gamedata/scripts/kotovod/monster_parts.script
++++ after/gamedata/scripts/kotovod/monster_parts.script
+@@ -785,7 +785,7 @@
+             if will_break then
+                 misc.release_obj(knife_item)
+                 db.actor:drop_item(part_to_take)
+-                sak.send_tip(
++                sak.send_tip_local(
+                     "Чёрт! Совсем нож в негодность пришёл \\nТеперь точно новый покупать...",
+                     "Мысли вслух", 0, 10, "g_g", "no", "red"
+                 )
+--- before/gamedata/scripts/sak/sak.script
++++ after/gamedata/scripts/sak/sak.script
+@@ -1412,7 +1412,7 @@
+ 	end
+ end
+ function info_received()
+-	send_tip(game.translate_string("info_received"),game.translate_string("info_received_h"),1,10,"nlc","pda_news", "sky_blue")
++	send_tip_local(game.translate_string("info_received"),game.translate_string("info_received_h"),1,10,"nlc","pda_news", "sky_blue")
+ end
+ function info_amk_received()
+ 	send_tip(game.translate_string("info_amk_received"),game.translate_string("info_amk_received_h"),1,10,"artmod","pda_news", "sky_blue")
+@@ -6319,7 +6319,7 @@
+ 			actor:give_talk_message( news_text, task_texture, task_rect, "iconed_answer_item" )		
+ 		end	
+ 	else
+-		if not pda_battery.news_blocked() then actor:give_game_news( news_text, task_texture, task_rect, 0, 2000 ) end
++		actor:give_game_news( news_text, task_texture, task_rect, 0, 2000 )
+ 	end	
+ end
+ 
+@@ -6913,6 +6913,12 @@
+     orange   = "%c[ 255, 238, 153, 26  ]",
+ 	salmon	 = "%c[ 255, 255, 160, 122 ]",
+ }  
++
++-- Local interaction feedback never depends on PDA reception.
++function send_tip_local(news_text, header, timeout, showtime, sender, sound, colour, dlg)
++    if not db.actor or news_text == nil then return false end
++    return present_tip(news_text, header, timeout, showtime, sender, sound, colour, dlg)
++end
+ 
+ function send_tip(news_text, header, timeout, showtime, sender, sound, colour, dlg)
+ 	if news_text==nil or db.actor:has_info("pda_is_broken") or pda_battery.news_blocked() then return end
+--- before/gamedata/scripts/vergas/vergas_flask.script
++++ after/gamedata/scripts/vergas/vergas_flask.script
+@@ -102,7 +102,7 @@
+ 
+     local current_water = get_flask_water( obj )	-- кол-во воды во фляге
+     if current_water == 1 then 
+-		sak.send_tip( 
++		sak.send_tip_local(
+ 			"Так фляга уже пустая...", 
+ 			"Мысли вслух", 0, 5, "g_g", "no", "red" 
+ 		)	
+@@ -114,7 +114,7 @@
+     -- Проверяем наличие маски на костюме
+     local mask, armor = vergas_masks.mask_definition()
+     if mask == "?" then
+-        sak.send_tip( 
++        sak.send_tip_local(
+ 			"Совсем из головы вылетело, маски-то и нету...", 
+ 			"Мысли вслух", 0, 5, "g_g", "no", "red" 
+ 		)
+@@ -129,7 +129,7 @@
+     local dirt_level = tonumber( tbl_custom[ 2 ] )
+ 
+     if dirt_level <= 1 then
+-        sak.send_tip( 
++        sak.send_tip_local(
+ 			"Маска ведь чистая, зачем её мыть...", 
+ 			"Мысли вслух", 0, 5, "g_g", "no", "yellow" 
+ 		)	
+@@ -267,7 +267,7 @@
+ 	local current_water = get_flask_water( obj )
+ 	if current_water == 1 then
+ 		vergas_lib.s_play( [[device\sleeping_bag\sleep_cancel]] )
+-		sak.send_tip(
++		sak.send_tip_local(
+ 			"Ни капельки не осталось...",
+ 			"Мысли вслух", 0, 5, "g_g", "no", "red"
+ 		)
+--- before/gamedata/scripts/vergas/vergas_masks.script
++++ after/gamedata/scripts/vergas/vergas_masks.script
+@@ -1105,9 +1105,9 @@
+ 	if flag_fill then
+ 		vergas_lib.s_play([[ambient\waterflow]],1)
+ 		timers.start_timer("fill_timer",14,"vergas_masks.end_fill_timer()")					--???????? ??????
+-		sak.send_tip(game.translate_string("fill_flask_1"),game.translate_string("fill_flask_2"), 1, 10, "g_g", "sak", "sky_blue")
++		sak.send_tip_local(game.translate_string("fill_flask_1"),game.translate_string("fill_flask_2"), 1, 10, "g_g", "sak", "sky_blue")
+ 	else
+-		sak.send_tip(game.translate_string("fill_flask_3"),game.translate_string("fill_flask_4"), 1, 10, "g_g", "sak", "red")
++		sak.send_tip_local(game.translate_string("fill_flask_3"),game.translate_string("fill_flask_4"), 1, 10, "g_g", "sak", "red")
+ 		--vergas_lib.s_play([[device\masks\water_no]],1)
+ 		vergas_lib.s_play( [[device\antirad_no]], 1 )
+ 		bind_stalker.restore_weapon()
+--- before/gamedata/scripts/vergas/vergas_medical_elastic.script
++++ after/gamedata/scripts/vergas/vergas_medical_elastic.script
+@@ -293,7 +293,7 @@
+     if db.actor:object("antirad") ~= nil then
+         db.actor:eat(db.actor:object("antirad"))
+     else
+-        sak.send_tip("А ведь нету антирада", "Худуть твою железа мать!", 1, 10, "g_g", "sak", "red")
++        sak.send_tip_local("А ведь нету антирада", "Худуть твою железа мать!", 1, 10, "g_g", "sak", "red")
+         vergas_lib.s_play([[device\antirad_no]], 1)
+     end
+ end
+--- /dev/null
++++ after/gamedata/scripts/he_local_feedback.script
+@@ -0,0 +1,30 @@
++-- Missing quick-use feedback is local, independent of PDA availability.
++local last_used, last_notice = {}, {}
++local function binding(class)
++    if class == clsid.obj_medkit then return key_bindings.kUSE_MEDKIT end
++    if class == clsid.obj_bandage then return key_bindings.kUSE_BANDAGE end
++end
++function before_use(item)
++    local bind = item and binding(item:clsid())
++    if bind then last_used[bind] = time_global() end
++end
++function on_key(key, bind)
++    if bind ~= key_bindings.kUSE_MEDKIT and bind ~= key_bindings.kUSE_BANDAGE then return end
++    if not db.actor or db.actor:is_talking() or level.main_input_receiver() then return end
++    local now = time_global()
++    -- Handles either callback order when the key consumed the last item.
++    if last_used[bind] and now-last_used[bind] < 500 then return end
++    if last_notice[bind] and now-last_notice[bind] < 1500 then return end
++    for _, rec in get_shadow_inv():get_content(false):ipairs() do
++        if binding(rec.obj:clsid()) == bind then return end
++    end
++    last_notice[bind] = now
++    local key = bind == key_bindings.kUSE_MEDKIT and "he_local_no_medkit" or "he_local_no_bandage"
++    sak.send_tip_local(game.translate_string(key),game.translate_string("thinking_out_loud"),0,5,"g_g","no","yellow")
++end
++function on_load() last_used={};last_notice={} end
++function attach(sm)
++    sm:subscribe({signal="on_key",fun=this.on_key})
++    sm:subscribe({signal="on_actor_before_use",fun=this.before_use})
++    sm:subscribe({signal="on_late_init_all",fun=this.on_load})
++end
+--- before/gamedata/scripts/ogse/ogse_signals_addons_list.script
++++ after/gamedata/scripts/ogse/ogse_signals_addons_list.script
+@@ -23,7 +23,8 @@
+ 	"he_red_water",
+ 	"anagramm_flash", -- [HE-PORT]
+ 	"he_pda_access",
+-	"he_pda_model", -- [HE-PORT]
++	"he_pda_model",
++	"he_local_feedback", -- [HE-PORT]
+ 	"he_pda_news", -- [HE-PORT]
+ 	"pda_battery", -- [HE-PORT]
+ 	"he_pda_market", -- [HE-PORT]

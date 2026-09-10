@@ -197,6 +197,28 @@ function electra_active()
     return smooth > 0.01
 end
 
+local function is_emission_active()
+    if db and db.blowout_active == true then return true end
+    local value = get_value( "blowout", 0 )
+    if type( value ) == "boolean" then return value end
+    return ( tonumber( value ) or 0 ) ~= 0
+end
+
+function reception_blocked()
+    if is_emission_active() then return true, "emission" end
+    if sivol_critical_malfunction and sivol_critical_malfunction.is_device_active
+        and sivol_critical_malfunction.is_device_active( "pda" ) then
+        return true, "critical_pda"
+    end
+
+    return false, nil
+end
+
+function screen_locked()
+    return db and db.actor and (db.actor:has_info("pda_is_broken")
+        or sivol_critical_malfunction.is_device_active("pda")) or false
+end
+
 -- Helper: Check if 3D PDA is in player's hands and active (not holstering)
 local function is_pda_in_hands()
     local active_item = db.actor:active_item()
@@ -223,20 +245,16 @@ end
 -- Expose ownership check for bind_stalker / binder_update_7
 function owns_pda_params()
     if not db.actor then return false end
-    local pda = db.actor:object("device_pda")
+    local pda = he_pda_model.get_pda()
     local is_3d_pda = get_console():get_string("g_3d_pda") == 'on'
     local broken = has_alife_info("pda_is_broken")
     
-    if not (pda and is_pda_in_hands() and is_3d_pda and not broken) then
+    if not (pda and (pda:condition() > 0 or broken) and is_pda_in_hands() and is_3d_pda) then
         return false
     end
 
-	local loc_base, _ = get_location_baseline()
-	update_artifact_pda_fx()
-
-	return (smooth > 0.01)
-		or (loc_base > 0)
-		or ((cached_artifact_pda_glitch or 0) > 0)
+    update_artifact_pda_fx()
+    return true
 end
 
 -- ======================= RAIN AMBIENT STATIC (conservative, flavor only) =======================
@@ -326,6 +344,10 @@ local function check_electra_proximity()
     local glitch_source = math.max(electra_eff, artifact_glitch, hit_glitch)
     cached_glitch_source = glitch_source
     update_lesser_emp_event(glitch_source, source_type)
+    -- Keep shared torch/NVD exposure above unchanged; attenuate only the PDA response.
+    local pda_resistance = he_pda_access.upgraded_emp_resistance()
+    glitch_source = glitch_source * (1 - pda_resistance)
+    electra_eff = electra_eff * (1 - pda_resistance)
     local target = math.max(glitch_source, loc_base_eff)
 
     -- Sound-gating target excludes rain — location baseline and glitch sources only
@@ -381,17 +403,25 @@ local function check_electra_proximity()
     local alpha_mode = base_alpha + smoothed_blackout * (1.55 - base_alpha)
 
 	-- 6. Validation for driving audio and shader
-    local pda = db.actor:object("device_pda")
+    local pda = he_pda_model.get_pda()
     local is_3d_pda = get_console():get_string("g_3d_pda") == 'on'
     local pda_in_hands = is_pda_in_hands()
     local broken = has_alife_info("pda_is_broken")
 
-    local can_drive = pda and pda_in_hands and is_3d_pda and not broken
+    local can_drive = pda and pda_in_hands and is_3d_pda and (pda:condition() > 0 or broken)
+    local emission = is_emission_active()
 
     if can_drive then
-        if sivol_critical_malfunction and sivol_critical_malfunction.is_device_active("pda") then
+        if screen_locked() then
             pda_noise.stop_noise_sound()  -- dead silence reads more "broken" than more static
             set_pda_params(pda_shader_params:set(0.0, 1.0, 1.55))  -- same ceiling as the existing electra blackout
+        elseif emission then
+            set_pda_params(pda_shader_params:set(0.4, 0.5, 0.0))
+            if has_alife_info("ui_pda") then
+                pda_noise.play_noise_sound()
+            else
+                pda_noise.stop_noise_sound()
+            end
         else
             if smooth_non_rain > 0.01 and not electra_noise_muted then
                 pda_noise.play_noise_sound()

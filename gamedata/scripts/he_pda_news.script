@@ -1,0 +1,115 @@
+-- [HE-PORT] Selected PDA messages: one FIFO, wall-clock presentation delays.
+local KEY, SEQ, CLOCK_KEY = "he_pda_news_queue", "he_pda_news_seq", "he_pda_news_pause"
+local SCHEMA = 2
+local last_tick, last_block, last_failure
+local new_ticks = {}
+local function queue() local q=get_value(KEY); return type(q)=="table" and q or {} end
+local function available()
+    if not db or not db.actor then return false,"actor" end
+    if db.actor:has_info("pda_is_broken") or db.actor:has_info("pda_will_be_broken") then return false,"broken" end
+    if pda_battery.is_charging() then return false,"charging" end
+    local pda=he_pda_model.get_pda()
+    if not pda then return false,"missing" end
+    if pda:condition()<=0 then return false,"empty" end
+    if sleep_manager.is_sleep_active() then return false,"sleep" end
+    if db.actor:is_talking() then return false,"dialogue" end
+    if he_pda_access.is_busy() then return false,"transaction" end
+    local blocked,reason=sivol_pda.reception_blocked()
+    if blocked then return false,reason end
+    return true
+end
+local function migrate(r)
+    if r.schema==1 then
+        -- Development saves may contain the previous queue. Never discard their text.
+        r.schema=SCHEMA
+        r.remaining=0
+        r.delayed=true
+    end
+    return r.schema==SCHEMA and r.channel=="pda" and type(r.text)=="string"
+        and (r.route=="sak" or r.route=="amk")
+end
+function enqueue(route,text,header,timeout,showtime,sender,sound,colour,dlg,origin_id,origin_profile)
+    if type(text)~="string" or (route~="sak" and route~="amk") then return false end
+    local q=queue()
+    local seq=(tonumber(get_value(SEQ,0)) or 0)+1
+    set_value(SEQ,seq)
+    local delay=math.max(0,tonumber(timeout) or 0)
+    local ready,reason=available()
+    local r={schema=SCHEMA,channel="pda",seq=seq,route=route,text=text,header=header,
+        timeout_seconds=delay,remaining=delay,showtime_seconds=tonumber(showtime) or 5,
+        sender=sender,sound=sound,colour=colour,dlg=dlg,
+        origin_id=tonumber(origin_id),origin_profile=origin_profile,
+        created_game_seconds=timers.Get_Game_Seconds(),delayed=not ready}
+    local previous=q[#q]
+    if previous and origin_profile=="gar_apostol_pair" and previous.origin_profile==origin_profile
+        and math.abs(r.created_game_seconds-(previous.created_game_seconds or -100))<1 then
+        r.gap_before=math.max(0,delay-(previous.timeout_seconds or 0))
+    end
+    new_ticks[seq]=time_global()
+    table.insert(q,r)
+    set_value(KEY,q)
+    -- Start the clock at enqueue, not at the first polling tick.
+    last_tick=last_tick or time_global()
+    log2("[he_pda_news] queued seq=%s depth=%d origin=%s reason=%s",seq,#q,tostring(origin_profile),tostring(reason or "ready"))
+    return true
+end
+local function dispatch(r)
+    local text,header=r.text,r.header
+    if r.delayed then
+        header=game.translate_string("he_pda_delayed")..": "..tostring(header or "")
+        text=game.translate_string("he_pda_delayed_body").."\\n"..text
+    end
+    if r.route=="sak" then
+        return sak.present_tip(text,header,0,r.showtime_seconds,r.sender,r.sound,r.colour,r.dlg)
+    end
+    return amk.present_tip(text,header,0,r.showtime_seconds,r.sender,r.sound)
+end
+function on_update()
+    ogse_signals.get_mgr():reschedule(200)
+    if not db or not db.actor then last_tick=nil;return end
+    local now=time_global()
+    local dt=last_tick and math.max(0,(now-last_tick)/1000) or 0
+    last_tick=now
+    local q=queue()
+    local pause=math.max(0,(tonumber(get_value(CLOCK_KEY,0)) or 0)-dt)
+    set_value(CLOCK_KEY,pause)
+    local ready,reason=available()
+    for _,r in ipairs(q) do
+        if type(r)=="table" and migrate(r) then
+            local elapsed = new_ticks[r.seq] and math.min(dt,math.max(0,(now-new_ticks[r.seq])/1000)) or dt
+            new_ticks[r.seq]=nil
+            r.remaining=math.max(0,(tonumber(r.remaining) or 0)-elapsed)
+            if not ready then r.delayed=true end
+        end
+    end
+    set_value(KEY,q)
+    if #q==0 then last_block=nil;return end
+    local r=q[1]
+    if type(r)~="table" or not migrate(r) then reason="invalid_record";ready=false end
+    if not ready then
+        if reason~=last_block then log2("[he_pda_news] blocked depth=%d reason=%s",#q,tostring(reason));last_block=reason end
+        return
+    end
+    last_block=nil
+    if r.remaining>0.000001 or pause>0.000001 then return end
+    local ok,result=pcall(dispatch,r)
+    if not ok or result~=true then
+        local failure=tostring(result)
+        if failure~=last_failure then log2("[he_pda_news] dispatch_failed seq=%s error=%s",r.seq,failure);last_failure=failure end
+        return
+    end
+    last_failure=nil
+    table.remove(q,1)
+    local next_record=q[1]
+    local spacing=math.max(5,tonumber(r.showtime_seconds) or 5)
+    if next_record and next_record.gap_before then spacing=next_record.gap_before end
+    set_value(CLOCK_KEY,spacing)
+    set_value(KEY,q)
+    log2("[he_pda_news] delivered seq=%s depth=%d",r.seq,#q)
+end
+function get_queue_depth() return #queue() end
+function on_load() last_tick=nil;last_block=nil;last_failure=nil;new_ticks={} end
+function attach(sm)
+    sm:subscribe({signal="on_update",fun=this.on_update})
+    sm:subscribe({signal="on_late_init_all",fun=this.on_load})
+end
