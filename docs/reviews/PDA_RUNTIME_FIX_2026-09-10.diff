@@ -1,0 +1,203 @@
+--- before/gamedata/scripts/he_pda_access.script
++++ after/gamedata/scripts/he_pda_access.script
+@@ -46,6 +46,13 @@
+     local parent = obj and obj:parent()
+     if obj and obj:section() == section and parent and parent:id() == db.actor:id() then return obj end
+ end
++local function inventory_owned(id, section)
++    local obj = owned(id,section)
++    if obj then return obj end
++    for _, rec in get_shadow_inv():get_content(true):ipairs() do
++        if rec.id == id and rec.sect == section then return rec.obj end
++    end
++end
+ local function record(obj, kind)
+     local sobj = alife():object(obj:id())
+     return {id=obj:id(), section=obj:section(), name=sobj and sobj:name(), kind=kind,
+@@ -58,7 +65,7 @@
+     end
+     return false
+ end
+-local function collect_artifacts(tier, count)
++local function collect_artifacts(tier, count, minimum)
+     local result, seen = {}, {}
+     -- Match the established non-dyn tier helper, including its difficulty threshold.
+     for _, base in ipairs(kotovod.tbl_arts[tier]) do
+@@ -66,7 +73,7 @@
+             if strpos(section, base, 1, true) then
+                 for _, id in ipairs(ids) do
+                     local obj = owned(id, section)
+-                    if obj and not seen[id] and obj:condition() >= artifact_minimum() then
++                    if obj and not seen[id] and obj:condition() >= (minimum or artifact_minimum()) then
+                         seen[id] = true
+                         table.insert(result, record(obj, tier))
+                         if #result == count then return result end
+@@ -78,18 +85,13 @@
+     return result
+ end
+ local function donor_valid(id)
+-    local obj = owned(id, DONOR)
++    local obj = inventory_owned(id, DONOR)
+     if not obj then return end
+     local status = vergas_pda.get_pda_status(id)
+     if status == 1 or status == 2 then return obj end
+ end
+ local function valid(r)
+-    local obj = owned(r.id, r.section)
+-    if not obj and r.kind == "toz" then
+-        for _, rec in get_shadow_inv():get_content(true):ipairs() do
+-            if rec.id == r.id and rec.sect == r.section then obj = rec.obj; break end
+-        end
+-    end
++    local obj = (r.kind == "toz" or r.kind == "donor") and inventory_owned(r.id,r.section) or owned(r.id,r.section)
+     local sobj = obj and alife():object(r.id)
+     if not obj or not sobj or sobj:name() ~= r.name then return false end
+     if r.kind == "donor" then return donor_valid(r.id) ~= nil and vergas_pda.get_pda_cdata(r.id) == r.cdata end
+@@ -106,15 +108,25 @@
+ end
+ local function donors()
+     local result = {}
+-    for _, id in ipairs((sak_inventory.rucksack or {})[DONOR] or {}) do
+-        local obj = donor_valid(id)
+-        if obj then table.insert(result, record(obj, "donor")) end
++    -- NPC PDAs are usable items, classified as eatable, not rucksack.
++    -- Read current full inventory rather than either cached category.
++    for _, rec in get_shadow_inv():get_content(true):ipairs() do
++        if rec.sect == DONOR then
++            local obj = donor_valid(rec.id)
++            if obj then table.insert(result, record(obj, "donor")) end
++        end
+     end
+     table.sort(result, function(a,b) return a.id < b.id end)
+     return result
+ end
+ function can_vergas_one() return vergas_reflash_available() and #donors() >= 1 and #collect_artifacts("lvl1",1) == 1 end
+ function can_vergas_five() return vergas_reflash_available() and #donors() >= 5 end
++function vergas_artifact_too_poor()
++    return vergas_reflash_available() and #donors() >= 1
++        and #collect_artifacts("lvl1",1) == 0 and #collect_artifacts("lvl1",1,0) == 1
++end
++function wolf_hint_available() return can_acquire_base() and not saved_true("he_pda_wolf_hint_seen") end
++function wolf_hint_seen() set_value("he_pda_wolf_hint_seen",true) end
+ function upgrade_artifacts_have() return upgrade_dialog_available() and #collect_artifacts("lvl2",2) == 2 end
+ local function toz_record()
+     local minimum = tonumber(level.get_game_difficulty()) == 0 and 0.475 or 0.95
+--- before/gamedata/scripts/he_pda_market.script
++++ after/gamedata/scripts/he_pda_market.script
+@@ -102,6 +102,8 @@
+ function on_update()
+ 	ogse_signals.get_mgr():reschedule( HEARTBEAT_MS )
+ 	if not db.actor then return end
++	-- Updates run before late-init: never classify the starter as an acquisition.
++	if get_value(STARTED_KEY) == nil then return end
+ 	local update_state = string.format( "level=%s info=%s", level.name(), tostring( db.actor:has_info( MARKET_INFO ) ) )
+ 	if last_update_state ~= update_state then
+ 		last_update_state = update_state
+--- before/gamedata/config/gameplay/dialogs_escape.xml
++++ after/gamedata/config/gameplay/dialogs_escape.xml
+@@ -1833,8 +1833,8 @@
+ 			<next>10</next>
+ 			<next>20</next>
+ 			<next>30</next>
++			<next>50</next>
+ 			<next>40</next>
+-			<next>50</next>
+ 		</phrase>
+ <!-- 10 -->
+ 		<phrase id="10">
+@@ -1935,7 +1935,7 @@
+ 			<text>esc_wolf_zone_info_dialog_40</text>
+ 		</phrase>
+ 		<phrase id="50">
+-			<precondition>he_pda_access.can_acquire_base</precondition>
++			<precondition>he_pda_access.wolf_hint_available</precondition>
+ 			<text>esc_wolf_zone_info_dialog_50</text>
+ 			<next>51</next>
+ 			<next>52</next>
+@@ -1943,11 +1943,13 @@
+ 		<phrase id="51">
+ 			<precondition>he_pda_access.vergas_known</precondition>
+ 			<text>he_pda_wolf_answer_known</text>
++			<action>he_pda_access.wolf_hint_seen</action>
+ 			<next>2</next>
+ 		</phrase>
+ 		<phrase id="52">
+ 			<precondition>he_pda_access.vergas_unknown</precondition>
+ 			<text>he_pda_wolf_answer_unknown</text>
++			<action>he_pda_access.wolf_hint_seen</action>
+ 			<next>2</next>
+ 		</phrase>
+ 	</phrase_list>
+--- before/gamedata/config/gameplay/dialogs_he_pda_access.xml
++++ after/gamedata/config/gameplay/dialogs_he_pda_access.xml
+@@ -37,12 +37,12 @@
+ 		<phrase id="11">
+ 			<precondition>he_pda_access.vergas_known</precondition>
+ 			<text>he_pda_sidor_vergas</text>
+-			<action>dialogs.break_dialog</action>
++			<next>20</next>
+ 		</phrase>
+ 		<phrase id="12">
+ 			<precondition>he_pda_access.vergas_unknown</precondition>
+ 			<text>he_pda_sidor_unknown</text>
+-			<action>dialogs.break_dialog</action>
++			<next>20</next>
+ 		</phrase>
+ 		<phrase id="20">
+ 			<text>he_pda_not_now</text>
+@@ -90,12 +90,12 @@
+ 		<phrase id="11">
+ 			<precondition>he_pda_access.vergas_known</precondition>
+ 			<text>he_pda_barman_vergas</text>
+-			<action>dialogs.break_dialog</action>
++			<next>20</next>
+ 		</phrase>
+ 		<phrase id="12">
+ 			<precondition>he_pda_access.vergas_unknown</precondition>
+ 			<text>he_pda_barman_unknown</text>
+-			<action>dialogs.break_dialog</action>
++			<next>20</next>
+ 		</phrase>
+ 		<phrase id="20">
+ 			<text>he_pda_not_now</text>
+@@ -155,6 +155,7 @@
+ 			<text>he_pda_vergas_offer</text>
+ 			<next>10</next>
+ 			<next>20</next>
++			<next>40</next>
+ 			<next>30</next>
+ 		</phrase>
+ 		<phrase id="10">
+@@ -218,6 +219,15 @@
+ 			<action>he_pda_access.clear_vergas_preview</action>
+ 			<action>dialogs.break_dialog</action>
+ 		</phrase>
++        <phrase id="40">
++            <precondition>he_pda_access.vergas_artifact_too_poor</precondition>
++            <text>he_pda_vergas_poor_ask</text>
++            <next>41</next>
++        </phrase>
++        <phrase id="41">
++            <text>he_pda_vergas_poor_answer</text>
++            <next>30</next>
++        </phrase>
+ 	</phrase_list>
+ </dialog>
+ 
+--- before/gamedata/config/text/eng/script_strings.xml
++++ after/gamedata/config/text/eng/script_strings.xml
+@@ -3722,4 +3722,6 @@
+ <string id="he_pda_burn_thanks"><text>Understood. I will speak to him.</text></string>
+ <string id="he_pda_wolf_answer_known"><text>Ask Sidorovich, though he will want a fair amount of money. If you have used PDAs, show them to Vergas; he can rework them. And use your head when following an unfamiliar signal. The PDA will not think for you.</text></string>
+ <string id="he_pda_wolf_answer_unknown"><text>Sidorovich sells them, but they are not cheap. Or find a technician who can rework a used one. Finding a PDA does not make it yours: it still has someone else's password and configuration.</text></string>
++<string id="he_pda_vergas_poor_ask"><text>What is wrong with this artifact?</text></string>
++<string id="he_pda_vergas_poor_answer"><text>Look how little life it has left. I need it to power equipment, not sit on a shelf. Bring me one in better condition and we can talk.</text></string>
+ </string_table>--- before/gamedata/config/text/rus/script_strings.xml
++++ after/gamedata/config/text/rus/script_strings.xml
+@@ -3903,4 +3903,6 @@
+ <string id="he_pda_burn_thanks"><text>Понятно. Поговорю с ним.</text></string>
+ <string id="he_pda_wolf_answer_known"><text>У Сидоровича спроси. Только денег он попросит немало. Есть чужие ПДА — покажи Вергазу, он умеет переделывать. А незнакомый сигнал всё равно проверяй головой: ПДА за тебя не думает.</text></string>
+ <string id="he_pda_wolf_answer_unknown"><text>Сидорович продаёт, но недёшево. Или ищи мастера, который чужой переделает. Сам по себе найденный ПДА твоим не станет: там и пароль, и чужая настройка.</text></string>
++<string id="he_pda_vergas_poor_ask"><text>А этот артефакт тебя чем не устраивает?</text></string>
++<string id="he_pda_vergas_poor_answer"><text>Посмотри, сколько в нём жизни осталось. Мне не сувенир нужен: от него ещё аппаратуру питать. Принесёшь такой же, но посвежее — поговорим.</text></string>
+ </string_table>

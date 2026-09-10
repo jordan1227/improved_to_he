@@ -1,0 +1,109 @@
+-- [HE-PORT] Geometry variants share one gameplay tier. No article/alarm reset.
+local BASE, ADVANCED = "device_pda", "device_pda_upgraded"
+local KEY = "he_pda_model_transfer"
+local started, last_error
+
+function is_pda_section(section) return section == BASE or section == ADVANCED end
+function get_pda()
+    if not db or not db.actor then return end
+    -- The original remains authoritative until the replacement is fully attached.
+    return db.actor:object(BASE) or db.actor:object(ADVANCED)
+end
+function section()
+    return he_pda_access.has_upgrade() and ADVANCED or BASE
+end
+local function owned(id, expected)
+    local obj = id and client_obj(id)
+    local parent = obj and obj:parent()
+    if obj and obj:section() == expected and parent and parent:id() == db.actor:id() then return obj end
+end
+local function identity(id, name)
+    local obj = id and alife():object(id)
+    return obj and obj:name() == name and obj or nil
+end
+local function ensure_slot(pda)
+    local current = db.actor:item_in_slot(7)
+    if current and current:id() == pda:id() then return true end
+    if current then return false end
+    db.actor:move_to_slot(pda, false)
+    current = db.actor:item_in_slot(7)
+    if current and current:id() == pda:id() then
+        log2("[he_pda_model] equipped slot=7 pda=%s",tostring(pda:id()))
+        return true
+    end
+    return false
+end
+local function cancel(tx, reason)
+    local target = identity(tx.new_id,tx.new_name)
+    if target then alife():release(target,true) end
+    remove_value(KEY)
+    started = nil
+    log2("[he_pda_model] cancelled reason=%s original_preserved=true",reason)
+end
+local function step()
+    local tx = get_value(KEY)
+    if not tx then
+        if not he_pda_access.has_upgrade() then return end
+        local advanced = db.actor:object(ADVANCED)
+        if advanced then ensure_slot(advanced); return end
+        local original = db.actor:object(BASE)
+        if not original or db.actor:object(ADVANCED) then return end
+        local server = alife():object(original:id())
+        if not server then return end
+        tx = {old_id=original:id(),old_name=server:name(),phase="prepare"}
+        set_value(KEY,tx)
+        started = time_global()
+    end
+    started = started or time_global()
+    local original = identity(tx.old_id,tx.old_name) and owned(tx.old_id,BASE)
+    if tx.phase == "prepare" then
+        if not original then return cancel(tx,"original_unavailable") end
+        if not tx.new_id then
+            local server = misc.spawn_to(ADVANCED,db.actor)
+            if not server then return cancel(tx,"spawn_rejected") end
+            tx.new_id,tx.new_name = server.id,server:name()
+            set_value(KEY,tx)
+        end
+        local replacement = identity(tx.new_id,tx.new_name) and owned(tx.new_id,ADVANCED)
+        if not replacement then
+            if time_global()-started > 10000 then cancel(tx,"spawn_timeout") end
+            return
+        end
+        -- Copy the latest charge, including any drain while waiting for attachment.
+        replacement:set_condition(original:condition())
+        tx.phase = "commit"
+        set_value(KEY,tx)
+    end
+    if not (identity(tx.new_id,tx.new_name) and owned(tx.new_id,ADVANCED)) then
+        error("committing model replacement unavailable")
+    end
+    local old_server = identity(tx.old_id,tx.old_name)
+    if old_server then
+        if not original then error("original model moved during commit") end
+        alife():release(old_server,true)
+    end
+    -- GetPDA() reads slot 7, not the rucksack. Keep the transfer until slotted.
+    if not ensure_slot(owned(tx.new_id,ADVANCED)) then return end
+    remove_value(KEY)
+    started = nil
+    sak_inventory.need_update_inventory()
+    log2("[he_pda_model] converted old=%s new=%s",tostring(tx.old_id),tostring(tx.new_id))
+end
+function on_update()
+    ogse_signals.get_mgr():reschedule(200)
+    if not db or not db.actor or he_pda_access.is_busy() or pda_battery.is_charging() then return end
+    -- Never release a HUD item in the player's hands, or during a dialogue.
+    if db.actor:is_talking() then return end
+    local active = db.actor:active_item()
+    if active and is_pda_section(active:section()) then return end
+    local ok,err = pcall(step)
+    if not ok and tostring(err) ~= last_error then
+        last_error = tostring(err)
+        log2("[he_pda_model] retained_transfer error=%s",last_error)
+    elseif ok then last_error = nil end
+end
+function on_load() started=nil;last_error=nil end
+function attach(sm)
+    sm:subscribe({signal="on_update",fun=this.on_update})
+    sm:subscribe({signal="on_late_init_all",fun=this.on_load})
+end

@@ -3,12 +3,12 @@
 local HEARTBEAT_MS = 5000
 local MARKET_INFO  = "he_pda_market_open"
 local STARTED_KEY  = "he_pda_started"
+local ACQUIRED_KEY = "he_pda_legitimate_acquired"
 local PENDING_KEY  = "he_pda_drop_pending"
 local START_LEVEL  = "l01_escape"
 local DROP_TRIES   = 6
 local TRADER_IDS   = { 3, 500 }
 local trader_states = {}
-local spawn_reported = {}
 local last_update_state
 
 local function report_trader( sid, state )
@@ -21,10 +21,30 @@ function attach( sm )
 	log2( "[he_pda_market] attach" )
 	sm:subscribe( { signal = "on_late_init_all", fun = this.on_late_init } )
 	sm:subscribe( { signal = "on_update", fun = this.on_update } )
+	sm:subscribe( { signal = "on_trade", fun = this.on_trade } )
+	sm:subscribe( { signal = "on_trade_open", fun = this.on_trade_open } )
+end
+
+function cancel_startup_removal()
+	set_value( ACQUIRED_KEY, true )
+	remove_value( PENDING_KEY )
+	log2( "[he_pda_market] startup_removal_cancelled" )
+end
+
+function on_trade( item, sell_buy, money )
+	if sell_buy == false and item and item.section and he_pda_model.is_pda_section(item:section()) then
+		cancel_startup_removal()
+		log2( "[he_pda_market] acquired_from_trade item=%s", tostring( item:id() ) )
+	end
 end
 
 local function drop_actor_pda()
-	local pda = db.actor:object( "device_pda" )
+	if he_pda_access.is_busy() then return false end
+	if get_value( ACQUIRED_KEY ) == true then
+		remove_value( PENDING_KEY )
+		return true
+	end
+	local pda = he_pda_model.get_pda()
 	level.set_actor_allow_pda( false )
 	if not pda then return false end
 	misc.release_obj( pda )
@@ -32,51 +52,43 @@ local function drop_actor_pda()
 end
 
 local function sync_actor_pda()
-	local pda = db.actor:object( "device_pda" )
+	local pda = he_pda_model.get_pda()
 	if not pda then
 		level.set_actor_allow_pda( false )
+	elseif db.actor:has_info("pda_is_broken") and not pda_battery.is_charging() then
+		level.set_actor_allow_pda(true) -- open the retained model; screen/input are locked by sivol_pda
 	elseif pda:condition() > 0 and not db.actor:has_info( "pda_is_broken" )
 		and not pda_battery.is_charging() then
 		level.set_actor_allow_pda( true )
 	end
 end
 
-local function sync_trader( sid, sobj, unlocked )
+local function sync_trader( sid, sobj )
 	if not sobj then
-		spawn_reported[ sid ] = nil
 		report_trader( sid, "story_object=nil" )
 		return
 	end
 	if not sobj.online then
-		spawn_reported[ sid ] = nil
-		report_trader( sid, string.format( "online=0 info=%s", tostring( unlocked ) ) )
+		report_trader( sid, "online=0" )
 		return
 	end
 	local npc = level.object_by_id( sobj.id )
 	if not npc then
-		spawn_reported[ sid ] = nil
-		report_trader( sid, string.format( "online=1 client=nil info=%s", tostring( unlocked ) ) )
+		report_trader( sid, "online=1 client=nil" )
 		return
 	end
 	local pda = npc:object( "device_pda" )
-	if unlocked and not pda then
-		local spawned = misc.spawn_to( "device_pda", npc )
-		local after = npc:object( "device_pda" )
-		if not spawn_reported[ sid ] then
-			log2( "[he_pda_market] trader=%s name=%s action=spawn spawn_id=%s after_pda=%s", tostring( sid ), npc:name(), tostring( spawned and spawned.id or nil ), tostring( after ~= nil ) )
-			spawn_reported[ sid ] = true
-		end
-		pda = after
-	elseif not unlocked and pda then
-		misc.release_obj( pda )
-	elseif pda then
-		npc:move_to_ruck( pda )
-	end
-	report_trader( sid, string.format( "name=%s online=1 client=1 info=%s pda=%s", npc:name(), tostring( unlocked ), tostring( pda ~= nil ) ) )
+	if pda then misc.release_obj( pda ) end
+	report_trader( sid, string.format( "name=%s online=1 client=1 dialogue_only=true removed=%s", npc:name(), tostring( pda ~= nil ) ) )
 end
 
 function on_late_init()
 	if not db.actor then return end
+	if get_value( ACQUIRED_KEY ) == true then
+		remove_value( PENDING_KEY )
+		log2( "[he_pda_market] late_init skip=legitimate_acquisition" )
+		return
+	end
 	log2( "[he_pda_market] late_init level=%s info=%s started=%s", level.name(), tostring( db.actor:has_info( MARKET_INFO ) ), tostring( get_value( STARTED_KEY ) ~= nil ) )
 	if get_value( STARTED_KEY ) ~= nil then return end
 	set_value( STARTED_KEY, true )
@@ -90,11 +102,14 @@ end
 function on_update()
 	ogse_signals.get_mgr():reschedule( HEARTBEAT_MS )
 	if not db.actor then return end
+	-- Updates run before late-init: never classify the starter as an acquisition.
+	if get_value(STARTED_KEY) == nil then return end
 	local update_state = string.format( "level=%s info=%s", level.name(), tostring( db.actor:has_info( MARKET_INFO ) ) )
 	if last_update_state ~= update_state then
 		last_update_state = update_state
 		log2( "[he_pda_market] update %s", update_state )
 	end
+	if he_pda_access.is_busy() then return end
 	local pending = get_value( PENDING_KEY )
 	if pending then
 		if drop_actor_pda() or pending <= 1 then
@@ -104,6 +119,7 @@ function on_update()
 		end
 	else
 		sync_actor_pda()
+		if he_pda_model.get_pda() and get_value(ACQUIRED_KEY) ~= true then cancel_startup_removal() end
 	end
 	local unlocked = db.actor:has_info( MARKET_INFO )
 	if not unlocked and level.name() == "l03_agroprom" then
@@ -117,6 +133,11 @@ function on_update()
 	if not sim then return end
 	for _, sid in pairs( TRADER_IDS ) do
 		local sobj = sim:story_object( sid )
-		sync_trader( sid, sobj, unlocked )
+		sync_trader( sid, sobj )
 	end
+end
+
+function on_trade_open()
+	if not alife() then return end
+	for _, sid in ipairs(TRADER_IDS) do sync_trader(sid, alife():story_object(sid)) end
 end

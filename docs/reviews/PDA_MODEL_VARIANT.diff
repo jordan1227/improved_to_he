@@ -1,0 +1,419 @@
+--- before/gamedata/scripts/death_manager.script
++++ after/gamedata/scripts/death_manager.script
+@@ -29,6 +29,7 @@
+ local always_offs_items = {
+ 	["device_torch"			]=true,
+ 	["device_pda"			]=true,
++	["device_pda_upgraded"]=true,
+ 	["hand_radio"			]=true,
+ 	["guitar_a"				]=true,
+ 	["harmonica_a"			]=true,
+--- before/gamedata/scripts/doc.script
++++ after/gamedata/scripts/doc.script
+@@ -692,7 +692,7 @@
+ 	        v:iterate_inventory(
+ 	            function(_, item)
+ 	                local sec = item:section()
+-	                if item and ((isWeapon(item) and sec ~= "wpn_pkm") or isAmmo(item) or sec == "device_pda") then
++	                if item and ((isWeapon(item) and sec ~= "wpn_pkm") or isAmmo(item) or he_pda_model.is_pda_section(sec)) then
+ 	                    log2("[abnormal item release]: %s < parent %s >", item:name(), v:name())
+ 	                    t_rem[item:id()] = item
+ 	                end
+--- before/gamedata/scripts/he_pda_access.script
++++ after/gamedata/scripts/he_pda_access.script
+@@ -20,11 +20,11 @@
+     return actor_ready() and not is_busy() and not saved_true(ACQUIRED_KEY)
+         and not saved_true("he_pda_vergas_reflash_done") and not saved_true("he_pda_petruha_reward_done")
+         and not has_upgrade() and not permanent_blocked() and not custody()
+-        and not has(PDA) and not has("device_pda_discharged_gg") and not has("device_pda_npc_gg")
++        and not he_pda_model.get_pda() and not has("device_pda_discharged_gg") and not has("device_pda_npc_gg")
+ end
+ function radiation_eligible() return has_upgrade() end
+ function custom_marker_eligible()
+-    local pda = actor_ready() and db.actor:object(PDA)
++    local pda = actor_ready() and he_pda_model.get_pda()
+     return pda ~= nil and has_upgrade() and pda:condition() > 0 and not permanent_blocked() and not custody()
+ end
+ function sidor_inquiry_available() return can_acquire_base() end
+@@ -204,7 +204,7 @@
+     local rank=read(function() return db.actor:character_rank() end)
+     local reputation=read(function() return db.actor:character_reputation() end)
+     local alarm=get_value("alarm_time")
+-    local pda=db.actor:object(PDA)
++    local pda=he_pda_model.get_pda()
+     log2("[he_pda_access] checkpoint=%s total=%s rank=%s reputation=%s money=%s pda=%s charge=%s upgrade=%s busy=%s alarm=%s/%s/%s/%s/%s",
+         tostring(label),tostring(total),tostring(rank),tostring(reputation),tostring(db.actor:money()),
+         tostring(pda and pda:id()),tostring(pda and pda:condition()),tostring(has_upgrade()),tostring(is_busy()),
+@@ -228,7 +228,7 @@
+ local function start_transaction(kind, items, cash)
+     if is_busy() or not actor_ready() or permanent_blocked() or custody() then return false end
+     if not all_valid(items) or db.actor:money() < cash then return false end
+-    local pda = db.actor:object(PDA)
++    local pda = he_pda_model.get_pda()
+     local tx = {schema=2, kind=kind, items=items, cash=cash, stage="prepare", paid_count=0,
+         existing_id=pda and pda:id() or nil}
+     diagnostics(kind .. "_before")
+--- before/gamedata/scripts/he_pda_market.script
++++ after/gamedata/scripts/he_pda_market.script
+@@ -32,7 +32,7 @@
+ end
+ 
+ function on_trade( item, sell_buy, money )
+-	if sell_buy == false and item and item.section and item:section() == "device_pda" then
++	if sell_buy == false and item and item.section and he_pda_model.is_pda_section(item:section()) then
+ 		cancel_startup_removal()
+ 		log2( "[he_pda_market] acquired_from_trade item=%s", tostring( item:id() ) )
+ 	end
+@@ -44,7 +44,7 @@
+ 		remove_value( PENDING_KEY )
+ 		return true
+ 	end
+-	local pda = db.actor:object( "device_pda" )
++	local pda = he_pda_model.get_pda()
+ 	level.set_actor_allow_pda( false )
+ 	if not pda then return false end
+ 	misc.release_obj( pda )
+@@ -52,7 +52,7 @@
+ end
+ 
+ local function sync_actor_pda()
+-	local pda = db.actor:object( "device_pda" )
++	local pda = he_pda_model.get_pda()
+ 	if not pda then
+ 		level.set_actor_allow_pda( false )
+ 	elseif db.actor:has_info("pda_is_broken") and not pda_battery.is_charging() then
+@@ -119,7 +119,7 @@
+ 		end
+ 	else
+ 		sync_actor_pda()
+-		if db.actor:object("device_pda") and get_value(ACQUIRED_KEY) ~= true then cancel_startup_removal() end
++		if he_pda_model.get_pda() and get_value(ACQUIRED_KEY) ~= true then cancel_startup_removal() end
+ 	end
+ 	local unlocked = db.actor:has_info( MARKET_INFO )
+ 	if not unlocked and level.name() == "l03_agroprom" then
+--- before/gamedata/scripts/he_pda_news.script
++++ after/gamedata/scripts/he_pda_news.script
+@@ -8,7 +8,7 @@
+     if not db or not db.actor then return false,"actor" end
+     if db.actor:has_info("pda_is_broken") or db.actor:has_info("pda_will_be_broken") then return false,"broken" end
+     if pda_battery.is_charging() then return false,"charging" end
+-    local pda=db.actor:object("device_pda")
++    local pda=he_pda_model.get_pda()
+     if not pda then return false,"missing" end
+     if pda:condition()<=0 then return false,"empty" end
+     if sleep_manager.is_sleep_active() then return false,"sleep" end
+--- before/gamedata/scripts/pda_battery.script
++++ after/gamedata/scripts/pda_battery.script
+@@ -74,14 +74,14 @@
+ function news_blocked()
+ 	if not db.actor then return false end
+ 	if is_charging() then return true end
+-	local pda = db.actor:object( "device_pda" )
++	local pda = he_pda_model.get_pda()
+ 	if not pda then return true end
+ 	return pda:condition() <= 0
+ end
+ 
+ function get_pda()
+ 	if not db.actor then return nil end
+-	return db.actor:object( "device_pda" )
++	return he_pda_model.get_pda()
+ end
+ 
+ function reset_discharge_clock()
+@@ -163,8 +163,8 @@
+ 	remove_value( NPC_KEY )
+ 	remove_value( READY_KEY )
+ 	reset_discharge_clock()
+-	if not db.actor:object( "device_pda" ) then
+-		misc.spawn_to( "device_pda", db.actor )
++	if not he_pda_model.get_pda() then
++		misc.spawn_to( he_pda_model.section(), db.actor )
+ 	end
+ 	bind_pda.enable_pda()
+ 	sak.send_tip( "100%", game.translate_string( "pda_battery_status_msg" ), 3, 10, "pribor", "pda_news", "green" )
+--- before/gamedata/config/misc/items.ltx
++++ after/gamedata/config/misc/items.ltx
+@@ -741,6 +741,12 @@
+ ;script_binding      							   = bind_pda.init // åñëè ÷¸, ðàñêîììåíòèðîâàòü ïðè ÍÈ
+ active_time									   	   = 168
+ 
++[device_pda_upgraded]:device_pda
++; [HE-PORT] Existing advanced PDA geometry; functionality remains saved tier state.
++visual = dynamics\devices\dev_pda\dev_pda
++hud = pda_upgraded_hud
++can_trade = false
++
+ [pda_hud]:hud_base
+ inertion_offset_LRUD                               = 0.02,  0.02,  0.02, 0.02
+ 
+@@ -777,6 +783,9 @@
+ anm_idle_moving                          		   = 3d_pda_hands_walk_new
+ anm_idle_sprint                          		   = 3d_pda_hands_run_new
+ anm_empty								 		   = 3d_pda_hands_dead
++
++[pda_upgraded_hud]:pda_hud
++item_visual = dynamics\devices\dev_pda\dev_pda_hud.ogf
+ 
+ [device_torch]:identity_immunities
+ GroupControlSection		= spawn_group
+--- before/gamedata/config/misc/paket_classes.ltx
++++ after/gamedata/config/misc/paket_classes.ltx
+@@ -40,6 +40,7 @@
+ device_flare                 = unknown                              , D_FLARE    , 6 ,                             ;--/ STCS|SCoP
+ obj_pda_s                    = cse_alife_item_pda                   , S_PDA      , 4 ,                             ;--/ SCoP
+ device_pda                   = cse_alife_item_pda                   , D_PDA      , 7 ,                             ;--/
++device_pda_upgraded                   = cse_alife_item_pda                   , D_PDA      , 7 ,                             ;--/
+ device_torch                 = cse_alife_item_torch                 , unknown    , 7 ,                             ;--/
+ device_torch_s               = cse_alife_item_torch                 , TORCH_S    , 7 ,                             ;--/
+ equ_exo                      = cse_alife_item_custom_outfit         , unknown    , 7 ,                             ;--/
+--- before/gamedata/scripts/binders/bind_stalker.script
++++ after/gamedata/scripts/binders/bind_stalker.script
+@@ -631,7 +631,7 @@
+ end
+ 
+ local function check_pda_conditions()
+-    local pda = db.actor:object("device_pda")
++    local pda = he_pda_model.get_pda()
+     if not pda then return 'nil', nil, nil, nil, nil, nil, nil end
+ 
+     local is_3d_pda = get_console():get_string("g_3d_pda")
+--- before/gamedata/scripts/ogse/ogse_signals_addons_list.script
++++ after/gamedata/scripts/ogse/ogse_signals_addons_list.script
+@@ -22,7 +22,8 @@
+ 	"he_no_monsters",
+ 	"he_red_water",
+ 	"anagramm_flash", -- [HE-PORT]
+-	"he_pda_access", -- [HE-PORT]
++	"he_pda_access",
++	"he_pda_model", -- [HE-PORT]
+ 	"he_pda_news", -- [HE-PORT]
+ 	"pda_battery", -- [HE-PORT]
+ 	"he_pda_market", -- [HE-PORT]
+--- before/gamedata/scripts/sak/sak.script
++++ after/gamedata/scripts/sak/sak.script
+@@ -1015,7 +1015,7 @@
+ 			or strpos(onm,"_surprise_box",1,true)
+ 			or strpos(onm,"dsc_trup_01",1,true)
+ 			or strpos(onm,"dead_chudishe",1,true)
+-			or (obj:section_name()=="device_pda" and obj.parent_id~=0)) then
++			or (he_pda_model.is_pda_section(obj:section_name()) and obj.parent_id~=0)) then
+ 			-- misc.release_obj(obj, true)
+ 			t[id] = obj
+ 		end
+@@ -4589,7 +4589,7 @@
+ 
+ function add_tail()
+ 	local actor=db.actor
+-	local pda = actor:object("device_pda")
++	local pda = he_pda_model.get_pda()
+ 	if pda and pda:condition() > 0 then
+ 		level.set_actor_allow_pda(true)
+ 	else
+@@ -4687,7 +4687,7 @@
+ 				prip_teleport=1			 
+ 			elseif strpos(nname,"flask_army",1,true) then
+ 				vergas_flask.take_flask_army(obj,a)
+-			elseif (sec=="device_pda" and obj.parent_id~=0) then
++			elseif (he_pda_model.is_pda_section(sec) and obj.parent_id~=0) then
+ 				misc.release_obj(obj)
+ 			elseif (check_rules(remove_rules, obj, actor, nname)                     
+ 				or (strpos(sec,"^rat_") and not obj:alive())
+@@ -6092,7 +6092,7 @@
+ function pda_will_brock()
+ 	db.actor:give_info_portion("pda_is_broken")
+ 	out_many_pda_broken()
+-	-- local pda = db.actor:object("device_pda")
++	-- local pda = he_pda_model.get_pda()
+ 	-- if pda then
+ 	-- 	misc.release_obj(pda)
+ 	-- end
+--- before/gamedata/scripts/sak/sak_dialog.script
++++ after/gamedata/scripts/sak/sak_dialog.script
+@@ -2373,7 +2373,7 @@
+ 	local cash = get_value("many_cash",450)
+ 	local money = db.actor:money()
+ 	db.actor:give_money(-(money-cash))
+-	local pda = db.actor:object("device_pda")
++	local pda = he_pda_model.get_pda()
+ 	if pda then
+ 		-- Sn: помимо set_actor_allow_pda здесь всё же следет оставить и само изъятие предмета
+ 		-- т.к. часть прекондишенов проверяет его наличие; смысл переделывать, если работает?
+@@ -2387,12 +2387,12 @@
+ 		db.actor:give_info_portion("val_dram_fire")
+ 		sak.set_val_gulag_enemy_actor()
+ 	end
+-	if has_alife_info("val_dram_scene_end") and db.actor and not db.actor:object("device_pda") and not has_alife_info("val_dram_pda_out_info") then
++	if has_alife_info("val_dram_scene_end") and db.actor and not he_pda_model.get_pda() and not has_alife_info("val_dram_pda_out_info") then
+ 		db.actor:give_info_portion("val_dram_pda_out_info")
+ 	end
+ end
+ function rashpil_pda_spawn()
+-	if has_alife_info("val_dram_pda_out_info") and db.actor and not db.actor:object("device_pda") then
++	if has_alife_info("val_dram_pda_out_info") and db.actor and not he_pda_model.get_pda() then
+ 		local obj = server_obj("val_dram_glavn")
+ 		if obj then
+ 			misc.spawn_to("device_pda_npc_gg",obj)
+@@ -2403,7 +2403,7 @@
+ end
+ function rashpil_pda_return()
+ 	if new_pda_buy_prec() then
+-		misc.spawn_to("device_pda",db.actor)
++		misc.spawn_to(he_pda_model.section(),db.actor)
+ 		level.set_actor_allow_pda(true)
+ 		sak.relocate_item("in", "device_pda_npc_gg")
+ 	end
+@@ -2411,7 +2411,7 @@
+ 	db.actor:disable_info_portion("val_dram_pda_out_info")
+ end
+ function new_pda_buy_prec()
+-	return has_alife_info("val_dram_pda_out_info") and not db.actor:object("device_pda")
++	return has_alife_info("val_dram_pda_out_info") and not he_pda_model.get_pda()
+ end
+ function new_pda_not_buy_prec()
+ 	return not new_pda_buy_prec()
+@@ -3485,7 +3485,7 @@
+ 	sak_inventory.release_actor_items("pda_krysyka",1)
+ end
+ function check_actor_pda()
+-	local pda = db.actor:object("device_pda")
++	local pda = he_pda_model.get_pda()
+ 	if pda then
+ 		return true
+ 	else
+@@ -5278,7 +5278,7 @@
+ 		raz:btn_empty()
+ 	end
+ 	for i,k in pairs(sak_inventory.slots) do
+-		if (i~="bolt" and i~="device_torch" and i~="device_pda") then
++		if (i~="bolt" and i~="device_torch" and not he_pda_model.is_pda_section(i)) then
+ 			local item = client_obj(k[1])
+ 			out_object:transfer_item(item, in_object)
+ 		end
+--- before/gamedata/scripts/sivol/sivol_pda.script
++++ after/gamedata/scripts/sivol/sivol_pda.script
+@@ -245,7 +245,7 @@
+ -- Expose ownership check for bind_stalker / binder_update_7
+ function owns_pda_params()
+     if not db.actor then return false end
+-    local pda = db.actor:object("device_pda")
++    local pda = he_pda_model.get_pda()
+     local is_3d_pda = get_console():get_string("g_3d_pda") == 'on'
+     local broken = has_alife_info("pda_is_broken")
+     
+@@ -399,7 +399,7 @@
+     local alpha_mode = base_alpha + smoothed_blackout * (1.55 - base_alpha)
+ 
+ 	-- 6. Validation for driving audio and shader
+-    local pda = db.actor:object("device_pda")
++    local pda = he_pda_model.get_pda()
+     local is_3d_pda = get_console():get_string("g_3d_pda") == 'on'
+     local pda_in_hands = is_pda_in_hands()
+     local broken = has_alife_info("pda_is_broken")
+--- before/gamedata/scripts/vergas/vergas_watch.script
++++ after/gamedata/scripts/vergas/vergas_watch.script
+@@ -81,7 +81,7 @@
+   if self ~= g_watch then
+      return
+   end -- отладочный трик
+-  self.object = db.actor:object("device_pda")
++  self.object = he_pda_model.get_pda()
+   -- [HE-PORT]
+   if self.object == nil then
+      self.object = db.actor:object("device_watch")
+--- /dev/null
++++ after/gamedata/scripts/he_pda_model.script
+@@ -0,0 +1,93 @@
++-- [HE-PORT] Geometry variants share one gameplay tier. No article/alarm reset.
++local BASE, ADVANCED = "device_pda", "device_pda_upgraded"
++local KEY = "he_pda_model_transfer"
++local started, last_error
++
++function is_pda_section(section) return section == BASE or section == ADVANCED end
++function get_pda()
++    if not db or not db.actor then return end
++    -- The original remains authoritative until the replacement is fully attached.
++    return db.actor:object(BASE) or db.actor:object(ADVANCED)
++end
++function section()
++    return he_pda_access.has_upgrade() and ADVANCED or BASE
++end
++local function owned(id, expected)
++    local obj = id and client_obj(id)
++    local parent = obj and obj:parent()
++    if obj and obj:section() == expected and parent and parent:id() == db.actor:id() then return obj end
++end
++local function identity(id, name)
++    local obj = id and alife():object(id)
++    return obj and obj:name() == name and obj or nil
++end
++local function cancel(tx, reason)
++    local target = identity(tx.new_id,tx.new_name)
++    if target then alife():release(target,true) end
++    remove_value(KEY)
++    started = nil
++    log2("[he_pda_model] cancelled reason=%s original_preserved=true",reason)
++end
++local function step()
++    local tx = get_value(KEY)
++    if not tx then
++        if not he_pda_access.has_upgrade() then return end
++        local original = db.actor:object(BASE)
++        if not original or db.actor:object(ADVANCED) then return end
++        local server = alife():object(original:id())
++        if not server then return end
++        tx = {old_id=original:id(),old_name=server:name(),phase="prepare"}
++        set_value(KEY,tx)
++        started = time_global()
++    end
++    started = started or time_global()
++    local original = identity(tx.old_id,tx.old_name) and owned(tx.old_id,BASE)
++    if tx.phase == "prepare" then
++        if not original then return cancel(tx,"original_unavailable") end
++        if not tx.new_id then
++            local server = misc.spawn_to(ADVANCED,db.actor)
++            if not server then return cancel(tx,"spawn_rejected") end
++            tx.new_id,tx.new_name = server.id,server:name()
++            set_value(KEY,tx)
++        end
++        local replacement = identity(tx.new_id,tx.new_name) and owned(tx.new_id,ADVANCED)
++        if not replacement then
++            if time_global()-started > 10000 then cancel(tx,"spawn_timeout") end
++            return
++        end
++        -- Copy the latest charge, including any drain while waiting for attachment.
++        replacement:set_condition(original:condition())
++        tx.phase = "commit"
++        set_value(KEY,tx)
++    end
++    if not (identity(tx.new_id,tx.new_name) and owned(tx.new_id,ADVANCED)) then
++        error("committing model replacement unavailable")
++    end
++    local old_server = identity(tx.old_id,tx.old_name)
++    if old_server then
++        if not original then error("original model moved during commit") end
++        alife():release(old_server,true)
++    end
++    remove_value(KEY)
++    started = nil
++    sak_inventory.need_update_inventory()
++    log2("[he_pda_model] converted old=%s new=%s",tostring(tx.old_id),tostring(tx.new_id))
++end
++function on_update()
++    ogse_signals.get_mgr():reschedule(200)
++    if not db or not db.actor or he_pda_access.is_busy() or pda_battery.is_charging() then return end
++    -- Never release a HUD item in the player's hands, or during a dialogue.
++    if db.actor:is_talking() then return end
++    local active = db.actor:active_item()
++    if active and is_pda_section(active:section()) then return end
++    local ok,err = pcall(step)
++    if not ok and tostring(err) ~= last_error then
++        last_error = tostring(err)
++        log2("[he_pda_model] retained_transfer error=%s",last_error)
++    elseif ok then last_error = nil end
++end
++function on_load() started=nil;last_error=nil end
++function attach(sm)
++    sm:subscribe({signal="on_update",fun=this.on_update})
++    sm:subscribe({signal="on_late_init_all",fun=this.on_load})
++end
