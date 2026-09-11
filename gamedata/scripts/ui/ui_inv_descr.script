@@ -11,6 +11,10 @@ local consumable_effects_mode = "easy"
 -- Toggle the green item identity/debug line in the inventory description.
 local show_item_debug_info = true
 
+-- Separator between LAlt help entries. Use "\\n \\n" to add a blank line
+-- between entries (costs vertical space); default keeps one entry per line.
+local lalt_help_separator = "\\n"
+
 local protection_descriptions = {
     burn = "Снижает урон от огня и термических аномалий",
     chemical_burn = "Защищает от едких испарений и кислотных аномалий",
@@ -305,7 +309,7 @@ local function add_weapon_characteristic_help(self, label_id, help_id)
     label = label:gsub("%%c%[[^%]]*%]", ""):gsub("%s*:%s*$", "")
     self.weapon_info_lines = self.weapon_info_lines or {}
     table.insert(self.weapon_info_lines,
-        "%c[default]" .. label .. ":%c[gray] " .. translate(help_id))
+        "%c[UI_orange]" .. label .. ":%c[gray] " .. translate(help_id))
 end
 local function add_artifact_note(self, label_id, help_id)
     if not self.lalt then return end
@@ -313,7 +317,7 @@ local function add_artifact_note(self, label_id, help_id)
     label = label:gsub("%%c%[[^%]]*%]", ""):gsub("%s*:%s*$", "")
     self.artifact_info_lines = self.artifact_info_lines or {}
     table.insert(self.artifact_info_lines,
-        "%c[default]" .. label .. ":%c[gray] " .. translate(help_id))
+        "%c[UI_orange]" .. label .. ":%c[gray] " .. translate(help_id))
 end
 local function safe_item_kind(item)
     if not item then return false, false, false end
@@ -722,11 +726,19 @@ local function rounded_modifier_percent_text(value, positive_is_good)
 end
 
 local function configure_description_width(self, weapon_layout, compact_layout)
-    -- Artifact and consumable properties use a compact popup so labels stay paired with their values.
-    local frame_w = compact_layout and 240 or (weapon_layout and 412 or 420)
+    -- Compact items use a narrow popup; weapons/outfits use a medium one, widened further on LAlt.
+    local base_w
+    if compact_layout then
+        base_w = 240
+    elseif weapon_layout then
+        base_w = 420
+    else
+        base_w = 350
+    end
+    local frame_w = self.lalt and (weapon_layout and 500 or 420) or base_w
     local scroll_w = frame_w - 14
-    local content_w = compact_layout and 224 or frame_w - 30
-    local header_w = math.min(390, frame_w - 14)
+    local content_w = compact_layout and (frame_w - 16) or (frame_w - 30)
+    local header_w = content_w
     -- Keep the condition label and the condition bar independently positioned per inventory context.
     local condition_w = compact_layout and 100 or 172
     local condition_x = compact_layout and (frame_w - condition_w - 14)
@@ -970,6 +982,36 @@ function get_dyn_color( sect )
 	return color_t
 end
 
+-- Drag-and-drop hints shown only in the player's own inventory. Items that
+-- cannot be dragged (e.g. bread) get no "Controls" header there, but the
+-- header still appears in body/trade contexts via the group-movement tip.
+local drag_drop_hints = {
+    { key = "ui_inv_hint_drag_reload",
+      match = function(item, section) return item:is_ammo() end },
+    { key = "ui_inv_hint_drag_battery",
+      match = function(item, section) return section == "batt_torch" end },
+    { key = "ui_inv_hint_drag_knife_sharpen",
+      match = function(item, section) return section == "wpn_knife" end },
+    { key = "ui_inv_hint_drag_sharper_use",
+      match = function(item, section) return section == "sharper" end },
+    { key = "ui_inv_hint_drag_sharper_clean",
+      match = function(item, section)
+          return section == "vodka" or section == "energy_drink" or section == "flask_army"
+      end },
+    { key = "ui_inv_hint_drag_flask",
+      match = function(item, section) return section == "flask_army" end },
+    { key = "ui_inv_hint_drag_balloon",
+      match = function(item, section) return section == "ballon" end },
+    { key = "ui_inv_hint_drag_resonator",
+      match = function(item, section) return section == "af_resonator" end },
+    { key = "ui_inv_hint_drag_artifact_container",
+      match = function(item, section)
+          return item:is_artefact() and section ~= "af_resonator"
+      end },
+    { key = "ui_inv_hint_drag_pda",
+      match = function(item, section) return section == "anagramm_flash" end },
+}
+
 function CUIDescriptionWnd:ShowInteractionHints(item)
     local hints = {}
     local is_weapon, is_outfit, is_artifact = safe_item_kind(item)
@@ -982,6 +1024,13 @@ function CUIDescriptionWnd:ShowInteractionHints(item)
     elseif artifact_help_supported(item) then
         table.insert(hints, translate("ui_inv_hint_artifact_notes"))
     end
+    if self.context == "inventory" then
+        for _, entry in ipairs(drag_drop_hints) do
+            if entry.match(item, self.section) then
+                table.insert(hints, translate(entry.key))
+            end
+        end
+    end
     if self.context ~= "inventory" then
         table.insert(hints, translate("st_ui_group_movement_tip"))
     end
@@ -989,8 +1038,10 @@ function CUIDescriptionWnd:ShowInteractionHints(item)
         table.insert(hints, translate("st_ui_ungroup_tip"))
     end
 
-    self:ShowPropsHeader(translate("ui_inv_controls"))
-    self:ShowProps({{nil, table.concat(hints, "\\n")}})
+    if #hints > 0 then
+        self:ShowPropsHeader(translate("ui_inv_controls"))
+        self:ShowProps({{nil, table.concat(hints, "\\n")}})
+    end
 end
 
 function CUIDescriptionWnd:ShowDescription(item, update_native_header)
@@ -1017,7 +1068,8 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	self.shown_item_section = new_item_section
 	self.section = item:section()
 	self.condition = item:condition()
-	configure_description_width(self, item:is_weapon() and not item:is_knife(), item:is_artefact() or item:is_eatable_item())
+	local is_weapon_item = item:is_weapon() and not item:is_knife()
+	configure_description_width(self, is_weapon_item, not is_weapon_item and not item:is_outfit())
 	self.scroll_v_normal:Clear()
 	self.scroll_v_weapon:Clear()
 	local signature = get_weapon_addon_signature(item)
@@ -1179,7 +1231,7 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
         if self.lalt and self.protection_info_lines and #self.protection_info_lines > 0 then
             -- Full replacement when LAlt is held
             self:ShowPropsHeader(translate("ui_inv_outfit_protection_info") .. ":")
-            description = "%c[default]" .. table.concat( self.protection_info_lines, "\\n" )
+            description = "%c[default]" .. table.concat( self.protection_info_lines, lalt_help_separator )
         end
     end
 
@@ -1243,10 +1295,6 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	if self.section == "anagramm_flash" then
 		description = string.format( "%%c[255,255,140,0]Свободное место: %d%%%%\\n%%c[default]%s", math.floor( self.item:condition() * 100 ), description )
 		description = description .. "\\n \\n%c[UI_orange]Драг-дроп:\\n%c[default]%c[white]Вставьте флешку в ПДА для работы с анаграммами\\nВ окне ПДА нажмите END для подбора пароля"
-	end
-
-	if self.section == "af_resonator" then
-		description = description .. game.translate_string( "af_resonator_drag_hint" )
 	end
 
 	if self.section == "device_pda_npc" then
@@ -1389,12 +1437,12 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	if item:is_weapon() and not item:is_knife()
 		and self.lalt and self.weapon_info_lines and #self.weapon_info_lines > 0 then
 		self:ShowPropsHeader(translate("ui_inv_weapon_help_header") .. ":")
-		description = "%c[default]" .. table.concat(self.weapon_info_lines, "\\n")
+		description = "%c[default]" .. table.concat(self.weapon_info_lines, lalt_help_separator)
 	end
     if artifact_help_supported(item) and self.lalt
         and self.artifact_info_lines and #self.artifact_info_lines > 0 then
         self:ShowPropsHeader(translate("ui_inv_artifact_notes") .. ":")
-        description = "%c[default]" .. table.concat(self.artifact_info_lines, "\\n")
+        description = "%c[default]" .. table.concat(self.artifact_info_lines, lalt_help_separator)
     end
 
 	if update_native_header then update_native_name_header(self, inv_name) end
@@ -2517,7 +2565,7 @@ function CUIDescriptionWnd:ShowOutfitParams()
                 local label_clean = t.text:gsub("%%c%[[^%]]*%]", "")
                 label_clean = label_clean:gsub("%s*:%s*$", "")
                 -- Только текст описания, без значений
-                table.insert(self.protection_info_lines, "%c[default]" .. label_clean .. ":%c[gray] " .. desc_text)
+                table.insert(self.protection_info_lines, "%c[UI_orange]" .. label_clean .. ":%c[gray] " .. desc_text)
             end
         end
         -- ===================================
@@ -2682,8 +2730,15 @@ end
 
 function CUIDescriptionWnd:ShowPropsOutfit( tbl )
     local st
+    local content_w = self.content_width or 390
+    local value_w = 54
+    local value_area = value_w * 3
+    local label_x = 21
+    local label_w = math.max(1, content_w - label_x - value_area - 6)
+    local value_x = content_w - value_area
     for _, t in ipairs(tbl) do
         st = self.xml:InitStatic("props_compact", self.scroll_v)
+        st:SetWidth(content_w)
         if t[1] ~= nil then
             st.icon = self.xml:InitStatic("props_compact:prop_texture", st)
             st.icon:InitTexture(get_compact_property_icon(t[1]))
@@ -2693,22 +2748,31 @@ function CUIDescriptionWnd:ShowPropsOutfit( tbl )
         if t[2] ~= nil then
             st.text = self.xml:InitStatic("props_compact:prop_text", st)
             st.text:SetText(t[2])
+            st.text:SetWndPos(label_x, 0)
             if t[3] == nil and not has_multiple_values then
-                st.text:SetWndSize(367, st:GetHeight())
+                st.text:SetWndSize(content_w - label_x - 2, st:GetHeight())
+            else
+                st.text:SetWndSize(label_w, st:GetHeight())
             end
         end
         if t[3] ~= nil then
             st.text_pr = self.xml:InitStatic("props_compact:prop_text_2", st)
             st.text_pr:SetText(t[3])
+            st.text_pr:SetWndPos(value_x, 0)
+            st.text_pr:SetWndSize(value_w, st:GetHeight())
         end
         if t[4] ~= nil then
             st.text_full = self.xml:InitStatic("props_compact:prop_text_3", st)
             st.text_full:SetText(t[4])
+            st.text_full:SetWndPos(value_x + value_w, 0)
+            st.text_full:SetWndSize(value_w, st:GetHeight())
             st.text_full:SetTextColor(255, 160, 160, 160)
         end
         if t[5] ~= nil then
             st.text_comp = self.xml:InitStatic("props_compact:prop_text_4", st)
             st.text_comp:SetText(t[5])
+            st.text_comp:SetWndPos(value_x + value_w * 2, 0)
+            st.text_comp:SetWndSize(value_w, st:GetHeight())
         end
         self.addH = self.addH + st:GetHeight() + vert_interval
     end
@@ -2888,7 +2952,7 @@ local function passes_differentiator(item)
 	end
 	local fn = ungroup_differentiators[sect]
 	if fn then return fn(item) end
-	return true -- нет спец. критерия — маркируем все предметы этой секции
+	return true -- нет спец. критерия - маркируем все предметы этой секции
 end
 
 function can_manual_ungroup( item )
