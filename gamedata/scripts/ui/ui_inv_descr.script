@@ -174,44 +174,114 @@ local function resolve_ready_speed_base_section(section)
     return section
 end
 
-local function get_ready_motion_speed(hud_section, alias)
+local function get_ready_motion_speed(hud_section, aliases)
     if not hud_section or not sys_ini:section_exist(hud_section) then return 1 end
-    return get_float(hud_section, alias .. "_speed_k", 1)
+    for _, alias in ipairs(aliases) do
+        if sys_ini:line_exist(hud_section, alias) then
+            return get_float(hud_section, alias .. "_speed_k", 1)
+        end
+    end
+    return 1
 end
 
-local function get_weapon_ready_speed(item, section, weapon)
+local function get_ready_ammo_count(item, grenade_mode)
+    if not item then return nil end
+    local method = grenade_mode and item.get_ammo_in_magazine2
+        or item.get_ammo_in_magazine
+    if type(method) ~= "function" then return nil end
+    local ok, ammo = pcall(method, item)
+    if not ok then return nil end
+    return tonumber(ammo)
+end
+
+local function get_ready_misfire(weapon)
+    if not weapon or type(weapon.misfire_status) ~= "function" then return false end
+    local ok, misfire = pcall(weapon.misfire_status, weapon)
+    return ok and misfire == true
+end
+
+local function get_ready_gl_state(item, section, use_live_attachment)
+    local status = get_u32(section, "grenade_launcher_status", 0)
+    local attached = status == 1
+    if use_live_attachment and status == 2 and ogse_wpn_utils
+        and type(ogse_wpn_utils.get_grenade_launcher_flag) == "function"
+    then
+        local ok, flag = pcall(ogse_wpn_utils.get_grenade_launcher_flag, item)
+        attached = ok and (flag == true or tonumber(flag) == 1) or false
+    end
+
+    local grenade_mode = false
+    if attached and item and type(item.is_weapon_gl) == "function"
+        and ogse_wpn_utils and type(ogse_wpn_utils.get_gl_mode) == "function"
+    then
+        local ok_gl, is_gl = pcall(item.is_weapon_gl, item)
+        if ok_gl and is_gl then
+            local ok_mode, mode = pcall(ogse_wpn_utils.get_gl_mode, item)
+            grenade_mode = ok_mode and mode == true
+        end
+    end
+    return attached, grenade_mode
+end
+
+local function get_ready_motion_aliases(item, section, weapon, gl_attached, grenade_mode, is_show, ammo_grenade_mode)
+    local prefix = is_show and "anm_show" or "anm_hide"
+    local misfire = get_ready_misfire(weapon)
+    if get_string(section, "class", "") == "WP_BM16" then
+        local ammo = get_ready_ammo_count(item, false)
+        local index = ammo and math.floor(ammo + 0.0001) or 2
+        index = math.max(0, math.min(2, index))
+        local aliases = {}
+        if misfire then aliases[#aliases + 1] = prefix .. "_jammed_" .. index end
+        aliases[#aliases + 1] = prefix .. "_" .. index
+        return aliases
+    end
+
+    local suffix = gl_attached and (grenade_mode and "_g" or "_w_gl") or ""
+    local aliases = {}
+    if misfire then
+        aliases[#aliases + 1] = prefix .. "_jammed" .. suffix
+    elseif get_ready_ammo_count(item, ammo_grenade_mode == true or grenade_mode) == 0 then
+        aliases[#aliases + 1] = prefix .. "_empty" .. suffix
+    end
+    aliases[#aliases + 1] = prefix .. suffix
+    return aliases
+end
+
+local function get_weapon_ready_speed(item, section, weapon, aim_profile)
     local base_section = resolve_ready_speed_base_section(section)
     local base_hud = get_string(base_section, "hud", nil)
     local current_hud = get_string(section, "hud", base_hud)
-    local base_draw = get_ready_motion_speed(base_hud, "anm_show")
-    local base_holster = get_ready_motion_speed(base_hud, "anm_hide")
-
-    local show_alias, hide_alias = "anm_show", "anm_hide"
     local gl_status = get_u32(section, "grenade_launcher_status", 0)
-    local gl_attached = gl_status == 1
-    if gl_status == 2 and ogse_wpn_utils and ogse_wpn_utils.get_grenade_launcher_flag then
-        local ok, flag = pcall(ogse_wpn_utils.get_grenade_launcher_flag, item)
-        gl_attached = ok and flag or false
-    end
-    if gl_attached then
-        show_alias, hide_alias = "anm_show_w_gl", "anm_hide_w_gl"
-    end
-
-    local current_draw = get_ready_motion_speed(current_hud, show_alias)
-    local current_holster = get_ready_motion_speed(current_hud, hide_alias)
+    local base_gl_attached, base_grenade_mode = get_ready_gl_state(item, base_section, false)
+    local current_gl_attached, current_grenade_mode = get_ready_gl_state(item, section, true)
+    -- The engine swaps the active and hidden magazines in grenade mode. The
+    -- naked comparison must still use the rifle magazine's count.
+    local base_ammo_grenade_mode = base_grenade_mode or current_grenade_mode
+    local base_draw = get_ready_motion_speed(base_hud,
+        get_ready_motion_aliases(item, base_section, weapon, base_gl_attached, base_grenade_mode, true,
+            base_ammo_grenade_mode))
+    local base_holster = get_ready_motion_speed(base_hud,
+        get_ready_motion_aliases(item, base_section, weapon, base_gl_attached, base_grenade_mode, false,
+            base_ammo_grenade_mode))
+    local current_draw = get_ready_motion_speed(current_hud,
+        get_ready_motion_aliases(item, section, weapon, current_gl_attached, current_grenade_mode, true))
+    local current_holster = get_ready_motion_speed(current_hud,
+        get_ready_motion_aliases(item, section, weapon, current_gl_attached, current_grenade_mode, false))
     local base_aim_time, current_aim_time = 0.25, 0.25
-    if weapon and sivol_weapon_aim_speed
+    local profile = aim_profile
+    if type(profile) ~= "table" and weapon and sivol_weapon_aim_speed
         and type(sivol_weapon_aim_speed.get_weapon_aim_profile) == "function" then
-        local ok, profile = pcall(
+        local ok, resolved = pcall(
             sivol_weapon_aim_speed.get_weapon_aim_profile, item, weapon, section)
-        if ok and type(profile) == "table" then
-            base_aim_time = tonumber(profile.base_target) or base_aim_time
-            current_aim_time = tonumber(profile.target) or base_aim_time
-            if profile.mode == "integral" or profile.mode == "integrated_override" then
-                base_aim_time = base_aim_time * (tonumber(profile.scope_multiplier) or 1)
-            end
-            if gl_status == 1 then base_aim_time = current_aim_time end
+        if ok and type(resolved) == "table" then profile = resolved end
+    end
+    if type(profile) == "table" then
+        base_aim_time = tonumber(profile.base_target) or base_aim_time
+        current_aim_time = tonumber(profile.target) or base_aim_time
+        if profile.mode == "integral" or profile.mode == "integrated_override" then
+            base_aim_time = base_aim_time * (tonumber(profile.scope_multiplier) or 1)
         end
+        if gl_status == 1 then base_aim_time = current_aim_time end
     end
 
     local function composite(draw, holster, aim_time)
@@ -318,12 +388,52 @@ local function get_equipped_weapon_for_comparison(item, section)
     return nil
 end
 
+-- Deterministic per-weapon/addon metric results are cached because the panel
+-- can recompute them on focus, click, Shift compare, and addon refresh. The
+-- key combines the addon signature with the magazine/misfire/GL-mode state
+-- that ready-speed depends on.
+local weapon_metrics_cache = {}
+local weapon_metrics_cache_keys = {}
+local WEAPON_METRICS_CACHE_MAX = 64
+
+local function weapon_metrics_cache_key(item, section, weapon)
+    local signature = get_weapon_addon_signature(item)
+    if not signature then return nil end
+    local misfire = get_ready_misfire(weapon) and 1 or 0
+    local gl_mode = 0
+    if ogse_wpn_utils and type(ogse_wpn_utils.get_gl_mode) == "function" then
+        local ok_mode, mode = pcall(ogse_wpn_utils.get_gl_mode, item)
+        gl_mode = ok_mode and mode == true and 1 or 0
+    end
+    return table.concat({signature, "|a", tostring(get_ready_ammo_count(item, false)),
+        "|b", tostring(get_ready_ammo_count(item, true)), "|m", tostring(misfire),
+        "|g", tostring(gl_mode)})
+end
+
+local function store_weapon_metrics(cache_key, metrics)
+    if not cache_key then return metrics end
+    if not weapon_metrics_cache[cache_key] then
+        weapon_metrics_cache_keys[#weapon_metrics_cache_keys + 1] = cache_key
+        if #weapon_metrics_cache_keys > WEAPON_METRICS_CACHE_MAX then
+            local oldest = table.remove(weapon_metrics_cache_keys, 1)
+            weapon_metrics_cache[oldest] = nil
+        end
+    end
+    weapon_metrics_cache[cache_key] = metrics
+    return metrics
+end
+
 local function get_effective_weapon_metrics(item)
     local is_weapon = safe_item_kind(item)
     if not is_weapon then return nil end
     local ok_section, section = pcall(item.section, item)
     local ok_weapon, weapon = pcall(item.get_weapon, item)
     if not ok_section or not ok_weapon or not weapon then return nil end
+    local cache_key = weapon_metrics_cache_key(item, section, weapon)
+    if cache_key then
+        local cached = weapon_metrics_cache[cache_key]
+        if cached then return cached end
+    end
     local metrics = {section = section}
     local sil_status = get_u32(section, "silencer_status", 0)
     local sil_attached = sil_status == 2 and get_live_silencer_attached(item)
@@ -363,13 +473,18 @@ local function get_effective_weapon_metrics(item)
             metrics.handling_details = details
         end
     end
-    local _, ready = get_weapon_ready_speed(item, section, weapon)
-    metrics.ready = ready * 100
-    if sivol_weapon_aim_speed and type(sivol_weapon_aim_speed.get_weapon_scope_profile) == "function" then
-        local ok_scope, profile = pcall(sivol_weapon_aim_speed.get_weapon_scope_profile, item, weapon, section)
-        if ok_scope and type(profile) == "table" then metrics.scope = profile end
+    local aim_profile
+    if sivol_weapon_aim_speed and type(sivol_weapon_aim_speed.get_weapon_aim_profile) == "function" then
+        local ok_aim, profile = pcall(
+            sivol_weapon_aim_speed.get_weapon_aim_profile, item, weapon, section)
+        if ok_aim and type(profile) == "table" then aim_profile = profile end
     end
-    return metrics
+    local _, ready = get_weapon_ready_speed(item, section, weapon, aim_profile)
+    metrics.ready = ready * 100
+    if aim_profile and aim_profile.scope and aim_profile.zoom then
+        metrics.scope = aim_profile
+    end
+    return store_weapon_metrics(cache_key, metrics)
 end
 
 local function metric_text(value, unit)
@@ -882,18 +997,14 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	if (item == nil) or BlockUIDescr() then return end
 
 
-	local old_item_id = nil
-	local old_item_section = nil
-	if self.item then
-		local ok_old, value = pcall(self.item.id, self.item)
-		if ok_old then old_item_id = value end
-		local ok_old_section, section = pcall(self.item.section, self.item)
-		if ok_old_section then old_item_section = section end
-	end
 	local ok_new, new_item_id = pcall(item.id, item)
 	local ok_new_section, new_item_section = pcall(item.section, item)
-	if old_item_id and ok_new and old_item_id ~= new_item_id
-		or old_item_section and ok_new_section and old_item_section ~= new_item_section then
+	-- Never dereference the previously shown item here: after an addon swap the
+	-- engine may already have freed that entity, and a native call on it faults
+	-- (pcall cannot catch an access violation). Compare against the id/section
+	-- captured in plain Lua values when that item was last displayed.
+	if (self.shown_item_id and ok_new and self.shown_item_id ~= new_item_id)
+		or (self.shown_item_section and ok_new_section and self.shown_item_section ~= new_item_section) then
 		self.lalt = nil
 		self.lshift = nil
 		self.weapon_info_lines = nil
@@ -902,6 +1013,8 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	end
 
 	self.item = item
+	self.shown_item_id = new_item_id
+	self.shown_item_section = new_item_section
 	self.section = item:section()
 	self.condition = item:condition()
 	configure_description_width(self, item:is_weapon() and not item:is_knife(), item:is_artefact() or item:is_eatable_item())
@@ -2724,8 +2837,9 @@ function CUIDescriptionWnd:OnKeyPress(dik, bind)
             self:ShowDescription(live_item)
         end
 	elseif dik == DIK_keys.DIK_T then
-		if self.item then
-			self:OutContainerArts( self.item:id() )
+		local live_item = get_live_focused_item(self)
+		if live_item then
+			self:OutContainerArts( live_item:id() )
 		end		
 --	elseif dik == DIK_keys.DIK_W then 
 --		self:SetItemPrice( self.item )		
@@ -2913,8 +3027,10 @@ function CUIDescriptionWnd:OutContainerArts( container_id )
 
 	misc.release_obj( box )
 
-	if self.item and self.item:id() == container_id then
+	if self.shown_item_id == container_id then
 		self.item = nil
+		self.shown_item_id = nil
+		self.shown_item_section = nil
 	end
 	if self.itemInFocus == container_id then
 		self.itemInFocus = nil
