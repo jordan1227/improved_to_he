@@ -40,8 +40,15 @@ function time_days() -- скильки дней
 end
 
 
-function wakeup_gg()
+local wake_generation = 0
+
+function wakeup_gg(generation)
+ if generation ~= wake_generation then return end
+ if not (db.actor and db.actor:alive()) then return end
+ if not he_watch_status.is_operational() then return end
+ if not g_watch or not g_watch:alarm_config().f then return end
  if sleep_manager.is_sleep_active() then
+    g_watch.alarm_sleep_factor, g_watch.alarm_applied_factor = nil, nil
     sleep_manager.stopper()
  end
 end
@@ -49,6 +56,7 @@ end
 class "uber_watch"
 
 function uber_watch:__init()
+ self:shut_up() -- invalidate saved/pending output across initialization
  if self:alarm_config().f then
     self:enable_alarm()
  end
@@ -81,6 +89,8 @@ function uber_watch:update(delta, curtime, taskrec)
   if self ~= g_watch then
      return
   end -- отладочный трик
+  if not (db.actor and db.actor:alive()) then self:stop_alarm_output(); return end
+  if not he_watch_status.is_operational() then return end
   self.object = he_pda_model.get_pda()
   -- [HE-PORT]
   if self.object == nil then
@@ -128,14 +138,18 @@ function uber_watch:update(delta, curtime, taskrec)
      if level.get_time_factor() > new_tf then
         -- замедлить время, чтобы не слишком промахнуться
         wprintf("[~T/~B].~CF0 #DBG(alarm_clock): time factor updated from~CFD %f~CF0 to~CFD %f~C07", level.get_time_factor(), new_tf)
+        self.alarm_sleep_factor = self.alarm_sleep_factor or level.get_time_factor()
         level.set_time_factor(new_tf)
+        self.alarm_applied_factor = new_tf
      end
   end
 
   -- проверка триггера перехода через время пробуждения
   if set and days == cfg.d and (prev_time <= wakeup) and (now_time >= wakeup) then
      wprintf("[~T/~B].~CE1 #DBG(alarm_clock): wakeup moment reached, beeper enabled.~C07")
+     if sleep then self.alarm_sleep_factor = self.alarm_sleep_factor or level.get_time_factor() end
      sleep_manager.reset_tf()
+     if sleep then self.alarm_applied_factor = level.get_time_factor() end
     --  local gt = game.get_game_time()
     --  gt:updHMS(cfg.h, cfg.m)
     --  game.set_game_time(gt)
@@ -145,7 +159,8 @@ function uber_watch:update(delta, curtime, taskrec)
      self:play_beeper(taskrec) -- что-то сквозь сон проступает )
      taskrec.period = 1000 -- замедлить апдейт для работы биппера
      g_taskrec = 1000
-     schedule.add("wakeup_gg", "vergas_watch.wakeup_gg()", 800)
+     wake_generation = wake_generation + 1
+     schedule.add("wakeup_gg", "vergas_watch.wakeup_gg(" .. wake_generation .. ")", 800)
   end
 
   self.prev_update = now_time
@@ -155,6 +170,8 @@ end
 
 local upd_time = 0
 function uber_watch:play_beeper(taskrec)
+  if not he_watch_status.is_operational() then return end
+  taskrec = taskrec or {}
   local tg = time_global()
   if upd_time < tg then
     upd_time = tg + g_taskrec
@@ -169,7 +186,7 @@ function uber_watch:play_beeper(taskrec)
      beeper = beeper - 1
      wprintf("[~T/~B]. #DBG: rest~C0D %d~C07 beeper signals,  ", beeper) -- lua_traceback(" ")
      for i = 1, 2 do
-       vergas_lib.s_play("pda\\timer_signal", 1)
+       self.alarm_sound = vergas_lib.s_play("pda\\timer_signal", 1)
      end -- for
   else
      beeper = false
@@ -180,13 +197,47 @@ function uber_watch:play_beeper(taskrec)
   set_value("alarm_time", cfg)
 end
 
+-- No stored-state writes here: safe during load/stop before a new save is bound.
+function uber_watch:stop_alarm_output()
+  wake_generation = wake_generation + 1
+  -- Undo only time scaling still owned by this alarm, never another sleep event.
+  if self.alarm_sleep_factor and sleep_manager.is_sleep_active()
+      and level.get_time_factor() == self.alarm_applied_factor then
+    level.set_time_factor(self.alarm_sleep_factor)
+  end
+  self.alarm_sleep_factor, self.alarm_applied_factor = nil, nil
+  if self.alarm_sound then
+    self.alarm_sound:stop()
+    self.alarm_sound = nil
+  end
+end
+
+-- Advance ONLY an occurrence already missed. Retain enabled flag and saved time.
+function uber_watch:skip_unavailable_alarm()
+  local cfg = self:alarm_config()
+  local days, minutes = math.floor(time_days()), time_minutes()
+  local alarm = cfg.h * 60 + cfg.m
+  if cfg.f and (cfg.d * 1440 + alarm <= days * 1440 + minutes) then
+    cfg.d = days + (alarm <= minutes and 1 or 0)
+    set_value("alarm_time", cfg)
+  end
+  self.prev_days, self.prev_update = days, minutes
+end
+
+function uber_watch:on_watch_state_changed(available)
+  self:shut_up()
+  self:skip_unavailable_alarm() -- also runs on recovery before normal update
+end
+
 function uber_watch:shut_up() -- утихомирить сигнал будильника
+  self:stop_alarm_output()
   local cfg = self:alarm_config()
   cfg.b = 0
   set_value("alarm_time", cfg)
 end
 
 function uber_watch:disable_alarm()
+  self:shut_up()
   local cfg = self:alarm_config()
   cfg.f = false
   set_value("alarm_time", cfg)
@@ -194,6 +245,7 @@ function uber_watch:disable_alarm()
 end
 
 function uber_watch:enable_alarm(hh, mm)
+  if hh and mm and not he_watch_status.is_operational() then return false end
   local cfg = self:alarm_config()
   local days = math.floor ( time_days() )
   cfg.d = days  -- день на который заведен будильник
