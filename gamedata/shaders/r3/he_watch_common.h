@@ -5,6 +5,7 @@
 	Lua writer: gamedata/scripts/ogsr_shaders_control.script (watch_update).
 */
 
+uniform float4 m_he_watch_page; // x = time/bleeding 0 or radiation/psy 1, y = icon slide 0..1
 uniform float4 m_he_watch_ring;   // x = radiation fill 0..1, y = ring available 1/0, z/w reserved
 uniform float4 m_he_watch_alarm;  // x = alarm enabled 1/0, y = editor active 1/0, z = saved alarm hour, w = saved alarm minute
 

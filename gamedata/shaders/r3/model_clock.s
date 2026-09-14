@@ -11,7 +11,9 @@ function normal   (shader, t_base, t_second, t_detail)
 
 	shader:dx10texture("s_base", t_base)
 	shader:dx10texture("s_lut", tex_lut)
+	shader:dx10texture("s_he_battery", "act\\watch\\bar_battery")
 	shader:dx10texture("s_he_alarm", "act\\watch\\icon_alarm")
+	shader:dx10texture("s_he_rad", "shaders\\watch\\he_radiation_digits")
 	
 	shader:dx10sampler("smp_base")	
 	shader:dx10sampler("smp_nofilter")		

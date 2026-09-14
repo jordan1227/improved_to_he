@@ -8,6 +8,9 @@
 #include "electronics_problems.h"
 #include "he_watch_common.h"
 
+Texture2D s_he_psy; // existing act/watch/icon_thirst2, ten 200x200 frames
+uniform float4 m_he_watch_psy; // x = psy health
+
 // float4 m_actor_params; //x = health, y = outfit cond, z = wpn cond, w = wpn_loading
 
 struct v2p
@@ -22,18 +25,16 @@ float get_noise(float2 co)
 	return (frac(sin(dot(co.xy, float2(12.9898,78.233))) * 43758.5453))*0.5;
 }
 
-float4 main(v2p I) : SV_Target
+float3 sample_watch_stat(float2 uv, bool psy_icon)
 {
-    float2 he_face_uv = I.tc0;
-    I.tc0 = he_watch_distort_uv(I.tc0);
     //Color and other settings
     float4 background_col = float4(16.0, 18.0, 20.0, 255.0) / 255.0; //Background color
 	float f_min = 0.0; //Lowest value of X
 
 	//Sample bar texture
-	float val = m_actor_watch_params.y;
-	I.tc0 = cond_icon(I.tc0, val);
-	float4 t_base = s_base.SampleLevel(smp_base, I.tc0, 0); //force mip 0
+	float val = psy_icon ? 1.0 - saturate(m_he_watch_psy.x) : m_actor_watch_params.y;
+	uv = cond_icon(uv, val);
+	float4 t_base = psy_icon ? s_he_psy.SampleLevel(smp_base, uv, 0) : s_base.SampleLevel(smp_base, uv, 0); //force mip 0
 
 	//Blending factor
 	float factor = val > f_min ? saturate(sin(timers.x * 10.0 * val)) : saturate(sin(timers.x * 9.0 * electronics_problems.x));
@@ -47,5 +48,21 @@ float4 main(v2p I) : SV_Target
 
 	//Output
 
-	return float4(he_watch_apply_signal(t_base.xyz, he_face_uv), 1.0);
+	return t_base.xyz;
+}
+float4 main(v2p I) : SV_Target
+{
+    float2 uv = he_watch_distort_uv(I.tc0);
+    // Alarm editing always shows the normal bleeding icon.
+    float slide = m_he_watch_alarm.y > 0.5 ? 0.0 : saturate(m_he_watch_page.y);
+    float3 color = watchBgColor();
+    float2 bleed_uv = uv + float2(slide, 0.0);
+    float2 psy_uv = uv - float2(1.0 - slide, 0.0);
+    // Clip in LOCAL icon coordinates before mapping to either ten-frame atlas.
+    // Compose one background rather than adding two opaque texture rectangles.
+    if (slide < 1.0 && all(bleed_uv >= 0.0) && all(bleed_uv <= 1.0))
+        color = sample_watch_stat(bleed_uv, false);
+    if (slide > 0.0 && all(psy_uv >= 0.0) && all(psy_uv <= 1.0))
+        color = sample_watch_stat(psy_uv, true);
+    return float4(he_watch_apply_signal(color, I.tc0), 1.0);
 }

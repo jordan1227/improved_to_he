@@ -8,7 +8,10 @@
 
 // uniform float4 m_actor_params; //x = health, y = outfit cond, z = wpn cond, w = wpn_loading
 
+uniform float4 m_he_watch_battery; // charge, present, reserved, reserved
+Texture2D s_he_battery;
 Texture2D s_lut; //RGBA LUT texture
+Texture2D s_he_rad; // addon glyph atlas: 14 columns, 12 rows (not 14x14)
 Texture2D s_he_alarm; // act\\watch\\icon_alarm (alpha silhouette)
 
 struct v2p
@@ -38,6 +41,41 @@ float4 sample_digit(float2 tc, int digit, int blowout_offset)
 	
 	//Multiply color by alpha and output
     return lut_texture;
+}
+
+float4 sample_radiation_digit(float2 uv, int digit)
+{
+    if (any(uv < 0.0) || any(uv > 1.0) || digit == 11)
+        return float4(0, 0, 0, 0);
+    if (digit == 14) // unavailable measurement: a dash, never a false zero
+    {
+        float mask = step(0.25, uv.x) * step(uv.x, 0.75) *
+                     step(0.45, uv.y) * step(uv.y, 0.55);
+        return float4(float3(0.55, 0.62, 0.55) * mask, mask);
+    }
+    uv = clamp(uv, 0.5 / 128.0, 1.0 - 0.5 / 128.0);
+    return s_he_rad.SampleLevel(smp_base, (uv + float2(digit, 0)) / float2(14.0, 12.0), 0);
+}
+
+float4 radiation_readout(float2 uv)
+{
+    // Existing backend conversion: actor radiation * 10 R. Fixed two decimals.
+    // Integer hundredths avoid the addon's low-range scale jump and fake maxima.
+    int value = int(floor(saturate(m_he_watch_ring.x) * 1000.0 + 0.5));
+    bool available = m_he_watch_ring.y > 0.5;
+    int d0 = available ? (value >= 1000 ? 1 : 11) : 14;
+    int d1 = available ? (value / 100) % 10 : 14;
+    int d2 = available ? (value / 10) % 10 : 14;
+    int d3 = available ? value % 10 : 14;
+    float2 cell = float2(0.21, 1.0);
+    float4 result = float4(0, 0, 0, 0);
+    result += sample_radiation_digit((uv - float2(0.00, 0)) / cell, d0);
+    result += sample_radiation_digit((uv - float2(0.17, 0)) / cell, d1);
+    result += sample_radiation_digit((uv - float2(0.265, 0)) / cell, 13); // decimal point
+    result += sample_radiation_digit((uv - float2(0.43, 0)) / cell, d2);
+    result += sample_radiation_digit((uv - float2(0.60, 0)) / cell, d3);
+    result += sample_radiation_digit((uv - float2(0.78, 0)) / cell, 12); // addon's Cyrillic R glyph
+    return result;
 }
 
 float4 main(v2p I) : SV_Target
@@ -109,6 +147,10 @@ float4 main(v2p I) : SV_Target
     watch_color += sample_digit(tc + digit_offset[3], game_time.w, blowout_offset[3]); //Minute2
     watch_color += sample_digit(tc + digit_offset[4], 10, blowout_offset[4]); //Colon
 
+    // Main display only: footer and all other surfaces keep their existing roles.
+    if (m_he_watch_page.x > 0.5 && m_he_watch_alarm.y < 0.5)
+        watch_color = radiation_readout(float2(I.tc0.x, tc.y));
+
 	//Background color
     float3 color = float3(16.0, 18.0, 20.0) / 255.0;
 
@@ -139,6 +181,23 @@ float4 main(v2p I) : SV_Target
 			alarm_mask = s_he_alarm.Sample(smp_base, alarm_uv).a;
 		color = lerp(color, float3(1.0, 0.88, 0.55), saturate(alarm_mask));
 	}
+
+	// Opaque, dark 22x18 source: RGB coverage, NOT alpha. Physical aspect corrected.
+    float2 battery_uv = (I.tc0 - float2(0.20, 0.82)) / float2(0.1067, 0.16);
+    if (m_he_watch_battery.y > 0.5 && all(battery_uv >= 0) && all(battery_uv <= 1))
+    {
+        float3 art = s_he_battery.Sample(smp_nofilter, battery_uv).rgb;
+        float mask = saturate((max(art.r, max(art.g, art.b)) - 0.08) / 0.18);
+        float charge = saturate(m_he_watch_battery.x);
+        // Preserve case and terminal; only the inner segments empty right to left.
+        bool interior = battery_uv.x > 2.0/22.0 && battery_uv.x < 20.0/22.0
+                     && battery_uv.y > 1.0/18.0 && battery_uv.y < 17.0/18.0;
+        if (interior && (battery_uv.x * 22.0 - 2.0) / 18.0 > charge) mask *= 0.12;
+        float3 tint = float3(0.76, 0.86, 0.72);
+        if (charge < 0.15) tint = float3(1.0, 0.65, 0.15);
+        if (charge < 0.05) tint = float3(1.0, 0.16, 0.07) * (0.65 + 0.35 * sin(timers.x * 2.0944));
+        color = lerp(color, tint, mask);
+    }
 
 	float brightness = 1.f;
 	brightness *= calc_glitch_brightness_watch_ui(brightness);

@@ -1,0 +1,225 @@
+--- before/gamedata/scripts/he_watch_battery.script
++++ after/gamedata/scripts/he_watch_battery.script
+@@ -0,0 +1,74 @@
++-- [HE-PORT] One AA = six game days. Only the worn/selected watch drains.
++-- Condition is authoritative; no wall-clock/offline or spare-watch simulation.
++local CAPACITY_SECONDS = 6 * 24 * 60 * 60
++local active_id, last_time = nil, nil
++
++local function selected_watch()
++    if not db.actor or not db.actor:alive() then return nil end
++    return db.actor:object("device_watch")
++end
++
++local function clamp(value)
++    return math.max(0, math.min(1, value))
++end
++
++function reset()
++    active_id, last_time = nil, nil
++end
++
++function refresh_charge(force)
++    local watch = selected_watch()
++    if not watch then reset(); return 0 end
++    local now = game.get_game_time()
++    if active_id ~= watch:id() or not last_time then
++        active_id, last_time = watch:id(), now
++        return clamp(watch:condition())
++    end
++    local elapsed = now:diffSec(last_time)
++    if elapsed < 0 then last_time = now; return clamp(watch:condition()) end
++    -- Avoid per-frame float condition writes. Save/recharge flush the remainder.
++    if elapsed >= 60 or (force and elapsed > 0) then
++        last_time = now
++        watch:set_condition(clamp(watch:condition() - elapsed / CAPACITY_SECONDS))
++    end
++    return clamp(watch:condition())
++end
++
++function get_charge()
++    return refresh_charge()
++end
++
++function is_powered()
++    return refresh_charge() > 0
++end
++
++local function owned(obj, section)
++    if not obj or obj:section() ~= section or not db.actor then return false end
++    local parent = obj:parent()
++    return parent ~= nil and parent:id() == db.actor:id()
++end
++
++function recharge(battery_id, watch_id)
++    if not db.actor or not db.actor:alive() or battery_id == watch_id then return false end
++    local battery = level.object_by_id(battery_id)
++    local watch = level.object_by_id(watch_id)
++    if not owned(battery, "batt_torch") or not owned(watch, "device_watch") then return false end
++    refresh_charge(true)
++    if watch:condition() >= 1 then return false end
++    -- No yield/deferred callback between revalidation and consumption.
++    misc.release_obj(battery)
++    watch:set_condition(1)
++    if active_id == watch_id then last_time = game.get_game_time() end
++    he_watch_status.is_operational() -- retains any remaining EMP outage
++    return true
++end
++
++function attach(sm)
++    sm:subscribe({signal = "on_update", fun = function() refresh_charge() end})
++    sm:subscribe({signal = "on_save", fun = function() refresh_charge(true) end})
++    sm:subscribe({signal = "on_load_before_all", fun = reset})
++    sm:subscribe({signal = "on_stop_modules", fun = reset})
++    sm:subscribe({signal = "on_drop_before_all", fun = function(obj)
++        if obj and obj:id() == active_id then refresh_charge(true); reset() end
++    end})
++end
+--- before/gamedata/scripts/he_watch_status.script
++++ after/gamedata/scripts/he_watch_status.script
+@@ -1,4 +1,4 @@
+--- [HE-PORT] Watch EMP state. Real-time outages; no battery consumption here.
++-- [HE-PORT] Watch EMP and battery operational state.
+ -- This is independent of the PDA/NVD/torch outage windows.
+ local outage_until = 0
+ local surge_until = 0
+@@ -12,7 +12,7 @@
+ end
+ 
+ local function refresh()
+-    local available = powered and time_global() >= outage_until
++    local available = he_watch_battery.is_powered() and powered and time_global() >= outage_until
+     if available ~= operational then
+         operational = available -- publish before callbacks; they may query us again
+         if vergas_watch and vergas_watch.g_watch and actor_ok() then
+@@ -32,7 +32,7 @@
+     return refresh()
+ end
+ 
+--- Future battery integration has one gate. Do not infer charge from condition.
++-- Additional power override; battery availability is always checked independently.
+ function set_power_available(available)
+     powered = available == true
+     refresh()
+--- before/gamedata/scripts/ogsr_shaders_control.script
++++ after/gamedata/scripts/ogsr_shaders_control.script
+@@ -106,6 +106,8 @@
+ 
+ 	-- Shader contract: x = shared interference, y = complete electronic outage.
+ 	local watch_operational = he_watch_status.is_operational()
++	shader_set_custom_param("m_he_watch_battery", he_watch_battery.get_charge(),
++		watch_gate.has_watch() and 1 or 0, 0, 0)
+ 	shader_set_custom_param("m_he_watch_effects", he_watch_status.get_interference(),
+ 		watch_operational and 0 or 1, 0, 0)
+ 
+--- before/gamedata/scripts/ogse/ogse_signals_addons_list.script
++++ after/gamedata/scripts/ogse/ogse_signals_addons_list.script
+@@ -75,6 +75,7 @@
+ 	"flamethrower",
+ 	"ui_pda_addons",
+ 	"ogsr_shaders_control",
++	"he_watch_battery", -- [HE-PORT] six-day AA charge stored in item condition
+ 	"he_watch_status", -- [HE-PORT] independent watch EMP / operational gate
+ 	"he_watch_ui", -- [HE-PORT] watch-only alarm editor
+ 	"he_watch_display", -- [HE-PORT] regular-view wheel pages
+--- before/gamedata/scripts/kotovod/dsh_drag_drop.script
++++ after/gamedata/scripts/kotovod/dsh_drag_drop.script
+@@ -628,6 +628,11 @@
+     local drag_sect = drag_obj:section()
+     local drop_sect = drop_obj:section()
+ 
++    -- Watch batteries require both items in actor inventory; no deferred object refs.
++    if drag_sect == "batt_torch" and drop_sect == "device_watch" then
++        return he_watch_battery.recharge(drag_obj:id(), drop_obj:id())
++    end
++
+     log2( "Попытка перетаскивания: drag_sect = " .. drag_sect .. ", drop_sect = " .. drop_sect )
+ 
+     local function check_prefix( section, prefix_or_prefixes, exceptions )
+--- before/gamedata/scripts/ui/ui_inv_descr.script
++++ after/gamedata/scripts/ui/ui_inv_descr.script
+@@ -1268,6 +1268,13 @@
+ 			end
+ 		end)
+ 		description = string.format("%%c[255,255,140,0]%s: %s\\n%%c[default]%s", translate("total_matches"), total_matches, description)
++	end
++
++	if self.section == "device_watch" then
++		he_watch_battery.refresh_charge()
++		description = string.format(translate("he_watch_charge_description"),
++			math.floor(math.max(0, math.min(1, item:condition())) * 100 + 0.5))
++			.. "\n" .. description
+ 	end
+ 
+ 	if self.section == "ballon" then
+--- before/gamedata/shaders/r3/model_clock.ps
++++ after/gamedata/shaders/r3/model_clock.ps
+@@ -8,6 +8,8 @@
+ 
+ // uniform float4 m_actor_params; //x = health, y = outfit cond, z = wpn cond, w = wpn_loading
+ 
++uniform float4 m_he_watch_battery; // charge, present, reserved, reserved
++Texture2D s_he_battery;
+ Texture2D s_lut; //RGBA LUT texture
+ Texture2D s_he_rad; // addon glyph atlas: 14 columns, 12 rows (not 14x14)
+ Texture2D s_he_alarm; // act\\watch\\icon_alarm (alpha silhouette)
+@@ -180,6 +182,23 @@
+ 		color = lerp(color, float3(1.0, 0.88, 0.55), saturate(alarm_mask));
+ 	}
+ 
++	// Opaque, dark 22x18 source: RGB coverage, NOT alpha. Physical aspect corrected.
++    float2 battery_uv = (I.tc0 - float2(0.20, 0.82)) / float2(0.1067, 0.16);
++    if (m_he_watch_battery.y > 0.5 && all(battery_uv >= 0) && all(battery_uv <= 1))
++    {
++        float3 art = s_he_battery.Sample(smp_nofilter, battery_uv).rgb;
++        float mask = saturate((max(art.r, max(art.g, art.b)) - 0.08) / 0.18);
++        float charge = saturate(m_he_watch_battery.x);
++        // Preserve case and terminal; only the inner segments empty right to left.
++        bool interior = battery_uv.x > 2.0/22.0 && battery_uv.x < 20.0/22.0
++                     && battery_uv.y > 1.0/18.0 && battery_uv.y < 17.0/18.0;
++        if (interior && (battery_uv.x * 22.0 - 2.0) / 18.0 > charge) mask *= 0.12;
++        float3 tint = float3(0.76, 0.86, 0.72);
++        if (charge < 0.15) tint = float3(1.0, 0.65, 0.15);
++        if (charge < 0.05) tint = float3(1.0, 0.16, 0.07) * (0.65 + 0.35 * sin(timers.x * 2.0944));
++        color = lerp(color, tint, mask);
++    }
++
+ 	float brightness = 1.f;
+ 	brightness *= calc_glitch_brightness_watch_ui(brightness);
+ 	color = lerp(watchBgColor(), color, brightness);
+--- before/gamedata/shaders/r3/model_clock.s
++++ after/gamedata/shaders/r3/model_clock.s
+@@ -11,6 +11,7 @@
+ 
+ 	shader:dx10texture("s_base", t_base)
+ 	shader:dx10texture("s_lut", tex_lut)
++	shader:dx10texture("s_he_battery", "act\\watch\\bar_battery")
+ 	shader:dx10texture("s_he_alarm", "act\\watch\\icon_alarm")
+ 	shader:dx10texture("s_he_rad", "shaders\\watch\\he_radiation_digits")
+ 	
+--- before/gamedata/config/system.ltx
++++ after/gamedata/config/system.ltx
+@@ -1259,6 +1259,7 @@
+ m_he_watch_effects
+ m_he_watch_psy
+ m_he_watch_page
++m_he_watch_battery
+ m_digiclock
+ m_actor_watch_params
+ m_actor_watch_params_2
+--- before/gamedata/config/text/eng/he_watch.xml
++++ after/gamedata/config/text/eng/he_watch.xml
+@@ -5,4 +5,5 @@
+ <string id="device_watch_descr"><text>An electronic wristwatch with an alarm and status display.</text></string>
+ <string id="he_watch_view_clock"><text>Time / bleeding - Wheel: radiation / psy</text></string>
+ <string id="he_watch_view_radiation"><text>Radiation / psy - Wheel: time / bleeding</text></string>
++<string id="he_watch_charge_description"><text>Charge: %d%%. Drag an AA battery onto the watch to replace it. One battery lasts about six days.</text></string>
+ </string_table>
+--- before/gamedata/config/text/rus/he_watch.xml
++++ after/gamedata/config/text/rus/he_watch.xml
+@@ -3,4 +3,5 @@
+ <string id="he_watch_alarm_help"><text>Колесо: минуты · Shift+колесо: часы\n[%s]: установить · Удержать [%s]: выключить · [%s]: отмена</text></string>
+ <string id="he_watch_view_clock"><text>Время / кровотечение - Колесо: радиация / пси</text></string>
+ <string id="he_watch_view_radiation"><text>Радиация / пси - Колесо: время / кровотечение</text></string>
++<string id="he_watch_charge_description"><text>Заряд: %d%%. Перетащите батарейку AA на часы для замены. Одной батарейки хватает примерно на шесть дней.</text></string>
+ </string_table>
