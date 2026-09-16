@@ -1,6 +1,8 @@
 #include <windows.h>
+#include <d3d11.h>
 #include <stdint.h>
 #include <math.h>
+#include <string.h>
 
 #define RVA_EXECCMD         0x000837a0ULL
 #define RVA_STEAL_END       0x000837b2ULL
@@ -11,6 +13,14 @@
 #define RVA_GAISPACE        0x01203a18ULL
 #define RVA_RELOADINI       0x0077cf30ULL
 #define RVA_MSG             0x00090140ULL
+#define RVA_STR_TABLE_LOAD    0x003CBAD0ULL
+#define RVA_STR_TABLE_ANCHOR  0x00DF85E8ULL
+#define RVA_RT_CREATE       0x0018F260ULL
+#define RVA_GETFONT_GRAFFITI  0x00528C80ULL
+#define RVA_FONT_OUT          0x0005CA40ULL
+#define RVA_HW              0x0110B2330ULL
+#define OFF_HW_PDEVICE      0x10
+#define OFF_CRT_PRT         0x28
 #define RVA_XR_FS           0x01224098ULL
 #define RVA_UPDATE_PATH     0x000A2F30ULL
 #define RVA_FILE_LIST_OPEN  0x000A0290ULL
@@ -694,6 +704,428 @@ static int lua_fl_step_material(void* L)
     return 3;
 }
 
+static void* g_pda3d_rt_holder = 0;
+
+typedef void (*rt_create_t)(void* holder, const char* name,
+    unsigned w, unsigned h, unsigned fmt, unsigned sample, unsigned flags);
+
+static int vtbl_in_module(void* obj, const wchar_t* mod)
+{
+    if (!obj) return 0;
+    void* vt = *(void**)obj;
+    if (!vt) return 0;
+    char* base = (char*)GetModuleHandleW(mod);
+    if (!base) return 0;
+    unsigned off = *(unsigned*)(base + 0x3C);
+    unsigned size = *(unsigned*)(base + off + 4 + 20 + 56);
+    return (char*)vt >= base && (char*)vt < base + size;
+}
+
+typedef void* (*getfont_t)(void);
+typedef void (*font_out_t)(void* self, float x, float y, const char* fmt, ...);
+
+typedef long (__stdcall *d3dcompile_t)(const void*, unsigned long long,
+    const char*, const void*, void*, const char*, const char*,
+    unsigned, unsigned, void**, void**);
+
+struct M2Vert { float x, y, c[4]; };
+
+static void* g_m2_vs = 0;
+static void* g_m2_ps = 0;
+static void* g_m2_layout = 0;
+static void* g_m2_vb = 0;
+static void* g_m2_cb = 0;
+
+static const char M2_VS[] =
+    "cbuffer CB : register(b0) { float4 so; };"
+    "struct VI { float2 p : POSITION; float4 c : COLOR; };"
+    "struct VO { float4 p : SV_POSITION; float4 c : COLOR; };"
+    "VO vs(VI i) { VO o; o.p = float4(i.p * so.xy + so.zw, 0, 1); o.c = i.c; return o; }";
+static const char M2_PS[] =
+    "struct VO { float4 p : SV_POSITION; float4 c : COLOR; };"
+    "float4 ps(VO i) : SV_TARGET { return i.c; }";
+
+static int m2b_setup(void* dev)
+{
+    if (g_m2_vs && g_m2_ps && g_m2_layout && g_m2_vb && g_m2_cb) return 1;
+    char sysdir[260];
+    unsigned n = GetSystemDirectoryA(sysdir, 260);
+    (void)n;
+    char dllp[300];
+    dllp[0] = 0;
+    const char* dlls[] = { "d3dcompiler_47.dll", "d3dcompiler_43.dll", 0 };
+    void* hdc = 0;
+    for (int i = 0; dlls[i] && !hdc; ++i) hdc = LoadLibraryA(dlls[i]);
+    if (!hdc) return 0;
+    d3dcompile_t comp = (d3dcompile_t)GetProcAddress((HMODULE)hdc, "D3DCompile");
+    msg_t Dm = (msg_t)(g_base + RVA_MSG);
+    if (!comp) { Dm("!! [pda3d] m2b: no D3DCompile export"); return 0; }
+    ID3D11Device* d = (ID3D11Device*)dev;
+    void* vsb = 0; void* psb = 0; void* err = 0;
+    long hr;
+    hr = comp(M2_VS, sizeof(M2_VS), 0, 0, 0, "vs", "vs_4_0", 0, 0, &vsb, &err);
+    if (hr) {
+        const char* et = err ? (const char*)((ID3D10Blob*)err)->GetBufferPointer() : 0;
+        Dm("!! [pda3d] m2b: VS compile hr=0x%X %s", (unsigned)hr, et ? et : "(no blob)");
+        return 0;
+    }
+    err = 0;
+    hr = comp(M2_PS, sizeof(M2_PS), 0, 0, 0, "ps", "ps_4_0", 0, 0, &psb, &err);
+    if (hr) {
+        const char* et = err ? (const char*)((ID3D10Blob*)err)->GetBufferPointer() : 0;
+        Dm("!! [pda3d] m2b: PS compile hr=0x%X %s", (unsigned)hr, et ? et : "(no blob)");
+        return 0;
+    }
+    int hrvs = d->CreateVertexShader(((ID3D10Blob*)vsb)->GetBufferPointer(),
+        ((ID3D10Blob*)vsb)->GetBufferSize(), 0, (ID3D11VertexShader**)&g_m2_vs);
+    if (hrvs) { Dm("!! [pda3d] m2b: CreateVS hr=0x%X", (unsigned)hrvs); return 0; }
+    int hrps = d->CreatePixelShader(((ID3D10Blob*)psb)->GetBufferPointer(),
+        ((ID3D10Blob*)psb)->GetBufferSize(), 0, (ID3D11PixelShader**)&g_m2_ps);
+    if (hrps) { Dm("!! [pda3d] m2b: CreatePS hr=0x%X", (unsigned)hrps); return 0; }
+    struct IE { const char* n; unsigned idx; unsigned fmt; unsigned slot; unsigned off; unsigned cls; unsigned step; };
+    static const IE elems[2] = {
+        { "POSITION", 0, 16, 0, 0, 0, 0 },
+        { "COLOR", 0, 2, 0, 8, 0, 0 },
+    };
+    int hrl = d->CreateInputLayout((const D3D11_INPUT_ELEMENT_DESC*)elems, 2,
+        ((ID3D10Blob*)vsb)->GetBufferPointer(), ((ID3D10Blob*)vsb)->GetBufferSize(),
+        (ID3D11InputLayout**)&g_m2_layout);
+    if (hrl) { Dm("!! [pda3d] m2b: CreateLayout hr=0x%X", (unsigned)hrl); return 0; }
+    ((ID3D10Blob*)vsb)->Release();
+    ((ID3D10Blob*)psb)->Release();
+    D3D11_BUFFER_DESC bd;
+    bd.ByteWidth = sizeof(M2Vert) * 256; bd.Usage = (D3D11_USAGE)1; bd.BindFlags = 1;
+    bd.CPUAccessFlags = 0x10000; bd.MiscFlags = 0; bd.StructureByteStride = 0;
+    int hrv = d->CreateBuffer(&bd, 0, (ID3D11Buffer**)&g_m2_vb);
+    if (hrv) { Dm("!! [pda3d] m2b: CreateVB hr=0x%X", (unsigned)hrv); return 0; }
+    D3D11_BUFFER_DESC cd;
+    cd.ByteWidth = 16; cd.Usage = (D3D11_USAGE)1; cd.BindFlags = 4;
+    cd.CPUAccessFlags = 0x10000; cd.MiscFlags = 0; cd.StructureByteStride = 0;
+    int hrc = d->CreateBuffer(&cd, 0, (ID3D11Buffer**)&g_m2_cb);
+    if (hrc) { Dm("!! [pda3d] m2b: CreateCB hr=0x%X", (unsigned)hrc); return 0; }
+    return 1;
+}
+
+static int g_m2_nv = 0;
+static M2Vert g_m2_v[256];
+
+static void m2b_rect(float x0, float y0, float x1, float y1,
+    float r, float g, float b, float a)
+{
+    if (g_m2_nv + 6 > 256) return;
+    float q[6][2] = { {x0,y0}, {x1,y0}, {x1,y1}, {x0,y0}, {x1,y1}, {x0,y1} };
+    for (int i = 0; i < 6; ++i) {
+        M2Vert* v = &g_m2_v[g_m2_nv++];
+        v->x = q[i][0]; v->y = q[i][1];
+        v->c[0] = r; v->c[1] = g; v->c[2] = b; v->c[3] = a;
+    }
+}
+
+static void cmd_pda3d_m2b(msg_t Msg)
+{
+    void* crt = g_pda3d_rt_holder;
+    void* rtv = crt ? *(void**)((char*)crt + OFF_CRT_PRT) : 0;
+    if (!rtv || !vtbl_in_module(rtv, L"d3d11.dll")) { Msg("!! [pda3d] m2b: no RT (run m1a first)"); return; }
+    ID3D11Device* dev = 0;
+    ((ID3D11RenderTargetView*)rtv)->GetDevice(&dev);
+    ID3D11DeviceContext* ctx = 0;
+    if (dev) dev->GetImmediateContext(&ctx);
+    if (!ctx) { Msg("!! [pda3d] m2b: no context"); return; }
+    if (!m2b_setup(dev)) { Msg("!! [pda3d] m2b: shader setup failed"); return; }
+    ID3D11RenderTargetView* oldRTV = 0;
+    ID3D11DepthStencilView* oldDSV = 0;
+    ctx->OMGetRenderTargets(1, &oldRTV, &oldDSV);
+    unsigned oldNV = 0;
+    ctx->RSGetViewports(&oldNV, 0);
+    D3D11_VIEWPORT oldVP[8];
+    if (oldNV > 8) oldNV = 8;
+    if (oldNV) ctx->RSGetViewports(&oldNV, oldVP);
+    ID3D11RenderTargetView* mine = (ID3D11RenderTargetView*)rtv;
+    ctx->OMSetRenderTargets(1, &mine, 0);
+    D3D11_VIEWPORT vp;
+    vp.TopLeftX = 0; vp.TopLeftY = 0; vp.Width = 512; vp.Height = 512;
+    vp.MinDepth = 0; vp.MaxDepth = 1;
+    ctx->RSSetViewports(1, &vp);
+    float c[4] = { 0.03f, 0.03f, 0.05f, 1.0f };
+    ctx->ClearRenderTargetView(mine, c);
+    g_m2_nv = 0;
+    m2b_rect(20, 20, 492, 90, 0.1f, 0.5f, 0.9f, 1.0f);
+    m2b_rect(20, 110, 492, 200, 0.9f, 0.8f, 0.1f, 1.0f);
+    for (int i = 0; i < 8; ++i)
+        m2b_rect(20 + i * 45, 230, 55 + i * 45, 265, 0.2f, 0.9f, 0.2f, 1.0f);
+    m2b_rect(20, 290, 492, 480, 0.7f, 0.1f, 0.1f, 1.0f);
+    D3D11_MAPPED_SUBRESOURCE mp;
+    if (!ctx->Map((ID3D11Resource*)g_m2_vb, 0, (D3D11_MAP)4, 0, &mp)) {
+        memcpy(mp.pData, g_m2_v, sizeof(M2Vert) * g_m2_nv);
+        ctx->Unmap((ID3D11Resource*)g_m2_vb, 0);
+        float cb[4] = { 2.0f / 512.0f, -2.0f / 512.0f, -1.0f, 1.0f };
+        D3D11_MAPPED_SUBRESOURCE mc;
+        if (!ctx->Map((ID3D11Resource*)g_m2_cb, 0, (D3D11_MAP)4, 0, &mc)) {
+            memcpy(mc.pData, cb, 16);
+            ctx->Unmap((ID3D11Resource*)g_m2_cb, 0);
+            ctx->IASetInputLayout((ID3D11InputLayout*)g_m2_layout);
+            unsigned stride = sizeof(M2Vert), off = 0;
+            ID3D11Buffer* vb = (ID3D11Buffer*)g_m2_vb;
+            ctx->IASetVertexBuffers(0, 1, &vb, &stride, &off);
+            ctx->IASetPrimitiveTopology((D3D11_PRIMITIVE_TOPOLOGY)4);
+            ctx->VSSetShader((ID3D11VertexShader*)g_m2_vs, 0, 0);
+            ID3D11Buffer* cb1 = (ID3D11Buffer*)g_m2_cb;
+            ctx->VSSetConstantBuffers(0, 1, &cb1);
+            ctx->PSSetShader((ID3D11PixelShader*)g_m2_ps, 0, 0);
+            ctx->Draw(g_m2_nv, 0);
+        }
+    }
+    ctx->OMSetRenderTargets(1, &oldRTV, oldDSV);
+    if (oldNV) ctx->RSSetViewports(oldNV, oldVP);
+    if (oldRTV) oldRTV->Release();
+    if (oldDSV) oldDSV->Release();
+    Msg("~ [pda3d] m2b: %d verts drawn, state restored", g_m2_nv);
+}
+
+static void cmd_pda3d_m2(msg_t Msg)
+{
+    void* crt = g_pda3d_rt_holder;
+    void* rtv = crt ? *(void**)((char*)crt + OFF_CRT_PRT) : 0;
+    if (!rtv || !vtbl_in_module(rtv, L"d3d11.dll")) { Msg("!! [pda3d] m2: no RT (run m1a first)"); return; }
+    ID3D11Device* dev = 0;
+    ((ID3D11RenderTargetView*)rtv)->GetDevice(&dev);
+    ID3D11DeviceContext* ctx = 0;
+    if (dev) dev->GetImmediateContext(&ctx);
+    if (!ctx) { Msg("!! [pda3d] m2: no context"); return; }
+    ID3D11RenderTargetView* oldRTV = 0;
+    ID3D11DepthStencilView* oldDSV = 0;
+    ctx->OMGetRenderTargets(1, &oldRTV, &oldDSV);
+    unsigned oldNV = 0;
+    ctx->RSGetViewports(&oldNV, 0);
+    D3D11_VIEWPORT oldVP[8];
+    if (oldNV > 8) oldNV = 8;
+    if (oldNV) ctx->RSGetViewports(&oldNV, oldVP);
+    unsigned oldNS = 0;
+    ctx->RSGetScissorRects(&oldNS, 0);
+    D3D11_RECT oldSR[8];
+    if (oldNS > 8) oldNS = 8;
+    if (oldNS) ctx->RSGetScissorRects(&oldNS, oldSR);
+    ID3D11RenderTargetView* mine = (ID3D11RenderTargetView*)rtv;
+    ctx->OMSetRenderTargets(1, &mine, 0);
+    D3D11_VIEWPORT vp;
+    vp.TopLeftX = 0; vp.TopLeftY = 0; vp.Width = 512; vp.Height = 512;
+    vp.MinDepth = 0; vp.MaxDepth = 1;
+    ctx->RSSetViewports(1, &vp);
+    D3D11_RECT sr = { 0, 0, 512, 512 };
+    ctx->RSSetScissorRects(1, &sr);
+    float c[4] = { 0.05f, 0.05f, 0.08f, 1.0f };
+    ctx->ClearRenderTargetView(mine, c);
+    getfont_t gf = (getfont_t)(g_base + RVA_GETFONT_GRAFFITI);
+    void* font = gf();
+    Msg("~ [pda3d] m2: font=%p", font);
+    if (font) {
+        font_out_t out = (font_out_t)(g_base + RVA_FONT_OUT);
+        out(font, 40.0f, 60.0f, "NPC PDA 3D-RT M2");
+        out(font, 40.0f, 110.0f, "PAROL: ****");
+        out(font, 40.0f, 160.0f, "TAYNIK: KORDON");
+        out(font, 40.0f, 210.0f, "0123456789");
+    }
+    ctx->OMSetRenderTargets(1, &oldRTV, oldDSV);
+    if (oldNV) ctx->RSSetViewports(oldNV, oldVP);
+    if (oldNS) ctx->RSSetScissorRects(oldNS, oldSR);
+    if (oldRTV) oldRTV->Release();
+    if (oldDSV) oldDSV->Release();
+    Msg("~ [pda3d] m2: text drawn, state restored");
+}
+
+static void cmd_pda3d_m1a(msg_t Msg)
+{
+    rt_create_t f = (rt_create_t)(g_base + RVA_RT_CREATE);
+    f(&g_pda3d_rt_holder, "$user$pda3d", 512, 512, 28, 1, 0);
+    void* crt = g_pda3d_rt_holder;
+    void* rtv = crt ? *(void**)((char*)crt + OFF_CRT_PRT) : 0;
+    Msg("~ [pda3d] m1a: holder=%p crt=%p pRT=%p", g_pda3d_rt_holder, crt, rtv);
+}
+
+static void cmd_pda3d_m1b(msg_t Msg)
+{
+    void* crt = g_pda3d_rt_holder;
+    void* rtv = crt ? *(void**)((char*)crt + OFF_CRT_PRT) : 0;
+    Msg("~ [pda3d] m1b: crt=%p pRT=%p d3d11vt=%d", crt, rtv,
+        vtbl_in_module(rtv, L"d3d11.dll"));
+    if (!rtv || !vtbl_in_module(rtv, L"d3d11.dll")) return;
+    ID3D11Device* dev = 0;
+    ((ID3D11RenderTargetView*)rtv)->GetDevice(&dev);
+    Msg("~ [pda3d] m1b: dev=%p", dev);
+}
+
+static void cmd_pda3d_m1b2(msg_t Msg)
+{
+    unsigned char* base = (unsigned char*)(uintptr_t)g_base;
+    Msg("~ [pda3d] m1b2: g_base=%p", base);
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery(base, &mbi, sizeof(mbi))) { Msg("!! [pda3d] m1b2: VQ base failed"); return; }
+    Msg("~ [pda3d] m1b2: base region base=%p size=0x%x state=0x%x prot=0x%x",
+        mbi.AllocationBase, (unsigned)mbi.RegionSize, (unsigned)mbi.State, (unsigned)mbi.Protect);
+    char mz[2] = { 0, 0 };
+    SIZE_T done = 0;
+    if (ReadProcessMemory(GetCurrentProcess(), base, mz, 2, &done) && done == 2)
+        Msg("~ [pda3d] m1b2: MZ bytes: %02X %02X", (unsigned char)mz[0], (unsigned char)mz[1]);
+    else
+        Msg("!! [pda3d] m1b2: cannot read [g_base]");
+    void* hw = (void*)(g_base + RVA_HW);
+    if (!VirtualQuery(hw, &mbi, sizeof(mbi))) { Msg("!! [pda3d] m1b2: VQ hw failed"); return; }
+    Msg("~ [pda3d] m1b2: hw=%p region base=%p size=0x%x state=0x%x prot=0x%x",
+        hw, mbi.AllocationBase, (unsigned)mbi.RegionSize, (unsigned)mbi.State, (unsigned)mbi.Protect);
+}
+
+static void cmd_pda3d_m1c(msg_t Msg)
+{
+    void* crt0 = g_pda3d_rt_holder;
+    void* rtv0 = crt0 ? *(void**)((char*)crt0 + OFF_CRT_PRT) : 0;
+    if (!rtv0 || !vtbl_in_module(rtv0, L"d3d11.dll")) { Msg("!! [pda3d] m1c: bad RTV"); return; }
+    ID3D11Device* dev = 0;
+    ((ID3D11RenderTargetView*)rtv0)->GetDevice(&dev);
+    if (!dev) { Msg("!! [pda3d] m1c: no D3D device"); return; }
+    ID3D11DeviceContext* ctx = 0;
+    dev->GetImmediateContext(&ctx);
+    Msg("~ [pda3d] m1c: dev=%p ctx=%p", dev, ctx);
+}
+
+static void cmd_pda3d_m1(msg_t Msg)
+{
+    cmd_pda3d_m1a(Msg);
+    cmd_pda3d_m1b(Msg);
+    cmd_pda3d_m1c(Msg);
+    void* crt = g_pda3d_rt_holder;
+    void* rtv = crt ? *(void**)((char*)crt + OFF_CRT_PRT) : 0;
+    if (!crt || !rtv) { Msg("!! [pda3d] m1: RT not ready"); return; }
+    if (!vtbl_in_module(rtv, L"d3d11.dll")) { Msg("!! [pda3d] m1: bad RTV"); return; }
+    ID3D11Device* dev = 0;
+    ((ID3D11RenderTargetView*)rtv)->GetDevice(&dev);
+    ID3D11DeviceContext* ctx = 0;
+    if (dev) dev->GetImmediateContext(&ctx);
+    if (!ctx) { Msg("!! [pda3d] m1: no immediate context"); return; }
+    ID3D11RenderTargetView* oldRTV = 0;
+    ID3D11DepthStencilView* oldDSV = 0;
+    ctx->OMGetRenderTargets(1, &oldRTV, &oldDSV);
+    ID3D11RenderTargetView* mine = (ID3D11RenderTargetView*)rtv;
+    ctx->OMSetRenderTargets(1, &mine, 0);
+    float c[4] = { 1.0f, 0.0f, 1.0f, 1.0f };
+    ctx->ClearRenderTargetView(mine, c);
+    ctx->OMSetRenderTargets(1, &oldRTV, oldDSV);
+    if (oldRTV) oldRTV->Release();
+    if (oldDSV) oldDSV->Release();
+    Msg("~ [pda3d] m1: cleared magenta, state restored");
+}
+
+static void cmd_pda3d_m1_OLD(msg_t Msg)
+{
+    rt_create_t f = (rt_create_t)(g_base + RVA_RT_CREATE);
+    f(&g_pda3d_rt_holder, "$user$pda3d", 512, 512, 28, 1, 0);
+    void* crt = g_pda3d_rt_holder;
+    void* rtv = crt ? *(void**)((char*)crt + OFF_CRT_PRT) : 0;
+    Msg("~ [pda3d] m1: holder=%p crt=%p pRT=%p", g_pda3d_rt_holder, crt, rtv);
+    if (!crt || !rtv) { Msg("!! [pda3d] m1: RT not ready"); return; }
+    void* hw = (void*)(g_base + RVA_HW);
+    ID3D11Device* dev = *(ID3D11Device**)((char*)hw + OFF_HW_PDEVICE);
+    if (!dev) { Msg("!! [pda3d] m1: no D3D device"); return; }
+    ID3D11DeviceContext* ctx = 0;
+    dev->GetImmediateContext(&ctx);
+    if (!ctx) { Msg("!! [pda3d] m1: no immediate context"); return; }
+    ID3D11RenderTargetView* oldRTV = 0;
+    ID3D11DepthStencilView* oldDSV = 0;
+    ctx->OMGetRenderTargets(1, &oldRTV, &oldDSV);
+    ID3D11RenderTargetView* mine = (ID3D11RenderTargetView*)rtv;
+    ctx->OMSetRenderTargets(1, &mine, 0);
+    float c[4] = { 1.0f, 0.0f, 1.0f, 1.0f };
+    ctx->ClearRenderTargetView(mine, c);
+    ctx->OMSetRenderTargets(1, &oldRTV, oldDSV);
+    if (oldRTV) oldRTV->Release();
+    if (oldDSV) oldDSV->Release();
+    Msg("~ [pda3d] m1: cleared magenta, state restored");
+}
+
+static int lua_fl_pda3d_available(void* L);
+static int lua_fl_pda3d_set_active(void* L);
+static int lua_fl_pda3d_clear(void* L);
+static int lua_fl_pda3d_text(void* L);
+static int lua_fl_pda3d_hack(void* L);
+static int lua_fl_pda3d_nosign(void* L);
+static int lua_fl_pda3d_freeze(void* L);
+static const unsigned char kNotesLoadPrologue[16] = {
+    0x40, 0x55, 0x53, 0x48, 0x8D, 0xAC, 0x24, 0x58,
+    0xF9, 0xFF, 0xFF, 0x48, 0x81, 0xEC, 0xA8, 0x07
+};
+static int      g_notes_verified = 0;
+static int      g_notes_failed   = 0;
+static int      g_notes_pushes   = 0;
+static uint64_t g_notes_dummy   = 0;
+typedef void (*strtable_load_t)(void* self, const char* xml_file);
+
+static int notes_verify()
+{
+    if (g_notes_verified) return 1;
+    if (!g_base) return 0;
+    uint8_t* f = (uint8_t*)(g_base + RVA_STR_TABLE_LOAD);
+    for (int i = 0; i < 16; ++i)
+        if (f[i] != kNotesLoadPrologue[i]) { g_notes_failed = 1; return 0; }
+    for (int i = 0; i < 0x400 - 7; ++i) {
+        if ((f[i] == 0x48 || f[i] == 0x4C) && (f[i+1] == 0x8B || f[i+1] == 0x8D) &&
+            ((f[i+2] & 0xC7) == 0x05)) {
+            int32_t d = *(int32_t*)(f + i + 3);
+            if (f + i + 7 + d == (uint8_t*)(g_base + RVA_STR_TABLE_ANCHOR)) {
+                g_notes_verified = 1;
+                return 1;
+            }
+        }
+    }
+    g_notes_failed = 1;
+    return 0;
+}
+
+static int      g_notes_seh = 0;
+static int      g_notes_test_ok = 0;
+
+static void*       g_notes_rec = 0;
+static void*       g_notes_rsp = 0;
+static volatile int g_notes_call_ok = 0;
+
+static LONG WINAPI notes_veh(EXCEPTION_POINTERS* ep)
+{
+    if (g_notes_rec &&
+        ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+        ++g_notes_seh;
+        ep->ContextRecord->Rsp = (DWORD64)g_notes_rsp;
+        ep->ContextRecord->Rip = (DWORD64)g_notes_rec;
+        ep->ContextRecord->Rax = 0;
+        g_notes_rec = 0;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static int      g_notes_depth = 0;
+
+static int notes_load_file(const char* name)
+{
+    (void)name;
+    if (!notes_verify()) return 0;
+    return 0;
+}
+
+static int notes_push()
+{
+    return notes_load_file("he_notes_runtime");
+}
+
+static int lua_fl_notes_available(void* L)
+{
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, 1);
+    return 1;
+}
+
+static int lua_fl_notes_push(void* L)
+{
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, notes_push() ? 1 : 0);
+    return 1;
+}
+
 static void* g_lua_api_state = 0;
 static void ensure_lua_api()
 {
@@ -713,8 +1145,571 @@ static void ensure_lua_api()
     setf(L, LUA_GLOBALSINDEX, "fl_hud_recoil_clear");
     pushc(L, &lua_fl_tex_swap, 0);
     setf(L, LUA_GLOBALSINDEX, "fl_tex_swap");
+    pushc(L, &lua_fl_pda3d_available, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_pda3d_available");
+    pushc(L, &lua_fl_pda3d_set_active, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_pda3d_set_active");
+    pushc(L, &lua_fl_pda3d_clear, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_pda3d_clear");
+    pushc(L, &lua_fl_pda3d_text, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_pda3d_text");
+    pushc(L, &lua_fl_pda3d_hack, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_pda3d_hack");
+    pushc(L, &lua_fl_pda3d_nosign, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_pda3d_nosign");
+    pushc(L, &lua_fl_pda3d_freeze, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_pda3d_freeze");
+    pushc(L, &lua_fl_notes_available, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_notes_available");
+    pushc(L, &lua_fl_notes_push, 0);
+    setf(L, LUA_GLOBALSINDEX, "fl_notes_push");
     hudrc_reset();
     g_lua_api_state = L;
+}
+
+static int      g_pda3d_rt_arm = 0;
+static unsigned g_pda3d_pda_id = 0;
+static int      g_pda3d_opens  = 0;
+static int      g_pda3d_clears = 0;
+
+static int lua_fl_pda3d_available(void* L)
+{
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, 1);
+    return 1;
+}
+
+static int lua_fl_pda3d_set_active(void* L)
+{
+    lua_tonumber_t tonum = (lua_tonumber_t)(g_base + RVA_LUA_TONUMBER);
+    unsigned id = (unsigned)tonum(L, 1);
+    if (!id) {
+        ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, 0);
+        return 1;
+    }
+    g_pda3d_pda_id = id;
+    g_pda3d_rt_arm = 1;
+    ++g_pda3d_opens;
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, 1);
+    return 1;
+}
+
+static int lua_fl_pda3d_clear(void* L)
+{
+    g_pda3d_rt_arm = 0;
+    g_pda3d_pda_id = 0;
+    ++g_pda3d_clears;
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, 1);
+    return 1;
+}
+
+static char g_pda3d_lines[14][80];
+static int  g_pda3d_nlines   = 0;
+static int  g_pda3d_rt_ready = 0;
+static int  g_pda3d_draws    = 0;
+static int  g_pda3d_draw_err = 0;
+
+static const unsigned PDA3D_W = 512;
+static const unsigned PDA3D_H = 512;
+
+static int pda3d_ensure_rt(void)
+{
+    if (g_pda3d_rt_ready && g_pda3d_rt_holder) return 1;
+    rt_create_t f = (rt_create_t)(g_base + RVA_RT_CREATE);
+    f(&g_pda3d_rt_holder, "$user$pda3d", PDA3D_W, PDA3D_H, 28, 1, 0);
+    void* crt = g_pda3d_rt_holder;
+    void* rtv = crt ? *(void**)((char*)crt + OFF_CRT_PRT) : 0;
+    if (!rtv || !vtbl_in_module(rtv, L"d3d11.dll")) return 0;
+    g_pda3d_rt_ready = 1;
+    return 1;
+}
+
+static void m2b_draw_verts(ID3D11DeviceContext* ctx)
+{
+    D3D11_MAPPED_SUBRESOURCE mp;
+    if (ctx->Map((ID3D11Resource*)g_m2_vb, 0, (D3D11_MAP)4, 0, &mp)) return;
+    memcpy(mp.pData, g_m2_v, sizeof(M2Vert) * g_m2_nv);
+    ctx->Unmap((ID3D11Resource*)g_m2_vb, 0);
+    float cb[4] = { 2.0f / (float)PDA3D_W, -2.0f / (float)PDA3D_H, -1.0f, 1.0f };
+    D3D11_MAPPED_SUBRESOURCE mc;
+    if (ctx->Map((ID3D11Resource*)g_m2_cb, 0, (D3D11_MAP)4, 0, &mc)) return;
+    memcpy(mc.pData, cb, 16);
+    ctx->Unmap((ID3D11Resource*)g_m2_cb, 0);
+    ctx->IASetInputLayout((ID3D11InputLayout*)g_m2_layout);
+    unsigned stride = sizeof(M2Vert), off = 0;
+    ID3D11Buffer* vb = (ID3D11Buffer*)g_m2_vb;
+    ctx->IASetVertexBuffers(0, 1, &vb, &stride, &off);
+    ctx->IASetPrimitiveTopology((D3D11_PRIMITIVE_TOPOLOGY)4);
+    ctx->VSSetShader((ID3D11VertexShader*)g_m2_vs, 0, 0);
+    ID3D11Buffer* cb1 = (ID3D11Buffer*)g_m2_cb;
+    ctx->VSSetConstantBuffers(0, 1, &cb1);
+    ctx->PSSetShader((ID3D11PixelShader*)g_m2_ps, 0, 0);
+    ctx->Draw(g_m2_nv, 0);
+}
+
+static void pda3d_render(void)
+{
+    if (!g_pda3d_rt_arm) return;
+    if (!pda3d_ensure_rt()) { ++g_pda3d_draw_err; return; }
+    void* crt = g_pda3d_rt_holder;
+    void* rtv = crt ? *(void**)((char*)crt + OFF_CRT_PRT) : 0;
+    if (!rtv || !vtbl_in_module(rtv, L"d3d11.dll")) { ++g_pda3d_draw_err; return; }
+    ID3D11Device* dev = 0;
+    ((ID3D11RenderTargetView*)rtv)->GetDevice(&dev);
+    ID3D11DeviceContext* ctx = 0;
+    if (dev) dev->GetImmediateContext(&ctx);
+    if (!ctx) { ++g_pda3d_draw_err; return; }
+    if (!m2b_setup(dev)) { ctx->Release(); ++g_pda3d_draw_err; return; }
+
+    ID3D11RenderTargetView* oldRTV = 0;
+    ID3D11DepthStencilView* oldDSV = 0;
+    ctx->OMGetRenderTargets(1, &oldRTV, &oldDSV);
+    unsigned oldNV = 0;
+    ctx->RSGetViewports(&oldNV, 0);
+    D3D11_VIEWPORT oldVP[8];
+    if (oldNV > 8) oldNV = 8;
+    if (oldNV) ctx->RSGetViewports(&oldNV, oldVP);
+    unsigned oldNS = 0;
+    ctx->RSGetScissorRects(&oldNS, 0);
+    D3D11_RECT oldSR[8];
+    if (oldNS > 8) oldNS = 8;
+    if (oldNS) ctx->RSGetScissorRects(&oldNS, oldSR);
+
+    ID3D11RenderTargetView* mine = (ID3D11RenderTargetView*)rtv;
+    ctx->OMSetRenderTargets(1, &mine, 0);
+    D3D11_VIEWPORT vp;
+    vp.TopLeftX = 0; vp.TopLeftY = 0;
+    vp.Width = (float)PDA3D_W; vp.Height = (float)PDA3D_H;
+    vp.MinDepth = 0; vp.MaxDepth = 1;
+    ctx->RSSetViewports(1, &vp);
+    D3D11_RECT sr = { 0, 0, (LONG)PDA3D_W, (LONG)PDA3D_H };
+    ctx->RSSetScissorRects(1, &sr);
+    float c[4] = { 0.05f, 0.08f, 0.05f, 1.0f };
+    ctx->ClearRenderTargetView(mine, c);
+
+    g_m2_nv = 0;
+    m2b_rect(6, 6, 506, 506, 0.09f, 0.30f, 0.11f, 1.0f);
+    m2b_rect(6, 6, 506, 54, 0.14f, 0.52f, 0.18f, 1.0f);
+    m2b_rect(14, 62, 498, 500, 0.02f, 0.05f, 0.03f, 1.0f);
+    for (int i = 0; i < g_pda3d_nlines; ++i)
+        m2b_rect(20, 74.0f + i * 30.0f, 492, 98.0f + i * 30.0f, 0.03f, 0.07f, 0.04f, 1.0f);
+    m2b_draw_verts(ctx);
+
+    getfont_t gf = (getfont_t)(g_base + RVA_GETFONT_GRAFFITI);
+    void* font = gf();
+    if (font) {
+        font_out_t out = (font_out_t)(g_base + RVA_FONT_OUT);
+        out(font, 22.0f, 16.0f, "PDA NPC [3D]");
+        for (int i = 0; i < g_pda3d_nlines; ++i)
+            out(font, 30.0f, 84.0f + i * 30.0f, "%s", g_pda3d_lines[i]);
+    }
+    ++g_pda3d_draws;
+
+    ctx->OMSetRenderTargets(1, &oldRTV, oldDSV);
+    if (oldNV) ctx->RSSetViewports(oldNV, oldVP);
+    if (oldNS) ctx->RSSetScissorRects(oldNS, oldSR);
+    if (oldRTV) oldRTV->Release();
+    if (oldDSV) oldDSV->Release();
+    ctx->Release();
+}
+
+static int lua_fl_pda3d_text(void* L)
+{
+    lua_tolstring_t tostr = (lua_tolstring_t)(g_base + RVA_LUA_TOLSTRING);
+    lua_pushboolean_t pb = (lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN);
+    size_t n = 0;
+    const char* s = tostr(L, 1, &n);
+    g_pda3d_nlines = 0;
+    if (s && n) {
+        const char* p = s;
+        while (*p && g_pda3d_nlines < 14) {
+            int k = 0;
+            while (*p && *p != '\n' && k < 79) g_pda3d_lines[g_pda3d_nlines][k++] = *p++;
+            g_pda3d_lines[g_pda3d_nlines][k] = 0;
+            ++g_pda3d_nlines;
+            if (*p == '\n') ++p;
+        }
+    }
+    pb(L, 1);
+    return 1;
+}
+
+#define RVA_CUIPDAWND_VFT    0x00DFE8F8ULL
+#define RVA_CUIPDAWND_DRAW   0x0041B2B0ULL
+#define RVA_CUIWINDOW_DRAW   0x004167A0ULL
+#define OFF_VFT_STOPANYMOVE  0x170
+#define OFF_VFT_DRAW         0x18
+#define RVA_PDA3D_VP2_SITE   0x0032D519ULL
+#define RVA_LAST_FRAME_2     0x01265804ULL
+#define RVA_DEVICE_FRAME     0x01223774ULL
+#define RVA_G_HUD            0x011FACB8ULL
+#define OFF_HUD_VFT_GETUI    0x30
+#define OFF_HOLDER_RECV      0x18
+#define OFF_RECV_ITEM        0x10
+#define OFF_WND_SHOWME       0x08
+#define RVA_HUD_RENDERUI     0x00380A10ULL
+#define RVA_HUD_RENDERUI_END 0x00380A25ULL
+
+typedef void  (*uiwnd_draw_t)(void*);
+typedef void  (*hud_renderui_t)(void*);
+typedef void* (*hud_getui_t)(void*);
+
+static int            g_pda3d_hack        = 0;
+static void*          g_pda3d_hack_wnd    = 0;
+static unsigned       g_pda3d_hack_frame  = 0;
+static int            g_pda3d_hack_draws  = 0;
+static int            g_pda3d_hack_hides  = 0;
+static int            g_pda3d_hack_miss   = 0;
+static int            g_pda3d_hack_bound  = 0;
+static int            g_pda3d_hide_2d     = 1;
+static int            g_pda3d_nosign      = 0;
+static int            g_pda3d_nosign_draws = 0;
+static uiwnd_draw_t   g_orig_pdawnd_draw  = 0;
+static hud_renderui_t g_orig_hud_renderui = 0;
+
+static void* pda3d_top_receiver(void)
+{
+    void* hud = *(void**)(g_base + RVA_G_HUD);
+    if (!hud) return 0;
+    void** hvft = *(void***)hud;
+    if (!hvft) return 0;
+    hud_getui_t getui = (hud_getui_t)hvft[OFF_HUD_VFT_GETUI / 8];
+    if (!getui) return 0;
+    void* ui = getui(hud);
+    if (!ui) return 0;
+    unsigned char* first = *(unsigned char**)((unsigned char*)ui + OFF_HOLDER_RECV);
+    unsigned char* last  = *(unsigned char**)((unsigned char*)ui + OFF_HOLDER_RECV + 8);
+    if (!first || !last || last <= first) return 0;
+    return *(void**)(last - OFF_RECV_ITEM);
+}
+
+static __attribute__((noinline)) void hkCUIPdaWndDraw(void* self)
+{
+    if (g_pda3d_nosign
+        && (uintptr_t)__builtin_return_address(0) == g_base + RVA_PDA3D_VP2_SITE) {
+        *(unsigned*)(g_base + RVA_LAST_FRAME_2) = *(unsigned*)(g_base + RVA_DEVICE_FRAME);
+        ++g_pda3d_nosign_draws;
+        ((uiwnd_draw_t)(g_base + RVA_CUIWINDOW_DRAW))(self);
+        return;
+    }
+    if (g_pda3d_hack
+        && (uintptr_t)__builtin_return_address(0) == g_base + RVA_PDA3D_VP2_SITE) {
+        void* wnd = pda3d_top_receiver();
+        if (wnd && wnd != self) {
+            unsigned frame = *(unsigned*)(g_base + RVA_DEVICE_FRAME);
+            void** wvft = *(void***)wnd;
+            *(unsigned*)(g_base + RVA_LAST_FRAME_2) = frame;
+            g_pda3d_hack_wnd   = wnd;
+            g_pda3d_hack_frame = frame;
+            ++g_pda3d_hack_draws;
+            ((uiwnd_draw_t)wvft[OFF_VFT_DRAW / 8])(wnd);
+            return;
+        }
+        ++g_pda3d_hack_miss;
+    }
+    if (g_orig_pdawnd_draw) g_orig_pdawnd_draw(self);
+}
+
+static void hkHudRenderUI(void* self)
+{
+    unsigned char* wnd = 0;
+    unsigned char saved = 0;
+    if (g_pda3d_hack && g_pda3d_hide_2d && g_pda3d_hack_wnd
+        && g_pda3d_hack_frame == *(unsigned*)(g_base + RVA_DEVICE_FRAME)
+        && pda3d_top_receiver() == g_pda3d_hack_wnd) {
+        wnd = (unsigned char*)g_pda3d_hack_wnd;
+        saved = wnd[OFF_WND_SHOWME];
+        wnd[OFF_WND_SHOWME] = 0;
+        ++g_pda3d_hack_hides;
+    }
+    if (g_orig_hud_renderui) g_orig_hud_renderui(self);
+    if (wnd) wnd[OFF_WND_SHOWME] = saved;
+}
+
+static int pda3d_hack_install(void)
+{
+    uint64_t* slot = (uint64_t*)(g_base + RVA_CUIPDAWND_VFT + OFF_VFT_DRAW);
+    DWORD oldp;
+    if (!VirtualProtect(slot, 8, PAGE_READWRITE, &oldp)) return 0;
+    if (*slot != (uint64_t)(g_base + RVA_CUIPDAWND_DRAW)) {
+        VirtualProtect(slot, 8, oldp, &oldp);
+        return 0;
+    }
+    g_orig_pdawnd_draw = (uiwnd_draw_t)*slot;
+    *slot = (uint64_t)&hkCUIPdaWndDraw;
+    VirtualProtect(slot, 8, oldp, &oldp);
+    g_pda3d_hack_bound = 1;
+    return 1;
+}
+
+static void pda3d_hack_set(int on)
+{
+    g_pda3d_hack = on ? 1 : 0;
+    if (!g_pda3d_hack) { g_pda3d_hack_wnd = 0; g_pda3d_hack_frame = 0; }
+}
+
+static uint64_t g_pda3d_stopmove_orig = 0;
+static int      g_pda3d_freeze        = 0;
+
+static char pda3d_stop_any_move(void* self) { (void)self; return 1; }
+
+static void pda3d_freeze_set(int on)
+{
+    uint64_t* slot = (uint64_t*)(g_base + RVA_CUIPDAWND_VFT + OFF_VFT_STOPANYMOVE);
+    DWORD oldp;
+    if (!VirtualProtect(slot, 8, PAGE_READWRITE, &oldp)) return;
+    if (on) {
+        if (!g_pda3d_stopmove_orig) g_pda3d_stopmove_orig = *slot;
+        *slot = (uint64_t)&pda3d_stop_any_move;
+        g_pda3d_freeze = 1;
+    } else if (g_pda3d_stopmove_orig) {
+        *slot = g_pda3d_stopmove_orig;
+        g_pda3d_freeze = 0;
+    }
+    VirtualProtect(slot, 8, oldp, &oldp);
+}
+
+static int lua_fl_pda3d_freeze(void* L)
+{
+    lua_tonumber_t tonum = (lua_tonumber_t)(g_base + RVA_LUA_TONUMBER);
+    pda3d_freeze_set((int)tonum(L, 1) ? 1 : 0);
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, g_pda3d_freeze);
+    return 1;
+}
+
+static int lua_fl_pda3d_nosign(void* L)
+{
+    lua_tonumber_t tonum = (lua_tonumber_t)(g_base + RVA_LUA_TONUMBER);
+    g_pda3d_nosign = (int)tonum(L, 1) ? 1 : 0;
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, g_pda3d_hack_bound);
+    return 1;
+}
+
+static int lua_fl_pda3d_hack(void* L)
+{
+    lua_tonumber_t tonum = (lua_tonumber_t)(g_base + RVA_LUA_TONUMBER);
+    pda3d_hack_set((int)tonum(L, 1));
+    ((lua_pushboolean_t)(g_base + RVA_LUA_PUSHBOOLEAN))(L, g_pda3d_hack_bound);
+    return 1;
+}
+
+#define RVA_PSACTORFLAGS     0x010AC028ULL
+#define RVA_ACTOR_ALLOW_PDA  0x010ABB44ULL
+#define OFF_ACTOR_INVENTORY  0x418
+#define OFF_INV_SLOTS        0x60
+#define OFF_INV_ACTIVESLOT   0x88
+#define SZ_INV_SLOT          0x20
+#define OFF_SLOT_ITEM        0x08
+#define OFF_PDA_IS3D         0x838
+#define OFF_CUI_PUIGAME      0x48
+#define OFF_SP_INVMENU       0x70
+#define OFF_SP_PDAMENU       0x78
+
+static void cmd_pda3d_why(msg_t Msg)
+{
+    unsigned flags = *(unsigned*)(g_base + RVA_PSACTORFLAGS);
+    unsigned char allow = *(unsigned char*)(g_base + RVA_ACTOR_ALLOW_PDA);
+    void* actor = *(void**)(g_base + RVA_G_ACTOR);
+    Msg("~ [pda3d why] psActorFlags=0x%X g_3d_pda=%d g_actor_allow_pda=%d actor=%p",
+        flags, (flags & 0x10000) ? 1 : 0, (int)allow, actor);
+    if (!actor) return;
+
+    void* inv = *(void**)((unsigned char*)actor + OFF_ACTOR_INVENTORY);
+    if (!inv) { Msg("!! [pda3d why] no inventory"); return; }
+    unsigned char* slots = *(unsigned char**)((unsigned char*)inv + OFF_INV_SLOTS);
+    unsigned active = *(unsigned*)((unsigned char*)inv + OFF_INV_ACTIVESLOT);
+    if (!slots) { Msg("!! [pda3d why] no slots, active=%u", active); return; }
+
+    void* item = *(void**)(slots + 7 * SZ_INV_SLOT + OFF_SLOT_ITEM);
+    int is3d = item ? (int)*((unsigned char*)item + OFF_PDA_IS3D) : -1;
+    Msg("~ [pda3d why] active_slot=%u slot7_item=%p this_is_3d_pda=%d", active, item, is3d);
+
+    void* hud = *(void**)(g_base + RVA_G_HUD);
+    if (!hud) { Msg("!! [pda3d why] no g_hud"); return; }
+    void** hvft = *(void***)hud;
+    hud_getui_t getui = (hud_getui_t)hvft[OFF_HUD_VFT_GETUI / 8];
+    void* ui = getui(hud);
+    if (!ui) { Msg("!! [pda3d why] no CUI"); return; }
+    void* sp = *(void**)((unsigned char*)ui + OFF_CUI_PUIGAME);
+    if (!sp) { Msg("!! [pda3d why] no pUIGame"); return; }
+    void* pda_wnd = *(void**)((unsigned char*)sp + OFF_SP_PDAMENU);
+    void* inv_wnd = *(void**)((unsigned char*)sp + OFF_SP_INVMENU);
+    Msg("~ [pda3d why] PdaMenu=%p show=%d  InventoryMenu=%p show=%d  top_recv=%p",
+        pda_wnd, pda_wnd ? (int)*((unsigned char*)pda_wnd + OFF_WND_SHOWME) : -1,
+        inv_wnd, inv_wnd ? (int)*((unsigned char*)inv_wnd + OFF_WND_SHOWME) : -1,
+        pda3d_top_receiver());
+
+    int gate = (item && is3d > 0 && (flags & 0x10000)) ? 1 : 0;
+    Msg("~ [pda3d why] 3d_gate=%d -> %s", gate,
+        gate ? "CInventory::Action should Activate(7)"
+             : "engine takes the flat 2D path (CUIGameSP opens PdaMenu)");
+}
+
+#define RVA_INV_ACTION       0x00385A60ULL
+#define RVA_INV_ACTION_END   0x00385A6FULL
+#define RVA_INV_ACTIVATE     0x00385820ULL
+#define PDA_SLOT_IDX         7
+#define EACT_KEYACTION       1
+
+typedef char (*inv_action_t)(void*, int, unsigned);
+typedef char (*inv_activate_t)(void*, unsigned, int, char, char);
+
+static inv_action_t g_orig_inv_action = 0;
+static int          g_pda3d_trace     = 0;
+
+static void* pda3d_actor_inventory(void)
+{
+    void* actor = *(void**)(g_base + RVA_G_ACTOR);
+    if (!actor) return 0;
+    return *(void**)((unsigned char*)actor + OFF_ACTOR_INVENTORY);
+}
+
+static char hkInvAction(void* self, int cmd, unsigned flags)
+{
+    if (!g_pda3d_trace) return g_orig_inv_action ? g_orig_inv_action(self, cmd, flags) : 0;
+    msg_t Msg = (msg_t)(g_base + RVA_MSG);
+    unsigned before = *(unsigned*)((unsigned char*)self + OFF_INV_ACTIVESLOT);
+    char r = g_orig_inv_action ? g_orig_inv_action(self, cmd, flags) : 0;
+    unsigned after = *(unsigned*)((unsigned char*)self + OFF_INV_ACTIVESLOT);
+    Msg("~ [pda3d trace] Action cmd=%d flags=0x%X slot %u -> %u ret=%d%s",
+        cmd, flags, before, after, (int)r,
+        (self == pda3d_actor_inventory()) ? " (actor)" : "");
+    return r;
+}
+
+static void cmd_pda3d_pull(msg_t Msg)
+{
+    void* inv = pda3d_actor_inventory();
+    if (!inv) { Msg("!! [pda3d pull] no inventory"); return; }
+    unsigned before = *(unsigned*)((unsigned char*)inv + OFF_INV_ACTIVESLOT);
+    inv_activate_t act = (inv_activate_t)(g_base + RVA_INV_ACTIVATE);
+    char r = act(inv, PDA_SLOT_IDX, EACT_KEYACTION, 0, 0);
+    unsigned after = *(unsigned*)((unsigned char*)inv + OFF_INV_ACTIVESLOT);
+    Msg("~ [pda3d pull] Activate(7, eKeyAction) ret=%d slot %u -> %u",
+        (int)r, before, after);
+}
+
+#define RVA_SET_MAIN_IR      0x003CACD0ULL
+#define RVA_SET_MAIN_IR_END  0x003CACE1ULL
+
+typedef void (*set_main_ir_t)(void*, void*, char, unsigned char);
+
+static set_main_ir_t g_orig_set_main_ir = 0;
+static int           g_pda3d_ir_blocks  = 0;
+
+static void* pda3d_pda_menu(void)
+{
+    void* hud = *(void**)(g_base + RVA_G_HUD);
+    if (!hud) return 0;
+    void** hvft = *(void***)hud;
+    if (!hvft) return 0;
+    hud_getui_t getui = (hud_getui_t)hvft[OFF_HUD_VFT_GETUI / 8];
+    if (!getui) return 0;
+    void* ui = getui(hud);
+    if (!ui) return 0;
+    void* sp = *(void**)((unsigned char*)ui + OFF_CUI_PUIGAME);
+    if (!sp) return 0;
+    return *(void**)((unsigned char*)sp + OFF_SP_PDAMENU);
+}
+
+static void hkSetMainInputReceiver(void* self, void* wnd, char no_focus, unsigned char flags)
+{
+    if (g_pda3d_hack && wnd && wnd == pda3d_pda_menu()) {
+        ++g_pda3d_ir_blocks;
+        return;
+    }
+    if (g_orig_set_main_ir) g_orig_set_main_ir(self, wnd, no_focus, flags);
+}
+
+static void cmd_pda3d_text(msg_t Msg, const char* s)
+{
+    while (*s == ' ' || *s == '\t') ++s;
+    g_pda3d_nlines = 0;
+    const char* p = s;
+    while (*p && g_pda3d_nlines < 14) {
+        int k = 0;
+        while (*p && *p != '\n' && k < 79) g_pda3d_lines[g_pda3d_nlines][k++] = *p++;
+        g_pda3d_lines[g_pda3d_nlines][k] = 0;
+        ++g_pda3d_nlines;
+        if (*p == '\n') ++p;
+    }
+    Msg("~ [pda3d] text: %d line(s)", g_pda3d_nlines);
+}
+static void cmd_pda3d(const char* a)
+{
+    msg_t Msg = (msg_t)(g_base + RVA_MSG);
+    while (*a == ' ' || *a == '\t') ++a;
+    if (a[0] == 'r' && a[1] == 't') {
+        const char* s = a + 2;
+        while (*s == ' ' || *s == '\t') ++s;
+        if (*s == '1') g_pda3d_rt_arm = 1;
+        else if (*s == '0') { g_pda3d_rt_arm = 0; g_pda3d_pda_id = 0; }
+        Msg("~ [pda3d] rt_arm=%d pda_id=%u", g_pda3d_rt_arm, g_pda3d_pda_id);
+        return;
+    }
+    if (a[0] == 'm' && a[1] == '1' && a[2] == 'a') { cmd_pda3d_m1a(Msg); return; }
+    if (a[0] == 'm' && a[1] == '2' && a[2] == 'b') { cmd_pda3d_m2b(Msg); return; }
+    if (a[0] == 'm' && a[1] == '2') { cmd_pda3d_m2(Msg); return; }
+    if (a[0] == 'm' && a[1] == '1' && a[2] == 'b' && a[3] == '2') { cmd_pda3d_m1b2(Msg); return; }
+    if (a[0] == 'm' && a[1] == '1' && a[2] == 'b') { cmd_pda3d_m1b(Msg); return; }
+    if (a[0] == 'm' && a[1] == '1' && a[2] == 'c') { cmd_pda3d_m1c(Msg); return; }
+    if (a[0] == 'm' && a[1] == '1') { cmd_pda3d_m1(Msg); return; }
+    if (a[0] == 't' && a[1] == 'e' && a[2] == 'x' && a[3] == 't') { cmd_pda3d_text(Msg, a + 4); return; }
+    if (a[0] == 'f' && a[1] == 'i' && a[2] == 'l' && a[3] == 'l') { pda3d_render(); Msg("~ [pda3d] fill: draws=%d err=%d", g_pda3d_draws, g_pda3d_draw_err); return; }
+    if (a[0] == 't' && a[1] == 'r' && a[2] == 'a' && a[3] == 'c') {
+        const char* s = a + 5;
+        while (*s == ' ') ++s;
+        if (*s == '1') g_pda3d_trace = 1;
+        else if (*s == '0') g_pda3d_trace = 0;
+        Msg("~ [pda3d] trace=%d hooked=%d", g_pda3d_trace, g_orig_inv_action ? 1 : 0);
+        return;
+    }
+    if (a[0] == 'p' && a[1] == 'u' && a[2] == 'l' && a[3] == 'l') { cmd_pda3d_pull(Msg); return; }
+    if (a[0] == 'h' && a[1] == 'i' && a[2] == 'd' && a[3] == 'e') {
+        const char* s = a + 4;
+        while (*s == ' ') ++s;
+        if (*s == '1') g_pda3d_hide_2d = 1;
+        else if (*s == '0') g_pda3d_hide_2d = 0;
+        Msg("~ [pda3d] hide_2d=%d", g_pda3d_hide_2d);
+        return;
+    }
+    if (a[0] == 'f' && a[1] == 'r' && a[2] == 'e' && a[3] == 'e') {
+        const char* s = a + 6;
+        while (*s == ' ') ++s;
+        if (*s == '1') pda3d_freeze_set(1);
+        else if (*s == '0') pda3d_freeze_set(0);
+        Msg("~ [pda3d] freeze=%d orig=%p", g_pda3d_freeze, (void*)g_pda3d_stopmove_orig);
+        return;
+    }
+    if (a[0] == 's' && a[1] == 'i' && a[2] == 'g' && a[3] == 'n') {
+        const char* s = a + 4;
+        while (*s == ' ') ++s;
+        if (*s == '1') g_pda3d_nosign = 1;
+        else if (*s == '0') g_pda3d_nosign = 0;
+        Msg("~ [pda3d] nosign=%d draws=%d", g_pda3d_nosign, g_pda3d_nosign_draws);
+        return;
+    }
+    if (a[0] == 'w' && a[1] == 'h' && a[2] == 'y') { cmd_pda3d_why(Msg); return; }
+    if (a[0] == 'h' && a[1] == 'a' && a[2] == 'c' && a[3] == 'k') {
+        const char* s = a + 4;
+        while (*s == ' ' || *s == '\t') ++s;
+        if (*s == '1') pda3d_hack_set(1);
+        else if (*s == '0') pda3d_hack_set(0);
+        Msg("~ [pda3d] hack=%d bound=%d draws=%d hides=%d miss=%d",
+            g_pda3d_hack, g_pda3d_hack_bound, g_pda3d_hack_draws,
+            g_pda3d_hack_hides, g_pda3d_hack_miss);
+        return;
+    }
+    if (a[0] == 'o' && a[1] == 'n') { g_pda3d_rt_arm = 1; Msg("~ [pda3d] on"); return; }
+    if (a[0] == 'o' && a[1] == 'f' && a[2] == 'f') { g_pda3d_rt_arm = 0; Msg("~ [pda3d] off"); return; }
+    Msg("~ [pda3d] rt_arm=%d pda_id=%u opens=%d clears=%d bound=%d",
+        g_pda3d_rt_arm, g_pda3d_pda_id, g_pda3d_opens, g_pda3d_clears,
+        g_lua_api_state ? 1 : 0);
+    Msg("~ [pda3d] phase=2 rt=%d lines=%d draws=%d",
+        g_pda3d_rt_ready, g_pda3d_nlines, g_pda3d_draws);
+    Msg("~ [pda3d] hack=%d bound=%d wnd=%p hides=%d",
+        g_pda3d_hack, g_pda3d_hack_bound, g_pda3d_hack_wnd, g_pda3d_hack_hides);
+    Msg("~ [pda3d] ir_guard=%d ir_blocks=%d",
+        g_orig_set_main_ir ? 1 : 0, g_pda3d_ir_blocks);
 }
 
 #define WBF_NAME "fl_on_actor_weapon_before_fire"
@@ -1844,6 +2839,72 @@ static void cmd_wbf(void)
         g_wbf_skip_np, g_wbf_skip_mf, g_wbf_last_gl);
 }
 
+static void cmd_notes_diag()
+{
+    msg_t Msg = (msg_t)(g_base + RVA_MSG);
+    char exe[MAX_PATH];
+    exe[0] = 0;
+    GetModuleFileNameA(NULL, exe, MAX_PATH);
+    Msg("~ [notes] exe=%s base=%p", exe, (void*)g_base);
+    uint8_t* f = (uint8_t*)(g_base + RVA_STR_TABLE_LOAD);
+    Msg("~ [notes] want=40 55 53 48 8D AC 24 58 F9 FF FF 48 81 EC A8 07");
+    Msg("~ [notes] got =%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+        f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7],
+        f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15]);
+    int bad = -1;
+    for (int i = 0; i < 16; ++i)
+        if (f[i] != kNotesLoadPrologue[i]) { bad = i; break; }
+    Msg("~ [notes] prologue_bad_idx=%d", bad);
+    char abuf[48];
+    const char* asrc = (const char*)(g_base + RVA_STR_TABLE_ANCHOR);
+    int ai = 0;
+    for (; ai < 47; ++ai) {
+        char c = asrc[ai];
+        abuf[ai] = c;
+        if (!c) break;
+    }
+    abuf[ai] = 0;
+    Msg("~ [notes] anchor_str=[%s]", abuf);
+    int found = -1;
+    for (int i = 0; i < 0x400 - 7; ++i) {
+        if ((f[i] == 0x48 || f[i] == 0x4C) && (f[i+1] == 0x8B || f[i+1] == 0x8D) &&
+            ((f[i+2] & 0xC7) == 0x05)) {
+            int32_t d = *(int32_t*)(f + i + 3);
+            if (f + i + 7 + d == (uint8_t*)(g_base + RVA_STR_TABLE_ANCHOR)) { found = i; break; }
+        }
+    }
+    Msg("~ [notes] anchor_ref_at=0x%x", (unsigned)found);
+}
+
+static void cmd_notes(const char* a)
+{
+    msg_t Msg = (msg_t)(g_base + RVA_MSG);
+    while (*a == ' ' || *a == '	') ++a;
+    if (*a == 0) { run_fl("he_pda_notes.open()"); return; }
+    if (a[0] == 's' && a[1] == 't') {
+        Msg("~ [notes] load=%p verified=%d failed=%d pushes=%d seh=%d test=%d lua=%d",
+            (void*)(g_base + RVA_STR_TABLE_LOAD),
+            g_notes_verified, g_notes_failed, g_notes_pushes,
+            g_notes_seh, g_notes_test_ok,
+            g_lua_api_state ? 1 : 0);
+        return;
+    }
+    if (a[0] == 'p' && a[1] == 'u') {
+        if (a[2] == 's' && a[3] == 'h' && a[4] == '_' && a[5] == 't') {
+            g_notes_test_ok = notes_load_file("string_table_enc_zone");
+            Msg("~ [notes] push_test(known-good)=%d seh=%d", g_notes_test_ok, g_notes_seh);
+            return;
+        }
+        Msg("~ [notes] push=%d", notes_push());
+        return;
+    }
+    if (a[0] == 'd' && a[1] == 'i') {
+        cmd_notes_diag();
+        return;
+    }
+    Msg("~ [notes] usage: notes | notes status | notes push[_test] | notes diag");
+}
+
 static void hkExecuteCommand(void* self, const char* cmd, char record, char allow)
 {
     g_console = self;
@@ -1981,6 +3042,12 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
             return;
         }
 
+        if (p[0] == 'p' && p[1] == 'd' && p[2] == 'a' && p[3] == '3' && p[4] == 'd' &&
+            (p[5] == 0 || p[5] == ' ' || p[5] == '\t')) {
+            cmd_pda3d(p + 5);
+            return;
+        }
+
         if (p[0] == 'a' && p[1] == 'p' && p[2] == 'a' && p[3] == 't' &&
             p[4] == 'h' && (p[5] == 0 || p[5] == ' ' || p[5] == '	')) {
             msg_t Msg = (msg_t)(g_base + RVA_MSG);
@@ -1989,6 +3056,12 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
                 g_alife_noway_patched, q[0], q[1], q[2], q[3], q[4]);
             return;
         }
+        if (p[0] == 'n' && p[1] == 'o' && p[2] == 't' && p[3] == 'e' && p[4] == 's' &&
+            (p[5] == 0 || p[5] == ' ' || p[5] == '	')) {
+            cmd_notes(p + 5);
+            return;
+        }
+
     }
     g_orig(self, cmd, record, allow);
 }
@@ -2036,6 +3109,7 @@ static void hkActorOnHUDDraw(void* self, void* hud, unsigned context_id, void* r
 {
     ensure_lua_api();
     hudrc_apply();
+    pda3d_render();
     if (g_base && g_bp_ui) {
         void** pph = (void**)(g_base + RVA_G_PLAYER_HUD);
         void* ph = pph ? *pph : 0;
@@ -2321,6 +3395,13 @@ static bool install_hook()
         RVA_ACTOR_RENDER, RVA_ACTOR_RENDER_END, (void*)&hkActorRenderableRender);
     g_orig_actor_onhud = (actor_onhuddraw_t)install_onhuddraw_detour(
         (void*)&hkActorOnHUDDraw);
+    g_orig_hud_renderui = (hud_renderui_t)install_detour(
+        RVA_HUD_RENDERUI, RVA_HUD_RENDERUI_END, (void*)&hkHudRenderUI);
+    pda3d_hack_install();
+    g_orig_set_main_ir = (set_main_ir_t)install_detour(
+        RVA_SET_MAIN_IR, RVA_SET_MAIN_IR_END, (void*)&hkSetMainInputReceiver);
+    g_orig_inv_action = (inv_action_t)install_detour(
+        RVA_INV_ACTION, RVA_INV_ACTION_END, (void*)&hkInvAction);
 
     {
         uint8_t* f = (uint8_t*)(g_base + RVA_FIRETRACE);
