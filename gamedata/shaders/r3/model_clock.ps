@@ -1,0 +1,208 @@
+/*
+	Watch shader - literally a watch shader
+*/
+#include "common.h"
+#include "watch_ui_common.h"
+#include "electronics_problems.h"
+#include "he_watch_common.h"
+
+// uniform float4 m_actor_params; //x = health, y = outfit cond, z = wpn cond, w = wpn_loading
+
+uniform float4 m_he_watch_battery; // charge, present, reserved, reserved
+Texture2D s_he_battery;
+Texture2D s_lut; //RGBA LUT texture
+Texture2D s_he_rad; // addon glyph atlas: 14 columns, 12 rows (not 14x14)
+Texture2D s_he_alarm; // act\\watch\\icon_alarm (alpha silhouette)
+
+struct v2p
+{
+ 	float2 tc0	: TEXCOORD0; //Base texture coordinates
+ 	float3 tc1	: TEXCOORD1; //Unused
+  	float4 c0	: COLOR0; //Light color + fog
+};
+
+float4 sample_digit(float2 tc, int digit, int blowout_offset)
+{
+    //Reject all pixels outside of current tile coords
+    if(tc.x < 0.0 || tc.y < 0.0 || tc.x > 1.0 || tc.y > 1.0)
+        return float4(0.0, 0.0, 0.0, 0.0);
+
+    if (ElectronicsProblemsBlackout())
+    	blowout_offset = 0;
+
+	//Offset UV
+    tc.xy += float2(digit, blowout_offset);
+	
+	//Divide by tile amount	
+    tc.xy /= 12.0;
+
+    //Sample tile
+	float4 lut_texture = s_lut.SampleLevel(smp_base, tc, 0);
+	
+	//Multiply color by alpha and output
+    return lut_texture;
+}
+
+float4 sample_radiation_digit(float2 uv, int digit)
+{
+    if (any(uv < 0.0) || any(uv > 1.0) || digit == 11)
+        return float4(0, 0, 0, 0);
+    if (digit == 14) // unavailable measurement: a dash, never a false zero
+    {
+        float mask = step(0.25, uv.x) * step(uv.x, 0.75) *
+                     step(0.45, uv.y) * step(uv.y, 0.55);
+        return float4(float3(0.55, 0.62, 0.55) * mask, mask);
+    }
+    uv = clamp(uv, 0.5 / 128.0, 1.0 - 0.5 / 128.0);
+    return s_he_rad.SampleLevel(smp_base, (uv + float2(digit, 0)) / float2(14.0, 12.0), 0);
+}
+
+float4 radiation_readout(float2 uv)
+{
+    // Existing backend conversion: actor radiation * 10 R. Fixed two decimals.
+    // Integer hundredths avoid the addon's low-range scale jump and fake maxima.
+    int value = int(floor(saturate(m_he_watch_ring.x) * 1000.0 + 0.5));
+    bool available = m_he_watch_ring.y > 0.5;
+    int d0 = available ? (value >= 1000 ? 1 : 11) : 14;
+    int d1 = available ? (value / 100) % 10 : 14;
+    int d2 = available ? (value / 10) % 10 : 14;
+    int d3 = available ? value % 10 : 14;
+    float2 cell = float2(0.21, 1.0);
+    float4 result = float4(0, 0, 0, 0);
+    result += sample_radiation_digit((uv - float2(0.00, 0)) / cell, d0);
+    result += sample_radiation_digit((uv - float2(0.17, 0)) / cell, d1);
+    result += sample_radiation_digit((uv - float2(0.265, 0)) / cell, 13); // decimal point
+    result += sample_radiation_digit((uv - float2(0.43, 0)) / cell, d2);
+    result += sample_radiation_digit((uv - float2(0.60, 0)) / cell, d3);
+    result += sample_radiation_digit((uv - float2(0.78, 0)) / cell, 12); // addon's Cyrillic R glyph
+    return result;
+}
+
+float4 main(v2p I) : SV_Target
+{
+    float2 he_face_uv = I.tc0;
+    I.tc0 = he_watch_distort_uv(I.tc0);
+    float2 tc = I.tc0;
+	
+	//Scale texcoord
+    tc -= 0.5; 
+	tc.x *= 1.725; // scale x
+	tc.y *= 1.25; // scale y
+    tc += 0.5;    
+ 
+	//Aspect ratio correction
+    tc -= 0.5; 
+	// tc.x *= screen_res.x * screen_res.w;
+	tc.x *= 1.778;
+    tc += 0.5;	
+
+    // Reserve the bottom strip for saved alarm time; preserve the top margin.
+    if (m_he_watch_alarm.x > 0.5)
+        tc.y = (I.tc0.y - 0.10) / 0.65;
+
+    //Skew it
+    // tc.x += tc.y * 0.1;
+    // tc.x -= 0.05;
+   
+    //Array with offsets aye
+	float2 digit_offset[5];
+	digit_offset[0] = float2(1.250, 0.0); //Hour 1st digit
+	digit_offset[1] = float2(0.5, 0.0); //Hour 2nd digit
+	digit_offset[2] = float2(-0.5, 0.0); //Minute 1st digit
+	digit_offset[3] = float2(-1.250, 0.0); //Minute 2nd digit    
+	digit_offset[4] = float2(0.0, 0.0); //Colon
+
+	//Calculate time (H1/H2/M1/M2)
+    int4 game_time = int4(floor(m_digiclock.xyzw * 10.0 + 0.5));
+
+	//Calculate some offsets for blowout...
+	int blowout_offset[5];
+	blowout_offset[0] = 1;
+	blowout_offset[1] = 5;
+	blowout_offset[2] = 2;
+	blowout_offset[3] = 4;
+	blowout_offset[4] = 3;
+
+	float blowout_glitch_speed_multiplier[5];
+	blowout_glitch_speed_multiplier[0] = 1.f;
+	blowout_glitch_speed_multiplier[1] = 1.f;
+	blowout_glitch_speed_multiplier[2] = 1.f;
+	blowout_glitch_speed_multiplier[3] = 1.f;
+	blowout_glitch_speed_multiplier[4] = 5.f;
+
+	float blowout_digit_glitch_factor = electronics_problems.x * timers.x; // start glitching when electronics_problems.x ~= .25
+
+	[unroll] for(int i = 0; i < 5; i++)
+		blowout_offset[i] += int(blowout_digit_glitch_factor * blowout_glitch_speed_multiplier[i]);
+
+	[unroll]
+		for(int j = 0; j < 5; j++)
+			blowout_offset[j] *= electronics_problems.x > 0.25 ? 1 : 0;
+
+    //Put stuff together
+	float4 watch_color = (0.0, 0.0, 0.0, 0.0);
+    watch_color += sample_digit(tc + digit_offset[0], game_time.x, blowout_offset[0]); //Hour1
+    watch_color += sample_digit(tc + digit_offset[1], game_time.y, blowout_offset[1]); //Hour2
+    watch_color += sample_digit(tc + digit_offset[2], game_time.z, blowout_offset[2]); //Minute1
+    watch_color += sample_digit(tc + digit_offset[3], game_time.w, blowout_offset[3]); //Minute2
+    watch_color += sample_digit(tc + digit_offset[4], 10, blowout_offset[4]); //Colon
+
+    // Main display only: footer and all other surfaces keep their existing roles.
+    if (m_he_watch_page.x > 0.5 && m_he_watch_alarm.y < 0.5)
+        watch_color = radiation_readout(float2(I.tc0.x, tc.y));
+
+	//Background color
+    float3 color = float3(16.0, 18.0, 20.0) / 255.0;
+
+	//Custom blend ffs
+	color = color * (1.0 - watch_color.w) + watch_color.xyz * watch_color.a;
+
+	// Saved-alarm footer. Model UV metric: width/height = 1.83288.
+	// Keep it inside the lower rectangular portion of the clipped clock mesh.
+	if (m_he_watch_alarm.x > 0.5)
+	{
+		int ah = int(floor(m_he_watch_alarm.z + 0.5));
+		int am = int(floor(m_he_watch_alarm.w + 0.5));
+		float2 uv = I.tc0;
+		float4 saved = float4(0, 0, 0, 0);
+		// Square glyph cells in physical face space, with tighter colon spacing.
+		float2 cell = float2(0.09821, 0.18);
+		saved += sample_digit((uv - float2(0.46, 0.80)) / cell, ah / 10, 0);
+		saved += sample_digit((uv - float2(0.54, 0.80)) / cell, ah % 10, 0);
+		saved += sample_digit((uv - float2(0.60, 0.80)) / cell, 10, 0);
+		saved += sample_digit((uv - float2(0.66, 0.80)) / cell, am / 10, 0);
+		saved += sample_digit((uv - float2(0.74, 0.80)) / cell, am % 10, 0);
+		color = lerp(color, saved.rgb, saturate(saved.a));
+
+		// 0.10912 * 1.83288 = 0.20: compensate physical surface aspect ratio.
+		float2 alarm_uv = (uv - float2(0.855, 0.79)) / float2(0.10912, 0.20);
+		float alarm_mask = 0.0;
+		if (all(alarm_uv >= 0.0) && all(alarm_uv <= 1.0))
+			alarm_mask = s_he_alarm.Sample(smp_base, alarm_uv).a;
+		color = lerp(color, float3(1.0, 0.88, 0.55), saturate(alarm_mask));
+	}
+
+	// Opaque, dark 22x18 source: RGB coverage, NOT alpha. Physical aspect corrected.
+    float2 battery_uv = (I.tc0 - float2(0.20, 0.82)) / float2(0.1067, 0.16);
+    if (m_he_watch_battery.y > 0.5 && all(battery_uv >= 0) && all(battery_uv <= 1))
+    {
+        float3 art = s_he_battery.Sample(smp_nofilter, battery_uv).rgb;
+        float mask = saturate((max(art.r, max(art.g, art.b)) - 0.08) / 0.18);
+        float charge = saturate(m_he_watch_battery.x);
+        // Preserve case and terminal; only the inner segments empty right to left.
+        bool interior = battery_uv.x > 2.0/22.0 && battery_uv.x < 20.0/22.0
+                     && battery_uv.y > 1.0/18.0 && battery_uv.y < 17.0/18.0;
+        if (interior && (battery_uv.x * 22.0 - 2.0) / 18.0 > charge) mask *= 0.12;
+        float3 tint = float3(0.76, 0.86, 0.72);
+        if (charge < 0.15) tint = float3(1.0, 0.65, 0.15);
+        if (charge < 0.05) tint = float3(1.0, 0.16, 0.07) * (0.65 + 0.35 * sin(timers.x * 2.0944));
+        color = lerp(color, tint, mask);
+    }
+
+	float brightness = 1.f;
+	brightness *= calc_glitch_brightness_watch_ui(brightness);
+	color = lerp(watchBgColor(), color, brightness);
+
+	//Output
+	return float4(he_watch_apply_signal(color, he_face_uv), 1.0);
+}

@@ -323,46 +323,153 @@ function animation_on()
 end
 
 watch_is_active = nil
-local function show_watch(key, bind)
-	if bind ~= key_bindings.kWATCH then return end
-	-- [HE-PORT]
-	if not watch_gate.has_watch() then return end
+local watch_session = 0
+local watch_presentation = nil
 
+local function watch_presentation_valid(session)
+	return watch_presentation ~= nil and watch_presentation.session == session
+end
+
+-- Entry callbacks are valid only while the raise is still in progress; closing or
+-- aborting the presentation must not let a pending raise callback resurrect it.
+local function watch_entry_active(session)
+	return watch_presentation_valid(session) and watch_presentation.phase == "raising"
+end
+
+-- Read-only identity for wheel input; raising/closing/alarm are excluded.
+function get_watch_view_session()
+    local st = watch_presentation
+    if st and st.mode == "view" and st.phase == "active" then return st.session end
+    return nil
+end
+
+local function restore_after_presentation(st)
+	if not st or st.phase == "done" then return end
+	st.phase = "done"
+	if db.actor and db.actor:alive() then
+		pcall(function() db.actor:activate_slot(st.prev_slot) end)
+	end
+	if watch_presentation == st then
+		watch_presentation = nil
+	end
+	watch_is_active = nil
+	animation_off()
+end
+
+-- [HE-PORT] Shared watch presentation. mode = "view" (kWATCH hold) or "alarm" (editor).
+-- Returns the presentation session id, or nil when the watch cannot be raised.
+function begin_watch_presentation(mode, on_ready)
+	if watch_presentation then return nil end
+	if not watch_gate.has_watch() then return nil end
+	if not (db.actor and db.actor:alive()) then return nil end
 	if get_actor_obj():IsDetectorActive()
 		or db.actor:is_talking()
 		or level.main_input_receiver()
 		or level.only_movekeys_allowed()
 		or not game.hud_motion_allowed()
 		or db.actor:ph_capture()
-	then return end
+	then return nil end
+
+	watch_session = watch_session + 1
+	local session = watch_session
+	local st = {
+		session = session,
+		mode = mode or "view",
+		prev_slot = db.actor:active_slot(),
+		phase = "raising",
+	}
+	watch_presentation = st
 
 	animation_on()
 	watch_is_active = true
-	local prev_active_slot = db.actor:active_slot()
 	db.actor:activate_slot(255)
 
-	dsh.wait_condition(function() return not db.actor:active_item() end, function()
-		local anm_sec, anm_in, anm_idle, anm_out = "switch_watch", "anm_start", "anm_idle", "anm_end"
-		local snd = xr_sound.get_safe_sound_object("device\\watch_start_beep")
-		snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
-		local anm_watch_time = game.play_hud_motion(2, anm_sec, anm_in, true, 1)
-		dsh.timeout(anm_watch_time, function()
-			game.play_hud_motion(2, anm_sec, anm_idle, true, 1)
-			dsh.wait_condition(function() return key_state(bind_to_dik(key_bindings.kWATCH)) == 0 end, function()
-				local snd = xr_sound.get_safe_sound_object("device\\watch_end")
+	dsh.wait_condition(
+		function() return not db.actor or not db.actor:alive() or not db.actor:active_item() end,
+		function()
+			if not watch_entry_active(session) then return end
+			if not (db.actor and db.actor:alive()) then
+				abort_watch_presentation(session)
+				return
+			end
+			if he_watch_status.is_operational() then
+				local snd = xr_sound.get_safe_sound_object("device\\watch_start_beep")
 				snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
-				game.stop_hud_motion()
-				anm_watch_time = game.play_hud_motion(2, anm_sec, anm_out, true, 1)
-				dsh.timeout(anm_watch_time, function()
-					db.actor:activate_slot(prev_active_slot)
-					animation_off()
-					watch_is_active = nil
-				end)
+			end
+			local anm_watch_time = game.play_hud_motion(2, "switch_watch", "anm_start", true, 1)
+			dsh.timeout(anm_watch_time, function()
+				if not watch_entry_active(session) then return end
+				if not (db.actor and db.actor:alive()) then
+					abort_watch_presentation(session)
+					return
+				end
+				game.play_hud_motion(2, "switch_watch", "anm_idle", true, 1)
+				st.phase = "active"
+				if on_ready then on_ready(session) end
 			end)
-		end)
-	end)
+		end
+	)
+	return session
 end
 
+-- [HE-PORT] Play the exit animation and restore the actor slot. Calls on_closed with
+-- the presentation session id on success and with false when the session is not valid.
+function end_watch_presentation(session, on_closed)
+	local st = watch_presentation
+	if not st or (session and st.session ~= session) or st.phase == "closing" or st.phase == "done" then
+		if on_closed then on_closed(false) end
+		return false
+	end
+	st.phase = "closing"
+	watch_session = watch_session + 1
+
+	local function finish()
+		if st.phase ~= "done" then
+			restore_after_presentation(st)
+		end
+		if on_closed then on_closed(st.session) end
+	end
+
+	if db.actor and db.actor:alive() then
+		if he_watch_status.is_operational() then
+			local snd = xr_sound.get_safe_sound_object("device\\watch_end")
+			snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
+		end
+		game.stop_hud_motion()
+		local anm_watch_time = game.play_hud_motion(2, "switch_watch", "anm_end", true, 1)
+		dsh.timeout(anm_watch_time, finish)
+	else
+		game.stop_hud_motion()
+		finish()
+	end
+	return true
+end
+
+-- [HE-PORT] Idempotent forced cleanup; safe on actor destruction/death.
+function abort_watch_presentation(session)
+	local st = watch_presentation
+	if not st or (session and st.session ~= session) then return end
+	watch_session = watch_session + 1
+	game.stop_hud_motion()
+	restore_after_presentation(st)
+end
+
+local function show_watch(key, bind)
+	if bind ~= key_bindings.kWATCH then return end
+	begin_watch_presentation("view", function(session)
+		dsh.wait_condition(
+			function()
+				return not watch_presentation_valid(session)
+					or not db.actor
+					or not db.actor:alive()
+					or key_state(bind_to_dik(key_bindings.kWATCH)) == 0
+			end,
+			function()
+				end_watch_presentation(session, nil)
+			end
+		)
+	end)
+end
 function attach( sm )
 	sm:subscribe({ signal = "on_actor_before_use", fun = on_actor_before_use })
 	sm:subscribe({ signal = "on_first_update",     fun = animation_off       })
