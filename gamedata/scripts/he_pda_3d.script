@@ -1,0 +1,123 @@
+-- [HE-PORT]
+
+local POLL_MS = 200
+
+local pending = false
+local pending_serial = nil
+local child_mode = false
+local child = nil
+local watching = false
+local was_open = false
+
+local function pda_wnd()
+  return level.get_pda_wnd()
+end
+
+local function pda_is_open()
+  local w = pda_wnd()
+  return w ~= nil and w:IsShown()
+end
+
+local function drop_child()
+  if child == nil then return end
+  child:del_windows()
+  child:ClearCallbacks()
+  child:DetachFromParent()
+  child = nil
+  log2("[pda3d] child dropped")
+end
+
+local function attach_child(w)
+  local pw = pda_wnd()
+  if pw == nil or w == nil then return false end
+  drop_child()
+  child = w
+  pw:AttachChild(child, false)
+  child:Show(true)
+  if fl_pda3d_nosign ~= nil then fl_pda3d_nosign(1) end
+  if fl_pda3d_freeze ~= nil then fl_pda3d_freeze(1) end
+  log2("[pda3d] child attached")
+  return true
+end
+
+local function reset()
+  drop_child()
+  if not child_mode then return end
+  child_mode = false
+  if fl_pda3d_nosign ~= nil then fl_pda3d_nosign(0) end
+  if fl_pda3d_freeze ~= nil then fl_pda3d_freeze(0) end
+  vergas_pda.set_info_pda_nil()
+  vergas_pda.set_tbl_sn_nil()
+  used_items.set_get_flag_use_gadget(1, true)
+  log2("[pda3d] reset")
+end
+
+function ui_open(w)
+  if child_mode and attach_child(w) then return true end
+  level.start_stop_menu(w, true)
+  return true
+end
+
+function ui_close(w)
+  if child_mode and child ~= nil and child == w then
+    drop_child()
+    return true
+  end
+  local h = w:GetHolder()
+  if h ~= nil then h:start_stop_menu(w, true) end
+  return true
+end
+
+local function tick()
+  local open = pda_is_open()
+  if open and not was_open then
+    if pending then
+      pending = false
+      child_mode = true
+      attach_child(vergas_pda.start_search_pda(2, pending_serial, true))
+    end
+  elseif was_open and not open then
+    reset()
+  end
+  was_open = open
+end
+
+local function start_watch()
+  if watching then return end
+  watching = true
+  was_open = pda_is_open()
+  dsh.exec_periodic(POLL_MS, function() tick() end)
+end
+
+function is_pending()
+  return pending
+end
+
+function open_npc_pda(obj_id)
+  if obj_id == nil then return end
+  local txt = vergas_pda.get_pda_cdata(obj_id)
+  if type(txt) ~= "string" then
+    log2("[pda3d] open_npc_pda(%s): bad pda data", tostring(obj_id))
+    return
+  end
+  local actor = db.actor
+  if actor == nil then return end
+  local serial = SplitStr(txt, '|')[4]
+  if serial == nil then return end
+  local sobj = alife():create("device_pda_npc", actor:position(),
+    actor:level_vertex_id(), actor:game_vertex_id(), actor:id())
+  if sobj == nil then return end
+  vergas_pda.set_pda(sobj.id, txt)
+  vergas_pda.set_info_pda(obj_id, sobj.id)
+  vergas_pda.set_tbl_sn()
+  vergas_pda.set_pda_condition(sobj.id, tonumber(string.sub(serial, 13, 13)) or 3)
+  pending_serial = serial
+  pending = true
+  start_watch()
+  log2("[pda3d] armed, serial=%s -- open the PDA with P", tostring(serial))
+end
+
+function close_npc_pda()
+  pending = false
+  reset()
+end
