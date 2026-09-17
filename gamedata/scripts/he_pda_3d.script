@@ -9,6 +9,10 @@ local child = nil
 local watching = false
 local was_open = false
 
+local WHEEL_COOLDOWN_MS = 600  -- >= задержки анимации (500мс) ниже, чтобы не запускать вторую пока первая не завершилась
+local last_wheel_switch = 0
+local HIDE_ANIM_MS = 900
+
 local function pda_wnd()
   return level.get_pda_wnd()
 end
@@ -52,6 +56,58 @@ local function reset()
   log2("[pda3d] reset")
 end
 
+local switching = false
+local switch_target = nil
+
+local function do_wheel_switch(dir)
+  if switching then return end
+  if vergas_pda.get_tbl_sn_count() <= 1 then
+    log2("[pda3d] wheel: only one pda in list, ignoring")
+    return
+  end
+
+  log2("[pda3d] wheel: dir=%d, hiding current pda via kMAP", dir)
+  vergas_lib.s_play(vergas_lib.set_pr_from_config_str("list_sounds_pda", "snd_select_pda_down"), 1)
+
+  switching = true
+  get_actor_obj():press_action(key_bindings.kMAP)  -- штатное "убрать", ui_close сам дропнет child
+end
+
+local function switch_after_hide(dir)
+  if not child_mode then
+    log2("[pda3d] wheel: left child_mode during hide, abort switch")
+    switching = false
+    return
+  end
+
+  local spwn = vergas_pda.start_search_pda(1, nil, true, dir)
+  if spwn == nil then
+    log2("[pda3d] wheel: start_search_pda returned nil, reopening previous")
+    switching = false
+    get_actor_obj():press_action(key_bindings.kMAP)  -- вернуть как было
+    return
+  end
+
+  switch_target = spwn
+	dsh.timeout( 1500, function() 
+		get_actor_obj():press_action(key_bindings.kMAP) 
+	end )	  -- штатное "достать", tick() аттачит switch_target
+end
+
+function on_wheel_rotation(vol)
+  if not child_mode or child == nil or switching then return end
+  if not pda_is_open() then return end
+
+  local now = time_global()
+  if now - last_wheel_switch < WHEEL_COOLDOWN_MS then return end
+  last_wheel_switch = now
+
+  local dir = 1
+  if vol and vol < 0 then dir = -1 end
+
+  do_wheel_switch(dir)
+end
+
 function ui_open(w)
   if child_mode and attach_child(w) then return true end
   level.start_stop_menu(w, true)
@@ -75,9 +131,18 @@ local function tick()
       pending = false
       child_mode = true
       attach_child(vergas_pda.start_search_pda(2, pending_serial, true))
+    elseif switching and switch_target ~= nil then
+      switching = false
+      attach_child(switch_target)
+      switch_target = nil
     end
   elseif was_open and not open then
-    reset()
+    if switching then
+      log2("[pda3d] wheel: pda hidden mid-switch, scheduling reopen")
+      dsh.timeout(50, function() switch_after_hide(pending_switch_dir) end)
+    else
+      reset()
+    end
   end
   was_open = open
 end
@@ -107,6 +172,10 @@ function open_npc_pda(obj_id)
   local sobj = alife():create("device_pda_npc", actor:position(),
     actor:level_vertex_id(), actor:game_vertex_id(), actor:id())
   if sobj == nil then return end
+  	sak.close_window()
+	dsh.timeout( 500, function() 
+		get_actor_obj():press_action(key_bindings.kMAP) 
+	end )	
   vergas_pda.set_pda(sobj.id, txt)
   vergas_pda.set_info_pda(obj_id, sobj.id)
   vergas_pda.set_tbl_sn()
@@ -121,3 +190,7 @@ function close_npc_pda()
   pending = false
   reset()
 end
+
+function attach(sm)
+  sm:subscribe({signal = "on_wheel_rotation", fun = on_wheel_rotation})
+end 
