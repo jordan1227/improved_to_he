@@ -201,6 +201,12 @@
 #define BP_RQ_STATIC       2
 #define RVA_WM_ROT_ANGLE   0x001C92D3ULL
 
+#define RVA_SR_GAME_OBJECT1     0x00B090C0ULL
+#define RVA_SR_GAME_OBJECT1_END 0x00B090DCULL
+#define RVA_LB_DEF_U32          0x00699DC0ULL
+#define RVA_SGO_CAST_INVITEM    0x00697270ULL
+#define OFF_INVITEM_COST        0xE0
+
 #define FS_ListFiles   1u
 #define FS_ListFolders 2u
 
@@ -258,6 +264,9 @@ typedef void* (*getdebugname_t)(void* visual, void* out_shared_str);
 typedef const void* (*ambush_cover_t)(void* self, const float* pos, const float* enemy,
                                       float radius, float min_distance, const void* cb);
 typedef void* (*rtdcast_t)(void* p, long vfdelta, void* srct, void* dstt, int isref);
+typedef void* (*sr_go1_t)(void* ret, void* src);
+typedef void* (*lb_def_u32_t)(void* cls, const char* name, void* memfn);
+typedef void* (*sgo_cast_invitem_t)(void* script_obj);
 typedef void  (*setup_ce_close_t)(void* ev, const float* enemy, float mn, float mx,
                                   float dev, const void* fn);
 typedef const void* (*best_cover_close_t)(void* mgr, const float* pos, float radius, void* ev);
@@ -2905,6 +2914,44 @@ static void cmd_notes(const char* a)
     Msg("~ [notes] usage: notes | notes status | notes push[_test] | notes diag");
 }
 
+static sr_go1_t g_orig_sr_go1 = 0;
+static int      g_scost_bound = 0;
+static unsigned g_scost_calls = 0;
+static unsigned g_scost_misses = 0;
+static unsigned g_scost_last = 0;
+
+static void heSetCost(void* script_obj, unsigned cost)
+{
+    void* item = ((sgo_cast_invitem_t)(g_base + RVA_SGO_CAST_INVITEM))(script_obj);
+    if (!item) {
+        ++g_scost_misses;
+        return;
+    }
+    *(unsigned*)((char*)item + OFF_INVITEM_COST) = cost;
+    g_scost_last = cost;
+    ++g_scost_calls;
+}
+
+static void* hkScriptRegisterGameObject1(void* ret, void* src)
+{
+    void* cls = g_orig_sr_go1 ? g_orig_sr_go1(ret, src) : ret;
+    if (cls) {
+        ((lb_def_u32_t)(g_base + RVA_LB_DEF_U32))(cls, "set_cost", (void*)&heSetCost);
+        ++g_scost_bound;
+    }
+    return cls;
+}
+
+static void cmd_scost()
+{
+    if (!g_orig_sr_go1) {
+        log_msg("!! [scost] class registration hook not installed");
+        return;
+    }
+    log_fmt2i("~ [scost] bound=%d calls=%d", g_scost_bound, (int)g_scost_calls);
+    log_fmt2i("~ [scost] not_an_item=%d last_cost=%d", (int)g_scost_misses, (int)g_scost_last);
+}
+
 static void hkExecuteCommand(void* self, const char* cmd, char record, char allow)
 {
     g_console = self;
@@ -2961,6 +3008,12 @@ static void hkExecuteCommand(void* self, const char* cmd, char record, char allo
         if (p[0] == 'h' && p[1] == 'u' && p[2] == 'd' && p[3] == 'r' && p[4] == 'c' &&
             (p[5] == 0 || p[5] == ' ' || p[5] == '\t')) {
             cmd_hudrc(p + 5);
+            return;
+        }
+
+        if (p[0] == 's' && p[1] == 'c' && p[2] == 'o' && p[3] == 's' && p[4] == 't' &&
+            (p[5] == 0 || p[5] == ' ' || p[5] == '\t')) {
+            cmd_scost();
             return;
         }
 
@@ -3466,6 +3519,16 @@ static bool install_hook()
                 g_alife_noway_patched = 1;
             }
         }
+    }
+
+    {
+        uint8_t* f = (uint8_t*)(g_base + RVA_SR_GAME_OBJECT1);
+        if (f[0] == 0x48 && f[1] == 0x89 && f[2] == 0x5C && f[3] == 0x24 && f[4] == 0x18 &&
+            f[5] == 0x55 && f[6] == 0x56 && f[7] == 0x57 &&
+            f[16] == 0x48 && f[17] == 0x8D && f[18] == 0x6C && f[19] == 0x24 && f[20] == 0xC0)
+            g_orig_sr_go1 = (sr_go1_t)install_detour(
+                RVA_SR_GAME_OBJECT1, RVA_SR_GAME_OBJECT1_END,
+                (void*)&hkScriptRegisterGameObject1);
     }
 
     g_orig_additem = (additem_t)install_additem_detour((void*)&hkListBoxAddItem);
