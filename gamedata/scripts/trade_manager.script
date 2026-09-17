@@ -14,26 +14,49 @@ local saving_money = {
 	"yantar_ecolog_general_barter",
 	"yantar_ecolog_general_recipes",
 	"yan_ecolog_kruglov",
+	"yantar_semenov",
 	-- [HE-PORT]
 	"hos_junkman",
 	"lim_trader",
 	"gen_hermit"
 }
 
+-- === PDA charging via yantar_semenov trade (price 0 to hand in) ===
+local PDA_SECTION      = "device_pda_npc"
+local PDA_CHARGE_BASE      = 30 * 60   -- база: 30 минут на одну пда
+local PDA_TIME_GROWTH_MIN  = 0.05      -- случайный прирост за каждую следующую пда, от 5%
+local PDA_TIME_GROWTH_MAX  = 0.12      -- случайный прирост за каждую следующую пда, до 12%
+local PDA_QUEUE_KEY    = "pda_charge_queue"
+
+-- цена ¬ќ«¬–ј“ј зар€женной пда (сдача трейдеру остаЄтс€ бесплатной)
+local PDA_PRICE_BASE      = 1500   -- базова€ цена за 1 пда на старте
+local PDA_PRICE_STEP      = 500    -- на сколько растЄт база инфл€ции
+local PDA_PRICE_PERIOD_D  = 7      -- раз в сколько игровых суток растЄт база
+local PDA_PRICE_GROWTH    = 0.15   -- +15% к цене за каждую следующую пда в одной партии
+local PDA_PRICE_EPOCH_KEY = "pda_price_epoch"
+
 function attach(sm)
     sm:subscribe({ signal = "on_trade_open",  fun = this.on_trade_open 	})
     sm:subscribe({ signal = "on_trade", 	  fun = this.on_trade	  	})
     sm:subscribe({ signal = "on_trade_hide",  fun = this.on_trade_hide 	})
     sm:subscribe({ signal = "on_trade_money", fun = this.on_trade_money })
+	sm:subscribe({ signal = "on_safe_spawn",  fun = this.on_safe_spawn })	
 end 
 
 local buy_items     = {}
 local sold_items    = {}
 local price_items_table = {}
+local pda_sold_ids = {}            -- id сданных за этот трейд пда (дл€ зар€дки у yantar_semenov)
 
 function on_trade_open()
 	buy_items  = {}
 	sold_items = {}
+	pda_sold_ids = {}
+
+--	local npc = level:get_second_talker()
+--	if npc and npc:name() == "yantar_semenov" then
+--		pda_charge_check()
+--	end
 end
 
 function on_trade( item, sell_buy, money )
@@ -46,6 +69,16 @@ function on_trade( item, sell_buy, money )
 		-- Ќужно получить актуальную цену предмета тут, на закрытии уже не произойдет расчЄт
 		if trader and trader:name() == "yan_ecolog_kruglov" then 
 			price_items_table[ item:id() ] = get_cost( item )
+		end
+		if trader and trader:name() == "yantar_semenov" and item:section() == PDA_SECTION then
+			local status = vergas_pda.get_pda_status( id )
+			if status == 2 then  -- берЄм в зар€дку только разр€женные (2); рабочие (1) и битые (3) не принимаем
+				table.insert( pda_sold_ids, id )
+				local obj = client_obj( id )
+				if obj then
+					set_item_inv_hidden( obj )
+				end				
+			end
 		end
 	else
 		buy_items[  id ] = true
@@ -253,9 +286,137 @@ function on_trade_hide()
 		return 
 	end	
 
+	if npc and npc:name() == "yantar_semenov" and #pda_sold_ids > 0 then
+		pda_add_to_queue( pda_sold_ids )
+	end
+
     buy_items = {}
     sold_items = {}
 	respawn_hidden_recipes()
+end
+
+-- === PDA charging via yantar_semenov trade ===
+
+function pda_get_queue()
+	return get_value( PDA_QUEUE_KEY, {} )
+end
+
+function pda_set_queue( queue )
+	set_value( PDA_QUEUE_KEY, queue )
+end
+
+function pda_get_epoch()
+	local epoch = get_value( PDA_PRICE_EPOCH_KEY, nil )
+	if not epoch then
+		epoch = pack_time_to_string( game.get_game_time() )
+		set_value( PDA_PRICE_EPOCH_KEY, epoch )
+	end
+	return unpack_time_from_string( epoch )
+end
+
+-- база цены: растЄт на PDA_PRICE_STEP раз в PDA_PRICE_PERIOD_D игровых суток
+--[[
+function pda_base_price()
+	local epoch = pda_get_epoch()
+	local now = game.get_game_time()
+	local elapsed_days = math.floor( now:diffSec( epoch ) / 86400 )
+	local periods = math.floor( elapsed_days / PDA_PRICE_PERIOD_D )
+	return PDA_PRICE_BASE + PDA_PRICE_STEP * periods
+end
+]]--
+
+function pda_base_price()
+	return sak_dialog.calc_money( PDA_PRICE_BASE, PDA_PRICE_PERIOD_D, PDA_PRICE_STEP )
+end
+
+-- цена конкретного экземпл€ра по его номеру в выдаваемой партии (n = 1, 2, 3...):
+-- 1-й по базовой цене, каждый следующий на PDA_PRICE_GROWTH дороже базы
+function pda_price_for_position( n )
+	local base = pda_base_price()
+	return math.floor( base * ( 1 + PDA_PRICE_GROWTH * ( n - 1 ) ) )
+end
+
+-- врем€ конкретного экземпл€ра по его номеру в сдаваемой партии (n = 1, 2, 3...):
+-- 1-й по базовому времени, каждый следующий получает случайный прирост
+-- PDA_TIME_GROWTH_MIN..PDA_TIME_GROWTH_MAX поверх суммарного прироста предыдущих
+function pda_time_for_position( n, cum_growth )
+	return math.floor( PDA_CHARGE_BASE * ( 1 + cum_growth ) )
+end
+
+function pda_add_to_queue( id_list )
+	local queue = pda_get_queue()
+	local now = game.get_game_time()
+
+	local last_end = now
+	if #queue > 0 then
+		local stored = unpack_time_from_string( queue[ #queue ].end_time )
+		if stored:diffSec( now ) > 0 then
+			last_end = stored
+		end
+	end
+
+	local cum_growth = 0
+	for n, id in ipairs( id_list ) do
+		if n > 1 then
+			local step = lua_random( PDA_TIME_GROWTH_MIN * 1000, PDA_TIME_GROWTH_MAX * 1000 ) / 1000
+			cum_growth = cum_growth + step
+		end
+		local charge_time = pda_time_for_position( n, cum_growth )
+		last_end = last_end + seconds2ctime( charge_time )
+		table.insert( queue, { id = id, end_time = pack_time_to_string( last_end ) } )
+	end
+	pda_set_queue( queue )
+end
+
+-- вызываетс€ из on_trade_open в момент открыти€ трейда с yantar_semenov.
+-- –аботаем с “≈ћ ∆≈ объектом, который сдал игрок (release() при продаже его
+-- не уничтожает, а просто передаЄт трейдеру в ассортимент) - никакого
+-- нового спавна, только смена статуса/кондиции у существующего id.
+function pda_charge_check()
+	local queue = pda_get_queue()
+	if #queue == 0 then return end
+
+	local now = game.get_game_time()
+	local remaining = {}
+	local position = 0
+	local changed = false
+
+	for _, e in ipairs( queue ) do
+		local sobj = alife():object( e.id )
+
+		if not sobj then
+			-- объект пропал (подобрали/уничтожили где-то ещЄ) - выкидываем из очереди
+			changed = true
+		else
+			local end_time = unpack_time_from_string( e.end_time )
+			if end_time:diffSec( now ) <= 0 then
+				position = position + 1
+				if vergas_pda.charge_pda( e.id ) then
+					local obj = client_obj( e.id )
+					if obj then
+						-- цену конкретного экземпл€ра ставим сами, как у vahtang;
+						-- хватит ли денег - решает штатное трейд-окно, как обычно
+						--obj:set_cost( pda_price_for_position( position ) )			
+							log2( "cost is %s", pda_price_for_position( position ) )
+						set_item_inv_visible( obj )
+						set_item_ungroupable( obj )
+					end
+				end
+				changed = true
+			else
+				-- ещЄ зар€жаетс€ - пр€чем из инвентар€/списка трейдера
+				local obj = client_obj( e.id )
+				if obj then
+					set_item_inv_hidden( obj )
+				end
+				table.insert( remaining, e )
+			end
+		end
+	end
+
+	if changed then
+		pda_set_queue( remaining )
+	end
 end
 
 function process_trade_counts( t, b )
@@ -527,6 +688,34 @@ function get_cfg( npc )
 	return trade_manager[ npc:id() ]
 end
 
+function on_safe_spawn()
+	local lname = level.name()
+	if lname ~= "l08_yantar" then return end
+	dsh.wait_condition( function() return amk_mod.sync_done end, function()
+		pda_hide_queue_after_load()
+	end )
+end
+
+function pda_hide_queue_after_load()
+	local queue = pda_get_queue()
+	if #queue == 0 then return end
+
+	local now = game.get_game_time()
+
+	for _, e in ipairs( queue ) do
+		local obj = client_obj( e.id )
+		if obj then
+			local end_time = unpack_time_from_string( e.end_time )
+			if end_time:diffSec( now ) <= 0 then
+				set_item_ungroupable( obj )
+				set_item_inv_visible( obj )
+			else
+				set_item_inv_hidden( obj )
+			end
+		end
+	end
+end
+
 local actor_money = -1
 local vcost = math.random( 500, 2000 )
 
@@ -766,6 +955,21 @@ function bar_arny_barter( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
 	set_value( "tradein_npc", npc:name() )
 	tradein_start( npc, "buy_condition", "sell_condition", false, 1000 )
+end
+
+function yan_semenov_barter( npc1, npc2 )
+	local function pda_ungroup_actor_items()
+		db.actor:iterate_inventory( function( npc, obj )
+			if obj:section() == PDA_SECTION then
+				set_item_ungroupable( obj )
+			end
+		end, db.actor )
+	end
+	local npc = npc1:is_actor() and npc2 or npc1
+	set_value( "tradein_npc", npc:name() )
+	pda_charge_check() -- “ут обновл€ем ѕƒјшки
+	--pda_ungroup_actor_items()
+	tradein_start( npc, "buy_condition", "sell_condition", true, false )
 end
 
 -- [HE-PORT]
