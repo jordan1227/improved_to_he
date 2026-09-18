@@ -4,6 +4,8 @@ local POLL_MS = 200
 
 local pending = false
 local pending_serial = nil
+local pending_callback = nil
+local pending_switch_dir = nil
 local child_mode = false
 local child = nil
 local watching = false
@@ -13,16 +15,46 @@ local WHEEL_COOLDOWN_MS = 600  -- >= задержки анимации (500мс)
 local last_wheel_switch = 0
 local HIDE_ANIM_MS = 900
 
-local function pda_wnd()
+-- Чистый переход с "off"-меню на полноценный UI пароля/записей
+function request_full_ui()
+	if not child_mode or child == nil then
+		log2("[pda3d] request_full_ui: no child, ignore")
+		return
+	end
+
+	log2("[pda3d] request_full_ui: dropping off-menu and attaching full UI")
+	drop_child()
+
+	-- Небольшая пауза, чтобы движок успел отцепить старое окно
+	dsh.timeout(30, function()
+		if not child_mode then return end   -- вдруг уже вышли
+		local spwn = ui_cheat_pda.cheat(get_hud())
+		attach_child(spwn)
+	end)
+end
+
+-- Вызывается сразу после успешного attach_child
+function try_autostart(w)
+	if w and w.btn_start and w.mode_r == 1 then
+		-- Окно уже прикреплено и показано — можно стартовать
+		dsh.timeout(20, function()
+			if w and w.mode_r == 1 then
+				w:btn_start()
+			end
+		end)
+	end
+end
+
+function pda_wnd()
   return level.get_pda_wnd()
 end
 
-local function pda_is_open()
+function pda_is_open()
   local w = pda_wnd()
   return w ~= nil and w:IsShown()
 end
 
-local function drop_child()
+function drop_child()
   if child == nil then return end
   child:del_windows()
   child:ClearCallbacks()
@@ -31,23 +63,27 @@ local function drop_child()
   log2("[pda3d] child dropped")
 end
 
-local function attach_child(w)
-  local pw = pda_wnd()
-  if pw == nil or w == nil then return false end
-  drop_child()
-  child = w
-  pw:AttachChild(child, false)
-  child:Show(true)
-  if fl_pda3d_nosign ~= nil then fl_pda3d_nosign(1) end
-  if fl_pda3d_freeze ~= nil then fl_pda3d_freeze(1) end
-  log2("[pda3d] child attached")
-  return true
+function attach_child(w)
+	local pw = pda_wnd()
+	if pw == nil or w == nil then return false end
+	drop_child()
+	child = w
+	pw:AttachChild(child, false)
+	child:Show(true)
+	if fl_pda3d_nosign ~= nil then fl_pda3d_nosign(1) end
+	if fl_pda3d_freeze ~= nil then fl_pda3d_freeze(1) end
+	log2("[pda3d] child attached")
+
+	try_autostart(child)   -- ← вот здесь
+
+	return true
 end
 
-local function reset()
+function reset()
   drop_child()
   if not child_mode then return end
   child_mode = false
+  pending_callback = nil
   if fl_pda3d_nosign ~= nil then fl_pda3d_nosign(0) end
   if fl_pda3d_freeze ~= nil then fl_pda3d_freeze(0) end
   vergas_pda.set_info_pda_nil()
@@ -59,7 +95,7 @@ end
 local switching = false
 local switch_target = nil
 
-local function do_wheel_switch(dir)
+function do_wheel_switch(dir)
   if switching then return end
   if vergas_pda.get_tbl_sn_count() <= 1 then
     log2("[pda3d] wheel: only one pda in list, ignoring")
@@ -69,14 +105,16 @@ local function do_wheel_switch(dir)
   log2("[pda3d] wheel: dir=%d, hiding current pda via kMAP", dir)
   vergas_lib.s_play(vergas_lib.set_pr_from_config_str("list_sounds_pda", "snd_select_pda_down"), 1)
 
+  pending_switch_dir = dir   -- ← сохранить направление
   switching = true
-  get_actor_obj():press_action(key_bindings.kMAP)  -- штатное "убрать", ui_close сам дропнет child
+  get_actor_obj():press_action(key_bindings.kMAP)
 end
 
 local function switch_after_hide(dir)
   if not child_mode then
     log2("[pda3d] wheel: left child_mode during hide, abort switch")
     switching = false
+    pending_switch_dir = nil
     return
   end
 
@@ -84,14 +122,17 @@ local function switch_after_hide(dir)
   if spwn == nil then
     log2("[pda3d] wheel: start_search_pda returned nil, reopening previous")
     switching = false
-    get_actor_obj():press_action(key_bindings.kMAP)  -- вернуть как было
+    pending_switch_dir = nil
+    get_actor_obj():press_action(key_bindings.kMAP)
     return
   end
 
   switch_target = spwn
-	dsh.timeout( 1500, function() 
-		get_actor_obj():press_action(key_bindings.kMAP) 
-	end )	  -- штатное "достать", tick() аттачит switch_target
+  pending_switch_dir = nil   -- больше не нужно
+
+  dsh.timeout(1500, function() 
+    get_actor_obj():press_action(key_bindings.kMAP) 
+  end)
 end
 
 function on_wheel_rotation(vol)
@@ -124,13 +165,23 @@ function ui_close(w)
   return true
 end
 
-local function tick()
+function tick()
   local open = pda_is_open()
   if open and not was_open then
     if pending then
       pending = false
       child_mode = true
       attach_child(vergas_pda.start_search_pda(2, pending_serial, true))
+
+      if pending_callback then
+        local cb = pending_callback
+        pending_callback = nil
+
+        dsh.wait_condition(
+          function() return ui_cheat_pda.cheat_instance ~= nil end,
+          cb
+        )
+      end
     elseif switching and switch_target ~= nil then
       switching = false
       attach_child(switch_target)
@@ -147,7 +198,7 @@ local function tick()
   was_open = open
 end
 
-local function start_watch()
+function start_watch()
   if watching then return end
   watching = true
   was_open = pda_is_open()
@@ -158,8 +209,9 @@ function is_pending()
   return pending
 end
 
-function open_npc_pda(obj_id)
+function open_npc_pda(obj_id, callback)
   if obj_id == nil then return end
+
   local txt = vergas_pda.get_pda_cdata(obj_id)
   if type(txt) ~= "string" then
     log2("[pda3d] open_npc_pda(%s): bad pda data", tostring(obj_id))
@@ -169,28 +221,60 @@ function open_npc_pda(obj_id)
   if actor == nil then return end
   local serial = SplitStr(txt, '|')[4]
   if serial == nil then return end
-  local sobj = alife():create("device_pda_npc", actor:position(),
-    actor:level_vertex_id(), actor:game_vertex_id(), actor:id())
-  if sobj == nil then return end
-  	sak.close_window()
-	dsh.timeout( 500, function() 
-		get_actor_obj():press_action(key_bindings.kMAP) 
-	end )	
-  vergas_pda.set_pda(sobj.id, txt)
-  vergas_pda.set_info_pda(obj_id, sobj.id)
-  vergas_pda.set_tbl_sn()
-  vergas_pda.set_pda_condition(sobj.id, tonumber(string.sub(serial, 13, 13)) or 3)
-  pending_serial = serial
-  pending = true
-  start_watch()
-  log2("[pda3d] armed, serial=%s -- open the PDA with P", tostring(serial))
+
+  local started = false   -- защита от повторного срабатывания wait_condition
+
+  local function proceed()
+    if started then return end
+    started = true
+
+    local sobj = alife():create("device_pda_npc", actor:position(),
+      actor:level_vertex_id(), actor:game_vertex_id(), actor:id())
+    if sobj == nil then return end
+
+    vergas_pda.set_pda(sobj.id, txt)
+    vergas_pda.set_info_pda(obj_id, sobj.id)
+    vergas_pda.set_tbl_sn()
+    vergas_pda.set_pda_condition(sobj.id, tonumber(string.sub(serial, 13, 13)) or 3)
+
+    pending_serial = serial
+    pending = true
+    pending_callback = callback
+    start_watch()
+    log2("[pda3d] armed, serial=%s -- open the PDA with P", tostring(serial))
+
+    dsh.timeout( 500, function()
+      -- защита от гонки: если что-то (например, закрытие рюкзака) уже
+      -- открыло PDA само по себе, наше нажатие kMAP было бы вторым и
+      -- закрыло бы окно обратно (kMAP — toggle-клавиша)
+      if not pda_is_open() then
+        log2("[pda3d] our kMAP press firing (pda not open yet)")
+        get_actor_obj():press_action(key_bindings.kMAP)
+      else
+        log2("[pda3d] pda already open by something else, skip our kMAP press")
+      end
+    end )
+  end
+
+  sak.close_window()
+  --slot_keeper.hold()
+
+  if get_value( "inv_full" ) then
+    dsh.wait_condition(
+      function() return not get_value( "inv_full" ) end,
+      proceed
+    )
+  else
+    proceed()
+  end
 end
 
 function close_npc_pda()
   pending = false
+  pending_callback = nil
   reset()
 end
 
 function attach(sm)
   sm:subscribe({signal = "on_wheel_rotation", fun = on_wheel_rotation})
-end 
+end
