@@ -13,6 +13,123 @@ local was_open = false
 
 local held_slot = nil
 
+local HAND_PDA_SECTION = "device_pda_hack"
+local hand_pda_id = nil
+local displaced_pda_id = nil
+
+local function restore_displaced_pda()
+  local own_id = displaced_pda_id
+  displaced_pda_id = nil
+  if own_id == nil or db.actor == nil then return end
+  local own = level.object_by_id(own_id)
+  if own and db.actor:item_in_slot(7) == nil then
+    db.actor:move_to_slot(own, true)
+    log2("[pda3d] own pda %s back to slot", tostring(own_id))
+  end
+end
+
+function hand_pda_active()
+  return hand_pda_id ~= nil
+end
+
+function drop_hand_pda()
+  local id = hand_pda_id
+  hand_pda_id = nil
+  if id == nil then return end
+  misc.release_obj(level.object_by_id(id) or id)
+  level.set_actor_allow_pda(false)
+  log2("[pda3d] hand pda %s released", tostring(id))
+  restore_displaced_pda()
+end
+
+local function give_hand_pda(cb)
+  if hand_pda_id ~= nil or db.actor == nil then return cb() end
+
+  local own = db.actor:object("device_pda")
+  if own and own:condition() > 0
+    and not db.actor:has_info("pda_is_broken")
+    and not pda_battery.is_charging()
+  then
+    if db.actor:item_in_slot(7) == nil then
+      db.actor:move_to_slot(own, true)
+    end
+    return cb()
+  end
+
+  if own and db.actor:item_in_slot(7) ~= nil then
+    db.actor:move_to_ruck(own)
+    displaced_pda_id = own:id()
+    log2("[pda3d] own pda %s unusable, moved to ruck", tostring(displaced_pda_id))
+  end
+
+  local sobj = misc.spawn_to(HAND_PDA_SECTION, db.actor)
+  if sobj == nil then
+    log2("[pda3d] hand pda spawn failed")
+    restore_displaced_pda()
+    return cb()
+  end
+
+  hand_pda_id = sobj.id
+  local deadline = time_global() + 3000
+  dsh.wait_condition(
+    function()
+      return level.object_by_id(hand_pda_id) ~= nil or time_global() > deadline
+    end,
+    function()
+      local obj = hand_pda_id and level.object_by_id(hand_pda_id)
+      if obj then
+        set_item_inv_hidden(obj)
+        set_item_ungroupable(obj)
+        if db.actor:item_in_slot(7) == nil then
+          db.actor:move_to_slot(obj, true)
+        end
+        level.set_actor_allow_pda(true)
+        log2("[pda3d] hand pda %s ready", tostring(hand_pda_id))
+      else
+        log2("[pda3d] hand pda did not appear")
+      end
+      cb()
+    end
+  )
+end
+
+function sweep_hand_pda()
+  hand_pda_id = nil
+  displaced_pda_id = nil
+  if db.actor == nil then return end
+
+  local stale = {}
+  db.actor:iterate_inventory(function(dummy, item)
+    if item and item:section() == HAND_PDA_SECTION then
+      table.insert(stale, item:id())
+    end
+  end, nil)
+
+  if #stale == 0 then return end
+
+  for _, id in ipairs(stale) do
+    log2("[pda3d] sweeping stale hand pda %s", tostring(id))
+    misc.release_obj(id)
+  end
+
+  local own = db.actor:object("device_pda")
+  if own and db.actor:item_in_slot(7) == nil then
+    db.actor:move_to_slot(own, true)
+    log2("[pda3d] own pda back to slot after sweep")
+  end
+end
+
+local function abort_pending()
+  if not pending then return end
+  pending = false
+  pending_callback = nil
+  log2("[pda3d] pda did not open, aborting")
+  drop_hand_pda()
+  local slot = held_slot
+  held_slot = nil
+  if slot then slot_keeper.restore_slot(slot) end
+end
+
 local WHEEL_COOLDOWN_MS = 600  -- >= задержки анимации (500мс) ниже, чтобы не запускать вторую пока первая не завершилась
 local last_wheel_switch = 0
 local HIDE_ANIM_MS = 900
@@ -94,20 +211,21 @@ function reset()
   bind_stalker.restore_weapon()
   local slot = held_slot
   held_slot = nil
-  if slot then
-    local deadline = time_global() + 5000
-    dsh.wait_condition(
-      function()
-        if not db.actor or not db.actor:alive() then return true end
-        return not db.actor:active_item() or time_global() > deadline
-      end,
-      function()
-        if not db.actor or not db.actor:alive() then return end
+  local deadline = time_global() + 5000
+  dsh.wait_condition(
+    function()
+      if not db.actor or not db.actor:alive() then return true end
+      return not db.actor:active_item() or time_global() > deadline
+    end,
+    function()
+      if not db.actor or not db.actor:alive() then return end
+      drop_hand_pda()
+      if slot then
         log2("[pda3d] restoring slot %s", tostring(slot))
         slot_keeper.restore_slot(slot)
       end
-    )
-  end
+    end
+  )
   log2("[pda3d] reset")
 end
 
@@ -262,16 +380,22 @@ function open_npc_pda(obj_id, callback)
     start_watch()
     log2("[pda3d] armed, serial=%s -- open the PDA with P", tostring(serial))
 
-    dsh.timeout( 500, function()
-      -- защита от гонки: если что-то (например, закрытие рюкзака) уже
-      -- открыло PDA само по себе, наше нажатие kMAP было бы вторым и
-      -- закрыло бы окно обратно (kMAP — toggle-клавиша)
-      if not pda_is_open() then
-        log2("[pda3d] our kMAP press firing (pda not open yet)")
-        get_actor_obj():press_action(key_bindings.kMAP)
-      else
-        log2("[pda3d] pda already open by something else, skip our kMAP press")
-      end
+    give_hand_pda(function()
+      dsh.timeout( 500, function()
+        -- защита от гонки: если что-то (например, закрытие рюкзака) уже
+        -- открыло PDA само по себе, наше нажатие kMAP было бы вторым и
+        -- закрыло бы окно обратно (kMAP — toggle-клавиша)
+        if not pda_is_open() then
+          log2("[pda3d] our kMAP press firing (pda not open yet)")
+          get_actor_obj():press_action(key_bindings.kMAP)
+        else
+          log2("[pda3d] pda already open by something else, skip our kMAP press")
+        end
+      end )
+    end)
+
+    dsh.timeout( 8000, function()
+      if pending and not pda_is_open() then abort_pending() end
     end )
   end
 
@@ -296,4 +420,5 @@ end
 
 function attach(sm)
   sm:subscribe({signal = "on_wheel_rotation", fun = on_wheel_rotation})
+  sm:subscribe({signal = "on_first_update", fun = sweep_hand_pda})
 end
