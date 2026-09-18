@@ -377,3 +377,16 @@ gamedata/config/text/eng/script_strings.xml
 ```
 
 This is a correction subset atop the existing PDA implementation, not a clean-install package. Review artifacts: `reviews/PDA_LUNA_REVIEW_AND_RADAR.diff` and `reviews/PDA_CURRENT_RUSSIAN_DIALOGUES.md`. No files were deployed or committed.
+
+
+## September 19: upgraded PDA emission usability
+
+Source implemented; deployment and runtime acceptance pending. Supersedes the earlier emission-wide reception-blocking rule for the upgraded tier only.
+
+- Upgraded PDA uses the live-screen glitch shader during emissions: X=0, Y=0.20, Z=0.25, with reduced noise volume. Tune `UPGRADED_PDA_EMISSION_INTERFERENCE` in `sivol_emp_config.script` after visual acceptance. No shader asset changes.
+- Its selected-message queue can deliver during emissions. Battery, custody, dialogue, broken/pending-burn and critical-outage checks still apply. Ordinary PDA and early notes module keep heavy emission static and queued messages.
+- Legacy 2D PDA no longer opens its blocking noise window solely because of an emission when upgraded; other location/anomaly restrictions remain.
+- Existing emission burn probability is unchanged: usability is not burn immunity.
+- Runtime files: `sivol/sivol_pda.script`, `sivol/sivol_emp_config.script`, `binders/bind_stalker.script`.
+
+Manual check: from matched disposable saves, compare ordinary and upgraded PDAs during a real emission in shelter, away from Electras. Read map/tasks and use controls; upgraded should remain readable with light/moderate glitching, ordinary should retain heavy static. Enqueue a test PDA message and confirm only upgraded delivers during the emission. Repeat with 3D PDA disabled. Check emission ending, holster/reopen and save/load; no lingering emission effect. A broken, empty or separately EMP-disabled upgraded PDA must remain unusable. Run the existing static and mocked pipeline before deployment.

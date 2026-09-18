@@ -104,6 +104,8 @@ local function world()
     sak={create_items=function(_,n) bonus=bonus+n end,present_tip=function(text) presented[#presented+1]={text=text,t=now}; return true end}
     amk={present_tip=sak.present_tip}
     ui_cheat_pda=nil
+    he_watch_status={on_critical_event=function() end}
+    he_pda_3d={hand_pda_active=function() return false end}
     sivol_pda={reception_blocked=function() return jam,"interference" end}
     sleep_manager={is_sleep_active=function() return false end}
     timers={Get_Game_Seconds=function() return now/1000*100 end}
@@ -490,5 +492,23 @@ test("actual PDA exposure attenuation preserves shared EMP inputs",function()
     sivol_emp_config={UPGRADED_PDA_EMP_RESISTANCE=0.05};values.he_pda_upgrade_owned=true;add("device_pda_upgraded")
     local c=assert(loadstring(s:sub(a,b-1)..' return target,electra_eff'));setfenv(c,env);local target,exposure=c()
     assert(math.abs(target-0.76)<0.000001);eq(exposure,target);eq(rolled[1],0.8);eq(rolled[2],0.2);eq(lesser,0.8)
+end)
+test("emission tier keeps upgraded screen live and messages available but respects outages",function()
+    local f=assert(io.open("gamedata/scripts/sivol/sivol_pda.script","rb")); local s=f:read("*a"); f:close()
+    local a=assert(s:find("local function is_emission_active()",1,true))
+    local b=assert(s:find("function screen_locked()",a,true))
+    local outage=false
+    local env=setmetatable({sivol_critical_malfunction={is_device_active=function() return outage end}}, {__index=_G})
+    local c=assert(loadstring(s:sub(a,b-1)));setfenv(c,env);c()
+    mod("sivol_emp_config","gamedata/scripts/sivol/sivol_emp_config.script")
+    add("device_pda"); values.blowout=1
+    assert(env.reception_blocked()); local x,y,z=env.emission_shader_params();eq(x,0.4);eq(y,0.5);eq(z,0)
+    values.he_pda_notes_installed=true;assert(env.reception_blocked())
+    values.he_pda_upgrade_owned=true;assert(not env.reception_blocked())
+    x,y,z=env.emission_shader_params();eq(x,0);eq(y,0.2);eq(z,0.25)
+    outage=true;local blocked,reason=env.reception_blocked();assert(blocked);eq(reason,"critical_pda")
+    outage=false;values.blowout=0;values.he_pda_upgrade_owned=false;assert(not env.reception_blocked())
+    db.blowout_active=true;assert(env.reception_blocked());values.he_pda_upgrade_owned=true;assert(not env.reception_blocked())
+    db.blowout_active=nil
 end)
 print("PDA mocked behavior: "..passed.." tests passed (not engine acceptance)")

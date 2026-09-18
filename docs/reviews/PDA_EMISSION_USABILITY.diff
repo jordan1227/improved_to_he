@@ -1,0 +1,133 @@
+diff --git a/docs/PDA_CORRECTION_TEST_PLAN.md b/docs/PDA_CORRECTION_TEST_PLAN.md
+index 86de1ec7..54dfc3b2 100644
+--- a/docs/PDA_CORRECTION_TEST_PLAN.md
++++ b/docs/PDA_CORRECTION_TEST_PLAN.md
+@@ -377,3 +377,16 @@ gamedata/config/text/eng/script_strings.xml
+ ```
+ 
+ This is a correction subset atop the existing PDA implementation, not a clean-install package. Review artifacts: `reviews/PDA_LUNA_REVIEW_AND_RADAR.diff` and `reviews/PDA_CURRENT_RUSSIAN_DIALOGUES.md`. No files were deployed or committed.
++
++
++## September 19: upgraded PDA emission usability
++
++Source implemented; deployment and runtime acceptance pending. Supersedes the earlier emission-wide reception-blocking rule for the upgraded tier only.
++
++- Upgraded PDA uses the live-screen glitch shader during emissions: X=0, Y=0.20, Z=0.25, with reduced noise volume. Tune `UPGRADED_PDA_EMISSION_INTERFERENCE` in `sivol_emp_config.script` after visual acceptance. No shader asset changes.
++- Its selected-message queue can deliver during emissions. Battery, custody, dialogue, broken/pending-burn and critical-outage checks still apply. Ordinary PDA and early notes module keep heavy emission static and queued messages.
++- Legacy 2D PDA no longer opens its blocking noise window solely because of an emission when upgraded; other location/anomaly restrictions remain.
++- Existing emission burn probability is unchanged: usability is not burn immunity.
++- Runtime files: `sivol/sivol_pda.script`, `sivol/sivol_emp_config.script`, `binders/bind_stalker.script`.
++
++Manual check: from matched disposable saves, compare ordinary and upgraded PDAs during a real emission in shelter, away from Electras. Read map/tasks and use controls; upgraded should remain readable with light/moderate glitching, ordinary should retain heavy static. Enqueue a test PDA message and confirm only upgraded delivers during the emission. Repeat with 3D PDA disabled. Check emission ending, holster/reopen and save/load; no lingering emission effect. A broken, empty or separately EMP-disabled upgraded PDA must remain unusable. Run the existing static and mocked pipeline before deployment.
+diff --git a/docs/tests/pda_state_tests.lua b/docs/tests/pda_state_tests.lua
+index c4045258..0be4aeef 100644
+--- a/docs/tests/pda_state_tests.lua
++++ b/docs/tests/pda_state_tests.lua
+@@ -104,6 +104,8 @@ local function world()
+     sak={create_items=function(_,n) bonus=bonus+n end,present_tip=function(text) presented[#presented+1]={text=text,t=now}; return true end}
+     amk={present_tip=sak.present_tip}
+     ui_cheat_pda=nil
++    he_watch_status={on_critical_event=function() end}
++    he_pda_3d={hand_pda_active=function() return false end}
+     sivol_pda={reception_blocked=function() return jam,"interference" end}
+     sleep_manager={is_sleep_active=function() return false end}
+     timers={Get_Game_Seconds=function() return now/1000*100 end}
+@@ -491,4 +493,22 @@ test("actual PDA exposure attenuation preserves shared EMP inputs",function()
+     local c=assert(loadstring(s:sub(a,b-1)..' return target,electra_eff'));setfenv(c,env);local target,exposure=c()
+     assert(math.abs(target-0.76)<0.000001);eq(exposure,target);eq(rolled[1],0.8);eq(rolled[2],0.2);eq(lesser,0.8)
+ end)
++test("emission tier keeps upgraded screen live and messages available but respects outages",function()
++    local f=assert(io.open("gamedata/scripts/sivol/sivol_pda.script","rb")); local s=f:read("*a"); f:close()
++    local a=assert(s:find("local function is_emission_active()",1,true))
++    local b=assert(s:find("function screen_locked()",a,true))
++    local outage=false
++    local env=setmetatable({sivol_critical_malfunction={is_device_active=function() return outage end}}, {__index=_G})
++    local c=assert(loadstring(s:sub(a,b-1)));setfenv(c,env);c()
++    mod("sivol_emp_config","gamedata/scripts/sivol/sivol_emp_config.script")
++    add("device_pda"); values.blowout=1
++    assert(env.reception_blocked()); local x,y,z=env.emission_shader_params();eq(x,0.4);eq(y,0.5);eq(z,0)
++    values.he_pda_notes_installed=true;assert(env.reception_blocked())
++    values.he_pda_upgrade_owned=true;assert(not env.reception_blocked())
++    x,y,z=env.emission_shader_params();eq(x,0);eq(y,0.2);eq(z,0.25)
++    outage=true;local blocked,reason=env.reception_blocked();assert(blocked);eq(reason,"critical_pda")
++    outage=false;values.blowout=0;values.he_pda_upgrade_owned=false;assert(not env.reception_blocked())
++    db.blowout_active=true;assert(env.reception_blocked());values.he_pda_upgrade_owned=true;assert(not env.reception_blocked())
++    db.blowout_active=nil
++end)
+ print("PDA mocked behavior: "..passed.." tests passed (not engine acceptance)")
+diff --git a/gamedata/scripts/binders/bind_stalker.script b/gamedata/scripts/binders/bind_stalker.script
+index 38e55125..15119098 100644
+--- a/gamedata/scripts/binders/bind_stalker.script
++++ b/gamedata/scripts/binders/bind_stalker.script
+@@ -644,7 +644,7 @@ local function check_pda_conditions()
+ 
+     -- [HE-PORT]
+     -- flag1 retained for legacy 2D PDA / external calls that check locations + blowout
+-    local flag1 = pda and (lvl_aver or lvl_underground or blowout or broken)
++    local flag1 = pda and (lvl_aver or lvl_underground or (blowout and not sivol_pda.emission_resistant()) or broken)
+     local flag2 = not pda and db.actor:object("device_pda_npc_gg")
+     local in_safe_zone = not amk_anoms.check_coordinates(db.actor:position())
+     local cond = (pda and pda:condition()) or 0
+@@ -1553,7 +1553,7 @@ function actor_binder:binder_update_7 (delta, time)
+         elseif owns then
+             -- sivol_pda drives set_pda_params every frame (handles electra + underground + aver)
+         elseif flag_blowout then
+-            set_pda_params(vector():set(0.4, 0.5, 0.0))    -- legacy blowout static + intended lamp flicker
++            set_pda_params(vector():set(sivol_pda.emission_shader_params()))
+             if has_alife_info("ui_pda") then 
+                 pda_noise.play_noise_sound() 
+             else 
+diff --git a/gamedata/scripts/sivol/sivol_emp_config.script b/gamedata/scripts/sivol/sivol_emp_config.script
+index 6b5f653a..15632149 100644
+--- a/gamedata/scripts/sivol/sivol_emp_config.script
++++ b/gamedata/scripts/sivol/sivol_emp_config.script
+@@ -161,6 +161,8 @@ SHOCK_HIT_MALFUNCTION = {
+ UPGRADED_PDA_EMP_RESISTANCE = 0.05
+ -- Ten percent of otherwise-due emission burn cycles are survived.
+ UPGRADED_PDA_EMISSION_SURVIVAL = 0.10
++-- Readable live-screen glitch strength during emissions (ordinary PDA keeps heavy static).
++UPGRADED_PDA_EMISSION_INTERFERENCE = 0.20
+ 
+ -- Watch survives most critical events and recovers sooner than PDA/NVD/torch.
+ WATCH_EMP = {
+diff --git a/gamedata/scripts/sivol/sivol_pda.script b/gamedata/scripts/sivol/sivol_pda.script
+index c3c062bd..f0579b44 100644
+--- a/gamedata/scripts/sivol/sivol_pda.script
++++ b/gamedata/scripts/sivol/sivol_pda.script
+@@ -204,8 +204,21 @@ local function is_emission_active()
+     return ( tonumber( value ) or 0 ) ~= 0
+ end
+ 
++-- Tier state is authoritative during the asynchronous model conversion too.
++function emission_resistant()
++    return he_pda_access.has_upgrade() and he_pda_model.get_pda() ~= nil
++end
++
++-- Both shader writers must choose the same mode; alpha >= 0.25 keeps the live screen.
++function emission_shader_params()
++    if emission_resistant() then
++        return 0.0, sivol_emp_config.UPGRADED_PDA_EMISSION_INTERFERENCE, 0.25
++    end
++    return 0.4, 0.5, 0.0
++end
++
+ function reception_blocked()
+-    if is_emission_active() then return true, "emission" end
++    if is_emission_active() and not emission_resistant() then return true, "emission" end
+     if sivol_critical_malfunction and sivol_critical_malfunction.is_device_active
+         and sivol_critical_malfunction.is_device_active( "pda" ) then
+         return true, "critical_pda"
+@@ -416,9 +429,12 @@ local function check_electra_proximity()
+             pda_noise.stop_noise_sound()  -- dead silence reads more "broken" than more static
+             set_pda_params(pda_shader_params:set(0.0, 1.0, 1.55))  -- same ceiling as the existing electra blackout
+         elseif emission then
+-            set_pda_params(pda_shader_params:set(0.4, 0.5, 0.0))
++            set_pda_params(pda_shader_params:set(emission_shader_params()))
+             if has_alife_info("ui_pda") then
+                 pda_noise.play_noise_sound()
++                if emission_resistant() then
++                    pda_noise.set_noise_volume((0.1 + 0.4 * sivol_emp_config.UPGRADED_PDA_EMISSION_INTERFERENCE) * NOISE_VOLUME_SCALE)
++                end
+             else
+                 pda_noise.stop_noise_sound()
+             end
