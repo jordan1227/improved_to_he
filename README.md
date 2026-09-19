@@ -79,3 +79,21 @@ Report issues and suggestions through Issues.
   <a href="https://github.com/AiramProvoker"><img src="https://img.shields.io/badge/AiramProvoker-sivol-e36209?style=for-the-badge&logo=github&logoColor=white" alt="AiramProvoker (sivol)"></a>
   <a href="https://github.com/KotovodKoteikovich"><img src="https://img.shields.io/badge/KotovodKoteikovich-1f6feb?style=for-the-badge&logo=github&logoColor=white" alt="KotovodKoteikovich"></a>
 </p>
+
+---
+
+## Донаты / Donations
+
+**eeeeb**
+
+- ₿ Bitcoin: `bc1qya6c5g025v64ph43vmjxnejckq9j4ej8v4cf83`
+- ₮ USDT TRC-20: `TXVsz873ELbD6nggqdJo78B43pVR2hDd9T`
+
+**sivol**
+
+- ₿ Bitcoin: `bc1qxcaekvqnj5m2v3zjl4zeu76j34x99d4llq783w`
+
+**Котовод**
+
+- 💳 Карта: `2200 0305 4331 3929`
+- ₿ Bitcoin: `bc1qs9mjs902ytxw20caufkj58xqqzrsr9m9x6dwn6`
