@@ -35,7 +35,7 @@ Report issues and suggestions through Issues.
 <p align="center">
   <a href="https://github.com/jordan1227"><img src="https://img.shields.io/badge/eeeeb-jordan1227-8957e5?style=for-the-badge&logo=github&logoColor=white" alt="eeeeb (jordan1227)"></a>
   <a href="https://github.com/AiramProvoker"><img src="https://img.shields.io/badge/AiramProvoker-sivol-e36209?style=for-the-badge&logo=github&logoColor=white" alt="AiramProvoker (sivol)"></a>
-  <img src="https://img.shields.io/badge/KotovodKoteikovich-1f6feb?style=for-the-badge" alt="KotovodKoteikovich">
+  <a href="https://github.com/KotovodKoteikovich"><img src="https://img.shields.io/badge/KotovodKoteikovich-1f6feb?style=for-the-badge&logo=github&logoColor=white" alt="KotovodKoteikovich"></a>
 </p>
 
 ---
@@ -77,5 +77,5 @@ Report issues and suggestions through Issues.
 <p align="center">
   <a href="https://github.com/jordan1227"><img src="https://img.shields.io/badge/eeeeb-jordan1227-8957e5?style=for-the-badge&logo=github&logoColor=white" alt="eeeeb (jordan1227)"></a>
   <a href="https://github.com/AiramProvoker"><img src="https://img.shields.io/badge/AiramProvoker-sivol-e36209?style=for-the-badge&logo=github&logoColor=white" alt="AiramProvoker (sivol)"></a>
-  <img src="https://img.shields.io/badge/KotovodKoteikovich-1f6feb?style=for-the-badge" alt="KotovodKoteikovich">
+  <a href="https://github.com/KotovodKoteikovich"><img src="https://img.shields.io/badge/KotovodKoteikovich-1f6feb?style=for-the-badge&logo=github&logoColor=white" alt="KotovodKoteikovich"></a>
 </p>
