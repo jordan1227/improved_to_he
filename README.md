@@ -84,16 +84,16 @@ Report issues and suggestions through Issues.
 
 ## Донаты / Donations
 
-**eeeeb**
+<a href="https://github.com/jordan1227"><img src="https://img.shields.io/badge/eeeeb-jordan1227-8957e5?style=for-the-badge&logo=github&logoColor=white" alt="eeeeb (jordan1227)"></a>
 
 - ₿ Bitcoin: `bc1qya6c5g025v64ph43vmjxnejckq9j4ej8v4cf83`
 - ₮ USDT TRC-20: `TXVsz873ELbD6nggqdJo78B43pVR2hDd9T`
 
-**sivol**
+<a href="https://github.com/AiramProvoker"><img src="https://img.shields.io/badge/sivol-AiramProvoker-e36209?style=for-the-badge&logo=github&logoColor=white" alt="sivol (AiramProvoker)"></a>
 
 - ₿ Bitcoin: `bc1qxcaekvqnj5m2v3zjl4zeu76j34x99d4llq783w`
 
-**Котовод**
+<a href="https://github.com/KotovodKoteikovich"><img src="https://img.shields.io/badge/%D0%9A%D0%BE%D1%82%D0%BE%D0%B2%D0%BE%D0%B4-KotovodKoteikovich-1f6feb?style=for-the-badge&logo=github&logoColor=white" alt="Котовод (KotovodKoteikovich)"></a>
 
 - 💳 Карта: `2200 0305 4331 3929`
 - ₿ Bitcoin: `bc1qs9mjs902ytxw20caufkj58xqqzrsr9m9x6dwn6`
