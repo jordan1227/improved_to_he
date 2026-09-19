@@ -6,6 +6,14 @@ Porting Hard Edition to Improved 3.9.1.
 
 Development is complete.
 
+> [!CAUTION]
+> **Don't overwrite other contributors' commits.**
+> Sync your branch first and check for overlapping changes.
+
+## Task List
+
+Current list of changes: [лист.md](лист.md).
+
 ## Releases
 
 The patched `xrEngine.exe` is published in [Releases](../../releases).
@@ -16,9 +24,9 @@ Save protection is disabled in this file.
 
 Report issues and suggestions through Issues.
 
-## Author
+## Authors
 
-eeeeb (jordan1227)
+eeeeb (jordan1227) · AiramProvoker · KotovodKoteikovich
 
 ---
 
@@ -30,6 +38,14 @@ eeeeb (jordan1227)
 
 Разработка завершена.
 
+> [!CAUTION]
+> **Не затирайте коммиты других участников.**
+> Сначала синхронизируйте ветку и проверьте пересечения изменений.
+
+## Список задач
+
+Актуальный список изменений: [лист.md](лист.md).
+
 ## Релизы
 
 В разделе [Releases](../../releases) публикуется патченный `xrEngine.exe`.
@@ -40,6 +56,6 @@ eeeeb (jordan1227)
 
 Ошибки и предложения можно отправлять через Issues.
 
-## Автор
+## Авторы
 
-eeeeb (jordan1227)
+eeeeb (jordan1227) · AiramProvoker · KotovodKoteikovich
