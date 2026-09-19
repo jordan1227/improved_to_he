@@ -1,47 +1,5 @@
 <div align="center">
 
-# Hard Edition to Improved 3.9.1
-
-**Porting Hard Edition to Improved 3.9.1**
-
-![Status](https://img.shields.io/badge/status-complete-2ea44f?style=flat-square)
-![Base](https://img.shields.io/badge/base-Improved%203.9.1-0969da?style=flat-square)
-![Platform](https://img.shields.io/badge/platform-Windows%20x64-6e7681?style=flat-square)
-
-</div>
-
----
-
-## Status
-
-Development is complete.
-
-> [!CAUTION]
-> **Don't overwrite other contributors' commits.**
-> Sync your branch first and check for overlapping changes.
-
-## Releases
-
-The patched `xrEngine.exe` is published in [Releases](../../releases).
-
-Save protection is disabled in this file.
-
-## Feedback
-
-Report issues and suggestions through Issues.
-
-## Authors
-
-<p align="center">
-  <a href="https://github.com/jordan1227"><img src="https://img.shields.io/badge/eeeeb-jordan1227-8957e5?style=for-the-badge&logo=github&logoColor=white" alt="eeeeb (jordan1227)"></a>
-  <a href="https://github.com/AiramProvoker"><img src="https://img.shields.io/badge/AiramProvoker-sivol-e36209?style=for-the-badge&logo=github&logoColor=white" alt="AiramProvoker (sivol)"></a>
-  <a href="https://github.com/KotovodKoteikovich"><img src="https://img.shields.io/badge/KotovodKoteikovich-1f6feb?style=for-the-badge&logo=github&logoColor=white" alt="KotovodKoteikovich"></a>
-</p>
-
----
-
-<div align="center">
-
 # Hard Edition на Improved 3.9.1
 
 **Перенос Hard Edition на Improved 3.9.1**
@@ -56,11 +14,7 @@ Report issues and suggestions through Issues.
 
 ## Статус
 
-Разработка завершена.
-
-> [!CAUTION]
-> **Не затирайте коммиты других участников.**
-> Сначала синхронизируйте ветку и проверьте пересечения изменений.
+Большая часть разработки завершена, но в будущем могут быть патчи с контентом.
 
 ## Релизы
 
@@ -97,3 +51,41 @@ Report issues and suggestions through Issues.
 
 - 💳 Карта: `2200 0305 4331 3929`
 - ₿ Bitcoin: `bc1qs9mjs902ytxw20caufkj58xqqzrsr9m9x6dwn6`
+
+# Hard Edition to Improved 3.9.1
+
+**Porting Hard Edition to Improved 3.9.1**
+
+![Status](https://img.shields.io/badge/status-complete-2ea44f?style=flat-square)
+![Base](https://img.shields.io/badge/base-Improved%203.9.1-0969da?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-Windows%20x64-6e7681?style=flat-square)
+
+</div>
+
+---
+
+## Status
+
+Most of the development work is complete, but new patches can happen.
+
+## Releases
+
+The patched `xrEngine.exe` is published in [Releases](../../releases).
+
+Save protection is disabled in this file.
+
+## Feedback
+
+Report issues and suggestions through Issues.
+
+## Authors
+
+<p align="center">
+  <a href="https://github.com/jordan1227"><img src="https://img.shields.io/badge/eeeeb-jordan1227-8957e5?style=for-the-badge&logo=github&logoColor=white" alt="eeeeb (jordan1227)"></a>
+  <a href="https://github.com/AiramProvoker"><img src="https://img.shields.io/badge/AiramProvoker-sivol-e36209?style=for-the-badge&logo=github&logoColor=white" alt="AiramProvoker (sivol)"></a>
+  <a href="https://github.com/KotovodKoteikovich"><img src="https://img.shields.io/badge/KotovodKoteikovich-1f6feb?style=for-the-badge&logo=github&logoColor=white" alt="KotovodKoteikovich"></a>
+</p>
+
+---
+
+<div align="center">
