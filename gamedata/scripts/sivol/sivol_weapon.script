@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 -- sivol_weapon.script
 -- Handles weapon-related stamina drain, breath memory, and fatigue loops.
 -- Покачивание оружия и оптики при прицеливании стало более плавным и естественным. Убрана повторяющаяся «шаблонность» движения прицела. Усилена вертикальная составляющая, эффект дыхания стал заметнее.
@@ -1216,3 +1217,1223 @@ function sivol_weapon.late_init()
     wpn_params.last_stance    = nil
     wpn_params.stance_bump_y  = 0
 end
+=======
+-- sivol_weapon.script
+-- Handles weapon-related stamina drain, breath memory, and fatigue loops.
+-- Покачивание оружия и оптики при прицеливании стало более плавным и естественным. Убрана повторяющаяся «шаблонность» движения прицела. Усилена вертикальная составляющая, эффект дыхания стал заметнее.
+-- Переработан базовый баланс покачивания и выносливости при прицеливании:
+-- Лёгкое оружие имеет более выраженное базовое покачивание, но меньше зависит от усталости и медленнее расходует выносливость
+-- Тяжёлое и длинноствольное оружие стабильнее в начале, но быстрее утомляет и сильнее теряет точность при падении выносливости
+-- В положении сидя покачивание и расход выносливости снижен
+-- Добавлена система привыкания к оружию (мастерство), оружие со временем становится стабильнее:
+-- пистолеты и лёгкое оружие осваиваются быстрее. Тяжёлое и специализированное — медленнее. 
+-- первую пару дней Калеченного кошмарит. На 3-ий день лучше. Через неделю еще лучше. Полный эффект достигается через несколько недель и дальше не растёт
+-- Задержка дыхания теперь сильнее зависит от выносливости персонажа.
+-- Добавлена накопительная усталость при прицеливании:
+-- быстрое повторное вскидывание оружия больше не сбрасывает эффект полностью — часть усталости переносится между попытками.
+-- Устранены ошибки и неточности в настройках покачивания. 
+-- Влияние артефактов на раскачку
+
+function attach(sm)
+    sm:subscribe({signal = "on_update", fun = update_ads_fatigue})
+    sm:subscribe({signal = "on_update", fun = run_psy_divert})
+    sm:subscribe({signal = "on_update", fun = run_belt_divert})
+    sm:subscribe({signal = "on_key", fun = function(key, bind) sivol_weapon.on_key(key, bind) end})
+    sm:subscribe({signal = "on_key_up", fun = function(key, bind) sivol_weapon.on_key_up(key, bind) end})
+    sm:subscribe({signal = "on_first_update", fun = function() sivol_weapon.reset_hold_breath() end})
+    sm:subscribe({signal = "on_stop_modules", fun = function() sivol_weapon.reset_hold_breath() end})
+    sm:subscribe({signal = "on_actor_weapon_fire", fun = function(obj) sivol_weapon.on_actor_weapon_fire(obj) end})
+end
+
+sivol_weapon.attach = attach
+
+sivol_weapon = sivol_weapon or {}
+wprintf("[~T]. #DBG sivol_weapon: SCRIPT FILE LOADED. РАСКАЧКА ЗАГРУЖЕНА")  
+local update_interval = 100 -- Run every 100ms
+local last_update = 0
+-- local min_stamina_floor = 0.70 -- 70% stamina floor so aiming doesn't cripple movement. -- I walk back on that idea. 
+
+-- Manual hold breath is the only weapon-breath system. It keeps the input
+-- request separate from the active state so every exit has one owner.
+local MANUAL_HOLD_BREATH_RISE_RATE = 12.0
+local MANUAL_HOLD_BREATH_FALL_RATE = 8.0
+local MANUAL_HOLD_BREATH_DRAIN_K   = 0.85
+local MANUAL_HOLD_BREATH_MIN_POWER = 0.025
+local MANUAL_HOLD_BREATH_BREATHOUT_MS = 8000
+local MANUAL_HOLD_BREATH_MAX_MS = 15000
+local MANUAL_HOLD_BREATH_COOLDOWN_MS = 2000
+local MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_MS = 2500
+local MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_K = 1.35
+local CONTROLLER_STAMINA_WOBBLE_MS = 3500
+local CONTROLLER_STAMINA_WOBBLE_K = 1.75
+
+-- Set true only while diagnosing weapon-breath/FOV/mass behavior.
+sivol_weapon.weapon_breath_diagnostics = false
+-- Set true while measuring native suppressor wear in game.
+sivol_weapon.suppressor_diagnostics = false
+local function weapon_breath_log(fmt, ...)
+    if sivol_weapon.weapon_breath_diagnostics then log2(fmt, ...) end
+end
+
+local manual_hold_requested = false
+local manual_hold_active = false
+local manual_hold_strength = 0
+local manual_hold_last_time = 0
+local manual_hold_actor_id = nil
+local manual_hold_weapon_id = nil
+local manual_hold_started_at = 0
+local manual_hold_cooldown_until = 0
+local manual_hold_timeout_wobble_until = 0
+local controller_stamina_wobble_until = 0
+local controller_stamina_wobble_k = 1.0
+local update_manual_hold_breath
+local get_artifact_weapon_effects
+
+local function play_breath_sound(name)
+    local effects = get_artifact_weapon_effects and get_artifact_weapon_effects()
+    if effects and effects.suppress_breath_sounds then return end
+    if vergas_lib and vergas_lib.s_play then
+        vergas_lib.s_play(name, 1)
+    end
+end
+
+function sivol_weapon.play_controller_false_trigger(item)
+    local actor = db.actor
+    if not actor then return end
+    local configured = item and get_string(item:section(), "snd_empty", "weapons\\ak_empty")
+        or "weapons\\ak_empty"
+    local dry_sound = configured and string.match(configured, "^%s*([^,]+)") or "weapons\\ak_empty"
+    if dry_sound then
+        dry_sound = string.gsub(dry_sound, "%s+$", "")
+        pcall(function()
+            local snd = xr_sound.get_safe_sound_object(dry_sound, sound_object.s2d)
+            snd:play_no_feedback(actor, sound_object.s2d, 0, vector(), 0.9)
+        end)
+    end
+    -- The mechanical click explains the failed trigger; the quiet controller
+    -- layer identifies it as hostile sound manipulation rather than a gun bug.
+    pcall(function()
+        local snd = xr_sound.get_safe_sound_object("monsters\\controller\\controller_control1", sound_object.s2d)
+        snd:play_no_feedback(actor, sound_object.s2d, 0, vector(), 0.35)
+    end)
+end
+
+function sivol_weapon.play_controller_psy_trigger_sound()
+    local actor = db.actor
+    if not actor then return end
+    pcall(function()
+        local snd = xr_sound.get_safe_sound_object("monsters\\controller\\controller_control1", sound_object.s2d)
+        snd:play_no_feedback(actor, sound_object.s2d, 0, vector(), 0.35)
+    end)
+end
+
+function sivol_weapon.start_controller_stamina_wobble(duration_ms, wobble_k)
+    local now = time_global()
+    local duration = math.max(0, tonumber(duration_ms) or CONTROLLER_STAMINA_WOBBLE_MS)
+    local requested_k = math.max(1.0, tonumber(wobble_k) or CONTROLLER_STAMINA_WOBBLE_K)
+    if now >= controller_stamina_wobble_until then
+        controller_stamina_wobble_k = requested_k
+    else
+        controller_stamina_wobble_k = math.max(controller_stamina_wobble_k, requested_k)
+    end
+    controller_stamina_wobble_until = math.max(controller_stamina_wobble_until, now + duration)
+end
+function sivol_weapon.is_manual_hold_breath_toggle_mode()
+    return game_options and game_options.ManualHoldBreathToggleMode == true
+end
+
+local function is_zoom_aiming()
+    return wpn_params and type(wpn_params.get_zie_obj) == "function"
+        and wpn_params.get_zie_obj() ~= nil
+end
+
+local function is_sprint_bind(bind)
+    return key_bindings and (bind == key_bindings.kACCEL or bind == key_bindings.kSPRINT_TOGGLE)
+end
+
+local function notify_hold_breath_exit(reason, immediate)
+    if sivol_weapon_zoom and sivol_weapon_zoom.on_manual_hold_breath_exit then
+        sivol_weapon_zoom.on_manual_hold_breath_exit(reason, immediate)
+    end
+end
+
+-- The only normal exit handler. Audio, input clearing, and the hold-zoom
+-- restoration signal all originate here, regardless of why the state ended.
+function sivol_weapon.release_manual_hold_breath(reason, silent, immediate_zoom_restore, force_breathout)
+    local was_active = manual_hold_active
+    manual_hold_requested = false
+    manual_hold_active = false
+
+    if was_active then
+        local now = time_global()
+        local held_ms = math.max(0, now - manual_hold_started_at)
+        if not silent and (force_breathout or held_ms >= MANUAL_HOLD_BREATH_BREATHOUT_MS) then
+            play_breath_sound("actor\\breathout")
+        end
+        if not silent then
+            manual_hold_cooldown_until = now + MANUAL_HOLD_BREATH_COOLDOWN_MS
+        end
+        if force_breathout then
+            manual_hold_timeout_wobble_until = now + MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_MS
+        end
+        weapon_breath_log("[weapon_breath] hold ended: reason=%s duration=%.1fs", reason or "released", held_ms / 1000)
+    end
+
+    if was_active or manual_hold_strength > 0.001 then
+        notify_hold_breath_exit(reason or "released", immediate_zoom_restore)
+    end
+    manual_hold_started_at = 0
+    manual_hold_weapon_id = nil
+end
+
+function sivol_weapon.is_manual_hold_breath_active()
+    update_manual_hold_breath()
+    return manual_hold_active
+end
+
+update_manual_hold_breath = function()
+    local now = time_global() / 1000
+    -- Several consumers query this state per frame; only advance once per clock tick.
+    if manual_hold_last_time == now then return end
+    local dt = (manual_hold_last_time == 0) and 0.016 or (now - manual_hold_last_time)
+    manual_hold_last_time = now
+    if dt <= 0 or dt > 0.25 then dt = 0.016 end
+
+    local actor = db.actor
+    if not actor then
+        sivol_weapon.release_manual_hold_breath("actor unavailable", true, true)
+        manual_hold_strength = 0
+        manual_hold_actor_id = nil
+        return
+    end
+    if manual_hold_actor_id ~= actor:id() then
+        sivol_weapon.release_manual_hold_breath("actor changed", true, true)
+        manual_hold_strength = 0
+        manual_hold_actor_id = actor:id()
+    end
+
+    local item = actor:active_item()
+    local sec = item and item:section()
+    local usable = sec and not sivol_weapon.is_stamina_exempt(sec)
+        and item:get_weapon() ~= nil
+    local item_id = item and item:id()
+    if manual_hold_active and manual_hold_weapon_id ~= item_id then
+        sivol_weapon.release_manual_hold_breath("weapon changed")
+    end
+    local now_ms = time_global()
+    local timed_out = manual_hold_active
+        and now_ms - manual_hold_started_at >= MANUAL_HOLD_BREATH_MAX_MS
+    if timed_out then
+        sivol_weapon.release_manual_hold_breath("maximum hold duration", false, false, true)
+    end
+    local aiming = is_zoom_aiming()
+    local stamina_depleted = actor.power <= MANUAL_HOLD_BREATH_MIN_POWER
+    local cooling_down = now_ms < manual_hold_cooldown_until
+    local target = manual_hold_requested and usable and aiming and not stamina_depleted
+        and not cooling_down and 1 or 0
+
+    if target == 1 and not manual_hold_active then
+        manual_hold_active = true
+        manual_hold_weapon_id = item:id()
+        manual_hold_started_at = time_global()
+        play_breath_sound("actor\\breathin")
+        weapon_breath_log("[weapon_breath] hold started: section=%s mode=%s", sec,
+            sivol_weapon.is_manual_hold_breath_toggle_mode() and "toggle" or "hold")
+    elseif target == 0 and manual_hold_active then
+        local reason = stamina_depleted and "stamina floor"
+            or not aiming and "ADS ended"
+            or not usable and "weapon changed"
+            or "input released"
+        sivol_weapon.release_manual_hold_breath(reason)
+    end
+
+    local rate = target > manual_hold_strength and MANUAL_HOLD_BREATH_RISE_RATE
+        or MANUAL_HOLD_BREATH_FALL_RATE
+    manual_hold_strength = manual_hold_strength
+        + (target - manual_hold_strength) * (1 - math.exp(-rate * dt))
+    if manual_hold_strength < 0.001 then manual_hold_strength = 0 end
+end
+
+function sivol_weapon.get_manual_hold_breath_strength()
+    update_manual_hold_breath()
+    return manual_hold_strength
+end
+
+function sivol_weapon.on_key(key, bind)
+    if key_bindings and bind == key_bindings.kWPN_FIRE
+        and bind_monster and bind_monster.on_actor_fire_pressed
+    then
+        bind_monster.on_actor_fire_pressed(key)
+    end
+    if not is_sprint_bind(bind) then return end
+    if time_global() < manual_hold_cooldown_until then
+        weapon_breath_log("[weapon_breath] activation blocked by cooldown")
+        return
+    end
+    if sivol_weapon.is_manual_hold_breath_toggle_mode() then
+        -- Do not turn a normal sprint press outside ADS into a queued hold.
+        if is_zoom_aiming() then
+            if manual_hold_requested then
+                sivol_weapon.release_manual_hold_breath("toggled off")
+            else
+                manual_hold_requested = true
+            end
+        end
+    else
+        manual_hold_requested = true
+    end
+end
+
+function sivol_weapon.on_key_up(key, bind)
+    if is_sprint_bind(bind) and not sivol_weapon.is_manual_hold_breath_toggle_mode() then
+        sivol_weapon.release_manual_hold_breath("key released")
+    end
+end
+
+function sivol_weapon.reset_hold_breath()
+    sivol_weapon.release_manual_hold_breath("load/reset", true, true)
+    manual_hold_requested = false
+    manual_hold_active = false
+    manual_hold_strength = 0
+    manual_hold_last_time = 0
+    manual_hold_actor_id = nil
+    manual_hold_weapon_id = nil
+    manual_hold_started_at = 0
+    manual_hold_cooldown_until = 0
+    manual_hold_timeout_wobble_until = 0
+    controller_stamina_wobble_until = 0
+    controller_stamina_wobble_k = 1.0
+end
+
+function sivol_weapon.get_manual_hold_breath_timeout_wobble_k()
+    local wobble_k = 1.0
+    if time_global() < manual_hold_timeout_wobble_until then
+        wobble_k = MANUAL_HOLD_BREATH_TIMEOUT_WOBBLE_K
+    end
+    if time_global() < controller_stamina_wobble_until then
+        wobble_k = math.max(wobble_k, controller_stamina_wobble_k)
+    end
+    return wobble_k
+end
+-- Each class defines:
+--   debuff: day-zero wobble multiplier, cap: long-term multiplier,
+--   plateau_day: day full mastery is reached.
+local mastery_classes = {
+    pistol  = { debuff = 1.15, cap = 0.75, plateau_day = 28 },  -- Reduced from 1.25 to prevent Day 0 whiplash
+    shotgun = { debuff = 1.25, cap = 0.85, plateau_day = 28 },  -- NEW: Fast plateau, modest cap
+    smg     = { debuff = 1.30, cap = 0.80, plateau_day = 35 },
+    rifle   = { debuff = 1.40, cap = 0.85, plateau_day = 42 },
+    sniper  = { debuff = 1.40, cap = 0.92, plateau_day = 56 },  -- Reduced debuff slightly, raised cap from 0.88
+    lmg     = { debuff = 1.45, cap = 0.94, plateau_day = 56 },  -- Reduced debuff slightly, raised cap from 0.90
+    special = { debuff = 1.40, cap = 0.92, plateau_day = 49 },
+}
+
+-- Оружие, полностью исключённое из выносливости/дыхания при прицеливании. Убираем чтобы Калеченный не пыжился когда смотрел в бинокль.
+-- Weapon handling is now derived from live mass; exemptions remain explicit.
+local no_stamina_no_breath = {
+    [ "wpn_binoc" ] = true,
+    [ "wpn_knife" ] = true,
+    [ "wpn_knife_m1" ] = true,
+}
+local no_wobble_mechanics = {
+    [ "wpn_knife" ] = true,
+    [ "wpn_knife_m1" ] = true,
+}
+
+function sivol_weapon.is_stamina_exempt(sec)
+    return no_stamina_no_breath[sec] == true
+end
+
+function sivol_weapon.is_wobble_exempt(sec)
+    return no_wobble_mechanics[sec] == true
+end
+
+-- Сила раскачки каждого оружия. Так же влияет на скорость раскачки каждого оружия (не амплитуду) - чем выше число, тем меньше инерция и быстрее раскачка
+-- Realistic Logic: Light mass = high twitch/sway. Heavy mass = low twitch/steady.
+-- Runtime mass-driven weapon handling. CWeapon.inv_weight is the live inventory
+-- mass exposed by the engine; it is deliberately preferred over static ini reads.
+local MASS_MIN_KG = 0.25
+local MASS_MAX_KG = 12.0
+local MASS_STAT_OVERRIDES = {
+    -- Binoculars retain their established special handling. Knives are excluded
+    -- entirely by is_wobble_exempt()/is_stamina_exempt() below.
+    wpn_binoc = { wobble = 0.5 * 0.75, weight_sens = 0.2 },
+}
+local last_mass_log_key = nil
+
+local function clamp(v, lo, hi)
+    return math.max(lo, math.min(hi, v))
+end
+-- One artifact lookup feeds both the existing wobble system and recoil.
+-- Explicit dynamic rows bypass tier scaling; other artifact families continue
+-- to use the established signed generic tier factor.
+local artifact_handling_table = {
+    af_vyvert = { wobble = -0.05, recoil = 0 },
+    af_vyvert_dyn1d = { wobble = 0, recoil = 0 },
+    af_vyvert_dyn2d = { wobble = -0.0125, recoil = 0 },
+    af_vyvert_dyn3d = { wobble = -0.025, recoil = 0 },
+    af_vyvert_dyn4d = { wobble = -0.0375, recoil = 0 },
+    af_vyvert_dyn5d = { wobble = -0.05, recoil = 0 },
+    af_vyvert_dyn6d = { wobble = 0, recoil = 0 },
+    af_gravi = { wobble = -0.10, recoil = 0 },
+    af_gravi_dyn1d = { wobble = 0, recoil = 0 },
+    af_gravi_dyn2d = { wobble = -0.025, recoil = 0 },
+    af_gravi_dyn3d = { wobble = -0.05, recoil = 0 },
+    af_gravi_dyn4d = { wobble = -0.075, recoil = 0 },
+    af_gravi_dyn5d = { wobble = -0.10, recoil = 0 },
+    af_gravi_dyn6d = { wobble = 0, recoil = 0 },
+    af_gold_fish = { wobble = -0.15, recoil = 0 },
+    af_gold_fish_dyn1d = { wobble = 0, recoil = 0 },
+    af_gold_fish_dyn2d = { wobble = -0.0375, recoil = 0 },
+    af_gold_fish_dyn3d = { wobble = -0.075, recoil = 0 },
+    af_gold_fish_dyn4d = { wobble = -0.1125, recoil = 0 },
+    af_gold_fish_dyn5d = { wobble = -0.15, recoil = 0 },
+    af_gold_fish_dyn6d = { wobble = 0, recoil = 0 },
+    af_eye = { wobble = 0.30, recoil = 0 },
+    af_eye_dyn1d = { wobble = 0.20, recoil = 0 },
+    af_eye_dyn2d = { wobble = 0.25, recoil = 0 },
+    af_eye_dyn3d = { wobble = 0.30, recoil = 0 },
+    af_eye_dyn4d = { wobble = 0.35, recoil = 0 },
+    af_eye_dyn5d = { wobble = 0.40, recoil = 0 },
+    af_eye_dyn6d = { wobble = 0, recoil = 0 },
+    af_dummy_spring = { wobble = 0, recoil = -0.08 },
+    af_red_dummy_spring = { wobble = 0, recoil = -0.12 },
+    af_electra_flash_new = { wobble = 0, recoil = -0.04 },
+    af_babka_1 = { wobble = 0, recoil = -0.20 },
+    af_babka_2 = { wobble = 0, recoil = -0.25 },
+    af_babka_3 = { wobble = 0, recoil = -0.30 },
+    af_babka_4 = { wobble = 0, recoil = -0.35 },
+}
+
+local function resolve_artifact_handling(section)
+    if type(section) ~= "string" then return nil, 1.0 end
+
+    local base_section = string.match(section, "^(af_[%w_]+)_dyn%dd") or section
+    local handling = artifact_handling_table[section]
+    local tier_scale = 1.0
+    if not handling then
+        handling = artifact_handling_table[base_section]
+        local tier_str = handling and string.match(section, "_dyn(%d)d")
+        if tier_str then
+            local tier = tonumber(tier_str) or 3
+            tier_scale = tier == 6 and 0.0 or (tier - 3) / 2
+        end
+    end
+    return handling, tier_scale
+end
+
+function sivol_weapon.get_artifact_handling_preview(section, condition)
+    local handling, tier_scale = resolve_artifact_handling(section)
+    if not handling then return 0, 0 end
+
+    local live_condition = clamp(tonumber(condition) or 0, 0, 1)
+    return (handling.recoil or 0) * tier_scale * live_condition,
+        (handling.wobble or 0) * tier_scale * live_condition
+end
+
+local cached_artifact_k = 1.0
+local cached_artifact_recoil_k = 1.0
+-- Future assignments belong here. Effects stack multiplicatively per powered,
+-- conditioned belt artifact; keep this table empty until an artifact is chosen.
+local artifact_weapon_effect_template = {
+    -- af_example = {
+    --     suppress_breath_sounds = true,
+    --     manual_drain_k = 0.0,
+    --     ads_drain_k = 0.5,
+    --     walking_drain_k = 1.0, -- reserved: no walking-drain change yet
+    -- },
+}
+local cached_artifact_weapon_effects = {
+    suppress_breath_sounds = false,
+    manual_drain_k = 1.0,
+    ads_drain_k = 1.0,
+    walking_drain_k = 1.0,
+}
+get_artifact_weapon_effects = function()
+    return cached_artifact_weapon_effects
+end
+local last_artifact_check = 0
+local ARTIFACT_CHECK_INTERVAL = 2000  -- check every 2sec 
+
+local function update_artifact_wobble_k()
+    local now = time_global()
+    if now - last_artifact_check < ARTIFACT_CHECK_INTERVAL then return end
+    last_artifact_check = now
+
+    -- NEW: NLC 7 Battery System check. 
+    -- If the electronic belt is dead, uncharged, or off, artifacts provide zero properties.
+    if not (sak and sak.arts_operate) then
+        cached_artifact_k = 1.0
+        cached_artifact_recoil_k = 1.0
+        cached_artifact_weapon_effects = {
+            suppress_breath_sounds = false, manual_drain_k = 1.0,
+            ads_drain_k = 1.0, walking_drain_k = 1.0,
+        }
+        return
+    end
+    local total_mod = 0.0
+    local total_recoil_mod = 0.0
+    local strongest_babka_recoil = 0.0
+    local effects = {
+        suppress_breath_sounds = false,
+        manual_drain_k = 1.0,
+        ads_drain_k = 1.0,
+        walking_drain_k = 1.0,
+    }
+    if sak_inventory and sak_inventory.belt_items then
+        for sec, items in pairs( sak_inventory.belt_items ) do
+            
+            local base_sec = string.match(sec, "^(af_[%w_]+)_dyn%dd") or sec
+            local effect = artifact_weapon_effect_template[sec]
+                or artifact_weapon_effect_template[base_sec]
+
+            -- Exact dynamic sections bypass tier scaling. Otherwise the generic
+            -- artifact entry receives the established 1d-6d tier factor.
+            local handling, tier_scale = resolve_artifact_handling(sec)
+            local mod = handling and handling.wobble * tier_scale
+            local recoil_mod = handling and handling.recoil * tier_scale
+            
+            -- STAGE 3: Condition and Quantity Weighting
+            local num_items = items and table.getn(items) or 0
+            if num_items > 0 then
+                for m = 1, num_items do
+                    local af_id  = items[m]
+                    local af_obj = client_obj and client_obj(af_id)
+                    local cond = 0.0
+                    if af_obj then
+                        local ok_section, live_section = pcall(af_obj.section, af_obj)
+                        if ok_section and live_section == sec then
+                            local ok_condition, live_condition = pcall(af_obj.condition, af_obj)
+                            if ok_condition then
+                                cond = tonumber(live_condition) or 0.0
+                            end
+                        end
+                    end
+                    
+                    if mod then total_mod = total_mod + (mod * cond) end
+                    if recoil_mod then
+                        local contribution = recoil_mod * cond
+                        if string.match(sec, "^af_babka_[1-4]$") then
+                            strongest_babka_recoil = math.min(strongest_babka_recoil, contribution)
+                        else
+                            total_recoil_mod = total_recoil_mod + contribution
+                        end
+                    end
+                    if effect then
+                        if effect.suppress_breath_sounds and cond > 0 then
+                            effects.suppress_breath_sounds = true
+                        end
+                        for _, key in ipairs({ "manual_drain_k", "ads_drain_k", "walking_drain_k" }) do
+                            if effect[key] ~= nil then
+                                effects[key] = effects[key] * (1 + (effect[key] - 1) * cond)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Keep the established artifact contribution bounds.
+    -- Stabilizing sway is capped at -0.75; disruptive sway at +1.60.
+    total_mod = math.max(-0.75, math.min(1.60, total_mod))
+    total_recoil_mod = total_recoil_mod + strongest_babka_recoil
+    total_recoil_mod = math.max(-0.40, math.min(0.50, total_recoil_mod))
+    cached_artifact_k = 1.0 + total_mod
+    cached_artifact_recoil_k = 1.0 + total_recoil_mod
+    cached_artifact_weapon_effects = effects
+end
+function sivol_weapon.get_artifact_wobble_k()
+    return cached_artifact_k
+end
+
+-- Returns scalar components rather than allocating a table on every shot.
+-- Artifact state is cached by the existing two-second belt scan; health, stance
+-- and outfit condition remain live because they are inexpensive actor reads.
+function sivol_weapon.get_recoil_context(actor, weapon_section)
+    actor = actor or db.actor
+    if not actor then return 1.0, 1.0, 1.0, 1.0, 1.0, "none", "unavailable", 1.0 end
+
+    local health = clamp(tonumber(actor.health) or 1.0, 0.0, 1.0)
+    local health_k = 1.0
+    if health < 0.5 then
+        local t = (0.5 - health) / 0.5
+        health_k = 1.0 + t * t * 0.20
+    end
+
+    -- db.actor is the script game object and does not expose the native actor
+    -- movement predicates in this build. Match wpn_params and the established
+    -- stamina-drain path by querying the native actor object instead.
+    local stance_k = 1.0
+    local stance_state = "unavailable"
+    local stance_actor
+    if type(get_actor_obj) == "function" then
+        local ok_actor, native_actor = pcall(get_actor_obj)
+        if ok_actor then stance_actor = native_actor end
+    end
+    if stance_actor then
+        local ok_creep, is_creep = pcall(function()
+            return stance_actor:is_actor_creep()
+        end)
+        local ok_crouch, is_crouch = pcall(function()
+            return stance_actor:is_actor_crouch()
+        end)
+        if ok_creep and ok_crouch then
+            if is_creep then
+                stance_k = 0.84
+                stance_state = "creep"
+            elseif is_crouch then
+                stance_k = 0.92
+                stance_state = "crouch"
+            else
+                stance_state = "standing"
+            end
+        else
+            stance_state = "api_error"
+        end
+    end
+
+    local outfit_k = 1.0
+    local outfit_section = "none"
+    local ok_outfit, outfit = pcall(actor.item_in_slot, actor, 6)
+    if ok_outfit and outfit then
+        local ok_section, section = pcall(outfit.section, outfit)
+        outfit_section = ok_section and tostring(section) or "unknown"
+        if ok_section and section and string.find(section, "exo", 1, true) then
+            local base_k = section == "broken_exoskeleton" and 0.96 or 0.88
+            local ok_condition, condition = pcall(outfit.condition, outfit)
+            condition = clamp(ok_condition and tonumber(condition) or 1.0, 0.0, 1.0)
+            outfit_k = 1.0 - (1.0 - base_k) * condition
+        end
+    end
+
+    local artifact_k = cached_artifact_recoil_k
+    local mastery_k = 1.0
+    if weapon_section and type(sivol_weapon.get_mastery_k) == "function" then
+        local ok_mastery, resolved_mastery = pcall(
+            sivol_weapon.get_mastery_k, weapon_section)
+        if ok_mastery and tonumber(resolved_mastery) then
+            mastery_k = clamp(tonumber(resolved_mastery), 0.50, 1.60)
+        end
+    end
+    local total = clamp(
+        health_k * stance_k * outfit_k * artifact_k * mastery_k,
+        0.70, 1.50)
+    return total, health_k, stance_k, outfit_k, artifact_k, outfit_section,
+        stance_state, mastery_k
+end
+
+-- Returns the baseline sway multiplier for the weapon
+-- Audited base item:section() IDs from gamedata/config/weapons. Do not add
+-- filenames or HUD/addon permutations here: those are not runtime item IDs.
+local AUDITED_SECTION_TO_CLASS = {
+    wpn_ak74_m3 = "pistol", wpn_aps = "pistol", wpn_beretta = "pistol", wpn_beretta93 = "pistol",
+    wpn_colt1911 = "pistol", wpn_desert_eagle = "pistol", wpn_eagle_m1 = "pistol", wpn_fort = "pistol",
+    wpn_fort_m1 = "pistol", wpn_glock = "pistol", wpn_glock_m1 = "pistol", wpn_gungauss = "pistol",
+    wpn_pb = "pistol", wpn_pm = "pistol", wpn_sig220 = "pistol", wpn_usp = "pistol", wpn_walther = "pistol",
+    wpn_aks47 = "smg", wpn_bizon = "smg", wpn_glock_m2 = "smg", wpn_mp5 = "smg",
+    wpn_mp5_m1 = "smg", wpn_mp5_m2 = "smg", wpn_pp19 = "smg", wpn_ump45 = "smg",
+    wpn_abakan = "rifle", wpn_aek971 = "rifle", wpn_ak104 = "rifle", wpn_ak47 = "rifle",
+    wpn_ak74 = "rifle", wpn_ak74_m1 = "rifle", wpn_ak74_m2 = "rifle", wpn_ak74m = "rifle",
+    wpn_ak74u = "rifle", wpn_akm = "rifle", wpn_aks47_he = "rifle", wpn_fn2000 = "rifle", wpn_g36 = "rifle",
+    wpn_groza = "rifle", wpn_groza_nimble = "rifle", wpn_m16a4 = "rifle", wpn_saiga12c_m2 = "rifle",
+    wpn_sig550 = "rifle", wpn_soc308 = "rifle", wpn_soc308_m1 = "rifle", wpn_val = "rifle",
+    wpn_val_nimble = "rifle",
+    wpn_bm16 = "shotgun", wpn_bm16_full = "shotgun", wpn_hunters_toz_new = "shotgun",
+    wpn_mp153 = "shotgun", wpn_mp153_m1 = "shotgun", wpn_saiga12c = "shotgun", wpn_saiga12c_m1 = "shotgun",
+    wpn_spas12 = "shotgun", wpn_spas12_m1 = "shotgun", wpn_spas15 = "shotgun", wpn_spas15_m1 = "shotgun",
+    wpn_toz34 = "shotgun", wpn_toz34_m1 = "shotgun", wpn_wincheaster1300 = "shotgun", wpn_mp133_full = "shotgun", wpn_winchester_m1 = "shotgun",
+    wpn_awm = "sniper", wpn_gauss = "sniper", wpn_gauss_auto = "sniper", wpn_m110 = "sniper",
+    wpn_mosin = "sniper", wpn_mr308 = "sniper", wpn_sv98 = "sniper", wpn_svd = "sniper",
+    wpn_svu = "sniper", wpn_vintorez = "sniper", wpn_vintorez_m1 = "sniper",
+    wpn_ak108 = "lmg", wpn_g36c = "lmg", wpn_pkm = "lmg", wpn_pkp = "lmg", wpn_rpk = "lmg", wpn_rpk74 = "lmg",
+    wpn_flame = "default", wpn_gm94 = "default", wpn_knife = "default", wpn_knife_m1 = "default",
+    wpn_rg6 = "default", wpn_rpg7 = "default",
+}
+
+-- Variant sections are generated from an audited base section by the add-on
+-- system. Resolve their existing respawn source instead of logging them as new
+-- weapons; the two LR300 aliases have no respawn field, so keep them explicit.
+local SECTION_BASE_OVERRIDES = {
+    wpn_lr300 = "wpn_m16a4",
+    wpn_lr300_m1 = "wpn_m16a4",
+}
+
+local function get_registered_base_section(sec)
+    if sec and AUDITED_SECTION_TO_CLASS[sec] then return sec end
+    if sec and sys_ini and sys_ini:section_exist(sec) then
+        for _, key in ipairs({ "scope_respawn", "silencer_respawn", "grenade_launcher_respawn" }) do
+            if sys_ini:line_exist(sec, key) then
+                local base = sys_ini:r_string(sec, key)
+                if AUDITED_SECTION_TO_CLASS[base] then return base end
+            end
+        end
+    end
+    return SECTION_BASE_OVERRIDES[sec]
+end
+local last_unknown_section
+
+local function note_unknown_section(sec)
+    if sec and sec ~= last_unknown_section then
+        weapon_breath_log("[sivol_weapon] unregistered weapon section '%s'; using generic mass fallback", sec)
+        last_unknown_section = sec
+    end
+end
+
+local function get_weapon_class(sec)
+    local base_sec = get_registered_base_section(sec)
+    local class = base_sec and AUDITED_SECTION_TO_CLASS[base_sec]
+    if class then
+        last_unknown_section = nil
+        return class == "default" and "special" or class
+    end
+    note_unknown_section(sec)
+    -- Preserve the previous generic fallback behavior for externally-added sections.
+    if string.find(sec, "wpn_rpk") or string.find(sec, "wpn_pkm") then return "lmg" end
+    if string.find(sec, "wpn_svd") or string.find(sec, "wpn_awm")
+        or string.find(sec, "wpn_svu") or string.find(sec, "wpn_sv98") then return "sniper" end
+    if string.find(sec, "wpn_pm") or string.find(sec, "wpn_pb") then return "pistol" end
+    if string.find(sec, "wpn_mp5") or string.find(sec, "wpn_bizon")
+        or string.find(sec, "wpn_pp19") then return "smg" end
+    if string.find(sec, "wpn_saiga") or string.find(sec, "wpn_mp153")
+        or string.find(sec, "wpn_toz") then return "shotgun" end
+    return "rifle"
+end
+
+-- Shared audited role resolver for readiness and other presentation systems.
+-- Keep mastery, ADS timing, and inventory role identity on the same map.
+function sivol_weapon.get_weapon_class(sec)
+    return get_weapon_class(sec)
+end
+local mass_stats_cache = {}
+local ADDON_BITS = { sc = 1, gl = 2, sl = 4 }
+
+local function get_live_addon_flags(item)
+    -- The ALife packet is authoritative for a currently fitted removable
+    -- addon. CWeapon:get_addon_flags() is only a fallback here: some baked
+    -- respawn variants expose zero through that binding.
+    if item and rx_utils and rx_utils.get_addon_flag then
+        return tonumber(rx_utils.get_addon_flag(item, true)) or 0
+    end
+    if item and item.get_addon_flags then
+        return tonumber(item:get_addon_flags()) or 0
+    end
+    return 0
+end
+
+local function valid_addon_section(section)
+    return type(section) == "string"
+        and section ~= ""
+        and string.lower(section) ~= "none"
+        and sys_ini:section_exist(section)
+end
+function sivol_weapon.get_weapon_mass_signature(item, sec)
+    sec = sec or (item and item:section()) or "none"
+    local flags = get_live_addon_flags(item)
+    return tostring(item and item:id() or "section") .. ":" .. sec .. ":" .. tostring(flags)
+end
+
+local function addon_is_attached(item, sec, addon, flags)
+    -- Respawn variants are already baked with this addon even when their live
+    -- addon flag is zero (for example wpn_akm_pso).
+    local respawn_key = addon == "sc" and "scope_respawn"
+        or addon == "sl" and "silencer_respawn" or "grenade_launcher_respawn"
+    if sec and sys_ini and sys_ini:section_exist(sec) and sys_ini:line_exist(sec, respawn_key) then
+        return true
+    end
+    local get_status = (rx_utils and rx_utils.get_addon_status) or get_addon_status
+    local status = get_status and get_status(item, addon) or 0
+    -- Status 1 is integral/non-detachable. Its authored inv_weight already
+    -- includes that hardware; only status-2 fitted addons are added here.
+    if status ~= 2 then return false end
+    local attached = rx_utils and rx_utils.addon_attached
+    if attached then return attached(item, addon) end
+    local bit = ADDON_BITS[addon]
+    return bit and bit_and(flags or 0, bit) == bit or false
+end
+
+local function get_live_weapon_mass(item, sec)
+    local weapon = item and item:get_weapon()
+    local mass = weapon and tonumber(weapon.inv_weight)
+    local source = "weapon.inv_weight"
+    if not mass or mass <= 0 then
+        local inventory_item = item and item:get_inventory_item()
+        mass = inventory_item and tonumber(inventory_item.inv_weight)
+        source = "inventory_item.inv_weight"
+    end
+    if (not mass or mass <= 0) and sec and sys_ini and sys_ini:section_exist(sec)
+        and sys_ini:line_exist(sec, "inv_weight") then
+        mass = sys_ini:r_float(sec, "inv_weight")
+        source = "section.inv_weight"
+    end
+
+    local flags = get_live_addon_flags(item)
+    local addon_mass = 0
+    local addon_sections = {}
+    local addon_runtime_field = {
+        sc = "scope_name", sl = "silencer_name", gl = "grenade_launcher_name",
+    }
+    for _, addon in ipairs({ "sc", "sl", "gl" }) do
+        if addon_is_attached(item, sec, addon, flags) then
+            -- CWeapon exposes the actual fitted addon's section at runtime. This
+            -- is the same source already used by adaptive scope zoom and works
+            -- for baked respawn variants even when rx_addons is not loaded.
+            local addon_sec = weapon and weapon[addon_runtime_field[addon]]
+            if not valid_addon_section(addon_sec) then
+                addon_sec = nil
+            end
+            if not addon_sec then
+                local addon_class = clsid and (
+                    addon == "sc" and clsid.wpn_scope_s
+                    or addon == "sl" and clsid.wpn_silencer
+                    or clsid.wpn_grenade_launcher
+                )
+                if addon_class and get_addon_section then
+                    local resolved = get_addon_section(sec, addon_class)
+                    if valid_addon_section(resolved) then
+                        addon_sec = resolved
+                    end
+                end
+            end
+            if not addon_sec and sec and sys_ini
+                and sys_ini:section_exist(sec) then
+                local field = addon_runtime_field[addon]
+                if sys_ini:line_exist(sec, field) then
+                    local configured = sys_ini:r_string(sec, field)
+                    if valid_addon_section(configured) then
+                        addon_sec = configured
+                    end
+                end
+            end
+            local addon_weight = addon_sec and get_float(addon_sec, "inv_weight", 0) or 0
+            if addon_weight > 0 then
+                addon_mass = addon_mass + addon_weight
+                table.insert(addon_sections, addon_sec)
+            end
+        end
+    end
+    if addon_mass > 0 then
+        mass = (mass or 0) + addon_mass
+        source = source .. "+addons"
+    end
+    return mass, source, addon_mass, table.concat(addon_sections, ",")
+end
+
+-- Real-mass curves: a heavier weapon begins steadier, but its sensitivity grows
+-- non-linearly, so low stamina expands heavy-weapon wobble more aggressively.
+function sivol_weapon.get_weapon_mass_stats(item, sec)
+    sec = sec or (item and item:section())
+    if get_registered_base_section(sec) then
+        last_unknown_section = nil
+    else
+        note_unknown_section(sec)
+    end
+
+    local signature = sivol_weapon.get_weapon_mass_signature(item, sec)
+    local cached = mass_stats_cache[signature]
+    if cached then return cached end
+
+    local override = sec and MASS_STAT_OVERRIDES[sec]
+    if override then
+        mass_stats_cache[signature] = override
+        return override
+    end
+
+    local mass, source, addon_mass, addon_sections = get_live_weapon_mass(item, sec)
+    if not mass or mass <= 0 then
+        mass, source, addon_mass, addon_sections = 3.0, "generic", 0, ""
+    end
+    local curve_mass = clamp(mass, MASS_MIN_KG, MASS_MAX_KG)
+    local wobble = (1.05 + 1.45 * math.exp(-0.28 * curve_mass)) * 0.75
+    local weight_sens = clamp(0.10 + 0.14 * curve_mass + 0.008 * curve_mass * curve_mass, 0.20, 1.60)
+    local stats = { wobble = wobble, weight_sens = weight_sens, mass = mass, source = source,
+        addon_mass = addon_mass, addon_sections = addon_sections }
+    mass_stats_cache[signature] = stats
+
+    if signature ~= last_mass_log_key then
+        weapon_breath_log("[weapon_mass] section=%s mass=%.2f addons=%.2f [%s] source=%s wobble=%.3f stamina_sens=%.3f",
+            tostring(sec), mass, addon_mass, addon_sections, source, wobble, weight_sens)
+        last_mass_log_key = signature
+    end
+    return stats
+end
+
+function sivol_weapon.get_base_wobble(sec, item)
+    return sivol_weapon.get_weapon_mass_stats(item, sec).wobble
+end
+
+function sivol_weapon.get_weight_sens(sec, item)
+    return sivol_weapon.get_weapon_mass_stats(item, sec).weight_sens
+end
+
+function update_ads_fatigue()
+    ogse_signals.get_mgr():reschedule(100)
+    local actor = db.actor
+    if not actor then return end
+
+    update_artifact_wobble_k()
+    update_manual_hold_breath()
+    if is_zoom_aiming() then
+        local wpn = actor:active_item()
+        local sec = wpn and wpn:section()
+        if not (sec and sivol_weapon.is_stamina_exempt(sec)) then
+            local weight_sens = wpn_params.current_weight_sens or 0.5
+
+            -- OGSR: is_actor_crouch()/is_actor_creep() instead of get_crouch_factor()
+            local aobj = get_actor_obj()
+            local stance_drain_k = 1.0
+            if aobj and aobj:is_actor_creep() then
+                stance_drain_k = 0.75
+            elseif aobj and aobj:is_actor_crouch() then
+                stance_drain_k = 0.87
+            end
+
+            -- Keep the established ADS drain unchanged, then add the manual
+            -- stabilization cost in the same actor.power update form.
+            local effects = get_artifact_weapon_effects()
+            local normal_drain = 0.00675 * weight_sens * stance_drain_k * effects.ads_drain_k
+            local manual_drain = normal_drain * MANUAL_HOLD_BREATH_DRAIN_K
+                * manual_hold_strength * effects.manual_drain_k
+            actor.power = -(normal_drain + manual_drain)
+        end
+    end
+end
+function sivol_weapon.get_mastery_k(sec)
+    local days = timers.Get_Game_Days()
+    local m    = mastery_classes[ get_weapon_class(sec) ]
+    if days < 7 then
+        -- Debuff phase: linear from debuff peak down to 1.0 by day 7
+        local t = days / 7
+		local t_curved = math.sqrt(t) --  Калеченому жоска первые два дня. 
+        return m.debuff + (1.0 - m.debuff) * t_curved
+    elseif days < m.plateau_day then
+        -- Improvement phase: linear from 1.0 down to cap
+        local t = (days - 7) / (m.plateau_day - 7)
+        return 1.0 + (m.cap - 1.0) * t
+    else
+        return m.cap
+    end
+end
+
+
+--  Абилке псевдычей гладкую камеру. Эта камера теперь также используется у некоторых других мутиков, типа контриков - смотреть в bind_monster.script. 
+local psy_divert = {
+    active     = false,
+    delta_h    = 0, delta_p = 0,     -- h = yaw (left/right), p = pitch (up/down)
+    applied_h  = 0, applied_p = 0,
+    duration   = 120,
+    start_time = 0,
+}
+
+function sivol_weapon.start_psy_divert(dh, dp, dur)
+    psy_divert.active     = true
+    psy_divert.delta_h    = dh
+    psy_divert.delta_p    = dp
+    psy_divert.applied_h  = 0
+    psy_divert.applied_p  = 0
+    psy_divert.duration   = dur or 120
+    psy_divert.start_time = time_global()
+end
+
+function run_psy_divert()
+    ogse_signals.get_mgr():reschedule(16)
+    if bind_monster and bind_monster.update_controller_reticle_pressure then
+        bind_monster.update_controller_reticle_pressure()
+    end
+    if not psy_divert.active then return end
+	
+    local elapsed = time_global() - psy_divert.start_time
+    local t       = math.min(1.0, elapsed / psy_divert.duration)
+    
+    -- Easing function: "Out Quad". Starts violent, then slows down.
+    local ease_t  = t * (2 - t) 
+
+    local target_h = psy_divert.delta_h * ease_t
+    local target_p = psy_divert.delta_p * ease_t
+
+    local step_h = target_h - psy_divert.applied_h
+    local step_p = target_p - psy_divert.applied_p
+
+    psy_divert.applied_h = target_h
+    psy_divert.applied_p = target_p
+
+    -- Apply directly to the base actor rotation, bypassing effector feedback completely!
+    if coord_params and coord_params.camera_angles then
+        local h, p = coord_params.camera_angles()
+        coord_params.camera_angles(h + step_h, p + step_p)
+    end
+
+    if t >= 1.0 then 
+        psy_divert.active = false 
+    end
+end
+
+--  Плавная камера для пояса аккумулятора: вниз-пауза-назад. Мб куда-нить еще использовать?
+local belt_divert = {
+    active       = false,
+    phase        = "out",
+    delta_h      = 0, delta_p = 0,
+    applied_h    = 0, applied_p = 0,
+    out_time     = 220,
+    hold_time    = 0,
+    back_time    = 220,
+    start_time   = 0,   -- phase-local
+    total_start  = 0,   -- whole-sequence, for wobble continuity
+    on_complete  = nil,
+
+    wobble_amp_h   = 0,
+    wobble_amp_p   = 0,
+	wobble_freq_h  = 0.53,
+	wobble_freq_p  = 0.71,
+    wobble_phase_h = 0,
+    wobble_phase_p = 0,
+}
+
+local function ease_in_out( t )
+    -- smoothstep: zero velocity at t=0 AND t=1, so out->hold->back
+    -- handoffs never snap
+    return t * t * ( 3 - 2 * t )
+end
+
+function sivol_weapon.start_belt_divert( dh, dp, out_time, hold_time, back_time, wobble_h, wobble_p, on_complete )
+    belt_divert.active         = true
+    belt_divert.phase          = "out"
+    belt_divert.delta_h        = dh
+    belt_divert.delta_p        = dp
+    belt_divert.applied_h      = 0
+    belt_divert.applied_p      = 0
+    belt_divert.out_time       = out_time  or 220
+    belt_divert.hold_time      = hold_time or 0
+    belt_divert.back_time      = back_time or 220
+    belt_divert.start_time     = time_global()
+    belt_divert.total_start    = time_global()
+    belt_divert.on_complete    = on_complete
+    belt_divert.wobble_amp_h   = wobble_h or 0
+    belt_divert.wobble_amp_p   = wobble_p or 0
+    belt_divert.wobble_phase_h = math.random() * 6.28
+    belt_divert.wobble_phase_p = math.random() * 6.28
+end
+
+function run_belt_divert()
+    ogse_signals.get_mgr():reschedule(16)
+    if not belt_divert.active then return end
+    local elapsed = time_global() - belt_divert.start_time
+    local envelope, target_h, target_p
+
+    if belt_divert.phase == "out" then
+        local t = math.min( 1.0, elapsed / belt_divert.out_time )
+        envelope = ease_in_out( t )
+        target_h = belt_divert.delta_h * envelope
+        target_p = belt_divert.delta_p * envelope
+        if t >= 1.0 then
+            belt_divert.phase      = "hold"
+            belt_divert.start_time = time_global()
+        end
+
+    elseif belt_divert.phase == "hold" then
+        envelope = 1.0
+        target_h = belt_divert.delta_h
+        target_p = belt_divert.delta_p
+        if elapsed >= belt_divert.hold_time then
+            belt_divert.phase      = "back"
+            belt_divert.start_time = time_global()
+        end
+
+    elseif belt_divert.phase == "back" then
+        local t = math.min( 1.0, elapsed / belt_divert.back_time )
+        envelope = ease_in_out( 1 - t )
+        target_h = belt_divert.delta_h * envelope
+        target_p = belt_divert.delta_p * envelope
+        if t >= 1.0 then
+            belt_divert.active = false
+        end
+    end
+
+    -- layered bobbing, scaled by the same envelope as the main motion
+    if belt_divert.wobble_amp_h ~= 0 or belt_divert.wobble_amp_p ~= 0 then
+        local te = ( time_global() - belt_divert.total_start ) / 1000
+        target_h = target_h + belt_divert.wobble_amp_h * envelope
+            * math.sin( te * belt_divert.wobble_freq_h * 6.28 + belt_divert.wobble_phase_h )
+        target_p = target_p + belt_divert.wobble_amp_p * envelope
+            * math.sin( te * belt_divert.wobble_freq_p * 6.28 + belt_divert.wobble_phase_p )
+    end
+
+    local step_h = target_h - belt_divert.applied_h
+    local step_p = target_p - belt_divert.applied_p
+    belt_divert.applied_h = target_h
+    belt_divert.applied_p = target_p
+
+    if coord_params and coord_params.camera_angles then
+        local h, p = coord_params.camera_angles()
+        coord_params.camera_angles( h + step_h, p + step_p )
+    end
+
+    if not belt_divert.active and belt_divert.on_complete then
+        local cb = belt_divert.on_complete
+        belt_divert.on_complete = nil
+        cb()
+    end
+end
+
+-- Native OGSR condition_shot_dec_silencer owns suppressor wear. This callback
+-- only reports configured and observed values when diagnostics are enabled.
+local suppressor_diag_weapon_id = nil
+local suppressor_diag_condition = nil
+local suppressor_diag_mode = nil
+
+
+local function resolve_silencer_section(item, weapon_section)
+    local weapon = item and item:get_weapon()
+    local runtime_silencer = weapon and weapon.silencer_name
+    if valid_addon_section(runtime_silencer) then
+        return runtime_silencer, runtime_silencer
+    end
+
+    if get_addon_section and clsid and clsid.wpn_silencer then
+        local ok, resolved = pcall(get_addon_section, weapon_section, clsid.wpn_silencer)
+        if ok and valid_addon_section(resolved) then
+            return runtime_silencer, resolved
+        end
+    end
+
+    if weapon_section and sys_ini:section_exist(weapon_section)
+        and sys_ini:line_exist(weapon_section, "silencer_name") then
+        local configured = sys_ini:r_string(weapon_section, "silencer_name")
+        if valid_addon_section(configured) then
+            return runtime_silencer, configured
+        end
+    end
+    return runtime_silencer, nil
+end
+-- Shared effective suppressor coefficient for scripted recoil replacements.
+-- Keep the attachment/status resolution identical to the native suppressor
+-- diagnostics below and return a safe failure when a fitted addon cannot be
+-- resolved instead of silently dropping cam_dispersion_k.
+function sivol_weapon.get_suppressor_recoil_k(item, weapon_section)
+    if not item then return nil, "weapon unavailable" end
+    local section = weapon_section
+    if not section then
+        local ok_section, item_section = pcall(item.section, item)
+        if not ok_section then return nil, "weapon section unavailable" end
+        section = item_section
+    end
+    if not section then return nil, "weapon section unavailable" end
+
+    local status = tonumber(get_u32(section, "silencer_status", 0)) or 0
+    if status == 1 then
+        return 1.0, "integrated", "integrated"
+    end
+    if status ~= 2 then
+        return 1.0, "base", nil
+    end
+
+    local flags = tonumber(get_live_addon_flags(item)) or 0
+    if not addon_is_attached(item, section, "sl", flags) then
+        return 1.0, "detachable_detached", nil
+    end
+
+    local raw_silencer, silencer_section = resolve_silencer_section(item, section)
+    if not valid_addon_section(silencer_section) then
+        return nil, "detachable_attached_unresolved", raw_silencer
+    end
+
+    local recoil_k = tonumber(get_float(silencer_section, "cam_dispersion_k", 1))
+    if not recoil_k or recoil_k ~= recoil_k or recoil_k < 0 then
+        return nil, "detachable_attached_invalid_coefficient", silencer_section
+    end
+    return recoil_k, "detachable_attached", silencer_section
+end
+function sivol_weapon.on_actor_weapon_fire( obj )
+    if not sivol_weapon.suppressor_diagnostics then
+        suppressor_diag_weapon_id = nil
+        suppressor_diag_condition = nil
+        suppressor_diag_mode = nil
+        return
+    end
+    if not ( obj and obj.section and obj.condition ) then return end
+
+    local sec = obj:section()
+    local status = tonumber(get_u32(sec, "silencer_status", 0)) or 0
+    local flags = tonumber(get_live_addon_flags(obj)) or 0
+    local attached = status == 2 and addon_is_attached(obj, sec, "sl", flags)
+    local silenced = status == 1 or attached
+    local weapon = obj:get_weapon()
+    local raw_silencer = weapon and weapon.silencer_name
+    local silencer_sec = nil
+
+    if status == 1 then
+        silencer_sec = "integrated"
+    elseif status == 2 and attached then
+        raw_silencer, silencer_sec = resolve_silencer_section(obj, sec)
+    end
+
+    local hit_k = 1
+    local speed_k = 1
+    local dispersion_k = 1
+    local recoil_k = 1
+    local wear_k = 1
+    if silencer_sec and silencer_sec ~= "integrated" then
+        hit_k = get_float(silencer_sec, "bullet_hit_power_k", 1)
+        speed_k = get_float(silencer_sec, "bullet_speed_k", 1)
+        dispersion_k = get_float(silencer_sec, "fire_dispersion_base_k", 1)
+        recoil_k = get_float(silencer_sec, "cam_dispersion_k", 1)
+        wear_k = get_float(silencer_sec, "condition_shot_dec_k", 1)
+    end
+
+    local base_dec = get_float(sec, "condition_shot_dec", 0)
+    local native_suppressed_dec = weapon and tonumber(weapon.condition_shot_dec_silencer)
+    if not native_suppressed_dec or native_suppressed_dec <= 0 then
+        native_suppressed_dec = get_float(sec, "condition_shot_dec_silencer", base_dec)
+    end
+    local expected_dec = silenced and native_suppressed_dec or base_dec
+    local cond = tonumber(obj:condition()) or -1
+    local observed = -1
+    local previous_mode = "none"
+
+    if suppressor_diag_weapon_id == obj:id() and suppressor_diag_condition then
+        observed = math.max(0, suppressor_diag_condition - cond)
+        previous_mode = suppressor_diag_mode or "unknown"
+    end
+
+    local mode = status == 1 and "integrated"
+        or attached and "detachable_attached"
+        or status == 2 and "detachable_detached"
+        or "base"
+
+    log2(
+        "[sivol_weapon][suppressor] section=%s id=%s status=%d flags=%d mode=%s raw_silencer=%s resolved_silencer=%s hit_k=%.4f speed_k=%.4f dispersion_k=%.4f recoil_k=%.4f wear_profile_k=%.4f base_dec=%.8f native_suppressed_dec=%.8f expected_dec=%.8f condition=%.6f observed_between_callbacks=%.8f previous_mode=%s",
+        tostring(sec),
+        tostring(obj:id()),
+        status,
+        flags,
+        mode,
+        tostring(raw_silencer),
+        tostring(silencer_sec or "none"),
+        hit_k,
+        speed_k,
+        dispersion_k,
+        recoil_k,
+        wear_k,
+        base_dec,
+        native_suppressed_dec,
+        expected_dec,
+        cond,
+        observed,
+        previous_mode
+    )
+
+    suppressor_diag_weapon_id = obj:id()
+    suppressor_diag_condition = cond
+    suppressor_diag_mode = mode
+end
+function sivol_weapon.late_init()
+    if wpn_params and wpn_params.late_init then
+        wpn_params.late_init()
+    end
+    wpn_params.mastery_k = 1.0
+    
+    -- CLAUDE'S OPTIMIZATION: Initialize outside the frame loop to prevent redundant table writes
+    wpn_params.last_stance    = nil
+    wpn_params.stance_bump_y  = 0
+end
+>>>>>>> Stashed changes
