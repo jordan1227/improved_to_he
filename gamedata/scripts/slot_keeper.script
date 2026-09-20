@@ -3,6 +3,11 @@
 local saved_slot = nil
 local anim_defer_since = nil
 local restore_held = false
+local restore_session = nil
+
+local function cancel_restore(reason)
+    if restore_session then hud_animation_session.cancel(restore_session, reason); restore_session = nil end
+end
 
 function ui_is_open()
 	if level.main_input_receiver() then return true end
@@ -44,6 +49,10 @@ function remember()
 end
 
 function hold()
+    if restore_session and hud_animation_session.valid(restore_session) then
+        saved_slot = saved_slot or restore_session.slot
+    end
+    cancel_restore("superseded")
 	restore_held = true
 end
 
@@ -51,38 +60,37 @@ local function weapon_blocked()
 	return bind_stalker.self_weapon_hide == true
 end
 
-local function activate_saved(slot, tries)
-	if not db.actor or not db.actor:alive() then return end
-	if db.actor:active_slot() == slot then return end
-	db.actor:activate_slot(slot)
-	if tries <= 0 then return end
-	dsh.timeout(300, function()
-		if not db.actor or not db.actor:alive() then return end
-		if db.actor:active_slot() == slot or db.actor:active_item() then return end
-		if ui_is_open() then return end
-		activate_saved(slot, tries - 1)
-	end)
+local function activate_saved(st, slot, tries)
+    if not hud_animation_session.valid(st) or restore_session ~= st then return end
+    if restore_held or ui_is_open() or anim_locked() or weapon_blocked() then
+        saved_slot = saved_slot or slot
+        cancel_restore("blocked")
+        return
+    end
+    if db.actor:active_slot() == slot then cancel_restore("complete"); return end
+    db.actor:activate_slot(slot)
+    if tries <= 0 then cancel_restore("complete"); return end
+    hud_animation_session.after(st, 300, function()
+        if db.actor:active_slot() == slot or db.actor:active_item() then cancel_restore("complete"); return end
+        activate_saved(st, slot, tries - 1)
+    end)
 end
 
 function restore()
-	if restore_held or not saved_slot then return end
-	local slot = saved_slot
-	saved_slot = nil
-	local deadline = time_global() + 11000
-	dsh.wait_condition(function()
-		if not db.actor or not db.actor:alive() then return true end
-		if ui_is_open() or anim_locked() or weapon_blocked() then
-			return time_global() > deadline
-		end
-		return true
-	end, function()
-		if not db.actor or not db.actor:alive() then return end
-		if ui_is_open() then
-			saved_slot = slot
-			return
-		end
-		activate_saved(slot, 6)
-	end)
+    if restore_held or not saved_slot then return end
+    local slot = saved_slot
+    saved_slot = nil
+    cancel_restore("superseded")
+    local st
+    st = hud_animation_session.new("slot restore", function(reason)
+        if hud_animation_session.valid(st) then saved_slot = saved_slot or slot end
+        cancel_restore(reason)
+    end)
+    st.slot = slot
+    restore_session = st
+    hud_animation_session.wait(st, function()
+        return not (restore_held or ui_is_open() or anim_locked() or weapon_blocked())
+    end, function() activate_saved(st, slot, 6) end, 11000)
 end
 
 function release()
@@ -91,7 +99,9 @@ function release()
 end
 
 function take()
-	local slot = saved_slot
+    local pending_slot = restore_session and hud_animation_session.valid(restore_session) and restore_session.slot or nil
+	local slot = saved_slot or pending_slot
+    cancel_restore("superseded")
 	saved_slot = nil
 	return slot
 end
@@ -103,6 +113,7 @@ function restore_slot(slot)
 end
 
 function reset()
+    cancel_restore("reset")
 	saved_slot = nil
 	anim_defer_since = nil
 	restore_held = false
