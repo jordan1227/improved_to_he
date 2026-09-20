@@ -486,31 +486,28 @@ function get_tip_text( obj, can_cut )
     
     local is_special = strposx( obj:name(), "burer" ) or strposx( obj:name(), "controller" )
     
-    if is_special then
-        local part_section = get_monster_part( obj:section() )
-        local has_part = part_section and obj:object( part_section )
+	if is_special then
+		local part_section = get_monster_part( obj:section() )
+		local has_part = part_section and part_section ~= "" and obj:object( part_section )
 
-        -- Проверяем, есть ли что-то ещё кроме самой части
-        local has_additional = false
-        for i = 0, count - 1 do
-            local item = obj:object( i )
-            if item and item:section() ~= part_section then
-                has_additional = true
-                break
-            end
-        end
+		local has_additional = false
+		for i = 0, count - 1 do
+			local item = obj:object( i )
+			if item and item:section() ~= part_section then
+				has_additional = true
+				break
+			end
+		end
 
-        if has_additional then
-            return "%c[green]Обшарим тело"
-        end
+		if has_part then
+			if can_cut then return "cut_off_part" end
+			-- ножа нет: часть не взять, но можно обшарить остальное
+			return has_additional and "%c[green]Обшарим тело" or "knife_need"
+		end
 
-        if has_part then
-            return can_cut and "cut_off_part" or "knife_need"
-        end
-
-        return "nothing_to_cut_off"
-    end
-    
+		return has_additional and "%c[green]Обшарим тело" or "nothing_to_cut_off"
+	end
+		
     return can_cut and "cut_off_part" or "knife_need"
 end
 
@@ -821,12 +818,16 @@ function process_monster_loot( monster, mutant_items, additional_items, token )
 end
 
 function actor_look_at_point( target_point )
-	local look_dir = vector():sub( target_point, device().cam_pos )
-	local cam = actor_camera( 0 )
-	if cam then
-		cam.yaw   = -look_dir:getH()
-		cam.pitch = -look_dir:getP()
-	end
+    if type( target_point ) ~= "userdata" then
+        log2( "[monster_parts] actor_look_at_point: expected vector, got %s", type( target_point ) )
+        return
+    end
+    local look_dir = vector():sub( target_point, device().cam_pos )
+    local cam = actor_camera( 0 )
+    if cam then
+        cam.yaw   = -look_dir:getH()
+        cam.pitch = -look_dir:getP()
+    end
 end
 
 function process_additional_items( monster, additional_items )
@@ -845,9 +846,13 @@ function process_additional_items( monster, additional_items )
 	--	local bone_name = strpos( monster:name(), "controller", 1, true ) and "bip01_pelvis" or monster:position()
 	--	local target_pos = monster:bone_position( bone_name ) or monster:position()
 		-- А по факту других же и не осматриваем, смысл? Бюрер - косячные кости
-		if strpos( monster:name(), "controller", 1, true ) then 
-			actor_look_at_point( "bip01_pelvis" )
-		end	
+		if strpos( monster:name(), "controller", 1, true ) then
+			local pos = monster:bone_position( "bip01_spine1" )
+			if pos then actor_look_at_point( pos ) end
+		else
+			local pos = monster:bone_position( "neck" )
+			if pos then actor_look_at_point( pos ) end
+		end
 		--local fov = db.actor:get_camera_fov()
 		--db.actor:set_camera_fov( 55 )
 		--set_dof_params( 1, 1, 1, 1 )
@@ -945,34 +950,32 @@ function on_monster_death( monster, who )
 	if monster:section() == "zombie_blow" then return end
 	-- и чтобы наверняка
 	dsh.timeout( 500, function()
-		-- Исключение для зомбей и прочих, удаляемых
-		if not monster or not monster:alive() and not level.object_by_id( monster:id() ) then return end
-		
-		local has_items = monster:object_count() > 0
+		local mob = level.object_by_id( id )
+		if not mob then return end
+
+		local has_items = mob:object_count() > 0
 		local tip_text = "nothing_to_cut_off"
 
 		if has_items then
-			tip_text = who:is_stalker() and "%c[255,230,210,30]Убито не мной, может лучше не трогать?" or get_tip_text( monster, has_knife() )
+			tip_text = who:is_stalker() and "%c[255,230,210,30]Убито не мной, может лучше не трогать?" or get_tip_text( mob, has_knife() )
 		end
 
-		monster:set_tip_text( tip_text )
+		mob:set_tip_text( tip_text )
 
-		-- Если убила аномалия или мы, то это нет смысла обрабатывать. Для аномальки будет вылет вообще
 		if who:id() == db.actor:id() or IsAnomaly( who ) then
 			return
 		end
-		
-		-- Если убил моб, то переносится ему с обновлением кондиции 
+
 		if who:is_monster() and has_items then
 			local condition = dsh.get_next_random( "kotovod.on_monster_kill_check_parts", 55, 95 ) * 0.01
-			
-			for i = 0, monster:object_count() - 1 do
-				local item = monster:object( i )
+
+			for i = 0, mob:object_count() - 1 do
+				local item = mob:object( i )
 				item:set_condition( condition )
-				monster:transfer_item( item, who )
+				mob:transfer_item( item, who )
 			end
-			
-			monster:set_tip_text( "nothing_to_cut_off" )
+
+			mob:set_tip_text( "nothing_to_cut_off" )
 		end
 	end )
 end
