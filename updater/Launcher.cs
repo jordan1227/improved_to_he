@@ -23,12 +23,15 @@ namespace NlcLauncher
         public static bool NoUpdate;      // -noupdate : launch at once
         public static bool NoLaunch;      // -nolaunch : update only
         public static bool ExitWhenDone;  // -exit     : close instead of waiting
+        public static bool AssumeYes;     // -yes      : do not ask before touching foreign files
+        public static bool DevOk;         // -devok    : update even in a development checkout
         public static string ExtraArgs = "";
 
         public static string StateDir { get { return Path.Combine(GameRoot, @"appdata\updater"); } }
         public static string StateFile { get { return Path.Combine(StateDir, "state.txt"); } }
         public static string TempDir { get { return Path.Combine(StateDir, "tmp"); } }
         public static string LogFile { get { return Path.Combine(StateDir, "updater.log"); } }
+        public static string BackupRoot { get { return Path.Combine(StateDir, "backup"); } }
 
         public static void LoadIni()
         {
@@ -47,6 +50,7 @@ namespace NlcLauncher
                 else if (k == "manifest") ManifestName = v;
                 else if (k == "base") Base = v.TrimEnd('/');
                 else if (k == "game") GameExe = v;
+                else if (k == "devok") DevOk = (v == "1" || v.ToLowerInvariant() == "true");
             }
         }
 
@@ -59,6 +63,8 @@ namespace NlcLauncher
                 if (low == "-noupdate" || low == "/noupdate") NoUpdate = true;
                 else if (low == "-nolaunch" || low == "/nolaunch") NoLaunch = true;
                 else if (low == "-exit" || low == "/exit") ExitWhenDone = true;
+                else if (low == "-yes" || low == "/yes") AssumeYes = true;
+                else if (low == "-devok" || low == "/devok") DevOk = true;
                 else rest.Add(a);
             }
             ExtraArgs = string.Join(" ", rest.ToArray());
@@ -70,6 +76,8 @@ namespace NlcLauncher
         public string Path;
         public string Sha;
         public long Size;
+        public bool LocalExists;   // a file is already there
+        public bool Ours;          // ...and the updater is the one that put it there
     }
 
     class StateRec
@@ -212,6 +220,52 @@ namespace NlcLauncher
             }
             catch { }
         }
+
+        // Scripts the build ships, by bare filename: that is how X-Ray addresses
+        // a module, so two files with one name are two modules with one name.
+        public static HashSet<string> ScriptNames(Dictionary<string, Entry> manifest)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in manifest)
+            {
+                string p = kv.Key;
+                if (!p.StartsWith("gamedata/scripts/", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!p.EndsWith(".script", StringComparison.OrdinalIgnoreCase)) continue;
+                names.Add(System.IO.Path.GetFileName(p));
+            }
+            return names;
+        }
+
+        // Local *.script files that carry a shipped module name from a path the
+        // build does not use -- leftovers that shadow the real module.
+        public static List<string> ShadowScripts(Dictionary<string, Entry> manifest)
+        {
+            var found = new List<string>();
+            var names = ScriptNames(manifest);
+            if (names.Count == 0) return found;
+            string root = Local("gamedata/scripts");
+            if (!Directory.Exists(root)) return found;
+            foreach (string full in Directory.GetFiles(root, "*.script", SearchOption.AllDirectories))
+            {
+                string rel = full.Substring(Cfg.GameRoot.Length).TrimStart('\\').Replace('\\', '/');
+                if (manifest.ContainsKey(rel)) continue;
+                if (names.Contains(Path.GetFileName(full))) found.Add(rel);
+            }
+            return found;
+        }
+
+        // Keep a copy of whatever is about to be overwritten or deleted, so a bad
+        // update can always be undone by hand.
+        public static string Backup(string relative, string stamp)
+        {
+            string local = Local(relative);
+            if (!File.Exists(local)) return null;
+            string dest = Path.Combine(Path.Combine(Cfg.BackupRoot, stamp),
+                                       relative.Replace('/', '\\'));
+            Directory.CreateDirectory(Path.GetDirectoryName(dest));
+            File.Copy(local, dest, true);
+            return dest;
+        }
     }
 
     class Net2
@@ -263,17 +317,20 @@ namespace NlcLauncher
         Label lblDetail;
         ProgressBar bar;
         TextBox log;
+        Button btnUpdate;
         Button btnPlay;
         Button btnCancel;
         Thread worker;
         volatile bool cancelRequested;
+        volatile bool confirmed;
+        readonly ManualResetEvent answered = new ManualResetEvent(false);
 
         public MainForm()
         {
             Text = "Апдейтер";
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(620, 320);
-            MinimumSize = new Size(520, 260);
+            MinimumSize = new Size(560, 260);
             Font = new Font("Segoe UI", 9f);
 
             lblStatus = new Label();
@@ -301,6 +358,19 @@ namespace NlcLauncher
             log.SetBounds(12, 84, 596, 190);
             log.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
 
+            btnUpdate = new Button();
+            btnUpdate.Text = "Обновить";
+            btnUpdate.SetBounds(348, 282, 80, 26);
+            btnUpdate.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+            btnUpdate.Enabled = false;
+            btnUpdate.Click += delegate
+            {
+                btnUpdate.Enabled = false;
+                btnPlay.Enabled = false;
+                confirmed = true;
+                answered.Set();
+            };
+
             btnPlay = new Button();
             btnPlay.Text = "Играть";
             btnPlay.SetBounds(438, 282, 80, 26);
@@ -317,12 +387,14 @@ namespace NlcLauncher
                 if (cancelRequested) { Close(); return; }
                 cancelRequested = true;
                 btnCancel.Enabled = false;
+                answered.Set();
                 Say("Отмена...");
             };
 
-            Controls.AddRange(new Control[] { lblStatus, lblDetail, bar, log, btnPlay, btnCancel });
+            Controls.AddRange(new Control[] { lblStatus, lblDetail, bar, log,
+                                              btnUpdate, btnPlay, btnCancel });
             Shown += delegate { Start(); };
-            FormClosing += delegate { cancelRequested = true; };
+            FormClosing += delegate { cancelRequested = true; answered.Set(); };
         }
 
         void Start()
@@ -345,6 +417,7 @@ namespace NlcLauncher
 
         void Status(string s) { Ui(delegate { lblStatus.Text = s; }); }
         void Detail(string s) { Ui(delegate { lblDetail.Text = s; }); }
+
         void Say(string s)
         {
             Ui(delegate { log.AppendText(s + "\r\n"); });
@@ -382,6 +455,7 @@ namespace NlcLauncher
             {
                 lblStatus.Text = status;
                 bar.Style = ProgressBarStyle.Continuous;
+                btnUpdate.Enabled = false;
                 btnPlay.Enabled = File.Exists(Util.Local(Cfg.GameExe));
                 if (btnPlay.Enabled) btnPlay.Focus();
                 btnCancel.Text = "Выход";
@@ -389,6 +463,24 @@ namespace NlcLauncher
                 cancelRequested = true;
                 if (Cfg.ExitWhenDone) Close();
             });
+        }
+
+        // Ask before touching files the updater did not install itself.
+        bool Confirm(string status)
+        {
+            answered.Reset();
+            confirmed = false;
+            Ui(delegate
+            {
+                lblStatus.Text = status;
+                bar.Style = ProgressBarStyle.Continuous;
+                btnUpdate.Enabled = true;
+                btnUpdate.Focus();
+                btnPlay.Enabled = File.Exists(Util.Local(Cfg.GameExe));
+            });
+            answered.WaitOne();
+            Ui(delegate { btnUpdate.Enabled = false; btnPlay.Enabled = false; });
+            return confirmed && !cancelRequested;
         }
 
         void Run()
@@ -409,6 +501,16 @@ namespace NlcLauncher
                 {
                     Say("Проверка обновлений отключена (-noupdate).");
                     LaunchAndExit();
+                    return;
+                }
+
+                // A development checkout is not a player's install: the working copy is
+                // ahead of the repository, and syncing it to the manifest destroys work.
+                if (!Cfg.DevOk && Directory.Exists(Path.Combine(Cfg.GameRoot, @"to_git\.git")))
+                {
+                    Say("Рядом лежит рабочая копия to_git — это папка разработки, не сборка игрока.");
+                    Say("Обновление пропущено, чтобы не затереть несохранённые правки (-devok снимает запрет).");
+                    OfferPlay("Папка разработки — обновление пропущено");
                     return;
                 }
 
@@ -457,20 +559,34 @@ namespace NlcLauncher
                     }
                     Entry e = kv.Value;
                     string local = Util.Local(e.Path);
-                    if (!File.Exists(local)) { todo.Add(e); todoBytes += e.Size; continue; }
+                    if (!File.Exists(local))
+                    {
+                        e.LocalExists = false;
+                        e.Ours = false;
+                        todo.Add(e);
+                        todoBytes += e.Size;
+                        continue;
+                    }
 
+                    e.LocalExists = true;
                     var fi = new FileInfo(local);
                     StateRec rec;
+                    bool known = state.TryGetValue(e.Path, out rec);
                     string sha;
-                    if (state.TryGetValue(e.Path, out rec) && rec.Size == fi.Length
-                        && rec.Mtime == fi.LastWriteTimeUtc.Ticks)
+                    if (known && rec.Size == fi.Length && rec.Mtime == fi.LastWriteTimeUtc.Ticks)
                     {
                         sha = rec.Sha;
                     }
                     else
                     {
                         try { sha = Util.Sha256(local); }
-                        catch { todo.Add(e); todoBytes += e.Size; continue; }
+                        catch
+                        {
+                            e.Ours = false;
+                            todo.Add(e);
+                            todoBytes += e.Size;
+                            continue;
+                        }
                         state[e.Path] = new StateRec
                         {
                             Sha = sha,
@@ -478,6 +594,8 @@ namespace NlcLauncher
                             Mtime = fi.LastWriteTimeUtc.Ticks
                         };
                     }
+                    // "ours" == this exact file is what the updater last installed
+                    e.Ours = known && string.Equals(rec.Sha, sha, StringComparison.OrdinalIgnoreCase);
                     if (!string.Equals(sha, e.Sha, StringComparison.OrdinalIgnoreCase))
                     {
                         todo.Add(e);
@@ -501,8 +619,10 @@ namespace NlcLauncher
                     catch { }
                 }
 
+                var shadows = Util.ShadowScripts(manifest);
+
                 Detail("");
-                if (todo.Count == 0 && removed.Count == 0)
+                if (todo.Count == 0 && removed.Count == 0 && shadows.Count == 0)
                 {
                     State.Save(state);
                     Progress(100);
@@ -512,9 +632,47 @@ namespace NlcLauncher
                     return;
                 }
 
+                // Files that already exist and were not installed by the updater are
+                // somebody's own: local edits, another mod, a variant pack. Overwriting
+                // them silently is how an update eats work, so it needs a yes.
+                var foreign = new List<Entry>();
+                foreach (Entry e in todo)
+                    if (e.LocalExists && !e.Ours) foreign.Add(e);
+
                 Say("К загрузке: " + todo.Count + " файл(ов), " + Util.Mb(todoBytes)
                     + (removed.Count > 0 ? "; удалить: " + removed.Count : ""));
+
+                if (shadows.Count > 0)
+                {
+                    Say("Найдены лишние копии модулей сборки — X-Ray адресует скрипт по имени файла,");
+                    Say("поэтому такие копии подменяют собой настоящие модули и ломают игру:");
+                    foreach (string p in shadows) Say("  " + p);
+                    Say("Они будут убраны в appdata\\updater\\backup.");
+                }
+
+                if ((foreign.Count > 0 || shadows.Count > 0) && !Cfg.AssumeYes)
+                {
+                    if (foreign.Count > 0)
+                    {
+                        Say("Из них " + foreign.Count + " файл(ов) в папке игры отличаются, и ставил их не апдейтер:");
+                        int shown = 0;
+                        foreach (Entry e in foreign)
+                        {
+                            if (shown++ == 15) { Say("  ... и ещё " + (foreign.Count - 15)); break; }
+                            Say("  " + e.Path);
+                    }
+                    Say("Они будут заменены версиями из сборки. Копии сохранятся в appdata\\updater\\backup.");
+                    }
+                    if (!Confirm("Подтвердите изменение " + (foreign.Count + shadows.Count) + " файл(ов)"))
+                    {
+                        Say("Обновление отменено пользователем.");
+                        OfferPlay("Обновление отменено");
+                        return;
+                    }
+                }
+
                 Status("Загрузка обновления...");
+                string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
 
                 Directory.CreateDirectory(Cfg.TempDir);
                 long done = 0;
@@ -548,6 +706,11 @@ namespace NlcLauncher
                                 continue;
                             }
                             string local = Util.Local(e.Path);
+                            if (e.LocalExists && !e.Ours)
+                            {
+                                try { Util.Backup(e.Path, stamp); }
+                                catch (Exception bex) { Say("не удалось сохранить копию " + e.Path + ": " + bex.Message); }
+                            }
                             Directory.CreateDirectory(Path.GetDirectoryName(local));
                             Util.Unprotect(local);
                             File.Copy(tmp, local, true);
@@ -578,6 +741,7 @@ namespace NlcLauncher
                     try
                     {
                         string local = Util.Local(path);
+                        Util.Backup(path, stamp);
                         Util.Unprotect(local);
                         File.Delete(local);
                         state.Remove(path);
@@ -586,9 +750,27 @@ namespace NlcLauncher
                     catch (Exception ex) { Say("не удалось удалить " + path + ": " + ex.Message); }
                 }
 
+                foreach (string path in shadows)
+                {
+                    try
+                    {
+                        string local = Util.Local(path);
+                        Util.Backup(path, stamp);
+                        Util.Unprotect(local);
+                        File.Delete(local);
+                        state.Remove(path);
+                        Say("убрана лишняя копия модуля: " + path);
+                    }
+                    catch (Exception ex) { Say("не удалось убрать " + path + ": " + ex.Message); }
+                }
+
                 State.Save(state);
                 try { Directory.Delete(Cfg.TempDir, true); }
                 catch { }
+
+                string backupDir = Path.Combine(Cfg.BackupRoot, stamp);
+                if (Directory.Exists(backupDir))
+                    Say("Копии заменённых файлов: appdata\\updater\\backup\\" + stamp);
 
                 int failed = todo.Count - written;
                 Detail("");
