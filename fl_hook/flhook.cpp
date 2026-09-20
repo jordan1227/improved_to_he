@@ -319,6 +319,7 @@ static int g_wm_last_state = -1;
 static int g_wm_nomodel = 0;
 static int g_wm_mismatch = 0;
 static int g_wm_skipped_model = 0;
+static int g_wm_skipped_name = 0;
 
 static int   g_boar_ok = 0;
 static int   g_boar_fail = 0;
@@ -2627,6 +2628,28 @@ static const char* wm_visual_name(int second)
     return sv ? sv + STRV_VALUE : "<empty>";
 }
 
+static int wm_name_eq(const char* path, const char* want)
+{
+    if (!path || !want || !*want) return 0;
+    const char* base = path;
+    for (const char* p = path; *p; ++p)
+        if (*p == '\\' || *p == '/') base = p + 1;
+    unsigned i = 0;
+    for (;; ++i) {
+        char a = base[i], b = want[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+        if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+        if (!b) break;
+        if (a != b) return 0;
+    }
+    const char* rest = base + i;
+    if (!*rest) return 1;
+    if (rest[0] != '.') return 0;
+    return (rest[1] == 'o' || rest[1] == 'O') &&
+           (rest[2] == 'g' || rest[2] == 'G') &&
+           (rest[3] == 'f' || rest[3] == 'F') && !rest[4];
+}
+
 static unsigned wm_child_count(void* kin)
 {
     if (!kin) return 0;
@@ -2663,14 +2686,14 @@ static void cmd_wm(const char* a)
         Msg("~ [wm] m_model_2=%p children=%u visual=%s",
             k2, wm_child_count(k2), wm_visual_name(1));
         Msg("~ [wm] calls=%d applied=%d skipped_idx=%d skipped_model=%d "
-            "nomatch=%d last_state=%d nomodel=%d",
+            "skipped_name=%d nomatch=%d last_state=%d nomodel=%d",
             g_wm_calls, g_wm_applied, g_wm_skipped, g_wm_skipped_model,
-            g_wm_mismatch, g_wm_last_state, g_wm_nomodel);
+            g_wm_skipped_name, g_wm_mismatch, g_wm_last_state, g_wm_nomodel);
         return;
     }
 
     if (*a != '0' && *a != '1') {
-        Msg("!! [wm] usage: wm <0|1> <nchildren> <idx> [idx ...]  |  wm");
+        Msg("!! [wm] usage: wm <0|1> <nchildren> [visual] <idx> [idx ...]  |  wm");
         return;
     }
     bool state = (*a == '1');
@@ -2678,11 +2701,20 @@ static void cmd_wm(const char* a)
 
     while (*a == ' ' || *a == '\t') ++a;
     if (*a < '0' || *a > '9') {
-        Msg("!! [wm] usage: wm <0|1> <nchildren> <idx> [idx ...]  |  wm");
+        Msg("!! [wm] usage: wm <0|1> <nchildren> [visual] <idx> [idx ...]  |  wm");
         return;
     }
     unsigned want = 0;
     while (*a >= '0' && *a <= '9') { want = want * 10u + (unsigned)(*a - '0'); ++a; }
+
+    char vname[64];
+    vname[0] = 0;
+    while (*a == ' ' || *a == '\t') ++a;
+    if (*a && (*a < '0' || *a > '9')) {
+        unsigned j = 0;
+        while (*a && *a != ' ' && *a != '\t' && j + 1 < sizeof(vname)) vname[j++] = *a++;
+        vname[j] = 0;
+    }
 
     if (!k1 && !k2) {
         if (++g_wm_nomodel <= 3)
@@ -2694,10 +2726,15 @@ static void cmd_wm(const char* a)
     void* t1 = (want && n1 != want) ? 0 : k1;
     void* t2 = (want && n2 != want) ? 0 : k2;
     if ((k1 && !t1) || (k2 && !t2)) ++g_wm_skipped_model;
+    if (vname[0]) {
+        if (t1 && !wm_name_eq(wm_visual_name(0), vname)) { t1 = 0; ++g_wm_skipped_name; }
+        if (t2 && !wm_name_eq(wm_visual_name(1), vname)) { t2 = 0; ++g_wm_skipped_name; }
+    }
     if (!t1 && !t2) {
         if (++g_wm_mismatch <= 3)
-            Msg("!! [wm] no model with %u children: m_model=%u (%s) m_model_2=%u (%s)",
-                want, n1, wm_visual_name(0), n2, wm_visual_name(1));
+            Msg("!! [wm] no model %s with %u children: m_model=%u (%s) m_model_2=%u (%s)",
+                vname[0] ? vname : "<any>", want,
+                n1, wm_visual_name(0), n2, wm_visual_name(1));
         return;
     }
 
