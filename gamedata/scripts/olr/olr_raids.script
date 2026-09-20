@@ -1,11 +1,14 @@
 -- [HE-PORT]
-local RAID_MIN_INTERVAL  = 15 * 60000
-local RAID_MAX_INTERVAL  = 30 * 60000
-local ACTOR_STAY_TIME    = 2 * 60000
-local SPAWN_DIST_MIN     = 90
-local SPAWN_DIST_MAX     = 160
-local MAX_RAID_SIZE      = 5
-local MAX_POINT_TRIES    = 10
+local RAID_MIN_INTERVAL  = 25 * 60000
+local RAID_MAX_INTERVAL  = 45 * 60000
+local ACTOR_STAY_TIME    = 3 * 60000
+local SPAWN_DIST_MIN     = 150
+local SPAWN_DIST_MAX     = 230
+local MAX_RAID_SIZE      = 4
+local MAX_POINT_TRIES    = 16
+-- [HE-PORT]
+local SPAWN_HEIGHT_MAX   = 20
+local SQUAD_SCATTER      = 6
 
 local time_next_raid     = 0
 local actor_smart_name   = nil
@@ -95,7 +98,7 @@ local function is_out_of_sight(spawn_pos, actor_pos)
 	flat_dx = flat_dx / dlen
 	flat_dz = flat_dz / dlen
 	local dot = flat_dx * to.x + flat_dz * to.z
-	return dot < -0.15
+	return dot < -0.45
 end
 
 local function get_spawn_point(actor_pos)
@@ -112,8 +115,31 @@ local function get_spawn_point(actor_pos)
 		local lvid = level.vertex_id(spawn_pos)
 		if lvid and lvid < 4294967295 then
 			spawn_pos = level.vertex_position(lvid)
-			if is_out_of_sight(spawn_pos, actor_pos) then
+			-- [HE-PORT]
+			if math.abs(spawn_pos.y - actor_pos.y) <= SPAWN_HEIGHT_MAX
+				and actor_pos:distance_to(spawn_pos) >= SPAWN_DIST_MIN
+				and is_out_of_sight(spawn_pos, actor_pos)
+			then
 				return spawn_pos, lvid
+			end
+		end
+	end
+	return nil, nil
+end
+
+-- [HE-PORT]
+local function scatter_point(anchor, actor_pos)
+	for i = 1, 6 do
+		local p = vector():set(
+			anchor.x + math.random(-SQUAD_SCATTER, SQUAD_SCATTER),
+			anchor.y,
+			anchor.z + math.random(-SQUAD_SCATTER, SQUAD_SCATTER)
+		)
+		local lvid = level.vertex_id(p)
+		if lvid and lvid < 4294967295 then
+			p = level.vertex_position(lvid)
+			if is_out_of_sight(p, actor_pos) then
+				return p, lvid
 			end
 		end
 	end
@@ -144,11 +170,17 @@ local function spawn_monster_raid(actor_pos)
 	local count = math.random(2, MAX_RAID_SIZE)
 	local spawned = 0
 
+	-- [HE-PORT]
+	local anchor, anchor_lvid = get_spawn_point(actor_pos)
+	if not anchor then return 0 end
+	local gvid = db.actor:game_vertex_id()
+
 	for i = 1, count do
 		local section = pool[math.random(#pool)]
-		local spawn_pos, lvid = get_spawn_point(actor_pos)
-		if not spawn_pos then break end
-		local gvid = db.actor:game_vertex_id()
+		local spawn_pos, lvid = scatter_point(anchor, actor_pos)
+		if not spawn_pos then
+			spawn_pos, lvid = anchor, anchor_lvid
+		end
 		local ok = pcall(function()
 			alife():create(section, spawn_pos, lvid, gvid)
 		end)
@@ -172,18 +204,24 @@ local function allowed_enemy_sections()
 end
 
 local function spawn_npc_raid(actor_pos)
-	local count = math.random(2, 4)
+	local count = math.random(2, 3)
 	local spawned = 0
 
 	-- [HE-PORT]
 	local pool = allowed_enemy_sections()
 	if #pool == 0 then return 0 end
 
+	-- [HE-PORT]
+	local anchor, anchor_lvid = get_spawn_point(actor_pos)
+	if not anchor then return 0 end
+	local gvid = db.actor:game_vertex_id()
+
 	for i = 1, count do
 		local section = pool[math.random(#pool)]
-		local spawn_pos, lvid = get_spawn_point(actor_pos)
-		if not spawn_pos then break end
-		local gvid = db.actor:game_vertex_id()
+		local spawn_pos, lvid = scatter_point(anchor, actor_pos)
+		if not spawn_pos then
+			spawn_pos, lvid = anchor, anchor_lvid
+		end
 		local ok = pcall(function()
 			local obj = alife():create(section, spawn_pos, lvid, gvid)
 			if obj then

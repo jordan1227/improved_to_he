@@ -1,17 +1,24 @@
 -- [HE-PORT]
-local CHECK_INTERVAL     = 15000
-local LEAVE_CHANCE       = 28
-local MAX_LEAVES_PER_TICK = 2
+local CHECK_INTERVAL     = 90000
+local LEAVE_CHANCE       = 20
+local MAX_LEAVES_PER_TICK = 1
 local SMART_LEAVE_WINDOW = 600000
 local SMART_LEAVE_MAX    = 2
 local REST_MIN_MS        = 30000
 local REST_MAX_MS        = 90000
-local DEPART_COOLDOWN    = 10 * 60000
+local DEPART_COOLDOWN    = 15 * 60000
+
+-- [HE-PORT]
+local TIME_FACTOR          = system_ini():r_float("alife", "time_factor")
+local SMART_LEAVE_WINDOW_G = SMART_LEAVE_WINDOW / 1000 * TIME_FACTOR
+local DEPART_COOLDOWN_G    = DEPART_COOLDOWN / 1000 * TIME_FACTOR
+local DEPART_KEY           = "nlc.olr_depart_until"
+local SMART_T0_KEY         = "nlc.olr_smart_leave_t0"
+local SMART_CNT_KEY        = "nlc.olr_smart_leave_cnt"
 
 local time_next_check = 0
+local started = false
 local pending = {}
-local recent_smart_leaves = {}
-local departed_ids = {}
 
 local allowed_comms = {
 	stalker = true,
@@ -28,56 +35,94 @@ local function now_ms()
 	return time_global()
 end
 
+-- [HE-PORT]
+local function now_g()
+	return timers.Get_Game_Seconds()
+end
+
 local function cleanup_departed()
-	local t = now_ms()
+	local t = now_g()
 	local sim = g_sim or alife()
-	for id, info in pairs(departed_ids) do
-		if (t - info.t0) > DEPART_COOLDOWN then
-			departed_ids[id] = nil
+	local store = get_value(DEPART_KEY) or {}
+	local dirty = false
+	for key, due in pairs(store) do
+		local drop = false
+		if t >= due then
+			drop = true
 		elseif sim then
-			local se = sim:object(id)
+			local se = sim:object(tonumber(key))
 			if not se or not se:alive() then
-				departed_ids[id] = nil
+				drop = true
 			end
 		end
+		if drop then
+			store[key] = nil
+			dirty = true
+		end
+	end
+	if dirty then
+		set_value(DEPART_KEY, store)
 	end
 end
 
 local function is_departed(id)
-	local info = departed_ids[id]
-	if not info then return false end
-	if (now_ms() - info.t0) > DEPART_COOLDOWN then
-		departed_ids[id] = nil
+	local store = get_value(DEPART_KEY) or {}
+	local key = tostring(id)
+	local due = store[key]
+	if not due then return false end
+	if now_g() >= due then
+		store[key] = nil
+		set_value(DEPART_KEY, store)
 		return false
 	end
 	return true
 end
 
+-- [HE-PORT]
+local function mark_departed(id)
+	local store = get_value(DEPART_KEY) or {}
+	store[tostring(id)] = now_g() + DEPART_COOLDOWN_G
+	set_value(DEPART_KEY, store)
+end
+
 local function cleanup_recent_smarts()
-	local t = now_ms()
-	for name, info in pairs(recent_smart_leaves) do
-		if (t - info.t0) > SMART_LEAVE_WINDOW then
-			recent_smart_leaves[name] = nil
+	local t = now_g()
+	local t0s = get_value(SMART_T0_KEY) or {}
+	local cnts = get_value(SMART_CNT_KEY) or {}
+	local dirty = false
+	for name, t0 in pairs(t0s) do
+		if (t - t0) > SMART_LEAVE_WINDOW_G then
+			t0s[name] = nil
+			cnts[name] = nil
+			dirty = true
 		end
+	end
+	if dirty then
+		set_value(SMART_T0_KEY, t0s)
+		set_value(SMART_CNT_KEY, cnts)
 	end
 end
 
 local function can_leave_smart(smart_name)
 	if not smart_name then return true end
 	cleanup_recent_smarts()
-	local info = recent_smart_leaves[smart_name]
-	if not info then return true end
-	return info.count < SMART_LEAVE_MAX
+	local cnt = (get_value(SMART_CNT_KEY) or {})[smart_name]
+	if not cnt then return true end
+	return cnt < SMART_LEAVE_MAX
 end
 
 local function mark_smart_leave(smart_name)
 	if not smart_name then return end
-	local info = recent_smart_leaves[smart_name]
-	if not info then
-		recent_smart_leaves[smart_name] = { t0 = now_ms(), count = 1 }
+	local t0s = get_value(SMART_T0_KEY) or {}
+	local cnts = get_value(SMART_CNT_KEY) or {}
+	if not cnts[smart_name] then
+		t0s[smart_name] = now_g()
+		cnts[smart_name] = 1
 	else
-		info.count = info.count + 1
+		cnts[smart_name] = cnts[smart_name] + 1
 	end
+	set_value(SMART_T0_KEY, t0s)
+	set_value(SMART_CNT_KEY, cnts)
 end
 
 local function get_smart_name(se)
@@ -208,7 +253,7 @@ local function apply_depart(se, mode)
 		olr_offline_task.set_wandering(se:name())
 	end
 
-	departed_ids[se.id] = { t0 = now_ms(), mode = mode }
+	mark_departed(se.id)
 	mark_smart_leave(smart_name)
 	return true
 end
@@ -268,6 +313,12 @@ function update()
 	process_pending()
 
 	local t = now_ms()
+	-- [HE-PORT]
+	if not started then
+		started = true
+		time_next_check = t + CHECK_INTERVAL
+		return
+	end
 	if t < time_next_check then return end
 	time_next_check = t + CHECK_INTERVAL
 
