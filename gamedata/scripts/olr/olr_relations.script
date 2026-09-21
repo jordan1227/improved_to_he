@@ -12,6 +12,9 @@ local pacified = {}
 local guest_spots = {}
 local guest_of = {}
 
+-- [HE-PORT]
+local hostile = {}
+
 local guest_comms = {
 	military = true,
 }
@@ -37,26 +40,53 @@ local function mark_guest_spot(smart)
 	if not smart then return end
 	local ok, pos = pcall(function() return vector():set(smart.position) end)
 	if not ok or not pos then return end
-	guest_spots[smart.id] = { pos = pos, t = time_global() }
+	guest_spots[smart.id] = { pos = pos, t = time_global(), lvl = level.name() }
 end
 
 -- [HE-PORT]
 local function is_near_guest_spot(npc)
 	local pos = npc:position()
 	local t = time_global()
+	local lvl = level.name()
 	local res = false
 	for sid, info in pairs(guest_spots) do
 		if (t - info.t) > GUEST_SPOT_TTL then
 			guest_spots[sid] = nil
-		elseif not res and pos:distance_to(info.pos) <= NEAR_SMART_DIST then
+		elseif not res and info.lvl == lvl and pos:distance_to(info.pos) <= NEAR_SMART_DIST then
 			res = true
 		end
 	end
 	return res
 end
 
+-- [HE-PORT]
+local function mark_hostile(id)
+	hostile[id] = true
+	if db.actor then
+		pcall(function() relation_registry.clear_personal_goodwill(id, db.actor:id()) end)
+	end
+end
+
+-- [HE-PORT]
+local function is_hostile_to_actor(npc)
+	local id = npc:id()
+	if hostile[id] then return true end
+	if not db.actor then return false end
+	local ok, enemy = pcall(function() return npc:best_enemy() end)
+	if ok and enemy and enemy:id() == db.actor:id() then
+		mark_hostile(id)
+		return true
+	end
+	return false
+end
+
 local function pacify(npc, targets)
-	pcall(function() npc:set_goodwill(GOODWILL_ACTOR, db.actor) end)
+	-- [HE-PORT]
+	if is_hostile_to_actor(npc) then
+		pcall(function() relation_registry.clear_personal_goodwill(npc:id(), db.actor:id()) end)
+	else
+		pcall(function() npc:set_goodwill(GOODWILL_ACTOR, db.actor) end)
+	end
 	for i = 1, #targets do
 		pcall(function() npc:set_goodwill(GOODWILL_NPC, targets[i]) end)
 	end
@@ -140,4 +170,22 @@ end
 
 function guest_smart_id(id)
 	return guest_of[id]
+end
+
+-- [HE-PORT]
+function on_npc_hit(npc, amount, local_direction, who, bone_index)
+	if not (db.actor and npc and who) then return end
+	if who:id() ~= db.actor:id() then return end
+	if not IsStalker(npc) then return end
+	if not guest_comms[npc:character_community()] then return end
+	mark_hostile(npc:id())
+end
+
+-- [HE-PORT]
+function on_npc_death(npc)
+	if not npc then return end
+	local id = npc:id()
+	hostile[id] = nil
+	pacified[id] = nil
+	guest_of[id] = nil
 end
