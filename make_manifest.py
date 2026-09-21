@@ -46,6 +46,19 @@ EXCLUDE_PREFIXES = (
 )
 EXCLUDE_FILES = (MANIFEST_NAME, ".gitattributes", ".gitignore", "README.md")
 
+# Optional variants (weapon packs) are copied over gamedata by hand. The build
+# ships its own version of part of what they replace, so an update puts the stock
+# weapons, hands and watch back and quietly uninstalls the pack. The manifest
+# therefore carries, per variant, the list of paths the launcher must leave alone
+# while that variant is installed; the variant announces itself with VARIANT_MARKER,
+# which it drops into gamedata together with the rest of its files.
+VARIANT_PREFIX = "Опционально/оружие/"
+VARIANT_MARKER = "gamedata/variant_weapons.ltx"
+# a pack's file is protected when the build ships the same path, and always for
+# scripts: X-Ray addresses a module by bare filename, so a pack script sitting in
+# its own subfolder still shadows -- and is shadowed by -- a shipped module.
+KEEP_ALWAYS_PREFIXES = ("gamedata/scripts/",)
+
 
 def git(repo_dir, *args, binary=False):
     out = subprocess.run(
@@ -54,8 +67,8 @@ def git(repo_dir, *args, binary=False):
     return out.stdout if binary else out.stdout.decode("utf-8", "replace")
 
 
-def tracked_files(repo_dir, rev):
-    """Return [(path, blob_sha, size)] for the files the launcher ships."""
+def all_files(repo_dir, rev):
+    """Return [(path, blob_sha, size)] for every blob in the tree."""
     raw = git(repo_dir, "ls-tree", "-r", "-l", "-z", rev, binary=True)
     items = []
     for rec in raw.split(b"\x00"):
@@ -66,11 +79,36 @@ def tracked_files(repo_dir, rev):
         mode, otype, sha, size = meta.decode("utf-8").split()
         if otype != "blob":
             continue
-        if not wanted(path):
-            continue
         items.append((path, sha, int(size)))
     items.sort(key=lambda it: it[0])
     return items
+
+
+def tracked_files(repo_dir, rev):
+    """Return [(path, blob_sha, size)] for the files the launcher ships."""
+    return [it for it in all_files(repo_dir, rev) if wanted(it[0])]
+
+
+def variant_keep(everything, shipped):
+    """-> {variant name: [paths the launcher must not touch]}.
+
+    `everything` is the whole tree, `shipped` the set of paths in the manifest.
+    """
+    owned = {}
+    for path, _, _ in everything:
+        if not path.startswith(VARIANT_PREFIX):
+            continue
+        rest = path[len(VARIANT_PREFIX):]
+        name, slash, rel = rest.partition("/")
+        if not slash or not rel.startswith("gamedata/"):
+            continue
+        if rel != VARIANT_MARKER and rel not in shipped \
+                and not rel.startswith(KEEP_ALWAYS_PREFIXES):
+            continue
+        owned.setdefault(name, []).append(rel)
+    for name in owned:
+        owned[name] = sorted(set(owned[name]))
+    return owned
 
 
 def wanted(path):
@@ -131,9 +169,11 @@ def worktree_hashes(repo_dir, items):
 
 
 def build(repo_dir, rev, repo, ref, worktree=False):
-    items = tracked_files(repo_dir, rev)
+    everything = all_files(repo_dir, rev)
+    items = [it for it in everything if wanted(it[0])]
     if not items:
         raise SystemExit("nothing matched the include rules -- wrong repo dir?")
+    keep = variant_keep(everything, {p for p, _, _ in items})
     hashes = (worktree_hashes(repo_dir, items) if worktree
               else blob_hashes(repo_dir, [sha for _, sha, _ in items]))
     head = git(repo_dir, "rev-parse", "--short", rev).strip()
@@ -146,6 +186,9 @@ def build(repo_dir, rev, repo, ref, worktree=False):
         "#version %s-%s" % (stamp, head),
         "#files %d" % len(items),
     ]
+    for name in sorted(keep):
+        for rel in keep[name]:
+            lines.append("#keep %s %s" % (name, rel))
     total = 0
     for path, sha, _ in items:
         digest, size = hashes[sha]
@@ -153,6 +196,11 @@ def build(repo_dir, rev, repo, ref, worktree=False):
         lines.append("%s %d %s" % (digest, size, path))
     lines.insert(5, "#bytes %d" % total)
     return "\n".join(lines) + "\n", len(items), total
+
+
+def body_line(line):
+    """The part of the manifest --verify compares: files and variant keep lists."""
+    return not line.startswith("#") or line.startswith("#keep ")
 
 
 def main():
@@ -187,8 +235,8 @@ def main():
             old = fh.read().decode("utf-8")
         same = old.replace("\r\n", "\n") == text
         # the version line carries today's date, so compare the file list only
-        body_old = [l for l in old.splitlines() if not l.startswith("#")]
-        body_new = [l for l in text.splitlines() if not l.startswith("#")]
+        body_old = [l for l in old.splitlines() if body_line(l)]
+        body_new = [l for l in text.splitlines() if body_line(l)]
         if body_old == body_new:
             print("OK: %s -- %d files, %.1f MB%s"
                   % (out, count, total / 1048576.0,
