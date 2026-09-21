@@ -16,6 +16,7 @@
 -- InitControls / on_quit -- same convention as vergas_masks, rummaged:btn_quit, etc.
 
 local is_document_animating = false
+local animation_session = 0
 
 -- Must match the anim_items.ltx section name once mod_system_liz_document_animation.ltx
 -- (or its NLC equivalent) is merged in.
@@ -31,12 +32,19 @@ function is_animating()
 end
 
 -- Emergency cleanup to prevent a stuck-hands softlock, mirrors vergas_masks.abort_animation()
-function abort_animation()
-    if is_document_animating then
-        bind_stalker.restore_weapon()
+function abort_animation(force)
+    animation_session = animation_session + 1
+    -- Lua/module state may already have been recreated during a save load while
+    -- the engine-owned slot-2 motion is still alive. Lifecycle cleanup passes
+    -- force=true; ordinary inactive calls must not stop another HUD owner.
+    if force or is_document_animating then
+        game.stop_hud_motion()
+        level.remove_cam_effector(7539)
+        level.remove_cam_effector(7540)
+        if db.actor then bind_stalker.restore_weapon() end
         level.only_allow_movekeys(false)
-        is_document_animating = false
     end
+    is_document_animating = false
 end
 
 -- ==========================================================================
@@ -44,9 +52,15 @@ end
 -- or right before level.start_stop_menu(wnd, true)).
 -- Plays show, then transitions into a looping idle once show finishes.
 -- ==========================================================================
-function play_show_animation()
+-- hud_sec: optional anim_items.ltx section override; papers with their own
+-- clipboard model (e.g. the Nazar map) pass their section, everything else
+-- uses the default document clipboard.
+function play_show_animation(hud_sec)
     if is_document_animating then return end
     is_document_animating = true
+    animation_session = animation_session + 1
+    local my_session = animation_session
+    hud_sec = hud_sec or HUD_SEC
 
     level.only_allow_movekeys(true)
     bind_stalker.hide_weapon()
@@ -55,16 +69,17 @@ function play_show_animation()
     if snd then snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0) end
 
     level.add_cam_effector(CAM_SHOW, 7539, false, "", 0, false)
-    local show_duration = game.play_hud_motion(2, HUD_SEC, "anm_show", true, 1, true) or 1000
+    local show_duration = game.play_hud_motion(2, hud_sec, "anm_show", true, 1, true) or 1000
 
     dsh.timeout(show_duration, function()
-        if not db.actor:alive() then
+        if my_session ~= animation_session or not is_document_animating then return end
+        if not db.actor or not db.actor:alive() then
             abort_animation()
             return
         end
         -- Loop the idle sway while the window stays open. play_hide_animation()
         -- overwrites this whenever the window actually closes.
-        game.play_hud_motion(2, HUD_SEC, "anm_idle", true, 1, true)
+        game.play_hud_motion(2, hud_sec, "anm_idle", true, 1, true)
     end)
 end
 
@@ -72,8 +87,11 @@ end
 -- Call this from the reading window's on_quit, before (or instead of) its own
 -- self:GetHolder():start_stop_menu(self, true) close call.
 -- ==========================================================================
-function play_hide_animation()
-    if not is_document_animating then return end
+function play_hide_animation(hud_sec, on_closed)
+    if not is_document_animating then if on_closed then on_closed(false) end return end
+    animation_session = animation_session + 1
+    local my_session = animation_session
+    hud_sec = hud_sec or HUD_SEC
 
     if not db.actor:alive() then
         abort_animation()
@@ -84,10 +102,10 @@ function play_hide_animation()
     if snd then snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0) end
 
     level.add_cam_effector(CAM_HIDE, 7540, false, "", 0, false)
-    local hide_duration = game.play_hud_motion(2, HUD_SEC, "anm_hide", true, 1, true) or 1000
+    local hide_duration = game.play_hud_motion(2, hud_sec, "anm_hide", true, 1, true) or 1000
 
     dsh.timeout(hide_duration, function()
-        abort_animation()
+        if my_session == animation_session then abort_animation(); if on_closed then on_closed(true) end end
     end)
 end
 

@@ -1,0 +1,315 @@
+-- ui_paper_reader.script
+--
+-- Generic reusable paper/document viewer for NLC OGSR HE. HUD documents use
+-- the held model directly and stay non-modal; image/text documents retain the
+-- ordinary CUIScriptWnd path.
+
+local registry = {
+	nazar_stash_map = {
+		text_key = nil,
+		texture = nil,
+		hud = "liz_document_animation_hud_nazar",
+		info = nil,
+	},
+}
+
+local DEFAULT_IMAGE_RECT = { x = 262, y = 140, w = 500, h = 460 }
+local TEXT_RECT = { x = 380, y = 150, w = 340, h = 470 }
+
+local read_entry = nil
+local read_item_id = nil
+local active_wnd = nil
+local hud_reader_active = false
+local help_overlay = nil
+local close_down = false
+local open_session = 0
+local owner_token = nil
+local closing_owner_token = nil
+
+local PAPER_ZOOM_MULTIPLIER = 0.55
+local PAPER_ZOOM_RATE = 10.0
+local PAPER_ZOOM_WRITE_EPSILON = 0.002
+local zoom_active = false
+local zoom_base = nil
+local zoom_current = nil
+local zoom_last_written = nil
+
+local function pressed(dik)
+	if not dik or dik <= 0 then return false end
+	local value = key_state(dik)
+	return value == true or (type(value) == "number" and value ~= 0)
+end
+
+local function key_label(action)
+	if not bind_to_dik or not dik_to_keyname then return "?" end
+	local dik = bind_to_dik(action)
+	if not dik then return "?" end
+	local name = dik_to_keyname(dik)
+	if not name or name == "" then return "?" end
+	return (string.gsub(name, "^k", ""))
+end
+
+local function help_text()
+	local template = game.translate_string("he_paper_reader_help")
+	local ok, text = pcall(string.format, template, key_label(key_bindings.kWPN_ZOOM), key_label(key_bindings.kWPN_FIRE))
+	if ok and text then return text end
+	return template
+end
+
+local function release_help()
+	if not help_overlay then return end
+	local wnd = help_overlay
+	help_overlay = nil
+	pcall(function()
+		local hud = get_hud()
+		if hud then hud:RemoveDialogToRender(wnd) end
+	end)
+end
+
+local function show_help()
+	release_help()
+	local ok, err = pcall(function()
+		local static = CUIStatic()
+		static:Init(192, 680, 640, 48)
+		static:SetFont(GetFontLetterica18Russian())
+		static:SetTextComplexMode(true)
+		static:SetText((string.gsub(help_text(), "\\n", "\n")))
+		static:SetTextColor(255, 238, 153, 26)
+		static:Show(true)
+		help_overlay = static
+		get_hud():AddDialogToRender(static)
+	end)
+	if not ok then log2("[paper_reader] hint failed: %s", tostring(err)) end
+end
+
+local function zoom_write(value, force)
+	if not force and zoom_last_written
+		and math.abs(zoom_last_written - value) <= PAPER_ZOOM_WRITE_EPSILON then return end
+	get_console():execute(string.format("hud_fov %.4f", value))
+	zoom_last_written = value
+end
+
+local function zoom_force_restore()
+	if zoom_active and zoom_base then zoom_write(zoom_base, true) end
+	zoom_active = false
+	zoom_base = nil
+	zoom_current = nil
+	zoom_last_written = nil
+end
+
+local function clear_reader_state()
+	hud_reader_active = false
+	active_wnd = nil
+	read_entry = nil
+	read_item_id = nil
+end
+
+local function close_hud_reader(reason, animated)
+	if not hud_reader_active and not owner_token and not read_entry then
+		zoom_force_restore()
+		release_help()
+		return
+	end
+	local was_active = hud_reader_active
+	local entry = read_entry
+	local owner = owner_token
+	owner_token = nil
+	clear_reader_state()
+	zoom_force_restore()
+	release_help()
+	if animated and was_active and db.actor and db.actor:alive() then
+		closing_owner_token = owner
+		sivol_paper.play_hide_animation(entry and entry.hud, function()
+			if closing_owner_token == owner then closing_owner_token = nil end
+			if owner and hud_animation_owner then hud_animation_owner.release(owner, reason or "closed") end
+		end)
+	else
+		sivol_paper.abort_animation()
+		if owner and hud_animation_owner then
+			hud_animation_owner.cancel(owner, reason or "aborted")
+			hud_animation_owner.release(owner, reason or "aborted")
+		end
+	end
+end
+
+function abort(reason, force)
+	open_session = open_session + 1
+	close_hud_reader(reason or "abort", false)
+	if closing_owner_token and hud_animation_owner then
+		local closing = closing_owner_token
+		closing_owner_token = nil
+		hud_animation_owner.cancel(closing, reason or "aborted")
+		hud_animation_owner.release(closing, reason or "aborted")
+	end
+	if active_wnd and not active_wnd.closed then
+		active_wnd.closed = true
+		active_wnd = nil
+	end
+	zoom_force_restore()
+	release_help()
+	sivol_paper.abort_animation(force == true)
+	read_entry = nil
+	read_item_id = nil
+end
+
+local function update_hud_reader()
+	if not hud_reader_active then
+		close_down = false
+		return
+	end
+	local close_pressed = pressed(bind_to_dik and bind_to_dik(key_bindings.kWPN_FIRE))
+	if close_pressed and not close_down then
+		close_down = true
+		close_hud_reader("fire close", true)
+		return
+	end
+	close_down = close_pressed
+	if not db.actor or not db.actor:alive() then abort("actor unavailable") return end
+	if read_item_id then
+		local obj = level.object_by_id(read_item_id)
+		local owned = obj and obj:parent() and obj:parent():id() == db.actor:id()
+		if not owned then close_hud_reader("item lost", true) return end
+	end
+
+	local zoom_dik = bind_to_dik and bind_to_dik(key_bindings.kWPN_ZOOM)
+	local zoom_pressed = pressed(zoom_dik)
+	if zoom_pressed and not zoom_active then
+		local base = tonumber(get_console():get_float("hud_fov"))
+		if base then
+			zoom_active = true
+			zoom_base = base
+			zoom_current = base
+			zoom_last_written = nil
+		end
+	end
+	if not zoom_active then return end
+
+	local dt = tonumber(device().f_time_delta) or 0.016
+	if dt <= 0 or dt > 0.2 then dt = 0.016 end
+	local target = zoom_pressed and (zoom_base * PAPER_ZOOM_MULTIPLIER) or zoom_base
+	zoom_current = zoom_current + (target - zoom_current) * (1 - math.exp(-PAPER_ZOOM_RATE * dt))
+	zoom_write(zoom_current)
+	if not zoom_pressed and math.abs(zoom_current - zoom_base) <= PAPER_ZOOM_WRITE_EPSILON then
+		zoom_write(zoom_base, true)
+		zoom_active = false
+		zoom_base = nil
+		zoom_current = nil
+		zoom_last_written = nil
+	end
+end
+
+
+class "paper_reader_wnd"(CUIScriptWnd)
+
+function paper_reader_wnd:__init(owner) super()
+	self.owner = owner
+	self.closed = false
+	self.entry = read_entry
+	self:InitControls()
+end
+
+function paper_reader_wnd:InitControls()
+	self:Init(0, 0, 1024, 768)
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_paper_reader.xml")
+	if self.entry and self.entry.texture then
+		local r = self.entry.image_rect or DEFAULT_IMAGE_RECT
+		self.image = CUIStatic()
+		self.image:SetAutoDelete(true)
+		self.image:Init(r.x, r.y, r.w, r.h)
+		self.image:InitTexture(self.entry.texture)
+		self.image:SetStretchTexture(true)
+		self:AttachChild(self.image)
+	elseif self.entry and self.entry.text_key then
+		xml:InitStatic("paper", self)
+		self.text = CUIStatic()
+		self.text:SetAutoDelete(true)
+		self.text:SetTextComplexMode(true)
+		self.text:SetText(game.translate_string(self.entry.text_key))
+		self.text:SetTextColor(255, 39, 40, 34)
+		self.text:SetFont(GetFontGraffiti19Russian())
+		self.text:Init(TEXT_RECT.x, TEXT_RECT.y, TEXT_RECT.w, TEXT_RECT.h)
+		self:AttachChild(self.text)
+	end
+end
+
+function paper_reader_wnd:OnKeyboard(dik, keyboard_action)
+	CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if keyboard_action == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
+		self:on_quit()
+	end
+	return true
+end
+
+function paper_reader_wnd:on_quit()
+	if self.closed then return end
+	self.closed = true
+	local entry = self.entry
+	active_wnd = nil
+	read_entry = nil
+	read_item_id = nil
+	sivol_paper.play_hide_animation(entry and entry.hud)
+	self:GetHolder():start_stop_menu(self, true)
+	self:ClearCallbacks()
+end
+
+local function start_reader(my_session)
+	if my_session ~= open_session or not read_entry then return end
+	if not owner_token or not hud_animation_owner.valid(owner_token)
+		or not hud_animation_owner.activate(owner_token, "paper-reader") then
+		abort("animation owner unavailable")
+		return
+	end
+	if not db.actor or not db.actor:alive() then abort("actor unavailable") return end
+	if read_item_id then
+		local obj = level.object_by_id(read_item_id)
+		local owned = obj and obj:parent() and obj:parent():id() == db.actor:id()
+		if not owned then abort("item unavailable") return end
+	end
+	local entry = read_entry
+	sivol_paper.play_show_animation(entry.hud)
+	if entry.hud then
+		hud_reader_active = true
+		show_help()
+	else
+		active_wnd = paper_reader_wnd(get_hud())
+		level.start_stop_menu(active_wnd, true)
+	end
+end
+
+function open_reader(item_id)
+	local sobj = item_id and alife():object(item_id)
+	local entry = sobj and registry[sobj:section_name()]
+	if not entry or not db.actor or not db.actor:alive() then return end
+	abort("reopen")
+	local owner = hud_animation_owner.reserve("paper-reader", { allow_full_backpack = true })
+	if not owner then return end
+	owner_token = owner
+	open_session = open_session + 1
+	local my_session = open_session
+	read_entry = entry
+	read_item_id = item_id
+	if entry.info and not has_alife_info(entry.info) then db.actor:give_info_portion(entry.info) end
+
+	local full_backpack = get_value("inv_full") == true
+	sak.close_window()
+	if full_backpack then
+		dsh.wait_condition(
+			function() return my_session ~= open_session or (not get_value("inv_full") and hud_animation_owner.current() == nil) end,
+			function()
+				if my_session ~= open_session then return end
+				dsh.timeout(250, function() start_reader(my_session) end)
+			end
+		)
+	else
+		dsh.timeout(50, function() start_reader(my_session) end)
+	end
+end
+function attach(sm)
+	sm:subscribe({signal = "on_update", fun = update_hud_reader})
+	sm:subscribe({signal = "on_before_save_game", fun = function() abort("save") end})
+	sm:subscribe({signal = "on_load_before_all", fun = function() abort("load", true) end})
+	sm:subscribe({signal = "on_first_update", fun = function() abort("first update", true) end})
+	sm:subscribe({signal = "level_changer_action", fun = function() abort("level change", true) end})
+	sm:subscribe({signal = "on_stop_modules", fun = function() abort("stop modules", true) end})
+end

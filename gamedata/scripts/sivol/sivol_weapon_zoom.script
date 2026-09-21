@@ -481,11 +481,95 @@ local function reset_hold_zoom(reason)
 	was_aiming = false
 end
 
+-- A small camera-FOV layer for genuinely empty hands. This deliberately uses
+-- camera FOV, not hud_fov: there is no held viewmodel to scale. It is disabled
+-- during sprint, menus, dialogue and scripted HUD animations so it never
+-- competes with those owners.
+local EMPTY_HAND_ZOOM_MULTIPLIER = 0.88
+local EMPTY_HAND_ZOOM_RATE = 8.0
+local EMPTY_HAND_ZOOM_WRITE_EPSILON = 0.01
+local empty_zoom_active = false
+local empty_zoom_actor
+local empty_zoom_base
+local empty_zoom_current
+local empty_zoom_last_written
+
+local function empty_zoom_key_down()
+	local dik = bind_to_dik and bind_to_dik(key_bindings.kWPN_ZOOM)
+	if not dik or dik <= 0 then return false end
+	local value = key_state(dik)
+	return value == true or (type(value) == "number" and value ~= 0)
+end
+
+local function write_empty_zoom(actor, value, force)
+	if not actor then return end
+	if not force and empty_zoom_last_written
+		and math.abs(empty_zoom_last_written - value) <= EMPTY_HAND_ZOOM_WRITE_EPSILON then return end
+	actor:set_camera_fov(value)
+	empty_zoom_last_written = value
+end
+
+local function clear_empty_zoom(reason)
+	if empty_zoom_active and empty_zoom_actor and empty_zoom_base then
+		pcall(function() write_empty_zoom(empty_zoom_actor, empty_zoom_base, true) end)
+	end
+	empty_zoom_active = false
+	empty_zoom_actor = nil
+	empty_zoom_base = nil
+	empty_zoom_current = nil
+	empty_zoom_last_written = nil
+end
+
+local function empty_zoom_allowed(actor, actor_obj)
+	if not actor or not actor:alive() or actor:active_item() then return false end
+	if device():is_paused() or level.main_input_receiver() or actor:is_talking() then return false end
+	if level.only_movekeys_allowed() or not game.hud_motion_allowed() then return false end
+	if actor_obj and actor_obj:is_actor_sprinting() then return false end
+	return true
+end
+
+local function update_empty_hand_zoom(actor, dt)
+	local actor_obj = get_actor_obj and get_actor_obj() or nil
+	local allowed = empty_zoom_allowed(actor, actor_obj)
+	local pressed = allowed and empty_zoom_key_down()
+	if pressed and not empty_zoom_active then
+		local base = tonumber(actor:get_camera_fov())
+		if not base then return end
+		empty_zoom_active = true
+		empty_zoom_actor = actor
+		empty_zoom_base = base
+		empty_zoom_current = base
+		empty_zoom_last_written = nil
+	end
+	if not empty_zoom_active then return end
+	if not allowed or actor ~= empty_zoom_actor then
+		clear_empty_zoom("suppressed")
+		return
+	end
+
+	local target = pressed and math.max(2.0, empty_zoom_base * EMPTY_HAND_ZOOM_MULTIPLIER) or empty_zoom_base
+	empty_zoom_current = exp_step(empty_zoom_current, target, EMPTY_HAND_ZOOM_RATE, dt)
+	write_empty_zoom(actor, empty_zoom_current)
+	if not pressed and math.abs(empty_zoom_current - empty_zoom_base) <= EMPTY_HAND_ZOOM_WRITE_EPSILON then
+		write_empty_zoom(actor, empty_zoom_base, true)
+		empty_zoom_active = false
+		empty_zoom_actor = nil
+		empty_zoom_base = nil
+		empty_zoom_current = nil
+		empty_zoom_last_written = nil
+	end
+end
+
+function sivol_weapon_zoom.on_actor_death()
+	clear_empty_zoom("death")
+	reset_hold_zoom("death")
+end
 local function on_update(delta)
     local aiming = wpn_params.get_zie_obj() ~= nil
 	local dt = tonumber(delta) or device().f_time_delta or 0.016
 	if dt > 1 then dt = dt / 1000 end
 	if dt <= 0 or dt > 0.20 then dt = 0.016 end
+	update_empty_hand_zoom(db.actor, dt)
 	update_hold_breath_zoom(db.actor, aiming, dt, time_global() / 1000)
 
     if aiming and not was_aiming then
@@ -500,7 +584,9 @@ end
 function attach(sm)
 	sm:subscribe({signal = "on_update", fun = on_update})
 	sm:subscribe({signal = "on_item_to_slot", fun = on_item_to_slot})
-	sm:subscribe({signal = "on_first_update", fun = function() reset_hold_zoom("load/reset") end})
-	sm:subscribe({signal = "on_before_save_game", fun = function() reset_hold_zoom("save") end})
-	sm:subscribe({signal = "on_stop_modules", fun = function() reset_hold_zoom("net_destroy") end})
+	sm:subscribe({signal = "on_first_update", fun = function() clear_empty_zoom("load/reset"); reset_hold_zoom("load/reset") end})
+	sm:subscribe({signal = "on_load_before_all", fun = function() clear_empty_zoom("load"); reset_hold_zoom("load") end})
+	sm:subscribe({signal = "on_before_save_game", fun = function() clear_empty_zoom("save"); reset_hold_zoom("save") end})
+	sm:subscribe({signal = "level_changer_action", fun = function() clear_empty_zoom("level change"); reset_hold_zoom("level change") end})
+	sm:subscribe({signal = "on_stop_modules", fun = function() clear_empty_zoom("net_destroy"); reset_hold_zoom("net_destroy") end})
 end
