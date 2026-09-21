@@ -52,8 +52,13 @@ EXCLUDE_FILES = (MANIFEST_NAME, ".gitattributes", ".gitignore", "README.md")
 # therefore carries, per variant, the list of paths the launcher must leave alone
 # while that variant is installed; the variant announces itself with VARIANT_MARKER,
 # which it drops into gamedata together with the rest of its files.
-VARIANT_PREFIX = "Опционально/оружие/"
-VARIANT_MARKER = "gamedata/variant_weapons.ltx"
+# one category per optional folder, each with its own marker, so a weapon pack,
+# a weather pack and a bolt pack can be installed at the same time
+VARIANT_CATEGORIES = {
+    "Опционально/оружие/": "gamedata/variant_weapons.ltx",
+    "Опционально/погода/": "gamedata/variant_weather.ltx",
+    "Опционально/болтяры/": "gamedata/variant_bolt.ltx",
+}
 # a pack's file is protected when the build ships the same path, and always for
 # scripts: X-Ray addresses a module by bare filename, so a pack script sitting in
 # its own subfolder still shadows -- and is shadowed by -- a shipped module.
@@ -96,16 +101,18 @@ def variant_keep(everything, shipped):
     """
     owned = {}
     for path, _, _ in everything:
-        if not path.startswith(VARIANT_PREFIX):
-            continue
-        rest = path[len(VARIANT_PREFIX):]
-        name, slash, rel = rest.partition("/")
-        if not slash or not rel.startswith("gamedata/"):
-            continue
-        if rel != VARIANT_MARKER and rel not in shipped \
-                and not rel.startswith(KEEP_ALWAYS_PREFIXES):
-            continue
-        owned.setdefault(name, []).append(rel)
+        for prefix, marker in VARIANT_CATEGORIES.items():
+            if not path.startswith(prefix):
+                continue
+            rest = path[len(prefix):]
+            name, slash, rel = rest.partition("/")
+            if not slash or not rel.startswith("gamedata/"):
+                break
+            if rel != marker and rel not in shipped \
+                    and not rel.startswith(KEEP_ALWAYS_PREFIXES):
+                break
+            owned.setdefault(name, []).append(rel)
+            break
     for name in owned:
         owned[name] = sorted(set(owned[name]))
     return owned

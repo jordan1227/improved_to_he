@@ -205,15 +205,32 @@ namespace NlcLauncher
             }
         }
 
-        // An optional pack (a weapon variant) drops this file in with its gamedata.
-        public const string VariantMarker = "gamedata/variant_weapons.ltx";
+        // An optional pack drops one of these in with its gamedata, one per
+        // category, so several packs can be installed side by side.
+        public static readonly string[] VariantMarkers = {
+            "gamedata/variant_weapons.ltx",
+            "gamedata/variant_weather.ltx",
+            "gamedata/variant_bolt.ltx",
+        };
 
-        // -> name of the optional variant installed in the game folder, or null.
-        public static string InstalledVariant()
+        // -> names of every optional variant installed in the game folder.
+        public static List<string> InstalledVariants()
+        {
+            var names = new List<string>();
+            foreach (string marker in VariantMarkers)
+            {
+                string name = VariantName(marker);
+                if (name != null && !names.Contains(name)) names.Add(name);
+            }
+            return names;
+        }
+
+        // -> name written in one marker file, or null when it is not there.
+        static string VariantName(string marker)
         {
             try
             {
-                string file = Local(VariantMarker);
+                string file = Local(marker);
                 if (!File.Exists(file)) return null;
                 foreach (string raw in File.ReadAllLines(file, Encoding.GetEncoding(1251)))
                 {
@@ -598,18 +615,20 @@ namespace NlcLauncher
                 // ships the stock weapons, watch and hands, and putting those back is
                 // exactly what uninstalls the variant.
                 var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                string variant = Util.InstalledVariant();
+                var variants = Util.InstalledVariants();
+                string variant = variants.Count > 0 ? string.Join(", ", variants.ToArray()) : null;
                 if (variant != null && Cfg.NoKeep)
-                    Say("-nokeep: файлы варианта " + variant
+                    Say("-nokeep: файлы вариантов " + variant
                         + " будут заменены версиями из сборки.");
-                else if (variant != null)
-                {
-                    HashSet<string> owned;
-                    if (Manifest.Keep.TryGetValue(variant, out owned))
-                        foreach (string p in owned) keep.Add(p);
-                    else
-                        Say("Вариант " + variant + " не описан в манифесте — его файлы не защищены.");
-                }
+                else
+                    foreach (string name in variants)
+                    {
+                        HashSet<string> owned;
+                        if (Manifest.Keep.TryGetValue(name, out owned))
+                            foreach (string p in owned) keep.Add(p);
+                        else
+                            Say("Вариант " + name + " не описан в манифесте — его файлы не защищены.");
+                    }
 
                 var state = State.Load();
                 var todo = new List<Entry>();
@@ -697,7 +716,7 @@ namespace NlcLauncher
 
                 Detail("");
                 if (keep.Count > 0)
-                    Say("Вариант оружия: " + variant + " — " + kept
+                    Say("Установленные варианты: " + variant + " — " + kept
                         + " файл(ов) пропущено (-nokeep снимает защиту).");
                 if (todo.Count == 0 && removed.Count == 0 && shadows.Count == 0)
                 {
