@@ -25,6 +25,7 @@ namespace NlcLauncher
         public static bool ExitWhenDone;  // -exit     : close instead of waiting
         public static bool AssumeYes;     // -yes      : do not ask before touching foreign files
         public static bool DevOk;         // -devok    : update even in a development checkout
+        public static bool NoKeep;        // -nokeep   : sync even the files an optional variant owns
         public static string ExtraArgs = "";
 
         public static string StateDir { get { return Path.Combine(GameRoot, @"appdata\updater"); } }
@@ -51,6 +52,7 @@ namespace NlcLauncher
                 else if (k == "base") Base = v.TrimEnd('/');
                 else if (k == "game") GameExe = v;
                 else if (k == "devok") DevOk = (v == "1" || v.ToLowerInvariant() == "true");
+                else if (k == "nokeep") NoKeep = (v == "1" || v.ToLowerInvariant() == "true");
             }
         }
 
@@ -65,6 +67,7 @@ namespace NlcLauncher
                 else if (low == "-exit" || low == "/exit") ExitWhenDone = true;
                 else if (low == "-yes" || low == "/yes") AssumeYes = true;
                 else if (low == "-devok" || low == "/devok") DevOk = true;
+                else if (low == "-nokeep" || low == "/nokeep") NoKeep = true;
                 else rest.Add(a);
             }
             ExtraArgs = string.Join(" ", rest.ToArray());
@@ -91,9 +94,15 @@ namespace NlcLauncher
     {
         public static string Version = "";
 
+        // paths an optional variant owns, per variant name: the build ships its own
+        // versions of them, and installing those on top of the variant undoes it.
+        public static Dictionary<string, HashSet<string>> Keep =
+            new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
         public static Dictionary<string, Entry> Parse(string text)
         {
             var map = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
+            Keep = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             foreach (string raw in text.Split('\n'))
             {
                 string line = raw.TrimEnd('\r');
@@ -101,6 +110,7 @@ namespace NlcLauncher
                 if (line[0] == '#')
                 {
                     if (line.StartsWith("#version ")) Version = line.Substring(9).Trim();
+                    else if (line.StartsWith("#keep ")) ParseKeep(line.Substring(6));
                     continue;
                 }
                 int a = line.IndexOf(' ');
@@ -115,6 +125,23 @@ namespace NlcLauncher
                 map[e.Path] = e;
             }
             return map;
+        }
+
+        static void ParseKeep(string rest)
+        {
+            rest = rest.Trim();
+            int sp = rest.IndexOf(' ');
+            if (sp <= 0) return;
+            string name = rest.Substring(0, sp).Trim();
+            string path = rest.Substring(sp + 1).Replace('\\', '/').Trim();
+            if (name.Length == 0 || path.Length == 0) return;
+            HashSet<string> set;
+            if (!Keep.TryGetValue(name, out set))
+            {
+                set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                Keep[name] = set;
+            }
+            set.Add(path);
         }
     }
 
@@ -178,6 +205,31 @@ namespace NlcLauncher
             }
         }
 
+        // An optional pack (a weapon variant) drops this file in with its gamedata.
+        public const string VariantMarker = "gamedata/variant_weapons.ltx";
+
+        // -> name of the optional variant installed in the game folder, or null.
+        public static string InstalledVariant()
+        {
+            try
+            {
+                string file = Local(VariantMarker);
+                if (!File.Exists(file)) return null;
+                foreach (string raw in File.ReadAllLines(file, Encoding.GetEncoding(1251)))
+                {
+                    string line = raw.Trim();
+                    if (line.Length == 0 || line[0] == ';' || line[0] == '#' || line[0] == '[') continue;
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0) continue;
+                    if (line.Substring(0, eq).Trim().ToLowerInvariant() != "name") continue;
+                    string v = line.Substring(eq + 1).Trim();
+                    if (v.Length > 0) return v;
+                }
+            }
+            catch { }
+            return null;
+        }
+
         public static string Local(string relative)
         {
             return Path.Combine(Cfg.GameRoot, relative.Replace('/', '\\'));
@@ -238,7 +290,8 @@ namespace NlcLauncher
 
         // Local *.script files that carry a shipped module name from a path the
         // build does not use -- leftovers that shadow the real module.
-        public static List<string> ShadowScripts(Dictionary<string, Entry> manifest)
+        public static List<string> ShadowScripts(Dictionary<string, Entry> manifest,
+                                                 HashSet<string> keep)
         {
             var found = new List<string>();
             var names = ScriptNames(manifest);
@@ -249,6 +302,7 @@ namespace NlcLauncher
             {
                 string rel = full.Substring(Cfg.GameRoot.Length).TrimStart('\\').Replace('\\', '/');
                 if (manifest.ContainsKey(rel)) continue;
+                if (keep != null && keep.Contains(rel)) continue;
                 if (names.Contains(Path.GetFileName(full))) found.Add(rel);
             }
             return found;
@@ -540,10 +594,28 @@ namespace NlcLauncher
                 Say("Версия сборки: " + (Manifest.Version.Length > 0 ? Manifest.Version : "?")
                     + ", файлов в сборке: " + manifest.Count);
 
+                // Files an installed optional variant owns are left alone: the build
+                // ships the stock weapons, watch and hands, and putting those back is
+                // exactly what uninstalls the variant.
+                var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                string variant = Util.InstalledVariant();
+                if (variant != null && Cfg.NoKeep)
+                    Say("-nokeep: файлы варианта " + variant
+                        + " будут заменены версиями из сборки.");
+                else if (variant != null)
+                {
+                    HashSet<string> owned;
+                    if (Manifest.Keep.TryGetValue(variant, out owned))
+                        foreach (string p in owned) keep.Add(p);
+                    else
+                        Say("Вариант " + variant + " не описан в манифесте — его файлы не защищены.");
+                }
+
                 var state = State.Load();
                 var todo = new List<Entry>();
                 var removed = new List<string>();
                 long todoBytes = 0;
+                int kept = 0;
 
                 Status("Сверка файлов...");
                 Marquee(false);
@@ -558,6 +630,7 @@ namespace NlcLauncher
                         Detail(i + " / " + manifest.Count);
                     }
                     Entry e = kv.Value;
+                    if (keep.Contains(e.Path)) { kept++; continue; }
                     string local = Util.Local(e.Path);
                     if (!File.Exists(local))
                     {
@@ -606,6 +679,7 @@ namespace NlcLauncher
                 foreach (var kv in state)
                 {
                     if (manifest.ContainsKey(kv.Key)) continue;
+                    if (keep.Contains(kv.Key)) continue;
                     string local = Util.Local(kv.Key);
                     if (!File.Exists(local)) continue;
                     try
@@ -619,9 +693,12 @@ namespace NlcLauncher
                     catch { }
                 }
 
-                var shadows = Util.ShadowScripts(manifest);
+                var shadows = Util.ShadowScripts(manifest, keep);
 
                 Detail("");
+                if (keep.Count > 0)
+                    Say("Вариант оружия: " + variant + " — " + kept
+                        + " файл(ов) пропущено (-nokeep снимает защиту).");
                 if (todo.Count == 0 && removed.Count == 0 && shadows.Count == 0)
                 {
                     State.Save(state);
