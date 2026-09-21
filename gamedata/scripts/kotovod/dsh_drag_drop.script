@@ -13,6 +13,7 @@ local RESONATOR_CAM_HIDE = "camera_effects\\weapon\\af_hand_inspect_hide.anm"
 
 local function resonator_state_active(state)
     return state and resonator_state == state and hud_animation_session.valid(state)
+        and hud_animation_owner.valid(state.owner_token)
 end
 
 local function resonator_remove_camera(state)
@@ -22,10 +23,37 @@ local function resonator_remove_camera(state)
     end
 end
 
+local function resonator_release_owner(owner, reason)
+    if owner and hud_animation_owner then
+        hud_animation_owner.cancel(owner, reason or "cancelled")
+        hud_animation_owner.release(owner, reason or "cancelled")
+    end
+end
+
+local function resonator_finish_request(request, reason)
+    if not request or resonator_request ~= request then return end
+    resonator_request = nil
+    hud_animation_session.cancel(request, reason or "complete")
+end
+
+local function resonator_refuse(owner, request, reason)
+    resonator_finish_request(request, reason or "refused")
+    resonator_release_owner(owner, reason or "refused")
+end
+
+local function resonator_show_busy_tip()
+    sak.send_tip(
+        game.translate_string( "af_resonator_busy" ),
+        game.translate_string( "af_resonator_tip_header" ),
+        0, 5, "g_g", "no", "yellow"
+    )
+end
 local function resonator_cleanup(reason, teardown)
-    if resonator_request then
-        hud_animation_session.cancel(resonator_request, reason or "cancelled")
-        resonator_request = nil
+    local request = resonator_request
+    resonator_request = nil
+    if request then
+        hud_animation_session.cancel(request, reason or "cancelled")
+        resonator_release_owner(request.owner_token, reason or "cancelled")
     end
     local state = resonator_state
     if not state then
@@ -34,6 +62,10 @@ local function resonator_cleanup(reason, teardown)
     end
 
     resonator_state = nil
+    local owner = state.owner_token
+    if owner and hud_animation_owner then
+        hud_animation_owner.cancel(owner, reason or "complete")
+    end
     hud_animation_session.cancel(state, reason or "complete")
     if state.hud_active then
         game.stop_hud_motion()
@@ -42,18 +74,23 @@ local function resonator_cleanup(reason, teardown)
     resonator_remove_camera(state)
     if state.sound and state.sound:playing() then state.sound:stop() end
     if state.slot_held then
-        if teardown or not db.actor or db.actor ~= state.actor or not db.actor:alive() then slot_keeper.reset()
-        else slot_keeper.release() end
+        if teardown or not db.actor or db.actor ~= state.actor or not db.actor:alive() then
+            slot_keeper.reset()
+        else
+            slot_keeper.release(owner)
+        end
     end
-    if state.input_hidden then sak.restore_weap() end
     if not teardown and db.actor and db.actor == state.actor and db.actor:alive() and state.psy_applied then
         db.actor.psy_health = state.psy
     end
 
-    resonator_state = nil
+    if owner then
+        resonator_release_owner(owner, reason or "complete")
+    elseif state.input_hidden then
+        sak.restore_weap()
+    end
     resonator_busy = false
 end
-
 function on_game_loaded()
     resonator_cleanup("load/reset", true)
 end
@@ -397,52 +434,96 @@ local function resonator_start_inspection(state, sections, message_id, special, 
     end )
 end
 
-local function use_resonator( drag_obj, drop_obj )
-    if resonator_busy or vergas_masks.is_animating() or hud_fx_busy
+local function use_resonator( drag_obj, drop_obj, owner_token, request )
+    if resonator_busy or vergas_masks.is_animating() or hud_fx_busy then
+        resonator_refuse(owner_token, request, "resonator blocked")
+        resonator_show_busy_tip()
+        return false
+    end
+
+    if owner_token and request and hud_animation_owner.pending
+        and hud_animation_owner.pending() == owner_token then
+        if request.waiting_for_owner then return true end
+        request.waiting_for_owner = true
+        sak.close_window()
+        hud_animation_session.wait(request, function()
+            return hud_animation_owner.current() == nil
+                and hud_animation_owner.pending() == owner_token
+                and not get_value("inv_full")
+        end, function()
+            request.waiting_for_owner = false
+            if not hud_animation_session.valid(request) then return end
+            local drag = level.object_by_id(request.drag_id)
+            local drop = level.object_by_id(request.drop_id)
+            if not drag or not drop then
+                resonator_refuse(owner_token, request, "objects unavailable")
+                return
+            end
+            if not hud_animation_owner.valid(owner_token) then
+                resonator_refuse(owner_token, request, "successor unavailable")
+                return
+            end
+            resonator_finish_request(request, "successor ready")
+            use_resonator(drag, drop, owner_token)
+        end, 10000)
+        return true
+    end
+
+    if (not owner_token and hud_animation_owner.busy())
         or (not get_value("inv_full") and (level.only_movekeys_allowed() or not game.hud_motion_allowed())) then
-        sak.send_tip(
-            game.translate_string( "af_resonator_busy" ),
-            game.translate_string( "af_resonator_tip_header" ),
-            0, 5, "g_g", "no", "yellow"
-        )
-        return
+        resonator_refuse(owner_token, request, "resonator admission blocked")
+        resonator_show_busy_tip()
+        return false
     end
 
     local sections, message_id, special, status =
         resonator_target_sections( drop_obj )
+    local owner = owner_token
+    if not owner then owner = hud_animation_owner.reserve("resonator") end
+    if not owner or not hud_animation_owner.activate(owner, "resonator") then
+        resonator_refuse(owner, request, "admission refused")
+        resonator_show_busy_tip()
+        return false
+    end
+    resonator_finish_request(request, "started")
+
     local accum = sak.get_accum()
     if not accum or accum:condition() < 0.07 then
+        resonator_refuse(owner, request, "no accumulator")
         sak.send_tip(
             game.translate_string( "af_resonator_no_accumulator" ),
             game.translate_string( "af_resonator_tip_header" ),
             0, 5, "g_g", "no", "red"
         )
         vergas_lib.s_play( [[device\\antirad_no]], 1 )
-        return
+        return false
     end
 
     params.upd_condition( accum, accum:condition() - 0.07 )
     resonator_busy = true
     local state = hud_animation_session.new("resonator", function(reason) resonator_cleanup(reason) end)
+    state.owner_token = owner
     state.psy = db.actor.psy_health
     resonator_state = state
-    slot_keeper.remember()
-    slot_keeper.hold()
+    slot_keeper.remember(owner)
+    slot_keeper.hold(owner)
     state.slot_held = true
+    hud_animation_owner.acquire_weapon(owner)
     sak.close_window()
-    sak.actor_hide_weapon()
+    hud_animation_owner.acquire_input(owner)
     state.input_hidden = true
     db.actor:activate_slot(255)
     hud_animation_session.wait(state, function()
         return not get_value("inv_full") and not db.actor:active_item()
     end, function()
+        if not resonator_state_active(state) then return end
         db.actor.psy_health = -0.55
         state.psy_applied = true
         state.sound = vergas_lib.s_play([[affects\\tinnitus3a]], 0.8)
         resonator_start_inspection(state, sections, message_id, special, status)
     end, 10000)
+    return true
 end
-
 local anagramm_busy = false
 
 local drag_drop = {
@@ -507,16 +588,23 @@ local drag_drop = {
         target_exceptions = {},
         action = function( drag_obj, drop_obj )
             if resonator_request or resonator_busy then return end
+            local owner = hud_animation_owner.reserve("resonator", { allow_full_backpack = true })
+            if not owner then return end
             local drag_id = drag_obj:id()
             local drop_id = drop_obj:id()
             local request = hud_animation_session.new("resonator request", function(reason) resonator_cleanup(reason, true) end)
+            request.owner_token = owner
+            request.drag_id = drag_id
+            request.drop_id = drop_id
             resonator_request = request
             hud_animation_session.after(request, 50, function()
-                resonator_request = nil
-                hud_animation_session.cancel(request, "complete")
                 local drag = level.object_by_id(drag_id)
                 local drop = level.object_by_id(drop_id)
-                if drag and drop then use_resonator(drag, drop) end
+                if drag and drop then
+                    use_resonator(drag, drop, owner, request)
+                else
+                    resonator_refuse(owner, request, "objects unavailable")
+                end
             end)
         end
     },

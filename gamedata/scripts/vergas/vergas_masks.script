@@ -686,23 +686,43 @@ end
 function abort_animation(reason, teardown)
     local st = mask_session
     if not st then return end
+    local owner = st.owner_token
+    local parent = st.parent_token
     local notify = not teardown and hud_animation_session.valid(st)
+    if notify and parent then notify = hud_animation_owner.valid(parent) end
     mask_session = nil
+    if owner and hud_animation_owner then hud_animation_owner.cancel(owner, reason or "cancelled") end
     hud_animation_session.cancel(st, reason or "cancelled")
     if st.hud_active then game.stop_hud_motion() end
     if st.camera_active then level.remove_cam_effector(MASK_CAMERA_ID) end
     if st.sound and st.sound:playing() then st.sound:stop() end
-    bind_stalker.restore_weapon()
-    level.only_allow_movekeys(false)
-    sivol.remove_move_penalty("mask")
+    if st.penalty_owned then
+        if db.actor and db.actor == st.actor and db.actor:alive() then
+            sivol.remove_move_penalty("mask")
+        end
+        if owner and hud_animation_owner then
+            hud_animation_owner.release_resource(owner, "mask_penalty")
+        end
+    end
     level.remove_pp_effector(4277)
     if st.slot_held then
-        if teardown or not db.actor or db.actor ~= st.actor or not db.actor:alive() then slot_keeper.reset()
-        else slot_keeper.release() end
+        if teardown or not db.actor or db.actor ~= st.actor or not db.actor:alive() then
+            slot_keeper.reset()
+        else
+            slot_keeper.release(owner)
+        end
+    end
+    if owner and hud_animation_owner then
+        hud_animation_owner.release(owner, reason or "cancelled")
+    else
+        if db.actor and db.actor == st.actor and db.actor:alive() then
+            sivol.remove_move_penalty("mask")
+        end
+        bind_stalker.restore_weapon()
+        level.only_allow_movekeys(false)
     end
     if notify and st.on_complete then st.on_complete(reason == "complete") end
 end
-
 function reset_animation()
     abort_animation("load/reset", true)
     last_mask_toggle = nil
@@ -715,7 +735,7 @@ function save_animation()
 end
 
 function update_animation()
-    if mask_session and not hud_animation_session.valid(mask_session) then
+    if mask_session and (not hud_animation_session.valid(mask_session) or not hud_animation_owner.valid(mask_session.owner_token)) then
         abort_animation("actor unavailable", true)
     elseif mask_session then
         local outfit = db.actor:get_current_outfit()
@@ -723,33 +743,65 @@ function update_animation()
     end
 end
 
-function on_off_mask(on_complete, chained)
+function on_off_mask(on_complete, chained, parent_owner)
     local now = time_global()
+    local parent = parent_owner
+    if type(parent) ~= "table" and type(chained) == "table" then
+        parent = chained
+    end
+    if chained == true and not parent then
+        local current = hud_animation_owner.current()
+        if current and hud_animation_owner.owner(current) == "consumable" then
+            parent = current
+        else
+            log2("[HUD_OWNER] rejected legacy chained mask without consumable parent")
+            return false
+        end
+    end
+    local is_chained = parent ~= nil
     if mask_session or not db.actor or not db.actor:alive() then return false end
-    if not chained and last_mask_toggle and now - last_mask_toggle >= 0
+    if not is_chained and last_mask_toggle and now - last_mask_toggle >= 0
         and now - last_mask_toggle < MASK_TOGGLE_COOLDOWN then return false end
-    if not chained and (hud_fx_busy or level.only_movekeys_allowed() or not game.hud_motion_allowed()) then return false end
+    if not is_chained and (hud_fx_busy or level.only_movekeys_allowed() or not game.hud_motion_allowed()) then return false end
+    if is_chained and not hud_animation_owner.valid(parent) then return false end
     local out = db.actor:get_current_outfit()
     local ms = out and get_mask_config(out:section()) or "?"
     if ms == "?" then return false end
     local is_resp = is_respirator_outfit(out:section())
+    local owner_token
+    if is_chained then
+        owner_token = hud_animation_owner.child(parent, "mask")
+    else
+        owner_token = hud_animation_owner.reserve("mask")
+    end
+    if not owner_token or not hud_animation_owner.activate(owner_token, "mask") then
+        if owner_token then hud_animation_owner.release(owner_token, "mask admission") end
+        return false
+    end
     local st = hud_animation_session.new("mask", function(reason) abort_animation(reason) end)
     st.on_complete = type(on_complete) == "function" and on_complete or nil
-    st.chained = chained == true
+    st.owner_token = owner_token
+    st.parent_token = parent
+    st.chained = is_chained
     st.outfit_id = out:id()
     st.outfit_section = out:section()
     if not st.chained then
-        slot_keeper.remember()
-        slot_keeper.hold()
+        slot_keeper.remember(owner_token)
+        if not slot_keeper.hold(owner_token) then
+            hud_animation_owner.release(owner_token, "slot hold refused")
+            return false
+        end
         st.slot_held = true
     end
-    db.actor:activate_slot(255)
+    hud_animation_owner.acquire_weapon(owner_token)
+    hud_animation_owner.acquire_movement(owner_token)
+    st.penalty_owned = hud_animation_owner.acquire(owner_token, "mask_penalty")
+    if st.penalty_owned then sivol.add_move_penalty("mask", 0.4) end
     mask_session = st
+    db.actor:activate_slot(255)
     last_mask_toggle = now
     if not fdda_headgear_data[ms] then
-        level.only_allow_movekeys(true)
-        bind_stalker.hide_weapon()
-        sivol.add_move_penalty("mask", 0.4)
+        -- Controls are held by the owner token.
         hud_animation_session.after(st, 2000, function()
             abort_animation("complete")
         end)
@@ -757,12 +809,9 @@ function on_off_mask(on_complete, chained)
     end
 
     -- Start FDDA Sequence
-    level.only_allow_movekeys(true)
-    sivol.add_move_penalty("mask", 0.4) -- sivol.script 
+    -- Controls are held by the owner token.
 
     -- Check if the player is actually holding something right now
-
-    bind_stalker.hide_weapon()
 
     hud_animation_session.wait(st, function() return not db.actor:active_item() end, function()
         -- Safety check: did the actor die while waiting for weapon to lower?

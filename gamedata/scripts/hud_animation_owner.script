@@ -1,0 +1,431 @@
+-- Shared admission and ownership for scripted HUD presentations.
+--
+-- hud_animation_session owns callback lifetime and timers. This module owns
+-- the single presentation channel and the controls which migrated into it.
+-- Reservations are deliberately side-effect free so they are safe from the
+-- native on_actor_before_use transaction.
+
+diagnostics = false
+
+local lifecycle_generation = 0
+local next_root_id = 0
+local current_root = nil
+local pending_successor = nil
+local accepting = true
+
+local resource_holders = {}
+
+local function diag(fmt, ...)
+    if diagnostics then
+        log2("[HUD_OWNER] " .. fmt, ...)
+    end
+end
+
+local function actor_is_alive(actor)
+    return actor and db and db.actor == actor and actor.alive and actor:alive()
+end
+
+local function token_actor_valid(token)
+    return token and db and token.actor == db.actor
+        and token.generation == lifecycle_generation
+        and token.actor and token.actor.alive and token.actor:alive()
+        and not token.cancelled and not token.released
+end
+
+local function root_token(token)
+    return token and (token.root or token)
+end
+
+local function token_valid(token)
+    if not token_actor_valid(token) then return false end
+    if token.kind == "child" then
+        return current_root == token.root and token.parent
+            and token_valid(token.parent)
+    end
+    if token.pending then return pending_successor == token end
+    return current_root == token
+end
+
+local function resource_is_held(name)
+    local holders = resource_holders[name]
+    if not holders then return false end
+    for token, held in pairs(holders) do
+        if held and not token.released then return true end
+    end
+    return false
+end
+
+local function make_token(owner, phase, pending)
+    next_root_id = next_root_id + 1
+    return {
+        kind = "root",
+        owner = owner,
+        actor = db and db.actor,
+        generation = lifecycle_generation,
+        root_id = next_root_id,
+        phase = phase or "reserved",
+        pending = pending == true,
+        cancelled = false,
+        released = false,
+        resources = {},
+        children = {},
+        lifecycle_cleanups = {},
+    }
+end
+
+function reserve(owner, options)
+    options = options or {}
+    if not accepting then return nil, "admission closed" end
+    if not actor_is_alive(db and db.actor) then return nil, "actor unavailable" end
+
+    if current_root then
+        local full_owner = current_root.owner == "full-backpack"
+            and current_root.phase == "full-backpack"
+        local full_open = get_value and get_value("inv_full")
+        if options.allow_full_backpack and full_owner and full_open
+            and not pending_successor then
+            local token = make_token(owner, "pending", true)
+            pending_successor = token
+            diag("reserve pending owner=%s root=%d generation=%d",
+                tostring(owner), token.root_id, token.generation)
+            return token, "pending"
+        end
+        return nil, "busy"
+    end
+
+    if pending_successor then return nil, "successor pending" end
+
+    local token = make_token(owner, "reserved", false)
+    current_root = token
+    diag("reserve owner=%s root=%d generation=%d",
+        tostring(owner), token.root_id, token.generation)
+    return token
+end
+
+function activate(token, phase)
+    if not token_actor_valid(token) then return false end
+    if token.kind == "child" then
+        if current_root ~= token.root or not token_valid(token.parent)
+            or token.phase ~= "reserved" then return false end
+        token.phase = phase or "active"
+        diag("activate child owner=%s root=%d phase=%s",
+            tostring(token.owner), token.root_id, tostring(token.phase))
+        return true
+    end
+
+    if token.pending then
+        if pending_successor ~= token or current_root ~= nil then return false end
+        pending_successor = nil
+        token.pending = false
+        current_root = token
+    elseif current_root ~= token or token.phase ~= "reserved" then
+        return false
+    end
+
+    token.phase = phase or "active"
+    diag("activate owner=%s root=%d phase=%s",
+        tostring(token.owner), token.root_id, tostring(token.phase))
+    return true
+end
+
+function valid(token)
+    return token_valid(token)
+end
+
+function busy()
+    return current_root ~= nil or pending_successor ~= nil
+end
+
+function owner(token)
+    local root = root_token(token)
+    return root and root.owner or nil
+end
+
+function root_id(token)
+    local root = root_token(token)
+    return root and root.root_id or nil
+end
+
+function generation()
+    return lifecycle_generation
+end
+
+function current()
+    return current_root
+end
+
+function pending()
+    return pending_successor
+end
+
+function child(parent, owner_name)
+    if not token_valid(parent) then return nil, "parent unavailable" end
+    local root = root_token(parent)
+    local token = {
+        kind = "child",
+        owner = owner_name,
+        actor = root.actor,
+        generation = root.generation,
+        root_id = root.root_id,
+        root = root,
+        parent = parent,
+        phase = "reserved",
+        pending = false,
+        cancelled = false,
+        released = false,
+        resources = {},
+        children = {},
+    }
+    root.children[token] = true
+    return token
+end
+
+function acquire(token, resource)
+    if not token_valid(token) or not resource then return false end
+    if token.resources[resource] then return true end
+    local holders = resource_holders[resource]
+    if not holders then
+        holders = {}
+        resource_holders[resource] = holders
+    end
+    token.resources[resource] = true
+    holders[token] = true
+    diag("acquire owner=%s root=%d resource=%s",
+        tostring(token.owner), tostring(token.root_id), tostring(resource))
+    return true
+end
+
+local function release_bookkeeping(token, resource)
+    if not token or not token.resources[resource] then return false end
+    token.resources[resource] = nil
+    local holders = resource_holders[resource]
+    if holders then
+        holders[token] = nil
+        local any = false
+        for _, held in pairs(holders) do
+            if held then any = true; break end
+        end
+        if not any then resource_holders[resource] = nil end
+    end
+    return true
+end
+
+function resource_owned(token, resource)
+    return token and token.resources and token.resources[resource] == true
+end
+
+function resource_held(resource)
+    return resource_is_held(resource)
+end
+
+function register_lifecycle_cleanup(token, callback)
+    if type(callback) ~= "function" or not token_valid(token) then return false end
+    token.lifecycle_cleanups = token.lifecycle_cleanups or {}
+    table.insert(token.lifecycle_cleanups, callback)
+    return true
+end
+
+local function run_lifecycle_cleanups(token, reason)
+    if not token or not token.lifecycle_cleanups then return end
+    local cleanups = token.lifecycle_cleanups
+    token.lifecycle_cleanups = nil
+    for _, callback in ipairs(cleanups) do
+        local ok, err = pcall(callback, reason)
+        if not ok then
+            diag("lifecycle cleanup failed owner=%s root=%d error=%s",
+                tostring(token.owner), tostring(token.root_id), tostring(err))
+        end
+    end
+end
+
+function acquire_weapon(token)
+    if not acquire(token, "weapon") then return false end
+    if bind_stalker and bind_stalker.hide_weapon then
+        bind_stalker.hide_weapon()
+    end
+    return true
+end
+
+function acquire_movement(token)
+    if not acquire(token, "movement") then return false end
+    if level and level.only_allow_movekeys then
+        level.only_allow_movekeys(true)
+        level.set_actor_allow_ladder(false)
+    end
+    return true
+end
+
+function acquire_input(token)
+    if not acquire(token, "input") then return false end
+    if level and level.disable_input then level.disable_input() end
+    return true
+end
+
+function release_resource(token, resource)
+    if not release_bookkeeping(token, resource) then return false end
+    diag("release owner=%s root=%d resource=%s",
+        tostring(token.owner), tostring(token.root_id), tostring(resource))
+    if resource == "weapon" and not resource_is_held("weapon") then
+        if db and db.actor == token.actor and token.actor:alive()
+            and bind_stalker and bind_stalker.restore_weapon then
+            bind_stalker.restore_weapon()
+        end
+    elseif resource == "movement" and not resource_is_held("movement") then
+        if db and db.actor == token.actor and token.actor:alive()
+            and level and level.only_allow_movekeys then
+            level.only_allow_movekeys(false)
+            level.set_actor_allow_ladder(true)
+        end
+    elseif resource == "input" and not resource_is_held("input") then
+        if db and db.actor == token.actor and token.actor:alive()
+            and level and level.enable_input then
+            level.enable_input()
+        end
+    end
+    return true
+end
+
+local function release_all_resources(token)
+    if not token or not token.resources then return end
+    local names = {}
+    for resource in pairs(token.resources) do
+        table.insert(names, resource)
+    end
+    for _, resource in ipairs(names) do
+        release_resource(token, resource)
+    end
+end
+
+local function mark_children_cancelled(token, reason)
+    if not token or not token.children then return end
+    for child_token in pairs(token.children) do
+        child_token.cancelled = true
+        child_token.phase = "cancelled"
+        child_token.reason = reason
+        mark_children_cancelled(child_token, reason)
+    end
+end
+
+function cancel(token, reason)
+    if not token or token.cancelled or token.released then return false end
+    token.cancelled = true
+    token.phase = "cancelled"
+    token.reason = reason or "cancelled"
+    if token.kind == "root" then
+        mark_children_cancelled(token, token.reason)
+    end
+    diag("cancel owner=%s root=%d reason=%s",
+        tostring(token.owner), tostring(token.root_id), tostring(token.reason))
+    return true
+end
+
+function release(token, reason)
+    if not token or token.released then return false end
+    if token.children then
+        local children = {}
+        for child_token in pairs(token.children) do
+            table.insert(children, child_token)
+        end
+        for _, child_token in ipairs(children) do
+            release(child_token, reason or "parent released")
+        end
+    end
+    token.released = true
+    token.phase = "released"
+    token.reason = reason or token.reason or "complete"
+    token.lifecycle_cleanups = nil
+    release_all_resources(token)
+
+    if token.kind == "child" then
+        if token.root and token.root.children then
+            token.root.children[token] = nil
+        end
+    elseif current_root == token then
+        current_root = nil
+    elseif pending_successor == token then
+        pending_successor = nil
+    end
+
+    diag("release owner=%s root=%d reason=%s",
+        tostring(token.owner), tostring(token.root_id), tostring(token.reason))
+    return true
+end
+
+local function finalize_token(token, reason)
+    run_lifecycle_cleanups(token, reason)
+    cancel(token, reason)
+    release(token, reason)
+end
+
+local function finalize(reason, reopen)
+    accepting = false
+    if current_root then
+        finalize_token(current_root, reason)
+    end
+    if pending_successor then
+        finalize_token(pending_successor, reason)
+    end
+    lifecycle_generation = lifecycle_generation + 1
+    accepting = reopen == true and actor_is_alive(db and db.actor)
+    diag("lifecycle reason=%s generation=%d accepting=%s",
+        tostring(reason), lifecycle_generation, tostring(accepting))
+end
+
+function on_load_before_all()
+    finalize("load/reset", false)
+end
+
+function on_first_update()
+    if current_root and token_valid(current_root) then
+        accepting = true
+        diag("first update preserved active owner=%s root=%d generation=%d",
+            tostring(current_root.owner), current_root.root_id, lifecycle_generation)
+        return
+    end
+    finalize("first update", true)
+end
+
+function on_game_loaded()
+    finalize("game loaded", true)
+end
+
+function on_before_save_game()
+    finalize("save", true)
+end
+
+function on_level_changer_action()
+    finalize("level change", false)
+end
+
+function on_stop_modules()
+    finalize("shutdown", false)
+end
+
+function on_update()
+    if current_root and (current_root.actor ~= (db and db.actor)
+        or not current_root.actor:alive()) then
+        finalize("actor unavailable", false)
+    elseif pending_successor and (pending_successor.actor ~= (db and db.actor)
+        or not pending_successor.actor:alive()) then
+        finalize("pending actor unavailable", false)
+    end
+end
+
+function blocks_weapon_restore()
+    return resource_is_held("weapon")
+end
+
+function set_diagnostics(enabled)
+    diagnostics = enabled == true
+end
+
+function attach(sm)
+    -- Registered after the participating owners so their cleanup runs first.
+    sm:subscribe({ signal = "on_load_before_all", fun = this.on_load_before_all })
+    sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
+    sm:subscribe({ signal = "on_game_loaded", fun = this.on_game_loaded })
+    sm:subscribe({ signal = "on_before_save_game", fun = this.on_before_save_game })
+    sm:subscribe({ signal = "level_changer_action", fun = this.on_level_changer_action })
+    sm:subscribe({ signal = "on_stop_modules", fun = this.on_stop_modules })
+    sm:subscribe({ signal = "on_update", fun = this.on_update })
+end
