@@ -174,6 +174,8 @@
 #define OFF_OBJ_NAME        0x0104
 #define OFF_MGR_DEF_IN      0x0020
 #define OFF_RO_OBJECT       0x0008
+#define OFF_SE_NAME_REPL    0x0040
+#define OFF_SE_NAME         0x0068
 #define STRV_VALUE          20
 
 #define RVA_UI_ADDITEM       0x00731C50ULL
@@ -2140,8 +2142,21 @@ static unsigned short g_brz_ids[BRZ_IDS_MAX];
 static int  g_brz_n = 0;
 static char g_brz_logged[BRZ_IDS_MAX];
 
+static int  g_brz_pending = 0;
+static int  g_brz_probe = 0;
+
 static void* g_brz_src = (void*)~(uintptr_t)0;
 static void* g_brz_dst = 0;
+
+static const char* se_name(void* se)
+{
+    if (!se) return 0;
+    const char* repl = *(const char**)((char*)se + OFF_SE_NAME_REPL);
+    if (repl && *repl) return repl;
+    void* nm = *(void**)((char*)se + OFF_SE_NAME);
+    if (!nm) return 0;
+    return (const char*)nm + STRV_VALUE;
+}
 
 static const char* obj_name(void* obj)
 {
@@ -2184,6 +2199,7 @@ static void brz_remember(unsigned short id)
 
 static int brz_is_exempt(unsigned short id)
 {
+    if (g_brz_pending) return 1;
     void* obj = level_object(id);
     if (obj) return brz_name_match(obj_name(obj));
     return brz_slot(id) >= 0;
@@ -2250,6 +2266,7 @@ static void hkRestrict(void* mgr, unsigned short id, void* out_r, void* in_r)
             g_orig_restrict(mgr, id, out_r, in_r);
             *dflt = save;
 
+            if (g_brz_pending) brz_remember(id);
             int i = brz_slot(id);
             if (i >= 0 && !g_brz_logged[i]) {
                 g_brz_logged[i] = 1;
@@ -2265,16 +2282,22 @@ static void hkRestrict(void* mgr, unsigned short id, void* out_r, void* in_r)
 static int hkRestrictedNetSpawn(void* self, void* data)
 {
     ensure_lua_api();
-    if (self) {
-        void* obj = *(void**)((char*)self + OFF_RO_OBJECT);
-        const char* nm = obj_name(obj);
-        if (nm && brz_name_match(nm)) {
-            unsigned short id = *(unsigned short*)((char*)obj + OFF_OBJ_ID);
-            brz_remember(id);
-            log_fmt1("~ [brz] tracking [%s]", nm);
-        }
+    const char* nm = se_name(data);
+    if (data && g_brz_probe < 6) {
+        ++g_brz_probe;
+        const char* repl = *(const char**)((char*)data + OFF_SE_NAME_REPL);
+        void* sn = *(void**)((char*)data + OFF_SE_NAME);
+        log_fmt1("~ [brz] probe repl [%s]", (repl && *repl) ? repl : "-");
+        log_fmt1("~ [brz] probe name [%s]", sn ? (const char*)sn + STRV_VALUE : "-");
     }
-    return g_orig_ro_spawn(self, data);
+    int match = (nm && brz_name_match(nm));
+    if (match) {
+        ++g_brz_pending;
+        log_fmt1("~ [brz] tracking [%s]", nm);
+    }
+    int r = g_orig_ro_spawn(self, data);
+    if (match && g_brz_pending > 0) --g_brz_pending;
+    return r;
 }
 
 static unsigned char __fastcall hkRunAttackCheck(void* self)
