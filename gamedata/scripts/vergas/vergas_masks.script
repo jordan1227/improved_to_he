@@ -6,6 +6,12 @@ Vergas
 ]]--
 
 function attach(sm)
+    sm:subscribe({signal = "on_stop_modules", fun = function() this.abort_animation("shutdown", true) end})
+    sm:subscribe({signal = "on_load_before_all", fun = this.reset_animation})
+    sm:subscribe({signal = "on_first_update", fun = this.reset_animation})
+    sm:subscribe({signal = "on_before_save_game", fun = this.save_animation})
+    sm:subscribe({signal = "level_changer_action", fun = this.save_animation})
+    sm:subscribe({signal = "on_update", fun = this.update_animation})
 	sm:subscribe({signal = "on_update", fun = this.update_zoom})
 	sm:subscribe({signal = "on_update", fun = this.mask_update})
 	sm:subscribe({signal = "on_actor_before_hit", fun = this.on_actor_before_hit})
@@ -668,63 +674,104 @@ local function get_mask_severity(mask)
     return math.max((dmg - 1) / 5, (dirt - 1) / 5) -- swap to an average if max feels too harsh
 end
 
-local last_mask_toggle = 0 -- Sivol mask 
-local MASK_TOGGLE_COOLDOWN = 3500 -- ms
+local last_mask_toggle = nil
+local MASK_TOGGLE_COOLDOWN = 3500
+local MASK_CAMERA_ID = 9783
+local mask_session = nil
 
 function is_animating()
-    return is_headgear_animating
+    return mask_session ~= nil
 end
 
--- Emergency cleanup to prevent the "busy hands" softlock
-function abort_animation()
-    if is_headgear_animating then
-        bind_stalker.restore_weapon()
-        level.only_allow_movekeys(false)
-        sivol.remove_move_penalty("mask") -- sivol.script 
-        level.remove_pp_effector(4277) -- Clear any stuck fade
-        is_headgear_animating = false
+function abort_animation(reason, teardown)
+    local st = mask_session
+    if not st then return end
+    local notify = not teardown and hud_animation_session.valid(st)
+    mask_session = nil
+    hud_animation_session.cancel(st, reason or "cancelled")
+    if st.hud_active then game.stop_hud_motion() end
+    if st.camera_active then level.remove_cam_effector(MASK_CAMERA_ID) end
+    if st.sound and st.sound:playing() then st.sound:stop() end
+    bind_stalker.restore_weapon()
+    level.only_allow_movekeys(false)
+    sivol.remove_move_penalty("mask")
+    level.remove_pp_effector(4277)
+    if st.slot_held then
+        if teardown or not db.actor or db.actor ~= st.actor or not db.actor:alive() then slot_keeper.reset()
+        else slot_keeper.release() end
+    end
+    if notify and st.on_complete then st.on_complete(reason == "complete") end
+end
+
+function reset_animation()
+    abort_animation("load/reset", true)
+    last_mask_toggle = nil
+end
+
+function save_animation()
+    -- The parent's save handler settles an in-progress consumable transaction.
+    if mask_session and mask_session.chained then return end
+    abort_animation("save")
+end
+
+function update_animation()
+    if mask_session and not hud_animation_session.valid(mask_session) then
+        abort_animation("actor unavailable", true)
+    elseif mask_session then
+        local outfit = db.actor:get_current_outfit()
+        if not outfit or outfit:id() ~= mask_session.outfit_id then abort_animation("outfit changed") end
     end
 end
 
-function on_off_mask()
+function on_off_mask(on_complete, chained)
     local now = time_global()
-    if now - last_mask_toggle < MASK_TOGGLE_COOLDOWN then return end
+    if mask_session or not db.actor or not db.actor:alive() then return false end
+    if not chained and last_mask_toggle and now - last_mask_toggle >= 0
+        and now - last_mask_toggle < MASK_TOGGLE_COOLDOWN then return false end
+    if not chained and (hud_fx_busy or level.only_movekeys_allowed() or not game.hud_motion_allowed()) then return false end
+    local out = db.actor:get_current_outfit()
+    local ms = out and get_mask_config(out:section()) or "?"
+    if ms == "?" then return false end
+    local is_resp = is_respirator_outfit(out:section())
+    local st = hud_animation_session.new("mask", function(reason) abort_animation(reason) end)
+    st.on_complete = type(on_complete) == "function" and on_complete or nil
+    st.chained = chained == true
+    st.outfit_id = out:id()
+    st.outfit_section = out:section()
+    if not st.chained then
+        slot_keeper.remember()
+        slot_keeper.hold()
+        st.slot_held = true
+    end
+    db.actor:activate_slot(255)
+    mask_session = st
     last_mask_toggle = now
-    if is_headgear_animating then return end
-
-	local out = db.actor:get_current_outfit()
-	local ms = out and get_mask_config(out:section()) or "?"
-	if ms == "?" then return end
-	local is_resp = is_respirator_outfit(out:section())   
-
-    -- If no FDDA anim data exists for this mask, fallback to original NLC behavior
     if not fdda_headgear_data[ms] then
         level.only_allow_movekeys(true)
         bind_stalker.hide_weapon()
-        sivol.add_move_penalty("mask", 0.4) -- sivol.script 
-        schedule.add("off_mask", "vergas_masks.on_off_mask_end()", 2000)
-        return
+        sivol.add_move_penalty("mask", 0.4)
+        hud_animation_session.after(st, 2000, function()
+            abort_animation("complete")
+        end)
+        return true
     end
 
     -- Start FDDA Sequence
-    is_headgear_animating = true
     level.only_allow_movekeys(true)
     sivol.add_move_penalty("mask", 0.4) -- sivol.script 
 
     -- Check if the player is actually holding something right now
-    local has_weapon = db.actor:active_item() ~= nil
-    local WEAPON_HIDE_DELAY = has_weapon and 1200 or 75
 
     bind_stalker.hide_weapon()
 
-    dsh.timeout(WEAPON_HIDE_DELAY, function()
+    hud_animation_session.wait(st, function() return not db.actor:active_item() end, function()
         -- Safety check: did the actor die while waiting for weapon to lower?
         if not db.actor:alive() then
             abort_animation()
             return
         end
 
-        local anim_data = fdda_headgear_data[out:section()] or fdda_headgear_data[ms]
+        local anim_data = fdda_headgear_data[st.outfit_section] or fdda_headgear_data[ms]
         
         -- If somehow there is still no anim_data, bail out safely
         if not anim_data then
@@ -745,15 +792,19 @@ function on_off_mask()
             if anim_data.snd_e then
                 local snd = xr_sound.get_safe_sound_object(anim_data.snd_e)
                 if snd then
-                    snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+                    st.sound = snd
+                    snd:play(db.actor, 0, sound_object.s2d)
                 end
             end
 
             -- Attempt to play the 3D animation using anim_data's section
-            local anm_duration = game.play_hud_motion(2, anim_data.hud_sec, "anm_equip", true, 1, true) or 2500
+            local anm_duration = game.play_hud_motion(2, anim_data.hud_sec, "anm_equip", true, 1, true)
+            st.hud_active = true
+            if not hud_animation_session.duration(anm_duration) then abort_animation("invalid motion duration"); return end
             
             -- FDDA's camera animation using anim_data's camera path
-            level.add_cam_effector(anim_data.cam_e, 7538, false, "", 0, false)
+            level.add_cam_effector(anim_data.cam_e, MASK_CAMERA_ID, false, "", 0, false)
+            st.camera_active = true
 
             -- FDDA Fade Trick timing, scaled by how dirty/damaged the mask is right now.
             local severity = get_mask_severity(mask)
@@ -778,12 +829,12 @@ function on_off_mask()
             local cleanup_time = math.max(anm_duration, fade_remove_time)
 
 			if not is_resp then
-				dsh.timeout(fade_time, function()
+				hud_animation_session.after(st, fade_time, function()
 					level.add_pp_effector(ppe_name, 4277, false)
 				end)
 			end
 
-			dsh.timeout(state_swap_time, function()
+			hud_animation_session.after(st, state_swap_time, function()
 				set_mask_on_off_flag(true)
 				if is_resp then
 					flag_blurs, flag_cmd = false, false
@@ -793,14 +844,14 @@ function on_off_mask()
 			end)
 
 			if not is_resp then
-				dsh.timeout(fade_remove_time, function()
+				hud_animation_session.after(st, fade_remove_time, function()
 					level.remove_pp_effector(4277)
 				end)
 			end
 
             -- 4. Cleanup
-            dsh.timeout(cleanup_time, function()
-                abort_animation() -- Safely cleans up and restores weapon
+            hud_animation_session.after(st, cleanup_time, function()
+                abort_animation("complete") -- Normal completion not cancellation
             end)
 
         else
@@ -814,11 +865,12 @@ function on_off_mask()
 
             -- 1. Play Sound immediately
             local sound = "device\\masks\\" .. unequip_breath .. "_off"
-            snd_obj = xr_sound.get_safe_sound_object(sound)
-            snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
+            st.sound = xr_sound.get_safe_sound_object(sound)
+            if st.sound then st.sound:play(db.actor, 0, sound_object.s2d) end
 
             -- 2. Start Camera immediately
-            level.add_cam_effector(anim_data.cam_u, 7538, false, "", 0, false)
+            level.add_cam_effector(anim_data.cam_u, MASK_CAMERA_ID, false, "", 0, false)
+            st.camera_active = true
 
             -- 3. Drop HUD state immediately
             set_mask_on_off_flag(false)
@@ -834,31 +886,34 @@ function on_off_mask()
             local fade_remove_time = math.max(fade_time, math.min(2500, fade_time + fade_hold))
 
 			if not is_resp then
-				dsh.timeout(fade_time, function()
+				hud_animation_session.after(st, fade_time, function()
 					level.add_pp_effector("deimos_short.ppe", 4277, false)
 				end)
-				dsh.timeout(fade_remove_time, function()
+				hud_animation_session.after(st, fade_remove_time, function()
 					level.remove_pp_effector(4277)
 				end)
 			end
 
             -- 5. Delay ONLY the 3D hands animation by 250ms
-            dsh.timeout(250, function()
+            hud_animation_session.after(st, 250, function()
                 -- Safety check inside the delay
                 if not db.actor:alive() then
                     abort_animation()
                     return
                 end
                 
-                local anm_duration = game.play_hud_motion(2, anim_data.hud_sec, "anm_unequip", true, 1, true) or 2500
+                local anm_duration = game.play_hud_motion(2, anim_data.hud_sec, "anm_unequip", true, 1, true)
+                st.hud_active = true
+                if not hud_animation_session.duration(anm_duration) then abort_animation("invalid motion duration"); return end
                 
                 -- Cleanup only after the 3D animation actually finishes
-                dsh.timeout(anm_duration, function()
-                    abort_animation()
+                hud_animation_session.after(st, anm_duration, function()
+                    abort_animation("complete")
                 end)
             end)
         end
-    end)
+    end, 10000)
+    return true
 end
 
 function on_off_mask_eye()
@@ -868,7 +923,7 @@ end
 function on_off_mask_end()
     -- This function is no longer called by our new logic, 
     -- but we leave it here in case other scripts call it.
-    if is_headgear_animating then return end
+    if mask_session then return end
     
     -- Original fallback logic if something else calls this
     bind_stalker.restore_weapon()
