@@ -83,6 +83,8 @@ end
 local def_used_timing = 5000
 local ITEM_CAMERA_ID = 9782
 local item_session = nil
+local watch_session = 0
+local watch_presentation = nil
 
 
 local function commit_item(st)
@@ -95,13 +97,16 @@ local function finish_item(reason, teardown)
     local st = item_session
     if not st then return end
     item_session = nil
+    local owner = st.owner_token
+    if owner and hud_animation_owner then
+        hud_animation_owner.cancel(owner, reason)
+    end
     hud_animation_session.cancel(st, reason)
     -- Cancel the child first; its completion callback must see an invalid parent.
     if st.mask_pending then vergas_masks.abort_animation(reason, teardown) end
     if st.hud_active then game.stop_hud_motion() end
     if st.camera_active then level.remove_cam_effector(ITEM_CAMERA_ID) end
     if st.sound and st.sound:playing() then st.sound:stop() end
-    animation_off()
     if not teardown and db.actor == st.actor and db.actor and db.actor:alive() then
         -- Temporary mask removal belongs to this use, not to the next actor.
         local outfit = db.actor:item_in_slot(6)
@@ -109,12 +114,16 @@ local function finish_item(reason, teardown)
             and not vergas_masks.allcore_mask_is_on() then
             vergas_masks.set_mask_on_off_flag(true)
         end
-        slot_keeper.release()
+        slot_keeper.release(owner)
     else
         slot_keeper.reset()
     end
+    if owner and hud_animation_owner then
+        hud_animation_owner.release(owner, reason)
+    else
+        animation_off()
+    end
 end
-
 local function item_after(st, ms, fn)
     return hud_animation_session.after(st, ms, fn)
 end
@@ -145,8 +154,8 @@ local function play_item_use(st)
 	elseif level.get_car_body_wnd():IsShown() then
 		level.start_stop_menu(level.get_car_body_wnd(), true)
 	end
-    animation_on()
-    slot_keeper.remember()
+    animation_on(st.owner_token)
+    slot_keeper.remember(st.owner_token)
     db.actor:activate_slot(255)
     item_wait(st, function() return not db.actor:active_item() end, function()
         st.sound = xr_sound.get_safe_sound_object(snd)
@@ -175,10 +184,11 @@ local function play_item_use(st)
             if st.restore_mask then
                 st.mask_pending = true
                 local started = vergas_masks.on_off_mask(function(ok)
-                    if not hud_animation_session.valid(st) then return end
+                    if not hud_animation_session.valid(st)
+                        or not hud_animation_owner.valid(st.owner_token) then return end
                     st.mask_pending = false
                     finish_item(ok and "complete" or "mask cancelled")
-                end, true)
+                end, true, st.owner_token)
                 if not started then st.mask_pending = false; finish_item("mask restore refused") end
             else
                 finish_item("complete")
@@ -212,6 +222,11 @@ local function on_actor_before_use(obj, sobj)
         obj:disable_use()
         return
     end
+    local owner_token = hud_animation_owner.reserve("consumable", { allow_full_backpack = full == true })
+    if not owner_token then
+        obj:disable_use()
+        return
+    end
     local st
     st = hud_animation_session.new("consumable", function(reason)
         -- Same-world cancellation settles an already consumed dose once.
@@ -219,6 +234,7 @@ local function on_actor_before_use(obj, sobj)
         finish_item(reason, db.actor ~= st.actor or not db.actor or not db.actor:alive())
     end)
     item_session = st
+    st.owner_token = owner_token
     st.section, st.item_id = sect, id
     st.restore_mask = masked
     local outfit = db.actor:item_in_slot(6)
@@ -226,18 +242,25 @@ local function on_actor_before_use(obj, sobj)
     -- Preserve native consumption; only the direct branch historically zeroes
     -- native effects. Mask/full-backpack paths retain their existing semantics.
     if not masked and not full then obj:zero_effects() end
-    slot_keeper.remember()
-    slot_keeper.hold()
+    slot_keeper.remember(owner_token)
+    slot_keeper.hold(owner_token)
     local function start()
-        animation_on()
+        if not hud_animation_owner.activate(st.owner_token, "consumable") then
+            commit_item(st)
+            finish_item("ownership unavailable")
+            return
+        end
+        animation_on(st.owner_token)
+        hud_animation_owner.acquire_weapon(st.owner_token)
         if not masked then play_item_use(st); return end
         st.mask_pending = true
         local started = vergas_masks.on_off_mask(function(ok)
-            if not hud_animation_session.valid(st) then return end
+            if not hud_animation_session.valid(st)
+                or not hud_animation_owner.valid(st.owner_token) then return end
             st.mask_pending = false
             if not ok then commit_item(st); finish_item("mask cancelled"); return end
             play_item_use(st)
-        end, true)
+        end, true, st.owner_token)
         if not started then st.mask_pending = false; commit_item(st); finish_item("mask removal refused") end
     end
     -- Close the inventory before claiming playback; full-backpack close retains
@@ -250,7 +273,6 @@ local function on_actor_before_use(obj, sobj)
             end)
         end)
     else
-        animation_on()
         item_after(st, 200, start)
     end
 end
@@ -258,6 +280,7 @@ end
 function item_animation_reset()
     finish_item("load/reset", true)
     animation_off()
+    if watch_presentation then abort_watch_presentation(watch_presentation.session) end
 end
 
 function item_animation_loaded()
@@ -266,37 +289,47 @@ end
 
 function item_animation_stop()
     finish_item("shutdown", true)
+    if watch_presentation then abort_watch_presentation(watch_presentation.session) end
 end
 
 function item_animation_save()
     local st = item_session
-    if not st then return end
-    commit_item(st)
-    finish_item("save")
+    if st then
+        commit_item(st)
+        finish_item("save")
+    end
+    if watch_presentation then abort_watch_presentation(watch_presentation.session) end
 end
 
 function item_animation_update()
     if item_session and not hud_animation_session.valid(item_session) then
         finish_item("actor unavailable", true)
     end
+    if watch_presentation and watch_presentation.owner_token
+        and not hud_animation_owner.valid(watch_presentation.owner_token) then
+        abort_watch_presentation(watch_presentation.session)
+    end
 end
 
 function animation_off()
+    if hud_animation_owner and hud_animation_owner.resource_held("movement") then return end
 	level.only_allow_movekeys(false)
 	level.set_actor_allow_ladder(true)
 end
 
-function animation_on()
+function animation_on(owner)
+    if owner and hud_animation_owner then
+        return hud_animation_owner.acquire_movement(owner)
+    end
 	level.only_allow_movekeys(true)
 	level.set_actor_allow_ladder(false)
+    return true
 end
-
 watch_is_active = nil
-local watch_session = 0
-local watch_presentation = nil
 
 local function watch_presentation_valid(session)
 	return watch_presentation ~= nil and watch_presentation.session == session
+		and hud_animation_owner.valid(watch_presentation.owner_token)
 end
 
 -- Entry callbacks are valid only while the raise is still in progress; closing or
@@ -315,16 +348,28 @@ end
 local function restore_after_presentation(st)
 	if not st or st.phase == "done" then return end
 	st.phase = "done"
-	if db.actor and db.actor:alive() then
+	local owner = st.owner_token
+	if db.actor and db.actor == st.actor and db.actor:alive() then
 		pcall(function() db.actor:activate_slot(st.prev_slot) end)
 	end
 	if watch_presentation == st then
 		watch_presentation = nil
 	end
 	watch_is_active = nil
-	animation_off()
+	if owner and hud_animation_owner then
+		hud_animation_owner.cancel(owner, "watch cleanup")
+		hud_animation_owner.release(owner, "watch cleanup")
+	else
+		animation_off()
+	end
 end
 
+local function discard_watch_presentation(st)
+    if not st then return end
+    st.phase = "done"
+    if watch_presentation == st then watch_presentation = nil end
+    watch_is_active = nil
+end
 -- [HE-PORT] Shared watch presentation. mode = "view" (kWATCH hold) or "alarm" (editor).
 -- Returns the presentation session id, or nil when the watch cannot be raised.
 function begin_watch_presentation(mode, on_ready)
@@ -339,6 +384,11 @@ function begin_watch_presentation(mode, on_ready)
 		or db.actor:ph_capture()
 	then return nil end
 
+	local owner_token = hud_animation_owner.reserve("watch")
+	if not owner_token or not hud_animation_owner.activate(owner_token, "watch raising") then
+		if owner_token then hud_animation_owner.release(owner_token, "watch admission") end
+		return nil
+	end
 	watch_session = watch_session + 1
 	local session = watch_session
 	local st = {
@@ -346,10 +396,12 @@ function begin_watch_presentation(mode, on_ready)
 		mode = mode or "view",
 		prev_slot = db.actor:active_slot(),
 		phase = "raising",
+		owner_token = owner_token,
 	}
 	watch_presentation = st
 
-	animation_on()
+	animation_on(owner_token)
+	hud_animation_owner.acquire_weapon(owner_token)
 	watch_is_active = true
 	db.actor:activate_slot(255)
 
@@ -389,14 +441,20 @@ function end_watch_presentation(session, on_closed)
 		if on_closed then on_closed(false) end
 		return false
 	end
+    if not hud_animation_owner.valid(st.owner_token) then
+        discard_watch_presentation(st)
+        if on_closed then on_closed(false) end
+        return false
+    end
 	st.phase = "closing"
 	watch_session = watch_session + 1
 
 	local function finish()
+        local valid = hud_animation_owner.valid(st.owner_token)
 		if st.phase ~= "done" then
-			restore_after_presentation(st)
+            if valid then restore_after_presentation(st) else discard_watch_presentation(st) end
 		end
-		if on_closed then on_closed(st.session) end
+		if on_closed then on_closed(valid and st.session or false) end
 	end
 
 	if db.actor and db.actor:alive() then
@@ -419,6 +477,10 @@ function abort_watch_presentation(session)
 	local st = watch_presentation
 	if not st or (session and st.session ~= session) then return end
 	watch_session = watch_session + 1
+    if not hud_animation_owner.valid(st.owner_token) then
+        discard_watch_presentation(st)
+        return
+    end
 	game.stop_hud_motion()
 	restore_after_presentation(st)
 end

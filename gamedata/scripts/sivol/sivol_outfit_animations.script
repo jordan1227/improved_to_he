@@ -76,14 +76,24 @@ local function cleanup(reason)
 
     animation_generation = animation_generation + 1
     animation_state = nil
+    local owner = state.owner_token
+    if owner and hud_animation_owner then
+        hud_animation_owner.cancel(owner, reason)
+    end
 
     if state.hud_started then game.stop_hud_motion() end
     remove_visual_effects()
     if state.sound and state.sound:playing() then state.sound:stop() end
 
-    bind_stalker.restore_weapon()
-	sivol.remove_move_penalty(MOVE_PENALTY_NAME)
+    if db.actor and db.actor == state.actor and db.actor:alive() then
+        sivol.remove_move_penalty(MOVE_PENALTY_NAME)
+    end
     if state.owns_hud_busy then hud_fx_busy = false end
+    if owner and hud_animation_owner then
+        hud_animation_owner.release(owner, reason)
+    else
+        bind_stalker.restore_weapon()
+    end
     diag("cleanup reason=%s kind=%s outfit=%s elapsed_ms=%s hud_started=%s",
         tostring(reason), tostring(state.kind), tostring(state.section),
         tostring(state.requested_at and (now() - state.requested_at) or nil),
@@ -115,6 +125,12 @@ local function start_animation(kind, section)
         return false
     end
 
+    local owner = hud_animation_owner.reserve("outfit")
+    if not owner or not hud_animation_owner.activate(owner, "outfit") then
+        if owner then hud_animation_owner.release(owner, "outfit admission") end
+        return false
+    end
+
     local hud, cam, snd, fallback
     if kind == "inspect" then
         hud, cam, snd, fallback = HUD_INSPECT, CAM_INSPECT, SND_INSPECT, FALLBACK_INSPECT_MS
@@ -128,6 +144,8 @@ local function start_animation(kind, section)
         generation = generation,
         kind = kind,
         section = section,
+        actor = db.actor,
+        owner_token = owner,
         owns_hud_busy = true,
         hud_started = false,
         sound = nil,
@@ -143,13 +161,14 @@ local function start_animation(kind, section)
         tostring(object_section(equipped)), START_DELAY_MS)
 
     hud_fx_busy = true
-    bind_stalker.hide_weapon()
+	hud_animation_owner.acquire_weapon(owner)
 	sivol.add_move_penalty(MOVE_PENALTY_NAME, MOVE_PENALTY_COEF)
 
     dsh.timeout(START_DELAY_MS, function()
         local state = animation_state
         if not state or state.generation ~= generation then return end
-        if not db.actor or not db.actor:alive() then
+        if not db.actor or not db.actor:alive()
+            or not hud_animation_owner.valid(state.owner_token) then
             cleanup("actor unavailable")
             return
         end
@@ -292,8 +311,9 @@ function on_first_update()
 end
 
 function on_update()
-    if animation_state and (not db.actor or not db.actor:alive()) then
-        cleanup("actor died")
+    if animation_state and (not db.actor or not db.actor:alive()
+        or not hud_animation_owner.valid(animation_state.owner_token)) then
+        cleanup("actor unavailable")
     end
     if pending_full_backpack and (not db.actor or not db.actor:alive()) then
         diag("pending_clear reason=actor_died outfit=%s", tostring(pending_full_backpack.section))

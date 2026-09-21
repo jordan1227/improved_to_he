@@ -28,6 +28,8 @@ local INVENTORY_DOF_OPEN_LEAD_MS = 250
 local inventory_dof_value = 0
 local inventory_dof_signal
 local inventory_dof_generation = 0
+local full_backpack_owner = nil
+local full_backpack_state = nil
 
 local function smoothstep( t )
 	return t * t * ( 3 - 2 * t )
@@ -71,6 +73,58 @@ local function blend_inventory_dof( target )
 	inventory_dof_signal = signal
 end
 
+local function unsubscribe_full_backpack_signal( signal )
+	if signal then
+		ogse_signals.get_mgr():unsubscribe( signal )
+	end
+end
+
+local function cleanup_full_backpack( state, reason, notify_close )
+	if not state or state.cleaned then return false end
+	state.cleaned = true
+
+	local owner = state.owner
+	if full_backpack_state == state then full_backpack_state = nil end
+	if full_backpack_owner == owner then full_backpack_owner = nil end
+
+	unsubscribe_full_backpack_signal( state.sig_bp_slot )
+	unsubscribe_full_backpack_signal( state.sig_bp_ruck )
+	unsubscribe_full_backpack_signal( state.sig_inv_hide )
+	state.sig_bp_slot = nil
+	state.sig_bp_ruck = nil
+	state.sig_inv_hide = nil
+
+	if get_console then get_console():execute( "bpui 0" ) end
+	if remove_value then remove_value( "inv_full" ) end
+	blend_inventory_dof( 0 )
+	if level and level.remove_cam_effector then level.remove_cam_effector( 9773 ) end
+	if state.hud_motion_active and game and game.stop_hud_motion then
+		game.stop_hud_motion()
+		state.hud_motion_active = false
+	end
+
+	if owner and hud_animation_owner and hud_animation_owner.valid( owner ) then
+		if state.movement_held then
+			hud_animation_owner.release_resource( owner, "movement" )
+			state.movement_held = false
+		end
+		if state.input_held then
+			hud_animation_owner.release_resource( owner, "input" )
+			state.input_held = false
+		end
+		hud_animation_owner.cancel( owner, reason or "full-backpack cleanup" )
+		hud_animation_owner.release( owner, reason or "full-backpack cleanup" )
+	else
+		state.movement_held = false
+		state.input_held = false
+	end
+
+	if slot_keeper and slot_keeper.restore then slot_keeper.restore() end
+	if notify_close then
+		ogse_signals.get_mgr():call( "on_full_backpack_close_complete" )
+	end
+	return true
+end
 function rummaged:__init(owner) 
 	super()
 	self.owner = owner
@@ -267,29 +321,58 @@ function rummaged:btn_quit(mode)
 		
 	elseif mode == 4 then
 		--полное открытие рюкзака (долго ковыряется)
-		level.disable_input()		
-		level.add_cam_effector( "camera_effects\\backpack_open.anm", 9773, false, "" ) 		
-		vergas_lib.s_play("interface\\item_usage\\backpack_open",1)				
-		anim_duration = game.play_hud_motion( 2, "item_ea_backpack_open_stalker_hud", "anm_ea_show", false, 0.65 )
+		local owner = hud_animation_owner.reserve("full-backpack")
+		if not owner or not hud_animation_owner.activate(owner, "full-backpack") then
+			if owner then hud_animation_owner.release(owner, "backpack admission") end
+			return
+		end
+		local state = {
+			owner = owner,
+			hud_motion_active = true,
+			input_held = false,
+			movement_held = false,
+		}
+		full_backpack_owner = owner
+		full_backpack_state = state
+		if not hud_animation_owner.acquire_input(owner) then
+			cleanup_full_backpack(state, "backpack input admission")
+			return
+		end
+		state.input_held = true
+		if not hud_animation_owner.register_lifecycle_cleanup(owner, function(reason)
+			cleanup_full_backpack(state, reason, false)
+		end) then
+			cleanup_full_backpack(state, "backpack lifecycle admission")
+			return
+		end
+		level.add_cam_effector( "camera_effects\\backpack_open.anm", 9773, false, "" )
+		vergas_lib.s_play("interface\\item_usage\\backpack_open",1)
+		local anim_duration = game.play_hud_motion( 2, "item_ea_backpack_open_stalker_hud", "anm_ea_show", false, 0.65 )
 		dsh.timeout( math.max( 0, anim_duration - INVENTORY_DOF_OPEN_LEAD_MS ), function()
+			if not hud_animation_owner.valid(owner) or state.cleaned then return end
 			blend_inventory_dof( 1 )
 		end )
 
 		dsh.timeout( anim_duration, function()
+			if not hud_animation_owner.valid(owner) or state.cleaned then return end
 			game.play_hud_motion( 2, "item_ea_backpack_open_stalker_hud", "anm_ea_idle", false, 1 )
 			inv_buttons_use.open_inventory( 4 )
 			-- DOF begins just before this point via blend_inventory_dof().
 			get_console():execute("bpui 1")
-		end )		
+			if state.input_held then
+				hud_animation_owner.release_resource( owner, "input" )
+				state.input_held = false
+			end
+		end )
 		razgruzka.open_inventory()
 		
 		-- Нужно для аллкор хайда, можно обычную переменную, но так проще
 		set_value( "inv_full", true )
 
 		local function restore_bp_hud_idle()
-			if not get_value( "inv_full" ) then return end
+			if state.cleaned or not hud_animation_owner.valid(owner) or not get_value( "inv_full" ) then return end
 			dsh.timeout( 17, function()
-				if not get_value( "inv_full" ) then return end
+				if state.cleaned or not hud_animation_owner.valid(owner) or not get_value( "inv_full" ) then return end
 				game.play_hud_motion( 2, "item_ea_backpack_open_stalker_hud", "anm_ea_idle", false, 1 )
 				get_console():execute("bpui 1")
 			end )
@@ -299,44 +382,46 @@ function rummaged:btn_quit(mode)
 				restore_bp_hud_idle()
 			end
 		end
-		local sig_bp_slot = ogse_signals.get_mgr():subscribe({
+		state.sig_bp_slot = ogse_signals.get_mgr():subscribe({
 			signal = "on_item_to_slot",
 			fun = on_outfit_changed
 		})
-		local sig_bp_ruck = ogse_signals.get_mgr():subscribe({
+		state.sig_bp_ruck = ogse_signals.get_mgr():subscribe({
 			signal = "on_item_to_ruck",
 			fun = on_outfit_changed
 		})
 
 		-- Подписываемся на хайд инвентори и сразу же отписываемся, чтобы не проверять моды или еще что		
-		local sig_inv_hide = nil
-		sig_inv_hide = ogse_signals.get_mgr():subscribe({
+		state.sig_inv_hide = ogse_signals.get_mgr():subscribe({
 			signal = "on_inventory_hide",
 			fun = function()
+				if state.cleaned or state.closing or not hud_animation_owner.valid(owner) then return end
+				state.closing = true
 				get_console():execute("bpui 0")
-				if sig_bp_slot then
-					ogse_signals.get_mgr():unsubscribe( sig_bp_slot )
-					sig_bp_slot = nil
-				end
-				if sig_bp_ruck then
-					ogse_signals.get_mgr():unsubscribe( sig_bp_ruck )
-					sig_bp_ruck = nil
-				end
+				unsubscribe_full_backpack_signal( state.sig_bp_slot )
+				unsubscribe_full_backpack_signal( state.sig_bp_ruck )
+				state.sig_bp_slot = nil
+				state.sig_bp_ruck = nil
 				blend_inventory_dof( 0 )
-			    level.only_allow_movekeys( true )
-				level.set_actor_allow_ladder( false )
+				if not hud_animation_owner.acquire_movement( owner ) then
+					cleanup_full_backpack( state, "backpack movement admission", true )
+					return
+				end
+				state.movement_held = true
 				level.add_cam_effector( "camera_effects\\backpack_open.anm", 9773, false, "" )
 				vergas_lib.s_play("interface\\item_usage\\backpack_close",1)
-				local anim_duration = game.play_hud_motion( 2, "item_ea_backpack_close_stalker_hud", "anm_ea_show", false, 0.75 )
-				ogse_signals.get_mgr():unsubscribe( sig_inv_hide )
-				sig_inv_hide = nil
-				dsh.timeout( anim_duration, function()
-					level.only_allow_movekeys( false )
-					level.set_actor_allow_ladder( true )
-					remove_value( "inv_full" )
-					slot_keeper.restore()
-					ogse_signals.get_mgr():call( "on_full_backpack_close_complete" )
-				end )				
+				local close_duration = game.play_hud_motion( 2, "item_ea_backpack_close_stalker_hud", "anm_ea_show", false, 0.75 )
+				unsubscribe_full_backpack_signal( state.sig_inv_hide )
+				state.sig_inv_hide = nil
+				dsh.timeout( close_duration, function()
+					if state.cleaned then return end
+					if not hud_animation_owner.valid(owner) then
+						cleanup_full_backpack( state, "stale backpack close" )
+						return
+					end
+					state.hud_motion_active = false
+					cleanup_full_backpack( state, "full-backpack close", true )
+				end )
 			end
 		})
 	elseif mode == 10 then
