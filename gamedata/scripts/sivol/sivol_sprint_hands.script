@@ -1,0 +1,196 @@
+-- [SIVOL TEST] Play the bolt sprint hand cycle while sprinting empty-handed.
+-- The section intentionally has no item_visual, so the engine resolves the
+-- bolt_sprint alias against the actor's separated hand model only.
+
+local HUD_SECTION = "sivol_emptyhand_sprint_hud_test"
+local HUD_ANIMATION_IDLE = "anm_idle"
+local HUD_ANIMATION_SPRINT = "anm_sprint"
+local MIN_SPEED_K = 0.65
+local MAX_SPEED_K = 1.35
+
+local base_walk_accel = get_float("actor", "walk_accel", 1)
+local base_sprint_koef = get_float("actor", "sprint_koef", 1)
+local inv_base_walk_accel = 1 / base_walk_accel
+local inv_base_sprint_koef = 1 / base_sprint_koef
+
+local active = false
+local actor_id
+local phase
+local phase_end_time
+
+local function clamp(value, low, high)
+	return math.max(low, math.min(high, value))
+end
+
+local function current_actor_object()
+	if type(get_actor_obj) ~= "function" then return nil end
+	local ok, actor_obj = pcall(get_actor_obj)
+	return ok and actor_obj or nil
+end
+
+local function empty_hands(actor)
+	return actor:active_item() == nil and actor:active_slot() == NO_ACTIVE_SLOT
+end
+
+local function movement_speed_k(actor, actor_obj)
+	-- play_hud_motion accepts one speed value when the cycle starts. Use the
+	-- same live movement modifiers as sprint_fov, rather than restarting the
+	-- hand cycle every frame while the actor's velocity fluctuates.
+	local walk = tonumber(actor_obj.walk_accel) or base_walk_accel
+	local sprint = tonumber(actor_obj.sprint_koef) or base_sprint_koef
+	local speed_multiplier = tonumber(actor.speed_multiplier) or 1
+	local modifier = (walk * inv_base_walk_accel) * (sprint * inv_base_sprint_koef)
+		* speed_multiplier
+	return clamp(modifier, MIN_SPEED_K, MAX_SPEED_K)
+end
+
+local function hud_owner_busy()
+	return hud_animation_owner and type(hud_animation_owner.busy) == "function"
+		and hud_animation_owner.busy()
+end
+
+local function start_allowed(actor)
+	if hud_owner_busy() then return false end
+	if level.main_input_receiver() or level.only_movekeys_allowed() then return false end
+	if actor:is_talking() then return false end
+	local dev = device()
+	if dev and dev:is_paused() then return false end
+	return game.hud_motion_allowed()
+end
+
+local function stop_motion(reason, force)
+	if not active and not force then return end
+	game.stop_hud_motion()
+	active = false
+	phase = nil
+	phase_end_time = nil
+	if reason then
+		log2("[sprint_hands] stopped: %s", reason)
+	end
+end
+
+local function play_phase(phase_name, animation, speed_k)
+	local duration = game.play_hud_motion(
+		2, HUD_SECTION, animation, true, speed_k, false
+	)
+	phase = phase_name
+	if duration and duration > 0 then
+		phase_end_time = time_global() + duration
+	else
+		phase_end_time = nil
+	end
+	return duration
+end
+
+function is_active()
+	return active
+end
+
+function stop_for_hud_use()
+	if active then stop_motion("HUD owner handoff") end
+	return true
+end
+
+local function is_sprint_bind(bind)
+	return key_bindings and (bind == key_bindings.kACCEL or bind == key_bindings.kSPRINT_TOGGLE)
+end
+
+local function arm_idle(actor)
+	if active or not actor or not actor:alive() or not empty_hands(actor) then return false end
+	if not start_allowed(actor) then return false end
+
+	play_phase("idle_pre", HUD_ANIMATION_IDLE, 1)
+	active = true
+	log2("[sprint_hands] armed hidden empty-hand transition")
+	return true
+end
+
+local function on_update()
+	local actor = db and db.actor
+	if not actor then
+		stop_motion("actor unavailable")
+		actor_id = nil
+		return
+	end
+
+	local current_id = actor:id()
+	if actor_id and actor_id ~= current_id then
+		stop_motion("actor changed")
+	end
+	actor_id = current_id
+
+	if hud_owner_busy() then
+		-- Reservations are side-effect free. The owner stops this cosmetic
+		-- motion synchronously from activate(), immediately before playback.
+		return
+	end
+
+	local actor_obj = current_actor_object()
+	local sprinting = actor_obj and actor_obj:is_actor_sprinting()
+	local now = time_global()
+
+	if active then
+		-- Item/slot changes always win over the cosmetic transition.
+		if not actor:alive() or not actor_obj or not empty_hands(actor) then
+			stop_motion("movement or item state changed")
+		elseif sprinting then
+			if phase ~= "sprint" then
+				local speed_k = movement_speed_k(actor, actor_obj)
+				play_phase("sprint", HUD_ANIMATION_SPRINT, speed_k)
+				log2("[sprint_hands] entered empty-hand sprint loop speed_k=%.2f", speed_k)
+			end
+		elseif phase == "sprint" then
+			-- Keep the scripted HUD alive while the generic hand-lowering motion
+			-- puts the hands below the visible frame.
+			play_phase("idle_end", HUD_ANIMATION_IDLE, 1)
+			log2("[sprint_hands] began hidden empty-hand release")
+		elseif (phase == "idle_pre" or phase == "idle_end")
+			and (not phase_end_time or now >= phase_end_time)
+		then
+			stop_motion(phase == "idle_pre" and "sprint input did not start" or "sprint ended")
+		end
+		return
+	end
+
+	-- Fallback for controller/alternate input paths that do not emit the
+	-- expected sprint key signal: start the loop once sprinting is confirmed.
+	if not actor:alive() or not sprinting or not empty_hands(actor) then return end
+	if not start_allowed(actor) then return end
+
+	local speed_k = movement_speed_k(actor, actor_obj)
+	play_phase("sprint", HUD_ANIMATION_SPRINT, speed_k)
+	active = true
+	log2("[sprint_hands] started empty-hand sprint loop speed_k=%.2f", speed_k)
+end
+
+local function on_key(key, bind)
+	if not is_sprint_bind(bind) then return end
+	local actor = db and db.actor
+	if actor then arm_idle(actor) end
+end
+local function on_item_change()
+	if active then
+		stop_motion("item slot changed")
+	end
+end
+
+local function reset(reason)
+	stop_motion(reason)
+	actor_id = nil
+end
+
+function on_actor_death()
+	reset("death")
+end
+
+function attach(sm)
+	sm:subscribe({signal = "on_update", fun = on_update})
+	sm:subscribe({signal = "on_key", fun = on_key})
+	sm:subscribe({signal = "on_item_to_slot", fun = on_item_change})
+	sm:subscribe({signal = "on_item_to_ruck", fun = on_item_change})
+	sm:subscribe({signal = "on_first_update", fun = function() reset("load/reset") end})
+	sm:subscribe({signal = "on_load_before_all", fun = function() reset("load") end})
+	sm:subscribe({signal = "on_before_save_game", fun = function() reset("save") end})
+	sm:subscribe({signal = "level_changer_action", fun = function() reset("level change") end})
+	sm:subscribe({signal = "on_stop_modules", fun = function() reset("shutdown") end})
+end

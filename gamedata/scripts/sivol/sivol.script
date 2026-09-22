@@ -4,6 +4,60 @@ local MOVE_PENALTY_FLOOR = 0.2 -- нижний предел суммарного коэффициента, чтобы н
 
 -- Actor-hit diagnostics are temporary investigation tooling. They log the
 -- incoming SHit packet and two bounded actor-state samples after the callback.
+local sprint_block_reasons = {}
+local sprint_block_actor = nil
+local sprint_actions_blocked = false
+local sprint_release_error_count = 0
+local sprint_release_last_error_log = -1000
+local SPRINT_RELEASE_LOG_INTERVAL_MS = 1000
+
+local function sprint_actor()
+    if get_actor_obj then
+        local ok, actor = pcall(get_actor_obj)
+        if ok and actor then return actor end
+    end
+    return db and db.actor
+end
+
+local function sprint_now()
+    if type(time_global) ~= "function" then return 0 end
+    local ok, value = pcall(time_global)
+    return ok and type(value) == "number" and value or 0
+end
+
+local function note_sprint_release_failure(bind_name, err)
+    sprint_release_error_count = sprint_release_error_count + 1
+    local now = sprint_now()
+    if now - sprint_release_last_error_log >= SPRINT_RELEASE_LOG_INTERVAL_MS then
+        log2("[SIVOL_SPRINT] release_action failed bind=%s count=%d error=%s",
+            tostring(bind_name), sprint_release_error_count, tostring(err))
+        sprint_release_last_error_log = now
+    end
+end
+
+local function release_active_sprint()
+    local actor = sprint_actor()
+    if not actor or not actor.release_action or not key_bindings then return end
+    local function release(bind, bind_name)
+        if not bind then return end
+        local ok, err = pcall(function() actor:release_action(bind) end)
+        if not ok then note_sprint_release_failure(bind_name, err) end
+    end
+    release(key_bindings.kACCEL, "kACCEL")
+    release(key_bindings.kSPRINT_TOGGLE, "kSPRINT_TOGGLE")
+end
+
+function sprint_is_active()
+    local actor = sprint_actor()
+    if not actor or not actor.is_actor_sprinting then return false end
+    local ok, active = pcall(function() return actor:is_actor_sprinting() end)
+    if not ok then return false end
+    return active == true
+end
+
+function request_sprint_stop()
+    release_active_sprint()
+end
 local ACTOR_HIT_DIAGNOSTICS = false
 local ACTOR_HIT_SAMPLE_DELAY = 100
 local ACTOR_HIT_LATE_SAMPLE_DELAY = 600
@@ -224,18 +278,73 @@ end
 --=====================
 --Для апдейта веса цифры в инвентаре когда цепим арты на пояс
 --=====================
+function reset_sprint_block_state()
+    if sprint_actions_blocked then
+        if level and level.unblock_action and key_bindings then
+            if key_bindings.kACCEL then level.unblock_action(key_bindings.kACCEL) end
+            if key_bindings.kSPRINT_TOGGLE then level.unblock_action(key_bindings.kSPRINT_TOGGLE) end
+        end
+        sprint_actions_blocked = false
+    end
+    sprint_block_reasons = {}
+    sprint_block_actor = nil
+end
+
+local function acquire_sprint_actions()
+    if sprint_actions_blocked then return true end
+    if not level or not level.block_action or not key_bindings then return false end
+    local blocked = false
+    if key_bindings.kACCEL then
+        level.block_action(key_bindings.kACCEL)
+        blocked = true
+    end
+    if key_bindings.kSPRINT_TOGGLE then
+        level.block_action(key_bindings.kSPRINT_TOGGLE)
+        blocked = true
+    end
+    sprint_actions_blocked = blocked
+    return blocked
+end
+
+function add_sprint_block(name)
+    local actor = db and db.actor
+    if not actor or type(name) ~= "string" or name == "" then return false end
+    if sprint_block_actor ~= actor then
+        reset_sprint_block_state()
+        sprint_block_actor = actor
+    end
+    if sprint_block_reasons[name] then return true end
+    if not acquire_sprint_actions() then return false end
+    sprint_block_reasons[name] = true
+    return true
+end
+
+function remove_sprint_block(name)
+    if not sprint_block_reasons[name] then return false end
+    sprint_block_reasons[name] = nil
+    if next(sprint_block_reasons) == nil then
+        reset_sprint_block_state()
+    end
+    return true
+end
+
+function sivol_on_lifecycle_reset()
+    reset_sprint_block_state()
+    reset_actor_hit_observations()
+end
 function attach(sm)
     sm:subscribe({ signal = "on_item_to_ruck",   fun = sivol_on_belt_leave })
     sm:subscribe({ signal = "on_drop_before_all", fun = sivol_on_belt_leave })
     sm:subscribe({ signal = "on_spawn",          fun = sivol_on_actor_spawn })
     sm:subscribe({ signal = "on_actor_before_hit", fun = sivol_on_actor_before_hit })
     sm:subscribe({ signal = "on_update",            fun = sivol_on_actor_hit_update })
-    sm:subscribe({ signal = "on_game_loaded",       fun = reset_actor_hit_observations })
-    sm:subscribe({ signal = "level_changer_action",  fun = reset_actor_hit_observations })
-    sm:subscribe({ signal = "on_stop_modules",       fun = reset_actor_hit_observations })
+    sm:subscribe({ signal = "on_game_loaded",       fun = sivol_on_lifecycle_reset })
+    sm:subscribe({ signal = "level_changer_action",  fun = sivol_on_lifecycle_reset })
+    sm:subscribe({ signal = "on_stop_modules",       fun = sivol_on_lifecycle_reset })
 end
 
 function sivol_on_actor_spawn()
+    reset_sprint_block_state()
     reset_actor_hit_observations()
     dsh.exec_on_update(
         function()

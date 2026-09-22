@@ -83,9 +83,9 @@ end
 local def_used_timing = 5000
 local ITEM_CAMERA_ID = 9782
 local item_session = nil
+
 local watch_session = 0
 local watch_presentation = nil
-
 
 local function commit_item(st)
     if st.applied or not hud_animation_session.valid(st) then return end
@@ -98,6 +98,12 @@ local function finish_item(reason, teardown)
     if not st then return end
     item_session = nil
     local owner = st.owner_token
+    if st.sprint_actions_blocked then
+        if sivol and sivol.remove_sprint_block then
+            sivol.remove_sprint_block("consumable")
+        end
+        st.sprint_actions_blocked = false
+    end
     if owner and hud_animation_owner then
         hud_animation_owner.cancel(owner, reason)
     end
@@ -160,7 +166,7 @@ local function play_item_use(st)
     item_wait(st, function() return not db.actor:active_item() end, function()
         st.sound = xr_sound.get_safe_sound_object(snd)
         if st.sound then st.sound:play(db.actor, 0, sound_object.s2d) end
-        local duration = game.play_hud_motion(2, item_hud, "anm_show", true, 1, true)
+        local duration = game.play_hud_motion(2, item_hud, "anm_show", false, 1, true)
         st.hud_active = true
         if not hud_animation_session.duration(duration) then
             commit_item(st)
@@ -210,6 +216,12 @@ local function on_actor_before_use(obj, sobj)
     end
     local hud = get_string(sect, "hud")
     if hud == "no_hud" or not hud or not get_string(hud, "sound_1") then return end
+    -- The engine normally rejects item use before this callback while sprinting.
+    -- Keep the callback safe if another invocation path reaches it anyway.
+    if sivol and sivol.sprint_is_active and sivol.sprint_is_active() then
+        obj:disable_use()
+        return
+    end
     local full = get_value("inv_full")
     local masked = vergas_masks.allcore_mask_is_on() and get_bool(sect, "allcore_hide.is_food", false)
     if item_session or vergas_masks.is_animating() or hud_fx_busy
@@ -244,8 +256,9 @@ local function on_actor_before_use(obj, sobj)
     if not masked and not full then obj:zero_effects() end
     slot_keeper.remember(owner_token)
     slot_keeper.hold(owner_token)
-    local function start()
-        if not hud_animation_owner.activate(st.owner_token, "consumable") then
+    local function begin_use()
+        if not hud_animation_session.valid(st) then return end
+        if not hud_animation_owner.valid(st.owner_token) then
             commit_item(st)
             finish_item("ownership unavailable")
             return
@@ -262,6 +275,18 @@ local function on_actor_before_use(obj, sobj)
             play_item_use(st)
         end, true, st.owner_token)
         if not started then st.mask_pending = false; commit_item(st); finish_item("mask removal refused") end
+    end
+
+    local function start()
+        if not hud_animation_owner.activate(st.owner_token, "consumable") then
+            commit_item(st)
+            finish_item("ownership unavailable")
+            return
+        end
+        if sivol and sivol.add_sprint_block then
+            st.sprint_actions_blocked = sivol.add_sprint_block("consumable")
+        end
+        begin_use()
     end
     -- Close the inventory before claiming playback; full-backpack close retains
     -- its own animation and releases inv_full only after that motion finishes.
@@ -302,7 +327,8 @@ function item_animation_save()
 end
 
 function item_animation_update()
-    if item_session and not hud_animation_session.valid(item_session) then
+    local st = item_session
+    if st and not hud_animation_session.valid(st) then
         finish_item("actor unavailable", true)
     end
     if watch_presentation and watch_presentation.owner_token

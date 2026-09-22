@@ -25,6 +25,7 @@ local wnd_icon
 local wnd_rykzack
 local INVENTORY_DOF_BLEND_MS = 300
 local INVENTORY_DOF_OPEN_LEAD_MS = 250
+local FULL_BACKPACK_OPEN_WATCHDOG_EXTRA_MS = 1000
 local inventory_dof_value = 0
 local inventory_dof_signal
 local inventory_dof_generation = 0
@@ -79,6 +80,32 @@ local function unsubscribe_full_backpack_signal( signal )
 	end
 end
 
+local function detach_equipment_icons(dialog)
+	if wnd_icon ~= nil then
+		if dialog then dialog:DetachChild(wnd_icon) end
+		wnd_icon = nil
+	end
+	if wnd_rykzack ~= nil then
+		if dialog then dialog:DetachChild(wnd_rykzack) end
+		wnd_rykzack = nil
+	end
+end
+
+local function restore_controls_directly(state, owner)
+	local current = hud_animation_owner and hud_animation_owner.current
+		and hud_animation_owner.current()
+	local other_owner = current and current ~= owner
+		and hud_animation_owner.valid and hud_animation_owner.valid(current)
+	if other_owner then return end
+	if state.movement_held and level and level.only_allow_movekeys then
+		level.only_allow_movekeys(false)
+		if level.set_actor_allow_ladder then level.set_actor_allow_ladder(true) end
+	end
+	if state.input_held and level and level.enable_input then
+		level.enable_input()
+	end
+end
+
 local function cleanup_full_backpack( state, reason, notify_close )
 	if not state or state.cleaned then return false end
 	state.cleaned = true
@@ -115,8 +142,14 @@ local function cleanup_full_backpack( state, reason, notify_close )
 		hud_animation_owner.cancel( owner, reason or "full-backpack cleanup" )
 		hud_animation_owner.release( owner, reason or "full-backpack cleanup" )
 	else
+		restore_controls_directly(state, owner)
 		state.movement_held = false
 		state.input_held = false
+	end
+
+	if state.inventory_requested and not state.opened and not state.closing
+		and sak and sak.close_window then
+		pcall(sak.close_window)
 	end
 
 	if slot_keeper and slot_keeper.restore then slot_keeper.restore() end
@@ -303,16 +336,9 @@ function rummaged:btn_quit(mode)
 	--mode = 12 квестовые предметы
 	vergas_lib.flag_inventory=false
 	schedule.add ("flag_inventory","vergas_lib.flag_inventory_on()",300)
-	if wnd_icon ~= nil then
-		self:DetachChild(wnd_icon)
-		wnd_icon = nil
+	if mode ~= 4 then
+		detach_equipment_icons(self)
 	end
-
-	if wnd_rykzack ~= nil then
-		self:DetachChild(wnd_rykzack)
-		wnd_rykzack = nil
-	end
-
 	if mode == 0 then
 		--закрываю снаряжение
 		inv_buttons_use.imitation_closing_inventory(mode)
@@ -331,6 +357,8 @@ function rummaged:btn_quit(mode)
 			hud_motion_active = true,
 			input_held = false,
 			movement_held = false,
+			inventory_requested = false,
+			opened = false,
 		}
 		full_backpack_owner = owner
 		full_backpack_state = state
@@ -347,7 +375,15 @@ function rummaged:btn_quit(mode)
 		end
 		level.add_cam_effector( "camera_effects\\backpack_open.anm", 9773, false, "" )
 		vergas_lib.s_play("interface\\item_usage\\backpack_open",1)
-		local anim_duration = game.play_hud_motion( 2, "item_ea_backpack_open_stalker_hud", "anm_ea_show", false, 0.65 )
+		local motion_ok, anim_duration = pcall(function()
+			return game.play_hud_motion( 2, "item_ea_backpack_open_stalker_hud", "anm_ea_show", false, 0.65 )
+		end)
+		if not motion_ok or not hud_animation_session or not hud_animation_session.duration
+			or not hud_animation_session.duration(anim_duration) then
+			cleanup_full_backpack(state, "invalid backpack open duration", false)
+			return
+		end
+		detach_equipment_icons(self)
 		dsh.timeout( math.max( 0, anim_duration - INVENTORY_DOF_OPEN_LEAD_MS ), function()
 			if not hud_animation_owner.valid(owner) or state.cleaned then return end
 			blend_inventory_dof( 1 )
@@ -356,18 +392,36 @@ function rummaged:btn_quit(mode)
 		dsh.timeout( anim_duration, function()
 			if not hud_animation_owner.valid(owner) or state.cleaned then return end
 			game.play_hud_motion( 2, "item_ea_backpack_open_stalker_hud", "anm_ea_idle", false, 1 )
-			inv_buttons_use.open_inventory( 4 )
+			local open_ok = pcall(function()
+				inv_buttons_use.open_inventory( 4 )
+				get_console():execute("bpui 1")
+			end)
+			if not open_ok then
+				cleanup_full_backpack(state, "backpack inventory open failed", false)
+				return
+			end
+			state.opened = true
 			-- DOF begins just before this point via blend_inventory_dof().
-			get_console():execute("bpui 1")
 			if state.input_held then
 				hud_animation_owner.release_resource( owner, "input" )
 				state.input_held = false
 			end
 		end )
-		razgruzka.open_inventory()
-		
-		-- Нужно для аллкор хайда, можно обычную переменную, но так проще
+		state.inventory_requested = true
 		set_value( "inv_full", true )
+		dsh.timeout( math.max( 1000, anim_duration + FULL_BACKPACK_OPEN_WATCHDOG_EXTRA_MS ), function()
+			if state.cleaned or state.opened then return end
+			cleanup_full_backpack(state, "full-backpack open timeout", false)
+		end )
+
+		local open_ok, open_error = pcall(function()
+			razgruzka.open_inventory()
+		end)
+		if not open_ok then
+			log2("[BACKPACK] inventory open failed: %s", tostring(open_error))
+			cleanup_full_backpack(state, "backpack inventory open failed", false)
+			return
+		end
 
 		local function restore_bp_hud_idle()
 			if state.cleaned or not hud_animation_owner.valid(owner) or not get_value( "inv_full" ) then return end
