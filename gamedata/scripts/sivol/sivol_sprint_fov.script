@@ -1,9 +1,11 @@
--- Smooth, speed-driven sprint FOV widening.
+-- Single owner for temporary actor camera-FOV effects: speed-driven sprint
+-- widening and the empty-hands aim-key zoom.
 --
 -- set_camera_fov() is the working camera override in this engine build (also
 -- used by monster_parts.script). It may update the console FOV as a side
 -- effect, so frozen_base_fov keeps the user's real setting separate from our
--- temporary writes. sivol_weapon_zoom remains authoritative during ADS.
+-- temporary writes. All targets are derived from that frozen base; a value
+-- written by either effect can therefore never become the next base.
 
 local MAX_FOV_OFFSET       = 20.0
 local SPEED_DEAD_ZONE      = 0.30 -- metres/second; filters idle physics noise
@@ -16,6 +18,8 @@ local CAMERA_MAX_DISTANCE  = 1.50 -- rejects third-person/script cameras
 local CAMERA_MIN_DIR_DOT   = 0.85
 local FOV_WRITE_EPSILON    = 0.01
 local BASE_CHANGE_EPSILON  = 0.01
+local EMPTY_ZOOM_MULTIPLIER = 0.88
+local EMPTY_ZOOM_RATE       = 8.0
 local MAX_SAMPLE_DISTANCE_SQ = MAX_SAMPLE_DISTANCE * MAX_SAMPLE_DISTANCE
 local CAMERA_MAX_DISTANCE_SQ = CAMERA_MAX_DISTANCE * CAMERA_MAX_DISTANCE
 
@@ -36,6 +40,8 @@ local frozen_base_fov
 local last_base_fov
 local last_written_fov
 local was_active = false
+local empty_zoom_strength = 0
+local empty_zoom_was_active = false
 local speed_source_logged = false
 
 local function clamp(value, low, high)
@@ -51,15 +57,21 @@ local function clear_position_sample()
 	last_position_z = nil
 end
 
--- If set_camera_fov changes the cvar, live will equal last_written_fov. Any
--- other live value is an external slider change and immediately becomes the
--- new base. If this engine leaves the cvar untouched, live simply stays equal
--- to frozen_base_fov and the same logic still works.
+-- If set_camera_fov changes the cvar, live will equal last_written_fov. A
+-- different live value is accepted as an external slider change only while no
+-- scripted camera layer is active. If this engine leaves the cvar untouched,
+-- live stays equal to frozen_base_fov and the same logic still works.
+local function has_camera_override()
+	return was_active or smoothed_offset > FOV_WRITE_EPSILON
+		or empty_zoom_strength > FOV_WRITE_EPSILON
+end
+
 local function current_base_fov()
 	local live = get_console():get_float("fov")
 	if not frozen_base_fov then
 		frozen_base_fov = live
-	elseif not last_written_fov or math.abs(live - last_written_fov) > FOV_WRITE_EPSILON then
+	elseif not has_camera_override()
+		and (not last_written_fov or math.abs(live - last_written_fov) > FOV_WRITE_EPSILON) then
 		if math.abs(live - frozen_base_fov) > BASE_CHANGE_EPSILON then
 			frozen_base_fov = live
 		end
@@ -78,13 +90,16 @@ local function write_actor_fov(actor, value, force)
 end
 
 local function restore_base(reason)
-	local had_override = was_active or smoothed_offset > FOV_WRITE_EPSILON
-	local base = current_base_fov()
-	if had_override and db.actor then
+	local had_override = has_camera_override()
+	local base = frozen_base_fov
+	if had_override and not base then base = current_base_fov() end
+	if had_override and base and db.actor then
 		write_actor_fov(db.actor, base, true)
 		log2("[sprint_fov] restored base FOV %.2f (%s)", base, reason or "inactive")
 	end
 	was_active = false
+	empty_zoom_strength = 0
+	empty_zoom_was_active = false
 	smoothed_speed = 0
 	smoothed_offset = 0
 	sprint_time = 0
@@ -110,6 +125,13 @@ local function aiming(actor_obj)
 	end
 	return wpn_params and type(wpn_params.get_zie_obj) == "function"
 		and wpn_params.get_zie_obj() ~= nil
+end
+
+local function empty_zoom_key_down()
+	local dik = bind_to_dik and bind_to_dik(key_bindings.kWPN_ZOOM)
+	if not dik or dik <= 0 then return false end
+	local value = key_state(dik)
+	return value == true or (type(value) == "number" and value ~= 0)
 end
 
 local function standard_camera(dev)
@@ -157,6 +179,9 @@ local function suppression_reason(actor, actor_obj, dev)
 	if level.main_input_receiver() then return "menu/UI" end
 	if actor:is_talking() then return "dialogue" end
 	if aiming(actor_obj) then return "ADS" end
+	if level.only_movekeys_allowed() or not game.hud_motion_allowed() then
+		return "scripted HUD/camera"
+	end
 	if not standard_camera(dev) then return "non-standard camera" end
 	return nil
 end
@@ -185,30 +210,24 @@ local function on_update(delta)
 		last_actor_id = actor_id
 	end
 
-	if not is_sprint_fov_enabled() then
-		if was_active or smoothed_offset > FOV_WRITE_EPSILON then
-			restore_base("option disabled")
-		else
-			smoothed_speed = 0
-			sprint_time = 0
-			peak_reference_candidate = 0
-			clear_position_sample()
-		end
-		return
-	end
-
 	local actor_obj = get_actor_obj()
 	if not actor_obj then
-		if was_active or smoothed_offset > FOV_WRITE_EPSILON then
+		if has_camera_override() then
 			restore_base("native actor unavailable")
 		end
 		return
 	end
 
-	local sprinting = actor_obj:is_actor_sprinting()
-	-- Nearly all frames take this path. Avoid console/camera/position reads,
-	-- allocations, square roots and exponential math while fully idle.
-	if not sprinting and smoothed_offset == 0 then
+	local actor_sprinting = actor_obj:is_actor_sprinting()
+	local sprinting = is_sprint_fov_enabled() and actor_sprinting
+	local empty_zoom_candidate = not actor_sprinting
+		and smoothed_offset <= FOV_WRITE_EPSILON
+		and actor:active_item() == nil
+	local empty_zoom_pressed = empty_zoom_candidate and empty_zoom_key_down()
+	-- Nearly all frames take this path. Avoid console/camera/position reads and
+	-- exponential math while neither camera-FOV effect is active or requested.
+	if not sprinting and smoothed_offset == 0 and empty_zoom_strength == 0
+		and not empty_zoom_pressed then
 		clear_position_sample()
 		sprint_time = 0
 		peak_reference_candidate = 0
@@ -229,6 +248,18 @@ local function on_update(delta)
 		return
 	end
 
+	-- Recheck after the common suppression gates. Losing empty-hands ownership
+	-- (equipping an item or beginning a sprint) restores the shared base
+	-- immediately instead of carrying a zoom transition into another system.
+	empty_zoom_candidate = not actor_sprinting
+		and smoothed_offset <= FOV_WRITE_EPSILON
+		and actor:active_item() == nil
+	empty_zoom_pressed = empty_zoom_candidate and empty_zoom_key_down()
+	if not empty_zoom_candidate and empty_zoom_strength > 0 then
+		empty_zoom_strength = 0
+		empty_zoom_was_active = false
+	end
+
 	local base = current_base_fov()
 	update_base_fov_log(base)
 
@@ -238,15 +269,32 @@ local function on_update(delta)
 		smoothed_offset = exp_step(smoothed_offset, 0, FOV_FALL_RATE, dt)
 		sprint_time = 0
 		peak_reference_candidate = 0
-		if smoothed_offset <= FOV_WRITE_EPSILON then
-			smoothed_offset = 0
+		if smoothed_offset <= FOV_WRITE_EPSILON then smoothed_offset = 0 end
+
+		local empty_target = empty_zoom_pressed and 1 or 0
+		empty_zoom_strength = exp_step(empty_zoom_strength, empty_target, EMPTY_ZOOM_RATE, dt)
+		if empty_zoom_strength <= FOV_WRITE_EPSILON then empty_zoom_strength = 0 end
+		if empty_zoom_pressed and not empty_zoom_was_active then
+			empty_zoom_was_active = true
+			log2("[camera_fov] empty-hands zoom enabled (base %.2f, multiplier %.2f)",
+				base, EMPTY_ZOOM_MULTIPLIER)
+		elseif empty_zoom_strength == 0 then
+			empty_zoom_was_active = false
+		end
+
+		local value = base + smoothed_offset
+		if empty_zoom_strength > 0 then
+			value = base * (1 - (1 - EMPTY_ZOOM_MULTIPLIER) * empty_zoom_strength)
+		end
+		if smoothed_offset == 0 and empty_zoom_strength == 0 then
 			write_actor_fov(actor, base, true)
 			if was_active then
-				log2("[sprint_fov] restored base FOV %.2f (sprint ended)", base)
+				log2("[camera_fov] restored base FOV %.2f (effects ended)", base)
 			end
 			was_active = false
 		else
-			write_actor_fov(actor, base + smoothed_offset)
+			write_actor_fov(actor, value)
+			was_active = true
 		end
 		return
 	end
@@ -293,8 +341,23 @@ local function on_update(delta)
 	end
 end
 
+-- Other scripted camera owners call this before capturing actor FOV. This is
+-- intentionally synchronous: they always receive the player's real base,
+-- never a sprint/empty-zoom transition value.
+function release_camera_fov(reason)
+	restore_base(reason or "external camera owner")
+end
+
+function on_actor_death()
+	reset_all("death")
+end
+
 local function on_first_update()
 	reset_all("load/reset")
+end
+
+local function on_load_before_all()
+	reset_all("load")
 end
 
 local function on_before_save_game()
@@ -305,9 +368,15 @@ local function on_stop_modules()
 	reset_all("net_destroy")
 end
 
+local function on_level_change()
+	reset_all("level change")
+end
+
 function attach(sm)
 	sm:subscribe({signal = "on_update", fun = on_update})
 	sm:subscribe({signal = "on_first_update", fun = on_first_update})
+	sm:subscribe({signal = "on_load_before_all", fun = on_load_before_all})
 	sm:subscribe({signal = "on_before_save_game", fun = on_before_save_game})
+	sm:subscribe({signal = "level_changer_action", fun = on_level_change})
 	sm:subscribe({signal = "on_stop_modules", fun = on_stop_modules})
 end
