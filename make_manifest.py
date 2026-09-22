@@ -12,6 +12,8 @@ Usage:
     python make_manifest.py --apply          write to_git/manifest.txt
     python make_manifest.py --verify         check the committed manifest
     python make_manifest.py --apply --rev HEAD --repo-dir D:\\impr\\impr\\to_git
+    python make_manifest.py --changelog-status
+    python make_manifest.py --changelog --changelog-days 14
 
     --apply also refreshes the main-menu patch stamp in both language files.
     Use --no-menu-version to leave those files unchanged.
@@ -38,6 +40,15 @@ DEFAULT_REPO_DIR = next(
 DEFAULT_REPO = "jordan1227/improved_to_he"
 DEFAULT_REF = "main"
 MANIFEST_NAME = "manifest.txt"
+CHANGELOG_NAME = "CHANGELOG.md"
+CHANGELOG_DEFAULT_DAYS = 14
+CHANGELOG_HEAD_RE = re.compile(
+    r"^<!-- nlc-changelog-head: ([0-9a-f]{40}) -->\s*\r?\n?",
+    re.MULTILINE,
+)
+CHANGELOG_ENTRY_RE = re.compile(
+    r"^<!-- nlc-changelog-commit: ([0-9a-f]{40}) -->$", re.MULTILINE
+)
 MENU_VERSION_FILES = (
     "gamedata/config/text/eng/ui_st_other.xml",
     "gamedata/config/text/rus/ui_st_other.xml",
@@ -277,21 +288,218 @@ def body_line(line):
     return not line.startswith("#") or line.startswith("#keep ")
 
 
-def progress_bar(done, total):
-    """Render a small ASCII progress bar for the hash pass."""
+def progress_bar(done, total, label="Manifest", step=64):
+    """Render a small ASCII progress bar for a long-running pass."""
     if getattr(progress_bar, "disabled", False):
         return
-    if done != total and done % 64:
+    if done != total and done % step:
         return
     width = 24
     filled = width if total == 0 else int(width * done / total)
     bar = "#" * filled + "-" * (width - filled)
     try:
-        print("\r[%s] %d/%d" % (bar, done, total), end="", flush=True)
+        prefix = (label + ": ") if label else ""
+        print("\r%s[%s] %d/%d" % (prefix, bar, done, total), end="", flush=True)
         if done == total:
             print()
     except OSError:
         progress_bar.disabled = True
+
+
+def commit_changes(repo_dir, rev):
+    """Return [(status, [path, ...])] for one commit."""
+    raw = git(repo_dir, "diff-tree", "--root", "--no-commit-id",
+              "--name-status", "-r", "-M", "-z", rev, binary=True)
+    tokens = raw.split(b"\x00")
+    changes = []
+    i = 0
+    while i < len(tokens):
+        if not tokens[i]:
+            i += 1
+            continue
+        status = tokens[i].decode("utf-8", "replace")
+        count = 2 if status[:1] in ("R", "C") else 1
+        paths = [p.decode("utf-8") for p in tokens[i + 1:i + 1 + count]]
+        if len(paths) == count:
+            changes.append((status, paths))
+        i += 1 + count
+    return changes
+
+
+def commit_info(repo_dir, rev):
+    """Return metadata and changed paths for a commit."""
+    raw = git(repo_dir, "show", "-s",
+              "--format=%H%x00%P%x00%aI%x00%B", rev)
+    sha, parents, authored, message = raw.split("\x00", 3)
+    return {
+        "sha": sha,
+        "short": sha[:7],
+        "parent": parents.split()[0] if parents.split() else "",
+        "authored": authored,
+        "message": message.strip(),
+        "changes": commit_changes(repo_dir, sha),
+    }
+
+
+def is_ancestor(repo_dir, older, newer):
+    proc = subprocess.run(
+        ["git", "-C", repo_dir, "merge-base", "--is-ancestor", older, newer],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    return proc.returncode == 0
+
+
+def recent_changelog_base(repo_dir, target, days):
+    if days <= 0:
+        raise SystemExit("--changelog-days must be greater than zero")
+    print("Finding commits from the last %d days..." % days)
+    recent = git(repo_dir, "rev-list", "--first-parent", "--reverse",
+                 "--since=%d days ago" % days, target).splitlines()
+    if recent:
+        return commit_info(repo_dir, recent[0])["parent"]
+    return target
+
+
+def changelog_commits(repo_dir, target, since=None, changelog_text="", days=CHANGELOG_DEFAULT_DAYS):
+    """Return (base, all_commits, payload_commits, ignored_commits)."""
+    target_info = commit_info(repo_dir, target)
+    marker = CHANGELOG_HEAD_RE.search(changelog_text)
+    if since:
+        base = since
+    else:
+        window_base = recent_changelog_base(repo_dir, target_info["sha"], days)
+        if marker:
+            base = marker.group(1)
+            # If the marker is newer than the default window, scan from the
+            # older window boundary so missing historical entries are filled
+            # without duplicating entries already present in CHANGELOG.md.
+            if window_base and is_ancestor(repo_dir, window_base, base):
+                base = window_base
+        else:
+            base = window_base
+    if base and not is_ancestor(repo_dir, base, target_info["sha"]):
+        raise SystemExit(
+            "changelog base %s is not an ancestor of %s; use --changelog-since"
+            % (base, target_info["short"]))
+    revspec = "%s..%s" % (base, target_info["sha"]) if base else target_info["sha"]
+    raw = git(repo_dir, "rev-list", "--first-parent", "--reverse", revspec)
+    all_commits = [line for line in raw.splitlines() if line]
+    infos = []
+    if all_commits:
+        print("Scanning changelog commits...")
+        total = len(all_commits)
+        for index, sha in enumerate(all_commits, 1):
+            infos.append(commit_info(repo_dir, sha))
+            progress_bar(index, total, label="Changelog", step=16)
+    else:
+        print("Changelog: no commits to scan")
+    payload = [info for info in infos
+               if any(wanted(path) for _, paths in info["changes"] for path in paths)]
+    ignored = [info for info in infos if info not in payload]
+    return base, infos, payload, ignored
+
+
+def format_change(status, paths):
+    if len(paths) >= 2:
+        return "%s %s -> %s" % (status, paths[0], paths[1])
+    return "%s %s" % (status, paths[0])
+
+
+def format_changelog_entry(info, repo):
+    try:
+        authored = datetime.datetime.fromisoformat(
+            info["authored"].replace("Z", "+00:00"))
+        stamp = authored.astimezone(MOSCOW).strftime("%d.%m.%y %H:%M") + " МСК"
+    except ValueError:
+        stamp = info["authored"]
+    message_lines = info["message"].splitlines()
+    subject = message_lines[0].strip() if message_lines else "(no commit subject)"
+    body = "\n".join(message_lines[1:]).strip()
+    url = "https://github.com/%s/commit/%s" % (repo, info["sha"])
+    game_changes = []
+    other_changes = []
+    for status, paths in info["changes"]:
+        target = game_changes if any(wanted(path) for path in paths) else other_changes
+        target.append(format_change(status, paths))
+    lines = [
+        "<!-- nlc-changelog-commit: %s -->" % info["sha"],
+        "## %s - %s" % (stamp, subject),
+        "",
+        "Commit: [%s](%s)" % (info["short"], url),
+        "",
+        "### Description",
+        "",
+        body or "_(No additional description.)_",
+        "",
+        "### Game files changed",
+        "",
+    ]
+    lines.extend("- %s" % change for change in game_changes)
+    if not game_changes:
+        lines.append("- _(none)_")
+    if other_changes:
+        lines.extend(["", "### Other repository files changed", ""])
+        lines.extend("- %s" % change for change in other_changes)
+    return "\n".join(lines)
+
+
+def read_changelog(path):
+    if not os.path.exists(path):
+        return ""
+    with open(path, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+def write_changelog(repo_dir, repo, target, since=None, out=None, days=CHANGELOG_DEFAULT_DAYS):
+    out = out or os.path.join(repo_dir, CHANGELOG_NAME)
+    old = read_changelog(out)
+    base, all_commits, payload, ignored = changelog_commits(
+        repo_dir, target, since=since, changelog_text=old, days=days)
+    existing = set(CHANGELOG_ENTRY_RE.findall(old))
+    new_infos = [info for info in payload if info["sha"] not in existing]
+    if not new_infos:
+        print("changelog is up to date -- %d maintenance commits ignored" % len(ignored))
+        return 0
+    entries = [format_changelog_entry(info, repo) for info in reversed(new_infos)]
+    marker_sha = payload[-1]["sha"]
+    content = CHANGELOG_HEAD_RE.sub("", old, count=1).lstrip()
+    if not content:
+        content = "# NLC Improved changelog\n"
+    if not content.startswith("# NLC Improved changelog"):
+        content = "# NLC Improved changelog\n\n" + content
+    header, _, rest = content.partition("\n")
+    blocks = [header, "", "\n\n".join(entries)]
+    if rest.strip():
+        blocks.extend(["", rest.strip()])
+    final = "<!-- nlc-changelog-head: %s -->\n\n%s\n" % (
+        marker_sha, "\n".join(blocks))
+    with open(out, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(final)
+    print("wrote %s -- %d entries; %d maintenance commits ignored"
+          % (out, len(new_infos), len(ignored)))
+    return 0
+
+
+def changelog_status(repo_dir, target, since=None, out=None, days=CHANGELOG_DEFAULT_DAYS):
+    out = out or os.path.join(repo_dir, CHANGELOG_NAME)
+    old = read_changelog(out)
+    base, all_commits, payload, ignored = changelog_commits(
+        repo_dir, target, since=since, changelog_text=old, days=days)
+    existing = set(CHANGELOG_ENTRY_RE.findall(old))
+    missing = [info for info in payload if info["sha"] not in existing]
+    marker = CHANGELOG_HEAD_RE.search(old)
+    print("changelog target: %s" % commit_info(repo_dir, target)["sha"][:7])
+    print("changelog marker: %s" % (marker.group(1)[:7] if marker else "none"))
+    if not since:
+        print("note: default window is the last %d days; --changelog-since overrides it" % days)
+    print("commits scanned: %d" % len(all_commits))
+    print("missing entries: %d" % len(missing))
+    print("maintenance commits ignored: %d" % len(ignored))
+    for info in missing:
+        subject = info["message"].splitlines()[0] if info["message"] else "(no subject)"
+        safe_subject = subject.encode("ascii", "replace").decode("ascii")
+        print("  %s %s" % (info["short"], safe_subject))
+    return 0
 
 
 def main():
@@ -311,12 +519,39 @@ def main():
                     help="do not update the main-menu patch stamp on --apply")
     ap.add_argument("--patch-stamp", metavar="DD.MM.YY_HH:MM_MСК",
                     help="override the Moscow patch stamp used by --apply")
+    ap.add_argument("--changelog", action="store_true",
+                    help="generate/catch up CHANGELOG.md from Git history")
+    ap.add_argument("--changelog-status", action="store_true",
+                    help="show missing changelog entries without writing")
+    ap.add_argument("--changelog-since", metavar="REV",
+                    help="history base revision for the first changelog run")
+    ap.add_argument("--changelog-days", type=int, default=CHANGELOG_DEFAULT_DAYS,
+                    help="number of recent days to include on a first run (default: %(default)s)")
+    ap.add_argument("--changelog-out", metavar="PATH",
+                    help="override the CHANGELOG.md output path")
     args = ap.parse_args()
 
     if args.prefix:
         global INCLUDE_PREFIXES, INCLUDE_FILES
         INCLUDE_PREFIXES = tuple(args.prefix)
         INCLUDE_FILES = ()
+
+    if args.changelog and args.changelog_status:
+        ap.error("--changelog and --changelog-status are mutually exclusive")
+    if args.changelog or args.changelog_status:
+        if args.apply or args.verify:
+            ap.error("changelog actions cannot be combined with --apply or --verify")
+        changelog_out = args.changelog_out or os.path.join(
+            args.repo_dir, CHANGELOG_NAME)
+        if args.changelog_status:
+            print("Starting changelog status scan...")
+            return changelog_status(args.repo_dir, args.rev,
+                                    since=args.changelog_since, out=changelog_out,
+                                    days=args.changelog_days)
+        print("Starting changelog generation...")
+        return write_changelog(args.repo_dir, args.repo, args.rev,
+                               since=args.changelog_since, out=changelog_out,
+                               days=args.changelog_days)
 
     if args.patch_stamp:
         patch_stamp = args.patch_stamp.replace("_", " ")
@@ -329,6 +564,7 @@ def main():
                        + " МСК")
 
     out = args.out or os.path.join(args.repo_dir, MANIFEST_NAME)
+    print("Starting manifest build...")
     menu_paths = ()
     if args.apply and not args.no_menu_version:
         menu_paths = update_menu_version(args.repo_dir, patch_stamp)
