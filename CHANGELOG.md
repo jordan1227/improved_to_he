@@ -1,6 +1,274 @@
-<!-- nlc-changelog-head: 9c280b15b9afe0927d78bd2adc91efe2e3feeb73 -->
+<!-- nlc-changelog-head: d732d3c2338b29051f706c800239a03e89cb2171 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: d732d3c2338b29051f706c800239a03e89cb2171 -->
+## 23.09.26 10:42 МСК - Фикс Шустрого, должен идти спать после спасения
+
+Commit: [d732d3c](https://github.com/jordan1227/improved_to_he/commit/d732d3c2338b29051f706c800239a03e89cb2171)
+
+### Description
+
+Rework esc_shustryi AI: move tutorial trigger earlier (on_info2 -> tutorial_wounded_give_info to walker6) and shift the original quest remark to on_info3. Update [walker6] to use shustryi_look, mark online, remove sprint movement overrides, use a 30s on_timer to wake the sleeper@esc_lager, set meet to meet@friend, and hide its show_spot. These changes make the NPC's movement/interaction timing and tutorial messaging more reliable.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+
+### Game files changed
+
+- M gamedata/config/scripts/esc/esc_shustryi.ltx
+
+<!-- nlc-changelog-commit: 58ff2d4c266a52713f2d98232e72a351ac1cf2fe -->
+## 23.09.26 10:12 МСК - Spawn energy drink once; tighten note spawn
+
+Commit: [58ff2d4](https://github.com/jordan1227/improved_to_he/commit/58ff2d4c266a52713f2d98232e72a351ac1cf2fe)
+
+### Description
+
+Refactors ensure_dead_novice_letter: stop early-return on alife flag so the energy drink logic can still run; only spawn dead_novice_letter when it's not already in the corpse and esc_tutorial_dead_novice alife info is absent. Iterate_inventory now guards against nil items and detects existing energy_drink. Introduces a persistent key (sak.dead_novice_energy_drink_spawned) to ensure energy_drink is spawned at most once and record when one is already present. Prevents duplicate spawns and avoids nil dereference in inventory iteration.
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: ee280f3b7400793014b085d5df8d0479ce023a5e -->
+## 23.09.26 10:10 МСК - Меньше яркость энергосу, -20% эффекта, x5 длительность
+
+Commit: [ee280f3](https://github.com/jordan1227/improved_to_he/commit/ee280f3b7400793014b085d5df8d0479ce023a5e)
+
+### Description
+
+Add new animation file gamedata/anims/brighten.ppe. Update gamedata/config/misc/items.ltx: increase mr_time from 2 to 10 and reduce mr_eat_power from 1.0 to 0.8 to slow recovery/eat effectiveness for balance.
+
+### Game files changed
+
+- A gamedata/anims/brighten.ppe
+- M gamedata/config/misc/items.ltx
+
+<!-- nlc-changelog-commit: 7a81f2245867c4ba21f70452a044f468ad6c8e20 -->
+## 23.09.26 10:03 МСК - Centralize dialog actions, add prapor utilities
+
+Commit: [7a81f22](https://github.com/jordan1227/improved_to_he/commit/7a81f2245867c4ba21f70452a044f468ad6c8e20)
+
+### Description
+
+Replaced inline dialog logic with centralized sivol functions and removed duplicate implementations.
+
+- kill_stalker_dlg.xml: replaced direct sak.create_items call with sivol.give_mutant_parts_and_update_dan.
+- sak_dalogs_esc_gar.xml: switched precondition/action to sivol.prapor_good_flame_have and sivol.prapor_good_flame_remove to handle fully-charged 'flame' weapon transfers.
+- gamedata/scripts/sivol/sivol.script: added give_mutant_parts_and_update_dan (creates mutant parts, updates Dan's trade_manager/resupply time and schedules a tip), show_dan_tip, prapor_flame_is_fully_charged, prapor_good_flame_have, prapor_good_flame_have_not, transfer_prapor_flame, prapor_good_flame_remove, prapor_partial_flame_remove, and a flyto helper.
+- gamedata/scripts/sivol/sivol_masks.script: removed the old duplicated implementations and adjusted section header to avoid redundancy.
+
+Purpose: centralize inventory/transfer and trader-resupply logic, keep dialog XMLs thin, and avoid duplicated code paths for flame-weapon transfers and Dan resupply updates.
+
+### Game files changed
+
+- M gamedata/config/gameplay/kill_stalker_dlg.xml
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/scripts/sivol/sivol.script
+- M gamedata/scripts/sivol/sivol_masks.script
+
+<!-- nlc-changelog-commit: 269ec69fd3d98d8f596077c626011e6962a671ab -->
+## 23.09.26 10:02 МСК - Add white loner jacket visual and UI icon
+
+Commit: [269ec69](https://github.com/jordan1227/improved_to_he/commit/269ec69fd3d98d8f596077c626011e6962a671ab)
+
+### Description
+
+Introduce a new white loner jacket visual and update references.
+
+- Added mesh gamedata/meshes/sm/actor_legs/jacket_loner_white.ogf
+- Registered [actor_legs_jacket_loner_white] in gamedata/config/misc/sivol_visible_body.ltx
+- Updated gamedata/scripts/sivol/sivol_visible_body.script to map neytral_novice_gaz_outfit_m1 to jacket_loner_white
+- Replaced gamedata/textures/ui/ui_icons_npc_suits.dds (updated UI icons)
+- Added /packaging to .gitignore
+
+These changes wire the new asset into the visible-body system and update the UI icon texture.
+
+### Game files changed
+
+- M gamedata/config/misc/sivol_visible_body.ltx
+- A gamedata/meshes/sm/actor_legs/jacket_loner_white.ogf
+- M gamedata/scripts/sivol/sivol_visible_body.script
+- M gamedata/textures/ui/ui_icons_npc_suits.dds
+
+### Other repository files changed
+
+- M .gitignore
+
+<!-- nlc-changelog-commit: ad891c5375834d5ca3c864b79aed4f0ba9ec55f1 -->
+## 23.09.26 06:34 МСК - Fix PDA startup removal and enable PDA
+
+Commit: [ad891c5](https://github.com/jordan1227/improved_to_he/commit/ad891c5375834d5ca3c864b79aed4f0ba9ec55f1)
+
+### Description
+
+Tighten the PDA startup-removal check in he_pda_market.script: cache he_pda_model.get_pda(), ensure the PDA's section is a valid PDA section before calling cancel_startup_removal().
+
+Also fix sak.script so the actor is allowed to use the PDA when the "pda_is_broken" alife info flag exists (change set_actor_allow_pda from false to true). These changes prevent incorrect startup-removal and restore PDA access when the broken flag is present.
+
+### Game files changed
+
+- M gamedata/scripts/he_pda_market.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: a70d1d9013c6a494be4d439311d8552c350627d7 -->
+## 23.09.26 02:56 МСК - Adjust blood pool lifetime and size
+
+Commit: [a70d1d9](https://github.com/jordan1227/improved_to_he/commit/a70d1d9013c6a494be4d439311d8552c350627d7)
+
+### Description
+
+Increase blood pool persistence from 200s to 600s and reduce the maximum final pool size from 1.2 to 1.0 to tune the visual footprint and duration of ground blood effects.
+
+### Game files changed
+
+- M gamedata/scripts/sivol/sivol_blood_pools.script
+
+<!-- nlc-changelog-commit: 5004521d0a1ac326d4ecb6236f00d46c3aa9a782 -->
+## 23.09.26 01:23 МСК - Цены торговли как в 3.0
+
+Commit: [5004521](https://github.com/jordan1227/improved_to_he/commit/5004521d0a1ac326d4ecb6236f00d46c3aa9a782)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/shop_barman/barman_buy.ltx
+- M gamedata/config/misc/shop_barman/barman_trade.ltx
+- M gamedata/config/misc/shop_mikhalych/mikhalych_barter.ltx
+- M gamedata/config/misc/shop_mikhalych/mikhalych_buy.ltx
+- M gamedata/config/misc/shop_other/junkman_barter.ltx
+- M gamedata/config/misc/shop_other/trade_junkman.ltx
+- M gamedata/config/misc/shop_other/trade_silvestr.ltx
+- M gamedata/config/misc/shop_pahom/pahom_buy.ltx
+- M gamedata/config/misc/shop_pahom/pahom_trade.ltx
+- M gamedata/config/misc/shop_sakharov/barter_saharov.ltx
+- M gamedata/config/misc/shop_sakharov/trade_sakharov.ltx
+- M gamedata/config/misc/shop_sidor/sidor_barter.ltx
+- M gamedata/config/misc/shop_sidor/sidor_modificats.ltx
+- M gamedata/config/misc/shop_sidor/trade_sidor.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_bnd.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_dlg.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_ecl.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_frd.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_grn.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_mil.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_exp.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_mas.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_nov.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_vet.ltx
+- M gamedata/config/misc/trade_npc/trade_dsc_part_exchanger.ltx
+- M gamedata/config/misc/trade_npc/trade_ignat.ltx
+- M gamedata/config/misc/trade_npc/trade_jila.ltx
+- M gamedata/config/misc/trade_npc/trade_kruglov.ltx
+- M gamedata/config/misc/trade_npc/trade_sherstyk.ltx
+
+<!-- nlc-changelog-commit: a6718f8dee3cea859e557a308c668c3979fe515d -->
+## 23.09.26 00:30 МСК - Кондиция 95%
+
+Commit: [a6718f8](https://github.com/jordan1227/improved_to_he/commit/a6718f8dee3cea859e557a308c668c3979fe515d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/ui/ui_barter.script
+
+<!-- nlc-changelog-commit: 3cddf6d710c0541b63d21129843bc4aa3d726dff -->
+## 22.09.26 23:46 МСК - Кружка
+
+Commit: [3cddf6d](https://github.com/jordan1227/improved_to_he/commit/3cddf6d710c0541b63d21129843bc4aa3d726dff)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_escape.xml
+- M gamedata/config/gameplay/dialogs_he_pda_access.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/vergas/vergas_krujka.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_hospital.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/hospital.sections
+
+<!-- nlc-changelog-commit: 334997fcc5e0f18c39b2b0ebcc729842a6b7f4c9 -->
+## 22.09.26 23:45 МСК - Поменял цены
+
+Commit: [334997f](https://github.com/jordan1227/improved_to_he/commit/334997fcc5e0f18c39b2b0ebcc729842a6b7f4c9)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/shop_barman/barman_trade.ltx
+- M gamedata/config/misc/shop_sidor/trade_sidor.ltx
+
+<!-- nlc-changelog-commit: 5e3016c85105ad25b31c72d1442d4981e18373a7 -->
+## 22.09.26 21:17 МСК - Фикс рукавов на ТЧ руках
+
+Commit: [5e3016c](https://github.com/jordan1227/improved_to_he/commit/5e3016c85105ad25b31c72d1442d4981e18373a7)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/kotovod/he_sleeves.script
+
+<!-- nlc-changelog-commit: 275ad22702e8b56b7903d90e537b1e61c0899d39 -->
+## 22.09.26 20:56 МСК - Снова скрыл часы с рук
+
+Commit: [275ad22](https://github.com/jordan1227/improved_to_he/commit/275ad22702e8b56b7903d90e537b1e61c0899d39)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/watch_gate.script
+
+<!-- nlc-changelog-commit: b9856fd9187c228b24e7b7234ae897243a757c4c -->
+## 22.09.26 20:41 МСК - Убрал иконки при взломе пда
+
+Commit: [b9856fd](https://github.com/jordan1227/improved_to_he/commit/b9856fd9187c228b24e7b7234ae897243a757c4c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_pda_3d.script
+- M gamedata/scripts/ui/ui_pda_addons.script
+
+<!-- nlc-changelog-commit: d2ac3cd6bfad7068a5e2071849629b8243db1981 -->
+## 22.09.26 20:31 МСК - Убрал нейтралов-военных с Кордона
+
+Commit: [d2ac3cd](https://github.com/jordan1227/improved_to_he/commit/d2ac3cd6bfad7068a5e2071849629b8243db1981)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_faction_policy.script
+- M gamedata/scripts/olr/olr_offline_task.script
+- M gamedata/scripts/olr/olr_relations.script
 
 <!-- nlc-changelog-commit: 7b87677460415608fb33a252abdf67eb23968569 -->
 ## 22.09.26 18:24 МСК - Окончательный фикс Лиса
