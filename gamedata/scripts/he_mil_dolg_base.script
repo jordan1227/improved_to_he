@@ -1,0 +1,143 @@
+-- [HE-PORT]
+local FREE = "mil_dolg_gulag_free"
+local CAPTURED = "he_mil_dolg_captured"
+local TIMER = "he_mil_dolg_capture"
+local TIMER_NOW = "he_mil_dolg_capture_now"
+local SKULL_SID = 708
+local BASE = "mil_freedom"
+local DUTY_SMART = "mil_dolg"
+
+local camps = {
+	mil_freedom = true,
+	mil_fblockpost = true,
+	mil_fneutral = true,
+}
+
+local owners = {
+	dolg = true,
+	military = true,
+}
+
+local respawners = {
+	mil_freedom_respawn_1 = true,
+	mil_freedom_barier_respawn_1 = true,
+}
+
+local duty_spawn = {
+	{ "bar_dolg_respawn_1", 3 },
+	{ "bar_dolg_respawn_2", 4 },
+	{ "bar_dolg_respawn_3", 2 },
+}
+
+function is_captured()
+	return has_alife_info(FREE)
+end
+
+function is_camp(gulag_type)
+	return camps[gulag_type] == true
+end
+
+function owner_accepts(community)
+	return owners[community] == true
+end
+
+function accepted(smart)
+	if camps[smart:name()] and is_captured() then
+		return owners
+	end
+	return smart.accepted_communities
+end
+
+function respawn_hook(obj)
+	if obj.he_dolg_spawn or not respawners[obj:name()] or not is_captured() then
+		return
+	end
+	local list = {}
+	for i, v in ipairs(duty_spawn) do
+		table.insert(list, { section = v[1], prob = v[2] })
+		if obj.sectSpawnProps[v[1]] == nil then
+			obj.sectSpawnProps[v[1]] = { community = "dolg", rank = "nil", check = true }
+		end
+	end
+	obj.respawn_section = list
+	obj.he_dolg_spawn = true
+end
+
+function update()
+	if not (db.actor and sak.game_began) or has_alife_info(CAPTURED) then
+		return
+	end
+	if is_captured() then
+		if not timers.check_timer(TIMER_NOW) then
+			timers.start_timer(TIMER_NOW, 1, "he_mil_dolg_base.capture()")
+		end
+		return
+	end
+	if has_alife_info("mil_lukash_dead") and has_alife_info("mil_dolg_skull_talk") and not has_alife_info("mil_dolg_dead") then
+		if not timers.check_timer(TIMER) then
+			timers.start_timer(TIMER, 0, 0, 20, "he_mil_dolg_base.capture()")
+		end
+	end
+end
+
+local function members(reg, name)
+	local out = {}
+	local smart = reg[name]
+	if not smart then
+		return out
+	end
+	smart:initialize_if_needed()
+	if smart.gulag and smart.gulag.Object then
+		for id in pairs(smart.gulag.Object) do
+			table.insert(out, id)
+		end
+	end
+	return out
+end
+
+local function human(sobj)
+	return sobj and IsStalker(sobj) and sobj:alive()
+end
+
+function capture()
+	if has_alife_info(CAPTURED) or not db.actor then
+		return
+	end
+	if not is_captured() then
+		if has_alife_info("mil_dolg_dead") then
+			return
+		end
+		db.actor:give_info_portion(FREE)
+	end
+	local sim = alife()
+	local reg = smart_terrain.get_registry_by_name()
+	if not (sim and reg) then
+		return
+	end
+
+	for name in pairs(camps) do
+		for _, id in ipairs(members(reg, name)) do
+			local sobj = sim:object(id)
+			if human(sobj) and not owners[sobj:community()] then
+				xrs_utils.clear_smart_terrain(sobj)
+				smart_terrain.unregister_npc(sobj)
+			end
+		end
+	end
+
+	local duty = members(reg, DUTY_SMART)
+	local skull = sim:story_object(SKULL_SID)
+	if skull then
+		table.insert(duty, 1, skull.id)
+	end
+	local done = {}
+	for _, id in ipairs(duty) do
+		local sobj = sim:object(id)
+		if not done[id] and human(sobj) and sobj:community() == "dolg" then
+			olr_smart_index.attach_to(sobj, BASE)
+			done[id] = true
+		end
+	end
+
+	db.actor:give_info_portion(CAPTURED)
+end
