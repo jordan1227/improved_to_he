@@ -1,6 +1,352 @@
-<!-- nlc-changelog-head: d732d3c2338b29051f706c800239a03e89cb2171 -->
+<!-- nlc-changelog-head: da95f16df35e854dc0183ff5ed31360ee71ad175 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: da95f16df35e854dc0183ff5ed31360ee71ad175 -->
+## 24.09.26 08:53 МСК - Add Sidor container map quest item
+
+Commit: [da95f16](https://github.com/jordan1227/improved_to_he/commit/da95f16df35e854dc0183ff5ed31360ee71ad175)
+
+### Description
+
+Adds the Sidor container map as a new paper/quest item, including the dialogue reward, item definitions, localization strings, and inventory interaction hints. The paper reader now resolves a per-spawn HUD variant for the map and the new texture/model assets are wired into the item registry for use in the game.
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_escape.xml
+- M gamedata/config/misc/items/anim_items.ltx
+- M gamedata/config/misc/sak_quest_items.ltx
+- M gamedata/config/text/eng/he_watch.xml
+- M gamedata/config/text/eng/sak_strings.xml
+- M gamedata/config/text/eng/string_table_items.xml
+- M gamedata/config/text/eng/ui_st_inventory.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/string_table_items.xml
+- M gamedata/config/text/rus/ui_st_inventory.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- A gamedata/meshes/anomaly_weapons/wpn_3ddocument/wpn_document_hud_sidor_container1.ogf
+- A gamedata/meshes/anomaly_weapons/wpn_3ddocument/wpn_document_hud_sidor_container2.ogf
+- A gamedata/meshes/anomaly_weapons/wpn_3ddocument/wpn_document_hud_sidor_container3.ogf
+- A gamedata/meshes/anomaly_weapons/wpn_3ddocument/wpn_document_hud_sidor_container4.ogf
+- A gamedata/meshes/anomaly_weapons/wpn_3ddocument/wpn_document_hud_sidor_container5.ogf
+- A gamedata/meshes/anomaly_weapons/wpn_3ddocument/wpn_document_hud_sidor_container6.ogf
+- A gamedata/meshes/anomaly_weapons/wpn_3ddocument/wpn_document_hud_sidor_container7.ogf
+- A gamedata/meshes/anomaly_weapons/wpn_3ddocument/wpn_document_hud_sidor_container8.ogf
+- A gamedata/meshes/anomaly_weapons/wpn_3ddocument/wpn_document_hud_sidor_container9.ogf
+- M gamedata/scripts/alpet/nlc_container.script
+- M gamedata/scripts/amk/amk_mod.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+- M gamedata/scripts/ui/ui_paper_reader.script
+- M gamedata/scripts/vergas/inv_buttons_use.script
+- M gamedata/scripts/vergas/vergas_lib.script
+- A gamedata/textures/liz/sidor_container1.dds
+- A gamedata/textures/liz/sidor_container2.dds
+- A gamedata/textures/liz/sidor_container3.dds
+- A gamedata/textures/liz/sidor_container4.dds
+- A gamedata/textures/liz/sidor_container5.dds
+- A gamedata/textures/liz/sidor_container6.dds
+- A gamedata/textures/liz/sidor_container7.dds
+- A gamedata/textures/liz/sidor_container8.dds
+- A gamedata/textures/liz/sidor_container9.dds
+
+<!-- nlc-changelog-commit: 4182bb2119d595dcd8807baf7efdeb5e841abbdd -->
+## 24.09.26 06:52 МСК - Add upgraded knife HUD animations, combo & Lua sounds
+
+Commit: [4182bb2](https://github.com/jordan1227/improved_to_he/commit/4182bb2119d595dcd8807baf7efdeb5e841abbdd)
+
+### Description
+
+Introduce knife HUD combo handling and delegated draw/holster sounds.
+
+- Hook flhook HUD playmotion (guarded by engine stamp/size) to support M1/M2 combo variants, return transitions, and logging.
+- Delegate show/hide sound playback to a new Lua module instead of engine for the M1 draw/hide events via fl_on_knife_motion callback.
+- Add sivol_knife.script implementing the Lua callback and register it in ogse_signals_addons_list.
+- Update w_knife.ltx to map new animations and sound keys.
+- Add multiple new camera animation and hud/hand assets and update UI texture/meshes.
+
+Files: fl_hook/flhook.cpp, gamedata/config/weapons/w_knife.ltx, gamedata/scripts/sivol/sivol_knife.script, gamedata/anims/*, meshes and textures; plus many binary asset updates.
+
+### Game files changed
+
+- A gamedata/anims/camera_effects/weapon/liz_knife_bored.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_hide.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_hide_quick.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_hit1_start.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_hit2_start.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_hit3_start.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_hit4_start.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_idle1.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_show.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_show_quick.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_stab.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_stab2_variant.anm
+- A gamedata/anims/camera_effects/weapon/liz_knife_stab3_variant.anm
+- M gamedata/config/weapons/w_knife.ltx
+- A gamedata/meshes/anomaly_weapons/hud_hands_animation/liz_knife_hud_hand_animations.omf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand__brown.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_bandit_exo.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_bandit_novice.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_bandit_trench_gloves.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_cs1.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_cs3a.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_ddd.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_dolg_exo.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_duty_psz9d.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_duty_seva.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_ecologist_ssp99.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_ecologist_ssp99m.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_exo.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_freedom_exo.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_freedom_guard.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_freedom_guardian.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_freedom_seva.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_freedom_wind.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_loner_novice.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_loner_novice_white.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_loner_seva.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_loner_sunrise.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_merc_exo.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_merc_radiation_suit.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_merc_seva.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_merc_suit.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_military_berill.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_military_novice.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_military_skat9.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_monolith_exo.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_monolith_radiation_suit.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_monolith_seva.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_monolith_suit.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_no_outfit.ogf
+- M gamedata/meshes/dynamics/weapons/wpn_hand/wpn_hand_skat9m.ogf
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- A gamedata/scripts/sivol/sivol_knife.script
+- M gamedata/scripts/vergas/vergas_art.script
+- A gamedata/sounds/weapons/liz_knife_attack1.ogg
+- A gamedata/sounds/weapons/liz_knife_attack2.ogg
+- A gamedata/sounds/weapons/liz_knife_attack3.ogg
+- A gamedata/sounds/weapons/liz_knife_hide.ogg
+- A gamedata/sounds/weapons/liz_knife_show.ogg
+- M gamedata/textures/ui/ui_icon_equipment_7.dds
+
+### Other repository files changed
+
+- M fl_hook/dinput8.dll
+- M fl_hook/flhook.cpp
+
+<!-- nlc-changelog-commit: 2cac18df852677e11e42abe46c9ce730cefa1e9f -->
+## 23.09.26 23:29 МСК - Фикс входа на базу Свободы
+
+Commit: [2cac18d](https://github.com/jordan1227/improved_to_he/commit/2cac18df852677e11e42abe46c9ce730cefa1e9f)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/gulag_mil_freedom1.ltx
+- M gamedata/config/misc/gulag_mil_freedom_he.ltx
+- M gamedata/scripts/xr/xr_gulag.script
+
+<!-- nlc-changelog-commit: e8b480247c5c5c9772f3db251d7a536d0199c7a0 -->
+## 23.09.26 20:04 МСК - Колбаса. Настоящие цены.
+
+Commit: [e8b4802](https://github.com/jordan1227/improved_to_he/commit/e8b480247c5c5c9772f3db251d7a536d0199c7a0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/trade_manager.script
+
+<!-- nlc-changelog-commit: 71ca121fe5f67d848b098375d09a4fd3e13f9f87 -->
+## 23.09.26 19:23 МСК - Награда за захват базы Свободы
+
+Commit: [71ca121](https://github.com/jordan1227/improved_to_he/commit/71ca121fe5f67d848b098375d09a4fd3e13f9f87)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/dialogs_bar.xml
+- M gamedata/config/gameplay/dialogs_military.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/config/misc/gulag_bar.ltx
+- M gamedata/config/misc/shop_petrenko/trade_petrenko.ltx
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/scripts/he_mil_dolg_base.script
+- A gamedata/scripts/he_mil_dolg_reward.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/olr/olr_squads.script
+- M gamedata/scripts/se/se_respawn.script
+
+<!-- nlc-changelog-commit: aa1b5d86d7255359385915257b3dde3eb48ae41b -->
+## 23.09.26 18:54 МСК - Цены Игнату
+
+Commit: [aa1b5d8](https://github.com/jordan1227/improved_to_he/commit/aa1b5d86d7255359385915257b3dde3eb48ae41b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/misc/trade_npc/trade_dan.ltx
+
+<!-- nlc-changelog-commit: 83e8da686e3d627062026bb451cd89812ff7770f -->
+## 23.09.26 18:33 МСК - Спавн новых свободовцев после активации квеста
+
+Commit: [83e8da6](https://github.com/jordan1227/improved_to_he/commit/83e8da686e3d627062026bb451cd89812ff7770f)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/creatures/spawn_sections.ltx
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- A gamedata/config/misc/gulag_mil_freedom_he.ltx
+- M gamedata/config/misc/gulag_military.ltx
+- M gamedata/config/waypoints.ltx
+- M gamedata/scripts/gulag/gulag_military.script
+- M gamedata/scripts/he_mil_dolg_base.script
+- A gamedata/scripts/he_mil_freedom_reinf.script
+- M gamedata/scripts/olr/olr_protected.script
+
+<!-- nlc-changelog-commit: 3ee1a89eeb495d9008166a5a9ddfd16f52e81aaa -->
+## 23.09.26 18:04 МСК - Вернул правки sak.script и info_portions, затёртые штурмом Хутора
+
+Commit: [3ee1a89](https://github.com/jordan1227/improved_to_he/commit/3ee1a89eeb495d9008166a5a9ddfd16f52e81aaa)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 7c23eea62cabd4135c8b247262e8efe2829fc6ba -->
+## 23.09.26 15:21 МСК - Вернул штурм Хутора/Базы свободы из 3.0
+
+Commit: [7c23eea](https://github.com/jordan1227/improved_to_he/commit/7c23eea62cabd4135c8b247262e8efe2829fc6ba)
+
+### Description
+
+Если ГГ убивает Лукаша в ходе штурма, то база Свободы переходит к долгу, Череп становится на место Лукаша, начинает работать миграция долговцев на базу свободы.
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_military.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/misc/gulag_mil_dolg.ltx
+- M gamedata/config/misc/gulag_mil_freedom1.ltx
+- A gamedata/config/misc/gulag_mil_freedom3.ltx
+- A gamedata/config/misc/gulag_mil_freedom4.ltx
+- M gamedata/config/misc/gulag_military.ltx
+- M gamedata/scripts/gulag/gulag_military.script
+- A gamedata/scripts/he_mil_dolg_base.script
+- M gamedata/scripts/logic/smart_terrain.script
+- M gamedata/scripts/olr/olr_faction_policy.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_tasks.script
+- M gamedata/scripts/se/se_respawn.script
+- M gamedata/scripts/xr/xr_effects.script
+
+<!-- nlc-changelog-commit: 56aba646880e060b5347edc29a969481be602847 -->
+## 23.09.26 15:02 МСК - Убрал дебаг метки
+
+Commit: [56aba64](https://github.com/jordan1227/improved_to_he/commit/56aba646880e060b5347edc29a969481be602847)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/kotovod/trade_arts_news.script
+
+<!-- nlc-changelog-commit: 03b35e15048aa2a1653bbdb09b255e65e8e52987 -->
+## 23.09.26 14:40 МСК - Крот на Агропроме: убран таймер выхода из укрытия, как в 3.0
+
+Commit: [03b35e1](https://github.com/jordan1227/improved_to_he/commit/03b35e15048aa2a1653bbdb09b255e65e8e52987)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/agr/agr_krot.ltx
+
+<!-- nlc-changelog-commit: 1a047a1a85e965ee0de7f4b8c2e8b2e430ee051b -->
+## 23.09.26 14:40 МСК - Вернул полные звуки сталкерам на агро
+
+Commit: [1a047a1](https://github.com/jordan1227/improved_to_he/commit/1a047a1a85e965ee0de7f4b8c2e8b2e430ee051b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- A gamedata/sounds/characters_voice/scenario/agroprom/stalker_help_1.ogg
+- A gamedata/sounds/characters_voice/scenario/agroprom/stalker_help_2.ogg
+
+<!-- nlc-changelog-commit: b2b5208a572a6d728d5fc7d24cd15d715d9bf985 -->
+## 23.09.26 14:31 МСК - Умирающий затыкается после разговора с ГГ
+
+Commit: [b2b5208](https://github.com/jordan1227/improved_to_he/commit/b2b5208a572a6d728d5fc7d24cd15d715d9bf985)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/mil/mil_dying.ltx
+
+<!-- nlc-changelog-commit: adfd41d4a3aa028fb32d1a0355f2b950f3d59633 -->
+## 23.09.26 14:23 МСК - Свобода больше не обижается за бандитов
+
+Commit: [adfd41d](https://github.com/jordan1227/improved_to_he/commit/adfd41d4a3aa028fb32d1a0355f2b950f3d59633)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/xr/xr_gulag.script
+- M gamedata/scripts/xr/xr_motivator.script
+
+<!-- nlc-changelog-commit: f1f9125a0489cfee923c67faae784fe9a790a6f4 -->
+## 23.09.26 11:26 МСК - Манифест
+
+Commit: [f1f9125](https://github.com/jordan1227/improved_to_he/commit/f1f9125a0489cfee923c67faae784fe9a790a6f4)
+
+### Description
+
+This update fixes the Esc Shustryi tutorial timing and sleep/wake flow, tightens the dead novice energy drink spawn logic, reduces energy-drink effectiveness, adds the white loner jacket and PDA cleanup fixes, and bumps the patch/version metadata in the changelog and UI strings.
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: d732d3c2338b29051f706c800239a03e89cb2171 -->
 ## 23.09.26 10:42 МСК - Фикс Шустрого, должен идти спать после спасения
