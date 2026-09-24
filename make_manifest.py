@@ -66,7 +66,7 @@ MOSCOW = datetime.timezone(datetime.timedelta(hours=3), name="MSK")
 
 # What the launcher installs into the player's game folder.
 INCLUDE_PREFIXES = ("gamedata/",)
-INCLUDE_FILES = ("he_gui.dll",)
+INCLUDE_FILES = ("he_gui.dll", "bin_x64/dinput8.dll")
 # Never shipped automatically: optional packs, spawn sources, dev material.
 EXCLUDE_PREFIXES = (
     "Опционально/",
