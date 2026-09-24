@@ -1,6 +1,282 @@
-<!-- nlc-changelog-head: da95f16df35e854dc0183ff5ed31360ee71ad175 -->
+<!-- nlc-changelog-head: b9ab35a869ec05deb4e3085127eb583d5249a697 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: b9ab35a869ec05deb4e3085127eb583d5249a697 -->
+## 24.09.26 22:52 МСК - НПС отключают фонарики в бою ночью
+
+Commit: [b9ab35a](https://github.com/jordan1227/improved_to_he/commit/b9ab35a869ec05deb4e3085127eb583d5249a697)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sr/sr_light.script
+
+<!-- nlc-changelog-commit: c51658857147f3a4628333be526dc65e79c2c9b0 -->
+## 24.09.26 22:16 МСК - Крот игнорит военных и наоборот
+
+Commit: [c516588](https://github.com/jordan1227/improved_to_he/commit/c51658857147f3a4628333be526dc65e79c2c9b0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/creatures/stalkers.ltx
+
+<!-- nlc-changelog-commit: 2bc7547f54fe49897b6018ae08bf3cde734b3265 -->
+## 24.09.26 21:48 МСК - Старьевщик: условия появления из 3.0
+
+Commit: [2bc7547](https://github.com/jordan1227/improved_to_he/commit/2bc7547f54fe49897b6018ae08bf3cde734b3265)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 9020771279a9db5083b5ff559803f9ae2e34a7b2 -->
+## 24.09.26 21:17 МСК - Починил Прошу
+
+Commit: [9020771](https://github.com/jordan1227/improved_to_he/commit/9020771279a9db5083b5ff559803f9ae2e34a7b2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/engine_callbacks.script
+
+<!-- nlc-changelog-commit: e262a11148cb9464cccda5b4777d91f32d787d7e -->
+## 24.09.26 21:04 МСК - Пофиксил "время прохождения" в статистике
+
+Commit: [e262a11](https://github.com/jordan1227/improved_to_he/commit/e262a11148cb9464cccda5b4777d91f32d787d7e)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/xr/xr_statistic.script
+
+<!-- nlc-changelog-commit: b7a08b529a135d294f528a30c19a0634ec505041 -->
+## 24.09.26 20:51 МСК - Вернул подсчет артов в статистику
+
+Commit: [b7a08b5](https://github.com/jordan1227/improved_to_he/commit/b7a08b529a135d294f528a30c19a0634ec505041)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_pda.xml
+- M gamedata/config/text/rus/ui_st_pda.xml
+- M gamedata/scripts/den1s_test.script
+- M gamedata/scripts/vergas/vergas_rucksack.script
+- M gamedata/scripts/xr/xr_statistic.script
+
+<!-- nlc-changelog-commit: 18b6bcf722492379e41d290a50e96eed6887e011 -->
+## 24.09.26 20:28 МСК - Поршень для генераторщика.
+
+Commit: [18b6bcf](https://github.com/jordan1227/improved_to_he/commit/18b6bcf722492379e41d290a50e96eed6887e011)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+
+<!-- nlc-changelog-commit: 29992ce9c9b55872b2637cdf43adb5fb1115f306 -->
+## 24.09.26 20:27 МСК - Динамические рад зоны
+
+Commit: [29992ce](https://github.com/jordan1227/improved_to_he/commit/29992ce9c9b55872b2637cdf43adb5fb1115f306)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/zone_radioactive.ltx
+- M gamedata/scripts/amk/amk_anoms.script
+
+<!-- nlc-changelog-commit: 02f07d56dd0d2c27ab8caeb0c4fc1f376dbbbe65 -->
+## 24.09.26 20:24 МСК - Пофиксил штраф за убийство Черепа
+
+Commit: [02f07d5](https://github.com/jordan1227/improved_to_he/commit/02f07d56dd0d2c27ab8caeb0c4fc1f376dbbbe65)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: bcbf810febd3feefee35f13e2c4840532e691837 -->
+## 24.09.26 19:37 МСК - Поправил.
+
+Commit: [bcbf810](https://github.com/jordan1227/improved_to_he/commit/bcbf810febd3feefee35f13e2c4840532e691837)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/thirst.script
+
+<!-- nlc-changelog-commit: 3de177d1b1dc75b6e8bcd3ed95c6bb44379a43fe -->
+## 24.09.26 19:14 МСК - Множитель жажды при перевесе
+
+Commit: [3de177d](https://github.com/jordan1227/improved_to_he/commit/3de177d1b1dc75b6e8bcd3ed95c6bb44379a43fe)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/thirst.script
+
+<!-- nlc-changelog-commit: 70ec205652b26c836a27155a77b0e76fe7a10bf8 -->
+## 24.09.26 18:41 МСК - Занес пда в custom_data для нычек
+
+Commit: [70ec205](https://github.com/jordan1227/improved_to_he/commit/70ec205652b26c836a27155a77b0e76fe7a10bf8)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_magic_box.script
+
+<!-- nlc-changelog-commit: aafa23bcdff6dd18f2cf0bfd0b189d9620f93873 -->
+## 24.09.26 18:28 МСК - Запер платные нычки
+
+Commit: [aafa23b](https://github.com/jordan1227/improved_to_he/commit/aafa23bcdff6dd18f2cf0bfd0b189d9620f93873)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/pri/store_ivar_seif.ltx
+
+<!-- nlc-changelog-commit: 29e5ebc8c33751be2cd71f3487fd91f44c3d1e50 -->
+## 24.09.26 18:28 МСК - Запер платные нычки
+
+Commit: [29e5ebc](https://github.com/jordan1227/improved_to_he/commit/29e5ebc8c33751be2cd71f3487fd91f44c3d1e50)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/val/store_jila_seif.ltx
+
+<!-- nlc-changelog-commit: 8075cd653eaa7075aaf65e498425029022eee858 -->
+## 24.09.26 18:28 МСК - Запер платные нычки
+
+Commit: [8075cd6](https://github.com/jordan1227/improved_to_he/commit/8075cd653eaa7075aaf65e498425029022eee858)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/mil/store_lukash_seif.ltx
+
+<!-- nlc-changelog-commit: 44ba7b8b85466fcffbbdb132f53cdfc44c6cda0a -->
+## 24.09.26 18:21 МСК - Нычка у Черепа, цена как в 3.0
+
+Commit: [44ba7b8](https://github.com/jordan1227/improved_to_he/commit/44ba7b8b85466fcffbbdb132f53cdfc44c6cda0a)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/dialogs_military.xml
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/config/text/eng/sak_strings_six.xml
+- M gamedata/config/text/rus/sak_strings_six.xml
+- M gamedata/scripts/engine_callbacks.script
+
+<!-- nlc-changelog-commit: 9560bee107e051414a009ac3a1f0d51b21c77687 -->
+## 24.09.26 18:02 МСК - Правки квеста с Черепом
+
+Commit: [9560bee](https://github.com/jordan1227/improved_to_he/commit/9560bee107e051414a009ac3a1f0d51b21c77687)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_mil_dolg_base.script
+- M gamedata/scripts/logic/smart_terrain.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+
+<!-- nlc-changelog-commit: cd0be816675875b79c2e2444eaaca589087525e9 -->
+## 24.09.26 17:20 МСК - Убрал забор на складах
+
+Commit: [cd0be81](https://github.com/jordan1227/improved_to_he/commit/cd0be816675875b79c2e2444eaaca589087525e9)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- A gamedata/levels/l07_military/level
+- A gamedata/levels/l07_military/level.cform
+- A gamedata/levels/l07_military/level.details
+- A gamedata/levels/l07_military/level.geom
+- A gamedata/levels/l07_military/level.geomx
+- A gamedata/levels/l07_military/level_lods.dds
+- A gamedata/levels/l07_military/level_lods_nm.dds
+- A gamedata/levels/l07_military/lmap#1_1.dds
+- A gamedata/levels/l07_military/lmap#1_2.dds
+- A gamedata/levels/l07_military/lmap#2_1.dds
+- A gamedata/levels/l07_military/lmap#2_2.dds
+
+<!-- nlc-changelog-commit: 7074161dd1af5dee50726cc23746f33025f265b3 -->
+## 24.09.26 08:59 МСК - Манифест
+
+Commit: [7074161](https://github.com/jordan1227/improved_to_he/commit/7074161dd1af5dee50726cc23746f33025f265b3)
+
+### Description
+
+Adds the Sidor container map as a new paper/quest item, including the reward dialogue, item definitions, localization strings, inventory interaction text, and HUD variants. The paper reader resolves per-spawn map visuals, and the new textures/models are wired into the item registry. This update also refreshes the patch metadata in the changelog and version strings.
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: da95f16df35e854dc0183ff5ed31360ee71ad175 -->
 ## 24.09.26 08:53 МСК - Add Sidor container map quest item
