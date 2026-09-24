@@ -1,138 +1,276 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
 local light_zones = {}
 
-local indoor_levels = {
-	l03u_agr_underground = true,
-	l03u_agr_underground_e3 = true,
-	l03u_agr_underground_hw = true,
-	l04u_labx18 = true,
-	l08u_brainlab = true,
-	l10u_bunker = true,
-	l12u_sarcofag = true,
-	l12u_control_monolith = true,
-	chugai_test = true
+local light_off_states = {
+  [ "sleep"         ] = true,
+  [ "wounded_heavy" ] = true,
 }
----------------------------------------------------------------------------------------------------------------------
+
+local indoor_levels = {
+  l03u_agr_underground = true,
+  l03u_agr_underground_e3 = true,
+  l03u_agr_underground_hw = true,
+  l04u_labx18 = true,
+  l08u_brainlab = true,
+  l10u_bunker = true,
+  l12u_sarcofag = true,
+  l12u_control_monolith = true,
+  chugai_test = true
+}
+
+-- [HE-PORT]
+function attach(sm)
+  sm:subscribe({ signal = "on_destroy",        fun = this.on_destroy })
+  sm:subscribe({ signal = "on_npc_death",     fun = this.on_death })
+  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.on_npc_destroy })
+  sm:subscribe({ signal = "on_npc_spawn",      fun = this.on_npc_spawn })
+end
+
+function on_npc_spawn(obj, binder)
+  if not obj or not obj:alive() then return end
+  binder = binder or obj:binded_object()
+  if not binder or binder["sr_light.subscribed"] then return end
+  local s = {
+    [ "signal" ] = "on_update",
+    [ "fun"    ] = this.on_update,
+    [ "self"   ] = obj,
+  }
+  binder["sr_light.subscribed"] = s
+  ogse_signals.get_mgr():subscribe(s)
+end
+
+function on_update(obj)
+  ogse_signals.get_mgr():reschedule(math.random(6000, 12000))
+  check_light(obj, true)
+end
+
+function on_death(obj)
+  unsubscribe(obj)
+  check_light(obj)
+end
+
+function on_destroy()
+  clean_up()
+end
+
+function on_npc_destroy(obj)
+  unsubscribe(obj)
+end
+
+function unsubscribe(obj)
+  if not obj then return end
+  local binder = obj:binded_object()
+  if not binder then return end
+  local subscribed = binder["sr_light.subscribed"]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe(subscribed)
+    binder["sr_light.subscribed"] = nil
+  end
+  local torch_t = binder["sr_light.torch_t"]
+  if torch_t then
+    torch_t:stop()
+    binder["sr_light.torch_t"] = nil
+  end
+  return binder
+end
+
 class "action_light"
 function action_light:__init(obj, storage)
-	self.object = obj
-	self.st = storage
-	self.active = false
-	self.id = obj:id()
+  self.object = obj
+  self.st = storage
+  self.active = false
+  self.id = obj:id()
 end
+
 function action_light:reset_scheme()
-		light_zones[self.id] = self
+  light_zones[self.id] = self
 end
+
 function action_light:update(delta)
-	local actor = db.actor
-
-	if xr_logic.try_switch_to_another_section(self.object, self.st, actor) then
-		self.active = false		
-		self.stalkers = {}
-		light_zones[self.id] = nil
-		return
-	end	
-	self.active = true
+  local actor = db.actor
+  if xr_logic.try_switch_to_another_section(self.object, self.st, actor) then
+    self.active = false
+    self.stalkers = {}
+    light_zones[self.id] = nil
+    return
+  end
+  self.active = true
 end
+
 function action_light:check_stalker(stalker)
-		if self.active==false then 
-			return false, false
-		end
-		
-	if self.object:inside(stalker:position()) then
-		return self.st.light, true
-	end
-
-	return false, false
+  if self.active == false then
+    return false, false
+  end
+  if stalker and self.object:inside(stalker:position()) then
+    return self.st.light, true
+  end
+  return false, false
 end
 
----------------------------------------------------------------------------------------------------------------------
 function add_to_binder(npc, ini, scheme, section, storage)
-	--printf("DEBUG: add_to_binder: scheme='%s', section='%s'", scheme, section)
-	local new_action = action_light(npc, storage)
-	xr_logic.subscribe_action_for_events(npc, storage, new_action)
+  local new_action = action_light(npc, storage)
+  xr_logic.subscribe_action_for_events(npc, storage, new_action)
 end
 
 function set_scheme(npc, ini, scheme, section, gulag_name)
-	local st = xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
-	st.logic = xr_logic.cfg_get_switch_conditions(ini, section, npc)
-	st.light = utils.cfg_get_bool(ini, section, "light_on", npc, false, false)
+  local st = xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
+  st.logic = xr_logic.cfg_get_switch_conditions(ini, section, npc)
+  st.light = utils.cfg_get_bool(ini, section, "light_on", npc, false, false)
 end
 
----------------------------------------------------------------------------------------------------------------------
-function check_light(stalker)
-	--'printf("[check_light %s] start", stalker:name())
-		if stalker==nil then 
-			return 
-		end
+-- [HE-PORT]
+local function rt_exec_on_update(...)
+  return dsh.timeout(0, ...)
+end
 
-	--'printf("[check_light %s] start_passed", stalker:name())
-		local torch = stalker:object("device_torch")
-		if torch==nil then
-			return
-		end
+local function get_torch(stalker)
+  local torch = stalker:item_in_slot(9)
+  if torch and torch:is_torch() then
+    return torch
+  end
+  return stalker:object("device_torch")
+end
 
-	--'printf("[check_light %s] torch_passed", stalker:name())
-	local light = false
-	local forced = false
+local function delay_torch_action(binder, notnow, torch, func)
+  if not binder then
+    func(torch)
+    return
+  end
 
-	if stalker:alive()==false then
-		light	= false
-		forced = true
-	end
+  local previous = binder["sr_light.torch_t"]
+  if previous then
+    previous:stop()
+    binder["sr_light.torch_t"] = nil
+  end
 
-	--'printf("[check_light %s] alive_passed: light=%s, forced=%s", stalker:name(), tostring(light), tostring(forced))
-		--' Проверка по лайтзонам
-		if not forced then
-			for k,v in pairs(light_zones) do
-			light, forced = v:check_stalker(stalker)
-			if forced==true then
-				break
-			end
-			end
-	end
+  if notnow then
+    local id = torch:id()
+    local torch_name = torch:name()
+    local parent = torch:parent()
+    local parent_name = parent and parent:name() or nil
+    local timer
+    timer = rt_exec_on_update(function()
+      if binder["sr_light.torch_t"] ~= timer then return end
+      binder["sr_light.torch_t"] = nil
+      local obj = level.object_by_id(id)
+      local obj_parent = obj and obj:parent()
+      if
+        obj and obj:is_torch() and obj:name() == torch_name
+        and (not parent_name or (obj_parent and obj_parent:name() == parent_name))
+      then
+        func(obj)
+      end
+    end)
+    binder["sr_light.torch_t"] = timer
+  else
+    func(torch)
+  end
+end
 
-	--'printf("[check_light %s] lightzone_passed: light=%s, forced=%s", stalker:name(), tostring(light), tostring(forced))
-	if not forced then
-		--' Проверка по времени суток(ночью всегда включено)
-		local htime = level.get_time_hours()
-		if htime <= 4 or htime >= 22 then
-			light = true
-		end
-	
-		--' Проверка на индор-аутдор(внутри всегда включено)
-		if light==false then
-			if indoor_levels[level.name()]==true then
-				light = true
-			end
-		end
-	end			
+local function is_combat(stalker)
+  if
+    xrs_battle_ai and xrs_battle_ai.in_combat
+    and xrs_battle_ai.in_combat[stalker:id()]
+  then
+    return true
+  end
 
-	--'printf("[check_light %s] timezone_passed: light=%s, forced=%s", stalker:name(), tostring(light), tostring(forced))
-	--' Проверка по активному действию
-	if not forced and light==true then
-		--' Фонарики должны быть выключены у костра
-		local scheme = db.storage[stalker:id()].active_scheme
-		if scheme=="kamp" or
-			scheme=="camper" 
-		then
-			light = false
-			forced = true
-		end
-	end
+  local enemy = nil
+  if xrs_battle_ai and xrs_battle_ai.get_target then
+    enemy = xrs_battle_ai.get_target(stalker, true)
+  end
+  enemy = enemy or stalker:best_enemy()
+  if not enemy then
+    return false
+  end
 
-	--'printf("[check_light %s] scheme_passed: light=%s, forced=%s", stalker:name(), tostring(light), tostring(forced))	
-	if not forced and light==true then
-		--' Фонарики должны быть выключены в бою. Но если в бою идет поиск врага - то включены.
-		if stalker:best_enemy()~=nil then
-			light = false
-		end				
-	end
-	
-	if light~=nil then
-		torch:enable_attachable_item(light)
-	end
+  local actor_in_targets = false
+  if
+    db.actor and xrs_battle_ai and xrs_battle_ai.has_actor_in_targets
+  then
+    actor_in_targets = xrs_battle_ai.has_actor_in_targets(stalker)
+  end
+
+  return actor_in_targets
+    or (enemy:is_stalker() and enemy:character_community() ~= "zombied")
+end
+
+function check_light(stalker, notnow)
+  if not stalker then return end
+
+  local torch = get_torch(stalker)
+  if not torch then return end
+
+  local binder = stalker:binded_object()
+  if not stalker:alive() then
+    delay_torch_action(
+      binder, notnow, torch,
+      function(obj) obj:enable_attachable_item(false) end
+    )
+    return
+  end
+
+  local light = false
+  local forced = false
+  for _, v in pairs(light_zones) do
+    light, forced = v:check_stalker(stalker)
+    if forced == true then
+      break
+    end
+  end
+
+  if not forced then
+    local htime = level.get_time_hours()
+    local weather = level.get_weather()
+    local storm = type(weather) == "string"
+      and string.find(weather, "storm", 1, true) ~= nil
+    light = htime and (htime <= 5 or htime >= 20 or storm) or false
+    if not light and indoor_levels[level.name()] == true then
+      light = true
+    end
+  end
+
+  if not forced and light == true then
+    local st = db.storage[stalker:id()]
+    local scheme = st and st.active_scheme
+    local state = st and st.state_mgr and state_mgr
+      and state_mgr.get_state(stalker)
+    if
+      scheme == "kamp" or scheme == "camper"
+      or light_off_states[state]
+    then
+      light = false
+      forced = true
+    end
+  end
+
+  if not forced and light == true then
+    if (xr_wounded and xr_wounded.is_wounded and xr_wounded.is_wounded(stalker))
+      or is_combat(stalker)
+    then
+      light = false
+    end
+  end
+
+  local sr_light_updated = binder and binder.sr_light_updated
+  delay_torch_action(
+    binder, notnow, torch,
+    function(obj)
+      if not sr_light_updated then
+        local torch_obj = get_torch_obj and get_torch_obj(obj) or obj
+        if torch_obj and torch_obj.set_brightness then
+          torch_obj:set_brightness(0.2 + 0.8 * math.random())
+        end
+      end
+      obj:enable_attachable_item(light)
+    end
+  )
+  if binder then
+    binder.sr_light_updated = true
+  end
 end
 
 function clean_up()
-	light_zones = {} 
+  light_zones = {}
 end
