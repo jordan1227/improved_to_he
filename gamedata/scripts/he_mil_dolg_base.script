@@ -6,6 +6,28 @@ local TIMER_NOW = "he_mil_dolg_capture_now"
 local SKULL_SID = 708
 local BASE = "mil_freedom"
 local DUTY_SMART = "mil_dolg"
+local ENFORCE_PERIOD = 10000
+local FRIENDS_KEY = "he_mil_dolg_friends"
+local DUTY_GOODWILL = 2000
+local SQUAD_GOODWILL = 1000
+local enforce_next = 0
+
+local squad = {
+	"mil_dolg_stalker0000",
+	"mil_dolg_stalker0001",
+	"mil_dolg_stalker0002",
+	"mil_dolg_stalker0003",
+	"mil_dolg_stalker0004",
+	"mil_dolg_stalker0005",
+	"mil_dolg_stalker0006",
+	"mil_dolg_stalker0006_0000",
+	"mil_dolg_stalker0007",
+}
+
+local squad_set = {}
+for _, name in ipairs(squad) do
+	squad_set[name] = true
+end
 
 local camps = {
 	mil_freedom = true,
@@ -63,12 +85,31 @@ function respawn_hook(obj)
 	obj.he_dolg_spawn = true
 end
 
+local tick_next = 0
+
+local function on_tick()
+	if time_global() < tick_next then
+		return
+	end
+	tick_next = time_global() + 1000
+	update()
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = on_tick })
+end
+
 function update()
 	if not (db.actor and sak.game_began) then
 		return
 	end
 	he_mil_freedom_reinf.update() -- [HE-PORT]
 	if has_alife_info(CAPTURED) then
+		make_friends()
+		if time_global() >= enforce_next then
+			enforce_next = time_global() + ENFORCE_PERIOD
+			enforce()
+		end
 		return
 	end
 	if is_captured() then
@@ -101,6 +142,85 @@ end
 
 local function human(sobj)
 	return sobj and IsStalker(sobj) and sobj:alive()
+end
+
+function enforce()
+	local sim = alife()
+	if not (sim and has_alife_info(CAPTURED)) then
+		return 0
+	end
+	local list = {}
+	local skull = sim:story_object(SKULL_SID)
+	if skull then
+		table.insert(list, skull)
+	end
+	for _, name in ipairs(squad) do
+		local sobj = sim:object(name)
+		if sobj then
+			table.insert(list, sobj)
+		end
+	end
+	local n = 0
+	local done = {}
+	for _, sobj in ipairs(list) do
+		if not done[sobj.id] and human(sobj) and sobj:community() == "dolg" then
+			done[sobj.id] = true
+			local sid = sobj:smart_terrain_id()
+			local smart = sid ~= 65535 and sim:object(sid)
+			if not (smart and smart:name() == BASE) then
+				olr_smart_index.attach_to(sobj, BASE)
+				n = n + 1
+			end
+		end
+	end
+	return n
+end
+
+function denies(smart, obj)
+	if not has_alife_info(CAPTURED) then
+		return false
+	end
+	if not (squad_set[obj:name()] or obj.m_story_id == SKULL_SID) then
+		return false
+	end
+	return smart:name() ~= BASE
+end
+
+function make_friends()
+	if get_value(FRIENDS_KEY, false) or not db.actor then
+		return
+	end
+	local sim = alife()
+	if not sim then
+		return
+	end
+	local actor_id = db.actor:id()
+	if relation_registry.community_goodwill("dolg", actor_id) < DUTY_GOODWILL then
+		relation_registry.set_community_goodwill("dolg", actor_id, DUTY_GOODWILL)
+	end
+	local list = {}
+	local skull = sim:story_object(SKULL_SID)
+	if skull then
+		table.insert(list, skull)
+	end
+	for _, name in ipairs(squad) do
+		local sobj = sim:object(name)
+		if sobj then
+			table.insert(list, sobj)
+		end
+	end
+	for _, sobj in ipairs(list) do
+		if human(sobj) then
+			if relation_registry.get_personal_goodwill(sobj.id, actor_id) < SQUAD_GOODWILL then
+				relation_registry.set_personal_goodwill(sobj.id, actor_id, SQUAD_GOODWILL)
+			end
+			local npc = level.object_by_id(sobj.id)
+			if npc then
+				npc:set_relation(game_object.friend, db.actor)
+			end
+		end
+	end
+	set_value(FRIENDS_KEY, true)
 end
 
 function capture()
