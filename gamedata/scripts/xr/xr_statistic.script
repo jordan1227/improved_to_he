@@ -6,6 +6,9 @@ function attach(sm)
   sm:subscribe({signal = "on_init_modules", fun = this.init_module})
   sm:subscribe({signal = "on_pda_actor_info", fun = this.show_quest_stat})
   sm:subscribe({signal = "on_update", fun = this.pda_stats_update})
+  -- [HE-PORT]
+  sm:subscribe({signal = "on_before_save_game", fun = this.save_gametime})
+  sm:subscribe({signal = "on_stop_modules", fun = this.save_gametime})
   for _, s in ipairs({
     "on_pda_open",
     "on_pda_contacts_open", "on_pda_contacts_hide",
@@ -410,6 +413,8 @@ function init_module()
     [ CLID_BLOODSUCKER        ] = "bloodsucker"
   }    
   init_artifact_stats()
+  -- [HE-PORT]
+  init_game_time_counter()
 end    
 
 -- обновляем статистику на странице "Данные" в ПДА
@@ -745,6 +750,9 @@ function pda_stats_update()
 	elseif not active and quest_stat and quest_stat.shown == false then
 		HideQuestStat()
 	end
+	if active and quest_stat then
+		quest_stat:RefreshTime()
+	end
 end
 
 
@@ -799,28 +807,80 @@ function timename( val, s1, s2, s3 )
 	end
 end
 
+-- [HE-PORT]
+local game_time_key = "he_stat_game_time_minutes"
+local _gametime_saved_at = nil
+local game_time_migrated = false
+
+local function current_game_time()
+	if not time_global then return nil end
+	local ok, value = pcall(time_global)
+	if ok and type(value) == "number" then return value end
+	return nil
+end
+
+local function legacy_death_count( what )
+	local fs_ok, f = pcall(getFS)
+	if not fs_ok or not f then return 0 end
+	local list_ok, flist = pcall(function()
+		return f:file_list_open_ex(
+			"$game_stats$", bit_or( FS.FS_ListFiles, FS.FS_RootOnly ),
+			"*." .. what
+		)
+	end)
+	if not list_ok or flist == nil then return 0 end
+	local size_ok, size = pcall(function() return flist:Size() end)
+	if not size_ok or not size or size <= 0 then
+		pcall(function()
+			local f1 = f:update_path( "$fs_root$", "fsgame.ltx" )
+			local f2 = f:update_path( "$game_stats$", "0." .. what )
+			f:file_copy( f1, f2 )
+		end)
+		return 0
+	end
+	local name_ok, name = pcall(function() return flist:GetAt( 0 ):NameFull() end)
+	if not name_ok then return 0 end
+	return tonumber( string.match( tostring( name or "" ), "^(%d+)" ) ) or 0
+end
+
+local function stored_game_time()
+	local value = get_value( game_time_key, nil )
+	if value == nil and not game_time_migrated then
+		value = legacy_death_count( "game_time" )
+		if value > 0 then set_value( game_time_key, value ) end
+		game_time_migrated = true
+	elseif value ~= nil then
+		game_time_migrated = true
+	end
+	return tonumber( value ) or 0
+end
+
 function get_death_count( what )
-    local f     = getFS()
-    local ok, flist = pcall( function()
-        return f:file_list_open_ex(
-            "$game_stats$", bit_or( FS.FS_ListFiles, FS.FS_RootOnly ),
-            "*." .. what
-        )
-    end )
-    if not ok or flist == nil then
-        return 0
-    end
-    if flist:Size() > 0 then
-        return tonumber( string.match( flist:GetAt( 0 ):NameFull(), "^(%d+)" ) ) or 0
-    else
-        local f1 = f:update_path( "$fs_root$", "fsgame.ltx" )
-        local f2 = f:update_path( "$game_stats$", "0." .. what )
-        pcall( function() f:file_copy( f1, f2 ) end )
-        return 0
-    end
+	if what == "game_time" then
+		local total = stored_game_time()
+		local now = current_game_time()
+		if now then
+			if _gametime_saved_at == nil then
+				_gametime_saved_at = now
+			elseif now >= _gametime_saved_at then
+				total = total + ( now - _gametime_saved_at ) / 60000
+			else
+				_gametime_saved_at = now
+			end
+		end
+		return total
+	end
+	return legacy_death_count( what )
 end
 
 function set_death_count( what, value )
+    if what == "game_time" then
+        set_value( game_time_key, tonumber( value ) or 0 )
+        game_time_migrated = true
+        local now = current_game_time()
+        if now then _gametime_saved_at = now end
+        return
+    end
     local f = getFS()
     local ok, flist = pcall( function()
         return f:file_list_open_ex( "$game_stats$",
@@ -847,24 +907,40 @@ function set_death_count( what, value )
 end
 
 function reset_death_count( what )
+    if what == "game_time" then
+        set_value( game_time_key, 0 )
+        game_time_migrated = true
+        local now = current_game_time()
+        if now then _gametime_saved_at = now end
+        return
+    end
     local f  = getFS()
     local f1 = f:update_path( "$fs_root$", "fsgame.ltx" )
     local f2 = f:update_path( "$game_stats$", "0." .. what )
     pcall( function() f:file_copy( f1, f2 ) end )
 end
 
-local _gametime_saved_at = 0
+function init_game_time_counter()
+	if _gametime_saved_at ~= nil then save_gametime() end
+	stored_game_time()
+	local now = current_game_time()
+	if now then _gametime_saved_at = now end
+end
 
 function save_gametime()
-	if not alife() then return end
-	local now = time_global() or 0
-	local delta
-	if _gametime_saved_at == 0 then
-		delta = math.floor( now / 60000 + 0.5 )
-	else
-		delta = math.floor( ( now - _gametime_saved_at ) / 60000 + 0.5 )
+	if not ( db and db.actor ) then return end
+	local now = current_game_time()
+	if not now then return end
+	if _gametime_saved_at == nil then
+		_gametime_saved_at = now
+		return
 	end
-	if delta < 1 then return end
-	_gametime_saved_at = now
-	set_death_count( "game_time", tonumber( get_death_count( "game_time" ) ) + delta )
+	local delta = now - _gametime_saved_at
+	if delta < 0 then
+		_gametime_saved_at = now
+		return
+	end
+	if delta <= 0 then return end
+	local total = stored_game_time()
+	set_death_count( "game_time", total + delta / 60000 )
 end
