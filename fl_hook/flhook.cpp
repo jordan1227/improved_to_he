@@ -3,6 +3,14 @@
 #include <stdint.h>
 #include <math.h>
 #include <string.h>
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#define FL_NOINLINE __declspec(noinline)
+#define FL_RETURN_ADDRESS() _ReturnAddress()
+#else
+#define FL_NOINLINE __attribute__((noinline))
+#define FL_RETURN_ADDRESS() __builtin_return_address(0)
+#endif
 
 #define RVA_EXECCMD         0x000837a0ULL
 #define RVA_STEAL_END       0x000837b2ULL
@@ -120,6 +128,14 @@
 
 #define RVA_FIRETRACE         0x004F9F10ULL
 #define RVA_FIRETRACE_END     0x004F9F26ULL
+#define RVA_HUD_PLAYMOTION    0x004F37D0ULL
+#define RVA_HUD_PLAYMOTION_END 0x004F37DEULL
+#define RVA_INI_LINE_EXIST    0x000AA960ULL
+#define RVA_PSETTINGS         0x011FB1C0ULL
+#define KNIFE_ENGINE_STAMP    0x6A15800Cu
+#define KNIFE_ENGINE_IMAGE    0x01344000u
+#define OFF_HUD_TO_COBJECT    0x2D0
+#define OFF_COBJECT_SECTION   0x10C
 #define RVA_GL_ONSHOT         0x005FE370ULL
 #define RVA_GL_ONSHOT_END     0x005FE380ULL
 #define OFF_WPN_PARENT        0x27C
@@ -290,6 +306,9 @@ typedef int   (*lua_gettop_t)(void* L);
 typedef int   (*lua_type_t)(void* L, int idx);
 typedef const char* (*lua_tolstring_t)(void* L, int idx, size_t* len);
 typedef void  (*fire_trace_t)(void* self, const float* P, const float* D);
+typedef unsigned (*hud_playmotion_t)(void* self, const char* key, bool mix_in,
+                                     unsigned state, bool random, float speed);
+typedef bool (*ini_line_exist_t)(void* ini, const char* section, const char* key);
 typedef void  (*gl_onshot_t)(void* self);
 typedef const void* (*best_cover_far_t)(void* mgr, const float* pos, float radius, void* ev,
                                         const void* restrictor);
@@ -305,6 +324,7 @@ static actor_render_t g_orig_actor_render = 0;
 static actor_onhuddraw_t g_orig_actor_onhud = 0;
 static actor_kbpress_t g_orig_actor_kbpress = 0;
 static fire_trace_t g_orig_fire_trace = 0;
+static hud_playmotion_t g_orig_hud_playmotion = 0;
 static gl_onshot_t  g_orig_gl_onshot = 0;
 static int g_torch_lua = 1;
 static int g_torch_blocked_n = 0;
@@ -477,6 +497,151 @@ static void* hudrc_item()
     if (!it) return 0;
     if (!*(void**)((char*)it + OFF_AHI_PARENT_ITEM)) return 0;
     return it;
+}
+
+// CHudItem is at +0x430 and CObject at +0x160 in this engine build (PDB).
+// Only the actor's attached wpn_knife_m1 may use the addon combo keys.
+static void* g_knife_combo_owner = 0;
+static unsigned g_knife_combo_last_ms = 0;
+static unsigned g_knife_combo_index = 0;
+static unsigned g_knife_combo_logged = 0;
+static void* g_knife_return_owner = 0;
+static unsigned g_knife_return_start_ms = 0;
+static unsigned g_knife_return_duration = 0;
+static unsigned g_knife_return_index = 0;
+static unsigned g_knife_return_logged = 0;
+static unsigned g_knife_sound_errors = 0;
+static unsigned g_knife_sound_missing = 0;
+static int g_knife_sound_busy = 0;
+
+static bool knife_combo_is_m1(void* hud_item)
+{
+    void* attached = hudrc_item();
+    if (!attached || *(void**)((char*)attached + OFF_AHI_PARENT_ITEM) != hud_item)
+        return false;
+    const char* value = *(const char**)((char*)hud_item - OFF_HUD_TO_COBJECT +
+                                       OFF_COBJECT_SECTION);
+    return value && strcmp(value + STRV_VALUE, "wpn_knife_m1") == 0;
+}
+
+static bool knife_combo_has_key(const char* key)
+{
+    void* ini = *(void**)(g_base + RVA_PSETTINGS);
+    return ini && ((ini_line_exist_t)(g_base + RVA_INI_LINE_EXIST))(
+        ini, "wpn_knife_m1_hud", key) != 0;
+}
+
+// The knife's native class does not play its configured draw/holster sounds.
+// Delegate just those two events to the optional Lua module after motion start.
+static void knife_notify_motion(int event)
+{
+    if (g_knife_sound_busy) return;
+    void* L = lua_state();
+    if (!L) return;
+    g_knife_sound_busy = 1;
+    const int top = ((lua_gettop_t)(g_base + RVA_LUA_GETTOP))(L);
+    ((lua_getfield_t)(g_base + RVA_LUA_GETFIELD))(
+        L, LUA_GLOBALSINDEX, "fl_on_knife_motion");
+    if (((lua_type_t)(g_base + RVA_LUA_TYPE))(L, -1) == LUA_TFUNCTION) {
+        ((lua_pushinteger_t)(g_base + RVA_LUA_PUSHINTEGER))(L, event);
+        if (((pcall_t)(g_base + RVA_PCALL))(L, 1, 0, 0) &&
+            g_knife_sound_errors++ < 3u) {
+            const char* error = ((lua_tolstring_t)(g_base + RVA_LUA_TOLSTRING))(L, -1, 0);
+            ((msg_t)(g_base + RVA_MSG))("!! [knife_sound] %s", error ? error : "?");
+        }
+    } else if (g_knife_sound_missing++ == 0u) {
+        ((msg_t)(g_base + RVA_MSG))("! [knife_sound] Lua callback unavailable");
+    }
+    ((lua_settop2_t)(g_base + RVA_LUA_SETTOP2))(L, top);
+    g_knife_sound_busy = 0;
+}
+
+static unsigned hkHudPlayMotion(void* self, const char* key, bool mix_in,
+                                unsigned state, bool random, float speed)
+{
+    if (!g_orig_hud_playmotion) return 0;
+    if (!self || !key || !knife_combo_is_m1(self))
+        return g_orig_hud_playmotion(self, key, mix_in, state, random, speed);
+
+    if (strcmp(key, "anm_hide") == 0 || strcmp(key, "anm_hide_fast") == 0) {
+        g_knife_combo_owner = 0;
+        g_knife_return_owner = 0;
+        const unsigned duration = g_orig_hud_playmotion(
+            self, key, mix_in, state, random, speed);
+        if (duration && strcmp(key, "anm_hide") == 0) knife_notify_motion(2);
+        return duration;
+    }
+    if (strcmp(key, "anm_show") == 0 || strcmp(key, "anm_show_empty") == 0 ||
+        strcmp(key, "anm_show_fast") == 0) {
+        g_knife_return_owner = 0;
+        const unsigned duration = g_orig_hud_playmotion(
+            self, key, mix_in, state, random, speed);
+        if (duration && strcmp(key, "anm_show_fast") != 0) knife_notify_motion(1);
+        return duration;
+    }
+
+    const bool primary = strcmp(key, "anm_attack") == 0;
+    const bool secondary = strcmp(key, "anm_attack2") == 0;
+    if (!primary && !secondary) {
+        if ((strcmp(key, "anm_idle") == 0 || strcmp(key, "anm_idle_aim") == 0) &&
+            g_knife_return_owner == self) {
+            static const char* return_keys[3] = {
+                "anm_hit12idle", "anm_hit22idle", "anm_hit32idle"
+            };
+            const unsigned elapsed = hudrc_time_ms() - g_knife_return_start_ms;
+            const unsigned threshold = g_knife_return_duration > 80u
+                ? g_knife_return_duration - 80u : 0u;
+            const unsigned index = g_knife_return_index;
+            g_knife_return_owner = 0;
+            if (elapsed >= threshold &&
+                elapsed <= g_knife_return_duration + 400u &&
+                index < 3u && knife_combo_has_key(return_keys[index])) {
+                const unsigned duration = g_orig_hud_playmotion(
+                    self, return_keys[index], mix_in, state, random, speed);
+                if (duration) {
+                    if (g_knife_return_logged++ < 12u)
+                        ((msg_t)(g_base + RVA_MSG))(
+                            "~ [knife_combo] %s -> %s (%u ms)",
+                            key, return_keys[index], duration);
+                    return duration;
+                }
+            }
+        } else {
+            g_knife_return_owner = 0;
+        }
+        return g_orig_hud_playmotion(self, key, mix_in, state, random, speed);
+    }
+
+    static const char* primary_keys[4] = {
+        "anm_attack", "anm_attack_svariant1", "anm_attack_svariant2", "anm_attack_svariant3"
+    };
+    static const char* secondary_keys[4] = {
+        "anm_attack2", "anm_attack2_svariant1", "anm_attack2_svariant2", "anm_attack2_svariant3"
+    };
+    const unsigned now = hudrc_time_ms();
+    const unsigned next = (g_knife_combo_owner == self &&
+                           (unsigned)(now - g_knife_combo_last_ms) <= 1000u)
+                              ? (g_knife_combo_index + 1u) % 4u : 0u;
+    const char* chosen = (primary ? primary_keys : secondary_keys)[next];
+    if (next != 0u && !knife_combo_has_key(chosen))
+        chosen = key;
+
+    g_knife_return_owner = 0;
+    const unsigned duration = g_orig_hud_playmotion(
+        self, chosen, mix_in, state, random, speed);
+    if (duration) {
+        g_knife_combo_owner = self;
+        g_knife_combo_last_ms = now;
+        g_knife_combo_index = chosen == key ? 0u : next;
+        g_knife_return_owner = primary && g_knife_combo_index < 3u ? self : 0;
+        g_knife_return_start_ms = now;
+        g_knife_return_duration = duration;
+        g_knife_return_index = g_knife_combo_index;
+        if (g_knife_combo_logged++ < 12u)
+            ((msg_t)(g_base + RVA_MSG))("~ [knife_combo] %s -> %s (%u ms)",
+                                         key, chosen, duration);
+    }
+    return duration;
 }
 
 static void hudrc_reset()
@@ -1394,17 +1559,17 @@ static void* pda3d_top_receiver(void)
     return *(void**)(last - OFF_RECV_ITEM);
 }
 
-static __attribute__((noinline)) void hkCUIPdaWndDraw(void* self)
+static FL_NOINLINE void hkCUIPdaWndDraw(void* self)
 {
     if (g_pda3d_nosign
-        && (uintptr_t)__builtin_return_address(0) == g_base + RVA_PDA3D_VP2_SITE) {
+        && (uintptr_t)FL_RETURN_ADDRESS() == g_base + RVA_PDA3D_VP2_SITE) {
         *(unsigned*)(g_base + RVA_LAST_FRAME_2) = *(unsigned*)(g_base + RVA_DEVICE_FRAME);
         ++g_pda3d_nosign_draws;
         ((uiwnd_draw_t)(g_base + RVA_CUIWINDOW_DRAW))(self);
         return;
     }
     if (g_pda3d_hack
-        && (uintptr_t)__builtin_return_address(0) == g_base + RVA_PDA3D_VP2_SITE) {
+        && (uintptr_t)FL_RETURN_ADDRESS() == g_base + RVA_PDA3D_VP2_SITE) {
         void* wnd = pda3d_top_receiver();
         if (wnd && wnd != self) {
             unsigned frame = *(unsigned*)(g_base + RVA_DEVICE_FRAME);
@@ -3531,6 +3696,27 @@ static bool install_hook()
             g[6] == 0x80 && g[7] == 0xB9)
             g_orig_gl_onshot = (gl_onshot_t)install_detour(
                 RVA_GL_ONSHOT, RVA_GL_ONSHOT_END, (void*)&hkGrenadeOnShot);
+    }
+
+    {
+        const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)g_base;
+        const IMAGE_NT_HEADERS64* nt = dos->e_magic == IMAGE_DOS_SIGNATURE
+            ? (const IMAGE_NT_HEADERS64*)(g_base + dos->e_lfanew) : 0;
+        static const uint8_t expected[] = {
+            0x40, 0x53, 0x55, 0x56, 0x57, 0x41, 0x55,
+            0x48, 0x81, 0xEC, 0x10, 0x01, 0x00, 0x00
+        };
+        const uint8_t* entry = (const uint8_t*)(g_base + RVA_HUD_PLAYMOTION);
+        if (nt && nt->Signature == IMAGE_NT_SIGNATURE &&
+            nt->FileHeader.TimeDateStamp == KNIFE_ENGINE_STAMP &&
+            nt->OptionalHeader.SizeOfImage == KNIFE_ENGINE_IMAGE &&
+            sizeof(expected) == RVA_HUD_PLAYMOTION_END - RVA_HUD_PLAYMOTION &&
+            memcmp(entry, expected, sizeof(expected)) == 0) {
+            g_orig_hud_playmotion = (hud_playmotion_t)install_detour(
+                RVA_HUD_PLAYMOTION, RVA_HUD_PLAYMOTION_END, (void*)&hkHudPlayMotion);
+        }
+        ((msg_t)(g_base + RVA_MSG))("~ [knife_combo] hook %s",
+            g_orig_hud_playmotion ? "ready" : "unavailable for this engine build");
     }
 
     {
