@@ -4,8 +4,10 @@ local TX_KEY, UPGRADE_KEY = "he_pda_transaction_v2", "he_pda_upgrade_owned"
 local SIDOR_DISCOUNT_KEY = "he_pda_sidor_discounted"
 local RESULT_KEY, ACQUIRED_KEY = "he_pda_last_transaction_ok", "he_pda_legitimate_acquired"
 local PRICE, SIDOR_DISCOUNT_PRICE = 15000, 10000
+local FIRST_NO_PDA_HINT_KEY = "he_pda_no_pda_first_hint_seen"
 local preview, spawn_wait_started, last_error
 local stepping = false
+local last_unavailable_pda_hint
 
 local function actor_ready() return db and db.actor ~= nil end
 local function saved_true(key) return get_value(key) == true or get_value(key) == 1 end
@@ -276,6 +278,38 @@ function module_install_unavailable() return not module_install_available() end
 function module_use_hint()
     sak.send_tip_local(game.translate_string("he_pda_module_pickup"),game.translate_string("thinking_out_loud"),0,7,"g_g","no","yellow")
 end
+local function unavailable_pda_tip()
+    if not actor_ready() then return end
+    local actor = db.actor
+    if actor:has_info("docent_self_pda_time_start") then return "he_local_pda_repairing" end
+    if actor:has_info("pda_is_broken") then return "he_local_pda_broken" end
+    if pda_battery.is_charging() then return "he_local_pda_charging" end
+    local pda = he_pda_model.get_pda()
+    if pda and pda:condition() > 0 then return end
+    if pda or has("device_pda_discharged_gg") then return "he_local_pda_discharged" end
+    if not saved_true(FIRST_NO_PDA_HINT_KEY) and not saved_true(ACQUIRED_KEY) then
+        return "he_local_no_pda_first", true
+    end
+    return "he_local_no_pda", false
+end
+function on_key(_, bind)
+    if bind ~= key_bindings.kACTIVE_JOBS and bind ~= key_bindings.kMAP then return end
+    if not actor_ready() or not db.actor:alive() or db.actor:is_talking() or level.main_input_receiver() then return end
+    local message, first_no_pda = unavailable_pda_tip()
+    if not message then return end
+    local now = time_global()
+    if last_unavailable_pda_hint and now - last_unavailable_pda_hint < 5000 then return end
+    last_unavailable_pda_hint = now
+    if first_no_pda then
+        set_value(FIRST_NO_PDA_HINT_KEY, true)
+        dsh.timeout(1000, function()
+            if not actor_ready() then return end
+            misc.last_sound = xr_sound.get_safe_sound_object("scripts\\matches_no_light_1")
+            if misc.last_sound then misc.last_sound:play_at_pos(db.actor, vector(), 0, sound_object.s2d) end
+        end)
+    end
+    sak.send_tip_local(game.translate_string(message),game.translate_string("thinking_out_loud"),1,5,"g_g","no","yellow")
+end
 function module_pickup()
     if saved_true("he_pda_module_seen") then return end
     set_value("he_pda_module_seen",true)
@@ -468,11 +502,13 @@ function on_update()
 end
 function on_load()
     preview, spawn_wait_started, last_error = nil,nil,nil
+    last_unavailable_pda_hint = nil
     stepping = false
     remove_value("he_pda_vergas_preview") -- obsolete unconfirmed previews are never resumed
 end
 function attach(sm)
     sm:subscribe({signal="on_actor_before_use",fun=this.before_use})
+    sm:subscribe({signal="on_key",fun=this.on_key})
     sm:subscribe({signal="on_update",fun=this.on_update})
     sm:subscribe({signal="on_late_init_all",fun=this.on_load})
 end
