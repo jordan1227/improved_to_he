@@ -21,31 +21,72 @@ GlobalEnable = false		--Включить скрипт? Подробные настройки смотрите ниже
 ----------------------------------------------------------------------------
 
 local subscribed
-function subscribe()
-	GlobalEnable = true
-	subscribed = {
+local subscription_mgr
+local lifecycle_mgr
+local lifecycle_slot
+local enabled_value_key = "dsh_coordinator.enabled"
+
+local function overlay_slots()
+	return {
 		{ signal = "on_info", fun = this.infos },
 		{ signal = "on_update", fun = this.vis_int },
 	}
-	local sm = ogse_signals.get_mgr()
-	for _, s in ipairs( subscribed ) do
-		 sm:subscribe( s )
+end
+
+local function register_overlay(sm)
+	if subscription_mgr == sm and subscribed then return end
+	local slots = overlay_slots()
+	for _, s in ipairs(slots) do
+		if not sm:is_already_subscribed(s, true) then
+			sm:subscribe(s)
+		end
 	end
+	subscribed = slots
+	subscription_mgr = sm
+end
+
+function subscribe(sm)
+	GlobalEnable = true
+	set_value(enabled_value_key, true)
+	register_overlay(sm or ogse_signals.get_mgr())
 end
 
 function unsubscribe()
-	for _, s in ipairs( subscribed ) do
-		local sm = ogse_signals.get_mgr()
-		sm:unsubscribe( s )
+	GlobalEnable = false
+	set_value(enabled_value_key, false)
+	local sm = subscription_mgr or ogse_signals.get_mgr()
+	if sm then
+		for _, s in ipairs(overlay_slots()) do
+			if sm:is_already_subscribed(s) then
+				sm:unsubscribe(s)
+			end
+		end
 	end
 	subscribed = nil
+	subscription_mgr = nil
 	switch_off()
-	GlobalEnable = false
 end
 
+function on_late_init()
+	if get_value(enabled_value_key, false) then
+		subscribe(ogse_signals.get_mgr())
+	else
+		unsubscribe()
+	end
+end
+
+function attach(sm)
+	if lifecycle_mgr == sm and lifecycle_slot and sm:is_already_subscribed(lifecycle_slot, true) then
+		return
+	end
+	lifecycle_slot = { signal = "on_late_init_all", fun = this.on_late_init }
+	if not sm:is_already_subscribed(lifecycle_slot, true) then
+		sm:subscribe(lifecycle_slot)
+	end
+	lifecycle_mgr = sm
+end
 ----------------------------------------------------------------------------
 -- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ! НЕ УДАЛЯТЬ
-local hud = get_hud()
 ----------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------
@@ -78,7 +119,7 @@ local aHealth		= true	-- включение показа здоровья
 local aPower		= true	-- включение показа силы
 local aRadiation 	= true	-- включение показа радиационного облучения
 local aSatiety		= true	-- включение показа сытости
-local aDrinky		= false	-- включение показа жажды
+local aDrinky		= true	-- включение показа жажды
 local aSleepy		= false	-- включение показа сонливости
 local aMoney		= true	-- включение показа суммы наличных (денег)
 local aPsyHealth	= true	-- включение показа пси-здоровья
@@ -131,6 +172,8 @@ end
 ----------------------------------------------------------------------------
 
 function switch_off()
+	local hud = get_hud()
+	if not hud then return end
 
 	local statics = {
 		["gul_debug"] = true,
@@ -153,6 +196,8 @@ end
 
 local zones_time = 0
 function zones()
+	local hud = get_hud()
+	if not hud then return end
     local ZonesText
 	local ZoneCS = hud:GetCustomStatic("gul_debug")
 	if ZoneCS == nil then
@@ -160,19 +205,19 @@ function zones()
 		ZoneCS = hud:GetCustomStatic("gul_debug")
 	end
 
-	ZoneCS:wnd():SetText("Актор в зоне:\\n")
+	ZoneCS:wnd():SetText("Актор в зоне:\n")
 
 	for name,zone in pairs (db.zone_by_name) do
 		if utils.npc_in_zone(db.actor,zone) then
 			if string.find(zone:section(),"space_restrictor") then
 			    ZonesText = string.format(ZoneCS:wnd():GetText())..
-				string.format("%s (%s) (sr)\\n",tostring(name),tostring(db.storage[zone:id()].active_section))
+				string.format("%s (%s) (sr)\n",tostring(name),tostring(db.storage[zone:id()] and db.storage[zone:id()].active_section))
 			elseif string.find(zone:section(),"smart_terrain") then
 			    ZonesText = string.format(ZoneCS:wnd():GetText())..
-				string.format("%s (st)\\n",tostring(name))
+				string.format("%s (st)\n",tostring(name))
 			else
 			    ZonesText = string.format(ZoneCS:wnd():GetText())..
-			    string.format("%s (anom)\\n",tostring(name))
+			    string.format("%s (anom)\n",tostring(name))
 			end
 		    if ZoneCS ~= nil then ZoneCS:wnd():SetText(ZonesText) end
 	    end
@@ -182,6 +227,8 @@ end
 
 local k = 0
 function infos( npc, info_id )
+	local hud = get_hud()
+	if not hud then return end
 	if bInfos then
 		local InfoCS = hud:GetCustomStatic( "prs_debug" )
 		if InfoCS == nil then
@@ -191,10 +238,10 @@ function infos( npc, info_id )
 		local OrigInfoText = InfoCS:wnd():GetText()
 		k = k + 1
 		if k > 12 then
-			OrigInfoText = string.sub( OrigInfoText,( string.find( OrigInfoText, "\\n" ) or 0 ) + 2, string.len( OrigInfoText ) )
+			OrigInfoText = string.sub( OrigInfoText,( string.find( OrigInfoText, "\n" ) or 0 ) + 2, string.len( OrigInfoText ) )
 			k = k - 1 
 		end
-		local InfoText = string.format( "%s%s\\n", tostring( OrigInfoText ), tostring( info_id ) )
+		local InfoText = string.format( "%s%s\n", tostring( OrigInfoText ), tostring( info_id ) )
 		if InfoCS ~= nil then InfoCS:wnd():SetText( InfoText ) end
 		kotovod.give_info( info_id )
 	end
@@ -207,6 +254,8 @@ local mental_anims = {
 }
 
 function info_about_npc()
+	local hud = get_hud()
+	if not hud then return end
 	clear_info_about_npc()
 
 	local PosLogic = hud:GetCustomStatic("logic_debug")
@@ -217,6 +266,7 @@ function info_about_npc()
 
 	local LogicText = ""
 	local rq = level.get_current_ray_query()
+	if not rq then return end
 	local target_obj = rq.object
 
 	if target_obj then
@@ -278,7 +328,7 @@ function info_about_npc()
 				community = target_obj:character_community()
 			end
 			local storage = db.storage[target_obj:id()]
-			local scheme = storage.active_scheme
+			local scheme = storage and storage.active_scheme
 			local state = state_mgr.get_state(target_obj)
 			local active_evaluator
 			-- if ogse_debug.active_evaluators and ogse_debug.active_evaluators[target_obj:id()] then
@@ -293,28 +343,28 @@ function info_about_npc()
 				-- active_anim = ogse_debug.active_anim[target_obj:id()]
 			-- end
 			LogicText = LogicText..
-				"npc: sect: ["..target_obj:section().."] ".."name: ["..target_obj:name().."]\\n"..
-				"npc: id: "..target_obj:id().." ".."story_id: "..target_obj:story_id().." ".."comm: ["..community.."]\\n"..
-				"npc: behave scheme: ["..tostring(scheme).."], fov: "..target_obj:fov()..", range: "..target_obj:range().."\\n"..
-				"npc: st_mgr state: ["..tostring(state).."] ".."anim: ["..tostring(anim).."] ".."mental: ["..tostring(mental).."]\\n"..
-				--"npc: last active eval: "..tostring(active_evaluator).."\\n"..
-				--"npc: last active danger: "..tostring(active_danger).."\\n"..
-				--"npc: last active anim_eval: "..tostring(active_anim).."\\n"..
-				"------------------\\n"..
-				"best_enemy: "..tostring(be).."\\n"..
-				"best_danger: "..tostring(best_danger_name).."\\n"..
-				"best_danger_type: "..tostring(best_danger_type).."\\n"..
-				"is wounded: "..tostring(xr_wounded.is_wounded(target_obj))..", health: "..target_obj.health..", bleeding: "..target_obj:get_bleeding().."\\n"..
-				"------------------\\n"..
-				"profile name: "..tostring(target_obj:profile_name()).."\\n"..
-				"visual name: "..( string.gsub( tostring( target_obj:get_visual_name() ), "\\", "/") ).."\\n"..
-				"gulag: "..tostring(gulag).."\\n"..
-				"gulag val: "..tostring(gulag_val).."\\n"..
-				"scheme_act_section: "..scheme1.."\\n"..
-				"scheme_act_logic: "..scheme2.."\\n"..
-				"ini file: ".. tostring( db.storage[ target_obj:id() ].ini_filename ) .. "\\n" ..
-				"------------------\\n"..
-				"coords: X "..target_obj:position().x..", Y "..target_obj:position().y..", Z "..target_obj:position().z.."\\n"..
+				"npc: sect: ["..target_obj:section().."] ".."name: ["..target_obj:name().."]\n"..
+				"npc: id: "..target_obj:id().." ".."story_id: "..target_obj:story_id().." ".."comm: ["..community.."]\n"..
+				"npc: behave scheme: ["..tostring(scheme).."], fov: "..target_obj:fov()..", range: "..target_obj:range().."\n"..
+				"npc: st_mgr state: ["..tostring(state).."] ".."anim: ["..tostring(anim).."] ".."mental: ["..tostring(mental).."]\n"..
+				--"npc: last active eval: "..tostring(active_evaluator).."\n"..
+				--"npc: last active danger: "..tostring(active_danger).."\n"..
+				--"npc: last active anim_eval: "..tostring(active_anim).."\n"..
+				"------------------\n"..
+				"best_enemy: "..tostring(be).."\n"..
+				"best_danger: "..tostring(best_danger_name).."\n"..
+				"best_danger_type: "..tostring(best_danger_type).."\n"..
+				"is wounded: "..tostring(xr_wounded.is_wounded(target_obj))..", health: "..target_obj.health..", bleeding: "..target_obj:get_bleeding().."\n"..
+				"------------------\n"..
+				"profile name: "..tostring(target_obj:profile_name()).."\n"..
+				"visual name: "..( string.gsub( tostring( target_obj:get_visual_name() ), "\\", "/") ).."\n"..
+				"gulag: "..tostring(gulag).."\n"..
+				"gulag val: "..tostring(gulag_val).."\n"..
+				"scheme_act_section: "..tostring(scheme1).."\n"..
+				"scheme_act_logic: "..tostring(scheme2).."\n"..
+				"ini file: ".. tostring( storage and storage.ini_filename ) .. "\n" ..
+				"------------------\n"..
+				"coords: X "..target_obj:position().x..", Y "..target_obj:position().y..", Z "..target_obj:position().z.."\n"..
 				"level_vertex: "..target_obj:level_vertex_id()..", game_vertex: "..target_obj:game_vertex_id()
 		else
 			local scheme1, scheme2
@@ -323,34 +373,34 @@ function info_about_npc()
 				scheme2 = tostring(db.storage[target_obj:id()].section_logic)
 			end
 			LogicText = LogicText..
-				"obj: section: "..target_obj:section().."\\n"..
-				"obj: name: "..target_obj:name().."\\n"..
-				"obj: id: "..target_obj:id().."\\n"..
-				"story_id: "..target_obj:story_id().."\\n"..
-				"visual name: "..( string.gsub( tostring( target_obj:get_visual_name() ), "\\", "/") ).."\\n"..
-				"------------------\\n"..
-				"coords: X "..target_obj:position().x..", Y "..target_obj:position().y..", Z "..target_obj:position().z.."\\n"..
-				"dir: X "..target_obj:direction().x..", Y "..target_obj:direction().y..", Z "..target_obj:direction().z.."\\n"..
-				"Active logic: "..tostring(scheme2).."\\n"..
-				"Logic Section: "..tostring(scheme1).."\\n"..
-				"level_vertex: "..target_obj:level_vertex_id().."\\n"..
+				"obj: section: "..target_obj:section().."\n"..
+				"obj: name: "..target_obj:name().."\n"..
+				"obj: id: "..target_obj:id().."\n"..
+				"story_id: "..target_obj:story_id().."\n"..
+				"visual name: "..( string.gsub( tostring( target_obj:get_visual_name() ), "\\", "/") ).."\n"..
+				"------------------\n"..
+				"coords: X "..target_obj:position().x..", Y "..target_obj:position().y..", Z "..target_obj:position().z.."\n"..
+				"dir: X "..target_obj:direction().x..", Y "..target_obj:direction().y..", Z "..target_obj:direction().z.."\n"..
+				"Active logic: "..tostring(scheme2).."\n"..
+				"Logic Section: "..tostring(scheme1).."\n"..
+				"level_vertex: "..target_obj:level_vertex_id().."\n"..
 				"game_vertex: "..target_obj:game_vertex_id()
 
 			if target_obj:is_ammo() then
-				LogicText = LogicText.."\\n \\nbullets in pack:".. vergas_lib.get_ammo_size( target_obj )
+				LogicText = LogicText.."\n \nbullets in pack:".. vergas_lib.get_ammo_size( target_obj )
 			end
 		end
 
 		local bone = rq.element
 		if bone then
 			local bone_name = target_obj:get_bone_name(bone)
-			LogicText = LogicText.."\\n\\nbone index = ".. bone ..", name = "..bone_name
+			LogicText = LogicText.."\n\nbone index = ".. bone ..", name = "..bone_name
 		end
     end
 
 	 local dist = rq.range
 	if dist then
-		LogicText = LogicText.."\\n\\ndistance: ".. dist
+		LogicText = LogicText.."\n\ndistance: ".. dist
 	end
 
 	if PosLogic then
@@ -360,23 +410,23 @@ end
 
 
 function get_mtl_text( mtl )
-  local LogicText = "mtl: m_Name: "..tostring( mtl.m_Name  ).."\\n"..
-			"mtl: m_Desc: "..tostring( mtl.m_Desc ).."\\n"..
-			"------------------\\n"..
-			"Flags: "..get_mtl_flags(mtl.Flags).."\\n"..
-			"------------------\\n"..
-			"mtl: fFlotationFactor: "..mtl.fFlotationFactor.."\\n"..
-			"mtl: fShootFactor: "..mtl.fShootFactor.."\\n"..
-			"mtl: fBounceDamageFactor: "..mtl.fBounceDamageFactor.."\\n"..
-			"mtl: fInjuriousSpeed: "..mtl.fInjuriousSpeed.."\\n"..
-			"mtl: fVisTransparencyFactor: "..mtl.fVisTransparencyFactor.."\\n"..
-			"mtl: fSndOcclusionFactor: "..mtl.fSndOcclusionFactor.."\\n"..
-			"------------------\\n"..
-			"mtl: fPHFriction: "..mtl.fPHFriction.."\\n"..
-			"mtl: fPHDamping: "..mtl.fPHDamping.."\\n"..
-			"mtl: fPHSpring: "..mtl.fPHSpring.."\\n"..
-			"mtl: fPHBounceStartVelocity: "..mtl.fPHBounceStartVelocity.."\\n"..
-			"mtl: fPHBouncing: "..mtl.fPHBouncing.."\\n"..
+  local LogicText = "mtl: m_Name: "..tostring( mtl.m_Name  ).."\n"..
+			"mtl: m_Desc: "..tostring( mtl.m_Desc ).."\n"..
+			"------------------\n"..
+			"Flags: "..get_mtl_flags(mtl.Flags).."\n"..
+			"------------------\n"..
+			"mtl: fFlotationFactor: "..mtl.fFlotationFactor.."\n"..
+			"mtl: fShootFactor: "..mtl.fShootFactor.."\n"..
+			"mtl: fBounceDamageFactor: "..mtl.fBounceDamageFactor.."\n"..
+			"mtl: fInjuriousSpeed: "..mtl.fInjuriousSpeed.."\n"..
+			"mtl: fVisTransparencyFactor: "..mtl.fVisTransparencyFactor.."\n"..
+			"mtl: fSndOcclusionFactor: "..mtl.fSndOcclusionFactor.."\n"..
+			"------------------\n"..
+			"mtl: fPHFriction: "..mtl.fPHFriction.."\n"..
+			"mtl: fPHDamping: "..mtl.fPHDamping.."\n"..
+			"mtl: fPHSpring: "..mtl.fPHSpring.."\n"..
+			"mtl: fPHBounceStartVelocity: "..mtl.fPHBounceStartVelocity.."\n"..
+			"mtl: fPHBouncing: "..mtl.fPHBouncing.."\n"..
 			"------------------"
   return LogicText
 end
@@ -384,6 +434,8 @@ end
 
 local show_info_about_time = 0
 function clear_info_about_npc()
+	local hud = get_hud()
+	if not hud then return end
 	 if show_info_about_time < time_global() then
         local PosLogic = hud:GetCustomStatic("logic_debug")
     	if PosLogic == nil then
@@ -395,7 +447,49 @@ function clear_info_about_npc()
     end
 end
 
+function capture(comment)
+	if not level.present() or not db.actor or not db.actor:alive() then
+		log2("[spawn_map] capture failed: actor unavailable")
+		return false
+	end
+
+	local actor = db.actor
+	local pos = actor:position()
+	local cam_pos = device().cam_pos
+	local cam_lvid = level.nearest_vertex_id(cam_pos)
+	local cam_gvid = -1
+	if cam_lvid and cam_lvid >= 0 then
+		local cross = cross_table()
+		local game_vertex = cross and cross:vertex(cam_lvid)
+		if game_vertex then
+			cam_gvid = game_vertex:game_vertex_id()
+		else
+			cam_lvid = -1
+		end
+	else
+		cam_lvid = -1
+	end
+	local lvid, gvid = actor:level_vertex_id(), actor:game_vertex_id()
+	local vertex_pos = level.vertex_position(lvid)
+	local valid = false
+	if vertex_pos then
+		valid = vertex_pos:distance_to(pos) <= 0.7
+	end
+	local note = string.gsub(tostring(comment or ""), "[\r\n]+", " ")
+	log2(
+		"[spawn_map] level=%s | comment=%s | pos=%.3f,%.3f,%.3f | cam_pos=%.3f,%.3f,%.3f | actor_lvid=%d | actor_gvid=%d | cam_lvid=%d | cam_gvid=%d | valid=%s",
+		level.name(), note, pos.x, pos.y, pos.z, cam_pos.x, cam_pos.y, cam_pos.z, lvid, gvid, cam_lvid, cam_gvid, tostring(valid)
+	)
+	return true
+end
+
+function c(comment)
+	return capture(comment)
+end
+
 function vis_int()
+	local hud = get_hud()
+	if not hud or not db.actor then return end
 	--ogse_signals.get_mgr():reschedule( 500 )
 
 	if bInfoAbout then
@@ -416,15 +510,16 @@ function vis_int()
 		end
 		local lvid,gvid      = db.actor:level_vertex_id(),db.actor:game_vertex_id()
 		local pos,dir,campos = db.actor:position(),device().cam_dir,device().cam_pos
-		local valid          = level.vertex_position(lvid):distance_to(pos) <= 0.7
+		local vertex_pos     = level.vertex_position(lvid)
+		local valid          = vertex_pos and vertex_pos:distance_to(pos) <= 0.7 or false
  		--local fps_check = ogse_benchmark.get_fps()
-		local PosText = string.format("pos: %1.3f, %1.3f, %1.3f\\n",pos.x,pos.y,pos.z)..	-- позиция ГГ (x,y,z)
-						string.format("cam_pos: %1.3f, %1.3f, %1.3f\\n",campos.x,campos.y,campos.z)..	-- позиция камеры (x,y,z)
-						string.format("dir: %1.3f, %1.3f, %1.3f\\n",dir.x,dir.y,dir.z)..	-- поворот ГГ вокруг осей (x,y,z) (гонит)
-		                string.format("lvid: %d\\n",lvid)..								-- левел вертекс
-						string.format("gvid: %d\\n",gvid)..								-- гейм вертекс
-						string.format("valid: %s\\n",tostring(valid))				-- наличие AI-сетки в данной координате
-						--string.format("fps: %d\\n",fps_check)							-- наличие AI-сетки в данной координате
+		local PosText = string.format("pos: %1.3f, %1.3f, %1.3f\n\n",pos.x,pos.y,pos.z)..	-- позиция ГГ (x,y,z)
+						string.format("cam_pos: %1.3f, %1.3f, %1.3f\n\n",campos.x,campos.y,campos.z)..	-- позиция камеры (x,y,z)
+						string.format("dir: %1.3f, %1.3f, %1.3f\n",dir.x,dir.y,dir.z)..	-- поворот ГГ вокруг осей (x,y,z) (гонит)
+		                string.format("lvid: %d\n",lvid)..								-- левел вертекс
+						string.format("gvid: %d\n",gvid)..								-- гейм вертекс
+						string.format("valid: %s\n",tostring(valid))				-- наличие AI-сетки в данной координате
+						--string.format("fps: %d\n",fps_check)							-- наличие AI-сетки в данной координате
 		if PosCS ~= nil then PosCS:wnd():SetText(PosText) end
 	end
 
@@ -441,7 +536,7 @@ function vis_int()
 		    local val = xr_gulag.getGulagPopulationComed(name_g)
 			--local cas = smart_terrain.getCasualities(name_g)
 		    if val ~= nil  then
-		        GlgText = GlgText.. string.format("%s\\n", tostring(name_g.." = ".. val))
+		        GlgText = GlgText.. string.format("%s\n", tostring(name_g.." = ".. val))
 		    end
 		end
 		if GlgCS ~= nil then GlgCS:wnd():SetText(GlgText) end
@@ -483,44 +578,44 @@ function vis_int()
 		end
 		if aHealth == true then
 			str = string.format(" %f",db.actor.health)
-			ActText = ActText.. game.translate_string("sdata_actor_health").. tostring(str).."("..math.ceil(tonumber(str)*100).."%)\\n"
+			ActText = ActText.. game.translate_string("sdata_actor_health").. tostring(str).."("..math.ceil(tonumber(str)*100).."%)\n"
 		end
 		if aPower == true then
 			str=string.format(" %f",db.actor.power)
-			ActText = ActText.. game.translate_string("sdata_actor_power").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\\n"
+			ActText = ActText.. game.translate_string("sdata_actor_power").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\n"
 		end
 		if aRadiation == true then
 			str = string.format(" %f",db.actor.radiation)
-			ActText = ActText.. game.translate_string("sdata_actor_radiation").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\\n"
+			ActText = ActText.. game.translate_string("sdata_actor_radiation").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\n"
 		end
 		if aSatiety == true then
 			str = string.format(" %f",db.actor.satiety)
-			ActText = ActText.. game.translate_string("sdata_actor_satiety").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\\n"
+			ActText = ActText.. game.translate_string("sdata_actor_satiety").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\n"
 		end
 		if aDrinky==true then
-			ActText = ActText.. string.format(game.translate_string("sdata_actor_drinky").." %d",ars_mod.get_actor_drinky()).."%\\n"
+			ActText = ActText.. string.format(game.translate_string("sdata_actor_drinky").." %d",math.ceil(thirst.get_thirst() * 100)).."%\n"
 		end
 		if aSleepy==true then
-			ActText = ActText.. string.format(game.translate_string("sdata_actor_sleepy").." %d",ars_mod.get_actor_sleepy()).."%\\n"
+			ActText = ActText.. string.format(game.translate_string("sdata_actor_sleepy").." %d",ars_mod.get_actor_sleepy()).."%\n"
 		end
 		if aMoney==true then
-			ActText = ActText.. string.format(game.translate_string("sdata_actor_money").." %d\\n",db.actor:money())
+			ActText = ActText.."\n".. string.format(game.translate_string("sdata_actor_money").." %d\n",db.actor:money())
 		end
 		if aPsyHealth==true then
 			str = string.format(" %f",db.actor.psy_health)
-			ActText = ActText.. game.translate_string("sdata_actor_psy_health").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\\n"
+			ActText = ActText.. game.translate_string("sdata_actor_psy_health").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\n"
 		end
 		if aMorale == true then
-			ActText = ActText.. string.format(game.translate_string("sdata_actor_morale").." %s\\n",tostring(db.actor.morale))
+			ActText = ActText.. string.format(game.translate_string("sdata_actor_morale").." %s\n",tostring(db.actor.morale))
 		end
 		if aRang == true then
-			ActText = ActText.. string.format(game.translate_string("sdata_actor_rang").." %d\\n",db.actor:character_rank())
+			ActText = ActText.. string.format(game.translate_string("sdata_actor_rang").." %d\n",db.actor:character_rank())
 		end
 		if aCommunity == true then
-			ActText = ActText.. string.format(game.translate_string("sdata_actor_community").." %s\\n",tostring(aCommun))
+			ActText = ActText.. string.format(game.translate_string("sdata_actor_community").." %s\n",tostring(aCommun))
 		end
 		if aReputation == true then
-			ActText = ActText.. string.format(game.translate_string("sdata_actor_reputation").." %d\\n",db.actor:character_reputation())
+			ActText = ActText.. string.format(game.translate_string("sdata_actor_reputation").." %d\n",db.actor:character_reputation())
 		end
 		if ActCS ~= nil then ActCS:wnd():SetText(ActText) end
 	end
@@ -533,11 +628,11 @@ function vis_int()
 			-- AchCS=hud:GetCustomStatic("ach_debug")
 		-- end
 		-- local AchText = ""
-		-- AchText = AchText.. string.format(GetString("sdata_achievement_headshots").." %d\\n",ars_achievements.ars_statistic.headshot)
-		-- AchText = AchText.. string.format(GetString("sdata_achievement_medkits").." %d\\n",ars_achievements.ars_statistic.medkit)
-		-- AchText = AchText.. string.format(GetString("sdata_achievement_mitems").." %d\\n",ars_achievements.ars_statistic.m_item)
-		-- AchText = AchText.. string.format(GetString("sdata_achievement_mobjects").." %d\\n",ars_achievements.ars_statistic.objects)
-		-- AchText = AchText.. string.format(GetString("sdata_achievement_crows").." %d\\n",ars.read_variable("ArsCrowCount",0))
+		-- AchText = AchText.. string.format(GetString("sdata_achievement_headshots").." %d\n",ars_achievements.ars_statistic.headshot)
+		-- AchText = AchText.. string.format(GetString("sdata_achievement_medkits").." %d\n",ars_achievements.ars_statistic.medkit)
+		-- AchText = AchText.. string.format(GetString("sdata_achievement_mitems").." %d\n",ars_achievements.ars_statistic.m_item)
+		-- AchText = AchText.. string.format(GetString("sdata_achievement_mobjects").." %d\n",ars_achievements.ars_statistic.objects)
+		-- AchText = AchText.. string.format(GetString("sdata_achievement_crows").." %d\n",ars.read_variable("ArsCrowCount",0))
 		-- if AchCS ~= nil then AchCS:wnd():SetText(AchText) end
 	-- end
 
@@ -557,12 +652,12 @@ function vis_int()
 				-- if i == 2 or i == 3 or i == 7 or i == 12 then
 					-- slot = db.actor:item_in_slot(i)
 					-- if slot then
-						-- name_str = string.format("%s\\n", GetString(GetItemName(slot:section())))
-						-- cond_str = string.format("State: %1.2f\\n", slot:condition())
+						-- name_str = string.format("%s\n", GetString(GetItemName(slot:section())))
+						-- cond_str = string.format("State: %1.2f\n", slot:condition())
 					-- else
 						-- name_str = "empty"
 					-- end
-					-- SlotText = SlotText.. GetString("Slot "..i..": ").. name_str.."\\n"..cond_str.."\\n\\n"
+					-- SlotText = SlotText.. GetString("Slot "..i..": ").. name_str.."\n"..cond_str.."\n\n"
 				-- end
 			-- end
 			-- if SlotCS ~= nil then SlotCS:wnd():SetText(SlotText) end
