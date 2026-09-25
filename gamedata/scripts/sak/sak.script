@@ -9901,29 +9901,76 @@ end
 ------------------- Арты на Кордоне -------------------
 -------------------------------------------------------
 
+-- [SIVOL_WORLDSPAWNS] Loose startup artifacts need used_ai_locations(false) after creation.
+-- Without it, ALife moved these Cordon artifacts hundreds of meters from their spawn spots.
+-- Keep the flag when revising this plan; the shared binder impulse stayed enabled in the successful test.
 function create_esc_arts()
-	local diff = level.get_game_difficulty()
-	if diff ~= 0 then return end
-	
-    local tbl = {
-        { art = 2, 							x = 110.41,  	y =  1.98,  z = 459.04,  lv = 416175,  gv = 223 },	-- Грузовик
-        { art = 2, 							x = -128.89,  	y = 4.94,   z = 218.36,  lv = 122678,  gv = 166 },	-- Каменюка
-        { art = "af_electra_sparkler_dyn", 	x = -80.97,  	y = -1.29,  z = 151.05,  lv = 186901,  gv = 163 },	-- Тоннель		
+    local diff = level.get_game_difficulty()
+    log2("[sak.create_esc_arts] called level=%s difficulty=%s", tostring(level.name()), tostring(diff))
+    if diff ~= 0 and diff ~= 3 then
+        log2("[sak.create_esc_arts] skipped: unsupported difficulty")
+        return
+    end
+
+    local easy = diff == 0
+    local spots = {
+        { name = "truck", art = 1, x = 110.41, y = 1.98, z = 459.04, lv = 416175, gv = 223 },  -- Грузовик
+        { name = "stone", art = 2, x = -128.89, y = 4.94, z = 218.36, lv = 122678, gv = 166 },  -- Каменюка
+        { name = "electra_tunnel", art = "af_electra_sparkler_dyn", x = -80.97, y = -1.29, z = 151.05, lv = 186901, gv = 163 },  -- Тоннель
     }
-    for _, v in pairs( tbl ) do
-        local obj = g_sim:create( type( v.art ) == "string" and string.format( "%s%d%s", v.art, lua_random( 1, 3 ), "d" ) or kotovod.rnd_rec_art_info( kotovod.tbl_arts, v.art, 2 ),
-            sak.v3f( v.x, v.y, v.z ), v.lv, v.gv
-        )
-        local id = obj.id        
-        kotovod.update_item_condition( obj, 0.3 )
-		
-        kotovod.add_art_to_vars( obj.id )        
-        level.client_spawn_manager():add(
-            obj.id, -1,
-            function( id, obj ) 
-                vergas_art.add_in_tbl_by_id( id, obj:section() )
-            end
-        )
+    local selected = spots
+    if not easy then
+        local roll = lua_random(1, 100)
+        selected = { spots[3], roll <= 33 and spots[2] or spots[1] }
+        log2("[sak.create_esc_arts] Author roll=%d selected=%s", roll, selected[2].name)
+    end
+
+    -- Preserve the earlier non-radioactive level-2 pool rule.
+    local lvl2_pool = {}
+    for _, art in ipairs(kotovod.tbl_arts["lvl2"]) do
+        if art ~= "af_cristal_flower" and art ~= "af_gravi" then
+            lvl2_pool[#lvl2_pool + 1] = art
+        end
+    end
+
+    for index, v in ipairs(selected) do
+        local tunnel = v.name == "electra_tunnel"
+        local dyn = tunnel and (easy and 3 or 2) or (easy and lua_random(2, 3) or 2)
+        local section
+        if tunnel then
+            section = string.format("%s%dd", v.art, dyn)
+        elseif v.art == 1 then
+            section = kotovod.rnd_rec_art_info(kotovod.tbl_arts, 1, dyn)
+        else
+            section = string.format("%s_dyn%dd", lvl2_pool[lua_random(1, #lvl2_pool)], dyn)
+        end
+        local min_condition = tunnel and (easy and 40 or 35) or 25
+        local max_condition = tunnel and (easy and 55 or 45) or (easy and 40 or 30)
+        local condition = lua_random(min_condition, max_condition) / 100
+        log2("[sak.create_esc_arts] attempt=%d spot=%s section=%s condition=%.2f pos=%.2f,%.2f,%.2f lv=%d gv=%d",
+            index, v.name, section, condition, v.x, v.y, v.z, v.lv, v.gv)
+        local obj = g_sim:create(section, sak.v3f(v.x, v.y, v.z), v.lv, v.gv)
+        if obj then
+            local se_obj = alife():object(obj.id)
+            if se_obj then se_obj:used_ai_locations(false) end
+            log2("[sak.create_esc_arts] ai_locations=%s id=%d",
+                tostring(se_obj and se_obj:used_ai_locations()), obj.id)
+            local pos = obj.position
+            log2("[sak.create_esc_arts] created=%d spot=%s section=%s server_pos=%s,%s,%s",
+                obj.id, v.name, section, tostring(pos and pos.x), tostring(pos and pos.y), tostring(pos and pos.z))
+            kotovod.update_item_condition(obj, condition)
+            kotovod.add_art_to_vars(obj.id)
+            level.client_spawn_manager():add(
+                obj.id, -1,
+                function(id, client_obj)
+                    vergas_art.add_in_tbl_by_id(id, client_obj:section())
+                end
+            )
+            log2("[sak.create_esc_arts] ready=%d spot=%s section=%s condition=%.2f",
+                obj.id, v.name, section, condition)
+        else
+            log2("[sak.create_esc_arts] FAILED attempt=%d spot=%s section=%s", index, v.name, section)
+        end
     end
 end
 
