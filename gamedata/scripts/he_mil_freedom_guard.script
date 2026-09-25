@@ -1,0 +1,127 @@
+-- [HE-PORT]
+local SMART = "mil_freedom"
+local REFUSED = "he_mil_dolg_refused"
+local KEY_DEAD = "he_mil_frg_dead"
+local KEY_LAST = "he_mil_frg_last"
+local MIN_DEAD = 4
+local PERIOD = 2000
+
+local base = {}
+local tick_next = 0
+
+local function closed()
+	return has_alife_info("mil_dolg_skull_talk") or has_alife_info(REFUSED) or has_alife_info("mil_dolg_gulag_free")
+end
+
+local function garrison(sobj)
+	return sobj ~= nil and IsStalker(sobj) and sobj:alive() and sobj:community() == "freedom"
+		and sobj.m_story_id ~= story_ids.mil_freedom_stalker0004
+end
+
+local function smart()
+	local reg = smart_terrain.get_registry_by_name()
+	local s = reg and reg[SMART]
+	if not s then
+		return nil
+	end
+	s:initialize_if_needed()
+	if not (s.gulag and s.gulag.Object) then
+		return nil
+	end
+	return s
+end
+
+local function scan()
+	local sim = alife()
+	local s = smart()
+	if not (sim and s) then
+		return nil, nil
+	end
+	local ids, n = {}, 0
+	for id in pairs(s.gulag.Object) do
+		if garrison(sim:object(id)) then
+			ids[id] = true
+			n = n + 1
+		end
+	end
+	return ids, n
+end
+
+local function on_tick()
+	if time_global() < tick_next then
+		return
+	end
+	tick_next = time_global() + PERIOD
+	if not (db.actor and sak.game_began) or closed() then
+		return
+	end
+	local ids, n = scan()
+	if not ids then
+		return
+	end
+	base = ids
+	local last = get_value(KEY_LAST, nil)
+	if last and n > last then
+		set_value(KEY_DEAD, math.max(0, get_value(KEY_DEAD, 0) - (n - last)))
+	end
+	set_value(KEY_LAST, n)
+end
+
+local function member(npc)
+	local id = npc:id()
+	if base[id] then
+		return true
+	end
+	if npc:character_community() ~= "freedom" then
+		return false
+	end
+	local sim = alife()
+	local sobj = sim and sim:object(id)
+	if not sobj or sobj.m_story_id == story_ids.mil_freedom_stalker0004 then
+		return false
+	end
+	local s = smart()
+	return s ~= nil and sobj:smart_terrain_id() == s.id
+end
+
+function on_npc_death(npc, who)
+	if not (db.actor and npc) or closed() then
+		return
+	end
+	if not member(npc) then
+		return
+	end
+	base[npc:id()] = nil
+	set_value(KEY_DEAD, get_value(KEY_DEAD, 0) + 1)
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = on_tick })
+	sm:subscribe({ signal = "on_npc_death", fun = this.on_npc_death })
+end
+
+function dead()
+	return get_value(KEY_DEAD, 0)
+end
+
+function alive()
+	local _, n = scan()
+	return n
+end
+
+function ruined()
+	local n = alive()
+	if not n then
+		return false
+	end
+	local d = dead()
+	return d >= MIN_DEAD and d > n
+end
+
+function intact()
+	return not ruined()
+end
+
+function refused()
+	return has_alife_info(REFUSED)
+end
