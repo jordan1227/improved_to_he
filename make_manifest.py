@@ -93,10 +93,16 @@ VARIANT_CATEGORIES = {
     "Опционально/погода/": "gamedata/variant_weather.ltx",
     "Опционально/болтяры/": "gamedata/variant_bolt.ltx",
 }
-# a pack's file is protected when the build ships the same path, and always for
+# A pack's file is protected when the build ships the same path, and always for
 # scripts: X-Ray addresses a module by bare filename, so a pack script sitting in
 # its own subfolder still shadows -- and is shadowed by -- a shipped module.
+# Weather packs are self-contained drops: protect every gamedata path they ship.
+# Weapon packs additionally own every weapon sound they ship.
 KEEP_ALWAYS_PREFIXES = ("gamedata/scripts/",)
+KEEP_CATEGORY_PREFIXES = {
+    "gamedata/variant_weather.ltx": ("gamedata/",),
+    "gamedata/variant_weapons.ltx": ("gamedata/sounds/weapons/",),
+}
 
 
 def git(repo_dir, *args, binary=False):
@@ -142,7 +148,8 @@ def variant_keep(everything, shipped):
             name, slash, rel = rest.partition("/")
             if not slash or not rel.startswith("gamedata/"):
                 break
-            if rel != marker and rel not in shipped \
+            if not rel.startswith(KEEP_CATEGORY_PREFIXES.get(marker, ())) \
+                    and rel != marker and rel not in shipped \
                     and not rel.startswith(KEEP_ALWAYS_PREFIXES):
                 break
             owned.setdefault(name, []).append(rel)
