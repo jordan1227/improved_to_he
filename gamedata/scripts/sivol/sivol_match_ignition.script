@@ -1,0 +1,261 @@
+-- Owns the actor's match strike and the delayed campfire/candle result.
+
+local MATCH_CAPACITY = 5
+local MATCH_DELAYS = { 3500, 4000, 4600 }
+local HIT_CANCEL_POWER = 0.03
+local MATCH_CAMERA_ID = 9665
+local WATCHDOG_MS = 15000
+
+local cur_ignite_try = 0
+local active = nil
+diagnostics = false
+
+local function diag(fmt, ...)
+    if diagnostics then log2("[match_ignition] " .. fmt, ...) end
+end
+
+local function stop_presentation(st)
+    if st.motion_started then
+        pcall(function() game.stop_hud_motion() end)
+        st.motion_started = false
+    end
+    if st.camera_started and level and level.present and level.present() then
+        pcall(function() level.remove_cam_effector(MATCH_CAMERA_ID) end)
+        st.camera_started = false
+    end
+    if st.sound then
+        pcall(function()
+            if st.sound:playing() then st.sound:stop() end
+        end)
+        st.sound = nil
+    end
+end
+
+local function finish(reason)
+    local st = active
+    if not st then return end
+    active = nil
+
+    if st.session then hud_animation_session.cancel(st.session, reason) end
+    stop_presentation(st)
+
+    if st.owner then
+        if db and db.actor == st.actor and st.actor:alive() then
+            slot_keeper.release(st.owner)
+        else
+            slot_keeper.reset()
+        end
+        hud_animation_owner.cancel(st.owner, reason)
+        hud_animation_owner.release(st.owner, reason)
+    end
+    diag("finish reason=%s spent=%s committed=%s", tostring(reason),
+        tostring(st.match_spent), tostring(st.committed))
+end
+
+local function consume_match(actor)
+    local obj = actor:object("matches")
+    if not obj then return false end
+    local sobj = g_sim:object(obj:id())
+    if not sobj then return false end
+    local ini = sobj:spawn_ini()
+    if not ini then return false end
+
+    local cnt = ini:section_exist("use") and get_u32("use", "c", 0, ini) or 0
+    cnt = cnt + 1
+    if cnt >= MATCH_CAPACITY then
+        misc.release_obj(obj:id())
+    else
+        ini.readonly = false
+        ini:w_u32("use", "c", cnt)
+        sobj:save_spawn_ini()
+    end
+    return true
+end
+
+local function start_motion(st)
+    if active ~= st then return end
+    local duration = game.play_hud_motion(2, "anim_matches_strike", "anm_show", false, 1)
+    st.motion_started = true
+    if not hud_animation_session.duration(duration) then
+        error("invalid match motion duration: " .. tostring(duration))
+    end
+    if not consume_match(st.actor) then
+        finish("matches unavailable at strike")
+        return
+    end
+    st.match_spent = true
+    st.motion_due_at = time_global() + duration + 400
+    level.add_cam_effector("camera_effects\\hand_ignit.anm", MATCH_CAMERA_ID, false)
+    st.camera_started = true
+    st.sound = sound_object("scripts\\hud_matches")
+    st.sound:play_at_pos(st.actor, vector(), 0, sound_object.s2d)
+    st.phase = "playing"
+    diag("strike started duration=%s", tostring(duration))
+end
+
+local function roll_result(st)
+    local rank = st.actor:character_rank()
+    local dec_factor = math.floor(rank / 300)
+    local cap = math.max(3, 6 - dec_factor)
+    local chance = black_tip.have_black_tip() and 30 or 40
+    local is_rain = false
+
+    if level.rain_factor() > 0 and not is_obj_in_hide(st.flame) then
+        chance = chance - (10 + level.rain_factor() * 10)
+        is_rain = true
+    end
+    if const.underground(level.name()) then chance = chance + 8 end
+    chance = math.floor(chance)
+
+    st.next_try = cur_ignite_try + 1
+    st.success = lua_random(100) < chance or st.next_try >= cap
+    st.dec_factor = dec_factor
+    st.rolled = true
+    log2("Chance to light a fire: [%s / %s], result: %s", chance, 100,
+        tostring(st.success))
+    if not st.success then sak.actor_grumble(is_rain) end
+end
+
+local function commit_result(st)
+    local kamp = st.kamp
+    if not kamp or kamp.has_users or (kamp.ignite_time or 0) > 1 then
+        finish("fire unavailable at result")
+        return
+    end
+
+    if st.success then
+        local time_add = math.min(48, 12 * st.dec_factor)
+        kamp.update_now = true
+        kamp.ignite_time = ogse_campfire.total_ignite_time + time_add
+        cur_ignite_try = 0
+    else
+        cur_ignite_try = st.next_try
+    end
+    st.committed = true
+end
+
+local function update_active(st)
+    if db.actor ~= st.actor or not st.actor:alive()
+        or not hud_animation_owner.valid(st.owner) then
+        finish("actor or owner unavailable")
+        return
+    end
+
+    if st.phase == "stowing" then
+        if not st.actor:active_item() then start_motion(st) end
+    elseif st.phase == "playing" then
+        local now = time_global()
+        if not st.motion_done and now >= st.motion_due_at then
+            game.stop_hud_motion()
+            st.motion_started = false
+            st.motion_done = true
+        end
+        if st.motion_done and not st.rolled and now >= st.roll_due_at then
+            roll_result(st)
+        end
+        if st.rolled and not st.committed and now >= st.commit_due_at then
+            commit_result(st)
+        end
+        if active == st and st.motion_done and st.committed then
+            finish("complete")
+        end
+    end
+
+    -- Legacy callers can enable the global input flag without consulting the
+    -- HUD owner. Reassert this session's lock while it remains active.
+    if active == st and not hud_animation_owner.acquire_input(st.owner) then
+        finish("input ownership lost")
+    end
+end
+
+function begin(flame, kamp)
+    local actor = db and db.actor
+    if not actor or not actor:alive() or not flame or not kamp then return false end
+    if active or not actor:object("matches") then return false end
+
+    local owner = hud_animation_owner.reserve("match ignition")
+    if not owner then return false end
+
+    local now = time_global()
+    local delay = MATCH_DELAYS[lua_random(1, #MATCH_DELAYS)]
+    local st = {
+        actor = actor,
+        flame = flame,
+        kamp = kamp,
+        owner = owner,
+        phase = "starting",
+        roll_due_at = now + delay + 2500,
+        commit_due_at = now + delay + 2700,
+    }
+    active = st
+
+    local ok, err = pcall(function()
+        if not hud_animation_owner.activate(owner, "match ignition") then
+            error("HUD owner activation failed")
+        end
+        if not hud_animation_owner.acquire_input(owner) then
+            error("input acquisition failed")
+        end
+        slot_keeper.remember(owner)
+        if not slot_keeper.hold(owner) then
+            error("slot hold failed")
+        end
+        if not hud_animation_owner.acquire_weapon(owner) then
+            error("weapon acquisition failed")
+        end
+        st.session = hud_animation_session.new("match ignition", function(reason)
+            finish(reason)
+        end)
+        if not hud_animation_session.after(st.session, WATCHDOG_MS, function()
+            finish("watchdog")
+        end) then
+            error("watchdog scheduling failed")
+        end
+        actor:activate_slot(255)
+        st.phase = "stowing"
+    end)
+    if not ok then
+        log2("[match_ignition] begin failed: %s", tostring(err))
+        finish("begin error")
+        return false
+    end
+    diag("begin delay=%d", delay)
+    return true
+end
+
+function on_update()
+    local st = active
+    if not st then return end
+    local ok, err = pcall(function() update_active(st) end)
+    if not ok then
+        log2("[match_ignition] update failed: %s", tostring(err))
+        finish("update error")
+    end
+end
+
+function on_actor_before_hit(actor, hit_data)
+    local st = active
+    if not st or actor ~= st.actor or not hit_data or hit_data.ignore_hit then return end
+    if hit_data.hit_type == hit.radiation or hit_data.hit_type == hit.telepatic then return end
+    if sivol_psy_phantoms and sivol_psy_phantoms.is_phantom
+        and sivol_psy_phantoms.is_phantom(hit_data.who_id) then return end
+    if (tonumber(hit_data.power) or 0) > HIT_CANCEL_POWER then
+        finish("significant actor hit")
+    end
+end
+
+function on_before_save_game() finish("save") end
+function on_load_before_all() finish("load") end
+function on_game_loaded() finish("game loaded") end
+function on_level_changer_action() finish("level change") end
+function on_stop_modules() finish("shutdown") end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_update", fun = this.on_update })
+    sm:subscribe({ signal = "on_actor_before_hit", fun = this.on_actor_before_hit })
+    sm:subscribe({ signal = "on_before_save_game", fun = this.on_before_save_game })
+    sm:subscribe({ signal = "on_load_before_all", fun = this.on_load_before_all })
+    sm:subscribe({ signal = "on_game_loaded", fun = this.on_game_loaded })
+    sm:subscribe({ signal = "level_changer_action", fun = this.on_level_changer_action })
+    sm:subscribe({ signal = "on_stop_modules", fun = this.on_stop_modules })
+end
