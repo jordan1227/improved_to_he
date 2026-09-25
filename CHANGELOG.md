@@ -1,6 +1,140 @@
-<!-- nlc-changelog-head: b9ab35a869ec05deb4e3085127eb583d5249a697 -->
+<!-- nlc-changelog-head: e6434c4a71894431213ba78a76dc7dfa74949719 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: e6434c4a71894431213ba78a76dc7dfa74949719 -->
+## 25.09.26 09:50 МСК - Extract match ignition to sivol module. Фикс розжига
+
+Commit: [e6434c4](https://github.com/jordan1227/improved_to_he/commit/e6434c4a71894431213ba78a76dc7dfa74949719)
+
+### Description
+
+Move match-strike and delayed flame logic out of generic physics and SAK into a new sivol_match_ignition script. bind_physic_object.script now delegates ignition to sivol_match_ignition.begin(...) and removes inlined match presentation/roll/consume logic. sak.script's old match helper functions were removed. Added sivol_match_ignition to ogse_signals_addons_list. The new module centralizes HUD/slot ownership, match consumption, roll/commit logic, hit-cancellation, watchdog and lifecycle subscriptions to improve separation of concerns and make ignition behavior reusable and more robust.
+
+### Game files changed
+
+- M gamedata/scripts/binders/bind_physic_object.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sak/sak.script
+- A gamedata/scripts/sivol/sivol_match_ignition.script
+
+<!-- nlc-changelog-commit: 8a02c45a1b3f7f43151001314db3b539bb11926e -->
+## 25.09.26 09:49 МСК - Фикс диалога Сидора разгрузка после Шустрого
+
+Commit: [8a02c45](https://github.com/jordan1227/improved_to_he/commit/8a02c45a1b3f7f43151001314db3b539bb11926e)
+
+### Description
+
+Adds a conditional dialog branch for players with and without the razgruzka state, updates the corresponding English and Russian text, and rewrites the reward logic so the first case grants randomized ammo and vodka while the second keeps the newbie reward path. This keeps the quest flow consistent while making the reward distribution more varied.
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/config/text/eng/sak_strings_six.xml
+- M gamedata/config/text/rus/sak_strings_six.xml
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 4aaf81cefdf2fe0adf725930086bee5db9c0a744 -->
+## 25.09.26 09:17 МСК - Add Cordon worldspawns and artifact fixes
+
+Commit: [4aaf81c](https://github.com/jordan1227/improved_to_he/commit/4aaf81cefdf2fe0adf725930086bee5db9c0a744)
+
+### Description
+
+Adds a generated Cordon loot plan for new games and loads it once using a saved info portion. Updates the bind/new-game init hooks to ensure the spawned items appear at their intended locations, and applies the AI-location fix needed for loose artifacts. Also tightens ESC artifact spawning behavior and disables noisy sprint FOV logging by default to reduce console spam.
+
+### Game files changed
+
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sivol/sivol_sprint_fov.script
+- A gamedata/scripts/sivol/sivol_worldspawns.script
+- M gamedata/spawns/all.spawn
+
+<!-- nlc-changelog-commit: 01395dc25e531ef261c35907886c89ac179254c9 -->
+## 25.09.26 09:16 МСК - Рандомизация артов на НИ на Кордоне
+
+Commit: [01395dc](https://github.com/jordan1227/improved_to_he/commit/01395dc25e531ef261c35907886c89ac179254c9)
+
+### Description
+
+Artifact generation now uses a stable seed source tied to the campaign UID for l01_escape, with a Lua-random fallback before the UID is available. The event record preserves its saved seed so choice replay does not consume or perturb the persistent random queue.
+
+### Game files changed
+
+- M gamedata/scripts/amk/amk_anoms.script
+
+<!-- nlc-changelog-commit: b4c59de60d15df5c7eb950c1738afc86176399ad -->
+## 25.09.26 07:08 МСК - Persistent dsh_coordinator, UI & debug fixes
+
+Commit: [b4c59de](https://github.com/jordan1227/improved_to_he/commit/b4c59de60d15df5c7eb950c1738afc86176399ad)
+
+### Description
+
+Refactor and harden the dsh_coordinator debug overlay: add a subscription manager, lifecycle attachment (on_late_init_all), and persistent enabled flag (dsh_coordinator.enabled) so overlay state is restored. Add capture/c helper, guard against nil hud/vertex/storage, and replace escaped "\\n" sequences with actual newlines for clearer in-game text. Enable thirst display via thirst.get_thirst() and set aDrinky default true. Move debug UI panels in ui_custom_msgs(.xml). Register dsh_coordinator in ogse addon list and make F3 main-menu toggle respect is_debug_mode and properly subscribe/unsubscribe.
+
+### Game files changed
+
+- M gamedata/config/ui/ui_custom_msgs.xml
+- M gamedata/config/ui/ui_custom_msgs_16.xml
+- M gamedata/scripts/kotovod/dsh_coordinator.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/ui/ui_main_menu.script
+
+<!-- nlc-changelog-commit: 0486028da0ea8bcea991e6140fd826f595b461af -->
+## 25.09.26 01:58 МСК - Add PDA availability hints
+
+Commit: [0486028](https://github.com/jordan1227/improved_to_he/commit/0486028da0ea8bcea991e6140fd826f595b461af)
+
+### Description
+
+Adds localized messages for PDA states like broken, repairing, charging, discharged, and missing. When the player presses map/job shortcuts while the PDA is unavailable, the script now shows a contextual tip instead of silently failing, and suppresses the first-time no-PDA hint once seen.
+
+### Game files changed
+
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/scripts/he_pda_access.script
+
+<!-- nlc-changelog-commit: 4902a418597f61aa54ac8b7a209547440a26b80f -->
+## 25.09.26 01:24 МСК - Переместил хук в бин
+
+Commit: [4902a41](https://github.com/jordan1227/improved_to_he/commit/4902a418597f61aa54ac8b7a209547440a26b80f)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/dinput8.dll
+
+### Other repository files changed
+
+- M .gitignore
+- D fl_hook/dinput8.dll
+- M make_manifest.py
+
+<!-- nlc-changelog-commit: 7e817c4256d905ea11bde7234540b513a9a1ffb3 -->
+## 25.09.26 01:09 МСК - Манифест
+
+Commit: [7e817c4](https://github.com/jordan1227/improved_to_he/commit/7e817c4256d905ea11bde7234540b513a9a1ffb3)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: b9ab35a869ec05deb4e3085127eb583d5249a697 -->
 ## 24.09.26 22:52 МСК - НПС отключают фонарики в бою ночью
