@@ -1,7 +1,3 @@
-local my_table  = ""
-local new_index = nil
-local tab_index = nil
-
 table_kill_npc = {
 	">>>>>>>>>> Мутанты <<<<<<<<<<",
 	"monster",
@@ -974,12 +970,30 @@ table_arts_dynamic = {
 	"af_capsule",	
 }
 
-local current_dyn = 3
+local teleport_levels = {
+    "l03_agroprom", "l07_military", "l05_bar", "marsh", "l06_rostok",
+    "lost_village", "generators", "deadcity", "l01_escape", "k01_darkscape",
+    "warlab", "labx8", "labx10", "l10u_bunker", "l08u_brainlab",
+    "l04u_labx18", "limansk", "av_peshera", "l03u_agr_underground",
+    "l11_pripyat", "l10_radar", "red_forest", "hospital", "l02_garbage",
+    "l04_darkvalley", "aver", "l08_yantar", "l12_stancia_new",
+    "l12_stancia_2_new", "l12u_sarcofag", "l12u_control_monolith",
+}
+local teleport_level_lookup = {}
+for _, level_name in ipairs(teleport_levels) do
+    teleport_level_lookup[level_name] = true
+end
+
 ---------------------------------------------------------
 class "spawn_items_dialog" ( CUIScriptWnd )
 
 function spawn_items_dialog:__init() super()
 	if self.menu_index == nil then self.menu_index = 1 end
+	self.table_name = nil
+	self.selected_index = nil
+	self.tab_index = nil
+	self.spawn_type = nil
+	self.current_dyn = 3
 	local eng = [[qwertyuiop[]asdfghjkl;'zxcvbnm,./QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>?!@#$%^&*()-_+=\| 0123456789]]
 	local rus = [[йцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,!"№;%:?*()-_+=\/ 0123456789]]
 	self.translit = {}
@@ -1004,7 +1018,7 @@ function spawn_items_dialog:InitControls()
 	
 	self:Register( self.list, "list_window" )
 	
-	self:Update_DynArtefact( current_dyn )
+	self:Update_DynArtefact()
 	
 	self:Register( xml:Init3tButton( "btn_item", 			self ),		"btn_item"			)
 	self:Register( xml:Init3tButton( "btn_wpn", 			self ),		"btn_wpn"			)
@@ -1026,7 +1040,7 @@ function spawn_items_dialog:InitControls()
 	self:Register( xml:Init3tButton( "btn_st", 				self ),		"btn_st"			)
 	self:Register( xml:Init3tButton( "btn_mob", 			self ),		"btn_mob"			)
 	self:Register( xml:Init3tButton( "btn_money", 			self ),		"btn_money"			)
-	--self:Register( xml:Init3tButton( "btn_tp", 	    		self ),		"btn_tp"			)	
+	self:Register( xml:Init3tButton( "btn_tp", self ), "btn_tp" )
 	
 	self:Register( xml:Init3tButton( "btn_save", 			self ),		"btn_save"			)	
 	-- self:Register( xml:Init3tButton( "btn_close", 		self ),		"btn_close"			)	
@@ -1111,7 +1125,7 @@ function spawn_items_dialog:InitCallBacks()
 	self:AddCallback( "btn_st",	      		ui_events.BUTTON_CLICKED,					self.FillList_Stalkers, 		    		self )
 	self:AddCallback( "btn_mob",	      	ui_events.BUTTON_CLICKED,					self.FillList_Monsters, 		    		self )	 
 	self:AddCallback( "btn_money",	  		ui_events.BUTTON_CLICKED,					self.OnButton_rich_actor, 					self )	
-	--self:AddCallback( "btn_tp",	      		ui_events.BUTTON_CLICKED,	   				self.Teleport,         				    	self )		
+	self:AddCallback( "btn_tp", ui_events.BUTTON_CLICKED, self.Teleport, self )
 	---------------------------------------------------------	
 	self:AddCallback( "btn_save",	  		ui_events.BUTTON_CLICKED,					self.OnButton_save_clicked,   				self )
 	--self:AddCallback( "btn_close",	  	ui_events.BUTTON_CLICKED,		       		self.OnButton_close_clicked,    			self )
@@ -1141,34 +1155,34 @@ function load_item:__init() super()
 	self.fn:SetTextColor	( ca, cr, cg, cb )
 end
 
-function spawn_items_dialog:OnTableNameFillList(table_name, type)
-    my_table = table_name
+function spawn_items_dialog:OnTableNameFillList(table_name, spawn_category, preserve_search, tab_index)
+    self.table_name = table_name or {}
+    self.tbl = self.table_name
+    self.spawn_type = tostring(spawn_category or "")
+    if tab_index then self.tab_index = tab_index end
     local list = self:GetListWnd("list_window")
-
-    -- Сбрасываем индекс ДО очистки списка
-    new_index = nil
+    self.selected_index = nil
     self.was_found = -1
-
+    if not preserve_search then
+        self.text = ""
+        if self.search then self.search:SetText("_") end
+    end
+    if self.pict then self.pict:Show(false) end
+    if self.descr then self.descr:SetText( "" ) end
     if list:GetSize() > 0 then
-        list:SetFocusedItem(-1)  -- снимаем фокус перед очисткой
+        list:SetFocusedItem(-1)
         list:RemoveAll()
     end
-
-    spawn_type = tostring(type)
-    self.tbl = table_name or {}
-
-    for i = 1, #self.tbl do
-        self:AddItemToList(self.tbl[i])
-    end
+    for i = 1, #self.tbl do self:AddItemToList(self.tbl[i]) end
 end
-
--- Для предметов спавнящихся в рюкзак
 
 function spawn_items_dialog:AddItemToList( sect )
 	local list = self:GetListWnd( "list_window" )
 	local ini = system_ini()
-	local itm_name	
-	if ini and ini:section_exist( sect ) and sect ~= "stalker" then
+	local itm_name
+	if self.spawn_type == "teleport" then
+		itm_name = game.translate_string( sect ) or sect
+	elseif ini and ini:section_exist( sect ) and sect ~= "stalker" then
 		if self.lang == "RUS" then 
 			if strpos( sect, "_capsule" ) then
 				itm_name = "Капсула артефакта " .. tostring( game.translate_string( string.gsub( sect, "_capsule", "_name" ) )	)
@@ -1181,9 +1195,9 @@ function spawn_items_dialog:AddItemToList( sect )
 		end	
 	elseif string.find( sect, "^>" ) then 
 		itm_name = sect			
-	elseif spawn_type == "kill" or spawn_type == "community" then 
+	elseif self.spawn_type == "kill" or self.spawn_type == "community" then
 		itm_name = table_translate[ sect ]
-	elseif spawn_type == "stalker" then 
+	elseif self.spawn_type == "stalker" then
 		itm_name = sect
 	else
 		itm_name = "Секция \"".. sect .."\" отсутствует в игре!"
@@ -1224,23 +1238,23 @@ function spawn_items_dialog:AddItemToList( sect )
 	end	
 end
 
-function spawn_items_dialog:FillList_Items()			self:OnTableNameFillList( table_items, 			"actor"  	)	end	
-function spawn_items_dialog:FillList_Wpns()				self:OnTableNameFillList( table_wpn, 			"actor"  	)	end	
-function spawn_items_dialog:FillList_Addns()			self:OnTableNameFillList( table_wpn_addons, 	"actor"  	)	end	
-function spawn_items_dialog:FillList_Outfits()			self:OnTableNameFillList( table_outfits, 		"actor"  	)	end
-function spawn_items_dialog:FillList_MutantParts()		self:OnTableNameFillList( table_mutant_parts, 	"actor"  	)	end
-function spawn_items_dialog:FillList_Ammo()				self:OnTableNameFillList( table_ammo, 			"actor"  	)	end
-function spawn_items_dialog:FillList_Medic()			self:OnTableNameFillList( table_medkits, 		"actor"  	)	end
-function spawn_items_dialog:FillList_Quest()			self:OnTableNameFillList( table_quest_items, 	"actor"  	)	end
-function spawn_items_dialog:FillList_Devices()			self:OnTableNameFillList( table_devices, 		"actor"  	)	end
-function spawn_items_dialog:FillList_Modificats()		self:OnTableNameFillList( table_modificats, 	"actor"  	)	end		
-function spawn_items_dialog:FillList_Unique()			self:OnTableNameFillList( table_unique_arts, 	"actor"  	)	end
+function spawn_items_dialog:FillList_Items() self:OnTableNameFillList( table_items, "actor", false, 1 ) end
+function spawn_items_dialog:FillList_Wpns() self:OnTableNameFillList( table_wpn, "actor", false, 2 ) end
+function spawn_items_dialog:FillList_Addns() self:OnTableNameFillList( table_wpn_addons, "actor", false, 3 ) end
+function spawn_items_dialog:FillList_Outfits() self:OnTableNameFillList( table_outfits, "actor", false, 4 ) end
+function spawn_items_dialog:FillList_MutantParts() self:OnTableNameFillList( table_mutant_parts, "actor", false, 5 ) end
+function spawn_items_dialog:FillList_Ammo() self:OnTableNameFillList( table_ammo, "actor", false, 6 ) end
+function spawn_items_dialog:FillList_Medic() self:OnTableNameFillList( table_medkits, "actor", false, 7 ) end
+function spawn_items_dialog:FillList_Quest() self:OnTableNameFillList( table_quest_items, "actor", false, 8 ) end
+function spawn_items_dialog:FillList_Devices() self:OnTableNameFillList( table_devices, "actor", false, 9 ) end
+function spawn_items_dialog:FillList_Modificats() self:OnTableNameFillList( table_modificats, "actor", false, 10 ) end
+function spawn_items_dialog:FillList_Unique() self:OnTableNameFillList( table_unique_arts, "actor", false, 11 ) end
 
-function spawn_items_dialog:FillList_DynArtefacts()		self:OnTableNameFillList( table_arts_dynamic, 	"dynamic"   )	end		
-function spawn_items_dialog:FillList_KillNPCs()			self:OnTableNameFillList( table_kill_npc, 		"kill" 		)	end
-function spawn_items_dialog:FillList_Community()		self:OnTableNameFillList( table_community, 	 	"community" )	end	
-function spawn_items_dialog:FillList_Monsters()			self:OnTableNameFillList( table_spawn_monsters, "stalker" 	)	end	
-function spawn_items_dialog:FillList_Stalkers()			self:OnTableNameFillList( table_spawn_npc, 	 	"stalker" 	)	end	
+function spawn_items_dialog:FillList_DynArtefacts() self:OnTableNameFillList( table_arts_dynamic, "dynamic", false, 12 ) end
+function spawn_items_dialog:FillList_KillNPCs() self:OnTableNameFillList( table_kill_npc, "kill", false, 13 ) end
+function spawn_items_dialog:FillList_Community() self:OnTableNameFillList( table_community, "community", false, 14 ) end
+function spawn_items_dialog:FillList_Monsters() self:OnTableNameFillList( table_spawn_monsters, "stalker", false, 15 ) end
+function spawn_items_dialog:FillList_Stalkers() self:OnTableNameFillList( table_spawn_npc, "stalker", false, 16 ) end
 
 --\\-- Возможен вылет при сборке поршней. В таком случае удалить содержимое all_article_disable, потом добавить в collect_info.ltx
 -- flush !collect_info_portions.main(true)
@@ -1260,7 +1274,7 @@ end
 function spawn_items_dialog:ClickBtnLang()
 	self.lang = ( self.lang == "RUS" and "ENG" ) or "RUS"
 	self.btn_lang:SetText( self.lang )
-	self:OnTableNameFillList( my_table, "actor" )	
+	self:OnTableNameFillList( self.table_name, self.spawn_type, true )
 end
 
 function make_static( name, own, text, x, y, width, height )
@@ -1276,148 +1290,167 @@ function make_static( name, own, text, x, y, width, height )
     return static
 end
 
-function spawn_items_dialog:Update_DynArtefact( current_dyn )
+function spawn_items_dialog:Update_DynArtefact()
 	if self.dyn then self:DetachChild( self.dyn ) end
-	self.dyn = make_static( "dyn", self, "".. current_dyn .."", 160, 638, 60, 60 )
+	self.dyn = make_static( "dyn", self, "".. self.current_dyn .."", 160, 638, 60, 60 )
 	self.dyn:SetTextColor( 255, 20,  230,  40 )
 	self.dyn:SetFont( GetFontGraffiti22Russian() )	
 end
 
 function spawn_items_dialog:OnListItemClicked()
     if self.list:GetSize() == 0 then return end
-    local itm_index = self.list:GetSelectedItem()
-    if itm_index < 0 then return end
-    if not self.tbl or itm_index + 1 > #self.tbl then return end
-    self.list:SetFocusedItem(itm_index)
-    self:GetDescription(itm_index)
-    new_index = itm_index
+    local index = self.list:GetSelectedItem()
+    if not index or index < 0 then return end
+    if not self.tbl or index + 1 > #self.tbl then return end
+    self.list:SetFocusedItem(index)
+    self.selected_index = index
+    self:GetDescription(index)
 end
 
 function spawn_items_dialog:OnButton_rich_actor()
-	sak_dialog.relocate_money( db.actor, 10000, "in" )
+	sak_dialog.relocate_money( 10000, "in" )
 	local snd = xr_sound.get_safe_sound_object([[device\decoder]])
 	snd:play( db.actor, 0, sound_object.s2d )
 end
 
 function spawn_items_dialog:OnButton_create_clicked()
-	local list = self:GetListWnd( "list_window" )	
-	if list:GetSize() == 0 then return end	
-	
-	local itm_index		= list:GetSelectedItem()
-	
-	if new_index ~= nil then itm_index = new_index end
+	local list = self:GetListWnd( "list_window" )
+	if list:GetSize() == 0 or not self.tbl then return end
+	local item_index = list:GetFocusedItem()
+	if item_index == nil or item_index < 0 then item_index = list:GetSelectedItem() end
+	if item_index == nil or item_index < 0 then item_index = self.selected_index end
+	if item_index == nil or item_index < 0 then return end
+	local item = self.tbl[item_index + 1]
+	if not item then return end
+	self.selected_index = item_index
 
-	if ( not itm_index ) or itm_index < 0 then return end	
-	local item = self.tbl[ itm_index + 1 ]
+	if self.spawn_type == "teleport" then
+		if not teleport_level_lookup[item] then return end
+		local console = get_console()
+		if not console then return end
+		self:OnButton_close_clicked()
+		console:execute( "jump_to_level " .. item )
+		return
+	end
+	if self:CreateSelectedItem( item ) then
+		local snd = xr_sound.get_safe_sound_object([[device\decoder]])
+		snd:play( db.actor, 0, sound_object.s2d )
+	end
+end
+
+function spawn_items_dialog:CreateSelectedItem( item )
+	local actor = db and db.actor
+	if not actor or not actor:alive() then return false end
 	local ini = system_ini()
-	
-	if spawn_type == "actor" and item == "af_capsule" then
-		nlc_capsules.give( nlc_capsules.random_regular( true ) )
-		return
-	elseif spawn_type == "actor" and item == "m_capsule" then
-		nlc_capsules.give( nlc_capsules.random_mayatnik() )
-		return
-	elseif spawn_type == "actor" and not ( ini and ini:section_exist( item ) ) then return end	
-	
-	if alife() and db.actor:alive() then
+	if self.spawn_type == "actor" then
+		return self:SpawnActorItem( item, ini, actor )
+	elseif self.spawn_type == "dynamic" then
+		return self:SpawnDynamicItem( item, ini )
+	elseif self.spawn_type == "stalker" then
+		return self:SpawnStalker( item, ini, actor )
+	elseif self.spawn_type == "info" then
+		actor:give_info_portion( item )
+		kotovod.sms_recipt_found( item )
+		return true
+	elseif self.spawn_type == "kill" then
+		return self:KillSelected( item, actor )
+	elseif self.spawn_type == "community" then
+		if not str_in_tab( item, table_community ) then return false end
+		relation_registry.set_community_goodwill( item, actor:id(), 5000 )
+		return true
+	end
+	return false
+end
 
-		local pos = db.actor:position()
-		local dir = db.actor:direction()
-		------------------------------------------------------
-        if spawn_type == "actor" then	
-			if item == "flask_army" then 
-				vergas_flask.create_water_flask( current_dyn or 5 )
-			elseif item == "device_pda_npc" then 
-				mike.add_pda_npc_amount( 1, math.min( math.max( current_dyn or 1, 1 ), 3 ) )
-			else 
-				sak.create_items( item, 1 )
-			end	
-		end
-		------------------------------------------------------
-		if spawn_type == "dynamic" then
-			if string.find( item, "^>" ) then return end
-			if current_dyn < 1 or current_dyn > 6 then current_dyn = 3 end
-			sak.create_items( item .. "_dyn" .. current_dyn .. "d", 1 )	
-		end		
-		------------------------------------------------------
-      	if spawn_type == "stalker" then
-			pos = pos:add( dir:mul( 3 ) )
-			local spawned = alife():create( item, pos, db.actor:level_vertex_id(), db.actor:game_vertex_id() )
-			if IsMonster( spawned ) and current_dyn == 5 then 
-				local part = utils.cfg_get_string( ini, item, "Spawn_Inventory_Item_Section", false, false, false, "" )			
-				if part then 
-					misc.spawn_to( part, spawned )
-				end
-			end	
-        end
-		------------------------------------------------------		
-		if spawn_type == "info" then		
-			db.actor:give_info_portion( item )	
-			kotovod.sms_recipt_found( item )
-        end		
-		------------------------------------------------------		
-		if spawn_type == "kill" then
-			if str_in_tab( item, { "poltergeist", "zombi", "gigant", "zombied" } ) then 
-				for id, obj in pairs( db.creatures ) do
-					if g_sim:object( id ) then
-						if obj and obj:alive() then 	
-							if 
-									( item == "poltergeist" and strpos( obj:section(), "m_poltergeist_", 1, true ) )
-								or 	( item == "zombi" and strpos( obj:section(), "zombie_", 1, true ) )
-								or  ( item == "gigant" and strpos( obj:section(), "gigant_", 1, true ) and obj:section() ~= "marsh_gigant" )
-								or  ( item == "zombied" and strposx( obj:name(), "zombied" ) )
-							then
-								log2( "item is %s", item )
-								obj:kill( db.actor )
-							end	
-						end
-					end
-				end	
-			elseif item == "tehnic" then 
-				for a = 1, MAX_OBJ_ID do
-					local obj = g_sim:object( a )
-					if obj then 
-						local posobj 	= obj.position
-						local actorpos 	= db.actor:position()	
-						if posobj:distance_to( actorpos ) < 100 then	
-							if obj:clsid() == 94 or obj:clsid() == 47 then  
-								misc.release_obj( obj )
-							end
-						end
-					end
-				end	
-			elseif str_in_tab( item, table_community ) then
-				for id, obj in pairs( db.creatures ) do
-					if g_sim:object( id ) and obj and obj:alive() and obj:is_stalker() then
-						if obj:character_community() and strpos( obj:character_community(), item, 1, true ) then
-							log2( "kill: %s -> %s (%s)", item, obj:name(), obj:section() )
-							obj:kill( db.actor )
-						end
-					end	
-				end
-				
-			else
-				local to_kill = {}
-				for id, obj in pairs( db.creatures ) do
-					if obj and obj:alive() and obj:is_monster() then
-						table.insert( to_kill, obj )
-					end
-				end
-				for _, obj in ipairs( to_kill ) do
-					obj:kill( db.actor )
+function spawn_items_dialog:SpawnActorItem( item, ini, actor )
+	if item == "af_capsule" then
+		nlc_capsules.give( nlc_capsules.random_regular( true ) )
+		return true
+	elseif item == "m_capsule" then
+		nlc_capsules.give( nlc_capsules.random_mayatnik() )
+		return true
+	end
+	if not ini or not ini:section_exist( item ) then return false end
+	if item == "flask_army" then
+		vergas_flask.create_water_flask( self.current_dyn or 5 )
+	elseif item == "device_pda_npc" then
+		mike.add_pda_npc_amount( 1, math.min( math.max( self.current_dyn or 1, 1 ), 3 ) )
+	else
+		sak.create_items( item, 1 )
+	end
+	return true
+end
+
+function spawn_items_dialog:SpawnDynamicItem( item, ini )
+	if not item or string.find( item, "^>" ) then return false end
+	if self.current_dyn < 1 or self.current_dyn > 6 then
+		self.current_dyn = 3
+		self:Update_DynArtefact()
+	end
+	local section = item .. "_dyn" .. self.current_dyn .. "d"
+	if not ini or not ini:section_exist( section ) then return false end
+	sak.create_items( section, 1 )
+	return true
+end
+
+function spawn_items_dialog:SpawnStalker( item, ini, actor )
+	if not ini or not ini:section_exist( item ) then return false end
+	local sim = alife()
+	if not sim then return false end
+	local pos = actor:position():add( actor:direction():mul( 3 ) )
+	local spawned = sim:create( item, pos, actor:level_vertex_id(), actor:game_vertex_id() )
+	if not spawned then return false end
+	if self.current_dyn == 5 and IsMonster( spawned ) then
+		local part = utils.cfg_get_string( ini, item, "Spawn_Inventory_Item_Section", false, false, false, "" )
+		if part and part ~= "" and ini:section_exist( part ) then misc.spawn_to( part, spawned ) end
+	end
+	return true
+end
+
+function spawn_items_dialog:KillSelected( item, actor )
+	local creatures = db.creatures or {}
+	local sim = g_sim or alife()
+	if str_in_tab( item, { "poltergeist", "zombi", "gigant", "zombied" } ) then
+		for id, obj in pairs( creatures ) do
+			if sim and sim:object( id ) and obj and obj:alive() then
+				if
+					(item == "poltergeist" and strpos( obj:section(), "m_poltergeist_", 1, true ))
+					or (item == "zombi" and strpos( obj:section(), "zombie_", 1, true ))
+					or (item == "gigant" and strpos( obj:section(), "gigant_", 1, true ) and obj:section() ~= "marsh_gigant")
+					or (item == "zombied" and strposx( obj:name(), "zombied" ))
+				then
+					log2( "item is %s", item )
+					obj:kill( actor )
 				end
 			end
 		end
-		------------------------------------------------------		
-		if spawn_type == "community" then
-			relation_registry.set_community_goodwill( item, db.actor:id(), 5000 )
-		end  
-		------------------------------------------------------		
+	elseif item == "tehnic" then
+		for id = 1, MAX_OBJ_ID do
+			local obj = sim and sim:object( id )
+			if obj then
+				local posobj = obj.position
+				if posobj:distance_to( actor:position() ) < 100 and (obj:clsid() == 94 or obj:clsid() == 47) then misc.release_obj( obj ) end
+			end
+		end
+	elseif str_in_tab( item, table_community ) then
+		for id, obj in pairs( creatures ) do
+			if sim and sim:object( id ) and obj and obj:alive() and obj:is_stalker() then
+				local community = obj:character_community()
+				if community and strpos( community, item, 1, true ) then
+					log2( "kill: %s -> %s (%s)", item, obj:name(), obj:section() )
+					obj:kill( actor )
+				end
+			end
+		end
+	else
+		local to_kill = {}
+		for _, obj in pairs( creatures ) do
+			if obj and obj:alive() and obj:is_monster() then table.insert( to_kill, obj ) end
+		end
+		for _, obj in ipairs( to_kill ) do obj:kill( actor ) end
 	end
-	local snd = xr_sound.get_safe_sound_object([[device\decoder]])
-	snd:play( db.actor, 0, sound_object.s2d )
+	return true
 end
-
 
 function spawn_items_dialog:OnButton_close_clicked()
 	self:GetHolder():start_stop_menu( self, true )
@@ -1429,12 +1462,10 @@ function spawn_items_dialog:OnButton_close_clicked()
 end
 
 function spawn_items_dialog:OnButton_save_clicked()
-	_G.flag_can_save = true
 	if get_value("blowout", 0) == 0 and _G.flag_can_save then
 		local bl_save = string.format( "День %s %s. %s [СПАВНЕР]", timers.Get_Game_Days(), level.get_time_hours(), level.get_time_minutes())
 		cmd("save", dsh.safe_file_name(bl_save))
 	end
-	--	_G.flag_can_save = false
 
 	--savemgmt.on_wakeup()	
 	--schedule.add( "rename_cheat", "spawner.rename_cheat_save()", 200 )		
@@ -1488,34 +1519,33 @@ function spawn_items_dialog:RemoveText()
 	self.was_found = -1
 end
 
-function spawn_items_dialog:SearchText( letter ) 
+function spawn_items_dialog:SearchText( letter )
 	local lett = letter and ( self.lang == "RUS" and self.translit[ letter ] or letter ) or ""
-	if lett == "%" then return end
 	if string.len( self.text ) >= 40 then return end
 	if string.len( self.text ) > 1 then self.text = string.sub( self.text, 1, -2 ) .. lett .. "_"
 	else self.text = lett .. "_" end
-	
+	self.was_found = -1
 	self.search:SetText( self.text )
 end
 
 function spawn_items_dialog:SearchItem()
-	if self.text == "" then return end
-	local size = self.list:GetSize()
-	local search_text = string_lower( string.sub( self.text, 1, -2 ) )
+	if not self.text or self.text == "" then return end
+	local search_text = string.sub( self.text, 1, -2 )
+	if search_text == "" then return end
+	search_text = string_lower( search_text )
 	search_text = string.gsub( search_text, "-", " " )
-	for i = 0, size - 1 do
+	for i = 0, self.list:GetSize() - 1 do
 		local item = self.list:GetItem( i )
 		local item_text = string_lower( item.fn:GetText() )
 		item_text = string.gsub( item_text, "-", " " )
 		item_text = string.gsub( item_text, "ё", "е" )
-		if #item_text >= #search_text and string.find( item_text, search_text ) then
-			if self.was_found < i then
-				self.was_found = i
-				self.list:ScrollToPos( i )
-				self.list:SetFocusedItem( i )
-				self:GetDescription( i )
-				break
-			end
+		if string.find( item_text, search_text, 1, true ) and self.was_found < i then
+			self.was_found = i
+			self.selected_index = i
+			self.list:ScrollToPos( i )
+			self.list:SetFocusedItem( i )
+			self:GetDescription( i )
+			break
 		end
 	end
 end
@@ -1532,67 +1562,48 @@ function spawn_items_dialog:BackSpace()
 end
 
 function spawn_items_dialog:NavigateList( where )
-	if not where then return end
-	if spawn_type == nil then return end
+	if not where or not self.spawn_type then return end
 	local size = self.list:GetSize()
+	if size == 0 then return end
 	local index = self.list:GetFocusedItem()
-	new_index = 0
+	if index == nil or index < 0 then index = self.selected_index or -1 end
+	local next_index
 	if where == "down" then
-		if not index or index < 0 or index >= size - 1 then new_index = 0 else new_index = index + 1 end
+		next_index = (index < 0 or index >= size - 1) and 0 or index + 1
 	elseif where == "up" then
-		if not index or index <= 0 or index > size - 1 then new_index = size - 1 else new_index = index - 1 end
+		next_index = (index <= 0 or index > size - 1) and size - 1 or index - 1
+	else
+		return
 	end
-	self.list:SetFocusedItem( new_index )
-	self.list:ScrollToPos( new_index ) 
-	self:GetDescription( new_index )	
+	self.selected_index = next_index
+	self.list:SetFocusedItem( next_index )
+	self.list:ScrollToPos( next_index )
+	self:GetDescription( next_index )
 end
 
 function spawn_items_dialog:ChangeButton( where )
 	local buttons = {
-		table_items,
-		table_wpn, 		
-		table_wpn_addons,
-		table_outfits, 
-		table_mutant_parts, 	
-		table_ammo, 			
-		table_medkits, 		
-		table_quest_items, 
-		table_devices, 		
-		table_modificats, 
-		table_unique_arts,
-		table_arts_dynamic,
-		table_kill_npc,
-		table_community,
-		table_spawn_monsters,
-		table_spawn_npc
+		table_items, table_wpn, table_wpn_addons, table_outfits,
+		table_mutant_parts, table_ammo, table_medkits, table_quest_items,
+		table_devices, table_modificats, table_unique_arts, table_arts_dynamic,
+		table_kill_npc, table_community, table_spawn_monsters, table_spawn_npc
 	}
-	
-	if tab_index == nil then tab_index = 1 end
-	
-	if where == "back" then 
-		if buttons[ tab_index - 1 ] ~= nil then 
-			tab_index = tab_index - 1 
-		end
-	end	 
-	if where == "next" then 
-		if buttons[ tab_index + 1 ] ~= nil then 
-			tab_index = tab_index + 1 
-		end
-	end	
-	
+	self.tab_index = self.tab_index or 1
+	if where == "back" and buttons[self.tab_index - 1] then
+		self.tab_index = self.tab_index - 1
+	elseif where == "next" and buttons[self.tab_index + 1] then
+		self.tab_index = self.tab_index + 1
+	else
+		return
+	end
 	local what = "actor"
-	if 	   tab_index == 12 then what = "dynamic" 
-	elseif tab_index == 13 then what = "kill"
-	elseif tab_index == 14 then what = "community"
-	elseif tab_index == 15 or tab_index == 16 then what = "stalker"
-	end 
-	
-	local tbl = buttons[ tab_index ]
-
-	self:OnTableNameFillList( tbl, what )
+	if self.tab_index == 12 then what = "dynamic"
+	elseif self.tab_index == 13 then what = "kill"
+	elseif self.tab_index == 14 then what = "community"
+	elseif self.tab_index == 15 or self.tab_index == 16 then what = "stalker"
+	end
+	self:OnTableNameFillList( buttons[self.tab_index], what, false, self.tab_index )
 end
-
---\\-------------------------- Прочее
 
 function spawn_items_dialog:MakeSpot()
     if self.text == "" then return end
@@ -1637,7 +1648,13 @@ end
 function spawn_items_dialog:GetDescription( index )
 	if not self.tbl or not self.tbl[index + 1] then return end
 	local section = self.tbl[ index + 1 ]
-	if string.find(section, "^>") then return end  -- заголовки пропускаем
+	if self.spawn_type == "teleport" then return end
+	if string.find(section, "^>") then
+		if self.pict then self.pict:Show( false ) end
+		if self.descr then self.descr:SetText( "" ) end
+		return
+	end
+	if self.pict then self.pict:Show( true ) end
 	local sizes = give_icon_params( section )
 	
 	local px = 625 + ( 182 - ( sizes.width  * 0.26 * 1.2 ) )                       -- 0.26 для 1:1 на 1920
@@ -1761,10 +1778,14 @@ function give_icon_params( sect )
     if ini and ini:section_exist( sect ) then
 		t.icon_group  = utils.cfg_get_number( ini, sect, "icon_group", nil, false, 0 )	
 		t.description = game.translate_string( utils.cfg_get_string( ini, sect, "description", nil, false, "" ) )	
-        t.width       = vergas_lib.set_pr_from_config( sect, "inv_grid_width"  ) * 50 or 176
-        t.height      = vergas_lib.set_pr_from_config( sect, "inv_grid_height" ) * 50 or 78
-        t.x           = vergas_lib.set_pr_from_config( sect, "inv_grid_x"      ) * 50 or 0
-        t.y           = vergas_lib.set_pr_from_config( sect, "inv_grid_y"      ) * 50 or 0
+        local function grid_value( key )
+            if not ini:line_exist( sect, key ) then return 0 end
+            return ini:r_float( sect, key ) or 0
+        end
+        t.width       = grid_value( "inv_grid_width"  ) * 50
+        t.height      = grid_value( "inv_grid_height" ) * 50
+        t.x           = grid_value( "inv_grid_x"      ) * 50
+        t.y           = grid_value( "inv_grid_y"      ) * 50
     else
         t.description = ""
 		t.icon_group  = 0
@@ -1823,12 +1844,12 @@ function spawn_items_dialog:OnKeyboard(dik, keyboard_action)
 	if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
 		if dik == DIK_keys.DIK_ESCAPE then self:OnButton_close_clicked()
 		
-		elseif dik == DIK_keys.DIK_1 or dik == DIK_keys.DIK_NUMPAD1 then current_dyn = 1 	self:Update_DynArtefact( current_dyn )
-		elseif dik == DIK_keys.DIK_2 or dik == DIK_keys.DIK_NUMPAD2 then current_dyn = 2	self:Update_DynArtefact( current_dyn )
-		elseif dik == DIK_keys.DIK_3 or dik == DIK_keys.DIK_NUMPAD3 then current_dyn = 3	self:Update_DynArtefact( current_dyn )
-		elseif dik == DIK_keys.DIK_4 or dik == DIK_keys.DIK_NUMPAD4 then current_dyn = 4	self:Update_DynArtefact( current_dyn )
-		elseif dik == DIK_keys.DIK_5 or dik == DIK_keys.DIK_NUMPAD5 then current_dyn = 5	self:Update_DynArtefact( current_dyn )
-		elseif dik == DIK_keys.DIK_6 or dik == DIK_keys.DIK_NUMPAD6 then current_dyn = 6	self:Update_DynArtefact( current_dyn )
+		elseif dik == DIK_keys.DIK_1 or dik == DIK_keys.DIK_NUMPAD1 then self.current_dyn = 1 	self:Update_DynArtefact()
+		elseif dik == DIK_keys.DIK_2 or dik == DIK_keys.DIK_NUMPAD2 then self.current_dyn = 2	self:Update_DynArtefact()
+		elseif dik == DIK_keys.DIK_3 or dik == DIK_keys.DIK_NUMPAD3 then self.current_dyn = 3	self:Update_DynArtefact()
+		elseif dik == DIK_keys.DIK_4 or dik == DIK_keys.DIK_NUMPAD4 then self.current_dyn = 4	self:Update_DynArtefact()
+		elseif dik == DIK_keys.DIK_5 or dik == DIK_keys.DIK_NUMPAD5 then self.current_dyn = 5	self:Update_DynArtefact()
+		elseif dik == DIK_keys.DIK_6 or dik == DIK_keys.DIK_NUMPAD6 then self.current_dyn = 6	self:Update_DynArtefact()
 		-----------------
 		elseif dik == DIK_keys.DIK_RETURN then self:OnButton_create_clicked()
 		elseif dik == DIK_keys.DIK_TAB then self:SearchItem()
@@ -1858,184 +1879,22 @@ function main() end
 
 function spawn_items_dialog:Teleport()
 	if level.present() and db.actor and db.actor:alive() then
-		local obj =  alife():story_object( 987987 )				-- Удаляем прошлый чейнджер, если есть
-		if obj then
-			alife():release( obj, true )
-		end
-		self.teleportator_dialog = this.teleportator_menu()
-		self.teleportator_dialog.owner = self
-		self:GetHolder():start_stop_menu( self.teleportator_dialog, true )
-		self:Show( true )
+		self:OnTableNameFillList( teleport_levels, "teleport" )
 	end
-end			
-
-local points = {		
-	{ level = "l03_agroprom",			name = "Тоннель",			    gv = 498,  	lv = 428829, 	x = 255.64,  	y = 0,      	z = 65.23	},
-	{ level = "l03_agroprom",			name = "У Клыка",			    gv = 717,  	lv = 3327, 		x = -71.68,  	y = -6.87,      z = -70.97	},
-	{ level = "l07_military",			name = "Лагерь нейтралов",		gv = 1710, 	lv = 213726, 	x = -96.58,  	y = -18.64, 	z = 212.17	},
-	{ level = "l07_military",			name = "База Свободы",		    gv = 1593, 	lv = 286827, 	x = -20.56,  	y = -4.11,  	z = -23.96	},
-	{ level = "l05_bar",		    	name = "Ангар у Бара",			gv = 1227, 	lv = 36082,  	x = 130.44,  	y = 0.1,    	z = 53.86	},
-	{ level = "marsh",			    	name = "База ЧН",			    gv = 3374, 	lv = 65512,  	x = -157.31, 	y = 0.56,   	z = -315.09	},
-	{ level = "l06_rostok",				name = "Переход в Бар",			gv = 1414, 	lv = 66990,  	x = 29.1,    	y = 1.24,   	z = 132.64	},
-	{ level = "lost_village",			name = "Контрабандисты",		gv = 3329, 	lv = 15076,  	x = 5.41,    	y = 9.19,   	z = -73.77	},
-	{ level = "generators",				name = "Переход в Лиманск",		gv = 3100, 	lv = 261568, 	x = -63.88,  	y = 33,     	z = -536.09	},		
-	{ level = "deadcity",				name = "Переход в Тесла",		gv = 3844, 	lv = 241276, 	x = -68,     	y = 4.13,   	z = -191.69	},
-	{ level = "l01_escape",				name = "Деревня новичков",		gv = 61,   	lv = 45931,  	x = -207.13, 	y = -20.59, 	z = -149.07	},
-	{ level = "k01_darkscape",			name = "Ангар охотников",		gv = 4095, 	lv = 695029, 	x = 251.33,  	y = -0.36,  	z = -195.87	},
-	{ level = "k01_darkscape",			name = "Северная стоянка",		gv = 3977, 	lv = 168532, 	x = -206.45,  	y = 3.46,  		z = 608.26	},
-	{ level = "warlab",			    	name = "Радар - после х8",		gv = 3187, 	lv = 4317,   	x = -0.94,   	y = 1,      	z = 1.1		},	
-	{ level = "labx8",			    	name = "Радар - Гармонизаторы",	gv = 3592, 	lv = 3041,   	x = -81.85,  	y = -16,    	z = 76.42	},
-	{ level = "labx10",					name = "База Борова", 			gv = 3656, 	lv = 5925,   	x = -3.53,   	y = -7.45,  	z = -77.82	},
-    { level = "l10u_bunker",			name = "Наёмники на Радаре",	gv = 2662, 	lv = 6862,   	x = 3.18,    	y = -7.45,  	z = -61.86	},		
-	{ level = "l08u_brainlab",			name = "Начало",			    gv = 1542, 	lv = 7394, 		x = 140.29, 	y = 30.64, 		z = -15.56	},	
-	{ level = "l08u_brainlab",			name = "У пролома",			    gv = 1529, 	lv = 489,    	x = -125.34, 	y = 18.76,  	z = -22.19	},	
-	{ level = "l04u_labx18",			name = "Переход в ТД",			gv = 1109, 	lv = 2678,   	x = -0.51,   	y = 9.32,   	z = -10.27	},	
-	{ level = "limansk", 				name = "У Михалыча",			gv = 2991, 	lv = 17444,  	x = -14.69,  	y = -5,     	z = -172.57	},	
-	{ level = "av_peshera",				name = "Логово Стрелка",		gv = 2934, 	lv = 42980,  	x = -307.43, 	y = 42.47,  	z = 192.79	},
-	{ level = "l03u_agr_underground",	name = "Переход на Агро",		gv = 725,  	lv = 4787,   	x = -38.47,  	y = -3.88,  	z = 19.52	},
-	{ level = "l11_pripyat",			name = "Подземная автостоянка",	gv = 2226, 	lv = 211518, 	x = 107.06,  	y = -7.39,  	z = 9.62	},
-	{ level = "l10_radar",				name = "Вагончик у леса",		gv = 2061, 	lv = 180293, 	x = 529.65,  	y = -49.1,  	z = -250.78	},	
-	{ level = "red_forest",				name = "Переход на Янтарь",		gv = 3269, 	lv = 58306,  	x = -11.43,  	y = -0.4,   	z = -354.79	},	
-	{ level = "red_forest",				name = "Шахта",					gv = 3240, 	lv = 8413,  	x = -125.46,  	y = -6.25,   	z = -42.87	},	
-	{ level = "hospital",				name = "Лёха Старьёвщик",		gv = 3037, 	lv = 1745,   	x = -93.49,  	y = 33.96,  	z = 696.23	},	
-	{ level = "l02_garbage",			name = "Руины около Долга",		gv = 258,  	lv = 165781, 	x = 104.36,  	y = 13.89,  	z = 174.03	},	
-	{ level = "l04_darkvalley",			name = "Лагерь нейтралов",		gv = 836,  	lv = 37161,  	x = -120.34, 	y = 0.9,    	z = -535.94	},	
-	{ level = "l04_darkvalley",			name = "Лагерь Борова",			gv = 1081,  lv = 224254,  	x = 40.03, 		y = 0.3,    	z = -71.07	},		
-	{ level = "aver",			    	name = "Домик Доктора",			gv = 2889, 	lv = 263449, 	x = -352.11, 	y = -8.12,  	z = 8.89	},	
-	{ level = "aver",			    	name = "Озеленение",			gv = 2902, 	lv = 1490256, 	x = 349.62, 	y = -6.20,  	z = -23.37	},		
-	{ level = "l08_yantar",				name = "База учёных",			gv = 1479, 	lv = 51588,  	x = 25.85,   	y = -11.8,  	z = -301.72	},	
-	{ level = "l12_stancia_new",    	name = "Тайник Стрелка",        gv = 4281, 	lv = 390872, 	x = 1017.82, 	y = -5.1,   	z = -74.99	},	
-	{ level = "l12_stancia_2_new",  	name = "Переход с Генераторов", gv = 4401, 	lv = 223489, 	x = 382.65,  	y = -0.007, 	z = 81.82	},	
-    { level = "l12u_sarcofag",			name = "У входа",			    gv = 2404, 	lv = 71,     	x = -29.02,  	y = 0.21,   	z = 34.35	},	
-	{ level = "l12u_control_monolith", 	name = "Переход в ТЧ",       	gv = 2480, 	lv = 3907,   	x = 36.96,   	y = -34.48, 	z = 12.88	}
---	{ level = "",				    	name = "",			            gv = , 		lv = , 			x = , 			y = , 			z = 		},	
-}
-
-
-
-class "destination" (CUIListItemEx)
-
-function destination:__init() super()
-	self:SetWndRect(0,0,530,22)
-	
-	self.fn	= CUIStatic()
-	self.fn:SetAutoDelete(true)
-	self:AttachChild(self.fn)
-	self.fn:SetWndRect(0,0,250,22)
-	self.fn:SetFont(GetFontLetterica18Russian())
-	self.fn:SetTextColor(255,216,186,140)
-
-	self.pm	= CUIStatic()
-	self.pm:SetAutoDelete(true)
-	self:AttachChild(self.pm)
-	self.pm:SetWndRect(250,0,130,22)
-	self.pm:SetFont(GetFontLetterica18Russian())
-	self.pm:SetTextColor(255,216,186,140)
-end
-
-class "teleportator_menu" (CUIScriptWnd)
-
-function teleportator_menu:__init(owner,objid) super()
-	self.targt = objid
-	self.owner = owner
-
-	self.point_id = {}
-
-	self:InitControls()
-	self:InitCallBacks()
-	self:FillList()
-end
-
-function teleportator_menu:__finalize()
-end
-
-function teleportator_menu:FillList()
-	local list_box = self:GetListWnd("list_window")
-	local _itm, place
-	for i = 1, #points do 			-- Сколько всего точек!
-		place = points[ i ]
-		_itm = destination()
-		_itm.fn:SetText( game.translate_string( place.level ) )
-		_itm.pm:SetText( tostring( place.name ) )
-		list_box:AddItem(_itm )
-		table.insert( self.point_id, i )
-	end
-end
-
-function teleportator_menu:InitControls()
-	self:Init(0,0,1024,768)
-	
-	-- файл-описатель наших элементов
-	local ctrl
-	local xml = CScriptXmlInit()
-	xml:ParseFile("ui_mm_teleportator.xml")
-
-	self.dialog	= xml:InitStatic("main_dialog:dialog", self)
-	xml:InitStatic("main_dialog:capt", self.dialog)
-	xml:InitStatic("main_dialog:msg1", self.dialog)
-	xml:InitStatic("main_dialog:msg2", self.dialog)
-	
-	-- кнопки
-	self:Register(xml:Init3tButton("main_dialog:btn_ok", self.dialog),"btn_ok")
-	self:Register(xml:Init3tButton("main_dialog:btn_quit", self.dialog),"btn_quit")
-	xml:InitFrame("main_dialog:list_frame", self.dialog)
-	ctrl = xml:InitList("main_dialog:list", self.dialog)
-	ctrl:ShowSelectedItem(true)
-	self:Register(ctrl, "list_window")
-end
-
-function teleportator_menu:InitCallBacks()
-	self:AddCallback("btn_ok", ui_events.BUTTON_CLICKED, self.on_ok, self)
-	self:AddCallback("btn_quit", ui_events.BUTTON_CLICKED, self.on_quit, self)
-	self:AddCallback("list_window", ui_events.WINDOW_LBUTTON_DB_CLICK, self.OnListItemDbClicked, self)
-end
-
-function teleportator_menu:OnKeyboard( dik, keyboard_action )
-	CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
-	if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
-		if dik == DIK_keys.DIK_ESCAPE then
-			self:on_quit()
-		end
-		if dik == DIK_keys.DIK_RETURN then
-			self:on_ok()
-		end
-	end
-	return true
-end
-
-function teleportator_menu:OnListItemDbClicked()
-	self:on_ok()
-end
-
-function teleportator_menu:on_ok()
-	local list = self:GetListWnd("list_window")	
-	if list:GetSize()==0 then return end
-	local index = list:GetSelectedItem()
-	if index == -1 then return end
-	local n = self.point_id[index+1]
-
-	self:on_quit()
-	this.create_level_changers(points[n].lv, points[n].gv, vector():set(points[n].x, points[n].y, points[n].z))
-end
-
-function teleportator_menu:on_quit()
-	self:GetHolder():start_stop_menu(self, false)
-	self.owner:Show (true)
-	get_console():execute("main_menu off")
 end
 
 function remove_created_changer()
 	local ch = get_value( "spawned_lc" )
 	if not ch then return end
-	local changer = g_sim:object( ch )
-	if changer then 
-		misc.release_obj( changer )
-		remove_value( "spawned_lc" )
-		sak.send_tip( 
-			"Level Changer уже существует, поэтому был удален. Пересоздайте телепорт!", 
-			nil, 0, 25, "stalker", "sak", "red"
-		)
-	end	
+	remove_value( "spawned_lc" )
+	local sim = g_sim or alife()
+	local changer = sim and sim:object( ch )
+	if not changer then return end
+	misc.release_obj( changer )
+	sak.send_tip(
+		"Level Changer уже существует, поэтому был удален. Пересоздайте телепорт!",
+		nil, 0, 25, "stalker", "sak", "red"
+	)
 end
 
 --// Спавн временного левел-чейнджера
@@ -2045,18 +1904,20 @@ function create_level_changers(
 	p_dest_pos										-- координаты точки, в которой на новом уровне окажется игрок
 	)
 	-- следующие параметры убраны из аргументов, т.к. не меняются
-	local p_story_id = 987987						-- STORY_ID нового level_changer (понадобится нам позже)
-	local p_position = db.actor:position()			-- вектор, координаты точки, в которой будет располагаться центр нового level_changer
-	local p_lvertex_id = db.actor:level_vertex_id()	-- level_vertext_id - идентифицируют уровень, на котором будет создан level_changer
-	local p_gvertex_id = db.actor:game_vertex_id()	-- game_vertext_id   	
+	local actor = db and db.actor
+	local sim = alife()
+	if not actor or not actor:alive() or not sim or p_dest_lv == nil or p_dest_gv == nil or not p_dest_pos then return end
+	local p_story_id = 987987
+	local p_position = actor:position()
+	local p_lvertex_id = actor:level_vertex_id()
+	local p_gvertex_id = actor:game_vertex_id()
 	local p_dest_dir = vector():set(0,0,0)			-- направрение взгляда игрока
 	local p_dest_level = level.name()				-- название уровня, например "L11_Pripyat" (уровень НА КОТОРОМ создаётся ЛЧ, не назначения!)
 	local p_silent = 1								-- следует задать 1, чтобы подавить вопрос о смене уровня (автоматический переход)
 
 	this.remove_created_changer()
-
-	local sim = alife()
 	local obj = sim:create("level_changer", p_position, p_lvertex_id, p_gvertex_id)
+	if not obj then return end
 	set_value( "spawned_lc", obj.id )
  
 --	level.map_add_object_spot(obj.id, "level_changer", "")
@@ -2155,15 +2016,13 @@ end
 function del_lc()
 	local ch = get_value( "spawned_lc" )
 	if not ch then return end
-	local changer = g_sim:object( ch )
-	if changer then 
-		sak.send_tip( changer:name(), "Удалён LC:", 0, 10, "g_g", "sak", "red" )		
-		misc.release_obj( changer )		
-		remove_value( "spawned_lc" )
-	end	
+	remove_value( "spawned_lc" )
+	local sim = g_sim or alife()
+	local changer = sim and sim:object( ch )
+	if not changer then return end
+	sak.send_tip( changer:name(), "Удалён LC:", 0, 10, "g_g", "sak", "red" )
+	misc.release_obj( changer )
 end
-
---\\----------------- Сортировка секций
 
 local index2type = {
 	[1] = "weapons",
