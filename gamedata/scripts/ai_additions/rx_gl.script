@@ -65,7 +65,34 @@ end
 local aim_be_only = read_from_ini(gl_ini,"main","aim_be_only",false,0)
 gl_sets.forbiddens.factions = rx_utils.parse_list(gl_ini,"main","forbidden_factions",true)
 gl_sets.forbiddens.npcs = rx_utils.parse_list(gl_ini,"main","forbidden_npcs",true)
+-- [HE-PORT]
+gl_sets.allowed_factions = rx_utils.parse_list(gl_ini,"main","allowed_factions",true)
 gl_ini = nil
+-- [HE-PORT]
+local function npc_gl_allowed(npc)
+	if not gl_sets.enabled then
+		return false
+	end
+	local comm = npc:character_community()
+	if gl_sets.forbiddens.factions[comm] or gl_sets.forbiddens.npcs[npc:name()] or gl_sets.forbiddens.npcs[npc:section()] then
+		return false
+	end
+	return next(gl_sets.allowed_factions) == nil or gl_sets.allowed_factions[comm] == true
+end
+
+local function gl_attached(wpn)
+	local status = rx_utils.get_addon_status(wpn,"gl")
+	return status == 1 or status == 2 and bit_and(wpn:get_addon_flags(),2) == 2
+end
+
+local function attach_gl(wpn)
+	if wpn and rx_utils.item_is_fa(wpn) and rx_utils.get_addon_status(wpn,"gl") == 2 then
+		local flags = wpn:get_addon_flags()
+		if bit_and(flags,2) == 0 then
+			wpn:set_addon_flags(flags+2)
+		end
+	end
+end
 
 
 class "evaluator_gl_ready" (property_evaluator)		-- определяет, есть ли занятие для схемы, запоминает цели для стрельбы
@@ -106,7 +133,8 @@ function evaluator_gl_ready:evaluate()
 end
 function evaluator_gl_ready:hit_callback(amount,dir,who)
 	local npc = self.object
-	if enemy_memory[self.st.squad] and who and who:alive() and IsStalker(who) and npc:relation(who) == game_object.enemy and not xr_combat_ignore.is_ignored(npc,who) then
+	-- [HE-PORT]
+	if enemy_memory[self.st.squad] and who and who:alive() and IsStalker(who) and npc:relation(who) == game_object.enemy then
 		enemy_memory[self.st.squad][who:id()] = {who:position(),who:level_vertex_id(),time_global()+30000,who}
 	end
 end
@@ -659,7 +687,8 @@ end
 function check_weapon(wpn)
 	if rx_utils.item_is_fa(wpn) then
 		local sec = wpn:section()
-		if rx_utils.addon_attached(wpn,"gl") then
+		-- [HE-PORT]
+		if gl_attached(wpn) then
 			if not config_data[sec] then
 				local particles = read_from_ini(nil,sec,"grenade_flame_particles","weapons\\generic_weapon01",2)
 				local sound_shoot = rx_sound.dihud_sound(sec,"snd_shoot_grenade")	--read_from_ini(nil,sec,"snd_shoot_grenade","weapons\\gen_grenshoot",2,',')
@@ -698,6 +727,8 @@ function check_ammo(npc)	-- проверить наличие оружия и патронов
 	if not wpn then
 		return false
 	end
+	-- [HE-PORT]
+	attach_gl(wpn)
 	local rm = ready_mem[wpn:id()]
 	if rm and rm.t > time_global() then
 		return rm.ammo~=nil,rm.ammo
@@ -826,8 +857,9 @@ function pick_visible_target(npc,radius)
 		local obj = o:object()
 		if o.level_time == tg and obj and obj.clsid then
 			if obj:alive() and not obj:wounded() then
+				-- [HE-PORT]
 				if obj:id() ~= be_id and obj:id() ~= npc_id and
-					npc:relation(obj) == game_object.enemy and not xr_combat_ignore.is_ignored(npc,obj) then
+					npc:relation(obj) == game_object.enemy then
 					local en_pos = obj:center()
 					local dist = npc_pos:distance_to_sqr(en_pos)
 					if dist > min_dist and dist < (IsMonster(obj) and max_dist_monster or max_dist) then
@@ -1130,10 +1162,15 @@ evid_gl_reload = evid_gl_fire+1
 actid_gl_fire = evid_gl_fire
 actid_gl_reload = evid_gl_reload
 launch_actions_permitted[actid_gl_reload] = true
+-- [HE-PORT]
+if xrs_battle_ai then
+	launch_actions_permitted[xrs_battle_ai.actid_altcombat] = true
+end
 
 function add_to_binder(npc,ini,scheme,section,storage)
 	local manager = npc:motivation_action_manager()
-	if not (gl_sets.enabled and not gl_sets.forbiddens.factions[npc:character_community()] and not gl_sets.forbiddens.npcs[npc:name()] and not gl_sets.forbiddens.npcs[npc:section()]) then
+	-- [HE-PORT]
+	if not npc_gl_allowed(npc) then
 		manager:add_evaluator(evid_gl_ready,property_evaluator_const(false))
 		manager:add_evaluator(evid_gl_fire,property_evaluator_const(false))
 		manager:add_evaluator(evid_gl_reload,property_evaluator_const(false))
@@ -1168,15 +1205,7 @@ function add_to_binder(npc,ini,scheme,section,storage)
 	action:add_precondition(world_property(stalker_ids.property_alive,true))
 	action:add_precondition(world_property(xr_evaluators_id.sidor_wounded_base,false))
 --	action:add_precondition(world_property(xr_evaluators_id.state_mgr+1,true)) --?
-	if rx_bandage then
-		action:add_precondition(world_property(rx_bandage.evid_bandage,false))
-	end
-	if rx_facer then
-		action:add_precondition(world_property(rx_facer.evid_facer,false))
-	end
-	if rx_knife then
-		action:add_precondition(world_property(rx_knife.evid_knife_attack,false))
-	end
+	-- [HE-PORT]
 	if xr_help_wounded then
 		action:add_precondition(world_property(xr_help_wounded.evid_wounded_exist,false))
 	end
@@ -1199,15 +1228,7 @@ function add_to_binder(npc,ini,scheme,section,storage)
 		action:add_precondition(world_property(evid_gl_fire,false))
 		action:add_precondition(world_property(evid_gl_reload,false))
 	end
-	-- необходимо добавить предусловие схеме собирательства и прочим низкоприоритетным общим схемам
-	if watcher_act and watcher_act.actid_reach_item then
-		for i,id in ipairs({watcher_act.actid_reach_item,watcher_act.actid_grab_item,watcher_act.actid_grab_body}) do
-			action = manager:action(id)
-			if action then
-				action:add_precondition(world_property(evid_gl_reload,false))
-			end
-		end
-	end
+	-- [HE-PORT]
 end
 
 function net_spawn()
@@ -1227,6 +1248,10 @@ end
 function set_scheme(npc,ini,scheme,section)
 	local st = xr_logic.assign_storage_and_bind(npc,ini,scheme,section)
 	st.rs = gl_sets.ranks[ranks.get_obj_rank_name(npc)]
+	-- [HE-PORT]
+	if npc_gl_allowed(npc) then
+		npc:iterate_inventory(function(_,item) attach_gl(item) end,npc)
+	end
 end
 
 --[[
