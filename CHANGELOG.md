@@ -1,6 +1,227 @@
-<!-- nlc-changelog-head: 735dc3e4ae1d32c729a0fd8e5499757b3a273deb -->
+<!-- nlc-changelog-head: 1d37c6ee552575749ed167a89760c870b26ce438 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 1d37c6ee552575749ed167a89760c870b26ce438 -->
+## 27.09.26 01:58 МСК - Бартер Шерстюка из Харды. Fix Sherstyk trade pricing and barter
+
+Commit: [1d37c6e](https://github.com/jordan1227/improved_to_he/commit/1d37c6ee552575749ed167a89760c870b26ce438)
+
+### Description
+
+This change updates Sherstyk's trade config to rebalance weapon pricing and category flags, and revises the displayed Russian trade text to match the current stock list. It also adds agr_sherstyk to the protected no-price-change list and ensures barter-related untradable items are hidden only during the Sherstyk barter flow, then restored afterward.
+
+### Game files changed
+
+- M gamedata/config/misc/trade_npc/trade_sherstyk.ltx
+- M gamedata/config/text/rus/sak_strings_trade.xml
+- M gamedata/scripts/engine_callbacks.script
+- M gamedata/scripts/trade_manager.script
+
+<!-- nlc-changelog-commit: 9faebbf1e1ebca4c35575c91775e69b94c96f03e -->
+## 27.09.26 01:58 МСК - Фикс и улучшения Рашпиля Fix Dark Valley Rashpil confrontation flow
+
+Commit: [9faebbf](https://github.com/jordan1227/improved_to_he/commit/9faebbf1e1ebca4c35575c91775e69b94c96f03e)
+
+### Description
+
+This patch resolves the Rashpil/Dark Valley escalation flow by gating the bandit intro dialog, adding combat-avoidance logic when the player threatens the leader, and triggering the gulag hostility correctly when weapons are drawn or zoomed. It also fixes the Rashpil story-object lookup to use story_id 412, prevents the stolen-letter item from being re-granted incorrectly, and refactors the robbery sack/item transfer flow to avoid duplicate or stuck transfers. The result is a more stable, less exploitable confrontation and cleanup of the victim/rucksack ownership sequence.
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_agr_dv.xml
+- M gamedata/config/misc/gulag_dark_valley_nlc.ltx
+- M gamedata/scripts/actor_take_item.script
+- M gamedata/scripts/gulag/gulag_dark_valley_nlc.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 833da68c2a92c27faaa08ff7ee7bca33f0fed3b6 -->
+## 27.09.26 01:57 МСК - Рандомим арт за АК Стрелка у Старьевщика
+
+Commit: [833da68](https://github.com/jordan1227/improved_to_he/commit/833da68c2a92c27faaa08ff7ee7bca33f0fed3b6)
+
+### Description
+
+This change broadens the random artifact dyn-range override in the ATP dialog by passing both min and max values into add_rnd_art_to_actor, so generated artifacts can vary within the intended range. It also fixes untradeable-item handling by tracking items that were temporarily trade-blocked and restoring their trade flag when the lock is reset, preventing stale item restrictions.
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_lim_atp.xml
+- M gamedata/scripts/kotovod.script
+
+<!-- nlc-changelog-commit: 6ae7d217d96f43aa3db31aee77a6a36e5129674f -->
+## 27.09.26 01:04 МСК - Фикс вылета протухания артов Fix artefact section update flow
+
+Commit: [6ae7d21](https://github.com/jordan1227/improved_to_he/commit/6ae7d217d96f43aa3db31aee77a6a36e5129674f)
+
+### Description
+
+This patch removes redundant UPD_SECTION registry calls when artefact sections are changed during degradation and belt discharge. It also resets the belt unload inventory flag after a section transition, preventing stale UI state and keeping section updates consistent with the runtime data.
+
+### Game files changed
+
+- M gamedata/scripts/arts/arc_arts.script
+
+<!-- nlc-changelog-commit: 83267758e82c67ea2c354e0020c501b25c098f5e -->
+## 27.09.26 00:52 МСК - Баф дроби, 7.62x54. Adjust ammo balance and inventory volume
+
+Commit: [8326775](https://github.com/jordan1227/improved_to_he/commit/83267758e82c67ea2c354e0020c501b25c098f5e)
+
+### Description
+
+Tweaks several ammo entries across 7.62, 8.6x70, and 12x70/76 cartridges. This update changes cost, inventory volume, and ballistic values like hit, pierce, impulse, spread, and muzzle size to rebalance gameplay, while preserving the original values in inline comments for reference.
+
+### Game files changed
+
+- M gamedata/config/weapons/weapons.ltx
+
+<!-- nlc-changelog-commit: 0023a5e874356fca1c9b9e870338723376d916e4 -->
+## 27.09.26 00:26 МСК - На всякий. Логируем торговлю в Баре. Log and monitor bar trade money changes
+
+Commit: [0023a5e](https://github.com/jordan1227/improved_to_he/commit/0023a5e874356fca1c9b9e870338723376d916e4)
+
+### Description
+
+Enhance trade_manager.script to monitor and log actor/trader money during bar (level 'l05_bar') trades. Adds on_update subscription and state (bar_trade_watching, bar_trade_last_money) to detect money changes, detailed logging on trade open/hide/transactions, and guards against duplicate tradein_start by checking saved actor_money. Also emits logs when barter money is restored. Changes are limited to gamedata/scripts/trade_manager.script and only affect behavior for the bar trading flow to aid debugging and tracking.
+
+### Game files changed
+
+- M gamedata/scripts/trade_manager.script
+
+<!-- nlc-changelog-commit: d62a55927dd0d8d0384abd014d3cd359f8e58630 -->
+## 27.09.26 00:25 МСК - Tune af_eye stat balance
+
+Commit: [d62a559](https://github.com/jordan1227/improved_to_he/commit/d62a55927dd0d8d0384abd014d3cd359f8e58630)
+
+### Description
+
+Adjusts the unique af_eye artifact to improve its utility and balance. This changes its power restoration, inventory weight bonus, and chemical/explosion immunity values to better fit its intended role.
+
+### Game files changed
+
+- M gamedata/config/misc/artefacts_unique.ltx
+
+<!-- nlc-changelog-commit: 40f7fe617eeee0556133976a8ce81bc3a7becfed -->
+## 27.09.26 00:15 МСК - Add teleport list and item spawning fixes
+
+Commit: [40f7fe6](https://github.com/jordan1227/improved_to_he/commit/40f7fe617eeee0556133976a8ce81bc3a7becfed)
+
+### Description
+
+This commit adds a direct teleport level list and jump_to_level flow, moves spawn state from globals to instance fields, and fixes tab/search/navigation behavior for the item spawner UI.
+
+It also refactors item creation into per-type helper methods, makes dynamic artifact handling safer, removes obsolete teleportator menu code, and tightens level-changer/save cleanup logic to avoid invalid object access.
+
+### Game files changed
+
+- M gamedata/scripts/kotovod/spawner.script
+
+<!-- nlc-changelog-commit: ca4707684ed1dfa6ba2e6259d4284f28f538c7b6 -->
+## 27.09.26 00:15 МСК - Fix Petrenko barter wallet state
+
+Commit: [ca47076](https://github.com/jordan1227/improved_to_he/commit/ca4707684ed1dfa6ba2e6259d4284f28f538c7b6)
+
+### Description
+
+This change prevents repeated barter openings from overwriting the actor's real wallet and losing money during trade sessions. It snapshots the current money when the barter is held, restores it when the trade closes, and centralizes Petrenko trade cleanup so the wallet and artifact flags are reset consistently.
+
+### Game files changed
+
+- M gamedata/scripts/gnzi.script
+- M gamedata/scripts/kotovod.script
+
+<!-- nlc-changelog-commit: a940c3d0785dd2b7e53e116624a810207a8d8c06 -->
+## 26.09.26 18:31 МСК - Вернул agr_mines_old_save
+
+Commit: [a940c3d](https://github.com/jordan1227/improved_to_he/commit/a940c3d0785dd2b7e53e116624a810207a8d8c06)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+
+<!-- nlc-changelog-commit: 9f70d768635a4d781fa842139099d1bca86813a7 -->
+## 26.09.26 18:26 МСК - Возврат лишних правок из коммита с альбомом
+
+Commit: [9f70d76](https://github.com/jordan1227/improved_to_he/commit/9f70d768635a4d781fa842139099d1bca86813a7)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: adca6934f2c7f28aca07a78b1e84fe9a8dbfbeb8 -->
+## 26.09.26 18:14 МСК - Дембельский альбом
+
+Commit: [adca693](https://github.com/jordan1227/improved_to_he/commit/adca6934f2c7f28aca07a78b1e84fe9a8dbfbeb8)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/sak_quest_items.ltx
+- A gamedata/meshes/new_item/dmb_album.ogf
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 794d3237442a49ae1fa797392ea52f2e101d08f3 -->
+## 26.09.26 18:02 МСК - Части мутантов гниют в нычках
+
+Commit: [794d323](https://github.com/jordan1227/improved_to_he/commit/794d3237442a49ae1fa797392ea52f2e101d08f3)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_magic_box.script
+- M gamedata/scripts/kotovod/parts_decay.script
+
+<!-- nlc-changelog-commit: 9b0f3bde9caf405774624c3264604d5806edbef1 -->
+## 26.09.26 17:20 МСК - НПС теперь стреляют с подствола
+
+Commit: [9b0f3bd](https://github.com/jordan1227/improved_to_he/commit/9b0f3bde9caf405774624c3264604d5806edbef1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/rx_gl.ltx
+- M gamedata/scripts/ai_additions/rx_ai.script
+- M gamedata/scripts/ai_additions/rx_gl.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/xrs/xrs_battle_ai.script
+
+<!-- nlc-changelog-commit: 87afd10e8fc21d46c1688271ea6237a010ac9779 -->
+## 26.09.26 15:58 МСК - Караван
+
+Commit: [87afd10](https://github.com/jordan1227/improved_to_he/commit/87afd10e8fc21d46c1688271ea6237a010ac9779)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/gameplay/info_sak_way.xml
+- A gamedata/config/scripts/agr/agr_korovan_btr.ltx
+- M gamedata/config/scripts/agr/agr_korovan_zone.ltx
+- M gamedata/scripts/he_info_list.script
+- M gamedata/scripts/sak/sak.script
 
 <!-- nlc-changelog-commit: 735dc3e4ae1d32c729a0fd8e5499757b3a273deb -->
 ## 26.09.26 01:40 МСК - Adjust Petrenko barter and pricing
