@@ -10,6 +10,8 @@ function attach(sm)
   sm:subscribe({signal = "on_update", fun = this.hazards_handle})
   sm:subscribe({signal = "on_update", fun = this.discharge_tasks})
   sm:subscribe({signal = "on_update", fun = this.actor_bio_upd})
+  sm:subscribe({signal = "on_update", fun = this.val_dram_weapon_watch})
+  sm:subscribe({signal = "on_actor_weapon_zoom_in", fun = this.val_dram_weapon_zoom_in})
 end
 
 -- глобальные переменные
@@ -2137,7 +2139,12 @@ function check_used_item(obj)
 	elseif strpos(sect, "klava") then info_klava(sect)
 	elseif sect=="ara_pda" and not act:has_info("info_way154a") then add_new_mil_gen_154() add_new_gen_mil_191()
 	elseif sect=="resiept_activ_anom" then info="info_artmod_activ_anom"
-	elseif sect=="drunk_dolg_letter" and not act:has_info("info_amk_recipt_tears_electra") then info="info_amk_recipt_tears_electra" info_amk_received()
+	elseif sect=="drunk_dolg_letter" then
+		if not act:has_info("info_amk_recipt_tears_electra") then
+			info="info_amk_recipt_tears_electra"
+			info_amk_received()
+		end
+		misc.release_obj(obj)
 	elseif sect=="sak_document2" then sak.send_tip_local(game.translate_string("sak_document2_sms"),game.translate_string("thinking_out_loud"),5,15,"g_g","sak","yellow")	
 	elseif sect=="sak_document4" and not act:has_info("info_amk_recipt_giant_small_brother") then info="info_amk_recipt_giant_small_brother" info_amk_received()  
 	elseif sect=="aver_bandit_letter" then info="info_artmod_ameba_slug_mincer"
@@ -4263,7 +4270,16 @@ end
 
 -- [HE-PORT]
 function val_bandits_ignore_actor( npc )
-	return npc ~= nil and IsStalker( npc ) and npc:character_community() == "bandit" and val_bandits_pass()
+	if not npc or not IsStalker( npc ) or npc:character_community() ~= "bandit" or not val_bandits_pass() then
+		return false
+	end
+	if has_alife_info( "val_dram_fire" ) then
+		local gulag = xr_gulag.get_npc_gulag( npc )
+		if gulag and ( gulag.name == "val_dram" or gulag.name == "val_x18_exit_base" ) then
+			return false
+		end
+	end
+	return true
 end
 
 -- [HE-PORT]
@@ -6282,9 +6298,80 @@ function set_mil_gulag_enemy_actor()
 	xr_gulag.setGulagEnemy("mil_freedom", db.actor)
 end
 function set_val_gulag_enemy_actor()
-	xr_gulag.setGulagEnemy("val_dram", db.actor)
-	xr_gulag.setGulagEnemy("val_x18_exit_base", db.actor)
+	for _, name in ipairs({ "val_dram", "val_x18_exit_base" }) do
+		xr_gulag.setGulagEnemy(name, db.actor)
+		local gulag = xr_gulag.get_gulag(name)
+		if gulag then
+			for obj_id in pairs(gulag.Object) do
+				local npc = client_obj(obj_id)
+				if npc and npc:alive() then npc:enable_memory_object(db.actor, true) end
+			end
+		end
+	end
 end
+
+local val_dram_gun_deadline
+local val_dram_gun_warned
+
+local function val_dram_gun_is_drawn()
+	local item = db.actor and db.actor:active_item()
+	return item and item:is_weapon() and not item:is_knife()
+		and not item:is_binoculars() and not item:is_grenade()
+		and item:section() ~= "bolt"
+end
+
+local function val_dram_weapon_threat_active()
+	if not db.actor or level.name() ~= "l04_darkvalley"
+		or not has_alife_info("val_dram_begin")
+		or has_alife_info("val_dram_fire")
+		or has_alife_info("val_dram_scene_end") then
+		return false
+	end
+	local rashpil = level_object_by_sid(412)
+	local st = rashpil and db.storage[rashpil:id()]
+	if rashpil and rashpil:alive() and st
+		and st.active_section == "walker2@val_dram_bandit_glavn"
+		and not db.actor:is_talking() and not rashpil:is_talking() then
+		return rashpil
+	end
+	return nil
+end
+
+local function val_dram_weapon_provoke()
+	val_dram_gun_deadline = nil
+	db.actor:give_info_portion("val_dram_fire")
+	set_val_gulag_enemy_actor()
+end
+
+function val_dram_weapon_watch()
+	local rashpil = val_dram_weapon_threat_active()
+	if not rashpil or not val_dram_gun_is_drawn() then
+		val_dram_gun_deadline = nil
+		return
+	end
+	if wpn_params.get_zie_obj() ~= nil then
+		val_dram_weapon_provoke()
+		return
+	end
+	local now = time_global()
+	if not val_dram_gun_deadline then
+		val_dram_gun_deadline = now + 5000
+		if not val_dram_gun_warned then
+			state_mgr.set_state(rashpil, "backoff", nil, nil, {look_object = db.actor}, {animation = true})
+			xr_sound.set_sound_play(rashpil, "threat_weap")
+			val_dram_gun_warned = true
+		end
+	elseif now >= val_dram_gun_deadline then
+		val_dram_weapon_provoke()
+	end
+end
+
+function val_dram_weapon_zoom_in()
+	if val_dram_weapon_threat_active() and val_dram_gun_is_drawn() then
+		val_dram_weapon_provoke()
+	end
+end
+
 function psevdowounded_help()
 	send_tip_pda(game.translate_string("psevdowounded_help"),game.translate_string("sos_tip"),0,20,"g_g","sak","red",true,nil,"lapot_psevdowounded")
 end
@@ -12196,6 +12283,8 @@ function barmen_kill_stalker_enemy(first_speaker, second_speaker)
 	end
 end
 function ruck_near_lc(box_id,flag_release)
+	local suppress_robbery_ruck_tip = nlc_vars and box_id ~= nil and box_id == nlc_vars.rashpil_robbery_tip_suppression_id
+	if suppress_robbery_ruck_tip then nlc_vars.rashpil_robbery_tip_suppression_id = nil end
 	local lvl = level.name()
 	local skip = const.underground(lvl) and lvl ~= 'l03u_agr_underground'
 	if skip then return end
@@ -12236,7 +12325,9 @@ function ruck_near_lc(box_id,flag_release)
 					if lc and lc:name() ~= 'aver_exit_to_x18' then
 						if lc:position():distance_to(obj:position()) < 50 then
 							if box_obj and box_obj:name() == obj:name() then
-								sak.send_tip_local(game.translate_string("ruck_near_lc"),game.translate_string("thinking_out_loud"),3,10,"g_g","sak","yellow")
+								if not ( suppress_robbery_ruck_tip and obj:id() == box_id ) then
+									sak.send_tip_local(game.translate_string("ruck_near_lc"),game.translate_string("thinking_out_loud"),3,10,"g_g","sak","yellow")
+								end
 							elseif flag_release and db.actor:position():distance_to(obj:position()) > 1 and ( obj:parent() == nil or obj:parent() == BAD_OBJ_ID ) then
 								misc.release_obj(obj)
 							end

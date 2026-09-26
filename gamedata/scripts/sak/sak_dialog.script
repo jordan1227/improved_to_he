@@ -2341,7 +2341,7 @@ function val_dram_restr_check()
 end
 function rashpil_pda_spawn()
 	if has_alife_info("val_dram_pda_out_info") and db.actor and not he_pda_model.get_pda() then
-		local obj = server_obj("val_dram_glavn")
+		local obj = g_sim:story_object(412)
 		if obj then
 			misc.spawn_to("device_pda_npc_gg",obj)
 		end
@@ -11100,8 +11100,107 @@ function pri_fake_klyk_treasure()
 	sak.off_on( sobj )	
 end
 function rashpil_robbing_actor()
+    if nlc_vars.rashpil_robbery_pending then return end
+
+    local created_rucksack = misc.spawn_to( "rucksack", db.actor )
+    if not created_rucksack then return end
+
+    misc.process_spawn()
+    kotovod.add_box_protection( created_rucksack:name() )
+    local rucksack_id = created_rucksack.id
+    nlc_vars.rashpil_rucksack = rucksack_id
+    nlc_vars.rashpil_robbery_tip_suppression_id = rucksack_id
+    nlc_vars.rashpil_robbery_pending = rucksack_id
+
+    if level.object_by_id( rucksack_id ) then
+        this.rashpil_robbing_actor_continue( rucksack_id )
+    else
+        this.rashpil_robbing_actor_deferred( rucksack_id, 10 )
+    end
+end
+
+-- OGSR process_spawn is a stub; wait for the client-side bag before using it.
+function rashpil_robbing_actor_deferred( rucksack_id, tries )
+    if level.object_by_id( rucksack_id ) then
+        this.rashpil_robbing_actor_continue( rucksack_id )
+        return
+    end
+    if tries and tries > 0 then
+        schedule.add(
+            "rashpil_robbery_rucksack",
+            string.format( "sak_dialog.rashpil_robbing_actor_deferred(%d,%d)", rucksack_id, tries - 1 ),
+            300
+        )
+    else
+        nlc_vars.rashpil_robbery_pending = nil
+    end
+end
+
+function rashpil_robbing_actor_finish( rucksack_id, tries )
+    local rucksack = level.object_by_id( rucksack_id )
+    if not rucksack then
+        if tries and tries > 0 then
+            schedule.add(
+                "rashpil_robbery_items",
+                string.format( "sak_dialog.rashpil_robbing_actor_finish(%d,%d)", rucksack_id, tries - 1 ),
+                300
+            )
+        end
+        return
+    end
+
+    local spawned_items = nlc_vars.rashpil_robbery_pending_items or {}
+    local pending_items = {}
+    for _, item_id in ipairs( spawned_items ) do
+        local item = level.object_by_id( item_id )
+        if item then
+            db.actor:transfer_item( item, rucksack )
+        else
+            table.insert( pending_items, item_id )
+        end
+    end
+
+    if #pending_items > 0 then
+        nlc_vars.rashpil_robbery_pending_items = pending_items
+        if tries and tries > 0 then
+            schedule.add(
+                "rashpil_robbery_items",
+                string.format( "sak_dialog.rashpil_robbing_actor_finish(%d,%d)", rucksack_id, tries - 1 ),
+                300
+            )
+        end
+        return
+    end
+
+    nlc_vars.rashpil_robbery_pending_items = nil
+    local rashpil = level_object_by_sid( 412 )
+    if rashpil then
+        rucksack:transfer_item( rucksack, rashpil )
+    end
+end
+
+function rashpil_robbing_actor_queue_item( spawned_item, rucksack, pending_items )
+    if not spawned_item then return end
+
+    misc.process_spawn()
+    local item = level.object_by_id( spawned_item.id )
+    if item then
+        db.actor:transfer_item( item, rucksack )
+    else
+        table.insert( pending_items, spawned_item.id )
+    end
+end
+
+function rashpil_robbing_actor_continue( rucksack_id )
+    local created_rucksack_id = level.object_by_id( rucksack_id )
+    if not created_rucksack_id then
+        this.rashpil_robbing_actor_deferred( rucksack_id, 10 )
+        return
+    end
+    if nlc_vars.rashpil_robbery_pending ~= rucksack_id then return end
+    nlc_vars.rashpil_robbery_pending = nil
 	-- Сперва вернём рюкзак актору, лишние проверки ни к чему
-	local ruck = client_obj( nlc_vars.dropped_rucksack )
+	local ruck = nlc_vars.dropped_rucksack and client_obj( nlc_vars.dropped_rucksack )
 	if ruck then 		
 		ruck:transfer_item( ruck, db.actor )
 	end		
@@ -11117,7 +11216,7 @@ function rashpil_robbing_actor()
 			if posobj:distance_to( actorpos ) < dist_item_from_dv then
 				local sobj = g_sim:object( a )
 				if 
-					sobj.parent_id ~= 0 
+					sobj and sobj.parent_id ~= 0
 					and sobj.parent_id == 65535 
 					and obj:is_inventory_item() 
 					and obj:section() ~= "rastopka"
@@ -11208,12 +11307,8 @@ function rashpil_robbing_actor()
 
 	-- Попробуем заспавнить рюкзак актору и сбросить его, а потом уже добавлять туда предметы
 	
-	local created_rucksack = misc.spawn_to( "rucksack", db.actor )
-	misc.process_spawn()
-	kotovod.add_box_protection( created_rucksack:name() )	
-	local created_rucksack_id = level.object_by_id( created_rucksack.id )
-	nlc_vars.rashpil_rucksack = created_rucksack.id
 	db.actor:drop_item( created_rucksack_id )
+	local pending_spawned_items = {}
 	
 	-- Заберем ранее занесенные вещи игрока, оставим только немного расходников
 
@@ -11243,9 +11338,9 @@ function rashpil_robbing_actor()
 	-- Подсластим пилюлю. Можно было бы получать отданные арты при сравнении кастом даты контейнера до отдачи и после, но слишком муторно. Заспавним что-нибудь другое, капсулу
 	if found_any_art then 
 		local lvl = ( diff == 0 ) and 6 or 5
-		local art = misc.spawn_to( kotovod.rnd_rec_art_info( kotovod.tbl_arts, lvl ), db.actor )
-		misc.process_spawn()
-		db.actor:transfer_item( level.object_by_id( art.id ), created_rucksack_id )	
+		local art_payload = nlc_capsules.from_descriptor( kotovod.rnd_rec_art_info( kotovod.tbl_arts, lvl ) )
+		local art = art_payload and nlc_capsules.spawn_to( art_payload, db.actor )
+		this.rashpil_robbing_actor_queue_item( art, created_rucksack_id, pending_spawned_items )
 	end	
 	
 	-- Добавим бонусом немного монстрячьих голов
@@ -11261,14 +11356,13 @@ function rashpil_robbing_actor()
 	for a = 1, 3 do 
 		local part = mutants_tbl[ lua_random( 1, #mutants_tbl ) ]
 		local aaa = misc.spawn_to( part, db.actor )
-		misc.process_spawn()
-		db.actor:transfer_item( level.object_by_id( aaa.id ), created_rucksack_id )
+		this.rashpil_robbing_actor_queue_item( aaa, created_rucksack_id, pending_spawned_items )
 	end	
 
 	-- Остатки заберем у актора
 	if rashpil_money > 0 then 
 		local actor_money = db.actor:money()
-		from_actor = math.round( math.min( rashpil_money, actor_money ) * 0.85 )
+		local from_actor = math.round( math.min( rashpil_money, actor_money ) * 0.85 )
 		if actor_money > 0 then 
 			sak_dialog.relocate_money( from_actor, "out" )
 		end	
@@ -11288,6 +11382,7 @@ function rashpil_robbing_actor()
 			local info = copied_table[ index ]
 
 				if has_alife_info( info ) then
+					db.actor:disable_info_portion( info )
 					table.remove( copied_table, index )
 					if not removed_infos[ info ] then
 						removed_infos[ info ] = info
@@ -11355,14 +11450,11 @@ function rashpil_robbing_actor()
 		
 		-- Заспавним бумагу с отобранными рецептами, я хз почему напрямую в рюкзак не пашет, поэтому трансферы везде
 		local bumaga = misc.spawn_to( "drunk_dolg_letter", db.actor )
-		misc.process_spawn()
-		db.actor:transfer_item( level.object_by_id( bumaga.id ), created_rucksack_id )
+		this.rashpil_robbing_actor_queue_item( bumaga, created_rucksack_id, pending_spawned_items )
 	end	
 	
-	local rashpil = level_object_by_sid( 412 )
-	if rashpil then 
-		created_rucksack_id:transfer_item( created_rucksack_id, rashpil )
-	end
+	nlc_vars.rashpil_robbery_pending_items = pending_spawned_items
+	this.rashpil_robbing_actor_finish( rucksack_id, 10 )
 end	
 function register_my_npc( name )
 	local npc = g_sim:object( name )
