@@ -1,6 +1,278 @@
-<!-- nlc-changelog-head: e6434c4a71894431213ba78a76dc7dfa74949719 -->
+<!-- nlc-changelog-head: 735dc3e4ae1d32c729a0fd8e5499757b3a273deb -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 735dc3e4ae1d32c729a0fd8e5499757b3a273deb -->
+## 26.09.26 01:40 МСК - Adjust Petrenko barter and pricing
+
+Commit: [735dc3e](https://github.com/jordan1227/improved_to_he/commit/735dc3e4ae1d32c729a0fd8e5499757b3a273deb)
+
+### Description
+
+This commit updates Petrenko's trade flow to use the custom barter hooks and trade subscription sequence, increases several buy prices for suhpays and related items, adds artifact-specific Petrenko buy entries for HE parity, and refreshes the build version banner text.
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_bar.xml
+- M gamedata/config/misc/shop_petrenko/trade_petrenko.ltx
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+<!-- nlc-changelog-commit: d6139c42c1baf2369168f28dfe5c9cf656e68fe9 -->
+## 26.09.26 01:35 МСК - Правки balance_ конфигов. Tune combat balance parameters
+
+Commit: [d6139c4](https://github.com/jordan1227/improved_to_he/commit/d6139c42c1baf2369168f28dfe5c9cf656e68fe9)
+
+### Description
+
+Облегчёнка сложнее, нерф ауры тушканов как Котовод просил.
+This change adjusts monster aggression and balance curves in both default and light configs. It increases controller presence and attack reach, raises several enemy engagement ranges, and tweaks health/restoration and battery drain values to make the light profile more demanding without making it wildly harder.
+
+### Game files changed
+
+- M gamedata/config/balance_default.ltx
+- M gamedata/config/balance_light.ltx
+
+<!-- nlc-changelog-commit: c8896a005cd9d1b7619088a6cf32d008da24d210 -->
+## 26.09.26 01:30 МСК - Пока до нормального редизайна - опцинально. Add additional mob hit option
+
+Commit: [c8896a0](https://github.com/jordan1227/improved_to_he/commit/c8896a005cd9d1b7619088a6cf32d008da24d210)
+
+### Description
+
+Adds a new gameplay toggle for extra hit effects and wires it into the main menu options, defaults, and localized UI text. This lets players disable effects like dropped or damaged items, temporary movement penalties, camera shake, and hit sounds.
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/kotovod/game_options.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+
+<!-- nlc-changelog-commit: 07321f8e8325ac8474948313e598ba2aae5f7a72 -->
+## 26.09.26 00:31 МСК - Нерф энергетика. Add energy drink move-speed buff
+
+Commit: [07321f8](https://github.com/jordan1227/improved_to_he/commit/07321f8e8325ac8474948313e598ba2aae5f7a72)
+
+### Description
+
+Refactors actor movement speed calculation to support a timed energy-drink multiplier and preserves the normal reset path when speed is cleared. The sleep manager now sets an `energy_drink_speed_buff` flag, starts a 10s timer to clear it, and applies the buff through `params.move_speed_set(0)` instead of a hardcoded 1.2x speed override.
+
+### Game files changed
+
+- M gamedata/scripts/params/params.script
+- M gamedata/scripts/sleep_manager.script
+
+<!-- nlc-changelog-commit: 6c5dd79266b32a4ebf84776499236ae7d56504ff -->
+## 26.09.26 00:30 МСК - Фикс Арни. Adjust Arny ammo rates and barter flow
+
+Commit: [6c5dd79](https://github.com/jordan1227/improved_to_he/commit/6c5dd79266b32a4ebf84776499236ae7d56504ff)
+
+### Description
+
+Update Arny's trade data and barter logic. gamedata/config/misc/trade_npc/trade_arny.ltx: refine many buy/sell ammo rates (old HE ammo adjusted to current costs). gamedata/scripts/kotovod.script: call ungroup_ammo() when subscribing Arny barter to reset ammo grouping. gamedata/scripts/trade_manager.script: change bar_arny_barter to use ammo-box pricing (npc:trade_virtual_cost(0, false)), subscribe Kotovod handler, and use dynamic tradein_start flag. Purpose: align ammo prices with current costs and ensure Arny's barter uses box/remaining-rounds pricing correctly.
+
+### Game files changed
+
+- M gamedata/config/misc/trade_npc/trade_arny.ltx
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/trade_manager.script
+
+<!-- nlc-changelog-commit: 8a010a25ab00f1184dce18ac270a379f0abee2fa -->
+## 25.09.26 22:42 МСК - Новая система для квеста с Черепом
+
+Commit: [8a010a2](https://github.com/jordan1227/improved_to_he/commit/8a010a25ab00f1184dce18ac270a379f0abee2fa)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_military.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/scripts/he_mil_dolg_reward.script
+- A gamedata/scripts/he_mil_freedom_guard.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+
+<!-- nlc-changelog-commit: b9ebe109051e02a6cbd3a18c03c7f5e9e814895b -->
+## 25.09.26 22:38 МСК - Дезертир фикс + возможность отдать альбом. Add ratcatcher album exchange
+
+Commit: [b9ebe10](https://github.com/jordan1227/improved_to_he/commit/b9ebe109051e02a6cbd3a18c03c7f5e9e814895b)
+
+### Description
+
+Adds a ratcatcher album handoff branch: when the player has the album, the NPC offers a choice to give it up or keep it, and the accepted trade consumes the item and grants two AP rounds. Includes the associated dialog trigger, info flag, and English/Russian localization strings.
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/dialogs_agroprom.xml
+- M gamedata/config/gameplay/info_sak_way.xml
+- M gamedata/config/text/eng/stable_dialogs_agroprom.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+
+<!-- nlc-changelog-commit: 800f84e263f85e2fee994708143e7e213e1173cc -->
+## 25.09.26 22:07 МСК - Починил диалог Долга: нет доступных фраз
+
+Commit: [800f84e](https://github.com/jordan1227/improved_to_he/commit/800f84e263f85e2fee994708143e7e213e1173cc)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_military.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+
+<!-- nlc-changelog-commit: 67588e4e02e9e054c25bdb09bd7e94e276e6fae4 -->
+## 25.09.26 19:52 МСК - Вернул скорость кровососу на Военных складах
+
+Commit: [67588e4](https://github.com/jordan1227/improved_to_he/commit/67588e4e02e9e054c25bdb09bd7e94e276e6fae4)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/creatures/m_bloodsucker.ltx
+
+<!-- nlc-changelog-commit: e887438bd32afa932a1162c51b13ccbddefe8c57 -->
+## 25.09.26 19:47 МСК - Кровосос
+
+Commit: [e887438](https://github.com/jordan1227/improved_to_he/commit/e887438bd32afa932a1162c51b13ccbddefe8c57)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/creatures/m_bloodsucker.ltx
+
+<!-- nlc-changelog-commit: 71e28f65e28253b4a2e791fb9e6d115dbe2c6772 -->
+## 25.09.26 19:16 МСК - ПНВ нельзя положить в контейнер для артефактов
+
+Commit: [71e28f6](https://github.com/jordan1227/improved_to_he/commit/71e28f65e28253b4a2e791fb9e6d115dbe2c6772)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/kotovod/dsh_drag_drop.script
+- M gamedata/scripts/kotovod/ui_arc_container_menu.script
+
+<!-- nlc-changelog-commit: 920913e9fa637c6353e21a23278aa4a9b42ea284 -->
+## 25.09.26 19:00 МСК - Вернул +1 на облегченной
+
+Commit: [920913e](https://github.com/jordan1227/improved_to_he/commit/920913e9fa637c6353e21a23278aa4a9b42ea284)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/amk/amk_anoms.script
+
+<!-- nlc-changelog-commit: 735e9f433fe5cb956773c73ea269c84e889e2bf5 -->
+## 25.09.26 18:13 МСК - Поправил цену РПК.
+
+Commit: [735e9f4](https://github.com/jordan1227/improved_to_he/commit/735e9f433fe5cb956773c73ea269c84e889e2bf5)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/trade_npc/trade_sherstyk.ltx
+
+<!-- nlc-changelog-commit: cfd0dd7e1de6634738ec5e82905e71cddf7e834f -->
+## 25.09.26 17:59 МСК - Добавил Глузова и напаника в исключения.
+
+Commit: [cfd0dd7](https://github.com/jordan1227/improved_to_he/commit/cfd0dd7e1de6634738ec5e82905e71cddf7e834f)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_protected.script
+
+<!-- nlc-changelog-commit: 6457fc9b88ab71200befc1953679419eac2fd954 -->
+## 25.09.26 17:38 МСК - Вернул гиганта на болота
+
+Commit: [6457fc9](https://github.com/jordan1227/improved_to_he/commit/6457fc9b88ab71200befc1953679419eac2fd954)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/amk/amk_respawns.ltx
+- M gamedata/config/scripts/amk/marsh.ltx
+- M gamedata/scripts/amk/amk_mod.script
+
+<!-- nlc-changelog-commit: 07a727b21e33abc8e1c7b9972ca6bd366877d06a -->
+## 25.09.26 17:13 МСК - Переименовал ствол для опциональных паков.
+
+Commit: [07a727b](https://github.com/jordan1227/improved_to_he/commit/07a727b21e33abc8e1c7b9972ca6bd366877d06a)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/string_table_enc_weapons.xml
+- M gamedata/config/text/rus/string_table_enc_weapons.xml
+
+### Other repository files changed
+
+- M Опционально/оружие/WEAPONS_NLC30/gamedata/config/weapons/w_apb.ltx
+- M Опционально/оружие/WEAPONS_NLC_ALT/gamedata/config/weapons/w_apb.ltx
+
+<!-- nlc-changelog-commit: 99c0c9eb5854bbce044a16c3afe8712e77811652 -->
+## 25.09.26 17:00 МСК - Добавил группы военных на болотах в исключения.
+
+Commit: [99c0c9e](https://github.com/jordan1227/improved_to_he/commit/99c0c9eb5854bbce044a16c3afe8712e77811652)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_protected.script
+
+<!-- nlc-changelog-commit: b7675691acd9df2897a34337665fc7de3e1dba1a -->
+## 25.09.26 09:51 МСК - Манифест
+
+Commit: [b767569](https://github.com/jordan1227/improved_to_he/commit/b7675691acd9df2897a34337665fc7de3e1dba1a)
+
+### Description
+
+Moves match-strike and delayed-flame logic out of generic physics and SAK into a dedicated sivol_match_ignition script, centralizing HUD/slot ownership, consumption, roll/commit checks, hit cancellation, watchdogs, and lifecycle subscriptions. bind_physic_object delegates ignition to the new module, old SAK match helpers are removed, and the addon list is updated for cleaner separation and reuse. This batch also includes the related text/version/manifest updates and the surrounding gameplay fixes shipped in the current release.
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: e6434c4a71894431213ba78a76dc7dfa74949719 -->
 ## 25.09.26 09:50 МСК - Extract match ignition to sivol module. Фикс розжига
