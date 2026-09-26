@@ -37,6 +37,7 @@ local PDA_PRICE_EPOCH_KEY = "pda_price_epoch"
 
 function attach(sm)
     sm:subscribe({ signal = "on_trade_open",  fun = this.on_trade_open 	})
+    sm:subscribe({ signal = "on_update", fun = this.on_update })
     sm:subscribe({ signal = "on_trade", 	  fun = this.on_trade	  	})
     sm:subscribe({ signal = "on_trade_hide",  fun = this.on_trade_hide 	})
     sm:subscribe({ signal = "on_trade_money", fun = this.on_trade_money })
@@ -46,9 +47,19 @@ end
 local buy_items     = {}
 local sold_items    = {}
 local price_items_table = {}
+local bar_trade_watching = false
+local bar_trade_last_money = nil
 local pda_sold_ids = {}            -- id сданных за этот трейд пда (для зарядки у yantar_semenov)
 
 function on_trade_open()
+	if level.name() == 'l05_bar' then
+		local npc = level:get_second_talker()
+		bar_trade_watching = true
+		bar_trade_last_money = db.actor:money()
+		log2('[bar_trade_money] open npc=%s actor=%s other=%s tradein=%s',
+			tostring(npc and npc:name()), tostring(bar_trade_last_money),
+			tostring(npc and npc:money()), tostring(get_value('tradein_npc')))
+	end
 	buy_items  = {}
 	sold_items = {}
 	pda_sold_ids = {}
@@ -112,7 +123,22 @@ function get_cost( obj )
     end
 end
 
+function on_update()
+    if not bar_trade_watching or level.name() ~= 'l05_bar' or not db.actor then return end
+    local money = db.actor:money()
+    if money ~= bar_trade_last_money then
+        log2('[bar_trade_money] change actor=%s previous=%s',
+            tostring(money), tostring(bar_trade_last_money))
+        bar_trade_last_money = money
+    end
+end
+
 function on_trade_money( trader, money_out, money_in )
+    if level.name() == 'l05_bar' then
+        log2('[bar_trade_money] transaction npc=%s out=%s in=%s actor=%s other=%s',
+            trader:name(), tostring(money_out), tostring(money_in),
+            tostring(db.actor:money()), tostring(trader:money()))
+    end
     if trader:name() == "yan_ecolog_kruglov" then 
         log2( "%s - потраченные деньги: %s, полученные деньги: %s", trader:name(), money_out, money_in )
         local barter_money = get_value( "barter_money", {} )
@@ -254,6 +280,13 @@ function count_buy_items( items )
 end
 
 function on_trade_hide()
+    if level.name() == 'l05_bar' then
+        local npc = level:get_second_talker()
+        log2('[bar_trade_money] hide npc=%s actor=%s other=%s tradein=%s',
+            tostring(npc and npc:name()), tostring(db.actor:money()),
+            tostring(npc and npc:money()), tostring(get_value('tradein_npc')))
+        bar_trade_watching = false
+    end
     local sold_counts = count_sold_items( sold_items )
     local buy_counts = count_buy_items( buy_items )
 
@@ -720,6 +753,12 @@ local actor_money = -1
 local vcost = math.random( 500, 2000 )
 
 function tradein_start( npc, buy, sell, use_cond, use_rand )
+	if actor_money >= 0 then
+		log2('[bar_trade_money] duplicate barter start ignored npc=%s actor=%s saved=%s',
+			npc:name(), tostring(db.actor:money()), tostring(actor_money))
+		return
+	end
+	log2('[bar_trade_money] barter start npc=%s actor=%s', npc:name(), tostring(db.actor:money()))
 	local tt = get_cfg( npc )
 	tt.noupdate = true
 	actor_money = db.actor:money()
@@ -796,6 +835,8 @@ function switch_to_tradein( npc )
 end
 
 function tradein_stop( npc )
+    log2('[bar_trade_money] barter stop npc=%s actor=%s saved=%s',
+        npc:name(), tostring(db.actor:money()), tostring(actor_money))
     local tt = get_cfg( npc )
 
 	-- Для этих не дисаблим обычную торговлю
@@ -819,7 +860,8 @@ function tradein_stop( npc )
 				log3( "barter stop is %s", barter_money )
 		end
 		db.actor:set_money( actor_money )
-		actor_money = -1        
+		actor_money = -1
+        log2('[bar_trade_money] barter restored npc=%s actor=%s', npc:name(), tostring(db.actor:money()))
 	end
 
     remove_value( "tradein_npc" )
