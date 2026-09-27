@@ -1,6 +1,83 @@
-<!-- nlc-changelog-head: 1d37c6ee552575749ed167a89760c870b26ce438 -->
+<!-- nlc-changelog-head: d203a8a36d99a62052924e09ac53cc446322b6c0 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: d203a8a36d99a62052924e09ac53cc446322b6c0 -->
+## 27.09.26 07:44 МСК - Микстуры. Фикс + эффект + квест. Add mixture translation and effects
+
+Commit: [d203a8a](https://github.com/jordan1227/improved_to_he/commit/d203a8a36d99a62052924e09ac53cc446322b6c0)
+
+### Description
+
+This changeset adds the Sanatorium mixture translation quest flow for Docent and Sakharov, including offer/wait/ready states and instruction deciphering gates. It also updates the mixture use logic, carry-weight and psy-immunity effects, inventory descriptions, and related spawn/timing fixes so the new quest and item behavior work consistently.
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/info_sak_way.xml
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/config/text/eng/sak_strings_six2.xml
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/eng/string_table_items.xml
+- M gamedata/config/text/eng/ui_st_inventory.xml
+- M gamedata/config/text/rus/sak_strings_six2.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/config/text/rus/string_table_items.xml
+- M gamedata/config/text/rus/ui_st_inventory.xml
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/params/params.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+
+<!-- nlc-changelog-commit: 0606e2d3fbfa0cb211633a6099e3ee1a4c37b281 -->
+## 27.09.26 03:55 МСК - Fix Sherstyk trader stock and GL logic
+
+Commit: [0606e2d](https://github.com/jordan1227/improved_to_he/commit/0606e2d3fbfa0cb211633a6099e3ee1a4c37b281)
+
+### Description
+
+This update rebalances Sherstyk's trade prices and adds a safeguard for trader stock setup. GL attachments are now blocked for traders and stale launcher flags are cleared from trader inventory, while normal NPCs retain the existing behavior. The stock preparation also resets invalid abakan addon state so barter flow remains consistent and trader inventories do not carry broken GL metadata.
+
+### Game files changed
+
+- M gamedata/config/misc/trade_npc/trade_sherstyk.ltx
+- M gamedata/scripts/ai_additions/rx_gl.script
+- M gamedata/scripts/trade_manager.script
+
+<!-- nlc-changelog-commit: 5d8f3fa59caad43d12a29cd5afebdf0ed1ef1976 -->
+## 27.09.26 02:43 МСК - Tune weapon impulse values
+
+Commit: [5d8f3fa](https://github.com/jordan1227/improved_to_he/commit/5d8f3fa59caad43d12a29cd5afebdf0ed1ef1976)
+
+### Description
+
+Raised the impulse values for several shotgun and buckshot weapon entries to match the repo baseline and improve hit force/knockback consistency. This updates the affected weapon profiles in weapons.ltx without changing other stat lines.
+
+### Game files changed
+
+- M gamedata/config/weapons/weapons.ltx
+
+<!-- nlc-changelog-commit: 2e27d1de7e57b87e7884b4c37d29fb679051b65f -->
+## 27.09.26 02:00 МСК - Манифест
+
+Commit: [2e27d1d](https://github.com/jordan1227/improved_to_he/commit/2e27d1de7e57b87e7884b4c37d29fb679051b65f)
+
+### Description
+
+Add detailed 27.09.26 changelog entries (multiple fixes/features: Sherstyk barter/pricing, Rashpil flow, artifact RNG/restoration, artefact degradation, ammo balance, bar trade logging, af_eye tuning, teleport/spawner fixes, Petrenko barter wallet, and more). Update UI version strings (eng/rus) to "27.09.26 01:59". Bump manifest metadata (version, bytes) and refresh file hashes to reflect the updated files.
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 1d37c6ee552575749ed167a89760c870b26ce438 -->
 ## 27.09.26 01:58 МСК - Бартер Шерстюка из Харды. Fix Sherstyk trade pricing and barter
