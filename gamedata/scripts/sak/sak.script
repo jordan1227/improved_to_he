@@ -5087,8 +5087,11 @@ if lname == "l12_stancia_new" or lname == "l12_stancia_2_new" then
 		end	
 		if lname=="l05_bar" then
 			if not actor:has_info("bar_seif_prot_out") then 
-				obj=level_object_by_sid(31)
-				grabb_bar_seif (obj:id(),actor) 
+				-- [HE-PORT]
+				local seif = g_sim:story_object(31)
+				if seif then
+					grabb_bar_seif (seif.id,actor) 
+				end
 			end
 			if actor:has_info("info_borov_revenge") and not actor:has_info("l05_bar_prot_out") then 
 				voronin_seif_out()			
@@ -5149,28 +5152,43 @@ end
 
 function grabb_bar_seif (obj_id,actor)
 	have_many=0
-	local box = client_obj(obj_id)
 	local rem_items = {}
-	if box then
-		local cnt = box:inv_box_count()
-		for i = 0, cnt - 1 do
-			local item = box:object_from_inv_box(i)
-			if item then
-				rem_items[item:id()] = item
-				local nname=item:section()
-				if strpos(nname, "af_",1,true) or strpos(nname, "arc_art_box_",1,true) then
-					add_price_arts(item)
+	local vbox = _G.he_magic_box and he_magic_box.is_virtual and he_magic_box.is_virtual( obj_id )
+	if vbox then
+		-- [HE-PORT]
+		for _, item in ipairs( he_magic_box.load( obj_id ) ) do
+			local nname=item.section
+			if strpos(nname, "af_",1,true) or strpos(nname, "arc_art_box_",1,true) then
+				add_price_arts_virtual( item )
+			end
+		end
+	else
+		local box = client_obj(obj_id)
+		if box then
+			local cnt = box:inv_box_count()
+			for i = 0, cnt - 1 do
+				local item = box:object_from_inv_box(i)
+				if item then
+					rem_items[item:id()] = item
+					local nname=item:section()
+					if strpos(nname, "af_",1,true) or strpos(nname, "arc_art_box_",1,true) then
+						add_price_arts(item)
+					end
 				end
 			end
 		end
 	end
-	if (have_many>350000 or actor:has_info("deactivate_radar_fall")) and not actor:has_info("bar_seif_prot_out") then 
+	if (have_many>300000 or actor:has_info("deactivate_radar_fall")) and not actor:has_info("bar_seif_prot_out") then 
 		actor:give_info_portion("bar_seif_prot_out")
 		local name,sname = amk_names_lists.get_strings()
 		send_tip(game.translate_string("grabb_bar_seif"),name.." "..sname,20,15,"uniq","news","gray")
 		name,sname = amk_names_lists.get_strings()
 		send_tip(game.translate_string("grabb_bar_seif2"),name.." "..sname,25,15,"uniq","news","gray")
-		release_tbl(rem_items)
+		if vbox then
+			he_magic_box.save( obj_id, {} )
+		else
+			release_tbl(rem_items)
+		end
 	end
 end
 function voronin_seif_out()
@@ -9634,6 +9652,26 @@ local rand_stalk = {
 				"val_bandit_bodyguard"  
 				}
 
+-- [HE-PORT]
+function get_container_arts(cont_id)
+    local box = level.object_by_id(cont_id)
+    if not box then return nil end
+    local pk = get_netpk(box)
+    if not pk then return nil end
+    local data = pk:get()
+    if not data.custom_data or data.custom_data == "" then return nil end
+    local sect = box:section()
+    local slots = get_u32(sect, "container_slots") or 8
+    local arts = arc_radiation.decode_custom_data(data.custom_data, sect, slots)
+    local result = {}
+    for _, a in ipairs(arts) do
+        if a.section then
+            table.insert(result, a)
+        end
+    end
+    return #result > 0 and result or nil
+end
+
 function add_price_arts(obj)
     if not obj then return 0 end
     local art_sect = obj
@@ -9674,6 +9712,45 @@ function add_price_arts(obj)
         log2("[add_price_arts] single art cost=%.0f", sys_cost * cond)
     end
     return sys_cost * cond
+end
+
+-- [HE-PORT]
+function add_price_arts_virtual(item)
+    if not item or not item.section then return 0 end
+    local art_sect = item.section
+    local cond = (item.condition or 100) / 100
+    local n = item.count or 1
+    local ini = system_ini()
+    local saldo = 0
+    if strposx(art_sect, "arc_art_box_") then
+        local info = item.info
+        if not info or info == "" then
+            log2("[add_price_arts_virtual] sect='%s' no custom_data", art_sect)
+            return 0
+        end
+        local slots = get_u32(art_sect, "container_slots") or 8
+        local arts = arc_radiation.decode_custom_data(info, art_sect, slots)
+        for _, rec in ipairs(arts) do
+            local sect = rec.section
+            if sect and ini:section_exist(sect) then
+                local c = rec.condition or 1
+                local sys_cost = ini:r_float(sect, "cost")
+                have_many = have_many + sys_cost * c * n
+                saldo = saldo + sys_cost * c * n
+                log2("[add_price_arts_virtual] art sect='%s' cond=%.2f x%d saldo+=%.0f", sect, c, n, sys_cost * c * n)
+            end
+        end
+        log2("[add_price_arts_virtual] container sect='%s' saldo=%.0f", art_sect, saldo)
+        return saldo
+    end
+    if not ini:section_exist(art_sect) then
+        log2("[add_price_arts_virtual] section '%s' not exist in ini", art_sect)
+        return 0
+    end
+    local sys_cost = ini:r_float(art_sect, "cost")
+    have_many = have_many + sys_cost * cond * n
+    log2("[add_price_arts_virtual] single art sect='%s' x%d cost=%.0f", art_sect, n, sys_cost * cond * n)
+    return sys_cost * cond * n
 end
 
 
