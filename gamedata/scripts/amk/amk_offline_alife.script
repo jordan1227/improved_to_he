@@ -2609,18 +2609,24 @@ function is_unlooted_treasure_box( box )
     return false
 end
 
-local function used_box_var( box_id )
-    return "he_leave_steal_used." .. tostring( box_id )
+local function placed_items()
+    return get_value( "he_leave_steal_items", {} )
 end
 
-function mark_box_used( box_id )
-    if not box_id then return end
-    set_value( used_box_var( box_id ), true )
+function track_placed_item( item_id, box_id )
+    if not item_id or not box_id then return end
+    local t = placed_items()
+    t[ tostring( item_id ) ] = box_id
+    set_value( "he_leave_steal_items", t )
 end
 
-function is_player_used_box( box )
-    if not box or not box.id then return false end
-    return get_value( used_box_var( box.id ), false ) == true
+function untrack_placed_item( item_id )
+    if not item_id then return end
+    local t = placed_items()
+    local key = tostring( item_id )
+    if t[ key ] == nil then return end
+    t[ key ] = nil
+    set_value( "he_leave_steal_items", t )
 end
 
 function box_skip_leave_steal( box )
@@ -2628,7 +2634,6 @@ function box_skip_leave_steal( box )
     if is_paid_stash_box( box ) then return true end
     if is_unlooted_treasure_box( box ) then return true end
     if box_is_protected( box ) then return true end
-    if not is_player_used_box( box ) then return true end
     return false
 end
 
@@ -2674,6 +2679,13 @@ function empty_box_for_steal( box, kids )
         end
     end
 
+    if _G.he_magic_box and he_magic_box.is_virtual( box_id ) then
+        if table.getn( he_magic_box.load( box_id ) ) > 0 then
+            dropped = dropped + 1
+        end
+        he_magic_box.drop_storage( box_id )
+    end
+
     items[ box_id ] = nil
     set_box_trapped( box_id, 0 )
     set_box_owner( box_id, BAD_OBJ_ID )
@@ -2685,20 +2697,37 @@ function steal_level_on_leave( level_name )
     if not db.actor then return 0 end
 
     local items_hit = 0
+    local t = placed_items()
+    for key, box_id in pairs( t ) do
+        local it  = g_sim:object( tonumber( key ) )
+        local box = it and it.parent_id == box_id and g_sim:object( box_id )
+        if not box then
+            t[ key ] = nil
+        elseif
+            ( box.parent_id == nil or box.parent_id == BAD_OBJ_ID )
+            and object_level_name_safe( box ) == level_name
+            and not box_skip_leave_steal( box )
+        then
+            t[ key ] = nil
+            do_drop_object( it )
+            items_hit = items_hit + 1
+        end
+    end
+    set_value( "he_leave_steal_items", t )
+
     local ids, cnt = registry.all_objects( true )
-
-    local boxes = {}
+    local rucks = {}
     local kids_by_box = {}
-
     for n = 1, cnt do
         local obj = g_sim:object( ids[ n ] )
         if obj then
-            if is_box_or_rukzak( obj ) then
+            if obj:section_name() == "rucksack" then
                 if
                     ( obj.parent_id == nil or obj.parent_id == BAD_OBJ_ID )
                     and object_level_name_safe( obj ) == level_name
+                    and not box_skip_leave_steal( obj )
                 then
-                    boxes[ obj.id ] = obj
+                    rucks[ obj.id ] = obj
                 end
             elseif obj.parent_id and obj.parent_id ~= BAD_OBJ_ID then
                 if not kids_by_box[ obj.parent_id ] then
@@ -2709,15 +2738,8 @@ function steal_level_on_leave( level_name )
         end
     end
 
-    for box_id, box in pairs( boxes ) do
-        if not box_skip_leave_steal( box ) then
-            local d = empty_box_for_steal( box, kids_by_box[ box_id ] )
-            if d > 0 then
-                items_hit = items_hit + d
-            else
-                items[ box_id ] = nil
-            end
-        end
+    for box_id, box in pairs( rucks ) do
+        items_hit = items_hit + empty_box_for_steal( box, kids_by_box[ box_id ] )
     end
 
     return items_hit
@@ -2994,6 +3016,7 @@ end
 
 function on_item_take( obj )
     if not obj then return end
+    untrack_placed_item( obj:id() )
     item_change( obj )
     check_metka_take( obj )
 end
@@ -3005,19 +3028,17 @@ function on_item_drop( obj )
     if sobj and sobj.parent_id then
         set_box_owner( sobj.parent_id, BAD_OBJ_ID )
         -- [HE-PORT]
-        if sobj.parent_id ~= BAD_OBJ_ID then
-            local parent = g_sim:object( sobj.parent_id )
-            if parent and is_box_or_rukzak( parent ) then
-                mark_box_used( sobj.parent_id )
-            end
+        local parent = sobj.parent_id ~= BAD_OBJ_ID and g_sim:object( sobj.parent_id )
+        if parent and is_box_or_rukzak( parent ) then
+            track_placed_item( obj:id(), sobj.parent_id )
+        else
+            untrack_placed_item( obj:id() )
         end
     end
 end
 
 function take_item_from_box(box, item)
     local box_id    = box:id()
-    -- [HE-PORT]
-    mark_box_used( box_id )
     local trman     = treasure_manager.get_treasure_manager()
     local needempty = true
     if trman then
