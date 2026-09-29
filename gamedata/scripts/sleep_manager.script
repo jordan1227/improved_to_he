@@ -179,8 +179,17 @@ function restore_coef()
 	local coef = 1
 	-- вещи в слотах мешают выспаться быстрее
 	if act:item_in_slot(1) or act:item_in_slot(2) then coef = 0.85 end
-	if get_shadow_inv():update_storage() or act:item_in_slot(6) then coef = 0.75 end
+	-- read-only check: update_storage() has side effects (pickup animation) and must not run every sleep tick
+	if act:object("shadow_inventory") or act:item_in_slot(6) then coef = 0.75 end
 	return coef
+end
+
+-- sleepiness removed by `minutes` of sleep; shared by the wake-up check and relaxation() so they cannot disagree
+local max_sleep_hours = 30 -- safety net only: worst case (coef 0.75, thirst 1.0) needs 270 / 0.1875 / 60 = 24 h
+function sleep_reduction(minutes)
+	local reduction = minutes * 0.5 * restore_coef() * thirst.sleep_quality()
+	if black_tip.have_black_tip() then reduction = reduction * 0.7 end
+	return reduction
 end
 
 magic_sleep = false
@@ -242,6 +251,7 @@ function starter(scale)
 end
 
 local enough_sleep = false
+local thirst_stop_queued = false
 function test_enough_sleep()
 	ogse_signals.get_mgr():reschedule(20)
 	if not sleeping then
@@ -249,14 +259,17 @@ function test_enough_sleep()
 	end
 	-- [HE-PORT]
 	if thirst.get_thirst() >= 0.8 then
-		schedule.add( "stop_sleep", "sleep_manager.stopper()", 1000 )
+		-- schedule.add does not deduplicate: queue the wake-up once, not on every tick
+		if not thirst_stop_queued then
+			thirst_stop_queued = true
+			schedule.add( "stop_sleep", "sleep_manager.stopper()", 1000 )
+		end
 		return
 	end
 	local minutes = sleep_minutes()
-	local coef = restore_coef()
-	local sleep_reduction = minutes * 0.5 * coef
-	log2("#DBG: test_enough_sleep: minutes [%d], get_sleepiness [%.1f], sleep_reduction [%.1f]",minutes,get_sleepiness(),sleep_reduction)
-	if get_sleepiness() - sleep_reduction <= 0 or minutes / 60 >= 10 then
+	local reduction = sleep_reduction(minutes)
+	log2("#DBG: test_enough_sleep: minutes [%d], get_sleepiness [%.1f], sleep_reduction [%.1f]",minutes,get_sleepiness(),reduction)
+	if get_sleepiness() - reduction <= 0 or minutes / 60 >= max_sleep_hours then
 		if not enough_sleep then
 			-- сны смотрим под самое восстановление сил
 			reset_tf()
@@ -269,13 +282,12 @@ end
 function relaxation() -- убирание сонливости во время сна
 	local minutes = sleep_minutes()
 	local coef = restore_coef() * thirst.sleep_quality()
-	local sleep_reduction = minutes * 0.5 * coef
-	if black_tip.have_black_tip() then sleep_reduction = sleep_reduction * 0.7 end
+	local reduction = sleep_reduction(minutes)
 
-	local sleepiness = get_sleepiness() - sleep_reduction
+	local sleepiness = get_sleepiness() - reduction
 	params.tiredness_add()
 	log2("#DBG: sleep_time = %d, decreasing sleepiness %.1f with value %.1f, coef = %.3f",
-                            minutes, get_sleepiness(), sleep_reduction, coef)
+                            minutes, get_sleepiness(), reduction, coef)
 	change_sleepiness(sleepiness)
 	return sleepiness
 end
@@ -286,6 +298,7 @@ function stopper()
 		subscribed = nil
 	end
 	enough_sleep = false
+	thirst_stop_queued = false
 	if not is_sleep_active() then
 		log2("#WARN: sleep stopper executed, but actor not sleeping")
 		return
