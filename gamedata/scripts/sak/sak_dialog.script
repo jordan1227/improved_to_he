@@ -26,6 +26,7 @@ function attach(sm)
   sm:subscribe({signal = "on_late_init_all", fun = this.late_init})
   sm:subscribe({signal = "on_before_save_game", fun = this.on_before_save})
   sm:subscribe({signal = "on_update", fun = this.reputation_down_check})
+  sm:subscribe({signal = "on_first_update", fun = this.fix_stuck_charge_pda}) -- [sivol]
 end
 
 table_food={
@@ -2160,7 +2161,8 @@ function check_cond(obj,c)
 	local pk = get_netpk(obj,1)
 	local data = pk:get()
 	local cond=data.condition
-	return cond >= c
+	-- [sivol] кондиция хранится как float (0.35 -> 0.3499999), поэтому допуск
+	return cond >= c - 0.0001
 end
 
 -- Sn: универсальные функции для генерации/выдачи заранее заданных случайных артов
@@ -9315,6 +9317,17 @@ function take_uncharge_pda( first_speaker, second_speaker )
     npc:transfer_item( pda, db.actor )
     sak.relocate_item( "in", "device_pda_npc", 1 )
 end
+-- [sivol] сейвы, застрявшие в зарядке ПДА до возврата взаимного disable ready/not_ready:
+-- not_ready висит, а таймер уже сброшен при выдаче ПДА - "зарядник занят" навсегда.
+-- Во время настоящей зарядки таймер всегда взведён (ставится вместе с not_ready).
+function fix_stuck_charge_pda()
+    for _, name in ipairs( { "vergas", "shurup", "saharov", "lisaped" } ) do
+        local info = name .. "_charge_pda_not_ready"
+        if has_alife_info( info ) and dialog_timer_value( name .. "_charge_pda_time" ) == 0 then
+            db.actor:disable_info_portion( info )
+        end
+    end
+end
 function sidor_shustriy_reward()
 	if have_razgruzka() then
 		local ammo_tbl = {
@@ -10890,6 +10903,17 @@ function give_uncharge_pda( first_speaker, second_speaker, npc_name )
     end
 	
 	local npc = charge_pda_npc( first_speaker, second_speaker )
+	-- [sivol] ПДА, отданный в прошлый раз без начала зарядки (ушёл из диалога после передачи),
+	-- сразу возвращаем, как при ремонте, иначе он навсегда оставался у техника
+	local prev_id = charge_pda_ids()[ tostring( npc:id() ) ]
+	if prev_id and prev_id > 0 then
+		local prev = level.object_by_id( prev_id )
+		local owner = prev and prev:parent()
+		if owner and owner:id() == npc:id() then
+			npc:transfer_item( prev, db.actor )
+			sak.relocate_item( "in", "device_pda_npc", 1 )
+		end
+	end
 	charge_pda_set( npc, 0 )
     
     -- Ищем ПДА со статусом 2
