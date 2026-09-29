@@ -9,8 +9,32 @@ local last_page, last_progress = nil, nil
 local SLIDE_MS = 250
 local HINT_MS = 10000
 local hint_until = 0
+local hint_shown_at = 0
 local PAGE_KEY = "he_watch_selected_page"
-local HINT_KEY = "he_watch_view_hint_seen"
+-- First-use hint is learned after one page scroll, or after HINT_LEARN_MS of total
+-- on-screen time across raises; a quick tap no longer consumes it.
+-- The superseded boolean key "he_watch_view_hint_seen" is intentionally not read.
+local HINT_DONE_KEY = "he_watch_view_hint_done"
+local HINT_TIME_KEY = "he_watch_view_hint_ms"
+local HINT_LEARN_MS = 4000
+
+local function hint_done()
+    return get_value(HINT_DONE_KEY, false) == true
+end
+
+local function mark_hint_done()
+    set_value(HINT_DONE_KEY, true)
+end
+
+local function account_hint_time()
+    if hint_shown_at <= 0 then return end
+    local shown = time_global() - hint_shown_at
+    hint_shown_at = 0
+    if shown <= 0 or hint_done() then return end
+    local total = (tonumber(get_value(HINT_TIME_KEY, 0)) or 0) + shown
+    set_value(HINT_TIME_KEY, total)
+    if total >= HINT_LEARN_MS then mark_hint_done() end
+end
 
 local function write_page()
     if target == last_page and progress == last_progress then return end
@@ -18,7 +42,10 @@ local function write_page()
     last_page, last_progress = target, progress
 end
 
-local function remove_hint()
+-- account = false on load/stop: the outgoing game's store must not be written then.
+local function remove_hint(account)
+    if account ~= false then account_hint_time() end
+    hint_shown_at = 0
     hint_until = 0
     if not hint then return end
     local old = hint
@@ -31,7 +58,7 @@ end
 
 local function show_hint()
     if hint and time_global() >= hint_until then remove_hint(); return end
-    if not hint and get_value(HINT_KEY, false) then return end
+    if not hint and hint_done() then return end
     local ok, err = pcall(function()
         if not hint then
             hint = CUIStatic()
@@ -41,8 +68,8 @@ local function show_hint()
             hint:SetTextColor(255, 238, 153, 26)
             hint:Show(true)
             get_hud():AddDialogToRender(hint)
-            hint_until = time_global() + HINT_MS
-            set_value(HINT_KEY, true) -- persisted first-use hint, no new deadline on scroll
+            hint_until = time_global() + HINT_MS -- no new deadline on scroll
+            hint_shown_at = time_global()
         end
         hint:SetText(game.translate_string(target == 0 and "he_watch_view_clock" or "he_watch_view_radiation"))
     end)
@@ -54,7 +81,7 @@ end
 
 local function reset()
     session, target, progress, start_progress, started_at = nil, 0, 0, 0, 0
-    remove_hint()
+    remove_hint(false)
     write_page()
 end
 
@@ -108,6 +135,7 @@ local function on_wheel_rotation(vol)
     set_value(PAGE_KEY, target)
     write_page()
     show_hint()
+    mark_hint_done() -- the player has used the gesture; the visible hint finishes its time
 end
 
 function attach(sm)

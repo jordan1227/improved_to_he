@@ -2,12 +2,24 @@
 #define HE_WATCH_COMMON_H
 /*
 	[HE-PORT] Shared watch HUD contract for the radiation ring and alarm editor.
-	Lua writer: gamedata/scripts/ogsr_shaders_control.script (watch_update).
+	Lua writers: gamedata/scripts/ogsr_shaders_control.script (watch_update);
+	m_he_watch_alarm_fx only: gamedata/scripts/he_watch_ui.script.
 */
 
 uniform float4 m_he_watch_page; // x = time/bleeding 0 or radiation/psy 1, y = icon slide 0..1
 uniform float4 m_he_watch_ring;   // x = radiation fill 0..1, y = ring available 1/0, z/w reserved
 uniform float4 m_he_watch_alarm;  // x = alarm enabled 1/0, y = editor active 1/0, z = saved alarm hour, w = saved alarm minute
+uniform float4 m_he_watch_alarm_fx; // x = alarm ringing 1/0, y = hold progress 0..1 (he_watch_ui.script), z/w reserved
+
+// Warm amber shared by the bell icon, ringing pulse and hold arc; distinct from the radiation yellow.
+static const float3 he_watch_alarm_amber = float3(1.0, 0.88, 0.55);
+
+// ~1 Hz, close to the beeper rate: short bright peak, longer dim tail.
+float he_watch_alarm_pulse()
+{
+	float p = 0.5 + 0.5 * cos(timers.x * 6.28318530718);
+	return p * p;
+}
 
 float he_watch_arc(float progress, float fraction)
 {

@@ -396,7 +396,7 @@ local function discard_watch_presentation(st)
     if watch_presentation == st then watch_presentation = nil end
     watch_is_active = nil
 end
--- [HE-PORT] Shared watch presentation. mode = "view" (kWATCH hold) or "alarm" (editor).
+-- [HE-PORT] Shared watch presentation. mode = "view" (kWATCH hold or toggle) or "alarm" (editor).
 -- Returns the presentation session id, or nil when the watch cannot be raised.
 function begin_watch_presentation(mode, on_ready)
 	if watch_presentation then return nil end
@@ -461,7 +461,8 @@ end
 
 -- [HE-PORT] Play the exit animation and restore the actor slot. Calls on_closed with
 -- the presentation session id on success and with false when the session is not valid.
-function end_watch_presentation(session, on_closed)
+-- speed scales the exit animation (default 1).
+function end_watch_presentation(session, on_closed, speed)
 	local st = watch_presentation
 	if not st or (session and st.session ~= session) or st.phase == "closing" or st.phase == "done" then
 		if on_closed then on_closed(false) end
@@ -480,6 +481,10 @@ function end_watch_presentation(session, on_closed)
 		if st.phase ~= "done" then
             if valid then restore_after_presentation(st) else discard_watch_presentation(st) end
 		end
+		-- Weapon-key close: slot_keeper activates the pressed slot once the weapon is unhidden.
+		if valid and st.restore_slot and db.actor and db.actor:alive() then
+			slot_keeper.restore_slot(st.restore_slot)
+		end
 		if on_closed then on_closed(valid and st.session or false) end
 	end
 
@@ -489,7 +494,9 @@ function end_watch_presentation(session, on_closed)
 			snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
 		end
 		game.stop_hud_motion()
-		local anm_watch_time = game.play_hud_motion(2, "switch_watch", "anm_end", true, 1)
+		speed = speed or 1
+		local anm_watch_time = game.play_hud_motion(2, "switch_watch", "anm_end", true, speed)
+		log2("[he_watch] lower speed=%.2f duration=%s", speed, tostring(anm_watch_time))
 		dsh.timeout(anm_watch_time, finish)
 	else
 		game.stop_hud_motion()
@@ -511,16 +518,110 @@ function abort_watch_presentation(session)
 	restore_after_presentation(st)
 end
 
+-- [HE-PORT] Weapon slot / fire key lowers the view faster; a slot key restores that slot.
+local WATCH_FAST_LOWER_SPEED = 2.0
+local watch_close_slots = {
+	[key_bindings.kWPN_1] = 0,
+	[key_bindings.kWPN_2] = 1,
+	[key_bindings.kWPN_3] = 2,
+	[key_bindings.kWPN_4] = 3,
+	[key_bindings.kWPN_5] = 4,
+	[key_bindings.kWPN_6] = 5,
+}
+
+local function watch_toggle_mode()
+	return game_options ~= nil and game_options.WatchToggleMode == true
+end
+
+-- Close the regular view now, or queue it until the raise completes.
+local function request_view_close(st, speed, slot)
+	if st.phase == "closing" or st.phase == "done" then return end
+	if slot then st.restore_slot = slot end
+	if speed then st.close_speed = speed end
+	if st.phase == "active" then
+		end_watch_presentation(st.session, nil, st.close_speed)
+	else
+		st.close_requested = true
+	end
+end
+
+-- Hold mode ends on key release; toggle mode ends on the states that would refuse a raise.
+local function view_should_close(session)
+	if not watch_presentation_valid(session) or not db.actor or not db.actor:alive() then return true end
+	if watch_toggle_mode() then
+		return db.actor:is_talking()
+			or get_actor_obj():IsDetectorActive()
+			or level.main_input_receiver() ~= nil
+			or db.actor:ph_capture()
+	end
+	return key_state(bind_to_dik(key_bindings.kWATCH)) == 0
+end
+
+-- While the watch is up, only_allow_movekeys suppresses the native on_key_press
+-- callback, so view keys are polled from raw key state (rising edges only).
+local view_poll_binds = nil
+local view_keys_down = {}
+
+local function view_poll_list()
+	if not view_poll_binds then
+		view_poll_binds = { key_bindings.kWATCH, key_bindings.kWPN_FIRE }
+		for bind in pairs(watch_close_slots) do table.insert(view_poll_binds, bind) end
+	end
+	return view_poll_binds
+end
+
+local function bind_down(bind)
+	local dik = bind_to_dik(bind)
+	if not dik or dik <= 0 then return false end
+	local v = key_state(dik)
+	return v == true or (type(v) == "number" and v ~= 0)
+end
+
+-- Keys already held when the view starts (the watch key itself) are not presses.
+local function snapshot_view_keys()
+	view_keys_down = {}
+	for _, bind in ipairs(view_poll_list()) do view_keys_down[bind] = bind_down(bind) end
+end
+
+local function handle_view_key(st, bind)
+	local slot = watch_close_slots[bind]
+	if slot or bind == key_bindings.kWPN_FIRE then
+		if slot and not (db.actor and db.actor:item_in_slot(slot)) then slot = nil end
+		request_view_close(st, WATCH_FAST_LOWER_SPEED, slot)
+		return true
+	end
+	if bind == key_bindings.kWATCH and watch_toggle_mode() then
+		request_view_close(st)
+		return true
+	end
+	return false
+end
+
+local function watch_view_input_update()
+	local st = watch_presentation
+	if not st or st.mode ~= "view" or st.phase == "closing" or st.phase == "done" then return end
+	if not (db.actor and db.actor:alive()) then return end
+	local act = not device():is_paused() and level.main_input_receiver() == nil
+	for _, bind in ipairs(view_poll_list()) do
+		local down = bind_down(bind)
+		local rising = down and not view_keys_down[bind]
+		view_keys_down[bind] = down
+		if act and rising and handle_view_key(st, bind) then return end
+	end
+end
+
 local function show_watch(key, bind)
 	if bind ~= key_bindings.kWATCH then return end
+	if watch_presentation then return end
+	snapshot_view_keys()
 	begin_watch_presentation("view", function(session)
+		local cur = watch_presentation
+		if cur and cur.session == session and cur.close_requested then
+			end_watch_presentation(session, nil, cur.close_speed)
+			return
+		end
 		dsh.wait_condition(
-			function()
-				return not watch_presentation_valid(session)
-					or not db.actor
-					or not db.actor:alive()
-					or key_state(bind_to_dik(key_bindings.kWATCH)) == 0
-			end,
+			function() return view_should_close(session) end,
 			function()
 				end_watch_presentation(session, nil)
 			end
@@ -537,4 +638,5 @@ function attach( sm )
 	sm:subscribe({ signal = "on_actor_before_use", fun = on_actor_before_use })
 	sm:subscribe({ signal = "on_first_update",     fun = item_animation_reset })
 	sm:subscribe({ signal = "on_key", fun = show_watch })
+	sm:subscribe({ signal = "on_update", fun = watch_view_input_update })
 end
