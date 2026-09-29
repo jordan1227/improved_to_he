@@ -2160,7 +2160,185 @@ function check_cond(obj,c)
 	local pk = get_netpk(obj,1)
 	local data = pk:get()
 	local cond=data.condition
-	return cond >= c
+						if cond>0.95 then return true end
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+function transfer_dart_full()
+	for i=1, #table_dart do
+		for kk,k in pairs(sak_inventory.rucksack) do
+			if strpos(kk, table_dart[i],1,true) and not strpos(kk, "_capsule",1,true) then
+				local kol=#k
+				for m=1,kol do
+					local obj=g_sim:object(k[m])
+					if obj then
+						local pk = get_netpk(obj,1)
+						local data = pk:get()
+						local cond=data.condition
+						if cond>0.95 then misc.release_obj(obj)
+							sak.relocate_item("out", table_dart[i], 1)
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+-- универсальна€ проверка наличи€ предметов с состо€нием >= указанного и их изъ€тие у √√
+-- синтаксис <precondition>sak_dialog.cond_items_have(s,n,c,g)</precondition>, s - секци€ предмета, n - кол-во, c - кондици€, g - флаг изъ€ти€ предмета (true - да, false - нет)
+-- если не задать аргумент(ы) n,c,g, то по дефолту им будут присвоены следующие значени€: 1, 0.95, false
+-- пример: <precondition>sak_dialog.cond_items_have("wpn_toz34",1,0.8,false)</precondition> - проверка наличи€ 1-го тозика, состо€ние >= 0.8
+-- пример: <precondition>sak_dialog.cond_items_have("wpn_ak74",3,0.5,true)</precondition> - проверка наличи€ и последующее изъ€тие 3-Єх ак74, с состо€нием >= 0.5
+-- дл€ артов действует особый синтаксис секций: "a","b","c","d","m1","m2","m3","m4" - таблицы артов 1-го, 2-го, 3-го уровней, пустышки, модификаты всех уровней, соответственно
+-- также дл€ артов можно напр€мую задавать первым аргументом свою собственную таблицу секций 
+-- пример дл€ артов: <precondition>sak_dialog.cond_items_have("b",3,0.65,false)</precondition> - проверка наличи€ 3 любых артов 2-го уровн€, состо€ние >= 0.65
+-- пример дл€ артов: <precondition>sak_dialog.cond_items_have("m3",2,0.35,true)</precondition> - проверка наличи€ и последующее изъ€тие 2 любых гипермодификатов, состо€ние >= 0.35
+-- пример дл€ артов: <precondition>sak_dialog.cond_items_have({"af_drops_dyn3d","af_medusa_dyn4d","af_electra_moonlight"},3,0.88,false)</precondition> - применение своей таблицы
+function cond_items_have(s,n,c,g)
+	local t_s = type(s)
+	if ( t_s ~= "table" and t_s ~= "string" ) then
+		log2("[cond_items_have]: wrong arg type for s = %s",t_s)
+		return
+	end
+	
+	local num, cond, give 
+	if n == nil then
+		num = 1
+	else
+		num = n
+	end
+	if c == nil then
+		cond = 0.95
+	else
+		cond = c
+	end
+	if g == nil then
+		give = false
+	else
+		give = g
+	end
+	-- Manool: затычка дл€ тасков
+	if c == nil and s == "device_pda_npc" then cond = 0.05 end
+	
+	local res = false
+	
+	if t_s == "table" then
+		res = full_art_have(s,num,cond,give)
+	elseif s == "a" then
+		res = full_art_have(table_aart,num,cond,give)
+	elseif s == "b" then
+		res = full_art_have(table_bart,num,cond,give)
+	elseif s == "c" then
+		res = full_art_have(table_cart,num,cond,give)
+	elseif s == "d" then
+		res = full_art_have(table_dart,num,cond,give)
+	elseif string.len(s) == 2 then
+		res = full_art_have(table_modarts["mod"..(string.sub(s,2))],num,cond,give)
+	else
+		local tbl
+		local eatable_tbl = {"device_pda_npc", "arc_art_box_8basic"}
+		if sak.is_food(s) or str_in_tab(s, eatable_tbl) then
+			tbl = sak_inventory.eatable
+		else
+			tbl = sak_inventory.rucksack
+		end
+		local count = 0
+		local exact_items = {}
+		for k,v in pairs(tbl) do
+			if s == k then
+				for i=1,#v do
+					local obj=g_sim:object(v[i])
+					if obj and check_cond(obj,cond) then
+						table.insert(exact_items,obj.id)
+						count = count + 1
+						if count == n then
+							if g then
+								cond_items_give(exact_items,n)
+							end
+							return true
+						end
+					end
+				end
+			end
+		end
+	end
+	return res
+end
+function full_art_have(s,n,c,g,excl_new)
+	local count = 0
+	local excl
+	if excl_new == nil then
+		excl = true
+	else
+		excl = excl_new
+	end
+	local excl_flt
+	if not excl then
+		excl_flt = function (sec) return true end
+	else
+		excl_flt = function (sec) return not strpos(sec,"_new",1,true) end
+	end
+	local exact_arts = {}
+	for i=1, #s do
+		for k,v in pairs(sak_inventory.rucksack) do
+			if strpos(k, s[i],1,true) and not strpos(k, "_capsule",1,true) and excl_flt(k) then
+				for ii=1,#v do
+					local obj=g_sim:object(v[ii])
+					if obj and check_cond(obj,c) then
+						table.insert(exact_arts,obj.id)
+						count = count + 1
+						if count == n then
+							if g then
+								cond_items_give(exact_arts,n)
+							end
+							return true
+						end
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+function cond_items_give(tbl,num)
+	if num ~= 0 and #tbl >= num then
+		local count = 0
+		local rel_sec_tbl = {}
+		while num > count do
+			local obj = g_sim:object(tbl[1])
+			if obj then
+				local sec = obj:section_name()
+				if not rel_sec_tbl[sec] then
+					rel_sec_tbl[sec] = 1
+				else
+					rel_sec_tbl[sec] = rel_sec_tbl[sec] + 1
+				end
+				misc.release_obj(obj)
+				table.remove(tbl,1)
+				count = count + 1
+			end
+		end
+		for k,v in pairs(rel_sec_tbl) do
+			sak.relocate_item("out", k, v)
+		end
+	else
+		log2("[cond_items_give]: !error!")
+	end
+end
+function check_cond(obj,c)
+	if obj == nil then
+		return false
+	end
+	local pk = get_netpk(obj,1)
+	local data = pk:get()
+	local cond=data.condition
+	-- [sivol] кондици€ хранитс€ как float (0.35 -> 0.3499999), поэтому допуск
+	return cond >= c - 0.0001
 end
 
 -- Sn: универсальные функции дл€ генерации/выдачи заранее заданных случайных артов
