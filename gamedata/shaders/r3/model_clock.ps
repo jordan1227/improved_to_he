@@ -96,8 +96,10 @@ float4 main(v2p I) : SV_Target
 	tc.x *= 1.778;
     tc += 0.5;	
 
-    // Reserve the bottom strip for saved alarm time; preserve the top margin.
-    if (m_he_watch_alarm.x > 0.5)
+    // Reserve the bottom strip for saved alarm time / editor bell; preserve the top margin.
+    bool alarm_editing = m_he_watch_alarm.y > 0.5;
+    bool alarm_footer = m_he_watch_alarm.x > 0.5 || alarm_editing;
+    if (alarm_footer)
         tc.y = (I.tc0.y - 0.10) / 0.65;
 
     //Skew it
@@ -148,8 +150,13 @@ float4 main(v2p I) : SV_Target
     watch_color += sample_digit(tc + digit_offset[4], 10, blowout_offset[4]); //Colon
 
     // Main display only: footer and all other surfaces keep their existing roles.
-    if (m_he_watch_page.x > 0.5 && m_he_watch_alarm.y < 0.5)
+    if (m_he_watch_page.x > 0.5 && !alarm_editing)
         watch_color = radiation_readout(float2(I.tc0.x, tc.y));
+
+    // Alarm editor: draft digits blink between full and dim, never fully off,
+    // so they stay readable while scrolling.
+    if (alarm_editing)
+        watch_color.rgb *= lerp(0.35, 1.0, step(0.5, frac(timers.x * 1.5)));
 
 	//Background color
     float3 color = float3(16.0, 18.0, 20.0) / 255.0;
@@ -159,27 +166,37 @@ float4 main(v2p I) : SV_Target
 
 	// Saved-alarm footer. Model UV metric: width/height = 1.83288.
 	// Keep it inside the lower rectangular portion of the clipped clock mesh.
-	if (m_he_watch_alarm.x > 0.5)
+	if (alarm_footer)
 	{
-		int ah = int(floor(m_he_watch_alarm.z + 0.5));
-		int am = int(floor(m_he_watch_alarm.w + 0.5));
 		float2 uv = I.tc0;
-		float4 saved = float4(0, 0, 0, 0);
-		// Square glyph cells in physical face space, with tighter colon spacing.
-		float2 cell = float2(0.09821, 0.18);
-		saved += sample_digit((uv - float2(0.46, 0.80)) / cell, ah / 10, 0);
-		saved += sample_digit((uv - float2(0.54, 0.80)) / cell, ah % 10, 0);
-		saved += sample_digit((uv - float2(0.60, 0.80)) / cell, 10, 0);
-		saved += sample_digit((uv - float2(0.66, 0.80)) / cell, am / 10, 0);
-		saved += sample_digit((uv - float2(0.74, 0.80)) / cell, am % 10, 0);
-		color = lerp(color, saved.rgb, saturate(saved.a));
+		if (m_he_watch_alarm.x > 0.5)
+		{
+			int ah = int(floor(m_he_watch_alarm.z + 0.5));
+			int am = int(floor(m_he_watch_alarm.w + 0.5));
+			float4 saved = float4(0, 0, 0, 0);
+			// Square glyph cells in physical face space, with tighter colon spacing.
+			float2 cell = float2(0.09821, 0.18);
+			saved += sample_digit((uv - float2(0.46, 0.80)) / cell, ah / 10, 0);
+			saved += sample_digit((uv - float2(0.54, 0.80)) / cell, ah % 10, 0);
+			saved += sample_digit((uv - float2(0.60, 0.80)) / cell, 10, 0);
+			saved += sample_digit((uv - float2(0.66, 0.80)) / cell, am / 10, 0);
+			saved += sample_digit((uv - float2(0.74, 0.80)) / cell, am % 10, 0);
+			color = lerp(color, saved.rgb, saturate(saved.a));
+		}
+
+		// Bell: dimmed while editing, blinking while ringing, full when armed.
+		float bell_level = 1.0;
+		if (alarm_editing)
+			bell_level = 0.35;
+		else if (m_he_watch_alarm_fx.x > 0.5)
+			bell_level = lerp(0.25, 1.0, he_watch_alarm_pulse());
 
 		// 0.10912 * 1.83288 = 0.20: compensate physical surface aspect ratio.
 		float2 alarm_uv = (uv - float2(0.855, 0.79)) / float2(0.10912, 0.20);
 		float alarm_mask = 0.0;
 		if (all(alarm_uv >= 0.0) && all(alarm_uv <= 1.0))
 			alarm_mask = s_he_alarm.Sample(smp_base, alarm_uv).a;
-		color = lerp(color, float3(1.0, 0.88, 0.55), saturate(alarm_mask));
+		color = lerp(color, he_watch_alarm_amber * bell_level, saturate(alarm_mask));
 	}
 
 	// Opaque, dark 22x18 source: RGB coverage, NOT alpha. Physical aspect corrected.

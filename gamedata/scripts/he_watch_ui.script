@@ -3,9 +3,12 @@
 -- forwards it to the actor signal, so the editor must not be a MainInputReceiver.
 -- Wheel arrives through on_wheel_rotation. The Use action is blocked at engine level
 -- (level.block_action) and its raw key state is polled, so the alarm gesture cannot
--- also use a door, NPC or pickup. The alarm key toggles the editor.
+-- also use a door, NPC or pickup. The alarm key toggles the editor; while the
+-- alarm rings, holding it silences the alarm without opening the editor.
 
 local USE_HOLD_MS = 600
+-- Hold arc starts after this delay, so a tap never flashes the ring.
+local HOLD_ARC_DELAY_MS = 120
 local alarm_down = false
 local opened_at = 0
 local alarm_owned = false
@@ -21,6 +24,14 @@ local use_blocked = false
 local use_down = false
 local use_press_time = 0
 local use_hold_fired = false
+
+-- Alarm key pressed while ringing with the editor closed: hold silences, tap opens.
+local silence_armed = false
+local silence_press_time = 0
+local silence_fired = false
+
+-- Shader contract m_he_watch_alarm_fx: x = ringing 1/0, y = hold progress 0..1.
+local fx_ringing, fx_hold = nil, nil
 
 local function actor_ok()
 	return db.actor ~= nil and db.actor:alive()
@@ -58,6 +69,32 @@ local function reset_use_gesture()
 	use_down = false
 	use_press_time = 0
 	use_hold_fired = false
+end
+
+local function reset_silence_gesture()
+	silence_armed = false
+	silence_press_time = 0
+	silence_fired = false
+end
+
+local function write_fx(ringing, hold)
+	if ringing == fx_ringing and hold == fx_hold then return end
+	fx_ringing, fx_hold = ringing, hold
+	shader_set_custom_param("m_he_watch_alarm_fx", ringing, hold, 0, 0)
+end
+
+local function is_ringing()
+	local watch = current_watch()
+	if not watch then return false end
+	local b = watch:alarm_config().b
+	return type(b) == "number" and b > 0
+end
+
+local function hold_fraction(started, now)
+	local t = (now - started - HOLD_ARC_DELAY_MS) / (USE_HOLD_MS - HOLD_ARC_DELAY_MS)
+	if t <= 0 then return 0 end
+	if t >= 1 then return 1 end
+	return t
 end
 
 local function key_label(action)
@@ -146,7 +183,38 @@ local function on_wheel_rotation(vol)
 	end
 end
 
-local function on_update()
+local function silence()
+	if not he_watch_status.is_operational() then return end
+	local watch = current_watch()
+	if watch then watch:shut_up() end
+end
+
+-- Alarm key: plain press toggles the editor; while ringing, the decision waits
+-- for release (tap opens the editor) or the hold threshold (silence only).
+local function handle_alarm_key(down_alarm, rising_alarm, now)
+	if rising_alarm then
+		if state == "closed" and is_ringing() then
+			silence_armed, silence_press_time, silence_fired = true, now, false
+		else
+			reset_silence_gesture()
+			toggle()
+		end
+		return
+	end
+	if not silence_armed then return end
+	if down_alarm then
+		if not silence_fired and (now - silence_press_time) >= USE_HOLD_MS then
+			silence_fired = true
+			silence()
+		end
+	else
+		local fired = silence_fired
+		reset_silence_gesture()
+		if not fired then toggle() end
+	end
+end
+
+local function update_input()
 	if use_blocked and state == "closed" and not pressed(use_dik()) then unblock_use() end
 	if not alarm_owned then
 		level.block_action(key_bindings.kPDA_CLOCK)
@@ -156,14 +224,17 @@ local function on_update()
 	local rising_alarm = down_alarm and not alarm_down
 	alarm_down = down_alarm
 	if not actor_ok() then
+		reset_silence_gesture()
 		abort("actor_unavailable")
 		return
 	end
 	if level.main_input_receiver() or device():is_paused() then
+		reset_silence_gesture()
 		if is_active() then abort("menu_or_pause") end
 		return
 	end
 	if not he_watch_status.is_operational() then
+		reset_silence_gesture()
 		if is_active() then abort("watch_unavailable") end
 		return
 	end
@@ -176,7 +247,7 @@ local function on_update()
 		log2("[he_watch] entry timed out; input restored")
 		return
 	end
-	if rising_alarm then toggle() end
+	handle_alarm_key(down_alarm, rising_alarm, time_global())
 	if state ~= "editing" then
 		reset_use_gesture()
 		return
@@ -200,6 +271,21 @@ local function on_update()
 		end
 		use_down = false
 	end
+end
+
+local function on_update()
+	update_input()
+	local ringing, hold = 0, 0
+	if actor_ok() and he_watch_status.is_operational() then
+		if is_ringing() then ringing = 1 end
+		local now = time_global()
+		if state == "editing" and use_down and not use_hold_fired then
+			hold = hold_fraction(use_press_time, now)
+		elseif silence_armed and alarm_down and not silence_fired then
+			hold = hold_fraction(silence_press_time, now)
+		end
+	end
+	write_fx(ringing, hold)
 end
 
 local function finish_close(my_session)
@@ -273,8 +359,14 @@ function open()
 	local cfg = watch:alarm_config()
 	if not cfg then return false end
 
-	draft_h = tonumber(cfg.h) or 0
-	draft_m = tonumber(cfg.m) or 0
+	-- Armed alarm: edit its saved time. Disarmed: start from the current time.
+	if cfg.f then
+		draft_h = tonumber(cfg.h) or 0
+		draft_m = tonumber(cfg.m) or 0
+	else
+		draft_h = level.get_time_hours()
+		draft_m = level.get_time_minutes()
+	end
 	draft_h = draft_h % 24
 	if draft_m < 0 or draft_m > 59 then draft_m = 0 end
 	session = session + 1
@@ -337,6 +429,9 @@ local function start_input()
 	level.block_action(key_bindings.kPDA_CLOCK)
 	alarm_owned = true
 	alarm_down = pressed(bind_to_dik(key_bindings.kPDA_CLOCK))
+	reset_silence_gesture()
+	fx_ringing, fx_hold = nil, nil
+	write_fx(0, 0)
 end
 
 local function stop_input()
@@ -345,12 +440,20 @@ local function stop_input()
 	if alarm_owned then level.unblock_action(key_bindings.kPDA_CLOCK) end
 	alarm_owned = false
 	alarm_down = false
+	reset_silence_gesture()
+	write_fx(0, 0)
+end
+
+local function on_load()
+	abort("load")
+	reset_silence_gesture()
+	write_fx(0, 0)
 end
 
 function attach(sm)
 	sm:subscribe({signal = "on_first_update", fun = start_input})
 	sm:subscribe({signal = "on_stop_modules", fun = stop_input})
-	sm:subscribe({signal = "on_load_before_all", fun = function() abort("load") end})
+	sm:subscribe({signal = "on_load_before_all", fun = on_load})
 	sm:subscribe({signal = "on_wheel_rotation", fun = on_wheel_rotation})
 	sm:subscribe({signal = "on_update", fun = on_update})
 end
