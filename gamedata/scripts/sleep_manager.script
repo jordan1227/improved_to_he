@@ -4,6 +4,25 @@
 sleeping = false
 sleep_blowout=true
 
+-- set to true to get the #DBG/#WARN sleep log lines
+local DIAGNOSTICS = false
+local function dbg(...)
+	if DIAGNOSTICS then log2(...) end
+end
+
+-- Sleep tuning. Effective rate = base_rate * gear coef * thirst.sleep_quality() * (black tip)
+local SLEEP = {
+	base_rate      = 0.5,   -- sleepiness removed per game minute
+	coef_weapon    = 0.85,  -- weapon in slot 1 or 2
+	coef_gear      = 0.75,  -- backpack or armor worn (overrides coef_weapon)
+	black_tip      = 0.7,   -- black tip artifact carried
+	max_hours      = 30,    -- safety net only: worst case (0.75 gear, thirst 1.0) needs 24 h
+	thirst_block   = 0.8,   -- thirst at which going to sleep is refused
+	poor_thirst    = 0.5,   -- thirst at sleep start that earns the "slept badly" note
+	slowdown_sec   = 0.25,  -- keep time factor low enough that a hitch this long cannot overshoot the wake-up
+	slowdown_floor = 1000,  -- ...but never slower than this time factor
+}
+
 local start_satiety = 0
 local sleep_timer = misc.game_timer("sleep_timer")
 
@@ -178,9 +197,38 @@ function restore_coef()
 	local act = db.actor
 	local coef = 1
 	-- вещи в слотах мешают выспаться быстрее
-	if act:item_in_slot(1) or act:item_in_slot(2) then coef = 0.85 end
-	if get_shadow_inv():update_storage() or act:item_in_slot(6) then coef = 0.75 end
+	if act:item_in_slot(1) or act:item_in_slot(2) then coef = SLEEP.coef_weapon end
+	if gear_worn() then coef = SLEEP.coef_gear end
 	return coef
+end
+
+-- backpack or armor worn. Read-only on purpose: get_shadow_inv():update_storage() has side effects
+-- (pickup animation) and must not run on every sleep tick.
+function gear_worn()
+	local act = db.actor
+	return (act:object("shadow_inventory") or act:item_in_slot(6)) and true or false
+end
+
+function thirst_blocks_sleep()
+	return thirst.get_thirst() >= SLEEP.thirst_block
+end
+
+-- sleepiness removed per game minute right now
+local function live_sleep_rate()
+	local rate = SLEEP.base_rate * restore_coef() * thirst.sleep_quality()
+	if black_tip.have_black_tip() then rate = rate * SLEEP.black_tip end
+	return rate
+end
+
+-- Rate frozen when a normal sleep starts, so thirst or gear changing mid-sleep cannot stretch it.
+-- nil during magic sleeps (radar lab, cave), which use the live rate exactly as before.
+local sleep_rate
+local sleep_note -- string id of the "slept badly" tip for the easy difficulty
+local stopping = false -- stopper() already ran for the current sleep
+
+-- sleepiness removed by `minutes` of sleep; shared by the wake-up check and relaxation()
+function sleep_reduction(minutes)
+	return minutes * (sleep_rate or live_sleep_rate())
 end
 
 magic_sleep = false
@@ -195,6 +243,7 @@ function main(scale)
 	-- params.health_v_add (balance.health.restore_w_sleep - diff * 0.1, sak.level_difficulty[level.name()]) -- скорость восстановления здоровья во сне, относительно сложности
 	params.health_v_add (1.5 - diff * 0.1, sak.level_difficulty[level.name()]) -- скорость восстановления здоровья во сне, относительно сложности
 	sleeping = true
+	stopping = false
 	reduce_need_sleep()
 	local sleep_ltx = dsh.cached_ini_file("scripts\\actorsleep.ltx")
 	schemes["ar_sleep"] = "ar_sleep"
@@ -222,8 +271,16 @@ function starter(scale)
 	vergas_lib.s_play([[characters_voice\human_01\monolith\states\sleep\sleep_6]])
 
 	if magic_sleep then
+		sleep_rate = nil -- magic sleeps use the live rate
 		-- wprintf("[~T]. #DBG: magic sleep activated with scale~C0D %f~C07", scale)
 	else
+		sleep_rate = live_sleep_rate()
+		sleep_note = nil
+		if thirst.get_thirst() >= SLEEP.poor_thirst then
+			sleep_note = "sleep_poor_thirst"
+		elseif gear_worn() then
+			sleep_note = "sleep_poor_gear"
+		end
 		if not subscribed then
 			subscribed = {signal = "on_update", fun = this.test_enough_sleep}
 			ogse_signals.get_mgr():subscribe(subscribed)
@@ -237,7 +294,7 @@ function starter(scale)
 	sleep_timer:elapsed(true)
 	sleep_timer:save()
 	start_satiety = params.actor_satiety_health()
-	log2("#DBG: before sleep starter cond: sleepiness = %.1f,  health  = %.4f, satiety = %.7f",
+	dbg("#DBG: before sleep starter cond: sleepiness = %.1f,  health  = %.4f, satiety = %.7f",
                   get_sleepiness(), db.actor.health, start_satiety)
 end
 
@@ -247,16 +304,19 @@ function test_enough_sleep()
 	if not sleeping then
 		return
 	end
-	-- [HE-PORT]
-	if thirst.get_thirst() >= 0.8 then
-		schedule.add( "stop_sleep", "sleep_manager.stopper()", 1000 )
-		return
-	end
 	local minutes = sleep_minutes()
-	local coef = restore_coef()
-	local sleep_reduction = minutes * 0.5 * coef
-	log2("#DBG: test_enough_sleep: minutes [%d], get_sleepiness [%.1f], sleep_reduction [%.1f]",minutes,get_sleepiness(),sleep_reduction)
-	if get_sleepiness() - sleep_reduction <= 0 or minutes / 60 >= 10 then
+	local reduction = sleep_reduction(minutes)
+	dbg("#DBG: test_enough_sleep: minutes [%d], get_sleepiness [%.1f], sleep_reduction [%.1f]",minutes,get_sleepiness(),reduction)
+	local remaining = get_sleepiness() - reduction -- sleepiness still to remove
+	if remaining > 0 and sleep_rate and sleep_rate > 0 then
+		-- Sleep runs at a huge time factor. Slow it down near the end so one frame hitch cannot skip hours.
+		local left_minutes = remaining / sleep_rate
+		local safe_tf = math.max(left_minutes * 60 / SLEEP.slowdown_sec, SLEEP.slowdown_floor)
+		if level.get_time_factor() > safe_tf then
+			level.set_time_factor(safe_tf)
+		end
+	end
+	if remaining <= 0 or minutes / 60 >= SLEEP.max_hours then
 		if not enough_sleep then
 			-- сны смотрим под самое восстановление сил
 			reset_tf()
@@ -268,14 +328,12 @@ end
 
 function relaxation() -- убирание сонливости во время сна
 	local minutes = sleep_minutes()
-	local coef = restore_coef() * thirst.sleep_quality()
-	local sleep_reduction = minutes * 0.5 * coef
-	if black_tip.have_black_tip() then sleep_reduction = sleep_reduction * 0.7 end
+	local reduction = sleep_reduction(minutes)
 
-	local sleepiness = get_sleepiness() - sleep_reduction
+	local sleepiness = get_sleepiness() - reduction
 	params.tiredness_add()
-	log2("#DBG: sleep_time = %d, decreasing sleepiness %.1f with value %.1f, coef = %.3f",
-                            minutes, get_sleepiness(), sleep_reduction, coef)
+	dbg("#DBG: sleep_time = %d, decreasing sleepiness %.1f with value %.1f, rate = %.3f",
+                            minutes, get_sleepiness(), reduction, sleep_rate or live_sleep_rate())
 	change_sleepiness(sleepiness)
 	return sleepiness
 end
@@ -287,11 +345,17 @@ function stopper()
 	end
 	enough_sleep = false
 	if not is_sleep_active() then
-		log2("#WARN: sleep stopper executed, but actor not sleeping")
+		dbg("#WARN: sleep stopper executed, but actor not sleeping")
 		return
 	end
+	if stopping then
+		dbg("#WARN: sleep stopper executed twice, ignored")
+		return
+	end
+	stopping = true
 	magic_sleep = false
 	relaxation()
+	sleep_rate = nil
 	reset_tf()
 	level.remove_pp_effector(1234)
 	ar_sleep.disable_scheme()
@@ -311,8 +375,8 @@ function stopper()
 			vergas_lib.s_play([[device\sleeping_bag\sleep_bag_up]])
 			sleeping_bag.set_flag_sleep(2)
 		end  
-		log2("#DBG: sleep_hours = %.3f, sleepiness = %.1f", elapsed, get_sleepiness())
-		log2("actor health on awake = %.4f, satiety= %.7f", db.actor.health, params.actor_satiety_health())
+		dbg("#DBG: sleep_hours = %.3f, sleepiness = %.1f", elapsed, get_sleepiness())
+		dbg("actor health on awake = %.4f, satiety= %.7f", db.actor.health, params.actor_satiety_health())
 	end
 	level.enable_input()
 	-- amk_mod.weather_manager()  -- Manool: это же всё-равно на апдейте обновляется?
@@ -371,6 +435,11 @@ end
 
 function end_sleeping()
 	sleeping = false
+	stopping = false
+	if sleep_note and level.get_game_difficulty() == 0 and db.actor:alive() then
+		sak.send_tip_local(game.translate_string(sleep_note), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "yellow")
+	end
+	sleep_note = nil
 	sak.wake_up_upd = true
 	sleep_blowout = true
 	sak.reset_actor_bio()  
