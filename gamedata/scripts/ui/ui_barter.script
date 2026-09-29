@@ -225,6 +225,7 @@ function barter_screen_ui:OnMsgYes()
         for k, v in pairs ( barter_tbl.sultan ) do
             if sect == v[ 1 ] then tip = k end
         end
+		--log2( "sultan order: sect=%s tip=%s lvl=%s", tostring( sect ), tostring( tip ), tostring( barter_tbl.sultan[ tip ] and barter_tbl.sultan[ tip ][ 3 ] ) )		
         set_value( "sultan_weapon", tip )
         actor:give_info_portion( "sultan_weapon_starting" )
     end
@@ -320,7 +321,7 @@ function barter_screen_ui:UpdatePriceStatic()
 
     if strposx( self.price_tbl, "lvl" ) then
         if self.b_name == "sultan" then
-            self.sultan_details = sultan_good_artefacts_details( self.price_tbl )
+            self.sultan_details = sultan_good_artefacts_details( self.price_tbl, true )
             have_amount = self.sultan_details.total
         else
             have_amount = gg_good_artefacts_have( tbl_translate_arts[ self.price_tbl ], self.price_amnt, true )
@@ -402,7 +403,7 @@ function barter_screen_ui:AddItemToList( item_name, item_amount, item_to_get, it
 	
 	-- ѕокраска в серый при отсутствии Ч оставл€ем проверку только дл€ sultan
 	if self.b_name == "sultan" then
-		if not sultan_good_artefacts_have( item_to_get, item_needed ) then
+		if not sultan_good_artefacts_have( item_to_get, item_needed, true ) then
 			_itm.fn:SetTextColor( unpack( clr_dgray ) )
 		end
 	elseif str_in_tab( self.b_name, { "addons" } ) and gg_good_artefacts_have( tbl_translate_arts[ item_to_get ], item_needed ) ~= true then
@@ -432,7 +433,7 @@ function barter_screen_ui:DoBarter( ind )
 	--------------------------------------------------------------------	
     if strposx( need_sect, "lvl" ) then
 	    if self.b_name == "sultan" then
-			if sultan_good_artefacts_have( need_sect, need_amount ) then
+			if sultan_good_artefacts_have( need_sect, need_amount, true ) then
 				sultan_good_artefacts_give( need_sect, need_amount )
 				sak.create_items( tovar, tovar_amnt )
 			end
@@ -721,6 +722,7 @@ end
 	
 function load_sultan_weapon_story()
     local tip = get_value( "sultan_weapon", 0 )
+	--log2( "sultan story: tip=%s sect=%s lvl=%s", tostring( tip ), tostring( barter_tbl.sultan[ tip ] and barter_tbl.sultan[ tip ][ 1 ] ), tostring( barter_tbl.sultan[ tip ] and barter_tbl.sultan[ tip ][ 3 ] ) )
     if tip ~= 0 then
 		local art_lvl = barter_tbl.sultan[ tip ][ 3 ]	
 		local art_text = ""
@@ -811,9 +813,14 @@ end
 
 local sultan_temp_storage = {}
 
-function sultan_good_artefacts_have( item_to_get, need_amount )
+function sultan_good_artefacts_have( item_to_get, need_amount, or_better )
 	local level_num = tonumber( item_to_get:match( "%d+" ) )
 	if not level_num then return false end
+
+	-- диалог —ултана: вариант оплаты не должен быть ниже уровн€ заказанного оружи€
+	if not or_better and get_value( "sultan_weapon", 0 ) ~= 0 and not need_sultan_weapon_art( item_to_get ) then
+		return false
+	end
 
 	local condition = 0.95
 	local dif = tonumber( level.get_game_difficulty() )
@@ -822,8 +829,9 @@ function sultan_good_artefacts_have( item_to_get, need_amount )
 	local inventory_artefacts = {}
 	local container_artefacts = {}
 	local total = 0
+	local max_lvl = or_better and 10 or level_num
 
-	for lvl = level_num, 10 do
+	for lvl = level_num, max_lvl do
 		local arts_tbl = tbl_translate_arts[ "lvl" .. lvl ]
 		if arts_tbl then
 
@@ -911,15 +919,15 @@ function sultan_good_artefacts_give( item_to_get, need_amount )
 	-- изъ€тие из контейнеров Ч тот же вызов, что и в gg_inventory_artefacts:give
 	for _, vv in ipairs( saved.container_artefacts ) do
 		if given >= need_amount then break end
-		if ui_arc_container_menu.put_out_art( vv.id, vv.slot, vv.art, vv.cond ) then
-			given = given + 1
+		-- put_out_art может ничего не вернуть, поэтому результат не провер€ем (как в kotovod.gg_inventory_artefacts)
+		ui_arc_container_menu.put_out_art( vv.id, vv.slot, vv.art, vv.cond )
+		given = given + 1
 
-			sak.send_tip(
-				get_inv_name( vv.art ),
-				"ѕередали из контейнера [" .. vv.id .. "]:",
-				0, 7, "con_" .. ( vv.size or 8 ) .. "_out", "no", "red"
-			)
-		end
+		sak.send_tip(
+			get_inv_name( vv.art ),
+			"ѕередали из контейнера [" .. vv.id .. "]:",
+			0, 7, "con_" .. vv.size .. "_out", "no", "red"
+		)
 	end
 
 	-- изъ€тие из рюкзака
@@ -931,8 +939,6 @@ function sultan_good_artefacts_give( item_to_get, need_amount )
 				misc.release_obj( obj )
 				sak.relocate_item( "out", v.art, 1 )
 				given = given + 1
-
-				sak.relocate_item( "out", v.art, 1 )
 			end
 		end
 	end
@@ -940,7 +946,7 @@ function sultan_good_artefacts_give( item_to_get, need_amount )
 	sultan_temp_storage[ item_to_get ] = nil
 end
 
-function sultan_good_artefacts_details( item_to_get )
+function sultan_good_artefacts_details( item_to_get, or_better )
     local level_num = tonumber( item_to_get:match( "%d+" ) )
     local result = {
         container_count  = 0,
@@ -955,7 +961,8 @@ function sultan_good_artefacts_details( item_to_get )
     local dif = tonumber( level.get_game_difficulty() )
     if dif == 0 then condition = 0.01 end
 
-    for lvl = level_num, 10 do
+    local max_lvl = or_better and 10 or level_num
+    for lvl = level_num, max_lvl do
         local arts_tbl = tbl_translate_arts[ "lvl" .. lvl ]
         if arts_tbl then
 
