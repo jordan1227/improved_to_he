@@ -11,6 +11,15 @@ underground_levels = {
     [ "l12u_sarcofag"			] = true
 }
 
+-- Suits that can carry an O2 tank (keep in sync with the 'ballon' entry in dsh_drag_drop.script)
+local protection_suits = { "scientific_", "ecolog_", "protection_", "militaryspec_", "monolit_exoskeleton", "monolit_q_exoskeleton" }
+
+-- Full tank runtime in minutes: 150 on easy (g_game_difficulty 0), 120 otherwise
+function get_ballon_duration()
+	local diff = get_value( "g_diff" ) or tonumber( level.get_game_difficulty() )
+	return diff == 0 and 150 or 120
+end
+
 function attach( sm )
 	sm:subscribe({ signal = "on_safe_spawn",          fun = this.on_safe_spawn })
 	sm:subscribe({ signal = "on_use",                 fun = this.on_ballon_use })
@@ -34,6 +43,7 @@ local is_first_tip = true
 
 function on_safe_spawn()
 	if game_options.UseBallons == false then return end
+	reset_lab_protection_state()
 	local screen_width = device().width
 	if screen_width >= 2560 then
 		text_pos = 15 
@@ -95,7 +105,7 @@ function actor_in_protection()
     
     local function can_play_breath_sound()
         return armor 
-            and str_in_tab( armor:section(), { "scientific_", "ecolog_", "protection_", "monolit_exoskeleton", "monolit_q_exoskeleton" } )
+            and str_in_tab( armor:section(), protection_suits )
             and armor:condition() >= 0.72 
 			and get_value( "lab_protection" )
             and vergas_masks.get_flag_mask()
@@ -107,7 +117,9 @@ function actor_in_protection()
         end
         return 
     end
-    
+
+    lab_info()
+
     if not can_play_breath_sound() then
         level.add_pp_effector( "black_tip_eff.ppe", 1031, false )    
         actor.health = armor and ( - ( 5 / armor:condition() ) / 75 ) or -0.15
@@ -175,9 +187,7 @@ function on_ballon_use(obj, sobj)
     sak.close_window()
 
     -- Проверка брони
-    if not armor or (armor and not str_in_tab(armor:section(), {
-        "scientific_", "ecolog_", "protection_", "monolit_exoskeleton", "monolit_q_exoskeleton"
-    })) then
+    if not armor or (armor and not str_in_tab(armor:section(), protection_suits)) then
         sak.send_tip("Отсутствует подходящее крепление для размещения баллона", "Вот же...", 0, 5, "g_g", "sak", "red")
         local eat = obj:get_eatable_item()
         if eat.eat_portions_num < 1 then eat.eat_portions_num = 1 end
@@ -186,7 +196,7 @@ function on_ballon_use(obj, sobj)
 
     this.on_ballon_stop_use()
     misc.release_obj(obj)
-    local time = (cond * 120) / 60
+    local time = (cond * get_ballon_duration()) / 60
 
     -- Состояния
     local prev_torch_mode = false
@@ -411,7 +421,7 @@ function on_ballon_stop_use()
 	is_first_tip = false
 
 	local actor  = db.actor		
-	local cond   = time / 120	
+	local cond   = math.min( 1, time / get_ballon_duration() )
 	local weight = 1 + ( 4 * cond )
 	local ballon = misc.spawn_to( "ballon", actor )	
 	misc.process_spawn()
@@ -479,6 +489,65 @@ function check_outfit(obj, sobj)
 end
 
 --//------------------------------------------------
+--//- Adaptive lab protection notifications (Sivol) -
+--//------------------------------------------------
+-- Notification only: damage and sounds stay in actor_in_protection.
+-- The O2 tank (lab_protection) is always required in this build, so no light-balance branch.
+
+local lab_protection_state = {
+    last_state = nil,
+    last_notification_time = 0,
+    notification_cooldown = 20000  -- repeat interval for an unchanged state, ms
+}
+
+-- Same suit rules as can_play_breath_sound() in actor_in_protection
+local function get_actor_protection_state()
+    local actor = db.actor
+    if not actor then return "no_suit" end
+    local armor = actor:item_in_slot( 6 )
+    local has_proper_suit = armor
+        and str_in_tab( armor:section(), protection_suits )
+        and armor:condition() >= 0.72
+    if not has_proper_suit then return "no_suit" end
+    if not vergas_masks.get_flag_mask() then return "no_mask" end
+    if not get_value( "lab_protection" ) then return "no_oxygen" end
+    return "fully_protected"
+end
+
+local protection_tips = {
+    no_suit         = { key = "lab_prot_no_suit",   color = "yellow" },
+    no_mask         = { key = "lab_prot_no_mask",   color = "orange" },
+    no_oxygen       = { key = "lab_prot_no_oxygen", color = "orange" },
+    fully_protected = { key = "lab_prot_ok",        color = "green"  }
+}
+
+local function show_protection_tip( state )
+    local tip = protection_tips[ state ]
+    sak.send_tip( translate( tip.key ), translate( "lab_prot_title" ), 0, 15, "g_g", "sak", tip.color )
+end
+
+function reset_lab_protection_state()
+    lab_protection_state.last_state = nil
+    lab_protection_state.last_notification_time = 0
+end
+
+function lab_info()
+    local now = time_global()
+    local state = get_actor_protection_state()
+    local changed = ( lab_protection_state.last_state ~= state )
+    if not changed and now - lab_protection_state.last_notification_time < lab_protection_state.notification_cooldown then
+        return
+    end
+    local previous = lab_protection_state.last_state
+    lab_protection_state.last_state = state
+    lab_protection_state.last_notification_time = now
+
+    -- confirm full protection only after an unprotected state, never on a first look or as a repeat
+    if state == "fully_protected" and not ( changed and previous ) then return end
+    show_protection_tip( state )
+end
+
+--//------------------------------------------------
 --//------------- Статик для баллона ---------------
 --//------------------------------------------------
 
@@ -499,7 +568,8 @@ function get_timer_color( minutes_left )
             return string.format( "%%c[ 255, %d, %d, %d ]", level.color[ 1 ], level.color[ 2 ], level.color[ 3 ] )
         end
     end
-    return string.format( "%%c[ 255, %d, %d, %d ]", table_color_thresholds[ 1 ].color[ 1 ], table_color_thresholds[ 1 ].color[ 2 ], table_color_thresholds[ 1 ].color[ 3 ] )
+    local last = table_color_thresholds[ #table_color_thresholds ].color
+    return string.format( "%%c[ 255, %d, %d, %d ]", last[ 1 ], last[ 2 ], last[ 3 ] )
 end
 
 function create_ballon_hud()
