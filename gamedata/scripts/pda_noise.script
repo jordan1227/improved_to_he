@@ -1,37 +1,336 @@
+--==============================================================================
+-- SCRIPT: pda_noise.script
+-- PURPOSE:
+--   Renders a 2D static noise overlay over the PDA screen UI based on proximity 
+--   to Electra/Galantine anomalies or external signal intensity metrics. 
+--   Controls a 5-frame static flicker cycle and dynamic 2D/3D audio noise bursts.
+--
+-- CONNECTED SYSTEMS & DEPENDENCIES:
+--   [Engine & Info Portions]
+--     - Info portions "on" / "on_broken" -> Opens PdaNoiseWnd UI
+--     - Info portion  "off"              -> Closes UI and stops audio
+--
+--   [Script Integrations]
+--     - bind_stalker.script : Tracks PDA active state and registers callbacks (set_pda_cb)
+--     - amk_anoms.script    : Scans nearby Electra anomaly lists and distance metrics
+--     - sivol_pda.script    : Optional provider for smoothed PDA signal noise (get_smooth)
+--     - sak.script          : Handles window closure routines (sak.close_window)
+--     - xr_sound.script     : Handles 2D/3D sound object wrappers (get_safe_sound_object)
+--
+--   [Assets & Resources]
+--     - Textures : textures\ui\ui_pda_noise_1.dds through ui_pda_noise_5.dds
+--     - Audio    : sounds\device\pda\noise_on.ogg
+--==============================================================================
+
+local noise_snd = nil
+local noise_snd_3d = nil
+local texture_name = "ui\\ui_pda_noise"
+
+-- ======================= CONFIG =======================
+local BASE_NOISE_RADIUS = 5.0
+
+local NUM_FRAMES    = 5
+local FLICKER_MS    = 33      -- Visual animation refresh (~30fps flicker)
+local SMOOTH_IN     = 5.0
+local SMOOTH_OUT    = 2.5
+
+-- Audio delay tuning (in milliseconds)
+local NOISE_MIN_DELAY = 1000   -- Minimum time between noise bursts (1.0 sec)
+local NOISE_MAX_DELAY = 5000   -- Maximum time between noise bursts (5.0 sec)
+
+local ELECTRA_POWER_TIER = {
+    ["zone_witches_galantine_weak"]        = sivol_emp_config.ELECTRA_TIER.weak,
+    ["zone_witches_galantine_average"]     = sivol_emp_config.ELECTRA_TIER.average,
+	["zone_witches_galantine"]             = 	sivol_emp_config.ELECTRA_TIER.average,
+    ["zone_witches_galantine_strong"]      = sivol_emp_config.ELECTRA_TIER.strong,
+    ["amk_zone_witches_galantine_weak"]    = sivol_emp_config.ELECTRA_TIER.weak,
+    ["amk_zone_witches_galantine_average"] = sivol_emp_config.ELECTRA_TIER.average,
+	["amk_zone_witches_galantine"]         = sivol_emp_config.ELECTRA_TIER.average,
+    ["amk_zone_witches_galantine_strong"]  = sivol_emp_config.ELECTRA_TIER.strong,
+}
+local DEFAULT_ELECTRA_TIER = { radius_mult = 0.0, max_limit = 0.9 }
+
+-- Static Electras are cached from anomaly lifecycle signals. Combined Electra
+-- and monster-source proximity is refreshed at this cadence; visual smoothing
+-- in sivol_pda remains per-frame.
+local ELECTRA_REFRESH_MS = 200
+local electra_cache = {}
+local last_electra_refresh = 0
+local cached_electra_intensity = 0
+local cached_electra_is_strong = false
+local cached_electra_source_type = nil
+-- =====================================================
+
+local function is_electra_anomaly(obj, sec)
+    return obj:clsid() == clsid.zone_electra_s
+        or string.find(sec, "galantine", 1, true) ~= nil
+        or string.find(sec, "electr", 1, true) ~= nil
+end
+
+local function cache_electra(obj)
+    if not obj then return end
+    local sec = obj:section() or ""
+    if not is_electra_anomaly(obj, sec) then return end
+
+    local tier = ELECTRA_POWER_TIER[sec] or DEFAULT_ELECTRA_TIER
+    local shape_ok, shape_radius = pcall(obj.get_shape_radius, obj)
+    local pos = obj:position()
+    electra_cache[obj:id()] = {
+        x = pos.x, y = pos.y, z = pos.z,
+        shape_radius = shape_ok and math.max(0, tonumber(shape_radius) or 0) or 0,
+        tier = tier,
+        section = sec,
+    }
+    last_electra_refresh = 0
+    log2(
+        "[pda_noise] cached Electra: section=%s id=%d shape_radius=%.2f effect_radius=%.2f max=%.2f",
+        sec, obj:id(), electra_cache[obj:id()].shape_radius,
+        BASE_NOISE_RADIUS + tier.radius_mult, tier.max_limit
+    )
+end
+
+local function on_anomaly_spawn(obj, binder)
+    cache_electra(obj)
+end
+
+local function on_anomaly_net_destroy(obj, binder)
+    if not obj then return end
+    local id = obj:id()
+    if electra_cache[id] then
+        log2("[pda_noise] removed cached Electra: section=%s id=%d", electra_cache[id].section, id)
+        electra_cache[id] = nil
+        last_electra_refresh = 0
+    end
+end
+
+local next_noise_play_time = 0
+
 function on_info( info_id )
-	if info_id == "off" then
-		sak.close_window()
-	elseif info_id == "on" then
-		level.start_stop_menu( PdaNoiseWnd(), true )
-	end
+    if info_id == "off" then
+        if noise_snd and noise_snd:playing() then noise_snd:stop() end
+        noise_snd = nil
+        sak.close_window()
+    elseif info_id == "on" or info_id == "on_broken" then
+        level.start_stop_menu( PdaNoiseWnd(), true )
+    end
 end
 
+function play_noise_sound()
+    if noise_snd_3d and noise_snd_3d:playing() then return end
+    if time_global() < next_noise_play_time then return end
+    
+    noise_snd_3d = xr_sound.get_safe_sound_object( "device\\pda\\noise_on" )
+    if noise_snd_3d then
+        noise_snd_3d:play_at_pos( db.actor, vector(), 0.1, sound_object.s2d )
+        noise_snd_3d.volume = 0.25
+        next_noise_play_time = time_global() + math.random(NOISE_MIN_DELAY, NOISE_MAX_DELAY)
+    end
+end
+
+function stop_noise_sound()
+    if noise_snd_3d and noise_snd_3d:playing() then noise_snd_3d:stop() end
+    noise_snd_3d = nil
+end
+
+function set_noise_volume(v)
+    if v then
+        if noise_snd and noise_snd:playing() then noise_snd.volume = v end
+        if noise_snd_3d and noise_snd_3d:playing() then noise_snd_3d.volume = v end
+    else
+        local intensity = get_noise_intensity()
+        local calculated_vol = 0.05 + 0.45 * intensity
+        if noise_snd and noise_snd:playing() then noise_snd.volume = calculated_vol end
+        if noise_snd_3d and noise_snd_3d:playing() then noise_snd_3d.volume = calculated_vol end
+    end
+end
+
+function reset_noise_schedule()
+    next_noise_play_time = 0
+end
+
+-- ======================= INTENSITY =======================
+function get_electra_intensity()
+    if not db.actor then return 0, false, nil end
+    local now = time_global()
+    if now - last_electra_refresh < ELECTRA_REFRESH_MS then
+        return cached_electra_intensity, cached_electra_is_strong,
+            cached_electra_source_type
+    end
+    last_electra_refresh = now
+
+    local pos = db.actor:position()
+    local best = 0
+    local is_strong = false
+    local source_type = nil
+
+    for _, src in pairs(electra_cache) do
+        local dx = pos.x - src.x
+        local dy = pos.y - src.y
+        local dz = pos.z - src.z
+        local center_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        local distance = math.max(0, center_distance - src.shape_radius)
+        local tier = src.tier
+        local radius = BASE_NOISE_RADIUS + tier.radius_mult
+        local proximity = 1 - distance / radius
+        local intensity = proximity * tier.max_limit
+
+        if intensity > best then
+            best = intensity
+            is_strong = tier.max_limit >= 1.0
+            source_type = "electra"
+        end
+    end
+
+    -- Poltergeist EMP sources
+    if sivol_emp_sources and sivol_emp_sources.get_sources then
+        for _, src in pairs(sivol_emp_sources.get_sources()) do
+            local tier = src.active and src.tier or nil
+            local burst_tier = now < (src.burst_until or 0) and src.burst_tier or nil
+
+            if tier or burst_tier then
+                local dx = pos.x - src.x
+                local dy = pos.y - src.y
+                local dz = pos.z - src.z
+                local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if tier then
+                    local proximity = 1 - dist / tier.radius
+                    local intensity = proximity * tier.max_limit
+                    if intensity > best then
+                        best = intensity
+                        is_strong = tier.critical or false
+                        source_type = src.source_type
+                    end
+                end
+                if burst_tier then
+                    local proximity = 1 - dist / burst_tier.radius
+                    local intensity = proximity * burst_tier.max_limit
+                    if intensity > best then
+                        best = intensity
+                        is_strong = burst_tier.critical or false
+                        source_type = src.source_type
+                    end
+                end
+            end
+        end
+    end
+
+    cached_electra_intensity = math.min(math.max(best, 0), 1)
+    cached_electra_is_strong = is_strong
+    cached_electra_source_type = source_type
+    return cached_electra_intensity, cached_electra_is_strong,
+        cached_electra_source_type
+end
+
+function get_noise_intensity()
+    if sivol_pda and sivol_pda.get_smooth then
+        local ok, val = pcall(sivol_pda.get_smooth)
+        if ok and type(val) == "number" then
+            return math.min(math.max(val, 0), 1)
+        end
+    end
+    local intensity, _ = get_electra_intensity()
+    return intensity
+end
+
+-- ======================= 2D WINDOW =======================
 class "PdaNoiseWnd" ( CUIScriptWnd )
+
 function PdaNoiseWnd:__init() super()
-	self:Init( 0, 0, 1024, 768 )
-	self.ClickBtnExit = function() level.start_stop_menu( self, true ) end	
-	self.noise = CUIStatic()
-	self.noise:InitTexture( "ui\\ui_pda_noise" )
-	self.noise:SetOriginalRect( 0, 0, 1024, 768 )
-	self.noise:Init( 3, 20, 891, 643 )
-	self:AttachChild( self.noise )
-	self.ignore_first_press = true
-	bind_stalker.set_pda_cb(true)
-end 
-function PdaNoiseWnd:OnKeyboard( dik, keyboard_action )
-	if self.ignore_first_press then
-		self.ignore_first_press = false
-		return
-	end
-	CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
-	if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
-		if dik == DIK_keys.DIK_ESCAPE or dik == bind_to_dik(key_bindings.kACTIVE_JOBS) or dik == bind_to_dik(key_bindings.kMAP) then
-			if bind_stalker.get_pda_on() then
-				self:ClickBtnExit()
-				bind_stalker.set_pda_cb(false)
-			end
-		end
-	end
-	return true
+	
+    self:Init(0, 0, 1024, 768)
+    self.ClickBtnExit = function() level.start_stop_menu(self, true) end
+
+    -- 5-Frame Noise Loop (Fits precisely inside 2D PDA Screen Viewport)
+    self.frames = {}
+    for i = 1, NUM_FRAMES do
+        local s = CUIStatic()
+        s:InitTexture("ui\\ui_pda_noise_" .. i)
+        s:SetOriginalRect(0, 0, 1024, 768)
+        s:Init(3, 20, 891, 643)
+        s:SetColor(GetARGB(255, 255, 255, 255))
+        s:Show(false)
+        self:AttachChild(s)
+        self.frames[i] = s
+    end
+
+    self.last_update        = time_global()
+    self.smooth             = 0
+    self.next_flicker_time  = 0
+	self.current_frame      = 1       -- Stores active noise frame indexF
+    self.visible_frame      = 0
+    self.ignore_first_press = true
+    
+    bind_stalker.set_pda_cb(true)
+
+    noise_snd = xr_sound.get_safe_sound_object("device\\pda\\noise_on")
+    if noise_snd then
+        noise_snd:play_at_pos(db.actor, vector(), 0.1, sound_object.s2d + sound_object.looped)
+        noise_snd.volume = 0.1
+    end
 end
 
+function PdaNoiseWnd:OnKeyboard( dik, keyboard_action )
+    if self.ignore_first_press then
+        self.ignore_first_press = false
+        return true
+    end
+    CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
+    if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+        local bind = dik_to_bind( dik )
+        if dik == DIK_keys.DIK_ESCAPE
+            or bind == key_bindings.kACTIVE_JOBS
+            or bind == key_bindings.kMAP
+            or bind == key_bindings.kPDA_CLOCK
+        then
+            if bind_stalker.get_pda_on() then
+                if noise_snd and noise_snd:playing() then noise_snd:stop() end
+                noise_snd = nil
+                self:ClickBtnExit()
+                bind_stalker.set_pda_cb(false)
+            end
+        end
+    end
+    return true
+end
+
+function PdaNoiseWnd:Update()
+    CUIScriptWnd.Update(self)
+    local now = time_global()
+    local dt  = (now - self.last_update) / 1000
+    self.last_update = now
+
+    local target = get_noise_intensity()
+    local rate   = (target > self.smooth) and SMOOTH_IN or SMOOTH_OUT
+    local k      = math.min(1, dt * rate)
+    self.smooth  = self.smooth + (target - self.smooth) * k
+
+    -- Check if noise threshold is active
+    if self.smooth > 0.05 then
+        -- Cycle frame index every FLICKER_MS (~30 FPS)
+        if now > self.next_flicker_time then
+            self.next_flicker_time = now + FLICKER_MS
+            self.current_frame = math.random(1, NUM_FRAMES)
+        end
+
+        -- Only touch UI visibility when the displayed frame actually changes.
+        if self.visible_frame ~= self.current_frame then
+            if self.visible_frame > 0 then
+                self.frames[self.visible_frame]:Show(false)
+            end
+            self.frames[self.current_frame]:Show(true)
+            self.visible_frame = self.current_frame
+        end
+    else
+        if self.visible_frame > 0 then
+            self.frames[self.visible_frame]:Show(false)
+            self.visible_frame = 0
+        end
+    end
+
+    if noise_snd then noise_snd.volume = 0.05 + 0.45 * self.smooth end
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_anomaly_spawn", fun = on_anomaly_spawn })
+    sm:subscribe({ signal = "on_anomaly_net_destroy", fun = on_anomaly_net_destroy })
+end

@@ -1,0 +1,356 @@
+-- [HE-PORT] Watch-only alarm editor.
+-- Non-modal on purpose: OGSR consumes mouse-wheel input in CUIDialogWnd and never
+-- forwards it to the actor signal, so the editor must not be a MainInputReceiver.
+-- Wheel arrives through on_wheel_rotation. The Use action is blocked at engine level
+-- (level.block_action) and its raw key state is polled, so the alarm gesture cannot
+-- also use a door, NPC or pickup. The alarm key toggles the editor.
+
+local USE_HOLD_MS = 600
+local alarm_down = false
+local opened_at = 0
+local alarm_owned = false
+
+local state = "closed"
+local session = 0
+local draft_h = 0
+local draft_m = 0
+local overlay = nil
+local presentation_session = nil
+
+local use_blocked = false
+local use_down = false
+local use_press_time = 0
+local use_hold_fired = false
+
+local function actor_ok()
+	return db.actor ~= nil and db.actor:alive()
+end
+
+local function current_watch()
+	if not vergas_watch then return nil end
+	return vergas_watch.g_watch
+end
+
+local function pressed(dik)
+	if not dik or dik <= 0 then return false end
+	local v = key_state(dik)
+	return v == true or (type(v) == "number" and v ~= 0)
+end
+
+local function use_dik()
+	if not key_bindings or not bind_to_dik then return nil end
+	return bind_to_dik(key_bindings.kUSE)
+end
+
+local function block_use()
+	if use_blocked then return end
+	use_blocked = true
+	level.block_action(key_bindings.kUSE)
+end
+
+local function unblock_use()
+	if not use_blocked then return end
+	use_blocked = false
+	level.unblock_action(key_bindings.kUSE)
+end
+
+local function reset_use_gesture()
+	use_down = false
+	use_press_time = 0
+	use_hold_fired = false
+end
+
+local function key_label(action)
+	if not bind_to_dik or not dik_to_keyname then return "?" end
+	local dik = bind_to_dik(action)
+	if not dik then return "?" end
+	local name = dik_to_keyname(dik)
+	if not name or name == "" then return "?" end
+	return (string.gsub(name, "^k", ""))
+end
+
+local function help_text()
+	local template = game.translate_string("he_watch_alarm_help")
+	local ok, text = pcall(
+		string.format,
+		template,
+		key_label(key_bindings.kUSE),
+		key_label(key_bindings.kUSE),
+		key_label(key_bindings.kPDA_CLOCK)
+	)
+	if ok and text then return text end
+	return template
+end
+
+local function release_overlay()
+	if overlay then
+		local wnd = overlay
+		overlay = nil
+		pcall(function()
+			local hud = get_hud()
+			if hud then hud:RemoveDialogToRender(wnd) end
+		end)
+	end
+end
+
+local function show_overlay()
+	release_overlay()
+	local ok, err = pcall(function()
+		local s = CUIStatic()
+		s:Init(192, 680, 640, 48)
+		s:SetFont(GetFontLetterica18Russian())
+		s:SetTextComplexMode(true)
+		s:SetText((string.gsub(help_text(), "\\n", "\n")))
+		s:SetTextColor(255, 238, 153, 26)
+		s:Show(true)
+		overlay = s
+		get_hud():AddDialogToRender(s)
+	end)
+	if not ok then log2("[he_watch] hint failed: %s", tostring(err)) end
+end
+
+local function local_cleanup()
+	release_overlay()
+	-- Keep Use suppressed until a held disable key is physically released.
+	if not actor_ok() or not pressed(use_dik()) then unblock_use() end
+	reset_use_gesture()
+end
+
+local function set_closed()
+	state = "closed"
+	presentation_session = nil
+end
+
+local function apply_draft_minutes(dir)
+	local total = draft_h * 60 + draft_m + dir
+	total = total % (24 * 60)
+	if total < 0 then total = total + 24 * 60 end
+	draft_h = math.floor(total / 60)
+	draft_m = total % 60
+end
+
+local function apply_draft_hours(dir)
+	draft_h = (draft_h + dir) % 24
+	if draft_h < 0 then draft_h = draft_h + 24 end
+end
+
+local function on_wheel_rotation(vol)
+	if state ~= "editing" then return end
+	if not he_watch_status.is_operational() then abort("watch_unavailable"); return end
+	local dir = 1
+	if vol and vol < 0 then dir = -1 end
+	if pressed(DIK_keys.DIK_LSHIFT) or pressed(DIK_keys.DIK_RSHIFT) then
+		apply_draft_hours(dir)
+	else
+		apply_draft_minutes(dir)
+	end
+end
+
+local function on_update()
+	if use_blocked and state == "closed" and not pressed(use_dik()) then unblock_use() end
+	if not alarm_owned then
+		level.block_action(key_bindings.kPDA_CLOCK)
+		alarm_owned = true
+	end
+	local down_alarm = pressed(bind_to_dik(key_bindings.kPDA_CLOCK))
+	local rising_alarm = down_alarm and not alarm_down
+	alarm_down = down_alarm
+	if not actor_ok() then
+		abort("actor_unavailable")
+		return
+	end
+	if level.main_input_receiver() or device():is_paused() then
+		if is_active() then abort("menu_or_pause") end
+		return
+	end
+	if not he_watch_status.is_operational() then
+		if is_active() then abort("watch_unavailable") end
+		return
+	end
+	if is_active() and (not watch_gate.has_watch() or db.actor:is_talking()) then
+		abort("watch_unavailable")
+		return
+	end
+	if state == "opening" and time_global() - opened_at > 5000 then
+		abort("entry_timeout")
+		log2("[he_watch] entry timed out; input restored")
+		return
+	end
+	if rising_alarm then toggle() end
+	if state ~= "editing" then
+		reset_use_gesture()
+		return
+	end
+	local dik = use_dik()
+	if not dik then return end
+	local now = time_global()
+	local down = pressed(dik)
+	if down then
+		if not use_down then
+			use_down = true
+			use_press_time = now
+			use_hold_fired = false
+		elseif not use_hold_fired and (now - use_press_time) >= USE_HOLD_MS then
+			use_hold_fired = true
+			disable()
+		end
+	else
+		if use_down and not use_hold_fired then
+			confirm()
+		end
+		use_down = false
+	end
+end
+
+local function finish_close(my_session)
+	if session ~= my_session then return end
+	local_cleanup()
+	set_closed()
+end
+
+local function close()
+	local my_session = session
+	local host = presentation_session
+	local_cleanup()
+	if host and allcore_hide and allcore_hide.end_watch_presentation then
+		state = "closing"
+		allcore_hide.end_watch_presentation(host, function(closed_session)
+			finish_close(my_session)
+		end)
+	else
+		set_closed()
+	end
+end
+
+function confirm()
+	if state ~= "editing" then return end
+	if not he_watch_status.is_operational() then abort("watch_unavailable"); return end
+	local watch = current_watch()
+	if watch then
+		watch:enable_alarm(draft_h, draft_m)
+		watch:shut_up()
+	end
+	close()
+end
+
+function disable()
+	if state ~= "editing" then return end
+	if not he_watch_status.is_operational() then abort("watch_unavailable"); return end
+	local watch = current_watch()
+	if watch then
+		watch:disable_alarm()
+		watch:shut_up()
+	end
+	close()
+end
+
+function cancel()
+	if state ~= "editing" and state ~= "opening" then return end
+	close()
+end
+
+local function open_editor(my_session)
+	if session ~= my_session or state ~= "opening" then return end
+	if not he_watch_status.is_operational() then abort("watch_unavailable"); return end
+	state = "editing"
+	log2("[he_watch] editor ready")
+	show_overlay()
+end
+
+function open()
+	if state ~= "closed" then return false end
+	if not actor_ok() then return false end
+	if not he_watch_status.is_operational() then return false end
+	if not watch_gate or not watch_gate.has_watch() then return false end
+	if get_actor_obj() and get_actor_obj():IsDetectorActive() then return false end
+	if db.actor:is_talking() then return false end
+	if device():is_paused() then return false end
+	if db.actor:ph_capture() then return false end
+	if level.main_input_receiver() then return false end
+	if allcore_hide.watch_is_active then return false end
+	local watch = current_watch()
+	if not watch then return false end
+	local cfg = watch:alarm_config()
+	if not cfg then return false end
+
+	draft_h = tonumber(cfg.h) or 0
+	draft_m = tonumber(cfg.m) or 0
+	draft_h = draft_h % 24
+	if draft_m < 0 or draft_m > 59 then draft_m = 0 end
+	session = session + 1
+	local my_session = session
+	state = "opening"
+	opened_at = time_global()
+
+	local host = allcore_hide.begin_watch_presentation("alarm", function(host_session)
+		if session ~= my_session or state ~= "opening" then
+			if host_session then allcore_hide.abort_watch_presentation(host_session) end
+			return
+		end
+		open_editor(my_session)
+	end)
+	if not host then
+		set_closed()
+		return false
+	end
+	presentation_session = host
+	block_use()
+	reset_use_gesture()
+	return true
+end
+
+-- Same alarm key toggles the editor: open when closed, cancel while editing.
+function toggle()
+	if state == "closed" then
+		return open()
+	end
+	if state == "opening" or state == "editing" then
+		cancel()
+		return true
+	end
+	return false
+end
+
+function is_active()
+	return state == "opening" or state == "editing" or state == "closing"
+end
+
+function get_display_time()
+	if state == "opening" or state == "editing" then
+		return draft_h, draft_m
+	end
+	return nil
+end
+
+function abort(reason)
+	if state == "closed" then return end
+	session = session + 1
+	local host = presentation_session
+	set_closed()
+	local_cleanup()
+	if host and allcore_hide and allcore_hide.abort_watch_presentation then
+		allcore_hide.abort_watch_presentation(host)
+	end
+end
+
+local function start_input()
+	level.block_action(key_bindings.kPDA_CLOCK)
+	alarm_owned = true
+	alarm_down = pressed(bind_to_dik(key_bindings.kPDA_CLOCK))
+end
+
+local function stop_input()
+	abort("stop_modules")
+	unblock_use()
+	if alarm_owned then level.unblock_action(key_bindings.kPDA_CLOCK) end
+	alarm_owned = false
+	alarm_down = false
+end
+
+function attach(sm)
+	sm:subscribe({signal = "on_first_update", fun = start_input})
+	sm:subscribe({signal = "on_stop_modules", fun = stop_input})
+	sm:subscribe({signal = "on_load_before_all", fun = function() abort("load") end})
+	sm:subscribe({signal = "on_wheel_rotation", fun = on_wheel_rotation})
+	sm:subscribe({signal = "on_update", fun = on_update})
+end

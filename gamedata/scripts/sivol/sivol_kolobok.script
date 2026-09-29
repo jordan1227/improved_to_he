@@ -1,0 +1,429 @@
+sivol_kolobok = sivol_kolobok or {}
+local M = sivol_kolobok
+
+local STAGES = {
+    af_kol_1 = { level = 1, capacity = 1, recharge = 90000 },
+    af_kol_2 = { level = 2, capacity = 1, recharge = 60000 },
+    af_kol_3 = { level = 3, capacity = 2, recharge = 60000 },
+    af_kol_4 = { level = 4, capacity = 2, recharge = 30000 },
+}
+
+local STATE_INITIALIZED = "sivol_kolobok.initialized"
+local STATE_CAPACITY = "sivol_kolobok.capacity"
+local STATE_CHARGES = "sivol_kolobok.charges"
+local STATE_REMAINING = "sivol_kolobok.recharge_remaining"
+local STATE_DURATION = "sivol_kolobok.recharge_duration"
+
+local SCAN_INTERVAL = 200
+local UPDATE_INTERVAL = 200
+local DIAGNOSTIC_INTERVAL = 250
+local DIAGNOSTICS_ENABLED = false
+
+local HIT_STRIKE = hit and hit.strike or 2
+local HIT_WOUND = hit and hit.wound or 3
+local HIT_CHEMICAL = hit and hit.chemical_burn or 6
+
+local melee_wound_classes = {}
+local function add_class(class_id)
+    if class_id ~= nil then melee_wound_classes[class_id] = true end
+end
+
+local function refresh_melee_classes()
+    -- These classes have a documented wound attack in the effective creature
+    -- configs.  Special controller/poltergeist/zombie attacks are intentionally
+    -- not part of this table.
+    add_class(CLID_BLOODSUCKER)
+    add_class(CLID_BOAR)
+    add_class(CLID_BURER)
+    add_class(CLID_CHIMERA)
+    add_class(CLID_DOG)
+    add_class(CLID_FLESH)
+    add_class(CLID_GIGANT)
+    add_class(CLID_PSEUDODOG)
+    add_class(CLID_SNORK)
+    add_class(CLID_TUSHKANO)
+end
+
+local candidates = {}
+local scan_dirty = true
+local last_scan = 0
+local last_update = nil
+local last_diagnostic = 0
+
+local state = {
+    initialized = false,
+    capacity = 0,
+    charges = 0,
+    recharge_remaining = 0,
+    recharge_duration = 0,
+}
+
+local function clamp(value, low, high)
+    return math.max(low, math.min(high, value))
+end
+
+local function belt_is_powered()
+    if not (sak and sak_inventory and sak.arts_operate
+        and sak.get_accum and sak_inventory.belt_items) then
+        return false
+    end
+
+    local ok, accumulator = pcall(sak.get_accum)
+    return ok and accumulator ~= nil and sak.arts_operate == true
+end
+
+function M.is_supported_section(section)
+    return STAGES[section] ~= nil
+end
+
+local function invalidate_candidates()
+    scan_dirty = true
+    last_scan = 0
+end
+
+local function scan_candidates(now)
+    if not scan_dirty and now - last_scan < SCAN_INTERVAL then return end
+
+    candidates = {}
+    last_scan = now
+    scan_dirty = false
+    if not (sak_inventory and sak_inventory.belt_items) then return end
+
+    for section, ids in pairs(sak_inventory.belt_items) do
+        if M.is_supported_section(section) and type(ids) == "table" then
+            for _, artifact_id in ipairs(ids) do
+                table.insert(candidates, { section = section, id = artifact_id })
+            end
+        end
+    end
+end
+
+local function live_candidate(candidate)
+    local ok_object, artifact = pcall(client_obj, candidate.id)
+    if not ok_object or not artifact then return nil end
+
+    local ok_section, section = pcall(artifact.section, artifact)
+    if not ok_section or section ~= candidate.section then return nil end
+
+    local ok_condition, condition = pcall(artifact.condition, artifact)
+    if not ok_condition then return nil end
+
+    condition = clamp(tonumber(condition) or 0, 0, 1)
+    if condition <= 0 then return nil end
+    return artifact, condition
+end
+
+local function select_current(now, powered)
+    if not powered then return nil end
+
+    scan_candidates(now)
+    local selected = nil
+    for _, candidate in ipairs(candidates) do
+        local artifact, condition = live_candidate(candidate)
+        if artifact then
+            local stage = STAGES[candidate.section]
+            if not selected
+                or stage.level > selected.level
+                or (stage.level == selected.level and condition > selected.condition)
+            then
+                selected = {
+                    section = candidate.section,
+                    id = candidate.id,
+                    level = stage.level,
+                    capacity = stage.capacity,
+                    recharge = stage.recharge,
+                    condition = condition,
+                }
+            end
+        end
+    end
+    return selected
+end
+
+local function load_state()
+    state.initialized = get_value(STATE_INITIALIZED, false) == true
+    state.capacity = math.max(0, math.floor(tonumber(get_value(STATE_CAPACITY, 0)) or 0))
+    state.charges = math.max(0, math.floor(tonumber(get_value(STATE_CHARGES, 0)) or 0))
+    state.recharge_remaining = math.max(0, tonumber(get_value(STATE_REMAINING, 0)) or 0)
+    state.recharge_duration = math.max(0, tonumber(get_value(STATE_DURATION, 0)) or 0)
+end
+
+local function save_state()
+    set_value(STATE_INITIALIZED, state.initialized == true)
+    set_value(STATE_CAPACITY, math.max(0, math.floor(state.capacity or 0)))
+    set_value(STATE_CHARGES, math.max(0, math.floor(state.charges or 0)))
+    set_value(STATE_REMAINING, math.max(0, state.recharge_remaining or 0))
+    set_value(STATE_DURATION, math.max(0, state.recharge_duration or 0))
+end
+
+local function sync_selection(selection)
+    if not selection then return end
+
+    if not state.initialized then
+        state.initialized = true
+        state.capacity = selection.capacity
+        state.charges = selection.capacity
+        state.recharge_remaining = 0
+        state.recharge_duration = 0
+        return
+    end
+
+    state.capacity = selection.capacity
+    if state.charges > state.capacity then
+        state.charges = state.capacity
+    end
+end
+
+local function finish_recharge(selection)
+    state.capacity = selection.capacity
+    state.charges = selection.capacity
+    state.recharge_remaining = 0
+    state.recharge_duration = 0
+end
+
+local function gameplay_clock_active()
+    if level and type(level.main_input_receiver) == "function" then
+        local ok_receiver, receiver = pcall(level.main_input_receiver)
+        if ok_receiver and receiver then return false end
+    end
+    if type(device) == "function" then
+        local ok_paused, paused = pcall(function() return device():is_paused() end)
+        if ok_paused and paused then return false end
+    end
+    return true
+end
+
+local function advance_recharge(now, selection)
+    if not selection then
+        last_update = nil
+        return
+    end
+
+    sync_selection(selection)
+    if not gameplay_clock_active() then
+        last_update = nil
+        return
+    end
+
+    local elapsed = 0
+    if last_update and now >= last_update then
+        elapsed = math.min(1000, now - last_update)
+    end
+    last_update = now
+    if elapsed <= 0 or state.recharge_remaining <= 0 then return end
+
+    state.recharge_remaining = math.max(0, state.recharge_remaining - elapsed)
+    if state.recharge_remaining <= 0 then
+        finish_recharge(selection)
+    end
+end
+
+local function log_diagnostic(now, selection, reason)
+    if not DIAGNOSTICS_ENABLED or now - last_diagnostic < DIAGNOSTIC_INTERVAL then return end
+    last_diagnostic = now
+    log2(
+        "[sivol_kolobok] selected=%s artifact_id=%s capacity=%d charges=%d recharge_remaining=%.0f recharge_duration=%.0f powered=%s reason=%s",
+        selection and selection.section or "none", selection and selection.id or -1,
+        state.capacity or 0, state.charges or 0, state.recharge_remaining or 0,
+        state.recharge_duration or 0, tostring(belt_is_powered()), tostring(reason or "update"))
+end
+
+local function log_hit(now, attacker_id, attacker_section, class_id, hit_type,
+    power, accepted, reason)
+    if not DIAGNOSTICS_ENABLED then return end
+    if accepted or not last_diagnostic or now - last_diagnostic >= DIAGNOSTIC_INTERVAL then
+        last_diagnostic = now
+        log2(
+            "[sivol_kolobok] hit attacker_id=%s section=%s class_id=%s hit_type=%s power=%.4f accepted=%s charges=%d recharge_remaining=%.0f reason=%s timestamp=%d",
+            tostring(attacker_id or -1), tostring(attacker_section or "unknown"),
+            tostring(class_id or "unknown"), tostring(hit_type or "unknown"),
+            tonumber(power) or 0, tostring(accepted == true), state.charges or 0,
+            state.recharge_remaining or 0, tostring(reason or "unknown"), now)
+    end
+end
+
+local function resolve_attacker(hit_data)
+    local attacker_id = tonumber(hit_data and hit_data.who_id)
+    if not attacker_id or not level or type(level.object_by_id) ~= "function" then
+        return nil, attacker_id, nil, nil, "missing_attacker"
+    end
+
+    local ok_object, attacker = pcall(level.object_by_id, attacker_id)
+    if not ok_object or not attacker then
+        return nil, attacker_id, nil, nil, "unresolved_attacker"
+    end
+
+    local ok_class, class_id = pcall(attacker.clsid, attacker)
+    if not ok_class or class_id == nil then
+        return nil, attacker_id, nil, nil, "unresolved_class"
+    end
+
+    local is_monster = false
+    if type(IsMonster) == "function" then
+        local ok_monster, value = pcall(IsMonster, attacker, class_id)
+        is_monster = ok_monster and value == true
+    end
+    if not is_monster and type(attacker.is_monster) == "function" then
+        local ok_monster, value = pcall(attacker.is_monster, attacker)
+        is_monster = ok_monster and value == true
+    end
+    if not is_monster then
+        return nil, attacker_id, nil, class_id, "not_monster"
+    end
+
+    local ok_section, section = pcall(attacker.section, attacker)
+    if not ok_section or not section then
+        return nil, attacker_id, nil, class_id, "unresolved_section"
+    end
+    return attacker, attacker_id, section, class_id, nil
+end
+
+local function is_allowed_melee(attacker_section, class_id, hit_type)
+    if hit_type == HIT_CHEMICAL then
+        return string.sub(attacker_section or "", 1, 4) == "rat_"
+    end
+    if hit_type == HIT_STRIKE then
+        return class_id == CLID_CAT
+    end
+    if hit_type == HIT_WOUND then
+        return melee_wound_classes[class_id] == true
+    end
+    return false
+end
+
+function M.on_before_hit(hit_data)
+    if not hit_data or hit_data.ignore_hit then return false end
+
+    refresh_melee_classes()
+    local now = time_global()
+    local hit_type = hit_data.hit_type
+    local power = tonumber(hit_data.power) or 0
+    local selection = select_current(now, belt_is_powered())
+    if not selection then return false end
+
+    sync_selection(selection)
+    if power <= 0 then
+        log_hit(now, hit_data.who_id, nil, nil, hit_type, power, false, "non_positive_power")
+        return false
+    end
+    if state.charges <= 0 then
+        log_hit(now, hit_data.who_id, nil, nil, hit_type, power, false, "empty")
+        return false
+    end
+
+    local attacker, attacker_id, attacker_section, class_id, resolve_reason =
+        resolve_attacker(hit_data)
+    if not attacker then
+        log_hit(now, attacker_id, attacker_section, class_id, hit_type, power, false,
+            resolve_reason)
+        return false
+    end
+    local is_psy_phantom = false
+    if sivol_psy_phantoms and type(sivol_psy_phantoms.is_phantom) == "function" then
+        local ok_phantom, value = pcall(sivol_psy_phantoms.is_phantom, attacker_id)
+        is_psy_phantom = ok_phantom and value == true
+    end
+    if is_psy_phantom then
+        log_hit(now, attacker_id, attacker_section, class_id, hit_type, power, false,
+            "psy_phantom")
+        return false
+    end
+    if not is_allowed_melee(attacker_section, class_id, hit_type) then
+        log_hit(now, attacker_id, attacker_section, class_id, hit_type, power, false,
+            "not_verified_melee")
+        return false
+    end
+
+    state.charges = math.max(0, state.charges - 1)
+    if state.recharge_remaining <= 0 then
+        state.recharge_duration = selection.recharge
+        state.recharge_remaining = selection.recharge
+        if not last_update then last_update = now end
+    end
+    hit_data.ignore_hit = true
+    -- Feedback follows successful interception; sound failure cannot undo it.
+    local ok_sound, sound_error = pcall(function()
+        local snd = xr_sound.get_safe_sound_object("zwuk_short\\kolo_block")
+        if snd then
+            snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+        end
+    end)
+    if not ok_sound then
+        log2("[sivol_kolobok] block sound failed: %s", tostring(sound_error))
+    end
+    log_hit(now, attacker_id, attacker_section, class_id, hit_type, power, true,
+        "kolobok_charge")
+    return true
+end
+
+function M.set_diagnostics(enabled)
+    DIAGNOSTICS_ENABLED = enabled == true
+end
+
+function M.on_update()
+    if ogse_signals and ogse_signals.get_mgr then
+        ogse_signals.get_mgr():reschedule(UPDATE_INTERVAL)
+    end
+
+    local now = time_global()
+    if not (db and db.actor) then
+        last_update = nil
+        invalidate_candidates()
+        return
+    end
+
+    local selection = select_current(now, belt_is_powered())
+    advance_recharge(now, selection)
+    log_diagnostic(now, selection, selection and "update" or "inactive")
+end
+
+local function reset_runtime_clock()
+    last_update = nil
+    last_diagnostic = 0
+    invalidate_candidates()
+end
+
+function M.on_first_update()
+    refresh_melee_classes()
+    load_state()
+    reset_runtime_clock()
+end
+
+function M.on_game_loaded()
+    refresh_melee_classes()
+    load_state()
+    reset_runtime_clock()
+end
+
+function M.on_spawn()
+    reset_runtime_clock()
+end
+
+function M.on_before_save_game()
+    save_state()
+end
+
+function M.on_level_changer_action()
+    save_state()
+    reset_runtime_clock()
+end
+
+function M.on_stop_modules()
+    save_state()
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_first_update", fun = M.on_first_update })
+    sm:subscribe({ signal = "on_update", fun = M.on_update })
+    sm:subscribe({ signal = "on_before_save_game", fun = M.on_before_save_game })
+    sm:subscribe({ signal = "on_game_loaded", fun = M.on_game_loaded })
+    sm:subscribe({ signal = "level_changer_action", fun = M.on_level_changer_action })
+    sm:subscribe({ signal = "on_spawn", fun = M.on_spawn })
+    sm:subscribe({ signal = "on_item_to_belt", fun = invalidate_candidates })
+    sm:subscribe({ signal = "on_item_to_ruck", fun = invalidate_candidates })
+    sm:subscribe({ signal = "on_item_to_slot", fun = invalidate_candidates })
+    sm:subscribe({ signal = "on_drop_after_all", fun = invalidate_candidates })
+    sm:subscribe({ signal = "on_stop_modules", fun = M.on_stop_modules })
+end
+
+M.attach = attach

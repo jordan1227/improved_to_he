@@ -200,16 +200,40 @@ function actor_immunities_add(out_sect,key)
 			end
 			if i=="telepatic_immunity" then
 				new_param=(new_param*sak.black_bonus)
+				if (get_value("mixture_mass", 0) or 0) > 0 then
+					new_param = new_param * 1.20
+				end
 			end
 			actor_params.immun_prop (i, new_param)
 		end
 	end
 end
 
+function refresh_mixture_immunity()
+  local armor = db.actor and db.actor:item_in_slot(6)
+  if armor then
+    actor_immunities_add(armor:section(), armor:condition())
+  else
+    actor_immunities_add()
+  end
+end
+
 function set_inv_weight(id, add)
  item_params.item_prop(id, "inv_weight", add)
 end
   
+function ballon_weight_add()
+  if sak_inventory.eatable["ballon"] then
+    for _, ballon_id in ipairs(sak_inventory.eatable["ballon"]) do
+      local ballon_obj = client_obj(ballon_id)
+      if ballon_obj then
+        local cond = math.max(0, math.min(1, ballon_obj:condition()))
+        set_inv_weight(ballon_id, 1 + 4 * cond)
+      end
+    end
+  end
+end
+
 local sys_repbox_weight = system_ini():r_float("repair_boxoutfit", "inv_weight")
 function repbox_weight_add()
   if sak_inventory.eatable["repair_boxoutfit"] then
@@ -250,6 +274,7 @@ function podsumok_weight_add(add)
 end
 local run_coef = system_ini():r_float("actor", "run_coef")
 local sprint_koef = system_ini():r_float("actor", "sprint_koef")
+local last_sprint_base_koef = sprint_koef
 local walk_accel = system_ini():r_float("actor", "walk_accel")
 local climb_coef = system_ini():r_float("actor", "climb_coef")
 local w_w_power = system_ini():r_float("actor_condition", "walk_weight_power")
@@ -258,6 +283,25 @@ local tiredness_timer = misc.game_timer()
 local sleep_time = 0
 -- set_value("ph_tiredness", -100)
 local prev_inert
+
+local function get_cry_sprint_bonus()
+    local module = _G.sivol_cry_sprint
+    if type(module) ~= "table" or type(module.get_current_bonus) ~= "function" then
+        return 0
+    end
+    local ok, bonus = pcall(module.get_current_bonus)
+    return ok and math.max(0, tonumber(bonus) or 0) or 0
+end
+
+function params.get_sprint_base_koef()
+    return last_sprint_base_koef or sprint_koef
+end
+
+function params.refresh_sprint_koef()
+    if not db or not db.actor then return end
+    local base = last_sprint_base_koef or sprint_koef
+    actor_params.actor_prop("sprint_koef", base * (1 + get_cry_sprint_bonus()))
+end
 function tiredness_add()
 	if vergas_art.params_flag == true then return end
 	local act = db.actor
@@ -272,14 +316,20 @@ function tiredness_add()
 	local state = actor_body_state()
 	local sleep = sleep_manager.is_sleep_active()
 
+	-- [HE-PORT]
+	local thirst_level = thirst.get_thirst()
 	local delta = -0.1
 
 	if state.crouch then delta = delta + 0.1 end
 	if state.sprint then delta = delta + 0.1 end
 	if state.jump   then delta = delta + 0.5 end  
 
+	if thirst_level > 0.8 then
+		delta = delta * ( 1 + ( thirst_level - 0.8 ) * 0.85 )
+	end
+
 	if act.power == act.max_power and ph_t > 5 then
-		ph_t = ph_t * 0.98 -- 2% процентное восстановление при высокой усталости
+		ph_t = ph_t * ( 0.98 * ( 1 - thirst_level * 0.4 ) ) -- 2% процентное восстановление при высокой усталости
 	end  
 								 
 	local have_power = ( act.power + 0.1 ) / act.max_power  -- краткосрочна€ перегрузка
@@ -290,7 +340,7 @@ function tiredness_add()
 		delta = delta * sleep_manager.restore_coef() -- в защите, с оружием и рюкзаком спать неудобно!
 	else   
 		delta = delta + (act.max_power - act.power)
-		sleepiness = sleepiness + delay / 6.0       -- раз в 360 игровых секунд добавл€етс€ 1 пункт сонливости
+		sleepiness = sleepiness + ( delay / 6.0 ) * ( 1 + ( thirst_level > 0.7 and ( thirst_level - 0.5 ) * 0.5 or 0 ) ) -- раз в 360 игровых секунд добавл€етс€ 1 пункт сонливости
 	end  
 
 	if delta < 0 and ph_t < 0 then
@@ -311,8 +361,9 @@ function tiredness_add()
 	local diff = sleep_manager.change_sleepiness(sleepiness)
 
 	set_value("ph_tiredness", ph_t)
+	thirst_level = thirst.update_activity( delay, state, act )
 
-	local new_coef = ( 960 + sleepiness + ph_t ) / ( 700 + 100 * have_power + gg_heal )
+	local new_coef = ( 960 + sleepiness + ph_t ) / ( ( 700 + 100 * have_power + gg_heal ) * thirst.tiredness_factor( thirst_level ) )
 	if new_coef < 1 then new_coef = 1 end
 
 	local wpn_wobble = math.min (1.5, new_coef / 1.5)
@@ -331,7 +382,7 @@ function tiredness_add()
 									 -- action, new_coef, sleepiness, have_power, act.max_power, ph_t, diff, delay)
 	-- wprintf("~C0A %s~C07", lua_traceback(' '))
 	ww_power = w_w_power * new_coef
-	act.max_power = 1 - ph_t * 0.02
+	act.max_power = ( 1 - ph_t * 0.02 ) * thirst.max_power_factor( thirst_level )
 
 	if get_console():get_bool("g_god") then
 		new_walk_accel = 17
@@ -342,6 +393,11 @@ function tiredness_add()
 		inert = 0
 	end
 	
+	if thirst_level <= 0.3 and sleepiness <= 120 then
+		new_run_coef = new_run_coef * 1.07
+		new_sprint_koef = new_sprint_koef * 1.07
+	end
+
 	local penalty = 1
 	if db.actor.satiety <= 0.2 then
 		penalty = penalty - 0.1
@@ -352,7 +408,8 @@ function tiredness_add()
 	end
 
 	actor_params.actor_prop("run_coef",    new_run_coef * penalty)
-	actor_params.actor_prop("sprint_koef", new_sprint_koef * penalty)
+	last_sprint_base_koef = new_sprint_koef * penalty
+    params.refresh_sprint_koef()
 	actor_params.actor_prop("walk_accel",  new_walk_accel * penalty)
 	actor_params.actor_prop("climb_coef",  new_climb_coef * penalty)
 	tired_owermass()
@@ -371,8 +428,9 @@ end
 local max_weight = system_ini():r_float("inventory", "max_weight")
 local max_walk_weight = system_ini():r_float("actor_condition", "max_walk_weight")
 function max_item_mass_add(add)
-  local new_max_weight = max_weight+add+(sak.mass_add)
-  local new_weight = max_walk_weight+add+(sak.mass_add)
+  local thirst_adjustment = thirst.weight_adjustment()
+  local new_max_weight = max_weight+add+(sak.mass_add)+thirst_adjustment+(get_value("mixture_mass", 0) or 0)
+  local new_weight = max_walk_weight+add+(sak.mass_add)+thirst_adjustment+(get_value("mixture_mass", 0) or 0)
   actor_params.inv_prop("max_weight", new_max_weight)
   actor_params.cond_prop("max_walk_weight", new_weight)
 end
@@ -504,21 +562,12 @@ function jump_speed_add(add)
 end
 function move_speed_set(val)
 	if not sak.game_began then return end
-	local v = get_value("block_sleep_menu", 0)
-	if val == 0 then -- Sn: для принудительной проверки действия энергетика
-		if v == 1 then
-			db.actor.speed_multiplier = 1.2 * sivol.get_move_penalty_coef()
-		else
-			db.actor.speed_multiplier = 1 * sivol.get_move_penalty_coef()
-		end
+	local reset = val == 0
+	if reset then val = 1 end
+	local energy_drink_boost = get_value("energy_drink_speed_buff", 0) == 1 and 1.05 or 1
+	db.actor.speed_multiplier = val * energy_drink_boost * sivol.get_move_penalty_coef()
+	if reset then
 		arc_arts.check_artefact()
-		return
-	else
-		if v == 1 then
-			db.actor.speed_multiplier = 1.2 * sivol.get_move_penalty_coef()
-		else
-			db.actor.speed_multiplier = val * sivol.get_move_penalty_coef()
-		end
 	end
 end
 local air_control_param = system_ini():r_float("actor", "air_control_param")
@@ -607,7 +656,7 @@ function params.get_condition(obj, limit)
   
  local sobj = g_sim:object(id)
  if sobj then 
-    local pk = get_netpk(obj, 1)
+    local pk = get_netpk(sobj, 1)
     local data = pk:get()
     if data.condition > limit then 
       return limit

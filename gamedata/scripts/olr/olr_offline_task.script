@@ -1,0 +1,478 @@
+-- [HE-PORT]
+local mutant_clsids = {
+	[clsid.dog_s]          = true,
+	[clsid.dog_red]        = true,
+	[clsid.dog_black]      = true,
+	[clsid.boar_s]         = true,
+	[clsid.boar]           = true,
+	[clsid.flesh_s]        = true,
+	[clsid.flesh]          = true,
+	[clsid.pseudodog_s]    = true,
+	[clsid.bloodsucker_s]  = true,
+	[clsid.bloodsucker]    = true,
+	[clsid.snork_s]        = true,
+	[clsid.tushkano_s]     = true,
+	[clsid.tushkano]       = true,
+	[clsid.gigant_s]       = true,
+	[clsid.pseudo_gigant]  = true,
+	[clsid.burer_s]        = true,
+	[clsid.burer]          = true,
+	[clsid.controller_s]   = true,
+	[clsid.controller]     = true,
+	[clsid.poltergeist_s]  = true,
+	[clsid.poltergeist]    = true,
+}
+
+local monster_comm_by_clsid = {
+	[clsid.dog_s] = "dog",
+	[clsid.dog_red] = "dog",
+	[clsid.dog_black] = "dog",
+	[clsid.boar_s] = "boar",
+	[clsid.boar] = "boar",
+	[clsid.flesh_s] = "flesh",
+	[clsid.flesh] = "flesh",
+	[clsid.pseudodog_s] = "pseudodog",
+	[clsid.bloodsucker_s] = "bloodsucker",
+	[clsid.bloodsucker] = "bloodsucker",
+	[clsid.snork_s] = "snork",
+	[clsid.tushkano_s] = "tushkano",
+	[clsid.tushkano] = "tushkano",
+	[clsid.gigant_s] = "giant",
+	[clsid.pseudo_gigant] = "giant",
+	[clsid.burer_s] = "burer",
+	[clsid.burer] = "burer",
+	[clsid.controller_s] = "controller",
+	[clsid.controller] = "controller",
+	[clsid.poltergeist_s] = "poltergeist",
+	[clsid.poltergeist] = "poltergeist",
+}
+
+local stalker_ids_cache = {}
+local monster_ids_cache = {}
+local zombie_ids_cache = {}
+local cache_time = 0
+local CACHE_TTL = 30000
+local cache_scan_pos = 1
+local CACHE_SCAN_BATCH = 80
+local cache_building = false
+local cache_stalker_tmp = {}
+local cache_monster_tmp = {}
+local cache_zombie_tmp = {}
+
+local function rebuild_cache()
+	if not cache_building and time_global() - cache_time < CACHE_TTL then return end
+	local sim = g_sim
+	if not sim then return end
+
+	if not cache_building then
+		cache_building = true
+		cache_scan_pos = 1
+		cache_stalker_tmp = {}
+		cache_monster_tmp = {}
+		cache_zombie_tmp = {}
+	end
+
+	local scan_end = cache_scan_pos + CACHE_SCAN_BATCH - 1
+	if scan_end > MAX_OBJ_ID then scan_end = MAX_OBJ_ID end
+	for id = cache_scan_pos, scan_end do
+		local obj = sim:object(id)
+		if obj and not obj.online and obj.health and obj:alive() then
+			local cls = obj:clsid()
+			if cls == clsid.script_stalker then
+				if not olr_protected.is_no_offline_alife_obj(obj:name()) then
+					local comm = obj:community()
+					if not cache_stalker_tmp[comm] then cache_stalker_tmp[comm] = {} end
+					table.insert(cache_stalker_tmp[comm], id)
+				end
+			elseif mutant_clsids[cls] then
+				table.insert(cache_monster_tmp, id)
+			elseif cls == clsid.zombie_s or cls == clsid.zombie then
+				table.insert(cache_zombie_tmp, id)
+			end
+		end
+	end
+
+	if scan_end >= MAX_OBJ_ID then
+		stalker_ids_cache = cache_stalker_tmp
+		monster_ids_cache = cache_monster_tmp
+		zombie_ids_cache = cache_zombie_tmp
+		cache_building = false
+		cache_time = time_global()
+		cache_scan_pos = 1
+	else
+		cache_scan_pos = scan_end + 1
+	end
+end
+
+-- [HE-PORT]
+function cached_stalkers( comm )
+	rebuild_cache()
+	if not comm then return {} end
+	return stalker_ids_cache[ comm ] or {}
+end
+
+local function current_smart_name(kill)
+	local strn_id = kill:smart_terrain_id()
+	if not strn_id or strn_id == BAD_OBJ_ID then return nil end
+	local sim = g_sim or alife()
+	if not sim then return nil end
+	local smart = sim:object(strn_id)
+	if smart then return smart:name() end
+	return nil
+end
+
+-- [HE-PORT]
+local WANDER_MIN_H  = 12
+local WANDER_MAX_H  = 24
+local WANDER_SHARE  = 0.5
+local WANDER_ROLL   = 2
+
+-- [HE-PORT]
+function has_wander_record( name )
+	if not name then return false end
+	return ( get_value( "nlc.olr_wanderers" ) or {} )[ name ] ~= nil
+end
+
+-- [HE-PORT]
+function is_wandering( name )
+	if not name then return false end
+	local due = ( get_value( "nlc.olr_wanderers" ) or {} )[ name ]
+	if not due then return false end
+	return timers.Get_Game_Seconds() < due
+end
+
+-- [HE-PORT]
+function set_wandering( name )
+	if not name then return end
+	local t = get_value( "nlc.olr_wanderers" ) or {}
+	t[ name ] = timers.Get_Game_Seconds() + math.random( WANDER_MIN_H, WANDER_MAX_H ) * 3600
+	set_value( "nlc.olr_wanderers", t )
+end
+
+-- [HE-PORT]
+function clear_wandering( name )
+	if not name then return end
+	local t = get_value( "nlc.olr_wanderers" ) or {}
+	if t[ name ] then
+		t[ name ] = nil
+		set_value( "nlc.olr_wanderers", t )
+	end
+end
+
+-- [HE-PORT]
+local function send_wandering( kill )
+	local from = current_smart_name( kill )
+	if olr_smart_index.is_locked( from ) then return false end
+	if not olr_smart_index.can_release( from ) then return false end
+	xrs_utils.clear_smart_terrain( kill )
+	smart_terrain.unregister_npc( kill )
+	if kill.brain then
+		kill:brain():can_choose_alife_tasks( true )
+	end
+	if not xrs_utils.set_smart_terrain( kill, "none" ) then return false end
+	set_wandering( kill:name() )
+	return true
+end
+
+-- [HE-PORT]
+local function wandering_count( id_list, sim )
+	local n = 0
+	for _, id in ipairs( id_list ) do
+		local o = sim:object( id )
+		if o and o:alive() and o:smart_terrain_id() == BAD_OBJ_ID and has_wander_record( o:name() ) then
+			n = n + 1
+		end
+	end
+	return n
+end
+
+local function migrate_stalker(kill, community_name)
+	local exclude = current_smart_name(kill)
+	if olr_smart_index.is_locked(exclude) then return false end
+	-- [HE-PORT]
+	if exclude and not olr_smart_index.can_release(exclude) then return false end
+	local target = olr_smart_index.pick_name(community_name, exclude)
+	if not target then return false end
+
+	xrs_utils.clear_smart_terrain(kill)
+	smart_terrain.unregister_npc(kill)
+	if kill.brain then
+		kill:brain():can_choose_alife_tasks(true)
+		kill:brain():update(true)
+	end
+
+	if not xrs_utils.set_smart_terrain(kill, target) then return false end
+	if kill.brain then
+		kill:brain():can_choose_alife_tasks(true)
+		kill:brain():update(true)
+	end
+	return true
+end
+
+local function migrate_monster(kill, community_name)
+	local exclude = current_smart_name(kill)
+	if olr_smart_index.is_locked(exclude) then return false end
+	-- [HE-PORT]
+	if exclude and not olr_smart_index.can_release(exclude) then return false end
+	local target = olr_smart_index.pick_name(community_name, exclude)
+	if not target then return false end
+
+	smart_terrain.unregister_npc(kill)
+	if kill.brain then
+		kill:brain():can_choose_alife_tasks(true)
+	end
+
+	if not xrs_utils.set_smart_terrain(kill, target) then return false end
+	if kill.brain then
+		kill:brain():can_choose_alife_tasks(true)
+		kill:brain():update(true)
+	end
+	return true
+end
+
+local function faction_migration(community_name)
+	if not db.actor then return end
+	if not olr_smart_index.ensure() then return end
+	if olr_smart_index.count(community_name) <= 0 then return end
+	rebuild_cache()
+	local id_list = stalker_ids_cache[community_name]
+	if community_name == "stalker" then
+		local extra = stalker_ids_cache["green"]
+		if extra then
+			local merged = {}
+			if id_list then
+				for _, id in ipairs(id_list) do table.insert(merged, id) end
+			end
+			for _, id in ipairs(extra) do table.insert(merged, id) end
+			id_list = merged
+		end
+	end
+	if not id_list then return end
+	local sim = g_sim
+	if not sim then return end
+
+	-- [HE-PORT]
+	local wanderers = wandering_count( id_list, sim )
+	local wander_cap = math.floor( #id_list * WANDER_SHARE )
+
+	for _, id in ipairs(id_list) do
+		local kill = sim:object(id)
+		if kill and kill:alive() and not kill.online then
+			local strn_id = kill:smart_terrain_id()
+			local nm = kill:name()
+			if strn_id == BAD_OBJ_ID then
+				if has_wander_record( nm ) and not is_wandering( nm ) then
+					local ok, res = pcall( migrate_stalker, kill, community_name )
+					if ok and res then
+						clear_wandering( nm )
+						wanderers = wanderers - 1
+					end
+				end
+			elseif math.random(1, 2) == 1 then
+				if wanderers < wander_cap and math.random( 1, WANDER_ROLL ) == 1 then
+					local ok, res = pcall( send_wandering, kill )
+					if ok and res then wanderers = wanderers + 1 end
+				else
+					pcall(migrate_stalker, kill, community_name)
+				end
+			end
+		end
+	end
+end
+
+function ecologs_neutral_task_select()
+	faction_migration("ecolog")
+end
+
+function bandits_neutral_task_select()
+	faction_migration("bandit")
+end
+
+function stalkers_neutral_task_select()
+	faction_migration("stalker")
+end
+
+function dolgs_task_select()
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	faction_migration("dolg")
+end
+
+function freedom_task_select()
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	faction_migration("freedom")
+end
+
+function killers_task_select()
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	faction_migration("killer")
+end
+
+function military_task_select()
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	faction_migration("military")
+end
+
+-- [HE-PORT]
+local function obj_level_name(obj)
+	local sim = g_sim or alife()
+	if not sim then return nil end
+	local ok, lname = pcall(function()
+		return sim:level_name(game_graph():vertex(obj.m_game_vertex_id):level_id())
+	end)
+	if ok then return lname end
+	return nil
+end
+
+-- [HE-PORT]
+function bar_sweep()
+	if not db.actor then return end
+	if not olr_smart_index.ensure() then return end
+	local sim = g_sim
+	if not sim then return end
+	rebuild_cache()
+
+	for comm, ids in pairs(stalker_ids_cache) do
+		if olr_faction_policy.level_denied(comm, "l05_bar") then
+			for _, id in ipairs(ids) do
+				local kill = sim:object(id)
+				if kill and kill:alive() and not kill.online and has_wander_record(kill:name()) then
+					if obj_level_name(kill) == "l05_bar" then
+						local target = olr_smart_index.pick_name(comm, nil, "l05_bar")
+						local smart = target and olr_smart_index.get_obj(target)
+						if smart then
+							pcall(function()
+								sim:teleport_object(id, smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+								olr_smart_index.attach_to(kill, target)
+							end)
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+-- [HE-PORT]
+function guest_sweep()
+	if not db.actor then return end
+	if not olr_smart_index.ensure() then return end
+	local sim = g_sim
+	if not sim then return end
+	rebuild_cache()
+
+	for comm, ids in pairs(stalker_ids_cache) do
+		for _, id in ipairs(ids) do
+			local kill = sim:object(id)
+			if kill and kill:alive() and not kill.online then
+				local lname = obj_level_name(kill)
+				local okd, denied = pcall(olr_faction_policy.is_guest_denied, comm, lname)
+				if okd and denied then
+					local sname = current_smart_name(kill)
+					local smart = sname and olr_smart_index.get_obj(sname)
+					local guest = false
+					if smart then
+						local okg, res = pcall(olr_faction_policy.is_guest_smart, smart, comm)
+						guest = okg and res == true
+					end
+					if guest and not olr_smart_index.is_locked(sname) then
+						local target = olr_smart_index.pick_name(comm, nil, lname)
+						local dst = target and olr_smart_index.get_obj(target)
+						if dst then
+							pcall(function()
+								sim:teleport_object(id, dst.position, dst.m_level_vertex_id, dst.m_game_vertex_id)
+								olr_smart_index.attach_to(kill, target)
+							end)
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+-- [HE-PORT]
+local ROAM_INTERVAL = 8 * 60000
+local roam_next = 0
+local roam_idx = 0
+local roam_plan = {
+	"stalker",
+	"bandit",
+	"dolg",
+	"killer",
+	"freedom",
+	"military",
+	"ecolog",
+}
+
+-- [HE-PORT]
+function roam_update()
+	if not db.actor then return end
+	if device().precache_frame > 1 then return end
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if time_global() < roam_next then return end
+	roam_next = time_global() + ROAM_INTERVAL
+	roam_idx = roam_idx + 1
+	if roam_idx > #roam_plan then roam_idx = 1 end
+	pcall(faction_migration, roam_plan[roam_idx])
+	pcall(bar_sweep)
+	pcall(guest_sweep)
+end
+
+local function monster_migration()
+	if not db.actor then return end
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if not olr_smart_index.ensure() then return end
+	rebuild_cache()
+	if not monster_ids_cache or #monster_ids_cache == 0 then return end
+	local sim = g_sim
+	if not sim then return end
+
+	for _, id in ipairs(monster_ids_cache) do
+		local kill = sim:object(id)
+		if kill and kill:alive() and not kill.online then
+			local strn_id = kill:smart_terrain_id()
+			if strn_id ~= BAD_OBJ_ID then
+				if math.random(1, 2) == 1 then
+					local cls = kill:clsid()
+					local comm = monster_comm_by_clsid[cls]
+					if not comm then
+						local okc, c = pcall(function() return kill:community() end)
+						if okc then comm = c end
+					end
+					if comm then
+						pcall(migrate_monster, kill, comm)
+					end
+				end
+			end
+		end
+	end
+end
+
+function mutants_task_select()
+	monster_migration()
+end
+
+function dogs_task_select()
+	mutants_task_select()
+end
+
+function zombies_task_select()
+	if not db.actor then return end
+	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if not olr_smart_index.ensure() then return end
+	rebuild_cache()
+	if not zombie_ids_cache or #zombie_ids_cache == 0 then return end
+	local sim = g_sim
+	if not sim then return end
+	for _, id in ipairs(zombie_ids_cache) do
+		local kill = sim:object(id)
+		if kill and kill:alive() and not kill.online then
+			local strn_id = kill:smart_terrain_id()
+			if strn_id ~= BAD_OBJ_ID then
+				if math.random(1, 2) == 1 then
+					pcall(migrate_monster, kill, "zombied")
+				end
+			end
+		end
+	end
+end

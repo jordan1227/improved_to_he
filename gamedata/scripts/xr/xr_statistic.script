@@ -4,6 +4,27 @@
 
 function attach(sm)
   sm:subscribe({signal = "on_init_modules", fun = this.init_module})
+  sm:subscribe({signal = "on_pda_actor_info", fun = this.show_quest_stat})
+  sm:subscribe({signal = "on_update", fun = this.pda_stats_update})
+  -- [HE-PORT]
+  sm:subscribe({signal = "on_first_update", fun = this.init_artifact_stats})
+  -- [HE-PORT]
+  sm:subscribe({signal = "on_before_save_game", fun = this.save_gametime})
+  sm:subscribe({signal = "on_stop_modules", fun = this.save_gametime})
+  for _, s in ipairs({
+    "on_pda_open",
+    "on_pda_contacts_open", "on_pda_contacts_hide",
+    "on_pda_diary_open", "on_pda_diary_hide",
+    "on_pda_encyclopedia_open", "on_pda_encyclopedia_hide",
+    "on_pda_events",
+    "on_pda_jobs_open", "on_pda_jobs_accomplished", "on_pda_jobs_current", "on_pda_jobs_failed", "on_pda_jobs_hide",
+    "on_pda_map_global", "on_pda_map_local",
+    "on_pda_news_open", "on_pda_news_hide",
+    "on_pda_hide",
+    "on_pda_ranking",
+  }) do
+    sm:subscribe({signal = s, fun = this.hide_quest_stat})
+  end
 --   sm:subscribe({signal = "on_late_init_all", fun = this.late_init})
 --   sm:subscribe({signal = "on_before_save_game", fun = this.on_before_save})
 end
@@ -263,6 +284,117 @@ local table_statistic_kill_data = {
 
 monster_classes = {}
 
+-- [HE-PORT]
+local artifact_stat_rows = {
+	"st_pda_otherstats_arts_found_1",
+	"st_pda_otherstats_arts_found_2",
+	"st_pda_otherstats_arts_found_3",
+	"st_pda_otherstats_arts_found_mayat",
+	"st_pda_otherstats_arts_found_uniq",
+}
+
+local artifact_stats_initialized = false
+
+local function artifact_matches(section, entries)
+	if not section or not entries then return false end
+	for _, entry in ipairs(entries) do
+		if string.find(section, entry, 1, true) then return true end
+	end
+	return false
+end
+
+local function artifact_stat_section(sect, id)
+	if not sect then return nil end
+	local is_capsule = sect == "af_capsule" or sect == "m_capsule"
+		or string.find(sect, "_capsule", 1, true) ~= nil
+	if is_capsule and id and nlc_capsules and nlc_capsules.read_server then
+		local ok, payload = pcall(nlc_capsules.read_server, id)
+		if ok and payload and nlc_capsules.content_section then
+			local content_ok, content = pcall(nlc_capsules.content_section, payload)
+			if content_ok and content then return content end
+		end
+	end
+	return sect
+end
+
+local function artifact_category(section)
+	if not section then return nil end
+	local base = string.gsub(section, "_capsule$", "")
+	local arts = kotovod and kotovod.tbl_arts
+	local dialog_arts = sak_dialog
+
+	if section == "m_capsule" or string.find(section, "^af_mayatnik_") then
+		return "st_pda_otherstats_arts_found_mayat", 5
+	end
+	if dialog_arts and artifact_matches(base, dialog_arts.table_mayatniks) then
+		return "st_pda_otherstats_arts_found_mayat", 5
+	end
+	if arts and artifact_matches(base, arts.lvl12) then
+		return "st_pda_otherstats_arts_found_mayat", 5
+	end
+	if arts and artifact_matches(base, arts.lvl11) then
+		return "st_pda_otherstats_arts_found_uniq", 4
+	end
+	if (arts and artifact_matches(base, arts.lvl1))
+		or (dialog_arts and artifact_matches(base, dialog_arts.table_aart)) then
+		return "st_pda_otherstats_arts_found_1", 1
+	end
+	if (arts and artifact_matches(base, arts.lvl2))
+		or (dialog_arts and artifact_matches(base, dialog_arts.table_bart)) then
+		return "st_pda_otherstats_arts_found_2", 2
+	end
+	if section == "af_capsule" then
+		return "st_pda_otherstats_arts_found_3", 3
+	end
+	if arts and (artifact_matches(base, arts.lvl5) or artifact_matches(base, arts.lvl6)) then
+		return "st_pda_otherstats_arts_found_3", 3
+	end
+	if dialog_arts and artifact_matches(base, dialog_arts.table_capsule) then
+		return "st_pda_otherstats_arts_found_3", 3
+	end
+	return nil
+end
+
+function init_artifact_stats()
+	if artifact_stats_initialized then return end
+	if not actor_stats or not game or not game.translate_string then return end
+	local initialized = true
+	for _, key in ipairs(artifact_stat_rows) do
+		local ok = pcall(function()
+			actor_stats.add_points("otherstats", game.translate_string(key), 0, 0)
+		end)
+		if not ok then initialized = false end
+	end
+	if initialized then artifact_stats_initialized = true end
+end
+
+function add_found_artifact(sect, id)
+	init_artifact_stats()
+	local semeckiy_id = nil
+	if get_value then semeckiy_id = get_value("nlc_vars.semeckiy_art_id") end
+	if semeckiy_id ~= nil and semeckiy_id == id then
+		local anomaly_key = game.translate_string("st_pda_otherstats_arts_found_3")
+		local semeckiy_key = game.translate_string("st_pda_otherstats_arts_found_semeckiy")
+		add_pts("otherstats", anomaly_key, 1, 3)
+		local function replace_semeckiy_stat()
+			add_pts("otherstats", anomaly_key, -1, -3)
+			add_pts("otherstats", semeckiy_key, 1, 6)
+		end
+		if dsh and dsh.timeout then
+			dsh.timeout(1000, replace_semeckiy_stat)
+		else
+			replace_semeckiy_stat()
+		end
+		return
+	end
+
+	local section = artifact_stat_section(sect, id)
+	local key, points = artifact_category(section)
+	if key then
+		add_pts("otherstats", game.translate_string(key), 1, points)
+	end
+end
+
 function init_module()
   monster_classes = {
     [ CLID_TUSHKANO           ] = "tushkano",
@@ -282,6 +414,8 @@ function init_module()
     [ CLID_CONTROLLER         ] = "controller",
     [ CLID_BLOODSUCKER        ] = "bloodsucker"
   }    
+  -- [HE-PORT]
+  init_game_time_counter()
 end    
 
 -- обновляем статистику на странице "Данные" в ПДА
@@ -301,18 +435,8 @@ end
 function add_pts(props, sect_name, count, pts)
 	if pts == nil then return end
 
-	if (not get_value("add_pts__flag_initialize_monsterkills")) and (props == "monsterkills") then
-		-- инициализация раздела monsterkills в статистике ПДА для удобной сортировки убитых монстров
-		for _, v in ipairs(table_initialize_monsterkills) do
-			actor_stats.add_points("monsterkills", v, 0, 0.0)
-		end
-		set_value("add_pts__flag_initialize_monsterkills", true)
-	elseif (not get_value("add_pts__flag_initialize_stalkerkills")) and (props == "stalkerkills") then
-		-- инициализация раздела stalkerkills в статистике ПДА для удобной сортировки убитых человекоподобных
-		for _, v in ipairs(table_initialize_stalkerkills) do
-			actor_stats.add_points("stalkerkills", v, 0, 0.0)
-		end
-		set_value("add_pts__flag_initialize_stalkerkills", true)
+	if false then
+		-- [HE-PORT]
 	end
 
 	-- wprintf(
@@ -420,7 +544,7 @@ function addKillCount(npc)
 	if isM then
 		add_pts("monsterkills", pda_alias_data, 1, pda_pts_data)
 	elseif isS then
-		add_pts("stalkerkills", pda_alias_data, 1, pda_pts_data)
+		-- [HE-PORT]
 	end
 end
 
@@ -466,4 +590,358 @@ function get_cooking_exp(sect_name)
 		pts = 2
 	end
 	return pts
+end
+
+-- [HE-PORT]
+
+class "QuestStat" (CUIScriptWnd)
+
+function QuestStat:__init(owner) super()
+   self.owner = owner
+   self:InitControls()
+end
+
+function QuestStat:InitControls()
+	self:SetWndRect(168,405,240,120)
+	self:SetAutoDelete(true)
+	self:Show(false)
+	self.owner:AttachChild( self )
+	
+	self.game_st = CUIStatic()
+	self.game_st:SetAutoDelete(true)
+	self.game_st:SetFont(GetFontLetterica18Russian())
+	self.game_st:SetWidth(210)
+	self.game_st:SetHeight(20)
+	self.game_st:SetTextX(8)
+	self.game_st:SetTextY(130)
+	self.game_st:SetTextColor(160,170,170,170)
+	self.game_st:SetTextAlign(CGameFont.alLeft)
+	self.game_st:SetText( game.translate_string( "st_pda_actor_games" ) )
+	self:AttachChild(self.game_st)
+
+	self.game = CUIStatic()
+	self.game:SetAutoDelete(true)
+	self.game:SetFont(GetFontLetterica18Russian())
+	self.game:SetWidth(200)
+	self.game:SetHeight(20)
+	self.game:SetTextColor(200,255,255,255)
+	self.game:SetTextAlign(CGameFont.alLeft)
+	self.game:SetTextX(8)
+	self.game:SetTextY(152)
+	self.game:SetText( gametime( get_death_count( "game_time" ) ) )
+	self:AttachChild(self.game)	
+
+	self.diff_st = CUIStatic()
+	self.diff_st:SetAutoDelete(true)
+	self.diff_st:SetFont(GetFontLetterica18Russian())
+	self.diff_st:SetWidth(210)
+	self.diff_st:SetHeight(20)
+	self.diff_st:SetTextColor(200,255,255,255)
+	self.diff_st:SetTextAlign(CGameFont.alLeft)
+	self.diff_st:SetTextX(0)
+	self.diff_st:SetTextY(174)
+	self:AttachChild(self.diff_st)
+end
+
+function QuestStat:RefreshTime()
+	if self.game then
+		self.game:SetText( gametime( get_death_count( "game_time" ) ) )
+	end
+end
+
+-- [HE-PORT]
+local difficulty_names = {
+	[0] = "ui_mm_novice",
+	[1] = "ui_mm_stalker",
+	[2] = "ui_mm_veteran",
+	[3] = "ui_mm_master"
+}
+
+-- [HE-PORT]
+local difficulty_colors = {
+	[0] = "%c[255,105,240,145]",
+	[3] = "%c[255,255,85,85]"
+}
+
+-- [HE-PORT]
+function QuestStat:UpdateDifficulty()
+	if not self.diff_st then return end
+	local d = level.get_game_difficulty() or 1
+	if d < 0 or d > 3 then d = 1 end
+	self.diff_st:SetTextComplexMode(true)
+	self.diff_st:SetText(
+		game.translate_string( "ui_mm_difficulty" ) .. ": "
+		.. ( difficulty_colors[d] or "" )
+		.. game.translate_string( difficulty_names[d] )
+	)
+end
+
+function QuestStat:Update()
+	CUIScriptWnd.Update(self)
+	-- [HE-PORT]
+	local pda = level.get_pda_wnd()
+	local show = db.actor ~= nil and pda ~= nil and pda:IsShown() and pda:FindChild("master_list") ~= nil
+	if show and not self.shown then
+		self.shown = true
+		self:RefreshTime()
+		self:UpdateDifficulty()
+		self:Show(true)
+	elseif not show and self.shown then
+		self.shown = false
+		self:Show(false)
+		save_gametime()
+	end
+end
+
+function QuestStat:HideWnd()
+	self:Show(false)
+	self.owner:DetachChild(self)
+end
+
+local quest_stat = nil
+
+function ShowQuestStat()
+	save_gametime()
+	local r = level.get_pda_wnd() or level.main_input_receiver()
+	if not r then
+		return
+	end
+	if quest_stat then
+		pcall(function() quest_stat:HideWnd() end)
+		quest_stat = nil
+	end
+	quest_stat = QuestStat( r )
+	if quest_stat then
+		quest_stat:RefreshTime()
+		quest_stat:UpdateDifficulty()
+		quest_stat.shown = true
+		quest_stat:Show(true)
+	end
+end
+
+function HideQuestStat()
+	save_gametime()
+	if quest_stat then
+		pcall(function() quest_stat:HideWnd() end)
+		quest_stat = nil
+	end
+end
+-- [HE-PORT]
+function show_quest_stat()
+	init_artifact_stats()
+	ShowQuestStat()
+end
+
+function hide_quest_stat()
+	HideQuestStat()
+end
+
+-- [HE-PORT]
+function pda_stats_active()
+	local pda = level.get_pda_wnd()
+	return db.actor ~= nil and pda ~= nil and pda:IsShown() and pda:FindChild("master_list") ~= nil
+end
+
+-- [HE-PORT]
+function pda_stats_update()
+	ogse_signals.get_mgr():reschedule( 250 )
+	local active = pda_stats_active()
+	if active and not quest_stat then
+		ShowQuestStat()
+	elseif not active and quest_stat and quest_stat.shown == false then
+		HideQuestStat()
+	end
+	if active and quest_stat then
+		quest_stat:RefreshTime()
+	end
+end
+
+
+function gametime( time )
+	time = math.floor( ( time or 0 ) * 1.1 + 0.5 )
+	local str = ""
+	local val = 0
+	
+	if time >= 60 * 24 * 365 then
+		val = math.floor( time / ( 60 * 24 * 365 ) )
+		time = time - val * 60 * 24 * 365
+		str = str .." ".. tostring( val ) .." ".. timename( val, "ui_stat_year_0", "ui_stat_year_1", "ui_stat_year_2" )
+	end
+
+	if time >= 60 * 24 * 30.417 then
+		val = math.floor( time / ( 60 * 24 * 30.417 ) )
+		time = time - math.floor( val * 60 * 24 * 30.417 + 0.5 )
+		str = str .." ".. tostring( val ) .." ".. timename( val, "ui_stat_mon_0", "ui_stat_mon_1", "ui_stat_mon_2" )
+	end
+
+	if time >= 60 * 24 then
+		val = math.floor( time / ( 60 * 24 ) )
+		time = time - val * 60 * 24
+		str = str .." ".. tostring( val ) .." ".. timename( val, "ui_stat_day_0", "ui_stat_day_1", "ui_stat_day_2" )
+	end
+
+	if time >= 60 then
+		val = math.floor( time / 60 )
+		time = time - val * 60
+		str = str .." ".. tostring( val ) .." ".. timename( val, "ui_stat_hour_0", "ui_stat_hour_1", "ui_stat_hour_2" )
+	end
+
+	if time > 0 then
+		str = str .." "..tostring( time ) .." ".. timename( time, "ui_stat_min_0", "ui_stat_min_1", "ui_stat_min_2" )
+	end
+	if str == "" then
+		str = " 0 " .. game.translate_string( "ui_stat_min_2" )
+	end
+	return str
+end
+
+function timename( val, s1, s2, s3 )
+	if val > 20 then
+		val = math.fmod( val, 10 )
+	end
+	if val == 0 or val >= 5 then
+		return game.translate_string( s3 )
+	elseif val >= 2 then
+		return game.translate_string( s2 )
+	else
+		return game.translate_string( s1 )
+	end
+end
+
+-- [HE-PORT]
+local game_time_key = "he_stat_game_time_minutes"
+local _gametime_saved_at = nil
+local game_time_migrated = false
+
+local function current_game_time()
+	if not time_global then return nil end
+	local ok, value = pcall(time_global)
+	if ok and type(value) == "number" then return value end
+	return nil
+end
+
+local function legacy_death_count( what )
+	local fs_ok, f = pcall(getFS)
+	if not fs_ok or not f then return 0 end
+	local list_ok, flist = pcall(function()
+		return f:file_list_open_ex(
+			"$game_stats$", bit_or( FS.FS_ListFiles, FS.FS_RootOnly ),
+			"*." .. what
+		)
+	end)
+	if not list_ok or flist == nil then return 0 end
+	local size_ok, size = pcall(function() return flist:Size() end)
+	if not size_ok or not size or size <= 0 then
+		pcall(function()
+			local f1 = f:update_path( "$fs_root$", "fsgame.ltx" )
+			local f2 = f:update_path( "$game_stats$", "0." .. what )
+			f:file_copy( f1, f2 )
+		end)
+		return 0
+	end
+	local name_ok, name = pcall(function() return flist:GetAt( 0 ):NameFull() end)
+	if not name_ok then return 0 end
+	return tonumber( string.match( tostring( name or "" ), "^(%d+)" ) ) or 0
+end
+
+local function stored_game_time()
+	local value = get_value( game_time_key, nil )
+	if value == nil and not game_time_migrated then
+		value = legacy_death_count( "game_time" )
+		if value > 0 then set_value( game_time_key, value ) end
+		game_time_migrated = true
+	elseif value ~= nil then
+		game_time_migrated = true
+	end
+	return tonumber( value ) or 0
+end
+
+function get_death_count( what )
+	if what == "game_time" then
+		local total = stored_game_time()
+		local now = current_game_time()
+		if now then
+			if _gametime_saved_at == nil then
+				_gametime_saved_at = now
+			elseif now >= _gametime_saved_at then
+				total = total + ( now - _gametime_saved_at ) / 60000
+			else
+				_gametime_saved_at = now
+			end
+		end
+		return total
+	end
+	return legacy_death_count( what )
+end
+
+function set_death_count( what, value )
+    if what == "game_time" then
+        set_value( game_time_key, tonumber( value ) or 0 )
+        game_time_migrated = true
+        local now = current_game_time()
+        if now then _gametime_saved_at = now end
+        return
+    end
+    local f = getFS()
+    local ok, flist = pcall( function()
+        return f:file_list_open_ex( "$game_stats$",
+            bit_or( FS.FS_ListFiles, FS.FS_RootOnly ),
+            "*." .. what )
+    end )
+    if not ok or flist == nil then return end
+    local fileName = ""
+    if flist:Size() > 0 then
+        fileName = flist:GetAt( 0 ):NameFull() or ""
+    end
+    local fileNameNew = ( tostring( value ) .. "." .. what ) or ""
+    if fileName == "" then
+        local f1 = f:update_path( "$fs_root$", "fsgame.ltx" )
+        local f2 = f:update_path( "$game_stats$", fileNameNew )
+        pcall( function() f:file_copy( f1, f2 ) end )
+        return
+    end
+    if fileNameNew ~= fileName then
+        local f1 = f:update_path( "$game_stats$", fileName )
+        local f2 = f:update_path( "$game_stats$", fileNameNew )
+        pcall( function() f:file_rename( f1, f2, true ) end )
+    end
+end
+
+function reset_death_count( what )
+    if what == "game_time" then
+        set_value( game_time_key, 0 )
+        game_time_migrated = true
+        local now = current_game_time()
+        if now then _gametime_saved_at = now end
+        return
+    end
+    local f  = getFS()
+    local f1 = f:update_path( "$fs_root$", "fsgame.ltx" )
+    local f2 = f:update_path( "$game_stats$", "0." .. what )
+    pcall( function() f:file_copy( f1, f2 ) end )
+end
+
+function init_game_time_counter()
+	if _gametime_saved_at ~= nil then save_gametime() end
+	stored_game_time()
+	local now = current_game_time()
+	if now then _gametime_saved_at = now end
+end
+
+function save_gametime()
+	if not ( db and db.actor ) then return end
+	local now = current_game_time()
+	if not now then return end
+	if _gametime_saved_at == nil then
+		_gametime_saved_at = now
+		return
+	end
+	local delta = now - _gametime_saved_at
+	if delta < 0 then
+		_gametime_saved_at = now
+		return
+	end
+	if delta <= 0 then return end
+	local total = stored_game_time()
+	set_death_count( "game_time", total + delta / 60000 )
 end

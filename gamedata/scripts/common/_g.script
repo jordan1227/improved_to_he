@@ -365,6 +365,7 @@ end
 local xvars = get_stored_vars()
 
 
+
 function unpack_value( value )
   if type( value ) == "userdata" then
     value = value( true )
@@ -1789,16 +1790,17 @@ function get_texture_info(id_name, id_default)
 end
 
 function do_start_game()
-  g_sim = alife()
+	g_sim = alife()
 
-  build_tables()
-  net_utils_new.init()
-  task_manager.clear_task_manager()
-  treasure_manager.clear_treasure_manager()
-  xr_sound.clear_all_sound_object()
-  dialog_manager.fill_phrase_table() 
-  timers.Set_Game_StartTime()
-  amk.on_game_start(obj) 
+	build_tables()
+	net_utils_new.init()
+	task_manager.clear_task_manager()
+	treasure_manager.clear_treasure_manager()
+	xr_sound.clear_all_sound_object()
+	dialog_manager.fill_phrase_table() 
+	timers.Set_Game_StartTime()
+	amk.on_game_start(obj)
+	game_options.load_game_options()	
 end
 
 --if xr_build_id < 6184 then
@@ -2145,6 +2147,15 @@ function release(o)
 	end
 end
 
+-- [HE-PORT] xrs_battle_ai
+function remove_memory_object( npc, enemy )
+  local be = npc:best_enemy()
+  if be and be:id() == enemy:id() and xr_wounded.is_wounded( enemy ) then
+    return
+  end
+  npc:remove_memory_object( enemy )
+end
+
 function disable_memory_object( npc, enemy )
   local be = npc:best_enemy()
   if be and be:id() == enemy:id() and xr_wounded.is_wounded( enemy ) then
@@ -2226,3 +2237,326 @@ end
 function on_set_article_text(t)
   return engine_callbacks.on_set_article_text(t)
 end
+
+function get_inv_name( item )
+	return ( game.translate_string( vergas_lib.set_pr_from_config_str( item, "inv_name" ) ) )
+end
+
+function give_info( i )
+	db.actor:give_info_portion( i )
+end
+
+function disable_info( i )
+	db.actor:disable_info_portion( i )
+end
+
+function has_info( i )
+	return db.actor:has_info( i )
+end
+
+function dont_has_info( i )
+	return db.actor:dont_has_info( i )
+end
+
+-- сделать предмет безусловно негруппируемым в окнах инвентаря
+function set_item_ungroupable( item )
+	local f = item:get_inventory_item_flags()
+	f:set( global_flags.FIUngroupable, true )
+	item:set_inventory_item_flags( f )
+end
+
+-- включить движковую группировку для предмета
+function set_item_default_grouping( item )
+	local f = item:get_inventory_item_flags()
+	f:set( global_flags.FIUngroupable, false )
+	item:set_inventory_item_flags( f )
+end
+
+-- ====================================================================
+-- Sivol. Condition-tier scaling + unique scaling. Tier affects effective property strength.  4 и 5-ый дан дольше живут по свойствам.
+-- Другие части в arc_arts.script - check_artefact и в ui_inv_descr.script
+-- ====================================================================
+-- Toggles for specific stats. 
+-- enable_X: false = stat stays at 100% base config value. true = stat scales with condition.
+-- use_buff_formula_X: 
+-- false = scales with raw condition (50% cond = 50% strength). 
+-- true = scales with condition + bonus (50% cond + 20% bonus = 70% strength).
+ARTIFACT_SCALE_CONFIG = {
+    enable_radiation = true, 
+    enable_hunger = true,
+    use_buff_formula_for_radiation = false, -- Set to true to make radiation emission get the tier bonus
+    use_buff_formula_for_hunger = false     -- Set to true to make hunger drain get the tier bonus
+}
+
+local ARTIFACT_CONFIG = {
+    DYN_BONUS_PER_TIER = 0.05,
+    MODIFICATE_BONUS_PER_LEVEL = 0.08,
+    UNIQUE_BONUSES = {
+        ["af_eye"]                  = 0.15,
+        ["af_mayatnik_chaes_new"]   = 0.20,
+        ["af_mayatnik_tesla_new"]   = 0.25,
+        ["af_mayatnik_les_new"]     = 0.20,
+        ["af_mayatnik_tuman_new"]   = 0.20,
+        ["af_mayatnik_stadion_new"] = 0.15,
+        ["af_mayatnik_radar_new"]   = 0.10,
+    },
+    CATEGORY_BONUSES = {
+        ["capsule"] = 0.10, ["_buliz"]  = 0.10, ["af_ice"]  = 0.08, ["af_sul"]  = 0.12,
+        ["af_electra_"]  = 0.05, ["af_glass"]     = 0.10, ["af_dummy_"]    = 0.05,
+        ["af_star"]      = 0.05, ["af_baloon"]    = 0.100,
+    }
+}
+
+function get_artifact_bonus_percent(section_name)
+    local tier = string.match(section_name, "_dyn(%d)d$")
+    if tier then
+        local tier_num = tonumber(tier)
+        -- Cap at tier 5. Tier 6 (degenerate) gets no bonus.
+        if tier_num and tier_num >= 2 and tier_num <= 5 then
+            return (tier_num - 1) * ARTIFACT_CONFIG.DYN_BONUS_PER_TIER
+        end
+        return 0.0
+    end
+
+    local mod_level = string.match(section_name, "_(%d+)$")
+    if mod_level then
+        local level_num = tonumber(mod_level)
+        if level_num and level_num >= 2 then
+            return (level_num - 1) * ARTIFACT_CONFIG.MODIFICATE_BONUS_PER_LEVEL
+        end
+    end
+
+    if ARTIFACT_CONFIG.UNIQUE_BONUSES[section_name] then
+        return ARTIFACT_CONFIG.UNIQUE_BONUSES[section_name]
+    end
+
+    for artifact_name, bonus in pairs(ARTIFACT_CONFIG.UNIQUE_BONUSES) do
+        if string.find(section_name, artifact_name) then
+            return bonus
+        end
+    end
+
+    for category_str, bonus in pairs(ARTIFACT_CONFIG.CATEGORY_BONUSES) do
+        if string.find(section_name, category_str) then
+            return bonus
+        end
+    end
+
+    return 0.0
+end
+
+-- Pure math version for serialized items (containers)
+function get_effective_strength_raw(condition, section, is_buff, prop_name)
+    if prop_name == "radiation_restore_speed" and not ARTIFACT_SCALE_CONFIG.enable_radiation then
+        return 1.0
+    end
+    if (prop_name == "satiety_restore_speed" or prop_name == "add_satiety") and not ARTIFACT_SCALE_CONFIG.enable_hunger then
+        return 1.0
+    end
+
+    local use_buff_formula = is_buff
+    if prop_name == "radiation_restore_speed" and ARTIFACT_SCALE_CONFIG.use_buff_formula_for_radiation then
+        use_buff_formula = true
+    end
+    if (prop_name == "satiety_restore_speed" or prop_name == "add_satiety") and ARTIFACT_SCALE_CONFIG.use_buff_formula_for_hunger then
+        use_buff_formula = true
+    end
+
+    if not use_buff_formula then
+        return condition
+    end
+
+    local bonus = get_artifact_bonus_percent(section)
+    return math.min(condition + bonus, 1.0)
+end
+
+-- Wrapper for live game objects
+function get_effective_strength(item, is_buff, prop_name)
+    if not item then return 1.0 end
+    return get_effective_strength_raw(item:condition(), item:section(), is_buff, prop_name)
+end
+
+function get_artefact_base_immunity(sect, imm_name)
+    local ini = system_ini()
+    if ini:line_exist(sect, imm_name) then
+        return ini:r_float(sect, imm_name)
+    end
+    if ini:line_exist(sect, "hit_absorbation_sect") then
+        local absorb_sect = ini:r_string(sect, "hit_absorbation_sect")
+        if absorb_sect and ini:section_exist(absorb_sect) and ini:line_exist(absorb_sect, imm_name) then
+            return ini:r_float(absorb_sect, imm_name)
+        end
+    end
+    return 1.0
+end
+
+function scale_artefact_stats(item, reset)
+    if not item then return end
+    local af_obj = item:get_artefact()
+    if not af_obj then return end
+    
+    local sect = item:section()
+    local ini = system_ini()
+    
+    -- Check for garbage_arts custom radiation
+    local custom_props = nil
+    if ui_arc_container_menu and ui_arc_container_menu.xp_read then
+        custom_props = ui_arc_container_menu.xp_read(item:id())
+    end
+    local custom_rad = custom_props and custom_props.rad
+
+    local props = {
+        "health_restore_speed", "bleeding_restore_speed", "power_restore_speed",
+        "satiety_restore_speed", "radiation_restore_speed", "psy_health_restore_speed"
+    }
+    for _, prop in ipairs(props) do
+        if prop == "radiation_restore_speed" and custom_rad ~= nil then
+            local strength = 1.0
+            if not reset then
+                strength = get_effective_strength(item, custom_rad < 0, prop)
+            end
+            af_obj[prop] = custom_rad * strength
+        else
+            local base = nil
+            if type(sivol_unknown_arts) == "table"
+                and type(sivol_unknown_arts.get_nominal_property) == "function"
+            then
+                base = sivol_unknown_arts.get_nominal_property(item, prop)
+            end
+            if base == nil and ini:line_exist(sect, prop) then
+                base = ini:r_float(sect, prop)
+            end
+            if base ~= nil then
+                local is_buff = true
+                if prop == "radiation_restore_speed" or prop == "bleeding_restore_speed" then
+                    is_buff = (base < 0)
+                else
+                    is_buff = (base > 0)
+                end
+                
+                local strength = 1.0
+                if not reset then
+                    strength = get_effective_strength(item, is_buff, prop)
+                end
+
+                local spirit_multiplier = 1.0
+                if not reset and prop == "health_restore_speed"
+                    and type(sivol_spirit_regen) == "table"
+                    and type(sivol_spirit_regen.get_runtime_multiplier) == "function" then
+                    local ok_multiplier, value = pcall(
+                        sivol_spirit_regen.get_runtime_multiplier, item)
+                    if ok_multiplier and tonumber(value) then
+                        spirit_multiplier = tonumber(value)
+                    end
+                end
+                af_obj[prop] = base * strength * spirit_multiplier
+            end
+        end
+    end
+
+    -- Mutate weight directly on the af_obj. Unknown specimens resolve their
+    -- carrying capacity from the persisted payload rather than the section.
+    local base_iw1 = nil
+    local base_iw2 = nil
+    if type(sivol_unknown_arts) == "table"
+        and type(sivol_unknown_arts.get_nominal_property) == "function"
+    then
+        base_iw1 = sivol_unknown_arts.get_nominal_property(item, "additional_inventory_weight")
+        base_iw2 = sivol_unknown_arts.get_nominal_property(item, "additional_inventory_weight2")
+    end
+    if base_iw1 == nil then base_iw1 = get_float(sect, "additional_inventory_weight", 0) end
+    if base_iw2 == nil then base_iw2 = get_float(sect, "additional_inventory_weight2", 0) end
+    
+    local iw1_strength = 1.0
+    if not reset then
+        iw1_strength = get_effective_strength(item, base_iw1 > 0, "additional_inventory_weight")
+    end
+    af_obj.additional_inventory_weight = base_iw1 * iw1_strength
+    
+    local iw2_strength = 1.0
+    if not reset then
+        iw2_strength = get_effective_strength(item, base_iw2 > 0, "additional_inventory_weight2")
+    end
+    af_obj.additional_inventory_weight2 = base_iw2 * iw2_strength
+
+    local af_imm = item.immunities
+    if af_imm then
+        local imm_props = {
+            "chemical_burn_immunity", "burn_immunity", "explosion_immunity", "fire_wound_immunity",
+            "radiation_immunity", "shock_immunity", "strike_immunity", "telepatic_immunity", "wound_immunity"
+        }
+        for _, imm in ipairs(imm_props) do
+            if imm == "radiation_immunity" and custom_rad ~= nil then
+                af_imm[imm] = 1.0
+            else
+                local base = nil
+                if type(sivol_unknown_arts) == "table"
+                    and type(sivol_unknown_arts.get_nominal_property) == "function"
+                then
+                    base = sivol_unknown_arts.get_nominal_property(item, imm)
+                end
+                if base == nil then base = get_artefact_base_immunity(sect, imm) end
+                local is_buff = (base <= 1) 
+                
+                local strength = 1.0
+                if not reset then
+                    strength = get_effective_strength(item, is_buff, imm)
+                end
+                
+                if base <= 1 then
+                    af_imm[imm] = 1 - ((1 - base) * strength)
+                else
+                    af_imm[imm] = 1 + ((base - 1) * strength)
+                end
+            end
+        end
+    end
+end
+
+-- [HE-PORT] xrs_battle_ai
+function random_choice( ... )
+  local n = select( "#", ... )
+  return ( select( math.random( n ), ... ) )
+end
+
+-- [HE-PORT] xrs_battle_ai
+function get_section_keys( section, ini_file )
+  local ini = ini_file or sys_ini
+  local t = {}
+  if not ini:section_exist( section ) then return t end
+  for i = 0, ini:line_count( section ) - 1 do
+    local _, key, v = ini:r_line( section, i )
+    table.insert( t, key )
+  end
+  return t
+end
+
+-- [HE-PORT] xrs_battle_ai
+function print_table_inlog_v2( tbl, subs )
+  local sub = subs or ""
+  for k, v in pairs( tbl ) do
+    local t = type( v )
+    if t == "table" then
+      log1( sub .. " " .. tostring( k ) .. ": table" )
+      print_table_inlog_v2( v, sub .. "    " )
+    elseif t == "function" or t == "userdata" then
+      log1( sub .. " " .. tostring( k ) .. ": " .. t )
+    else
+      log1( sub .. " " .. tostring( k ) .. ": " .. tostring( v ) )
+    end
+  end
+end
+
+-- [HE-PORT] xrs_battle_ai
+weapon_states = {
+  idle      = global_flags.eIdle,
+  fire      = global_flags.eFire,
+  fire2     = global_flags.eFire2,
+  reload    = global_flags.eReload,
+  showing   = global_flags.eShowing,
+  hiding    = global_flags.eHiding,
+  hidden    = global_flags.eHidden,
+  misfire   = global_flags.eMisfire,
+  mag_empty = global_flags.eMagEmpty,
+  switch    = global_flags.eSwitch,
+}

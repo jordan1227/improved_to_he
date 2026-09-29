@@ -1,0 +1,90 @@
+-- Knife repair by technicians (Vergas, Lisaped, Shurup). Used from the repair
+-- dialogs built in kotovod.script (vergas_repair_items, lisaped_repair_items,
+-- shurup_repair_items). Keep it ASCII-only; player-facing text lives in
+-- ui_st_knife_repair.xml (rus, eng).
+--
+-- Goal: a technician is convenient but never the best deal. Sharpening with a
+-- sharpener (sharper_core) is cheaper over time and earns skill; the technician
+-- costs money (Shurup: vodka), takes minutes of game time and gives no skill.
+-- Vergas becomes the cheapest and quickest once the player gave him a sharpener
+-- (info "vergas_sharper_given"; see the Vergas sharpener quest).
+--
+-- PRICE  = max( VALUE * (1 - condition) * (0.8 + 0.1 * days / 8) * margin * difficulty,
+--               FLOOR_SHARE * VALUE ), then the Vergas perk factor
+--   Same shape as sak_dialog.calc_repair_cost, but VALUE is a fixed figure per knife
+--   (config cost is only 500 / 3000) and the floor is a share of that value instead of
+--   the difficulty floor, so a regular knife and the M1 differ clearly at 90% too.
+--   Example (stalker difficulty, day 0, margin 1.6):
+--     knife  90% -> 300    70% -> 615    50% -> 1024    30% -> 1434
+--     M1     90% -> 750    70% -> 1537   50% -> 2560    30% -> 3584
+--   The in-game day factor makes late prices about 2.25 times higher (day 80).
+-- TIME   = 5..10 minutes, longer for duller knives (Vergas perk: x0.6)
+-- MIN CONDITION a technician accepts (worse knives need a sharpener):
+--   Vergas 40%, Lisaped 20%, Shurup 20%; Vergas with the perk: any condition
+-- SHURUP takes vodka for knives only (one bottle per VODKA_RUB_KNIFE of the price, min 1);
+--   his weapon and outfit repairs still cost money
+
+local KNIFE_VALUE = { wpn_knife = 2000, wpn_knife_m1 = 5000 }
+local MIN_COND    = { vergas = 0.40, lisaped = 0.20, shurup = 0.20 }
+local DIFF_COEF   = { [ 0 ] = 0.7, 0.8, 0.9, 1.0 }   -- as in sak_dialog.calc_repair_cost
+local FLOOR_SHARE = 0.15
+local TIME_MIN, TIME_MAX = 5, 10
+local PERK = { info = "vergas_sharper_given", price = 0.5, time = 0.6, min_cond = 0.0 }
+local VODKA_RUB_KNIFE = 2000    -- shurup: rubles of price per bottle for a knife
+
+function is_knife( sect )
+	return KNIFE_VALUE[ sect ] ~= nil
+end
+
+-- true if this technician repairs this section as a knife
+function offers( repairer, sect )
+	return KNIFE_VALUE[ sect ] ~= nil and MIN_COND[ repairer ] ~= nil
+end
+
+function has_perk( repairer )
+	return repairer == "vergas" and has_alife_info( PERK.info )
+end
+
+function min_cond( repairer )
+	if has_perk( repairer ) then return PERK.min_cond end
+	return MIN_COND[ repairer ] or 1
+end
+
+-- Threshold for the dialogs' "too worn to repair" checks, written as
+-- `condition <= limit(...)`: for knives it is just below the minimum condition,
+-- for anything else it is the dialog's own default.
+function limit( repairer, sect, default )
+	if KNIFE_VALUE[ sect ] then return min_cond( repairer ) - 0.0001 end
+	return default
+end
+
+-- cost in rubles and time in minutes for one knife
+function quote( repairer, obj, sect )
+	local value  = KNIFE_VALUE[ sect ] or 2000
+	local cond   = obj:condition()
+	local days   = level.get_time_days()
+	local margin = sak_dialog.get_margin( repairer )
+	local diff   = DIFF_COEF[ level.get_game_difficulty() ] or 0.8
+
+	local cost = math.ceil( value * ( 1 - cond ) * ( 0.8 + 0.1 * ( days / 8 ) ) * margin * diff )
+	cost = math.max( cost, math.ceil( FLOOR_SHARE * value ) )
+
+	local time = TIME_MIN + ( TIME_MAX - TIME_MIN ) * ( 1 - cond )
+	if has_perk( repairer ) then
+		cost = cost * PERK.price
+		time = time * PERK.time
+	end
+	return math.ceil( cost ), math.max( 1, math.ceil( time ) )
+end
+
+-- Shurup: bottles of vodka for a knife price in rubles
+function vodka_needed( cost )
+	return math.max( 1, math.ceil( cost / VODKA_RUB_KNIFE ) )
+end
+
+-- game text by string id
+function text( id, ... )
+	local s = game.translate_string( id )
+	if select( "#", ... ) > 0 then return string.format( s, ... ) end
+	return s
+end

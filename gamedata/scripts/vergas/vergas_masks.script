@@ -1,11 +1,17 @@
 --[[
-Динамический худ v 4
+???????????? ??? v 4
 Vergas
-© NLC-6.0
-имитация дыхания и расчет зума © AMK
+? NLC-6.0
+???????? ??????? ? ?????? ???? ? AMK
 ]]--
 
 function attach(sm)
+    sm:subscribe({signal = "on_stop_modules", fun = function() this.abort_animation("shutdown", true) end})
+    sm:subscribe({signal = "on_load_before_all", fun = this.reset_animation})
+    sm:subscribe({signal = "on_first_update", fun = this.reset_animation})
+    sm:subscribe({signal = "on_before_save_game", fun = this.save_animation})
+    sm:subscribe({signal = "level_changer_action", fun = this.save_animation})
+    sm:subscribe({signal = "on_update", fun = this.update_animation})
 	sm:subscribe({signal = "on_update", fun = this.update_zoom})
 	sm:subscribe({signal = "on_update", fun = this.mask_update})
 	sm:subscribe({signal = "on_actor_before_hit", fun = this.on_actor_before_hit})
@@ -44,6 +50,18 @@ local tip_brth = {
 }
 tip_breath = "wht"
 
+-- костюмы только с респиратором - отключаем запотевание, эффекты маски, худ им 
+local respirator_only = {
+    ["bandit_gaz_outfit_m1"] = true,
+	["neytral_novice_gaz_outfit_m1"] = true,
+	["bandit_q_gaz_q_outfit_q_m1"] = true,
+	["neytral_q_novice_q_gaz_q_outfit_q_m1"] = true,
+}
+
+function is_respirator_outfit(section)
+    return respirator_only[section] == true
+end
+
 local pre_mask = {}
 function get_mask_config(sect)
 	if pre_mask[sect] == nil then
@@ -57,7 +75,19 @@ function no_astma_protection()
 end
 
 function set_mask_on_off_flag(param)
-	mask_on_off = param
+    mask_on_off = param
+
+    if sivol then
+        if param then
+            if sivol.apply_mask_effects then
+                sivol.apply_mask_effects()
+            end
+        else
+            if sivol.remove_mask_effects then
+                sivol.remove_mask_effects()
+            end
+        end
+    end
 end
 
 function mask_update()
@@ -68,7 +98,7 @@ function mask_update()
 	flag_add_dirt = false
 	if not db.actor then return end
 	if flag_dirt then return end
-	if wnd_mask_osnova == nil then
+	if wnd_mask_osnova == nil or get_hud():GetCustomStatic("dynamic_hud") == nil then
 		init_mask()
 	end
 	if db.actor.health <= 0 then
@@ -80,26 +110,35 @@ function mask_update()
 		return
 	end
 	mask, armor = mask_definition()
-	if mask == "?" and mask_old == "?" then	return end
+	local outfit = db.actor and db.actor:item_in_slot(6) and db.actor:item_in_slot(6):get_outfit()
+	if mask == "?" and mask_old == "?" then return end
 	if armor == "?" and armor_old == "?" then return end
-	if mask~= "?" and armor == armor_old then
-		if mask_on_off == false and mask_old~= "?" then 
+	local is_resp = armor ~= "?" and is_respirator_outfit(armor)
+
+	if mask ~= "?" and armor == armor_old then
+		if mask_on_off == false and mask_old ~= "?" then
 			flag_blurs, flag_cmd = false, false
-			if wnd_mask~= nil then
-			   wnd_mask:Show(false)
- 			   flag_blurs, flag_cmd = false, false    -- не знаю пока, но по моему именно из-за отсутствия здесь этого влага == 0 появляется запотевание без маски.
+			if wnd_mask ~= nil then
+				wnd_mask:Show(false)
+				flag_blurs, flag_cmd = false, false
 			end
 			mask_old = "?"
 			tip_breath = tip_brth["?"]
 			return
 		elseif mask_on_off == true then
-			if mask_old == "?" or mask_old~= mask then
-			set_mask(mask)
-			wnd_mask:Show(true)
-			flag_blurs, flag_cmd = true, true
-			tip_breath = tip_brth[string.sub(mask,1,7)]
+				if mask_old == "?" or mask_old ~= mask then
+					if is_resp then
+						wnd_mask:Show(false)      -- respirator: keep audio/breath, no HUD overlay
+						flag_blurs, flag_cmd = false, false
+						mask_old = mask          -- ADD: track state even without showing
+					else
+						set_mask(mask)
+						wnd_mask:Show(true)
+						flag_blurs, flag_cmd = true, true
+					end
+					tip_breath = tip_brth[string.sub(mask,1,7)]
+				end
 			end
-		end
 	end
 	if armor == "?" and armor_old~= "?" then
 		if mask_old~= "?" then
@@ -107,18 +146,24 @@ function mask_update()
 			mask_on_off = false
 			flag_blurs, flag_cmd = false, false
 			mask_old = "?"
+			if sivol and sivol.remove_mask_effects then
+				sivol.remove_mask_effects()
+			end
 		end
 		armor_old = "?"
 		return
 	end
-	if armor~= armor_old then
-		if mask_old~= "?" then
+	if armor ~= armor_old then
+		if mask_old ~= "?" then
 			wnd_mask:Show(false)
 			mask_on_off = false
 			flag_blurs, flag_cmd = false, false
 			mask_old = "?"
-			if mask~= "?" then
-			set_mask(mask)
+			if sivol and sivol.remove_mask_effects then
+				sivol.remove_mask_effects()
+			end
+			if mask ~= "?" and not is_resp then
+				set_mask(mask)
 			end
 		end
 		armor_old = armor
@@ -131,23 +176,27 @@ end
 
 local ec_flag = "ec_flag"
 function effects_control()
-	if ec_flag ~= flag_cmd then
-		local flag = flag_cmd and "on" or "off"
-		cmd("r2_visor_refl_control", flag)
-		cmd("r2_rain_drops_control", flag)
-		cmd("r2_mask_control", flag)
-		ec_flag = flag_cmd
-		-- log2("effects_control: %s", tostring(flag))
-	end
+    local armor = db.actor and db.actor:item_in_slot(6)
+    local is_resp = armor and is_respirator_outfit(armor:section())
+    local effective_flag = (not is_resp) and flag_cmd or false
+
+    if ec_flag ~= effective_flag then
+        local flag = effective_flag and "on" or "off"
+        cmd("r2_visor_refl_control", flag)
+        cmd("r2_rain_drops_control", flag)
+        cmd("r2_mask_control", flag)
+        ec_flag = effective_flag
+    end
 end
 
 -- local time_upd_d = 360000 / sys_ini:r_float("alife", "time_factor")
 
 function add_time_dirt_phase()
-	timers.start_timer("vergas_m_dirt", 0, 0, lua_random(4, 8), "vergas_masks.add_time_dirt_phase()")
-	-- ogse_signals.get_mgr():reschedule(time_upd_d)
-	if mask_on_off == true and flag_add_dirt == true then
-		local armor_custom = set_get_armor_custom(2)
+    timers.start_timer("vergas_m_dirt", 0, 0, lua_random(4, 8), "vergas_masks.add_time_dirt_phase()")
+    if mask_on_off == true and flag_add_dirt == true then
+        local mask, armor = mask_definition()
+        if is_respirator_outfit(armor) then return end   -- no dirt tracking for respirators
+        local armor_custom = set_get_armor_custom(2)
 		local tbl_custom = vergas_lib.str_explode("|",armor_custom,true)
 		if (type(tonumber(tbl_custom[2])) == "number") and tonumber(tbl_custom[2]) < 6 then
 			local tm_dirt = tonumber(tbl_custom[3]) or 5
@@ -200,11 +249,17 @@ function init_mask()
 	if mask ~= "?" then
 		mask_on_off = get_value("var_mask_on_off", false)
 		remove_value("var_mask_on_off")
-		if mask_on_off then
-			tip_breath = tip_brth[string.sub(mask,1,7)] or "wht" -- Manool: нужно сразу определять тип звука, при загрузке, например
-			set_mask(mask)
-			flag_blurs, flag_cmd = true, true
-		else
+        if mask_on_off then
+            tip_breath = tip_brth[string.sub(mask,1,7)] or "wht"
+            if not is_respirator_outfit(armor) then
+                set_mask(mask)
+                flag_blurs, flag_cmd = true, true
+            else
+                wnd_mask:Show(false)
+                flag_blurs, flag_cmd = false, false
+				mask_old = mask          -- ADD: same fix on load
+            end
+        else
 			wnd_mask:Show(false)
 			mask_old = "?"
 		end
@@ -214,6 +269,14 @@ function init_mask()
 	armor_old = armor
 	if mask_on_off == nil then
 		mask_on_off = false
+	end
+
+	if sivol and sivol.apply_mask_effects then
+		if mask_on_off then
+			sivol.apply_mask_effects()
+		else
+			if sivol.remove_mask_effects then sivol.remove_mask_effects() end
+		end
 	end
 end
 
@@ -245,17 +308,33 @@ function mask_definition()
 	local n_phase
 	local combez
 	local armor = db.actor:item_in_slot(6)
+
 	if armor then
 		combez = armor:section()
-        -- local cval = mask_condition()    
+
+		-- Respirators: use a fixed mask texture only.
+		-- Skip condition, dirt phase, and armor_custom caching.
+        if is_respirator_outfit(combez) then
+            local ms = get_mask_config(combez)
+            if ms ~= "?" then
+                mask = ms
+            else
+                mask = "?"
+            end
+            return mask, combez
+        end
+
+		-- Full masks: existing condition/dirt logic.
 		local armor_custom, cval = set_get_armor_custom(2)
 		cond = set_hud_textur(cval)
+
 		if armor_custom == "" then
 			local ms = get_mask_config(combez)
-			if ms~= "?" then
+			if ms ~= "?" then
 				armor_custom = ms.."|"
 				mask = ms
 				mask = mask..cond
+
 				if tonumber(string.sub(cond, 2,2)) == 1 then
 					n_phase = 1
 					armor_custom = armor_custom.."1|"..(lua_random(1,6))
@@ -263,15 +342,17 @@ function mask_definition()
 					n_phase = lua_random(1,6)
 					armor_custom = armor_custom..n_phase.."|"..(lua_random(1,6))
 				end
+
 				mask = mask.."_"..n_phase
 			else
 				mask = "?"
-				armor_custom = "none|none|none" 
+				armor_custom = "none|none|none"
 			end
-			set_get_armor_custom(1,armor_custom)
+
+			set_get_armor_custom(1, armor_custom)
 		else
-			local tbl_custom = vergas_lib.str_explode("|",armor_custom,true)
-			if tbl_custom and tbl_custom[1]~= "none" then
+			local tbl_custom = vergas_lib.str_explode("|", armor_custom, true)
+			if tbl_custom and tbl_custom[1] ~= "none" then
 				mask = tbl_custom[1]..cond.."_"..tbl_custom[2]
 			else
 				mask = "?"
@@ -280,7 +361,8 @@ function mask_definition()
 	else
 		mask, combez, tip_breath = "?", "?", tip_brth["?"]
 	end
-	return mask,combez
+
+	return mask, combez
 end
 
 function allcore_mask_is_on()
@@ -294,9 +376,9 @@ local function set_shader_cond(cond)
 	if aobj then aobj.sh_mask_condition = cond end
 end
 
--- Manool: переделано на spawn_ini, чтобы удобнее было другие
--- данные записывать в костюм
--- + состояние маски отдельно в кастомдате
+-- Manool: ?????????? ?? spawn_ini, ????? ??????? ???? ??????
+-- ?????? ?????????? ? ??????
+-- + ????????? ????? ???????? ? ??????????
 function set_get_armor_custom(mode, armor_custom)
 	local armor = db.actor:get_current_outfit()
 	if not armor then return end
@@ -328,7 +410,7 @@ function set_get_armor_custom(mode, armor_custom)
 end
 
 function is_headshot(bone_id)
-	-- ключицы и выше
+	-- ??????? ? ????
 	return (bone_id and bone_id > 11 and bone_id < 18)
 end
 
@@ -342,24 +424,24 @@ local function actor_hit_target(hd)
 		local name = obj:name()
 		local clid = obj:clsid()
 		-- wprintf("  outfit_name =~C0E %s~C07, hit_source =~C0F %s~C07, hit_power =~C0D %.3f~C07 ", outfit and outfit:name() or "nil", name, hit_power)
-		-- Sn: все кости смещены на -1 относительно оригинала
+		-- Sn: ??? ????? ??????? ?? -1 ???????????? ?????????
 		if (clid == CLID_TUSHKANO or strpos(name, "buzz")) then 
-			hd.bone_id = lua_random(0, 8) -- хит только по нижней половине тела
+			hd.bone_id = lua_random(0, 8) -- ??? ?????? ?? ?????? ???????? ????
 		elseif clid == CLID_BLOODSUCKER then
 			if rval > 33 then
-				hd.bone_id = lua_random(9, 11) -- попадания по туловищу
+				hd.bone_id = lua_random(9, 11) -- ????????? ?? ????????
 			else
-				hd.bone_id = lua_random(12, 17) -- попадания по голове
+				hd.bone_id = lua_random(12, 17) -- ????????? ?? ??????
 			end
 		elseif clid == CLID_BOAR then
 			if rval > 50 then
-				hd.bone_id = lua_random(0, 8) -- 50% вероятность повреждения ног
+				hd.bone_id = lua_random(0, 8) -- 50% ??????????? ??????????? ???
 			else
-				hd.bone_id = lua_random(9, 11) -- 50% вероятность попадания по туловищу
+				hd.bone_id = lua_random(9, 11) -- 50% ??????????? ????????? ?? ????????
 			end
 		elseif clid == CLID_CAT or clid == CLID_PSEUDODOG or clid == CLID_PSY_DOG or clid == CLID_PSY_DOG_PHANTOM or clid == CLID_CHIMERA or clid == CLID_SNORK then
 			if rval < 20 then 
-				hd.bone_id = lua_random(12, 17) -- прыгучие мобы тоже могут иногда оторвать лицо
+				hd.bone_id = lua_random(12, 17) -- ???????? ???? ???? ????? ?????? ???????? ????
 			else
 				hd.bone_id = lua_random(0, 11)
 			end
@@ -391,7 +473,9 @@ local imm_mask = {
 }
 
 function on_actor_before_hit(obj, hd)
-	actor_hit_target(hd) -- Manool: это вызывать ПЕРЕД хитом по маске!
+	if not hd or hd.ignore_hit then return end
+	if sivol_psy_phantoms and sivol_psy_phantoms.is_phantom and sivol_psy_phantoms.is_phantom( hd.who_id ) then return end
+	actor_hit_target(hd) -- Manool: ??? ???????? ????? ????? ?? ?????!
 
 	local ht = hd.hit_type
 	if ht == hit.telepatic or ht == hit.radiation then return end
@@ -482,57 +566,425 @@ end
 function get_flag_mask()
 	return mask_on_off
 end
+local fdda_headgear_data = {
+    -- ==========================================
+    -- 1. CATEGORY DEFAULTS (Fallbacks)
+    -- ==========================================
+    ["hud_gas"] = {
+        hud_sec = "gasmask_headgear_hud",
+        cam_e = "itemuse_anm_effects\\headgear_gasmask_equip_cam.anm",
+        cam_u = "itemuse_anm_effects\\headgear_gasmask_unequip_cam.anm",
+        snd_e = "actor\\headgear_hud\\gasmask_equip"
+    },
+    ["hud_sci"] = {
+        hud_sec = "protector_headgear_hud",
+        cam_e = "itemuse_anm_effects\\headgear_protector_equip_cam.anm",
+        cam_u = "itemuse_anm_effects\\headgear_protector_unequip_cam.anm",
+        snd_e = "actor\\headgear_hud\\helmet_protector_equip"
+    },
+    ["hud_exo"] = {
+        hud_sec = "helm_exo_headgear_hud", 
+        cam_e = "itemuse_anm_effects\\headgear_helmet_equip_cam.anm",
+        cam_u = "itemuse_anm_effects\\headgear_helmet_unequip_cam.anm",
+        snd_e = "actor\\headgear_hud\\helmet_equip"
+    },
+    ["hud_mil"] = {
+        hud_sec = "helm_battle_headgear_hud",
+        cam_e = "itemuse_anm_effects\\headgear_helmet_equip_cam.anm",
+        cam_u = "itemuse_anm_effects\\headgear_helmet_unequip_cam.anm",
+        snd_e = "actor\\headgear_hud\\helmet_equip"
+    },
+    ["hud_mer"] = {
+        hud_sec = "gasmask_headgear_hud",
+        cam_e = "itemuse_anm_effects\\headgear_gasmask_equip_cam.anm",
+        cam_u = "itemuse_anm_effects\\headgear_gasmask_unequip_cam.anm",
+        snd_e = "actor\\headgear_hud\\gasmask_equip"
+    },
 
-function on_off_mask()
-	local out = db.actor:get_current_outfit()
-	local ms = out and get_mask_config(out:section()) or "?"
-	if ms == "?" then return end
-
-	level.only_allow_movekeys(true)
-	bind_stalker.hide_weapon()
-    local timeout = 50
-	
-	--schedule.add("off_eye", "vergas_masks.on_off_mask_eye()", 1500)
-	if mask_on_off == false then
-		local mask, armor = mask_definition()
-		if mask ~= "?" then
-    		tip_breath = tip_brth[string.sub(mask,1,7)]
-    		local sound = "device\\masks\\"..tip_breath.."_on"
-    		snd_obj = xr_sound.get_safe_sound_object(sound)
-    		snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 0.5)
-            timeout = 2000
-		end       
-    end
+    -- ==========================================
+    -- 2. PER-OUTFIT OVERRIDES (Specific suits)
+    -- ==========================================
     
-    schedule.add("off_mask", "vergas_masks.on_off_mask_end()", timeout)
-    flag_blurs, flag_cmd = false, false
+    -- Novices / Bandits with cheap masks
+    ["neytral_novice_gaz_outfit_m1"] = { hud_sec = "respirator_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_respirator_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_respirator_takeoff_cam.anm", snd_e = "actor\\headgear_hud\\gasmask_equip" },
+    ["bandit_gaz_outfit_m1"]         = { hud_sec = "respirator_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_respirator_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_respirator_takeoff_cam.anm", snd_e = "actor\\headgear_hud\\gasmask_equip" },
+
+    -- Ghost & CS Heavy (Ach7ex)
+    ["outfit_stalker_m1"]  = { hud_sec = "helm_ach7ex_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_helmet_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_helmet_unequip_cam.anm", snd_e = "actor\\headgear_hud\\helmet_equip" },
+    ["cs_heavy_outfit"]    = { hud_sec = "helm_ach7ex_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_helmet_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_helmet_unequip_cam.anm", snd_e = "actor\\headgear_hud\\helmet_equip" },
+
+    -- Military Specifics
+    ["militaryspec_outfit"] = { hud_sec = "helm_spartan_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_metro_equip_cam_new.anm", cam_u = "itemuse_anm_effects\\headgear_metro_uneqiup_cam.anm", snd_e = "actor\\headgear_hud\\helmet_metro_equip" },
+    ["specops_outfit"]      = { hud_sec = "helm_tactic_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_helmet_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_helmet_unequip_cam.anm", snd_e = "actor\\headgear_hud\\helmet_equip" },
+    ["outfit_specnaz_m1"]   = { hud_sec = "helm_tactic_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_helmet_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_helmet_unequip_cam.anm", snd_e = "actor\\headgear_hud\\helmet_equip" },
+
+    -- Freedom Specifics
+    ["svoboda_heavy_outfit"] = { hud_sec = "helm_tactic_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_helmet_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_helmet_unequip_cam.anm", snd_e = "actor\\headgear_hud\\helmet_equip" },
+    ["svoboda_gaz_outfit_m1"] = { hud_sec = "gasmask_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_gasmask_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_gasmask_unequip_cam.anm", snd_e = "actor\\headgear_hud\\gasmask_equip" },
+
+    -- CS Light
+    ["cs_light_outfit"] = { hud_sec = "helm_hardhat_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_helmet_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_helmet_unequip_cam.anm", snd_e = "actor\\headgear_hud\\helmet_equip" },
+
+    -- Monolith Sci (Ranger option)
+    ["monolit_scientific_outfit"] = { hud_sec = "helm_ranger_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_gasmask_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_gasmask_unequip_cam.anm", snd_e = "actor\\headgear_hud\\gasmask_equip" },
+
+    -- Tourist (M50 option)
+    ["outfit_stalker_m2"] = { hud_sec = "helm_m50_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_gasmask_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_gasmask_unequip_cam.anm", snd_e = "actor\\headgear_hud\\gasmask_equip" },
+    ["outfit_killer_m1"]  = { hud_sec = "helm_m50_headgear_hud", cam_e = "itemuse_anm_effects\\headgear_gasmask_equip_cam.anm", cam_u = "itemuse_anm_effects\\headgear_gasmask_unequip_cam.anm", snd_e = "actor\\headgear_hud\\gasmask_equip" },
+}
+
+-- ==========================================
+-- FDDA blackout tuning: which ppe cover to use and how long it holds.
+-- deimos_short.ppe is the original brief blink; deimos_longer.ppe is the
+-- new ~2s cover for filthy/wrecked masks. Below the threshold we use the
+-- short one (old behavior); at/above it, the long one.
+-- ==========================================
+
+-- EQUIP SEQUENCE (Putting mask on)
+local FADE_LEAD_MIN_EQ = 350   -- ms before anim end to start fade (clean mask)
+local FADE_LEAD_MAX_EQ = 1400  -- ms before anim end to start fade (worst-case dirty mask)
+
+-- UNEQUIP SEQUENCE (Taking mask off)
+local FADE_START_UN    = 50    -- ms after unequip anim starts to trigger fade (fixed)
+local FADE_HOLD_MIN_UN = 200   -- Minimum blackout duration for clean masks
+local FADE_HOLD_MAX_UN = 600   -- Maximum blackout duration for dirty masks
+
+-- POST-PROCESS EFFECTS (PPE) FILES
+local PPE_SHORT_EQ = "deimos_short.ppe" -- Brief blink for clean masks
+local PPE_LONG_EQ  = "deimos_longer.ppe" -- Longer cover (~2s) for filthy/wrecked masks
+
+-- PPE HOLD TIMES (How long the engine enforces the effect)
+local PPE_SHORT_HOLD_EQ = 300   -- ms; matches old working behavior for mild cases
+local PPE_LONG_HOLD_EQ  = 1400  -- ms; matches deimos_longer's authored length
+
+-- THRESHOLDS
+-- Severity is a 0.0 to 1.0 scale based on mask dirt/damage.
+-- If severity is >= 0.35, the engine swaps to the longer PPE and hold times.
+local SEVERITY_LONG_THRESHOLD_EQ = 0.35 
+
+-- Reads severity straight off the string mask_definition() already returns
+-- (format ends "..._<condition 1-6>_<dirt phase 1-6>"), no extra lookups needed.
+local function get_mask_severity(mask)
+    if not mask or mask == "?" then return 0 end
+    local dmg, dirt = mask:match("_(%d)_(%d)$")
+    dmg, dirt = tonumber(dmg), tonumber(dirt)
+    if not dmg or not dirt then return 0 end
+    dmg = math.min(math.max(dmg, 1), 6)
+    dirt = math.min(math.max(dirt, 1), 6)
+    return math.max((dmg - 1) / 5, (dirt - 1) / 5) -- swap to an average if max feels too harsh
 end
+
+local last_mask_toggle = nil
+local MASK_TOGGLE_COOLDOWN = 3500
+local MASK_CAMERA_ID = 9783
+local mask_session = nil
+
+function is_animating()
+    return mask_session ~= nil
+end
+
+function abort_animation(reason, teardown)
+    local st = mask_session
+    if not st then return end
+    local owner = st.owner_token
+    local parent = st.parent_token
+    local notify = not teardown and hud_animation_session.valid(st)
+    if notify and parent then notify = hud_animation_owner.valid(parent) end
+    mask_session = nil
+    if owner and hud_animation_owner then hud_animation_owner.cancel(owner, reason or "cancelled") end
+    hud_animation_session.cancel(st, reason or "cancelled")
+    if st.hud_active then game.stop_hud_motion() end
+    if st.camera_active then level.remove_cam_effector(MASK_CAMERA_ID) end
+    if st.sound and st.sound:playing() then st.sound:stop() end
+    if st.penalty_owned then
+        if db.actor and db.actor == st.actor and db.actor:alive() then
+            sivol.remove_move_penalty("mask")
+        end
+        if owner and hud_animation_owner then
+            hud_animation_owner.release_resource(owner, "mask_penalty")
+        end
+    end
+    level.remove_pp_effector(4277)
+    if st.slot_held then
+        if teardown or not db.actor or db.actor ~= st.actor or not db.actor:alive() then
+            slot_keeper.reset()
+        else
+            slot_keeper.release(owner)
+        end
+    end
+    if owner and hud_animation_owner then
+        hud_animation_owner.release(owner, reason or "cancelled")
+    else
+        if db.actor and db.actor == st.actor and db.actor:alive() then
+            sivol.remove_move_penalty("mask")
+        end
+        bind_stalker.restore_weapon()
+        level.only_allow_movekeys(false)
+    end
+    if notify and st.on_complete then st.on_complete(reason == "complete") end
+end
+function reset_animation()
+    abort_animation("load/reset", true)
+    last_mask_toggle = nil
+end
+
+function save_animation()
+    -- The parent's save handler settles an in-progress consumable transaction.
+    if mask_session and mask_session.chained then return end
+    abort_animation("save")
+end
+
+function update_animation()
+    if mask_session and (not hud_animation_session.valid(mask_session) or not hud_animation_owner.valid(mask_session.owner_token)) then
+        abort_animation("actor unavailable", true)
+    elseif mask_session then
+        local outfit = db.actor:get_current_outfit()
+        if not outfit or outfit:id() ~= mask_session.outfit_id then abort_animation("outfit changed") end
+    end
+end
+
+function on_off_mask(on_complete, chained, parent_owner)
+    local now = time_global()
+    local parent = parent_owner
+    if type(parent) ~= "table" and type(chained) == "table" then
+        parent = chained
+    end
+    if chained == true and not parent then
+        local current = hud_animation_owner.current()
+        if current and hud_animation_owner.owner(current) == "consumable" then
+            parent = current
+        else
+            log2("[HUD_OWNER] rejected legacy chained mask without consumable parent")
+            return false
+        end
+    end
+    local is_chained = parent ~= nil
+    if mask_session or not db.actor or not db.actor:alive() then return false end
+    if not is_chained and last_mask_toggle and now - last_mask_toggle >= 0
+        and now - last_mask_toggle < MASK_TOGGLE_COOLDOWN then return false end
+    if not is_chained and (hud_fx_busy or level.only_movekeys_allowed() or not game.hud_motion_allowed()) then return false end
+    if is_chained and not hud_animation_owner.valid(parent) then return false end
+    local out = db.actor:get_current_outfit()
+    local ms = out and get_mask_config(out:section()) or "?"
+    if ms == "?" then return false end
+    local is_resp = is_respirator_outfit(out:section())
+    local owner_token
+    if is_chained then
+        owner_token = hud_animation_owner.child(parent, "mask")
+    else
+        owner_token = hud_animation_owner.reserve("mask")
+    end
+    if not owner_token or not hud_animation_owner.activate(owner_token, "mask") then
+        if owner_token then hud_animation_owner.release(owner_token, "mask admission") end
+        return false
+    end
+    local st = hud_animation_session.new("mask", function(reason) abort_animation(reason) end)
+    st.on_complete = type(on_complete) == "function" and on_complete or nil
+    st.owner_token = owner_token
+    st.parent_token = parent
+    st.chained = is_chained
+    st.outfit_id = out:id()
+    st.outfit_section = out:section()
+    if not st.chained then
+        slot_keeper.remember(owner_token)
+        if not slot_keeper.hold(owner_token) then
+            hud_animation_owner.release(owner_token, "slot hold refused")
+            return false
+        end
+        st.slot_held = true
+    end
+    hud_animation_owner.acquire_weapon(owner_token)
+    hud_animation_owner.acquire_movement(owner_token)
+    st.penalty_owned = hud_animation_owner.acquire(owner_token, "mask_penalty")
+    if st.penalty_owned then sivol.add_move_penalty("mask", 0.4) end
+    mask_session = st
+    db.actor:activate_slot(255)
+    last_mask_toggle = now
+    if not fdda_headgear_data[ms] then
+        -- Controls are held by the owner token.
+        hud_animation_session.after(st, 2000, function()
+            abort_animation("complete")
+        end)
+        return true
+    end
+
+    -- Start FDDA Sequence
+    -- Controls are held by the owner token.
+
+    -- Check if the player is actually holding something right now
+
+    hud_animation_session.wait(st, function() return not db.actor:active_item() end, function()
+        -- Safety check: did the actor die while waiting for weapon to lower?
+        if not db.actor:alive() then
+            abort_animation()
+            return
+        end
+
+        local anim_data = fdda_headgear_data[st.outfit_section] or fdda_headgear_data[ms]
+        
+        -- If somehow there is still no anim_data, bail out safely
+        if not anim_data then
+            abort_animation()
+            return
+        end
+        
+        if mask_on_off == false then
+            -- ==========================================
+            -- ===== EQUIP SEQUENCE =====================
+            -- ==========================================
+            local mask, armor = mask_definition()
+            if mask ~= "?" then
+                tip_breath = tip_brth[string.sub(mask, 1, 7)]
+            end
+
+            -- Play FDDA Equip Sound
+            if anim_data.snd_e then
+                local snd = xr_sound.get_safe_sound_object(anim_data.snd_e)
+                if snd then
+                    st.sound = snd
+                    snd:play(db.actor, 0, sound_object.s2d)
+                end
+            end
+
+            -- Attempt to play the 3D animation using anim_data's section
+            local anm_duration = game.play_hud_motion(2, anim_data.hud_sec, "anm_equip", true, 1, true)
+            st.hud_active = true
+            if not hud_animation_session.duration(anm_duration) then abort_animation("invalid motion duration"); return end
+            
+            -- FDDA's camera animation using anim_data's camera path
+            level.add_cam_effector(anim_data.cam_e, MASK_CAMERA_ID, false, "", 0, false)
+            st.camera_active = true
+
+            -- FDDA Fade Trick timing, scaled by how dirty/damaged the mask is right now.
+            local severity = get_mask_severity(mask)
+            local use_long_ppe = severity >= SEVERITY_LONG_THRESHOLD_EQ
+            local ppe_name = use_long_ppe and PPE_LONG_EQ or PPE_SHORT_EQ
+            local ppe_hold = use_long_ppe and PPE_LONG_HOLD_EQ or PPE_SHORT_HOLD_EQ
+
+            local fade_lead = FADE_LEAD_MIN_EQ + (FADE_LEAD_MAX_EQ - FADE_LEAD_MIN_EQ) * severity
+            fade_lead = math.max(fade_lead, ppe_hold) -- lead must cover at least the ppe's own duration
+
+            local fade_time = math.max(0, anm_duration - fade_lead)
+            local fade_remove_time = fade_time + ppe_hold
+            
+            -- NEW: Swap the 2D HUD state EARLY in the fade hold (200ms in, or halfway if hold is short).
+            -- This guarantees the HUD triggers while the screen is fully black, 
+            -- hiding the pop-up before the fade begins to clear.
+            local swap_offset = math.min(800, ppe_hold * 0.5)
+            local state_swap_time = math.max(fade_time, fade_time + swap_offset)
+			
+            
+            -- Total sequence duration is unchanged, tied to the max of anim end or fade end
+            local cleanup_time = math.max(anm_duration, fade_remove_time)
+
+			if not is_resp then
+				hud_animation_session.after(st, fade_time, function()
+					level.add_pp_effector(ppe_name, 4277, false)
+				end)
+			end
+
+			hud_animation_session.after(st, state_swap_time, function()
+				set_mask_on_off_flag(true)
+				if is_resp then
+					flag_blurs, flag_cmd = false, false
+				else
+					flag_blurs, flag_cmd = true, true
+				end
+			end)
+
+			if not is_resp then
+				hud_animation_session.after(st, fade_remove_time, function()
+					level.remove_pp_effector(4277)
+				end)
+			end
+
+            -- 4. Cleanup
+            hud_animation_session.after(st, cleanup_time, function()
+                abort_animation("complete") -- Normal completion not cancellation
+            end)
+
+        else
+            -- ==========================================
+            -- ===== UNEQUIP SEQUENCE =====
+            local mask, armor = mask_definition()
+            local unequip_breath = "neutral"
+            if mask ~= "?" then
+                unequip_breath = tip_brth[string.sub(mask, 1, 7)] or "neutral"
+            end
+
+            -- 1. Play Sound immediately
+            local sound = "device\\masks\\" .. unequip_breath .. "_off"
+            st.sound = xr_sound.get_safe_sound_object(sound)
+            if st.sound then st.sound:play(db.actor, 0, sound_object.s2d) end
+
+            -- 2. Start Camera immediately
+            level.add_cam_effector(anim_data.cam_u, MASK_CAMERA_ID, false, "", 0, false)
+            st.camera_active = true
+
+            -- 3. Drop HUD state immediately
+            set_mask_on_off_flag(false)
+            flag_blurs, flag_cmd = false, false
+            if nvd_params and nvd_params.off_pnv then
+                nvd_params.off_pnv()
+            end
+
+            -- 4. Calculate Fade (runs immediately, doesn't wait for 250ms)
+            local severity = get_mask_severity(mask)
+            local fade_hold = FADE_HOLD_MIN_UN + (FADE_HOLD_MAX_UN - FADE_HOLD_MIN_UN) * severity
+            local fade_time = math.min(FADE_START_UN, 2500) 
+            local fade_remove_time = math.max(fade_time, math.min(2500, fade_time + fade_hold))
+
+			if not is_resp then
+				hud_animation_session.after(st, fade_time, function()
+					level.add_pp_effector("deimos_short.ppe", 4277, false)
+				end)
+				hud_animation_session.after(st, fade_remove_time, function()
+					level.remove_pp_effector(4277)
+				end)
+			end
+
+            -- 5. Delay ONLY the 3D hands animation by 250ms
+            hud_animation_session.after(st, 250, function()
+                -- Safety check inside the delay
+                if not db.actor:alive() then
+                    abort_animation()
+                    return
+                end
+                
+                local anm_duration = game.play_hud_motion(2, anim_data.hud_sec, "anm_unequip", true, 1, true)
+                st.hud_active = true
+                if not hud_animation_session.duration(anm_duration) then abort_animation("invalid motion duration"); return end
+                
+                -- Cleanup only after the 3D animation actually finishes
+                hud_animation_session.after(st, anm_duration, function()
+                    abort_animation("complete")
+                end)
+            end)
+        end
+    end, 10000)
+    return true
+end
+
 function on_off_mask_eye()
 	level.add_pp_effector("black_q.ppe", 1237, false)
 end
+
 function on_off_mask_end()
-   local timeout = 50
-	if mask_on_off then
-        -- выключение маски
-		mask_on_off = false
-		local sound = "device\\masks\\"..tip_breath.."_off"
-		snd_obj = xr_sound.get_safe_sound_object(sound)
-		snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
-        timeout = 1300
-		nvd_params.off_pnv()
-	else
-		mask_on_off = true
-	end
-	dsh.timeout(timeout, function()
-		bind_stalker.restore_weapon()
-		level.only_allow_movekeys(false)
-	end)
-    flag_blurs, flag_cmd = false, false 
+    -- This function is no longer called by our new logic, 
+    -- but we leave it here in case other scripts call it.
+    if mask_session then return end
+    
+    -- Original fallback logic if something else calls this
+    bind_stalker.restore_weapon()
+    level.only_allow_movekeys(false)
+    sivol.remove_move_penalty("mask") -- sivol.script 
+	return true	-- Не удалять, нужно для воспроизведения анимок
 end
 
 function save_mask_on_off()
 	set_value("var_mask_on_off", mask_on_off)
 end
+
 
 function update_zoom()
 	ogse_signals.get_mgr():reschedule(53)
@@ -597,8 +1049,26 @@ function mask_zoom_stretchy(param)
 	end
 end
 
+local function manual_hold_breath_active()
+    return sivol_weapon and sivol_weapon.is_manual_hold_breath_active
+        and sivol_weapon.is_manual_hold_breath_active()
+end
+
 function update_blurs()
-	set_blurs(flag_blurs)
+    local armor = db.actor and db.actor:item_in_slot(6)
+    local is_resp = armor and is_respirator_outfit(armor:section())
+    if is_resp or manual_hold_breath_active() then
+        -- Freeze the breath cycle while holding breath so releasing it does not
+        -- apply the elapsed time as a large condensation/decay step.
+        if not is_resp then
+            blurlt = time_global()
+            blurcyctime = blurlt
+            blurlastphase = 0
+        end
+        set_blurs(false)
+    else
+        set_blurs(flag_blurs)
+    end
 end
 
 function set_blurs(enabled)
@@ -611,7 +1081,7 @@ function set_blurs(enabled)
 		return		
 	end
 	local power = db.actor.power
-	local period = 1.0+power^2 -- текущая частота дыхания от 30 до 120 циклов в минуту
+	local period = 1.0+power^2 -- ??????? ??????? ??????? ?? 30 ?? 120 ?????? ? ??????
 	local expirt = 0.3
 	local breathpower = 3
 	
@@ -719,34 +1189,41 @@ function mask_cleaned_end()
 	mask_old = "?" 
 end
 
-function fill_flask()
-	local i,j,k
-	local flag_fill = false
-	local portions_of_water = vergas_lib.set_pr_from_config("flask_army","portions_of_water")
-	level.disable_input()
-	bind_stalker.hide_weapon()
-	for i,k in pairs(sak_inventory.rucksack) do
-		if i == "flask_army" or i == "flask_army_on_belt" then
-			for j = 1, table.getn(k) do
-				local d_custom = tonumber(vergas_flask.set_get_flask_custom(2,k[j]))
-				--if d_custom ~= portions_of_water then
-					vergas_flask.set_get_flask_custom(1,k[j],tostring(portions_of_water))
-					vergas_flask.replace_flask_weight(k[j],tostring(portions_of_water))
-					flag_fill = true
-				--end
-			end
+local function army_flasks()
+	local list = {}
+	local function add( o )
+		local s = o and o:section()
+		if s == "flask_army" or s == "flask_army_on_belt" then
+			list[o:id()] = o   -- ключ по id: дубли схлопываются сами
 		end
 	end
-	if flag_fill then
-		vergas_lib.s_play([[ambient\waterflow]],1)
-		timers.start_timer("fill_timer",14,"vergas_masks.end_fill_timer()")					--запускаю таймер
-		sak.send_tip(game.translate_string("fill_flask_1"),game.translate_string("fill_flask_2"), 1, 10, "g_g", "sak", "sky_blue")
-	else
-		sak.send_tip(game.translate_string("fill_flask_3"),game.translate_string("fill_flask_4"), 1, 10, "g_g", "sak", "red")
-		vergas_lib.s_play([[device\masks\water_no]],1)
-		bind_stalker.restore_weapon()
-		level.enable_input()
+	for i = 0, db.actor:object_count() - 1 do
+		add( db.actor:object( i ) )
 	end
+	add( ui_cheat_flask.get_equipped_flask() )   -- фляга в чехле
+	return list
+end
+
+function fill_flask()
+	local flasks = army_flasks()
+
+	if next( flasks ) == nil then
+		sak.send_tip_local( game.translate_string("fill_flask_3"), game.translate_string("fill_flask_4"), 1, 10, "g_g", "sak", "red" )
+		vergas_lib.s_play( [[device\antirad_no]], 1 )
+		return
+	end
+
+	local portions = math.floor( vergas_lib.set_pr_from_config( "flask_army", "portions_of_water" ) )
+	if portions < 2 then portions = 5 end
+
+	level.disable_input()
+	bind_stalker.hide_weapon()
+	for _, flask in pairs( flasks ) do
+		vergas_flask.set_flask_water( flask, portions )
+	end
+	vergas_lib.s_play( [[ambient\waterflow]], 1 )
+	timers.start_timer( "fill_timer", 14, "vergas_masks.end_fill_timer()" )
+	sak.send_tip_local( game.translate_string("fill_flask_1"), game.translate_string("fill_flask_2"), 1, 10, "g_g", "sak", "sky_blue" )
 end
 
 function end_fill_timer()
@@ -755,7 +1232,7 @@ function end_fill_timer()
 	level.enable_input()
 end
 
--- [HE-PORT-R2] перенос функций NLC HE из vergas\vergas_masks.script
+-- [HE-PORT-R2] ??????? ??????? NLC HE ?? vergas\vergas_masks.script
 
 -- [HE-PORT] proxy: staroe hranilishche nlc_vars poverh dvizhkovogo xvars (get_value/set_value iz _g)
 if nlc_vars == nil then
@@ -768,9 +1245,92 @@ function have_dsc_water()
     if not nlc_vars.dsc_fill_time then return true end
 	local saved_time = unpack_time_from_string( nlc_vars.dsc_fill_time )	
 	local time_diff_sec = saved_time:diffSec( game.get_game_time() )
-	local time_diff_hours = math.floor( math.abs( time_diff_sec / 3600 ) ) -- перевод в часы	
-	return time_diff_hours >= 22	-- почти сутки
+	local time_diff_hours = math.floor( math.abs( time_diff_sec / 3600 ) ) -- ??????? ? ????	
+	return time_diff_hours >= 22	-- ????? ?????
 end
 function not_have_dsc_water()
 	return not have_dsc_water()
+end
+
+
+
+-- ??? ????????? ???????
+function manage_armor_mask_params(armor_obj, mode, custom)
+    local sobj = g_sim:object(armor_obj:id())
+    if not sobj then return end
+    local ini = sobj:spawn_ini()
+    
+    if mode == "get" then
+        local custom, cond = "", 100
+        if ini and ini:section_exist("mask") then
+            local st1 = get_string("mask", "t1", nil, ini)
+            local st2 = get_string("mask", "t2", nil, ini)
+            local st3 = get_string("mask", "t3", nil, ini)
+            cond = get_u32("mask", "t4", 100, ini)
+            if st1 and st2 and st3 then
+                custom = st1 .. "|" .. st2 .. "|" .. st3
+            end
+        end
+        return custom, cond / 100
+    elseif mode == "set" then
+        ini.readonly = false
+        local custom_parts = vergas_lib.str_explode("|", custom, true)
+        log3("Saving to ini: t1 = %s, t2 = %s, t3 = %s", 
+              tostring(custom_parts[1] or "none"), 
+              tostring(custom_parts[2] or "none"), 
+              tostring(custom_parts[3] or "none"))
+        ini:w_string("mask", "t1", tostring(custom_parts[1] or "none"))
+        ini:w_string("mask", "t2", tostring(custom_parts[2] or "none"))
+        ini:w_string("mask", "t3", tostring(custom_parts[3] or "none"))
+        sobj:save_spawn_ini()
+    end
+end
+
+function mask_definition_new(armor_obj)
+    local mask = "?"
+    local n_phase
+    local combez
+    
+    if armor_obj then
+        combez = armor_obj:section()
+        local custom, cond = manage_armor_mask_params(armor_obj, "get")
+        
+        if custom then
+            cond = set_hud_textur(cond)
+            
+            if custom == "none" then
+                local ms = get_mask_config(combez)
+                if ms ~= "?" then
+                    mask = ms
+                    mask = mask..cond
+                    
+                    local new_params = {}
+                    new_params.t1 = ms
+                    
+                    if tonumber(string.sub(cond, 2, 2)) == 1 then
+                        n_phase = 1
+                        new_params.t2 = "1"
+                        new_params.t3 = tostring(lua_random(1, 6))
+                    else
+                        n_phase = lua_random(1, 6)
+                        new_params.t2 = tostring(n_phase)
+                        new_params.t3 = tostring(lua_random(1, 6))
+                    end
+                    mask = mask.."_"..n_phase
+                    
+                    manage_armor_mask_params(armor_obj, "set", new_params)
+                else
+                    mask = "?"
+                    manage_armor_mask_params(armor_obj, "set", "none|none|none")
+                end
+            else
+                local custom_parts = vergas_lib.str_explode("|", custom, true)
+                mask = custom_parts[1]..cond.."_"..(custom_parts[2] or "none")
+            end
+        end
+    else
+        mask, combez, tip_breath = "?", "?", tip_brth["?"]
+    end
+    
+    return mask, combez
 end

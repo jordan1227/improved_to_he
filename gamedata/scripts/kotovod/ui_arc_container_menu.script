@@ -30,6 +30,21 @@ function possible_inv_change()
     end
 end
 
+local arc_container_banned = {
+	af_full_akkum     = true,
+	af_full_akkum_big = true,
+	nvd_bad           = true,
+	nvd_good          = true,
+	nvd_elite         = true,
+	nvd_absorbation   = true,
+}
+
+function is_allowed_in_container( sect )
+    if not sect then return false end
+    if arc_container_banned[ sect ] then return false end
+    return not sys_ini:line_exist( sect, "night_vision_device" )
+end
+
 class "arc_8container_menu" (CUIScriptWnd)
 function arc_8container_menu:__init(obj)
     super()
@@ -55,6 +70,18 @@ function arc_8container_menu:__finalize()
 end
 
 local radiation_v = get_float("actor_condition", "radiation_v")
+
+local function nominal_art_property(target, property, custom_data)
+    local section = type(target) == "string" and target or target:section()
+    local value = get_float(section, property, 0)
+    if type(sivol_unknown_arts) == "table"
+        and type(sivol_unknown_arts.get_nominal_property) == "function"
+    then
+        local resolved = sivol_unknown_arts.get_nominal_property(target, property, custom_data)
+        if resolved ~= nil then value = resolved end
+    end
+    return value
+end
 
 function arc_8container_menu:read_params()
     local prefix  = "arc_ui_8container_menu."
@@ -90,10 +117,11 @@ function arc_8container_menu:update_radiation()
     local rad = 0
     if self.protection > 0 then
         for i, t in ipairs(self.artefacts) do
-            if t.section and t.condition > 0 then
-                local rrs = get_float(t.section, "radiation_restore_speed", 0)
-                if rrs > self.protection then rad = rad + (rrs - self.protection) end
-            end
+			if t.section and t.condition > 0 then
+				local base_rrs = nominal_art_property(t.section, "radiation_restore_speed", t.custom_data)
+				local rrs = base_rrs * get_effective_strength_raw(t.condition, t.section, base_rrs < 0, "radiation_restore_speed")
+				if rrs > self.protection then rad = rad + (rrs - self.protection) end
+			end
         end
         local iitem = self.object:get_inventory_item()
         ASSERT(
@@ -152,14 +180,23 @@ function arc_8container_menu:load_inventory()
         end
     end
 
+    -- Include all actor inventory items, but keep equipped belt artifacts out.
+    local belt_ids = {}
+    for _, ids in pairs(sak_inventory.belt_items or {}) do
+        for _, id in ipairs(ids) do
+            belt_ids[id] = true
+        end
+    end
+
     self.inventory = {}
     local changed = false
-    db.actor:iterate_ruck(
+    db.actor:iterate_inventory(
         function(npc, obj)
             if g_sim:object(obj:id())
+                and not belt_ids[obj:id()]
 				and (not db.actor:marked_dropped(obj))
                 and obj:is_artefact()
-				and obj:section() ~= "af_full_akkum"
+				and this.is_allowed_in_container( obj:section() )
 				and (
 					obj:section() ~= "af_dummy_black_tip"
 					or not get_value( "tried_to_drop_bt", false )
@@ -258,6 +295,7 @@ function arc_8container_menu:DrawBackground()
     local art_box            = self.xml:InitStatic("art_box", self.scrolled)
 
     self.btn_quit            = self.xml:InitButton("btn_quit", art_box)
+	self.btn_quit:SetText( string.format( "Закрыть [%d]", self.object:id() ) )
     self:Register(self.btn_quit, self.btn_quit:WindowName())
     self:AddCallback(
         self.btn_quit:WindowName(), ui_events.BUTTON_CLICKED,
@@ -324,7 +362,8 @@ function arc_8container_menu:make_art_button(t, act)
 
     local rad_text = ""
     if t.condition > 0 then
-        local rad = get_float(t.section, "radiation_restore_speed", 0)
+		local base_rrs = nominal_art_property(t.section, "radiation_restore_speed", t.custom_data)
+		local rad = base_rrs * get_effective_strength_raw(t.condition, t.section, base_rrs < 0, "radiation_restore_speed")
         if rad > 0 then
             rad_text = string.format("+%.0f", rad / radiation_v)
             b:SetText(rad_text)
@@ -362,6 +401,7 @@ end
 
 function put_in_art(id, art_section, condition, cust)
    -- local sobj = level.object_by_id(id)
+    if not this.is_allowed_in_container( art_section ) then return false end
 	local box = level.object_by_id(id)
     if not box then 
         log3("! контейнер " .. id .. " не найден")
@@ -531,7 +571,8 @@ function arc_recalc_container(id)
 		if t.section and (t.condition or 0) > 0 then
 			sum_weight = sum_weight + get_float(t.section, "inv_weight", 0)
 
-			local rrs = get_float(t.section, "radiation_restore_speed", 0)
+			local base_rrs = nominal_art_property(t.section, "radiation_restore_speed", t.custom_data)
+			local rrs = base_rrs * get_effective_strength_raw(t.condition or 0, t.section, base_rrs < 0, "radiation_restore_speed")
 			if protection > 0 and rrs > protection then
 				rad = rad + (rrs - protection)
 			end
@@ -656,6 +697,21 @@ function arc_8container_menu:show_art_info(wnd, section, condition, data)
 	
     if is_debug_mode then
         text = inv_name .. " (" .. section .. ")\\n \\n"
+
+        -- debug-инфо по капсулам nlc_capsules
+        if nlc_capsules.is_capsule_section(section) then
+            local payload = nlc_capsules.read(data)
+            if payload then
+                local content_sect = nlc_capsules.content_section(payload)
+                local content_name = content_sect and get_string(content_sect, "inv_name", content_sect) or "?"
+                text = text .. string.format(
+                    "%%c[255,255,220,50]CAPSULE: sect=%s \\n dyn=%s tag=%s\\n-> %%c[white]%s\\n \\n",
+                    tostring(content_sect), tostring(payload.dyn), tostring(payload.tag), translate(content_name)
+                )
+            else
+                text = text .. "%c[255,255,50,50]CAPSULE: payload NOT FOUND in custom_data!\\n \\n"
+            end
+        end
     else
         text = inv_name .. "\\n \\n"
     end
@@ -664,7 +720,7 @@ function arc_8container_menu:show_art_info(wnd, section, condition, data)
 		text = text .. string.format( "• Состояние: %d%%\\n \\n", condition * 100 )
 	end
 
-    local af_text = get_art_info_text(section)
+    local af_text = get_art_info_text(section, condition, data)
     if af_text then
         text = text .. af_text .. "\\n \\n%c[default]"
     end
@@ -714,6 +770,15 @@ end
 
 function arc_8container_menu:take_artefact(n)
     local src = self.artefacts[n]
+    if src and src.section and sivol_unknown_arts
+        and sivol_unknown_arts.is_unknown_section(src.section)
+        and not sivol_unknown_arts.read_custom(src.custom_data or "")
+    then
+        local payload = sivol_unknown_arts.migrate_container_entry(
+            src.section, src.condition, self.object:id(), n, src.custom_data
+        )
+        if payload then src.custom_data = sivol_unknown_arts.encode(payload, src.custom_data) end
+    end
     local s   = src.button
     if s.flying then return end
 
@@ -736,21 +801,39 @@ function arc_8container_menu:take_artefact(n)
     end
 
     local sobj = misc.spawn_to( src.section, db.actor )
-    level.client_spawn_manager():add(
-        sobj.id, -1,
-        function( id, sobj )
-            sobj:set_condition( src.condition )	
-            sobj = sobj:get_alife_object()
-            if src.custom_data then
-                log3( "src on take %s", src.custom_data )
-                sobj.custom_data = src.custom_data
-            end		
-            self.fly_it[sobj.id] = vector():set(wpos.x, wpos.y, 0)
-            vergas_lib.s_play( "scripts\\art_move", 1 )
-			-- Таймаут не особо, но проще, чем городить другое
+    if sobj and src.custom_data and sivol_unknown_arts then
+        sivol_unknown_arts.restore_server(alife():object(sobj.id), src.custom_data)
+    end
+	level.client_spawn_manager():add(
+		sobj.id, -1,
+		function( id, sobj )
+			sobj:set_condition( src.condition )	
+			local alife_obj = sobj:get_alife_object()
+			if src.custom_data then
+				log3( "src on take %s", src.custom_data )
+				alife_obj.custom_data = src.custom_data
+			end		
+
+			-- восстанавливаем радейку свалки из custom_data
+			if src.custom_data then
+				local props = ui_arc_container_menu.xp_read_from_cust( src.custom_data )
+				if props and props.rad then
+					local live_obj = level.object_by_id( id )
+					local af_obj = live_obj and live_obj:get_artefact()
+					if af_obj then
+						update_prop( af_obj, "radiation_restore_speed", props.rad )
+						local new_tbl = get_value( "garbage_arts", {} )
+						new_tbl[ tostring( id ) ] = true
+						set_value( "garbage_arts", new_tbl )
+					end
+				end
+			end			
+
+			self.fly_it[id] = vector():set(wpos.x, wpos.y, 0)
+			vergas_lib.s_play( "scripts\\art_move", 1 )
 			dsh.timeout( 15, function() self.info_wnd:SetText("") end )
-        end
-    )
+		end
+	)
 end
 
 function arc_8container_menu:draw_inventory()
@@ -810,6 +893,7 @@ end
 function arc_8container_menu:put_artefact(n)
     local src = self.inventory[n]
     if src.button.flying then return end
+    if not this.is_allowed_in_container( src.section ) then return end
 
     local dst, pos
     for i, t in ipairs(self.artefacts) do
@@ -826,6 +910,15 @@ function arc_8container_menu:put_artefact(n)
         pos = table.getn(self.artefacts)
     end
 
+    local source_server = g_sim:object(src.id)
+    if source_server and type(sivol_unknown_arts) == "table"
+        and type(sivol_unknown_arts.initialize_new) == "function"
+        and sivol_unknown_arts.is_unknown_section(src.section)
+    then
+        sivol_unknown_arts.initialize_new(source_server)
+        local _, stored_data = sivol_unknown_arts.read_server(source_server)
+        src.custom_data = stored_data
+    end
     for _, k in ipairs({ "section", "condition", "custom_data" }) do
         dst[k] = src[k]
     end
@@ -836,12 +929,13 @@ function arc_8container_menu:put_artefact(n)
     end
 	
 	-- для радейки
-	if src.section and src.condition > 0 then
-		local rrs = get_float(src.section, "radiation_restore_speed", 0)
-		if rrs > self.protection then
-		   sak.send_tip( "Защита недостаточна.", "Контейнер", 0, 10, "death", "sak", "red" )
+		if src.section and src.condition > 0 then
+			local base_rrs = nominal_art_property(src.section, "radiation_restore_speed", src.custom_data)
+			local rrs = base_rrs * get_effective_strength_raw(src.condition, src.section, base_rrs < 0, "radiation_restore_speed")
+			if rrs > self.protection then
+			   sak.send_tip( "Защита недостаточна.", "Контейнер", 0, 10, "death", "sak", "red" )
+			end
 		end
-	end	
 
     if dst.custom_data then
 		log3( "dst custom_data %s", dst.custom_data )
@@ -902,7 +996,7 @@ function subscribe_black_tip(container_id, condition)
             cleanup()
             this.put_out_art(container_id, nil, "af_dummy_black_tip")
             kotovod.add_bad_item("af_dummy_black_tip", condition)
-            sak.send_tip(
+            sak.send_tip_local(
                 "Етижи-пассатижи, вернулась зараза! \\nПохоже, нет никакого смысла помещать её в контейнер...",
                 "Мысли вслух", 2, 10, "g_g", "sak", "red"
             )
@@ -918,7 +1012,7 @@ function subscribe_black_tip(container_id, condition)
             cleanup()
 			dsh.timeout( 10, function()
 				this.put_out_art(container_id, nil, "af_dummy_black_tip")
-				sak.send_tip(
+				sak.send_tip_local(
 					"Етижи-пассатижи, вернулась зараза! \\nПохоже, нет никакого смысла помещать её в контейнер...",
 					"Мысли вслух", 2, 10, "g_g", "sak", "red"
 				)
@@ -1191,106 +1285,90 @@ local af_ui_name = {
 function get_art_info_text(sect, condition, data)
     condition = condition or 1
     local texts = {}
-    
-	local garbage_rad = nil
-	if data then
-		local props = ui_arc_container_menu.xp_read_from_cust( data )
-		if props and props.rad then
-			garbage_rad = props.rad
-		end
-	end
 
-	for k, v in pairs(af_actor_cond) do
-		local af_val = get_float(sect, k, 0)
-		
-		-- если радейка нулевая в конфиге но есть garbage_rad — всё равно показываем
-		if k == "radiation_restore_speed" and garbage_rad and af_val == 0 then
-			af_val = garbage_rad / v * 100
-			-- Значение показываем только выше 0			
-			if math.abs( af_val ) > 0.000001 then
-				local sn = ""
-				local color = af_val > 0 and "%c[red]" or "%c[green]"
-				table.insert(
-					texts,
-					string.format(
-						"%%c[default]• %s %s%+.0f%s",
-						game.translate_string(af_ui_name[k]), color, af_val, sn
-					)
+    local garbage_rad = nil
+    if data then
+        local props = ui_arc_container_menu.xp_read_from_cust( data )
+        if props and props.rad then
+            garbage_rad = props.rad
+        end
+    end
+
+    for k, v in pairs(af_actor_cond) do
+        local base_val = nominal_art_property(sect, k, data)
+        local af_val
+
+        if k == "radiation_restore_speed" and garbage_rad then
+            local is_buff = (garbage_rad < 0)
+            af_val = garbage_rad * get_effective_strength_raw(condition, sect, is_buff, k) / v * 100
+        elseif base_val ~= 0 then
+            local is_buff = true
+            if k == "radiation_restore_speed" then
+                is_buff = (base_val < 0)
+            else
+                is_buff = (base_val > 0)
+            end
+            af_val = base_val / v * 100 * get_effective_strength_raw(condition, sect, is_buff, k)
+        end
+
+        if af_val and math.abs( af_val ) > 0.000001 then
+            local sn = "%"
+            if k == "radiation_restore_speed" then sn = "" end
+            local color = af_val > 0 and "%c[green]" or "%c[red]"
+            if k == "bleeding_restore_speed" then
+                af_val = af_val * -1
+            end
+            if k == "bleeding_restore_speed" or k == "radiation_restore_speed" then
+                color = af_val > 0 and "%c[red]" or "%c[green]"
+            end
+			local format_str = "%+.0f"
+			if k == "radiation_restore_speed" then
+				format_str = "%+.1f"
+			end
+
+			table.insert(
+				texts,
+				string.format(
+					"%%c[default]• %s %s" .. format_str .. "%s",
+					game.translate_string(af_ui_name[k]), color, af_val, sn
 				)
-			end
-		elseif af_val ~= 0 then
-			local sn = "%"
-			if k == "radiation_restore_speed" then sn = "" end
-			if k == "radiation_restore_speed" and garbage_rad then
-				af_val = garbage_rad / v * 100
-			else
-				af_val = af_val / v * 100 * condition
-			end
-			if math.abs( af_val ) > 0.000001 then
-				local color
-				if af_val > 0 then
-					color = "%c[green]"
-				else
-					color = "%c[red]"
-				end
-				if k == "bleeding_restore_speed" then
-					af_val = af_val * -1
-				end
-				if k == "bleeding_restore_speed" or k == "radiation_restore_speed" then
-					if af_val > 0 then
-						color = "%c[red]"
-					else
-						color = "%c[green]"
-					end
-				end
-				table.insert(
-					texts,
-					string.format(
-						"%%c[default]• %s %s%+.0f%s",
-						game.translate_string(af_ui_name[k]), color, af_val, sn
-					)
-				)
-			end
-		end
-	end
+			)
+        end
+    end
+
     for _, k in ipairs({
         "additional_inventory_weight", "additional_inventory_weight2"
     }) do
-        local af_val = get_float(sect, k, 0)
+        local af_val = nominal_art_property(sect, k, data)
         if k == "additional_inventory_weight" then
-            local af_val2 = get_float(sect, "additional_inventory_weight2", 0)
+            local af_val2 = nominal_art_property(sect, "additional_inventory_weight2", data)
             if af_val == af_val2 then af_val = 0 end
         end
         if af_val ~= 0 then
-            af_val = af_val * condition
+            af_val = af_val * get_effective_strength_raw(condition, sect, af_val > 0, k)
             local sn = " кг"
-            local color
-            if af_val > 0 then
-                color = "%c[green]"
-            else
-                color = "%c[red]"
-            end
-            table.insert(
-                texts,
-                string.format(
-                    "%%c[default]• %s %s%+.0f%s",
-                    game.translate_string(af_ui_name[k]), color, af_val, sn
-                )
-            )
+            local color = af_val > 0 and "%c[green]" or "%c[red]"
+			table.insert(
+				texts,
+				string.format(
+					"%%c[default]• %s %s%+.1f%s",
+					game.translate_string(af_ui_name[k]), color, af_val, sn
+				)
+			)
         end
     end
+
     local absorb_sect = get_string(sect, "hit_absorbation_sect")
     if sys_ini:section_exist(absorb_sect) then
         for _, k in ipairs(af_absorbs) do
-            local af_val = get_float(absorb_sect, k, 0)
+            local af_val = nominal_art_property(sect, k, data)
+            if af_val == 0 then
+                af_val = get_float(absorb_sect, k, 0)
+            end
             if af_val ~= 1 then
-                af_val = (1 - af_val) * 100 * condition
-                local color
-                if af_val > 0 then
-                    color = "%c[green]"
-                else
-                    color = "%c[red]"
-                end
+                local is_buff = (af_val <= 1)
+                af_val = (1 - af_val) * 100 * get_effective_strength_raw(condition, sect, is_buff, k)
+                local color = af_val > 0 and "%c[green]" or "%c[red]"
                 table.insert(
                     texts,
                     string.format(
@@ -1302,6 +1380,23 @@ function get_art_info_text(sect, condition, data)
         end
     end
 
+    for _, wear in ipairs({
+        { property = "outfit_wear_burn", label = "ui_inv_outfit_wear_fire" },
+        { property = "outfit_wear_shock", label = "ui_inv_outfit_wear_shock" },
+        { property = "outfit_wear_chemical", label = "ui_inv_outfit_wear_chemical" },
+    }) do
+        local wear_value = nominal_art_property(sect, wear.property, data)
+        if wear_value and wear_value > 0 then
+            wear_value = wear_value * get_effective_strength_raw(condition, sect, true, wear.property)
+            table.insert(
+                texts,
+                string.format(
+                    "%%c[default]? %s %%c[green]-%0.f%%",
+                    game.translate_string(wear.label), wear_value * 100
+                )
+            )
+        end
+    end
     if table.getn(texts) > 0 then
         return table.concat(texts, "\\n")
     end
@@ -1353,15 +1448,6 @@ end
 -- Формат: xp={key1=val1,key2=val2}
 -- ============================================================
 
---[[ Переделать потом семецкий капсулы, типо такого
-xp_write( obj:id(), { capsule = "af_night_star_dyn5d_capsule", data = "semeckiy_capsule" } )
-
-local props = xp_read( obj:id() )
-if props then
-    local capsule_sect = props.capsule  -- "af_night_star_dyn5d_capsule"
-    local capsule_data = props.data     -- "semeckiy_capsule"
-end
-]]--
 
 function xp_read_raw( cust )
     if not cust then return nil end
@@ -1407,6 +1493,7 @@ function xp_write( id, props )
     end
     cust = cust:gsub( "|?xp={[^}]*}", "" )
     cust = cust:gsub( "^|", "" )
+	log2( "cust is %s", tostring( cust ) )
     -- используем ; вместо , чтобы не ломать parse_names контейнера
     local xp = "xp={" .. table.concat( parts, ";" ) .. "}"
     data.custom_data = cust ~= "" and ( cust .. "|" .. xp ) or xp

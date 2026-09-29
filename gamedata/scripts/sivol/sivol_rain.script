@@ -1,0 +1,99 @@
+-- ======================================================================
+-- SIVOL_RAIN.SCRIPT. Rain-driven ambient effects for NLC OGSR HE
+-- Shelter check pattern reused from cleaning_masks_if_raining.script (NLC Improved)
+-- ======================================================================
+sivol_rain = sivol_rain or {}
+
+local RAIN_THRESHOLD   = 0.02   -- ignore drizzle
+local SHELTER_RANGE    = 10     -- overhead hit within this range = sheltered
+local RAY_MAX_DIST     = 200
+
+-- ADDITIVE/SUBTRACT, NOT MULTIPLIER 
+local ELECTRIC_RES_MULT = -0.20 -- -20% at full rain intensity
+local BURN_RES_MULT     =  0.10 -- +10% at full rain intensity
+
+local cached_intensity  = 0     -- 0..1, current effective rain exposure (0 if sheltered/no rain)
+local effects_applied   = false
+local active_armor_id   = nil
+
+-- ======================= SHELTER + INTENSITY =======================
+
+local function is_actor_sheltered()
+    local RP = level.ray_query( db.actor:position(), vector():set( 0, 1, 0 ), RAY_MAX_DIST, rq_target.rqtStatic, nil )
+    local range = ( RP and RP.result ) and RP.range or RAY_MAX_DIST
+    return range <= SHELTER_RANGE
+end
+
+local function update_rain_intensity()
+    local rf = level.rain_factor()
+    if rf <= RAIN_THRESHOLD or not db.actor then
+        cached_intensity = 0
+        return
+    end
+    if is_actor_sheltered() then
+        cached_intensity = 0
+        return
+    end
+    -- Clamp to 0..1. Engine can return >1 (night sections with rain_density > 1),
+    -- but the design target for MULT values is rain_factor ≈ 1 as "full rain".
+    cached_intensity = math.min(math.max(rf, 0), 1.0)
+end
+
+-- Public getter — shared by sivol_pda.script's ambient static and anything else that cares
+function sivol_rain.get_intensity()
+    return cached_intensity
+end
+
+-- ======================= ARMOR STAT EFFECTS =======================
+
+local function apply_rain_armor_effects()
+    local actor = db.actor
+    local armor = actor and actor:item_in_slot(6)
+    if not armor then return end
+
+    sivol.outfit_stats.set("rain", armor:id(), {
+        shock_protection = { mode = "add", value = ELECTRIC_RES_MULT * cached_intensity },
+        burn_protection  = { mode = "add", value = BURN_RES_MULT * cached_intensity },
+    })
+    sivol.outfit_stats.recompute(armor)
+
+    active_armor_id = armor:id()
+    effects_applied = true
+end
+
+local function remove_rain_armor_effects()
+    if not effects_applied then return end
+
+    if active_armor_id then
+        sivol.outfit_stats.clear("rain", active_armor_id)
+        local armor = level.object_by_id(active_armor_id)
+        if armor then
+            sivol.outfit_stats.recompute(armor)
+        end
+    end
+
+    active_armor_id = nil
+    effects_applied = false
+end
+
+-- ======================= UPDATE LOOP =======================
+-- Same 6-second cadence as cleaning_masks_if_raining.script
+
+local function on_upd_if_raining()
+    update_rain_intensity()
+    if cached_intensity > 0 then
+        apply_rain_armor_effects()
+    elseif effects_applied then
+        remove_rain_armor_effects()
+    end
+end
+
+local function on_safe_spawn()
+    if const.ground_levels[ level.name() ] then -- surface levels only
+        ogse_signals.get_mgr():subscribe({ signal = "on_update_6sec", fun = on_upd_if_raining })
+    end
+end
+
+function attach( sm )
+    sm:subscribe({ signal = "on_safe_spawn", fun = on_safe_spawn })
+end

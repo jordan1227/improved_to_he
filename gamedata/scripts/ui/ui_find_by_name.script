@@ -1,169 +1,171 @@
---- на основе наработок naxac и den1s, доработал котовод, текстурки paradox
-
 _dialog = level.main_input_receiver()
 
 function attach(sm)
-  sm:subscribe({signal = "on_init_modules", fun = this.init_module})
---   sm:subscribe({signal = "on_late_init_all", fun = this.late_init})
---   sm:subscribe({signal = "on_before_save_game", fun = this.on_before_save})
+	sm:subscribe({signal = "on_init_modules", fun = this.init_module})
 end
 
 function init_module()
 	_dialog = nil
 end
 
+local sortedTable = {}
+local saved_keys  = {}
+local new_index	  = 0
+
+local State ={CurString = ""}
+local table_npc_name 	= {}
+local count_npc_total 	= 0
+
 function start_find()
+	sak.actor_hide_weapon()	
+  --  local snd_obj
+
+ --   snd_obj = xr_sound.get_safe_sound_object( [[device\windows_up]] )
+ --   snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1.0 )	
+	-- schedule.add( "start_find", "ui_find_by_name.find_screen()", 2000 )
+	dsh.timeout( 2000, function()
+		ui_find_by_name.find_screen()
+	end )
+end
+
+-- g_loadstring ui_find_by_name.find_screen()
+
+function find_screen()
+	sak.restore_weap()
 	level.start_stop_menu( find_by_name( get_hud() ), true )
 end
 
-class "find_by_name"( CUIScriptWnd )
+class "find_by_name" ( CUIScriptWnd )
 
 function find_by_name:__init( owner ) super()
+	if self.menu_index == nil then self.menu_index = 1 end
+	
 	local eng = [[qwertyuiop[]asdfghjkl;'zxcvbnm,./QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>?!@#$%^&*()-_+=\| 0123456789]]
 	local rus = [[йцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,!"№;%:?*()-_+=\/ 0123456789]]
+	
 	self.translit = {}
-	for i = 1, string.len( rus ) do
-		self.translit[ string.sub( eng, i, i ) ] = string.sub( rus, i, i )
-	end
-	_dialog = self
+	for i = 1, string.len(rus) do
+		self.translit[string.sub(eng, i, i)] = string.sub(rus, i, i)
+	end	
+	_dialog = self	
+	self.was_found = -1		
 	self:InitControls()
-	used_items.set_get_flag_use_gadget(1,false)
+	self:InitCallBacks()
+	self:FillList()	
+	used_items.set_use_gadget( false )
 end
 
-function find_by_name:__finalize()
-end
+function find_by_name:__finalize()	end
 
 function find_by_name:InitControls()
-	self:Init( 0, 0, 1026, 861 )
+	self:SetWndRect( Frect():set( 0, 0, 1024, 1024 ) )
 	local xml = CScriptXmlInit()
-	local ctrl
-	xml:ParseFile( "ui_find_by_name.xml" )
-	self.dialog =  xml:InitStatic( "main_dialog:dialog", self )
-	self.edit_box = xml:InitEditBox( "main_dialog:frame_search", self.dialog )
+	xml:ParseFile	( "ui_find_by_name.xml" )
+	
+	self.dialog =  xml:InitStatic( "main_dialog:dialog", self )	
+
+	self.list = xml:InitList( "list", self )	
+	self.list:ShowSelectedItem( true )
+	
+	self:Register( self.list, "list_window" )
+	------------------------
+	self.text = ""	
+	self.edit_box = xml:InitEditBox( "main_dialog:frame_search",	self )	
+	
 	self.search = CUIStatic()
 	self.search:SetWindowName( "search" )
 	self.search:SetAutoDelete( true )
-	self.search:SetTextST( "st_input_text" )
-	self.search:SetTextColor( 255, 255, 255, 255 )
-	self.search:SetFont( GetFontLetterica18Russian() )
-	self.search:Init( 375, 212, 250, 24 )
-	self:AttachChild( self.search )
-	------
-	local windows_text = game.translate_string("windows_text")
-    self.windows = make_static( "windows_info", self, windows_text, 185, 160, 500, 200 )
-    self.windows:SetTextColor( 255, 255, 255, 255 )
-    self.windows:SetFont( GetFontLetterica18Russian() )	
-	------	
-	self.text = ""
-	self:dozent_npc_search_init()	
+	self.search:SetText( "Имя Фамилия или Прозвище" )
+	self.search:SetTextColor( 255, 200, 255, 200 )
+	--self.search:SetFont( GetFontDI() )
+    self.search:Init( 255, 438, 200, 200 )
+    self:AttachChild( self.search )
+	self:AddCallback( "search", ui_events.WINDOW_LBUTTON_DB_CLICK, self.RemoveText, self )
+	------------------------
+	self.btn_find = CUIButton()
+	self.btn_find:Init( "ui\\ui_hud", 450, 433, 45, 25 )
+	self.btn_find:SetText( "Найти" )
+	self.btn_find:SetTextAlign( CGameFont.alCenter )
+	self.btn_find:SetTextY( 1 )
+	self.btn_find:SetTextColor( 255, 240, 165, 25 )
+	self.btn_find:SetOriginalRect( 65, 704, 37, 25 )
+	self.btn_find:SetStretchTexture( true )
+	self:Register( self.btn_find, "btn_find" )
+	self:AttachChild( self.btn_find )
+	self:AddCallback( "btn_find", ui_events.BUTTON_DOWN, self.AddSpotNPC, self )	
+	------------------------
+    self.message_box = CUIMessageBoxEx()
+    self:Register( self.message_box, "message_box" )	
+	------------------------
+	self:AddCallback( "list_window",		ui_events.LIST_ITEM_CLICKED, 				self.OnListItemClicked,						self )		
+	self:dozent_npc_search_init()		
+
+    self.total_npces = make_static(
+        "total_npces", self, string.format( "Общее количество пользователей: %s ", ( count_npc_total or 0 ) ), 270, 185, 260, 20
+    )		
+    self.total_npces:SetTextColor( 255, 135, 130, 130 )
+    self.total_npces:SetFont( GetFontLetterica18Russian() )	
 end
 
-function find_by_name:SearchText( letter )
-	self.search:SetText( "" )
-	self.search:SetTextColor( 255, 240, 165, 25 )
-	local lett = letter and ( self.translit[ letter ] or letter ) or ""
-	self.text = self.text .. lett
-	self.search:SetText( self.text )
+function find_by_name:InitCallBacks()
+	-- self:AddCallback( "list_window",	  	ui_events.WINDOW_LBUTTON_DB_CLICK,			self.AddSpotNPC,           	self )
+	self:AddCallback( "message_box", 		ui_events.MESSAGE_BOX_OK_CLICKED, 			self.OnQuit, 				self )	
 end
 
-function find_by_name:OnQuit()
-	if self then
-		local holder = self:GetHolder()
-		if holder then holder:start_stop_menu( self, true ) end
-		-- level.destroy_dialog( self )
-		self:ClearCallbacks()
-	end
-	_dialog = nil
-	dozent_npc_search_finalize()	
-	used_items.set_get_flag_use_gadget(1,true)
+---------------------------------------------------------
+class "load_item" (CUIListItemEx)
+
+function load_item:__init() super()
+	self:SetWndRect		( 0, 0, 430, 22 )
+	
+	local ca = 255
+	local cr = 255 -- 255
+	local cg = 255 -- 234
+	local cb = 255 -- 104
+	
+	self.fn					= CUIStatic()
+	self.fn:SetAutoDelete	( true)
+	self:AttachChild		( self.fn )
+	self.fn:SetWndRect		( 0, 0, 230, 22 )
+	self.fn:SetText			( "item" )
+	self.fn:SetFont			( GetFontLetterica18Russian() )
+	self.fn:SetTextColor	( ca, cr, cg, cb )
 end
 
-function find_by_name:Reboot()
-	if self then
-		local holder = self:GetHolder()
-		if holder then holder:start_stop_menu( self, true ) end
-		-- level.destroy_dialog( self )
-		self:ClearCallbacks()
-	end
-	_dialog = nil
-	dozent_npc_search_finalize()
-	start_find()	
+function find_by_name:AddItemToList( sect )
+	local list = self:GetListWnd( "list_window" )
+	local _itm				= load_item()
+	_itm.fn:SetText			( sect )
+	_itm.fn:SetFont( GetFontMedium() )
+	list:AddItem		( _itm )
 end
 
-function find_by_name:BackSpace()
-	if self.text ~= "" and string.len( self.text ) > 1 then
-		self.text = string.sub( self.text, 1, string.len( self.text ) - 1 )
-		self.search:SetText( self.text )
-	else
-		self.text = ""
-	end
-	self.search:SetText( self.text )
-end
-
-function find_by_name:OnKeyboard( dik, keyboard_action )
-	CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
-	if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
-		if
-			dik == DIK_keys.DIK_RETURN then self:OnBtnOk()
-		elseif
-			dik == DIK_keys.DIK_DELETE or dik == DIK_keys.DIK_LEFT then self:BackSpace() self:dozent_npc_search()
-		elseif
-			dik == DIK_keys.DIK_ESCAPE then self:OnQuit()
-		elseif	
-			dik == DIK_keys.DIK_END or dik == DIK_keys.DIK_RIGHT then self:Reboot()
-		else
-			local letter = string.sub( self.edit_box:GetText(), -1 )
-			if letter and letter ~= "" then
-				self:SearchText( letter )
-				self.edit_box:SetText( "" )
-				self:dozent_npc_search()				
-			end
-		end
-	end
-	return true
-end
-
-local State = {CurString = ""}
-
-local count_npc 		= 0			-- сколько найдено НПС с именем
-local id_npc 			= 0			-- id последнего НПС с именем 
-
-local table_npc_id 		= {}		-- таблица с id всех НПС в игре
-local table_npc_name 	= {}		-- таблица с именами всех НПС в игре
-local count_npc_total 	= 0			-- количество всех НПС в игре
-
--- очищаем таблицы table_npc_id, table_npc_name для освобождения памяти
 function dozent_npc_search_finalize()
-	for i = 1, #table_npc_id do
-		table_npc_id[ i ] = nil
-	end
-	for i = 1, #table_npc_name do
-		table_npc_name[ i ] = nil
-	end
+	table_npc_name = {}
 end
 
--- ищем всех НПС в игре (заполняем таблицы table_npc_id, table_npc_name и переменную count_npc_total).
--- Выводим в диалог строку с количеством НПС в игре
 function find_by_name:dozent_npc_search_init()
-
-	-- очистка таблиц от предыдущих поисков
 	dozent_npc_search_finalize()
 
 	count_npc_total = 0
-	-- новый поиск всех НПС в игре
 	for i = 1, MAX_OBJ_ID do
 		local obj = alife():object( i )
 		if 
 			obj 
 			and obj.m_game_vertex_id 
 			and db.actor and db.actor:id() ~= obj.id 
-			and IsStalker( obj ) 
+			and (
+				IsStalker( obj ) or 
+				( obj:name() == "escape_trader" or obj:name() == "lim_trader" )
+			)
 			and obj:community() ~= "zombied" 
 			and obj:community() ~= "monolith" 
 			and obj:community() ~= "military" 
 			and obj:community() ~= "killer" 
+			and obj:name() ~= "stalker_osoznanie"
 		then
-			if ( obj.can_switch_online and obj:can_switch_online() == true ) or obj:name() == 'vorobey' then	-- попытка убрать неактивных или присутствующих в нескольких экземплярах НПС (Оксана, Кузнецов, Санек-Меняла, Болотный доктор и т.д.)
+			--[[
+			if obj.can_switch_online and obj:can_switch_online() == true then
 		
 				local name_temp = ""
 				if news_main.isGameObject( obj ) then
@@ -173,209 +175,416 @@ function find_by_name:dozent_npc_search_init()
 					if obj2 and obj2.character_name then
 						name_temp = obj2:character_name()
 					else
-						name_temp = news_main.get_npc_name(obj)
-						data = nil	-- release memory
+						local data = get_netpk( obj ):get()
+						if data then name_temp = data.checked_characters end
+						data = nil
 					end
 				end
 
 				if ( name_temp ~= nil ) and ( name_temp ~= "" ) then
-					count_npc_total = count_npc_total + 1		-- нашли НПС
-					table_npc_id[ count_npc_total ] = i
-					table_npc_name[ count_npc_total ] = name_temp
+					count_npc_total = count_npc_total + 1
+					table_npc_name[ count_npc_total ] = name_temp .. " [" .. i .. "]"
 				end
 			end
+			]]--
+			
+			if obj.can_switch_online and obj:can_switch_online() then
+				local name_temp = news_main.get_npc_name( obj )
+
+				if name_temp and name_temp ~= "" then
+					count_npc_total = count_npc_total + 1
+					table_npc_name[count_npc_total] = name_temp .. " [" .. i .. "]"
+				end
+			end			
+			
 		end
 	end
-
-	if self.stalker_amount then self:DetachChild( self.stalker_amount ) end
-	self.stalker_amount = make_static( "stalker_amount", self, game.translate_string("stalker_amount")..": ".. count_npc_total, 185, 230, 500, 200 )
-	self.stalker_amount:SetTextColor( 255, 255, 255, 255 )
-	self.stalker_amount:SetFont( GetFontLetterica18Russian() )	
 end
 
-function find_by_name:dozent_npc_search()
+function find_by_name:FillList()
+    local list = self:GetListWnd( "list_window" )
+    if list:GetSize() > 0 then
+        list:RemoveAll()
+    end
 
-	-- if self.stalker_info ~= nil then self:DetachChild( self.stalker_info ) end	Нормально не пашет, при втором нажатии вылет
+    for k, v in pairs( table_npc_name ) do
+        table.insert( sortedTable, v )
+    end
+
+    table.sort( sortedTable )
+
+    for _, v in ipairs( sortedTable ) do
+        self:AddItemToList( v )
+    end
+end
+
+function find_by_name:RemoveText()
+	self.text = ""
+	self.search:SetText( "_" )
+	self.was_found = -1
+end
+
+function find_by_name:SearchText(letter)
+    if not letter or letter == "" then return end
+    local lett = self.translit[letter] or letter
+    if lett == "" or lett == "%" then return end
+    if string.len(self.text) >= 60 then return end
+    
+    if string.sub(self.text, -1) == "_" then
+        self.text = string.sub(self.text, 1, -2)
+    end
+    
+    self.text = self.text .. lett
+    self.search:SetText(self.text)
+    
+    self:SearchNPC()
+end
+
+function find_by_name:SearchNPC()
+    if self.text == "" then return end
+    
+    local size = self.list:GetSize()
+    local search_text = this.string_lower(self.text)
+    
+    for i = 0, size - 1 do
+        local item = self.list:GetItem(i)
+        local item_text = this.string_lower(item.fn:GetText())
+        
+        if item_text:find(search_text) then
+            self.list:ScrollToPos(i)
+            self.list:SetFocusedItem(i)
+            self.list:SetSelectedItem(i)
+            self.was_found = i
+            break
+        end
+    end
+end
+
+local special_traders = {
+    [ "escape_trader" ] = {
+        status = function() 
+            return sak_dialog.is_holiday_sidor() and "%c[red]Выходной\\n%c[default]" or "%c[green]На месте\\n%c[default]"
+        end,
+        group = "trader"
+    },
+    [ "lim_trader" ] = {
+        status = function() 
+            return "%c[green]На месте\\n%c[default]"
+        end,
+        group = "trader"
+    }
+}								
+
+function find_by_name:AddSpotNPC()
+    if not self or not self.list then return end
+    
+    if self.detail then 
+        self:DetachChild(self.detail) 
+        self.detail = nil 
+    end    
+    
+    if self.icon_texture then 
+        self:DetachChild(self.icon_texture) 
+        self.icon_texture = nil 
+    end    
+    
+    if self.cost_static then 
+        self:DetachChild(self.cost_static)
+        self.cost_static = nil
+    end
 	
-	count_npc = 0
-	id_npc = 0
-	local names_string = ""
-	local names_string_isverylong = false
+    local list = self:GetListWnd("list_window")
+    local selected_index = list:GetSelectedItem()
+    
+    if selected_index == -1 then return end
+    
+    local selected_item = list:GetItem(selected_index)
+    local full_item_text = selected_item.fn:GetText()
+    
+    self.last_added_npc_text = full_item_text:gsub("%[.*", ""):gsub("^%s*(.-)%s*$", "%1")
+    
+    local id = full_item_text:match('%[(%d+)%]')
 
-	local i = 1
-	while ( i < count_npc_total ) and ( not names_string_isverylong ) do	-- выход также если найдено уже очень много НПС и строка с именами очень длинная
+    if not id then return end
+    
+    local diff = tonumber(level.get_game_difficulty())    
+    local money_needed = calc_money(1000, 15, 500)        
+    
+    if db.actor:money() >= money_needed then
+        local npc = g_sim:object(tonumber(id))
+        
+        if npc then 
+            local pk = get_netpk(npc)
+            local data = pk:get()
+            
+            local icon = npc:character_icon() or "ui_npc_u_trups"
+            local name = full_item_text:gsub("%[.*", ""):gsub("^%s*(.-)%s*$", "%1")
 
-		-- для поиска в имена НПС добавляем его id, чтобы можно было отдельно найти "Воробей" и "Макс Воробей"
-		local name_temp = table_npc_name[ i ] .. " [" .. tostring( table_npc_id[ i ] ) .."]"
+            local trader_info = special_traders[npc:name()]
+            local group = trader_info and game.translate_string(trader_info.group) or game.translate_string(npc:community())
+            local status = trader_info and trader_info.status() or (
+                (npc.alive and npc:alive() and npc.health and npc:health() > 0) 
+                and "%c[green]Жив\\n%c[default]" or "%c[red]Мёртв\\n%c[default]"
+            )
+            
+            local m_level = news_main.get_point_description(news_main.get_object_levelname(npc), news_main.get_object_position(npc))
+            m_level = (m_level == "" and "неизвестно") or m_level        
+            db.actor:give_money(-money_needed)    
+            local colour = db.actor:money() >= money_needed and "%c[green]" or "%c[red]"
+            local transfer = string.format("\\nПереведено: %d. Остаток: %s%d\\n%%c[default]", money_needed, colour, db.actor:money())
 
-		if string.find( string.upper( name_temp ), string.upper( self.text ) ) then
-			local obj = alife():object( table_npc_id[ i ] )
-			if 
-				obj 
-				and obj.m_game_vertex_id 
-				and db.actor and db.actor:id() ~= obj.id 
-				and IsStalker( obj ) 
-				and obj:community() ~= "zombied" 
-				and obj:community() ~= "monolith" 
-				and obj:community() ~= "military" 
-				and obj:community() ~= "killer" 
-			then						
-				if ( obj.can_switch_online and obj:can_switch_online() == true ) or obj:name() == 'vorobey' then	-- попытка убрать неактивных или присутствующих в нескольких экземплярах НПС (Оксана, Кузнецов, Санек-Меняла, Болотный доктор и т.д.)
-					id_npc = table_npc_id[ i ]
-					count_npc = count_npc + 1
-					if count_npc == 1 then
-						names_string = name_temp
-					else
-						names_string_isverylong = string.len( names_string ) > 500 -- если слишком длинная строка, перестаем добавлять найденные имена
-						if not names_string_isverylong then
-							names_string = names_string .. ", " .. name_temp
-						end
-					end
-				end
-			end
+            local text = string.format("Пользователь: %s \\nГруппировка: %s \\nСтатус: %s \\nМестоположение: %s \\n%s", name, group, status, m_level, transfer)
+        
+            self.icon_texture = make_static_picture("picture", self, nil, icon, 505, 210, 165, 108)
+            self.detail = make_static("detail", self, text, 505, 340, 330, 20)
+            
+            if diff == 0 then 
+                if level.map_has_object_spot(npc.id, 'blue_location') > 0 then 
+                    level.map_remove_object_spot(npc.id, 'blue_location')
+                end    
+                level.map_add_object_spot_ser(npc.id, 'blue_location', name)
+            
+                if self.detail then 
+                    self:DetachChild(self.detail) 
+                    text = text .. "\\nУстановлена метка в ПДА на 24 часа"
+                    self.detail = make_static("detail", self, text, 505, 340, 330, 20)    
+                    timers.start_timer("remove_map_spot", 1, 0, 0, "ui_find_by_name.remove_map_spot(".. npc.id ..")")                        
+                end    
+            end                    
+        end
+    elseif db.actor:money() < money_needed then
+        self.message_box:Init("msg_box_not_enough_search_money")    
+        self:GetHolder():start_stop_menu(self.message_box, true)            
+    end    
+end
+
+function find_by_name:BackSpace()
+	if self.text ~= "" then
+		local old_text = self.text
+		if string.len(self.text) > 1 then
+			self.text = string.sub(self.text, 1, -2)
+		else
+			self.text = "_"
 		end
-		i = i + 1
+		self.search:SetText(self.text)
 	end
+	
+	self.was_found = -1
+	self:SearchNPC()
+	misc.easy_sound("device\\key_click") 		
+end
 
-	if count_npc > 0 then		-- были найдены НПС
-		names_string = names_string
+function find_by_name:Restore()
+	self.text = ""
+	self.was_found = -1
+	self.search:SetText( self.text )
+	self.list:SetFocusedItem( 0 )
+	self.list:ScrollToPos( 0 )	
+end
+
+function find_by_name:NavigateList( direction )
+	local list = self:GetListWnd( "list_window" )
+	if list:GetSize() == 0 then return end
+
+	local current_index = list:GetSelectedItem()
+	local new_index
+
+	if direction == "up" then
+		new_index = ( current_index > 0 ) and ( current_index - 1 ) or ( list:GetSize() - 1 )
 	else
-		names_string = game.translate_string("fbn_nothing")
+		new_index = ( current_index < list:GetSize() - 1 ) and ( current_index + 1 ) or 0
 	end
 
-	if self.stalker_amount then self:DetachChild( self.stalker_amount ) end
-	self.stalker_amount = make_static( "stalker_amount", self, game.translate_string("stalker_amount")..": ".. count_npc, 185, 230, 500, 200 )
-	self.stalker_amount:SetTextColor( 255, 255, 255, 255 )
-	self.stalker_amount:SetFont( GetFontLetterica18Russian() )		
+	list:SetSelectedItem( new_index )
+	list:ScrollToPos(new_index)
+	self:UpdateCurrentItem( new_index )
 
-	if self.stalker_names then self:DetachChild( self.stalker_names ) end
-	self.stalker_names = make_static( "stalker_names", self, game.translate_string("fbn_cmd").. names_string, 185, 250, 500, 200 )
-	self.stalker_names:SetTextColor( 255, 255, 255, 255 )
-	self.stalker_names:SetFont( GetFontLetterica18Russian() )	
+	if self.detail then 
+		self:DetachChild( self.detail )
+		self.detail = nil
+	end
+    
+	if self.cost_static then 
+		self:DetachChild( self.cost_static )
+		self.cost_static = nil
+	end
+    
+	if self.icon_texture then 
+		self:DetachChild( self.icon_texture )
+	end
+    
+	self.icon_texture = make_static_picture( "picture", self, nil, "ui_npc_u_trups", 505, 210, 165, 108 )
+    
+	local money_needed = calc_money( 1000, 15, 500 )
+	local actor_money = db.actor:money()
+    
+	local cost_text
+	if actor_money >= money_needed then
+		cost_text = string.format(
+			'Стоимость: %%c[green]%d%%c[default] / Доступно: %%c[green]%d%%c[default] руб. \\nНажмите "Enter" или "Найти"', 
+			money_needed, actor_money
+		)
+	else
+		cost_text = string.format(
+			'%%c[default]Стоимость: %%c[red]%d%%c[default] / %%c[red]Недостаточно средств%%c[default]',
+			money_needed
+		)
+	end
+    
+	self.cost_static = make_static( "cost_static", self, cost_text, 505, 320, 165, 30 )
+    
+	-- Сохраняем текст для двойного клика
+	self.text = sortedTable[ new_index + 1 ]:gsub( "%[.*", "" ):gsub( "^%s*(.-)%s*$", "%1" )
 end
 
+function find_by_name:ClearSearchInfo()
+	if self.detail then 
+		self:DetachChild( self.detail )
+		self.detail = nil
+	end
+	if self.icon_texture then 
+		self:DetachChild( self.icon_texture )
+		self.icon_texture = nil
+	end
+end
 
-function find_by_name:OnBtnOk()
-	local show_text = ""
-	State.CurString = self.text or State.CurString
-	local isntFind = true
-	for i = 1, MAX_OBJ_ID do
-		local obj = alife():object( i )
-		if 
-			obj 
-			and obj.m_game_vertex_id 
-			and db.actor and db.actor:id() ~= obj.id 
-			and IsStalker( obj ) 
-			and obj:community() ~= "zombied" 
-			and obj:community() ~= "monolith" 
-			and obj:community() ~= "military" 
-			and obj:community() ~= "killer" 
-		then
-			local name = news_main.get_npc_name( obj )
-			if name ~= "" and string.find( State.CurString, "^" .. name ) then 
-				isntFind = false
-				local m_level = news_main.get_point_description( news_main.get_object_levelname( obj ), news_main.get_object_position( obj ) )
-				if 
-					m_level == "" 
-				then 
-					m_level = game.translate_string("st_unknown")
-				else 
-					m_level = m_level
-				end
+function find_by_name:OnKeyboard( dik, keyboard_action )
+	CUIScriptWnd.OnKeyboard(self,dik,keyboard_action)
+	if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+		if dik == DIK_keys.DIK_ESCAPE then self:OnQuit()
+		elseif dik == DIK_keys.DIK_RETURN then self:AddSpotNPC()
+		elseif dik == DIK_keys.DIK_BACK then self:BackSpace()
+		elseif dik == DIK_keys.DIK_DOWN then self:NavigateList( "down" )
+		elseif dik == DIK_keys.DIK_UP then self:NavigateList( "up" )	
+		elseif dik == DIK_keys.DIK_END then self:Restore()		
+		else
+			local letter = string.sub( self.edit_box:GetText(), -1 )
 
-				if sak_dialog.bar_npc_search_money_have() then
-					if obj.alive and obj:alive() and obj.health and obj:health() > 0 then 
-						sak_dialog.bar_npc_search_money_give()
-						dozent_npc_mark(obj.id)
-						-----------
-						show_text = 
-							game.translate_string("fbn_1") .. m_level .. "\\n \\n" ..
-							string.format(game.translate_string("fbn_2"), sak_dialog.bar_npc_search_money_price(), db.actor:money()) .. "\\n \\n" ..
-							game.translate_string("fbn_4")
-						if self.stalker_info then self:DetachChild( self.stalker_info ) end
-						self.stalker_info = make_static( "stalker_info", self, show_text, 185, 270, 500, 200 )
-						self.stalker_info:SetTextColor( 255, 255, 255, 255 )
-						self.stalker_info:SetFont( GetFontLetterica18Russian() )						
-						-----------							
-						return						
-					else
-						sak_dialog.bar_npc_search_money_give()
-						-----------
-						show_text = 
-							game.translate_string("fbn_3").. m_level .."\\n \\n" ..
-							string.format(game.translate_string("fbn_2"), sak_dialog.bar_npc_search_money_price(), db.actor:money()) .. "\\n \\n" ..
-							game.translate_string("fbn_4")
-						if self.stalker_info then self:DetachChild( self.stalker_info ) end
-						self.stalker_info = make_static( "stalker_info", self, show_text, 185, 270, 500, 200 )
-						self.stalker_info:SetTextColor( 255, 255, 255, 255 )
-						self.stalker_info:SetFont( GetFontLetterica18Russian() )	
-						-----------					
-						return
-					end
-				else
-					-----------
-					if self.stalker_info then self:DetachChild( self.stalker_info ) end
-					self.stalker_info = make_static( "stalker_info", self, game.translate_string("fbn_5"), 185, 270, 500, 200 )
-					self.stalker_info:SetTextColor( 255, 255, 255, 255 )
-					self.stalker_info:SetFont( GetFontLetterica18Russian() )	
-					-----------								
-					return
-				end
+			if letter and letter ~= "" then
+				self:SearchText( letter )
+				self.edit_box:SetText( "" )
+				self:SearchNPC()	
+				misc.easy_sound( "device\\key_click" ) 				
 			end
 		end
 	end
-	if isntFind then show_text = game.translate_string("fbn_6") end
-	-----------
-	if self.stalker_info then self:DetachChild( self.stalker_info ) end
-	self.stalker_info = make_static( "stalker_info", self, game.translate_string("fbn_1").. show_text, 185, 270, 500, 200 )
-	self.stalker_info:SetTextColor( 255, 255, 255, 255 )
-	self.stalker_info:SetFont( GetFontLetterica18Russian() )			
+	return true
 end
 
-function bar_docent_notebook()
-	local note = g_sim:object("Sak_notebook_bar")
-	if note==nil then
-		return
+function find_by_name:OnQuit()
+	if self then
+		self:ClearCallbacks()
+		local holder = self:GetHolder()
+		if holder then 
+			holder:start_stop_menu( self, true )
+		end
 	end
-	misc.release_obj ( note )
-	local sobj = g_sim:create( "physic_object", sak.v3f( 116.300003051758, -4.40000009536743, 17.5599994659424 ), 34184, 1239 )
-	if sobj then
-		local pk 		 = get_netpk( sobj, 1 )
-		local data 		 = pk:get()
-		data.physic_type = 3
-		data.mass 		 = 10
-		data.visual_name = "equipments\\item_notebook"
-		data.custom_data =
-			"[collide]\n" ..
-			"ignore_dynamic\nignore_ragdoll\nignore_static\n\n" ..
-			"[ph_heavy]\n" ..
-			"[logic]\n" ..
-			"active = ph_idle@enable\n" ..
-			"[ph_idle@enable]\n" ..
-			"tips = switch_on\n" ..
-			"on_use = {+bar_docent_npc_search_available2} %=ui_find_by_name.start_find()%"
-		pk:set( data )
-        sobj.direction = sak.v3f( 0, -2.25999999046326, 0 )
-	end
+
+	dozent_npc_search_finalize()
+	sak.actor_hide_weapon()		
+	misc.easy_sound( "device\\windows_shutdown" ) 	
+	schedule.add( "restor_wpn", "sak.restore_weap()", 2000 )
+	sortedTable = {}	
+
+	_dialog = nil	
+	used_items.set_use_gadget( false )
 end
 
-function dozent_npc_mark(id)
-	-- удаляем предыдущую метку НПС на карте
-	local sp = get_value("dozent_map_spot_active")
-	if sp ~= nil and level.map_has_object_spot(sp, 'blue_location') > 0 then
-		level.map_remove_object_spot(sp, 'blue_location')
-	end
+function find_by_name:UpdateCurrentItem( index )
+    self.was_found = index
+    
+    local text = sortedTable[ index + 1 ]
+    local search_text = text:gsub( "%[.*", "" ):gsub( "^%s*(.-)%s*$", "%1" )
+    
+    self.text = search_text
+    
+    if self.search then
+        self.search:SetText( search_text ) 
+    end
 
-	-- ставим метку НПС на карте
-	local obj = alife():object( id )
-	local name = news_main.get_npc_name( obj )
-	if name == game.translate_string("sim_stalker_veteran_vorobey_name") then
-		db.actor:give_info_portion("vorobey_spawn")
-	end
-	level.map_add_object_spot( obj.id, 'blue_location', name )
-	set_value("dozent_map_spot_active", obj.id)
+    if self.edit_box then
+        self.edit_box:SetText( "" )
+    end
+end
 
-	--db.actor:give_talk_message( "Поставлена метка на карте.", "ui\\ui_iconstotal", Frect():set(0,0,10,10), "simple_answer_item" )
+function find_by_name:OnListItemClicked()
+    local list = self:GetListWnd( "list_window" )    
+    if list:GetSize() == 0 then return end    
+    
+    local current_time = os.time()
+    local itm_index = list:GetSelectedItem()
+
+    local selected_item = self.list:GetItem( itm_index )
+    local item_text = selected_item.fn:GetText()
+
+	-- Через дблклик не пашет
+    -- Проверяем, тот ли это же элемент, что был ранее
+    if self.last_selected_index == itm_index and 
+        current_time - ( self.last_click_time or 0 ) <= 0.5 then
+        -- Двойной клик на тот же элемент
+        self:AddSpotNPC()
+        self.last_click_time = nil
+        self.last_selected_index = nil
+        return
+    end
+    
+    -- Первый клик или клик на новый элемент
+    self.last_selected_index = itm_index
+    self.last_click_time = current_time
+    
+    self:UpdateCurrentItem( itm_index )
+
+    if self.detail then 
+        self:DetachChild( self.detail )
+        self.detail = nil
+    end
+    
+    if self.cost_static then 
+        self:DetachChild( self.cost_static )
+        self.cost_static = nil
+    end
+    
+    if self.icon_texture then 
+        self:DetachChild( self.icon_texture )
+    end
+    
+    self.icon_texture = make_static_picture( "picture", self, nil, "ui_npc_u_trups", 505, 210, 165, 108 )
+    
+    local money_needed = calc_money( 1000, 15, 500 )
+    local actor_money = db.actor:money()
+    
+    local cost_text
+    if actor_money >= money_needed then
+        cost_text = string.format(
+            'Стоимость: %%c[green]%d%%c[default] / Доступно: %%c[green]%d%%c[default] руб. \\nНажмите "Enter" или "Найти"', 
+            money_needed, actor_money
+        )
+    else
+        cost_text = string.format(
+            '%%c[default]Стоимость: %%c[red]%d%%c[default] / %%c[red]Недостаточно средств%%c[default]',
+            money_needed
+        )
+    end
+    
+    self.cost_static = make_static( "cost_static", self, cost_text, 505, 320, 165, 30 )
+    
+    -- Сохраняем полный текст без ID в квадратных скобках
+    self.text = item_text:gsub( "%[.*", "" ):gsub( "^%s*(.-)%s*$", "%1" )
+end
+
+function find_by_name:OnArrowsClicked()
+	local list = self:GetListWnd( "list_window" )	
+	if list:GetSize() == 0 then return end	
+	
+	local text = sortedTable[ new_index + 1  ]
+	local search_text = text:gsub( "%[.*", "" )
+	
+	self.text = search_text
+	self.search:SetText( search_text ) 
+end
+
+function capitalize_first_letter( text )
+    return text:gsub( "^%l", string.upper )
 end
 
 function make_static( name, own, text, x, y, width, height )
@@ -389,4 +598,89 @@ function make_static( name, own, text, x, y, width, height )
     static:Init( x, y, width, height )
     own:AttachChild( static )
     return static
+end
+
+function make_static_picture( name, own, text, icon, x, y, width, height )
+    local static = CUIStatic()
+    static:SetWindowName( name )
+    static:SetAutoDelete( true )
+    if text then
+        static:SetTextComplexMode( true )
+        static:SetText( text )
+    end
+	if icon then 
+		static:InitTexture( icon )		
+	end
+    static:Init( x, y, width, height )
+    own:AttachChild( static )
+    return static
+end
+
+function remove_map_spot( id )
+	if level.map_has_object_spot( id, 'blue_location' ) > 0 then 
+		level.map_remove_object_spot( id, 'blue_location' )
+	end	
+end
+
+function string_lower( str )
+	local low = "qwertyuiopasdfghjklzxcvbnmйцукенгшщзхъфывапролджэячсмитьбюё"
+	local high = "QWERTYUIOPASDFGHJKLZXCVBNMЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ"
+	local low_str = ""
+	for i = 1, #str do
+		local letter = string.sub( str, i, i )
+		for a = 1,#high do
+			if letter == string.sub( high, a, a ) then letter = string.sub( low, a, a ) break end
+		end
+		low_str = low_str..letter
+	end
+	return low_str
+end
+
+function bar_docent_notebook()
+	misc.release_by_name( "Sak_notebook_bar" )
+	--------------
+	local sobj = alife():create( "physic_object", sak.v3f( 116.300003051758, -4.40000009536743, 17.5599994659424 ), 34184, 1239 )
+	if sobj then 
+		local pk 		 = get_netpk( sobj, 1 )	
+		local data 		 = pk:get()		
+		data.physic_type = 3
+		data.mass 		 = 10	
+		data.visual_name = "equipments\\item_notebook"		
+		data.custom_data = 
+			"[collide]\n" ..
+			"ignore_dynamic\nignore_ragdoll\nignore_static\n\n" .. 
+			"[ph_heavy]\n" ..
+			"[logic]\n" .. 
+			"active = ph_idle@enable\n" ..
+			"[ph_idle@enable]\n" ..			
+			"tips = switch_on\n" ..
+			"on_use = {+bar_docent_npc_search_available} %=ui_find_by_name.start_find()%"
+		pk:set( data )	
+        sobj.direction = sak.v3f( 0, -2.25999999046326, 0 )	
+	end	
+end
+
+function calc_money( price, period, add )
+	local day = timers.Get_Game_Days() or 1
+	day = math.min( day, 120 )
+	local dif = tonumber( level.get_game_difficulty() )
+	if dif == 0 then
+		day = math.min( day, 40 )
+	end
+	return math.floor( math.abs( price + math.floor( day / period ) * add ) )
+end
+
+function new_money_have( price, period, add )
+    return have_money( calc_money( price, period, add ) )
+end
+
+function new_money_give( price, period, add )
+	local actor = db.actor
+    local amount = calc_money( price, period, add )
+    actor:give_money( - amount )
+    sak.show_relocated_money( "out", amount )
+end
+
+function have_money( amount )
+    return db.actor:money() >= amount
 end

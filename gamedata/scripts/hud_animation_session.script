@@ -1,0 +1,90 @@
+-- Transient callback lifetime only; does not arbitrate the shared HUD channel.
+-- Owners must cancel on shutdown and load, even if the actor ID is reused.
+diagnostics = false
+
+function new(owner, on_invalid)
+    return { owner = owner, actor = db.actor, timers = {}, on_invalid = on_invalid }
+end
+
+function valid(st)
+    return st and not st.cancelled and db.actor ~= nil
+        and db.actor == st.actor and db.actor:alive()
+end
+
+function duration(ms)
+    return type(ms) == "number" and ms == ms and ms > 0 and ms <= 120000
+end
+
+function cancel(st, reason)
+    if not st or st.cancelled then return end
+    st.cancelled = true
+    for timer in pairs(st.timers) do
+        if not timer:stopped() then timer:stop() end
+    end
+    st.timers = {}
+    if diagnostics or (reason ~= "complete" and reason ~= "superseded") then
+        log2("[HUD_SESSION] owner=%s end=%s", st.owner, tostring(reason))
+    end
+end
+
+local function invalid(st, reason)
+    if not st.cancelled then st.on_invalid(reason) end
+end
+
+local function invoke(st, fn)
+    if not valid(st) then invalid(st, "actor unavailable"); return end
+    local ok, err = pcall(fn)
+    if not ok then
+        invalid(st, "callback error")
+        error(err)
+    end
+end
+
+function after(st, ms, fn)
+    if not valid(st) then invalid(st, "actor unavailable"); return end
+    if type(ms) ~= "number" or ms ~= ms or ms < 0 or ms > 120000 then
+        invalid(st, "invalid duration")
+        return
+    end
+    local timer
+    timer = dsh.timeout(ms, function()
+        -- quick_timer stops itself AFTER calling us. Do not stop it twice if
+        -- this callback completes/cancels the whole session.
+        st.timers[timer] = nil
+        invoke(st, fn)
+    end)
+    st.timers[timer] = true
+    return timer
+end
+
+function wait(st, predicate, fn, timeout_ms)
+    if not valid(st) then invalid(st, "actor unavailable"); return end
+    local deadline = time_global() + (timeout_ms or 10000)
+    local ready = false
+    local timer
+    timer = dsh.wait_condition(function()
+        if not valid(st) then return true end
+        local ok, result = pcall(predicate)
+        if not ok then
+            -- Defer cleanup until action, outside quick_timer's condition.
+            st.wait_error = result
+            return true
+        end
+        ready = result and true or false
+        return ready or time_global() >= deadline
+    end, function()
+        st.timers[timer] = nil
+        if not valid(st) then invalid(st, "actor unavailable"); return end
+        if st.wait_error then
+            local err = st.wait_error
+            invalid(st, "condition error")
+            error(err)
+        elseif ready then
+            invoke(st, fn)
+        else
+            invalid(st, "wait timeout")
+        end
+    end)
+    st.timers[timer] = true
+    return timer
+end

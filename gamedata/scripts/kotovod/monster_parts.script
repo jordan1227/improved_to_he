@@ -1,0 +1,1067 @@
+function attach( sm )
+	sm:subscribe({ signal = "on_late_init_all",    fun = this.on_late_init_all    })
+	sm:subscribe({ signal = "on_monster_death",    fun = this.on_monster_death    })
+	sm:subscribe({ signal = "on_monster_use",      fun = this.on_monster_use      })
+	sm:subscribe({ signal = "on_item_to_slot",     fun = this.on_slot             })
+	sm:subscribe({ signal = "on_item_to_ruck",     fun = this.on_drop             })
+	sm:subscribe({ signal = "on_drop_before_all",  fun = this.on_drop             })
+	sm:subscribe({ signal = "on_update",           fun = this.on_update           })
+	sm:subscribe({ signal = "on_actor_before_hit", fun = this.on_actor_before_hit })
+	sm:subscribe({ signal = "on_before_save_game", fun = this.on_before_save_game })
+	sm:subscribe({ signal = "on_stop_modules",     fun = this.on_stop_modules     })
+	sm:subscribe({ signal = "level_changer_action",fun = this.on_level_changer_action })
+end
+
+local snd 
+
+-- Вроде работает, всяко лучше апдейта. Надо в этот блок с Сяка перетягивать он монстер десы или там доделать типсы, т.к тут мы не обрабатываем доспавненные айтемы
+
+function on_late_init_all()
+	correct_monster_tip()
+end	
+
+
+-- g_loadstring monster_parts.ab()
+
+-- кроуч - полуприсяд, крип - глубокий
+function ab()
+	local aobj = get_actor_obj()
+	get_actor_obj():press_action( key_bindings.kCROUCH_TOGGLE )
+    dsh.timeout( 50, function()
+		get_actor_obj():press_action( key_bindings.kCROUCH_TOGGLE )	
+        get_actor_obj():hold_action( key_bindings.kCROUCH_TOGGLE )
+		local aobj = get_actor_obj()
+		if aobj:is_actor_crouch() then
+			log2( "crouch" )
+		end	
+		if aobj:is_actor_creep() then 
+			log2( "creep" )
+		end			
+    end )		
+end
+
+local ease_pitch_sig = nil
+local ease_pitch_target = nil
+
+local function cancel_camera_pitch_ease(complete)
+	if ease_pitch_sig then
+		ogse_signals.get_mgr():unsubscribe( ease_pitch_sig )
+		ease_pitch_sig = nil
+	end
+	if complete and ease_pitch_target then
+		local cam = actor_camera(0)
+		if cam then cam.pitch = ease_pitch_target end
+	end
+	ease_pitch_target = nil
+end
+
+-- Smoothly approaches an absolute pitch so cleanup can restore the exact saved angle.
+function ease_camera_pitch_to(target_pitch, duration, on_complete)
+	cancel_camera_pitch_ease(false)
+
+	local cam = actor_camera(0)
+	if not cam then
+		if on_complete then on_complete() end
+		return
+	end
+
+	local start_pitch = cam.pitch
+	ease_pitch_target = target_pitch
+	local start_time = time_global()
+
+	ease_pitch_sig = ogse_signals.get_mgr():subscribe({
+		signal = "on_update",
+		fun = function()
+			local c = actor_camera(0)
+			if not c then return end
+
+			local elapsed = time_global() - start_time
+			local progress = math.clamp(elapsed / duration, 0, 1)
+			local k = progress * progress * (3 - 2 * progress)
+			c.pitch = start_pitch + (target_pitch - start_pitch) * k
+
+			if progress >= 1 then
+				ogse_signals.get_mgr():unsubscribe( ease_pitch_sig )
+				ease_pitch_sig = nil
+				ease_pitch_target = nil
+				if on_complete then on_complete() end
+			end
+		end
+	})
+end
+
+function ease_camera_pitch(delta_rad, duration, on_complete)
+	local cam = actor_camera(0)
+	if not cam then
+		if on_complete then on_complete() end
+		return
+	end
+	ease_camera_pitch_to(cam.pitch + delta_rad, duration, on_complete)
+end
+function test_ease_pitch()
+	ease_camera_pitch( -math.rad( 30 ), 500, function()
+		log2("eased up, holding")
+		dsh.timeout( 2200, function()
+			ease_camera_pitch( -math.rad( 25 ), 500, function()
+				log2("eased back down")
+			end)
+		end)
+	end)
+end
+
+local STANCE_NORMAL = 0
+local STANCE_CROUCH = 1
+local STANCE_CREEP  = 2
+
+local function get_actor_stance()
+	local a = get_actor_obj()
+	if a:is_actor_creep() then
+		return STANCE_CREEP
+	elseif a:is_actor_crouch() then
+		return STANCE_CROUCH
+	else
+		return STANCE_NORMAL
+	end
+end
+
+-- Переводит актора в крип, запоминает исходную стойку и вызывает callback(prev_stance)
+-- когда переход гарантированно завершён
+function force_full_crouch(callback, can_continue)
+	local a = get_actor_obj()
+	local prev_stance = get_actor_stance()
+
+	if prev_stance == STANCE_CREEP then
+		if callback then callback(prev_stance) end
+		return prev_stance
+	end
+
+	if prev_stance == STANCE_NORMAL then
+		a:press_action(key_bindings.kCROUCH_TOGGLE)          -- normal -> crouch
+		dsh.timeout(50, function()
+			if can_continue and not can_continue() then return end
+			local aobj = get_actor_obj()
+			if not aobj then return end
+			aobj:press_action(key_bindings.kCROUCH_TOGGLE)   -- crouch -> creep (нажатие)
+			aobj:hold_action(key_bindings.kCROUCH_TOGGLE)     -- удерживаем, чтобы остаться в крипе
+			if callback then callback(prev_stance) end
+		end)
+	else -- STANCE_CROUCH
+		a:press_action(key_bindings.kCROUCH_TOGGLE)
+		a:hold_action(key_bindings.kCROUCH_TOGGLE)
+		if callback then callback(prev_stance) end
+	end
+
+	return prev_stance
+end
+
+-- Возврат в исходную стойку, которую вернул force_full_crouch
+function restore_stance(prev_stance)
+	local a = get_actor_obj()
+	if not a then return end
+
+	if prev_stance == STANCE_CREEP then return end -- и так были там
+
+	a:release_action(key_bindings.kCROUCH_TOGGLE) -- creep -> crouch
+
+	if prev_stance == STANCE_NORMAL then
+		dsh.timeout(50, function()
+			local aobj = get_actor_obj()
+			if aobj then aobj:press_action(key_bindings.kCROUCH_TOGGLE) end -- crouch -> normal
+		end)
+	end
+end
+
+local HARVEST_HUD_FOV_REGULAR = 0.84
+local HARVEST_HUD_FOV_IMPROVED = 0.94
+local HARVEST_DOF_TARGET = 0.65
+local HARVEST_DOF_DELAY_MS = 250
+local HARVEST_VISUAL_IN_MS = 300
+local HARVEST_VISUAL_OUT_MS = 400
+local HUD_FOV_EPSILON = 0.003
+
+local HARVEST_REGULAR_SPEED = 0.95
+local HARVEST_IMPROVED_SPEED = 1.10
+local HARVEST_REGULAR_DELAY_MIN = 600
+local HARVEST_REGULAR_DELAY_MAX = 1100
+local HARVEST_IMPROVED_DELAY_MIN = 100
+local HARVEST_IMPROVED_DELAY_MAX = 200
+local HARVEST_COMPLEXITY_MIN = 2300
+local HARVEST_COMPLEXITY_MAX = 6500
+local HARVEST_TRANSITION_SOUND_DELAY_MIN = 500
+local HARVEST_STOW_TRANSFER_FRACTION = 0.55
+local HARVEST_STOW_DURATION_FALLBACK = 1033
+
+local is_processing = false
+local harvest_generation = 0
+local harvest_state = nil
+local harvest_visual = nil
+harvest_diagnostics = false
+
+local function harvest_log(fmt, ...)
+	if harvest_diagnostics then log2(fmt, ...) end
+end
+
+local function smoothstep(value)
+	return value * value * (3 - 2 * value)
+end
+
+local function read_hud_fov()
+	local ok, value = pcall(function() return get_console():get_float("hud_fov") end)
+	return ok and tonumber(value) or nil
+end
+
+local function write_harvest_hud_fov(visual, value)
+	if not visual.hud_owned or not value then return end
+
+	if visual.last_hud_written and math.abs(value - visual.last_hud_written) <= 0.0005 then
+		return
+	end
+
+	local live = read_hud_fov()
+	if visual.last_hud_written and live
+		and math.abs(live - visual.last_hud_written) > HUD_FOV_EPSILON
+	then
+		visual.hud_owned = false
+		log2("[monster_parts] HUD FOV ownership lost; external value preserved")
+		return
+	end
+
+	local ok = pcall(function()
+		get_console():execute(string.format("hud_fov %.4f", value))
+	end)
+	if ok then
+		visual.last_hud_written = value
+	else
+		visual.hud_owned = false
+	end
+end
+local function update_harvest_visual()
+	local visual = harvest_visual
+	if not visual then return end
+
+	local elapsed = time_global() - visual.started_at
+	local duration = visual.restoring and HARVEST_VISUAL_OUT_MS or HARVEST_VISUAL_IN_MS
+	local progress = math.min(1, elapsed / duration)
+	local k = smoothstep(progress)
+	local hud_target = visual.restoring and visual.base_hud_fov or visual.target_hud_fov
+	local dof_target = visual.restoring and 0 or HARVEST_DOF_TARGET
+	if visual.hud_owned then
+		visual.current_hud_fov = visual.start_hud_fov + (hud_target - visual.start_hud_fov) * k
+		write_harvest_hud_fov(visual, visual.current_hud_fov)
+	end
+
+	local dof_progress = progress
+	if not visual.restoring then
+		dof_progress = math.max(0, math.min(1, (elapsed - HARVEST_DOF_DELAY_MS) / HARVEST_VISUAL_IN_MS))
+	end
+	local dof_k = smoothstep(dof_progress)
+	visual.current_dof = visual.start_dof + (dof_target - visual.start_dof) * dof_k
+
+	if not visual.last_dof_written or math.abs(visual.current_dof - visual.last_dof_written) > 0.005 then
+		set_dof_params(visual.current_dof, visual.current_dof, visual.current_dof, visual.current_dof)
+		visual.last_dof_written = visual.current_dof
+	end
+
+	if visual.restoring and progress >= 1 then
+		if visual.hud_owned then write_harvest_hud_fov(visual, visual.base_hud_fov) end
+		set_dof_params(0, 0, 0, 0)
+		harvest_visual = nil
+	end
+end
+
+local function begin_harvest_visual(hud_fov_multiplier)
+	if harvest_visual then
+		if harvest_visual.hud_owned then
+			write_harvest_hud_fov(harvest_visual, harvest_visual.base_hud_fov)
+		end
+		set_dof_params(0, 0, 0, 0)
+	end
+
+	local base_hud_fov = read_hud_fov()
+	harvest_visual = {
+		base_hud_fov = base_hud_fov,
+		target_hud_fov = base_hud_fov and math.max(0.05, math.min(0.99, base_hud_fov * hud_fov_multiplier)) or nil,
+		current_hud_fov = base_hud_fov,
+		start_hud_fov = base_hud_fov,
+		current_dof = 0,
+		start_dof = 0,
+		started_at = time_global(),
+		hud_owned = base_hud_fov ~= nil,
+		last_hud_written = nil,
+		last_dof_written = nil,
+		restoring = false,
+	}
+end
+
+local function restore_harvest_visual(immediate)
+	local visual = harvest_visual
+	if not visual then return end
+
+	if immediate then
+		if visual.hud_owned then write_harvest_hud_fov(visual, visual.base_hud_fov) end
+		set_dof_params(0, 0, 0, 0)
+		harvest_visual = nil
+		return
+	end
+
+	visual.start_hud_fov = visual.current_hud_fov
+	visual.start_dof = visual.current_dof
+	visual.started_at = time_global()
+	visual.restoring = true
+end
+
+local function is_harvest_active(token)
+	return harvest_state and harvest_state.token == token
+end
+
+local function begin_harvest(monster)
+	harvest_generation = harvest_generation + 1
+	harvest_state = {
+		token = harvest_generation,
+		monster = monster,
+		monster_id = monster and monster:id() or nil,
+		input_disabled = true,
+		saved_stance = get_actor_stance(),
+		stance_started = false,
+	}
+	is_processing = true
+	return harvest_generation
+end
+
+local function cleanup_harvest(reason, interrupted)
+	local state = harvest_state
+	if not state then
+		if interrupted then restore_harvest_visual(true) end
+		return
+	end
+
+	harvest_state = nil
+	harvest_generation = harvest_generation + 1
+	is_processing = false
+	cancel_camera_pitch_ease(false)
+
+	if interrupted then
+		pcall(function() game.stop_hud_motion() end)
+	end
+
+	local cam = actor_camera(0)
+	if cam and state.saved_pitch then
+		if interrupted then
+			cam.pitch = state.saved_pitch
+		else
+			ease_camera_pitch_to(state.saved_pitch, 500)
+		end
+	end
+
+	if db.actor and state.saved_fov then
+		if interrupted or not smooth_set_fov then
+			pcall(function() db.actor:set_camera_fov(state.saved_fov) end)
+		else
+			pcall(function() smooth_set_fov(state.saved_fov, 600) end)
+		end
+	end
+
+	restore_harvest_visual(interrupted)
+
+	local actor_alive = db.actor and db.actor:alive()
+	if actor_alive and state.stance_started and state.saved_stance ~= nil then
+		restore_stance(state.saved_stance)
+	end
+	if level.present() then pcall(function() level.enable_input() end) end
+	if actor_alive then pcall(function() sak.restore_weap() end) end
+	if snd and snd:playing() then snd:stop() end
+	if level.present() then pcall(function() level.remove_cam_effector(8553) end) end
+	if interrupted then
+		log2("[monster_parts] harvest cleanup reason=%s interrupted=true", reason)
+	else
+		harvest_log("[monster_parts] harvest cleanup reason=%s interrupted=false", reason)
+	end
+end
+
+local function begin_harvest_stow(state, now)
+	local stow_duration = game.play_hud_motion(2, "anm_mob_loot", "anm_show", false, 1, true)
+	stow_duration = tonumber(stow_duration) or HARVEST_STOW_DURATION_FALLBACK
+	state.phase = "stow"
+	state.transfer_at = now + stow_duration * HARVEST_STOW_TRANSFER_FRACTION
+	state.phase_due_at = now + stow_duration
+	harvest_log("[monster_parts] stow knife=%s part=%s anim=anm_mob_loot duration=%s transfer_ms=%s",
+		state.knife_sect, state.part_section, tostring(stow_duration),
+		tostring(math.floor(stow_duration * HARVEST_STOW_TRANSFER_FRACTION + 0.5)))
+end
+
+local function update_harvest_phase()
+	local state = harvest_state
+	if not state or not state.phase then return end
+
+	local now = time_global()
+	if state.phase == "skinning" and now >= state.phase_due_at then
+		if state.stow_delay > 0 then
+			state.phase = "transition"
+			state.phase_due_at = now + state.stow_delay
+			if state.stow_delay >= HARVEST_TRANSITION_SOUND_DELAY_MIN then
+				misc.easy_sound("razgruzka\\bag_scroll")
+			end
+		else
+			begin_harvest_stow(state, now)
+		end
+	elseif state.phase == "transition" and now >= state.phase_due_at then
+		begin_harvest_stow(state, now)
+	elseif state.phase == "stow" then
+		if not state.transferred and now >= state.transfer_at then
+			state.transfer()
+		end
+		if now >= state.phase_due_at then
+			if not state.transferred then state.transfer() end
+			cleanup_harvest("complete", false)
+		end
+	end
+end
+
+function on_update()
+	update_harvest_visual()
+	if harvest_state and (not db.actor or not db.actor:alive()) then
+		cleanup_harvest("actor_dead", true)
+	elseif harvest_state then
+		local token = harvest_state.token
+		local ok, err = pcall(update_harvest_phase)
+		if not ok and is_harvest_active(token) then
+			log2("[monster_parts] harvest error stage=phase error=%s", tostring(err))
+			cleanup_harvest("error_phase", true)
+		end
+	end
+end
+
+function on_actor_before_hit(obj, hit_data)
+	if not hit_data or hit_data.ignore_hit then return end
+	if sivol_psy_phantoms and sivol_psy_phantoms.is_phantom and sivol_psy_phantoms.is_phantom( hit_data.who_id ) then return end
+	if harvest_state and hit_data.hit_type ~= hit.radiation
+		and (not hit_data.power or hit_data.power > 0)
+	then
+		cleanup_harvest("actor_hit", true)
+	end
+end
+
+function on_before_save_game()
+	if harvest_state then
+		cleanup_harvest("save", true)
+	else
+		restore_harvest_visual(true)
+		cancel_camera_pitch_ease(true)
+	end
+end
+
+function on_stop_modules()
+	if harvest_state then
+		cleanup_harvest("net_destroy", true)
+	else
+		restore_harvest_visual(true)
+		cancel_camera_pitch_ease(true)
+	end
+end
+
+function on_level_changer_action()
+	if harvest_state then
+		cleanup_harvest("level_change", true)
+	else
+		restore_harvest_visual(true)
+		cancel_camera_pitch_ease(true)
+	end
+end
+function get_monster_part( name )
+	local ini = system_ini()
+	local part = get_string( name, "Spawn_Inventory_Item_Section" )
+	return part
+end
+
+function has_knife()
+    local knife = db.actor:item_in_slot( 0 )
+    return knife and strpos( knife:section(), "knife" ) or false
+end
+
+function get_tip_text( obj, can_cut )
+    local count = obj:object_count()
+    if count == 0 then
+        return "nothing_to_cut_off"
+    end
+    
+    local is_special = strposx( obj:name(), "burer" ) or strposx( obj:name(), "controller" )
+    
+	if is_special then
+		local part_section = get_monster_part( obj:section() )
+		local has_part = part_section and part_section ~= "" and obj:object( part_section )
+
+		local has_additional = false
+		for i = 0, count - 1 do
+			local item = obj:object( i )
+			if item and item:section() ~= part_section then
+				has_additional = true
+				break
+			end
+		end
+
+		if has_part then
+			if can_cut then return "cut_off_part" end
+			-- ножа нет: часть не взять, но можно обшарить остальное
+			return has_additional and "%c[green]Обшарим тело" or "knife_need"
+		end
+
+		return has_additional and "%c[green]Обшарим тело" or "nothing_to_cut_off"
+	end
+		
+    return can_cut and "cut_off_part" or "knife_need"
+end
+
+function correct_monster_tip()
+	local can_cut = has_knife()
+    
+	for id, obj in pairs( db.creatures ) do
+		if g_sim:object( id ) and obj and obj:is_monster() and not obj:alive() and obj:section() ~= "zombie_blow" then
+			obj:set_tip_text( get_tip_text( obj, can_cut ) )
+		end
+	end
+end
+
+function on_slot( obj )
+	if not obj:is_knife() then return end 
+	-- Как-то бы проверять был ли какой до этого, чтобы зря не гонять... 
+	-- Может на спавне получить активный и с ним проверять? Но вроде все равно заранее надо, т.к при помещении в любом случае обнулится
+	correct_monster_tip()
+end
+
+function on_drop( obj )
+	if not obj:is_knife() then return end 
+--	local slot = obj:get_slot()
+--	log2( "slot is %s", slot )
+--	if slot ~= 0 then return end
+	-- Если дропали не со слота, то не нужно его обновлять
+	if has_knife() then return end
+	correct_monster_tip()
+end
+
+function on_hit( obj, amount, local_direction, who, bone_index )
+	log2( string.format( "%s hitted %s with %s on %s", who:name(), obj:name(), amount, bone_index ) )
+end
+
+local knf_brk_k  = {    
+    [ "mutant_dog_tail"          ] = { 2300, 0.10, - 0.01 },    
+    [ "mutant_face_tushkano"     ] = { 2500, 0.10, - 0.01 },	
+    [ "mutant_zombie_hand"       ] = { 3500, 0.12, - 0.02 },	
+	[ "mutant_boar_leg"          ] = { 3400, 0.12, - 0.02 },
+    [ "mutant_psevdodog_tail"    ] = { 3300, 0.12, - 0.01 },
+    [ "mutant_tail_cat"          ] = { 2900, 0.12, - 0.02 },	
+    [ "mutant_flesh_shkura"      ] = { 5000, 0.12, - 0.03 },	
+    [ "mutant_snork_leg"         ] = { 4000, 0.14, - 0.03 },
+    [ "mutant_chimera_kogot"     ] = { 4000, 0.14, - 0.04 },	
+    [ "mutant_flesh_eye"         ] = { 4000, 0.14, - 0.01 },
+    [ "mutant_burer_hand"        ] = { 5500, 0.14, - 0.03 },	
+    [ "mutant_hand_kontroler"    ] = { 5500, 0.16, - 0.04 },
+    [ "mutant_krovosos_jaw"      ] = { 4500, 0.16, - 0.02 },	
+    [ "mutant_poltergeist_glas"  ] = { 5000, 0.16, - 0.01 },
+    [ "mutant_psevdogigant_hand" ] = { 6500, 0.18, - 0.05 },
+    [ "mutant_e_chimera_kidney"  ] = { 6000, 0.16, - 0.05 }
+}
+
+-- Knife condition at/above which a harvested part comes out pristine (mut_cond = 1).
+-- easy = g_game_difficulty 0 (balance_light.ltx), hard = g_game_difficulty 3 (balance_default.ltx).
+local knf_perfect_threshold = {
+    [ "wpn_knife"    ] = { easy = 0.85, hard = 0.90 },
+    [ "wpn_knife_m1" ] = { easy = 0.75, hard = 0.80 },
+}
+
+-- A harvest stays locked until completion or guarded cleanup.
+
+function on_monster_use( monster, who )
+	if hud_animation_owner and hud_animation_owner.busy and hud_animation_owner.busy() then
+		return
+	end
+	if is_processing then return end
+
+    monster:set_nonscript_usable( false )
+
+    if monster:object_count() == 0 then return end	
+
+	is_processing = true
+
+    local mutant_items, additional_items = {}, {}	
+    local knife_ready = false
+
+    -- Итерируем объекты моба и заносим по таблицам
+    for i = 0, monster:object_count() - 1 do
+        local item = monster:object( i )
+        if item:section():sub( 1, 6 ) == "mutant" then
+            table.insert( mutant_items, item )
+        else
+            table.insert( additional_items, item )
+        end
+    end
+  
+    -- Проверяем наличие ножа
+    local function is_knife( item )
+        return item and strpos( item:section(), "knife" )
+    end
+
+    local active_item = db.actor:active_item()
+    local knife_slot = db.actor:item_in_slot( 0 )
+    local has_knife = is_knife( active_item ) or is_knife( knife_slot )
+
+	-- Non-harvest interactions keep the old short debounce. Active harvesting owns
+	-- the lock until completion or interruption cleanup.
+	dsh.timeout( 500, function()
+		if not harvest_state then is_processing = false end
+	end )
+	
+    -- Если есть мутантские части, проверяем нож
+    if #mutant_items > 0 then
+        if has_knife then
+            if not is_knife( active_item ) then
+                db.actor:activate_slot( 0 )
+            end
+            knife_ready = is_knife( active_item )
+        end
+
+        -- Если есть нож и потроха
+        if has_knife then
+			-- Сразу, если нож активен или 1500 мс
+			level.disable_input()
+			local token = begin_harvest(monster)
+			local wait = knife_ready and 0 or 1500
+			dsh.timeout(wait, function()
+				if not is_harvest_active(token) then return end
+				if not db.actor or not db.actor:alive() then
+					cleanup_harvest("actor_unavailable", true)
+					return
+				end
+				local ok, err = pcall(function()
+					process_monster_loot(monster, mutant_items, additional_items, token)
+				end)
+				if not ok and is_harvest_active(token) then
+					log2("[monster_parts] harvest error stage=prepare error=%s", tostring(err))
+					cleanup_harvest("error_prepare", true)
+				end
+			end)
+            return
+        end
+    end
+
+    -- Если нет ножа и есть потроха или есть доп. вещи, тогда их и лутаем
+    if not has_knife or #additional_items > 0 then 
+        process_additional_items( monster, additional_items )
+    end	
+end
+
+-- =========================================================
+-- ADAPTIVE RAYCAST
+-- =========================================================
+
+local function cast_ray( pos, dir, range, ignore_obj )
+    local rq = level.ray_query( pos, dir, range, rq_target.rqtBoth, ignore_obj )
+    if not rq or not rq.result or not rq.range or rq.range > range then
+        return { success = false, distance = range }
+    end
+    return {
+        success  = true,
+        distance = rq.range,
+        object   = rq.object,
+        element  = rq.element,
+        position = vector():set( pos ):mad( dir, rq.range ),
+    }
+end
+
+function get_wound_pos( range, ignore_obj, target_obj )
+    local pos0 = device().cam_pos
+    local dirn = vector():set( device().cam_dir ):normalize()
+    local res = cast_ray( pos0, dirn, range, ignore_obj )
+    if res.success and target_obj and res.object then
+        local ok, same_target = pcall(function() return res.object:id() == target_obj:id() end)
+        if ok and same_target then return res.position, "ray" end
+    end
+
+    -- AdaptiveSkinningCamera uses the selected corpse center when its ray misses.
+    -- This API is native in this checkout and avoids mutant-specific bone names.
+    if target_obj then
+        local ok, center = pcall(function() return target_obj:center() end)
+        if ok and center and center.x == center.x and center.y == center.y and center.z == center.z
+            and pos0:distance_to(center) <= range + 2.0
+        then
+            return vector():set(center), "center"
+        end
+
+        local pos_ok, object_pos = pcall(function() return target_obj:position() end)
+        if pos_ok and object_pos and object_pos.x == object_pos.x and object_pos.y == object_pos.y and object_pos.z == object_pos.z
+            and pos0:distance_to(object_pos) <= range + 2.0
+        then
+            return vector():set(object_pos), "position"
+        end
+    end
+
+    return nil, "fixed"
+end
+
+-- =========================================================
+-- PROCESS MONSTER LOOT (INTEGRATION)
+-- =========================================================
+
+function process_monster_loot( monster, mutant_items, additional_items, token )
+    if not is_harvest_active(token) then return end
+
+    local part_to_take = mutant_items[ 1 ]
+    local part_section = part_to_take:section()
+
+    local knife_item = db.actor:item_in_slot( 0 )
+    if not knife_item then
+        cleanup_harvest("knife_missing", true)
+        return
+    end
+    local knife_sect = knife_item:section()
+
+    local time_by_monster = knf_brk_k[ part_section ][ 1 ]
+    local cond_by_monster = knf_brk_k[ part_section ][ 2 ]
+    local reduce_cond = knf_brk_k[ part_section ][ 3 ]
+
+    local knife_cond = knife_item:condition()
+    local new_cond = ( knife_sect == "wpn_knife_m1" and reduce_cond / 2 ) or reduce_cond
+    local will_break = knife_cond + new_cond <= 0
+
+    local mut_cond = math.max( 1 - ( cond_by_monster / knife_cond ), 0.2 )
+    local threshold_pair = knf_perfect_threshold[ knife_sect ]
+    local perfect_threshold = threshold_pair and ( game_options.BalanceValue and threshold_pair.easy or threshold_pair.hard ) or 0.9
+    if knife_cond >= perfect_threshold then mut_cond = 1 end
+
+    if will_break then
+        local decrease_percentage = math.random( 10, 15 ) / 100
+        mut_cond = math.max( mut_cond * ( 1 - decrease_percentage), 0.1 )
+    end
+
+    local function start_animation(saved)
+        if not is_harvest_active(token) then return end
+
+        local state = harvest_state
+        state.saved_stance = saved
+
+        local cam = actor_camera(0)
+        state.saved_pitch = cam and cam.pitch or nil
+
+        local wound_pos, target_source = get_wound_pos(5.0, db.actor, monster)
+        local pitch_delta = -math.rad(25)
+
+        if wound_pos and cam then
+            local cam_pos = device().cam_pos
+            local look_dir = vector():sub(wound_pos, cam_pos)
+            local target_pitch = look_dir:getP()
+            pitch_delta = target_pitch - state.saved_pitch
+            pitch_delta = math.max(-math.rad(45), math.min(math.rad(10), pitch_delta))
+        end
+
+        if state.saved_pitch and not strpos(monster:name(), "burer", 1, true) then
+            ease_camera_pitch_to(state.saved_pitch + pitch_delta, 500)
+        end
+
+        -- Relinquish sprint/empty-hands camera ownership before capturing the
+        -- value this animation must restore. Otherwise a transition frame can
+        -- be mistaken for the player's native FOV.
+        if sivol_sprint_fov and sivol_sprint_fov.release_camera_fov then
+            sivol_sprint_fov.release_camera_fov("monster harvest")
+        end
+        state.saved_fov = db.actor:get_camera_fov()
+        local LOOT_FOV = 58
+        if smooth_set_fov then
+            pcall(function() smooth_set_fov(LOOT_FOV, 400) end)
+        else
+            db.actor:set_camera_fov(LOOT_FOV)
+        end
+
+        local improved_knife = knife_sect == "wpn_knife_m1"
+        local anim = improved_knife and "anm_mob_harvest_m1" or "anm_mob_harvest_hoc"
+        local anim_speed = improved_knife and HARVEST_IMPROVED_SPEED or HARVEST_REGULAR_SPEED
+        local hud_fov_multiplier = improved_knife and HARVEST_HUD_FOV_IMPROVED or HARVEST_HUD_FOV_REGULAR
+        local complexity = math.max(0, math.min(1,
+            (time_by_monster - HARVEST_COMPLEXITY_MIN) / (HARVEST_COMPLEXITY_MAX - HARVEST_COMPLEXITY_MIN)))
+        local delay_min = improved_knife and HARVEST_IMPROVED_DELAY_MIN or HARVEST_REGULAR_DELAY_MIN
+        local delay_max = improved_knife and HARVEST_IMPROVED_DELAY_MAX or HARVEST_REGULAR_DELAY_MAX
+        local stow_delay = math.floor(delay_min + (delay_max - delay_min) * complexity + 0.5)
+
+        begin_harvest_visual(hud_fov_multiplier)
+
+        -- Keep the real slot-0 knife hidden through skinning, the balance delay,
+        -- and the bag-stow animation. cleanup_harvest() restores it on every exit.
+        sak.actor_hide_weapon()
+        local anim_duration = game.play_hud_motion(2, anim, "anm_show", false, anim_speed, true)
+        misc.easy_sound("interface\\item_usage\\harvest_use")
+        harvest_log("[monster_parts] harvest knife=%s part=%s anim=%s speed=%.2f duration=%s stow_delay=%s complexity=%.2f camera_target=%s pitch_delta=%.1f",
+            knife_sect, part_section, anim, anim_speed, tostring(anim_duration), stow_delay, complexity, target_source, math.deg(pitch_delta))
+
+        state.transfer = function()
+            if state.transferred then return end
+            params.add_condition(knife_item, new_cond)
+
+
+            misc.easy_sound("interface\\item_usage\\harvest_use_success")
+            monster:transfer_item(part_to_take, db.actor)
+            part_to_take:set_condition(mut_cond)
+            sak.relocate_item("in", part_to_take:section(), 1)
+
+            if will_break then
+                misc.release_obj(knife_item)
+                db.actor:drop_item(part_to_take)
+                sak.send_tip_local(
+                    "Чёрт! Совсем нож в негодность пришёл \\nТеперь точно новый покупать...",
+                    "Мысли вслух", 0, 10, "g_g", "no", "red"
+                )
+                misc.easy_sound("scripts\\knife_broke")
+                misc.easy_sound("scripts\\matches_no_light_2")
+            end
+
+            state.transferred = true
+        end
+
+        state.phase = "skinning"
+        state.phase_due_at = time_global() + anim_duration
+        state.stow_delay = stow_delay
+        state.knife_sect = knife_sect
+        state.part_section = part_section
+        state.transferred = false
+
+        monster:set_tip_text(#mutant_items > 1 and "cut_off_part" or
+            (#mutant_items == 1 and #additional_items > 0 and (strpos(monster:name(), "burer_", 1, true)
+                or strpos(monster:name(), "controller", 1, true)) and "%c[green]Обшарим тело"
+                or "nothing_to_cut_off")
+        )
+    end
+
+    harvest_state.stance_started = true
+    force_full_crouch(function(saved)
+        local ok, err = pcall(function() start_animation(saved) end)
+        if not ok and is_harvest_active(token) then
+            log2("[monster_parts] harvest error stage=start error=%s", tostring(err))
+            cleanup_harvest("error_start", true)
+        end
+    end, function() return is_harvest_active(token) end)
+end
+
+function actor_look_at_point( target_point )
+    if type( target_point ) ~= "userdata" then
+        log2( "[monster_parts] actor_look_at_point: expected vector, got %s", type( target_point ) )
+        return
+    end
+    local look_dir = vector():sub( target_point, device().cam_pos )
+    local cam = actor_camera( 0 )
+    if cam then
+        cam.yaw   = -look_dir:getH()
+        cam.pitch = -look_dir:getP()
+    end
+end
+
+function process_additional_items( monster, additional_items )
+	if hud_animation_owner and hud_animation_owner.busy and hud_animation_owner.busy() then return end
+    local amnt = #additional_items
+	if amnt == 0 then return end
+	level.disable_input()
+	monster:set_tip_text( "" )
+
+	local prev_active_slot = db.actor:active_slot()
+	db.actor:activate_slot( 255 )
+	
+	dsh.wait_condition( function() return not db.actor:active_item() end, function()
+		level.add_cam_effector( "camera_effects\\hand_help.anm", 8800, false )
+
+		--local target_pos = monster:bone_position( "bip01_spine1" ) or monster:position()
+	--	local bone_name = strpos( monster:name(), "controller", 1, true ) and "bip01_pelvis" or monster:position()
+	--	local target_pos = monster:bone_position( bone_name ) or monster:position()
+		-- А по факту других же и не осматриваем, смысл? Бюрер - косячные кости
+		if strpos( monster:name(), "controller", 1, true ) then
+			local pos = monster:bone_position( "bip01_spine1" )
+			if pos then actor_look_at_point( pos ) end
+		else
+			local pos = monster:bone_position( "neck" )
+			if pos then actor_look_at_point( pos ) end
+		end
+		--local fov = db.actor:get_camera_fov()
+		--db.actor:set_camera_fov( 55 )
+		--set_dof_params( 1, 1, 1, 1 )
+		
+		local anim_duration = game.play_hud_motion( 2, "anim_body_search", "anm_show", false, 0.5 )	
+		dsh.timeout( anim_duration, function() 
+			game.play_hud_motion( 2, "anim_body_search", "anm_idle", false, 1, true )				
+		end )	
+		
+		dsh.timeout( 1800, function() 
+			game.stop_hud_motion()
+			game.play_hud_motion( 2, "anim_body_search", "anm_end", false, 1 )	
+			for _, item in ipairs( additional_items ) do
+				monster:transfer_item( item, db.actor )
+				sak.relocate_item( "in", item:section(), 1 )
+			end
+
+			-- Восстанавливаем текст в зависимости от наличия мутантских частей
+			if monster:object_count() > 0 then
+				monster:set_tip_text( "knife_need" )
+			else
+				monster:set_tip_text( "nothing_to_cut_off" )
+			end
+
+			--db.actor:set_camera_fov( fov )
+			--set_dof_params( 0, 0, 0, 0 )
+			
+			dsh.timeout( 600, function() 
+				level.enable_input()
+				db.actor:activate_slot( prev_active_slot )			
+			end )
+		end )		
+	end )	
+end
+
+function stop_loot_already()
+	--nlc_vars.lotted_part = nil
+    if snd and snd:playing() then snd:stop() end
+	level.remove_cam_effector( 8553 )	
+	sak.restore_weap()
+end
+
+function spawn_item_if_met( sect, id, cond, obj )
+	if math.fmod( id, cond ) == 0 then
+		local spawned = misc.spawn_to( sect, obj )
+		if spawned then 
+			obj:set_tip_text( get_tip_text( obj, has_knife() ) )	
+		else
+			obj:set_tip_text( "nothing_to_cut_off" )			
+		end
+		-- sak.send_tip( sect, "SPAWNED IN" .. id, 0, 5, "saharov", "sak", "green" )			
+	end
+end
+
+function on_monster_death( monster, who )
+	if not monster then return end
+	local section = monster:section()	
+	local id = monster:id()
+	
+	if strpos( section, "controller", 1, true ) then
+		arc_diary.monster_killed( monster, who )
+		--sak.restore_movement()
+		--sak.restore_fire()
+		
+		-- Чтоб уж наверняка, не знаю, иногда багует
+		--schedule.add( "restore_movement", function()	
+			--sak.restore_movement()
+		--	sak.restore_fire()
+		--end, 1000 )		
+	end
+	
+	if strpos( section, "burer_", 1, true ) then		
+		on_burer_kill( monster, who, section, id )
+	end
+	
+	if strpos( section, "flesh_strong", 1, true ) then
+		if has_alife_info( "dsc_greens_flesh_shkura" ) then
+			spawn_item_if_met( "mutant_flesh_shkura", id, 2, monster )
+		end
+	end
+	
+	if strpos( section, "boar_", 1, true ) then
+		spawn_item_if_met( "mutant_boar_leg", id, 10, monster )
+		spawn_item_if_met( "mutant_boar_leg", id, 20, monster )
+		spawn_item_if_met( "mutant_boar_leg", id, 25, monster )
+	end
+	
+	if strpos( section, "chimera_", 1, true ) then
+		spawn_item_if_met( "mutant_chimera_kogot", id, 20, monster )
+		spawn_item_if_met( "mutant_chimera_kogot", id, 30, monster )
+		spawn_item_if_met( "mutant_chimera_kogot", id, 40, monster )
+	end
+	-----------------------------------------------	
+	-- В противном случае вылетает при их убийстве?
+	if monster:section() == "zombie_blow" then return end
+	-- и чтобы наверняка
+	dsh.timeout( 500, function()
+		local mob = level.object_by_id( id )
+		if not mob then return end
+
+		local has_items = mob:object_count() > 0
+		local tip_text = "nothing_to_cut_off"
+
+		if has_items then
+			tip_text = who:is_stalker() and "%c[255,230,210,30]Убито не мной, может лучше не трогать?" or get_tip_text( mob, has_knife() )
+		end
+
+		mob:set_tip_text( tip_text )
+
+		if who:id() == db.actor:id() or IsAnomaly( who ) then
+			return
+		end
+
+		if who:is_monster() and has_items then
+			local condition = dsh.get_next_random( "kotovod.on_monster_kill_check_parts", 55, 95 ) * 0.01
+
+			for i = 0, mob:object_count() - 1 do
+				local item = mob:object( i )
+				item:set_condition( condition )
+				mob:transfer_item( item, who )
+			end
+
+			mob:set_tip_text( "nothing_to_cut_off" )
+		end
+	end )
+end
+
+local burer_items = {
+    { "mutant_burer_hand",   25  },
+    { "mfake_af_medus_new",  16  },
+    { "mfake_af_glass_new",  14  },
+    { "mfake_af_crist_new",  12  },
+    { "mfake_af_flower_new", 10  },
+    { "mfake_af_star_new",   8   },
+    { "mfake_af_dummy_fire", 6   },
+    { "mfake_af_battery",    4   },
+    { "mfake_af_ice",        2   },
+    { "mfake_af_sul_new",    1 },
+}
+
+function on_burer_kill( obj, who, section, id )
+    local can_cut = has_knife()
+    obj:set_tip_text( get_tip_text( obj, can_cut ) )
+
+    if section == "burer_hos" then
+		misc.spawn_to( "mfake_af_dummy_fire", obj )
+        obj:set_tip_text( "%c[green]Обшарим тело" )
+        return
+    end
+
+  --  if nlc_vars.burer_killed then return end
+  --  if math.fmod( id, 6 ) ~= 0 then return end
+  
+	-- 20 процентов на дроп 100 % рандомной вещи, ибо эта хрень возвращает раз в пятилетку
+	if dsh.get_next_random("burer_drop_chance", 1, 100) > 20 then return end
+
+    local total = 0
+    for _, v in ipairs( burer_items ) do total = total + v[ 2 ] end
+
+    local rnd = dsh.get_next_random( "on_burer_kill", 1, total )
+    local sum = 0
+    for _, v in ipairs( burer_items ) do
+        sum = sum + v[ 2 ]
+        if rnd <= sum then
+            misc.spawn_to( v[ 1 ], obj )
+            --if v[ 1 ] ~= "mutant_burer_hand" then
+            --    nlc_vars.burer_killed = true
+            --end
+            if obj:object("mutant_burer_hand") then
+                obj:set_tip_text( "cut_off_part" )
+            else
+                obj:set_tip_text( "%c[green]Обшарим тело" )
+            end
+            return
+        end
+    end
+end
+
+function g( name )
+	local sobj = g_sim:object( "burer_weak7791" )
+	if sobj then 
+		local ids, cnt = registry.inv_objects( sobj.id, true )
+		for n = 1, cnt do
+			local obj = g_sim:object( ids[ n ] )
+			if obj and obj.section_name then
+				log2( "we have here %s", obj:section_name() )
+			end
+		end	
+	end
+end

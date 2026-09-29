@@ -1,0 +1,119 @@
+-- [HE-PORT] Regular-view pages only. Alarm editor owns its own wheel controls.
+local session = nil
+local target = 0
+local progress = 0
+local start_progress = 0
+local started_at = 0
+local hint = nil
+local last_page, last_progress = nil, nil
+local SLIDE_MS = 250
+local HINT_MS = 10000
+local hint_until = 0
+local PAGE_KEY = "he_watch_selected_page"
+local HINT_KEY = "he_watch_view_hint_seen"
+
+local function write_page()
+    if target == last_page and progress == last_progress then return end
+    shader_set_custom_param("m_he_watch_page", target, progress, 0, 0)
+    last_page, last_progress = target, progress
+end
+
+local function remove_hint()
+    hint_until = 0
+    if not hint then return end
+    local old = hint
+    hint = nil
+    pcall(function()
+        local hud = get_hud()
+        if hud then hud:RemoveDialogToRender(old) end
+    end)
+end
+
+local function show_hint()
+    if hint and time_global() >= hint_until then remove_hint(); return end
+    if not hint and get_value(HINT_KEY, false) then return end
+    local ok, err = pcall(function()
+        if not hint then
+            hint = CUIStatic()
+            hint:Init(192, 680, 640, 48)
+            hint:SetFont(GetFontLetterica18Russian())
+            hint:SetTextComplexMode(true)
+            hint:SetTextColor(255, 238, 153, 26)
+            hint:Show(true)
+            get_hud():AddDialogToRender(hint)
+            hint_until = time_global() + HINT_MS
+            set_value(HINT_KEY, true) -- persisted first-use hint, no new deadline on scroll
+        end
+        hint:SetText(game.translate_string(target == 0 and "he_watch_view_clock" or "he_watch_view_radiation"))
+    end)
+    if not ok then
+        remove_hint()
+        log2("[he_watch] view hint failed: %s", tostring(err))
+    end
+end
+
+local function reset()
+    session, target, progress, start_progress, started_at = nil, 0, 0, 0, 0
+    remove_hint()
+    write_page()
+end
+
+local function active_session()
+    if not (db.actor and db.actor:alive()) then return nil end
+    if device():is_paused() or level.main_input_receiver() then return nil end
+    if db.actor:is_talking() or not watch_gate.has_watch() then return nil end
+    if he_watch_ui.is_active() or not he_watch_status.is_operational() then return nil end
+    return allcore_hide.get_watch_view_session()
+end
+
+local function sync_session()
+    local current = active_session()
+    -- Preserve the selected screen even when the wrist is visible outside a raise.
+    -- The alarm editor temporarily overrides it without changing the saved choice.
+    local selected = get_value(PAGE_KEY, 0) == 1 and 1 or 0
+    if he_watch_ui.is_active() then selected = 0 end
+    if current ~= session then
+        remove_hint()
+        session = current
+        target, progress, start_progress, started_at = selected, selected, selected, 0
+        write_page()
+        if session then show_hint() end
+    elseif not current and (target ~= selected or progress ~= selected) then
+        target, progress, start_progress, started_at = selected, selected, selected, 0
+        write_page()
+    end
+    return current ~= nil
+end
+
+local function animate()
+    if progress == target then return end
+    local t = math.max(0, math.min(1, (time_global() - started_at) / SLIDE_MS))
+    local ease = t * t * (3 - 2 * t)
+    progress = start_progress + (target - start_progress) * ease
+    if t >= 1 then progress = target end
+end
+
+local function on_update()
+    if not sync_session() then write_page(); return end
+    animate()
+    if hint and time_global() >= hint_until then remove_hint() end
+    write_page()
+end
+
+local function on_wheel_rotation(vol)
+    if not vol or vol == 0 or not sync_session() then return end
+    animate() -- reverse from the current position, never jump on fast scrolling
+    start_progress, started_at = progress, time_global()
+    target = 1 - target
+    set_value(PAGE_KEY, target)
+    write_page()
+    show_hint()
+end
+
+function attach(sm)
+    sm:subscribe({signal = "on_update", fun = on_update})
+    sm:subscribe({signal = "on_wheel_rotation", fun = on_wheel_rotation})
+    sm:subscribe({signal = "on_first_update", fun = reset})
+    sm:subscribe({signal = "on_load_before_all", fun = reset})
+    sm:subscribe({signal = "on_stop_modules", fun = reset})
+end

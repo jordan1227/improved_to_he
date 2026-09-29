@@ -1,0 +1,633 @@
+-- ===== Фниверсальное замедление ?? (маски, еда, бинты и т.п.; можно подвз§ать на что угодно по идее - какие-то абилки мутантов в bind_monster, например) =====
+local move_penalties = {} -- [name] = coef (0..1)
+local MOVE_PENALTY_FLOOR = 0.2 -- нижний предел суммарного коэффициента, чтобы несколько штрафов разом не занулили скорость
+
+-- Actor-hit diagnostics are temporary investigation tooling. They log the
+-- incoming SHit packet and two bounded actor-state samples after the callback.
+local sprint_block_reasons = {}
+local sprint_block_actor = nil
+local sprint_actions_blocked = false
+local sprint_release_error_count = 0
+local sprint_release_last_error_log = -1000
+local SPRINT_RELEASE_LOG_INTERVAL_MS = 1000
+
+local function sprint_actor()
+    if get_actor_obj then
+        local ok, actor = pcall(get_actor_obj)
+        if ok and actor then return actor end
+    end
+    return db and db.actor
+end
+
+local function sprint_now()
+    if type(time_global) ~= "function" then return 0 end
+    local ok, value = pcall(time_global)
+    return ok and type(value) == "number" and value or 0
+end
+
+local function note_sprint_release_failure(bind_name, err)
+    sprint_release_error_count = sprint_release_error_count + 1
+    local now = sprint_now()
+    if now - sprint_release_last_error_log >= SPRINT_RELEASE_LOG_INTERVAL_MS then
+        log2("[SIVOL_SPRINT] release_action failed bind=%s count=%d error=%s",
+            tostring(bind_name), sprint_release_error_count, tostring(err))
+        sprint_release_last_error_log = now
+    end
+end
+
+local function release_active_sprint()
+    local actor = sprint_actor()
+    if not actor or not actor.release_action or not key_bindings then return end
+    local function release(bind, bind_name)
+        if not bind then return end
+        local ok, err = pcall(function() actor:release_action(bind) end)
+        if not ok then note_sprint_release_failure(bind_name, err) end
+    end
+    release(key_bindings.kACCEL, "kACCEL")
+    release(key_bindings.kSPRINT_TOGGLE, "kSPRINT_TOGGLE")
+end
+
+function sprint_is_active()
+    local actor = sprint_actor()
+    if not actor or not actor.is_actor_sprinting then return false end
+    local ok, active = pcall(function() return actor:is_actor_sprinting() end)
+    if not ok then return false end
+    return active == true
+end
+
+function request_sprint_stop()
+    release_active_sprint()
+end
+local ACTOR_HIT_DIAGNOSTICS = false
+local ACTOR_HIT_SAMPLE_DELAY = 100
+local ACTOR_HIT_LATE_SAMPLE_DELAY = 600
+local ACTOR_HIT_MAX_PENDING = 8
+
+local actor_hit_sequence = 0
+local actor_hit_observations = {}
+local actor_hit_type_names = {}
+
+local function register_actor_hit_type(name)
+	if hit and hit[name] ~= nil then
+		actor_hit_type_names[hit[name]] = name
+	end
+end
+
+for _, name in ipairs({
+	"burn", "shock", "strike", "wound", "radiation", "telepatic",
+	"chemical_burn", "explosion", "fire_wound", "wound_2"
+}) do
+	register_actor_hit_type(name)
+end
+
+local function actor_hit_type_name(hit_type)
+	return actor_hit_type_names[hit_type] or "unknown"
+end
+
+local function read_actor_hit_vitals(actor)
+	if not actor then return nil, nil, nil end
+
+	local ok_health, health = pcall(function() return actor.health end)
+	local ok_bleeding, bleeding = pcall(function() return actor:get_bleeding() end)
+	local ok_radiation, radiation = pcall(function() return actor.radiation end)
+
+	return
+		(ok_health and tonumber(health) or nil),
+		(ok_bleeding and tonumber(bleeding) or nil),
+		(ok_radiation and tonumber(radiation) or nil)
+end
+
+local function read_actor_hit_god_mode()
+	if type(get_console) ~= "function" then return nil end
+	local ok, value = pcall(function() return get_console():get_bool("g_god") end)
+	if ok then return value end
+	return nil
+end
+
+local function actor_hit_source(hit_data)
+	local source = hit_data and hit_data.who
+	if source then return source end
+
+	local source_id = tonumber(hit_data and hit_data.who_id)
+	if not source_id or source_id <= 0 or source_id >= 65535 then return nil end
+	if not level or type(level.object_by_id) ~= "function" then return nil end
+
+	local ok, object = pcall(level.object_by_id, source_id)
+	if ok then return object end
+	return nil
+end
+
+local function actor_hit_source_field(source, method, default)
+	if not source then return default end
+	local ok_method, fn = pcall(function() return source[method] end)
+	if not ok_method or type(fn) ~= "function" then return default end
+
+	local ok, value = pcall(fn, source)
+	if ok and value ~= nil then return tostring(value) end
+	return default
+end
+
+local function actor_hit_bone_name(actor, bone_id)
+	if not actor or bone_id < 0 then return "none" end
+	local ok, value = pcall(function() return actor:get_bone_name(bone_id) end)
+	if ok and value ~= nil then return tostring(value) end
+	return "unknown"
+end
+
+local function new_actor_hit_observation(actor, hit_data)
+	actor_hit_sequence = actor_hit_sequence + 1
+
+	local now = time_global()
+	local health, bleeding, radiation = read_actor_hit_vitals(actor)
+	local source = actor_hit_source(hit_data)
+	local hit_type = tonumber(hit_data.hit_type) or -1
+	local bone_id = tonumber(hit_data.bone_id) or -1
+
+	return {
+		sequence = actor_hit_sequence,
+		created_at = now,
+		next_sample = now + ACTOR_HIT_SAMPLE_DELAY,
+		sample_count = 0,
+		hit_type = hit_type,
+		hit_type_name = actor_hit_type_name(hit_type),
+		power = tonumber(hit_data.power) or 0,
+		full_power = tonumber(hit_data.full_power) or 0,
+		impulse = tonumber(hit_data.impulse) or 0,
+		bone_id = bone_id,
+		bone_name = actor_hit_bone_name(actor, bone_id),
+		who_id = tonumber(hit_data.who_id) or -1,
+		source_section = actor_hit_source_field(source, "section", "none"),
+		source_name = actor_hit_source_field(source, "name", "none"),
+		source_clsid = actor_hit_source_field(source, "clsid", "none"),
+		sender_id = tonumber(hit_data.sender_id) or -1,
+		dest_id = tonumber(hit_data.dest_id) or -1,
+		weapon_id = tonumber(hit_data.weapon_id) or -1,
+		bullet_id = tonumber(hit_data.bullet_id) or -1,
+		packet_type = tonumber(hit_data.packet_type) or -1,
+		ap = tonumber(hit_data.ap) or 0,
+		aim_bullet = tostring(hit_data.aim_bullet),
+		ignore_hit = tostring(hit_data.ignore_hit),
+		god_mode = tostring(read_actor_hit_god_mode()),
+		before_health = health,
+		before_bleeding = bleeding,
+		before_radiation = radiation,
+	}
+end
+
+local function log_actor_hit_observation(observation, stage, health, bleeding, radiation)
+	local health_delta = health and observation.before_health
+		and health - observation.before_health or 0
+	local bleeding_delta = bleeding and observation.before_bleeding
+		and bleeding - observation.before_bleeding or 0
+	local radiation_delta = radiation and observation.before_radiation
+		and radiation - observation.before_radiation or 0
+	local age = math.max(0, time_global() - observation.created_at)
+
+	log2(
+		"[sivol.actor_hit] seq=%d age_ms=%d stage=%s type=%s(%d) power=%.6f full=%.6f impulse=%.3f bone=%d[%s] who=%d source=%s name=%s clsid=%s ignore=%s god=%s hp=%.6f bleed=%.6f rad=%.6f dhp=%.6f dbleed=%.6f drad=%.6f sender=%d dest=%d weapon=%d bullet=%d packet=%d ap=%.3f aim=%s",
+		observation.sequence, age, stage, observation.hit_type_name, observation.hit_type,
+		observation.power, observation.full_power, observation.impulse,
+		observation.bone_id, observation.bone_name, observation.who_id,
+		observation.source_section, observation.source_name, observation.source_clsid,
+		observation.ignore_hit, observation.god_mode,
+		health or -1, bleeding or -1, radiation or -1,
+		health_delta, bleeding_delta, radiation_delta,
+		observation.sender_id, observation.dest_id, observation.weapon_id,
+		observation.bullet_id, observation.packet_type, observation.ap,
+		observation.aim_bullet
+	)
+end
+
+local function reset_actor_hit_observations()
+	actor_hit_observations = {}
+end
+
+function set_actor_hit_diagnostics(enabled)
+	ACTOR_HIT_DIAGNOSTICS = enabled == true
+	reset_actor_hit_observations()
+	log2("[sivol.actor_hit] diagnostics=%s", tostring(ACTOR_HIT_DIAGNOSTICS))
+end
+
+function sivol_on_actor_before_hit(obj, hit_data)
+	if not ACTOR_HIT_DIAGNOSTICS or not hit_data then return end
+
+	local observation = new_actor_hit_observation(obj or (db and db.actor), hit_data)
+	while table.getn(actor_hit_observations) >= ACTOR_HIT_MAX_PENDING do
+		table.remove(actor_hit_observations, 1)
+	end
+	table.insert(actor_hit_observations, observation)
+	log_actor_hit_observation(
+		observation, "before", observation.before_health,
+		observation.before_bleeding, observation.before_radiation
+	)
+end
+
+function sivol_on_actor_hit_update()
+	if not ACTOR_HIT_DIAGNOSTICS then return end
+	if not db or not db.actor then
+		reset_actor_hit_observations()
+		return
+	end
+	if table.getn(actor_hit_observations) == 0 then return end
+
+	local now = time_global()
+	local health, bleeding, radiation = read_actor_hit_vitals(db.actor)
+	for i = table.getn(actor_hit_observations), 1, -1 do
+		local observation = actor_hit_observations[i]
+		if now >= observation.next_sample then
+			local stage = observation.sample_count == 0 and "after" or "late"
+			log_actor_hit_observation(observation, stage, health, bleeding, radiation)
+			if observation.sample_count == 0 then
+				observation.sample_count = 1
+				observation.next_sample = now + ACTOR_HIT_LATE_SAMPLE_DELAY
+			else
+				table.remove(actor_hit_observations, i)
+			end
+		end
+	end
+end
+
+
+function add_move_penalty(name, coef)
+	local old_coef = get_move_penalty_coef()
+	move_penalties[name] = coef
+	local new_coef = get_move_penalty_coef()
+	-- масштабируем У?†ФҐїЕ speed_multiplier напр§мую „ не форсируем check_artefact(),
+	-- он может попасть на переходное состо§ние (напр. во врем§ смены предмета/маски)
+	-- и временно занулить артефактный бонус до следующего планового пересч™та
+	db.actor.speed_multiplier = db.actor.speed_multiplier / old_coef * new_coef
+end
+
+function remove_move_penalty(name)
+	if move_penalties[name] then
+		local old_coef = get_move_penalty_coef()
+		move_penalties[name] = nil
+		local new_coef = get_move_penalty_coef()
+		db.actor.speed_multiplier = db.actor.speed_multiplier / old_coef * new_coef
+	end
+end
+
+function get_move_penalty_coef()
+	local total = 1
+	for _, coef in pairs(move_penalties) do
+		total = total * coef
+	end
+	if total < MOVE_PENALTY_FLOOR then total = MOVE_PENALTY_FLOOR end
+	return total
+end
+--=====================
+--ƒл€ апдейта веса цифры в инвентаре когда цепим арты на по€с
+--=====================
+function reset_sprint_block_state()
+    if sprint_actions_blocked then
+        if level and level.unblock_action and key_bindings then
+            if key_bindings.kACCEL then level.unblock_action(key_bindings.kACCEL) end
+            if key_bindings.kSPRINT_TOGGLE then level.unblock_action(key_bindings.kSPRINT_TOGGLE) end
+        end
+        sprint_actions_blocked = false
+    end
+    sprint_block_reasons = {}
+    sprint_block_actor = nil
+end
+
+local function acquire_sprint_actions()
+    if sprint_actions_blocked then return true end
+    if not level or not level.block_action or not key_bindings then return false end
+    local blocked = false
+    if key_bindings.kACCEL then
+        level.block_action(key_bindings.kACCEL)
+        blocked = true
+    end
+    if key_bindings.kSPRINT_TOGGLE then
+        level.block_action(key_bindings.kSPRINT_TOGGLE)
+        blocked = true
+    end
+    sprint_actions_blocked = blocked
+    return blocked
+end
+
+function add_sprint_block(name)
+    local actor = db and db.actor
+    if not actor or type(name) ~= "string" or name == "" then return false end
+    if sprint_block_actor ~= actor then
+        reset_sprint_block_state()
+        sprint_block_actor = actor
+    end
+    if sprint_block_reasons[name] then return true end
+    if not acquire_sprint_actions() then return false end
+    sprint_block_reasons[name] = true
+    return true
+end
+
+function remove_sprint_block(name)
+    if not sprint_block_reasons[name] then return false end
+    sprint_block_reasons[name] = nil
+    if next(sprint_block_reasons) == nil then
+        reset_sprint_block_state()
+    end
+    return true
+end
+
+function sivol_on_lifecycle_reset()
+    reset_sprint_block_state()
+    reset_actor_hit_observations()
+end
+function attach(sm)
+    sm:subscribe({ signal = "on_item_to_ruck",   fun = sivol_on_belt_leave })
+    sm:subscribe({ signal = "on_drop_before_all", fun = sivol_on_belt_leave })
+    sm:subscribe({ signal = "on_spawn",          fun = sivol_on_actor_spawn })
+    sm:subscribe({ signal = "on_actor_before_hit", fun = sivol_on_actor_before_hit })
+    sm:subscribe({ signal = "on_update",            fun = sivol_on_actor_hit_update })
+    sm:subscribe({ signal = "on_game_loaded",       fun = sivol_on_lifecycle_reset })
+    sm:subscribe({ signal = "level_changer_action",  fun = sivol_on_lifecycle_reset })
+    sm:subscribe({ signal = "on_stop_modules",       fun = sivol_on_lifecycle_reset })
+end
+
+function sivol_on_actor_spawn()
+    reset_sprint_block_state()
+    reset_actor_hit_observations()
+    dsh.exec_on_update(
+        function()
+            local sm = ogse_signals.get_mgr()
+            sm:subscribe({ signal = "on_item_to_belt", fun = sivol_on_belt_enter })
+        end
+    )
+end
+
+function sivol_on_belt_enter(obj)
+    if obj and obj:clsid() == CLID_ART then
+        scale_artefact_stats(obj, false)   -- apply condition+bonus scaling immediately
+        update_inventory_window()
+    end
+end
+
+function sivol_on_belt_leave(obj)
+    if obj and obj:clsid() == CLID_ART then
+        scale_artefact_stats(obj, true)    -- reset to base, matches off-belt behavior in check_artefact()
+        update_inventory_window()
+    end
+end
+
+-- ===== ђЦ?Ю?ННЯЕ У?ЧУ cant_sprint / cant_walk „ удалить после проверки =====
+
+function test_cant_status()
+	wprintf("~C0E #TEST: cant_sprint =~C0D %s ~C0E, cant_walk =~C0D %s ~C07",
+		tostring(db.actor.cant_sprint), tostring(db.actor.cant_walk))
+end
+
+function test_cant_sprint_on()
+	db.actor.cant_sprint = true
+	wprintf("~C0A #TEST: cant_sprint SET to true~C07")
+end
+
+function test_cant_sprint_off()
+	db.actor.cant_sprint = false
+	wprintf("~C0A #TEST: cant_sprint SET to false~C07")
+end
+
+function test_cant_walk_on()
+	db.actor.cant_walk = true
+	wprintf("~C0A #TEST: cant_walk SET to true~C07")
+end
+
+function test_cant_walk_off()
+	db.actor.cant_walk = false
+	wprintf("~C0A #TEST: cant_walk SET to false~C07")
+end
+
+-- проверка: не сбрасываетс§ ли флаг сам по себе через какое-то врем§
+function test_cant_sprint_persistence()
+	db.actor.cant_sprint = true
+	wprintf("~C0A #TEST: cant_sprint SET true, checking persistence over 5s...~C07")
+	schedule.add("test_cant_check", "sivol.test_cant_status()", 1000)
+	schedule.add("test_cant_check2", "sivol.test_cant_status()", 5000)
+end
+
+function test_basic()
+       wprintf("BASIC TEST FIRED")
+end
+
+-- Console: g_loadstring !sivol.spawn_anomaly_near("zone_witches_galantine_strong")
+-- Optional arguments are distance and sphere radius in metres (defaults: five and two).
+function spawn_anomaly_near(section, distance, radius)
+	if type(section) ~= "string" or section == "" then
+		log2("[sivol.spawn_anomaly_near] invalid anomaly section: %s", tostring(section))
+		return nil
+	end
+
+	if not (level.present() and db.actor and db.actor:alive() and alife()) then
+		log2("[sivol.spawn_anomaly_near] cannot spawn [%s]: actor or ALife is unavailable", section)
+		return nil
+	end
+
+	local ini = system_ini()
+	if not (ini and ini:section_exist(section)) then
+		log2("[sivol.spawn_anomaly_near] cannot spawn [%s]: section does not exist", section)
+		return nil
+	end
+
+	distance = tonumber(distance) or 5.0
+	local actor_pos = db.actor:position()
+	local actor_dir = db.actor:direction()
+	local pos = vector():set(
+		actor_pos.x + actor_dir.x * distance,
+		actor_pos.y + 0.1,
+		actor_pos.z + actor_dir.z * distance
+	)
+	if not (amk_anoms and amk_anoms.spawn_anomaly) then
+		log2("[sivol.spawn_anomaly_near] cannot spawn [%s]: amk_anoms is unavailable", section)
+		return nil
+	end
+
+	radius = tonumber(radius) or 2.0
+	local shape = { shtype = 0, radius = radius, center = { 0, 0.5, 0 } }
+	local spawned = amk_anoms.spawn_anomaly(
+		section,
+		pos,
+		db.actor:game_vertex_id(),
+		db.actor:level_vertex_id(),
+		shape,
+		"on"
+	)
+
+	if spawned then
+		log2("[sivol.spawn_anomaly_near] spawned [%s] id=%s at %.2f, %.2f, %.2f", section, tostring(spawned.id), pos.x, pos.y, pos.z)
+	else
+		log2("[sivol.spawn_anomaly_near] spawn failed for [%s]", section)
+	end
+
+	return spawned
+end
+
+-- Console: fl sivol.spawn_upgraded_outfit("stalker_outfit", 1.0, 120)
+-- Spawns an outfit into the actor's inventory, then marks it upgraded after client spawn.
+-- condition is 0..1; duration is game minutes. Equip the returned outfit manually for the test.
+function spawn_upgraded_outfit(section, condition, duration)
+    section = section or "stalker_outfit"
+    condition = math.max(0, math.min(1, tonumber(condition) or 1.0))
+    duration = math.max(1, math.floor(tonumber(duration) or 120))
+
+    if type(section) ~= "string" or section == "" then
+        log2("[sivol.spawn_upgraded_outfit] invalid outfit section: %s", tostring(section))
+        return nil
+    end
+
+    if not (level.present() and db.actor and db.actor:alive() and alife()) then
+        log2("[sivol.spawn_upgraded_outfit] actor or ALife is unavailable")
+        return nil
+    end
+
+    local ini = system_ini()
+    if not (ini and ini:section_exist(section)) then
+        log2("[sivol.spawn_upgraded_outfit] outfit section does not exist: %s", section)
+        return nil
+    end
+
+    if not (misc and misc.spawn_to and level.client_spawn_manager
+        and bind_upg_outfit and bind_upg_outfit.set_end_time
+        and bind_upg_outfit.update_outfit) then
+        log2("[sivol.spawn_upgraded_outfit] required spawn or upgrade helpers are unavailable")
+        return nil
+    end
+
+    local spawned = misc.spawn_to(section, db.actor)
+    if not spawned then
+        log2("[sivol.spawn_upgraded_outfit] spawn failed for %s", section)
+        return nil
+    end
+
+    -- misc.spawn_to returns the server object; persist the timer without a server_obj lookup.
+    bind_upg_outfit.set_end_time(spawned, timers.Get_Game_Minutes() + duration)
+
+    level.client_spawn_manager():add(
+        spawned.id, -1,
+        function(_, outfit)
+            if not outfit then
+                log2("[sivol.spawn_upgraded_outfit] client spawn failed for id=%s", tostring(spawned.id))
+                return
+            end
+
+            params.upd_condition(outfit.id, condition)
+            bind_upg_outfit.update_outfit(outfit, true)
+            log2("[sivol.spawn_upgraded_outfit] upgraded %s id=%s condition=%.2f duration=%d",
+                section, tostring(outfit.id), condition, duration)
+        end
+    )
+
+    log2("[sivol.spawn_upgraded_outfit] spawned %s id=%s; waiting for client spawn",
+        section, tostring(spawned.id))
+    return spawned
+end
+
+-------------------------------------------------------------------------
+-- 2.  ¬≈—“ќ¬џ≈ ‘”Ќ ÷»»
+-------------------------------------------------------------------------
+
+-- –есаем дробь ƒену когда јртем  улинар нас посылает по квесту Ѕорова.
+function give_mutant_parts_and_update_dan()
+    sak.create_items({ mutant_boar_leg = 6, mutant_dog_tail = 8 })
+    local dan_story_id = story_ids.green_dan
+    local dan_obj = alife():story_object(dan_story_id)
+    if not dan_obj then return false end
+    local data = {}
+    if dan_obj.s_storage and dan_obj.s_storage ~= "" and dan_obj.s_storage ~= "_" then
+        data = amk.parse_custom_data(dan_obj.s_storage) or {}
+    end
+    if type(data.trade_manager) ~= "table" then
+        data.trade_manager = {}
+    end
+    data.trade_manager.resuply_time = pack_time_to_string(game.get_game_time())
+    dan_obj.s_storage = amk.gen_custom_data(data)
+    local dan_lvl = level.object_by_id(dan_obj.id)
+    local tt = dan_lvl and trade_manager and trade_manager.get_cfg
+        and trade_manager.get_cfg(dan_lvl)
+    if tt then
+        tt.resuply_time = game.get_game_time()
+        tt.update_time = nil
+        tt.skip_updates = 0
+        if trade_manager.update then
+            -- Dan has a static supply section, so force it through the standard refresh path.
+            tt.current_buy_supplies = nil
+            trade_manager.update(dan_lvl)
+        end
+    end
+    timers.start_timer("dan_tip_delay", 60, "sivol.show_dan_tip()")
+    return true
+end
+
+function show_dan_tip()
+    sak.send_tip(" улинар передал через мен€ - говорит, ты за делом придЄшь. Ћадно, раз јртЄм поручилс€, выделил тебе отдельную партию дроби. ѕриходи, обмен€ем как обычно.", "ƒэн ќхотник", 0, 10, "ui_npc_u_hunter_dan", "sak", "green")
+end
+
+-- ќгнемЄт ѕрапору можно принести и не полностью зар€женный по квесту —идоровича, но награда меньше.
+local function prapor_flame_is_fully_charged( obj )
+    if not obj then return false end
+    local ammo = obj:get_ammo_in_magazine()
+    local max_ammo = system_ini():r_float( obj:section(), "ammo_mag_size" )
+    return obj:condition() >= 0.95 and ammo >= max_ammo
+end
+
+function prapor_good_flame_have()
+    for section, ids in pairs( sak_inventory.rucksack ) do
+        if strpos( section, "wpn_flame", 1, true ) then
+            for _, id in pairs( ids ) do
+                if prapor_flame_is_fully_charged( client_obj( id ) ) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+function prapor_good_flame_have_not()
+    return not prapor_good_flame_have()
+end
+
+local function transfer_prapor_flame( first_speaker, second_speaker, fully_charged )
+    local actor = db.actor
+    if not actor or not first_speaker or not second_speaker then return false end
+
+    local npc = second_speaker
+    if actor:id() == npc:id() then npc = first_speaker end
+    if not npc or npc:id() == actor:id() then return false end
+
+    for section, ids in pairs( sak_inventory.rucksack ) do
+        if strpos( section, "wpn_flame", 1, true ) then
+            for _, id in pairs( ids ) do
+                local obj = client_obj( id )
+                if obj then
+                    local is_fully_charged = prapor_flame_is_fully_charged( obj )
+                    if is_fully_charged == fully_charged then
+                        actor:transfer_item( obj, npc )
+                        sak.relocate_item( "out", "wpn_flame", 1 )
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+function prapor_good_flame_remove( first_speaker, second_speaker )
+    return transfer_prapor_flame( first_speaker, second_speaker, true )
+end
+
+function prapor_partial_flame_remove( first_speaker, second_speaker )
+    return transfer_prapor_flame( first_speaker, second_speaker, false )
+end
+
+
+----
+function flyto(x, y, z)
+
+ local v = vector()
+ local d = 0
+ 
+ v.x = tonumber(x)
+ v.y = tonumber(y)
+ v.z = tonumber(z)
+ 
+ db.actor:set_actor_position(v)
+end

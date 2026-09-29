@@ -1,0 +1,80 @@
+-- [HE-PORT]
+
+local FLASH_KEY  = "anagramm_flash"
+local FLASH_SECT = "anagramm_flash"
+local EPS        = 0.001
+
+function stor_read( key, default )
+	return he_stor.stor_read( key, default )
+end
+
+function stor_write( key, value )
+	return he_stor.stor_write( key, value )
+end
+
+function read_data()
+	local data = he_stor.stor_read( FLASH_KEY, "" )
+	local res = {}
+	for chunk in string.gmatch( data, "([^|]+)" ) do
+		local id, cond = string.match( chunk, "(%d+),([%d%.]+)" )
+		if id and cond then
+			res[ id ] = tonumber( cond )
+		end
+	end
+	return res
+end
+
+function write_data( t )
+	local out = {}
+	for id, cond in pairs( t or {} ) do
+		if tonumber( cond ) then
+			table.insert( out, string.format( "%s,%.2f", tostring( id ), tonumber( cond ) ) )
+		end
+	end
+	return stor_write( FLASH_KEY, table.concat( out, "|" ) )
+end
+
+function get( id )
+	return read_data()[ tostring( id ) ]
+end
+
+function update( id, cond )
+	local t = read_data()
+	t[ tostring( id ) ] = tonumber( cond )
+	write_data( t )
+end
+
+function remove( id )
+	local t = read_data()
+	t[ tostring( id ) ] = nil
+	write_data( t )
+end
+
+function apply_stored()
+	if not db.actor then return end
+	local data = read_data()
+	if not next( data ) then return end
+	db.actor:iterate_inventory( function( dummy, item )
+		if item and item:section() == FLASH_SECT then
+			local cond = data[ tostring( item:id() ) ]
+			if cond and item:condition() > cond + EPS then
+				params.upd_condition( item, cond )
+			end
+		end
+	end, nil )
+end
+
+local function on_first_update()
+	apply_stored()
+end
+
+local function on_take( obj )
+	if obj and obj:section() == FLASH_SECT then
+		apply_stored()
+	end
+end
+
+function attach( sm )
+	sm:subscribe( { signal = "on_first_update", fun = on_first_update } )
+	sm:subscribe( { signal = "on_take",         fun = on_take } )
+end

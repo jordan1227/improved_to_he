@@ -5,9 +5,31 @@ local count_by_level = {}
 local ammo_sections = {}
 local death_ini = ini_file("misc\\death_generic.ltx")
 
+-- Merc ammunition is an NPC-only lethality resource. Corpses expose ordinary
+-- compatible AP ammunition so the NPC balance multiplier cannot leak into the
+-- player economy. Diagnostics are intentionally opt-in and bounded by deaths.
+merc_ammo_diagnostics = false
+merc_ammo_conversions = 0
+local merc_ammo_drop_replacements = {
+	["ammo_5.45x39_merc"] = "ammo_5.45x39_ap",
+	["ammo_5.56x45_merc"] = "ammo_5.56x45_ap",
+}
+
+local function player_safe_ammo(ammo, source)
+	local replacement = merc_ammo_drop_replacements[ammo]
+	if not replacement then return ammo end
+	merc_ammo_conversions = merc_ammo_conversions + 1
+	if merc_ammo_diagnostics then
+		log2("[merc_ammo] source=%s action=convert from=%s to=%s count=%d",
+			tostring(source), tostring(ammo), replacement, merc_ammo_conversions)
+	end
+	return replacement
+end
+
 local always_offs_items = {
 	["device_torch"			]=true,
 	["device_pda"			]=true,
+	["device_pda_upgraded"]=true,
 	["hand_radio"			]=true,
 	["guitar_a"				]=true,
 	["harmonica_a"			]=true,
@@ -16,7 +38,7 @@ local always_offs_items = {
 	["wpn_binoc"			]=true,
 	["bolt"					]=true,
 	["repair_item_weapon"	]=true,
-	["repair_itemoutfit"	]=true,
+	["repair_item_outfit"	]=true,
 	["closer_box"			]=true,
 	["wpn_spas15_m1"		]=true
 	}
@@ -135,9 +157,57 @@ function init_drop_settings()
 	end
 end
 
+-- [HE-PORT]
+local function he_release_all(npc, item)
+	if item==nil or npc==nil then
+		return
+	end
+	if g_sim:object(item:id())~=nil then
+		misc.release_obj(item:id())
+	end
+end
+
+-- [HE-PORT]
+local function he_drop_single_ammo(npc)
+	local wpn = npc:item_in_slot(2) or npc:item_in_slot(1)
+	local ammo
+	if wpn and isWeapon(wpn) then
+		local sect = wpn:section()
+		local sini = system_ini()
+		if sini:line_exist(sect, "ammo_class") then
+			local list = {}
+			for name in string.gmatch(sini:r_string(sect, "ammo_class"), "([%w%._%-]+)") do
+				table.insert(list, name)
+			end
+			if #list > 0 then
+				ammo = list[(wpn:get_ammo_type() or 0) + 1] or list[1]
+				if ammo and not sini:section_exist(ammo) then
+					local found_valid = false
+					for _, a in ipairs(list) do
+						if sini:section_exist(a) then
+							ammo = a
+							found_valid = true
+							break
+						end
+					end
+					if not found_valid then
+						ammo = nil
+					end
+				end
+			end
+		end
+	end
+	npc:iterate_inventory(he_release_all, npc)
+	if ammo then
+		ammo = player_safe_ammo(ammo, "non_actor_death")
+		misc.spawn_obj(ammo, npc:position(), npc:id(), 1)
+	end
+end
+
 class "drop_manager"
-function drop_manager:__init(npc)
+function drop_manager:__init(npc, who) -- [HE-PORT]
 	self.npc = npc
+	self.killed_by_actor = who~=nil and db.actor~=nil and who:id()==db.actor:id() -- [HE-PORT]
 end
 
 local sootv_outfit={
@@ -311,12 +381,35 @@ local sootv_outfit={
 ["lohmat"]="dolg_outfit"
 }
 
+-- [HE-PORT]
+local function he_strip_gl(npc)
+	local done = {}
+	local function strip(item)
+		if item and not done[item:id()] and isWeapon(item) and rx_utils.get_addon_status(item,"gl") == 2 then
+			done[item:id()] = true
+			local flags = item:get_addon_flags()
+			if bit_and(flags,2) == 2 and math.random() >= 0.1 then
+				item:set_addon_flags(flags-2)
+			end
+		end
+	end
+	npc:iterate_inventory(function(_,item) strip(item) end, npc)
+	for i=1,2 do
+		strip(npc:item_in_slot(i))
+	end
+	strip(npc:active_item())
+end
+
 function drop_manager:create_release_item()
 	if (self.npc==nil) then
 		return
 	end
 	local nname=self.npc:name()
-	if (nname=="esc_exit_bandit_1") or (nname=="esc_exit_bandit_2") then
+	if (nname=="esc_exit_bandit_1") or (nname=="esc_exit_bandit_2") or (nname=="esc_stalker_corpse") then
+		return
+	end
+	local nsid = self.npc:story_id()
+	if nsid == 9496 or nsid == 9497 or nsid == 9498 then
 		return
 	end
 	local lname = level.name()
@@ -324,6 +417,11 @@ function drop_manager:create_release_item()
 		return
 	end
 
+	-- [HE-PORT]
+	local sp_ini = self.npc:spawn_ini()
+	if sp_ini and sp_ini:section_exist("spawn") and self.killed_by_actor~=true then
+		return
+	end
 	local se_obj = alife():object(self.npc:id())
 	if se_obj==nil or se_obj.death_droped==true then
 		return
@@ -331,8 +429,14 @@ function drop_manager:create_release_item()
 	se_obj.death_droped = true
 	self.npc:iterate_inventory(keep_item, self.npc)
 	check_weap_slots(self.npc)
+	he_strip_gl(self.npc) -- [HE-PORT]
 	local ini = self.npc:spawn_ini()
 	if ini and ini:section_exist("dont_spawn_loot") then
+		return
+	end
+	-- [HE-PORT]
+	if self.killed_by_actor~=true and excl_npcs(self.npc)~=true then
+		he_drop_single_ammo(self.npc)
 		return
 	end
 	local spawn_items = item_by_community[self.npc:character_community()]
@@ -494,7 +598,11 @@ function create_items(npc, section, number, rnd)
 				if npc:story_id() and npc:story_id()==NONE_CL_SID or npc:story_id()==NONE_SID then
 					local obj=g_sim:create(section,npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
 					if obj then
-						vergas_pda.add_tbl_pda(npc:id(),obj.id,vergas_pda.set_status_pda())
+						local status_pda = vergas_pda.set_status_pda() or 3
+						vergas_pda.add_tbl_pda(
+							npc:id(), obj.id, status_pda
+						)
+						vergas_pda.set_pda_condition( obj.id, status_pda )
 					end
 				end
 				return

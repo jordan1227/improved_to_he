@@ -1,7 +1,6 @@
 function attach(sm)
 	sm:subscribe({signal = "on_pda_open", fun = this.pda_open})
 	sm:subscribe({signal = "on_pda_hide", fun = this.pda_close})
-	sm:subscribe({signal = "on_key", fun = this.on_key})
 	sm:subscribe({signal = "on_update", fun = this.on_update})
 end
 
@@ -10,27 +9,33 @@ local wnd = nil
 function pda_open()
 	if not wnd and level.get_pda_wnd() then
 		wnd = PDAAdd(level.get_pda_wnd())
+		wnd:UpdateScreenLock()
 	end
 end
 
 function pda_close()
 	if wnd then
+        if wnd.screen_locked then
+            local bg = level.get_pda_wnd() and level.get_pda_wnd():FindChild("background_static")
+            if bg then bg:Enable(wnd.screen_was_enabled ~= false) end
+        end
 		wnd:DetachWnd()
 		wnd = nil
 		open_add_now = nil
 	end
 end
 
--- Manool: коллбэк срабатывает раньше, чем открывается PDAAdd, поэтому, успеваем установить флаг
-function on_key(key, bind)
-	if bind ~= key_bindings.kPDA_CLOCK then return end
-	open_add_now = true
+-- [HE-PORT]
+function set_shown(flag)
+	if wnd and wnd.stat then wnd.stat:Show(flag) end
 end
 
 function on_update()
 	ogse_signals.get_mgr():reschedule(500)
 	if wnd then
+		wnd:UpdateScreenLock()
 		wnd:UpdateTextRad()
+		wnd:UpdateBattery()
 	end
 end
 
@@ -52,7 +57,16 @@ function PDAAdd:InitControls()
 	self.stat:Show(true)
 
 	self.main_btn = xml:InitButton("btn_show_timer", self.stat)
+	-- [HE-PORT]
+	self.battery = xml:InitStatic("battery_static", self.stat)
+	self:UpdateBattery()
 	self:Register(self.main_btn, "button_timer")
+	-- [HE-PORT]
+	if he_watch_ui then
+		self.main_btn:Show(false)
+		self.main_btn:Enable(false)
+		open_add_now = nil
+	end
 	if open_add_now then
 		open_add_now = nil
 		self:ShowTimerDlg()
@@ -103,13 +117,30 @@ function PDAAdd:ShowTimerDlg()
 	self.main_btn:Enable(false)
 end
 
+function PDAAdd:UpdateScreenLock()
+    local locked = sivol_pda.screen_locked()
+    if locked == self.screen_locked then return end
+    local owner = level.get_pda_wnd()
+    local bg = owner and owner:FindChild("background_static")
+    if bg then
+        if locked then
+            self.screen_was_enabled = bg:IsEnabled()
+            bg:Enable(false)
+        elseif self.screen_locked then
+            bg:Enable(self.screen_was_enabled ~= false)
+        end
+    end
+    self.screen_locked = locked
+end
+
 function PDAAdd:SwitchMainControl(flag)
 	local wnd = level.get_pda_wnd()
 	if wnd then
 		local bg = wnd:FindChild("background_static")
 		if bg then
 			-- log2("SwitchMainControl: [%s]", tostring(flag))
-			bg:Enable(flag)
+			if self.screen_locked then self.screen_was_enabled = flag end
+			bg:Enable(flag and not self.screen_locked)
 		end
 	end
 end
@@ -136,12 +167,32 @@ function PDAAdd:CheckRadDevice()
 	return false
 end
 
+-- [HE-PORT]
+function PDAAdd:UpdateBattery()
+	if not self.battery then return end
+	local pct = pda_battery.get_percent()
+	if not pct then
+		self.battery:SetText("")
+		return
+	end
+	local col = "%c[255,105,240,145]"
+	if pct <= 20 then
+		col = "%c[255,255,85,85]"
+	elseif pct <= 40 then
+		col = "%c[255,238,153,26]"
+	elseif pct <= 60 then
+		col = "%c[255,255,255,1]"
+	end
+	self.battery:SetTextComplexMode(true)
+	self.battery:SetText(game.translate_string("he_pda_battery") .. ": " .. col .. pct .. "%")
+end
+
 function PDAAdd:UpdateTextRad()
 	if not self.cap_rad then return end
 	self.cap_rad:SetTextComplexMode(true)
 	
-	if not get_value("pda_upgr_rad") then
-		self.cap_rad:SetText(game.translate_string("ui_inv_radiation") .. ":%c[red] " .. game.translate_string("no_pda_chip_rad"))
+	if not he_pda_access or not he_pda_access.radiation_eligible or not he_pda_access.radiation_eligible() then
+		self.cap_rad:SetText("")
 		return
 	end
 	if not self:CheckRadDevice() then
@@ -250,6 +301,5 @@ function PDAAdd:OnKeyboard(dik, action)
 end
 
 function get_pda_upgr_spot()
-	local res = get_value("pda_upgr_spot",false)
-	return res
+	return he_pda_access and he_pda_access.custom_marker_eligible and he_pda_access.custom_marker_eligible() or false
 end

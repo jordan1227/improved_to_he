@@ -1,0 +1,369 @@
+-- [HE-PORT]
+local index = {}
+local name_to_obj = {}
+local name_to_level = {}
+local built = false
+local last_build = 0
+local BUILD_TTL = 120000
+-- [HE-PORT]
+local ACTOR_KEEPOUT = 260
+
+local probe_comms = {
+	"stalker", "bandit", "dolg", "freedom", "ecolog", "killer", "military", "green",
+	"monolith", "zombied",
+	"dog", "pseudodog", "boar", "flesh", "snork", "bloodsucker", "tushkano",
+	"burer", "controller", "poltergeist", "cat", "chimera", "giant",
+}
+
+local blacklist_sub = {
+	"arena",
+	"test_",
+}
+
+local locked_smarts = {
+	esc_bridge = true,
+}
+
+-- [HE-PORT]
+local cordon_pinned_smarts = {
+	esc_blokpost = true,
+	esc_bridge = true,
+	esc_specnaz = true,
+	esc_private = true,
+}
+
+local function is_blacklisted(name)
+	local n = string.lower(tostring(name or ""))
+	for i = 1, #blacklist_sub do
+		if string.find(n, blacklist_sub[i], 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+function is_locked(name)
+	if locked_smarts[name] == true then return true end
+	-- [HE-PORT]
+	if cordon_pinned_smarts[name] == true then
+		local ok, lname = pcall(function() return level.name() end)
+		if ok and lname == "l01_escape" then return true end
+	end
+	return false
+end
+
+local function is_bar_smart(name)
+	local n = string.lower(tostring(name or ""))
+	return string.sub(n, 1, 4) == "bar_"
+end
+
+local function smart_open(smart)
+	if not smart then return false end
+	if smart.disabled then return false end
+	if smart.population_locked then return false end
+	if is_blacklisted(smart:name()) then return false end
+	return true
+end
+
+local function smart_accepts(smart, community, level_name)
+	if not smart_open(smart) then return false end
+	return olr_faction_policy.accepts(smart, community, level_name)
+end
+
+local function smart_level_name(smart)
+	local ok, lname = pcall(function()
+		if smart.get_level_name then
+			return smart:get_level_name()
+		end
+		return smart.level_name
+	end)
+	if ok and lname then return lname end
+	ok, lname = pcall(function()
+		local sim = g_sim or alife()
+		return sim:level_name(game_graph():vertex(smart.m_game_vertex_id):level_id())
+	end)
+	if ok and lname then return lname end
+	return nil
+end
+
+local function add_smart(smart, new_index, new_map, new_level)
+	if not smart or not smart.name then return false end
+	local sname = smart:name()
+	if new_map[sname] then return true end
+	new_map[sname] = smart
+	local lname = smart_level_name(smart)
+	new_level[sname] = lname
+	for i = 1, #probe_comms do
+		local comm = probe_comms[i]
+		-- [HE-PORT]
+		local barred = false
+		local okd, denied = pcall(olr_faction_policy.smart_denied, comm, sname, lname)
+		if okd and denied then barred = true end
+		if smart_accepts(smart, comm, lname) and not barred then
+			if not new_index[comm] then
+				new_index[comm] = {}
+			end
+			table.insert(new_index[comm], sname)
+		end
+	end
+	return true
+end
+
+local function global_registry()
+	if not smart_terrain or not smart_terrain.get_registry_by_name then
+		return nil
+	end
+	local ok, reg = pcall(smart_terrain.get_registry_by_name)
+	if ok and reg then return reg end
+	return nil
+end
+
+function rebuild(force)
+	if not force and built and (time_global() - last_build) < BUILD_TTL then
+		return built
+	end
+
+	local new_index = {}
+	local new_map = {}
+	local new_level = {}
+	local any = false
+
+	local reg = global_registry()
+	if reg then
+		for _, smart in pairs(reg) do
+			if add_smart(smart, new_index, new_map, new_level) then
+				any = true
+			end
+		end
+	end
+
+	if db and db.smart_terrain_by_id then
+		for _, smart in pairs(db.smart_terrain_by_id) do
+			if add_smart(smart, new_index, new_map, new_level) then
+				any = true
+			end
+		end
+	end
+
+	if any then
+		index = new_index
+		name_to_obj = new_map
+		name_to_level = new_level
+		built = true
+		last_build = time_global()
+		return true
+	end
+	return false
+end
+
+local function merge_lists(comms)
+	local out = {}
+	local seen = {}
+	for i = 1, #comms do
+		local list = index[comms[i]]
+		if list then
+			for j = 1, #list do
+				local n = list[j]
+				if not seen[n] then
+					seen[n] = true
+					table.insert(out, n)
+				end
+			end
+		end
+	end
+	return out
+end
+
+function get_names(community)
+	rebuild(false)
+	if not community then
+		return {}
+	end
+	local list
+	if community == "green" or community == "nebo" or community == "stalker"
+		or community == "dolg" or community == "military"
+	then
+		list = merge_lists(olr_faction_policy.expand_comm(community))
+	else
+		list = index[community] or {}
+	end
+	if community == "military" then -- [HE-PORT]
+		local filtered = {}
+		for i = 1, #list do
+			local n = list[i]
+			if not is_bar_smart(n) then
+				table.insert(filtered, n)
+			end
+		end
+		return filtered
+	end
+	return list
+end
+
+function get_level(name)
+	rebuild(false)
+	return name_to_level[name]
+end
+
+-- [HE-PORT]
+function near_actor( name )
+	if not db.actor then return false end
+	local smart = name_to_obj[ name ]
+	if not smart then return false end
+	local ok, res = pcall( function()
+		if name_to_level[ name ] ~= level.name() then return false end
+		return db.actor:position():distance_to( smart.position ) < ACTOR_KEEPOUT
+	end )
+	if ok then return res == true end
+	return false
+end
+
+-- [HE-PORT]
+local function drop_near_actor( list )
+	if not db.actor then return list end
+	local pool = {}
+	for i = 1, #list do
+		if not near_actor( list[ i ] ) then
+			table.insert( pool, list[ i ] )
+		end
+	end
+	if #pool > 0 then return pool end
+	return list
+end
+
+local function pick_from(list, exclude_name)
+	local n = #list
+	if n == 0 then
+		return nil
+	end
+	if n == 1 then
+		if list[1] == exclude_name then
+			return nil
+		end
+		return list[1]
+	end
+	for i = 1, 12 do
+		local name = list[math.random(n)]
+		if name ~= exclude_name then
+			return name
+		end
+	end
+	return list[math.random(n)]
+end
+
+function pick_name(community, exclude_name, exclude_level)
+	local list = get_names(community)
+	if exclude_level then
+		local pool = {}
+		for i = 1, #list do
+			if name_to_level[list[i]] ~= exclude_level then
+				table.insert(pool, list[i])
+			end
+		end
+		if #pool > 0 then
+			list = pool
+		end
+	end
+	-- [HE-PORT]
+	local okp, pref = pcall(olr_faction_policy.is_bar_preferred, community)
+	if okp and pref then
+		local boosted = {}
+		for i = 1, #list do
+			local n = list[i]
+			table.insert(boosted, n)
+			if olr_faction_policy.is_bar_smart_name(n) then
+				table.insert(boosted, n)
+				table.insert(boosted, n)
+			end
+		end
+		list = boosted
+	end
+	-- [HE-PORT]
+	list = drop_near_actor( list )
+	return pick_from(list, exclude_name)
+end
+
+-- [HE-PORT]
+function pick_any_on_levels(allowed_levels, exclude_name)
+	rebuild(false)
+	local pool = {}
+	for name, lvl in pairs(name_to_level) do
+		if (not allowed_levels) or allowed_levels[lvl] then
+			if smart_open(name_to_obj[name]) then
+				table.insert(pool, name)
+			end
+		end
+	end
+	-- [HE-PORT]
+	pool = drop_near_actor( pool )
+	return pick_from(pool, exclude_name)
+end
+
+-- [HE-PORT]
+function population( name )
+	local smart = name_to_obj[ name ]
+	if not smart or not smart.gulag then return nil end
+	local ok, pop = pcall( function() return smart.gulag:get_population() end )
+	if ok and pop then return pop end
+	return nil
+end
+
+-- [HE-PORT]
+function capacity( name )
+	local smart = name_to_obj[ name ]
+	if not smart or not smart.gulag then return nil end
+	local ok, cap = pcall( function() return smart.gulag.capacity end )
+	if ok and cap then return cap end
+	return nil
+end
+
+-- [HE-PORT]
+function can_release( name )
+	if not name then return true end
+	rebuild( false )
+	local pop = population( name )
+	if not pop then return true end
+	local cap = capacity( name ) or 0
+	local floor = 2
+	if cap <= 3 then floor = 1 end
+	return ( pop - 1 ) >= floor
+end
+
+function get_obj(name)
+	rebuild(false)
+	local o = name_to_obj[name]
+	if not o then
+		return nil
+	end
+	local sim = g_sim or alife()
+	if sim and sim:object(o.id) then
+		return o
+	end
+	return nil
+end
+
+function ensure()
+	return rebuild(false)
+end
+
+function count(community)
+	local list = get_names(community)
+	return #list
+end
+
+-- [HE-PORT]
+function attach_to(sobj, smart_name)
+	if not (sobj and smart_name) then return false end
+	xrs_utils.clear_smart_terrain(sobj)
+	smart_terrain.unregister_npc(sobj)
+	if sobj.brain then
+		sobj:brain():can_choose_alife_tasks(true)
+		sobj:brain():update(true)
+	end
+	if not xrs_utils.set_smart_terrain(sobj, smart_name) then return false end
+	if sobj.brain then
+		sobj:brain():can_choose_alife_tasks(true)
+		sobj:brain():update(true)
+	end
+	return true
+end

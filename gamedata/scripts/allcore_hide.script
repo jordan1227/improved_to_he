@@ -4,9 +4,9 @@ function UseEnegry()
 	if eat_in_mask > 0 then
 		if vergas_masks.allcore_mask_is_on() or get_actor_obj():IsDetectorActive() then
 			if vergas_masks.allcore_mask_is_on() then
-				sak.send_tip(translate("eat_in_mask"), translate("st_mda"), 1, 10, "g_g", "sak", "red")
+				sak.send_tip_local(translate("eat_in_mask"), translate("st_mda"), 1, 10, "g_g", "sak", "red")
 			else
-				sak.send_tip(game.translate_string("use_antirad_1"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
+				sak.send_tip_local(game.translate_string("use_antirad_1"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
 			end
 			vergas_lib.s_play([[device\antirad_no]],1)
 			return 
@@ -15,7 +15,7 @@ function UseEnegry()
 	if db.actor:object("energy_drink") ~= nil then
 			db.actor:eat(db.actor:object("energy_drink"))
 	else
-		sak.send_tip(translate("no_en_drink"), translate("edred_baton"), 1, 10, "g_g", "sak", "red")
+		sak.send_tip_local(translate("no_en_drink"), translate("edred_baton"), 1, 10, "g_g", "sak", "red")
 		vergas_lib.s_play([[device\antirad_no]],1)
 	end
 end
@@ -72,192 +72,469 @@ function apply_item( sect, id )
 			end
 		end
 		return
+	elseif sect == "flask_army" then 
+		local obj = client_obj(id)
+		local current_water = vergas_flask.get_flask_water( obj )
+		vergas_flask.set_flask_water( obj, current_water )		
 	end
 	vergas_medical_elastic.use_item(sect, id, true)
 end
 
-local snd_in_use = false
 local def_used_timing = 5000
+local ITEM_CAMERA_ID = 9782
+local item_session = nil
 
-local function play_item_use(item, item_id)
-    local anim = "anm_show"
+local watch_session = 0
+local watch_presentation = nil
+
+local function commit_item(st)
+    if st.applied or not hud_animation_session.valid(st) then return end
+    st.applied = true
+    apply_item_prop(st.section, st.item_id)
+end
+
+local function finish_item(reason, teardown)
+    local st = item_session
+    if not st then return end
+    item_session = nil
+    local owner = st.owner_token
+    if st.sprint_actions_blocked then
+        if sivol and sivol.remove_sprint_block then
+            sivol.remove_sprint_block("consumable")
+        end
+        st.sprint_actions_blocked = false
+    end
+    if owner and hud_animation_owner then
+        hud_animation_owner.cancel(owner, reason)
+    end
+    hud_animation_session.cancel(st, reason)
+    -- Cancel the child first; its completion callback must see an invalid parent.
+    if st.mask_pending then vergas_masks.abort_animation(reason, teardown) end
+    if st.hud_active then game.stop_hud_motion() end
+    if st.camera_active then level.remove_cam_effector(ITEM_CAMERA_ID) end
+    if st.sound and st.sound:playing() then st.sound:stop() end
+    if not teardown and db.actor == st.actor and db.actor and db.actor:alive() then
+        -- Temporary mask removal belongs to this use, not to the next actor.
+        local outfit = db.actor:item_in_slot(6)
+        if st.restore_mask and outfit and outfit:id() == st.restore_outfit_id
+            and not vergas_masks.allcore_mask_is_on() then
+            vergas_masks.set_mask_on_off_flag(true)
+        end
+        slot_keeper.release(owner)
+    else
+        slot_keeper.reset()
+    end
+    if owner and hud_animation_owner then
+        hud_animation_owner.release(owner, reason)
+    else
+        animation_off()
+    end
+end
+local function item_after(st, ms, fn)
+    return hud_animation_session.after(st, ms, fn)
+end
+
+local function item_wait(st, predicate, fn)
+    return hud_animation_session.wait(st, predicate, fn, 10000)
+end
+
+local function play_item_use(st)
+    local item = st.section
     local item_hud = get_string(item, "hud")
     local cam_effect = get_string(item, "cam_effect")
     local used_time = get_u32(item, "item_used_timing", def_used_timing)
-    local snd = get_string(item_hud, "sound_1")
-
-    
     local outfit = db.actor:item_in_slot(6)
-
-    if outfit then
-        if string.find(outfit:section(), "_exo") then
-
-			local exo_anim_section = get_string(item_hud, "exo_anim_section")
-			if exo_anim_section then
-				item_hud = exo_anim_section
-			end
-
-            used_time = get_u32(item, "item_used_timing_exo", def_used_timing)
-            snd = get_string(item_hud, "sound_1")
-
-            cam_effect = get_string(item, "cam_effect_exo")
-        end
+    if outfit and string.find(outfit:section(), "_exo") then
+        item_hud = get_string(item_hud, "exo_anim_section") or item_hud
+        used_time = get_u32(item, "item_used_timing_exo", def_used_timing)
+        cam_effect = get_string(item, "cam_effect_exo")
     end
-
+    local snd = get_string(item_hud, "sound_1")
+    local act_it = db.actor:active_item()
+    local act_it_slot = act_it and get_u32(act_it:section(), "slot", false) or false
+    local is_det_active = get_actor_obj():IsDetectorActive()
+	-- Let CEatableItem::UseBy finish before closing the inventory. Closing it
+	-- from on_actor_before_use invalidates the item's current-inventory owner.
 	if level.get_inventory_wnd():IsShown() then
 		level.start_stop_menu(level.get_inventory_wnd(), true)
 	elseif level.get_car_body_wnd():IsShown() then
-		level.start_stop_menu(level.get_car_body_wnd(), true)			
+		level.start_stop_menu(level.get_car_body_wnd(), true)
 	end
-
-	local act_it = db.actor:active_item()
-	local act_it_slot = act_it and get_u32(act_it:section(), "slot", false) or false
-	local is_det_active = get_actor_obj():IsDetectorActive()
-
-	local prev_active_slot = db.actor:active_slot()
-	db.actor:activate_slot(255)
-
-	dsh.wait_condition(function() return not db.actor:active_item() end, function()
-		snd_in_use = sound_object(snd)
-		snd_in_use:play(db.actor, 0, sound_object.s2d)
-
-		local anm_start = time_global()
-		local anm_duration = game.play_hud_motion(2, item_hud, anim, true, 1, true)
-		sivol.add_move_penalty("item_use", 0.6)
-		if cam_effect then level.add_cam_effector(cam_effect, 7538, false, "", 0, false) end
-
-        --[=[]]
-		local hud = get_hud()
-		local anim_hud = hud:GetCustomStatic("static_anim") or hud:AddCustomStatic("static_anim", true)
-		local anim_hud_wnd = anim_hud:wnd()
-		local xml = CScriptXmlInit()
-		xml:ParseFile("ui_custom_msgs.xml")
-		anim_hud_wnd:SetText(game.translate_string("st_item_used")..": "..game.translate_string(news_manager.get_inv_name(item)))		
-		local anim_progress = xml:InitProgressBar("static_anim:anim_progress", anim_hud_wnd)
-		anim_progress:Show(true)
-        --]=]
-
-		dsh.timeout(math.min(used_time, anm_duration), function()
-			apply_item_prop(item, item_id)
-		end)
-
-		local tmr = dsh.timeout(anm_duration, function()
-			animation_off()
-			sivol.remove_move_penalty("item_use")
-
-			-- когда в руке длинное оружие и детектор одновременно, если использовать анимированный предмет (аптечку например),
-			-- и во время применения переключаться на бег к примеру и ещё в некоторых случаях,
-			-- детектор не возвращается и левая рука исчезает вообще, чтоб появилась надо убрать детектор из слота и вернуть обратно.
-			if is_det_active and act_it and not (act_it_slot == 0 or act_it_slot == 1 or act_it_slot == 5) then
-				local det = db.actor:item_in_slot(8)
-				if det then
-					db.actor:move_to_ruck(det)
-					db.actor:move_to_slot(det, true)
-				end
-			end
-
-			db.actor:activate_slot(prev_active_slot)
-
-			-- hud:RemoveCustomStatic("static_anim")
-			anim_progress = false
-		end)
-
-		dsh.wait_condition(function() return not tmr.slot_desc end, function() end, function()
-			if anim_progress then
-				anim_progress:SetProgressPos( 100 - 100 * ( ((anm_start + anm_duration) - time_global()) / anm_duration ) )
-			end
-		end)
-	end)
+    animation_on(st.owner_token)
+    slot_keeper.remember(st.owner_token)
+    db.actor:activate_slot(255)
+    item_wait(st, function() return not db.actor:active_item() end, function()
+        st.sound = xr_sound.get_safe_sound_object(snd)
+        if st.sound then st.sound:play(db.actor, 0, sound_object.s2d) end
+        local duration = game.play_hud_motion(2, item_hud, "anm_show", false, 1, true)
+        st.hud_active = true
+        if not hud_animation_session.duration(duration) then
+            commit_item(st)
+            finish_item("invalid motion duration")
+            return
+        end
+        if cam_effect then
+            level.add_cam_effector(cam_effect, ITEM_CAMERA_ID, false, "", 0, false)
+            st.camera_active = true
+        end
+        item_after(st, math.min(used_time, duration), function() commit_item(st) end)
+        item_after(st, duration, function()
+            commit_item(st) -- equal-deadline timers must not lose or double effects
+            game.stop_hud_motion()
+            st.hud_active = false
+            if st.camera_active then level.remove_cam_effector(ITEM_CAMERA_ID); st.camera_active = false end
+            if is_det_active and act_it and not (act_it_slot == 0 or act_it_slot == 1 or act_it_slot == 5) then
+                local det = db.actor:item_in_slot(8)
+                if det then db.actor:move_to_ruck(det); db.actor:move_to_slot(det, true) end
+            end
+            if st.restore_mask then
+                st.mask_pending = true
+                local started = vergas_masks.on_off_mask(function(ok)
+                    if not hud_animation_session.valid(st)
+                        or not hud_animation_owner.valid(st.owner_token) then return end
+                    st.mask_pending = false
+                    finish_item(ok and "complete" or "mask cancelled")
+                end, true, st.owner_token)
+                if not started then st.mask_pending = false; finish_item("mask restore refused") end
+            else
+                finish_item("complete")
+            end
+        end)
+    end)
 end
 
-local function on_actor_before_use( obj, sobj )
-
-	if db.actor:is_talking() then return end -- Юзанье в диалоге, никаких эффектов и анимаций
-
+local function on_actor_before_use(obj, sobj)
+    if db.actor:is_talking() then return end
     local sect, id = obj:section(), obj:id()
-	local hud = get_string(sect, "hud")
+    if sect == "flask_army" and vergas_flask.get_flask_water(obj) == 1 then
+        obj:disable_use()
+        sak.send_tip_local(
+				"Уже пустая", 
+				"Ёк-макарёк!", 0, 5, "g_g", "no", "red"
+			)
+        return
+    end
+    local hud = get_string(sect, "hud")
+    if hud == "no_hud" or not hud or not get_string(hud, "sound_1") then return end
+    -- The engine normally rejects item use before this callback while sprinting.
+    -- Keep the callback safe if another invocation path reaches it anyway.
+    if sivol and sivol.sprint_is_active and sivol.sprint_is_active() then
+        obj:disable_use()
+        return
+    end
+    local full = get_value("inv_full")
+    local masked = vergas_masks.allcore_mask_is_on() and get_bool(sect, "allcore_hide.is_food", false)
+    if item_session or vergas_masks.is_animating() or hud_fx_busy
+        or (not full and (level.only_movekeys_allowed() or not game.hud_motion_allowed())) then
+        obj:disable_use()
+        return
+    end
+    if not masked and get_actor_obj():IsDetectorActive() then
+        sak.send_tip_local(game.translate_string("use_antirad_1"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
+        obj:disable_use()
+        return
+    end
+    local owner_token = hud_animation_owner.reserve("consumable", { allow_full_backpack = full == true })
+    if not owner_token then
+        obj:disable_use()
+        return
+    end
+    local st
+    st = hud_animation_session.new("consumable", function(reason)
+        -- Same-world cancellation settles an already consumed dose once.
+        if hud_animation_session.valid(st) then commit_item(st) end
+        finish_item(reason, db.actor ~= st.actor or not db.actor or not db.actor:alive())
+    end)
+    item_session = st
+    st.owner_token = owner_token
+    st.section, st.item_id = sect, id
+    st.restore_mask = masked
+    local outfit = db.actor:item_in_slot(6)
+    st.restore_outfit_id = outfit and outfit:id()
+    -- Preserve native consumption; only the direct branch historically zeroes
+    -- native effects. Mask/full-backpack paths retain their existing semantics.
+    if not masked and not full then obj:zero_effects() end
+    slot_keeper.remember(owner_token)
+    slot_keeper.hold(owner_token)
+    local function begin_use()
+        if not hud_animation_session.valid(st) then return end
+        if not hud_animation_owner.valid(st.owner_token) then
+            commit_item(st)
+            finish_item("ownership unavailable")
+            return
+        end
+        animation_on(st.owner_token)
+        hud_animation_owner.acquire_weapon(st.owner_token)
+        if not masked then play_item_use(st); return end
+        st.mask_pending = true
+        local started = vergas_masks.on_off_mask(function(ok)
+            if not hud_animation_session.valid(st)
+                or not hud_animation_owner.valid(st.owner_token) then return end
+            st.mask_pending = false
+            if not ok then commit_item(st); finish_item("mask cancelled"); return end
+            play_item_use(st)
+        end, true, st.owner_token)
+        if not started then st.mask_pending = false; commit_item(st); finish_item("mask removal refused") end
+    end
 
-	if hud == "no_hud" or not hud then return end -- Анимации выключены
-	if not get_string(hud, "sound_1") then return end -- Не указан звук
+    local function start()
+        if not hud_animation_owner.activate(st.owner_token, "consumable") then
+            commit_item(st)
+            finish_item("ownership unavailable")
+            return
+        end
+        if sivol and sivol.add_sprint_block then
+            st.sprint_actions_blocked = sivol.add_sprint_block("consumable")
+        end
+        begin_use()
+    end
+    -- Close the inventory before claiming playback; full-backpack close retains
+    -- its own animation and releases inv_full only after that motion finishes.
+    if full or masked then
+        item_after(st, 20, function()
+            sak.close_window()
+            item_wait(st, function() return not get_value("inv_full") end, function()
+                item_after(st, 250, start)
+            end)
+        end)
+    else
+        item_after(st, 200, start)
+    end
+end
 
-	-- Юзанье с маской
-	if eat_in_mask > 0 and vergas_masks.allcore_mask_is_on() and get_bool(sect, "allcore_hide.is_food", false) then
-		sak.send_tip(translate("eat_in_mask"), translate("st_mda"), 1, 10, "g_g", "sak", "red")
-		obj:disable_use()
-		return
-	end
-	
-	-- Юзанье с детектором
-	if get_actor_obj():IsDetectorActive() then
-		sak.send_tip(game.translate_string("use_antirad_1"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
-		obj:disable_use()
-		return
-	end
+function item_animation_reset()
+    finish_item("load/reset", true)
+    animation_off()
+    if watch_presentation then abort_watch_presentation(watch_presentation.session) end
+end
 
-	-- В данный момент анимации недоступны
-	if level.only_movekeys_allowed() or not game.hud_motion_allowed() then
-		obj:disable_use()
-		return
-	end
+function item_animation_loaded()
+    item_animation_reset()
+end
 
-	animation_on()
-	obj:zero_effects()
-	dsh.timeout(200, function() -- Manool: здесь нужна задержка, иначе - движковый вылет
-		play_item_use(sect, id)
-	end)
+function item_animation_stop()
+    finish_item("shutdown", true)
+    if watch_presentation then abort_watch_presentation(watch_presentation.session) end
+end
+
+function item_animation_save()
+    local st = item_session
+    if st then
+        commit_item(st)
+        finish_item("save")
+    end
+    if watch_presentation then abort_watch_presentation(watch_presentation.session) end
+end
+
+function item_animation_update()
+    local st = item_session
+    if st and not hud_animation_session.valid(st) then
+        finish_item("actor unavailable", true)
+    end
+    if watch_presentation and watch_presentation.owner_token
+        and not hud_animation_owner.valid(watch_presentation.owner_token) then
+        abort_watch_presentation(watch_presentation.session)
+    end
 end
 
 function animation_off()
+    if hud_animation_owner and hud_animation_owner.resource_held("movement") then return end
 	level.only_allow_movekeys(false)
 	level.set_actor_allow_ladder(true)
 end
 
-function animation_on()
+function animation_on(owner)
+    if owner and hud_animation_owner then
+        return hud_animation_owner.acquire_movement(owner)
+    end
 	level.only_allow_movekeys(true)
 	level.set_actor_allow_ladder(false)
+    return true
+end
+watch_is_active = nil
+
+local function watch_presentation_valid(session)
+	return watch_presentation ~= nil and watch_presentation.session == session
+		and hud_animation_owner.valid(watch_presentation.owner_token)
 end
 
-watch_is_active = nil
-local function show_watch(key, bind)
-	if bind ~= key_bindings.kWATCH then return end
+-- Entry callbacks are valid only while the raise is still in progress; closing or
+-- aborting the presentation must not let a pending raise callback resurrect it.
+local function watch_entry_active(session)
+	return watch_presentation_valid(session) and watch_presentation.phase == "raising"
+end
 
+-- Read-only identity for wheel input; raising/closing/alarm are excluded.
+function get_watch_view_session()
+    local st = watch_presentation
+    if st and st.mode == "view" and st.phase == "active" then return st.session end
+    return nil
+end
+
+local function restore_after_presentation(st)
+	if not st or st.phase == "done" then return end
+	st.phase = "done"
+	local owner = st.owner_token
+	if db.actor and db.actor == st.actor and db.actor:alive() then
+		pcall(function() db.actor:activate_slot(st.prev_slot) end)
+	end
+	if watch_presentation == st then
+		watch_presentation = nil
+	end
+	watch_is_active = nil
+	if owner and hud_animation_owner then
+		hud_animation_owner.cancel(owner, "watch cleanup")
+		hud_animation_owner.release(owner, "watch cleanup")
+	else
+		animation_off()
+	end
+end
+
+local function discard_watch_presentation(st)
+    if not st then return end
+    st.phase = "done"
+    if watch_presentation == st then watch_presentation = nil end
+    watch_is_active = nil
+end
+-- [HE-PORT] Shared watch presentation. mode = "view" (kWATCH hold) or "alarm" (editor).
+-- Returns the presentation session id, or nil when the watch cannot be raised.
+function begin_watch_presentation(mode, on_ready)
+	if watch_presentation then return nil end
+	if not watch_gate.has_watch() then return nil end
+	if not (db.actor and db.actor:alive()) then return nil end
 	if get_actor_obj():IsDetectorActive()
 		or db.actor:is_talking()
 		or level.main_input_receiver()
 		or level.only_movekeys_allowed()
 		or not game.hud_motion_allowed()
 		or db.actor:ph_capture()
-	then return end
+	then return nil end
 
-	animation_on()
+	local owner_token = hud_animation_owner.reserve("watch")
+	if not owner_token or not hud_animation_owner.activate(owner_token, "watch raising") then
+		if owner_token then hud_animation_owner.release(owner_token, "watch admission") end
+		return nil
+	end
+	watch_session = watch_session + 1
+	local session = watch_session
+	local st = {
+		session = session,
+		mode = mode or "view",
+		prev_slot = db.actor:active_slot(),
+		phase = "raising",
+		owner_token = owner_token,
+	}
+	watch_presentation = st
+
+	animation_on(owner_token)
+	hud_animation_owner.acquire_weapon(owner_token)
 	watch_is_active = true
-	local prev_active_slot = db.actor:active_slot()
 	db.actor:activate_slot(255)
 
-	dsh.wait_condition(function() return not db.actor:active_item() end, function()
-		local anm_sec, anm_in, anm_idle, anm_out = "switch_watch", "anm_start", "anm_idle", "anm_end"
-		local snd = xr_sound.get_safe_sound_object("device\\watch_start_beep")
-		snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
-		local anm_watch_time = game.play_hud_motion(2, anm_sec, anm_in, true, 1)
-		dsh.timeout(anm_watch_time, function()
-			game.play_hud_motion(2, anm_sec, anm_idle, true, 1)
-			dsh.wait_condition(function() return key_state(bind_to_dik(key_bindings.kWATCH)) == 0 end, function()
-				local snd = xr_sound.get_safe_sound_object("device\\watch_end")
+	dsh.wait_condition(
+		function() return not db.actor or not db.actor:alive() or not db.actor:active_item() end,
+		function()
+			if not watch_entry_active(session) then return end
+			if not (db.actor and db.actor:alive()) then
+				abort_watch_presentation(session)
+				return
+			end
+			if he_watch_status.is_operational() then
+				local snd = xr_sound.get_safe_sound_object("device\\watch_start_beep")
 				snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
-				game.stop_hud_motion()
-				anm_watch_time = game.play_hud_motion(2, anm_sec, anm_out, true, 1)
-				dsh.timeout(anm_watch_time, function()
-					db.actor:activate_slot(prev_active_slot)
-					animation_off()
-					watch_is_active = nil
-				end)
+			end
+			local anm_watch_time = game.play_hud_motion(2, "switch_watch", "anm_start", true, 1)
+			dsh.timeout(anm_watch_time, function()
+				if not watch_entry_active(session) then return end
+				if not (db.actor and db.actor:alive()) then
+					abort_watch_presentation(session)
+					return
+				end
+				game.play_hud_motion(2, "switch_watch", "anm_idle", true, 1)
+				st.phase = "active"
+				if on_ready then on_ready(session) end
 			end)
-		end)
-	end)
+		end
+	)
+	return session
 end
 
+-- [HE-PORT] Play the exit animation and restore the actor slot. Calls on_closed with
+-- the presentation session id on success and with false when the session is not valid.
+function end_watch_presentation(session, on_closed)
+	local st = watch_presentation
+	if not st or (session and st.session ~= session) or st.phase == "closing" or st.phase == "done" then
+		if on_closed then on_closed(false) end
+		return false
+	end
+    if not hud_animation_owner.valid(st.owner_token) then
+        discard_watch_presentation(st)
+        if on_closed then on_closed(false) end
+        return false
+    end
+	st.phase = "closing"
+	watch_session = watch_session + 1
+
+	local function finish()
+        local valid = hud_animation_owner.valid(st.owner_token)
+		if st.phase ~= "done" then
+            if valid then restore_after_presentation(st) else discard_watch_presentation(st) end
+		end
+		if on_closed then on_closed(valid and st.session or false) end
+	end
+
+	if db.actor and db.actor:alive() then
+		if he_watch_status.is_operational() then
+			local snd = xr_sound.get_safe_sound_object("device\\watch_end")
+			snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
+		end
+		game.stop_hud_motion()
+		local anm_watch_time = game.play_hud_motion(2, "switch_watch", "anm_end", true, 1)
+		dsh.timeout(anm_watch_time, finish)
+	else
+		game.stop_hud_motion()
+		finish()
+	end
+	return true
+end
+
+-- [HE-PORT] Idempotent forced cleanup; safe on actor destruction/death.
+function abort_watch_presentation(session)
+	local st = watch_presentation
+	if not st or (session and st.session ~= session) then return end
+	watch_session = watch_session + 1
+    if not hud_animation_owner.valid(st.owner_token) then
+        discard_watch_presentation(st)
+        return
+    end
+	game.stop_hud_motion()
+	restore_after_presentation(st)
+end
+
+local function show_watch(key, bind)
+	if bind ~= key_bindings.kWATCH then return end
+	begin_watch_presentation("view", function(session)
+		dsh.wait_condition(
+			function()
+				return not watch_presentation_valid(session)
+					or not db.actor
+					or not db.actor:alive()
+					or key_state(bind_to_dik(key_bindings.kWATCH)) == 0
+			end,
+			function()
+				end_watch_presentation(session, nil)
+			end
+		)
+	end)
+end
 function attach( sm )
+    sm:subscribe({ signal = "on_load_before_all", fun = item_animation_reset })
+    sm:subscribe({ signal = "on_game_loaded", fun = item_animation_loaded })
+    sm:subscribe({ signal = "on_stop_modules", fun = item_animation_stop })
+    sm:subscribe({ signal = "on_before_save_game", fun = item_animation_save })
+    sm:subscribe({ signal = "level_changer_action", fun = item_animation_save })
+    sm:subscribe({ signal = "on_update", fun = item_animation_update })
 	sm:subscribe({ signal = "on_actor_before_use", fun = on_actor_before_use })
-	sm:subscribe({ signal = "on_first_update",     fun = animation_off       })
+	sm:subscribe({ signal = "on_first_update",     fun = item_animation_reset })
 	sm:subscribe({ signal = "on_key", fun = show_watch })
 end

@@ -1,0 +1,185 @@
+-- [HE-PORT]
+local subscribed, power, container, anomaly_id
+
+-- [HE-PORT]
+function attach(sm)
+	sm:subscribe({ signal = "on_drop", fun = this.on_drop })
+	sm:subscribe({ signal = "on_take", fun = this.on_take })
+	sm:subscribe({ signal = "on_actor_before_hit", fun = this.on_actor_before_hit })
+	sm:subscribe({ signal = "on_late_init_all", fun = this.on_late_init_all })
+end
+
+-- [HE-PORT]
+function on_late_init_all()
+	if nlc_fixes and nlc_fixes.create_freeman_case then
+		nlc_fixes.create_freeman_case()
+	end
+end
+
+-- [HE-PORT]
+function on_drop(obj, sobj)
+	local sect = obj:section()
+	if sect ~= "special_art_container" then return end
+	container = obj:id()
+
+	local id, pos, radius, dist = amk_anoms.get_nearest_anomaly(db.actor)
+	if id and dist <= 2 then
+		local anom = client_obj(id)
+		if not anom then return end
+		local anom_sect = anom:section()
+		if strpos(anom_sect, "_galant", 1, true) then
+			local atype = anom_sect:match("[^_]+$")
+			power = (atype == "weak" and -0.002) or (atype == "average" and -0.003) or -0.0045
+			anomaly_id = id
+
+			if not subscribed then
+				subscribed = { signal = "on_update", fun = this.hit_container }
+				ogse_signals.get_mgr():subscribe(subscribed)
+			end
+		end
+	end
+end
+
+-- [HE-PORT]
+function on_take(obj, sobj)
+	if obj:section() ~= "special_art_container" then return end
+	unsubscribe()
+end
+
+-- [HE-PORT]
+function unsubscribe()
+	if subscribed then
+		ogse_signals.get_mgr():unsubscribe(subscribed)
+		subscribed = nil
+		power = nil
+	end
+end
+
+-- [HE-PORT]
+local function srv_glv(sobj)
+	local gv, lv
+	local ok
+	ok, gv = pcall(function() return sobj.m_game_vertex_id end)
+	if not ok or gv == nil then
+		ok, gv = pcall(function() return sobj.gvid end)
+	end
+	if not ok or gv == nil then gv = db.actor:game_vertex_id() end
+	ok, lv = pcall(function() return sobj.m_level_vertex_id end)
+	if not ok or lv == nil then
+		ok, lv = pcall(function() return sobj.lvid end)
+	end
+	if not ok or lv == nil then lv = db.actor:level_vertex_id() end
+	return gv, lv
+end
+
+-- [HE-PORT]
+function hit_container()
+	local signal_manager = ogse_signals.get_mgr():reschedule(1000)
+
+	local obj = g_sim:object(container)
+	if not obj then
+		unsubscribe()
+		return
+	end
+
+	local cont_cond = params.get_condition(obj, 0.99)
+	if cont_cond == 0 then
+		unsubscribe()
+		local days = lua_random(1, 3)
+		local hours = lua_random(1, 10)
+		local minutes = lua_random(1, 60)
+		timers.start_timer("black_tip_hv", days, hours, minutes, "sak_dialog.take_black_tip()")
+		db.actor:give_info_portion("info_black_tip")
+		return
+	end
+
+	local cont_pos = obj.position
+	local act_pos = db.actor:position()
+
+	if cont_pos:distance_to(act_pos) >= 25 or sleep_manager.sleeping or db.blowout_active then
+		unsubscribe()
+		local shape = { shtype = 0, radius = 2.0, center = { 0, 0.5, 0 } }
+		local gv, lv = srv_glv(obj)
+		amk_anoms.spawn_anomaly("amk_zone_greedy_strong", cont_pos, gv, lv, shape, "on")
+		misc.release_obj(obj)
+		misc.release_obj(anomaly_id)
+		return
+	end
+
+	local electra_particle = particles_object("anomaly2\\electra_entrance_big")
+	local electra_sound = sound_object([[monsters\tushkano\tushkano_spark]])
+
+	if electra_particle and electra_sound then
+		local pos_blast = sak.v3f(cont_pos.x, cont_pos.y, cont_pos.z)
+		electra_particle:play_at_pos(pos_blast)
+		electra_sound:play_at_pos(db.actor, pos_blast, 0)
+		params.add_condition(obj, power)
+	end
+end
+
+-- [HE-PORT]
+local function is_electra_hit(hit_data)
+	if not hit_data or hit_data.hit_type ~= hit.shock then return false end
+	local who_id = hit_data.who_id
+	if who_id then
+		local src = level.object_by_id(who_id)
+		if src then
+			if src:clsid() == clsid.zone_electra_s then return true end
+			local sec = src:section() or ""
+			if string.find(sec, "galant", 1, true) then return true end
+		end
+	end
+	return false
+end
+
+-- [HE-PORT]
+local function outfit_shock_prot()
+	local shock = 0.15
+	local ok, arm = pcall(function() return db.actor:item_in_slot(6) end)
+	if ok and arm then
+		local ok2, prot = pcall(function()
+			return arm:get_inventory_item().shock_protection * arm:condition()
+		end)
+		if ok2 and prot then shock = (0.65 - prot) / 2 end
+	end
+	return shock
+end
+
+-- [HE-PORT]
+local function belt_shock_prot()
+	local ok, val = pcall(function()
+		if not arts_operate then return 0 end
+		local v = 0
+		for _, k in pairs(sak_inventory.belt_items) do
+			for m = 1, #k do
+				local af_obj = client_obj(k[m])
+				if af_obj then
+					local af_sect = af_obj:section()
+					if system_ini():line_exist(af_sect .. "_absorbation", "shock_immunity") then
+						local absorbation = tonumber(system_ini():r_string(af_sect .. "_absorbation", "shock_immunity")) or 0
+						v = v + ((absorbation >= 1) and absorbation or -absorbation)
+					end
+				end
+			end
+		end
+		return (v > 0 and v * 0.03) or 0
+	end)
+	if ok and val then return val end
+	return 0
+end
+
+-- [HE-PORT]
+function special_container_downgrade(hit_power)
+	local cont = db.actor:object("special_art_container")
+	if not cont or cont:condition() == 0 then return end
+	if black_tip.have_black_tip() then hit_power = hit_power * 1.3 end
+	local cond = outfit_shock_prot() + (hit_power * 0.01) + belt_shock_prot()
+	if cond > 0 then cont:set_condition(cont:condition() - cond) end
+end
+
+-- [HE-PORT]
+function on_actor_before_hit(obj, hit_data)
+	if not is_electra_hit(hit_data) then return end
+	special_container_downgrade(hit_data.power or 0.3)
+end
+

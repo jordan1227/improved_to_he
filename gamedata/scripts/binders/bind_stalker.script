@@ -78,6 +78,9 @@ spec_item = {
 	["razgruzka_new"]=true,
 	["podsumok"]=true,
 	["shadow_inventory"]=true,
+	["bag_on_belt"]=true,
+	["bag_on_belt_n"]=true,
+	["shadow_inventory2"]=true,
 	["af_dummy_black_tip"]=true,
 	["flask_army_on_belt"]=true,
 	--["arc_art_box_1basic"]=true,
@@ -297,6 +300,8 @@ function actor_binder:net_spawn(data)
 	self.bCheckStart = true
 	self.weapon_hide = false
 	weapon_hide = false
+	slot_keeper.reset()
+	remove_value( "restore_slot" )
 
 	local lname = level.name()
 	local prev_lname = get_value("prev_level_name")
@@ -373,24 +378,43 @@ function actor_binder:safe_net_spawn(data)
 	return true
 end
 
+-- [HE-PORT]
 function actor_binder:early_init()
-	-- инциализация по первым тикам биндера (большая часть объектов онлайн)
-	if binder_loops == 2 then
-		s_fixes.fix_mgr()
-	end
 end
 
 function actor_binder:late_init()
 	log_init_stage()
+	-- [HE-PORT]
+	game_options.sync_balance_value()
 	amk.on_game_load(obj)
 	sak.add_tail()
 	self.am:call("on_late_init_all")
 	level.enable_input()
-end
+	if sivol_weapon then
+		if sivol_weapon.late_init then sivol_weapon.late_init() end
+	end
+	if sivol_masks then
+		if sivol_masks.init_module then sivol_masks.init_module() end
+		if sivol_masks.on_game_load then sivol_masks.on_game_load() end
+	end
 
+	-- signal wpn_params that late-init has fully completed and it's safe
+	-- to touch globals like nlc_vars
+	if wpn_params and wpn_params.mark_ready then wpn_params.mark_ready() end
+	sivol_worldspawns.on_game_load()
+	sak_dialog.fill_hos_treasure()
+	sak.mixture_effects_on_load()
+	-- [HE-PORT]
+	if not get_value( "anti_spawn_restrictors" ) then
+		nlc_fixes.create_anti_spawn_zones()
+	end
+end
 function actor_binder:net_destroy()
 	ODS('[~T].~CF0 #DBG: actor_binder:net_destroy() processing ...~C07')
+	-- [HE-PORT]
+	if he_watch_ui then he_watch_ui.abort("net_destroy") end
 	self.am:call("on_stop_modules")
+	slot_keeper.reset()
 	texman.ret_tex_trees()
 	self:clear_callbacks()
 	db.del_actor(self.object)
@@ -539,6 +563,7 @@ function actor_binder:on_footstep(obj, p)
 end
 
 function actor_binder:on_actor_weapon_reload(wpn)
+	self.am:call("on_actor_weapon_reload", wpn)
 	if wpn then
 		local a_t = vergas_lib.set_pr_from_config_str(wpn:section(),"weapon_type")
 		if a_t ~= "heavy" then return end
@@ -589,91 +614,264 @@ function actor_binder:before_hit_callback(hit_data)
 			end
 		end
 	end
+	if not hit_data.ignore_hit and sivol_kolobok and type(sivol_kolobok.on_before_hit) == "function" then
+		local ok_kolobok, error_text = pcall(sivol_kolobok.on_before_hit, hit_data)
+		if not ok_kolobok then
+			log2("[sivol_kolobok] before-hit handler failed: %s", tostring(error_text))
+		end
+	end
 	if not hit_data.ignore_hit then
 		self.am:call("on_actor_before_hit", self.object, hit_data, self)
 	end
 end
 
+local function is_blowout_active()
+	if db.blowout_active == true then
+		return true
+	end
+	local value = get_value("blowout", 0)
+	if type(value) == "boolean" then
+		return value
+	end
+	return (tonumber(value) or 0) ~= 0
+end
+
 local function check_pda_conditions()
-	local pda = db.actor:object("device_pda")
-	if not pda then return 'nil', nil, nil, nil, nil end
-	local is_3d_pda = get_console():get_string("g_3d_pda")
-	local lvl_aver = level.name() == "aver"
-	local flag1 = pda and lvl_aver
-	local flag2 = not pda and db.actor:object("device_pda_npc_gg")
-	local in_safe_zone = not amk_anoms.check_coordinates(db.actor:position())
-	local cond = (pda and pda:condition()) or 0
-	return flag1, flag2, in_safe_zone, is_3d_pda, cond
+    local pda = he_pda_model.get_pda()
+    if not pda then return 'nil', nil, nil, nil, nil, nil, nil end
+
+    local is_3d_pda = get_console():get_string("g_3d_pda")
+    local lvl_aver = level.name() == "aver"
+    local lvl_underground = const.ground_levels and const.ground_levels[string.lower(level.name())] == false
+    local blowout = is_blowout_active()
+    local broken = has_alife_info("pda_is_broken")
+
+    -- [HE-PORT]
+    -- flag1 retained for legacy 2D PDA / external calls that check locations + blowout
+    local flag1 = pda and (lvl_aver or lvl_underground or (blowout and not sivol_pda.emission_resistant()) or broken)
+    local flag2 = not pda and db.actor:object("device_pda_npc_gg")
+    local in_safe_zone = not amk_anoms.check_coordinates(db.actor:position())
+    local cond = (pda and pda:condition()) or 0
+    local flag_blowout = pda and blowout
+
+    return flag1, flag2, in_safe_zone, is_3d_pda, cond, broken, flag_blowout
 end
 
 local function pda_cb()
-	local flag1, flag2, in_safe_zone, is_3d_pda, _ = check_pda_conditions()
-	if flag1 == 'nil' then return end
-	if is_3d_pda == 'on' then return end
-	if flag1 and not flag2 then
-		if in_safe_zone then return end
-		if pda_on then
-			pda_noise.on_info("off")
-		else
-			pda_noise.on_info("on")
-		end
-	elseif flag2 then
-		if pda_on then
-			pda_noise.on_info("off")
-		else
-			pda_noise.on_info("on")
-		end
-	end
+    local flag1, flag2, in_safe_zone, is_3d_pda, _, broken = check_pda_conditions()
+    if is_3d_pda == 'on' then return end
+    if flag1 == 'nil' then return end
+    
+    -- Re-add the electra check so 2D PDA triggers near anomalies
+    local electra_on = sivol_pda
+        and sivol_pda.electra_active
+        and sivol_pda.electra_active()
+        
+    if (flag1 or electra_on) and not flag2 then
+        if pda_on then
+            pda_noise.on_info("off")
+        elseif broken then
+            pda_noise.on_info("on_broken")
+        else
+            pda_noise.on_info("on")
+        end
+    elseif flag2 then
+        if pda_on then
+            pda_noise.on_info("off")
+        else
+            pda_noise.on_info("on")
+        end
+    end
 end
 
 local is_busy_on = get_bool("features", "busy_actor_restrictions", false)
 function is_busy_actor_restrictions()
 	local wpn = db.actor:active_item()
 	if not db.actor:alive() then return true end
+	if vergas_masks.is_animating() then return true end -- Sivol FDDA mask
+	if hud_animation_owner and hud_animation_owner.busy
+	 and hud_animation_owner.busy() then return true end
 	if wpn and wpn:is_hud_item() and is_busy_on and wpn:get_hud_item_state() ~= global_flags.eIdle then return true end
 	return false
 end
 
+local inv_holster_wait = false
 local gren_fix_process
-local key_actions = {
-	[key_bindings.kNEW_INVENTORY] = {
-		func = function()
-			--if is_busy_actor_restrictions() then return end
-			local wnd = windows.get_active()
-			if db.actor:is_talking() or wnd then
 
-				if wnd and not level.main_input_receiver() then
-					log2("lost actve_dialog object detected")
-					if wnd.CloseDialog then
-						wnd:CloseDialog()
-					elseif wnd.on_quit then
-						wnd:on_quit()
-					else
-						windows.set_active(false)
-					end
-				else
-					return
+-- [HE-PORT]
+he_suppress_gadget_open = false
+
+local function he_can_hold()
+	return db.actor and db.actor:alive()
+		and not db.actor:is_talking()
+		and used_items.can_use_gadget()
+		and not is_busy_actor_restrictions()
+end
+
+local function he_open_raz_filter(mode)
+	if not he_can_hold() then return end
+	if not (sak_dialog.have_razgruzka() or sak_dialog.have_razgruzka_new()) then return end
+	bind_stalker.hide_weapon()
+	razgruzka.open_inventory()
+	inv_buttons_use.open_inventory(mode)
+end
+
+local function he_open_raz_full()
+	if not he_can_hold() then return end
+	local sect = nil
+	if db.actor:object("razgruzka_new") then
+		sect = "razgruzka_new"
+	elseif db.actor:object("razgruzka") then
+		sect = "razgruzka"
+	else
+		return
+	end
+	sak.actor_hide_weapon()
+	level.add_cam_effector("camera_effects\\item_use.anm", 9773, false, "")
+	misc.easy_sound("interface\\misery\\inv_open")
+	dsh.timeout(1700, function()
+		level.enable_input()
+		level.remove_cam_effector(9773)
+		if not db.actor or not db.actor:alive() then return end
+		inv_buttons_use.imitation_opening_inventory()
+		used_items.used_podsumok_razgruzka(sect)
+	end)
+end
+
+local function he_open_podsumok()
+	if not he_can_hold() then return end
+	if not db.actor:object("podsumok") then return end
+	sak.actor_hide_weapon()
+	level.add_cam_effector("camera_effects\\item_use.anm", 9773, false, "")
+	misc.easy_sound("interface\\misery\\inv_open")
+	dsh.timeout(800, function()
+		level.enable_input()
+		level.remove_cam_effector(9773)
+		if not db.actor or not db.actor:alive() then return end
+		inv_buttons_use.imitation_opening_inventory()
+		used_items.used_podsumok_razgruzka("podsumok")
+	end)
+end
+
+local function he_equip_accum()
+	if not he_can_hold() then return end
+	if level.main_input_receiver() then return end
+	local accum = sak.get_accum and sak.get_accum() or db.actor:item_in_slot(10)
+	if accum then
+		db.actor:move_to_ruck(accum)
+	else
+		local inv_accum = nil
+		db.actor:iterate_inventory(function(npc, obj)
+			local s = obj:section()
+			if (s == "af_full_akkum" or s == "af_full_akkum_big") and obj:condition() > 0 then
+				if not inv_accum or inv_accum:condition() > obj:condition() then
+					inv_accum = obj
 				end
 			end
+		end)
+		if not inv_accum then
+			sak.send_tip_local("Н-да, аккумулятор-то где...", "Нету его!", 1, 10, "g_g", "sak", "red")
+			return
+		end
+		db.actor:move_to_slot(inv_accum)
+	end
+	sak.actor_hide_weapon()
+	level.add_cam_effector("camera_effects\\item_use.anm", 9773, false, "")
+	misc.easy_sound("interface\\misery\\inv_open")
+	dsh.timeout(1200, function()
+		level.remove_cam_effector(9773)
+		sak.restore_weap()
+	end)
+end
 
-			local gadget = used_items.can_use_gadget()
+local function he_open_flask()
+	if not he_can_hold() then return end
+	if self_weapon_hide then return end
+	if get_actor_obj():IsDetectorActive() then return end
+	sak.actor_hide_weapon()
+	level.add_cam_effector("camera_effects\\item_use.anm", 9773, false, "")
+	misc.easy_sound("interface\\misery\\inv_open")
+	dsh.timeout(800, function()
+		level.enable_input()
+		level.remove_cam_effector(9773)
+		if not db.actor or not db.actor:alive() then
+			bind_stalker.restore_weapon()
+			return
+		end
+		used_items.used_flask_army(true)
+	end)
+end
 
-			if gadget and (not self_weapon_hide) and not get_actor_obj():IsDetectorActive() and not db.actor:ph_capture() then
-				--local activ = db.actor:active_slot()
-				--if activ == NO_ACTIVE_SLOT then
-					used_items.used_inventory()
-				--end
+
+
+local key_actions = {
+-- [HE-PORT]
+[key_bindings.kNEW_INVENTORY] = {
+	func = function()
+		if is_busy_actor_restrictions() then return end
+		local wnd = windows.get_active()
+		if db.actor:is_talking() or wnd then
+			if wnd and not level.main_input_receiver() then
+				log2("lost actve_dialog object detected")
+				if wnd.CloseDialog then
+					wnd:CloseDialog()
+				elseif wnd.on_quit then
+					wnd:on_quit()
+				else
+					windows.set_active(false)
+				end
+			else
+				return
 			end
 		end
-	},
-	[key_bindings.kMASK_CONTROL] = {
-		func = function()
-			if is_busy_actor_restrictions() then return end
-			if used_items.can_use_gadget() and self_weapon_hide == false then
-				vergas_masks.on_off_mask()
+		local gadget = used_items.can_use_gadget()
+		if gadget and (not self_weapon_hide) and not get_actor_obj():IsDetectorActive() and not db.actor:ph_capture() then
+			if inv_holster_wait then return end
+			slot_keeper.remember()
+			if db.actor:active_item() then
+				inv_holster_wait = true
+				db.actor:activate_slot(255)
+				local deadline = time_global() + 2000
+				dsh.wait_condition(function()
+					return not db.actor:active_item() or time_global() > deadline
+				end, function()
+					inv_holster_wait = false
+					if used_items.can_use_gadget() and not db.actor:is_talking() and not level.main_input_receiver() and not get_actor_obj():IsDetectorActive() and not db.actor:ph_capture() then
+						used_items.used_inventory()
+					else
+						slot_keeper.restore()
+					end
+				end)
+			else
+				used_items.used_inventory()
 			end
 		end
-	},
+	end,
+	long_press = function()
+		he_open_raz_filter(2)
+	end,
+	long_press_timer = 200,
+},
+-- [HE-PORT]
+[key_bindings.kMASK_CONTROL] = {
+	func = function()
+		if is_busy_actor_restrictions() then return end
+		if used_items.can_use_gadget() and self_weapon_hide == false then
+			vergas_masks.on_off_mask()
+		end
+	end,
+	long_press = function()
+		he_open_flask()
+	end,
+	long_press_timer = 300,
+},
+-- [HE-PORT]
+[key_bindings.kNIGHT_VISION] = {
+	func = function()
+		if is_busy_actor_restrictions() then return end
+		nvd_params.on_before_switch_nv()
+	end,
+},
 	[key_bindings.kNEW_QUICKSAVE] = {
 		func = function()
 			-- if is_busy_actor_restrictions() then return end
@@ -684,7 +882,7 @@ local key_actions = {
 		func = function()
 			if is_busy_actor_restrictions() then return end
 			if used_items.can_use_gadget() and self_weapon_hide == false and not db.actor:is_talking() and not get_actor_obj():IsDetectorActive() then
-				used_items.used_flask_army(false)
+				used_items.used_flask_army(true)
 			end
 		end
 	},
@@ -712,6 +910,7 @@ local key_actions = {
 			end
 		end
 	},
+	--[[
 	[key_bindings.kUSE_INFO] = {
 		func = function()
 			if
@@ -725,6 +924,26 @@ local key_actions = {
 			end
 		end
 	},
+	]]--
+	
+	-- Удержание
+	[key_bindings.kUSE_INFO] = {
+		on_hold_start = function()
+			if
+				(sak_dialog.have_razgruzka() or sak_dialog.have_razgruzka_new() or sak_dialog.podsumok_have()) and
+					used_items.can_use_gadget() and
+					db.actor:alive() and
+					not db.actor:is_talking() and
+					self_weapon_hide == false
+			then
+				razgruzka.use_info()
+			end
+		end,
+		on_hold_end = function()
+			razgruzka.end_use_info()
+		end,
+	},
+		
 	[key_bindings.kNAME_SAVE] = {
 		func = function()
 			-- if is_busy_actor_restrictions() then return end
@@ -767,12 +986,104 @@ local key_actions = {
 	},
 	[key_bindings.kPDA_CLOCK] = {
 		func = function()
-			pda_cb()
+			-- [HE-PORT] Watch-only alarm editor; the same key toggles open/cancel.
+			-- he_watch_ui polls this action; never open the native PDA here.
 		end
-	}
+	},
+-- [HE-PORT]
+[key_bindings.kWPN_RELOAD] = {
+	long_press = function()
+		he_open_raz_full()
+	end,
+	long_press_timer = 600,
+},
+
+-- [HE-PORT]
+	[key_bindings.kTORCH] = {
+		func = function()
+			nlc_torch.switch_torch()
+		end,
+		long_press = function()
+			nlc_torch.torch_switch_cone_hold()
+		end,
+		long_press_timer = 400,
+	},
+	
+-- [HE-PORT]
+[key_bindings.kUSE_MEDKIT] = {
+	long_press = function()
+		he_open_raz_filter(1)
+	end,
+	long_press_timer = 350,
+},
+-- [HE-PORT]
+[key_bindings.kOPN_NZ] = {
+	func = function()
+		if he_suppress_gadget_open then
+			he_suppress_gadget_open = false
+			return
+		end
+		if not he_can_hold() then return end
+		if self_weapon_hide then return end
+		used_items.used_bag_on_belt(true, true)
+	end,
+	long_press = function()
+		he_open_raz_filter(12)
+	end,
+	long_press_timer = 220,
+},
+-- [HE-PORT]
+[key_bindings.kEXT_1] = {
+	func = function()
+		he_equip_accum()
+	end,
+	long_press = function()
+		he_open_raz_filter(3)
+	end,
+	long_press_timer = 180,
+},
+	-- Короткое: переключить прицел/аддон. Долгое: TEST.
+-- [HE-PORT]
+[key_bindings.kCAM_4] = {
+	func = function()
+		if is_busy_actor_restrictions() then return end
+		sak.actor_hide_weapon()
+		misc.easy_sound("interface\\misery\\inv_open")
+		dsh.timeout(450, function()
+			if dsh_switch_addons.switch_addons() then
+				dsh.timeout(1500, function()
+					sak.restore_weap()
+				end)
+			else
+				sak.restore_weap()
+				sak.send_tip_local("Невозможно присоединить прицел к оружию", "Нету места", 0, 5, "g_g", "sak", "red")
+			end
+		end)
+	end,
+	long_press = function()
+		he_open_podsumok()
+	end,
+	long_press_timer = 400,
+},
 }
 
-local hold_keys = {}
+local hold_keys        = {}
+local accepted_keys    = {}
+local key_press_time   = {}
+local long_press_fired = {}
+local last_action_time = {}
+local ACTION_COOLDOWN  = 200
+
+-- [HE-PORT]
+hud_fx_busy = false
+
+local function is_input_blocked()
+	return level.main_input_receiver() ~= nil
+		or device():is_paused()
+		or db.actor:ph_capture()
+		or hud_fx_busy
+end
+
 function actor_binder:on_cell_item_focus(obj)
 	self.am:call("on_cell_item_focus", obj)
 end
@@ -782,11 +1093,16 @@ function actor_binder:on_cell_item_focus_lost(obj)
 end
 
 function actor_binder:on_cell_item_mouse( obj, x, y, action )
-	local iitem = hold_keys[DIK_keys.DIK_U]
-		and get_bool(obj:section(), "manual_ungrouping", false)
-		and obj:get_inventory_item()
-	if iitem then iitem.always_ungroupable = true end
-	--
+	if hold_keys[DIK_keys.DIK_U] then
+		if self.last_manual_ungroup_id ~= obj:id() then
+			local success = ui_inv_descr.try_manual_ungroup( obj )
+			if success then
+				self.last_manual_ungroup_id = obj:id()
+			end
+		end
+	else
+		self.last_manual_ungroup_id = nil
+	end
 	self.am:call("on_cell_item_mouse", obj, x, y, action )
 end
 
@@ -800,22 +1116,74 @@ function actor_binder:on_key(key, bind)
 	if key == DIK_keys.DIK_NUMPAD0 and is_debug_mode then
 		cmd("demo_record 1")
 	end
+
 	--
 	if key == DIK_keys.DIK_ADD or key == DIK_keys.DIK_MULTIPLY then he_info_giver.open() end
 	--
 	local tbl = key_actions[bind]
-	if tbl and not (level.main_input_receiver() or device():is_paused() or db.actor:ph_capture()) then tbl.func() end
+	if tbl and not is_input_blocked() then
+		local now = time_global()
+		if not (last_action_time[key] and now - last_action_time[key] < ACTION_COOLDOWN) then
+			accepted_keys[key]    = bind
+			key_press_time[key]   = now
+			long_press_fired[key] = false
+
+			if not tbl.long_press and not tbl.on_hold_start then
+				if tbl.func then
+					last_action_time[key] = now
+					tbl.func()
+				end
+			end
+		end
+	end
+	--
 	self.am:call("on_key", key, bind)
+end
+
+function actor_binder:on_key_hold(key, bind)
+	local accepted_bind = accepted_keys[key]
+	local tbl = accepted_bind and key_actions[accepted_bind]
+	if tbl and not long_press_fired[key] and not is_input_blocked() then
+		local t = key_press_time[key]
+		if t then
+			local elapsed = time_global() - t
+
+			if tbl.on_hold_start and elapsed >= 150 then
+				long_press_fired[key] = true
+				tbl.on_hold_start()
+			elseif tbl.long_press and elapsed >= (tbl.long_press_timer or 500) then
+				long_press_fired[key] = true
+				if not tbl.no_cooldown then
+					last_action_time[key] = time_global()
+				end
+				tbl.long_press()
+			end
+		end
+	end
+
+	self.am:call("on_key_hold", key, bind)
 end
 
 function actor_binder:on_key_free(key, bind)
 	hold_keys[key] = nil
-	--
-	self.am:call("on_key_up", key, bind)
-end
 
-function actor_binder:on_key_hold(key, bind)
-	self.am:call("on_key_hold", key, bind)
+	local accepted_bind = accepted_keys[key]
+	local tbl = accepted_bind and key_actions[accepted_bind]
+	local fired = long_press_fired[key]
+
+	accepted_keys[key] = nil
+
+	if tbl and tbl.on_hold_end and fired then
+		tbl.on_hold_end()
+	elseif tbl and tbl.long_press and not tbl.on_hold_start and not fired and tbl.func and not is_input_blocked() then
+		last_action_time[key] = time_global()
+		tbl.func()
+	end
+
+	key_press_time[key]   = nil
+	long_press_fired[key] = nil
+
+	self.am:call("on_key_up", key, bind)
 end
 
 function actor_binder:level_changer_action( obj, wnd )
@@ -862,8 +1230,16 @@ end
 function actor_binder:take_item_from_box(box, item)
 	--wprintf(" actor_binder:take_item_from_box, item = %s ", DumpVar(item))
 	amk_offline_alife.take_item_from_box(box, item)
-	treasure_manager.take_item_from_box(box)
+	
 	gps_habar.on_item_take_from_box(box, item)
+	
+	-- Стори айди для ПДАшек и отметки в юи, что нашли
+	local story_id = box:story_id()
+	if story_id == nil then
+		return
+	end	
+	
+	treasure_manager.take_item_from_box(box, story_id)	
 end
 
 -- function actor_binder:level_border_enter(npc, info_id)
@@ -929,6 +1305,16 @@ function actor_binder:info_callback( npc, info_id )
 	self.am:call("on_info_2", npc, info_id)
 end
 
+function actor_binder:on_pda_hide()
+	HideQuestStat()
+	pda_noise.stop_noise_sound()
+end
+
+-- [HE-PORT]
+function actor_binder:on_pda_ranking()
+	HideQuestStat()
+end
+
 function actor_binder:on_trade(item, sell_bye, money)
 	--[[if sell_bye==true then
 		game_stats.money_trade_update(money)
@@ -975,6 +1361,10 @@ function actor_binder:on_item_drop(obj)
 	if handle_take_drop then
 		--ODS("[~T]. #DBG: отдаем ~C0A"..obj:name().."   "..obj:section().."~C07")
 		handle_dropped(obj)
+        local sobj = g_sim:object( obj:id() )
+        if sobj then
+            self.am:call( "on_drop", obj, sobj )
+        end			
 	end
 	self.am:call("on_drop_after_all", obj, server_obj(obj:id()))
 end
@@ -1011,6 +1401,11 @@ end
 function actor_binder:death_callback(oVictim, oWho)
 	--self.object:activate_slot(0)
 	--m_call("on_actor_death", oWho) --/#+#
+	-- [HE-PORT]
+	if he_watch_ui then he_watch_ui.abort("death") end
+	if ui_paper_reader then ui_paper_reader.abort("death", true) end
+	if sivol_weapon_zoom then sivol_weapon_zoom.on_actor_death() end
+	if sivol_sprint_fov then sivol_sprint_fov.on_actor_death() end
 end
 
 local m_last_update = 0
@@ -1138,7 +1533,7 @@ function actor_binder:binder_update_5 ()
 			self.weapon_hide = true
 		end
 	else
-		if self.weapon_hide then
+		if self.weapon_hide and not slot_keeper.restore_deferred() then
 			self.object:restore_weapon()
 			self.weapon_hide = false
 		end
@@ -1153,36 +1548,44 @@ function actor_binder:binder_update_6 (delta, time)
 end
 
 function actor_binder:binder_update_7 (delta, time)
-	ogse_signals.get_mgr():reschedule(1000)
-	local flag1, flag2, in_safe_zone, is_3d_pda, cond = check_pda_conditions()
-	if is_3d_pda == 'on' then
-		if flag1 == 'nil' then return end
-		if flag1 and not flag2 and cond > 0 then
-			if not in_safe_zone then
-				set_pda_params(vector():set(0.5,0.2,0.0))
-			else
-				set_pda_params(vector():set(0,0,0))
-			end
-		elseif flag2 or cond <= 0 then
-			set_pda_params(vector():set(0.5,0.2,0.0))
-		else
-			set_pda_params(vector():set(0,0,0))
-		end
-	end
-	if self.bCheckStart then
-		if not has_alife_info("storyline_actor_start") and
-			(level.name()=="l01_escape")
-			then
-			self.object:give_info_portion("storyline_actor_start")
-		end
-		if not has_alife_info("global_dialogs") then
-			self.object:give_info_portion("global_dialogs")
-		end
-		if not has_alife_info("level_changer_icons") then
-			self.object:give_info_portion("level_changer_icons")
-		end
-		self.bCheckStart = false
-	end
+    ogse_signals.get_mgr():reschedule(1000)
+
+    local flag1, flag2, in_safe_zone, is_3d_pda, cond, broken, flag_blowout = check_pda_conditions()
+    if is_3d_pda == 'on' then
+        if flag1 == 'nil' then return end
+
+        local owns = sivol_pda and sivol_pda.owns_pda_params and sivol_pda.owns_pda_params()
+
+        if flag2 or cond <= 0 or broken then
+            if not owns then set_pda_params(vector():set(0.5, 0.2, 0.0)) end
+            pda_noise.stop_noise_sound()
+        elseif owns then
+            -- sivol_pda drives set_pda_params every frame (handles electra + underground + aver)
+        elseif flag_blowout then
+            set_pda_params(vector():set(sivol_pda.emission_shader_params()))
+            if has_alife_info("ui_pda") then 
+                pda_noise.play_noise_sound() 
+            else 
+                pda_noise.stop_noise_sound() 
+            end
+        else
+            set_pda_params(vector():set(0, 0, 0))
+            pda_noise.stop_noise_sound()
+        end
+    end
+
+    if self.bCheckStart then
+        if not has_alife_info("storyline_actor_start") and (level.name()=="l01_escape") then
+            self.object:give_info_portion("storyline_actor_start")
+        end
+        if not has_alife_info("global_dialogs") then
+            self.object:give_info_portion("global_dialogs")
+        end
+        if not has_alife_info("level_changer_icons") then
+            self.object:give_info_portion("level_changer_icons")
+        end
+        self.bCheckStart = false
+    end
 end
 
 function actor_binder:binder_update_8 (delta, time)
@@ -1286,6 +1689,10 @@ function hide_weapon()
 end
 
 function restore_weapon()
+	if hud_animation_owner and hud_animation_owner.blocks_weapon_restore
+		and hud_animation_owner.blocks_weapon_restore() then
+		return
+	end
 	weapon_hide = false
     -- wprintf("[~T].~C0C #WARN:~C07 weapon_hide~C0E reset~C07 from\n %s ", lua_traceback(' '))
 end
@@ -1307,6 +1714,8 @@ end
 function actor_binder:on_use_object(obj)
 	vergas_lib.used_item(obj)
 	amk_mod.used_item(obj)
+	-- [HE-PORT]
+	kotovod.food_poison_roll(obj)
 	self.am:call( "on_use", obj )	
 end
 

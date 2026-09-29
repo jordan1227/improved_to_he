@@ -1,0 +1,180 @@
+-- Cordon world loot: generated only for a new game, then saved and spawned once.
+-- Food: one recipe spread over distinct spots. Nominal satiety per item:
+--   bread 0.30, kolbasa 0.40, conserva 0.75.
+--   Easy (difficulty 0): conserva+bread (1.05), kolbasa+2 bread (1.00),
+--     or 3 bread (0.90); bread/kolbasa condition 75-90%.
+--   Author (difficulty 3): conserva (0.75), kolbasa+bread (0.70),
+--     or 2 bread (0.60); bread/kolbasa condition 70-75%.
+-- Misc: 4-5 of 8 spots on easy, 3 of 8 on Author.
+--   At least 1 matches; remaining pool: matches, bandage, energy_drink.
+--   Bandages: 0-2 on easy, 0-1 on Author.
+--   Vodka: at most 1, with 75% easy / 33% Author chance.
+-- Set diagnostics to true temporarily to log the chosen items and spots.
+diagnostics = false
+
+local CORDON_INFO = "sivol_worldspawns_cordon_v1"
+local CORDON_PLAN = "sivol_worldspawns.cordon_v1"
+
+-- Positions and vertices below are the camera values from spawn_map, not actor values.
+local food_spots = {
+    -- food дом право вверх кастрюля
+    { name = "food_pot", pos = {-173.530, -18.424, -164.135}, lv = 76906, gv = 52 },
+    -- food тарелка за волком
+    { name = "food_plate", pos = {-194.139, -18.420, -131.893}, lv = 56853, gv = 56 },
+    -- food ящики за волком
+    { name = "food_crates", pos = {-185.337, -16.346, -133.296}, lv = 65162, gv = 56 },
+    -- дом лево вверх food/misc
+    { name = "food_or_misc_left_house", pos = {-166.706, -19.620, -129.056}, lv = 83654, gv = 55 },
+    -- food/misc над неумехой
+    { name = "food_or_misc_above_novice", pos = {-225.249, -15.537, -134.392}, lv = 30427, gv = 62 }
+}
+
+local misc_spots = {
+    -- misc дом право вверх в столе
+    { name = "misc_right_house_table", pos = {-172.307, -19.542, -159.508}, lv = 76907, gv = 52 },
+    -- misc коробки
+    { name = "misc_boxes", pos = {-204.904, -19.602, -162.833}, lv = 46048, gv = 50 },
+    -- misc подоконник дом лево вверх
+    { name = "misc_left_house_windowsill", pos = {-164.757, -18.231, -128.245}, lv = 85601, gv = 55 },
+    -- misc подвал шустрого
+    { name = "misc_shustry_basement", pos = {-187.620, -21.106, -132.561}, lv = 63845, gv = 56 },
+    -- misc рядом с тарелкой
+    { name = "misc_by_plate", pos = {-197.466, -19.128, -130.149}, lv = 54982, gv = 58 },
+    -- misc potential matches only spot дом за волком
+    { name = "misc_matches_only_behind_wolf", pos = {-188.463, -18.859, -132.719}, lv = 63845, gv = 56, matches_only = true },
+    -- misc рядом с вергасом
+    { name = "misc_by_vergas", pos = {-224.582, -18.264, -168.534}, lv = 30397, gv = 48 },
+    -- misc рядом с костром корыто
+    { name = "misc_campfire_trough", pos = {-205.376, -19.568, -152.266}, lv = 47320, gv = 46 }
+}
+-- Nominal satiety: bread .30, kolbasa .40, conserva .75.
+-- Easy recipes stay at or below 1.05; hard recipes stay at or below .75.
+local food_recipes = {
+    [0] = {
+        { "conserva", "bread" },
+        { "kolbasa", "bread", "bread" },
+        { "bread", "bread", "bread" }
+    },
+    [3] = {
+        { "conserva" },
+        { "kolbasa", "bread" },
+        { "bread", "bread" }
+    }
+}
+
+local function shuffle_indices(count)
+    local indices = {}
+    for i = 1, count do indices[i] = i end
+    for i = count, 2, -1 do
+        local j = lua_random(1, i)
+        indices[i], indices[j] = indices[j], indices[i]
+    end
+    return indices
+end
+
+local function add_item(items, section, spot, condition)
+    items[#items + 1] = {
+        section = section, name = spot.name, pos = spot.pos,
+        lv = spot.lv, gv = spot.gv, condition = condition, done = false
+    }
+end
+
+local function make_plan(difficulty)
+    local recipes = food_recipes[difficulty]
+    if not recipes then return nil end
+    local plan = { difficulty = difficulty, items = {} }
+    local recipe = recipes[lua_random(1, #recipes)]
+    local food_indices = shuffle_indices(#food_spots)
+    local low, high = difficulty == 0 and 75 or 70, difficulty == 0 and 90 or 75
+
+    for i, section in ipairs(recipe) do
+        local condition = nil
+        if section == "bread" or section == "kolbasa" then
+            condition = lua_random(low, high) / 100
+        end
+        add_item(plan.items, section, food_spots[food_indices[i]], condition)
+    end
+
+    local misc_indices = shuffle_indices(#misc_spots)
+    local misc_count = difficulty == 0 and lua_random(4, 5) or 3
+    local matches_slot = nil
+    for i = 1, misc_count do
+        if misc_spots[misc_indices[i]].matches_only then matches_slot = i end
+    end
+    if not matches_slot then matches_slot = lua_random(1, misc_count) end
+
+    local vodka_slot = nil
+    local vodka_chance = difficulty == 0 and 75 or 33
+    if lua_random(1, 100) <= vodka_chance then
+        local choices = {}
+        for i = 1, misc_count do
+            if i ~= matches_slot then choices[#choices + 1] = i end
+        end
+        vodka_slot = choices[lua_random(1, #choices)]
+    end
+
+    local bandages = 0
+    local bandage_limit = difficulty == 0 and 2 or 1
+    for i = 1, misc_count do
+        local spot = misc_spots[misc_indices[i]]
+        local section
+        if i == matches_slot or spot.matches_only then
+            section = "matches"
+        elseif i == vodka_slot then
+            section = "vodka"
+        else
+            local other_misc = bandages < bandage_limit
+                and { "matches", "bandage", "energy_drink" }
+                or { "matches", "energy_drink" }
+            section = other_misc[lua_random(1, #other_misc)]
+            if section == "bandage" then bandages = bandages + 1 end
+        end
+        add_item(plan.items, section, spot)
+    end
+    return plan
+end
+
+local function run_plan()
+    if not db.actor or not db.actor:has_info(CORDON_INFO) then return end
+    local plan = get_value(CORDON_PLAN)
+    if not plan or not plan.items then return end
+    for i, item in ipairs(plan.items) do
+        if not item.done then
+            local obj = amk.spawn_item(item.section,
+                sak.v3f(item.pos[1], item.pos[2], item.pos[3]), item.gv, item.lv)
+            if obj then
+                if item.condition then params.upd_condition(obj, item.condition) end
+                item.done = true
+                set_value(CORDON_PLAN, plan)
+                if diagnostics then
+                    log2("[sivol_worldspawns] %s %s id=%s condition=%s",
+                        item.name, item.section, tostring(obj.id), tostring(item.condition))
+                end
+            elseif diagnostics then
+                log2("[sivol_worldspawns] FAILED %s %s", item.name, item.section)
+            end
+        end
+    end
+end
+
+function new_game_init()
+    if not db.actor or db.actor:has_info(CORDON_INFO) then return end
+    local difficulty = get_value("g_diff") or tonumber(level.get_game_difficulty())
+    local plan = make_plan(difficulty)
+    if not plan then
+        log2("[sivol_worldspawns] unsupported new-game difficulty: %s", tostring(difficulty))
+        return
+    end
+    set_value(CORDON_PLAN, plan)
+    db.actor:give_info_portion(CORDON_INFO)
+    if diagnostics then
+        log2("[sivol_worldspawns] Cordon plan difficulty=%d items=%d",
+            difficulty, #plan.items)
+    end
+    run_plan()
+end
+
+function on_game_load()
+    -- Existing saves have no eligibility infoportion and receive no Cordon loot.
+    run_plan()
+end

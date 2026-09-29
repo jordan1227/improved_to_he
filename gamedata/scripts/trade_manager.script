@@ -2,7 +2,10 @@ local trade_manager = {}
 
 local enable_trade = {
 	[ "escape_trader" ] = true,
-	[ "yan_ecolog_kruglov" ] = true
+	[ "yan_ecolog_kruglov" ] = true,
+	-- [HE-PORT]
+	[ "hos_junkman" ] = true,
+	[ "lim_trader" ] = true
 }
 
 -- Перед сменой листа для tradein_npc добавляем нужные приписки, если потребуется сохранение одному нпц нескольких видов бартерных денег
@@ -10,23 +13,61 @@ local saving_money = {
 	"bar_bar_osvedomitel",
 	"yantar_ecolog_general_barter",
 	"yantar_ecolog_general_recipes",
-	"yan_ecolog_kruglov"
+	"yan_ecolog_kruglov",
+	"yantar_semenov",
+	-- [HE-PORT]
+	"hos_junkman",
+	"lim_trader",
+	"gen_hermit"
 }
+
+-- === PDA charging via yantar_semenov trade (price 0 to hand in) ===
+local PDA_SECTION      = "device_pda_npc"
+local PDA_CHARGE_BASE      = 30 * 60   -- база: 30 минут на одну пда
+local PDA_TIME_GROWTH_MIN  = 0.05      -- случайный прирост за каждую следующую пда, от 5%
+local PDA_TIME_GROWTH_MAX  = 0.12      -- случайный прирост за каждую следующую пда, до 12%
+local PDA_QUEUE_KEY    = "pda_charge_queue"
+
+-- цена ВОЗВРАТА заряженной пда (сдача трейдеру остаётся бесплатной)
+local PDA_PRICE_BASE      = 1500   -- базовая цена за 1 пда на старте
+local PDA_PRICE_STEP      = 250    -- на сколько растёт база инфляции
+local PDA_PRICE_PERIOD_D  = 7      -- раз в сколько игровых суток растёт база
+local PDA_PRICE_GROWTH    = 0.15   -- +15% к цене за каждую следующую пда в одной партии
+local PDA_PRICE_EPOCH_KEY = "pda_price_epoch"
 
 function attach(sm)
     sm:subscribe({ signal = "on_trade_open",  fun = this.on_trade_open 	})
+    sm:subscribe({ signal = "on_update", fun = this.on_update })
     sm:subscribe({ signal = "on_trade", 	  fun = this.on_trade	  	})
     sm:subscribe({ signal = "on_trade_hide",  fun = this.on_trade_hide 	})
     sm:subscribe({ signal = "on_trade_money", fun = this.on_trade_money })
+	sm:subscribe({ signal = "on_safe_spawn",  fun = this.on_safe_spawn })	
 end 
 
 local buy_items     = {}
 local sold_items    = {}
 local price_items_table = {}
+local bar_trade_watching = false
+local bar_trade_last_money = nil
+local pda_sold_ids = {}            -- id сданных за этот трейд пда (для зарядки у yantar_semenov)
 
 function on_trade_open()
+	if level.name() == 'l05_bar' then
+		local npc = level:get_second_talker()
+		bar_trade_watching = true
+		bar_trade_last_money = db.actor:money()
+		log2('[bar_trade_money] open npc=%s actor=%s other=%s tradein=%s',
+			tostring(npc and npc:name()), tostring(bar_trade_last_money),
+			tostring(npc and npc:money()), tostring(get_value('tradein_npc')))
+	end
 	buy_items  = {}
 	sold_items = {}
+	pda_sold_ids = {}
+
+--	local npc = level:get_second_talker()
+--	if npc and npc:name() == "yantar_semenov" then
+--		pda_charge_check()
+--	end
 end
 
 function on_trade( item, sell_buy, money )
@@ -39,6 +80,16 @@ function on_trade( item, sell_buy, money )
 		-- Нужно получить актуальную цену предмета тут, на закрытии уже не произойдет расчёт
 		if trader and trader:name() == "yan_ecolog_kruglov" then 
 			price_items_table[ item:id() ] = get_cost( item )
+		end
+		if trader and trader:name() == "yantar_semenov" and item:section() == PDA_SECTION then
+			local status = vergas_pda.get_pda_status( id )
+			if status == 2 then  -- берём в зарядку только разряженные (2); рабочие (1) и битые (3) не принимаем
+				table.insert( pda_sold_ids, id )
+				local obj = client_obj( id )
+				if obj then
+					set_item_inv_hidden( obj )
+				end				
+			end
 		end
 	else
 		buy_items[  id ] = true
@@ -72,7 +123,22 @@ function get_cost( obj )
     end
 end
 
+function on_update()
+    if not bar_trade_watching or level.name() ~= 'l05_bar' or not db.actor then return end
+    local money = db.actor:money()
+    if money ~= bar_trade_last_money then
+        log2('[bar_trade_money] change actor=%s previous=%s',
+            tostring(money), tostring(bar_trade_last_money))
+        bar_trade_last_money = money
+    end
+end
+
 function on_trade_money( trader, money_out, money_in )
+    if level.name() == 'l05_bar' then
+        log2('[bar_trade_money] transaction npc=%s out=%s in=%s actor=%s other=%s',
+            trader:name(), tostring(money_out), tostring(money_in),
+            tostring(db.actor:money()), tostring(trader:money()))
+    end
     if trader:name() == "yan_ecolog_kruglov" then 
         log2( "%s - потраченные деньги: %s, полученные деньги: %s", trader:name(), money_out, money_in )
         local barter_money = get_value( "barter_money", {} )
@@ -214,6 +280,13 @@ function count_buy_items( items )
 end
 
 function on_trade_hide()
+    if level.name() == 'l05_bar' then
+        local npc = level:get_second_talker()
+        log2('[bar_trade_money] hide npc=%s actor=%s other=%s tradein=%s',
+            tostring(npc and npc:name()), tostring(db.actor:money()),
+            tostring(npc and npc:money()), tostring(get_value('tradein_npc')))
+        bar_trade_watching = false
+    end
     local sold_counts = count_sold_items( sold_items )
     local buy_counts = count_buy_items( buy_items )
 
@@ -246,9 +319,137 @@ function on_trade_hide()
 		return 
 	end	
 
+	if npc and npc:name() == "yantar_semenov" and #pda_sold_ids > 0 then
+		pda_add_to_queue( pda_sold_ids )
+	end
+
     buy_items = {}
     sold_items = {}
 	respawn_hidden_recipes()
+end
+
+-- === PDA charging via yantar_semenov trade ===
+
+function pda_get_queue()
+	return get_value( PDA_QUEUE_KEY, {} )
+end
+
+function pda_set_queue( queue )
+	set_value( PDA_QUEUE_KEY, queue )
+end
+
+function pda_get_epoch()
+	local epoch = get_value( PDA_PRICE_EPOCH_KEY, nil )
+	if not epoch then
+		epoch = pack_time_to_string( game.get_game_time() )
+		set_value( PDA_PRICE_EPOCH_KEY, epoch )
+	end
+	return unpack_time_from_string( epoch )
+end
+
+-- база цены: растёт на PDA_PRICE_STEP раз в PDA_PRICE_PERIOD_D игровых суток
+--[[
+function pda_base_price()
+	local epoch = pda_get_epoch()
+	local now = game.get_game_time()
+	local elapsed_days = math.floor( now:diffSec( epoch ) / 86400 )
+	local periods = math.floor( elapsed_days / PDA_PRICE_PERIOD_D )
+	return PDA_PRICE_BASE + PDA_PRICE_STEP * periods
+end
+]]--
+
+function pda_base_price()
+	return sak_dialog.calc_money( PDA_PRICE_BASE, PDA_PRICE_PERIOD_D, PDA_PRICE_STEP )
+end
+
+-- цена конкретного экземпляра по его номеру в выдаваемой партии (n = 1, 2, 3...):
+-- 1-й по базовой цене, каждый следующий на PDA_PRICE_GROWTH дороже базы
+function pda_price_for_position( n )
+	local base = pda_base_price()
+	return math.floor( base * ( 1 + PDA_PRICE_GROWTH * ( n - 1 ) ) )
+end
+
+-- время конкретного экземпляра по его номеру в сдаваемой партии (n = 1, 2, 3...):
+-- 1-й по базовому времени, каждый следующий получает случайный прирост
+-- PDA_TIME_GROWTH_MIN..PDA_TIME_GROWTH_MAX поверх суммарного прироста предыдущих
+function pda_time_for_position( n, cum_growth )
+	return math.floor( PDA_CHARGE_BASE * ( 1 + cum_growth ) )
+end
+
+function pda_add_to_queue( id_list )
+	local queue = pda_get_queue()
+	local now = game.get_game_time()
+
+	local last_end = now
+	if #queue > 0 then
+		local stored = unpack_time_from_string( queue[ #queue ].end_time )
+		if stored:diffSec( now ) > 0 then
+			last_end = stored
+		end
+	end
+
+	local cum_growth = 0
+	for n, id in ipairs( id_list ) do
+		if n > 1 then
+			local step = lua_random( PDA_TIME_GROWTH_MIN * 1000, PDA_TIME_GROWTH_MAX * 1000 ) / 1000
+			cum_growth = cum_growth + step
+		end
+		local charge_time = pda_time_for_position( n, cum_growth )
+		last_end = last_end + seconds2ctime( charge_time )
+		table.insert( queue, { id = id, end_time = pack_time_to_string( last_end ) } )
+	end
+	pda_set_queue( queue )
+end
+
+-- вызывается из on_trade_open в момент открытия трейда с yantar_semenov.
+-- Работаем с ТЕМ ЖЕ объектом, который сдал игрок (release() при продаже его
+-- не уничтожает, а просто передаёт трейдеру в ассортимент) - никакого
+-- нового спавна, только смена статуса/кондиции у существующего id.
+function pda_charge_check()
+	local queue = pda_get_queue()
+	if #queue == 0 then return end
+
+	local now = game.get_game_time()
+	local remaining = {}
+	local position = 0
+	local changed = false
+
+	for _, e in ipairs( queue ) do
+		local sobj = alife():object( e.id )
+
+		if not sobj then
+			-- объект пропал (подобрали/уничтожили где-то ещё) - выкидываем из очереди
+			changed = true
+		else
+			local end_time = unpack_time_from_string( e.end_time )
+			if end_time:diffSec( now ) <= 0 then
+				position = position + 1
+				if vergas_pda.charge_pda( e.id ) then
+					local obj = client_obj( e.id )
+					if obj then
+						-- цену конкретного экземпляра ставим сами, как у vahtang;
+						-- хватит ли денег - решает штатное трейд-окно, как обычно
+						obj:set_cost( pda_price_for_position( position ) )			
+							log2( "cost is %s", pda_price_for_position( position ) )
+						set_item_inv_visible( obj )
+						set_item_ungroupable( obj )
+					end
+				end
+				changed = true
+			else
+				-- ещё заряжается - прячем из инвентаря/списка трейдера
+				local obj = client_obj( e.id )
+				if obj then
+					set_item_inv_hidden( obj )
+				end
+				table.insert( remaining, e )
+			end
+		end
+	end
+
+	if changed then
+		pda_set_queue( remaining )
+	end
 end
 
 function process_trade_counts( t, b )
@@ -520,10 +721,45 @@ function get_cfg( npc )
 	return trade_manager[ npc:id() ]
 end
 
+function on_safe_spawn()
+	local lname = level.name()
+	if lname ~= "l08_yantar" then return end
+	dsh.wait_condition( function() return amk_mod.sync_done end, function()
+		pda_hide_queue_after_load()
+	end )
+end
+
+function pda_hide_queue_after_load()
+	local queue = pda_get_queue()
+	if #queue == 0 then return end
+
+	local now = game.get_game_time()
+
+	for _, e in ipairs( queue ) do
+		local obj = client_obj( e.id )
+		if obj then
+			local end_time = unpack_time_from_string( e.end_time )
+			if end_time:diffSec( now ) <= 0 then
+				set_item_ungroupable( obj )
+				set_item_inv_visible( obj )
+			else
+				set_item_inv_hidden( obj )
+			end
+		end
+	end
+end
+
 local actor_money = -1
+local sherstyk_barter_items_hidden = false
 local vcost = math.random( 500, 2000 )
 
 function tradein_start( npc, buy, sell, use_cond, use_rand )
+	if actor_money >= 0 then
+		log2('[bar_trade_money] duplicate barter start ignored npc=%s actor=%s saved=%s',
+			npc:name(), tostring(db.actor:money()), tostring(actor_money))
+		return
+	end
+	log2('[bar_trade_money] barter start npc=%s actor=%s', npc:name(), tostring(db.actor:money()))
 	local tt = get_cfg( npc )
 	tt.noupdate = true
 	actor_money = db.actor:money()
@@ -600,6 +836,12 @@ function switch_to_tradein( npc )
 end
 
 function tradein_stop( npc )
+    log2('[bar_trade_money] barter stop npc=%s actor=%s saved=%s',
+        npc:name(), tostring(db.actor:money()), tostring(actor_money))
+    if sherstyk_barter_items_hidden then
+        kotovod.reset_untradedable_items()
+        sherstyk_barter_items_hidden = false
+    end
     local tt = get_cfg( npc )
 
 	-- Для этих не дисаблим обычную торговлю
@@ -623,7 +865,8 @@ function tradein_stop( npc )
 				log3( "barter stop is %s", barter_money )
 		end
 		db.actor:set_money( actor_money )
-		actor_money = -1        
+		actor_money = -1
+        log2('[bar_trade_money] barter restored npc=%s actor=%s', npc:name(), tostring(db.actor:money()))
 	end
 
     remove_value( "tradein_npc" )
@@ -647,9 +890,10 @@ end
 
 function dsc_ignat_tradein( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
-	npc:set_money( 1000000	)	-- Пока так, потом в чарактерсах или в дате поправить? Я уже забыл как можно. Вроде и через переспавн нпц прокатит при изменении чарактера
+	--npc:set_money( 1000000	)	-- Пока так, потом в чарактерсах или в дате поправить? Я уже забыл как можно. Вроде и через переспавн нпц прокатит при изменении чарактера
 	set_value( "tradein_npc", npc:name() )
-	tradein_start( npc, "buy_condition", "sell_condition", true, 1000 )
+	-- [HE-PORT]
+	tradein_start( npc, "buy_condition", "sell_condition", true, false )
 end
 
 function esc_sidor_barter( npc1, npc2 )
@@ -672,14 +916,12 @@ end
 
 function esc_kuznetcov_barter( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
-	npc:set_money( 1000000	)
 	set_value( "tradein_npc", npc:name() )
 	tradein_start( npc, "buy_condition", "sell_condition", false, 1000 )
 end
 
 function bar_zub_barter_1( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
-	npc:set_money( 1000000	)	
 	set_value( "tradein_npc", npc:name() )
 	hide_zub_recipes( "first_level" )
 	tradein_start( npc, "zub_recipes_buy", "zub_recipes_sell", true, false )
@@ -687,7 +929,6 @@ end
 
 function bar_zub_barter_2( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
-	npc:set_money( 1000000	)	
 	set_value( "tradein_npc", npc:name() )
 	hide_zub_recipes( "second_level" )
 	tradein_start( npc, "zub_recipes_buy", "zub_recipes_sell", true, false )
@@ -695,7 +936,6 @@ end
 
 function bar_zub_barter_3( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
-	npc:set_money( 1000000	)
 	set_value( "tradein_npc", npc:name() )
 	hide_zub_recipes( "third_level" )
 	tradein_start( npc, "zub_recipes_buy", "zub_recipes_sell", true, false )
@@ -703,7 +943,6 @@ end
 
 function bar_zub_barter_4( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
-	npc:set_money( 1000000	)
 	set_value( "tradein_npc", npc:name() )
 	hide_zub_recipes( "dummys" )
 	tradein_start( npc, "zub_recipes_buy", "zub_recipes_sell", true, false )
@@ -711,21 +950,59 @@ end
 
 function bar_petrenko_barter( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
-	npc:set_money( 1000000	)
 	set_value( "tradein_npc", npc:name() )
 	tradein_start( npc, "buy_condition", "sell_condition", true, false )
 end
 
+local sherstyk_stock_key = "sherstyk_rpk74_stock_v1"
+local function clear_sherstyk_abakan_addons(npc)
+    npc:iterate_inventory(function(_, item)
+        if item:section() == "wpn_abakan" and item:get_addon_flags() ~= 0 then
+            item:set_addon_flags(0)
+        end
+    end, npc)
+end
+
+local function prepare_sherstyk_stock(npc)
+    if not get_value(sherstyk_stock_key, false) then
+        local has_rpk = false
+        npc:iterate_inventory(function(_, item)
+            if item:section() == "wpn_rpk74" then
+                has_rpk = true
+            end
+        end, npc)
+
+        if has_rpk then
+            set_value(sherstyk_stock_key, true)
+        else
+            local tt = get_cfg(npc)
+            if tt and tt.buy_supplies then
+                tt.resuply_time = game.get_game_time()
+                tt.update_time = nil
+                tt.skip_updates = 0
+                tt.current_buy_supplies = nil
+                update(npc)
+                set_value(sherstyk_stock_key, true)
+            end
+        end
+    end
+
+    clear_sherstyk_abakan_addons(npc)
+end
+
 function agr_sherstyk_barter( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
-	npc:set_money( 1000000	)
+	prepare_sherstyk_stock(npc)
+	if actor_money < 0 and not sherstyk_barter_items_hidden then
+		kotovod.set_untradedable_items( "millitary" )
+		sherstyk_barter_items_hidden = true
+	end
 	set_value( "tradein_npc", npc:name() )
 	tradein_start( npc, "buy_condition", "sell_condition", true, false )
 end
 
 function mil_vahtang_barter( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
-	npc:set_money( 1000000	)
 	set_value( "tradein_npc", npc:name() )
 	tradein_start( npc, "buy_condition", "sell_condition", false, false )
 end
@@ -744,12 +1021,149 @@ end
 
 function yan_kruglov_first_barter( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
-	npc:set_money( 1000000	)	
 	set_value( "tradein_npc", npc:name() )
 	tradein_start( npc, "barter_first_buy", "barter_first_sell", true, 5000 )
 end
 
 function val_jila_barter( npc1, npc2 )
+	local npc = npc1:is_actor() and npc2 or npc1
+	set_value( "tradein_npc", npc:name() )
+	tradein_start( npc, "buy_condition", "sell_condition", true, false )
+end
+
+function bar_arny_barter( npc1, npc2 )
+	local npc = npc1:is_actor() and npc2 or npc1
+	set_value( "tradein_npc", npc:name() )
+	-- Use ammo box cost and remaining rounds for Arny barter.
+	npc:trade_virtual_cost( 0, false )
+	kotovod.arny_barter_subscribe()
+	tradein_start( npc, "buy_condition", "sell_condition", false, false )
+end
+
+function yan_semenov_barter( npc1, npc2 )
+	if not has_alife_info( "info_semenov_pda_usage" ) then return end
+	local function pda_ungroup_actor_items()
+		db.actor:iterate_inventory( function( npc, obj )
+			if obj:section() == PDA_SECTION then
+				set_item_ungroupable( obj )
+			end
+		end, db.actor )
+	end
+	local npc = npc1:is_actor() and npc2 or npc1
+	set_value( "tradein_npc", npc:name() )
+	pda_charge_check() -- Тут обновляем ПДАшки
+	--pda_ungroup_actor_items()
+	tradein_start( npc, "buy_condition", "sell_condition", true, false )
+end
+
+-- [HE-PORT]
+local mikhalych_arts = {
+	{ "af_unknown_9_new",  90 }, { "af_unknown_23_new", 86 }, { "af_unknown_27_new", 85 },
+	{ "af_unknown_14_new", 80 }, { "af_unknown_10_new", 77 }, { "af_unknown_13_new", 75 },
+	{ "af_unknown_17_new", 72 }, { "af_unknown_11_new", 70 }, { "af_unknown_29_new", 66 },
+	{ "af_unknown_1_new",  64 }, { "af_unknown_12_new", 60 }, { "af_unknown_3_new",  58 },
+	{ "af_unknown_2_new",  56 }, { "af_unknown_26_new", 52 }, { "af_unknown_16_new", 48 },
+	{ "af_unknown_30_new", 46 }, { "af_unknown_5_new",  42 }, { "af_unknown_22_new", 38 },
+	{ "af_unknown_8_new",  36 }, { "af_unknown_20_new", 34 }, { "af_unknown_6_new",  29 },
+	{ "af_unknown_19_new", 27 }, { "af_unknown_21_new", 26 }, { "af_unknown_18_new", 25 },
+	{ "af_unknown_25_new", 24 }, { "af_unknown_7_new",  22 }, { "af_unknown_15_new", 21 },
+	{ "af_unknown_31_new", 30 }, { "af_unknown_28_new", 18 }, { "af_unknown_4_new",  15 },
+	{ "af_unknown_24_new", 12 }
+}
+
+-- [HE-PORT]
+function refresh_mikhalych_arts( npc )
+	local have = 0
+	for i = 0, npc:object_count() - 1 do
+		local o = npc:object( i )
+		if o and strposx( o:section(), "af_unknown_" ) then have = have + 1 end
+	end
+	if have >= 6 then return end
+	for _, v in ipairs( mikhalych_arts ) do
+		if lua_random( 1, 100 ) <= v[ 2 ] then
+			local spawned = misc.spawn_to( v[ 1 ], npc:id() )
+			if spawned and sivol_unknown_arts
+				and type(sivol_unknown_arts.initialize_new) == "function"
+			then
+				sivol_unknown_arts.initialize_new(spawned)
+			end
+		end
+	end
+	misc.process_spawn()
+end
+
+-- [HE-PORT]
+function refresh_junkman_items( npc )
+	local have = 0
+	for i = 0, npc:object_count() - 1 do
+		local o = npc:object( i )
+		if o and kotovod.table_junkman_items[ o:section() ] then have = have + 1 end
+	end
+	if have >= 4 then return end
+	kotovod.add_junkman_items()
+end
+
+-- [HE-PORT]
+function hos_junkman_barter( npc1, npc2 )
+	local npc = npc1:is_actor() and npc2 or npc1
+	refresh_junkman_items( npc )
+	npc:set_money( 1000000	)
+	set_value( "tradein_npc", npc:name() )
+	tradein_start( npc, "junkman_barter_buy", "junkman_barter_sell", true, false )
+end
+
+-- [HE-PORT]
+local hermit_goods_count = 5
+local hermit_conserva_count = 10
+
+function refresh_hermit_goods( npc )
+	local arts, food = 0, 0
+	for i = 0, npc:object_count() - 1 do
+		local o = npc:object( i )
+		if o then
+			local sect = o:section()
+			if strposx( sect, "af_electra_sparkler" ) or strposx( sect, "af_electra_flash" )
+			or strposx( sect, "af_dummy_battery" ) or sect == "af_capsule" or sect == "m_capsule" then
+				arts = arts + 1
+			elseif sect == "conserva" then
+				food = food + 1
+			end
+		end
+	end
+
+	if arts < hermit_goods_count then
+		misc.spawn_to( "af_electra_sparkler_dyn" .. lua_random( 1, 3 ) .. "d", npc:id() )
+		misc.spawn_to( "af_electra_flash_dyn" .. lua_random( 1, 3 ) .. "d", npc:id() )
+		misc.spawn_to( "af_dummy_battery", npc:id() )
+		nlc_capsules.spawn_to( nlc_capsules.regular( "af_electra_moonlight", lua_random( 1, 3 ) ), npc:id() )
+		nlc_capsules.spawn_to( nlc_capsules.mayatnik( "af_mayatnik_tesla_new" ), npc:id() )
+	end
+
+	for i = food + 1, hermit_conserva_count do
+		misc.spawn_to( "conserva", npc:id() )
+	end
+
+	misc.process_spawn()
+end
+
+function gen_hermit_barter( npc1, npc2 )
+	local npc = npc1:is_actor() and npc2 or npc1
+	refresh_hermit_goods( npc )
+	npc:set_money( 1000000	)
+	set_value( "tradein_npc", npc:name() )
+	tradein_start( npc, "hermit_barter_buy", "hermit_barter_sell", false, false )
+end
+
+-- [HE-PORT]
+function lim_mikhalych_barter( npc1, npc2 )
+	local npc = npc1:is_actor() and npc2 or npc1
+	refresh_mikhalych_arts( npc )
+	npc:set_money( 1000000	)
+	set_value( "tradein_npc", npc:name() )
+	tradein_start( npc, "mikhalych_barter_buy", "mikhalych_barter_sell", true, false )
+end
+
+function dsc_prosha_barter( npc1, npc2 )
 	local npc = npc1:is_actor() and npc2 or npc1
 	set_value( "tradein_npc", npc:name() )
 	tradein_start( npc, "buy_condition", "sell_condition", true, false )

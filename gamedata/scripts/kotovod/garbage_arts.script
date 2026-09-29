@@ -1,0 +1,153 @@
+function attach( sm )
+    sm:subscribe({ signal = "on_game_loaded",    fun = this.on_game_loaded    })	-- он спавн нельзя, как и on_late_init_all - рано
+    sm:subscribe({ signal = "on_take_before_all", fun = this.on_garbage_take_art })
+end
+
+local is_garbage_level = false
+
+function get_art_garbage_lvl( sect )
+    local base = sak_inventory.dyn_art_base( sect )
+    if str_in_tab( base, kotovod.tbl_arts.lvl1 ) then return 1 end
+    if str_in_tab( base, kotovod.tbl_arts.lvl2 ) then return 2 end
+    if str_in_tab( base, kotovod.tbl_arts.lvl4 ) then return 3 end
+    return nil
+end
+
+function add_garbage_art( id, sect )
+    local tbl = get_value( "garbage_arts", {} )
+    tbl[ tostring( id ) ] = true
+	set_value( "garbage_arts", tbl )
+    --log4( "[garbage] added art id=%d sect=%s lvl=%d", id, sect )
+end
+
+local tbl_arts_rad = {
+    -- { dyn1_rad, dyn4_rad, max_dyn }  -- max_dyn опционален, по умолчанию 5
+	af_medusa           = {  0.0007,  0.0000 	},  	-- +7 радиации и до 0 для 5-го дана
+    af_vyvert           = {  0.0006,  0.0000, 4 }, 	 	-- +6 радиации и до 4 = 0	
+    af_blood            = {  0.0002,  0.0000, 3 },
+    af_drops            = {  0.0001, -0.0003 	},
+    af_ameba_slime      = {  0.0001,  0.0000, 2 },
+    af_rusty_thorn      = { -0.0001, -0.0004  	},
+	af_electra_sparkler = {  0.0001,  0.0003  	},
+	-- 2 lvl
+    af_cristal_flower   = {  0.0011,  0.0002, 4 },
+    af_gravi            = {  0.0009,  0.0001, 4 },
+    af_mincer_meat      = {  0.0004,  0.0001, 3 },
+    af_fireball         = {  0.0002, -0.0005 	},
+    af_ameba_slug       = {  0.0002,  0.0000, 3 },
+    af_rusty_kristall   = { -0.0002, -0.0006  	},
+    af_electra_flash    = {  0.0003,  0.0006  	}
+}
+
+function compute_rad_val( base_rad, max_rad, dyn, max_dyn )
+    max_dyn = max_dyn or 5
+    local t = ( dyn - 1 ) / ( max_dyn - 1 )
+    t = math.max( 0.0, math.min( 1.0, t ) )
+    local result = base_rad + t * ( max_rad - base_rad )
+    return math.floor( result * 10000 + 0.5 ) / 10000
+end
+
+function apply_garbage_art( obj, garbage_arts )
+	-- Передаем, если нет - читаем, чтобы не гонять сто раз
+    garbage_arts = garbage_arts or get_value( "garbage_arts", {} )
+    if not garbage_arts[ tostring( obj:id() ) ] then
+        local props = ui_arc_container_menu.xp_read( obj:id() )
+        if not ( props and props.rad ) then return end
+    end
+    local af_obj = obj:get_artefact()
+    if not af_obj then return end
+
+    local dyn = tonumber( string.match( obj:section(), "dyn(%d+)d" ) )
+    if not dyn then return end
+    if dyn == 6 then return end  -- вырожденный, пропускаем
+
+    local base_sect = sak_inventory.dyn_art_base( obj:section() )
+    local entry = tbl_arts_rad[ base_sect ]
+    if not entry then return end
+
+    local base_rad = entry[1]
+    local max_rad  = entry[2]
+    local max_dyn  = entry[3] or 5
+
+    if dyn > max_dyn then return end
+
+    local new_rad = compute_rad_val( base_rad, max_rad, dyn, max_dyn )
+
+	update_prop( af_obj, "radiation_restore_speed", new_rad )
+
+    if new_rad > 0 then
+        local rad_imm = obj.immunities and obj.immunities["radiation_immunity"]
+        if rad_imm and rad_imm < 1.0 then
+            update_prop( obj.immunities, "radiation_immunity", 1.0 )
+        end
+    end
+	
+    ui_arc_container_menu.xp_write( obj:id(), { rad = new_rad } )
+end
+
+function on_game_loaded()
+    is_garbage_level = ( level.name() == "l02_garbage" )
+	-- Арты переделываем на любой локе! 
+   -- if not is_garbage_level then return end
+	
+    local current_day = timers.Get_Game_Days() or 1
+    local last_clean  = get_value( "garbage_arts_last_clean", 0 )
+ 
+	-- получим таблицу тут, чтобы не гонять по сто раз
+	local garbage_arts = get_value( "garbage_arts", {} )
+	
+    if ( current_day - last_clean ) >= 1 then
+        local changed = false
+        for id_str, lvl in pairs( garbage_arts ) do
+            if not g_sim:object( tonumber( id_str ) ) then
+                garbage_arts[ id_str ] = nil
+                changed = true
+            end
+        end
+        if changed then
+            set_value( "garbage_arts", garbage_arts )
+        end
+        set_value( "garbage_arts_last_clean", current_day )
+    end
+
+	local items = get_shadow_inv():get_content( true )
+	for i, rec in items:ipairs() do
+		if rec.obj:is_artefact() then
+            apply_garbage_art( rec.obj, garbage_arts )
+		end
+	end		
+end
+
+function on_garbage_take_art( obj, sobj )
+	if not is_garbage_level then return end
+    if not obj:is_artefact() then return end
+    if not ( kotovod.art_is_bio_art( obj:id() ) or vergas_art.is_in_vergas_table( obj:id() ) ) then return end
+    add_garbage_art( obj:id(), obj:section() )
+    apply_garbage_art( obj )
+end
+
+
+
+function tp()
+	for a = 1, MAX_OBJ_ID do 
+        local obj = level.object_by_id( a )
+        if obj and isArtefact( obj ) and obj.level_name == "l02_garbage" and not obj:parent() then
+			obj:transfer_item( obj, db.actor )
+			on_garbage_take_art( obj )			
+		end
+	end		
+end
+
+function c( name )	
+	for a = 1, 5 do 
+		local obj = misc.spawn_to( name .. "_dyn" .. a .. "d", db.actor )
+		misc.process_spawn()
+		vergas_art.add_in_tbl( obj )	
+		level.client_spawn_manager():add(
+			obj.id, -1,
+			function( id, obj )
+				on_garbage_take_art( obj )
+			end
+		)				
+	end	
+end

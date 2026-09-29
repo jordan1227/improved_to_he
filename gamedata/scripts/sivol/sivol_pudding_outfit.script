@@ -1,0 +1,276 @@
+-- Passive Pudding insulation for the currently worn outfit.
+-- This module owns only the outfit immunity writes; protection fields remain
+-- owned by bind_upg_outfit/sivol_outfit_stats.
+
+local PUDDING_REDUCTION = {
+    af_pudd_1 = 0.20,
+    af_pudd_2 = 0.30,
+    af_pudd_3 = 0.40,
+    af_pudd_4 = 0.50,
+}
+
+local MAX_REDUCTION = 0.50
+local SCALE_WITH_CONDITION = true
+local REFRESH_INTERVAL = 500
+local DIAGNOSTICS_ENABLED = false
+
+local active_outfit = nil
+local refresh_dirty = true
+local next_refresh = 0
+
+local function clamp(value, low, high)
+    return math.max(low, math.min(high, value))
+end
+sivol_pudding_outfit = sivol_pudding_outfit or {}
+
+function sivol_pudding_outfit.get_reduction(section, condition)
+    local stage_reduction = PUDDING_REDUCTION[section]
+    local live_condition = clamp(tonumber(condition) or 0, 0, 1)
+    if not stage_reduction or live_condition <= 0 then return 0 end
+
+    local reduction = SCALE_WITH_CONDITION
+        and stage_reduction * live_condition
+        or stage_reduction
+    return math.min(reduction, MAX_REDUCTION)
+end
+
+function sivol_pudding_outfit.is_condition_scaled()
+    return SCALE_WITH_CONDITION
+end
+
+-- game_object has no __eq in this build; compare its string identity token instead.
+local function object_token(obj)
+    return obj and tostring(obj) or nil
+end
+
+local function preview_reductions(artifact, condition)
+    local result = { burn = 0, shock = 0, chemical = 0 }
+    if not artifact then return result end
+
+    local section = type(artifact) == "string" and artifact or artifact:section()
+    local live_condition = condition
+    if live_condition == nil and type(artifact) ~= "string" then
+        live_condition = artifact:condition()
+    end
+    live_condition = clamp(tonumber(live_condition) or 0, 0, 1)
+
+    local pudding = sivol_pudding_outfit.get_reduction(section, live_condition)
+    if pudding > 0 then
+        result.burn = pudding
+        result.shock = pudding
+    end
+
+    if type(sivol_unknown_arts) == "table"
+        and type(sivol_unknown_arts.is_unknown_section) == "function"
+        and sivol_unknown_arts.is_unknown_section(section)
+        and type(sivol_unknown_arts.get_outfit_wear) == "function"
+    then
+        for _, damage in ipairs({ "burn", "shock", "chemical" }) do
+            local contribution = sivol_unknown_arts.get_outfit_wear(
+                artifact, damage) * live_condition
+            if contribution > result[damage] then
+                result[damage] = math.min(contribution, MAX_REDUCTION)
+            end
+        end
+    end
+
+    return result
+end
+
+function sivol_pudding_outfit.get_preview(artifact, condition)
+    return preview_reductions(artifact, condition)
+end
+
+local function diagnostic(event_name, armor, baseline, reductions, selected)
+    if not DIAGNOSTICS_ENABLED then return end
+
+    local armor_id = armor and armor:id() or -1
+    local armor_section = armor and armor:section() or "none"
+    local current_burn = armor and armor.immunities and tonumber(armor.immunities.burn_immunity) or 0
+    local current_shock = armor and armor.immunities and tonumber(armor.immunities.shock_immunity) or 0
+    local current_chemical = armor and armor.immunities and tonumber(armor.immunities.chemical_burn_immunity) or 0
+    local base_burn = baseline and baseline.burn or 0
+    local base_shock = baseline and baseline.shock or 0
+    local base_chemical = baseline and baseline.chemical or 0
+    local burn_reduction = reductions and reductions.burn or 0
+    local shock_reduction = reductions and reductions.shock or 0
+    local chemical_reduction = reductions and reductions.chemical or 0
+    local selected_text = selected or "none"
+    if type(selected) == "table" then
+        selected_text = string.format("burn=%s,shock=%s,chemical=%s",
+            tostring(selected.burn or "none"), tostring(selected.shock or "none"),
+            tostring(selected.chemical or "none"))
+    end
+    log2(
+        "[sivol_pudding_outfit] %s armor=%s section=%s selected=%s base_burn=%.4f base_shock=%.4f base_chemical=%.4f current_burn=%.4f current_shock=%.4f current_chemical=%.4f reduction_burn=%.4f reduction_shock=%.4f reduction_chemical=%.4f",
+        event_name, tostring(armor_id), tostring(armor_section), selected_text,
+        base_burn, base_shock, base_chemical, current_burn, current_shock, current_chemical,
+        burn_reduction, shock_reduction, chemical_reduction
+    )
+end
+
+local function write_outfit_immunities(armor, baseline, reductions)
+    if not armor or not armor.immunities or not baseline then return false end
+
+    if baseline.burn then
+        armor.immunities["burn_immunity"] = baseline.burn * (1 - (reductions.burn or 0))
+    end
+    if baseline.shock then
+        armor.immunities["shock_immunity"] = baseline.shock * (1 - (reductions.shock or 0))
+    end
+    if baseline.chemical then
+        armor.immunities["chemical_burn_immunity"] =
+            baseline.chemical * (1 - (reductions.chemical or 0))
+    end
+    return true
+end
+
+local function clean_immunities_for(armor)
+    if not armor then return nil end
+
+    local ini = system_ini()
+    local armor_section = armor:section()
+    if not ini:section_exist(armor_section)
+        or not ini:line_exist(armor_section, "immunities_sect")
+    then
+        return nil
+    end
+
+    local immunity_section = ini:r_string(armor_section, "immunities_sect")
+    if not immunity_section or not ini:section_exist(immunity_section) then
+        return nil
+    end
+
+    local has_burn = ini:line_exist(immunity_section, "burn_immunity")
+    local has_shock = ini:line_exist(immunity_section, "shock_immunity")
+    local has_chemical = ini:line_exist(immunity_section, "chemical_burn_immunity")
+    if not has_burn and not has_shock and not has_chemical then
+        return nil
+    end
+
+    return {
+        burn = has_burn and ini:r_float(immunity_section, "burn_immunity") or nil,
+        shock = has_shock and ini:r_float(immunity_section, "shock_immunity") or nil,
+        chemical = has_chemical and ini:r_float(immunity_section, "chemical_burn_immunity") or nil,
+    }
+end
+
+local function restore_active_outfit(event_name)
+    if not active_outfit then return end
+
+    local armor = level.object_by_id(active_outfit.id)
+    local armor_token = object_token(armor)
+    if armor
+        and armor:id() == active_outfit.id
+        and armor:section() == active_outfit.section
+        and armor_token == active_outfit.object_token
+    then
+        write_outfit_immunities(armor, active_outfit.baseline, { burn = 0, shock = 0, chemical = 0 })
+        diagnostic(event_name or "reset", armor, active_outfit.baseline, { burn = 0, shock = 0, chemical = 0 }, nil)
+    end
+
+    active_outfit = nil
+end
+
+local function strongest_wear_reductions()
+    local reductions = { burn = 0, shock = 0, chemical = 0 }
+    local selected = { burn = "none", shock = "none", chemical = "none" }
+    if not (sak and sak_inventory and sak.arts_operate and sak.get_accum and sak.get_accum()) then
+        return reductions, selected
+    end
+
+    local belt_items = sak_inventory.belt_items
+    if not belt_items then return reductions, selected end
+
+    for section, ids in pairs(belt_items) do
+        for _, artifact_id in ipairs(ids) do
+            local artifact = client_obj(artifact_id)
+            if artifact and artifact:section() == section then
+                local contribution = preview_reductions(artifact)
+                for _, damage in ipairs({ "burn", "shock", "chemical" }) do
+                    if contribution[damage] > reductions[damage] then
+                        reductions[damage] = math.min(contribution[damage], MAX_REDUCTION)
+                        selected[damage] = tostring(section) .. ":" .. tostring(artifact_id)
+                    end
+                end
+            end
+        end
+    end
+
+    return reductions, selected
+end
+
+local function refresh_outfit_insulation()
+    if not db or not db.actor then
+        restore_active_outfit("actor unavailable")
+        return
+    end
+
+    local armor = db.actor:item_in_slot(6)
+    local reductions, selected = strongest_wear_reductions()
+    if not armor or (reductions.burn <= 0 and reductions.shock <= 0 and reductions.chemical <= 0) then
+        restore_active_outfit("insulation inactive")
+        return
+    end
+
+    local armor_id = armor:id()
+    local armor_section = armor:section()
+    local armor_token = object_token(armor)
+    if not armor.immunities then
+        restore_active_outfit("outfit unavailable")
+        return
+    end
+
+    if active_outfit
+        and (active_outfit.id ~= armor_id
+            or active_outfit.section ~= armor_section
+            or active_outfit.object_token ~= armor_token)
+    then
+        restore_active_outfit("outfit changed")
+    end
+
+    if not active_outfit then
+        local baseline = clean_immunities_for(armor)
+        if not baseline then return end
+
+        active_outfit = {
+            id = armor_id,
+            section = armor_section,
+            object_token = armor_token,
+            baseline = baseline,
+        }
+    end
+
+    if write_outfit_immunities(armor, active_outfit.baseline, reductions) then
+        diagnostic("insulation active", armor, active_outfit.baseline, reductions, selected)
+    end
+end
+
+local function invalidate()
+    refresh_dirty = true
+    next_refresh = 0
+end
+
+local function reset()
+    restore_active_outfit("lifecycle reset")
+    invalidate()
+end
+
+local function on_update()
+    local now = time_global()
+    if not refresh_dirty and now < next_refresh then return end
+
+    refresh_dirty = false
+    next_refresh = now + REFRESH_INTERVAL
+    refresh_outfit_insulation()
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_update", fun = on_update })
+    sm:subscribe({ signal = "on_spawn", fun = reset })
+    sm:subscribe({ signal = "on_game_loaded", fun = reset })
+    sm:subscribe({ signal = "on_item_to_belt", fun = invalidate })
+    sm:subscribe({ signal = "on_item_to_ruck", fun = invalidate })
+    sm:subscribe({ signal = "on_item_to_slot", fun = invalidate })
+    sm:subscribe({ signal = "on_drop_after_all", fun = invalidate })
+end

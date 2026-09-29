@@ -1,0 +1,84 @@
+-- [HE-PORT] Watch EMP and battery operational state.
+-- This is independent of the PDA/NVD/torch outage windows.
+local outage_until = 0
+local surge_until = 0
+local surge_strength = 0
+local powered = true
+local operational = true
+local had_actor = false
+
+local function actor_ok()
+    return db.actor ~= nil and db.actor:alive()
+end
+
+local function refresh()
+    local available = he_watch_battery.is_powered() and powered and time_global() >= outage_until
+    if available ~= operational then
+        operational = available -- publish before callbacks; they may query us again
+        if vergas_watch and vergas_watch.g_watch and actor_ok() then
+            vergas_watch.g_watch:on_watch_state_changed(available)
+        end
+        if not available and he_watch_ui then he_watch_ui.abort("watch_emp") end
+        log2("[he_watch_emp] operational=%s", tostring(available))
+    end
+    -- Do this each frame, independent of the alarm's slower update subscription.
+    if not available and actor_ok() and vergas_watch and vergas_watch.g_watch then
+        vergas_watch.g_watch:skip_unavailable_alarm()
+    end
+    return available
+end
+
+function is_operational()
+    return refresh()
+end
+
+-- Additional power override; battery availability is always checked independently.
+function set_power_available(available)
+    powered = available == true
+    refresh()
+end
+
+function get_interference()
+    local intensity = (sivol_pda and sivol_pda.get_glitch_intensity()) or 0
+    if time_global() < surge_until then intensity = math.max(intensity, surge_strength) end
+    return math.max(0, math.min(1, intensity))
+end
+
+-- Called once AFTER an existing shared critical event is successfully scheduled.
+-- A surviving watch still glitches after a direct hit outside a proximity field.
+function on_critical_event(severity)
+    if not actor_ok() or not watch_gate.has_watch() then return end
+    local cfg = sivol_emp_config.WATCH_EMP
+    local strength = math.max(0, math.min(1, severity or 0))
+    local now = time_global()
+    surge_until = now + cfg.surge_duration_min +
+        (cfg.surge_duration_max - cfg.surge_duration_min) * strength
+    surge_strength = math.max(0.45, strength)
+    if strength < cfg.critical_threshold or not refresh() then return end
+    if math.random() >= cfg.critical_chance then return end
+    local duration = math.random(cfg.outage_min, cfg.outage_max)
+    outage_until = now + duration
+    log2("[he_watch_emp] critical severity=%.3f duration=%dms", strength, duration)
+    refresh() -- silence / invalidate wake-up immediately, not at the shader tick
+end
+
+local function reset()
+    outage_until, surge_until, surge_strength = 0, 0, 0
+    powered, operational, had_actor = true, true, false
+    if vergas_watch and vergas_watch.g_watch then
+        vergas_watch.g_watch:stop_alarm_output()
+    end
+end
+
+function attach(sm)
+    sm:subscribe({signal = "on_update", fun = function()
+        if actor_ok() then
+            had_actor = true
+            refresh()
+        elseif had_actor then
+            reset()
+        end
+    end})
+    sm:subscribe({signal = "on_load_before_all", fun = reset})
+    sm:subscribe({signal = "on_stop_modules", fun = reset})
+end

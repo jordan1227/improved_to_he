@@ -1,0 +1,116 @@
+-- [HE-PORT]
+
+local subscribed
+local artefacts   = {}
+local visibility_dist_sqr = 12
+
+function attach(sm)
+	sm:subscribe({ signal = "on_game_loaded", 	fun = this.on_game_loaded 	})
+	sm:subscribe({ signal = "on_item_to_slot", 	fun = this.detector_in_slot })
+	sm:subscribe({ signal = "on_item_to_ruck", 	fun = this.detector_in_ruck })
+end
+
+function on_game_loaded()
+	if level.name() ~= "generators" then return end
+	collect_arts()
+	process_artefact_visibility( "hide" )
+	local detector = db.actor:item_in_slot( 8 )
+	if detector and is_art_detector( detector ) then
+		subscribe()
+	end
+end
+
+function detector_in_slot( obj )
+	if not obj or not is_art_detector( obj ) then return end
+	if level.name() ~= "generators" then return end
+	collect_arts()
+	subscribe()
+end
+
+function detector_in_ruck( obj )
+	if not obj or not is_art_detector( obj ) then return end
+	process_artefact_visibility( "hide" )
+	unsubscribe()
+end
+
+function is_art_detector( obj )
+	local section = obj:section()
+	return section == "detector_art" or section == "detector_art_upgr"
+end
+
+function collect_arts()
+	artefacts = {}
+	local current_level = level.name()
+	local tbl = get_value( "tbl_bio_art", {} )
+	if not tbl[ current_level ] then return end
+	for i = 1, #tbl[ current_level ] do
+		local art_id = tbl[ current_level ][ i ]
+		local sobj = g_sim:object( art_id )
+		if sobj and sobj.parent_id == BAD_OBJ_ID then
+			artefacts[ art_id ] = true
+		end
+	end
+end
+
+function process_artefact_visibility( what )
+	if not next( artefacts ) then return end
+	for id in pairs( artefacts ) do
+		local sobj = alife():object( id )
+		if sobj and sobj.parent_id == BAD_OBJ_ID then
+			if what == "hide" then
+				alife():set_switch_online( sobj.id, false )
+				alife():set_switch_offline( sobj.id, true )
+			elseif what == "show" then
+				alife():set_switch_online( sobj.id, true )
+				alife():set_switch_offline( sobj.id, false )
+			end
+		end
+	end
+end
+
+function subscribe()
+	if not subscribed then
+		subscribed = { signal = "on_update", fun = this.det_arts }
+		ogse_signals.get_mgr():subscribe( subscribed )
+	end
+end
+
+function unsubscribe()
+	if subscribed then
+		ogse_signals.get_mgr():unsubscribe( subscribed )
+		subscribed = nil
+	end
+end
+
+function det_arts()
+	if not next( artefacts ) then
+		unsubscribe()
+		return
+	end
+	local detector = db.actor:item_in_slot( 8 )
+	if not detector or not is_art_detector( detector ) then
+		process_artefact_visibility( "hide" )
+		unsubscribe()
+		return
+	end
+	if detector:condition() <= 0.002 then
+		sak.send_tip( "В детекторе артефактов сели батарейки", "Едрить твою налево!", 0, 5, "g_g", "no", "red" )
+		process_artefact_visibility( "hide" )
+		unsubscribe()
+		return
+	end
+	local actor_pos = db.actor:position()
+	for id in pairs( artefacts ) do
+		local sobj = alife():object( id )
+		if sobj and sobj.parent_id == BAD_OBJ_ID then
+			local dist = actor_pos:distance_to_sqr( sobj.position )
+			if dist < visibility_dist_sqr then
+				alife():set_switch_online( sobj.id, true )
+				alife():set_switch_offline( sobj.id, false )
+			else
+				alife():set_switch_offline( sobj.id, true )
+				alife():set_switch_online( sobj.id, false )
+			end
+		end
+	end
+end

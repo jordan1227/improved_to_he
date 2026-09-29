@@ -1,0 +1,74 @@
+-- [HE-PORT] One AA = six game days. Only the worn/selected watch drains.
+-- Condition is authoritative; no wall-clock/offline or spare-watch simulation.
+local CAPACITY_SECONDS = 6 * 24 * 60 * 60
+local active_id, last_time = nil, nil
+
+local function selected_watch()
+    if not db.actor or not db.actor:alive() then return nil end
+    return db.actor:object("device_watch")
+end
+
+local function clamp(value)
+    return math.max(0, math.min(1, value))
+end
+
+function reset()
+    active_id, last_time = nil, nil
+end
+
+function refresh_charge(force)
+    local watch = selected_watch()
+    if not watch then reset(); return 0 end
+    local now = game.get_game_time()
+    if active_id ~= watch:id() or not last_time then
+        active_id, last_time = watch:id(), now
+        return clamp(watch:condition())
+    end
+    local elapsed = now:diffSec(last_time)
+    if elapsed < 0 then last_time = now; return clamp(watch:condition()) end
+    -- Avoid per-frame float condition writes. Save/recharge flush the remainder.
+    if elapsed >= 60 or (force and elapsed > 0) then
+        last_time = now
+        watch:set_condition(clamp(watch:condition() - elapsed / CAPACITY_SECONDS))
+    end
+    return clamp(watch:condition())
+end
+
+function get_charge()
+    return refresh_charge()
+end
+
+function is_powered()
+    return refresh_charge() > 0
+end
+
+local function owned(obj, section)
+    if not obj or obj:section() ~= section or not db.actor then return false end
+    local parent = obj:parent()
+    return parent ~= nil and parent:id() == db.actor:id()
+end
+
+function recharge(battery_id, watch_id)
+    if not db.actor or not db.actor:alive() or battery_id == watch_id then return false end
+    local battery = level.object_by_id(battery_id)
+    local watch = level.object_by_id(watch_id)
+    if not owned(battery, "batt_torch") or not owned(watch, "device_watch") then return false end
+    refresh_charge(true)
+    if watch:condition() >= 1 then return false end
+    -- No yield/deferred callback between revalidation and consumption.
+    misc.release_obj(battery)
+    watch:set_condition(1)
+    if active_id == watch_id then last_time = game.get_game_time() end
+    he_watch_status.is_operational() -- retains any remaining EMP outage
+    return true
+end
+
+function attach(sm)
+    sm:subscribe({signal = "on_update", fun = function() refresh_charge() end})
+    sm:subscribe({signal = "on_save", fun = function() refresh_charge(true) end})
+    sm:subscribe({signal = "on_load_before_all", fun = reset})
+    sm:subscribe({signal = "on_stop_modules", fun = reset})
+    sm:subscribe({signal = "on_drop_before_all", fun = function(obj)
+        if obj and obj:id() == active_id then refresh_charge(true); reset() end
+    end})
+end

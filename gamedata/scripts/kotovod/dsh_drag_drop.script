@@ -1,8 +1,124 @@
 -- Доделать бинд сталкер, не хватает аргументов в драг-дропе мыши!!!
 
+local resonator_busy = false
+local resonator_state = nil
+local resonator_request = nil
+
+local RESONATOR_HUD = "af_resonator_inspect_hud"
+local RESONATOR_SCAN_MS = 4200
+local RESONATOR_CAMERA_ID = 9784
+local RESONATOR_CAM_DRAW = "camera_effects\\weapon\\af_hand_inspect_draw.anm"
+local RESONATOR_CAM_IDLE = "camera_effects\\weapon\\af_hand_inspect_idle.anm"
+local RESONATOR_CAM_HIDE = "camera_effects\\weapon\\af_hand_inspect_hide.anm"
+
+local function resonator_state_active(state)
+    return state and resonator_state == state and hud_animation_session.valid(state)
+        and hud_animation_owner.valid(state.owner_token)
+end
+
+local function resonator_remove_camera(state)
+    if state and state.camera_active then
+        level.remove_cam_effector( RESONATOR_CAMERA_ID )
+        state.camera_active = false
+    end
+end
+
+local function resonator_release_owner(owner, reason)
+    if owner and hud_animation_owner then
+        hud_animation_owner.cancel(owner, reason or "cancelled")
+        hud_animation_owner.release(owner, reason or "cancelled")
+    end
+end
+
+local function resonator_finish_request(request, reason)
+    if not request or resonator_request ~= request then return end
+    resonator_request = nil
+    hud_animation_session.cancel(request, reason or "complete")
+end
+
+local function resonator_refuse(owner, request, reason)
+    resonator_finish_request(request, reason or "refused")
+    resonator_release_owner(owner, reason or "refused")
+end
+
+local function resonator_show_busy_tip()
+    sak.send_tip(
+        game.translate_string( "af_resonator_busy" ),
+        game.translate_string( "af_resonator_tip_header" ),
+        0, 5, "g_g", "no", "yellow"
+    )
+end
+local function resonator_cleanup(reason, teardown)
+    local request = resonator_request
+    resonator_request = nil
+    if request then
+        hud_animation_session.cancel(request, reason or "cancelled")
+        resonator_release_owner(request.owner_token, reason or "cancelled")
+    end
+    local state = resonator_state
+    if not state then
+        resonator_busy = false
+        return
+    end
+
+    resonator_state = nil
+    local owner = state.owner_token
+    if owner and hud_animation_owner then
+        hud_animation_owner.cancel(owner, reason or "complete")
+    end
+    hud_animation_session.cancel(state, reason or "complete")
+    if state.hud_active then
+        game.stop_hud_motion()
+        state.hud_active = false
+    end
+    resonator_remove_camera(state)
+    if state.sound and state.sound:playing() then state.sound:stop() end
+    if state.slot_held then
+        if teardown or not db.actor or db.actor ~= state.actor or not db.actor:alive() then
+            slot_keeper.reset()
+        else
+            slot_keeper.release(owner)
+        end
+    end
+    if not teardown and db.actor and db.actor == state.actor and db.actor:alive() and state.psy_applied then
+        db.actor.psy_health = state.psy
+    end
+
+    if owner then
+        resonator_release_owner(owner, reason or "complete")
+    elseif state.input_hidden then
+        sak.restore_weap()
+    end
+    resonator_busy = false
+end
+function on_game_loaded()
+    resonator_cleanup("load/reset", true)
+end
+
+function on_level_changer_action()
+    resonator_cleanup("save/transition")
+end
+
+function on_resonator_stop()
+    resonator_cleanup("shutdown", true)
+end
+
+function on_resonator_update()
+    if (resonator_state and not resonator_state_active(resonator_state))
+        or (resonator_request and not hud_animation_session.valid(resonator_request)) then
+        resonator_cleanup("actor unavailable", true)
+    end
+end
+
 function attach(sm)
+    sm:subscribe({ signal = "on_load_before_all", fun = this.on_game_loaded })
+    sm:subscribe({ signal = "on_stop_modules", fun = this.on_resonator_stop })
+    sm:subscribe({ signal = "on_update", fun = this.on_resonator_update })
+    sm:subscribe({ signal = "on_before_save_game", fun = this.on_level_changer_action })
     sm:subscribe({ signal = "on_inventory_open", fun = this.on_show_inventory })
     sm:subscribe({ signal = "inv_drag_drop", fun = this.try_drag_drop })
+    sm:subscribe({ signal = "on_game_loaded", fun = this.on_game_loaded })
+    sm:subscribe({ signal = "level_changer_action", fun = this.on_level_changer_action })
 end
 
 local drop_on_id = false
@@ -61,6 +177,355 @@ function on_cell_item_mouse(obj, x, y, action)
     end
 end
 
+function close_and_wait_inventory( callback )
+	sak.close_window()
+	sak.actor_hide_weapon()	
+	if get_value( "inv_full" ) then
+		dsh.wait_condition(
+			function() return not get_value( "inv_full" ) end,
+			callback
+		)
+	else
+		callback()
+	end
+end
+
+function hide_weapon_then( callback )
+	dsh.timeout( 20, function()
+		close_and_wait_inventory( callback )
+	end )
+end
+
+local function resonator_server_object( obj )
+    if not obj then return nil end
+    local sobj = obj:get_alife_object()
+    if sobj then return sobj end
+    return alife():object( obj:id() )
+end
+
+local function resonator_custom_data( obj )
+    local sobj = resonator_server_object( obj )
+    if not sobj then return nil end
+    local pk = get_netpk( sobj, 1 )
+    if pk then
+        local data = pk:get()
+        return data and data.custom_data or nil
+    end
+    return sobj.custom_data
+end
+
+local function resonator_payload( value )
+    if type( value ) ~= "string" or value == "" then return nil end
+    return nlc_capsules.from_descriptor( value ) or nlc_capsules.read( value )
+end
+
+local function resonator_section( value )
+    local payload = resonator_payload( value )
+    if payload then
+        local section = nlc_capsules.content_section( payload )
+        local ini = system_ini()
+        if section and ini and ini:section_exist( section ) then
+            return section
+        end
+        return nil
+    end
+
+    if type( value ) ~= "string" or value == "" or value == "?" then return nil end
+    if nlc_capsules.is_capsule_section( value ) then return nil end
+
+    if string.sub( value, -8 ) == "_capsule" then
+        value = string.sub( value, 1, -9 )
+    end
+
+    local ini = system_ini()
+    if ini and ini:section_exist( value ) then return value end
+    return nil
+end
+
+local function resonator_named_section( section )
+    if not section or section == "" or section == "?" then return nil end
+    local ini = system_ini()
+    if not ini or not ini:section_exist( section ) then return nil end
+    local name = get_inv_name( section )
+    if not name or name == "" or name == "?" then return nil end
+    return name
+end
+
+local function resonator_display_name( section )
+    local name = resonator_named_section( section )
+    if not name then return nil end
+    local dyn = string.match( section, "_dyn(%d+)d$" )
+    if dyn then name = name .. " [" .. dyn .. "]" end
+    return name
+end
+
+local function resonator_special_display_name( section )
+    local base = string.match( section, "^(.+)_%d+$" )
+    if base then
+        local base_section = base .. "_1"
+        local ini = system_ini()
+        if ini and ini:section_exist( base_section ) then
+            local description = get_string( base_section, "description", nil )
+            if description and description ~= "" then
+                local text = game.translate_string( description )
+                if text and text ~= "" and text ~= description then
+                    return text
+                end
+            end
+        end
+    end
+    return resonator_display_name( section )
+end
+
+local function resonator_is_capsule_section( section )
+    return section and (
+        nlc_capsules.is_capsule_section( section ) or
+        string.sub( section, -8 ) == "_capsule"
+    )
+end
+
+local function resonator_capsule_section( obj, shell )
+    local sobj = resonator_server_object( obj )
+    if sobj then
+        local payload, custom_data = nlc_capsules.read_server( sobj )
+        if payload then
+            local section = resonator_section( nlc_capsules.descriptor( payload ) )
+            return section, section and "found" or "unknown"
+        end
+
+        local section = resonator_section( custom_data or resonator_custom_data( obj ) )
+        if section then return section, "found" end
+        if custom_data and custom_data ~= "" then return nil, "unknown" end
+        return nil, "empty"
+    end
+    return nil, "empty"
+end
+
+local function resonator_arc_sections( obj )
+    local sections = {}
+    local custom_data = resonator_custom_data( obj )
+    local shell = obj:section()
+    local slots = get_u32( shell, "container_slots" ) or 8
+    local ok, arts = pcall(
+        arc_radiation.decode_custom_data, custom_data, shell, slots
+    )
+    if not ok then return sections, "unknown" end
+
+    local invalid_capsule = false
+    for _, art in ipairs( arts or {} ) do
+        if art.section and resonator_is_capsule_section( art.section ) then
+            local section = resonator_section( art.custom_data ) or
+                resonator_section( art.section )
+            if section then
+                table.insert( sections, section )
+            else
+                invalid_capsule = true
+            end
+        end
+    end
+
+    if #sections > 0 then return sections, "found" end
+    return sections, invalid_capsule and "unknown" or "empty"
+end
+
+local function resonator_target_sections( obj )
+    local shell = obj:section()
+    if string.find( shell, "arc_art_box_", 1, true ) then
+        local sections, status = resonator_arc_sections( obj )
+        return sections, "af_resonator_container_tip", false, status
+    end
+
+    if string.find( shell, "special_art_container", 1, true ) then
+        local custom_data = resonator_custom_data( obj )
+        local section = resonator_section( custom_data )
+        local status = section and "found" or
+            ( custom_data and custom_data ~= "" and "unknown" or "empty" )
+        return section and { section } or {}, "af_resonator_special_tip", true, status
+    end
+
+    if string.find( shell, "inventory_sakbox", 1, true ) then
+        local custom_data = resonator_custom_data( obj )
+        local section = resonator_section( custom_data )
+        local status = section and "found" or
+            ( custom_data and custom_data ~= "" and "unknown" or "empty" )
+        return section and { section } or {}, "af_resonator_container_tip", false, status
+    end
+
+    if string.find( shell, "capsule", 1, true ) then
+        local section, status = resonator_capsule_section( obj, shell )
+        return section and { section } or {}, "af_resonator_capsule_tip", false, status
+    end
+
+    return {}, "af_resonator_container_tip", false, "unknown"
+end
+
+local function resonator_send_result( sections, message_id, special, status )
+    local names = {}
+    local counts = {}
+    local order = {}
+
+    for _, section in ipairs( sections or {} ) do
+        local name = special and resonator_special_display_name( section ) or
+            resonator_display_name( section )
+        if name then
+            if counts[ name ] then
+                counts[ name ] = counts[ name ] + 1
+            else
+                counts[ name ] = 1
+                table.insert( order, name )
+            end
+        end
+    end
+
+    for _, name in ipairs( order ) do
+        local count = counts[ name ]
+        table.insert(
+            names, count > 1 and name .. " x" .. tostring( count ) or name
+        )
+    end
+
+    local result
+    if #names > 0 then
+        result = table.concat( names, ", " )
+    elseif status == "unknown" then
+        result = game.translate_string( "af_resonator_unknown" )
+    else
+        result = game.translate_string( "af_resonator_empty" )
+    end
+    sak.send_tip(
+        result,
+        game.translate_string( message_id ),
+        0, 12, "g_g", "no", "yellow"
+    )
+end
+
+local function resonator_play_camera(state, effect, looped)
+    if not resonator_state_active(state) then return end
+    resonator_remove_camera(state)
+    level.add_cam_effector( effect, RESONATOR_CAMERA_ID, looped, "", 0, false )
+    state.camera_active = true
+end
+
+local function resonator_start_inspection(state, sections, message_id, special, status)
+    if not resonator_state_active(state) then return end
+
+    resonator_play_camera(state, RESONATOR_CAM_DRAW, false)
+    local show_duration = game.play_hud_motion( 2, RESONATOR_HUD, "anm_show", true, 1.1, true )
+    state.hud_active = true
+    if not hud_animation_session.duration(show_duration) then resonator_cleanup("invalid motion duration"); return end
+
+    hud_animation_session.after(state, show_duration, function()
+        if not resonator_state_active(state) then return end
+        resonator_play_camera(state, RESONATOR_CAM_IDLE, true)
+        game.play_hud_motion( 2, RESONATOR_HUD, "anm_idle", true, 1, true )
+    end )
+
+    hud_animation_session.after(state, math.max( RESONATOR_SCAN_MS, show_duration ), function()
+        if not resonator_state_active(state) then return end
+        game.stop_hud_motion()
+        resonator_play_camera(state, RESONATOR_CAM_HIDE, false)
+        local hide_duration = game.play_hud_motion( 2, RESONATOR_HUD, "anm_hide", true, 1, true )
+        if not hud_animation_session.duration(hide_duration) then resonator_cleanup("invalid motion duration"); return end
+        hud_animation_session.after(state, hide_duration, function()
+            if not resonator_state_active(state) then return end
+            resonator_cleanup()
+            resonator_send_result( sections, message_id, special, status )
+        end )
+    end )
+end
+
+local function use_resonator( drag_obj, drop_obj, owner_token, request )
+    if resonator_busy or vergas_masks.is_animating() or hud_fx_busy then
+        resonator_refuse(owner_token, request, "resonator blocked")
+        resonator_show_busy_tip()
+        return false
+    end
+
+    if owner_token and request and hud_animation_owner.pending
+        and hud_animation_owner.pending() == owner_token then
+        if request.waiting_for_owner then return true end
+        request.waiting_for_owner = true
+        sak.close_window()
+        hud_animation_session.wait(request, function()
+            return hud_animation_owner.current() == nil
+                and hud_animation_owner.pending() == owner_token
+                and not get_value("inv_full")
+        end, function()
+            request.waiting_for_owner = false
+            if not hud_animation_session.valid(request) then return end
+            local drag = level.object_by_id(request.drag_id)
+            local drop = level.object_by_id(request.drop_id)
+            if not drag or not drop then
+                resonator_refuse(owner_token, request, "objects unavailable")
+                return
+            end
+            if not hud_animation_owner.valid(owner_token) then
+                resonator_refuse(owner_token, request, "successor unavailable")
+                return
+            end
+            resonator_finish_request(request, "successor ready")
+            use_resonator(drag, drop, owner_token)
+        end, 10000)
+        return true
+    end
+
+    if (not owner_token and hud_animation_owner.busy())
+        or (not get_value("inv_full") and (level.only_movekeys_allowed() or not game.hud_motion_allowed())) then
+        resonator_refuse(owner_token, request, "resonator admission blocked")
+        resonator_show_busy_tip()
+        return false
+    end
+
+    local sections, message_id, special, status =
+        resonator_target_sections( drop_obj )
+    local owner = owner_token
+    if not owner then owner = hud_animation_owner.reserve("resonator") end
+    if not owner or not hud_animation_owner.activate(owner, "resonator") then
+        resonator_refuse(owner, request, "admission refused")
+        resonator_show_busy_tip()
+        return false
+    end
+    resonator_finish_request(request, "started")
+
+    local accum = sak.get_accum()
+    if not accum or accum:condition() < 0.07 then
+        resonator_refuse(owner, request, "no accumulator")
+        sak.send_tip(
+            game.translate_string( "af_resonator_no_accumulator" ),
+            game.translate_string( "af_resonator_tip_header" ),
+            0, 5, "g_g", "no", "red"
+        )
+        vergas_lib.s_play( [[device\\antirad_no]], 1 )
+        return false
+    end
+
+    params.upd_condition( accum, accum:condition() - 0.07 )
+    resonator_busy = true
+    local state = hud_animation_session.new("resonator", function(reason) resonator_cleanup(reason) end)
+    state.owner_token = owner
+    state.psy = db.actor.psy_health
+    resonator_state = state
+    slot_keeper.remember(owner)
+    slot_keeper.hold(owner)
+    state.slot_held = true
+    hud_animation_owner.acquire_weapon(owner)
+    sak.close_window()
+    hud_animation_owner.acquire_input(owner)
+    state.input_hidden = true
+    db.actor:activate_slot(255)
+    hud_animation_session.wait(state, function()
+        return not get_value("inv_full") and not db.actor:active_item()
+    end, function()
+        if not resonator_state_active(state) then return end
+        db.actor.psy_health = -0.55
+        state.psy_applied = true
+        state.sound = vergas_lib.s_play([[affects\\tinnitus3a]], 0.8)
+        resonator_start_inspection(state, sections, message_id, special, status)
+    end, 10000)
+    return true
+end
+local anagramm_busy = false
+
 local drag_drop = {
     ['batt_torch'] = {
         target = { 'device_torch', 'detector' },
@@ -68,7 +533,7 @@ local drag_drop = {
             misc.release_obj(drag_obj)
             --sak.new_batt_torch()
 			drop_obj:set_condition( 1 )
-			dsh_torch.update_torch_parameters()
+			nlc_torch.update_torch_parameters()
         end
     },
     
@@ -79,7 +544,7 @@ local drag_drop = {
             local flask_to = drop_obj:get_eatable_item()
             
             if flask_from.eat_portions_num <= 1 then
-                sak.send_tip("А ведь Фляга пуста, что же переливать?!", "Мысли вслух", 0, 5, "g_g", "sak", "red")
+                sak.send_tip_local("А ведь Фляга пуста, что же переливать?!", "Мысли вслух", 0, 5, "g_g", "sak", "red")
                 return
             end
             
@@ -93,15 +558,57 @@ local drag_drop = {
                 vergas_flask.replace_flask_weight(drop_obj:id(), flask_to.eat_portions_num)
                 vergas_flask.replace_flask_weight(drag_obj:id(), flask_from.eat_portions_num)
                 
-                sak.send_tip(string.format("Перелил %d порций воды", portions_to_transfer), "Мысли вслух", 0, 5, "g_g", "sak", "green")
+                sak.send_tip_local(string.format("Перелил %d порций воды", portions_to_transfer), "Мысли вслух", 0, 5, "g_g", "sak", "green")
             else
-                sak.send_tip("Вот ведь, фляга уже заполнена!", "Мысли вслух", 0, 5, "g_g", "sak", "red")
+                sak.send_tip_local("Вот ведь, фляга уже заполнена!", "Мысли вслух", 0, 5, "g_g", "sak", "red")
             end
             
             sak_inventory.need_update_inventory()
         end
     },
 	
+    [ 'ballon' ] = {
+        target = { 'scientific_', 'ecolog_', 'protection_', 'monolit_exoskeleton', 'monolit_q_exoskeleton' },
+        exceptions = {},
+        target_exceptions = {},
+        action = function( drag_obj, drop_obj )
+            local drag_id = drag_obj:id()
+            local drop_id = drop_obj:id()
+            schedule.add( "ballon_drag_prepare", function()
+                undergrounds_hits.prepare_ballon_drag(
+                    level.object_by_id( drag_id ),
+                    level.object_by_id( drop_id )
+                )
+            end, 50 )
+        end
+    },
+	
+    [ 'af_resonator' ] = {
+        target = { 'capsule', 'inventory_sakbox', 'arc_art_box_', 'special_art_container' },
+        target_exceptions = {},
+        action = function( drag_obj, drop_obj )
+            if resonator_request or resonator_busy then return end
+            local owner = hud_animation_owner.reserve("resonator", { allow_full_backpack = true })
+            if not owner then return end
+            local drag_id = drag_obj:id()
+            local drop_id = drop_obj:id()
+            local request = hud_animation_session.new("resonator request", function(reason) resonator_cleanup(reason, true) end)
+            request.owner_token = owner
+            request.drag_id = drag_id
+            request.drop_id = drop_id
+            resonator_request = request
+            hud_animation_session.after(request, 50, function()
+                local drag = level.object_by_id(drag_id)
+                local drop = level.object_by_id(drop_id)
+                if drag and drop then
+                    use_resonator(drag, drop, owner, request)
+                else
+                    resonator_refuse(owner, request, "objects unavailable")
+                end
+            end)
+        end
+    },
+
     [ 'af' ] = {
         target = 'arc_art_box_',
         exceptions = {
@@ -111,6 +618,7 @@ local drag_drop = {
         },
         target_exceptions = {}, -- Добавляем исключения для целевых объектов
         action = function( drag_obj, drop_obj )			
+			if not ui_arc_container_menu.is_allowed_in_container( drag_obj:section() ) then return end
 			local container = drop_obj:get_alife_object()
 			if container then 
 				local slots = get_u32( drop_obj:section(), "container_slots" )	
@@ -125,7 +633,7 @@ local drag_drop = {
 					local free = slots - used
 					log3( "Free %s - used %s", free, used )
 					if free <= 0 then 
-						sak.send_tip(
+						sak.send_tip_local(
 							"Э-э, так ведь туда больше не поместится!",
 							"Мысли вслух", 0, 5, "g_g", "sak", "yellow"
 						)                   
@@ -133,6 +641,13 @@ local drag_drop = {
 					end 
 					local art = drag_obj:section()
 					local con = drag_obj:condition()
+					local art_server = alife():object( drag_obj:id() )
+					if art_server then
+                        nlc_capsules.ensure_server( art_server )
+                        if sivol_unknown_arts and type(sivol_unknown_arts.initialize_new) == "function" then
+                            sivol_unknown_arts.initialize_new( art_server )
+                        end
+                    end
 					local cus = get_netpk( drag_obj, 1 )
 					if cus then 
 						local pk = get_netpk( drag_obj, 1 )
@@ -153,64 +668,79 @@ local drag_drop = {
         end
     },	
 	
-    [ 'wpn_knife' ] = {
-        target = 'sharper',
-        action = function( drag_obj, drop_obj )		
-			local back = get_value( "inv_full" ) and 2000 or 0		
-			sak.actor_hide_weapon()			
-			dsh.timeout( 20, function()
-				sak.close_window()				
-				dsh.timeout( back, function()				
-					process_sharpering( drag_obj, drop_obj )
-				end )
-			end )	
-        end
-    },
+	[ 'wpn_knife' ] = {
+		target = 'sharper',
+		action = function( drag_obj, drop_obj )
+			hide_weapon_then( function()
+				process_sharpering( drag_obj, drop_obj )
+			end )
+		end
+	},
+	
+	[ 'sharper' ] = {
+		target = 'wpn_knife',
+		action = function( drag_obj, drop_obj )
+			hide_weapon_then( function()
+				process_sharpering( drop_obj, drag_obj )
+			end )
+		end
+	},	
 
-    [ 'vodka' ] = {
-        target = { 'sharper' },
-        target_exceptions = {},
-        action = function( drag_obj, drop_obj )
-			local back = get_value( "inv_full" ) and 2000 or 0
-			sak.actor_hide_weapon()
-			dsh.timeout( 20, function()			
-				sak.close_window()				
-				dsh.timeout( back, function()			
-					clean_sharper( drag_obj, drop_obj )
-				end )
-			end )	
-        end
-    },
+	[ 'vodka' ] = {
+		target = { 'sharper' },
+		target_exceptions = {},
+		action = function( drag_obj, drop_obj )
+			hide_weapon_then( function()
+				clean_sharper( drag_obj, drop_obj )
+			end )
+		end
+	},
+
+	[ 'energy_drink' ] = {
+		target = { 'sharper' },
+		target_exceptions = {},
+		action = function( drag_obj, drop_obj )
+			hide_weapon_then( function()
+				clean_sharper( drag_obj, drop_obj )
+			end )
+		end
+	},
+
+	[ 'flask_army' ] = {
+		target = { 'sharper' },
+		target_exceptions = {},
+		action = function( drag_obj, drop_obj )
+			hide_weapon_then( function()
+				clean_sharper( drag_obj, drop_obj )
+			end )
+		end
+	},
 	
-    [ 'energy_drink' ] = {
-        target = { 'sharper' },
-        target_exceptions = {},
-        action = function( drag_obj, drop_obj )
-			local back = get_value( "inv_full" ) and 2000 or 0
-			sak.actor_hide_weapon()
-			dsh.timeout( 20, function()			
-				sak.close_window()				
-				dsh.timeout( back, function()			
-					clean_sharper( drag_obj, drop_obj )
+	[ 'anagramm_flash' ] = {
+		target = { 'device_pda_npc' },
+		exceptions = {},
+		target_exceptions = {},
+		action = function( drag_obj, drop_obj )
+			-- В противном случае вскрывает весь стэк
+			if anagramm_busy then return end
+			anagramm_busy = true
+
+			local drop_id = drop_obj:id()
+			dsh.timeout( 50, function()
+				bind_stalker.hide_weapon()
+
+				he_pda_3d.open_npc_pda( drop_id, function()
+					if ui_cheat_pda.cheat_instance then
+						ui_cheat_pda.cheat_instance:SolveAnagramm( true )
+					end
+					anagramm_busy = false
 				end )
-			end )	
-        end
-    },
-	
-    [ 'flask_army' ] = {
-        target = { 'sharper' },
-        target_exceptions = {},
-        action = function( drag_obj, drop_obj )
-			local back = get_value( "inv_full" ) and 2000 or 0
-			sak.actor_hide_weapon()
-			dsh.timeout( 20, function()			
-				sak.close_window()				
-				dsh.timeout( back, function()			
-					clean_sharper( drag_obj, drop_obj )
-				end )
-			end )	
-        end
-    },	
+
+				local obj = level.object_by_id( drop_id )
+				if obj then misc.release_obj( obj ) end
+			end )
+		end
+	},
 }
 
 function try_drag_drop( drag_obj, drop_obj )
@@ -219,6 +749,11 @@ function try_drag_drop( drag_obj, drop_obj )
 
     local drag_sect = drag_obj:section()
     local drop_sect = drop_obj:section()
+
+    -- Watch batteries require both items in actor inventory; no deferred object refs.
+    if drag_sect == "batt_torch" and drop_sect == "device_watch" then
+        return he_watch_battery.recharge(drag_obj:id(), drop_obj:id())
+    end
 
     log2( "Попытка перетаскивания: drag_sect = " .. drag_sect .. ", drop_sect = " .. drop_sect )
 
@@ -261,197 +796,90 @@ function try_drag_drop( drag_obj, drop_obj )
     log2("Перетаскивание не удалось: нет подходящей комбинации.")
 end
 
-local sharpen_params = {
-    vodka = 
-		{ decrease = 0.05, 
-		min = 30,
-		max = 40
-	},
-    energy_drink = { 
-		decrease = 0.10, 
-		min = 15, 
-		max = 25
-	},
-    flask_army = { 
-		decrease = 0.15, 
-		min = 5, 
-		max = 10
-	}
+-- Rinse/sharpen rules live in sharper_core; this file only does the inventory
+-- side (messages, sounds, effects). Every refusal must call sak.restore_weap():
+-- hide_weapon_then() disabled the input before we got here.
+local rinse_refusals = {
+	full   = "ui_sharper_rinse_full",
+	at_max = "ui_sharper_rinse_max",
+	empty  = "ui_sharper_flask_empty",
 }
 
 function clean_sharper( drag_obj, drop_obj )
-    local sharp_obj = drop_obj
-    local sharp_cond = sharp_obj:condition()
-    local sharp_id = sharp_obj:id()
-    
-    if sharp_cond >= 1 then 
-        sak.send_tip( 
-			"Точильный камень в идеальном состоянии", 
-			"Мысли вслух", 0, 5, "g_g", "no", "red"
-		)
-		vergas_lib.s_play( [[device\antirad_no]], 1 )		
-        return
-    end
-	
-	local item_type = drag_obj:section()
-    
-    local value = sharpen_params[ item_type ]
-    if not value then return end
-    
-    local max_condition = get_sharper_max_condition( sharp_id )
-    
-    if max_condition ~= 1 and sharp_cond == max_condition then 
-        sak.send_tip( 
-			"Въевшееся уже не отмыть...", 
-			"Мысли вслух", 0, 5, "g_g", "no", "red" 
-		)
-		vergas_lib.s_play( [[device\antirad_no]], 1 )	
-        return
-    end
-    
-    if item_type == "flask_army" then
-        local flask_item = drag_obj:get_eatable_item()
-        if flask_item.eat_portions_num <= 1 then
-            sak.send_tip( 
-				"Фляга пустая", 
-				"Мысли вслух", 0, 5, "g_g", "no", "red" 
-			)
-			vergas_lib.s_play( [[device\antirad_no]], 1 )	
-            return
-        end
-        
-        local water_used = flask_item.eat_portions_num - 1
-        local base_improvement = dsh.get_next_random( "generic_rnd", value.min, value.max ) / 100
-        local total_improvement = base_improvement * water_used
-        
-        -- Обновляем максимальную кондицию
-        max_condition = update_sharper_max_condition( sharp_id, "water" )
-        
-        local new_condition = math.min( max_condition, sharp_cond + total_improvement )
-        
-        params.upd_condition( sharp_id, new_condition )
-        flask_item.eat_portions_num = 1
-        vergas_flask.replace_flask_weight( drag_obj:id(), 1 )
-        
-    elseif item_type == "vodka" or item_type == "energy_drink" then
-        local random = dsh.get_next_random( "generic_rnd", value.min, value.max ) / 100
-        
-        -- Обновляем максимальную кондицию
-        max_condition = update_sharper_max_condition( sharp_id, item_type )
-        
-        local new_condition = math.min( max_condition, sharp_cond + random )
-        params.upd_condition( sharp_id, new_condition )
-        misc.release_obj( drag_obj:id(), true )
-    end
-    
-    local snd = xr_sound.get_safe_sound_object( "device\\masks\\water_flask" )
-    local sound_length = snd:length()
-    snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d )
-    level.add_cam_effector( "camera_effects\\item_use.anm", 9773, false, "" )
+	-- a stack may hand us its empty flask while a filled one sits in the same stack
+	local source = drag_obj
+	if drag_obj:section() == "flask_army" then
+		source = sharper_core.find_flask( drag_obj ) or "flask_army"
+	end
+
+	local plan = sharper_core.plan_rinse( drop_obj, source )
+	if not plan.ok then
+		local text = rinse_refusals[ plan.reason ]
+		if text then
+			sak.send_tip_local( sharper_core.text( text ), sharper_core.text( "thinking_out_loud" ), 0, 5, "g_g", "no", "red" )
+			vergas_lib.s_play( [[device\antirad_no]], 1 )
+		end
+		sak.restore_weap()
+		return
+	end
+
+	sharper_core.apply_rinse( plan )
+
+	local snd = xr_sound.get_safe_sound_object( "device\\masks\\water_flask" )
+	local sound_length = snd:length()
+	snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d )
+	level.add_cam_effector( "camera_effects\\item_use.anm", 9773, false, "" )
 	dsh.timeout( sound_length + 300, function()
-		if snd and snd:playing() then snd:stop() end		
-		level.remove_cam_effector( 9773 )	
+		if snd and snd:playing() then snd:stop() end
+		level.remove_cam_effector( 9773 )
 		misc.easy_sound( "device\\sleeping_bag\\sleep_cancel" )
 		sak.restore_weap()
 	end )
 end
 
 function process_sharpering( drag_obj, drop_obj )
-	local knife, sharper = drag_obj, drop_obj
+	local plan = sharper_core.plan_sharpen( drag_obj, drop_obj )
+	if not plan.ok then
+		if plan.reason == "knife_ok" then
+			sak.send_tip_local(
+				sharper_core.text( "ui_sharper_knife_fine" ),
+				sharper_core.text( "thinking_out_loud" ), 0, 10, "g_g", "sak", "yellow" 
+			)
+		end
+		sak.restore_weap()
+		return
+	end
 
-    if not knife then return end	
-	
-    local knife_cond = knife:condition()
-    local knife_sect = knife:section()	
-	
-    if knife_cond >= 0.99 then 
-		sak.send_tip( 
-			"Нож не нуждается в заточке!",
-			"Мысли вслух", 0, 10, "g_g", "sak", "yellow" 
-		) 		
-        return 
-    end	
-
-    local sharp_cond = sharper:condition()
-    local sharp_id = sharper:id()	
-    local knife_num = 1.5
-    local knife_exp = 0.2	
-	
-	if 
-		knife_sect == "wpn_knife_m1" 
-	then 
-		knife_num = 2 
-		knife_exp = 0.3
-	end	
-	
-	new_sharp_cond = ( knife_num / knife_cond ) / 8 	-- Было 10
-	if new_sharp_cond >= 1 then new_sharp_cond = 0.75 end	
-	params.upd_condition( sharp_id, sharp_cond - new_sharp_cond )
-	local will_break = sharp_cond - new_sharp_cond <= 0
-	
-	------------------------------------------			
-	local sharp_exp = get_value( "sharping", 0 )
-	if sharp_exp <= 0.4 then 
-		sharp_exp = sharp_exp + ( ( knife_exp / knife_cond ) / 100 )
-		set_value( "sharping", sharp_exp )
-	end	
-	
-	new_knife_cond = knife_cond + ( ( sharp_cond + sharp_exp ) / ( knife_num * 2 ) )
-	if new_knife_cond >= 1 then new_knife_cond = 1 end
-	
-	params.upd_condition( knife, new_knife_cond )	
-    xr_statistic.add_pts( "otherstats", game.translate_string( "st_pda_otherstats_knife_repairs" ), 1, 1 )
+	local sharp_id, will_break = plan.sharper:id(), plan.will_break
+	sharper_core.apply_sharpen( plan )
 
 	local snd = sound_object( "scripts\\sharp_" .. lua_random( 1, 3 ) )
-	snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d + sound_object.looped )	
-	misc.last_sound = snd	
-	
-	local max_time = 25000  -- 25 секунд для 0%
-	local min_time = 5000   -- 5 секунд для 100%
+	snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d + sound_object.looped )
+	misc.last_sound = snd
 
-	-- Расчет времени заточки
-	local time = max_time * ( 1 - knife_cond ) + min_time * knife_cond	
-	log2( "time is %s", time )
-	
+	log2( "time is %s", plan.duration )
+
 	set_dof_params( 1, 1, 1, 1 )
 	level.add_cam_effector( "camera_effects\\item_use.anm", 9773, true, "" )
-	
-	dsh.timeout( time, function()
-		if snd and snd:playing() then snd:stop() end	
-		level.remove_cam_effector( 9773 )	
+
+	dsh.timeout( plan.duration, function()
+		if snd and snd:playing() then snd:stop() end
+		level.remove_cam_effector( 9773 )
 		set_dof_params( 0, 0, 0, 0 )
-	
-		if will_break then 
-			misc.release_obj( sharp_id, true ) 
-			sak.send_tip( 
-				"Чёрт! Сломался точильный камень \\nТеперь точно новый покупать", 
-				"Мысли вслух", 0, 10, "g_g", "sak", "red" 
-			) 				
-		end 	
+
+		if will_break then
+			misc.release_obj( sharp_id, true )
+			sak.send_tip_local(
+				sharper_core.text( "ui_sharper_broke" ),
+				sharper_core.text( "thinking_out_loud" ), 0, 10, "g_g", "sak", "red"
+			)
+		end
 		misc.easy_sound( "device\\sleeping_bag\\sleep_cancel" )
-		sak.restore_weap()		
+		sak.restore_weap()
 	end )
 end
 
-function update_sharper_max_condition(sharp_id, item_type)
-	local sharper_data = get_value( "sharper_max_condition", {} )
-    local current_max = sharper_data[sharp_id] or 1.0
-    
-    local condition_decrease = {
-        water = 0.15,
-        energy = 0.10,
-        vodka = 0.05
-    }
-    
-    local new_max = current_max - (condition_decrease[item_type] or 0)
-    sharper_data[sharp_id] = math.max(0, new_max)
-    set_value( "sharper_max_condition", sharper_data )
-	
-    return new_max
-end
-
--- Функция для получения максимальной кондиции точильного камня
-function get_sharper_max_condition(sharp_id)
-    local sharper_data = get_value( "sharper_max_condition", {} )
-    return sharper_data[sharp_id] or 1.0
+-- Kept for callers such as ui_inv_descr; the value lives in sharper_core.
+function get_sharper_max_condition( sharp_id )
+	return sharper_core.get_max_condition( sharp_id )
 end

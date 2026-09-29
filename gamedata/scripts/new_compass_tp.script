@@ -1,0 +1,359 @@
+-- [HE-PORT]
+
+function attach( sm )
+	sm:subscribe({ signal = "on_item_to_belt", fun = this.on_item_to_belt })
+end
+
+local function item_cond( obj, default )
+	if not obj then return default end
+	return obj:condition() or default
+end
+
+local function set_item_cond( obj, value )
+	if not obj then return end
+	if value < 0 then value = 0 end
+	if value > 1 then value = 1 end
+	obj:set_condition( value )
+end
+
+local accum_sections = {
+	[ "af_full_akkum" ]     = true,
+	[ "af_full_akkum_big" ] = true
+}
+
+function get_charged_accum()
+	local accum = sak.get_accum()
+	if accum and accum_sections[ accum:section() ] and accum:condition() >= 0.75 then
+		return accum
+	end
+	local found
+	db.actor:iterate_inventory(
+	function( npc, item )
+		if not found and accum_sections[ item:section() ] and item:condition() >= 0.75 then
+			found = item
+		end
+	end, db.actor )
+	return found
+end
+
+function on_item_to_belt( obj, sobj )
+	if not obj then return end
+	local sect = obj:section()
+	if sect ~= "af_red_dummy_compass" then return end
+
+	if get_value( "nlc_vars.compass_tp_id" ) ~= nil then
+		sak.send_tip(
+			"Компас разряжен. Нужно подождать!",
+			"Ёшкин-кот!", 2, 7, "g_g", "sak", "red"
+		)
+		return
+	end
+
+	local accum = get_charged_accum()
+	if accum == nil then
+		sak.send_tip(
+			"Вроде никаких изменений. Может попробовать с заряженным аккумулятором?",
+			"Хм...", 2, 7, "g_g", "sak", "yellow"
+		)
+		return
+	end
+	set_item_cond( accum, item_cond( accum, 0.99 ) - 0.5 )
+
+	local compass_cond = item_cond( obj, 0.99 )
+	if compass_cond > 0.1 then
+		set_item_cond( obj, compass_cond - 0.1 )
+	else
+		misc.release_obj( obj:id() )
+	end
+
+	if level.main_input_receiver() then
+		schedule.add( "close_window", "sak.close_window()", 100 )
+	end
+	effectors()
+end
+
+function effectors()
+	vergas_art.scheme_2()
+	db.actor.health = - 0.2
+	db.actor.psy_health = - 0.4
+	for _, v in pairs({
+		"anomaly2\\emi_entrance_big_00",
+		"anomaly2\\teleport_out_00",
+		"anomaly2\\emi_entrance_big_00"
+	}) do
+		local particle	= particles_object( v )
+		local sound		= sound_object( "anomaly\\teleport_work_2" )
+		local actor		= db.actor
+		local act_pos	= actor:position()
+		local dir		= device().cam_dir
+		local a			= vector() a.y = math.atan2( dir.x, dir.z )
+		local xdelta	= math.sin( a.y )
+		local zdelta	= math.cos( a.y )
+		local pos_blast	= sak.v3f( ( act_pos.x + xdelta ), ( act_pos.y + 0.6 ), ( act_pos.z + zdelta ) )
+		particle:play_at_pos( pos_blast )
+		sound:play_at_pos( actor, pos_blast, 0 )
+	end
+	schedule.add( "create_compass_tp", "new_compass_tp.create_tp_restrictor()", 600 )
+end
+
+function pos_in_front_of_actor()
+	local actr   = db.actor
+	local dir    = device().cam_dir
+	local a      = vector()
+	a.y          = math.atan2( dir.x, dir.z )
+	local xdelta = math.sin( a.y )
+	local pos    = actr:position()
+	return sak.v3f( ( pos.x + xdelta ), ( pos.y + 0.3 ), ( pos.z - 7 ) )
+end
+
+function create_tp_restrictor()
+	local pos   = pos_in_front_of_actor()
+	local shape = { shtype = 0, radius = 2.0, center = { 0, 0.5, 0 } }
+	local lvid, gvid = db.actor:level_vertex_id(), db.actor:game_vertex_id()
+
+	local obj = amk_anoms.spawn_anomaly( "zone_teleport_4", pos, gvid, lvid, shape, "on" )
+	if not obj then return end
+	set_value( "nlc_vars.compass_tp_id", obj.id )
+	level.map_add_object_spot_ser( obj.id, "alife_presentation_smart_target", "Телепорт" )
+	timers.start_timer( "compass_tp_timer", 1, 0, 0, "new_compass_tp.release_compass_tp()" )
+
+	local sr_obj = alife():create( "space_restrictor", vector():set( pos ), lvid, gvid )
+	if sr_obj then
+		set_value( "nlc_vars.compass_sr_id", sr_obj.id )
+		local custom = "[logic]\n"..
+		"active = sr_idle\n"..
+		"[sr_idle]\n"..
+		"on_actor_inside = %=new_compass_tp.move_to()%"
+		kotovod_restrictors.rewrite_restrictor( sr_obj, custom, 3.0 )
+	end
+	info_arts()
+end
+
+function release_compass_tp()
+	local tp_id  = get_value( "nlc_vars.compass_tp_id" )
+	local location
+	if tp_id then
+		local tp_obj = g_sim:object( tp_id )
+		if tp_obj then location = get_lname( tp_obj.m_game_vertex_id ) end
+		sak.send_tip(
+			"Прекращено действие телепортационной аномалии",
+			location, 0, 10, "g_g", "sak", "yellow"
+		)
+		level.map_remove_object_spot( tp_id, "alife_presentation_smart_target" )
+		if tp_obj then misc.release_obj( tp_obj ) end
+		remove_value( "nlc_vars.compass_tp_id" )
+	end
+
+	local sr_id = get_value( "nlc_vars.compass_sr_id" )
+	if sr_id then
+		misc.release_obj( sr_id )
+		remove_value( "nlc_vars.compass_sr_id" )
+	end
+
+	local rest = g_sim:story_object( 987986 )
+	if rest then misc.release_obj( rest ) end
+end
+
+function get_lname( num )
+	local name = "???"
+	for k, v in pairs( const.game_vertices ) do
+		if num >= v[ 1 ] and num <= v[ 2 ] then
+			name = k
+			return game.translate_string( name )
+		end
+	end
+	return name
+end
+
+function info_arts()
+	local tbl = {
+		[ "info_compass_tp_escape" 		] = "Кордон - \"Бенгальский огонь\"",
+		[ "info_compass_tp_valley"		] = "Тёмная Долина - \"Капля\"",
+		[ "info_compass_tp_yantar"		] = "Янтарь - \"Колючка\"",
+		[ "info_compass_tp_limansk"		] = "Лиманск - \"Слизь\"",
+		[ "info_compass_tp_military"	] = "Арм. Склады - \"Медуза\""
+	}
+	local text = ""
+	for k, v in pairs( tbl ) do
+		if has_alife_info( k ) then
+			text = text .. v .. "\\n"
+		end
+	end
+	if text == "" then return end
+	sak.send_tip( text, "Известные пути для телепортации", 0, 10, "g_g", "sak", "yellow" )
+end
+
+function move_to()
+	local timer = new_quests.check_timer( "delete_changer", "new_compass_tp.delete_spawned_changer()" )
+	if timer ~= nil and timer > 0 then return end
+	local teleport = {
+
+		[ "info_compass_tp_escape"		] = {
+			artefact = "af_electra_sparkler",
+			position = {
+				{ gv =  223, lv = 411143, x =  110.263, y =   4.646, z =  459.206 },
+				{ gv =	 56, lv =  72791, x = -171.082, y = -16.817, z = -133.824 },
+				{ gv =	 67, lv =   9123, x = -252.648, y = -11.139, z =   -9.385 },
+				{ gv =  133, lv = 427496, x =  129.964, y =  -6.365, z =  -11.987 },
+				{ gv =  206, lv = 307258, x =   22.649, y =  20.352, z =  659.237 }
+			}
+		},
+
+		[ "info_compass_tp_valley" 		] = {
+			artefact = "af_drops",
+			position = {
+				{ gv =  943, lv = 325703, x =  131.721, y =  14.099, z = -405.091 },
+				{ gv =  833, lv =  63006, x =  -95.859, y =   0.977, z = -523.635 },
+				{ gv =  854, lv = 158415, x =  -12.589, y =  -3.947, z = -261.689 },
+				{ gv =  955, lv = 318641, x =  121.242, y =   8.845, z = -262.865 },
+				{ gv =  986, lv = 288644, x =   93.461, y =   4.220, z =  -12.916 },
+			}
+		},
+
+		[ "info_compass_tp_yantar" 		] = {
+			artefact = "af_rusty_thorn",
+			position = {
+				{ gv = 1523, lv = 123270, x =  152.747, y =  12.673, z =   11.723 },
+				{ gv = 1487, lv =  16150, x =  -63.649, y =  -4.403, z = -341.022 },
+				{ gv = 1438, lv = 132306, x =  169.365, y =   4.278, z = -245.285 },
+				{ gv = 1451, lv = 134043, x =  177.652, y =  -7.238, z = -103.651 },
+				{ gv = 1469, lv =  48813, x =   17.769, y =  -3.376, z = -200.974 }
+			}
+		},
+		[ "info_compass_tp_limansk"		] = {
+			artefact = "af_ameba_slime",
+			position = {
+				{ gv = 3023, lv =  47129, x =   37.541, y =   6.182, z =  311.764 },
+				{ gv = 2995, lv =  20956, x = 	-7.697, y =  -4.976, z = -176.255 },
+				{ gv = 2994, lv =   3853, x =  -47.281, y =  -0.960, z = -257.800 },
+				{ gv = 3008, lv =  24480, x =   -0.004, y =   4.654, z = -286.390 },
+				{ gv = 3015, lv =  45566, x =   35.806, y =   1.045, z =   43.125 }
+			}
+		},
+		[ "info_compass_tp_military" 	] = {
+			artefact = "af_medusa",
+			position = {
+				{ gv = 1795, lv =  29510, x = -316.212, y = -22.447, z = 207.789 },
+				{ gv = 1847, lv =   4172, x = -361.645, y = -13.623, z = 387.021 },
+				{ gv = 1548, lv = 382792, x =   85.995, y =  -6.544, z = 384.119 },
+				{ gv = 1642, lv = 405173, x =  112.633, y = -11.681, z = 164.790 },
+				{ gv = 1638, lv = 339325, x =   35.506, y =  -2.193, z =  90.568 }
+			}
+		}
+	}
+	local amount = 0
+	for k, v in pairs( teleport ) do
+		if has_alife_info( k ) then
+			for ii, kk in pairs( sak_inventory.belt_items ) do
+				if
+					strpos( ii, v.artefact, 1, true )
+					and not strpos( ii, "_dyn6d", 1, true )
+					and ( tonumber( string.sub( ii, -2, -2 ) ) >= 1 )
+				then
+					if amount == 1 then return end
+					local obj = client_obj( kk[ 1 ] )
+					misc.release_obj( obj )
+					level.add_pp_effector( "teleport.ppe", 2006, false )
+					local a = teleport[ k ].position[ lua_random( 1, 5 ) ]
+					create_level_changer( a.lv, a.gv, vector():set( a.x, a.y, a.z ) )
+					amount = amount + 1
+				end
+			end
+		end
+	end
+end
+
+function create_level_changer( p_dest_lv, p_dest_gv, p_dest_pos )
+	local p_story_id = 987986
+	local p_position = db.actor:position()
+	local p_lvertex_id = db.actor:level_vertex_id()
+	local p_gvertex_id = db.actor:game_vertex_id()
+	local p_dest_dir = vector():set( 0, 0, 0 )
+	local p_dest_level = level.name()
+	local p_silent = 1
+
+	local sim = alife()
+	local obj = sim:create( "level_changer", p_position, p_lvertex_id, p_gvertex_id )
+	set_value( "nlc_vars.compass_lc_id", obj.id )
+
+	local packet = net_packet()
+	obj:STATE_Write( packet )
+
+	local game_vertex_id				= packet:r_u16()
+	local cse_alife_object__unk1_f32	= packet:r_float()
+	local cse_alife_object__unk2_u32	= packet:r_u32()
+	local level_vertex_id				= packet:r_u32()
+	local object_flags					= packet:r_u32()
+	local custom_data					= packet:r_stringZ()
+	local story_id						= packet:r_u32()
+	local spawn_story_id				= packet:r_u32()
+
+	local shape_count = packet:r_u8()
+	for i = 1, shape_count do
+		local shape_type = packet:r_u8()
+		if shape_type == 0 then
+			local center = packet:r_vec3()
+			local radius = packet:r_float()
+		else
+			for j = 1, 12 do local f = packet:r_float() end
+		end
+	end
+
+	local restrictor_type		= packet:r_u8()
+
+	local dest_game_vertex_id	= packet:r_u16()
+	local dest_level_vertex_id	= packet:r_u32()
+	local dest_position			= packet:r_vec3()
+	local dest_direction		= packet:r_vec3()
+	local dest_level_name		= packet:r_stringZ()
+	local dest_graph_point		= packet:r_stringZ()
+	local silent_mode			= packet:r_u8()
+
+	packet:w_begin( game_vertex_id )
+	packet:w_float( cse_alife_object__unk1_f32 )
+	packet:w_u32( cse_alife_object__unk2_u32 )
+	packet:w_u32( level_vertex_id )
+	packet:w_u32( bit_not( 193 ) )
+	packet:w_stringZ( custom_data )
+	packet:w_u32( p_story_id )
+	packet:w_u32( spawn_story_id )
+
+	packet:w_u8( 1 )
+	packet:w_u8( 1 )
+	packet:w_float( 50 )
+	packet:w_float( 0 )
+	packet:w_float( 0 )
+	packet:w_float( 0 )
+	packet:w_float( 50 )
+	packet:w_float( 0 )
+	packet:w_float( 0 )
+	packet:w_float( 0 )
+	packet:w_float( 50 )
+	packet:w_float( 0 )
+	packet:w_float( 0 )
+	packet:w_float( 0 )
+
+	packet:w_u8( 3 )
+
+	packet:w_u16( p_dest_gv )
+	packet:w_s32( p_dest_lv )
+	packet:w_vec3( p_dest_pos )
+	packet:w_vec3( p_dest_dir )
+	packet:w_stringZ( p_dest_level )
+	packet:w_stringZ( "start_actor_02" )
+	packet:w_u8( p_silent )
+
+	packet:r_seek( 0 )
+	obj:STATE_Read( packet, packet:w_tell() )
+	timers.start_timer( "delete_changer", 0, 0, 5, "new_compass_tp.delete_spawned_changer()" )
+end
+
+function delete_spawned_changer()
+	local id = get_value( "nlc_vars.compass_lc_id" )
+	if not id then return end
+	local obj = g_sim:object( id )
+	if obj then
+		misc.release_obj( obj )
+	end
+	remove_value( "nlc_vars.compass_lc_id" )
+end

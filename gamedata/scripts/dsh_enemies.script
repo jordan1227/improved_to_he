@@ -4,14 +4,47 @@ function attach( sm )
 	sm:subscribe({ signal = "on_monster_enemy_callback", fun = this.enemy_callback })
 	sm:subscribe({ signal = "on_npc_enemy_callback", fun = this.enemy_callback })
 	sm:subscribe({ signal = "on_spawn",              fun = this.on_spawn       })
+-- [HE-PORT]
+	sm:subscribe({ signal = "on_npc_hit",            fun = this.on_npc_hit     })
 end
 
 
 local ignore_enemies = {}
+local never_ignore = {}
+local bridge_shift_actor_attack = {}
 local activation_time = 0
+
+-- [HE-PORT]
+local red_neitral_angry = {}
+function on_npc_hit( npc, amount, local_direction, who, bone_index )
+	if not ( db.actor and who and who:id() == db.actor:id() ) then return end
+	if not ( npc and npc:alive() and IsStalker( npc )
+		and npc:character_community() == "bandit" ) then return end
+	local zone = db.zone_by_name[ "red_neitral_bandit_zone" ]
+	if zone and utils.npc_in_zone( npc, zone ) then
+		red_neitral_angry[ npc:id() ] = true
+	end
+end
+function red_neitral_bandit_angry( npc )
+	return npc ~= nil and red_neitral_angry[ npc:id() ] and true or false
+end
 
 function on_spawn()
 	activation_time = timers.Get_Game_Seconds()
+	never_ignore = {}
+	for _, dsh_sect in ipairs( { "dsh.enemy.ignore.except", "dsh.enemy.ignore.except." .. level.name() } ) do
+		if sys_ini:section_exist( dsh_sect ) then
+			for i = 0, sys_ini:line_count( dsh_sect ) - 1 do
+				local _, k, _ = sys_ini:r_line( dsh_sect, i, "", "" )
+				for _, n in ipairs( parse_names_dsh( get_string( dsh_sect, k ) ) ) do
+					if not never_ignore[ k ] then never_ignore[ k ] = {} end
+					if not never_ignore[ n ] then never_ignore[ n ] = {} end
+					never_ignore[ k ][ n ] = true
+					never_ignore[ n ][ k ] = true
+				end
+			end
+		end
+	end
 	local dsh_sections = {
 				"dsh.enemy.ignore",
 				"dsh.enemy.ignore." .. level.name(),
@@ -117,6 +150,12 @@ end
 
 function enemy_callback( obj, enemy, result )
 	if db.actor and enemy:id() == db.actor:id() then
+		local obj_name = obj:name()
+		if (obj_name == "esc_bridge_soldier5" or obj_name == "esc_soldier_commander_sub") and not bridge_shift_actor_attack[obj:id()] then
+			obj:set_relation(game_object.neutral, db.actor)
+			table.insert(result, false)
+			return true
+		end
 		local lvl = level.name()
 		if lvl == 'warlab' then
 			if timers.Get_Game_Seconds() < activation_time + 30 then 
@@ -124,8 +163,43 @@ function enemy_callback( obj, enemy, result )
 			end
 		elseif lvl == 'limansk' then
 			sak.check_lim_lager_bandits_enemies(obj)
+		-- [HE-PORT]
+		elseif lvl == 'l04_darkvalley' then
+			if sak.val_bandits_ignore_actor( obj ) then
+				table.insert( result, false )
+				return true
+			end
+		-- [HE-PORT]
+		elseif lvl == 'l01_escape' then
+			if sak.esc_blockpost_ignore_actor( obj ) then
+				table.insert( result, false )
+				return true
+			end
+		-- [HE-PORT]
+		elseif lvl == 'l06_rostok' then
+			if sak.ros_bandit_veterans_ignore_actor( obj ) then
+				table.insert( result, false )
+				return true
+			end
+-- [HE-PORT]
+		elseif lvl == 'red_forest' then
+			if sak.red_neitral_bandits_ignore_actor( obj ) then
+				table.insert( result, false )
+				return true
+			end
 		end
 		return
+	end
+-- [HE-PORT]
+	local obj_name_he = obj:name()
+	local enemy_name_he = enemy:name()
+	if ( obj_name_he == "gar_wounded_bandit" or enemy_name_he == "gar_wounded_bandit" ) and not has_alife_info( "gar_lapot_talk" ) then
+		table.insert( result, false )
+		return true
+	end
+	if ( obj_name_he == "gar_seryi" or enemy_name_he == "gar_seryi" ) and not has_alife_info( "garbage_seryi_done" ) then
+		table.insert( result, false )
+		return true
 	end
 	local is_enemy = get_cache_rec( obj, enemy )
 	if is_enemy == false then
@@ -135,7 +209,17 @@ function enemy_callback( obj, enemy, result )
 end
 
 
+function bridge_shift_actor_hit(actor, npc)
+	bridge_shift_actor_attack[npc:id()] = true
+	npc:set_relation(game_object.enemy, actor)
+end
+
+
 function check_is_enemy_always( obj, enemy )
+	local except = never_ignore[ obj:name() ]
+	if except and except[ enemy:name() ] then
+		return true
+	end
 	local ignories = {
 				this.get_ignore_by_community,
 				this.get_ignore_by_name_or_strn,

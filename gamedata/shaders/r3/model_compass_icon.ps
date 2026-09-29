@@ -1,0 +1,72 @@
+/*
+	Watch shader - compass border
+*/
+#include "common.h"
+#include "watch_ui_common.h"
+#include "electronics_problems.h"
+#include "he_watch_common.h"
+
+uniform	float4 	m_timearrow2;
+
+Texture2D s_he_band; // act\watch\rad_band (red channel = band mask)
+
+// float4 m_actor_params; //x = health, y = outfit cond, z = wpn cond, w = wpn_loading
+
+struct v2p
+{
+ 	float2 tc0	: TEXCOORD0; //Base texture coordinates
+ 	float3 tc1	: TEXCOORD1; //Unused
+  	float4 c0	: COLOR0; //Light color + fog
+};
+
+float4 main(v2p I) : SV_Target
+{
+    float2 he_face_uv = I.tc0;
+    I.tc0 = he_watch_distort_uv(I.tc0);
+	//Sample compass texture
+	float2 coords = I.tc0;
+	float2 coords_new;
+
+	float sin_a = m_timearrow2.z;
+	float cos_a = m_timearrow2.a;
+	coords.x = coords.x-0.5;
+	coords.y = coords.y-0.5;
+
+	coords_new.x = coords.x * cos_a + coords.y * sin_a;
+	coords_new.y = -coords.x * sin_a + coords.y * cos_a;
+
+	coords_new.x = coords_new.x+0.5;
+	coords_new.y = coords_new.y+0.5;
+
+	float4	t_base 	= s_base.Sample( smp_base, coords_new );
+
+	// [HE-PORT] Radiation ring. Arc is face space; tick coverage is extracted from
+	// the existing rotated compass sample so fill and ticks share the face orientation.
+	float2 p = I.tc0 - float2(0.5, 0.5);
+	float angle = atan2(p.x, -p.y);
+	float progress = frac(angle / 6.28318530718 + 1.0);
+
+	float available = step(0.5, m_he_watch_ring.y);
+	float fraction = saturate(m_he_watch_ring.x);
+	float arc = he_watch_arc(progress, fraction);
+
+	float peak = max(t_base.r, max(t_base.g, t_base.b));
+	float ticks = saturate((peak - 0.08) / 0.62);
+	float band = s_he_band.Sample(smp_base, coords_new).r;
+	float coverage = max(band, ticks);
+
+	float3 neutral = float3(0.12, 0.12, 0.12);
+	float3 color = he_watch_radiation_color(fraction);
+	float3 mark_rgb = lerp(neutral * ticks, color * coverage, available * arc);
+
+	t_base.rgb = lerp(t_base.rgb, mark_rgb, coverage * available);
+
+	// Alarm editor dimming.
+
+	float brightness = 1.f;
+	brightness *= calc_glitch_brightness_watch_ui(brightness);
+	t_base.rgb = lerp(watchBgColor(), t_base.rgb, brightness);
+
+	//Output
+	return float4(he_watch_apply_signal(t_base.rgb, he_face_uv), t_base.a);
+}

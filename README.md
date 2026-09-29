@@ -1,18 +1,72 @@
+<div align="center">
+
+# Hard Edition на Improved 3.9.1
+
+**Перенос Hard Edition на Improved 3.9.1**
+
+![Статус](https://img.shields.io/badge/%D1%81%D1%82%D0%B0%D1%82%D1%83%D1%81-%D0%B7%D0%B0%D0%B2%D0%B5%D1%80%D1%88%D0%B5%D0%BD%D0%BE-2ea44f?style=flat-square)
+![Основа](https://img.shields.io/badge/%D0%BE%D1%81%D0%BD%D0%BE%D0%B2%D0%B0-Improved%203.9.1-0969da?style=flat-square)
+![Платформа](https://img.shields.io/badge/%D0%BF%D0%BB%D0%B0%D1%82%D1%84%D0%BE%D1%80%D0%BC%D0%B0-Windows%20x64-6e7681?style=flat-square)
+
+</div>
+
+---
+
+## Статус
+
+Большая часть разработки завершена, но в будущем могут быть патчи с контентом.
+
+## Релизы
+
+В разделе [Releases](../../releases) публикуется патченный `xrEngine.exe`.
+
+Защита сохранений в файле отключена.
+
+## Обратная связь
+
+Ошибки и предложения можно отправлять через Issues.
+
+## Авторы
+
+<p align="center">
+  <a href="https://github.com/jordan1227"><img src="https://img.shields.io/badge/eeeeb-jordan1227-8957e5?style=for-the-badge&logo=github&logoColor=white" alt="eeeeb (jordan1227)"></a>
+  <a href="https://github.com/AiramProvoker"><img src="https://img.shields.io/badge/AiramProvoker-sivol-e36209?style=for-the-badge&logo=github&logoColor=white" alt="AiramProvoker (sivol)"></a>
+  <a href="https://github.com/KotovodKoteikovich"><img src="https://img.shields.io/badge/KotovodKoteikovich-1f6feb?style=for-the-badge&logo=github&logoColor=white" alt="KotovodKoteikovich"></a>
+</p>
+
+---
+
+## Донаты / Donations
+
+<a href="https://github.com/jordan1227"><img src="https://img.shields.io/badge/eeeeb-jordan1227-8957e5?style=for-the-badge&logo=github&logoColor=white" alt="eeeeb (jordan1227)"></a>
+
+- ₿ Bitcoin: `bc1qya6c5g025v64ph43vmjxnejckq9j4ej8v4cf83`
+- ₮ USDT TRC-20: `TXVsz873ELbD6nggqdJo78B43pVR2hDd9T`
+
+<a href="https://github.com/AiramProvoker"><img src="https://img.shields.io/badge/sivol-AiramProvoker-e36209?style=for-the-badge&logo=github&logoColor=white" alt="sivol (AiramProvoker)"></a>
+
+- ₿ Bitcoin: `bc1qxcaekvqnj5m2v3zjl4zeu76j34x99d4llq783w`
+
+<a href="https://github.com/KotovodKoteikovich"><img src="https://img.shields.io/badge/%D0%9A%D0%BE%D1%82%D0%BE%D0%B2%D0%BE%D0%B4-KotovodKoteikovich-1f6feb?style=for-the-badge&logo=github&logoColor=white" alt="Котовод (KotovodKoteikovich)"></a>
+
+- 💳 Карта: `2200 0305 4331 3929`
+- ₿ Bitcoin: `bc1qs9mjs902ytxw20caufkj58xqqzrsr9m9x6dwn6`
+
 # Hard Edition to Improved 3.9.1
 
-Porting Hard Edition to Improved 3.9.1.
+**Porting Hard Edition to Improved 3.9.1**
+
+![Status](https://img.shields.io/badge/status-complete-2ea44f?style=flat-square)
+![Base](https://img.shields.io/badge/base-Improved%203.9.1-0969da?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-Windows%20x64-6e7681?style=flat-square)
+
+</div>
+
+---
 
 ## Status
 
-Development is ongoing. Completed tasks are marked with `✅`.
-
-> [!CAUTION]
-> **Don't overwrite other contributors' commits.**
-> Sync your branch first and check for overlapping changes.
-
-## Task List
-
-Current list of changes: [лист.md](лист.md).
+Most of the development work is complete, but new patches can happen.
 
 ## Releases
 
@@ -24,30 +78,14 @@ Save protection is disabled in this file.
 
 Report issues and suggestions through Issues.
 
+## Authors
+
+<p align="center">
+  <a href="https://github.com/jordan1227"><img src="https://img.shields.io/badge/eeeeb-jordan1227-8957e5?style=for-the-badge&logo=github&logoColor=white" alt="eeeeb (jordan1227)"></a>
+  <a href="https://github.com/AiramProvoker"><img src="https://img.shields.io/badge/AiramProvoker-sivol-e36209?style=for-the-badge&logo=github&logoColor=white" alt="AiramProvoker (sivol)"></a>
+  <a href="https://github.com/KotovodKoteikovich"><img src="https://img.shields.io/badge/KotovodKoteikovich-1f6feb?style=for-the-badge&logo=github&logoColor=white" alt="KotovodKoteikovich"></a>
+</p>
+
 ---
 
-# Hard Edition на Improved 3.9.1
-
-Перенос Hard Edition на Improved 3.9.1.
-
-## Статус
-
-Разработка продолжается. Выполненные задачи отмечены `✅`.
-
-> [!CAUTION]
-> **Не затирайте коммиты других участников.**
-> Сначала синхронизируйте ветку и проверьте пересечения изменений.
-
-## Список задач
-
-Актуальный список изменений: [лист.md](лист.md).
-
-## Релизы
-
-В разделе [Releases](../../releases) публикуется патченный `xrEngine.exe`.
-
-Защита сохранений в файле отключена.
-
-## Обратная связь
-
-Ошибки и предложения можно отправлять через Issues.
+<div align="center">

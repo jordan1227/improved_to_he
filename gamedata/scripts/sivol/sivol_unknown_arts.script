@@ -1,0 +1,1076 @@
+-- Persistent resolved property data for the player-facing Unknown artifact family.
+-- The payload is deliberately comma-free because arc_radiation stores container
+-- entries as comma-separated fields.
+
+sivol_unknown_arts = sivol_unknown_arts or {}
+local M = sivol_unknown_arts
+
+local SCHEMA_VERSION = 2
+local MIN_SUPPORTED_SCHEMA = 1
+local PROFILE_TABLE_VERSION = 2
+local NEXT_TOKEN_KEY = "sivol_unknown_arts.next_token"
+
+local RESTORE_PROPERTIES = {
+    "health_restore_speed",
+    "power_restore_speed",
+    "radiation_restore_speed",
+    "psy_health_restore_speed",
+    "bleeding_restore_speed",
+    "satiety_restore_speed",
+}
+
+local PROPERTY_ORDER = {
+    "health_restore_speed",
+    "power_restore_speed",
+    "radiation_restore_speed",
+    "psy_health_restore_speed",
+    "bleeding_restore_speed",
+    "satiety_restore_speed",
+    "additional_inventory_weight2",
+    "radiation_immunity",
+    "burn_immunity",
+    "shock_immunity",
+    "chemical_burn_immunity",
+    "outfit_wear_burn",
+    "outfit_wear_shock",
+    "outfit_wear_chemical",
+}
+
+local PROPERTY_DEFAULTS = {
+    health_restore_speed = 0,
+    power_restore_speed = 0,
+    radiation_restore_speed = 0,
+    psy_health_restore_speed = 0,
+    bleeding_restore_speed = 0,
+    satiety_restore_speed = 0,
+    additional_inventory_weight2 = 0,
+    radiation_immunity = 1,
+    burn_immunity = 1,
+    shock_immunity = 1,
+    chemical_burn_immunity = 1,
+    explosion_immunity = 1,
+    fire_wound_immunity = 1,
+    strike_immunity = 1,
+    telepatic_immunity = 1,
+    wound_immunity = 1,
+    outfit_wear_burn = 0,
+    outfit_wear_shock = 0,
+    outfit_wear_chemical = 0,
+}
+
+local V2_REQUIRED_FIELDS = {
+    "table",
+    "grade",
+    "quality",
+    "composition",
+    "weight",
+    "budget",
+    "exception",
+    "primary",
+    "positive1",
+    "positive2",
+    "drawback",
+    "primary_share",
+    "primary_budget",
+    "secondary_budget",
+    "specialist",
+}
+
+local V2_NUMERIC_FIELDS = {
+    "table",
+    "grade",
+    "quality",
+    "weight",
+    "budget",
+    "exception",
+    "primary_share",
+    "primary_budget",
+    "secondary_budget",
+    "specialist",
+}
+
+local UNKNOWN_SECTION_PATTERNS = {
+    "^af_unknown_(%d+)$",
+    "^af_unknown_(%d+)_new$",
+}
+M.diagnostics = M.diagnostics == true
+
+local function diagnostic(message, ...)
+    if M.diagnostics then
+        log2("[sivol_unknown_arts] " .. message, ...)
+    end
+end
+
+local function diagnostic_payload_error(action, section, err, fallback)
+    diagnostic(
+        "%s section=%s error=%s fallback=%s preserved=true",
+        tostring(action), tostring(section), tostring(err), tostring(fallback)
+    )
+end
+
+local function clean_value(value)
+    if value == nil then return nil end
+    local cleaned = tostring(value):gsub("[,;{}|\r\n]", "")
+    return cleaned
+end
+
+local function number_string(value)
+    return string.format("%.9f", tonumber(value) or 0)
+end
+
+local function round(value)
+    return value >= 0 and math.floor(value + 0.5) or math.ceil(value - 0.5)
+end
+
+local function quantize(value, step)
+    if not step or step <= 0 then return value end
+    return round(value / step) * step
+end
+
+local function diagnostic_payload(action, section, payload)
+    if not payload or not payload.values then return end
+    local quality = tonumber(payload.quality or payload.grade) or 0
+    diagnostic(
+        "%s token=%s section=%s profile=%s composition=%s weight=%.2f budget=%.3f quality=%.3f exception=%s specialist=%s primary=%s positive1=%s positive2=%s drawback=%s allocation=%.3f/%.3f health=%.9f power=%.9f radiation=%.9f psy_health=%.9f bleeding=%.9f carry=%.1f rad_imm=%.3f burn_imm=%.3f shock_imm=%.3f chemical_imm=%.3f burn_wear=%.3f shock_wear=%.3f chemical_wear=%.3f",
+        action, tostring(payload.token), tostring(section), tostring(payload.profile),
+        tostring(payload.composition or "legacy"), tonumber(payload.weight) or 0,
+        tonumber(payload.budget) or 0, quality, tostring(payload.exception == true),
+        tostring(payload.specialist == true), tostring(payload.primary or "none"),
+        tostring(payload.positive1 or "none"), tostring(payload.positive2 or "none"),
+        tostring(payload.drawback or "none"), tonumber(payload.primary_budget) or 0,
+        tonumber(payload.secondary_budget) or 0,
+        payload.values.health_restore_speed or 0,
+        payload.values.power_restore_speed or 0,
+        payload.values.radiation_restore_speed or 0,
+        payload.values.psy_health_restore_speed or 0,
+        payload.values.bleeding_restore_speed or 0,
+        payload.values.additional_inventory_weight2 or 0,
+        payload.values.radiation_immunity or 1,
+        payload.values.burn_immunity or 1,
+        payload.values.shock_immunity or 1,
+        payload.values.chemical_burn_immunity or 1,
+        payload.values.outfit_wear_burn or 0,
+        payload.values.outfit_wear_shock or 0,
+        payload.values.outfit_wear_chemical or 0
+    )
+end
+
+local function section_of(value)
+    if type(value) == "string" then return value end
+    if not value then return nil end
+    if type(value.section) == "function" then
+        local ok, result = pcall(value.section, value)
+        if ok then return result end
+    end
+    if type(value.section_name) == "function" then
+        local ok, result = pcall(value.section_name, value)
+        if ok then return result end
+    end
+    return nil
+end
+
+local function id_of(value)
+    if not value then return nil end
+    if type(value.id) == "number" then return value.id end
+    if type(value.id) == "function" then
+        local ok, result = pcall(value.id, value)
+        if ok then return result end
+    end
+    return nil
+end
+
+local function server_object(value)
+    if not value then return nil end
+    if type(value) == "number" then return alife():object(value) end
+    local value_type = type(value)
+    if value_type ~= "userdata" and value_type ~= "table" then return nil end
+    local id = id_of(value)
+    return id and alife():object(id) or nil
+end
+
+local function block_bounds(custom_data, name)
+    if not custom_data or custom_data == "" then return nil end
+    local needle = name .. "={"
+    local from = 1
+    while true do
+        local first = string.find(custom_data, needle, from, true)
+        if not first then return nil end
+        local previous = first > 1 and string.sub(custom_data, first - 1, first - 1) or ""
+        if previous == "" or not string.find(previous, "[%w_]") then
+            local last = string.find(custom_data, "}", first + string.len(needle), true)
+            if last then return first, last, nil end
+            return first, nil, "truncated"
+        end
+        from = first + 1
+    end
+end
+
+local function remove_block(custom_data, name)
+    local result = custom_data or ""
+    local first, last, err = block_bounds(result, name)
+    if err then return result end
+    while first do
+        result = string.sub(result, 1, first - 1) .. string.sub(result, last + 1)
+        first, last, err = block_bounds(result, name)
+        if err then return result end
+    end
+    result = result:gsub("^%s+", ""):gsub("%s+$", "")
+    result = result:gsub("^|+", ""):gsub("|+$", "")
+    return result
+end
+
+local function parse_block(custom_data)
+    local first, last, err = block_bounds(custom_data, "sivol_unknown")
+    if not first then return nil, err end
+    if not last then return nil, err or "truncated" end
+
+    local body = string.sub(custom_data, first + string.len("sivol_unknown") + 2, last - 1)
+    local result = {}
+    for key, value in string.gmatch(body, "([%w_]+)=([^;}]*)") do
+        result[key] = value
+    end
+
+    local version = tonumber(result.v)
+    if not version or version < MIN_SUPPORTED_SCHEMA or version > SCHEMA_VERSION
+        or version ~= math.floor(version) then
+        return nil, "unsupported_schema"
+    end
+    if not result.token or not result.profile then
+        return nil, "missing_field"
+    end
+
+    if version >= 2 then
+        for _, field in ipairs(V2_REQUIRED_FIELDS) do
+            if result[field] == nil or result[field] == "" then
+                return nil, "missing_v2_field:" .. field
+            end
+        end
+        for _, field in ipairs(V2_NUMERIC_FIELDS) do
+            if tonumber(result[field]) == nil then
+                return nil, "invalid_v2_field:" .. field
+            end
+        end
+    end
+
+    local token = clean_value(result.token)
+    local profile = clean_value(result.profile)
+    if not token or token == "" then return nil, "invalid_token" end
+    if not profile or profile == "" or profile ~= result.profile then
+        return nil, "invalid_profile"
+    end
+
+    local table_version = tonumber(result.table or 1)
+    if not table_version or table_version < 1 or table_version ~= math.floor(table_version) then
+        return nil, "invalid_table"
+    end
+
+    local grade = tonumber(result.grade or result.quality or 1)
+    if not grade or grade <= 0 then return nil, "invalid_grade" end
+
+    local payload = {
+        v = version,
+        token = token,
+        profile = profile,
+        table = table_version,
+        grade = grade,
+        quality = tonumber(result.quality),
+        composition = clean_value(result.composition),
+        weight = tonumber(result.weight),
+        budget = tonumber(result.budget),
+        exception = tonumber(result.exception) == 1,
+        primary = clean_value(result.primary),
+        positive1 = clean_value(result.positive1),
+        positive2 = clean_value(result.positive2),
+        drawback = clean_value(result.drawback),
+        primary_share = tonumber(result.primary_share),
+        primary_budget = tonumber(result.primary_budget),
+        secondary_budget = tonumber(result.secondary_budget),
+        specialist = tonumber(result.specialist) == 1,
+        values = {},
+    }
+
+    for _, prop in ipairs(PROPERTY_ORDER) do
+        if result[prop] == nil then
+            if version >= 2 then
+                return nil, "missing_v2_field:" .. prop
+            end
+            if version == 1 then
+                local is_legacy = false
+                for _, legacy_prop in ipairs(RESTORE_PROPERTIES) do
+                    if legacy_prop == prop then is_legacy = true break end
+                end
+                if is_legacy then return nil, "missing_value" end
+            end
+            payload.values[prop] = PROPERTY_DEFAULTS[prop]
+        else
+            local value = tonumber(result[prop])
+            if not value then
+                return nil, version >= 2 and ("invalid_v2_field:" .. prop) or "invalid_value"
+            end
+            payload.values[prop] = value
+        end
+    end
+
+    return payload, nil
+end
+
+function M.read_custom(custom_data)
+    return parse_block(custom_data)
+end
+
+function M.encode(payload, custom_data)
+    if not payload or not payload.values then return custom_data end
+    local _, _, block_error = block_bounds(custom_data, "sivol_unknown")
+    if block_error then return custom_data end
+
+    local result = remove_block(custom_data, "sivol_unknown")
+    local version = tonumber(payload.v) or SCHEMA_VERSION
+    local fields = {
+        "v=" .. tostring(version),
+        "token=" .. clean_value(payload.token),
+        "profile=" .. clean_value(payload.profile),
+        "table=" .. tostring(payload.table or PROFILE_TABLE_VERSION),
+        "grade=" .. number_string(payload.grade or payload.quality or 1),
+    }
+
+    if version >= 2 then
+        table.insert(fields, "quality=" .. number_string(payload.quality or payload.grade or 1))
+        table.insert(fields, "composition=" .. clean_value(payload.composition or "generated"))
+        table.insert(fields, "weight=" .. number_string(payload.weight or 0))
+        table.insert(fields, "budget=" .. number_string(payload.budget or 0))
+        table.insert(fields, "exception=" .. (payload.exception and "1" or "0"))
+        table.insert(fields, "primary=" .. clean_value(payload.primary or "none"))
+        table.insert(fields, "positive1=" .. clean_value(payload.positive1 or "none"))
+        table.insert(fields, "positive2=" .. clean_value(payload.positive2 or "none"))
+        table.insert(fields, "drawback=" .. clean_value(payload.drawback or "none"))
+        table.insert(fields, "primary_share=" .. number_string(payload.primary_share or 1))
+        table.insert(fields, "primary_budget=" .. number_string(payload.primary_budget or 0))
+        table.insert(fields, "secondary_budget=" .. number_string(payload.secondary_budget or 0))
+        table.insert(fields, "specialist=" .. (payload.specialist and "1" or "0"))
+    end
+
+    local properties = version >= 2 and PROPERTY_ORDER or RESTORE_PROPERTIES
+    for _, prop in ipairs(properties) do
+        table.insert(fields, prop .. "=" .. number_string(
+            payload.values[prop] or PROPERTY_DEFAULTS[prop] or 0))
+    end
+
+    local block = "sivol_unknown={" .. table.concat(fields, ";") .. "}"
+    if result == "" then return block end
+    return result .. "|" .. block
+end
+
+local function read_server_custom(sobj)
+    if not sobj then return nil end
+    local pk = get_netpk(sobj, 1)
+    if pk then
+        local data = pk:get()
+        return data.custom_data
+    end
+    return sobj.custom_data
+end
+
+local function write_server_custom(sobj, custom_data)
+    if not sobj then return false end
+    local pk = get_netpk(sobj, 1)
+    if pk then
+        local data = pk:get()
+        data.custom_data = custom_data or ""
+        pk:set(data)
+        return true
+    end
+    sobj.custom_data = custom_data or ""
+    return true
+end
+
+function M.read_server(value)
+    local sobj = server_object(value)
+    if not sobj then return nil, nil, "no_object" end
+    local custom_data = read_server_custom(sobj) or ""
+    local payload, err = parse_block(custom_data)
+    return payload, custom_data, err
+end
+
+function M.is_unknown_section(section)
+    for _, pattern in ipairs(UNKNOWN_SECTION_PATTERNS) do
+        local number = tonumber(section and string.match(section, pattern))
+        if number and number >= 1 and number <= 31 then return true end
+    end
+    return false
+end
+
+local function hash_text(text)
+    local hash = 2166131
+    for i = 1, string.len(text or "") do
+        hash = (hash * 65599 + string.byte(text, i)) % 2147483647
+    end
+    return hash
+end
+
+local function make_rng(seed)
+    local state = hash_text(seed)
+    if state <= 0 then state = 1 end
+
+    local rng = {}
+    function rng:float()
+        state = (state * 48271) % 2147483647
+        return state / 2147483647
+    end
+    return rng
+end
+
+local function next_token()
+    local token = tonumber(get_value(NEXT_TOKEN_KEY, 0)) or 0
+    token = token + 1
+    set_value(NEXT_TOKEN_KEY, token)
+    return token
+end
+
+local function configured_weight(section)
+    return math.max(0, tonumber(get_float(section, "inv_weight", 0)) or 0)
+end
+
+function M.get_configured_weight(target)
+    return configured_weight(section_of(target))
+end
+
+local function weight_band(weight)
+    if weight < 2 then return "under_2", 0.75 end
+    if weight < 4 then return "2_to_4", 0.90 end
+    if weight < 6 then return "4_to_6", 1.05 end
+    if weight < 8 then return "6_to_8", 1.20 end
+    return "8_plus", 1.35
+end
+
+local function specialist_chance(section, weight)
+    if section == "af_unknown_24_new" then return 0.80 end
+    if weight < 2 then return 0.05 end
+    if weight < 4 then return 0.10 end
+    if weight < 6 then return 0.25 end
+    if weight < 8 then return 0.45 end
+    return 0.65
+end
+
+local function triangular(rng, low, high)
+    return low + (high - low) * ((rng:float() + rng:float()) * 0.5)
+end
+
+local function lower_middle(rng, low, high)
+    local mode = low + (high - low) * 0.40
+    local split = (mode - low) / (high - low)
+    local roll = rng:float()
+    if roll < split then
+        return low + math.sqrt(roll * (high - low) * (mode - low))
+    end
+    return high - math.sqrt((1 - roll) * (high - low) * (high - mode))
+end
+
+local ORDINARY_BENEFITS = {
+    { key = "health_restore_speed", stat = "health", reference = 0.000045, step = 0.000001, pick_weight = 2 },
+    { key = "power_restore_speed", stat = "power", reference = 0.0018, step = 0.00005, pick_weight = 3 },
+    { key = "radiation_removal", value = "radiation_restore_speed", stat = "radiation", reference = -0.00014, step = 0.000005, pick_weight = 2 },
+    { key = "psy_health_restore_speed", stat = "psy", reference = 0.00018, step = 0.000005, pick_weight = 2 },
+    { key = "bleeding_restore_speed", stat = "bleeding", reference = -0.0012, step = 0.00005, pick_weight = 1 },
+    { key = "radiation_protection", value = "radiation_immunity", stat = "radiation", reference = 0.08, step = 0.005, pick_weight = 2, coefficient = true },
+    { key = "carrying_capacity", value = "additional_inventory_weight2", stat = "carry", reference = 3.0, step = 0.1, pick_weight = 1, carry = true },
+}
+
+local WEAR_BENEFITS = {
+    { key = "outfit_wear_burn", value = "outfit_wear_burn", stat = "damage", damage = "burn", reference = 0.20, step = 0.005, pick_weight = 1, wear = true },
+    { key = "outfit_wear_shock", value = "outfit_wear_shock", stat = "damage", damage = "shock", reference = 0.20, step = 0.005, pick_weight = 1, wear = true },
+    { key = "outfit_wear_chemical", value = "outfit_wear_chemical", stat = "damage", damage = "chemical", reference = 0.20, step = 0.005, pick_weight = 1, wear = true },
+}
+
+local DRAWBACKS = {
+    { key = "radiation_emission", stat = "radiation", value = "radiation_restore_speed", low = 0.00004, high = 0.00012, step = 0.000005 },
+    { key = "stamina_drain", stat = "power", value = "power_restore_speed", low = 0.0004, high = 0.0014, step = 0.00005 },
+    { key = "burn_vulnerability", stat = "damage", damage = "burn", value = "burn_immunity", low = 0.03, high = 0.09, step = 0.005 },
+    { key = "shock_vulnerability", stat = "damage", damage = "shock", value = "shock_immunity", low = 0.03, high = 0.09, step = 0.005 },
+    { key = "chemical_vulnerability", stat = "damage", damage = "chemical", value = "chemical_burn_immunity", low = 0.03, high = 0.09, step = 0.005 },
+}
+
+local function composition_for(rng)
+    local roll = rng:float()
+    if roll < 0.55 then return 1, 1, "1p1n" end
+    if roll < 0.70 then return 1, 0, "1p" end
+    if roll < 0.90 then return 2, 1, "2p1n" end
+    if roll < 0.97 then return 2, 0, "2p" end
+    return 0, 1, "1n"
+end
+
+local function select_weighted(rng, candidates)
+    local total = 0
+    for _, candidate in ipairs(candidates) do
+        total = total + (candidate.pick_weight or 1)
+    end
+    if total <= 0 then return nil end
+
+    local roll = rng:float() * total
+    for index, candidate in ipairs(candidates) do
+        roll = roll - (candidate.pick_weight or 1)
+        if roll <= 0 then return index, candidate end
+    end
+    return #candidates, candidates[#candidates]
+end
+
+local function approved_exception_pair(benefit_key, drawback_key)
+    if drawback_key == "radiation_emission" then
+        return benefit_key == "radiation_protection"
+    end
+    if drawback_key == "burn_vulnerability" then
+        return benefit_key == "outfit_wear_burn"
+    end
+    if drawback_key == "shock_vulnerability" then
+        return benefit_key == "outfit_wear_shock"
+    end
+    if drawback_key == "chemical_vulnerability" then
+        return benefit_key == "outfit_wear_chemical"
+    end
+    return false
+end
+
+local function candidate_allowed(candidate, selected, drawback, amount, weight, exception)
+    if selected[candidate.key] then return false end
+    if candidate.carry and not exception then
+        local carry_value = quantize(candidate.reference * amount, candidate.step)
+        if carry_value <= weight + 0.5 then return false end
+    end
+    if not drawback then return true end
+    if candidate.stat == drawback.stat
+        and (candidate.stat ~= "damage" or candidate.damage == drawback.damage)
+        and not (exception and approved_exception_pair(candidate.key, drawback.key))
+    then
+        return false
+    end
+    return true
+end
+
+local function resolve_benefit(candidate, amount)
+    local raw = candidate.reference * amount
+    if candidate.carry then
+        return quantize(raw, candidate.step)
+    end
+    if candidate.coefficient then
+        return 1 - quantize(raw, candidate.step)
+    end
+    if candidate.wear then
+        return math.min(0.30, quantize(raw, candidate.step))
+    end
+    return quantize(raw, candidate.step)
+end
+
+local function select_benefit(rng, source, selected, drawback, amount, weight, exception)
+    local candidates = {}
+    for _, candidate in ipairs(source) do
+        if candidate_allowed(candidate, selected, drawback, amount, weight, exception) then
+            table.insert(candidates, candidate)
+        end
+    end
+
+    while #candidates > 0 do
+        local index, candidate = select_weighted(rng, candidates)
+        if not index then return nil, nil end
+        table.remove(candidates, index)
+        local value = resolve_benefit(candidate, amount)
+        if value ~= 0
+            and (not candidate.coefficient or value < 1)
+            and (not candidate.carry or value > 0)
+        then
+            return candidate, value
+        end
+    end
+    return nil, nil
+end
+
+local function resolve_drawback(rng, negative_only)
+    local _, drawback = select_weighted(rng, DRAWBACKS)
+    if not drawback then return nil, nil end
+    local high = negative_only and (drawback.low + drawback.high) * 0.5 or drawback.high
+    local amount = lower_middle(rng, drawback.low, high)
+    amount = quantize(amount, drawback.step)
+    if drawback.key == "radiation_emission" then
+        return drawback, amount
+    end
+    if drawback.key == "stamina_drain" then
+        return drawback, -amount
+    end
+    return drawback, 1 + amount
+end
+
+local function payload_values()
+    local values = {}
+    for _, property in ipairs(PROPERTY_ORDER) do
+        values[property] = PROPERTY_DEFAULTS[property]
+    end
+    return values
+end
+
+local function generate_payload(section, token, seed)
+    local weight = configured_weight(section)
+    local band, multiplier = weight_band(weight)
+    local rng = make_rng(seed)
+    local positive_count, negative_count, composition = composition_for(rng)
+    local exception = rng:float() < 0.02
+    local quality = triangular(rng, 0.65, 1.15)
+    local budget = multiplier * quality
+    if positive_count == 2 and negative_count == 0 then budget = budget * 0.85 end
+
+    local values = payload_values()
+    local selected = {}
+    local primary_name = "none"
+    local drawback_name = "none"
+    local drawback = nil
+    if negative_count > 0 then
+        local resolved
+        drawback, resolved = resolve_drawback(rng, positive_count == 0)
+        if drawback then
+            drawback_name = drawback.key
+            values[drawback.value] = resolved
+        end
+    end
+
+    local primary_share = positive_count == 2 and (0.55 + 0.15 * rng:float()) or 1.0
+    local primary_amount = budget * primary_share
+    local secondary_amount = budget * (1 - primary_share)
+    local specialist = positive_count > 0 and rng:float() < specialist_chance(section, weight)
+    local primary_source = specialist and WEAR_BENEFITS or ORDINARY_BENEFITS
+    if positive_count > 0 then
+        local candidate, value = select_benefit(
+            rng, primary_source, selected, drawback, primary_amount, weight, exception)
+        if not candidate and specialist then
+            candidate, value = select_benefit(
+                rng, ORDINARY_BENEFITS, selected, drawback, primary_amount, weight, exception)
+            specialist = false
+        end
+        if candidate then
+            selected[candidate.key] = true
+            values[candidate.value or candidate.key] = value
+            primary_name = candidate.key
+        end
+    end
+
+    if positive_count == 2 and primary_name ~= "none" then
+        local secondary_source = specialist and WEAR_BENEFITS or ORDINARY_BENEFITS
+        local candidate, value = select_benefit(
+            rng, secondary_source, selected, drawback, secondary_amount, weight, exception)
+        if candidate then
+            selected[candidate.key] = true
+            values[candidate.value or candidate.key] = value
+        end
+    end
+
+    local positive_names = {}
+    for _, candidate in ipairs(ORDINARY_BENEFITS) do
+        if selected[candidate.key] then table.insert(positive_names, candidate.key) end
+    end
+    for _, candidate in ipairs(WEAR_BENEFITS) do
+        if selected[candidate.key] then table.insert(positive_names, candidate.key) end
+    end
+
+    return {
+        v = SCHEMA_VERSION,
+        token = token,
+        profile = "generated",
+        table = PROFILE_TABLE_VERSION,
+        grade = quality,
+        quality = quality,
+        composition = composition,
+        weight = weight,
+        band = band,
+        budget = budget,
+        exception = exception,
+        specialist = specialist,
+        primary = primary_name,
+        drawback = drawback_name,
+        primary_share = primary_share,
+        primary_budget = primary_amount,
+        secondary_budget = secondary_amount,
+        positive1 = positive_names[1],
+        positive2 = positive_names[2],
+        values = values,
+    }
+end
+
+local function make_new_payload(section)
+    local token_number = next_token()
+    local token = "N" .. string.format("%08d", token_number)
+    return generate_payload(section, token, section .. "|" .. tostring(token_number))
+end
+
+local function object_fingerprint(sobj, context)
+    local position = sobj and sobj.position
+    local px = position and tonumber(position.x) or 0
+    local py = position and tonumber(position.y) or 0
+    local pz = position and tonumber(position.z) or 0
+    return table.concat({
+        context or "legacy",
+        section_of(sobj) or "none",
+        tostring(id_of(sobj) or -1),
+        tostring(sobj and sobj.parent_id or -1),
+        tostring(sobj and sobj.m_level_vertex_id or -1),
+        tostring(sobj and sobj.m_game_vertex_id or -1),
+        string.format("%.2f", px), string.format("%.2f", py), string.format("%.2f", pz),
+    }, "|")
+end
+
+local function make_legacy_payload(section, fingerprint)
+    local hash = hash_text(fingerprint)
+    local token = "L" .. string.format("%08d", hash)
+    return generate_payload(section, token, fingerprint)
+end
+
+function M.initialize_new(sobj)
+    sobj = server_object(sobj)
+    local section = section_of(sobj)
+    if not sobj or not M.is_unknown_section(section) then return nil, "not_unknown" end
+    local payload, custom_data, err = M.read_server(sobj)
+    if payload then
+        diagnostic_payload("read-existing", section, payload)
+        return payload, "existing"
+    end
+    if err then
+        diagnostic_payload_error("refusing new profile", section, err, "base")
+        return nil, err
+    end
+    payload = make_new_payload(section)
+    write_server_custom(sobj, M.encode(payload, custom_data))
+    diagnostic_payload("creation", section, payload)
+    return payload, "created"
+end
+
+function M.migrate_legacy(sobj, context)
+    sobj = server_object(sobj)
+    local section = section_of(sobj)
+    if not sobj or not M.is_unknown_section(section) then return nil, "not_unknown" end
+    local payload, custom_data, err = M.read_server(sobj)
+    if payload then
+        diagnostic_payload("read-existing", section, payload)
+        return payload, "existing"
+    end
+    if err then
+        diagnostic_payload_error("refusing legacy migration", section, err, "base")
+        return nil, err
+    end
+    payload = make_legacy_payload(section, object_fingerprint(sobj, context))
+    write_server_custom(sobj, M.encode(payload, custom_data))
+    diagnostic_payload("migration", section, payload)
+    return payload, "migrated"
+end
+
+function M.ensure_server(sobj, context)
+    sobj = server_object(sobj)
+    local section = section_of(sobj)
+    if not sobj or not M.is_unknown_section(section) then return nil, "not_unknown" end
+    local payload, custom_data, err = M.read_server(sobj)
+    if payload then
+        diagnostic_payload("rehydration", section, payload)
+        return payload, "existing"
+    end
+    if err then
+        diagnostic_payload_error("unknown payload is not usable", section, err, "base")
+        return nil, err
+    end
+    return M.migrate_legacy(sobj, context or "rehydrate")
+end
+
+function M.restore_server(sobj, custom_data)
+    sobj = server_object(sobj)
+    if not sobj or not custom_data then return false end
+    local payload, err = parse_block(custom_data)
+    if err then
+        diagnostic_payload_error("refusing restore", section_of(sobj), err, "preserve")
+        return false
+    end
+    if not payload then return false end
+    write_server_custom(sobj, custom_data)
+    diagnostic_payload("restoration", section_of(sobj), payload)
+    return true
+end
+
+function M.migrate_container_entry(section, condition, container_id, slot, custom_data)
+    if not M.is_unknown_section(section) then return nil, "not_unknown" end
+    local payload, err = parse_block(custom_data or "")
+    if payload then return payload, "existing" end
+    if err then
+        diagnostic_payload_error("container migration refused", section, err, "preserve")
+        return nil, err
+    end
+    local fingerprint = table.concat({
+        "container", tostring(section), tostring(container_id or -1), tostring(slot or -1),
+        string.format("%.4f", tonumber(condition) or 1),
+    }, "|")
+    return make_legacy_payload(section, fingerprint), "migrated"
+end
+
+function M.migrate_storage_entry(section, condition, storage_id, ordinal, custom_data)
+    if not M.is_unknown_section(section) then return nil, "not_unknown" end
+    local payload, err = parse_block(custom_data or "")
+    if payload then return payload, "existing" end
+    if err then
+        diagnostic_payload_error("storage migration refused", section, err, "preserve")
+        return nil, err
+    end
+    local fingerprint = table.concat({
+        "storage", tostring(storage_id or -1), tostring(ordinal or -1),
+        tostring(section), string.format("%.4f", tonumber(condition) or 1),
+    }, "|")
+    return make_legacy_payload(section, fingerprint), "migrated"
+end
+
+function M.get_payload(target, custom_data)
+    local section = section_of(target)
+    if not section or not M.is_unknown_section(section) then return nil end
+    if custom_data == nil and type(target) ~= "string" then
+        local payload, stored_data = M.read_server(target)
+        if payload then return payload end
+        custom_data = stored_data
+    end
+    local payload, err = parse_block(custom_data or "")
+    if err then
+        diagnostic_payload_error("read payload failed", section, err, "base")
+    end
+    return payload
+end
+
+function M.get_nominal_property(target, property, custom_data)
+    local section = section_of(target)
+    if not section or not M.is_unknown_section(section) then return nil end
+    local payload = M.get_payload(target, custom_data)
+    if payload and payload.values[property] ~= nil then
+        return payload.values[property]
+    end
+    return get_float(section, property, PROPERTY_DEFAULTS[property] or 0)
+end
+
+M.get_effective_property = M.get_nominal_property
+
+function M.get_outfit_wear(target, damage, custom_data)
+    local value = M.get_nominal_property(target, "outfit_wear_" .. tostring(damage), custom_data)
+    return math.max(0, tonumber(value) or 0)
+end
+
+function M.log_grouping_state(obj, sobj, stage)
+    if not M.diagnostics or not obj then return end
+    local section = section_of(obj)
+    if not M.is_unknown_section(section) then return end
+    local payload, _, err = M.read_server(sobj or obj)
+    local inventory_item = obj:get_inventory_item()
+    diagnostic(
+        "grouping stage=%s object_id=%s section=%s token=%s profile=%s grade=%s always_ungroupable=%s error=%s",
+        tostring(stage), tostring(id_of(obj)), tostring(section),
+        tostring(payload and payload.token), tostring(payload and payload.profile),
+        tostring(payload and payload.grade),
+        tostring(inventory_item and inventory_item.always_ungroupable), tostring(err)
+    )
+end
+
+function M.on_take(obj, sobj)
+    if not M.diagnostics or not obj then return end
+    M.log_grouping_state(obj, sobj, "after_pickup")
+end
+
+function M.dump_inventory_world()
+    if not M.diagnostics then return 0 end
+    local count = 0
+    if db and db.actor then
+        db.actor:iterate_inventory(function(_, obj)
+            local section = obj:section()
+            if M.is_unknown_section(section) then
+                local payload, _, err = M.read_server(obj)
+                diagnostic("inventory section=%s id=%s token=%s profile=%s grade=%s error=%s",
+                    section, tostring(obj:id()), tostring(payload and payload.token),
+                    tostring(payload and payload.profile), tostring(payload and payload.grade), tostring(err))
+                count = count + 1
+            end
+        end)
+    end
+    for id = 0, MAX_OBJ_ID do
+        local sobj = alife():object(id)
+        if sobj and M.is_unknown_section(section_of(sobj)) then
+            local payload, _, err = M.read_server(sobj)
+            diagnostic("world section=%s id=%s token=%s profile=%s grade=%s error=%s",
+                section_of(sobj), tostring(id), tostring(payload and payload.token),
+                tostring(payload and payload.profile), tostring(payload and payload.grade), tostring(err))
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function exception_pair_key(payload)
+    if not payload or not payload.exception then return nil end
+    for _, benefit_key in ipairs({ payload.positive1, payload.positive2 }) do
+        if benefit_key and approved_exception_pair(benefit_key, payload.drawback) then
+            return benefit_key .. "+" .. tostring(payload.drawback)
+        end
+    end
+    return nil
+end
+
+local function inefficient_carry(payload)
+    if not payload or not payload.values then return false end
+    local carry = tonumber(payload.values.additional_inventory_weight2) or 0
+    return carry > 0 and carry <= (tonumber(payload.weight) or 0) + 0.5
+end
+
+local function has_contradiction(payload)
+    if not payload or not payload.values then return false end
+    local values = payload.values
+    local allowed_paradox = exception_pair_key(payload)
+    if payload.drawback == "radiation_emission"
+        and values.radiation_immunity < 1
+        and not allowed_paradox
+    then
+        return true
+    end
+    if payload.drawback == "burn_vulnerability"
+        and values.outfit_wear_burn > 0
+        and not allowed_paradox
+    then
+        return true
+    end
+    if payload.drawback == "shock_vulnerability"
+        and values.outfit_wear_shock > 0
+        and not allowed_paradox
+    then
+        return true
+    end
+    if payload.drawback == "chemical_vulnerability"
+        and values.outfit_wear_chemical > 0
+        and not allowed_paradox
+    then
+        return true
+    end
+    if inefficient_carry(payload) and not payload.exception then
+        return true
+    end
+    return false
+end
+
+local SAMPLE_BANDS = {
+    "under_2",
+    "2_to_4",
+    "4_to_6",
+    "6_to_8",
+    "8_plus",
+}
+
+local function new_sample_summary()
+    return {
+        count = 0,
+        magnitude_total = 0,
+        magnitude_min = math.huge,
+        magnitude_max = -math.huge,
+        specialists = 0,
+        exceptions = 0,
+    }
+end
+
+local function add_sample_summary(summary, payload)
+    local magnitude = tonumber(payload.budget) or 0
+    summary.count = summary.count + 1
+    summary.magnitude_total = summary.magnitude_total + magnitude
+    if magnitude < summary.magnitude_min then summary.magnitude_min = magnitude end
+    if magnitude > summary.magnitude_max then summary.magnitude_max = magnitude end
+    if payload.specialist then summary.specialists = summary.specialists + 1 end
+    if payload.exception then summary.exceptions = summary.exceptions + 1 end
+end
+
+-- Diagnostic sample entry point. It uses the same generator as creation and
+-- does not consume specimen tokens or write payloads.
+function M.sample(count)
+    count = math.max(1, tonumber(count) or 1000)
+    local compositions = { ["1p1n"] = 0, ["1p"] = 0, ["2p1n"] = 0, ["2p"] = 0, ["1n"] = 0 }
+    local bands = { under_2 = 0, ["2_to_4"] = 0, ["4_to_6"] = 0, ["6_to_8"] = 0, ["8_plus"] = 0 }
+    local summaries = {}
+    for _, band in ipairs(SAMPLE_BANDS) do
+        summaries[band] = new_sample_summary()
+    end
+    local carry = 0
+    local exceptions = 0
+    local allowed_paradoxes = {}
+    local carry_exceptions = 0
+    local forbidden_contradictions = 0
+    local specialist_8_77 = 0
+    local specimens_8_77 = 0
+    local sections = {}
+
+    for index = 1, count do
+        local section_number = ((index - 1) % 31) + 1
+        local section = "af_unknown_" .. tostring(section_number) .. "_new"
+        local token = "S" .. string.format("%08d", index)
+        local production_seed = section .. "|" .. tostring(index)
+        local payload = generate_payload(section, token, production_seed)
+        compositions[payload.composition] = (compositions[payload.composition] or 0) + 1
+        bands[payload.band] = (bands[payload.band] or 0) + 1
+        add_sample_summary(summaries[payload.band], payload)
+        if payload.values.additional_inventory_weight2 > 0 then carry = carry + 1 end
+        if payload.exception then exceptions = exceptions + 1 end
+        local paradox = exception_pair_key(payload)
+        if paradox then
+            allowed_paradoxes[paradox] = (allowed_paradoxes[paradox] or 0) + 1
+        end
+        if payload.exception and inefficient_carry(payload) then
+            carry_exceptions = carry_exceptions + 1
+        end
+        if has_contradiction(payload) then
+            forbidden_contradictions = forbidden_contradictions + 1
+        end
+        if math.abs((tonumber(payload.weight) or 0) - 8.77) < 0.001 then
+            specimens_8_77 = specimens_8_77 + 1
+            if payload.specialist then specialist_8_77 = specialist_8_77 + 1 end
+        end
+        sections[payload.primary or "none"] = (sections[payload.primary or "none"] or 0) + 1
+    end
+
+    diagnostic(
+        "sample count=%d seed_format=section|ordinal compositions=1p1n:%d,1p:%d,2p1n:%d,2p:%d,1n:%d bands=under2:%d,2to4:%d,4to6:%d,6to8:%d,8plus:%d carry=%d exceptions=%d allowed_paradoxes=%d carry_exceptions=%d forbidden_contradictions=%d",
+        count, compositions["1p1n"], compositions["1p"], compositions["2p1n"],
+        compositions["2p"], compositions["1n"], bands.under_2, bands["2_to_4"],
+        bands["4_to_6"], bands["6_to_8"], bands["8_plus"], carry, exceptions,
+        (function()
+            local total = 0
+            for _, value in pairs(allowed_paradoxes) do total = total + value end
+            return total
+        end)(), carry_exceptions, forbidden_contradictions
+    )
+    for _, band in ipairs(SAMPLE_BANDS) do
+        local summary = summaries[band]
+        if summary.count > 0 then
+            diagnostic(
+                "sample band=%s count=%d magnitude=%.3f/%.3f/%.3f specialists=%d rate=%.1f%% exceptions=%d",
+                band, summary.count, summary.magnitude_min,
+                summary.magnitude_total / summary.count, summary.magnitude_max,
+                summary.specialists, summary.specialists * 100 / summary.count,
+                summary.exceptions
+            )
+        end
+    end
+    for paradox, paradox_count in pairs(allowed_paradoxes) do
+        diagnostic("sample allowed_paradox=%s count=%d", tostring(paradox), paradox_count)
+    end
+    diagnostic(
+        "sample specialist_8_77kg count=%d specialist=%d rate=%.1f%%",
+        specimens_8_77, specialist_8_77,
+        specimens_8_77 > 0 and specialist_8_77 * 100 / specimens_8_77 or 0
+    )
+    for property_name, property_count in pairs(sections) do
+        diagnostic("sample primary=%s count=%d", tostring(property_name), property_count)
+    end
+    return compositions, bands, carry, exceptions, forbidden_contradictions
+end
+
+function M.set_diagnostics(enabled)
+    M.diagnostics = enabled == true
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_before_save_game", fun = M.on_before_save_game })
+    sm:subscribe({ signal = "on_take", fun = M.on_take })
+end
+
+function M.on_before_save_game()
+    if M.diagnostics then
+        diagnostic("save boundary reached")
+    end
+end

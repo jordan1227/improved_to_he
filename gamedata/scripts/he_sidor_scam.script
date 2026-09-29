@@ -1,0 +1,145 @@
+-- [HE-PORT]
+local SCAM_INFO = "sidor_container_scam"
+local LIE_INFO = "sidor_container_lie"
+local BOX_NAME = "esc_sak_box_0001"
+local CONTAINER_SECT = "arc_art_box_1basic"
+local CAPSULE_SECT = "af_capsule"
+
+function is_scammed()
+	local a = db.actor
+	if a == nil then return false end
+	return a:has_info(SCAM_INFO)
+end
+
+function has_lied()
+	local a = db.actor
+	if a == nil then return false end
+	return a:has_info(LIE_INFO)
+end
+
+function trade_locked(npc)
+	if npc == nil or db.actor == nil then return false end
+	if story_ids == nil or story_ids.escape_trader == nil then return false end
+	if npc:story_id() ~= story_ids.escape_trader then return false end
+	return db.actor:has_info(SCAM_INFO)
+end
+
+local function sidor_client()
+	if g_sim == nil then return nil end
+	if story_ids == nil or story_ids.escape_trader == nil then return nil end
+	local sobj = g_sim:story_object(story_ids.escape_trader)
+	if sobj == nil then return nil end
+	return client_obj(sobj.id)
+end
+
+function apply_trade_block()
+	if not is_scammed() then return end
+	local npc = sidor_client()
+	if npc then npc:disable_trade() end
+end
+
+local function box_server_id()
+	if g_sim == nil then return nil end
+	local sobj = g_sim:object(BOX_NAME)
+	if sobj == nil then return nil end
+	return sobj.id
+end
+
+function box_has_container()
+	local bid = box_server_id()
+	if bid == nil then return false end
+	if _G.he_magic_box and he_magic_box.is_virtual and he_magic_box.is_virtual(bid) then
+		if he_magic_box.load then
+			local data = he_magic_box.load(bid)
+			for _, it in ipairs(data) do
+				if it.section == CONTAINER_SECT and (it.count or 0) > 0 then return true end
+			end
+		end
+		return false
+	end
+	local box = client_obj(bid)
+	if box then
+		for i = 0, box:object_count() - 1 do
+			local o = box:object(i)
+			if o and o:section() == CONTAINER_SECT then return true end
+		end
+	end
+	if alife then
+		for id, so in alife():objects() do
+			if so.parent_id == bid and so:section_name() == CONTAINER_SECT then return true end
+		end
+	end
+	return false
+end
+
+function box_blocked(box_name)
+	return box_name == BOX_NAME and is_scammed()
+end
+
+function deny_box()
+end
+
+function punish(src)
+	if is_scammed() then return end
+	if db.actor == nil then return end
+	if db.actor:has_info("kvest_art_done") then return end
+	db.actor:give_info_portion(SCAM_INFO)
+	apply_trade_block()
+end
+
+function on_lie(first_speaker, second_speaker)
+	if is_scammed() then return end
+	if db.actor and not has_lied() then db.actor:give_info_portion(LIE_INFO) end
+	if box_has_container() then punish("lie") end
+end
+
+function punish_empty(first_speaker, second_speaker)
+	punish("empty")
+end
+
+function on_box_drop(box, obj)
+	if box == nil or obj == nil then return end
+	if box:name() ~= BOX_NAME then return end
+	if obj:section() ~= CONTAINER_SECT then return end
+	if is_scammed() then return end
+	if has_lied() then punish("box") end
+end
+
+function on_virtual_box_changed(owner_id)
+	if is_scammed() then return end
+	if not has_lied() then return end
+	local sobj = server_obj(owner_id)
+	if sobj == nil or sobj:name() ~= BOX_NAME then return end
+	if box_has_container() then punish("vbox") end
+end
+
+function clear_lie()
+	if db.actor == nil then return end
+	if has_lied() then db.actor:disable_info_portion(LIE_INFO) end
+end
+
+function repay_have(first_speaker, second_speaker)
+	return sak.have_items_count(CAPSULE_SECT, 1) ~= false
+end
+
+function repay_not_have(first_speaker, second_speaker)
+	return not repay_have(first_speaker, second_speaker)
+end
+
+function repay(first_speaker, second_speaker)
+	if not is_scammed() then return end
+	if not repay_have(first_speaker, second_speaker) then return end
+	sak_inventory.release_actor_items(CAPSULE_SECT, 1)
+	db.actor:disable_info_portion(SCAM_INFO)
+	clear_lie()
+	local npc = sidor_client()
+	if npc then npc:enable_trade() end
+end
+
+function on_first_update()
+	apply_trade_block()
+end
+
+function attach(sm)
+	sm:subscribe({signal = "on_first_update", fun = this.on_first_update})
+end
