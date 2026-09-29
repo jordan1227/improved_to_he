@@ -796,198 +796,90 @@ function try_drag_drop( drag_obj, drop_obj )
     log2("Перетаскивание не удалось: нет подходящей комбинации.")
 end
 
-local sharpen_params = {
-    vodka = 
-		{ decrease = 0.05, 
-		min = 30,
-		max = 40
-	},
-    energy_drink = { 
-		decrease = 0.10, 
-		min = 15, 
-		max = 25
-	},
-    flask_army = { 
-		decrease = 0.15, 
-		min = 5, 
-		max = 10
-	}
+-- Rinse/sharpen rules live in sharper_core; this file only does the inventory
+-- side (messages, sounds, effects). Every refusal must call sak.restore_weap():
+-- hide_weapon_then() disabled the input before we got here.
+local rinse_refusals = {
+	full   = "ui_sharper_rinse_full",
+	at_max = "ui_sharper_rinse_max",
+	empty  = "ui_sharper_flask_empty",
 }
 
 function clean_sharper( drag_obj, drop_obj )
-    local sharp_obj = drop_obj
-    local sharp_cond = sharp_obj:condition()
-    local sharp_id = sharp_obj:id()
-    
-    if sharp_cond >= 1 then 
-        sak.send_tip_local( 
-			"Точильный камень в идеальном состоянии", 
-			"Мысли вслух", 0, 5, "g_g", "no", "red"
-		)
-		vergas_lib.s_play( [[device\antirad_no]], 1 )		
-        return
-    end
-	
-	local item_type = drag_obj:section()
-    
-    local value = sharpen_params[ item_type ]
-    if not value then return end
-    
-    local max_condition = get_sharper_max_condition( sharp_id )
-    
-    if max_condition ~= 1 and sharp_cond == max_condition then 
-        sak.send_tip_local( 
-			"Въевшееся уже не отмыть...", 
-			"Мысли вслух", 0, 5, "g_g", "no", "red" 
-		)
-		vergas_lib.s_play( [[device\antirad_no]], 1 )	
-        return
-    end
-    
-    if item_type == "flask_army" then
-        local flask_item = drag_obj:get_eatable_item()
-        if flask_item.eat_portions_num <= 1 then
-            sak.send_tip_local( 
-				"Фляга пустая", 
-				"Мысли вслух", 0, 5, "g_g", "no", "red" 
-			)
-			vergas_lib.s_play( [[device\antirad_no]], 1 )	
-            return
-        end
-        
-        local water_used = flask_item.eat_portions_num - 1
-        local base_improvement = dsh.get_next_random( "generic_rnd", value.min, value.max ) / 100
-        local total_improvement = base_improvement * water_used
-        
-        -- Обновляем максимальную кондицию
-        max_condition = update_sharper_max_condition( sharp_id, "water" )
-        
-        local new_condition = math.min( max_condition, sharp_cond + total_improvement )
-        
-        params.upd_condition( sharp_id, new_condition )
-        flask_item.eat_portions_num = 1
-        vergas_flask.replace_flask_weight( drag_obj:id(), 1 )
-        
-    elseif item_type == "vodka" or item_type == "energy_drink" then
-        local random = dsh.get_next_random( "generic_rnd", value.min, value.max ) / 100
-        
-        -- Обновляем максимальную кондицию
-        max_condition = update_sharper_max_condition( sharp_id, item_type )
-        
-        local new_condition = math.min( max_condition, sharp_cond + random )
-        params.upd_condition( sharp_id, new_condition )
-        misc.release_obj( drag_obj:id(), true )
-    end
-    
-    local snd = xr_sound.get_safe_sound_object( "device\\masks\\water_flask" )
-    local sound_length = snd:length()
-    snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d )
-    level.add_cam_effector( "camera_effects\\item_use.anm", 9773, false, "" )
+	-- a stack may hand us its empty flask while a filled one sits in the same stack
+	local source = drag_obj
+	if drag_obj:section() == "flask_army" then
+		source = sharper_core.find_flask( drag_obj ) or "flask_army"
+	end
+
+	local plan = sharper_core.plan_rinse( drop_obj, source )
+	if not plan.ok then
+		local text = rinse_refusals[ plan.reason ]
+		if text then
+			sak.send_tip_local( sharper_core.text( text ), sharper_core.text( "thinking_out_loud" ), 0, 5, "g_g", "no", "red" )
+			vergas_lib.s_play( [[device\antirad_no]], 1 )
+		end
+		sak.restore_weap()
+		return
+	end
+
+	sharper_core.apply_rinse( plan )
+
+	local snd = xr_sound.get_safe_sound_object( "device\\masks\\water_flask" )
+	local sound_length = snd:length()
+	snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d )
+	level.add_cam_effector( "camera_effects\\item_use.anm", 9773, false, "" )
 	dsh.timeout( sound_length + 300, function()
-		if snd and snd:playing() then snd:stop() end		
-		level.remove_cam_effector( 9773 )	
+		if snd and snd:playing() then snd:stop() end
+		level.remove_cam_effector( 9773 )
 		misc.easy_sound( "device\\sleeping_bag\\sleep_cancel" )
 		sak.restore_weap()
 	end )
 end
 
 function process_sharpering( drag_obj, drop_obj )
-	local knife, sharper = drag_obj, drop_obj
-
-    if not knife then return end	
-	
-    local knife_cond = knife:condition()
-    local knife_sect = knife:section()	
-	
-    if knife_cond >= 0.99 then 
-		sak.send_tip_local( 
-			"Нож не нуждается в заточке!",
-			"Мысли вслух", 0, 10, "g_g", "sak", "yellow" 
-		) 		
+	local plan = sharper_core.plan_sharpen( drag_obj, drop_obj )
+	if not plan.ok then
+		if plan.reason == "knife_ok" then
+			sak.send_tip_local(
+				sharper_core.text( "ui_sharper_knife_fine" ),
+				sharper_core.text( "thinking_out_loud" ), 0, 10, "g_g", "sak", "yellow" 
+			)
+		end
 		sak.restore_weap()
-        return 
-    end	
+		return
+	end
 
-    local sharp_cond = sharper:condition()
-    local sharp_id = sharper:id()	
-    local knife_num = 1.5
-    local knife_exp = 0.2	
-	
-	if 
-		knife_sect == "wpn_knife_m1" 
-	then 
-		knife_num = 2 
-		knife_exp = 0.3
-	end	
-	
-	new_sharp_cond = ( knife_num / knife_cond ) / 8 	-- Было 10
-	if new_sharp_cond >= 1 then new_sharp_cond = 0.75 end	
-	params.upd_condition( sharp_id, sharp_cond - new_sharp_cond )
-	local will_break = sharp_cond - new_sharp_cond <= 0
-	
-	------------------------------------------			
-	local sharp_exp = get_value( "sharping", 0 )
-	if sharp_exp <= 0.4 then 
-		sharp_exp = sharp_exp + ( ( knife_exp / knife_cond ) / 100 )
-		set_value( "sharping", sharp_exp )
-	end	
-	
-	new_knife_cond = knife_cond + ( ( sharp_cond + sharp_exp ) / ( knife_num * 2 ) )
-	if new_knife_cond >= 1 then new_knife_cond = 1 end
-	
-	params.upd_condition( knife, new_knife_cond )	
-    xr_statistic.add_pts( "otherstats", game.translate_string( "st_pda_otherstats_knife_repairs" ), 1, 1 )
+	local sharp_id, will_break = plan.sharper:id(), plan.will_break
+	sharper_core.apply_sharpen( plan )
 
 	local snd = sound_object( "scripts\\sharp_" .. lua_random( 1, 3 ) )
-	snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d + sound_object.looped )	
-	misc.last_sound = snd	
-	
-	local max_time = 25000  -- 25 секунд для 0%
-	local min_time = 5000   -- 5 секунд для 100%
+	snd:play_at_pos( db.actor, vector(), 0, sound_object.s2d + sound_object.looped )
+	misc.last_sound = snd
 
-	-- Расчет времени заточки
-	local time = max_time * ( 1 - knife_cond ) + min_time * knife_cond	
-	log2( "time is %s", time )
-	
+	log2( "time is %s", plan.duration )
+
 	set_dof_params( 1, 1, 1, 1 )
 	level.add_cam_effector( "camera_effects\\item_use.anm", 9773, true, "" )
-	
-	dsh.timeout( time, function()
-		if snd and snd:playing() then snd:stop() end	
-		level.remove_cam_effector( 9773 )	
+
+	dsh.timeout( plan.duration, function()
+		if snd and snd:playing() then snd:stop() end
+		level.remove_cam_effector( 9773 )
 		set_dof_params( 0, 0, 0, 0 )
-	
-		if will_break then 
-			misc.release_obj( sharp_id, true ) 
-			sak.send_tip_local( 
-				"Чёрт! Сломался точильный камень \\nТеперь точно новый покупать", 
-				"Мысли вслух", 0, 10, "g_g", "sak", "red" 
-			) 				
-		end 	
+
+		if will_break then
+			misc.release_obj( sharp_id, true )
+			sak.send_tip_local(
+				sharper_core.text( "ui_sharper_broke" ),
+				sharper_core.text( "thinking_out_loud" ), 0, 10, "g_g", "sak", "red"
+			)
+		end
 		misc.easy_sound( "device\\sleeping_bag\\sleep_cancel" )
-		sak.restore_weap()		
+		sak.restore_weap()
 	end )
 end
 
-function update_sharper_max_condition(sharp_id, item_type)
-	local sharper_data = get_value( "sharper_max_condition", {} )
-    local current_max = sharper_data[sharp_id] or 1.0
-    
-    local condition_decrease = {
-        water = 0.15,
-        energy_drink = 0.10,
-        vodka = 0.05
-    }
-    
-    local new_max = current_max - (condition_decrease[item_type] or 0)
-    sharper_data[sharp_id] = math.max(0, new_max)
-    set_value( "sharper_max_condition", sharper_data )
-	
-    return new_max
-end
-
--- Функция для получения максимальной кондиции точильного камня
-function get_sharper_max_condition(sharp_id)
-    local sharper_data = get_value( "sharper_max_condition", {} )
-    return sharper_data[sharp_id] or 1.0
+-- Kept for callers such as ui_inv_descr; the value lives in sharper_core.
+function get_sharper_max_condition( sharp_id )
+	return sharper_core.get_max_condition( sharp_id )
 end

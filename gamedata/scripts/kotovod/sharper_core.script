@@ -1,0 +1,328 @@
+-- Sharpener rules shared by the sharpener window (ui_sharper) and inventory
+-- drag-and-drop (dsh_drag_drop). This module only plans and applies the
+-- numbers; sounds, camera effects, messages and weapon restore stay in callers.
+-- Keep it ASCII-only. Player-facing text lives in ui_st_sharper.xml (rus, eng).
+--
+-- =====================================================================
+-- HOW IT WORKS (condition and skill are 0..1; n = 1.5 for wpn_knife, 2 for wpn_knife_m1)
+-- =====================================================================
+-- SHARPENING THE KNIFE (plan_sharpen / apply_sharpen)
+--   skill     = saved "sharping" / 0.4          (0 = novice, 1 = master)
+--   strength  = sharper + skill * (0.4 + 0.4 * (1 - sharper))
+--   potential = strength / (2 * n)              knife condition the sharpener could restore
+--   gain      = min(potential, 1 - knife)       what the knife actually gets
+--   wear      = min(n / knife / 8, 0.75) * (w + (1 - w) * gain / potential)
+--               w = 0.5 * (1 - 0.7 * skill)     "top-off waste": paid even for a tiny repair,
+--                                               smaller with skill
+--   sharper  -= wear   (the sharpener breaks when wear >= its condition; the repair still happens)
+--   skill    += 0.04 * gain (capped at 0.4 saved value; 36-60 repairs at 75-85% knife)
+--   The M1 knife (n = 2) restores less per use and wears the sharpener more.
+--
+-- EXAMPLES (sharpener condition / knife condition -> knife result, wear of the sharpener)
+--                              skill 0                  max skill
+--   wpn_knife
+--     100% sharper, 50% knife    -> 83%, wear 37.5%       -> 97%, wear 37.5%
+--      50% sharper, 50% knife    -> 67%, wear 37.5%       -> 87%, wear 37.5%
+--       1% sharper, 50% knife    -> 50%, BREAKS           -> 77%, BREAKS
+--     100% sharper, 70% knife    -> 100%, wear 25.4%      -> 100%, wear 18.7%
+--      25% sharper, 70% knife    -> 78%, BREAKS           -> 100%, BREAKS
+--     100% sharper, 80% knife    -> 100%, wear 18.7%      -> 100%, wear 12.1%
+--     100% sharper, 95% knife    -> 100%, wear 11.3%      -> 100%, wear  4.8%
+--   wpn_knife_m1
+--     100% sharper, 50% knife    -> 75%, wear 50.0%       -> 85%, wear 50.0%
+--     100% sharper, 70% knife    -> 95%, wear 35.7%       -> 100%, wear 31.4%
+--     100% sharper, 95% knife    -> 100%, wear 15.8%      -> 100%, wear  7.1%
+--   A knife at 25% or below always costs the 75% cap. Skill mostly makes repairs stronger
+--   and cheaper at the top end; a nearly dead sharpener still breaks, skill or not.
+--
+-- RINSING THE SHARPENER (plan_rinse / apply_rinse), table RINSE below
+--   The item lifts the sharpener's condition, but every rinse lowers its ceiling
+--   ("max condition") for good, and the ceiling caps the gain of that same rinse.
+--   vodka          +30..40%, ceiling -5%
+--   energy drink   +15..25%, ceiling -9%
+--   water flask    +5..10% per portion, ceiling -4% per portion; only as many portions
+--                  as it takes to reach the ceiling are used
+--   A rinse that could not gain anything (already at the ceiling) is refused.
+-- =====================================================================
+
+local EPS = 0.005
+
+-- gain: percent per use (flask: per water portion); max_cost: drop of the
+-- sharpener's maximum condition (flask: per water portion)
+local RINSE = {
+	vodka        = { min = 30, max = 40, max_cost = 0.05 },
+	energy_drink = { min = 15, max = 25, max_cost = 0.09 },
+	flask_army   = { min = 5,  max = 10, max_cost = 0.04 },
+}
+
+---------------------------------------------------------------------
+-- Maximum condition (saved by sharpener id; key kept for old saves)
+---------------------------------------------------------------------
+function get_max_condition( sharp_id )
+	local data = get_value( "sharper_max_condition", {} )
+	return data[ sharp_id ] or 1.0
+end
+
+function set_max_condition( sharp_id, value )
+	local data = get_value( "sharper_max_condition", {} )
+	data[ sharp_id ] = math.max( 0, value )
+	-- forget sharpeners that no longer exist (broken, destroyed), so the save does not grow
+	local sim = alife()
+	if sim then
+		for id in pairs( data ) do
+			if id ~= sharp_id and not sim:object( id ) then data[ id ] = nil end
+		end
+	end
+	set_value( "sharper_max_condition", data )
+end
+
+---------------------------------------------------------------------
+-- Flasks
+---------------------------------------------------------------------
+-- eat_portions_num of a flask: 1 = empty, +1 per water portion
+function flask_water( obj )
+	if not obj then return 0 end
+	local eat = obj:get_eatable_item()
+	return eat and eat.eat_portions_num or 1
+end
+
+-- The preferred flask if it has water, otherwise the fullest flask in the whole
+-- inventory (including the hidden storage). Returns flask, portions or nil, 0.
+function find_flask( preferred )
+	if preferred and preferred:section() == "flask_army" then
+		local water = flask_water( preferred )
+		if water > 1 then return preferred, water end
+	end
+
+	local best, best_water = nil, 1
+	local items = get_shadow_inv():get_content( true )
+	for _, rec in items:ipairs() do
+		if rec.sect == "flask_army" and rec.obj then
+			local water = flask_water( rec.obj )
+			if water > best_water then best, best_water = rec.obj, water end
+		end
+	end
+	if best then return best, best_water end
+	return nil, 0
+end
+
+---------------------------------------------------------------------
+-- Rinsing the sharpener
+---------------------------------------------------------------------
+-- source: item object, or a section name (vodka / energy_drink; the caller has
+-- already spent or will spend the item). For flask_army pass the flask object.
+-- Never changes anything. plan.ok == false -> plan.reason:
+--   no_sharper, bad_source, full, at_max, empty
+function plan_rinse( sharper, source )
+	local plan = { ok = false }
+	if not sharper then plan.reason = "no_sharper" return plan end
+
+	local sect = type( source ) == "string" and source or ( source and source:section() )
+	local params_ = sect and RINSE[ sect ]
+	if not params_ then plan.reason = "bad_source" return plan end
+
+	local cond, sharp_id = sharper:condition(), sharper:id()
+	local max_cond = get_max_condition( sharp_id )
+	if cond >= 1 - EPS then plan.reason = "full" return plan end
+	if cond >= max_cond - EPS then plan.reason = "at_max" return plan end
+
+	local headroom = math.min( 1, max_cond ) - cond
+	local portions, cost = 1, params_.max_cost
+	if sect == "flask_army" then
+		local available = type( source ) == "string" and 0 or ( flask_water( source ) - 1 )
+		if available < 1 then plan.reason = "empty" return plan end
+		-- only as many portions as it takes (by average roll) to reach the ceiling,
+		-- which every portion lowers by max_cost
+		local mid = ( params_.min + params_.max ) / 2
+		local needed = math.max( 1, math.ceil( headroom * 100 / ( mid + params_.max_cost * 100 ) - 0.001 ) )
+		portions = math.min( available, needed )
+		cost = params_.max_cost * portions
+		plan.flask_water = available + 1
+	end
+
+	-- the lowered maximum is the ceiling of this rinse; nothing to gain -> refuse
+	local ceiling = math.max( 0, max_cond - cost )
+	local room = ceiling - cond
+	if room <= EPS then plan.reason = "at_max" return plan end
+
+	plan.ok         = true
+	plan.ceiling    = ceiling
+	plan.room       = room
+	plan.sect       = sect
+	plan.source     = type( source ) ~= "string" and source or nil
+	plan.sharper    = sharper
+	plan.sharp_id   = sharp_id
+	plan.cond       = cond
+	plan.max_cond   = max_cond
+	plan.headroom   = headroom
+	plan.portions   = portions
+	plan.max_cost   = cost
+	plan.rng_min    = params_.min
+	plan.rng_max    = params_.max
+	plan.gain_min   = math.min( room, params_.min * portions / 100 )
+	plan.gain_max   = math.min( room, params_.max * portions / 100 )
+	return plan
+end
+
+-- Rolls the gain, updates sharpener condition and maximum, spends the source.
+-- consume: optional function( plan ) replacing the default spending
+-- (default: flask loses plan.portions, other items are released).
+-- The maximum is lowered first and caps the gain, so the condition never drops.
+function apply_rinse( plan, consume )
+	local roll = dsh.get_next_random( "generic_rnd", plan.rng_min, plan.rng_max ) / 100
+	local gain = math.min( plan.room, roll * plan.portions )
+	local new_cond = plan.cond + gain
+	local new_max  = plan.ceiling
+
+	params.upd_condition( plan.sharp_id, new_cond )
+	set_max_condition( plan.sharp_id, new_max )
+
+	if consume then
+		consume( plan )
+	elseif plan.sect == "flask_army" then
+		ui_cheat_flask.set_flask_water( plan.source, plan.flask_water - plan.portions )
+	elseif plan.source then
+		misc.release_obj( plan.source:id(), true )
+	end
+	return { gain = gain, new_cond = new_cond, new_max = new_max }
+end
+
+---------------------------------------------------------------------
+-- Sharpening the knife
+---------------------------------------------------------------------
+local SKILL_CAP        = 0.4    -- value of "sharping" that counts as full skill
+local SKILL_PER_GAIN   = 0.04   -- skill earned per 1.0 (100%) of knife condition restored
+                                -- (repairs at 75-85% knife: about 36-60 of them reach the cap)
+local POINTS_PER_REPAIR = 0.25  -- PDA rank points per sharpening (was 1)
+local MAX_COST         = 0.75   -- the most a single sharpening can wear the sharpener
+local WASTE_FLOOR      = 0.5    -- share of the wear paid even when almost nothing is restored
+local WASTE_SKILL_CUT  = 0.7    -- how much of that floor full skill removes
+
+-- 0..1, from the saved "sharping" value
+function skill_level()
+	return math.min( 1, get_value( "sharping", 0 ) / SKILL_CAP )
+end
+
+-- nil, or the id of a short line hinting at the player's skill (no numbers)
+function skill_text_id()
+	local s = skill_level()
+	if s >= 0.75 then return "ui_sharper_skill_3" end
+	if s >= 0.5  then return "ui_sharper_skill_2" end
+	if s >= 0.25 then return "ui_sharper_skill_1" end
+	return nil
+end
+
+-- Never changes anything. plan.ok == false -> plan.reason:
+--   no_knife, no_sharper, knife_ok
+--
+-- Strength: the sharpener's condition, topped up by skill (which also matters more
+-- the more worn the sharpener is). Wear: a base that grows as the knife gets duller,
+-- scaled by how much of the sharpener's potential the repair actually uses; a floor
+-- is always paid (the top-off waste), and skill lowers it.
+function plan_sharpen( knife, sharper )
+	local plan = { ok = false }
+	if not knife then plan.reason = "no_knife" return plan end
+	if not sharper then plan.reason = "no_sharper" return plan end
+
+	local knife_cond = knife:condition()
+	if knife_cond >= 0.99 then plan.reason = "knife_ok" return plan end
+
+	local knife_num = 1.5
+	if knife:section() == "wpn_knife_m1" then knife_num = 2 end
+
+	local s = skill_level()
+	local sharp_cond = sharper:condition()
+	local strength = sharp_cond + s * ( 0.4 + 0.4 * ( 1 - sharp_cond ) )
+	local potential = strength / ( knife_num * 2 )          -- knife condition it could restore
+	local gain = math.min( potential, 1 - knife_cond )
+	local used = potential > 0 and ( gain / potential ) or 0 -- share of the potential in use
+	local waste = WASTE_FLOOR * ( 1 - WASTE_SKILL_CUT * s )
+	local base = math.min( ( knife_num / math.max( knife_cond, 0.001 ) ) / 8, MAX_COST )
+	local cost = base * ( waste + ( 1 - waste ) * used )
+
+	local sharp_exp = get_value( "sharping", 0 )
+	local new_exp   = sharp_exp
+	if sharp_exp < SKILL_CAP then
+		new_exp = math.min( SKILL_CAP, sharp_exp + SKILL_PER_GAIN * gain )
+	end
+
+	local new_knife_cond = math.min( 1, knife_cond + gain )
+
+	local max_time, min_time = 25000, 5000
+	plan.ok             = true
+	plan.knife          = knife
+	plan.sharper        = sharper
+	plan.knife_cond     = knife_cond
+	plan.new_knife_cond = new_knife_cond
+	plan.sharp_cond     = sharp_cond
+	plan.new_sharp_cond = sharp_cond - cost
+	plan.sharp_cost     = cost
+	plan.will_break     = sharp_cond - cost <= 0
+	plan.exp_changed    = new_exp ~= sharp_exp
+	plan.new_exp        = new_exp
+	plan.duration       = max_time * ( 1 - knife_cond ) + min_time * knife_cond
+	return plan
+end
+
+function apply_sharpen( plan )
+	params.upd_condition( plan.sharper:id(), plan.new_sharp_cond )
+	if plan.exp_changed then
+		set_value( "sharping", plan.new_exp )
+	end
+	params.upd_condition( plan.knife, plan.new_knife_cond )
+	xr_statistic.add_pts( "otherstats", game.translate_string( "st_pda_otherstats_knife_repairs" ), 1, POINTS_PER_REPAIR )
+	update_pda_stat()
+end
+
+-- Skill given outright (for example a lesson from Vergas), capped like earned skill.
+function add_skill( amount )
+	set_value( "sharping", math.min( SKILL_CAP, get_value( "sharping", 0 ) + amount ) )
+	update_pda_stat()
+end
+
+-- Rank word for the PDA and the mastery on a 0..10 scale (10 = the skill cap)
+function mastery_level()
+	return math.floor( skill_level() * 100 + 0.5 ) / 10
+end
+
+function rank_text_id( level )
+	if level >= 7.5 then return "ui_sharper_rank_4" end
+	if level >= 5 then return "ui_sharper_rank_3" end
+	if level >= 2.5 then return "ui_sharper_rank_2" end
+	return "ui_sharper_rank_1"
+end
+
+-- PDA statistics row "Knife sharpening mastery: <rank> <0..10>", shown as text.
+-- add_points_str is a native call that nothing else in the scripts uses, so it is
+-- guarded: if it does not behave, the sharpening still works and only the row is lost.
+function update_pda_stat()
+	local name = game.translate_string( "st_pda_sharpening_mastery" )
+	local level = mastery_level()
+	local value = string.format( "%s: %.1f", text( rank_text_id( level ) ), level )
+	local ok, err = pcall( function()
+		actor_stats.remove_points( "otherstats", name )
+		actor_stats.add_points_str( "otherstats", name, value )
+	end )
+	if not ok then
+		log2( "[~T].~C0C #WARN(sharper_core.update_pda_stat):~C07 %s", tostring( err ) )
+	end
+end
+---------------------------------------------------------------------
+-- Player-facing text (string tables: ui_st_sharper.xml in rus and eng)
+---------------------------------------------------------------------
+-- translated string by id; with extra arguments the text is a string.format template
+function text( id, ... )
+	local s = game.translate_string( id )
+	if select( "#", ... ) > 0 then return string.format( s, ... ) end
+	return s
+end
+
+-- 0.85 -> "85%"
+function pct( value )
+	return string.format( "%.0f%%", value * 100 )
+end
+
+-- 1 -> "1 portion", 3 -> "3 portions" (both forms are one word in Russian)
+function portions_text( n )
+	return string.format( "%d %s", n, text( n == 1 and "ui_sharper_portion_1" or "ui_sharper_portion_n" ) )
+end
