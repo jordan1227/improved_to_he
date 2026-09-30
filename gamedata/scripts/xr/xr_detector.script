@@ -5,9 +5,121 @@ local first_update = false
 local time_to_discharge_1 = 24 * 5 * 60 * 60
 local time_to_discharge_2 = 24 * 2 * 60 * 60
 
+-- Battery drain for the passive detectors (class D_SIMDET: Geiger counter, Kisel, anomaly detectors).
+-- They have no on/off switch: the engine runs them whenever the item sits in a slot
+-- (CCustomDetectorSHOC::OnMoveToSlot), so "active" here means "in a detector slot" (8, 13-16).
+-- Items in the ruck or in a razgruzka pocket (shadow inventory) do not drain.
+-- Condition is the charge. Drain is game-time based, like he_watch_battery. detector_art keeps its
+-- own slower drain in actor_detector:update below and is not drained here.
+--
+-- NOTE (engine option): CCustomDetectorSHOC has no condition check at all (only the COP-style
+-- CCustomDetector ignores zones at condition <= 0.01), so a drained detector is taken off by script.
+-- Gating IsWorking/shedule_Update/UpdateCL in CCustomDetectorSHOC would be the cleaner implementation.
+-- NOTE (trade): item price is expected to scale with condition, so a drained detector sells for
+-- next to nothing until a battery is fitted. Accepted for now (not verified in game).
+local DAY = 24 * 60 * 60
+local BATTERY_SLOTS = { 8, 13, 14, 15, 16 }
+local BATTERY_TICK = 60      -- game seconds between condition writes
+local BATTERY_CHECK_MS = 500 -- real-time cadence of the slot scan
+local BATTERY_DEAD = 0.001
+-- Game seconds of continuous use per full battery. Tuning values: keep elite/advanced in step with
+-- the Kisel detectors until their advantages are rebalanced.
+local battery_life = {
+	detector_simple         = 3 * DAY,
+	detector_advances       = 3 * DAY,
+	detector_elite          = 3 * DAY,
+	detector_sakbuzz_simple = 3 * DAY,
+	detector_sakbuzz_elite  = 3 * DAY,
+}
+local battery_state = {}    -- [item id] = game time of the last condition write
+local battery_check_at = 0
+
+local function detector_name(sect)
+	return game.translate_string(get_string(sect, "inv_name_short", sect))
+end
+
+local function battery_tip(key, sect, colour)
+	sak.send_tip_local(
+		string.format(game.translate_string(key), detector_name(sect)),
+		game.translate_string("thinking_out_loud"), 0, 5, "g_g", "no", colour)
+end
+
+local function battery_dead(obj)
+	local sect = obj:section()
+	db.actor:move_to_ruck(obj)
+	razgruzka.check_detectors() -- refresh the slot cache after the detector leaves its slot
+	battery_tip("detector_battery_dead", sect, "red")
+	vergas_lib.s_play([[device\antirad_no]], 1)
+end
+
+local function update_batteries()
+	local act = db.actor
+	if not act or not act:alive() then return end
+	local t = time_global()
+	if t < battery_check_at then return end
+	battery_check_at = t + BATTERY_CHECK_MS
+
+	local now = game.get_game_time()
+	local seen = {}
+	for _, slot in ipairs(BATTERY_SLOTS) do
+		local obj = act:item_in_slot(slot)
+		local life = obj and battery_life[obj:section()]
+		if life then
+			local id = obj:id()
+			seen[id] = true
+			local cond = obj:condition()
+			if cond > BATTERY_DEAD then
+				local last = battery_state[id]
+				if not last then
+					battery_state[id] = now
+				else
+					local elapsed = now:diffSec(last)
+					if elapsed < 0 then
+						battery_state[id] = now
+					elseif elapsed >= BATTERY_TICK then
+						battery_state[id] = now
+						cond = math.max(0, cond - elapsed / life)
+						obj:set_condition(cond)
+					end
+				end
+			end
+			-- also catches a dead detector that was put back into a slot
+			if cond <= BATTERY_DEAD then battery_dead(obj) end
+		end
+	end
+	for id in pairs(battery_state) do
+		if not seen[id] then battery_state[id] = nil end
+	end
+end
+
+-- Drag a battery (batt_torch) onto a detector. Returns true when the battery was used.
+function recharge_detector(battery, detector)
+	local act = db.actor
+	if not (act and act:alive() and battery and detector) then return false end
+	if battery:id() == detector:id() then return false end
+	local bp, dp = battery:parent(), detector:parent()
+	if not (bp and dp and bp:id() == act:id() and dp:id() == act:id()) then return false end
+
+	local sect = detector:section()
+	if detector:condition() >= 0.99 then
+		battery_tip("detector_battery_full", sect, "yellow")
+		vergas_lib.s_play([[device\antirad_no]], 1)
+		return false
+	end
+	-- No yield between the checks above and consuming the battery.
+	misc.release_obj(battery)
+	detector:set_condition(1)
+	battery_state[detector:id()] = game.get_game_time()
+	battery_tip("detector_battery_replaced", sect, "green")
+	vergas_lib.s_play([[device\use_battery]], 1)
+	return true
+end
+
 class "actor_detector"
 function actor_detector:__init()
 	-- self.last_update_time = game.get_game_time()
+	battery_state = {} -- a fresh binder means a fresh load: drop stale timestamps
+	battery_check_at = 0
 end
 
 function actor_detector:update()
@@ -27,6 +139,7 @@ function actor_detector:update()
 	-- 	return
 	-- end
 	-- log2("[~T]. actor_detector: start")
+	update_batteries()
 	local detector_record = razgruzka.active_detectors[8]
 	if detector_record and strpos(detector_record,"art") then
 		if not self.last_update_time then
