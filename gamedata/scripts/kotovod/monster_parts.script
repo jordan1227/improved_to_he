@@ -17,6 +17,8 @@ local snd
 -- Вроде работает, всяко лучше апдейта. Надо в этот блок с Сяка перетягивать он монстер десы или там доделать типсы, т.к тут мы не обрабатываем доспавненные айтемы
 
 function on_late_init_all()
+	-- [HE-PORT]
+	prune_foreign_kills()
 	correct_monster_tip()
 end	
 
@@ -478,6 +480,63 @@ function has_knife()
     return knife and strpos( knife:section(), "knife" ) or false
 end
 
+-- [HE-PORT]
+local FOREIGN_TIP = "%c[255,230,210,30]Убито не мной, может лучше не трогать?"
+local FOREIGN_KILLS_KEY = "monster_parts_foreign_kills"
+
+local function foreign_kills()
+	local t = get_value( FOREIGN_KILLS_KEY, nil )
+	return type( t ) == "table" and t or {}
+end
+
+local function mark_foreign_kill( id, flag )
+	local t = foreign_kills()
+	if ( t[ id ] == true ) == flag then return end
+	t[ id ] = flag or nil
+	set_value( FOREIGN_KILLS_KEY, t )
+end
+
+function is_foreign_kill( id )
+	return foreign_kills()[ id ] == true
+end
+
+local function strip_foreign_parts( mob )
+	if get_bool( mob:section(), "Spawn_Inventory_Item_Keep", false ) then return 0 end
+	local ids = {}
+	for i = 0, mob:object_count() - 1 do
+		local item = mob:object( i )
+		if item and strposx( item:section(), "mutant_" ) then
+			table.insert( ids, item:id() )
+		end
+	end
+	local stripped = 0
+	for _, item_id in ipairs( ids ) do
+		local sobj = alife():object( item_id )
+		if sobj then
+			alife():release( sobj, true )
+			stripped = stripped + 1
+		end
+	end
+	return stripped
+end
+
+local function foreign_tip( mob, stripped )
+	return mob:object_count() > stripped and FOREIGN_TIP or "nothing_to_cut_off"
+end
+
+function prune_foreign_kills()
+	local t = foreign_kills()
+	local changed = false
+	for id in pairs( t ) do
+		local sobj = alife():object( id )
+		if not sobj or not IsMonster( nil, sobj:clsid() ) or ( sobj.alive and sobj:alive() ) then
+			t[ id ] = nil
+			changed = true
+		end
+	end
+	if changed then set_value( FOREIGN_KILLS_KEY, t ) end
+end
+
 function get_tip_text( obj, can_cut )
     local count = obj:object_count()
     if count == 0 then
@@ -516,7 +575,12 @@ function correct_monster_tip()
     
 	for id, obj in pairs( db.creatures ) do
 		if g_sim:object( id ) and obj and obj:is_monster() and not obj:alive() and obj:section() ~= "zombie_blow" then
-			obj:set_tip_text( get_tip_text( obj, can_cut ) )
+			-- [HE-PORT]
+			if is_foreign_kill( id ) then
+				obj:set_tip_text( foreign_tip( obj, strip_foreign_parts( obj ) ) )
+			else
+				obj:set_tip_text( get_tip_text( obj, can_cut ) )
+			end
 		end
 	end
 end
@@ -577,6 +641,15 @@ function on_monster_use( monster, who )
 	if is_processing then return end
 
     monster:set_nonscript_usable( false )
+
+	-- [HE-PORT]
+	if is_foreign_kill( monster:id() ) then
+		local stripped = strip_foreign_parts( monster )
+		if stripped > 0 then
+			monster:set_tip_text( foreign_tip( monster, stripped ) )
+			return
+		end
+	end
 
     if monster:object_count() == 0 then return end	
 
@@ -933,7 +1006,10 @@ function on_monster_death( monster, who )
 	if not monster then return end
 	local section = monster:section()	
 	local id = monster:id()
-	
+
+	-- [HE-PORT]
+	mark_foreign_kill( id, who ~= nil and who:id() ~= db.actor:id() and who:is_stalker() )
+
 	if strpos( section, "controller", 1, true ) then
 		arc_diary.monster_killed( monster, who )
 		--sak.restore_movement()
@@ -975,11 +1051,14 @@ function on_monster_death( monster, who )
 		local mob = level.object_by_id( id )
 		if not mob then return end
 
-		local has_items = mob:object_count() > 0
+		-- [HE-PORT]
+		local foreign = is_foreign_kill( id )
+		local stripped = foreign and strip_foreign_parts( mob ) or 0
+		local has_items = mob:object_count() > stripped
 		local tip_text = "nothing_to_cut_off"
 
 		if has_items then
-			tip_text = who:is_stalker() and "%c[255,230,210,30]Убито не мной, может лучше не трогать?" or get_tip_text( mob, has_knife() )
+			tip_text = foreign and FOREIGN_TIP or get_tip_text( mob, has_knife() )
 		end
 
 		mob:set_tip_text( tip_text )
