@@ -1,0 +1,49 @@
+-- [HE-PORT] North ring on the watch compass border.
+-- Shader contract m_timearrow2 (model_compass_icon.ps): z = sin, w = cos of the
+-- ring texture rotation; x/y unused. This module is the only writer.
+-- The watch face is fixed to the camera in the held pose, so the camera heading
+-- plus one calibrated offset is enough; no face-frame projection is needed.
+
+-- Calibration: flip the sign if the ring turns against the view, and set the
+-- offset so the north mark sits at the top of the face while looking north (+Z).
+-- 90 reproduces the former static ring when facing north.
+local RING_SIGN = 1
+local RING_OFFSET_DEG = 90
+
+-- Looking almost straight up or down: the heading is unstable, keep the last one.
+local MIN_YAW_LEN_SQ = 0.0009
+local WRITE_EPS = 0.0005
+
+local last_sin, last_cos = nil, nil
+
+local function write_ring(s, c)
+    if last_sin and math.abs(s - last_sin) < WRITE_EPS and math.abs(c - last_cos) < WRITE_EPS then return end
+    last_sin, last_cos = s, c
+    shader_set_custom_param("m_timearrow2", 0, 0, s, c)
+end
+
+local function on_update()
+    if not (db.actor and db.actor:alive()) then return end
+    if not watch_gate.has_watch() then return end
+    -- Dead battery or EMP outage: the ring freezes at its last heading.
+    if last_sin and not he_watch_status.is_operational() then return end
+    local dir = device().cam_dir
+    if dir.x * dir.x + dir.z * dir.z < MIN_YAW_LEN_SQ then
+        if last_sin then return end
+        dir = db.actor:direction()
+    end
+    local angle = RING_SIGN * math.atan2(dir.x, dir.z) + math.rad(RING_OFFSET_DEG)
+    write_ring(math.sin(angle), math.cos(angle))
+end
+
+-- Forget the cached value so the first frame of a new game always writes.
+local function reset()
+    last_sin, last_cos = nil, nil
+end
+
+function attach(sm)
+    sm:subscribe({signal = "on_update", fun = on_update})
+    sm:subscribe({signal = "on_first_update", fun = reset})
+    sm:subscribe({signal = "on_load_before_all", fun = reset})
+    sm:subscribe({signal = "on_stop_modules", fun = reset})
+end
