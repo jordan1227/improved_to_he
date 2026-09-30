@@ -1,8 +1,9 @@
 # NLC engine changelog
 
-One entry per shipped build (tag `nlc-<ogsr>.<n>`). Newest first. The exe and its
-PDB are attached to the GitHub Release of the tag. Game data for the same build
-lives in the mod repository (`jordan1227/improved_to_he`).
+One entry per shipped build (tag `nlc-<ogsr>.<n>` in `jordan1227/improved_to_he`).
+Newest first. The engine source lives in this repository under `engine/`, next to the
+game data of the same build. The exe and its PDB are attached to the GitHub Release
+of the tag in this repository.
 
 ## nlc-3.589.1 (2026-09-30)
 
@@ -42,7 +43,7 @@ lives in the mod repository (`jordan1227/improved_to_he`).
   description window on.
 - Version text `nlc-3.589.1, OGSR main 2021123` in the log and main menu.
 
-### Required game data (mod repository)
+### Required game data (same repository)
 
 - Upstream 3.589 shaders as loose overrides in `gamedata/shaders/r3` (the engine
   crashes at startup without `temporal_resolve`), merged

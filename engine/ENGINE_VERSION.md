@@ -1,20 +1,15 @@
-# Engine version (read-only mirror)
+# Engine version
 
-`engine/` is a **read-only mirror** of the private engine repository
-<https://github.com/AiramProvoker/NLC_OGSR_engine> (default branch `nlc`), updated in
-the same commit as each new `bin_x64/xrEngine.exe`, so engine changes are visible in
-this repository's history next to the game data.
-
-**Do not edit engine source here.** Work in the engine repo (see its
-`.github/README.md`); edits made here are overwritten by the next mirror update.
+`engine/` in this repository is the **source of truth** for the NLC engine. Engine
+source is edited and committed here, together with the scripts and
+`bin_x64/xrEngine.exe` built from it. Workflow: `engine/.github/README.md`.
+Build history: `engine/CHANGELOG_NLC.md`.
 
 | | |
 |---|---|
-| Mirrored engine build | `nlc-3.589.1` (engine commit `40120fb`) |
+| Engine build in `bin_x64/xrEngine.exe` | `nlc-3.589.1` |
 | Upstream base | OGSR `main` `2021123` (2026-09-27) |
-| `bin_x64/xrEngine.exe` SHA-256 | `5A3F8D71BA5DA732BA597C7C6697A0607F27D9E907594AA814BFCAAAE07C0CF3` |
-| PDB | attached to the GitHub Release `nlc-3.589.1` of the engine repo |
+| exe SHA-256 | `5A3F8D71BA5DA732BA597C7C6697A0607F27D9E907594AA814BFCAAAE07C0CF3` |
+| PDB | attached to the GitHub Release `nlc-3.589.1` of this repository (never in git) |
 
-Mirror update (on every engine release): replace `engine/` with
-`git -C <engine repo> archive <tag> | tar -x -C engine`, keep this file updated,
-commit together with the new exe.
+Update this file whenever a new engine exe is committed to `bin_x64/`.
