@@ -2,6 +2,21 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
+rem --- Git: use the one from PATH, otherwise look inside GitHub Desktop ---
+where git >nul 2>&1
+if errorlevel 1 (
+    for /f "delims=" %%D in ('dir /b /ad /o-n "%LOCALAPPDATA%\GitHubDesktop\app-*" 2^>nul') do (
+        if exist "%LOCALAPPDATA%\GitHubDesktop\%%D\resources\app\git\cmd\git.exe" (
+            set "PATH=%PATH%;%LOCALAPPDATA%\GitHubDesktop\%%D\resources\app\git\cmd"
+            goto :git_ok
+        )
+    )
+    echo Git was not found. Install Git for Windows and try again.
+    pause
+    exit /b 1
+)
+:git_ok
+
 set "SCRIPT=%~dp0make_manifest.py"
 set "PYTHON=python"
 python --version >nul 2>&1
