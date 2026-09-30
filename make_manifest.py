@@ -9,7 +9,7 @@ That matters because the repo is checked out with core.autocrlf=true, so the
 working tree and the served bytes are not the same for text files.
 
 Usage:
-    python make_manifest.py --apply          write to_git/manifest.txt
+    python make_manifest.py --apply          write manifest.txt in the repository root
     python make_manifest.py --verify         check the committed manifest
     python make_manifest.py --apply --rev HEAD --repo-dir D:\\impr\\impr\\to_git
     python make_manifest.py --changelog-status
@@ -316,8 +316,11 @@ def progress_bar(done, total, label="Manifest", step=64):
 
 def commit_changes(repo_dir, rev):
     """Return [(status, [path, ...])] for one commit."""
-    raw = git(repo_dir, "diff-tree", "--root", "--no-commit-id",
-              "--name-status", "-r", "-M", "-z", rev, binary=True)
+    # -m --first-parent: a merge commit has no diff without -m, so it would be
+    # ignored as a maintenance commit; diff it against its first parent instead.
+    raw = git(repo_dir, "diff-tree", "--root", "--no-commit-id", "-m",
+              "--first-parent", "--name-status", "-r", "-M", "-z", rev,
+              binary=True)
     tokens = raw.split(b"\x00")
     changes = []
     i = 0
@@ -525,7 +528,7 @@ def main():
     ap.add_argument("--verify", action="store_true")
     ap.add_argument("--no-menu-version", action="store_true",
                     help="do not update the main-menu patch stamp on --apply")
-    ap.add_argument("--patch-stamp", metavar="DD.MM.YY_HH:MM_MСК",
+    ap.add_argument("--patch-stamp", metavar="DD.MM.YY_HH:MM_MSK",
                     help="override the Moscow patch stamp used by --apply")
     ap.add_argument("--changelog", action="store_true",
                     help="generate/catch up CHANGELOG.md from Git history")
@@ -564,7 +567,7 @@ def main():
     if args.patch_stamp:
         patch_stamp = args.patch_stamp.replace("_", " ")
         if not PATCH_STAMP_RE.fullmatch(patch_stamp):
-            ap.error("--patch-stamp must be DD.MM.YY_HH:MM_MСК")
+            ap.error("--patch-stamp must be DD.MM.YY_HH:MM_MSK")
         if patch_stamp.endswith(" MSK"):
             patch_stamp = patch_stamp[:-4] + " МСК"
     else:
