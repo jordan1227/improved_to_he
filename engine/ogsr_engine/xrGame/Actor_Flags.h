@@ -28,6 +28,8 @@ enum
     AF_SHOW_DYN_DESC_WND = (1 << 23),
     AF_HIDE_UNTRADABLE_ITEMS = (1 << 24),
     AF_THROW_DEBUG = 1 << 25,
+    AF_WEAPON_BOBBING = 1 << 26,
+    AF_WEAPON_BOBBING_ADS_ONLY = 1 << 27, // NLC: g_weapon_bobbing_ads_only
 };
 
 //enum
