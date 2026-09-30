@@ -1,6 +1,83 @@
-<!-- nlc-changelog-head: d203a8a36d99a62052924e09ac53cc446322b6c0 -->
+<!-- nlc-changelog-head: ed32e8accb12dfbda144608a003765ee2f9c4547 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: ed32e8accb12dfbda144608a003765ee2f9c4547 -->
+## 29.09.26 09:03 МСК - Манифест
+
+Commit: [ed32e8a](https://github.com/jordan1227/improved_to_he/commit/ed32e8accb12dfbda144608a003765ee2f9c4547)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 7410b93ba9f9eb8ea13c5ef6bd180a64557f71c3 -->
+## 29.09.26 07:24 МСК - Фикс Султана
+
+Commit: [7410b93](https://github.com/jordan1227/improved_to_he/commit/7410b93ba9f9eb8ea13c5ef6bd180a64557f71c3)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_lim_atp.xml
+- M gamedata/scripts/ui/ui_barter.script
+
+<!-- nlc-changelog-commit: ca28f01672798a2d21c1be32e2c49c9c0e88ffb9 -->
+## 29.09.26 05:53 МСК - Add emergency pouch entries for mutant parts so they get icons and take space
+
+Commit: [ca28f01](https://github.com/jordan1227/improved_to_he/commit/ca28f01672798a2d21c1be32e2c49c9c0e88ffb9)
+
+### Description
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011y7BqmK6QstbYUtqesYKjc
+
+### Game files changed
+
+- M gamedata/config/misc/vergas_bag_on_belt.ltx
+
+<!-- nlc-changelog-commit: 3c954665754376c6ec18a0cd06066643086dbded -->
+## 29.09.26 05:42 МСК - Don't create backpack buttons in the equipment window when the backpack is dropped
+
+Commit: [3c95466](https://github.com/jordan1227/improved_to_he/commit/3c954665754376c6ec18a0cd06066643086dbded)
+
+### Description
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011y7BqmK6QstbYUtqesYKjc
+
+### Game files changed
+
+- M gamedata/scripts/ui/ui_cheat_inv_buttons.script
+
+<!-- nlc-changelog-commit: d018fb8643a9d7e579d9dcfe4aa63c89ac91dcbe -->
+## 29.09.26 05:36 МСК - Block opening the backpack from the equipment window after it is dropped
+
+Commit: [d018fb8](https://github.com/jordan1227/improved_to_he/commit/d018fb8643a9d7e579d9dcfe4aa63c89ac91dcbe)
+
+### Description
+
+The backpack buttons always started the full open animation, even when
+the rucksack had been dropped. Guard modes 1-4 in btn_quit.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011y7BqmK6QstbYUtqesYKjc
+
+### Game files changed
+
+- M gamedata/scripts/ui/ui_cheat_inv_buttons.script
 
 <!-- nlc-changelog-commit: d203a8a36d99a62052924e09ac53cc446322b6c0 -->
 ## 27.09.26 07:44 МСК - Микстуры. Фикс + эффект + квест. Add mixture translation and effects

@@ -505,14 +505,6 @@ static void* g_knife_combo_owner = 0;
 static unsigned g_knife_combo_last_ms = 0;
 static unsigned g_knife_combo_index = 0;
 static unsigned g_knife_combo_logged = 0;
-static void* g_knife_return_owner = 0;
-static unsigned g_knife_return_start_ms = 0;
-static unsigned g_knife_return_duration = 0;
-static unsigned g_knife_return_index = 0;
-static unsigned g_knife_return_logged = 0;
-static unsigned g_knife_sound_errors = 0;
-static unsigned g_knife_sound_missing = 0;
-static int g_knife_sound_busy = 0;
 
 static bool knife_combo_is_m1(void* hud_item)
 {
@@ -531,31 +523,6 @@ static bool knife_combo_has_key(const char* key)
         ini, "wpn_knife_m1_hud", key) != 0;
 }
 
-// The knife's native class does not play its configured draw/holster sounds.
-// Delegate just those two events to the optional Lua module after motion start.
-static void knife_notify_motion(int event)
-{
-    if (g_knife_sound_busy) return;
-    void* L = lua_state();
-    if (!L) return;
-    g_knife_sound_busy = 1;
-    const int top = ((lua_gettop_t)(g_base + RVA_LUA_GETTOP))(L);
-    ((lua_getfield_t)(g_base + RVA_LUA_GETFIELD))(
-        L, LUA_GLOBALSINDEX, "fl_on_knife_motion");
-    if (((lua_type_t)(g_base + RVA_LUA_TYPE))(L, -1) == LUA_TFUNCTION) {
-        ((lua_pushinteger_t)(g_base + RVA_LUA_PUSHINTEGER))(L, event);
-        if (((pcall_t)(g_base + RVA_PCALL))(L, 1, 0, 0) &&
-            g_knife_sound_errors++ < 3u) {
-            const char* error = ((lua_tolstring_t)(g_base + RVA_LUA_TOLSTRING))(L, -1, 0);
-            ((msg_t)(g_base + RVA_MSG))("!! [knife_sound] %s", error ? error : "?");
-        }
-    } else if (g_knife_sound_missing++ == 0u) {
-        ((msg_t)(g_base + RVA_MSG))("! [knife_sound] Lua callback unavailable");
-    }
-    ((lua_settop2_t)(g_base + RVA_LUA_SETTOP2))(L, top);
-    g_knife_sound_busy = 0;
-}
-
 static unsigned hkHudPlayMotion(void* self, const char* key, bool mix_in,
                                 unsigned state, bool random, float speed)
 {
@@ -563,54 +530,15 @@ static unsigned hkHudPlayMotion(void* self, const char* key, bool mix_in,
     if (!self || !key || !knife_combo_is_m1(self))
         return g_orig_hud_playmotion(self, key, mix_in, state, random, speed);
 
-    if (strcmp(key, "anm_hide") == 0 || strcmp(key, "anm_hide_fast") == 0) {
+    if (strcmp(key, "anm_hide") == 0) {
         g_knife_combo_owner = 0;
-        g_knife_return_owner = 0;
-        const unsigned duration = g_orig_hud_playmotion(
-            self, key, mix_in, state, random, speed);
-        if (duration && strcmp(key, "anm_hide") == 0) knife_notify_motion(2);
-        return duration;
-    }
-    if (strcmp(key, "anm_show") == 0 || strcmp(key, "anm_show_empty") == 0 ||
-        strcmp(key, "anm_show_fast") == 0) {
-        g_knife_return_owner = 0;
-        const unsigned duration = g_orig_hud_playmotion(
-            self, key, mix_in, state, random, speed);
-        if (duration && strcmp(key, "anm_show_fast") != 0) knife_notify_motion(1);
-        return duration;
+        return g_orig_hud_playmotion(self, key, mix_in, state, random, speed);
     }
 
     const bool primary = strcmp(key, "anm_attack") == 0;
     const bool secondary = strcmp(key, "anm_attack2") == 0;
-    if (!primary && !secondary) {
-        if ((strcmp(key, "anm_idle") == 0 || strcmp(key, "anm_idle_aim") == 0) &&
-            g_knife_return_owner == self) {
-            static const char* return_keys[3] = {
-                "anm_hit12idle", "anm_hit22idle", "anm_hit32idle"
-            };
-            const unsigned elapsed = hudrc_time_ms() - g_knife_return_start_ms;
-            const unsigned threshold = g_knife_return_duration > 80u
-                ? g_knife_return_duration - 80u : 0u;
-            const unsigned index = g_knife_return_index;
-            g_knife_return_owner = 0;
-            if (elapsed >= threshold &&
-                elapsed <= g_knife_return_duration + 400u &&
-                index < 3u && knife_combo_has_key(return_keys[index])) {
-                const unsigned duration = g_orig_hud_playmotion(
-                    self, return_keys[index], mix_in, state, random, speed);
-                if (duration) {
-                    if (g_knife_return_logged++ < 12u)
-                        ((msg_t)(g_base + RVA_MSG))(
-                            "~ [knife_combo] %s -> %s (%u ms)",
-                            key, return_keys[index], duration);
-                    return duration;
-                }
-            }
-        } else {
-            g_knife_return_owner = 0;
-        }
+    if (!primary && !secondary)
         return g_orig_hud_playmotion(self, key, mix_in, state, random, speed);
-    }
 
     static const char* primary_keys[4] = {
         "anm_attack", "anm_attack_svariant1", "anm_attack_svariant2", "anm_attack_svariant3"
@@ -626,17 +554,12 @@ static unsigned hkHudPlayMotion(void* self, const char* key, bool mix_in,
     if (next != 0u && !knife_combo_has_key(chosen))
         chosen = key;
 
-    g_knife_return_owner = 0;
     const unsigned duration = g_orig_hud_playmotion(
         self, chosen, mix_in, state, random, speed);
     if (duration) {
         g_knife_combo_owner = self;
         g_knife_combo_last_ms = now;
         g_knife_combo_index = chosen == key ? 0u : next;
-        g_knife_return_owner = primary && g_knife_combo_index < 3u ? self : 0;
-        g_knife_return_start_ms = now;
-        g_knife_return_duration = duration;
-        g_knife_return_index = g_knife_combo_index;
         if (g_knife_combo_logged++ < 12u)
             ((msg_t)(g_base + RVA_MSG))("~ [knife_combo] %s -> %s (%u ms)",
                                          key, chosen, duration);

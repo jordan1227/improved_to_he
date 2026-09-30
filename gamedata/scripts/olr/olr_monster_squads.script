@@ -1,8 +1,13 @@
 -- [HE-PORT]
 local SPAWN_INTERVAL      = 420000
-local MAX_MONSTERS_TOTAL  = 34
+local MAX_MONSTERS_TOTAL  = 44
 local MIN_ACTOR_DIST      = 300
 local SAVE_KEY            = "olr_monster_squads.ids"
+-- [HE-PORT]
+local SPAWN_INTERVAL_LOW  = 200000
+local REGION_TARGET       = 16
+local REGION_SHARE        = 70
+local RECYCLE_BATCH       = 6
 
 local time_next_spawn = 0
 local spawned_ids = {}
@@ -64,6 +69,13 @@ local by_tier = { weak = {}, medium = {}, strong = {} }
 for i = 1, #squad_types do
 	local st = squad_types[i]
 	table.insert(by_tier[st.tier], st)
+end
+
+-- [HE-PORT]
+local own_sections = {}
+for i = 1, #squad_types do
+	local list = squad_types[i].sections
+	for j = 1, #list do own_sections[ list[ j ] ] = true end
 end
 
 local function tier_weights()
@@ -140,6 +152,44 @@ local function count_alive()
 	return alive
 end
 
+-- [HE-PORT]
+local function count_in_region()
+	local region = olr_smart_index.region_levels()
+	local sim = g_sim or alife()
+	if not ( region and sim ) then return 0 end
+	local n = 0
+	for id, _ in pairs(spawned_ids) do
+		local obj = sim:object(id)
+		if obj and obj:alive() and region[ olr_smart_index.object_level(obj) or "" ] then
+			n = n + 1
+		end
+	end
+	return n
+end
+
+-- [HE-PORT]
+local function recycle_far(limit)
+	local region = olr_smart_index.region_levels()
+	local sim = g_sim or alife()
+	if not ( region and sim ) then return 0 end
+	local victims = {}
+	for id, _ in pairs(spawned_ids) do
+		if #victims >= limit then break end
+		local obj = sim:object(id)
+		if obj and obj:alive() and not obj.online and IsMonster(obj)
+			and own_sections[ obj:section_name() ]
+			and not region[ olr_smart_index.object_level(obj) or "" ]
+		then
+			table.insert(victims, obj)
+		end
+	end
+	for i = 1, #victims do
+		spawned_ids[ victims[ i ].id ] = nil
+		pcall(function() sim:release(victims[ i ], true) end)
+	end
+	return #victims
+end
+
 local function smart_level(smart_obj)
 	local lname = olr_smart_index.get_level(smart_obj:name())
 	if lname then return lname end
@@ -163,25 +213,28 @@ local function target_allowed(smart_obj)
 	return d > MIN_ACTOR_DIST
 end
 
-local function pick_any_monster_name()
+local function pick_any_monster_name(region)
 	local pool = {}
 	for i = 1, #monster_comms do
 		local list = olr_smart_index.get_names(monster_comms[i])
 		for j = 1, #list do
-			table.insert(pool, list[j])
+			if not region or region[ olr_smart_index.get_level(list[j]) or "" ] then -- [HE-PORT]
+				table.insert(pool, list[j])
+			end
 		end
 	end
 	if #pool == 0 then return nil end
 	return pool[math.random(#pool)]
 end
 
-local function pick_target(comm)
+local function pick_target(comm, region)
 	for attempt = 1, 10 do
 		local sname
+		local only = ( attempt <= 4 or attempt == 7 or attempt == 8 ) and region or nil -- [HE-PORT]
 		if attempt <= 6 then
-			sname = olr_smart_index.pick_name(comm, nil)
+			sname = olr_smart_index.pick_name(comm, nil, nil, only)
 		else
-			sname = pick_any_monster_name()
+			sname = pick_any_monster_name(only)
 		end
 		if sname then
 			local sobj = olr_smart_index.get_obj(sname)
@@ -193,12 +246,13 @@ local function pick_target(comm)
 	return nil, nil, false
 end
 
-local function spawn_squad()
+local function spawn_squad(in_region)
 	local st = pick_squad_type()
 	if not st then return 0 end
 	if not olr_smart_index.ensure() then return 0 end
 
-	local smart_name, smart_obj, own_comm = pick_target(st.comm)
+	local region = in_region and olr_smart_index.region_levels() or nil -- [HE-PORT]
+	local smart_name, smart_obj, own_comm = pick_target(st.comm, region)
 	if not smart_obj then return 0 end
 
 	local size = math.random(st.min, st.max)
@@ -253,13 +307,23 @@ function update()
 	if device().precache_frame > 1 then return end
 	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
 	if time_global() < time_next_spawn then return end
-	time_next_spawn = time_global() + SPAWN_INTERVAL
 
 	local sim = g_sim or alife()
 	if not sim then return end
 	load_ids()
 
-	if count_alive() >= MAX_MONSTERS_TOTAL then
+	-- [HE-PORT]
+	local alive = count_alive()
+	if count_in_region() < REGION_TARGET then
+		time_next_spawn = time_global() + SPAWN_INTERVAL_LOW
+		if alive >= MAX_MONSTERS_TOTAL then
+			recycle_far(alive - MAX_MONSTERS_TOTAL + RECYCLE_BATCH)
+			alive = count_alive()
+		end
+	else
+		time_next_spawn = time_global() + SPAWN_INTERVAL
+	end
+	if alive >= MAX_MONSTERS_TOTAL then
 		store_ids()
 		return
 	end
@@ -274,7 +338,7 @@ function update()
 
 	for i = 1, waves do
 		if count_alive() >= MAX_MONSTERS_TOTAL then break end
-		spawn_squad()
+		spawn_squad(math.random(1, 100) <= REGION_SHARE) -- [HE-PORT]
 	end
 
 	store_ids()
