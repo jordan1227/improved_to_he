@@ -66,7 +66,8 @@ MOSCOW = datetime.timezone(datetime.timedelta(hours=3), name="MSK")
 
 # What the launcher installs into the player's game folder.
 INCLUDE_PREFIXES = ("gamedata/",)
-INCLUDE_FILES = ("he_gui.dll", "bin_x64/xrEngine.exe")
+# nvngx_dlss.dll belongs to the engine build (the exe is compiled against its SDK version).
+INCLUDE_FILES = ("he_gui.dll", "bin_x64/xrEngine.exe", "bin_x64/nvngx_dlss.dll")
 # Never shipped automatically: optional packs, spawn sources, dev material.
 EXCLUDE_PREFIXES = (
     "Опционально/",
