@@ -1,6 +1,15 @@
 local lua_random_task = nil
 local day = nil
 
+-- target_kill_items reuse treasure_manager.parse_spawns, which keeps the "section, N" number in .prob;
+-- consumers read the hand-in amount from .count.
+local function with_kill_item_counts( items )
+	for _, entry in ipairs( items ) do
+		entry.count = tonumber( entry.prob ) or 1
+	end
+	return items
+end
+
 local start_scripts_tbl = {}
 
 	start_scripts_tbl[ 'barmen_find_item_1' ] = function()
@@ -176,7 +185,7 @@ function Clua_randomTask:__init()
 		if self.task_ini:line_exist(id, "init_condition") then
 			curr_task_info.init_condition = xr_logic.parse_condlist(db.actor, "task_manager", "init_condition", self.task_ini:r_string(id, "init_condition"))
 		end
-		curr_task_info.target_kill_item=treasure_manager.parse_spawns(utils.cfg_get_string(self.task_ini,id,"target_kill_items",nil,false,"")) 
+		curr_task_info.target_kill_item=with_kill_item_counts(treasure_manager.parse_spawns(utils.cfg_get_string(self.task_ini,id,"target_kill_items",nil,false,""))) 
 		curr_task_info.reward_item=treasure_manager.parse_spawns(utils.cfg_get_string(self.task_ini,id,"reward_item"..r_task_rew,nil,false,"")) 
 		curr_task_info.reward_money=utils.cfg_get_number(self.task_ini,id,"reward_money"..r_task_rew,nil,false)
 		local target_info = utils.cfg_get_string(self.task_ini, id, "target_info", nil, false,"")
@@ -1143,7 +1152,18 @@ function Clua_randomTask:make_task_completed( task_id, type )
 	end	
 end
 
+-- A Lua error in a dialog precondition is fatal for the engine. On error, log it and report
+-- "not completed" so the regular "not done" phrase stays available.
 function Clua_randomTask:completed_task(actor, npc, p1, p2, p3)
+	local ok, result = pcall( function() return self:completed_task_impl(actor, npc, p1, p2, p3) end )
+	if not ok then
+		log2("#ERROR: task_manager.completed_task failed: %s", tostring(result))
+		return false
+	end
+	return result
+end
+
+function Clua_randomTask:completed_task_impl(actor, npc, p1, p2, p3)
 	if not p3 then return false end
 	local tid=self.task_id_by_desc_phrase_id[tostring(p2)]
 	if not tid then return false end
@@ -1193,8 +1213,12 @@ function Clua_randomTask:completed_task(actor, npc, p1, p2, p3)
 	elseif task_desc.type=="kill_stalker" then
 		if task_desc.target_kill_item and task_desc.target_kill_item~="" then
 			for kk,vv in pairs(task_desc.target_kill_item) do
-				local capsule = nlc_capsules.from_descriptor( vv.section )
-				local have = capsule and nlc_capsules.have_actor_descriptor( vv.section, vv.count ) or sak.have_items_count( vv.section, vv.count )
+				local have
+				if nlc_capsules.from_descriptor( vv.section ) then
+					have = nlc_capsules.have_actor_descriptor( vv.section, vv.count )
+				else
+					have = sak.have_items_count( vv.section, vv.count )
+				end
 				if not have then
 					can_finish = false
 					break
@@ -1357,37 +1381,6 @@ function Clua_randomTask:task_give_kill_target(actor,npc, p1, p2)
 	end
 end
 
-function Clua_randomTask:task_reward(actor,npc, p1, p2)
-	local rewarder = self:get_parent(npc)
-	local v=self.task_id_by_completed_phrase_id[tostring(tonumber(p2))]
-	if can_complete==true then
-	local task_desc = self.task_info[v]
-	self.task_info[v].status = "rewarded"
-		if task_desc.reward_money~=nil then
-		dialogs.relocate_money(npc, task_desc.reward_money, "in")
-		end
-		if task_desc.reward_item~=nil then
-			for kk,vv in pairs(task_desc.reward_item) do
-				if string.find(vv,"^af_") and not string.find(vv,"^af_dummy_") and not string.find(vv,"_dyn",1,true) and not string.find(vv,"_new",1,true) and not string.find(vv,"_1",1,true) and not string.find(vv,"_2",1,true) and not string.find(vv,"_3",1,true) and not string.find(vv,"_4",1,true) and not string.find(vv,"full_akkum",1,true) then
-				local b=lua_random(1,4)
-				vv=vv.."_dyn"..b.."d"
-				end
-			sak.create_items(vv,vv.count)
-			end
-		end
-		if task_desc.reward_reputation~=nil then
-			db.actor:change_character_reputation(task_desc.reward_reputation)
-		end
-		-- if task_desc.reward_relation~=nil then
-			-- for kk,vv in pairs(task_desc.reward_relation) do
-			-- relation_registry.change_community_goodwill (kk, db.actor:id(), tonumber(vv))
-			-- end
-		-- end
-		if task_desc.reward_rank~=nil then
-			xr_statistic.add_pts("quests", task_desc.name, 1, task_desc.reward_rank)
-		end
-	end
-end
 function Clua_randomTask:task_reward_money(actor,npc,p1,p2)
 	local rewarder=self:get_parent(npc)
 	local v=self.task_id_by_add_money_phrase_id[tostring(tonumber(p2))]
@@ -2121,10 +2114,6 @@ function action_task_reward_rec( actor, npc, p1, p2 )
 	local oActor, oNPC = Get_Actor_NPC( actor, npc )
 	get_lua_random_task():task_reward_rec( oActor, oNPC, p1, p2 )
 end
-function action_task_reward(actor, npc, p1, p2)
-	local oActor, oNPC = Get_Actor_NPC(actor, npc)
-	get_lua_random_task():task_reward(oActor, oNPC, p1, p2)
-end
 function action_task_reward_info(actor, npc, p1, p2, dlg)
 	local oActor, oNPC = Get_Actor_NPC(actor, npc)
 	get_lua_random_task():task_reward_info(oActor, oNPC, p1, p2, dlg)
@@ -2312,16 +2301,27 @@ function is_ammo(s)
 	return class == clsid.wpn_ammo
 end
 
+-- Capsule descriptors ("capsule@af_soul@5") are not config sections, so their display name is
+-- built from the shell item and the base artifact. Returns nil for regular sections.
+local function capsule_reward_name(section)
+	local payload = nlc_capsules.from_descriptor(section)
+	if not payload then return nil end
+	local ini = system_ini()
+	return game.translate_string(ini:r_string(nlc_capsules.shell(payload), "inv_name")) .. ": " .. game.translate_string(ini:r_string(payload.base, "inv_name"))
+end
+
 function format_reward_text(reward_list)
 	local i,v
 	local rwd={}
 	local reward_text=""
 	if reward_list==nil then return "" end
 	for kk,vv in pairs(reward_list) do
-		if is_ammo(vv.section) then
-		reward_text=reward_text..game.translate_string(news_manager.get_inv_name(vv.section)).." - "..vv.prob.." "..game.translate_string("st_count_packs").."\\n"
+		local capsule_name = capsule_reward_name(vv.section)
+		local item_name = capsule_name or game.translate_string(news_manager.get_inv_name(vv.section))
+		if not capsule_name and is_ammo(vv.section) then
+		reward_text=reward_text..item_name.." - "..vv.prob.." "..game.translate_string("st_count_packs").."\\n"
 		else
-		reward_text=reward_text..game.translate_string(news_manager.get_inv_name(vv.section)).." - "..vv.prob.." "..game.translate_string("st_count").."\\n"
+		reward_text=reward_text..item_name.." - "..vv.prob.." "..game.translate_string("st_count").."\\n"
 		end
 	end
 	return reward_text
@@ -2333,7 +2333,7 @@ function format_reward_text_bad( reward_list )
 	local reward_text = ""
 	if reward_list == nil then return "" end
 	for kk, vv in pairs( reward_list ) do
-		reward_text = reward_text .. get_inv_name( vv.section ) .. ";\\n"
+		reward_text = reward_text .. ( capsule_reward_name( vv.section ) or get_inv_name( vv.section ) ) .. ";\\n"
 	end
 	return reward_text
 end
