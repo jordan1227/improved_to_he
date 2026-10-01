@@ -712,6 +712,17 @@ local function get_compact_property_icon(icon)
     return icon
 end
 
+-- Prop icons are authored square, but horizontal units render wider than vertical ones on widescreen
+-- (kScreen < 1), which stretches them. Narrow icon-sized windows by kScreen and keep them centered.
+local function fit_prop_icon(icon)
+    local w, h = icon:GetWidth(), icon:GetHeight()
+    if w > 24 or h > 24 or kScreen >= 1 then return end
+    local nw = w * kScreen
+    local pos = icon:GetWndPos()
+    icon:SetWndSize(nw, h)
+    icon:SetWndPos(pos.x + (w - nw) / 2, pos.y)
+end
+
 local function modifier_percent_text(value, positive_is_good)
     local good = positive_is_good and value > 0 or not positive_is_good and value < 0
     local color = good and "%c[green]" or "%c[red]"
@@ -799,6 +810,7 @@ function CUIDescriptionWnd:ShowProps( tbl )
         if icon then
             st.icon = self.xml:InitStatic(template .. ":prop_texture", st)
             st.icon:InitTexture(icon)
+            fit_prop_icon(st.icon)
         end
         st.text = self.xml:InitStatic(template .. ":prop_text", st)
         st.text:SetText(entry[2] or "")
@@ -845,7 +857,89 @@ function CUIDescriptionWnd:ShowPropsHeader(text)
     add_post_header_spacing(self)
 end
 
+-- Popup-style row builders for other windows (the artifact container menu).
+-- Each creates one row inside `parent` at `y` with the same templates as the description popup, appends the
+-- created windows to `owned` (the caller detaches them) and returns the next free y.
+function popup_header(owned, parent, width, y, text)
+    local line = g_xml:InitLabel("description:inv_name_line", parent)
+    local title = g_xml:InitStatic("description:inv_name", parent)
+    local h = 22
+    title:SetWndPos(0, y)
+    title:SetWndSize(width, h)
+    title:SetText(text)
+    -- Same two-control pattern as update_name_line: a textless broken-line label sized to the measured name.
+    local line_w = width
+    local ok = pcall(function()
+        title:AdjustWidthToText()
+        local measured_w = title:GetWidth()
+        if measured_w > 0 and measured_w < width then
+            line_w = measured_w + 12
+        end
+    end)
+    title:SetWndSize(width, h)
+    if not ok then line_w = width end
+    line_w = math.max(50, math.min(width, line_w))
+    line:SetWndPos(math.floor((width - line_w) / 2), y)
+    line:SetWidth(line_w)
+    table.insert(owned, line)
+    table.insert(owned, title)
+    return y + h + 4 + vert_interval
+end
+
+function popup_gap(owned, parent, width, y)
+    local st = g_xml:InitStatic("section_gap", parent)
+    st:SetWndPos(0, y)
+    st:SetWidth(width)
+    table.insert(owned, st)
+    return y + st:GetHeight() + vert_interval
+end
+
+-- Value is flush right: it is measured and placed so its right edge is at `width`.
+function popup_prop_row(owned, parent, width, y, icon, label, value)
+    local st = g_xml:InitStatic("props_artifact", parent)
+    st:SetWndPos(0, y)
+    st:SetWidth(width)
+    local row_h = st:GetHeight()
+    local text_x = 1
+    if icon ~= nil then
+        st.icon = g_xml:InitStatic("props_artifact:prop_texture", st)
+        st.icon:InitTexture(get_compact_property_icon(icon))
+        fit_prop_icon(st.icon)
+        text_x = 21
+    end
+    st.value = g_xml:InitStatic("props_artifact:prop_text_2", st)
+    st.value:SetText(value)
+    -- Label and value each span the whole row (left- and right-aligned), so neither wraps; text measurement is
+    -- unreliable for complex-mode statics. They only touch if label plus value exceed the row.
+    st.value:SetTextAlign(CGameFont.alRight)
+    st.value:SetWndPos(text_x, 0)
+    st.value:SetWndSize(math.max(1, width - text_x - 2), row_h)
+    st.text = g_xml:InitStatic("props_artifact:prop_text", st)
+    st.text:SetText(label)
+    st.text:SetWndPos(text_x, 0)
+    st.text:SetWndSize(math.max(1, width - text_x - 2), row_h)
+    table.insert(owned, st)
+    return y + row_h + vert_interval
+end
+
+function popup_text_row(owned, parent, width, y, text)
+    local st = g_xml:InitStatic("props_artifact", parent)
+    st:SetWndPos(0, y)
+    st:SetWidth(width)
+    st.text = g_xml:InitStatic("props_artifact:prop_text", st)
+    st.text:SetText(text)
+    st.text:SetWndPos(1, 0)
+    st.text:SetWndSize(width - 2, 200)
+    st.text:AdjustHeightToText()
+    local h = math.max(st:GetHeight(), st.text:GetHeight() + 4)
+    st:SetWndSize(width, h)
+    st.text:SetWndSize(width - 2, h)
+    table.insert(owned, st)
+    return y + h + vert_interval
+end
+
 local function update_name_line(self, inv_name)
+
     local title_w = self.frame:GetWidth() - 20
     local title_h = self.inv_name:GetHeight()
     local line_w = title_w
@@ -879,6 +973,7 @@ function CUIDescriptionWnd:ShowPropsAf( tbl )
         if t[1] ~= nil then
             st.icon = self.xml:InitStatic("props_artifact:prop_texture", st)
             st.icon:InitTexture(get_compact_property_icon(t[1]))
+            fit_prop_icon(st.icon)
         end
         local text_x = t[1] ~= nil and 21 or 1
         st.text = self.xml:InitStatic("props_artifact:prop_text", st)
@@ -1015,6 +1110,8 @@ local drag_drop_hints = {
       end },
     { key = "ui_inv_hint_drag_pda",
       match = function(item, section) return section == "anagramm_flash" end },
+    { key = "ui_inv_hint_container_drop",
+      match = function(item, section) return string.find(section, "^arc_art_box_") ~= nil end },
 }
 
 function CUIDescriptionWnd:ShowInteractionHints(item)
@@ -1039,7 +1136,7 @@ function CUIDescriptionWnd:ShowInteractionHints(item)
     if self.context ~= "inventory" then
         table.insert(hints, translate("st_ui_group_movement_tip"))
     end
-    if get_bool(self.section, "manual_ungrouping", false) then
+    if manual_ungroup_applies(item) then
         table.insert(hints, translate("st_ui_ungroup_tip"))
     end
 
@@ -1187,8 +1284,8 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 			end
 		end		
 		
-		self:ShowPropFromIni(nil, nil, string.format("[%d/%d] %s: %d",
-			filled, cs, translate("ui_inv_arc_free_slots"), (cs - filled)), {255, 160, 255, 160}
+		self:ShowPropFromIni(nil, nil, string.format("Количество слотов: [%d/%d]",
+			filled, cs), {255, 160, 255, 160}
 		)		
 		
 		for _, s in ipairs(arts) do
@@ -2153,44 +2250,58 @@ function CUIDescriptionWnd:ShowSilencerParams()
 		self:ShowPropsWeapon(params)
 	end
 end
--- Показываем параметры артефактов
-function CUIDescriptionWnd:ShowAfParams(item)
-    self.artifact_info_lines = nil
+-- Rows of base artifact stats, shared by the inventory description and the artifact container menu.
+-- target: live game_object or a section name; a section needs `condition` and optional `custom_data`.
+-- Returns a list of { texture, label, "%c[..]value" }.
+function get_af_stat_rows(target, condition, custom_data)
+    local is_section = type(target) == "string"
+    local sect = is_section and target or target:section()
+    if condition == nil then
+        condition = is_section and 1 or target:condition()
+    end
     local params = {}
-    local handling_params = {}
     local val, txt = 0, ""
-    local sect = item:section()
-    local id = item:id()
-    local af_obj = item:get_artefact()
-    local ini = system_ini()
 
-    if string.find(sect, "dyn6d") then return end
+    if string.find(sect, "dyn6d") then return params end
+
+    local unknown_ok = type(sivol_unknown_arts) == "table"
+        and type(sivol_unknown_arts.get_nominal_property) == "function"
+
+    -- garbage artifacts keep their own radiation in custom_data (xp={rad=...})
+    local xp_props = nil
+    if type(ui_arc_container_menu) == "table" then
+        if custom_data ~= nil then
+            xp_props = ui_arc_container_menu.xp_read_from_cust(custom_data)
+        elseif not is_section then
+            xp_props = ui_arc_container_menu.xp_read(target:id())
+        end
+    end
 
     for i, t in ipairs(conditions_params) do
-        if t.prop == "satiety_restore_speed" then
-            -- do nothing
-        else
+        local denom = conditions[t.prop]
+        if t.prop ~= "satiety_restore_speed" and denom and denom ~= 0 then
             local base_val = get_float(sect, t.prop, 0)
-            if type(sivol_unknown_arts) == "table"
-                and type(sivol_unknown_arts.get_nominal_property) == "function"
-            then
-                local resolved = sivol_unknown_arts.get_nominal_property(item, t.prop)
+            if unknown_ok then
+                local resolved = sivol_unknown_arts.get_nominal_property(target, t.prop, custom_data)
                 if resolved ~= nil then base_val = resolved end
             end
-            
+            if t.prop == "radiation_restore_speed" and xp_props and xp_props.rad then
+                base_val = xp_props.rad
+            end
+
             local is_buff = true
             if t.prop == "radiation_restore_speed" then
                 is_buff = (base_val < 0)
             else
                 is_buff = (base_val > 0)
             end
-            
+
             -- Pass t.prop to respect toggles
-            local eff_strength = get_effective_strength(item, is_buff, t.prop)
+            local eff_strength = get_effective_strength_raw(condition, sect, is_buff, t.prop)
             val = base_val * eff_strength
 
             if val ~= 0 then
-                val = val * 100 / conditions[t.prop]
+                val = val * 100 / denom
                 txt = ""
 
                 if t.prop == "bleeding_restore_speed" then
@@ -2213,14 +2324,12 @@ function CUIDescriptionWnd:ShowAfParams(item)
         end
     end
 
-    if item.immunities then
+    if is_section or target.immunities then
         for i, t in ipairs(hit_types) do
             local immunity_name = t.prop .. "_immunity"
             local base_immunity = nil
-            if type(sivol_unknown_arts) == "table"
-                and type(sivol_unknown_arts.get_nominal_property) == "function"
-            then
-                base_immunity = sivol_unknown_arts.get_nominal_property(item, immunity_name)
+            if unknown_ok then
+                base_immunity = sivol_unknown_arts.get_nominal_property(target, immunity_name, custom_data)
             end
             if base_immunity == nil then
                 base_immunity = get_artefact_base_immunity(sect, immunity_name)
@@ -2228,8 +2337,8 @@ function CUIDescriptionWnd:ShowAfParams(item)
 
             if base_immunity and base_immunity ~= 1 then
                 local is_buff = (base_immunity <= 1)
-                local eff_strength = get_effective_strength(item, is_buff, immunity_name)
-                
+                local eff_strength = get_effective_strength_raw(condition, sect, is_buff, immunity_name)
+
                 local eff_immunity = 1.0
                 if base_immunity <= 1 then
                     eff_immunity = 1 - ((1 - base_immunity) * eff_strength)
@@ -2246,17 +2355,15 @@ function CUIDescriptionWnd:ShowAfParams(item)
 
     local iw_1_base = nil
     local iw_2_base = nil
-    if type(sivol_unknown_arts) == "table"
-        and type(sivol_unknown_arts.get_nominal_property) == "function"
-    then
-        iw_1_base = sivol_unknown_arts.get_nominal_property(item, "additional_inventory_weight")
-        iw_2_base = sivol_unknown_arts.get_nominal_property(item, "additional_inventory_weight2")
+    if unknown_ok then
+        iw_1_base = sivol_unknown_arts.get_nominal_property(target, "additional_inventory_weight", custom_data)
+        iw_2_base = sivol_unknown_arts.get_nominal_property(target, "additional_inventory_weight2", custom_data)
     end
     if iw_1_base == nil then iw_1_base = get_float(sect, "additional_inventory_weight", 0) end
     if iw_2_base == nil then iw_2_base = get_float(sect, "additional_inventory_weight2", 0) end
     -- Pass prop_name
-    local iw_1 = iw_1_base * get_effective_strength(item, iw_1_base > 0, "additional_inventory_weight")
-    local iw_2 = iw_2_base * get_effective_strength(item, iw_2_base > 0, "additional_inventory_weight2")
+    local iw_1 = iw_1_base * get_effective_strength_raw(condition, sect, iw_1_base > 0, "additional_inventory_weight")
+    local iw_2 = iw_2_base * get_effective_strength_raw(condition, sect, iw_2_base > 0, "additional_inventory_weight2")
 
     if iw_1 ~= 0 or iw_2 ~= 0 then
         local parts = {}
@@ -2271,7 +2378,7 @@ function CUIDescriptionWnd:ShowAfParams(item)
     end
 
     local base_jmp = get_float(sect, "add_jump_speed", 0)
-    val = base_jmp * get_effective_strength(item, base_jmp > 0, "add_jump_speed")
+    val = base_jmp * get_effective_strength_raw(condition, sect, base_jmp > 0, "add_jump_speed")
     if val ~= 0 then
         val = val * 10
         txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%.0f", val)
@@ -2279,7 +2386,7 @@ function CUIDescriptionWnd:ShowAfParams(item)
     end
 
     local base_mov = get_float(sect, "add_move_speed", 0)
-    val = base_mov * get_effective_strength(item, base_mov > 0, "add_move_speed")
+    val = base_mov * get_effective_strength_raw(condition, sect, base_mov > 0, "add_move_speed")
     if val ~= 0 then
         txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%.0f%%", val * 100)
         table.insert(params, {"ui_inv_icon_add_jump_power_hd", translate("ui_inv_move_speed"), txt})
@@ -2287,7 +2394,7 @@ function CUIDescriptionWnd:ShowAfParams(item)
 
     local base_dog_psy = get_float(sect, "add_dog_psy", 1)
     if base_dog_psy and base_dog_psy ~= 1 then
-        local eff_strength = get_effective_strength(item, base_dog_psy < 1, "add_dog_psy")
+        local eff_strength = get_effective_strength_raw(condition, sect, base_dog_psy < 1, "add_dog_psy")
         val = 1 + (base_dog_psy - 1) * eff_strength
         if val ~= 1 then
             txt = (val < 1 and "%c[green]+" or "%c[red]") .. string.format("%.0f%%", (1 - val) * 100)
@@ -2296,23 +2403,21 @@ function CUIDescriptionWnd:ShowAfParams(item)
     end
 
     local base_restore = get_float(sect, "satiety_restore_speed", 0)
-    if type(sivol_unknown_arts) == "table"
-        and type(sivol_unknown_arts.get_nominal_property) == "function"
-    then
-        local resolved = sivol_unknown_arts.get_nominal_property(item, "satiety_restore_speed")
+    if unknown_ok then
+        local resolved = sivol_unknown_arts.get_nominal_property(target, "satiety_restore_speed", custom_data)
         if resolved ~= nil then base_restore = resolved end
     end
     local base_add_sat = get_float(sect, "add_satiety", 1)
 
     local sat_units = 0
     if base_restore ~= 0 then
-        local sat_str = get_effective_strength(item, base_restore > 0, "satiety_restore_speed")
+        local sat_str = get_effective_strength_raw(condition, sect, base_restore > 0, "satiety_restore_speed")
         sat_units = (base_restore * sat_str) * math.pow(10, 8) / 4455
     end
 
     local sat_percent = 0
     if base_add_sat and base_add_sat > 1 then
-        local sat_str = get_effective_strength(item, false, "add_satiety")
+        local sat_str = get_effective_strength_raw(condition, sect, false, "add_satiety")
         sat_percent = base_add_sat * sat_str
     end
 
@@ -2322,13 +2427,15 @@ function CUIDescriptionWnd:ShowAfParams(item)
             table.insert(parts, "%c[red]-" .. string.format("%d%%", math.round(sat_percent)))
         end
         if sat_units ~= 0 then
-            table.insert(parts, "%c[red]" .. string.format("%.2f %s", sat_units, translate("ui_inv_units")))
+            -- positive satiety_restore_speed restores satiety (green), negative drains it (red)
+            table.insert(parts, (sat_units > 0 and "%c[green]+" or "%c[red]")
+                .. string.format("%.2f %s", sat_units, translate("ui_inv_units")))
         end
         txt = table.concat(parts, "%c[default] | ")
         table.insert(params, {"ui_inv_icon_add_satiety_hd", translate("ui_inv_satiety"), txt})
     end
 
-    if type(sivol_unknown_arts) == "table"
+    if unknown_ok
         and type(sivol_unknown_arts.is_unknown_section) == "function"
         and sivol_unknown_arts.is_unknown_section(sect)
         and type(sivol_unknown_arts.get_outfit_wear) == "function"
@@ -2339,8 +2446,8 @@ function CUIDescriptionWnd:ShowAfParams(item)
             { damage = "chemical", property = "outfit_wear_chemical", icon = "ui_inv_icon_chemical_burn_immunity_hd", label = "ui_inv_outfit_wear_chemical" },
         }
         for _, row in ipairs(unknown_wear) do
-            local nominal = sivol_unknown_arts.get_outfit_wear(item, row.damage)
-            local effective = nominal * get_effective_strength(item, true, row.property)
+            local nominal = sivol_unknown_arts.get_outfit_wear(target, row.damage, custom_data)
+            local effective = nominal * get_effective_strength_raw(condition, sect, true, row.property)
             if effective > 0 then
                 table.insert(params, {
                     row.icon,
@@ -2350,6 +2457,19 @@ function CUIDescriptionWnd:ShowAfParams(item)
             end
         end
     end
+
+    return params
+end
+
+-- Показываем параметры артефактов
+function CUIDescriptionWnd:ShowAfParams(item)
+    self.artifact_info_lines = nil
+    local handling_params = {}
+    local sect = item:section()
+
+    if string.find(sect, "dyn6d") then return end
+
+    local params = get_af_stat_rows(item)
     if type(sivol_pudding_outfit) == "table"
         and type(sivol_pudding_outfit.get_reduction) == "function" then
         local ok, reduction = pcall(
@@ -2785,6 +2905,7 @@ function CUIDescriptionWnd:ShowPropsOutfit( tbl )
         if t[1] ~= nil then
             st.icon = self.xml:InitStatic("props_compact:prop_texture", st)
             st.icon:InitTexture(get_compact_property_icon(t[1]))
+            fit_prop_icon(st.icon)
         end
 
         local has_multiple_values = t[4] ~= nil or t[5] ~= nil
@@ -2988,19 +3109,20 @@ function CUIDescriptionWnd:SetItemPrice( obj )
 end
 
 local ungroup_differentiators = {
+	-- only charged PDAs (condition 1) carry readable info worth telling apart; discharged/broken ones are not split
 	device_pda_npc = function(item) return item:condition() == 1 end,
 }
 
 local function passes_differentiator(item)
 	local sect = item:section()
-	if sect:sub(1, 11) == "arc_art_box" then
-		local inv_w = item:get_inventory_item().inv_weight
-		local ini_w = sys_ini:r_float(sect, "inv_weight")
-		return inv_w ~= ini_w
-	end
 	local fn = ungroup_differentiators[sect]
 	if fn then return fn(item) end
 	return true -- нет спец. критерия - маркируем все предметы этой секции
+end
+
+-- Used by the Controls hint: true when U would actually split this particular item.
+function manual_ungroup_applies( item )
+	return item ~= nil and can_manual_ungroup( item ) and passes_differentiator( item )
 end
 
 function can_manual_ungroup( item )
@@ -3009,16 +3131,39 @@ function can_manual_ungroup( item )
 	return allowed
 end
 
+-- Items separated with U go back to normal grouping when the inventory closes.
+local manual_marked = {}
+local manual_regroup_signal = nil
+
+local function regroup_manual_marked()
+	for id in pairs( manual_marked ) do
+		local obj = client_obj( id )
+		if obj then set_item_default_grouping( obj ) end
+	end
+	manual_marked = {}
+end
+
 function do_manual_ungroup_all( section )
-	local matched = 0
+	if not manual_regroup_signal then
+		manual_regroup_signal = { signal = "on_inventory_hide", fun = regroup_manual_marked }
+		ogse_signals.get_mgr():subscribe( manual_regroup_signal )
+	end
+	local newly_marked = 0
 	db.actor:iterate_inventory( function( _, item )
-		if item:section() == section then
-			if passes_differentiator(item) then
-				set_item_ungroupable( item )
-				matched = matched + 1
+		if item:section() == section and passes_differentiator(item) then
+			local ii = item:get_inventory_item()
+			if not (ii and ii.always_ungroupable) then
+				newly_marked = newly_marked + 1
+				manual_marked[ item:id() ] = true
 			end
+			set_item_ungroupable( item )
 		end
 	end, nil )
+	-- The flag only matters when the inventory lists are built; a stack that is already shown keeps its children.
+	-- Ask the engine to rebuild the open inventory once, so the stack splits right away.
+	if newly_marked > 0 then
+		update_inventory_window()
+	end
 end
 
 function try_manual_ungroup( item )
