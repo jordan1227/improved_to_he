@@ -1,0 +1,142 @@
+-- sivol: monster hit log for balance tests (off by default; restart after editing).
+--
+-- ENABLED: one log line per actor shot that hits a monster. Pellets of the same
+--   shot are grouped. Shows weapon, loaded ammo, pellet count, bones hit, raw hit
+--   power, health before -> after and the bleeding rate a moment after the shot.
+-- FREEZE: alive monsters within FREEZE_RADIUS of the actor are held under script
+--   control in a standing idle, so they can be shot at rest. Monsters already
+--   under story/scheme script control are left alone. Set FREEZE = false and
+--   restart (or reload) to release them.
+
+local ENABLED = false
+local FREEZE = false
+local FREEZE_RADIUS = 40
+local GROUP_MS = 60          -- pellets of one shot arrive within this window
+local REPORT_DELAY_MS = 250  -- health and bleeding are read this long after the shot
+
+local pending = {}   -- [monster id] = shot record
+
+function is_enabled() return ENABLED end
+local frozen = {}    -- [monster id] = true
+
+local function ammo_section(item)
+    if not item then return "?" end
+    local sect = item:section()
+    if not sys_ini:section_exist(sect) or not sys_ini:line_exist(sect, "ammo_class") then return "?" end
+    local ok, ammo_type = pcall(item.get_ammo_type, item)
+    ammo_type = ok and tonumber(ammo_type) or 0
+    local index, first = 0, nil
+    for ammo in string.gmatch(sys_ini:r_string(sect, "ammo_class"), "([%w%._%-]+)") do
+        first = first or ammo
+        if index == ammo_type then return ammo end
+        index = index + 1
+    end
+    return first or "?"
+end
+
+local function bone_name(obj, bone_id)
+    local ok, name = pcall(obj.get_bone_name, obj, bone_id)
+    if ok and type(name) == "string" and name ~= "" then return name end
+    return "bone#" .. tostring(bone_id)
+end
+
+local function flush(obj, rec)
+    local parts = {}
+    for name, count in pairs(rec.bones) do
+        parts[#parts + 1] = count > 1 and string.format("%s x%d", name, count) or name
+    end
+    table.sort(parts)
+    local health, bleeding = -1, -1
+    if obj then
+        health = obj.health or -1
+        local ok, b = pcall(obj.get_bleeding, obj)
+        bleeding = ok and tonumber(b) or -1
+    end
+    log2("[sivol_hit_log] %s | %s [%s] | hits=%d | bones: %s | raw_power=%.3f | health %.3f -> %.3f | bleeding %.4f",
+        rec.monster, rec.weapon, rec.ammo, rec.hits, table.concat(parts, ", "),
+        rec.power, rec.health, health, bleeding)
+end
+
+local function on_monster_before_hit(obj, hit_data)
+    if not ENABLED or not obj or not hit_data or hit_data.ignore_hit then return end
+    if not db.actor or hit_data.who_id ~= db.actor:id() then return end
+    local id = obj:id()
+    local now = time_global()
+    local rec = pending[id]
+    if rec and now - rec.first > GROUP_MS then
+        flush(obj, rec)
+        rec = nil
+    end
+    if not rec then
+        local wpn = hit_data.weapon_id and level.object_by_id(hit_data.weapon_id)
+        rec = {
+            first = now,
+            monster = obj:section(),
+            weapon = wpn and wpn:section() or "?",
+            ammo = ammo_section(wpn),
+            health = obj.health or -1,
+            hits = 0,
+            power = 0,
+            bones = {},
+        }
+        pending[id] = rec
+    end
+    rec.hits = rec.hits + 1
+    rec.power = rec.power + (tonumber(hit_data.power) or 0)
+    local name = bone_name(obj, hit_data.bone_id)
+    rec.bones[name] = (rec.bones[name] or 0) + 1
+end
+
+local function hold(obj)
+    if not obj:get_script() then
+        if not pcall(obj.script, obj, true, script_name()) then return end
+        frozen[obj:id()] = true
+    elseif not frozen[obj:id()] then
+        return -- scripted by something else
+    end
+    if not obj:action() then
+        pcall(function()
+            action(obj, anim(anim.stand_idle, 0), cond(cond.time_end, 600000))
+        end)
+    end
+end
+
+local function release(obj)
+    if frozen[obj:id()] then
+        pcall(obj.script, obj, false, script_name())
+        frozen[obj:id()] = nil
+    end
+end
+
+local function on_monster_update(obj, delta)
+    if not obj then return end
+    local id = obj:id()
+    local rec = pending[id]
+    if rec and time_global() - rec.first >= REPORT_DELAY_MS then
+        flush(obj, rec)
+        pending[id] = nil
+    end
+    if not obj:alive() or not db.actor then return end
+    if FREEZE and obj:position():distance_to(db.actor:position()) < FREEZE_RADIUS then
+        hold(obj)
+    elseif frozen[id] then
+        release(obj)
+    end
+end
+
+local function on_monster_death(obj)
+    if not obj then return end
+    local rec = pending[obj:id()]
+    if rec then
+        flush(obj, rec)
+        pending[obj:id()] = nil
+    end
+    frozen[obj:id()] = nil
+end
+
+function attach(sm)
+    if not ENABLED and not FREEZE then return end
+    sm:subscribe({ signal = "on_monster_before_hit", fun = on_monster_before_hit })
+    sm:subscribe({ signal = "on_monster_update", fun = on_monster_update })
+    sm:subscribe({ signal = "on_monster_death", fun = on_monster_death })
+end
