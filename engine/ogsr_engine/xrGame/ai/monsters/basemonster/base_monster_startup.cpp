@@ -52,6 +52,9 @@ void CBaseMonster::Load(LPCSTR section)
     // load parameters from ".ltx" file
     inherited::Load(section);
 
+    // NLC: target selection weights ([monster_target_selection] + per-section overrides)
+    EnemyMemory.load(section);
+
     m_head_bone_name = READ_IF_EXISTS(pSettings, r_string, section, "bone_head", "bip01_head");
     m_left_eye_bone_name = READ_IF_EXISTS(pSettings, r_string, section, "bone_eye_left", 0);
     m_right_eye_bone_name = READ_IF_EXISTS(pSettings, r_string, section, "bone_eye_right", 0);
@@ -132,6 +135,7 @@ void CBaseMonster::PostLoad(LPCSTR section)
     aom.prediction_factor = READ_IF_EXISTS(pSettings, r_float, section, "aom_prediction_factor", detail::base_monster::aom_prediction_factor);
     aom.prepare_time = READ_IF_EXISTS(pSettings, r_float, section, "aom_prepare_time", detail::base_monster::aom_prepare_time);
     aom.prepare_radius = READ_IF_EXISTS(pSettings, r_float, section, "aom_prepare_radius", detail::base_monster::aom_prepare_radius);
+    aom.close_melee_dist = READ_IF_EXISTS(pSettings, r_float, section, "aom_close_melee_dist", 0.f);
     aom.max_go_close_time = READ_IF_EXISTS(pSettings, r_float, section, "aom_max_go_close_time", 8.f);
 
     if (aom.enabled)

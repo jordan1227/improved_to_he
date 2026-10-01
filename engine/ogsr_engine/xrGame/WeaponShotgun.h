@@ -49,6 +49,9 @@ protected:
     HUD_SOUND sndShotBoth;
     ESoundTypes m_eSoundShotBoth;
 
+    // NLC: "duplet_on_alt_aim" fires both barrels from the alt-aim key (weapons without alt-aim zoom)
+    bool m_bDupletOnAltAim{};
+
     ESoundTypes m_eSoundOpen{};
     ESoundTypes m_eSoundAddCartridge;
     ESoundTypes m_eSoundClose;

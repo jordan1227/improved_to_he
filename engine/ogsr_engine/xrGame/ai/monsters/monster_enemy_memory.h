@@ -11,12 +11,25 @@ class CMonsterEnemyMemory
 
     ENEMIES_MAP m_objects;
 
+    // NLC: config-driven target selection, [monster_target_selection] in
+    // game_relations.ltx with optional per-monster-section overrides.
+    // Identity defaults (1.0 / 0) keep the original danger formula.
+    float m_actor_bias;
+    float m_target_stickiness;
+    float m_hit_bonus;
+    TTime m_hit_bonus_time;
+
 public:
     CMonsterEnemyMemory();
     ~CMonsterEnemyMemory();
 
     void init_external(CBaseMonster* M, TTime mem_time);
+    void load(LPCSTR section);
     void update();
+
+    // danger score of a remembered enemy, -1 if it is not remembered
+    float get_danger(const CEntityAlive* enemy) const;
+    static bool target_debug_log();
 
     // -----------------------------------------------------
     const CEntityAlive* get_enemy();

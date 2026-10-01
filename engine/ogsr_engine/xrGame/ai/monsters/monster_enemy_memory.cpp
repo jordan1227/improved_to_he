@@ -12,10 +12,28 @@
 #include "../../actor.h"
 #include "../../actor_memory.h"
 
+namespace
+{
+constexpr LPCSTR TARGET_SELECTION_SECTION = "monster_target_selection";
+bool s_target_debug_log = false;
+
+// global [monster_target_selection] value, overridden by the monster's own section
+float read_target_param(LPCSTR section, LPCSTR key, float def)
+{
+    float value = READ_IF_EXISTS(pSettings, r_float, TARGET_SELECTION_SECTION, key, def);
+    return READ_IF_EXISTS(pSettings, r_float, section, key, value);
+}
+} // namespace
+
 CMonsterEnemyMemory::CMonsterEnemyMemory()
 {
     monster = 0;
     time_memory = 15000;
+
+    m_actor_bias = 1.f;
+    m_target_stickiness = 1.f;
+    m_hit_bonus = 1.f;
+    m_hit_bonus_time = 0;
 }
 
 CMonsterEnemyMemory::~CMonsterEnemyMemory() {}
@@ -24,6 +42,24 @@ void CMonsterEnemyMemory::init_external(CBaseMonster* M, TTime mem_time)
 {
     monster = M;
     time_memory = mem_time;
+}
+
+void CMonsterEnemyMemory::load(LPCSTR section)
+{
+    m_actor_bias = std::clamp(read_target_param(section, "actor_bias", 1.f), 0.1f, 10.f);
+    m_target_stickiness = std::clamp(read_target_param(section, "target_stickiness", 1.f), 0.1f, 10.f);
+    m_hit_bonus = std::clamp(read_target_param(section, "hit_bonus", 1.f), 0.1f, 10.f);
+    m_hit_bonus_time = TTime(std::max(read_target_param(section, "hit_bonus_time", 0.f), 0.f));
+
+    s_target_debug_log = !!READ_IF_EXISTS(pSettings, r_bool, TARGET_SELECTION_SECTION, "debug_log", false);
+}
+
+bool CMonsterEnemyMemory::target_debug_log() { return s_target_debug_log; }
+
+float CMonsterEnemyMemory::get_danger(const CEntityAlive* enemy) const
+{
+    const auto it = m_objects.find(enemy);
+    return (it != m_objects.end()) ? it->second.danger : -1.f;
 }
 
 void CMonsterEnemyMemory::update()
@@ -106,11 +142,30 @@ void CMonsterEnemyMemory::update()
     remove_non_actual();
 
     // обновить опасность
+    // EnemyMan.update() runs after this, so get_enemy() is still the previous target (pointer compare only)
+    const CEntityAlive* const current_target = monster->EnemyMan.get_enemy();
+    const CEntityAlive* const actor = Actor();
+
     for (ENEMIES_MAP_IT it = m_objects.begin(); it != m_objects.end(); it++)
     {
         u8 relation_value = u8(monster->tfGetRelationType(it->first));
         float dist = monster->Position().distance_to(it->second.position);
-        it->second.danger = (1 + relation_value * relation_value * relation_value) / (1 + dist);
+        float danger = (1 + relation_value * relation_value * relation_value) / (1 + dist);
+
+        if (actor && it->first == actor)
+            danger *= m_actor_bias;
+
+        if (m_hit_bonus_time > 0)
+        {
+            const TTime hit_time = monster->HitMemory.get_last_hit_time(it->first);
+            if (hit_time != 0 && Device.dwTimeGlobal < hit_time + m_hit_bonus_time)
+                danger *= m_hit_bonus;
+        }
+
+        if (current_target && it->first == current_target)
+            danger *= m_target_stickiness;
+
+        it->second.danger = danger;
     }
 }
 

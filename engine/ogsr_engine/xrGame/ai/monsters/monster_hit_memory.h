@@ -28,6 +28,7 @@ public:
 
     Fvector get_last_hit_dir();
     TTime get_last_hit_time();
+    TTime get_last_hit_time(const CObject* who); // NLC: latest hit by `who`, 0 if none
     CObject* get_last_hit_object();
     Fvector get_last_hit_position();
 

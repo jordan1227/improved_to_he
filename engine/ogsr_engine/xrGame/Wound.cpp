@@ -88,3 +88,13 @@ void CWound::Incarnation(float percent, float min_wound_size)
             m_Wounds[i] = 0;
     }
 }
+
+void CWound::IncarnationProportional(float keep_factor, float min_wound_size)
+{
+    for (int i = 0; i < ALife::eHitTypeMax; i++)
+    {
+        m_Wounds[i] *= keep_factor;
+        if (m_Wounds[i] < min_wound_size)
+            m_Wounds[i] = 0;
+    }
+}
