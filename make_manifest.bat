@@ -2,6 +2,21 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
+rem --- Git: use the one from PATH, otherwise look inside GitHub Desktop ---
+where git >nul 2>&1
+if errorlevel 1 (
+    for /f "delims=" %%D in ('dir /b /ad /o-n "%LOCALAPPDATA%\GitHubDesktop\app-*" 2^>nul') do (
+        if exist "%LOCALAPPDATA%\GitHubDesktop\%%D\resources\app\git\cmd\git.exe" (
+            set "PATH=%PATH%;%LOCALAPPDATA%\GitHubDesktop\%%D\resources\app\git\cmd"
+            goto :git_ok
+        )
+    )
+    echo Git was not found. Install Git for Windows and try again.
+    pause
+    exit /b 1
+)
+:git_ok
+
 set "SCRIPT=%~dp0make_manifest.py"
 set "PYTHON=python"
 python --version >nul 2>&1
@@ -31,6 +46,11 @@ echo 7 - Generate/catch up changelog (14-day window)
 echo 8 - Generate changelog from a chosen base revision
 echo 0 - Exit
 echo.
+echo Notes:
+echo  - The manifest is built from HEAD: uncommitted gamedata changes are not included.
+echo  - After 1/3/4 commit manifest.txt (and the two ui_st_other.xml files for 1/4).
+echo  - Verify (2) reports STALE until those changes are committed.
+echo.
 set "ACTION="
 set /p "ACTION=Choose an action: "
 if "%ACTION%"=="0" exit /b 0
@@ -46,6 +66,7 @@ if "%ACTION%"=="6" (
 if "%ACTION%"=="5" goto :help
 if "%ACTION%"=="4" goto :custom_stamp
 if "%ACTION%"=="3" (
+    call :warn_dirty
     call :run --apply --no-menu-version
     goto :menu
 )
@@ -54,6 +75,7 @@ if "%ACTION%"=="2" (
     goto :menu
 )
 if "%ACTION%"=="1" (
+    call :warn_dirty
     call :run --apply
     goto :menu
 )
@@ -79,12 +101,23 @@ set "PATCH_STAMP="
 echo.
 set /p "PATCH_STAMP=Enter DD.MM.YY_HH:MM (Moscow time): "
 if not defined PATCH_STAMP goto :menu
+call :warn_dirty
 call :run --apply --patch-stamp "%PATCH_STAMP%_MSK"
 goto :menu
 
 :help
 call :run --help
 goto :menu
+
+:warn_dirty
+set "DIRTY="
+for /f "delims=" %%L in ('git status --porcelain -- gamedata he_gui.dll bin_x64 2^>nul') do set "DIRTY=1"
+if defined DIRTY (
+    echo.
+    echo WARNING: uncommitted changes in shipped paths. The manifest uses HEAD,
+    echo so they are NOT included until committed. Continuing anyway.
+)
+exit /b 0
 
 :run
 echo Working...

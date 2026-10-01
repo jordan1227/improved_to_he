@@ -12,6 +12,26 @@ Texture2D s_he_band; // act\watch\rad_band (red channel = band mask)
 
 // float4 m_actor_params; //x = health, y = outfit cond, z = wpn cond, w = wpn_loading
 
+// [HE-PORT] North marker: a triangle across the radiation band (band = 0.42..0.44 of
+// the face), tip pointing outward. The ring mesh is a narrow annulus, so anything
+// placed clear of the band has no geometry to draw on. Radii and width are face UV units.
+static const float he_north_base = 0.400;
+static const float he_north_tip = 0.470;
+static const float he_north_half_width = 0.040;
+static const float he_north_edge = 0.004;
+static const float3 he_north_color = float3(0.10, 0.18, 0.31);
+static const float3 he_south_color = float3(0.37, 0.20, 0.06);
+
+// Triangle pointing outward: along = distance from the centre towards the tip,
+// across = sideways offset. The south marker is the same shape turned 180 degrees.
+float he_marker(float along, float across)
+{
+	float taper = saturate((he_north_tip - along) / (he_north_tip - he_north_base));
+	return smoothstep(0.0, he_north_edge, along - he_north_base)
+		* smoothstep(0.0, he_north_edge, he_north_tip - along)
+		* smoothstep(0.0, he_north_edge, he_north_half_width * taper - abs(across));
+}
+
 struct v2p
 {
  	float2 tc0	: TEXCOORD0; //Base texture coordinates
@@ -38,10 +58,12 @@ float4 main(v2p I) : SV_Target
 	coords_new.x = coords_new.x+0.5;
 	coords_new.y = coords_new.y+0.5;
 
-	float4	t_base 	= s_base.Sample( smp_base, coords_new );
+	// [HE-PORT] The ring texture and band stay static in face space; only the N/S
+	// markers below use the rotated coordinates (coords_new).
+	float4	t_base 	= s_base.Sample( smp_base, I.tc0 );
 
 	// [HE-PORT] Radiation ring. Arc is face space; tick coverage is extracted from
-	// the existing rotated compass sample so fill and ticks share the face orientation.
+	// the ring texture sample so fill and ticks share the face orientation.
 	float2 p = I.tc0 - float2(0.5, 0.5);
 	float angle = atan2(p.x, -p.y);
 	float progress = frac(angle / 6.28318530718 + 1.0);
@@ -52,7 +74,7 @@ float4 main(v2p I) : SV_Target
 
 	float peak = max(t_base.r, max(t_base.g, t_base.b));
 	float ticks = saturate((peak - 0.08) / 0.62);
-	float band = s_he_band.Sample(smp_base, coords_new).r;
+	float band = s_he_band.Sample(smp_base, I.tc0).r;
 	float coverage = max(band, ticks);
 
 	float3 neutral = float3(0.12, 0.12, 0.12);
@@ -75,6 +97,16 @@ float4 main(v2p I) : SV_Target
 	{
 		t_base.rgb = lerp(t_base.rgb, he_watch_alarm_amber * band, band * he_watch_alarm_pulse());
 	}
+
+	// [HE-PORT] North (blue) and south (orange) markers. Fixed in the rotated space, so
+	// they turn with the heading (he_watch_compass.script). Drawn after the radiation/
+	// alarm tinting to keep their colour.
+	float2 q = coords_new - float2(0.5, 0.5);
+	float north = he_marker(-q.y, q.x);
+	float south = he_marker(q.y, -q.x);
+	t_base.rgb = lerp(t_base.rgb, he_north_color, north);
+	t_base.rgb = lerp(t_base.rgb, he_south_color, south);
+	t_base.a = max(t_base.a, max(north, south));
 
 	// Alarm editor dimming.
 

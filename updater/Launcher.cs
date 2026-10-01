@@ -28,6 +28,28 @@ namespace NlcLauncher
         public static bool NoKeep;        // -nokeep   : sync even the files an optional variant owns
         public static string ExtraArgs = "";
 
+        // Folders this build never downloads into, overwrites or deletes, even when
+        // the manifest still lists them. The personal build is compiled with
+        // NLC_PROTECTED_ASSETS; the regular build ships with an empty list.
+#if NLC_PROTECTED_ASSETS
+        public static readonly string[] ProtectedPrefixes = {
+            "gamedata/meshes/weapons/",
+            "gamedata/levels/",
+            "levels/",
+        };
+#else
+        public static readonly string[] ProtectedPrefixes = new string[0];
+#endif
+
+        public static bool IsProtected(string relative)
+        {
+            if (relative == null) return false;
+            string path = relative.Replace('\\', '/').TrimStart('/');
+            foreach (string prefix in ProtectedPrefixes)
+                if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
         public static string StateDir { get { return Path.Combine(GameRoot, @"appdata\updater"); } }
         public static string StateFile { get { return Path.Combine(StateDir, "state.txt"); } }
         public static string TempDir { get { return Path.Combine(StateDir, "tmp"); } }
@@ -79,6 +101,7 @@ namespace NlcLauncher
         public string Path;
         public string Sha;
         public long Size;
+        public string Url;         // download from here instead of the repo (release asset)
         public bool LocalExists;   // a file is already there
         public bool Ours;          // ...and the updater is the one that put it there
     }
@@ -111,6 +134,7 @@ namespace NlcLauncher
                 {
                     if (line.StartsWith("#version ")) Version = line.Substring(9).Trim();
                     else if (line.StartsWith("#keep ")) ParseKeep(line.Substring(6));
+                    else if (line.StartsWith("#url ")) ParseUrl(line.Substring(5), map);
                     continue;
                 }
                 int a = line.IndexOf(' ');
@@ -125,6 +149,24 @@ namespace NlcLauncher
                 map[e.Path] = e;
             }
             return map;
+        }
+
+        // "#url <sha256> <size> <url> <path>": a file too big for the repo (the engine
+        // PDB), fetched from a release asset. Older launchers skip it as a comment.
+        static void ParseUrl(string rest, Dictionary<string, Entry> map)
+        {
+            string[] p = rest.Trim().Split(new char[] { ' ' }, 4);
+            if (p.Length != 4 || p[0].Length != 64) return;
+            if (!p[2].StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return;
+            long size;
+            if (!long.TryParse(p[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out size)) return;
+            var e = new Entry();
+            e.Sha = p[0];
+            e.Size = size;
+            e.Url = p[2];
+            e.Path = p[3].Replace('\\', '/').Trim();
+            if (e.Path.Length == 0) return;
+            map[e.Path] = e;
         }
 
         static void ParseKeep(string rest)
@@ -318,6 +360,7 @@ namespace NlcLauncher
             foreach (string full in Directory.GetFiles(root, "*.script", SearchOption.AllDirectories))
             {
                 string rel = full.Substring(Cfg.GameRoot.Length).TrimStart('\\').Replace('\\', '/');
+                if (Cfg.IsProtected(rel)) continue;
                 if (manifest.ContainsKey(rel)) continue;
                 if (keep != null && keep.Contains(rel)) continue;
                 if (names.Contains(Path.GetFileName(full))) found.Add(rel);
@@ -398,7 +441,11 @@ namespace NlcLauncher
 
         public MainForm()
         {
+#if NLC_PROTECTED_ASSETS
+            Text = "Апдейтер — без meshes/weapons и levels";
+#else
             Text = "Апдейтер";
+#endif
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(620, 320);
             MinimumSize = new Size(560, 260);
@@ -587,6 +634,10 @@ namespace NlcLauncher
 
                 Status("Проверка обновлений...");
                 Say("Репозиторий: " + Cfg.Repo + " (" + Cfg.Ref + ")");
+                if (Cfg.ProtectedPrefixes.Length > 0)
+                    Say("Защищённые папки: "
+                        + string.Join(", ", Cfg.ProtectedPrefixes)
+                        + " — скачивание, замена и удаление отключены.");
 
                 Dictionary<string, Entry> manifest;
                 try
@@ -635,6 +686,8 @@ namespace NlcLauncher
                 var removed = new List<string>();
                 long todoBytes = 0;
                 int kept = 0;
+                int protectedFiles = 0;
+                int protectedStale = 0;
 
                 Status("Сверка файлов...");
                 Marquee(false);
@@ -649,6 +702,7 @@ namespace NlcLauncher
                         Detail(i + " / " + manifest.Count);
                     }
                     Entry e = kv.Value;
+                    if (Cfg.IsProtected(e.Path)) { protectedFiles++; continue; }
                     if (keep.Contains(e.Path)) { kept++; continue; }
                     string local = Util.Local(e.Path);
                     if (!File.Exists(local))
@@ -697,6 +751,7 @@ namespace NlcLauncher
 
                 foreach (var kv in state)
                 {
+                    if (Cfg.IsProtected(kv.Key)) { protectedStale++; continue; }
                     if (manifest.ContainsKey(kv.Key)) continue;
                     if (keep.Contains(kv.Key)) continue;
                     string local = Util.Local(kv.Key);
@@ -715,6 +770,12 @@ namespace NlcLauncher
                 var shadows = Util.ShadowScripts(manifest, keep);
 
                 Detail("");
+                if (protectedFiles > 0)
+                    Say("Защищённые папки: " + protectedFiles
+                        + " файл(ов) в манифесте пропущено.");
+                if (protectedStale > 0)
+                    Say("Защищённые папки: " + protectedStale
+                        + " устаревших записей пропущено при очистке.");
                 if (keep.Count > 0)
                     Say("Установленные варианты: " + variant + " — " + kept
                         + " файл(ов) пропущено (-nokeep снимает защиту).");
@@ -786,7 +847,7 @@ namespace NlcLauncher
                         try
                         {
                             long got = 0;
-                            Net2.GetFile(Util.RawUrl(e.Path), tmp,
+                            Net2.GetFile(e.Url ?? Util.RawUrl(e.Path), tmp,
                                 delegate(long n)
                                 {
                                     got += n;

@@ -1,0 +1,244 @@
+-- [HE-PORT] Left-hand watch trim, with an optional live tuner.
+--
+-- The engine reads he_watch_left_hud.hands_position once per motion and the ini cannot
+-- be written at runtime, so this shifts the left hand with additive blend layers
+-- (game.play_hud_anm, gamedata/anims/he_watch/left_hand_*.anm; units: pos 0.1 m per
+-- 1.0 power, rot 10 deg per 1.0 power). Layers run only while the left-hand watch view
+-- is alive (allcore_hide.is_left_view_live).
+--
+-- TRIM_POS / TRIM_ROT are the shipped values (all zero = no layers, no cost).
+-- Tuner (TUNER_ENABLED): hold Right Ctrl with the watch up.
+--   Numpad 4 / 6   x - / +           Numpad 8 / 2   y + / -           Numpad 7 / 1   z + / -
+--   + Right Shift  rotates instead:  4 / 6 yaw,      8 / 2 pitch,     7 / 1 roll
+--   Numpad + / -   step x2 / x0.5    Numpad 5  reset to 0             Numpad Enter  print
+-- Current values also go to the log when the watch is lowered. Copy them into
+-- TRIM_POS / TRIM_ROT below. Set TUNER_ENABLED = false (or drop this module from the
+-- addons list) for a release build.
+
+-- Off in normal play. Set to true to re-tune; the module starts from TRIM_POS / TRIM_ROT.
+local TUNER_ENABLED = false
+
+-- Shipped trim, applied every left-hand raise. pos: metres {x, y, z}; rot: degrees {pitch, yaw, roll}.
+-- Measured in game (roll 345 in the tuner is the same pose as -15).
+local TRIM_POS = { -0.017, -0.05, 0.02 }
+local TRIM_ROT = { -2.5, 0, -15 }
+
+local POS_UNIT = 0.1
+local ROT_UNIT = 10.0
+local LEFT_PART = 1
+local POWER_EPS = 1e-4
+
+local POS_ANMS = { [[he_watch\left_hand_x.anm]], [[he_watch\left_hand_y.anm]], [[he_watch\left_hand_z.anm]] }
+local ROT_ANMS = { [[he_watch\left_hand_pitch.anm]], [[he_watch\left_hand_yaw.anm]], [[he_watch\left_hand_roll.anm]] }
+
+local pos = { TRIM_POS[1], TRIM_POS[2], TRIM_POS[3] }
+local rot = { TRIM_ROT[1], TRIM_ROT[2], TRIM_ROT[3] }
+local step_pos = 0.002
+local step_rot = 0.5
+local STEP_MIN, STEP_MAX = 0.0002, 0.05
+local ROT_STEP_MIN, ROT_STEP_MAX = 0.05, 5.0
+
+local active_layers = {}
+local overlay = nil
+local overlay_text = nil
+local dirty = false
+
+local REPEAT_DELAY_MS = 300
+local REPEAT_MS = 60
+local held = {}
+
+local function key_down(dik)
+	local v = key_state(dik)
+	return v == true or (type(v) == "number" and v ~= 0)
+end
+
+local function drive_layer(anm, power)
+	if math.abs(power) > POWER_EPS then
+		game.play_hud_anm(anm, LEFT_PART, 1.0, power, true, true)
+		active_layers[anm] = true
+	elseif active_layers[anm] then
+		game.stop_hud_anm(anm, false)
+		active_layers[anm] = nil
+	end
+end
+
+local function drive_all()
+	for i = 1, 3 do
+		drive_layer(POS_ANMS[i], pos[i] / POS_UNIT)
+		drive_layer(ROT_ANMS[i], rot[i] / ROT_UNIT)
+	end
+end
+
+local function stop_all()
+	for anm in pairs(active_layers) do
+		game.stop_hud_anm(anm, false)
+	end
+	active_layers = {}
+end
+
+local function format_values()
+	return string.format(
+		"TRIM_POS = { %.4f, %.4f, %.4f }   TRIM_ROT = { %.2f, %.2f, %.2f }",
+		pos[1], pos[2], pos[3], rot[1], rot[2], rot[3]
+	)
+end
+
+local function remove_overlay()
+	overlay_text = nil
+	if not overlay then return end
+	local wnd = overlay
+	overlay = nil
+	pcall(function()
+		local hud = get_hud()
+		if hud then hud:RemoveDialogToRender(wnd) end
+	end)
+end
+
+local function show_overlay(text)
+	if overlay and overlay_text == text then return end
+	overlay_text = text
+	local ok, err = pcall(function()
+		if not overlay then
+			overlay = CUIStatic()
+			overlay:Init(192, 640, 640, 48)
+			overlay:SetFont(GetFontLetterica18Russian())
+			overlay:SetTextComplexMode(true)
+			overlay:SetTextColor(255, 150, 210, 255)
+			overlay:Show(true)
+			get_hud():AddDialogToRender(overlay)
+		end
+		overlay:SetText(text)
+	end)
+	if not ok then
+		overlay = nil
+		log2("[he_watch_trim] overlay failed: %s", tostring(err))
+	end
+end
+
+local function overlay_line()
+	return string.format(
+		"pos x%.3f y%.3f z%.3f  rot p%.1f y%.1f r%.1f  step %.4f m / %.2f deg",
+		pos[1], pos[2], pos[3], rot[1], rot[2], rot[3], step_pos, step_rot
+	)
+end
+
+local function clamp(v, lo, hi)
+	if v < lo then return lo end
+	if v > hi then return hi end
+	return v
+end
+
+-- One key action; returns true when it changed a value.
+local function apply_action(kind, axis, sign)
+	if kind == "pos" then
+		pos[axis] = pos[axis] + sign * step_pos
+	elseif kind == "rot" then
+		rot[axis] = rot[axis] + sign * step_rot
+	elseif kind == "step" then
+		step_pos = clamp(step_pos * (sign > 0 and 2 or 0.5), STEP_MIN, STEP_MAX)
+		step_rot = clamp(step_rot * (sign > 0 and 2 or 0.5), ROT_STEP_MIN, ROT_STEP_MAX)
+	elseif kind == "reset" then
+		pos = { 0, 0, 0 }
+		rot = { 0, 0, 0 }
+	elseif kind == "print" then
+		log2("[he_watch_trim] %s", format_values())
+		return false
+	end
+	return true
+end
+
+local function build_bindings(with_rot)
+	local d = DIK_keys
+	local b = {
+		{ d.DIK_ADD, "step", 0, 1 },
+		{ d.DIK_SUBTRACT, "step", 0, -1 },
+		{ d.DIK_NUMPAD5, "reset", 0, 0, true },
+		{ d.DIK_NUMPADENTER, "print", 0, 0, true },
+	}
+	local kind = with_rot and "rot" or "pos"
+	-- Rotation axes: 1 pitch, 2 yaw, 3 roll. Position axes: 1 x, 2 y, 3 z.
+	local ax = with_rot and { x = 2, y = 1, z = 3 } or { x = 1, y = 2, z = 3 }
+	b[#b + 1] = { d.DIK_NUMPAD4, kind, ax.x, -1 }
+	b[#b + 1] = { d.DIK_NUMPAD6, kind, ax.x, 1 }
+	b[#b + 1] = { d.DIK_NUMPAD8, kind, ax.y, 1 }
+	b[#b + 1] = { d.DIK_NUMPAD2, kind, ax.y, -1 }
+	b[#b + 1] = { d.DIK_NUMPAD7, kind, ax.z, 1 }
+	b[#b + 1] = { d.DIK_NUMPAD1, kind, ax.z, -1 }
+	return b
+end
+
+local function poll_tuner(now)
+	if not key_down(DIK_keys.DIK_RCONTROL) then
+		held = {}
+		return
+	end
+	local with_rot = key_down(DIK_keys.DIK_RSHIFT)
+	for _, bind in ipairs(build_bindings(with_rot)) do
+		local dik, kind, axis, sign, once = bind[1], bind[2], bind[3], bind[4], bind[5]
+		local id = dik
+		if key_down(dik) then
+			local state = held[id]
+			local fire = false
+			if not state then
+				held[id] = { since = now, last = now }
+				fire = true
+			elseif not once and now - state.since >= REPEAT_DELAY_MS and now - state.last >= REPEAT_MS then
+				state.last = now
+				fire = true
+			end
+			if fire and apply_action(kind, axis, sign) then dirty = true end
+		else
+			held[id] = nil
+		end
+	end
+end
+
+local function has_trim()
+	for i = 1, 3 do
+		if math.abs(pos[i]) > 1e-6 or math.abs(rot[i]) > 1e-6 then return true end
+	end
+	return false
+end
+
+local was_live = false
+
+local function on_update()
+	local live = db.actor ~= nil and db.actor:alive()
+		and allcore_hide ~= nil and allcore_hide.is_left_view_live ~= nil and allcore_hide.is_left_view_live()
+	if not live then
+		if was_live then
+			if TUNER_ENABLED and (dirty or has_trim()) then
+				log2("[he_watch_trim] %s", format_values())
+			end
+			stop_all()
+			remove_overlay()
+			held = {}
+			dirty = false
+			was_live = false
+		end
+		return
+	end
+	was_live = true
+	if TUNER_ENABLED then
+		poll_tuner(time_global())
+		show_overlay(overlay_line())
+	end
+	if has_trim() or next(active_layers) then
+		drive_all()
+	end
+end
+
+local function reset()
+	stop_all()
+	remove_overlay()
+	held = {}
+	dirty = false
+	was_live = false
+end
+
+function attach(sm)
+	sm:subscribe({signal = "on_update", fun = on_update})
+	sm:subscribe({signal = "on_first_update", fun = reset})
+	sm:subscribe({signal = "on_load_before_all", fun = reset})
+	sm:subscribe({signal = "on_stop_modules", fun = reset})
+end

@@ -20,14 +20,31 @@ function UseEnegry()
 	end
 end
 
+-- Drowsiness is stored on a 0-250 scale (250 = falls asleep on the go, see dsh_hud_icons.script).
+local SLEEPINESS_MAX = 250
+local PILL_BOOST = 175 -- a sleeping pill adds this much drowsiness (only while below it)...
+local PILL_CAP = 240   -- ...and never lifts it above this
+
+-- sleeping_pill, plus the hidden legacy alias section "dimedrol" (Old HE's single-use pill, merged into
+-- sleeping_pill; kept in vergas_items.ltx only so old saves still load).
+function is_sleeping_pill(sect)
+	return sect == "sleeping_pill" or sect == "dimedrol"
+end
+
+-- Shown in the inventory (ui_inv_descr.ShowEatableParams) so the UI and the effect share one source.
+function sleeping_pill_boost_percent()
+	return math.floor(PILL_BOOST / SLEEPINESS_MAX * 100 + 0.5)
+end
+
 function sleeping_pill_used()
+	-- on_actor_before_use refuses the pill during the lockout; this is only a safety net
 	if has_alife_info("sleep_abuse_timer_info") then return end
 	sleep_manager.reduce_need_sleep()
 	local slp = sleep_manager.get_sleepiness()
-	if slp < 175 then
-		local val = slp + 175
-		if val > 240 then
-			val = 240
+	if slp < PILL_BOOST then
+		local val = slp + PILL_BOOST
+		if val > PILL_CAP then
+			val = PILL_CAP
 		end
 		sleep_manager.change_sleepiness(val)
 	end
@@ -62,7 +79,7 @@ function apply_item( sect, id )
 		return
 	elseif sect == "drag_cat_eyes" then
 		sak.add_cat_eyes()
-	elseif sect == "sleeping_pill" then
+	elseif is_sleeping_pill(sect) then
 		sleeping_pill_used()
 		local obj = client_obj(id)
 		if obj then
@@ -214,6 +231,13 @@ local function on_actor_before_use(obj, sobj)
 			)
         return
     end
+    -- Right after waking up the pill does nothing (sleep_manager.end_sleeping starts the lockout):
+    -- refuse before the dose is spent instead of wasting it.
+    if is_sleeping_pill(sect) and has_alife_info("sleep_abuse_timer_info") then
+        obj:disable_use()
+        sak.send_tip_local(game.translate_string("cant_sleep_abuse"), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
+        return
+    end
     local hud = get_string(sect, "hud")
     if hud == "no_hud" or not hud or not get_string(hud, "sound_1") then return end
     -- The engine normally rejects item use before this callback while sprinting.
@@ -353,6 +377,47 @@ function animation_on(owner)
 end
 watch_is_active = nil
 
+-- [HE-PORT] Left-hand view: the weapon stays in the right hand and only the left hand
+-- raises the watch (play_hud_motion part 1, section he_watch_left_hud). Anything that
+-- cannot play cleanly (no weapon in hand, sprint, busy weapon) uses the two-hand raise.
+local LEFT_HAND_ENABLED = true
+local LEFT_HUD_SECT = "he_watch_left_hud"
+local LEFT_HAND_PART = 1
+local LEFT_SEAM_MS = 120
+local LEFT_STOP_MARGIN_MS = 50
+-- The holster clip is cut this long before its end so the engine's hand-to-weapon
+-- blend overlaps the clip's slow tail (the Wearable Devices addon does the same).
+local LEFT_HANDOFF_MS = 334
+
+local function sprint_active()
+	return sivol ~= nil and sivol.sprint_is_active ~= nil and sivol.sprint_is_active() == true
+end
+
+local function left_hand_possible()
+	if not LEFT_HAND_ENABLED then return false end
+	if not db.actor:active_item() or sprint_active() then return false end
+	return game.get_motion_length(LEFT_HUD_SECT, "anm_draw", 1) > 0
+end
+
+-- Plays a clip on the left hand and remembers when the engine ends it by itself, so
+-- a later stop is never sent to an already finished script motion.
+local function left_play(st, anm, speed)
+	local len = game.play_hud_motion(LEFT_HAND_PART, LEFT_HUD_SECT, anm, true, speed or 1) or 0
+	st.motion_until = len > 0 and (time_global() + len) or math.huge
+	return len
+end
+
+local function stop_presentation_motion(st)
+	if not st.left then
+		game.stop_hud_motion()
+		return
+	end
+	if st.motion_until and time_global() < st.motion_until - LEFT_STOP_MARGIN_MS then
+		game.stop_hud_motion()
+	end
+	st.motion_until = nil
+end
+
 local function watch_presentation_valid(session)
 	return watch_presentation ~= nil and watch_presentation.session == session
 		and hud_animation_owner.valid(watch_presentation.owner_token)
@@ -371,11 +436,21 @@ function get_watch_view_session()
     return nil
 end
 
+-- Left-hand watch is raising or held (not lowering); read by he_watch_trim. The trim
+-- must start fading with the holster clip: its 0.4 s fade-out would otherwise run after
+-- the clip ends and drag the hand back to the weapon late.
+function is_left_view_live()
+    local st = watch_presentation
+    return st ~= nil and st.left == true and st.phase ~= "closing" and st.phase ~= "done"
+end
+
 local function restore_after_presentation(st)
 	if not st or st.phase == "done" then return end
 	st.phase = "done"
 	local owner = st.owner_token
-	if db.actor and db.actor == st.actor and db.actor:alive() then
+	if st.left then
+		stop_presentation_motion(st)
+	elseif db.actor and db.actor == st.actor and db.actor:alive() then
 		pcall(function() db.actor:activate_slot(st.prev_slot) end)
 	end
 	if watch_presentation == st then
@@ -396,6 +471,36 @@ local function discard_watch_presentation(st)
     if watch_presentation == st then watch_presentation = nil end
     watch_is_active = nil
 end
+local function play_left_idle(st)
+	if st.phase ~= "active" or not watch_presentation_valid(st.session) then return end
+	local len = left_play(st, "anm_idle")
+	if len > LEFT_SEAM_MS * 2 then
+		dsh.timeout(len - LEFT_SEAM_MS, function() play_left_idle(st) end)
+	end
+end
+
+local function begin_left_raise(st, on_ready)
+	local session = st.session
+	st.weapon_id = db.actor:active_item():id()
+	watch_is_active = true
+	if he_watch_status.is_operational() then
+		local snd = xr_sound.get_safe_sound_object("device\\watch_start_beep")
+		snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
+	end
+	local len = left_play(st, "anm_draw")
+	if len <= 0 then
+		restore_after_presentation(st)
+		return false
+	end
+	dsh.timeout(len, function()
+		if not watch_entry_active(session) then return end
+		st.phase = "active"
+		play_left_idle(st)
+		if on_ready then on_ready(session) end
+	end)
+	return true
+end
+
 -- [HE-PORT] Shared watch presentation. mode = "view" (kWATCH hold or toggle) or "alarm" (editor).
 -- Returns the presentation session id, or nil when the watch cannot be raised.
 function begin_watch_presentation(mode, on_ready)
@@ -423,8 +528,13 @@ function begin_watch_presentation(mode, on_ready)
 		prev_slot = db.actor:active_slot(),
 		phase = "raising",
 		owner_token = owner_token,
+		left = (mode or "view") == "view" and left_hand_possible(),
 	}
 	watch_presentation = st
+	if st.left then
+		if not begin_left_raise(st, on_ready) then return nil end
+		return session
+	end
 
 	animation_on(owner_token)
 	hud_animation_owner.acquire_weapon(owner_token)
@@ -493,13 +603,22 @@ function end_watch_presentation(session, on_closed, speed)
 			local snd = xr_sound.get_safe_sound_object("device\\watch_end")
 			snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
 		end
-		game.stop_hud_motion()
 		speed = speed or 1
-		local anm_watch_time = game.play_hud_motion(2, "switch_watch", "anm_end", true, speed)
+		local anm_watch_time
+		if st.left then
+			anm_watch_time = left_play(st, "anm_holster", speed)
+		else
+			game.stop_hud_motion()
+			anm_watch_time = game.play_hud_motion(2, "switch_watch", "anm_end", true, speed)
+		end
 		log2("[he_watch] lower speed=%.2f duration=%s", speed, tostring(anm_watch_time))
-		dsh.timeout(anm_watch_time, finish)
+		local finish_in = anm_watch_time
+		if st.left then
+			finish_in = finish_in - math.min(LEFT_HANDOFF_MS / speed, finish_in * 0.5)
+		end
+		dsh.timeout(finish_in, finish)
 	else
-		game.stop_hud_motion()
+		stop_presentation_motion(st)
 		finish()
 	end
 	return true
@@ -514,7 +633,7 @@ function abort_watch_presentation(session)
         discard_watch_presentation(st)
         return
     end
-	game.stop_hud_motion()
+	stop_presentation_motion(st)
 	restore_after_presentation(st)
 end
 
@@ -564,7 +683,7 @@ local view_keys_down = {}
 
 local function view_poll_list()
 	if not view_poll_binds then
-		view_poll_binds = { key_bindings.kWATCH, key_bindings.kWPN_FIRE }
+		view_poll_binds = { key_bindings.kWATCH, key_bindings.kWPN_FIRE, key_bindings.kWPN_ZOOM, key_bindings.kWPN_RELOAD }
 		for bind in pairs(watch_close_slots) do table.insert(view_poll_binds, bind) end
 	end
 	return view_poll_binds
@@ -585,8 +704,14 @@ end
 
 local function handle_view_key(st, bind)
 	local slot = watch_close_slots[bind]
+	-- Left-hand view: the weapon is in hand, so zoom/reload just lower the watch and
+	-- a slot key is left to the engine (no slot restore afterwards).
+	if st.left and (bind == key_bindings.kWPN_ZOOM or bind == key_bindings.kWPN_RELOAD) then
+		request_view_close(st, WATCH_FAST_LOWER_SPEED)
+		return true
+	end
 	if slot or bind == key_bindings.kWPN_FIRE then
-		if slot and not (db.actor and db.actor:item_in_slot(slot)) then slot = nil end
+		if st.left or (slot and not (db.actor and db.actor:item_in_slot(slot))) then slot = nil end
 		request_view_close(st, WATCH_FAST_LOWER_SPEED, slot)
 		return true
 	end
@@ -597,10 +722,26 @@ local function handle_view_key(st, bind)
 	return false
 end
 
+-- Left-hand view only: a different or missing weapon ends it at once; a detector or a
+-- sprint lowers it quickly.
+local function left_view_lost(st)
+	if not st.left then return false end
+	local wpn = db.actor:active_item()
+	if not wpn or wpn:id() ~= st.weapon_id then
+		abort_watch_presentation(st.session)
+		return true
+	end
+	if get_actor_obj():IsDetectorActive() or sprint_active() then
+		request_view_close(st, WATCH_FAST_LOWER_SPEED)
+	end
+	return false
+end
+
 local function watch_view_input_update()
 	local st = watch_presentation
 	if not st or st.mode ~= "view" or st.phase == "closing" or st.phase == "done" then return end
 	if not (db.actor and db.actor:alive()) then return end
+	if left_view_lost(st) then return end
 	local act = not device():is_paused() and level.main_input_receiver() == nil
 	for _, bind in ipairs(view_poll_list()) do
 		local down = bind_down(bind)

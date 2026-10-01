@@ -60,6 +60,17 @@ void xrServer::Process_event_destroy(NET_Packet& P, ClientID sender, u32 time, u
     //---------------------------------------------
     NET_Packet P2, *pEventPack = pEPack;
     P2.w_begin(M_EVENT_PACK);
+
+    // NLC
+    const auto pack_event = [&](const NET_Packet& ev) {
+        if (pEventPack->B.count + 1 + ev.B.count >= NET_PacketSizeLimit)
+        {
+            SendBroadcast(BroadcastCID, *pEventPack, MODE);
+            pEventPack->w_begin(M_EVENT_PACK);
+        }
+        pEventPack->w_u8(u8(ev.B.count));
+        pEventPack->w(&ev.B.data, ev.B.count);
+    };
     //---------------------------------------------
     // check if we have children
     if (!e_dest->children.empty())
@@ -87,14 +98,12 @@ void xrServer::Process_event_destroy(NET_Packet& P, ClientID sender, u32 time, u
             if (!pEventPack)
                 pEventPack = &P2;
 
-            pEventPack->w_u8(u8(tmpP.B.count));
-            pEventPack->w(&tmpP.B.data, tmpP.B.count);
+            pack_event(tmpP);
         };
 
         game->u_EventGen(tmpP, GE_DESTROY, id_dest); //-V595
 
-        pEventPack->w_u8(u8(tmpP.B.count));
-        pEventPack->w(&tmpP.B.data, tmpP.B.count);
+        pack_event(tmpP);
     }
 
     if (NULL == pEPack && NULL != pEventPack)
