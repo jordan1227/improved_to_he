@@ -1,6 +1,98 @@
-<!-- nlc-changelog-head: 77b73e916db46342b1ff6a07af50748e5bad0e55 -->
+<!-- nlc-changelog-head: cb23ea58d9e2a17180ba8b2eb3dbef95a40edfa3 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: cb23ea58d9e2a17180ba8b2eb3dbef95a40edfa3 -->
+## 01.10.26 14:22 МСК - Фиксы Support capsule descriptors in tasks and spawns
+
+Commit: [cb23ea5](https://github.com/jordan1227/improved_to_he/commit/cb23ea58d9e2a17180ba8b2eb3dbef95a40edfa3)
+
+### Description
+
+This patch adds capsule descriptor parsing and legacy capsule alias support across spawn, task, and treasure logic. It normalizes kill-item counts, fixes nil-count guards in inventory checks, and updates reward text to display capsule names correctly while keeping older af_*_capsule entries working.
+
+### Game files changed
+
+- M gamedata/config/misc/shop_mikhalych/mikhalych_barter.ltx
+- M gamedata/config/misc/task_manager.ltx
+- M gamedata/config/misc/treasure_manager.ltx
+- M gamedata/scripts/alpet/misc.script
+- M gamedata/scripts/nlc_capsules.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_inventory.script
+- M gamedata/scripts/task_manager.script
+- M gamedata/scripts/treasure_manager.script
+
+<!-- nlc-changelog-commit: d04192865c455a361ba1e055aa5dd3fc33204738 -->
+## 01.10.26 13:50 МСК - Звуки конта
+
+Commit: [d041928](https://github.com/jordan1227/improved_to_he/commit/d04192865c455a361ba1e055aa5dd3fc33204738)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/kotovod/ui_arc_container_menu.script
+- A gamedata/sounds/scripts/inv_art_container_change.ogg
+- A gamedata/sounds/scripts/inv_art_container_close.ogg
+- A gamedata/sounds/scripts/inv_art_container_open.ogg
+
+<!-- nlc-changelog-commit: 74b0f6892d7efd34f9ee43b667f4128b18bb9c1a -->
+## 01.10.26 13:38 МСК - Фиксы и улучшения контейнеров для артов. Improve container UI and grouping logic
+
+Commit: [74b0f68](https://github.com/jordan1227/improved_to_he/commit/74b0f6892d7efd34f9ee43b667f4128b18bb9c1a)
+
+### Description
+
+Refine artifact container handling by unifying radiation and weight calculations, fixing grouping state on inventory moves, and exposing clearer container summary/lore/tooltips in the inventory UI. This also adds a safer manual ungroup flow, restores selection/lore cleanup, and aligns container row rendering with the shared inventory description styling.
+
+### Game files changed
+
+- M gamedata/config/misc/arc.ltx
+- M gamedata/config/text/eng/ui_st_inventory.xml
+- M gamedata/config/text/rus/ui_st_inventory.xml
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/common/_g.script
+- M gamedata/scripts/kotovod/arc_radiation.script
+- M gamedata/scripts/kotovod/ui_arc_container_menu.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+- M gamedata/scripts/vergas/vergas_medical_elastic.script
+
+<!-- nlc-changelog-commit: 11bd51b8b2e052bd4ed2f0da9edfe1a40d3360f4 -->
+## 01.10.26 13:02 МСК - Фикс Стаса чтобы не здоровался. На тест. Fix Stas patrol transitions
+
+Commit: [11bd51b](https://github.com/jordan1227/improved_to_he/commit/11bd51b8b2e052bd4ed2f0da9edfe1a40d3360f4)
+
+### Description
+
+Adds intermediate go_day/go_night/go_nosidor walker states so the ESC guard script transitions cleanly between day, night, and holiday patrol behavior. It also adds an npc_near_path_point condition helper to trigger state changes when the NPC reaches a specific patrol point, avoiding abrupt jumps between states.
+
+### Game files changed
+
+- M gamedata/config/scripts/esc/esc_sid_guard.ltx
+- M gamedata/config/scripts/esc/esc_sid_guard_sub.ltx
+- M gamedata/scripts/xr/xr_conditions.script
+
+<!-- nlc-changelog-commit: 6687e4c9c29855d4a9264fb3d01cfccec8d58545 -->
+## 01.10.26 09:02 МСК - Манифест
+
+Commit: [6687e4c](https://github.com/jordan1227/improved_to_he/commit/6687e4c9c29855d4a9264fb3d01cfccec8d58545)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 77b73e916db46342b1ff6a07af50748e5bad0e55 -->
 ## 01.10.26 07:57 МСК - Fix Borov harmonica corpse quest state
