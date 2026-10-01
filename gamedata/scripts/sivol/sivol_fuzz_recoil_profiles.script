@@ -133,8 +133,12 @@ register_personality({ "wpn_ump45" },
       hip_multiplier = 0.90 })
 
 -- Intermediate rifles.
+-- AN-94: in burst/auto the hyper-burst pair leaves before the recoil arrives,
+-- so the first impulse is nearly free and the second carries the combined kick.
+-- Single fire keeps the normal first/second values.
 register_personality({ "wpn_abakan" },
     { pitch = 1.10, yaw = 0.86, first = 0.88, second = 0.82, sustained = 1.08,
+      burst_first = 0.20, burst_second = 1.45, burst_first_pitch_floor = 0.0,
       first_pitch_floor = 0.28, recovery = 1.10, heat_grace = 4, heat_rate = 0.075,
       yaw_persistence = 0.62, wander = 0.90, shove = 0.92, roll = 0.90 })
 -- Despite its section ID, this is the short 7.62x39 AK-104 Tactical.
@@ -305,16 +309,16 @@ local CLASS_PROFILES = {
         max_yaw_deg = 3.5,
     },
     shotgun = {
-        dispersion_scale = 0.92,
+        dispersion_scale = 1.04, -- 0.92
         dispersion_increment_scale = 0.25,
         horizontal_step_scale = 0.48,
-        horizontal_dispersion_scale = 0.24,
+        horizontal_dispersion_scale = 0.27, -- 0.24
         burst_scale = 0.10,
         handling_rise = 0.22,
         handling_strength = 0.22,
         fatigue_per_shot = 0.050,
         fatigue_recovery = 1.10,
-        recovery_scale = 0.82,
+        recovery_scale = 0.76, -- 0.82
         hip_multiplier = 1.04,
         ads_multiplier = 0.90,
         hud_pitch_scale = 0.52,
@@ -651,9 +655,11 @@ end
 -- recoil_multiplier is the complete ADS/hip and actor-state multiplier;
 -- attachment_stability_k is applied before the class clamp, while suppressor
 -- gas recoil is applied afterward, matching the live controller's ownership.
+-- burst_fire (optional) is true when the weapon is not in single-fire mode;
+-- personalities with burst_first/burst_second then use those opening stages.
 function sivol_fuzz_recoil_profiles.calculate_shot_impulse(
     profile, shot, heat, recoil_multiplier, attachment_stability_k,
-    suppressor_recoil_k)
+    suppressor_recoil_k, burst_fire)
     if not profile then return nil, nil, nil, nil, nil, nil end
     local class = profile.class
     local live = profile.live
@@ -671,8 +677,16 @@ function sivol_fuzz_recoil_profiles.calculate_shot_impulse(
         (shot - 1.0) * 0.18,
         0,
         math.min(1.80, math.max(0, class.max_burst - 1.0)))
-    local shot_stage = shot == 1 and (personality.first or 1.0)
-        or (shot == 2 and (personality.second or 1.0)
+    local first_k = personality.first or 1.0
+    local second_k = personality.second or 1.0
+    local first_floor = personality.first_pitch_floor or 0
+    if burst_fire and personality.burst_first then
+        first_k = personality.burst_first
+        second_k = personality.burst_second or second_k
+        first_floor = personality.burst_first_pitch_floor or 0
+    end
+    local shot_stage = shot == 1 and first_k
+        or (shot == 2 and second_k
         or (personality.sustained or 1.0))
     local heat_k = 1.0 + heat * ((personality.heat_max or 1.55) - 1.0)
 
@@ -685,7 +699,7 @@ function sivol_fuzz_recoil_profiles.calculate_shot_impulse(
     vertical = vertical * (personality.pitch or 1.0) * shot_stage
         * (1.0 + (heat_k - 1.0) * 0.65)
     if shot == 1 then
-        vertical = math.max(vertical, personality.first_pitch_floor or 0)
+        vertical = math.max(vertical, first_floor)
     end
 
     local automatic_first_shot = shot == 1 and profile.automatic_fire == true
