@@ -8294,6 +8294,172 @@ function shurup_repair_items( dlg )
 	phrase_script:AddAction( "dialogs.break_dialog" )
 end
 
+-----------------------------------------------------------
+------------------ Ремонт у Степаныча ---------------------
+-----------------------------------------------------------
+-- Stepanych repairs only his own leather coats (bandit_veteran_/bandit_master_ outfits).
+-- Old HE rules: money up front (price per coat, condition scaled), one bottle of vodka
+-- on pickup (stepanych_repair_end_dialog). Too worn coats are refused: the minimum
+-- condition is 55% on difficulty 0 and 65% on difficulty 3.
+local stepanych_good_item = {
+	"%s - в добром стане. Чаго тут латаць? Не мардуй старога.",
+	"Дык %s ж як новы. Табе што, гроши девать некуда?",
+	"Ну, %s у парадку. Прыходзь, як нешта сапраўды парвецца.",
+}
+
+local function stepanych_is_coat( sect )
+	return string.find( sect, "bandit_veteran_outfit", 1, true ) ~= nil
+		or string.find( sect, "bandit_master_outfit", 1, true ) ~= nil
+end
+
+-- 0.55 on difficulty 0, 0.65 on difficulty 3 (linear for anything between)
+function stepanych_min_cond()
+	local d = level.get_game_difficulty() or 0
+	if d < 0 then d = 0 elseif d > 3 then d = 3 end
+	return 0.55 + 0.1 * d / 3
+end
+
+function stepanych_vodka_tip()
+	sak.send_tip(
+		"Надо не забыть принести Степанычу бутылку водки по окончанию работы",
+		"Точно! Вспомнил...", 0, 10, "g_g", "no", "yellow"
+	)
+end
+
+function stepanych_repair_items( dlg )
+	dlg:SetForceReload( true )
+
+	local cfg = sak_dialog.repair_config[ r_stepanych ]
+	if not cfg then
+		log2( "[~T].~C0C #ERROR(stepanych_repair_items):~C07 no repair config for ~C0A %s~C07", r_stepanych )
+		return
+	end
+
+	local T = knife_repair.text
+	local min_cond = stepanych_min_cond()
+
+	local phr = task_manager.Dlg_AddPhrase( dlg, "stepanych_repair_dialog_0", "0", "", -10000 )
+	local phrase_script = phr:GetPhraseScript()
+
+	phr = task_manager.Dlg_AddPhrase( dlg, "stepanych_repair_dialog_1", "1", "0", -10000 )
+	phrase_script = phr:GetPhraseScript()
+	phrase_script:AddDontHasInfo( "stepanych_repair_starting" )
+
+	local function collect_items_for_repair()
+		local shadow_inv = get_shadow_inv():get_content( true )
+		local result = {}
+
+		for i, rec in shadow_inv:ipairs() do
+			local sect = sak_inventory.dyn_art_base( rec.sect )
+
+			if rec.obj:is_outfit() and stepanych_is_coat( sect ) then
+				local item_info = {
+					rec = rec,
+					sect = sect,
+					condition = rec.obj:condition(),
+					repair = { cost = 0, time = 0 }
+				}
+
+				if item_info.condition < 0.999 then
+					item_info.repair.cost = sak_dialog.calc_repair_cost( rec.obj, sak_dialog.get_margin( r_stepanych ) )
+					item_info.repair.time = sak_dialog.uniform_time_repair( item_info.repair.cost, rec.obj:cost(), cfg.price_coefs, cfg.time_repair )
+				end
+
+				table.insert( result, item_info )
+			end
+		end
+
+		table.sort( result, function( a, b )
+			return a.condition > b.condition
+		end )
+
+		return result
+	end
+
+	local function get_repair_text( item )
+		local cond = round( item.condition * 100 )
+
+		if cond >= 100 then
+			return string.format( stepanych_good_item[ lua_random( #stepanych_good_item ) ], get_inv_name( item.sect ) )
+		elseif item.condition < min_cond then
+			return game.translate_string( "stepanych_repair_dialog_32" )
+		end
+
+		local cost = item.repair.cost
+		local rubles = declension( cost, T( "ui_kr_rub_a1" ), T( "ui_kr_rub_a2" ), T( "ui_kr_rub_a3" ) )
+		return string.format( "%s %s %%c[255,238,155,23]%d %%c[default]%s. %s %s",
+			game.translate_string( "stepanych_repair_dialog_31" ),
+			game.translate_string( "stepanych_list_trader_repair_6" ),
+			cost, rubles,
+			sak_dialog.time_desc( item.repair.time ), game.translate_string( "list_time_repair_2" ) )
+	end
+
+	local items = collect_items_for_repair()
+
+	for index, item in ipairs( items ) do
+		local cond = round( item.condition * 100 )
+		local repairable = item.condition < 0.999 and item.condition >= min_cond
+
+		phr = task_manager.Dlg_AddPhrase( dlg, kotovod.get_inv_name( item.sect ) .. " [%c[255, 238, 153, 26]" .. tostring( cond ) .. "%%c[default]]", index + 1000, "1", -10000 )
+		phrase_script = phr:GetPhraseScript()
+
+		local text = get_repair_text( item )
+		if string.len( text ) > 462 then
+			text = string.sub( text, 1, 462 )
+		end
+
+		phr = task_manager.Dlg_AddPhrase( dlg, text, index + 2000, index + 1000, -10000 )
+		phrase_script = phr:GetPhraseScript()
+
+		if repairable then
+			local current_index = index + 3000
+			phr = task_manager.Dlg_AddPhrase( dlg, "stepanych_repair_dialog_411", current_index, index + 2000, -10000 )
+			phrase_script = phr:GetPhraseScript()
+			phrase_script:AddPrecondition( "kotovod.money_have(" .. item.repair.cost .. ")" )
+			phrase_script:AddAction( "kotovod.relocate_money(" .. item.repair.cost .. ", 'out')" )
+			-- outfits keep their mask and dirt state, as in the other repair dialogs
+			phrase_script:AddAction( string.format( "sak_dialog.repair_start('%s', %s, '%s', %s, 'a')",
+				r_stepanych, item.repair.time, item.sect, item.rec.obj:id() ) )
+			phrase_script:AddAction( "kotovod.stepanych_vodka_tip()" )
+
+			phr = task_manager.Dlg_AddPhrase( dlg, "stepanych_repair_dialog_5", current_index + 50, current_index, -10000 )
+			phrase_script = phr:GetPhraseScript()
+
+			phr = task_manager.Dlg_AddPhrase( dlg, "stepanych_repair_dialog_6", current_index + 75, current_index + 50, -10000 )
+			phrase_script = phr:GetPhraseScript()
+			phrase_script:AddAction( "dialogs.break_dialog" )
+		end
+
+		-- always available, so the verdict never ends up without an answer
+		local fallback_text
+		if repairable then
+			fallback_text = "Пока не надо. Подумаю."
+		elseif item.condition < min_cond then
+			fallback_text = "stepanych_repair_dialog_42"
+		else
+			fallback_text = "Ага, понятно."
+		end
+
+		phr = task_manager.Dlg_AddPhrase( dlg, fallback_text, index + 4000, index + 2000, -10000 )
+		phrase_script = phr:GetPhraseScript()
+		phrase_script:AddAction( "dialogs.break_dialog" )
+	end
+
+	-- nothing more to discuss
+	phr = task_manager.Dlg_AddPhrase( dlg, "Ладно, потом зайду.", "400", "1", -10000 )
+	phrase_script = phr:GetPhraseScript()
+	phrase_script:AddAction( "dialogs.break_dialog" )
+
+	-- the previous coat is still in work
+	phr = task_manager.Dlg_AddPhrase( dlg, "stepanych_repair_dialog_12", "200", "0", -10000 )
+	phrase_script = phr:GetPhraseScript()
+	phrase_script:AddHasInfo( "stepanych_repair_starting" )
+
+	phr = task_manager.Dlg_AddPhrase( dlg, "stepanych_repair_dialog_13", "201", "200", -10000 )
+	phrase_script = phr:GetPhraseScript()
+	phrase_script:AddAction( "dialogs.break_dialog" )
+end
+
 function repair_ak_strelok()
 	sak_dialog.cond_items_have( "wpn_akm", 1, 0.75, true )
 	sak_dialog.cond_items_have( "wpn_sig550", 1, 0.75, true ) 
