@@ -899,6 +899,17 @@ bool CBaseMonster::check_eated_corpse_draggable()
 
 bool CBaseMonster::can_attack_on_move() { return m_attack_on_move_params.enabled; }
 
+bool CBaseMonster::aom_close_melee_allowed(bool continuing)
+{
+    if (!m_attack_on_move_params.enabled || m_attack_on_move_params.close_melee_dist <= 0.f)
+        return false;
+    if (continuing)
+        return true;
+
+    const CEntityAlive* enemy = EnemyMan.get_enemy();
+    return enemy && MeleeChecker.distance_to_enemy(enemy) < m_attack_on_move_params.close_melee_dist;
+}
+
 float CBaseMonster::get_attack_on_move_max_go_close_time() { return m_attack_on_move_params.max_go_close_time; }
 
 float CBaseMonster::get_attack_on_move_far_radius()

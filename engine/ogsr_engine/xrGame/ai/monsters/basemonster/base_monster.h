@@ -491,9 +491,13 @@ public:
         float attack_radius;
         float update_side_period;
         float prediction_factor;
+        float close_melee_dist; // NLC: "aom_close_melee_dist", 0 = off
     };
 
     bool can_attack_on_move();
+    // NLC: attack-on-move monsters fall back to the standing melee state when the enemy is
+    // closer than aom_close_melee_dist (or keep it once started); classic melee then ends past MaxAttackDist
+    bool aom_close_melee_allowed(bool continuing);
     float get_attack_on_move_max_go_close_time();
     float get_attack_on_move_far_radius();
     float get_attack_on_move_attack_radius();

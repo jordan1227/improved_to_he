@@ -5,6 +5,48 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.3 (2026-10-01)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E145FBA5C3671C8C4E8FCE113547E63B951C43D78B288ABA4D42453DA5877F5A`
+
+### NLC
+
+- Monster target selection (`monster_enemy_memory.cpp`, `monster_hit_memory.cpp`):
+  `[monster_target_selection]` in `game_relations.ltx` sets `actor_bias`,
+  `target_stickiness`, `hit_bonus` and `hit_bonus_time`, with optional per-monster
+  overrides. Missing keys keep the original danger formula. `debug_log = true`
+  logs every target switch.
+- Duplet (`WeaponShotgun.cpp`): `duplet_on_alt_aim = true` fires both barrels from
+  the alt-aim key on weapons without alt-aim zoom. Both shots raise the actor
+  weapon-fire callback, so script recoil sees two cartridges. Optional
+  `anm_shots_both` / `anm_shots_both_aim` HUD motions.
+- Wound model (`EntityCondition.cpp`, `Wound.cpp`): `wound_model = 2` in a
+  creature's condition section sums wound sizes and heals wounds in proportion to
+  their size, so total bleeding is a fixed share of the damage dealt. Default 1
+  keeps the original behaviour (actor and stalkers unchanged).
+- Attack-on-move monsters (`base_monster`, attack states): `aom_close_melee_dist`
+  switches to the standing melee state when the enemy is that close, until it
+  moves past `MaxAttackDist`. Default 0 (off).
+- Version text `nlc-3.589.3, OGSR main 2021123`.
+
+### Required game data (same repository)
+
+- `game_relations.ltx`: `[monster_target_selection]`; actor relation `-2` -> `-1`
+  for flesh, dog, cat, chimera, giant, zombie, snork, fracture and zombi.
+- Weapon configs: `duplet_on_alt_aim` and duplet HUD motions on the TOZ-66, the
+  sawn-off TOZ-66, the TOZ-34 and the Ruzhye Orekha.
+- Creature configs: `wound_model = 2` on dogs, cats, pseudodogs, boars and flesh;
+  `aom_close_melee_dist = 1.6` on dogs.
+
+## nlc-3.589.2 (2026-09-30)
+
+- Server object destruction (`xrServer_process_event_destroy.cpp`): destroy
+  events are flushed into a new event pack before the pack would exceed
+  `NET_PacketSizeLimit` (fixed lost items when many objects were destroyed at
+  once, e.g. Sidorovich's stock).
+- **exe SHA-256:** `01026234925690EF58BE213DE2DE29558455F24F0C182FB99A8E74C5F11C1C0F`
+
 ## nlc-3.589.1 (2026-09-30)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), newer than release

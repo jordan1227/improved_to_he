@@ -47,7 +47,17 @@ void CMonsterEnemyManager::update()
         }
         else
         {
+            const CEntityAlive* const old_enemy = enemy;
             enemy = monster->EnemyMemory.get_enemy();
+
+            if (enemy != old_enemy && CMonsterEnemyMemory::target_debug_log())
+            {
+                // the old target is only named while it is still remembered (pointer known valid)
+                const float old_danger = monster->EnemyMemory.get_danger(old_enemy);
+                Msg("~ [monster_target] [%s]: [%s] (%.3f) -> [%s] (%.3f)", monster->cName().c_str(),
+                    old_enemy ? (old_danger >= 0.f ? old_enemy->cName().c_str() : "<forgotten>") : "none", old_danger,
+                    enemy ? enemy->cName().c_str() : "none", monster->EnemyMemory.get_danger(enemy));
+            }
         }
 
         if (enemy)

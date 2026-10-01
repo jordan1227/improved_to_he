@@ -57,6 +57,9 @@ local PITCH_VELOCITY_DECAY_RATE = 14.0
 local RECOVERY_REPORT_EPSILON = 0.00005
 local HANDLING_RECOVERY_RATE = 1.65
 local MOUSE_TRACK_MAX_DELTA = 0.35
+-- Share of the player's downward mouse input that pays off outstanding recoil
+-- climb instead of moving the aim base (0 = old behaviour, 1 = full credit).
+local PLAYER_COMPENSATION_SHARE = 1.0
 -- The hook applies a conventional X-axis rotation, whose positive direction
 -- pitches this build's weapon model down. Camera pitch uses the opposite live
 -- convention, so keep the two signs independent.
@@ -1006,6 +1009,24 @@ local function sample_base_camera(camera)
     return pitch, yaw
 end
 
+-- Recovery always returns the recoil offset to zero. Downward mouse input made
+-- while climb is still outstanding used to land in the aim base as well, so the
+-- view settled below the point where the burst started. Move that input (up to
+-- the outstanding climb) from the base into the offset: the view responds the
+-- same this frame, and recovery then ends on the original aim. Input beyond the
+-- climb still moves the aim normally. Call with the contribution removed.
+local function absorb_player_compensation(camera)
+    if PLAYER_COMPENSATION_SHARE <= 0 then return end
+    local input = state.measured_mouse_pitch or 0
+    if state.recoil_pitch >= 0 or input <= 0 then return end
+    local absorbed = math.min(-state.recoil_pitch, input * PLAYER_COMPENSATION_SHARE)
+    if absorbed <= 0 then return end
+    local ok = pcall(function() camera.pitch = camera.pitch - absorbed end)
+    if not ok then return end
+    state.recoil_pitch = state.recoil_pitch + absorbed
+    state.last_base_pitch = state.last_base_pitch - absorbed
+end
+
 local function reset_burst_metrics(start_ms)
     state.burst_shots = 0
     state.burst_start_ms = start_ms
@@ -1347,6 +1368,7 @@ local function on_update_impl(delta)
     local base_pitch, base_yaw = sample_base_camera(camera)
     if base_pitch == nil or base_yaw == nil then
         return false, "camera angle read failed" end
+    absorb_player_compensation(camera)
 
     local update_now = now_ms()
     local dt = get_dt(delta)
@@ -1387,6 +1409,16 @@ local function on_update(delta)
     elseif not result then
         disable_session(reason)
     end
+end
+
+-- True outside single fire (queue_size 2 = burst, -1 = auto). Unreadable
+-- values count as single fire, so burst-only personality stages stay off.
+local function is_burst_fire_mode()
+    local weapon = state.weapon
+    if not weapon then return false end
+    local ok, queue = pcall(function() return weapon.queue_size end)
+    queue = ok and tonumber(queue) or nil
+    return queue ~= nil and queue ~= 1
 end
 
 local function add_shot_impulse()
@@ -1471,7 +1503,7 @@ local function add_shot_impulse()
         automatic_first_shot, vertical_balance_k =
         profile_adapter.calculate_shot_impulse(
             profile, state.burst_shots, state.recoil_heat, total_multiplier,
-            attachment_stability_k, suppressor_recoil_k)
+            attachment_stability_k, suppressor_recoil_k, is_burst_fire_mode())
     if not valid_number(vertical_deg) or not valid_number(horizontal_deg) then
         fail_runtime("shared recoil impulse calculation failed")
         return

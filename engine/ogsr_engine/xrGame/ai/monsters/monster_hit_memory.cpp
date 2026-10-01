@@ -116,6 +116,19 @@ TTime CMonsterHitMemory::get_last_hit_time()
     return last_hit.time;
 }
 
+TTime CMonsterHitMemory::get_last_hit_time(const CObject* who)
+{
+    TTime last_time = 0;
+
+    for (u32 i = 0; i < m_hits.size(); i++)
+    {
+        if (m_hits[i].object == who && m_hits[i].time > last_time)
+            last_time = m_hits[i].time;
+    }
+
+    return last_time;
+}
+
 CObject* CMonsterHitMemory::get_last_hit_object()
 {
     SMonsterHit last_hit;

@@ -156,6 +156,11 @@ protected:
     float m_fMinWoundSize;
     bool m_bIsBleeding;
 
+    // NLC: "wound_model" in the condition section. 1 (default) = original: bleeding uses the
+    // average wound size and wounds heal by a fixed amount. 2 = bleeding sums the wounds and
+    // wounds heal in proportion to their size, so total bleed is proportional to the damage.
+    u8 m_wound_model{1};
+
     //части хита, затрачиваемые на уменьшение здоровья и силы
     float m_fHealthHitPart[ALife::eHitTypeMax]{};
     float m_fPowerHitPart;
