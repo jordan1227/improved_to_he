@@ -16,6 +16,7 @@
 #include "../../../../Include/xrRender/KinematicsAnimated.h"
 #include "../../../sound_player.h"
 #include "../../../level.h"
+#include "../../../nlc_stealth.h" // NLC: stealth diagnostics
 #include "../../../script_callback_ex.h"
 #include "../../../script_game_object.h"
 #include "../../../game_object_space.h"
@@ -48,8 +49,14 @@ void CBaseMonster::feel_sound_new(CObject* who, int eType, CSound_UserDataPtr us
     Fvector center;
     Center(center);
     float dist = center.distance_to(Position);
+    // NLC: stealth diagnostics for sounds owned by the actor (nlc_stealth; off unless a watch is set)
+    const bool nlc_log = nlc_stealth::g_track && g_actor && who == g_actor;
     if (dist > db().m_max_hear_dist)
+    {
+        if (nlc_log)
+            nlc_stealth::on_monster_sound(this, eType, dist, power, db().m_fSoundThreshold, false, false, "max_hear_dist");
         return;
+    }
 
     // ignore sounds if not from enemies and not help sounds
     CEntityAlive* entity = smart_cast<CEntityAlive*>(who);
@@ -66,8 +73,12 @@ void CBaseMonster::feel_sound_new(CObject* who, int eType, CSound_UserDataPtr us
 
     // if ((eType & SOUND_TYPE_WEAPON_SHOOTING) == SOUND_TYPE_WEAPON_SHOOTING) power = 1.f;
 
-    if (((eType & SOUND_TYPE_WEAPON_BULLET_HIT) == SOUND_TYPE_WEAPON_BULLET_HIT) && (dist < 2.f))
+    const bool near_hit = ((eType & SOUND_TYPE_WEAPON_BULLET_HIT) == SOUND_TYPE_WEAPON_BULLET_HIT) && (dist < 2.f); // NLC: named for the diagnostics
+    if (near_hit)
         HitMemory.add_hit(who, eSideFront);
+
+    if (nlc_log) // NLC
+        nlc_stealth::on_monster_sound(this, eType, dist, power, db().m_fSoundThreshold, power >= db().m_fSoundThreshold, near_hit, nullptr);
 
     // execute callback
     sound_callback(who, eType, Position, power);

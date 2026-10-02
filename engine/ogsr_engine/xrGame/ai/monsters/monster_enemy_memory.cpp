@@ -11,6 +11,7 @@
 #include "ai_monster_squad_manager.h"
 #include "../../actor.h"
 #include "../../actor_memory.h"
+#include "../../nlc_stealth.h" // NLC: stealth diagnostics
 
 namespace
 {
@@ -79,6 +80,7 @@ void CMonsterEnemyMemory::update()
             if (monster->CCustomMonster::useful(&monster->memory().enemy(), enemy) &&
                 monster->Position().distance_to(enemy->Position()) < monster->get_feel_enemy_who_just_hit_max_distance())
             {
+                nlc_stealth::set_monster_add_source("hit"); // NLC: stealth diagnostics source tag
                 add_enemy(enemy);
 
                 bool const self_is_dog = !!smart_cast<const CAI_Dog*>(monster);
@@ -105,6 +107,7 @@ void CMonsterEnemyMemory::update()
 
                 if (monster->CCustomMonster::useful(&monster->memory().enemy(), enemy) && y_dist < 10 && xz_dist < monster->get_feel_enemy_who_made_sound_max_distance())
                 {
+                    nlc_stealth::set_monster_add_source("sound"); // NLC: stealth diagnostics source tag
                     add_enemy(enemy);
 
                     bool const self_is_dog = !!smart_cast<const CAI_Dog*>(monster);
@@ -124,7 +127,10 @@ void CMonsterEnemyMemory::update()
         const bool feel_enemy = monster->Position().distance_to(enemy->Position()) < monster->get_feel_enemy_max_distance();
 
         if (feel_enemy || monster->memory().visual().visible_now(*I))
+        {
+            nlc_stealth::set_monster_add_source(feel_enemy ? "feel" : "sight"); // NLC: stealth diagnostics source tag
             add_enemy(*I);
+        }
     }
 
     float const feel_enemy_max_distance = monster->get_feel_enemy_max_distance();
@@ -135,8 +141,12 @@ void CMonsterEnemyMemory::update()
         float const y_dist = _abs(monster->Position().y - Actor()->Position().y);
 
         if (xz_dist < feel_enemy_max_distance && y_dist < 10 && monster->memory().enemy().is_useful(Actor()) && Actor()->memory().visual().visible_now(monster))
+        {
+            nlc_stealth::set_monster_add_source("actor_sees_monster"); // NLC: stealth diagnostics source tag
             add_enemy(Actor());
+        }
     }
+    nlc_stealth::set_monster_add_source(nullptr); // NLC
 
     // удалить устаревших врагов
     remove_non_actual();
@@ -187,6 +197,7 @@ void CMonsterEnemyMemory::add_enemy(const CEntityAlive* enemy)
     {
         // добавить врага в список объектов
         m_objects.insert(std::make_pair(enemy, enemy_info));
+        nlc_stealth::on_monster_enemy_added(monster, enemy, false); // NLC: stealth diagnostics
     }
 }
 
@@ -209,6 +220,7 @@ void CMonsterEnemyMemory::add_enemy(const CEntityAlive* enemy, const Fvector& po
     {
         // добавить врага в список объектов
         m_objects.insert(std::make_pair(enemy, enemy_info));
+        nlc_stealth::on_monster_enemy_added(monster, enemy, true); // NLC: stealth diagnostics
     }
 }
 

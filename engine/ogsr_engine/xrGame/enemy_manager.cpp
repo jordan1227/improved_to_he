@@ -25,6 +25,7 @@
 #include "movement_manager.h"
 #include "agent_manager.h"
 #include "agent_enemy_manager.h"
+#include "nlc_stealth.h" // NLC: stealth diagnostics
 
 static const u32 ENEMY_INERTIA_TIME_TO_SOMEBODY = 3000;
 static const u32 ENEMY_INERTIA_TIME_TO_ACTOR = 0;
@@ -333,6 +334,10 @@ void CEnemyManager::try_change_enemy()
 
     if (selected() != previous_selected)
         m_object->on_enemy_change(previous_selected);
+
+    // NLC: stealth diagnostics - the actor just became the selected enemy (nlc_stealth; off unless a watch or log_events is set)
+    if (nlc_stealth::g_track && g_actor && selected() == g_actor && previous_selected != g_actor)
+        nlc_stealth::on_enemy_selected(m_object);
 }
 
 void CEnemyManager::update()

@@ -94,28 +94,8 @@ void CSoundRender_Source::LoadWave(LPCSTR pName)
     dwBytesTotal = u32(pcm_total * m_wformat.nBlockAlign);
     fTimeTotal = s_f_def_source_footer + dwBytesTotal / float(m_wformat.nAvgBytesPerSec);
 
-    bool ini_params = false;
-    {
-        xr_string sound_file_sec = fname.c_str();
-        std::replace(sound_file_sec.begin(), sound_file_sec.end(), '\\', '.');
-        if (pSettings->section_exist(sound_file_sec.c_str()))
-        {
-            if (pSettings->line_exist(sound_file_sec.c_str(), "min_dist"))
-                m_fMinDist = (float)atof(pSettings->r_string(sound_file_sec.c_str(), "min_dist"));
-            if (pSettings->line_exist(sound_file_sec.c_str(), "max_dist"))
-                m_fMaxDist = (float)atof(pSettings->r_string(sound_file_sec.c_str(), "max_dist"));
-            if (pSettings->line_exist(sound_file_sec.c_str(), "volume"))
-                m_fBaseVolume = (float)atof(pSettings->r_string(sound_file_sec.c_str(), "volume"));
-            if (pSettings->line_exist(sound_file_sec.c_str(), "type"))
-                m_uGameType = atol(pSettings->r_string(sound_file_sec.c_str(), "type"));
-            if (pSettings->line_exist(sound_file_sec.c_str(), "ai_dist"))
-                m_fMaxAIDist = (float)atof(pSettings->r_string(sound_file_sec.c_str(), "ai_dist"));
-            ini_params = true;
-        }
-    }
-
     vorbis_comment* ovm = ov_comment(&ovf, -1);
-    if (ovm->comments && !ini_params)
+    if (ovm->comments)
     {
         IReader F(ovm->user_comments[0], ovm->comment_lengths[0]);
 
@@ -154,9 +134,25 @@ void CSoundRender_Source::LoadWave(LPCSTR pName)
             Msg("! Invalid ogg-comment version, file: [%s]", pName);
         }
     }
-    else
-    {
+    // NLC: a [path.with.dots] section in the system ini overrides only the keys it sets, on top of the
+    // ogg comment (before, the section replaced the whole comment and unset keys kept engine defaults)
+    xr_string sound_file_sec = fname.c_str();
+    std::replace(sound_file_sec.begin(), sound_file_sec.end(), '\\', '.');
+    const bool ini_params = !!pSettings->section_exist(sound_file_sec.c_str());
+    if (!ovm->comments && !ini_params)
         Msg("! Missing ogg-comment, file: [%s]", pName);
+    if (ini_params)
+    {
+        if (pSettings->line_exist(sound_file_sec.c_str(), "min_dist"))
+            m_fMinDist = (float)atof(pSettings->r_string(sound_file_sec.c_str(), "min_dist"));
+        if (pSettings->line_exist(sound_file_sec.c_str(), "max_dist"))
+            m_fMaxDist = (float)atof(pSettings->r_string(sound_file_sec.c_str(), "max_dist"));
+        if (pSettings->line_exist(sound_file_sec.c_str(), "volume"))
+            m_fBaseVolume = (float)atof(pSettings->r_string(sound_file_sec.c_str(), "volume"));
+        if (pSettings->line_exist(sound_file_sec.c_str(), "type"))
+            m_uGameType = atol(pSettings->r_string(sound_file_sec.c_str(), "type"));
+        if (pSettings->line_exist(sound_file_sec.c_str(), "ai_dist"))
+            m_fMaxAIDist = (float)atof(pSettings->r_string(sound_file_sec.c_str(), "ai_dist"));
     }
     R_ASSERT3((m_fMaxAIDist >= 0.1f) && (m_fMaxDist >= 0.1f), "Invalid max distance.", pName);
 

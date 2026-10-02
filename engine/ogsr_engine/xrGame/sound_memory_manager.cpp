@@ -24,6 +24,8 @@
 #include "client_spawn_manager.h"
 #include "memory_manager.h"
 #include "..\xr_3da\IGame_Persistent.h"
+#include "actor.h" // NLC: stealth diagnostics
+#include "nlc_stealth.h" // NLC: stealth diagnostics
 
 #ifndef MASTER_GOLD
 #include "clsid_game.h"
@@ -124,6 +126,8 @@ void CSoundMemoryManager::feel_sound_new(CObject* object, int sound_type, CSound
     if (!m_sounds)
         return;
 
+    const float nlc_raw_power = sound_power; // NLC: stealth diagnostics
+
     if (user_data)
         user_data->accept(m_visitor);
 
@@ -179,6 +183,16 @@ void CSoundMemoryManager::feel_sound_new(CObject* object, int sound_type, CSound
         sound_power *= m_world_factor;
 
     VERIFY(_valid(sound_power));
+    // NLC: stealth diagnostics for sounds owned by the actor (nlc_stealth; off unless a watch or log_events is set)
+    if (nlc_stealth::g_track && g_actor && object == g_actor)
+    {
+        const bool heard = sound_power >= m_sound_threshold;
+        const bool fake_hit = heard && is_sound_type(sound_type, SOUND_TYPE_WEAPON_SHOOTING) && (g_actor->g_Team() != entity_alive->g_Team());
+        Fvector center;
+        m_object->Center(center);
+        nlc_stealth::on_stalker_sound(m_object, sound_type, center.distance_to(position), nlc_raw_power, sound_power, m_sound_threshold, heard, fake_hit);
+    }
+
     if (sound_power >= m_sound_threshold)
     {
         if (is_sound_type(sound_type, SOUND_TYPE_WEAPON_SHOOTING))

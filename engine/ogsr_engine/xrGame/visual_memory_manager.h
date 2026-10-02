@@ -92,6 +92,8 @@ public:
     virtual void update(float time_delta);
     virtual float feel_vision_mtl_transp(CObject* O, u32 element);
     void remove_links(CObject* object);
+    // NLC: per-NPC vision profile (nlc_stealth_set_vision); "" keeps that profile
+    bool nlc_set_vision_sections(LPCSTR free_section, LPCSTR danger_section);
 
 public:
     bool visible(const CGameObject* game_object, float time_delta);

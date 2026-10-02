@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "hudmanager.h"
 #include "WeaponMagazined.h"
+#include "nlc_stealth.h" // NLC: stealth muzzle flash
 #include "weaponBM16.h"
 #include "entity.h"
 #include "actor.h"
@@ -916,6 +917,9 @@ void CWeaponMagazined::OnShot()
 
     // Sound
     PlaySound(*m_pSndShotCurrent, get_LastFP(), true);
+
+    if (ParentIsActor()) // NLC: stealth muzzle flash (nlc_stealth flash_k)
+        nlc_stealth::on_actor_shot(IsSilencerAttached());
 
     if (!m_sndBreech.sounds.empty())
     {

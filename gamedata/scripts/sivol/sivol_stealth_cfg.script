@@ -1,0 +1,140 @@
+-- sivol: stealth tuning layer (docs/STEALTH_DESIGN.md, section 10).
+--
+-- Holds the nlc_stealth engine parameters and pushes them to the engine when the
+-- module loads, so a hot reload (`rl scripts sivol_stealth_cfg`) applies edited
+-- file values. After a save load the Lua state is new but the engine keeps its
+-- values: values changed live in this session (engine value differs from the file)
+-- are kept and logged; reset_defaults() returns to the file. Shipped values are
+-- tuned values (docs/STEALTH_DESIGN.md 11 to 13); logs off. Vision section values
+-- (luminocity_factor, time_quant, transparency_factor) live in m_stalker.ltx.
+--
+-- Live use from the console:
+--   g_loadstring sivol_stealth_cfg.set("danger_rate_mult", 0.4)
+--   g_loadstring sivol_stealth_cfg.dump()
+--   g_loadstring sivol_stealth_cfg.reset_defaults()
+-- Copy accepted values back into `params` below.
+-- Measurement helpers live in sivol_stealth_test.script.
+
+params = {
+    log_vision = 0,                    -- per-update vision lines for watched observers
+    log_sound = 0,                     -- actor-sound perception lines for watched observers
+    log_events = 0,                    -- sight / enemy / monster acquisition events for every observer
+    log_interval_ms = 0,               -- min gap between per-update lines per observer (0 = every update)
+    log_cap_per_min = 300,             -- global line cap per minute
+    free_rate_mult = 1,                -- stalker free-profile detection speed multiplier
+    danger_rate_mult = 1,              -- stalker danger-profile detection speed multiplier
+    monster_rate_mult = 1,             -- monster detection speed multiplier
+    lum_factor_override = -1,          -- stalker luminocity_factor (-1 = vision section value)
+    transparency_factor_override = -1, -- stalker transparency_factor (-1 = vision section value)
+    force_profile = -1,                -- debug, watched observers only: 0 free, 1 danger vision (-1 = own state)
+    sky_k = 8,                         -- AI sky light weight for stalker observers (0 = engine luminosity only)
+    sky_scale = 0.08,                  -- renderer hemi scale the sky visibility is divided by (keep 0.08)
+    sky_pow = 1.5,                     -- sky brightness exponent: > 1 favours bright (day) skies over dim (night) ones
+    vel_physics = 1,                   -- 1: actor speed from physics movement instead of the noisy position history
+    crouch_k = 0.85,                   -- detection rate factor while crouched
+    creep_k = 0.7,                     -- detection rate factor in low crouch (crouch + accelerate)
+    torch_k = 0.5,                     -- light from an observer's own flashlight on the actor (cone centre, zero distance)
+    torch_cone = 40,                   -- flashlight cone, full angle in degrees
+    flash_k = 1,                       -- muzzle flash light after an unsuppressed shot, scaled by darkness
+    flash_ms = 300,                    -- muzzle flash fade time
+    near_k = 0.3,                      -- near-range contrast: light added at zero distance, fading as (1 - d / near_range)^2
+    near_range = 25,
+    rank_k_novice = 1,                 -- detection rate factor per observer rank
+    rank_k_experienced = 1.15,
+    rank_k_veteran = 1.3,
+    rank_k_master = 1.5,
+}
+
+local defaults = {}
+for name, value in pairs(params) do
+    defaults[name] = value
+end
+
+-- the engine's built-in values (nlc_stealth.cpp); an engine value equal to these was
+-- not changed live, so the file value applies
+local ENGINE_DEFAULTS = {
+    log_vision = 0, log_sound = 0, log_events = 0, log_interval_ms = 0, log_cap_per_min = 300,
+    free_rate_mult = 1, danger_rate_mult = 1, monster_rate_mult = 1,
+    lum_factor_override = -1, transparency_factor_override = -1, force_profile = -1,
+    sky_k = 0, sky_scale = 0.08, sky_pow = 1, vel_physics = 0, crouch_k = 1, creep_k = 1,
+    torch_k = 0, torch_cone = 40, flash_k = 0, flash_ms = 300,
+    near_k = 0, near_range = 25,
+    rank_k_novice = 1, rank_k_experienced = 1, rank_k_veteran = 1, rank_k_master = 1,
+}
+
+local function engine_ready()
+    return type(nlc_stealth_set) == "function"
+end
+
+-- keep_live: leave a parameter whose engine value already differs from the file
+-- (changed live earlier in this session) and log it
+function apply(keep_live)
+    if not engine_ready() then
+        log2("! [stealth] nlc_stealth_* functions missing: engine older than nlc-3.589.4")
+        return false
+    end
+    local ok = true
+    for name, value in pairs(params) do
+        local current = nlc_stealth_get(name)
+        local builtin = ENGINE_DEFAULTS[name]
+        if keep_live and current and math.abs(current - value) > 1e-6 and not (builtin and math.abs(current - builtin) < 1e-6) then
+            params[name] = current
+            log2("~ [stealth] kept live %s=%s (file %s)", name, tostring(current), tostring(value))
+        elseif not nlc_stealth_set(name, value) then
+            ok = false
+        end
+    end
+    return ok
+end
+
+function set(name, value)
+    if params[name] == nil then
+        log2("! [stealth] unknown parameter [%s]", tostring(name))
+        return false
+    end
+    value = tonumber(value)
+    if not value or not engine_ready() or not nlc_stealth_set(name, value) then
+        return false
+    end
+    params[name] = value
+    log2("~ [stealth] %s=%s", name, tostring(value))
+    return true
+end
+
+function get(name)
+    return params[name]
+end
+
+function reset_defaults()
+    for name, value in pairs(defaults) do
+        params[name] = value
+    end
+    return apply()
+end
+
+function dump()
+    for name, value in pairs(params) do
+        log2("~ [stealth] script %s=%s", name, tostring(value))
+    end
+    if engine_ready() then
+        nlc_stealth_dump()
+    end
+end
+
+local function on_first_update()
+    -- object ids from the previous session must not stay watched
+    if engine_ready() then
+        nlc_stealth_unwatch_all()
+    end
+    apply(true)
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_first_update", fun = on_first_update })
+end
+
+-- module load: a hot reload in game (actor present) applies the file; a load during
+-- game start or save load keeps values changed live earlier in this session
+if engine_ready() then
+    apply(not (db and db.actor))
+end

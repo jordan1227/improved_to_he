@@ -5,6 +5,66 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.4 (2026-10-02)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `7C6BA53A0470FAB27DC01BF96CE15B113010BFEC3151178EA41CC3C21017589A`
+- **Status:** runtime tested in the test install (2026-10-02, stealth checks 1 to 5 of
+  `docs/STEALTH_DESIGN.md` 13.1); design and measurements in `docs/STEALTH_DESIGN.md`.
+
+### NLC: stealth and perception (`xrGame/nlc_stealth.cpp/.h`)
+
+All terms are parameters set from Lua (`sivol_stealth_cfg.script`); every engine default
+is identity, so the exe alone behaves like nlc-3.589.3. The shipped script values are
+listed under game data.
+
+- **Vision terms for the actor as target** (`visual_memory_manager.cpp`):
+  - AI sky light (`sky_k`, `sky_pow`, `sky_scale`): env hemisphere brightness x sky
+    visibility added to the actor's luminosity for stalker observers. The renderer scales
+    its sky term by `ps_r2_dhemi_sky_scale` (0.08), so before this, shade at noon read like
+    night and only direct sun or static lamps mattered.
+  - Near-range contrast (`near_k`, `near_range`), observer flashlight cone (`torch_k`,
+    `torch_cone`; NPC torches are found in the torch slot or among attached items),
+    muzzle flash after an unsuppressed actor shot (`flash_k`, `flash_ms`; hook in
+    `CWeaponMagazined::OnShot`).
+  - Rate factors: observer rank (`rank_k_novice/experienced/veteran/master`, thresholds
+    from `[game_relations] rating`) and actor stance (`crouch_k`, `creep_k`); never inside
+    `always_visible_distance`.
+  - Actor speed from physics movement (`vel_physics`) instead of the position history,
+    which alternated between real and doubled values.
+  - Live overrides of the existing formula: `free_rate_mult`, `danger_rate_mult`,
+    `monster_rate_mult`, `lum_factor_override`, `transparency_factor_override`.
+- **Per-NPC vision sections:** `nlc_stealth_set_vision(id, free, danger)` reloads an
+  observer's `CVisionParameters` (`CVisualMemoryManager::nlc_set_vision_sections`); lasts
+  until the NPC reloads its sections.
+- **Diagnostics** (off by default): per-observer `~ [stealth]` lines for vision factors
+  (`vis`, `nolos`, `seen`), actor sounds heard by stalkers (`snd`, with the actor's weapon
+  and suppressor state) and monsters (`msnd`), stalker enemy selection context (`enemy`),
+  monster enemy acquisition source (`macq`); once per episode for `enemy` / `macq`; the
+  visible-body helper (`actor_legs`) is skipped. Hooks in `sound_memory_manager.cpp`,
+  `base_monster_feel.cpp`, `enemy_manager.cpp`, `monster_enemy_memory.cpp`,
+  `script_game_object2/3.cpp` (script-induced awareness timestamps).
+- **Lua globals:** `nlc_stealth_set/get/dump/watch/unwatch/unwatch_all/reset/last_seen/
+  set_vision` (registered in `COMMON_AI/script_engine_export.cpp`). Debug parameter
+  `force_profile` forces free or danger vision on watched observers.
+
+### NLC: sound loader (`xrSound/SoundRender_Source_loader.cpp`)
+
+- A `[path.with.dots]` section in the system ini now overrides only the keys it sets on
+  top of the `.ogg` comment. Before, any such section skipped the comment, so unset keys
+  (range, volume, sound type) fell back to engine defaults. The false "Missing
+  ogg-comment" warning for overridden sounds is gone.
+
+### Required game data
+
+- `gamedata/scripts/sivol/sivol_stealth_cfg.script` (tuning values, registered in
+  `ogse_signals_addons_list.script`), `sivol_stealth_test.script` (measurement harness).
+- `config/creatures/m_stalker.ltx`: stalker vision sections (`always_visible_distance`
+  2 when calm, `luminocity_factor` 0.8, danger `time_quant` 0.00286, `transparency_factor`
+  1) and the new `[actor_step_manager]` with landing rows; `config/creatures/actor.ltx`
+  points `step_params` at it.
+- `config/ogg_comments_overrides.ltx`: `ai_dist` for every suppressed shot sound.
+
 ## nlc-3.589.3 (2026-10-01)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
