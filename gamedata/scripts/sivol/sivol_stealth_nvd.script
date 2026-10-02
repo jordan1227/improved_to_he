@@ -1,0 +1,149 @@
+-- sivol: NPC night-vision devices (docs/STEALTH_DESIGN.md 15.3).
+--
+-- Who wears one is a stable roll per NPC id (no save data), by rank chance plus a
+-- community offset; both tables are live-editable:
+--   g_loadstring sivol_stealth_nvd.rank_chance.master = 0.8
+--   g_loadstring sivol_stealth_nvd.reassign()
+-- Wearers get the engine light floor (nlc_stealth nvd_floor, set in sivol_stealth_cfg),
+-- keep the torch off at night (sr_light hook) and show an eye glow at night near the
+-- actor. Eye glow particle stealth_nvg\nvg_dot from the Anomaly addon "Stealth 2.31"
+-- (used with the author's permission).
+
+enabled = true
+rank_chance = { novice = 0.05, experienced = 0.15, veteran = 0.35, master = 0.65 }
+community_offset = { military = 0.15, monolith = 0.15, killer = 0.15, bandit = -0.05, zombied = -1, trader = -1 }
+glow_enabled = true
+glow_distance = 60       -- metres from the actor
+glow_check_ms = 2000
+mode = "dark"            -- "dark": environment light below dark_below (engine nlc_stealth_env_light); "hours": night_from..night_to
+dark_below = 0.2         -- environment light (ambient + sky + sun): clear night 0.02 to 0.12, dusk 21:00 about 0.19, rainy day 0.28+; ctx() in sivol_stealth_test shows it
+night_from = 20          -- hours mode: same hours as sr_light torches
+night_to = 5
+dark_levels = {          -- underground levels always count as dark (sr_light indoor levels)
+    l03u_agr_underground = true, l03u_agr_underground_e3 = true, l03u_agr_underground_hw = true, l04u_labx18 = true,
+    l08u_brainlab = true, l10u_bunker = true, l12u_sarcofag = true, l12u_control_monolith = true,
+}
+
+local wearers = {}       -- id -> true for online NPCs with a device
+local glowing = {}       -- id -> true while the engine glow is on
+local next_check = 0
+
+local function engine_ready()
+    return type(nlc_stealth_set_nvd) == "function"
+end
+
+-- stable value in [0, 1) from an object id
+local function roll(id)
+    local h = (id * 2654435761 + 40503) % 4294967296
+    return h / 4294967296
+end
+
+local function chance(npc)
+    local base = rank_chance[ranks.get_obj_rank_name(npc)] or 0
+    return base + (community_offset[npc:character_community()] or 0)
+end
+
+function has_nvd(npc)
+    return enabled and npc and wearers[npc:id()] == true
+end
+
+function is_night()
+    if mode == "dark" and type(nlc_stealth_env_light) == "function" then
+        return dark_levels[level.name()] == true or nlc_stealth_env_light() < dark_below
+    end
+    local h = level.get_time_hours()
+    return h >= night_from or h <= night_to
+end
+
+local function set_glow(id, obj, on)
+    if (glowing[id] == true) == on then
+        return
+    end
+    glowing[id] = on or nil
+    if type(nlc_stealth_eye_glow) == "function" then
+        nlc_stealth_eye_glow(id, on)
+    end
+end
+
+local function apply(npc)
+    if not (npc and npc:alive() and engine_ready()) then
+        return
+    end
+    local id = npc:id()
+    local on = enabled and roll(id) < chance(npc)
+    wearers[id] = on or nil
+    nlc_stealth_set_nvd(id, on)
+    if not on then
+        set_glow(id, npc, false)
+    end
+end
+
+local function on_npc_spawn(npc)
+    glowing[npc:id()] = nil -- the engine drops glows on net_destroy
+    apply(npc)
+end
+
+local function on_npc_death(npc)
+    local id = npc:id()
+    wearers[id] = nil
+    glowing[id] = nil -- the engine stops the glow on death
+end
+
+local function on_update()
+    local now = time_global()
+    if now < next_check then
+        return
+    end
+    next_check = now + glow_check_ms
+    local night = is_night()
+    local actor_pos = db.actor and db.actor:position()
+    for id in pairs(wearers) do
+        local obj = level.object_by_id(id)
+        if not (obj and obj:alive()) then
+            wearers[id] = nil
+            glowing[id] = nil
+        else
+            local want = glow_enabled and night and actor_pos ~= nil and obj:position():distance_to(actor_pos) < glow_distance
+            set_glow(id, obj, want)
+        end
+    end
+end
+
+-- re-roll every online stalker (after editing the tables live)
+function reassign()
+    local n, worn = 0, 0
+    for id in pairs(db.storage) do
+        local obj = level.object_by_id(id)
+        if obj and obj:is_stalker() and obj:alive() then
+            apply(obj)
+            n = n + 1
+            if wearers[id] then
+                worn = worn + 1
+            end
+        end
+    end
+    next_check = 0
+    log2("~ [stealth] nvd reassign: %d of %d online stalkers wear a device", worn, n)
+end
+
+-- harness: give or take a device for one NPC (id, or the one under the crosshair) until it respawns
+function force(on, id)
+    local obj = id and level.object_by_id(id) or level.get_target_obj()
+    if not (obj and obj:alive() and engine_ready()) then
+        log2("! [stealth] nvd force: no living target or engine too old")
+        return
+    end
+    wearers[obj:id()] = on and true or nil
+    nlc_stealth_set_nvd(obj:id(), on and true or false)
+    if not on then
+        set_glow(obj:id(), obj, false)
+    end
+    next_check = 0
+    log2("~ [stealth] nvd force %s %s (roll %.3f, chance %.2f)", obj:name(), tostring(on), roll(obj:id()), chance(obj))
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_npc_spawn", fun = on_npc_spawn })
+    sm:subscribe({ signal = "on_npc_death", fun = on_npc_death })
+    sm:subscribe({ signal = "on_update", fun = on_update })
+end

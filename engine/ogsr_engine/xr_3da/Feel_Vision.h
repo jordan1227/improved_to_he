@@ -96,6 +96,8 @@ public:
     }
     virtual BOOL feel_vision_isRelevant(CObject* O) = 0;
     virtual float feel_vision_mtl_transp(CObject* O, u32 element) = 0;
+    // NLC: true = re-trace this object every update with a new sample point (partial cover; nlc_stealth ray_resample)
+    virtual bool feel_vision_resample(const CObject* O) { return false; }
 
     float feel_vision_get_transparency(const CObject* _O) const;
 };

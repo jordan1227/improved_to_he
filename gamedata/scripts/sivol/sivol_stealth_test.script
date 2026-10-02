@@ -41,10 +41,15 @@ end
 -- over time), rain and actor position, so log lines carry their own conditions
 local function context_text()
     local p = db.actor and db.actor:position()
-    return string.format("level %s, %02d:%02d, weather %s (prev %s), rain %.2f, actor %s",
+    local env = type(nlc_stealth_env_light) == "function" and nlc_stealth_env_light() or -1
+    local mtl, surface_k, noise_k = "?", 1, 1
+    if type(nlc_stealth_actor_surface) == "function" then
+        mtl, surface_k, noise_k = nlc_stealth_actor_surface()
+    end
+    return string.format("level %s, %02d:%02d, weather %s (prev %s), rain %.2f, env light %.3f, ground %s (x%.2f), outfit noise x%.2f, actor %s",
         tostring(safe(level.name)), level.get_time_hours(), level.get_time_minutes(),
         tostring(safe(level.get_weather)), tostring(safe(level.get_weather_prev)),
-        tonumber(safe(level.rain_factor)) or -1,
+        tonumber(safe(level.rain_factor)) or -1, env, tostring(mtl), surface_k, noise_k,
         p and string.format("%.1f,%.1f,%.1f", p.x, p.y, p.z) or "?")
 end
 
@@ -164,12 +169,20 @@ function hold(mental)
     if not npc then
         return
     end
-    if not npc:is_stalker() then
-        say("hold() works on stalkers only; use sivol_hit_log FREEZE for monsters")
-        return
-    end
     held_mental = (mental == "danger") and "danger" or "free"
-    hold_command(npc)
+    if npc:is_stalker() then
+        hold_command(npc)
+    else
+        -- monsters: script capture with an idle animation (the sivol_hit_log freeze); vision keeps running
+        if not npc:get_script() and not pcall(npc.script, npc, true, script_name()) then
+            say("hold(): could not capture %s", npc:name())
+            held_mental = nil
+            return
+        end
+        pcall(function()
+            action(npc, anim(anim.stand_idle, 0), cond(cond.time_end, 600000))
+        end)
+    end
     sivol_stealth_cfg.set("force_profile", held_mental == "danger" and 1 or 0)
     say("holding %s, %s vision forced", npc:name(), held_mental)
 end
@@ -278,4 +291,32 @@ function measure(n, timeout_s)
     level.add_call(step, function()
         measuring = false
     end)
+end
+
+-- which voice folders contain the suspicion callout lines (reac_see: reactions/see_something,
+-- threat_stop: threat/stop); logs one line per folder with the file counts
+function voices()
+    local counts = {}
+    for _, mask in ipairs({ "see_*.ogg", "stop_*.ogg" }) do
+        local list = getFS():file_list_open_ex("$game_sounds$", FS.FS_ListFiles, mask)
+        for i = 0, list:Size() - 1 do
+            local name = string.lower(list:GetAt(i):NameFull())
+            local folder, kind = nil, nil
+            if string.find(name, "see_something", 1, true) then
+                folder, kind = string.match(name, "^(.-)reactions"), "see"
+            elseif string.find(name, "threat", 1, true) then
+                folder, kind = string.match(name, "^(.-)threat"), "stop"
+            end
+            if folder then
+                counts[folder] = counts[folder] or { see = 0, stop = 0 }
+                counts[folder][kind] = counts[folder][kind] + 1
+            end
+        end
+    end
+    local n = 0
+    for folder, c in pairs(counts) do
+        say("voices %s see=%d stop=%d", folder, c.see, c.stop)
+        n = n + 1
+    end
+    say("voices: %d folder(s) with callout lines", n)
 end

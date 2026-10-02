@@ -1,0 +1,760 @@
+-- sivol: suspicion stages for hostile stalkers (docs/STEALTH_DESIGN.md 15.1, 15.2, 15.7).
+--
+-- The engine keeps the numbers: nlc_stealth_suspicion(id) returns the stalker's
+-- detection progress toward the actor (0..1) and where the actor was. This scheme
+-- turns that into behaviour below danger and combat and above the normal schemes:
+--   notice      (value >= notice_v)      look toward the point, by temperament
+--   investigate (value >= investigate_v) go and check, by temperament
+--   detected    (value 1)                engine enemy and combat path, unchanged
+-- Temperament (lazy, curious, careful, tactical) is a stable roll per NPC from
+-- weights by community group and rank. All tables are live-editable:
+--   g_loadstring sivol_stealth_suspicion.enabled = false
+--   g_loadstring sivol_stealth_suspicion.notice_v = 0.4
+-- Hooks: modules.script (load_scheme), xr_logic.enable_generic_schemes (set_scheme),
+-- xr_motivator.addCommonPrecondition (scheme actions wait while suspicious).
+
+enabled = true
+log_stages = true
+notice_v = 0.35
+investigate_v = 0.7
+eval_ms = 250
+eligible_ms = 2000       -- hostility / combat_ignore re-check period
+rate_k_suspicious = 1.25 -- detection rate factor while suspicious and "on edge"
+edge_ms = { 30000, 60000 }
+escalate_ms = 120000     -- a new notice within this time raises the temperament one step
+max_trip = 40            -- metres from the NPC's position: farther points are only watched
+max_episode_ms = 90000
+callout_chance = { novice = 0.6, experienced = 0.4, veteran = 0.25, master = 0.15 }
+jumpy_share = 0.3        -- share of novice callouts that are "stop!" instead of "I see something"
+callout_radius = 25
+cover_radius = 15
+mate_radius = 30
+budget = { default = 1, radio = 2 } -- investigators per point cell and per smart terrain
+cell = 10
+-- shot at (near miss, docs/STEALTH_DESIGN.md 17): reaction delay by rank (seconds) before ducking or taking cover
+react_delay = { novice = { 0.8, 1.5 }, experienced = { 0.4, 0.8 }, veteran = { 0.2, 0.5 }, master = { 0, 0.2 } }
+shot_at_hold_k = 1.5     -- careful and tactical stay in cover this much longer than their notice time
+-- non-hostile stalkers shot near (docs/STEALTH_DESIGN.md 18): purely reactive, no goodwill change
+worried_enabled = true
+worried_ignore_lazy = 0.3   -- chance a lazy NPC ignores a near miss
+worried_time = { 3, 6 }     -- seconds
+worried_voice_chance = 0.5  -- "back off" / "stop" lines
+-- a fresh corpse seen by a hostile NPC: investigate instead of the vanilla danger reaction
+corpse_investigate = true
+
+-- seconds; {min, max}
+timing = {
+    lazy     = { notice = { 1, 3 }, watch = { 3, 5 } },
+    curious  = { notice = { 2, 4 }, search = { 8, 15 } },
+    careful  = { notice = { 5, 8 }, pause = { 3, 5 }, search = { 20, 30 } },
+    tactical = { notice = { 5, 10 }, search = { 25, 40 } },
+}
+
+-- percent: lazy, curious, careful, tactical; [group][1] novice/experienced, [2] veteran/master
+weights = {
+    bandit  = { { 60, 35, 5, 0 },   { 35, 45, 15, 5 } },
+    stalker = { { 35, 50, 15, 0 },  { 15, 45, 35, 5 } },
+    duty    = { { 15, 40, 40, 5 },  { 5, 30, 45, 20 } },
+    mil     = { { 10, 40, 35, 15 }, { 0, 15, 35, 50 } },
+}
+-- position error = distance x factor, factor from sloppy to precise by skill
+error_sloppy = 0.25
+error_precise = 0.08
+error_min = 2
+error_max = 12
+skill = {
+    bandit  = { 0.2, 0.4 },
+    stalker = { 0.4, 0.6 },
+    duty    = { 0.5, 0.7 },
+    mil     = { 0.6, 0.9 },
+}
+
+local TEMPERS = { "lazy", "curious", "careful", "tactical" }
+local TEMPER_INDEX = { lazy = 1, curious = 2, careful = 3, tactical = 4 }
+local GROUP = { bandit = "bandit", dolg = "duty", military = "mil", monolith = "mil", killer = "mil" }
+local RADIO = { military = true, monolith = true, killer = true, dolg = true }
+local EXCLUDED_COMMUNITIES = { zombied = true, trader = true, arena_enemy = true }
+local LOOK_ONLY_SCHEMES = { camper = true, sleeper = true, heli_hunter = true }
+
+evid = 18960
+actid = 18960
+
+local registry = {}      -- id -> storage of NPCs with this scheme
+local test_ids = {}      -- harness: id -> true, suspicion runs even when not hostile
+local test_rate = {}     -- harness: id -> detection rate factor
+local investigations = {} -- key -> count
+
+local function engine_ready()
+    return type(nlc_stealth_suspicion) == "function"
+end
+
+local function roll(id, salt)
+    local h = (id * 2246822519 + salt * 3266489917 + 374761393) % 4294967296
+    return h / 4294967296
+end
+
+local function rand_range(t)
+    return t[1] + math.random() * (t[2] - t[1])
+end
+
+local function senior(npc)
+    local r = ranks.get_obj_rank_name(npc)
+    return r == "veteran" or r == "master"
+end
+
+local function group_of(npc)
+    return GROUP[npc:character_community()] or "stalker"
+end
+
+local function temperament_of(npc)
+    local w = weights[group_of(npc)][senior(npc) and 2 or 1]
+    local total = w[1] + w[2] + w[3] + w[4]
+    if total <= 0 then
+        return "curious"
+    end
+    local x = roll(npc:id(), 7) * total
+    for i = 1, 4 do
+        x = x - w[i]
+        if x < 0 then
+            return TEMPERS[i]
+        end
+    end
+    return "tactical"
+end
+
+local function skill_of(npc)
+    return skill[group_of(npc)][senior(npc) and 2 or 1]
+end
+
+local function say(fmt, ...)
+    if log_stages then
+        log2("~ [stealth] susp " .. fmt, ...)
+    end
+end
+
+local function vec_str(v)
+    return v and string.format("%.1f,%.1f,%.1f", v.x, v.y, v.z) or "-"
+end
+
+-- noticed point with an error by distance and skill; nil when unusable
+local function blurred_point(npc, point)
+    local d = npc:position():distance_to(point)
+    local s = skill_of(npc)
+    local radius = d * (error_sloppy + (error_precise - error_sloppy) * s)
+    radius = math.max(error_min, math.min(error_max, radius))
+    local a = math.random() * 2 * math.pi
+    local r = radius * math.sqrt(math.random())
+    return vector():set(point.x + r * math.cos(a), point.y, point.z + r * math.sin(a))
+end
+
+-- reachable vertex near the point, or nil
+local function reachable_vertex(npc, point)
+    local lvid = level.vertex_id(point)
+    if lvid and lvid < 4294967295 and npc:accessible(lvid) then
+        return lvid, level.vertex_position(lvid)
+    end
+    local nlvid, npos = npc:accessible_nearest(point, vector():set(0, 0, 0))
+    if nlvid and nlvid < 4294967295 and npos and npos:distance_to(point) < 8 then
+        return nlvid, npos
+    end
+    return nil
+end
+
+local function cell_key(p)
+    return math.floor(p.x / cell) .. ":" .. math.floor(p.z / cell)
+end
+
+local function smart_key(npc)
+    local se = alife() and alife():object(npc:id())
+    local sid = se and se.smart_terrain_id and se:smart_terrain_id()
+    return (sid and sid ~= 65535) and ("smart:" .. sid) or nil
+end
+
+local function budget_take(st, npc, point)
+    local limit = RADIO[npc:character_community()] and budget.radio or budget.default
+    local keys = { "cell:" .. cell_key(point) }
+    local sk = smart_key(npc)
+    if sk then
+        keys[2] = sk
+    end
+    for _, k in ipairs(keys) do
+        if (investigations[k] or 0) >= limit then
+            return false
+        end
+    end
+    for _, k in ipairs(keys) do
+        investigations[k] = (investigations[k] or 0) + 1
+    end
+    st.budget_keys = keys
+    return true
+end
+
+local function budget_release(st)
+    if not st.budget_keys then
+        return
+    end
+    for _, k in ipairs(st.budget_keys) do
+        local n = (investigations[k] or 1) - 1
+        investigations[k] = n > 0 and n or nil
+    end
+    st.budget_keys = nil
+end
+
+local function set_rate_k(st, npc, k)
+    k = k * (test_rate[npc:id()] or 1)
+    if st.rate_k ~= k and type(nlc_stealth_set_rate_k) == "function" then
+        nlc_stealth_set_rate_k(npc:id(), k)
+        st.rate_k = k
+    end
+end
+
+local function eligible(npc, st, now)
+    if st.elig_until and now < st.elig_until then
+        return st.elig
+    end
+    st.elig_until = now + eligible_ms
+    local test = test_ids[npc:id()]
+    local ok = npc:alive() and db.actor ~= nil
+        and not EXCLUDED_COMMUNITIES[npc:character_community()]
+        and (test or npc:relation(db.actor) == game_object.enemy)
+        and not (xr_wounded.is_wounded and xr_wounded.is_wounded(npc))
+    if ok and not test and xr_combat_ignore and xr_combat_ignore.is_enemy then
+        ok = xr_combat_ignore.is_enemy(npc, db.actor) ~= false
+    end
+    local active_scheme = db.storage[npc:id()] and db.storage[npc:id()].active_scheme
+    if active_scheme == "sleeper" then
+        ok = false
+    end
+    st.elig = ok and true or false
+    return st.elig
+end
+
+local function end_episode(st, npc, now, why)
+    if (st.stage or 0) > 0 then
+        say("t=%d obs=%s end why=%s temper=%s", now, npc:name(), why, tostring(st.temper))
+    end
+    budget_release(st)
+    st.stage = 0
+    st.plan = nil
+    st.phase = nil
+    st.done = nil
+    st.external = nil
+    if why ~= "reset" then
+        st.edge_until = now + rand_range(edge_ms)
+        st.escalate_until = now + escalate_ms
+    end
+end
+
+-- another NPC tells this one to look at a point (callout, covering mate)
+local function external_watch(st, npc, point, ms, why)
+    if (st.stage or 0) > 0 or not eligible(npc, st, time_global()) then
+        return
+    end
+    local now = time_global()
+    st.stage = 1
+    st.plan = "watch"
+    st.point = point
+    st.stage_until = now + ms
+    st.started = now
+    st.external = true
+    say("t=%d obs=%s stage=watch why=%s point=%s", now, npc:name(), why, vec_str(point))
+end
+
+local function callout(npc, st, point)
+    local rank = ranks.get_obj_rank_name(npc)
+    if math.random() >= (callout_chance[rank] or 0) then
+        return
+    end
+    local theme = (rank == "novice" and math.random() < jumpy_share) and "threat_stop" or "reac_see"
+    if xr_sound and xr_sound.set_sound_play then
+        xr_sound.set_sound_play(npc, theme)
+    end
+    local pos, comm, n = npc:position(), npc:character_community(), 0
+    for id, ost in pairs(registry) do
+        local o = id ~= npc:id() and level.object_by_id(id)
+        if o and o:alive() and o:character_community() == comm and o:position():distance_to(pos) < callout_radius then
+            external_watch(ost, o, point, 4000 + math.random(3000), "callout")
+            n = n + 1
+        end
+    end
+    say("t=%d obs=%s callout=%s friends=%d", time_global(), npc:name(), theme, n)
+end
+
+local function covering_mate(npc, point, ms)
+    if not RADIO[npc:character_community()] then
+        return
+    end
+    local pos, comm, best, best_d = npc:position(), npc:character_community(), nil, mate_radius
+    for id, ost in pairs(registry) do
+        local o = id ~= npc:id() and level.object_by_id(id)
+        if o and o:alive() and o:character_community() == comm and (ost.stage or 0) == 0 then
+            local d = o:position():distance_to(pos)
+            if d < best_d then
+                best, best_d = { o, ost }, d
+            end
+        end
+    end
+    if best then
+        external_watch(best[2], best[1], point, ms, "cover_mate")
+    end
+end
+
+-- decide the investigate plan
+local function plan_investigation(npc, st, now)
+    local temper = st.temper
+    local look_only = LOOK_ONLY_SCHEMES[db.storage[npc:id()].active_scheme or ""]
+    local lvid = not look_only and npc:position():distance_to(st.point) <= max_trip and reachable_vertex(npc, st.point)
+    if temper == "lazy" or not lvid then
+        st.plan = "watch"
+        st.stage_until = now + rand_range(timing.lazy.watch) * 1000
+        return look_only and "post" or (lvid and "lazy" or "unreachable")
+    end
+    if not budget_take(st, npc, st.point) then
+        st.plan = "watch"
+        st.stage_until = now + rand_range(timing.careful.notice) * 1000
+        return "budget"
+    end
+    st.plan = temper
+    st.dest_lvid = lvid
+    if sr_light and sr_light.check_light then
+        pcall(sr_light.check_light, npc) -- torch on for the walk at night (sr_light hook)
+    end
+    st.search_ms = rand_range(timing[temper].search) * 1000
+    st.stage_until = now + max_episode_ms
+    covering_mate(npc, st.point, math.floor(st.search_ms))
+    return "go"
+end
+
+-- non-hostile NPCs with an actor bullet passing or hitting close: a short worried reaction by temperament
+local function worried_update(npc, st, now)
+    if st.worried then
+        if now >= (st.stage_until or 0) or npc:best_enemy() then
+            say("t=%d obs=%s worried end", now, npc:name())
+            st.worried, st.stage, st.plan = nil, 0, nil
+            return false
+        end
+        return true
+    end
+    if not (worried_enabled and enabled and engine_ready() and db.actor) or npc:best_enemy() then
+        return false
+    end
+    if EXCLUDED_COMMUNITIES[npc:character_community()] or (xr_wounded.is_wounded and xr_wounded.is_wounded(npc)) then
+        return false
+    end
+    if npc:relation(db.actor) == game_object.enemy then
+        return false
+    end
+    local v, age, x, y, z, kind = nlc_stealth_suspicion(npc:id())
+    if kind ~= 2 or not x or (st.worried_seen and st.worried_seen + 1500 > now) then
+        return false
+    end
+    st.worried_seen = now
+    local temper = temperament_of(npc)
+    if temper == "lazy" and math.random() < worried_ignore_lazy then
+        say("t=%d obs=%s worried ignored temper=lazy", now, npc:name())
+        return false
+    end
+    local post = LOOK_ONLY_SCHEMES[db.storage[npc:id()].active_scheme or ""]
+    local plan = ({ lazy = "look", curious = "look", careful = "duck", tactical = "cover" })[temper] or "look"
+    if post and plan == "cover" then
+        plan = "duck"
+    end
+    st.worried, st.stage, st.plan, st.temper = true, 1, plan, temper
+    st.point = vector():set(x, y, z)
+    st.stage_until = now + rand_range(worried_time) * 1000
+    st.react_until = now + rand_range(react_delay[ranks.get_obj_rank_name(npc)] or react_delay.experienced) * 1000
+    st.phase, st.cover_lvid, st.in_cover = nil, nil, nil
+    if math.random() < worried_voice_chance and xr_sound and xr_sound.set_sound_play then
+        xr_sound.set_sound_play(npc, math.random() < 0.5 and "threat_back" or "threat_stop")
+    end
+    say("t=%d obs=%s worried temper=%s plan=%s point=%s", now, npc:name(), temper, plan, vec_str(st.point))
+    return true
+end
+
+local function update(npc, st)
+    local now = time_global()
+    local id = npc:id()
+
+    if not eligible(npc, st, now) and worried_update(npc, st, now) then
+        return true
+    end
+    if not enabled or not engine_ready() or not eligible(npc, st, now) or npc:best_enemy() then
+        if (st.stage or 0) > 0 then
+            end_episode(st, npc, now, "reset")
+        end
+        set_rate_k(st, npc, 1)
+        return false
+    end
+    local danger = db.storage[id].danger
+    if danger and danger.exist then
+        if (st.stage or 0) > 0 then
+            end_episode(st, npc, now, "danger")
+        end
+        return false
+    end
+
+    local v, age, x, y, z, kind = nlc_stealth_suspicion(id)
+    st.value = v
+    local stage = st.stage or 0
+
+    -- enter or escalate
+    if v >= notice_v and x and not st.external and (stage == 0 or (stage == 1 and v >= investigate_v)) then
+        local raw = vector():set(x, y, z)
+        if stage == 0 then
+            st.temper = temperament_of(npc)
+            if st.escalate_until and now < st.escalate_until and TEMPER_INDEX[st.temper] < 4 then
+                st.temper = TEMPERS[TEMPER_INDEX[st.temper] + 1]
+            end
+            -- heard concern already carries a blurred point (engine); sight gets the script blur
+            st.kind = kind or 0 -- 0 sight, 1 faint shot, 2 near miss / impact, 3 footstep
+            st.point = (st.kind > 0) and raw or blurred_point(npc, raw)
+            st.started = now
+            st.react_until = nil
+        end
+        if v >= investigate_v then
+            st.stage = 2
+            st.phase = nil
+            local why = plan_investigation(npc, st, now)
+            say("t=%d obs=%s stage=investigate v=%.2f temper=%s plan=%s why=%s d=%.1f point=%s", now, npc:name(), v, st.temper, st.plan, why,
+                npc:position():distance_to(st.point), vec_str(st.point))
+            if stage == 0 then -- straight to investigate (seen clearly): the notice callout still applies
+                callout(npc, st, st.point)
+            end
+        else
+            st.stage = 1
+            local post = LOOK_ONLY_SCHEMES[db.storage[id].active_scheme or ""]
+            st.plan = (st.temper == "tactical" and not post) and "cover" or "look"
+            st.phase = nil
+            st.stage_until = now + rand_range(timing[st.temper].notice) * 1000
+            if st.kind == 2 then
+                -- shot at: lazy ducks where it stands, the others take cover; slow ranks react late
+                st.plan = (st.temper == "lazy" or post) and "duck" or "cover"
+                st.react_until = now + rand_range(react_delay[ranks.get_obj_rank_name(npc)] or react_delay.experienced) * 1000
+                if st.temper == "careful" or st.temper == "tactical" then
+                    st.stage_until = now + (st.stage_until - now) * shot_at_hold_k
+                end
+            end
+            say("t=%d obs=%s stage=notice v=%.2f temper=%s plan=%s kind=%s d=%.1f point=%s", now, npc:name(), v, st.temper, st.plan,
+                ({ [0] = "sight", "shot_far", "near_miss", "step" })[st.kind or 0] or "?", npc:position():distance_to(st.point), vec_str(st.point))
+            callout(npc, st, st.point)
+        end
+        stage = st.stage
+    end
+
+    if stage > 0 then
+        -- keep the notice going while the value stays up
+        if stage == 1 and not st.external and v >= notice_v then
+            st.stage_until = math.max(st.stage_until or 0, now + 1000)
+        end
+        if st.done or now >= (st.stage_until or 0) then
+            end_episode(st, npc, now, st.done and "done" or "timeout")
+            stage = 0
+        end
+    end
+
+    local edge = stage > 0 or (st.edge_until and now < st.edge_until)
+    set_rate_k(st, npc, edge and rate_k_suspicious or 1)
+    return stage > 0
+end
+
+-- ---------------------------------------------------------------------------
+-- evaluator
+-- ---------------------------------------------------------------------------
+class "evaluator_suspicion" (property_evaluator)
+
+function evaluator_suspicion:__init(name, st) super(nil, name)
+    self.st = st
+end
+
+function evaluator_suspicion:evaluate()
+    local st = self.st
+    local now = time_global()
+    if st.next_eval and now < st.next_eval then
+        return st.active == true
+    end
+    st.next_eval = now + eval_ms
+    st.active = update(self.object, st)
+    return st.active
+end
+
+-- ---------------------------------------------------------------------------
+-- action
+-- ---------------------------------------------------------------------------
+class "action_suspicion" (action_base)
+
+function action_suspicion:__init(name, st) super(nil, name)
+    self.st = st
+end
+
+function action_suspicion:initialize()
+    action_base.initialize(self)
+    self.phase_key = nil
+end
+
+local function look_at(npc, state, point)
+    state_mgr.set_state(npc, state, nil, nil, { look_position = point })
+end
+
+local function go_to(npc, lvid, state)
+    npc:set_path_type(game_object.level_path)
+    npc:set_detail_path_type(move.line)
+    npc:set_dest_level_vertex_id(lvid)
+    state_mgr.set_state(npc, state)
+end
+
+-- phase helper: run fn once when the phase key changes
+function action_suspicion:enter(key, fn)
+    if self.phase_key ~= key then
+        self.phase_key = key
+        self.phase_time = time_global()
+        self.last_lvid = self.object:level_vertex_id()
+        self.stuck_time = time_global()
+        fn()
+    end
+end
+
+-- true once the NPC stands at (or cannot get closer to) the vertex
+function action_suspicion:arrived(lvid)
+    local npc = self.object
+    local now = time_global()
+    if npc:level_vertex_id() == lvid or npc:position():distance_to(level.vertex_position(lvid)) < 1.5 then
+        return true
+    end
+    if npc:level_vertex_id() ~= self.last_lvid then
+        self.last_lvid = npc:level_vertex_id()
+        self.stuck_time = now
+    elseif now - self.stuck_time > 8000 then
+        return true
+    end
+    return false
+end
+
+function action_suspicion:execute()
+    action_base.execute(self)
+    local st, npc = self.st, self.object
+    if not st.point then
+        return
+    end
+    local now = time_global()
+    local plan = st.plan
+    if st.react_until and now < st.react_until then
+        return -- not reacted yet
+    end
+
+    if plan == "duck" then
+        self:enter("duck", function() look_at(npc, "hide_na", st.point) end)
+
+    elseif plan == "look" or plan == "watch" then
+        self:enter(plan, function() look_at(npc, "guard", st.point) end)
+
+    elseif plan == "cover" then
+        -- tactical notice: drop into the nearest cover facing the point, then watch
+        if not st.cover_lvid then
+            local cover = npc:best_cover(npc:position(), st.point, cover_radius, 5, 60)
+            st.cover_lvid = cover and npc:accessible(cover:level_vertex_id()) and cover:level_vertex_id() or -1
+        end
+        if st.cover_lvid >= 0 and not st.in_cover then
+            self:enter("cover_move", function() go_to(npc, st.cover_lvid, "sneak_run") end)
+            if self:arrived(st.cover_lvid) then
+                st.in_cover = true
+            end
+        else
+            self:enter("cover_watch", function() look_at(npc, "hide_na", st.point) end)
+        end
+
+    elseif plan == "curious" or plan == "careful" or plan == "tactical" then
+        st.phase = st.phase or "approach"
+        if st.phase == "approach" then
+            local dest = st.dest_lvid
+            if plan == "careful" and not st.paused then
+                -- stop about two thirds of the way and watch first
+                local p = npc:position()
+                local mid = vector():set(p.x + (st.point.x - p.x) * 0.66, st.point.y, p.z + (st.point.z - p.z) * 0.66)
+                st.mid_lvid = st.mid_lvid or reachable_vertex(npc, mid) or -1
+                if st.mid_lvid >= 0 then
+                    dest = st.mid_lvid
+                end
+            end
+            self:enter("approach:" .. dest, function() go_to(npc, dest, plan == "tactical" and "sneak" or "patrol") end)
+            if self:arrived(dest) then
+                if plan == "careful" and not st.paused and dest ~= st.dest_lvid then
+                    st.phase = "pause"
+                    st.pause_until = now + rand_range(timing.careful.pause) * 1000
+                else
+                    st.phase = "search"
+                    st.search_until = now + (st.search_ms or 10000)
+                end
+            end
+        elseif st.phase == "pause" then
+            self:enter("pause", function() look_at(npc, "guard", st.point) end)
+            if now >= st.pause_until then
+                st.paused = true
+                st.phase = "approach"
+            end
+        elseif st.phase == "search" then
+            self:enter("search", function() state_mgr.set_state(npc, plan == "tactical" and "threat_na" or "search") end)
+            if now >= st.search_until then
+                st.done = true
+            end
+        end
+    end
+end
+
+function action_suspicion:finalize()
+    local st = self.st
+    st.cover_lvid, st.in_cover, st.mid_lvid, st.paused = nil, nil, nil, nil
+    self.phase_key = nil
+    action_base.finalize(self)
+end
+
+-- ---------------------------------------------------------------------------
+-- scheme plumbing
+-- ---------------------------------------------------------------------------
+function add_to_binder(npc, ini, scheme, section, st)
+    local manager = npc:motivation_action_manager()
+    manager:add_evaluator(evid, evaluator_suspicion("stealth_suspicion", st))
+
+    local action = action_suspicion("action_stealth_suspicion", st)
+    action:add_precondition(world_property(stalker_ids.property_alive, true))
+    action:add_precondition(world_property(stalker_ids.property_enemy, false))
+    action:add_precondition(world_property(stalker_ids.property_danger, false))
+    action:add_precondition(world_property(stalker_ids.property_anomaly, false))
+    action:add_precondition(world_property(evid, true))
+    action:add_effect(world_property(evid, false))
+    manager:add_action(actid, action)
+
+    action = manager:action(xr_actions_id.alife)
+    action:add_precondition(world_property(evid, false))
+
+    registry[npc:id()] = st
+end
+
+function set_scheme(npc, ini, scheme, section)
+    local st = xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
+    registry[npc:id()] = st
+end
+
+-- scheme actions wait while the NPC is suspicious
+function addCommonPrecondition(action)
+    action:add_precondition(world_property(evid, false))
+end
+
+local function on_npc_death(npc)
+    local st = registry[npc:id()]
+    if st then
+        budget_release(st)
+        st.stage = 0
+    end
+    registry[npc:id()] = nil
+end
+
+local function on_npc_destroy(npc)
+    on_npc_death(npc)
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_npc_death", fun = on_npc_death })
+    sm:subscribe({ signal = "on_npc_net_destroy", fun = on_npc_destroy })
+end
+
+-- harness: report suspicion v for ms milliseconds on the NPC (id, or the one under the crosshair)
+function force(v, id, ms)
+    local obj = id and level.object_by_id(id) or level.get_target_obj()
+    if not (obj and type(nlc_stealth_force_suspicion) == "function") then
+        log2("! [stealth] susp force: no target or engine too old")
+        return
+    end
+    nlc_stealth_force_suspicion(obj:id(), v, ms or 1500)
+    local st = registry[obj:id()]
+    if st then
+        st.next_eval = 0
+    end
+    log2("~ [stealth] susp force %s v=%.2f temper=%s", obj:name(), v, temperament_of(obj))
+end
+
+local function target(id)
+    return id and level.object_by_id(id) or level.get_target_obj()
+end
+
+-- harness: a neutral NPC runs the suspicion behaviour as if hostile (it never fights:
+-- detection does not make it an enemy). test_neutral(false) ends it.
+function test_neutral(on, id)
+    local obj = target(id)
+    if not (obj and obj:is_stalker()) then
+        log2("! [stealth] susp test_neutral: look at a stalker or pass its id")
+        return
+    end
+    test_ids[obj:id()] = on and true or nil
+    local st = registry[obj:id()]
+    if st then
+        st.elig_until, st.next_eval = 0, 0
+    end
+    log2("~ [stealth] susp test_neutral %s %s temper=%s", obj:name(), tostring(on), temperament_of(obj))
+end
+
+-- harness: scale one NPC's detection speed toward the actor (0.2 = five times slower; 1 = normal)
+function slow(k, id)
+    local obj = target(id)
+    if not (obj and obj:is_stalker()) then
+        log2("! [stealth] susp slow: look at a stalker or pass its id")
+        return
+    end
+    k = tonumber(k) or 1
+    test_rate[obj:id()] = (k ~= 1) and k or nil
+    local st = registry[obj:id()]
+    if st then
+        st.rate_k = nil
+        set_rate_k(st, obj, (st.stage or 0) > 0 and rate_k_suspicious or 1)
+    elseif type(nlc_stealth_set_rate_k) == "function" then
+        nlc_stealth_set_rate_k(obj:id(), k)
+    end
+    log2("~ [stealth] susp slow %s k=%s", obj:name(), tostring(k))
+end
+
+-- xr_danger hook: a hostile NPC that sees a fresh corpse investigates it (by temperament) instead of the
+-- vanilla danger reaction; true = handled, xr_danger ignores this danger
+function corpse_seen(npc, corpse)
+    if not (corpse_investigate and enabled and engine_ready() and npc and corpse) then
+        return false
+    end
+    local st = registry[npc:id()]
+    if not st or not eligible(npc, st, time_global()) or npc:best_enemy() then
+        return false
+    end
+    st.corpses = st.corpses or {}
+    if st.corpses[corpse:id()] then
+        return true -- already checked: no new danger from it
+    end
+    if (st.stage or 0) >= 2 then
+        return true
+    end
+    local now = time_global()
+    st.corpses[corpse:id()] = true
+    st.temper = temperament_of(npc)
+    st.point = vector():set(corpse:position())
+    st.started, st.kind, st.external, st.react_until = now, 0, nil, nil
+    st.stage = 2
+    st.phase = nil
+    local why = plan_investigation(npc, st, now)
+    say("t=%d obs=%s stage=investigate why=corpse temper=%s plan=%s (%s) d=%.1f point=%s", now, npc:name(), st.temper, st.plan, why,
+        npc:position():distance_to(st.point), vec_str(st.point))
+    callout(npc, st, st.point)
+    st.next_eval = 0
+    return true
+end
+
+-- sr_light hook: an NPC walking to investigate something
+function is_investigating(npc)
+    local st = npc and registry[npc:id()]
+    return st ~= nil and (st.stage or 0) == 2 and (st.plan == "curious" or st.plan == "careful" or st.plan == "tactical")
+end
+
+function info(id)
+    local obj = id and level.object_by_id(id) or level.get_target_obj()
+    if not obj then
+        return
+    end
+    local st = registry[obj:id()]
+    log2("~ [stealth] susp info %s temper=%s group=%s skill=%.2f stage=%s plan=%s value=%s eligible=%s", obj:name(), temperament_of(obj), group_of(obj),
+        skill_of(obj), tostring(st and st.stage), tostring(st and st.plan), tostring(st and st.value), tostring(st and st.elig))
+end

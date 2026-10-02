@@ -45,6 +45,10 @@ void CBaseMonster::feel_sound_new(CObject* who, int eType, CSound_UserDataPtr us
     if (eType == 0xffffffff)
         return;
 
+    // NLC M4: outfit noise, surface and rain masking of the actor's quiet sounds (identity by default)
+    if (nlc_stealth::g_actor_sound_factor && g_actor && who == g_actor)
+        power *= nlc_stealth::actor_sound_factor(eType);
+
     // ignore distant sounds
     Fvector center;
     Center(center);
@@ -73,7 +77,8 @@ void CBaseMonster::feel_sound_new(CObject* who, int eType, CSound_UserDataPtr us
 
     // if ((eType & SOUND_TYPE_WEAPON_SHOOTING) == SOUND_TYPE_WEAPON_SHOOTING) power = 1.f;
 
-    const bool near_hit = ((eType & SOUND_TYPE_WEAPON_BULLET_HIT) == SOUND_TYPE_WEAPON_BULLET_HIT) && (dist < 2.f); // NLC: named for the diagnostics
+    // NLC: named for the diagnostics; the shooter range gate is a species key (near_hit_shooter_max_distance, off by default)
+    const bool near_hit = ((eType & SOUND_TYPE_WEAPON_BULLET_HIT) == SOUND_TYPE_WEAPON_BULLET_HIT) && (dist < 2.f) && nlc_stealth::monster_near_hit_allowed(this, who);
     if (near_hit)
         HitMemory.add_hit(who, eSideFront);
 
@@ -82,6 +87,10 @@ void CBaseMonster::feel_sound_new(CObject* who, int eType, CSound_UserDataPtr us
 
     // execute callback
     sound_callback(who, eType, Position, power);
+
+    // NLC M3: a faint heard actor shot only sends the monster to look (nlc_stealth monster_shot_alert_pow / species shot_alert_pow)
+    if (g_actor && who == g_actor && power >= db().m_fSoundThreshold && nlc_stealth::monster_faint_shot(this, eType, Position, power))
+        return;
 
     // register in sound memory
     if (power >= db().m_fSoundThreshold)
@@ -245,7 +254,8 @@ BOOL CBaseMonster::feel_vision_isRelevant(CObject* O)
         {
             // если видит друга - проверить наличие у него врагов
             CBaseMonster* monster = smart_cast<CBaseMonster*>(entity);
-            if (monster && !m_skip_transfer_enemy)
+            // NLC: pack sharing gate and visible-body exclusion (nlc_stealth pack_gate)
+            if (monster && !m_skip_transfer_enemy && !nlc_stealth::monster_pack_share(this, monster))
                 EnemyMan.transfer_enemy(monster);
             return FALSE;
         }
@@ -291,7 +301,11 @@ void CBaseMonster::HitSignal(float amount, Fvector& vLocalDir, CObject* who, s16
     // если нейтрал - добавить как врага
     CEntityAlive* obj = smart_cast<CEntityAlive*>(who);
     if (obj && (tfGetRelationType(obj) == ALife::eRelationTypeNeutral))
+    {
+        nlc_stealth::set_monster_add_source("hit_neutral"); // NLC: diagnostics tag
         EnemyMan.add_enemy(obj);
+        nlc_stealth::set_monster_add_source(nullptr);
+    }
 }
 
 void CBaseMonster::SetAttackEffector()

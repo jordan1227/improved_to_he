@@ -126,6 +126,9 @@ void CSoundMemoryManager::feel_sound_new(CObject* object, int sound_type, CSound
     if (!m_sounds)
         return;
 
+    // NLC M4: outfit noise, surface and rain masking of the actor's quiet sounds (nlc_stealth; identity by default)
+    if (nlc_stealth::g_actor_sound_factor && g_actor && object == g_actor)
+        sound_power *= nlc_stealth::actor_sound_factor(sound_type);
     const float nlc_raw_power = sound_power; // NLC: stealth diagnostics
 
     if (user_data)
@@ -183,14 +186,46 @@ void CSoundMemoryManager::feel_sound_new(CObject* object, int sound_type, CSound
         sound_power *= m_world_factor;
 
     VERIFY(_valid(sound_power));
+    // NLC: a heard actor shot becomes a hit memory only when loud enough (nlc_stealth fakehit_min_pow; 0 = always, as before)
+    const bool nlc_fake_hit_ok = !g_actor || object != g_actor || nlc_stealth::fake_hit_allowed(sound_power);
+
     // NLC: stealth diagnostics for sounds owned by the actor (nlc_stealth; off unless a watch or log_events is set)
     if (nlc_stealth::g_track && g_actor && object == g_actor)
     {
         const bool heard = sound_power >= m_sound_threshold;
-        const bool fake_hit = heard && is_sound_type(sound_type, SOUND_TYPE_WEAPON_SHOOTING) && (g_actor->g_Team() != entity_alive->g_Team());
+        const bool shot = heard && is_sound_type(sound_type, SOUND_TYPE_WEAPON_SHOOTING) && (g_actor->g_Team() != entity_alive->g_Team());
         Fvector center;
         m_object->Center(center);
-        nlc_stealth::on_stalker_sound(m_object, sound_type, center.distance_to(position), nlc_raw_power, sound_power, m_sound_threshold, heard, fake_hit);
+        nlc_stealth::on_stalker_sound(m_object, sound_type, center.distance_to(position), nlc_raw_power, sound_power, m_sound_threshold, heard, shot && nlc_fake_hit_ok,
+                                      shot && !nlc_fake_hit_ok);
+    }
+
+    // NLC M4: faint actor footsteps are concern, not danger (nlc_stealth step_alert_pow; off by default)
+    if (m_stalker && g_actor && object == g_actor && nlc_stealth::g_step_alert_pow > 0.f && sound_power >= m_sound_threshold &&
+        sound_power < nlc_stealth::g_step_alert_pow && is_sound_type(sound_type, SOUND_TYPE_MONSTER_STEP))
+    {
+        nlc_stealth::stalker_faint_step(m_stalker, position, sound_power);
+        m_last_sound_time = Device.dwTimeGlobal;
+        m_sound_threshold = _max(m_sound_threshold, sound_power);
+        return;
+    }
+    // NLC M4: an actor bullet impact close to a stalker is concern like a near miss (any relation)
+    if (m_stalker && g_actor && object == g_actor && nlc_stealth::g_near_miss_range > 0.f && is_sound_type(sound_type, SOUND_TYPE_WEAPON_BULLET_HIT))
+    {
+        Fvector center;
+        m_object->Center(center);
+        if (center.distance_to(position) < nlc_stealth::g_near_miss_range)
+            nlc_stealth::stalker_near_impact(m_stalker, position);
+    }
+
+    // NLC M3: a faint heard actor shot is concern (suspicion stages), not danger (nlc_stealth shot_alert_pow; off by default)
+    if (m_stalker && g_actor && object == g_actor && nlc_stealth::g_shot_alert_pow > 0.f && sound_power >= m_sound_threshold &&
+        sound_power < nlc_stealth::g_shot_alert_pow && is_sound_type(sound_type, SOUND_TYPE_WEAPON_SHOOTING))
+    {
+        nlc_stealth::stalker_faint_shot(m_stalker, position, sound_power);
+        m_last_sound_time = Device.dwTimeGlobal;
+        m_sound_threshold = _max(m_sound_threshold, sound_power);
+        return;
     }
 
     if (sound_power >= m_sound_threshold)
@@ -199,7 +234,7 @@ void CSoundMemoryManager::feel_sound_new(CObject* object, int sound_type, CSound
         {
             // this is fake!
             CEntityAlive* _entity_alive = smart_cast<CEntityAlive*>(object);
-            if (_entity_alive && (self->ID() != _entity_alive->ID()) && (_entity_alive->g_Team() != entity_alive->g_Team()))
+            if (_entity_alive && (self->ID() != _entity_alive->ID()) && (_entity_alive->g_Team() != entity_alive->g_Team()) && nlc_fake_hit_ok) // NLC: loudness gate
                 m_object->memory().hit().add(_entity_alive);
         }
         if (!m_stalker || !m_stalker->memory().enemy().selected())

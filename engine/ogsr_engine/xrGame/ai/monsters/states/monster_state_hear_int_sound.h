@@ -22,10 +22,13 @@ public:
 
     virtual void reselect_state();
     virtual void setup_substates();
+    virtual void initialize();
+    virtual void check_force_state(); // NLC M4: retarget when a new investigate impulse arrives
     virtual void remove_links(CObject* object) { inherited::remove_links(object); }
 
 private:
     Fvector get_target_position();
+    u32 m_nlc_serial{};
 };
 
 #include "monster_state_hear_int_sound_inline.h"

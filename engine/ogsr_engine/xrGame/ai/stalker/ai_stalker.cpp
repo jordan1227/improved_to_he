@@ -51,6 +51,7 @@
 #include "../../mt_config.h"
 #include "../../effectorshot.h"
 #include "../../visual_memory_manager.h"
+#include "../../nlc_stealth.h" // NLC: stealth eye glow
 #include "../../enemy_manager.h"
 #include "alife_human_brain.h"
 #include "../../BoneProtections.h"
@@ -267,6 +268,7 @@ void CAI_Stalker::reload(LPCSTR section)
 
 void CAI_Stalker::Die(CObject* who)
 {
+    nlc_stealth::stop_eye_glow(this); // NLC
     notify_on_wounded_or_killed(who);
 
     SelectAnimation(XFORM().k, movement().detail().direction(), movement().speed());
@@ -424,6 +426,7 @@ BOOL CAI_Stalker::net_Spawn(CSE_Abstract* DC)
 
 void CAI_Stalker::net_Destroy()
 {
+    nlc_stealth::stop_eye_glow(this); // NLC
     m_pPhysics_support->SyncNetState();
     inherited::net_Destroy();
     CInventoryOwner::net_Destroy();
@@ -559,6 +562,9 @@ void CAI_Stalker::UpdateCL()
             m_ActiveWeapon->CheckHaveAmmo();
             m_ActiveWeapon = nullptr;
         }
+
+        if (memory().visual().m_nlc_glow) // NLC: night-vision eye glow follows the eyes
+            nlc_stealth::update_eye_glow(this);
 
         if (g_mt_config.test(mtObjectHandler) && CObjectHandler::planner().initialized())
         {

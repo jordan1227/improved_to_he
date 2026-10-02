@@ -105,7 +105,9 @@ void CMonsterEnemyMemory::update()
                 float const xz_dist = monster->Position().distance_to_xz(enemy->Position());
                 float const y_dist = _abs(monster->Position().y - enemy->Position().y);
 
-                if (monster->CCustomMonster::useful(&monster->memory().enemy(), enemy) && y_dist < 10 && xz_dist < monster->get_feel_enemy_who_made_sound_max_distance())
+                // NLC: impact and whine sounds make the shooter an enemy only within the species range (off by default)
+                if (monster->CCustomMonster::useful(&monster->memory().enemy(), enemy) && y_dist < 10 && xz_dist < monster->get_feel_enemy_who_made_sound_max_distance() &&
+                    nlc_stealth::monster_impact_allowed(monster, sound.type == WEAPON_BULLET_RICOCHET, xz_dist))
                 {
                     nlc_stealth::set_monster_add_source("sound"); // NLC: stealth diagnostics source tag
                     add_enemy(enemy);
@@ -181,6 +183,7 @@ void CMonsterEnemyMemory::update()
 
 void CMonsterEnemyMemory::add_enemy(const CEntityAlive* enemy)
 {
+    nlc_stealth::on_monster_firsthand(monster, enemy); // NLC M4: own senses (pack sharing uses the positional overload)
     SMonsterEnemy enemy_info;
     enemy_info.position = enemy->Position();
     enemy_info.vertex = enemy->ai_location().level_vertex_id();

@@ -919,7 +919,9 @@ void CWeaponMagazined::OnShot()
     PlaySound(*m_pSndShotCurrent, get_LastFP(), true);
 
     if (ParentIsActor()) // NLC: stealth muzzle flash (nlc_stealth flash_k)
-        nlc_stealth::on_actor_shot(IsSilencerAttached());
+        nlc_stealth::on_actor_shot(IsSilencerAttached(), cNameSect().c_str());
+    else if (H_Parent() && !IsSilencerAttached()) // NLC: NPC muzzle flash for npc_light_k
+        nlc_stealth::on_npc_shot(H_Parent());
 
     if (!m_sndBreech.sounds.empty())
     {

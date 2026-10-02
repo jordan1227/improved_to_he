@@ -44,6 +44,7 @@
 #include "script_engine.h"
 #include "../anti_aim_ability.h"
 #include "../../../game_object_space.h"
+#include "../../../nlc_stealth.h" // NLC: monster senses
 
 CBaseMonster::CBaseMonster() : m_psy_aura(this, "psy"), m_fire_aura(this, "fire"), m_radiation_aura(this, "radiation"), m_base_aura(this, "base")
 {
@@ -328,6 +329,8 @@ void CBaseMonster::shedule_Update(u32 dt)
         m_anti_aim->update_schedule();
     }
 
+    nlc_stealth::monster_sense_update(this); // NLC: psy / smell aura (species nlc_sense_* keys)
+
     m_psy_aura.update_schedule();
     m_fire_aura.update_schedule();
     m_base_aura.update_schedule();
@@ -372,6 +375,8 @@ void CBaseMonster::Die(CObject* who)
         sound().play(MonsterSound::eMonsterSoundDie);
 
     monster_squad().remove_member((u8)g_Team(), (u8)g_Squad(), (u8)g_Group(), this);
+
+    nlc_stealth::on_monster_death(this); // NLC M3: pack mates check the corpse (nlc_stealth corpse_check)
 
     if (m_grouping_behaviour)
     {

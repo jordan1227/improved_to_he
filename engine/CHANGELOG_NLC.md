@@ -5,6 +5,203 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.10 (2026-10-02)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `AF014A0519F11A3313951C11BE4F07F00245465ACD3271A4ACDE4DBA96809EA3`
+- **Status:** runtime pending (stealth P4 build, `docs/STEALTH_DESIGN.md` 18.1 and 19).
+
+### NLC
+
+- **Monster investigate retarget** (`monster_state_hear_int_sound`): every accepted investigate
+  impulse bumps a serial and the hear-interesting-sound state restarts toward the new point
+  (`check_force_state`); a corpse check does not override a more urgent impulse (near miss,
+  faint shot, sight) still in progress. Before, a monster walking to a corpse ignored later near
+  misses.
+
+## nlc-3.589.9 (2026-10-02)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `5A326042C868CFD609666D557ED97A7EE2A975511BC2C81D06E31B50F26CE19E`
+- **Status:** runtime pending (stealth M4, `docs/STEALTH_DESIGN.md` section 18).
+
+### NLC: stealth M4 (`xrGame/nlc_stealth.cpp/.h`)
+
+New globals are identity by default; the script values switch them on.
+
+- **Concern escalation** (`concern_escalate`, `concern_window_ms`; species `concern_bold`,
+  `concern_enemy_range`): repeated near misses or faint shots make a monster hurry on the second
+  event, then attack within range (bold) or flee (timid, an ownerless dangerous sound).
+- **No relay chains** (`firsthand_ms`): pack mates pass the actor on only if they sensed him
+  themselves recently (`CMonsterEnemyMemory::add_enemy` marks own-sense acquisitions).
+- **Two-tier footsteps** (`step_alert_pow`; `sound_memory_manager.cpp`): actor footsteps weaker than
+  the threshold are a heard suspicion (kind 3) for stalkers, not an enemy sound.
+- **Impacts near stalkers:** an actor bullet hit sound within `near_miss_range` of a stalker counts
+  like a near miss (any relation; scripts give non-hostiles a short worried reaction).
+- **Footstep noise:** outfit key `stealth_noise_k` (`outfit_noise`), ground material table
+  `[nlc_step_surface]` (`surface_noise`), rain masking of quiet sounds (`rain_mask`); applied to the
+  actor's sounds for stalkers and monsters.
+- **Dynamic lamps** (`lamp_k`, `lamp_period_ms`; `CHangingLamp::nlc_light`, lamp registry): lamps and
+  spot lamps light the actor for AI (range falloff, spot cone, static-geometry ray), computed once per
+  period for all observers; `vis` lines show `+lamp`.
+- **Lua:** `nlc_stealth_actor_surface()` (ground material, its factor, outfit noise factor).
+
+### Required game data
+
+- Scripts: `sivol_stealth_suspicion.script` (worried reaction, corpse investigation, torch hook),
+  `sivol_stealth_cfg.script`, `sivol_stealth_test.script`; hooks in `xr/xr_danger.script` (corpses),
+  `xrs/xrs_battle_ai.script` (knife and any suppressed weapon count as a silent kill),
+  `sr/sr_light.script` (torch on while investigating).
+- Config: `creatures/m_stalker.ltx` (`[nlc_step_surface]`), species keys in `m_dog`, `m_pseudodog`,
+  `m_boar`, `m_bloodsucker`, `m_snork`, `m_chimera`, `m_flesh`, `m_tushkano`, `m_rat`;
+  `misc/all_outfits_nlc.ltx` (`stealth_noise_k`).
+
+## nlc-3.589.8 (2026-10-02)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `1668F9477BB2EFF7B5BE8F62C33252825C787D523F3F08B7969EBFB23051F69C`
+- **Status:** runtime pending (stealth M3, `docs/STEALTH_DESIGN.md` section 17).
+
+### NLC: shots, near misses, corpses (`xrGame/nlc_stealth.cpp/.h`)
+
+New globals are identity by default; the script values switch them on.
+
+- **Two-tier shot hearing:** a heard actor shot weaker than `shot_alert_pow` (stalkers, weighted
+  power; `sound_memory_manager.cpp`) or `monster_shot_alert_pow` / species `shot_alert_pow`
+  (monsters; `base_monster_feel.cpp`) is concern only: stalkers get a heard suspicion value at a
+  blurred point (suspicion stages run, no `attack_sound` danger), monsters investigate a blurred
+  point. Louder shots work as before.
+- **Near misses** (`Level_bullet_manager.cpp` `CalcBullet`): an actor bullet segment passing within
+  `near_miss_range` of a creature gives concern toward a shooter guessed back along the bullet
+  (distance error): monsters investigate, stalkers get a heard suspicion (kind "near miss") that the
+  script turns into ducking or taking cover by temperament. Per-creature cooldown 1.5 s.
+- **Corpse checks** (`CBaseMonster::Die`, `corpse_check`): the nearest calm squad mates within the
+  species `corpse_check_radius` (up to `corpse_check_count`) investigate the corpse, the rest watch it.
+- **Investigate styles** (`monster_state_hear_int_sound_inline.h`): monsters sent to investigate by
+  the stealth layer walk, sneak (`ACT_STEAL`), hold and watch, or run, by a stable roll with the
+  species `investigate_style_weights`; `mnotice` lines show `why` and `style`.
+- **Lua:** `nlc_stealth_suspicion` returns the heard kind (0 sight, 1 faint shot, 2 near miss).
+- **Diagnostics:** `macq src=hit_neutral` for the neutral-attacker hit path.
+
+### Required game data
+
+- `config/ogg_comments_overrides.ltx`: suppressed `ai_dist` raised to the outer radii (PB 8,
+  pistols 13, 9x39 13, 5.45/5.56 20, 7.62x39 25, full power 28, 12 gauge 32).
+- `config/creatures/m_dog.ltx`, `m_pseudodog.ltx`, `m_boar.ltx`, `m_flesh.ltx`, `m_snork.ltx`,
+  `m_bloodsucker.ltx`: corpse check and investigate style keys.
+- `gamedata/scripts/sivol/sivol_stealth_cfg.script` (new values),
+  `sivol_stealth_suspicion.script` (shot-at reaction by temperament and rank).
+
+## nlc-3.589.7 (2026-10-02)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `4C48BA7921655C02A6EA1760D937913BFD33CA290BD40D3FCA449E091C7D0B83`
+- **Status:** runtime pending (stealth M2, mutant senses, `docs/STEALTH_DESIGN.md` section 16).
+
+### NLC: mutant senses (`xrGame/nlc_stealth.cpp/.h`)
+
+New globals are identity by default; species keys in `config/creatures/m_*.ltx` are absent
+(vanilla) unless set.
+
+- **Light model:** species `nlc_light_k` (share of the AI sky and near-range light terms for
+  monster observers) and `nlc_dark_floor` (night vision); `visual_memory_manager.cpp`.
+- **Partial cover and decay for monsters:** `monster_ray_resample`, `monster_mem_hold_ms`,
+  `monster_mem_decay_s`.
+- **Monster suspicion:** past `monster_notice_v` of its detection threshold a monster gets an
+  "interesting" actor sound at the actor's position, so its own investigate states run
+  (`monster_notice_ms` between impulses).
+- **Aura sense** (generalised from `CPoltergeist::update_detection`; `CBaseMonster::shedule_Update`):
+  species `nlc_sense_*` keys (range, near/far factors, actor-speed exponent and minimum, rate,
+  loss, notice and success levels, psy scaling by the actor's telepathic immunity, rain, through
+  walls); notice sends the monster to investigate, success makes the actor its enemy (sources
+  `psy` / `smell`). Global `sense_mult`.
+- **Pack sharing gate** (`CBaseMonster::feel_vision_isRelevant`): with `pack_gate`, a monster copies
+  a pack mate's enemy only within the species `pack_share_range` and after a random delay
+  (`pack_share_delay_min/max`); beyond the range it only investigates. Monsters already hunting
+  the enemy refresh freely. The visible-body helper (`actor_legs`) never gives or receives (always).
+- **Impact and near-miss gates:** species `feel_enemy_who_made_impact_max_distance`
+  (`CMonsterEnemyMemory::update`, bullet impact and whine sounds) and
+  `near_hit_shooter_max_distance` (`CBaseMonster::feel_sound_new`, the 2 m near-miss hit).
+- **Rain:** species `nlc_rain_k` scales monster detection.
+- **Lua:** `nlc_stealth_env_light()` (environment light: total, ambient, sky, sun) for the NPC
+  night-vision darkness switch.
+- **Diagnostics:** `mnotice` and `msense` lines; `macq` sources `psy`, `smell`.
+
+### Required game data
+
+- `config/creatures/m_dog.ltx`, `m_pseudodog.ltx`, `m_snork.ltx`, `m_bloodsucker.ltx`,
+  `m_controller.ltx`, `m_burer.ltx`, `m_poltergeist.ltx`, `m_boar.ltx`, `m_flesh.ltx`: species
+  keys and calm vision sections.
+- `gamedata/scripts/sivol/sivol_stealth_cfg.script` (monster globals),
+  `sivol_stealth_nvd.script` (darkness mode), `sivol_stealth_test.script` (monster `hold()`,
+  environment light in `ctx()`).
+
+## nlc-3.589.6 (2026-10-02)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `60BE35C44604D1C2A8C2EC1F95FAA224089774B28248B87FF83B219AC9A9163C`
+- **Status:** runtime pending (stealth pass 3, `docs/STEALTH_DESIGN.md` section 15).
+
+### NLC: stealth and perception (`xrGame/nlc_stealth.cpp/.h`)
+
+New parameters are identity by default, so the exe alone behaves like nlc-3.589.5.
+
+- **Partial cover** (`ray_resample`; `xr_3da/Feel_Vision.cpp` virtual
+  `feel_vision_resample`, `CCustomMonster` override): stalkers re-trace the actor every
+  update with a new sample point on the body, so detection scales with the visible part
+  of the body. Before, one clear point was kept while nobody moved.
+- **Suspicion exports** (`CVisualMemoryManager`): the actor's position at the last
+  evaluation that added to the sum, a per-NPC rate factor; Lua `nlc_stealth_suspicion`,
+  `nlc_stealth_set_rate_k`, `nlc_stealth_force_suspicion` (harness).
+- **Night-vision devices:** per-NPC flag (`nlc_stealth_set_nvd`) and light floor
+  `nvd_floor`; eye glow particle placed in front of the eyes every frame
+  (`nlc_stealth_eye_glow`; `CAI_Stalker::UpdateCL`, stopped on death and net_Destroy).
+- **Outfit and rain** (`outfit_vis`, `rain_k`): the actor outfit's hidden
+  `stealth_visibility_k` and the rain density scale the detection rate for stalker
+  observers.
+- **NPC targets** (`npc_light_k`, `npc_sky_vis`, `npc_sun_k`): optional light model for
+  stalkers seeing stalkers (environment light cached per frame, target torch flag cached
+  for 0.5 s, muzzle flash after unsuppressed NPC shots, near term, night-vision floor),
+  blended from the vanilla "always lit"; 0 keeps vanilla.
+- **Diagnostics:** shot sounds are labelled with the weapon that fired (the actor's
+  `wpn_pkp` logged `wpn=-` before); `vis` lines add `out`, `rain`, `nvd`, `ek`.
+
+### Required game data
+
+- `gamedata/scripts/sivol/sivol_stealth_suspicion.script` (new scheme; hooks in
+  `modules.script`, `xr/xr_logic.script`, `xr/xr_motivator.script`),
+  `sivol_stealth_nvd.script` (new; hook in `sr/sr_light.script`), both registered in
+  `ogse/ogse_signals_addons_list.script`; `sivol_stealth_cfg.script` values.
+- `config/misc/all_outfits_nlc.ltx`: `stealth_visibility_k` keys.
+- `particles/stealth_nvg/nvg_dot.pe` (from the Anomaly addon "Stealth" 2.31, with
+  permission).
+
+## nlc-3.589.5 (2026-10-02)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A241D7FC2E7EEBA27A51440D1E6587953FA164A78F383FA764DF30EE84ED33A9`
+- **Status:** runtime pending (stealth batch 2, `docs/STEALTH_DESIGN.md` section 14).
+
+### NLC: stealth and perception (`xrGame/nlc_stealth.cpp/.h`)
+
+New parameters are identity by default, so the exe alone behaves like nlc-3.589.4.
+
+- **Suspicion decay** (`mem_hold_ms`, `mem_decay_s`; `visual_memory_manager.cpp`
+  `update`): a stalker that stops evaluating the actor (out of its view cone, ray
+  blocked) keeps its partial detection sum for `mem_hold_ms`, then drains it over
+  `mem_decay_s` from the full threshold, instead of resetting it at once. Monsters and
+  other targets keep the instant reset. `nolos` lines show `sum` and `left`.
+- **Heard-shot hit record gate** (`fakehit_min_pow`; `sound_memory_manager.cpp`): a
+  heard actor shot adds the actor to the listener's hit memory (an amount-0 record that
+  turns into an enemy candidate once the squad is in combat) only at this weighted power
+  or more. `snd` lines show `gated=1`.
+
+### Required game data
+
+- `config/creatures/m_stalker.ltx`: new `[stalker_vision_tower_sniper]`.
+- `gamedata/scripts/sivol/sivol_stealth_cfg.script`: the new parameters and
+  `vision_profiles` (applies the tower section to the Agroprom tower snipers on spawn).
+
 ## nlc-3.589.4 (2026-10-02)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

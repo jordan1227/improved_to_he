@@ -7,6 +7,13 @@
 
 #define CStateMonsterHearInterestingSoundAbstract CStateMonsterHearInterestingSound<_Object>
 
+class CBaseMonster;
+namespace nlc_stealth
+{
+u32 monster_inv_style(CBaseMonster* monster);
+u32 monster_notice_serial(CBaseMonster* monster);
+}
+
 TEMPLATE_SPECIALIZATION
 CStateMonsterHearInterestingSoundAbstract::CStateMonsterHearInterestingSound(_Object* obj) : inherited(obj)
 {
@@ -15,10 +22,39 @@ CStateMonsterHearInterestingSoundAbstract::CStateMonsterHearInterestingSound(_Ob
 }
 
 TEMPLATE_SPECIALIZATION
+void CStateMonsterHearInterestingSoundAbstract::initialize()
+{
+    inherited::initialize();
+    m_nlc_serial = nlc_stealth::monster_notice_serial(object);
+}
+
+// NLC M4: a new investigate impulse (near miss, shot, sight) restarts the walk toward the new point
+TEMPLATE_SPECIALIZATION
+void CStateMonsterHearInterestingSoundAbstract::check_force_state()
+{
+    const u32 serial = nlc_stealth::monster_notice_serial(object);
+    if (serial == m_nlc_serial)
+        return;
+    m_nlc_serial = serial;
+    if (current_substate != u32(-1))
+    {
+        get_state_current()->critical_finalize();
+        current_substate = u32(-1);
+    }
+    prev_substate = u32(-1);
+}
+
+TEMPLATE_SPECIALIZATION
 void CStateMonsterHearInterestingSoundAbstract::reselect_state()
 {
     if (prev_substate == u32(-1))
     {
+        // NLC M3: "hold" style watches the point without moving
+        if (nlc_stealth::monster_inv_style(object) == 3)
+        {
+            select_state(eStateHearInterestingSound_LookAround);
+            return;
+        }
         if (get_state(eStateHearInterestingSound_MoveToDest)->check_start_conditions())
             select_state(eStateHearInterestingSound_MoveToDest);
         else
@@ -43,6 +79,16 @@ void CStateMonsterHearInterestingSoundAbstract::setup_substates()
         data.accelerated = true;
         data.braking = false;
         data.accel_type = eAT_Calm;
+        // NLC M3: investigate style (sneak, run); walk otherwise
+        switch (nlc_stealth::monster_inv_style(object))
+        {
+        case 2: data.action.action = ACT_STEAL; break;
+        case 4:
+            data.action.action = ACT_RUN;
+            data.accel_type = eAT_Aggressive;
+            break;
+        default: break;
+        }
         data.completion_dist = 2.f;
         data.action.sound_type = MonsterSound::eMonsterSoundIdle;
         data.action.sound_delay = object->db().m_dwIdleSndDelay;
@@ -62,6 +108,8 @@ void CStateMonsterHearInterestingSoundAbstract::setup_substates()
         Fvector dir;
         object->CoverMan->less_cover_direction(dir);
         data.point.mad(object->Position(), dir, 10.f);
+        if (nlc_stealth::monster_inv_style(object) == 3) // NLC M3: hold and watch the sound
+            data.point = object->SoundMemory.GetSound().position;
 
         state->fill_data_with(&data, sizeof(SStateDataActionLook));
 
