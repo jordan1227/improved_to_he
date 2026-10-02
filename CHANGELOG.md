@@ -1,6 +1,411 @@
-<!-- nlc-changelog-head: 2bc2a9d95b3e9b0ee81dbb8ac86f129362f21708 -->
+<!-- nlc-changelog-head: c8e3df0e2fc08993fcf13c8611baa708d31fdaa1 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: c8e3df0e2fc08993fcf13c8611baa708d31fdaa1 -->
+## 03.10.26 00:03 МСК - ИИ, стелс. Add stealth AI suspicion and perception pass
+
+Commit: [c8e3df0](https://github.com/jordan1227/improved_to_he/commit/c8e3df0e2fc08993fcf13c8611baa708d31fdaa1)
+
+### Description
+
+This patch adds the stealth perception pass for stalkers and monsters: concern vs danger handling for faint shots and near misses, monster investigate retargeting and pack-sharing logic, dynamic lamp lighting, NPC night-vision glow, and suspicion-stage scripting hooks. It also introduces the related tuning keys, monster/species config entries, new scripts, and required particle/data updates for the stealth system.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_bloodsucker.ltx
+- M gamedata/config/creatures/m_boar.ltx
+- M gamedata/config/creatures/m_burer.ltx
+- M gamedata/config/creatures/m_chimera.ltx
+- M gamedata/config/creatures/m_controller.ltx
+- M gamedata/config/creatures/m_dog.ltx
+- M gamedata/config/creatures/m_flesh.ltx
+- M gamedata/config/creatures/m_poltergeist.ltx
+- M gamedata/config/creatures/m_pseudodog.ltx
+- M gamedata/config/creatures/m_rat.ltx
+- M gamedata/config/creatures/m_snork.ltx
+- M gamedata/config/creatures/m_stalker.ltx
+- M gamedata/config/creatures/m_tushkano.ltx
+- M gamedata/config/misc/all_outfits_nlc.ltx
+- M gamedata/config/ogg_comments_overrides.ltx
+- A gamedata/particles/stealth_nvg/nvg_dot.pe
+- M gamedata/scripts/modules.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sivol/sivol_stealth_cfg.script
+- A gamedata/scripts/sivol/sivol_stealth_nvd.script
+- A gamedata/scripts/sivol/sivol_stealth_suspicion.script
+- M gamedata/scripts/sivol/sivol_stealth_test.script
+- M gamedata/scripts/sr/sr_light.script
+- M gamedata/scripts/xr/xr_danger.script
+- M gamedata/scripts/xr/xr_logic.script
+- M gamedata/scripts/xr/xr_motivator.script
+- M gamedata/scripts/xrs/xrs_battle_ai.script
+
+### Other repository files changed
+
+- M .gitignore
+- M credit list (unfinished).txt
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/CustomMonster.cpp
+- M engine/ogsr_engine/xrGame/CustomMonster.h
+- M engine/ogsr_engine/xrGame/HangingLamp.cpp
+- M engine/ogsr_engine/xrGame/HangingLamp.h
+- M engine/ogsr_engine/xrGame/Level_Bullet_Manager.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_feel.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_hear_int_sound.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_hear_int_sound_inline.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.h
+- M engine/ogsr_engine/xrGame/sound_memory_manager.cpp
+- M engine/ogsr_engine/xrGame/visual_memory_manager.cpp
+- M engine/ogsr_engine/xrGame/visual_memory_manager.h
+- M engine/ogsr_engine/xr_3da/Feel_Vision.cpp
+- M engine/ogsr_engine/xr_3da/Feel_Vision.h
+
+<!-- nlc-changelog-commit: 3ec324d1c4c838c095a1bec17933cafcf21f9f52 -->
+## 02.10.26 22:39 МСК - Вернул ограбление Рашпилю из he
+
+Commit: [3ec324d](https://github.com/jordan1227/improved_to_he/commit/3ec324d1c4c838c095a1bec17933cafcf21f9f52)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 417cdf4675faf26a64ed446a4acc96443f517dc4 -->
+## 02.10.26 22:30 МСК - По трупам закрываем квест
+
+Commit: [417cdf4](https://github.com/jordan1227/improved_to_he/commit/417cdf4675faf26a64ed446a4acc96443f517dc4)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/info_sak_way.xml
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 93bf7d059470547e9208c96f92e3f09df7df1306 -->
+## 02.10.26 21:20 МСК - Убрать жажду только после анимации
+
+Commit: [93bf7d0](https://github.com/jordan1227/improved_to_he/commit/93bf7d059470547e9208c96f92e3f09df7df1306)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/thirst.script
+- M gamedata/scripts/vergas/vergas_flask.script
+
+<!-- nlc-changelog-commit: 6f95c0271099bf840588351c268372a0f6f91d89 -->
+## 02.10.26 18:35 МСК - Восстанавливаем эффект выброса при загрузки сейва
+
+Commit: [6f95c02](https://github.com/jordan1227/improved_to_he/commit/6f95c0271099bf840588351c268372a0f6f91d89)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/amk/amk_mod.script
+
+<!-- nlc-changelog-commit: 3aecb72818645021c54ffaccd43a089413c5d3a4 -->
+## 02.10.26 18:02 МСК - Звуковые эффекты, если выброс застали в подземке
+
+Commit: [3aecb72](https://github.com/jordan1227/improved_to_he/commit/3aecb72818645021c54ffaccd43a089413c5d3a4)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/amk/amk_mod.script
+
+<!-- nlc-changelog-commit: 892faea0ad6b11828053fe373bffe6022add1c44 -->
+## 02.10.26 17:50 МСК - Выброс хранит свое состояние в сейве
+
+Commit: [892faea](https://github.com/jordan1227/improved_to_he/commit/892faea0ad6b11828053fe373bffe6022add1c44)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/amk/amk_mod.script
+- M gamedata/scripts/blowout_scheme.script
+- M gamedata/scripts/kotovod/spawner.script
+- M gamedata/scripts/nlc_fixes.script
+
+<!-- nlc-changelog-commit: 74190c976c23e9017cff5ebbcd07793c56fd88d9 -->
+## 02.10.26 16:08 МСК - Манифест
+
+Commit: [74190c9](https://github.com/jordan1227/improved_to_he/commit/74190c976c23e9017cff5ebbcd07793c56fd88d9)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 6360a186495a3a7f0649d825525060bbbcc6e02c -->
+## 02.10.26 16:05 МСК - Add stealth perception tuning and diagnostics
+
+Commit: [6360a18](https://github.com/jordan1227/improved_to_he/commit/6360a186495a3a7f0649d825525060bbbcc6e02c)
+
+### Description
+
+This change adds a live-tunable stealth/perception layer for actor visibility and hearing, including NPC watch diagnostics, muzzle flash/torch/sky light terms, actor speed fixes, and stealth script hooks. It also fixes .ogg comment overrides so INI keys merge on top of existing comment values instead of replacing them. The patch includes the nlc-3.589.4 engine bump, stealth config/test Lua scripts, creature and sound tuning data, and related changelog/version updates.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/actor.ltx
+- M gamedata/config/creatures/m_stalker.ltx
+- M gamedata/config/ogg_comments_overrides.ltx
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- A gamedata/scripts/sivol/sivol_stealth_cfg.script
+- A gamedata/scripts/sivol/sivol_stealth_test.script
+
+### Other repository files changed
+
+- M .gitignore
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/COMMON_AI/script_engine_export.cpp
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_feel.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.cpp
+- M engine/ogsr_engine/xrGame/enemy_manager.cpp
+- A engine/ogsr_engine/xrGame/nlc_stealth.cpp
+- A engine/ogsr_engine/xrGame/nlc_stealth.h
+- M engine/ogsr_engine/xrGame/script_game_object2.cpp
+- M engine/ogsr_engine/xrGame/script_game_object3.cpp
+- M engine/ogsr_engine/xrGame/sound_memory_manager.cpp
+- M engine/ogsr_engine/xrGame/visual_memory_manager.cpp
+- M engine/ogsr_engine/xrGame/visual_memory_manager.h
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+- M engine/ogsr_engine/xrSound/SoundRender_Source_loader.cpp
+
+<!-- nlc-changelog-commit: 2ffa9d2d7ae2d029023b33ba67021f5e94a4df28 -->
+## 02.10.26 15:20 МСК - Рандомный пулл монстров в гулагах
+
+Commit: [2ffa9d2](https://github.com/jordan1227/improved_to_he/commit/2ffa9d2d7ae2d029023b33ba67021f5e94a4df28)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- A gamedata/config/misc/he_random_fauna.ltx
+- A gamedata/scripts/he_random_fauna.script
+- M gamedata/scripts/logic/smart_terrain.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/olr/olr_faction_policy.script
+- M gamedata/scripts/se/se_respawn.script
+
+<!-- nlc-changelog-commit: 9d8a896ddf2ba19be335e14dffaa045d81733aa1 -->
+## 02.10.26 07:29 МСК - Update sivol_bloodsucker_head.script
+
+Commit: [9d8a896](https://github.com/jordan1227/improved_to_he/commit/9d8a896ddf2ba19be335e14dffaa045d81733aa1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sivol/sivol_bloodsucker_head.script
+
+<!-- nlc-changelog-commit: 0cfda49a253f13bc6f6eb836ef23f672ccb1dad2 -->
+## 02.10.26 07:29 МСК - Adjust shotgun reloads and recoil caps
+
+Commit: [0cfda49](https://github.com/jordan1227/improved_to_he/commit/0cfda49a253f13bc6f6eb836ef23f672ccb1dad2)
+
+### Description
+
+Tune shotgun HUD animation speeds and reload timing to match the faster 1.2x animation pacing, including the Orekh shotgun reload timing and lock values. Extend recoil personality profiles with per-shot pitch caps and live max-pitch handling so shotgun duplets and self-loaders can climb above the default class limit without breaking the overall camera clamp.
+
+### Game files changed
+
+- M gamedata/config/weapons/w_mp133_full.ltx
+- M gamedata/config/weapons/w_mp133_short.ltx
+- M gamedata/config/weapons/w_mp153.ltx
+- M gamedata/config/weapons/w_oreh_shotgun.ltx
+- M gamedata/scripts/sivol/sivol_fuzz_recoil.script
+- M gamedata/scripts/sivol/sivol_fuzz_recoil_profiles.script
+
+<!-- nlc-changelog-commit: 914e52aa3cb782aae0a45ef7465da22e974e75cc -->
+## 02.10.26 00:27 МСК - Сохранение фреймов для погоды
+
+Commit: [914e52a](https://github.com/jordan1227/improved_to_he/commit/914e52aa3cb782aae0a45ef7465da22e974e75cc)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/level_weathers.script
+
+<!-- nlc-changelog-commit: 78a477ee86146ef8af6dff303cafe86fad2e8daa -->
+## 01.10.26 22:11 МСК - Манифест
+
+Commit: [78a477e](https://github.com/jordan1227/improved_to_he/commit/78a477ee86146ef8af6dff303cafe86fad2e8daa)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 66f60da32a2d579658c80f124c90ac1708b61245 -->
+## 01.10.26 22:10 МСК - Update sivol_bloodsucker_head.script
+
+Commit: [66f60da](https://github.com/jordan1227/improved_to_he/commit/66f60da32a2d579658c80f124c90ac1708b61245)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sivol/sivol_bloodsucker_head.script
+
+<!-- nlc-changelog-commit: 8887b32564fab9541534b56cb8b6bbb74c3c310c -->
+## 01.10.26 21:43 МСК - Merge branch 'balance/mutants-shotguns-engine-3.589.3'
+
+Commit: [8887b32](https://github.com/jordan1227/improved_to_he/commit/8887b32564fab9541534b56cb8b6bbb74c3c310c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+- M gamedata/scripts/level_weathers.script
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
+
+<!-- nlc-changelog-commit: a802f1ba75d813af160b285572a83ba1bb361370 -->
+## 01.10.26 21:34 МСК - Merge pull request #6 from jordan1227/balance/mutants-shotguns-engine-3.589.3
+
+Commit: [a802f1b](https://github.com/jordan1227/improved_to_he/commit/a802f1ba75d813af160b285572a83ba1bb361370)
+
+### Description
+
+Balance/mutants shotguns engine 3.589.3
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/game_relations.ltx
+- M gamedata/config/creatures/m_bloodsucker.ltx
+- M gamedata/config/creatures/m_boar.ltx
+- M gamedata/config/creatures/m_cat.ltx
+- M gamedata/config/creatures/m_chimera.ltx
+- M gamedata/config/creatures/m_dog.ltx
+- M gamedata/config/creatures/m_flesh.ltx
+- M gamedata/config/creatures/m_pseudodog.ltx
+- M gamedata/config/gameplay/storyline_info_sak_way.xml
+- M gamedata/config/misc/barter_trade.ltx
+- M gamedata/config/misc/shop_other/junkman_barter.ltx
+- M gamedata/config/misc/task_manager.ltx
+- M gamedata/config/misc/trade_logic/trade_generic.ltx
+- M gamedata/config/misc/trade_npc/trade_generic.ltx
+- M gamedata/config/misc/treasure_manager.ltx
+- M gamedata/config/text/eng/ui_st_inventory.xml
+- M gamedata/config/text/rus/ui_st_inventory.xml
+- M gamedata/config/weapons/w_abakan.ltx
+- M gamedata/config/weapons/w_mp133_full.ltx
+- M gamedata/config/weapons/w_mp133_short.ltx
+- M gamedata/config/weapons/w_mp153.ltx
+- M gamedata/config/weapons/w_mp153_short.ltx
+- M gamedata/config/weapons/w_oreh_shotgun.ltx
+- M gamedata/config/weapons/w_saiga12_mod.ltx
+- M gamedata/config/weapons/w_saiga12c.ltx
+- M gamedata/config/weapons/w_spas12.ltx
+- M gamedata/config/weapons/w_toz34.ltx
+- M gamedata/config/weapons/w_toz34_hunter.ltx
+- M gamedata/config/weapons/w_toz66.ltx
+- M gamedata/config/weapons/w_toz66_short.ltx
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/dsh_monster_attack.script
+- M gamedata/scripts/he_hipfire.script
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/new_quests.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sak/sak_dialog.script
+- A gamedata/scripts/sivol/sivol_bloodsucker_head.script
+- M gamedata/scripts/sivol/sivol_fuzz_recoil.script
+- M gamedata/scripts/sivol/sivol_fuzz_recoil_profiles.script
+- A gamedata/scripts/sivol/sivol_hit_log.script
+- A gamedata/scripts/sivol/sivol_mp153_swap.script
+- M gamedata/scripts/ui/ui_barter.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/EntityCondition.cpp
+- M engine/ogsr_engine/xrGame/EntityCondition.h
+- M engine/ogsr_engine/xrGame/WeaponShotgun.cpp
+- M engine/ogsr_engine/xrGame/WeaponShotgun.h
+- M engine/ogsr_engine/xrGame/Wound.cpp
+- M engine/ogsr_engine/xrGame/Wound.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_startup.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/group_states/group_state_attack_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_manager.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.h
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_hit_memory.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_hit_memory.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_inline.h
 
 <!-- nlc-changelog-commit: 2bc2a9d95b3e9b0ee81dbb8ac86f129362f21708 -->
 ## 01.10.26 21:31 МСК - MP-153: late weapon again, MP-133 as the early shotgun, one-time swap
