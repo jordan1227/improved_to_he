@@ -1,0 +1,168 @@
+-- [HE-PORT]
+local HEARTBEAT_MS = 10000
+local REFILL_KEY = "he_random_fauna_refill"
+
+local loaded = false
+local keep_original = 40
+local level_pool = {}
+local accept = {}
+local keep = {}
+local refill = { level = "", interval = 1440, lairs = {} }
+
+local function read_section(ini, sec, fn)
+	if not ini:section_exist(sec) then return end
+	for i = 0, ini:line_count(sec) - 1 do
+		local res, id, val = ini:r_line(sec, i, "", "")
+		if id and id ~= "" then
+			fn(id, val or "")
+		end
+	end
+end
+
+local function load_pool(ini, name)
+	local p = { list = {}, sum = 0, set = {} }
+	read_section(ini, name, function(sec, w)
+		w = tonumber(w) or 0
+		if w > 0 and system_ini():section_exist(sec) then
+			table.insert(p.list, { sec, w })
+			p.sum = p.sum + w
+			p.set[sec] = true
+		end
+	end)
+	return p
+end
+
+local function load()
+	if loaded then return end
+	loaded = true
+	local ini = ini_file("misc\\he_random_fauna.ltx")
+	if not ini or not ini:section_exist("settings") then return end
+	if ini:line_exist("settings", "keep_original") then
+		keep_original = ini:r_u32("settings", "keep_original")
+	end
+	local pools = {}
+	read_section(ini, "levels", function(lvl, pool)
+		if not pools[pool] then
+			pools[pool] = load_pool(ini, pool)
+		end
+		level_pool[lvl] = pools[pool]
+	end)
+	read_section(ini, "lair_accept", function(name, val)
+		if val == "any" then
+			accept[name] = true
+		else
+			local set = {}
+			for c in string.gmatch(val, "[%w_]+") do
+				set[c] = true
+			end
+			accept[name] = set
+		end
+	end)
+	read_section(ini, "keep_respawners", function(name)
+		keep[name] = true
+	end)
+	read_section(ini, "refill", function(k, v)
+		if k == "level" then
+			refill.level = v
+		elseif k == "interval" then
+			refill.interval = tonumber(v) or refill.interval
+		elseif k == "pool" then
+			refill.pool = load_pool(ini, v)
+		elseif k == "lairs" then
+			for n in string.gmatch(v, "[%w_]+") do
+				table.insert(refill.lairs, n)
+			end
+		end
+	end)
+end
+
+local function roll(p)
+	if not p or p.sum <= 0 then return nil end
+	local r = math.random() * p.sum
+	for i = 1, #p.list do
+		r = r - p.list[i][2]
+		if r <= 0 then
+			return p.list[i][1]
+		end
+	end
+	return p.list[#p.list][1]
+end
+
+local function pool_of(respawner)
+	if not respawner.he_monster_respawn then return nil end
+	load()
+	if keep[respawner:name()] then return nil end
+	local p = level_pool[respawner.level_name or ""]
+	if not p or p.sum <= 0 then return nil end
+	return p
+end
+
+function pick(respawner, section)
+	local p = pool_of(respawner)
+	if not p or math.random(100) <= keep_original then
+		return section
+	end
+	return roll(p) or section
+end
+
+function add_sections(respawner, set)
+	local p = pool_of(respawner)
+	if not p then return end
+	for sec in pairs(p.set) do
+		set[sec] = true
+	end
+end
+
+function accepts(smart, community)
+	load()
+	local rule = accept[smart:name()]
+	if rule == nil then return nil end
+	if rule == true then return true end
+	return rule[community] == true
+end
+
+local function refill_lair(sim, name)
+	local smart = sim:object(name)
+	if not smart or not smart.initialize_if_needed then return end
+	smart:initialize_if_needed()
+	local g = smart.gulag
+	if not g or (g:get_population() or 0) >= (g.capacity or 0) then return end
+	local section = roll(refill.pool)
+	if not section then return end
+	local obj = sim:create(section, smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+	if not obj then return end
+	local pk = get_netpk(obj)
+	local data = pk and pk:get()
+	if data then
+		data.custom_data = "[smart_terrains]\n" .. name .. " = true\n"
+		pk:set(data)
+	end
+	obj.smart_terrain_conditions = {
+		[name] = xr_logic.parse_condlist(obj, "smart_terrains", name, "true")
+	}
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = this.on_update })
+end
+
+function on_update()
+	ogse_signals.get_mgr():reschedule(HEARTBEAT_MS)
+	if not db.actor then return end
+	load()
+	if not refill.pool or #refill.lairs == 0 then return end
+	local now = timers.Get_Game_Minutes()
+	local nxt = get_value(REFILL_KEY)
+	if not nxt or nxt > now + refill.interval then
+		set_value(REFILL_KEY, now + refill.interval)
+		return
+	end
+	if now < nxt then return end
+	set_value(REFILL_KEY, now + refill.interval)
+	if level.name() == refill.level then return end
+	local sim = alife()
+	if not sim then return end
+	for i = 1, #refill.lairs do
+		refill_lair(sim, refill.lairs[i])
+	end
+end
