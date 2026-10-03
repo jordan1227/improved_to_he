@@ -1,0 +1,322 @@
+-- sivol: stealth measurement harness (docs/STEALTH_DESIGN.md, sections 10.6 and 10.8).
+--
+-- Debug only and inert until a function is called from the console. Not in the
+-- addon list; the first g_loadstring call loads it.
+--
+--   g_loadstring sivol_stealth_test.watch()             watch the NPC under the crosshair
+--   g_loadstring sivol_stealth_test.hold("free")        pin it in place (stalkers), force free or danger vision
+--   g_loadstring sivol_stealth_test.setup("default_np_clear")  force weather, log time
+--   g_loadstring sivol_stealth_test.place(20)           stand 20 m in front of the watched NPC
+--   g_loadstring sivol_stealth_test.measure(5, 60)      5 timed detections, 60 s timeout each
+--   g_loadstring sivol_stealth_test.vision("", "stalker_vision_free")  per-NPC vision sections ("" keeps one)
+--   g_loadstring sivol_stealth_test.release()           give the NPC back to its logic
+--   g_loadstring sivol_stealth_test.unwatch()
+--
+-- A held stalker keeps updating its vision but does not react, so the timing is
+-- clean. Holding only measures vision; behavior tests need the NPC's planner.
+-- nlc_stealth_reset() makes the observer forget the actor's visual record (and,
+-- for squads, the shared record) between runs.
+
+local watched_id = nil
+local held_mental = nil
+local measuring = false
+
+local function say(fmt, ...)
+    log2("~ [stealth_test] " .. fmt, ...)
+end
+
+local function engine_ready()
+    return type(nlc_stealth_watch) == "function"
+end
+
+local function safe(fn, ...)
+    if type(fn) ~= "function" then
+        return nil
+    end
+    local ok, value = pcall(fn, ...)
+    return ok and value or nil
+end
+
+-- level, game time, weather (current and previous section: a weather change blends
+-- over time), rain and actor position, so log lines carry their own conditions
+local function context_text()
+    local p = db.actor and db.actor:position()
+    local env = type(nlc_stealth_env_light) == "function" and nlc_stealth_env_light() or -1
+    local mtl, surface_k, noise_k = "?", 1, 1
+    if type(nlc_stealth_actor_surface) == "function" then
+        mtl, surface_k, noise_k = nlc_stealth_actor_surface()
+    end
+    return string.format("level %s, %02d:%02d, weather %s (prev %s), rain %.2f, env light %.3f, ground %s (x%.2f), outfit noise x%.2f, actor %s",
+        tostring(safe(level.name)), level.get_time_hours(), level.get_time_minutes(),
+        tostring(safe(level.get_weather)), tostring(safe(level.get_weather_prev)),
+        tonumber(safe(level.rain_factor)) or -1, env, tostring(mtl), surface_k, noise_k,
+        p and string.format("%.1f,%.1f,%.1f", p.x, p.y, p.z) or "?")
+end
+
+function ctx()
+    say("context: %s", context_text())
+end
+
+local function watched_obj()
+    if not watched_id then
+        say("no watched NPC; call watch() first")
+        return nil
+    end
+    local obj = level.object_by_id(watched_id)
+    if not obj or not obj:alive() then
+        say("watched object %d is gone or dead", watched_id)
+        return nil
+    end
+    return obj
+end
+
+-- Look only: move(standing, stand, line, <vector>) crashed in the engine, and without a
+-- movement action anim(mental) is not applied (2026-10-02). The vision profile is forced
+-- through nlc_stealth force_profile instead; the captured stalker stays where it is.
+local function hold_command(npc)
+    reset_action(npc, script_name())
+    local target = vector():set(db.actor:position())
+    target.y = target.y + 1.5
+    action(npc, look(look.point, target), cond(cond.time_end, 3600000))
+end
+
+function watch(id)
+    if not engine_ready() then
+        say("engine lacks nlc_stealth_*; needs nlc-3.589.4 or newer")
+        return
+    end
+    local obj = id and level.object_by_id(id) or level.get_target_obj()
+    if not obj or not (obj:is_stalker() or obj:is_monster()) then
+        say("look at a living stalker or monster, or pass its id")
+        return
+    end
+    if watched_id and watched_id ~= obj:id() then
+        unwatch()
+    end
+    if not nlc_stealth_watch(obj:id()) then
+        return
+    end
+    watched_id = obj:id()
+    sivol_stealth_cfg.set("log_vision", 1)
+    sivol_stealth_cfg.set("log_sound", 1)
+    say("watching %s (%d), rank %s", obj:name(), obj:id(), obj:is_stalker() and tostring(obj:character_rank()) or "-")
+    ctx()
+end
+
+function unwatch()
+    if measuring then
+        say("measurement still running")
+        return
+    end
+    if watched_id then
+        release()
+        nlc_stealth_unwatch(watched_id)
+        say("stopped watching %d", watched_id)
+        watched_id = nil
+    end
+    sivol_stealth_cfg.set("force_profile", -1)
+    sivol_stealth_cfg.set("log_vision", 0)
+    sivol_stealth_cfg.set("log_sound", 0)
+end
+
+-- force a weather section and log the time. Time is not changed here: skipping hours
+-- runs the mod's sleep and blowout logic (2026-10-02); set the hour in game instead.
+function setup(weather)
+    if type(weather) == "number" then
+        say("setup() no longer changes the time; pass only a weather section")
+        return
+    end
+    if weather then
+        level.set_weather(weather, true)
+    end
+    say("time %02d:%02d, weather %s (level_weathers may switch it later)", level.get_time_hours(), level.get_time_minutes(), tostring(level.get_weather()))
+end
+
+-- move the actor `dist` metres from the watched NPC on a valid level vertex: its facing
+-- direction first, then directions turning away from it in 22.5 degree steps
+function place(dist)
+    local npc = watched_obj()
+    if not npc then
+        return
+    end
+    dist = tonumber(dist) or 20
+    local base, origin = npc:direction(), npc:position()
+    local best_pos, best_err, best_angle
+    for i = 0, 15 do
+        local step = math.floor((i + 1) / 2) * ((i % 2 == 1) and 1 or -1)
+        local a = step * math.pi / 8
+        local dir = vector():set(base.x * math.cos(a) - base.z * math.sin(a), 0, base.x * math.sin(a) + base.z * math.cos(a))
+        dir:normalize()
+        local pos = level.vertex_position(level.vertex_in_direction(npc:level_vertex_id(), dir, dist))
+        local err = math.abs(pos:distance_to(origin) - dist)
+        if not best_err or err < best_err then
+            best_pos, best_err, best_angle = pos, err, step * 22.5
+        end
+        if err < 1.5 then
+            break
+        end
+    end
+    db.actor:set_actor_position(best_pos)
+    if held_mental then
+        hold_command(npc)
+    end
+    say("placed at %.1f m (asked %.1f m), %.1f degrees off its facing", best_pos:distance_to(origin), dist, best_angle)
+    ctx()
+end
+
+function hold(mental)
+    local npc = watched_obj()
+    if not npc then
+        return
+    end
+    held_mental = (mental == "danger") and "danger" or "free"
+    if npc:is_stalker() then
+        hold_command(npc)
+    else
+        -- monsters: script capture with an idle animation (the sivol_hit_log freeze); vision keeps running
+        if not npc:get_script() and not pcall(npc.script, npc, true, script_name()) then
+            say("hold(): could not capture %s", npc:name())
+            held_mental = nil
+            return
+        end
+        pcall(function()
+            action(npc, anim(anim.stand_idle, 0), cond(cond.time_end, 600000))
+        end)
+    end
+    sivol_stealth_cfg.set("force_profile", held_mental == "danger" and 1 or 0)
+    say("holding %s, %s vision forced", npc:name(), held_mental)
+end
+
+-- per-NPC vision profile for the watched NPC (nlc_stealth_set_vision); "" keeps that profile.
+-- Lasts until the NPC reloads its sections (respawn, save load).
+function vision(free_section, danger_section)
+    local npc = watched_obj()
+    if not npc or type(nlc_stealth_set_vision) ~= "function" then
+        return
+    end
+    nlc_stealth_set_vision(npc:id(), free_section or "", danger_section or "")
+end
+
+function release()
+    local obj = watched_id and level.object_by_id(watched_id)
+    if held_mental and obj and obj:get_script() then
+        obj:script(false, script_name())
+        say("released %s", obj:name())
+    end
+    if held_mental then
+        sivol_stealth_cfg.set("force_profile", -1)
+    end
+    held_mental = nil
+end
+
+local function median(t)
+    if #t == 0 then
+        return -1
+    end
+    local s = {}
+    for i = 1, #t do
+        s[i] = t[i]
+    end
+    table.sort(s)
+    local mid = math.floor((#s + 1) / 2)
+    if #s % 2 == 1 then
+        return s[mid]
+    end
+    return (s[mid] + s[mid + 1]) / 2
+end
+
+-- n timed detections: reset the observer's record of the actor, wait for the engine's
+-- sight acquisition, record the accumulation time; timeout_s per run
+function measure(n, timeout_s)
+    local npc = watched_obj()
+    if not npc or measuring then
+        return
+    end
+    n = math.max(1, tonumber(n) or 5)
+    timeout_s = tonumber(timeout_s) or 60
+
+    local runs, times, timeouts = 0, {}, 0
+    local phase, t0, pause_until = "start", 0, 0
+    measuring = true
+    say("measure: %d run(s), timeout %d s, observer %s, distance %.1f m, held %s", n, timeout_s, npc:name(),
+        npc:position():distance_to(db.actor:position()), tostring(held_mental))
+    ctx()
+
+    local function step()
+        local obj = watched_id and level.object_by_id(watched_id)
+        if not obj or not obj:alive() then
+            say("measure aborted: observer gone")
+            return true
+        end
+        local now = time_global()
+        if phase == "start" then
+            if held_mental then
+                hold_command(obj)
+            end
+            nlc_stealth_reset(watched_id)
+            t0 = now
+            phase = "wait"
+        elseif phase == "wait" then
+            local after, dist, danger, seen_t = nlc_stealth_last_seen(watched_id)
+            if after and after >= 0 and seen_t and seen_t >= t0 then
+                runs = runs + 1
+                times[#times + 1] = after / 1000
+                say("run %d: seen after %.2f s (wall %.2f s), d %.1f m, profile %s, %02d:%02d %s", runs, after / 1000, (seen_t - t0) / 1000,
+                    dist, danger and "danger" or "free", level.get_time_hours(), level.get_time_minutes(), tostring(safe(level.get_weather)))
+                phase, pause_until = "pause", now + 1500
+            elseif now - t0 > timeout_s * 1000 then
+                runs = runs + 1
+                timeouts = timeouts + 1
+                say("run %d: not seen within %d s", runs, timeout_s)
+                phase, pause_until = "pause", now
+            end
+        elseif phase == "pause" and now >= pause_until then
+            if runs >= n then
+                local lo, hi = 1e9, -1
+                for _, v in ipairs(times) do
+                    lo, hi = math.min(lo, v), math.max(hi, v)
+                end
+                if #times > 0 then
+                    say("result: %d seen, %d timeout(s); min %.2f / median %.2f / max %.2f s", #times, timeouts, lo, median(times), hi)
+                else
+                    say("result: no detection in %d run(s)", n)
+                end
+                return true
+            end
+            phase = "start"
+        end
+        return false
+    end
+
+    level.add_call(step, function()
+        measuring = false
+    end)
+end
+
+-- which voice folders contain the suspicion callout lines (reac_see: reactions/see_something,
+-- threat_stop: threat/stop); logs one line per folder with the file counts
+function voices()
+    local counts = {}
+    for _, mask in ipairs({ "see_*.ogg", "stop_*.ogg" }) do
+        local list = getFS():file_list_open_ex("$game_sounds$", FS.FS_ListFiles, mask)
+        for i = 0, list:Size() - 1 do
+            local name = string.lower(list:GetAt(i):NameFull())
+            local folder, kind = nil, nil
+            if string.find(name, "see_something", 1, true) then
+                folder, kind = string.match(name, "^(.-)reactions"), "see"
+            elseif string.find(name, "threat", 1, true) then
+                folder, kind = string.match(name, "^(.-)threat"), "stop"
+            end
+            if folder then
+                counts[folder] = counts[folder] or { see = 0, stop = 0 }
+                counts[folder][kind] = counts[folder][kind] + 1
+            end
+        end
+    end
+    local n = 0
+    for folder, c in pairs(counts) do
+        say("voices %s see=%d stop=%d", folder, c.see, c.stop)
+        n = n + 1
+    end
+    say("voices: %d folder(s) with callout lines", n)
+end

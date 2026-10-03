@@ -992,16 +992,38 @@ end
 function not_have_razgruzka_any()
 	return not have_razgruzka_any()
 end
+-- [sivol] армейская разгрузка выдаётся только через add_razgruzka: малая сначала
+-- выгружается и сдаётся, иначе две разгрузки делят одни карманы (items_mtv)
 function add_razgruzka()
+	razgruzka_new_away()
 	sak.create_items("razgruzka",1)
 end
 function add_razgruzka_new()
+	if have_razgruzka_any() then return end
 	sak.create_items("razgruzka_new",1)
 end
 function razgruzka_new_away()
+	if not have_razgruzka_new() then return end
 	local raz=ui_cheat_razgruzka_new.mtv_dialog(get_hud())
 	raz:btn_empty()
 	sak_inventory.release_actor_items("razgruzka_new",1)
+end
+-- [sivol] обмен у вояк: ящик водки с малой разгрузкой в зачёт либо 25 бутылок без зачёта
+function have_mil_razgruzka_trade_in()
+	return have_razgruzka_new() and sak.have_items_count("vodka",20)
+end
+function have_mil_razgruzka_full_price()
+	return not have_razgruzka_new() and sak.have_items_count("vodka",25)
+end
+function mil_razgruzka_trade_in()
+	if not have_mil_razgruzka_trade_in() then return end
+	sak_inventory.release_actor_items("vodka",20)
+	add_razgruzka()
+end
+function mil_razgruzka_full_price()
+	if not have_mil_razgruzka_full_price() then return end
+	sak_inventory.release_actor_items("vodka",25)
+	add_razgruzka()
 end
 function sidor_capsule_time()
 	start_time("time_start_sidor_capsule")
@@ -1801,15 +1823,16 @@ function out_wpn_actor(sid)
 	local in_object = level_object_by_sid(sid)
 	if not in_object then return end
 	local out_object = db.actor
+	local keep_knife = has_alife_info("mil_freedom_good") -- [HE-PORT]
 	for i,k in pairs(sak_inventory.slots) do
-		if (strpos(i, "wpn_",1,true) and (i~="wpn_binoc") and (i~="bolt")) then
+		if (strpos(i, "wpn_",1,true) and (i~="wpn_binoc") and (i~="bolt") and not (keep_knife and strpos(i, "wpn_knife",1,true))) then -- [HE-PORT]
 			local item = client_obj(k[1])
 			out_object:transfer_item(item, in_object)
 			sak.relocate_item("out", i, 1)
 		end
 	end
 	for i,k in pairs(sak_inventory.rucksack) do
-		if strpos(i, "wpn_",1,true) then
+		if strpos(i, "wpn_",1,true) and not (keep_knife and strpos(i, "wpn_knife",1,true)) then -- [HE-PORT]
 			for j = 1, #k do
 				local item = client_obj(k[j])
 				out_object:transfer_item(item, in_object)
@@ -1822,7 +1845,7 @@ function out_wpn_actor(sid)
 				if box then
 					box:iterate_inventory(function(_, item)				
 						local sect=item:section()
-						if strpos(sect, "wpn_",1,true) then
+						if strpos(sect, "wpn_",1,true) and not (keep_knife and strpos(sect, "wpn_knife",1,true)) then -- [HE-PORT]
 							out_object:transfer_item(item, in_object)
 							sak.relocate_item("out", sect, 1)
 						end
@@ -3506,15 +3529,25 @@ function give_conserva_vodka()
 	sak_inventory.release_actor_items("vodka",1)
 	sak_inventory.release_actor_items("conserva",2)
 end
+-- [HE-PORT]
 function have_krysyk_goodses()
-	return (sak.have_items_count("af_capsule",2)~=false and sak.have_items_count("af_star_new",1)~=false) or gg_3_cart_have()
+	return have_krysyk_goods() or have_krysyk_cart()
+end
+function have_krysyk_cart()
+	return kotovod.gg_inventory_artefacts("krysyk_cart", "have", 3) == true
+end
+function give_krysyk_cart()
+	if have_krysyk_cart() then
+		kotovod.gg_inventory_artefacts("krysyk_cart", "give", 3)
+	end
 end
 function have_krysyk_goods()
-	return sak.have_items_count("af_capsule",2)~=false and sak.have_items_count("af_star_new",1)~=false
+	return kotovod.gg_inventory_artefacts("krysyk", "have") == true
 end
 function give_krysyk_goods()
-	sak_inventory.release_actor_items("af_capsule",2)
-	sak_inventory.release_actor_items("af_star_new",1)
+	if have_krysyk_goods() then
+		kotovod.gg_inventory_artefacts("krysyk", "give")
+	end
 end
 function give_pda_krysyka()
 	sak_inventory.release_actor_items("pda_krysyka",1)
@@ -3830,7 +3863,8 @@ function give_25vodka()
 end
 
 function kuz_razgruzka_precond_yes()
-	return has_alife_info("sherstuk_dead") or has_alife_info("detector_quest_wait")
+	-- [sivol] detector_quest_wait не выдаётся (квест Глузова вырезан): склад открывается с заданием на документы Агропрома
+	return has_alife_info("sherstuk_dead") or has_alife_info("agroprom_military_case") or has_alife_info("detector_quest_wait")
 end
 function kuz_razgruzka_precond_no()
 	return not kuz_razgruzka_precond_yes()
@@ -6686,8 +6720,18 @@ end
 function rashpil_treasure()
 	treasure_manager.get_treasure_manager():give_treasure("dsc_secret_rashpil")
 end
-function add_rashpil_letter()
+-- [HE-PORT]
+function add_rashpil_letter( first_speaker, second_speaker )
 	sak.create_items("rashpil_letter",1)
+	local ruck_id = nlc_vars.rashpil_rucksack
+	if ruck_id == nil then return end
+	local ruck = level.object_by_id( ruck_id )
+	local owner = ruck and ruck:parent()
+	if not owner or owner:id() == db.actor:id() then return end
+	kotovod.remove_box_protection( ruck:name() )
+	owner:transfer_item( ruck, db.actor )
+	sak.relocate_item( "in", "rucksack", 1 )
+	nlc_vars.rashpil_rucksack = nil
 end
 function have_rashpil_letter()
 	return sak.have_items_count("rashpil_letter",1)~=false
@@ -8865,7 +8909,7 @@ function fill_dsc_container(id)
 		if box then
 			local pk = get_netpk(box)
 			local data = pk:get()	  
-			data.custom_data = "capsule,0.99," .. nlc_capsules.encode( nlc_capsules.regular( "af_rusty_sea_urchin", 1 ) )
+			data.custom_data = oxyr.lst_of_arts_in_cont( { ["capsule@af_rusty_sea_urchin@1"] = 99 }, "arc_art_box_basic" )
 			pk:set(data)
 		end
 		sak.obj_off_on(obj)
@@ -9329,7 +9373,7 @@ function fix_stuck_charge_pda()
     end
 end
 function sidor_shustriy_reward()
-	if have_razgruzka() then
+	if have_razgruzka_any() then
 		local ammo_tbl = {
 			{ "ammo_9x18_fmj", 2, 3 },
 			{ "ammo_9x19_fmj", 1, 2 },
@@ -9342,7 +9386,7 @@ function sidor_shustriy_reward()
 		sak.create_items( ammo[1], ammo_count )
 		sak.create_items( "vodka", vodka_count )
 	else
-		add_razgruzka()
+		add_razgruzka_new()
 		kotovod.newbie_reward()
 	end
 	sak_dialog.relocate_money( 5000, "in" )
@@ -9694,7 +9738,7 @@ function dead_oreh_treasure()
 	local ini  = system_ini()
 	local sobj = g_sim:object( "inventory_dead_robbers" )
 	local tabl = {
-        "wpn_mp153",
+        "wpn_winchester_m1",
         "wpn_svd",	
         "wpn_ak108",
         "wpn_m16a4",
@@ -11253,6 +11297,23 @@ function pri_fake_klyk_treasure()
 	)		
 	sak.off_on( sobj )	
 end
+-- [HE-PORT]
+function rashpil_dropped_rucksack()
+	local best, best_dist
+	local actor_pos = db.actor:position()
+	for id, sobj in alife():objects() do
+		if sobj:name() == "dropped_rucksack" and sobj.parent_id == 65535 then
+			local obj = level.object_by_id( id )
+			if obj then
+				local dist = obj:position():distance_to( actor_pos )
+				if not best_dist or dist < best_dist then
+					best, best_dist = obj, dist
+				end
+			end
+		end
+	end
+	return best
+end
 function rashpil_robbing_actor()
     if nlc_vars.rashpil_robbery_pending then return end
 
@@ -11354,7 +11415,8 @@ function rashpil_robbing_actor_continue( rucksack_id )
     if nlc_vars.rashpil_robbery_pending ~= rucksack_id then return end
     nlc_vars.rashpil_robbery_pending = nil
 	-- Сперва вернём рюкзак актору, лишние проверки ни к чему
-	local ruck = nlc_vars.dropped_rucksack and client_obj( nlc_vars.dropped_rucksack )
+	-- [HE-PORT]
+	local ruck = this.rashpil_dropped_rucksack()
 	if ruck then 		
 		ruck:transfer_item( ruck, db.actor )
 	end		
@@ -11536,7 +11598,6 @@ function rashpil_robbing_actor_continue( rucksack_id )
 			local info = copied_table[ index ]
 
 				if has_alife_info( info ) then
-					db.actor:disable_info_portion( info )
 					table.remove( copied_table, index )
 					if not removed_infos[ info ] then
 						removed_infos[ info ] = info
@@ -11833,7 +11894,7 @@ function transfer_any_gun_from_actor( first_speaker, second_speaker )
     sak_inventory.need_update_inventory()
 end
 function transfer_saharov_money( num )
-	db.actor:give_money( num )
+	task_manager.add_barter_money( "yantar_ecolog_general_barter", num )
 	sak.show_relocated_money( "sah", num )	
 end
 function upgrade_weapon_precond( trader, actor )

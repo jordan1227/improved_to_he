@@ -84,6 +84,7 @@ void CEntityCondition::LoadCondition(LPCSTR entity_section)
     m_change_v.load(section, "");
 
     m_fMinWoundSize = pSettings->r_float(section, "min_wound_size");
+    m_wound_model = (READ_IF_EXISTS(pSettings, r_u32, section, "wound_model", 1) == 2) ? 2 : 1;
     m_fPowerHitPart = pSettings->r_float(section, "power_hit_part");
     float fHealthHitPart = READ_IF_EXISTS(pSettings, r_float, section, "health_hit_part", 1.f);
     for (int hit_type = 0; hit_type < (int)ALife::eHitTypeMax; ++hit_type)
@@ -420,6 +421,9 @@ float CEntityCondition::BleedingSpeed()
     for (WOUND_VECTOR_IT it = m_WoundVector.begin(); m_WoundVector.end() != it; ++it)
         bleeding_speed += (*it)->TotalSize();
 
+    if (m_wound_model == 2)
+        return bleeding_speed;
+
     return (m_WoundVector.empty() ? 0.f : bleeding_speed / m_WoundVector.size());
 }
 
@@ -431,7 +435,19 @@ void CEntityCondition::UpdateHealth()
     m_fDeltaHealth += m_fDeltaTime * m_change_v.m_fV_HealthRestore;
 
     VERIFY(_valid(m_fDeltaHealth));
-    ChangeBleeding(m_change_v.m_fV_WoundIncarnation * m_fDeltaTime);
+    if (m_wound_model == 2)
+    {
+        // exponential healing; exact for any delta time, so long schedule steps cannot overshoot
+        const float keep_factor = std::exp(-m_change_v.m_fV_WoundIncarnation * m_fDeltaTime);
+        for (WOUND_VECTOR_IT it = m_WoundVector.begin(); m_WoundVector.end() != it; ++it)
+        {
+            (*it)->IncarnationProportional(keep_factor, m_fMinWoundSize);
+            if (0 == (*it)->TotalSize())
+                (*it)->SetDestroy(true);
+        }
+    }
+    else
+        ChangeBleeding(m_change_v.m_fV_WoundIncarnation * m_fDeltaTime);
 }
 
 void CEntityCondition::UpdatePower() {}

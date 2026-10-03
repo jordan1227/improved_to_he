@@ -26,4 +26,6 @@ void CVisionParameters::Load(LPCSTR section, bool not_a_stalker)
     m_fog_factor = READ_IF_EXISTS(pSettings, r_float, section, "fog_factor", 1.f);
     m_fog_pow = READ_IF_EXISTS(pSettings, r_float, section, "fog_pow", 5.f);
     m_transparency_factor = READ_IF_EXISTS(pSettings, r_float, section, "transparency_factor", 0.f);
+    // NLC: the stealth tuning of a vision section for the actor only, so NPC-vs-NPC sight keeps time_quant
+    m_nlc_actor_rate_k = _max(0.f, READ_IF_EXISTS(pSettings, r_float, section, "nlc_actor_rate_k", 1.f));
 }

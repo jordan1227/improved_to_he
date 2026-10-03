@@ -1,0 +1,508 @@
+-- sivol: camp alerts, radio calls, the death registry and checked bodies (docs/STEALTH_DESIGN.md 20).
+--
+-- Camp alert: per smart terrain (or a 50 m cell when an NPC has none), saved.
+--   alert (3-5 real min): a radio call, a fresh friendly body, a found shooter point
+--   high  (6-8 real min, then alert): a firefight, a dead veteran or master
+--   effects (read by sivol_stealth_suspicion): vision rate factor, temperament one step up,
+--   no lazy temperament at high alert
+-- Radio (radio factions of xrs_battle_ai): a friend past shouting range gets the actor's last
+-- known position after a delay by rank and investigates it; no call if the caller dies first;
+-- nobody past radio_range. Close friends are told at once (vanilla).
+-- Deaths: time (game seconds), killer kind, shot origin, rank and community of dead stalkers,
+-- saved, for the corpse rules. Checked bodies: one check per body per camp, saved.
+-- Psy: pushes the actor's psy gear factor to the engine (actor_psy_k, psy auras).
+-- Live edits: g_loadstring sivol_stealth_alert.radio_range = 50
+
+enabled = true
+alert_ms = { 180000, 300000 }  -- real milliseconds (1 game minute = 12 s)
+high_ms = { 360000, 480000 }
+alert_rate_k = { alert = 1.25, high = 1.5 }
+cell = 50                      -- metres: camp cell for NPCs without a smart terrain
+
+radio_enabled = true
+radio_range = 70               -- metres: same-faction NPCs farther away are not reached by radio
+shout_range = 25               -- metres: closer friends are told at once (vanilla)
+radio_delay = { novice = { 6, 8 }, experienced = { 4, 7 }, veteran = { 3, 5 }, master = { 3, 4 } } -- seconds
+radio_error = { 3, 0.5, 15 }   -- last known position error: min metres, + metres per second since seen, max
+radio_voice = "fight_backup"
+radio_max_search = 4           -- per call: the nearest free recipients that go and search (the rest only go on alert)
+
+death_keep_s = 172800          -- game seconds a death record is kept (two game days)
+psy_push_ms = 1000
+
+local RADIO = { military = true, monolith = true, killer = true, dolg = true }
+
+local alerts = {}      -- camp key -> { level, until_t, high_until }
+local radio_calls = {} -- caller id -> { at, to = {id = true}, point, seen }
+local deaths = {}      -- corpse id -> { t, k, x, y, z, r, c, s }
+local checked = {}     -- corpse id -> { [camp key] = true }
+local claims = {}      -- corpse id -> npc id (runtime)
+local deferred = {}    -- npc id -> "info1,info2": quest alarm infos waiting for a found body (saved)
+local loaded = false
+local next_tick, next_psy = 0, 0
+
+local function say(fmt, ...)
+    if sivol_stealth_suspicion and sivol_stealth_suspicion.log_stages then
+        log2("~ [stealth] alert " .. fmt, ...)
+    end
+end
+
+local function rand_range(t)
+    return t[1] + math.random() * (t[2] - t[1])
+end
+
+local function game_s()
+    return (db.oGameStartTime and timers and timers.Get_Game_Seconds) and timers.Get_Game_Seconds() or 0
+end
+
+-- ---------------------------------------------------------------------------
+-- persistence
+-- ---------------------------------------------------------------------------
+local function load_state()
+    if loaded then
+        return
+    end
+    loaded = true
+    local function tbl(name)
+        local v = get_value(name, {})
+        return type(v) == "table" and v or {}
+    end
+    deaths = tbl("nlc_stealth_deaths")
+    checked = tbl("nlc_stealth_checked")
+    deferred = tbl("nlc_stealth_deferred")
+    local saved = tbl("nlc_stealth_alerts")
+    local now = time_global()
+    alerts = {}
+    for key, a in pairs(saved) do
+        alerts[key] = { level = a.l, until_t = now + (a.u or 0), high_until = now + (a.h or 0) }
+    end
+end
+
+local function on_save()
+    load_state()
+    local now_g, keep = game_s(), {}
+    for id, d in pairs(deaths) do
+        if now_g - (d.t or 0) <= death_keep_s then
+            keep[id] = d
+        end
+    end
+    deaths = keep
+    -- checked bodies and deferred quest infos expire by their own time (a body nobody found in two game days stays unfound)
+    for id, c in pairs(checked) do
+        if type(c) ~= "table" or now_g - (c._t or 0) > death_keep_s then
+            checked[id] = nil
+        end
+    end
+    for id, e in pairs(deferred) do
+        if type(e) ~= "table" or now_g - (e.t or 0) > death_keep_s then
+            deferred[id] = nil
+        end
+    end
+    local now, saved = time_global(), {}
+    for key, a in pairs(alerts) do
+        if a.until_t > now then
+            saved[key] = { l = a.level, u = a.until_t - now, h = math.max(0, (a.high_until or 0) - now) }
+        end
+    end
+    set_value("nlc_stealth_deaths", deaths)
+    set_value("nlc_stealth_checked", checked)
+    set_value("nlc_stealth_deferred", deferred)
+    set_value("nlc_stealth_alerts", saved)
+end
+
+-- ---------------------------------------------------------------------------
+-- camp alert
+-- ---------------------------------------------------------------------------
+local last_camp = {} -- npc id -> last smart camp key (the dead keep their camp)
+function camp_key(npc)
+    local id = npc:id()
+    local se = alife() and alife():object(id)
+    local sid = se and se.smart_terrain_id and se:smart_terrain_id()
+    if sid and sid ~= 65535 then
+        last_camp[id] = "smart:" .. sid
+        return last_camp[id]
+    end
+    if not npc:alive() and last_camp[id] then
+        return last_camp[id] -- the dead lose their smart terrain: their last known camp
+    end
+    local p = npc:position()
+    return level.name() .. ":" .. math.floor(p.x / cell) .. ":" .. math.floor(p.z / cell)
+end
+
+-- level: "alert" or "high"; npc or a camp key
+function raise(npc_or_key, level_name, why)
+    if not enabled then
+        return
+    end
+    load_state()
+    local key = type(npc_or_key) == "string" and npc_or_key or camp_key(npc_or_key)
+    local now = time_global()
+    local a = alerts[key] or { level = "alert", until_t = 0, high_until = 0 }
+    if level_name == "high" then
+        a.high_until = math.max(a.high_until or 0, now + rand_range(high_ms))
+        a.until_t = math.max(a.until_t, a.high_until + rand_range(alert_ms))
+    else
+        a.until_t = math.max(a.until_t, now + rand_range(alert_ms))
+    end
+    a.level = (a.high_until or 0) > now and "high" or "alert"
+    alerts[key] = a
+    say("t=%d camp=%s level=%s why=%s for=%.0fs", now, key, a.level, tostring(why), (a.until_t - now) / 1000)
+end
+
+-- "none", "alert" or "high"
+function level_of(npc)
+    load_state()
+    local a = alerts[camp_key(npc)]
+    local now = time_global()
+    if not a or now >= a.until_t then
+        return "none"
+    end
+    return (a.high_until or 0) > now and "high" or "alert"
+end
+
+function rate_k_of(npc)
+    return alert_rate_k[level_of(npc)] or 1
+end
+
+-- ---------------------------------------------------------------------------
+-- radio
+-- ---------------------------------------------------------------------------
+function in_radio_range(npc, obj)
+    return not (enabled and radio_enabled) or npc:position():distance_to(obj:position()) < radio_range
+end
+
+-- no relay chains: an NPC told about the actor by a mate (shouting range) who has not seen the actor
+-- himself does not pass him on; vanilla chains of 25 m shares crossed whole bases in a second
+relay_block = true
+secondhand_ms = 15000
+local secondhand = {} -- npc id -> time he was told about the actor
+
+function told(obj)
+    secondhand[obj:id()] = time_global()
+end
+
+function relay_blocked(npc)
+    if not (enabled and relay_block and db.actor) then
+        return false
+    end
+    local t = secondhand[npc:id()]
+    if not t or time_global() - t > secondhand_ms or not npc:alive() then
+        return false -- a dead mate's death notification is not a relay
+    end
+    return not npc:see(db.actor)
+end
+
+-- true when obj is reached only by radio (not within shouting range, not a visible friend)
+function radio_only(npc, obj)
+    -- a dead caller: the witnesses of the death are told as before (vanilla)
+    if not (enabled and radio_enabled and RADIO[npc:character_community()]) or not npc:alive() then
+        return false
+    end
+    if npc:position():distance_to(obj:position()) < shout_range then
+        return false
+    end
+    return not (npc:alive() and npc:relation(obj) == game_object.friend and npc:see(obj))
+end
+
+function radio_queue(npc, obj, wounded)
+    if not (npc:alive() and db.actor) then
+        return -- the dead do not call
+    end
+    local id = npc:id()
+    local call = radio_calls[id]
+    if not call then
+        local d = radio_delay[ranks.get_obj_rank_name(npc)] or radio_delay.experienced
+        call = { at = time_global() + rand_range(d) * 1000, to = {} }
+        local t = xrs_battle_ai and xrs_battle_ai.get_target_info and xrs_battle_ai.get_target_info(npc, db.actor:id())
+        if t and t.vertex then
+            call.point = vector():set(level.vertex_position(t.vertex))
+            call.seen = t.last_time_seen or time_global()
+        else
+            call.point = vector():set(db.actor:position())
+            call.seen = time_global()
+        end
+        radio_calls[id] = call
+        raise(npc, "high", "firefight") -- the caller is fighting the actor
+        if radio_voice and xr_sound and xr_sound.set_sound_play then
+            xr_sound.set_sound_play(npc, radio_voice)
+        end
+        say("t=%d radio call from=%s in=%.1fs point=%.1f,%.1f,%.1f", time_global(), npc:name(), (call.at - time_global()) / 1000,
+            call.point.x, call.point.y, call.point.z)
+    end
+    call.to[obj:id()] = true
+end
+
+local function deliver(caller_id, call)
+    local caller = level.object_by_id(caller_id)
+    if not (caller and caller:alive()) then
+        say("t=%d radio call from=%d lost: caller dead", time_global(), caller_id)
+        return
+    end
+    local age = (time_global() - (call.seen or time_global())) / 1000
+    local err = math.min(radio_error[3], radio_error[1] + radio_error[2] * age)
+    raise(caller, "alert", "radio")
+    -- every recipient's camp goes on alert; only the radio_max_search nearest free ones go and search
+    -- (a later call sends the next ones: those already searching are skipped)
+    local list = {}
+    for id in pairs(call.to) do
+        local o = level.object_by_id(id)
+        local engaged = o and ((o:best_enemy() and o:best_enemy():id() == db.actor:id())
+            or (xrs_battle_ai.get_target_info and xrs_battle_ai.get_target_info(o, db.actor:id())))
+        if o and o:alive() and not engaged then
+            raise(o, "alert", "radio")
+            list[#list + 1] = { o, o:position():distance_to(call.point) }
+        end
+    end
+    table.sort(list, function(a, b) return a[2] < b[2] end)
+    local n = 0
+    for _, e in ipairs(list) do
+        if n >= radio_max_search then
+            break
+        end
+        local a = math.random() * 2 * math.pi
+        local r = err * math.sqrt(math.random())
+        local p = vector():set(call.point.x + r * math.cos(a), call.point.y, call.point.z + r * math.sin(a))
+        if sivol_stealth_suspicion and sivol_stealth_suspicion.radio_investigate
+            and sivol_stealth_suspicion.radio_investigate(e[1], p, caller) then
+            n = n + 1
+        end
+    end
+    say("t=%d radio call from=%s alerted=%d searching=%d err=%.1f", time_global(), caller:name(), #list, n, err)
+end
+
+-- ---------------------------------------------------------------------------
+-- deaths and checked bodies
+-- ---------------------------------------------------------------------------
+local RANK_INDEX = { novice = 1, experienced = 2, veteran = 3, master = 4 }
+
+local function on_npc_death(victim, killer)
+    if not (enabled and victim and IsStalker(victim)) then
+        return
+    end
+    load_state()
+    local d = { t = game_s(), k = "unknown", r = RANK_INDEX[ranks.get_obj_rank_name(victim)] or 1, c = victim:character_community() }
+    if killer then
+        if db.actor and killer:id() == db.actor:id() then
+            d.k = "actor"
+            -- the weapon in hand: on a one-shot kill the death callback can come before the hit that records it
+            local ok, silent = pcall(function()
+                return xrs_battle_ai.wpn_is_silent(actor_hit_weapon(victim))
+            end)
+            d.s = ok and silent and true or nil
+        elseif IsMonster(killer) then
+            d.k = "monster"
+        elseif IsStalker(killer) then
+            d.k = "npc"
+        end
+        local p = killer:position()
+        d.x, d.y, d.z = p.x, p.y, p.z
+    end
+    deaths[victim:id()] = d
+    checked[victim:id()] = nil -- a new body (ids are reused): not "already checked"
+    claims[victim:id()] = nil
+    -- a loud kill by the actor is a firefight: high alert in the victim's camp (a silent kill is found later, by the body)
+    if d.k == "actor" and not d.s then
+        raise(victim, "high", "firefight")
+    end
+end
+
+-- the actor's weapon for a hit or kill of npc: the one recorded by the hit when the actor made that hit, else the
+-- weapon in hand (on a one-shot kill the death callback can come before the hit that records it)
+function actor_hit_weapon(npc)
+    if not db.actor then
+        return nil
+    end
+    if npc and he_bai_compat and he_bai_compat.who_hit then
+        local who = he_bai_compat.who_hit(npc)
+        local w = who and who:id() == db.actor:id() and he_bai_compat.who_hit_wpn(npc)
+        if w then
+            return w
+        end
+    end
+    return db.actor:active_item()
+end
+
+-- quest alarms that wait for a found body (gulag_agroprom.ltx death@agr_nii / hit@agr_nii):
+-- xr_conditions.killed_by_actor_loud / hit_by_actor_loud and xr_effects.stealth_defer_infos
+function actor_weapon_loud(npc)
+    local w = actor_hit_weapon(npc)
+    local ok, silent = pcall(function() return w and xrs_battle_ai.wpn_is_silent(w) end)
+    return not (ok and silent)
+end
+
+function defer_infos(npc, p)
+    load_state()
+    if not (npc and p) then
+        return
+    end
+    -- stealth off: nobody would ever find the body through our rules, so the quest infos are given at once
+    if not (sivol_stealth_suspicion and sivol_stealth_suspicion.enabled and sivol_stealth_suspicion.corpse_investigate) then
+        for _, info in ipairs(p) do
+            db.actor:give_info_portion(tostring(info))
+        end
+        return
+    end
+    -- merged with an earlier deferral of the same NPC (a silent hit, then the silent kill)
+    local e = deferred[npc:id()]
+    local list, seen = {}, {}
+    if type(e) == "table" and e.i then
+        for info in string.gmatch(e.i, "[^,]+") do
+            list[#list + 1], seen[info] = info, true
+        end
+    end
+    for _, info in ipairs(p) do
+        info = tostring(info)
+        if not seen[info] and not has_alife_info(info) then -- already set (e.g. the alarm is on): nothing to wait for
+            list[#list + 1], seen[info] = info, true
+        end
+    end
+    if #list == 0 then
+        return
+    end
+    deferred[npc:id()] = { i = table.concat(list, ","), t = game_s(), l = level.name() }
+    say("t=%d deferred %s until the body of %s is found", time_global(), deferred[npc:id()].i, npc:name())
+end
+
+-- a soldier of the victim's side saw the body (sivol_stealth_suspicion.corpse_seen)
+function body_found(corpse_id, finder)
+    load_state()
+    local e = deferred[corpse_id]
+    if not (type(e) == "table" and db.actor) then
+        return
+    end
+    -- the same body: this level, and a death recorded together with the deferral (ids are reused)
+    local dr = deaths[corpse_id]
+    if e.l ~= level.name() or not dr or math.abs((dr.t or 0) - (e.t or 0)) > 60 then
+        if e.l ~= level.name() or (dr and (dr.t or 0) > (e.t or 0) + 60) then
+            deferred[corpse_id] = nil
+        end
+        return
+    end
+    deferred[corpse_id] = nil
+    local infos = e.i or ""
+    for info in string.gmatch(infos, "[^,]+") do
+        db.actor:give_info_portion(info)
+    end
+    say("t=%d body found by %s: %s", time_global(), finder and finder:name() or "?", infos)
+end
+
+-- death record of a corpse, age in game seconds (nil = unknown)
+function death_info(corpse_id)
+    load_state()
+    local d = deaths[corpse_id]
+    if not d then
+        return nil
+    end
+    return d, game_s() - (d.t or 0)
+end
+
+function is_checked(npc, corpse_id)
+    load_state()
+    local c = checked[corpse_id]
+    return c ~= nil and c[camp_key(npc)] == true
+end
+
+function set_checked(npc, corpse_id)
+    load_state()
+    checked[corpse_id] = checked[corpse_id] or { _t = game_s() }
+    checked[corpse_id][camp_key(npc)] = true
+end
+
+-- one NPC at a time checks a body; true = this NPC may check it
+function claim(corpse_id, npc)
+    local owner = claims[corpse_id]
+    if owner and owner ~= npc:id() then
+        local o = level.object_by_id(owner)
+        if o and o:alive() then
+            return false
+        end
+    end
+    claims[corpse_id] = npc:id()
+    return true
+end
+
+function release(corpse_id, npc)
+    if claims[corpse_id] == npc:id() then
+        claims[corpse_id] = nil
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- psy gear factor (mirrors bind_monster.get_psy_defense_context: suit protection x belt artifacts)
+-- ---------------------------------------------------------------------------
+local function psy_gear()
+    local actor = db.actor
+    local prot = 0
+    if actor:item_in_slot(6) then
+        local ok, v = pcall(function() return actor:get_current_outfit_protection(hit.telepatic) end)
+        if ok then
+            prot = math.max(0, math.min(0.95, tonumber(v) or 0))
+        end
+    end
+    local belt = 1
+    if sak and sak.arts_operate then
+        for i = 0, actor:belt_count() - 1 do
+            local item = actor:item_on_belt(i)
+            if item and item:clsid() == CLID_ART then
+                local imm = item.immunities and tonumber(item.immunities.telepatic_immunity)
+                if imm then
+                    belt = belt * math.max(0, imm)
+                end
+            end
+        end
+    end
+    return math.max(0, math.min(1.5, (1 - prot) * belt))
+end
+
+local function on_update()
+    local now = time_global()
+    if now < next_tick or not db.actor then
+        return
+    end
+    next_tick = now + 250
+    load_state()
+    for id, call in pairs(radio_calls) do
+        if now >= call.at then
+            radio_calls[id] = nil
+            deliver(id, call)
+        end
+    end
+    if now >= next_psy and type(nlc_stealth_set) == "function" then
+        next_psy = now + psy_push_ms
+        local ok, k = pcall(psy_gear)
+        if ok and k then
+            nlc_stealth_set("actor_psy_k", k)
+        end
+    end
+end
+
+local function on_first_update()
+    loaded = false
+    load_state()
+    radio_calls, claims, secondhand = {}, {}, {} -- ids from the previous session are meaningless now
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_npc_death", fun = on_npc_death })
+    sm:subscribe({ signal = "on_update", fun = on_update })
+    sm:subscribe({ signal = "on_save", fun = on_save })
+    sm:subscribe({ signal = "on_first_update", fun = on_first_update })
+end
+
+-- console: g_loadstring sivol_stealth_alert.info()
+function info()
+    load_state()
+    local now = time_global()
+    for key, a in pairs(alerts) do
+        if a.until_t > now then
+            log2("~ [stealth] alert camp=%s level=%s left=%.0fs", key, (a.high_until or 0) > now and "high" or "alert", (a.until_t - now) / 1000)
+        end
+    end
+    local obj = level.get_target_obj()
+    if obj and obj:is_stalker() then
+        log2("~ [stealth] alert target=%s camp=%s level=%s", obj:name(), camp_key(obj), level_of(obj))
+    end
+    if type(nlc_stealth_get) == "function" then
+        log2("~ [stealth] alert actor_psy_k=%s", tostring(nlc_stealth_get("actor_psy_k")))
+    end
+end

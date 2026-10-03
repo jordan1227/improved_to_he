@@ -1,5 +1,7 @@
 local fly_speed = 1
 local sig_inv_hide, sig_inv_drop = nil, nil
+-- Extra gate (besides debug_mode) for developer text in the tooltip, same as ui_inv_descr.
+local show_item_debug_info = false
 
 function attach(sm)
     sm:subscribe({ signal = "on_use", fun = this.on_use })
@@ -64,6 +66,8 @@ function arc_8container_menu:__init(obj)
 
     self.flying = {}
     self.fly_it = {}
+    self:show_lore()
+    self:show_summary()
 end
 
 function arc_8container_menu:__finalize()
@@ -116,19 +120,13 @@ end
 function arc_8container_menu:update_radiation()
     local rad = 0
     if self.protection > 0 then
-        for i, t in ipairs(self.artefacts) do
-			if t.section and t.condition > 0 then
-				local base_rrs = nominal_art_property(t.section, "radiation_restore_speed", t.custom_data)
-				local rrs = base_rrs * get_effective_strength_raw(t.condition, t.section, base_rrs < 0, "radiation_restore_speed")
-				if rrs > self.protection then rad = rad + (rrs - self.protection) end
-			end
-        end
+        rad = arc_radiation.calc_container(self.object:section(), self.artefacts)
         local iitem = self.object:get_inventory_item()
         ASSERT(
             iitem, "[%s]: %s not an inventory_item", script_name(), self.object:name()
         )
         iitem.radiation_restore_speed = rad
-        arc_radiation.register_item(self.object:id(), rad)		
+        arc_radiation.register_item(self.object:id(), rad)
     end
     return rad
 end
@@ -250,6 +248,8 @@ end
 
 function arc_8container_menu:load_containers()
     self.containers = {}
+    self.next_n = false
+    self.prev_n = false
     db.actor:iterate_ruck(
         function(npc, obj)
             if obj:section() == self.object:section()
@@ -290,7 +290,9 @@ function arc_8container_menu:DrawBackground()
 
     local scroll             = self.xml:InitScrollView("scroll", self)
     self.scrolled            = self.xml:InitStatic("scrolled", scroll)
-    self.min_scrolled_height = self.scrolled:GetHeight()
+    -- start from the visible height: the authored 750 is taller than the viewport and always showed the scrollbar
+    self.min_scrolled_height = math.min(self.scrolled:GetHeight(), scroll:GetHeight())
+    self.scrolled:SetHeight(self.min_scrolled_height)
     --self.min_scrolled_height = 250
     local art_box            = self.xml:InitStatic("art_box", self.scrolled)
 
@@ -328,8 +330,6 @@ function arc_8container_menu:draw_weight()
     end
     local container_weight = get_float(self.object:section(), "inv_weight", 0)
     local total_weight = container_weight + sum_weight_arts
-	local text = string.format( "Артефакты: %.2f кг\n | Всего: %.2f кг", sum_weight_arts, total_weight )
-    self.arts_weight:SetText(text)
     return sum_weight_arts, container_weight, total_weight
 end
 
@@ -354,6 +354,47 @@ function arc_8container_menu:get_goodness_symbol(section)
     end
 end
 
+-- Condition bar drawn as one continuous solid bar with a thin grey outline.
+-- ui_mg_progress_efficiency_full is not really segmented: it alternates one lit and one dark texel (the lit ones
+-- are the odd texels). Shrunk onto a ~45 px bar that pattern aliases into a few "segments" whose width depends on
+-- the sub-pixel position, which is why slot bars and bag bars never matched. The fill is therefore a crop from
+-- inside a single lit texel (texel 13, inner half), stretched over the whole bar and cut to the condition.
+-- Colour runs red to green like the popup's condition bar. The node only supplies the rectangle; the returned
+-- object offers SetProgressPos(percent).
+local COND_FULL = "ui_mg_progress_efficiency_full"
+local COND_OUTLINE = 0.7  -- outline thickness, in layout units
+
+local function make_condition_bar(xml, node, parent)
+    local frame = xml:InitStatic(node, parent)
+    local w, h = frame:GetWidth(), frame:GetHeight()
+    local tex, rect = get_texture_info(COND_FULL)
+
+    local function make_block(color, x, y, bw, bh)
+        local st = CUIStatic()
+        frame:AttachChild(st)
+        st:Init(x, y, bw, bh)
+        st:InitTexture(tex)
+        st:SetOriginalRect(rect.x1 + 13.25, rect.y1, 0.5, rect.y2)
+        st:SetStretchTexture(true)
+        st:SetColor(color)
+        return st
+    end
+
+    make_block(GetARGB(255, 120, 120, 120), -COND_OUTLINE, -COND_OUTLINE, w + 2 * COND_OUTLINE, h + 2 * COND_OUTLINE)
+    make_block(GetARGB(255, 25, 25, 25), 0, 0, w, h)
+    local fill = make_block(GetARGB(255, 0, 255, 0), 0, 0, w, h)
+
+    local bar = {}
+    function bar:SetProgressPos(percent)
+        local k = math.max(0, math.min(1, percent / 100))
+        fill:Show(k > 0)
+        if k <= 0 then return end
+        fill:SetWidth(w * k)
+        fill:SetColor(GetARGB(255, math.min((1 - k) * 510, 255), math.min(k * 510, 255), 0))
+    end
+    return bar
+end
+
 function arc_8container_menu:make_art_button(t, act)
     local s = self.xml:InitStatic("art_" .. act, self.scrolled)
     local b = self.xml:InitButton("art_button_" .. act, s)
@@ -372,9 +413,8 @@ function arc_8container_menu:make_art_button(t, act)
         end
     end
 
-    local p = self.xml:InitProgressBar("condition_progess_bar_" .. act, s)
-    s.progress = p
-    p:SetProgressPos(t.condition * 100)
+    s.progress = make_condition_bar(self.xml, "condition_progess_bar_" .. act, s)
+    s.progress:SetProgressPos(t.condition * 100)
 
     local symbol, color = self:get_goodness_symbol(t.section)
     if symbol ~= "" and symbol ~= nil then
@@ -546,7 +586,6 @@ function put_out_art(id, slot, art_section, condition)
 end
 
 function arc_recalc_container(id)
-	log2( "Resitred recalc container" )
     local obj = level.object_by_id(id)
     if not obj then return end
 
@@ -554,40 +593,21 @@ function arc_recalc_container(id)
     if not sobj then return end
     local sect  = sobj:section_name()
     local slots = get_u32(sect, "container_slots") or 8
-    local base_weight = get_float(sect, "inv_weight", 0)
 
     local arts = arc_radiation.decode_custom_data(
         sobj.custom_data, sect, slots
     )
-	
-    local sum_weight = 0
-    local rad = 0
-    local protection = get_u32(sect, "container_protection", 0)
-    if protection > 0 then
-        protection = (protection + 0.1) * get_float("actor_condition", "radiation_v")
-    end
-
-	for _, t in ipairs(arts) do
-		if t.section and (t.condition or 0) > 0 then
-			sum_weight = sum_weight + get_float(t.section, "inv_weight", 0)
-
-			local base_rrs = nominal_art_property(t.section, "radiation_restore_speed", t.custom_data)
-			local rrs = base_rrs * get_effective_strength_raw(t.condition or 0, t.section, base_rrs < 0, "radiation_restore_speed")
-			if protection > 0 and rrs > protection then
-				rad = rad + (rrs - protection)
-			end
-		end
-	end
+    local rad, sum_weight, count = arc_radiation.calc_container(sect, arts)
 
     local iitem = obj:get_inventory_item()
     if iitem then
-        iitem.inv_weight = base_weight + sum_weight
+        iitem.inv_weight = get_float(sect, "inv_weight", 0) + sum_weight
         iitem.radiation_restore_speed = rad
     end
 
     arc_radiation.register_item(id, rad)
 
-    if sum_weight > 0 then
+    if count > 0 then
         set_item_ungroupable(obj)
     else
         set_item_default_grouping(obj)
@@ -648,19 +668,7 @@ function change_inv_item_weight(id, weight, abs_weight)
 end
 
 
--- сделать предмет безусловно негруппируемым в окнах инвентаря
-function set_item_ungroupable(item)
-    local f = item:get_inventory_item_flags()
-    f:set(global_flags.FIAlwaysUngroupable, true)
-    item:set_inventory_item_flags(f)
-end
 
--- включить движковую группировку для предмета
-function set_item_default_grouping(item)
-    local f = item:get_inventory_item_flags()
-    f:set(global_flags.FIAlwaysUngroupable, false)
-    item:set_inventory_item_flags(f)
-end
 
 -- сделать предмет безусловно непродаваемым в окнах инвентаря
 function set_item_untradable(item)
@@ -685,60 +693,254 @@ end
 
 -----------------------------------------
 
-function arc_8container_menu:show_art_info(wnd, section, condition, data)
-    local text = ""
+-- Opening a container from the inventory clears the inventory's own item info, so the lore text under the name
+-- (the inventory's native description panel) goes blank. Draw the container's description there ourselves.
+-- Kept at module level so a menu that was torn down without on_quit cannot leave its text on the panel.
+local lore_static, lore_parent = nil, nil
 
-    local inv_name = this.get_inv_name(section)
-	
-	local dyn_num = tonumber( string.sub( section, -2, -2 ) )
-	if strpos( section, "_dyn", 1, true ) and not strpos( section, "_capsule" ) then
-		inv_name = inv_name .. " [" .. dyn_num .. "]"
-	end	
-	
-    if is_debug_mode then
-        text = inv_name .. " (" .. section .. ")\\n \\n"
+-- The text stays after the menu closes (like the name header) and goes away when another inventory item is
+-- selected or the inventory closes.
+local lore_signals = nil
 
-        -- debug-инфо по капсулам nlc_capsules
-        if nlc_capsules.is_capsule_section(section) then
-            local payload = nlc_capsules.read(data)
-            if payload then
-                local content_sect = nlc_capsules.content_section(payload)
-                local content_name = content_sect and get_string(content_sect, "inv_name", content_sect) or "?"
-                text = text .. string.format(
-                    "%%c[255,255,220,50]CAPSULE: sect=%s \\n dyn=%s tag=%s\\n-> %%c[white]%s\\n \\n",
-                    tostring(content_sect), tostring(payload.dyn), tostring(payload.tag), translate(content_name)
-                )
-            else
-                text = text .. "%c[255,255,50,50]CAPSULE: payload NOT FOUND in custom_data!\\n \\n"
+local function drop_lore()
+    if lore_signals then
+        local sm = ogse_signals.get_mgr()
+        for _, s in ipairs(lore_signals) do
+            sm:unsubscribe(s)
+        end
+        lore_signals = nil
+    end
+    if lore_static and lore_parent then
+        lore_parent:DetachChild(lore_static)
+    end
+    lore_static = nil
+    lore_parent = nil
+end
+
+function arc_8container_menu:hide_lore()
+    drop_lore()
+end
+
+function arc_8container_menu:show_lore()
+    self:hide_lore()
+    local inv_wnd = level.get_inventory_wnd()
+    local panel = inv_wnd and inv_wnd:FindChild("descr_static")
+    if not panel then return end
+    local desc = get_string(self.object:section(), "description")
+    if not desc then return end
+    local text = dsh.strip_quotes(game.translate_string(desc))
+    if not text or text == "" then return end
+    local st = CUIStatic()
+    panel:AttachChild(st)
+    -- the native description list sits at x=8, y=46 with a 16-unit left indent
+    st:Init(24, 46, math.max(10, panel:GetWidth() - 48), math.max(10, panel:GetHeight() - 56))
+    st:SetFont(GetFontLetterica16Russian())
+    st:SetTextColor(255, 240, 217, 182)
+    st:SetTextComplexMode(true)
+    st:SetText(text)
+    lore_static = st
+    lore_parent = panel
+    lore_signals = {
+        { signal = "on_cell_item_select", fun = drop_lore },
+        { signal = "on_inventory_hide",   fun = drop_lore },
+    }
+    local sm = ogse_signals.get_mgr()
+    for _, s in ipairs(lore_signals) do
+        sm:subscribe(s)
+    end
+end
+
+-- Idle panel: what the container holds, instead of an empty window when no artifact is hovered.
+function arc_8container_menu:show_summary()
+    self.info_gen = (self.info_gen or 0) + 1
+    self:clear_art_info()
+    local wnd = self.info_wnd
+    local width = math.floor(wnd:GetWidth() * 0.7)
+    local rows = self.info_rows
+    local y = 0
+    local sect = self.object:section()
+    local rad, arts_weight, count = arc_radiation.calc_container(sect, self.artefacts)
+    local total = get_float(sect, "inv_weight", 0) + arts_weight
+
+    y = ui_inv_descr.popup_header(rows, wnd, width, y, "Параметры контейнера")
+    y = ui_inv_descr.popup_prop_row(rows, wnd, width, y, nil, "Заполнено", string.format("%d / %d", count, self.slots))
+    y = ui_inv_descr.popup_prop_row(rows, wnd, width, y, nil, "Вес артефактов", string.format("%.2f кг", arts_weight))
+    y = ui_inv_descr.popup_prop_row(rows, wnd, width, y, nil, "Общий вес", string.format("%.2f кг", total))
+    local rad_text
+    if rad > 0 then
+        rad_text = string.format("%%c[red]+%d %s", math.ceil(rad / radiation_v), translate("ui_inv_st_ki"))
+    else
+        rad_text = "%c[green]нет"
+    end
+    y = ui_inv_descr.popup_prop_row(rows, wnd, width, y, "ui_inv_icon_radiation_restore_speed_hd", "Утечка радиации", rad_text)
+    y = ui_inv_descr.popup_gap(rows, wnd, width, y)
+    local next_mode = sort_modes[((self.sort_mode or 0) % table.getn(sort_modes)) + 1]
+    y = ui_inv_descr.popup_text_row(rows, wnd, width, y, "[S] Сортировать " .. next_mode.name)
+end
+
+-- Artifact level as the game defines it (kotovod.tbl_arts: 1-3 base, 4 dummies, 7-10 modificates, 11 uniques,
+-- 13 pendulums), not the dynNd quality suffix. Lists 5 and 6 are capsule copies of the base lists.
+local art_level_by_section = nil
+
+function art_level(section)
+    if not art_level_by_section then
+        art_level_by_section = {}
+        for key, list in pairs(kotovod.tbl_arts) do
+            local lvl = tonumber(string.match(key, "^lvl(%d+)$"))
+            if lvl and lvl ~= 5 and lvl ~= 6 then
+                for _, s in ipairs(list) do
+                    if not art_level_by_section[s] or art_level_by_section[s] < lvl then
+                        art_level_by_section[s] = lvl
+                    end
+                end
             end
         end
-    else
-        text = inv_name .. "\\n \\n"
     end
-	
-	if condition then 
-		text = text .. string.format( "• Состояние: %d%%\\n \\n", condition * 100 )
-	end
+    local base = string.gsub(section, "_dyn%dd$", "")
+    return art_level_by_section[base] or 0
+end
 
-    local af_text = get_art_info_text(section, condition, data)
-    if af_text then
-        text = text .. af_text .. "\\n \\n%c[default]"
+-- Quality from the dynNd suffix; dyn6d is the degraded form and ranks below everything else.
+function art_tier(section)
+    local n = tonumber(string.match(section, "_dyn(%d)d")) or 0
+    if n == 6 then return 0 end
+    return n
+end
+
+-- Sorting refills the slots from the top-left, the same order put_artefact uses.
+sort_modes = {
+    { name = "по уровню", key = function(e) return e.level * 100 + e.tier, e.price end },
+    { name = "по цене",   key = function(e) return e.price, e.level * 100 + e.tier end },
+}
+
+function arc_8container_menu:sort_artefacts()
+    local entries = {}
+    for _, t in ipairs(self.artefacts) do
+        if t.section then
+            table.insert(entries, {
+                section     = t.section,
+                condition   = t.condition,
+                custom_data = t.custom_data,
+                level       = this.art_level(t.section),
+                tier        = this.art_tier(t.section),
+                price       = get_float(t.section, "cost", 0) * (t.condition or 1),
+                idx         = table.getn(entries) + 1,
+            })
+        end
     end
-	
-	if strpos( section, "af_compass", 1, true ) then 
-		text = text .. "\\n" .. ui_inv_descr.get_compass_way( data )
-	end	
+    if table.getn(entries) < 2 then return end
+
+    self.sort_mode = ((self.sort_mode or 0) % table.getn(sort_modes)) + 1
+    local key = sort_modes[self.sort_mode].key
+    table.sort(entries, function(a, b)
+        local a1, a2 = key(a)
+        local b1, b2 = key(b)
+        if a1 ~= b1 then return a1 > b1 end
+        if a2 ~= b2 then return a2 > b2 end
+        if (a.condition or 0) ~= (b.condition or 0) then return (a.condition or 0) > (b.condition or 0) end
+        if a.section ~= b.section then return a.section < b.section end
+        return a.idx < b.idx
+    end)
+
+    self:stop_flying()
+    for _, t in ipairs(self.artefacts) do
+        if t.button then
+            self:detach_button(t.button)
+        end
+    end
+    self.artefacts = {}
+    for i = 1, self.slots do
+        local e = entries[i]
+        self.artefacts[i] = e and { section = e.section, condition = e.condition, custom_data = e.custom_data } or {}
+    end
+    self:save_artefacts()
+    self:reload_artefacts()
+end
+
+function arc_8container_menu:clear_art_info()
+
+    local wnd = self.info_wnd
+    for _, row in ipairs(self.info_rows or {}) do
+        wnd:DetachChild(row)
+    end
+    self.info_rows = {}
+    wnd:SetText("")
+end
+
+-- Focus-lost fires before the next button's focus-received (or just after), so the clear is deferred and
+-- cancelled by any newer tooltip: the panel only stays while an artifact is actually hovered.
+function arc_8container_menu:schedule_clear_info()
+    local gen = self.info_gen or 0
+    dsh.timeout( 30, function()
+        if (self.info_gen or 0) == gen then
+            self:show_summary()
+        end
+    end )
+end
+
+-- Same popup-style rows (centered broken-line header, icon + label + flush-right value) as the inventory popup.
+function arc_8container_menu:show_art_info(wnd, section, condition, data)
+    self.info_gen = (self.info_gen or 0) + 1
+    self:clear_art_info()
+    -- Rows use a fraction of the authored info_wnd width: the visible panel behind it is narrower than the window.
+    local width = math.floor(wnd:GetWidth() * 0.7)
+    local y = 0
+    local rows = self.info_rows
+
+    local inv_name = this.get_inv_name(section)
+
+    local dyn_num = tonumber( string.sub( section, -2, -2 ) )
+    if strpos( section, "_dyn", 1, true ) and not strpos( section, "_capsule" ) then
+        inv_name = inv_name .. " [" .. dyn_num .. "]"
+    end
+
+    local show_debug = is_debug_mode and show_item_debug_info
+    y = ui_inv_descr.popup_header(rows, wnd, width, y, show_debug and (inv_name .. " (" .. section .. ")") or inv_name)
+
+    -- debug info for nlc_capsules capsules
+    if show_debug and nlc_capsules.is_capsule_section(section) then
+        local line
+        local payload = nlc_capsules.read(data)
+        if payload then
+            local content_sect = nlc_capsules.content_section(payload)
+            local content_name = content_sect and get_string(content_sect, "inv_name", content_sect) or "?"
+            line = string.format(
+                "%%c[255,255,220,50]CAPSULE: sect=%s dyn=%s tag=%s -> %%c[white]%s",
+                tostring(content_sect), tostring(payload.dyn), tostring(payload.tag), translate(content_name)
+            )
+        else
+            line = "%c[255,255,50,50]CAPSULE: payload NOT FOUND in custom_data!"
+        end
+        y = ui_inv_descr.popup_text_row(rows, wnd, width, y, line)
+    end
+
+    if condition then
+        y = ui_inv_descr.popup_prop_row(
+            rows, wnd, width, y, nil, "Состояние", string.format("%d%%", math.floor(condition * 100 + 0.5))
+        )
+    end
+
+    for _, row in ipairs(ui_inv_descr.get_af_stat_rows(section, condition or 1, data)) do
+        y = ui_inv_descr.popup_prop_row(rows, wnd, width, y, row[1], row[2], row[3])
+    end
+
+    y = ui_inv_descr.popup_gap(rows, wnd, width, y)
+
+    if strpos( section, "af_compass", 1, true ) then
+        local way = ui_inv_descr.get_compass_way( data )
+        if way and way ~= "" then
+            y = ui_inv_descr.popup_text_row(rows, wnd, width, y, way)
+        end
+    end
 
     local cost = get_float(section, "cost", 0)
     if cost ~= 0 then
-        text = text .. "\\n" .. "Базовая стоимость: " .. cost .. " руб."
+        y = ui_inv_descr.popup_prop_row(rows, wnd, width, y, nil, "Стоимость", cost .. " руб.")
     end
     local inv_weight = get_float(section, "inv_weight", 0)
     if inv_weight ~= 0 then
-        text = text .. "\\nВес:" .. string.format("%s%.2f кг", game.translate_string("ui_inv_weight"), inv_weight)
+        y = ui_inv_descr.popup_prop_row(rows, wnd, width, y, nil, "Вес", string.format("%.2f кг", inv_weight))
     end
-	
-    wnd:SetText(text)
 end
 
 function arc_8container_menu:draw_artefacts()
@@ -764,6 +966,10 @@ function arc_8container_menu:draw_artefacts()
                 local src = self.artefacts[i]
                 self:show_art_info(info, src.section, src.condition, src.custom_data)
             end
+        )
+        self:AddCallback(
+            "art_button_take_" .. i, ui_events.STATIC_FOCUS_LOST,
+            function() self:schedule_clear_info() end
         )
     end
 end
@@ -831,7 +1037,7 @@ function arc_8container_menu:take_artefact(n)
 
 			self.fly_it[id] = vector():set(wpos.x, wpos.y, 0)
 			vergas_lib.s_play( "scripts\\art_move", 1 )
-			dsh.timeout( 15, function() self.info_wnd:SetText("") end )
+			dsh.timeout( 15, function() self:show_summary() end )
 		end
 	)
 end
@@ -866,6 +1072,10 @@ function arc_8container_menu:draw_inventory()
                     self:show_art_info(self.info_wnd, self.inventory[idx].section, self.inventory[idx].condition, self.inventory[idx].custom_data)
                 end
             end
+        )
+        self:AddCallback(
+            btn_name, ui_events.STATIC_FOCUS_LOST,
+            function() self:schedule_clear_info() end
         )
 
         t.button = s
@@ -962,7 +1172,7 @@ function arc_8container_menu:put_artefact(n)
 	-- Очищать инфу в окне описания, если закинули последний имеющийся
 	if n == #self.inventory then
 		dsh.timeout( 15, function()
-			self.info_wnd:SetText( "" )
+			self:show_summary()
 		end )
 	end
 
@@ -1097,6 +1307,10 @@ function arc_8container_menu:reload_inventory()
                     end
                 end
             )
+            self:AddCallback(
+                btn_name, ui_events.STATIC_FOCUS_LOST,
+                function() self:schedule_clear_info() end
+            )
             
             t.button = s
         end
@@ -1165,7 +1379,11 @@ end
 function arc_8container_menu:stop_flying()
     for _, s in ipairs(self.flying) do
         local t = s.flying
-        s:SetWndPos(t.target_pos.x, t.target_pos.y)
+        if t then
+            s:SetWndPos(t.target_pos.x, t.target_pos.y)
+        end
+        -- detach_button asserts s.flying == nil once the entry is gone from self.flying
+        s.flying = nil
     end
     self.flying = {}
 end
@@ -1183,6 +1401,8 @@ function arc_8container_menu:OnKeyboard(dik, keyboard_action)
     if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
         if dik == DIK_keys.DIK_ESCAPE then
             self:on_quit()
+        elseif dik == DIK_keys.DIK_S then
+            self:sort_artefacts()
         end
     end
     return true
@@ -1197,7 +1417,10 @@ function arc_8container_menu:reload_artefacts()
     end
     self:load_artefacts()
     self:draw_weight()
+    self:show_lore()
+    self:show_summary()
 	vergas_lib.s_play( "scripts\\inv_art_container_change", 1 )
+    self.btn_quit:SetText( string.format( "Закрыть [%d]", self.object:id() ) )
     for i, t in ipairs(self.artefacts) do
         if t.section then
             local s = self:make_art_button(t, "take")
@@ -1208,30 +1431,28 @@ function arc_8container_menu:reload_artefacts()
     end
 end
 
-function arc_8container_menu:next_container()
-    self.object = self.containers[self.next_n]
-    self.prev_n = self.next_n - 1
-    if self.next_n == table.getn(self.containers) then
-        self.next_n = false
-    else
-        self.next_n = self.next_n + 1
+-- The container list is rebuilt on every switch: a container may have been dropped, sold or moved since the menu opened.
+function arc_8container_menu:switch_container(forward)
+    self:load_containers()
+    local n = forward and self.next_n or self.prev_n
+    local target = n and self.containers[n]
+    if target then
+        self.object = target
+        self:load_containers()
     end
-    self.btn_prev:Show(true)
+    self.btn_prev:Show(self.prev_n and true or false)
     self.btn_next:Show(self.next_n and true or false)
-    self:reload_artefacts()
+    if target then
+        self:reload_artefacts()
+    end
+end
+
+function arc_8container_menu:next_container()
+    self:switch_container(true)
 end
 
 function arc_8container_menu:prev_container()
-    self.object = self.containers[self.prev_n]
-    self.next_n = self.prev_n + 1
-    if self.prev_n == 1 then
-        self.prev_n = false
-    else
-        self.prev_n = self.prev_n - 1
-    end
-    self.btn_prev:Show(self.prev_n and true or false)
-    self.btn_next:Show(true)
-    self:reload_artefacts()
+    self:switch_container(false)
 end
 
 
@@ -1239,163 +1460,12 @@ end
 -- Вынес из левого скрипта
 
 
-local af_actor_cond = {
-    ["bleeding_restore_speed"] = get_float("actor_condition", "wound_incarnation_v", 0),
-    ["health_restore_speed"] = get_float("actor_condition", "satiety_health_v", 0),
-    ["power_restore_speed"] = get_float("actor_condition", "satiety_power_v", 0) * 100,
-    ["satiety_restore_speed"] = get_float("actor_condition", "satiety_v", 0),
-    ["thirst_restore_speed"] = get_float("actor_condition", "thirst_v", 0),
-    ["radiation_restore_speed"] = get_float("actor_condition", "radiation_v", 0) * 100,
-    ["psy_health_restore_speed"] = get_float("actor_condition", "psy_health_v", 0),
-}
-
-local af_absorbs = {
-    "burn_immunity",
-    "strike_immunity",
-    "shock_immunity",
-    "wound_immunity",
-    "radiation_immunity",
-    "telepatic_immunity",
-    "chemical_burn_immunity",
-    "explosion_immunity",
-    "fire_wound_immunity",
-}
-
-local af_ui_name = {
-    ["health_restore_speed"] = "ui_inv_health",
-    ["radiation_restore_speed"] = "ui_inv_radiation",
-    ["satiety_restore_speed"] = "ui_inv_satiety",
-    ["thirst_restore_speed"] = "ui_inv_thirst",
-    ["power_restore_speed"] = "ui_inv_power",
-    ["bleeding_restore_speed"] = "ui_inv_bleeding",
-    ["psy_health_restore_speed"] = "ui_inv_psy_health",
-    ["burn_immunity"] = "ui_inv_outfit_burn_protection",
-    ["strike_immunity"] = "ui_inv_outfit_strike_protection",
-    ["shock_immunity"] = "ui_inv_outfit_shock_protection",
-    ["wound_immunity"] = "ui_inv_outfit_wound_protection",
-    ["radiation_immunity"] = "ui_inv_outfit_radiation_protection",
-    ["telepatic_immunity"] = "ui_inv_outfit_telepatic_protection",
-    ["chemical_burn_immunity"] = "ui_inv_outfit_chemical_burn_protection",
-    ["explosion_immunity"] = "ui_inv_outfit_explosion_protection",
-    ["fire_wound_immunity"] = "ui_inv_outfit_fire_wound_protection",
-    ["additional_inventory_weight"] = "ui_inv_additional_weight",
-    ["additional_inventory_weight2"] = "Переносимый вес:",
-}
-
+-- Tooltip rows come from ui_inv_descr so the container menu matches the inventory description.
 function get_art_info_text(sect, condition, data)
-    condition = condition or 1
+    local rows = ui_inv_descr.get_af_stat_rows(sect, condition or 1, data)
     local texts = {}
-
-    local garbage_rad = nil
-    if data then
-        local props = ui_arc_container_menu.xp_read_from_cust( data )
-        if props and props.rad then
-            garbage_rad = props.rad
-        end
-    end
-
-    for k, v in pairs(af_actor_cond) do
-        local base_val = nominal_art_property(sect, k, data)
-        local af_val
-
-        if k == "radiation_restore_speed" and garbage_rad then
-            local is_buff = (garbage_rad < 0)
-            af_val = garbage_rad * get_effective_strength_raw(condition, sect, is_buff, k) / v * 100
-        elseif base_val ~= 0 then
-            local is_buff = true
-            if k == "radiation_restore_speed" then
-                is_buff = (base_val < 0)
-            else
-                is_buff = (base_val > 0)
-            end
-            af_val = base_val / v * 100 * get_effective_strength_raw(condition, sect, is_buff, k)
-        end
-
-        if af_val and math.abs( af_val ) > 0.000001 then
-            local sn = "%"
-            if k == "radiation_restore_speed" then sn = "" end
-            local color = af_val > 0 and "%c[green]" or "%c[red]"
-            if k == "bleeding_restore_speed" then
-                af_val = af_val * -1
-            end
-            if k == "bleeding_restore_speed" or k == "radiation_restore_speed" then
-                color = af_val > 0 and "%c[red]" or "%c[green]"
-            end
-			local format_str = "%+.0f"
-			if k == "radiation_restore_speed" then
-				format_str = "%+.1f"
-			end
-
-			table.insert(
-				texts,
-				string.format(
-					"%%c[default]• %s %s" .. format_str .. "%s",
-					game.translate_string(af_ui_name[k]), color, af_val, sn
-				)
-			)
-        end
-    end
-
-    for _, k in ipairs({
-        "additional_inventory_weight", "additional_inventory_weight2"
-    }) do
-        local af_val = nominal_art_property(sect, k, data)
-        if k == "additional_inventory_weight" then
-            local af_val2 = nominal_art_property(sect, "additional_inventory_weight2", data)
-            if af_val == af_val2 then af_val = 0 end
-        end
-        if af_val ~= 0 then
-            af_val = af_val * get_effective_strength_raw(condition, sect, af_val > 0, k)
-            local sn = " кг"
-            local color = af_val > 0 and "%c[green]" or "%c[red]"
-			table.insert(
-				texts,
-				string.format(
-					"%%c[default]• %s %s%+.1f%s",
-					game.translate_string(af_ui_name[k]), color, af_val, sn
-				)
-			)
-        end
-    end
-
-    local absorb_sect = get_string(sect, "hit_absorbation_sect")
-    if sys_ini:section_exist(absorb_sect) then
-        for _, k in ipairs(af_absorbs) do
-            local af_val = nominal_art_property(sect, k, data)
-            if af_val == 0 then
-                af_val = get_float(absorb_sect, k, 0)
-            end
-            if af_val ~= 1 then
-                local is_buff = (af_val <= 1)
-                af_val = (1 - af_val) * 100 * get_effective_strength_raw(condition, sect, is_buff, k)
-                local color = af_val > 0 and "%c[green]" or "%c[red]"
-                table.insert(
-                    texts,
-                    string.format(
-                        "%%c[default]• %s %s%+.0f%s",
-                        game.translate_string(af_ui_name[k]), color, af_val, "%"
-                    )
-                )
-            end
-        end
-    end
-
-    for _, wear in ipairs({
-        { property = "outfit_wear_burn", label = "ui_inv_outfit_wear_fire" },
-        { property = "outfit_wear_shock", label = "ui_inv_outfit_wear_shock" },
-        { property = "outfit_wear_chemical", label = "ui_inv_outfit_wear_chemical" },
-    }) do
-        local wear_value = nominal_art_property(sect, wear.property, data)
-        if wear_value and wear_value > 0 then
-            wear_value = wear_value * get_effective_strength_raw(condition, sect, true, wear.property)
-            table.insert(
-                texts,
-                string.format(
-                    "%%c[default]? %s %%c[green]-%0.f%%",
-                    game.translate_string(wear.label), wear_value * 100
-                )
-            )
-        end
+    for _, row in ipairs(rows) do
+        table.insert(texts, string.format("%%c[default]• %s %s", row[2], row[3]))
     end
     if table.getn(texts) > 0 then
         return table.concat(texts, "\\n")

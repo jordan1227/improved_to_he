@@ -51,6 +51,29 @@ function get_inv_arts_radiation()
     return inv_arts_radiation + belt_rrs
 end
 
+-- Single source for what a container holds: radiation that leaks past its protection, the weight of the
+-- artifacts inside, how many there are, and the (scaled) protection threshold. Used by the container menu,
+-- arc_recalc_container and get_item, so the three can no longer disagree.
+function calc_container(sect, artefacts)
+    local protection = get_u32(sect, "container_protection", 0)
+    if protection > 0 then
+        protection = (protection + 0.1) * radiation_v
+    end
+    local rad, weight, count = 0, 0, 0
+    for _, t in ipairs(artefacts) do
+        if t.section then
+            count  = count + 1
+            weight = weight + get_float(t.section, "inv_weight", 0)
+            if protection > 0 and (t.condition or 0) > 0 then
+                local base_rrs = nominal_radiation(t.section, t.custom_data)
+                local rrs = base_rrs * get_effective_strength_raw(t.condition, t.section, base_rrs < 0, "radiation_restore_speed")
+                if rrs > protection then rad = rad + (rrs - protection) end
+            end
+        end
+    end
+    return rad, weight, count, protection
+end
+
 function lose_item(obj)
     local sect = obj:section()
  --   if get_bool(sect, "arc_usable") then
@@ -70,26 +93,12 @@ function get_item(obj)
     local sect = obj:section()
     --if get_bool(sect, "arc_usable") then
 	if strpos( sect, "arc_art_box_", 1, true ) then
-        local protection = get_u32(sect, "container_protection", 0)
+        local sobj      = g_sim:object(obj:id())
+        local artefacts = decode_custom_data(
+            sobj.custom_data, sobj:section_name()
+        )
+        local rad, arts_weight, cnt, protection = calc_container(sect, artefacts)
         if protection > 0 then
-            protection      = (protection + 0.1) * radiation_v
-            local sobj      = g_sim:object(obj:id())
-            local artefacts = decode_custom_data(
-                sobj.custom_data, sobj:section_name()
-            )
-            local cnt, rad  = 0, 0
-            local weight    = get_float(sect, "inv_weight")
-            for i, t in ipairs(artefacts) do
-                if t.section then
-                    cnt    = cnt + 1
-                    weight = weight + get_float(t.section, "inv_weight")
-					if t.condition > 0 then
-						local base_rrs = nominal_radiation(t.section, t.custom_data)
-						local rrs = base_rrs * get_effective_strength_raw(t.condition, t.section, base_rrs < 0, "radiation_restore_speed")
-						if rrs > protection then rad = rad + (rrs - protection) end
-					end
-                end
-            end
             register_item(obj:id(), rad)
             if rad > 0 then
                 local iitem = obj:get_inventory_item()
@@ -99,11 +108,11 @@ function get_item(obj)
                 )
                 iitem.radiation_restore_speed = rad
             end
-            ui_arc_container_menu.set_inv_item_weight(obj, weight)
+            ui_arc_container_menu.set_inv_item_weight(obj, get_float(sect, "inv_weight") + arts_weight)
             if cnt > 0 then
-                ui_arc_container_menu.set_item_ungroupable(obj)
+                set_item_ungroupable(obj)
             else
-                ui_arc_container_menu.set_item_default_grouping(obj)
+                set_item_default_grouping(obj)
             end
         end
     else
@@ -120,6 +129,25 @@ end
 
 function parse_names(s)
     return string.explode(",", s, true)
+end
+
+-- Containers filled by the old oxyr.lst_of_arts_in_cont hold "section_percent" entries
+-- ("af_dummy_spring_40"). Split them back; capsule-only bases go back into a capsule.
+-- Anything else that is not a section empties the slot instead of aborting the load.
+function repair_legacy_entry(t)
+    local base, percent = string.match(t.section, "^(.+)_(%d+)$")
+    if base and system_ini():section_exist(base) then
+        t.section   = base
+        t.condition = t.condition or tonumber(percent) / 100
+        local payload = nlc_capsules.from_legacy_section(base .. "_capsule")
+        if payload then
+            t.section     = nlc_capsules.shell(payload)
+            t.custom_data = nlc_capsules.encode(payload)
+        end
+        return
+    end
+    log2("#WARN: arc container: unknown artefact section [%s], slot emptied", tostring(t.section))
+    t.section, t.condition, t.custom_data = nil, nil, nil
 end
 
 function decode_custom_data(custom_data, sect, slots)
@@ -142,6 +170,9 @@ function decode_custom_data(custom_data, sect, slots)
                 local custom_data = cd[slots * 2 + i]
                 if custom_data ~= "_" then
                     t.custom_data = custom_data
+                end
+                if t.section and not system_ini():section_exist(t.section) then
+                    this.repair_legacy_entry(t)
                 end
             end
             table.insert(artefacts, t)

@@ -1,0 +1,162 @@
+-- sivol: bloodsucker head mechanics (hybrid of Old HE and the earlier repo version).
+-- Design notes and worked examples: docs/BLOODSUCKER_HEAD_MECHANICS.md
+--
+-- Called from bind_monster hit_callback for bloodsuckers (hits below 0.015 health never
+-- arrive here, so single buckshot pellets take no part in it).
+--  * Combo: consecutive actor head hits multiply that hit's damage 1.3 / 1.6 / 1.8 / 2.0.
+--    One step per shot (dart pellets of one shot count once). The streak resets on a body
+--    hit, after STREAK_TIMEOUT_MS without a head hit, or when an actor shot hits no
+--    bloodsucker at all (a miss).
+--  * Temple: a head hit from the side adds TEMPLE_RAW * x^4 raw fire-wound power once per
+--    shot, x = sideways part of the hit direction in the bloodsucker's own frame (Old HE
+--    used 100 here, an instant kill from the side).
+-- The bonus is delivered as one extra fire-wound hit credited to the actor on bip01_spine,
+-- converted through the variant's immunity so every variant scales the same way.
+
+local COMBO = { 1.3, 1.6, 1.8, 2.0 }
+local STREAK_TIMEOUT_MS = 2500
+local SAME_SHOT_MS = 60
+local MISS_WINDOW_MS = 150
+local TEMPLE_RAW = 5.25
+local EXTRA_BONE = "bip01_spine"
+local EXTRA_IGNORE_MS = 1000   -- script hits can land a few hundred ms later
+-- Sniper-class weapons (weapon_class = sniper_rifle): every head hit uses the top combo
+-- step, and the temple bonus is multiplied (a softer form of the old sniper rule).
+local SNIPER_TEMPLE_K = 2.0
+
+local state = {}        -- [id] = { streak, last_head, pending, pending_until }
+local params = {}       -- [section] = { head, extra_bone, k }
+local last_actor_hit = 0
+local miss_check_at = nil
+local last_fire = 0
+
+local function section_params(obj)
+    local sect = obj:section()
+    local p = params[sect]
+    if p then return p end
+    p = { head = 14, extra_bone = -1, k = 0 }
+    local ok_h, head = pcall(obj.get_bone_id, obj, "bip01_head")
+    if ok_h and tonumber(head) and head >= 0 then p.head = head end
+    local ok_e, extra = pcall(obj.get_bone_id, obj, EXTRA_BONE)
+    if ok_e and tonumber(extra) then p.extra_bone = extra end
+
+    -- health lost per raw fire-wound power on EXTRA_BONE = immunity * hit part * bone scale
+    local imm, part, bone_k = 1.0, 1.0, 1.0
+    if sys_ini:line_exist(sect, "immunities_sect") then
+        local is = sys_ini:r_string(sect, "immunities_sect")
+        if sys_ini:line_exist(is, "fire_wound_immunity") then imm = sys_ini:r_float(is, "fire_wound_immunity") end
+    end
+    if sys_ini:line_exist(sect, "health_fire_wound_hit_part") then
+        part = sys_ini:r_float(sect, "health_fire_wound_hit_part")
+    elseif sys_ini:line_exist(sect, "health_hit_part") then
+        part = sys_ini:r_float(sect, "health_hit_part")
+    end
+    if sys_ini:line_exist(sect, "damage") then
+        local ds = sys_ini:r_string(sect, "damage")
+        local line = sys_ini:line_exist(ds, EXTRA_BONE) and EXTRA_BONE or (sys_ini:line_exist(ds, "default") and "default")
+        if line then bone_k = tonumber(string.match(sys_ini:r_string(ds, line), "^%s*([%d%.]+)")) or 1.0 end
+    end
+    p.k = imm * part * bone_k
+    p.bone_k = bone_k
+    params[sect] = p
+    return p
+end
+
+local function apply_extra(obj, who, health_damage, temple_raw, p)
+    if p.k <= 0 or p.bone_k <= 0 then return end
+    -- combo bonus is health damage, so convert it back to raw power; the temple bonus is
+    -- already raw power (the engine applies immunity and hit part), corrected only for the
+    -- EXTRA_BONE scale so it behaves like an unscaled hit
+    local raw = health_damage / p.k + temple_raw / p.bone_k
+    if raw <= 0 then return end
+    local h = hit()
+    h.type = hit.fire_wound
+    h.power = raw
+    h.impulse = 0
+    h.draftsman = who
+    h.direction = vector():set(0, -1, 0)
+    h:bone(EXTRA_BONE)
+    local st = state[obj:id()]
+    st.pending = (st.pending or 0) + 1
+    st.pending_until = time_global() + EXTRA_IGNORE_MS
+    obj:hit(h)
+end
+
+function on_hit(obj, amount, local_direction, who, bone_index)
+    if not obj or not who or not db.actor or who:id() ~= db.actor:id() then return end
+    local now = time_global()
+    local id = obj:id()
+    local st = state[id]
+    if not st then
+        st = { streak = 0, last_head = 0, pending = 0, pending_until = 0 }
+        state[id] = st
+    end
+    local p = section_params(obj)
+
+    if bone_index ~= p.head then
+        -- our own bonus hit lands on EXTRA_BONE; it must not count as a body hit
+        if bone_index == p.extra_bone and st.pending > 0 and now <= st.pending_until then
+            st.pending = st.pending - 1
+            return
+        end
+        last_actor_hit = now
+        st.streak = 0
+        return
+    end
+
+    last_actor_hit = now
+    if st.last_head > 0 and now - st.last_head > STREAK_TIMEOUT_MS then st.streak = 0 end
+    -- a body hit or a miss may have reset the streak inside the same shot window
+    local new_shot = st.streak == 0 or st.last_head == 0 or now - st.last_head > SAME_SHOT_MS
+    if new_shot then st.streak = st.streak + 1 end
+    st.last_head = now
+
+    local sniper = false
+    local item = db.actor:active_item()
+    if item then
+        local sect = item:section()
+        sniper = sys_ini:line_exist(sect, "weapon_class") and sys_ini:r_string(sect, "weapon_class") == "sniper_rifle"
+    end
+
+    local step = math.max(1, math.min(st.streak, #COMBO))
+    if sniper then step = #COMBO end
+    local mult = COMBO[step]
+    local extra_damage = amount * (mult - 1)
+    local temple_raw, x = 0, 0
+    if new_shot and local_direction then
+        local len = local_direction:magnitude()
+        if len > 0 then
+            x = math.abs(local_direction.x) / len
+            temple_raw = TEMPLE_RAW * x * x * x * x * (sniper and SNIPER_TEMPLE_K or 1.0)
+        end
+    end
+    if new_shot and sivol_hit_log and sivol_hit_log.is_enabled and sivol_hit_log.is_enabled() then
+        log2("[sivol_bloodsucker_head] %s streak=%d mult=%.2f sniper=%s side=%.2f (%d deg off facing) temple_raw=%.2f",
+            obj:section(), st.streak, mult, tostring(sniper), x, math.floor(math.deg(math.asin(math.min(1, x))) + 0.5), temple_raw)
+    end
+    apply_extra(obj, who, extra_damage, temple_raw, p)
+end
+
+local function on_actor_weapon_fire(item)
+    if not item or not item:is_weapon() or item:is_knife() then return end
+    last_fire = time_global()
+    miss_check_at = last_fire + MISS_WINDOW_MS
+end
+
+local function on_update()
+    if not miss_check_at or time_global() < miss_check_at then return end
+    miss_check_at = nil
+    if last_actor_hit < last_fire then
+        for _, st in pairs(state) do st.streak = 0 end
+    end
+end
+
+local function on_monster_death(obj)
+    if obj then state[obj:id()] = nil end
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_actor_weapon_fire", fun = on_actor_weapon_fire })
+    sm:subscribe({ signal = "on_update", fun = on_update })
+    sm:subscribe({ signal = "on_monster_death", fun = on_monster_death })
+end

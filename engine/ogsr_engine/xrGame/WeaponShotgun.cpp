@@ -42,6 +42,7 @@ void CWeaponShotgun::Load(LPCSTR section)
 
     // Звук и анимация для выстрела дуплетом
     HUD_SOUND::LoadSound(section, "snd_shoot_duplet", sndShotBoth, m_eSoundShotBoth);
+    m_bDupletOnAltAim = !!READ_IF_EXISTS(pSettings, r_bool, section, "duplet_on_alt_aim", false);
 
     if (pSettings->line_exist(section, "tri_state_reload"))
     {
@@ -125,7 +126,10 @@ void CWeaponShotgun::OnShotBoth()
     AddShotEffector();
 
     // анимация дуплета
-    PlayHUDMotion({"anim_shoot_both", "anm_shots_both"}, IS_OGSR_GA, GetState());
+    if (IsZoomed() && !IsRotatingToZoom())
+        PlayHUDMotion({"anm_shots_both_aim", "anim_shoot_both", "anm_shots_both"}, IS_OGSR_GA, GetState());
+    else
+        PlayHUDMotion({"anim_shoot_both", "anm_shots_both"}, IS_OGSR_GA, GetState());
 
     // Shell Drop
     Fvector vel;
@@ -218,6 +222,15 @@ void CWeaponShotgun::switch2_Fire2()
 
         OnShotBoth();
 
+        // NLC: one fire callback per barrel, as the single-shot path does, so script
+        // recoil and shot listeners see both cartridges (only when both are fired)
+        if (iAmmoElapsed >= 2)
+            if (auto parent = smart_cast<CActor*>(H_Parent()))
+            {
+                parent->callback(GameObject::eOnActorWeaponFire)(lua_game_object());
+                parent->callback(GameObject::eOnActorWeaponFire)(lua_game_object());
+            }
+
         //выстрел из обоих стволов
         FireTrace(p1, d);
         FireTrace(p1, d);
@@ -282,6 +295,21 @@ bool CWeaponShotgun::Action(s32 cmd, u32 flags)
     }
 
 #endif // !DUPLET_STATE_SWITCH
+
+    // NLC: both barrels on the alt-aim key; CWeapon::Action would otherwise consume the key
+    if (cmd == kWPN_ALT_AIM && m_bDupletOnAltAim && !m_bUseAltAimZoom)
+    {
+        if (flags & CMD_START)
+        {
+            if (IsPending())
+                return false;
+            Fire2Start();
+        }
+        else
+            Fire2End();
+
+        return true;
+    }
 
     if (inherited::Action(cmd, flags))
         return true;

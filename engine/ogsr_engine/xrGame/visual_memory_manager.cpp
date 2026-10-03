@@ -32,6 +32,7 @@
 #include "holder_custom.h"
 #include "inventory.h"
 #include "torch.h"
+#include "nlc_stealth.h" // NLC: stealth diagnostics and tuning
 
 #ifndef MASTER_GOLD
 #include "clsid_game.h"
@@ -132,6 +133,20 @@ void CVisualMemoryManager::reinit()
     m_not_yet_visible_objects.clear();
     //	m_not_yet_visible_objects.reserve	(100);
 
+    // NLC: per-NPC stealth state; scripts re-apply flags on spawn
+    m_nlc_point_time = 0;
+    m_nlc_rate_k = 1.f;
+    m_nlc_forced = 0.f;
+    m_nlc_forced_until = 0;
+    m_nlc_last_shot = 0;
+    m_nlc_torch_time = 0;
+    m_nlc_torch_on = false;
+    m_nlc_nvd = false;
+    m_nlc_hunt_until = m_nlc_alert_until = m_nlc_hunt_next = 0; // NLC pass 5: monster hunt state
+    m_nlc_concern_total = m_nlc_concern_count = 0;
+    m_nlc_wall_time = 0;
+    m_nlc_wall_k = 1.f;
+
     if (m_object)
         m_object->feel_vision_clear();
 
@@ -152,6 +167,7 @@ void CVisualMemoryManager::reload(LPCSTR section)
     {
         m_free.Load(READ_IF_EXISTS(pSettings, r_string, section, "vision_free_section", section), !!m_client);
         m_danger.Load(READ_IF_EXISTS(pSettings, r_string, section, "vision_danger_section", section), !!m_client);
+        nlc_stealth::load_monster_keys(*this, section); // NLC: monster senses
     }
     else
         m_free.Load(section, !!m_client);
@@ -159,6 +175,10 @@ void CVisualMemoryManager::reload(LPCSTR section)
 
 /*IC*/ const CVisionParameters& CVisualMemoryManager::current_state() const
 {
+    // NLC: debug profile override for watched observers (nlc_stealth force_profile, off by default)
+    if (nlc_stealth::g_force_profile >= 0.f && m_object && nlc_stealth::watched(m_object->ID()))
+        return (nlc_stealth::g_force_profile > 0.5f) ? m_danger : m_free;
+
     if (m_stalker)
     {
         return (m_stalker->movement().mental_state() == eMentalStateDanger) ? m_danger : m_free;
@@ -280,7 +300,17 @@ float CVisualMemoryManager::object_luminocity(const CGameObject* game_object) co
 {
     const auto* pActor = smart_cast<const CActor*>(game_object);
     if (!pActor)
+    {
+        // NLC: light model for stalker targets of stalker observers (nlc_stealth npc_light_k; 0 = vanilla, always lit)
+        if (nlc_stealth::g_npc_light_k > 0.f && m_stalker)
+            if (const auto* target = smart_cast<const CAI_Stalker*>(game_object))
+            {
+                const float light = nlc_stealth::npc_target_light(m_object, target, m_nlc_nvd);
+                const float factor = (nlc_stealth::g_lum_factor_override >= 0.f) ? nlc_stealth::g_lum_factor_override : current_state().m_luminocity_factor;
+                return exp(log(light > .001f ? light : .001f) * factor);
+            }
         return (1.f);
+    }
 
     const auto* pTorch = smart_cast<const CTorch*>(pActor->GetCurrentTorch());
     if (pTorch && pTorch->torch_active())
@@ -291,7 +321,28 @@ float CVisualMemoryManager::object_luminocity(const CGameObject* game_object) co
     }
 
     float luminocity = const_cast<CGameObject*>(game_object)->ROS()->get_luminocity();
-    float power = log(luminocity > .001f ? luminocity : .001f) * current_state().m_luminocity_factor;
+    // NLC: AI light terms for the actor (nlc_stealth sky_k, torch_k, flash_k; all 0 = off)
+    if (m_object && nlc_stealth::g_actor_light_bonus)
+    {
+        if (m_stalker)
+            luminocity += nlc_stealth::actor_light_parts(m_object, true, luminocity).total();
+        else
+        {
+            // NLC: monsters take the sky and near-range terms by species (nlc_light_k), the muzzle flash always
+            const nlc_stealth::LightParts parts = nlc_stealth::actor_light_parts(m_object, m_nlc_light_k > 0.f, luminocity);
+            luminocity += m_nlc_light_k * (parts.sky + parts.near_light + parts.lamp) + parts.flash;
+        }
+        clamp(luminocity, 0.f, 1.f);
+    }
+    // NLC: night vision of nocturnal monsters (species nlc_dark_floor)
+    if (!m_stalker && m_nlc_dark_floor > luminocity)
+        luminocity = m_nlc_dark_floor;
+    // NLC: night-vision device: light floor (nlc_stealth nvd_floor; flag set per NPC by script)
+    if (m_nlc_nvd && nlc_stealth::g_nvd_floor > luminocity)
+        luminocity = nlc_stealth::g_nvd_floor;
+    // NLC: live override of the stalker luminocity_factor (nlc_stealth, identity by default)
+    const float luminocity_factor = (m_stalker && nlc_stealth::g_lum_factor_override >= 0.f) ? nlc_stealth::g_lum_factor_override : current_state().m_luminocity_factor;
+    float power = log(luminocity > .001f ? luminocity : .001f) * luminocity_factor;
     return (exp(power));
 }
 
@@ -322,8 +373,11 @@ float CVisualMemoryManager::get_visible_value(float distance, float object_dista
     clamp(fog, 0.f, 1.f);
     float fog_factor = 1.f - pow(fog, current_state().m_fog_pow);
 
+    // NLC: live rate multiplier per profile (nlc_stealth, identity by default)
+    const float rate_mult = m_object ? nlc_stealth::rate_mult(!!m_stalker, &current_state() == &m_danger) : 1.f;
+
     return (time_delta / current_state().m_time_quant * luminocity * (1.f + current_state().m_velocity_factor * object_velocity) * (distance - object_distance) /
-            (distance - always_visible_distance) * fog_factor * trans);
+            (distance - always_visible_distance) * fog_factor * trans * rate_mult);
 }
 
 CNotYetVisibleObject* CVisualMemoryManager::not_yet_visible_object(const CGameObject* game_object)
@@ -359,6 +413,21 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
 
     CNotYetVisibleObject* object = not_yet_visible_object(game_object);
 
+    // NLC: stealth diagnostics for the actor as target (nlc_stealth; off unless a watch or log_events is set)
+    const bool nlc_log = nlc_stealth::g_track && m_object && g_actor && game_object == g_actor && nlc_stealth::tracked(m_object->ID());
+    nlc_stealth::VisionSample nlc_sample{};
+    if (nlc_log)
+    {
+        nlc_sample.object_distance = object_distance;
+        nlc_sample.view_distance = distance;
+        nlc_sample.threshold = current_state().m_visibility_threshold;
+        nlc_sample.time_delta = time_delta;
+        nlc_sample.danger_profile = &current_state() == &m_danger;
+        nlc_sample.sum_before = object ? object->m_value : 0.f;
+        nlc_sample.ray = visible_transparency_threshold(game_object);
+        nlc_sample.trans = 1.f;
+    }
+
     if (distance < object_distance)
     {
         if (object)
@@ -368,6 +437,12 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
                 object->m_value = 0.f;
             else
                 object->m_update_time = Device.dwTimeGlobal;
+            if (nlc_log) // NLC
+            {
+                nlc_sample.out_of_range = true;
+                nlc_sample.sum_after = object->m_value;
+                nlc_stealth::on_vision(m_object, current_state(), nlc_sample);
+            }
             return (object->m_value >= current_state().m_visibility_threshold);
         }
         return (false);
@@ -375,11 +450,14 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
 
     float luminocity = object_luminocity(game_object);
     float trans;
-    if (current_state().m_transparency_factor > 0.f && smart_cast<const CActor*>(game_object))
+    // NLC: live override of the stalker transparency_factor (nlc_stealth, identity by default)
+    const float transparency_factor =
+        (m_stalker && nlc_stealth::g_transparency_factor_override >= 0.f) ? nlc_stealth::g_transparency_factor_override : current_state().m_transparency_factor;
+    if (transparency_factor > 0.f && smart_cast<const CActor*>(game_object))
     {
         trans = visible_transparency_threshold(game_object);
         if (trans < 1.f)
-            trans = trans < 0.f ? 1.f : (trans * current_state().m_transparency_factor);
+            trans = trans < 0.f ? 1.f : (trans * transparency_factor);
 
         clamp(trans, 0.f, 1.f);
     }
@@ -391,18 +469,88 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
         CNotYetVisibleObject new_object;
         new_object.m_object = game_object;
         new_object.m_prev_time = 0;
-        new_object.m_value = get_visible_value(distance, object_distance, time_delta, get_object_velocity(game_object, new_object), luminocity, trans);
+        float velocity = get_object_velocity(game_object, new_object); // NLC: kept for the diagnostics
+        if (nlc_stealth::g_vel_physics > 0.f && game_object == g_actor) // NLC: physics speed instead of the noisy position history
+            velocity = nlc_stealth::actor_speed();
+        new_object.m_value = get_visible_value(distance, object_distance, time_delta, velocity, luminocity, trans);
+        // NLC: rank and stance factor for the actor as target (not inside always_visible_distance)
+        if (nlc_stealth::g_actor_rate_factor && m_object && game_object == g_actor && object_distance > current_state().m_always_visible_distance)
+            new_object.m_value *= nlc_stealth::actor_rate_factor(m_object);
+        if (game_object == g_actor && g_actor && current_state().m_nlc_actor_rate_k != 1.f &&
+            object_distance > current_state().m_always_visible_distance) // NLC: vision section actor factor
+            new_object.m_value *= current_state().m_nlc_actor_rate_k;
+        if (m_stalker && g_actor && game_object == g_actor) // NLC: suspicion rate factor and noticed point
+        {
+            if (m_nlc_rate_k != 1.f && object_distance > current_state().m_always_visible_distance)
+                new_object.m_value *= m_nlc_rate_k;
+            if (new_object.m_value > 0.f)
+            {
+                m_nlc_point = g_actor->Position();
+                m_nlc_point_time = Device.dwTimeGlobal;
+            }
+        }
+        else if (g_actor && game_object == g_actor && m_nlc_rate_k != 1.f && object_distance > current_state().m_always_visible_distance)
+            new_object.m_value *= m_nlc_rate_k; // NLC pass 5: monster hunt / alert
+        if (nlc_log) // NLC
+        {
+            nlc_sample.increment = new_object.m_value;
+            nlc_sample.velocity = velocity;
+        }
         clamp(new_object.m_value, 0.f, current_state().m_visibility_threshold + EPS_L);
         new_object.m_update_time = Device.dwTimeGlobal;
         new_object.m_prev_time = get_prev_time(game_object);
         add_not_yet_visible_object(new_object);
+        if (nlc_log) // NLC
+        {
+            nlc_sample.luminocity_used = luminocity;
+            nlc_sample.trans = trans;
+            nlc_sample.always_visible = object_distance <= current_state().m_always_visible_distance;
+            nlc_sample.sum_after = new_object.m_value;
+            nlc_stealth::on_vision(m_object, current_state(), nlc_sample);
+        }
         return (new_object.m_value >= current_state().m_visibility_threshold);
     }
 
     object->m_update_time = Device.dwTimeGlobal;
-    object->m_value += get_visible_value(distance, object_distance, time_delta, get_object_velocity(game_object, *object), luminocity, trans);
+    float velocity = get_object_velocity(game_object, *object); // NLC: kept for the diagnostics
+    if (nlc_stealth::g_vel_physics > 0.f && game_object == g_actor) // NLC: physics speed instead of the noisy position history
+        velocity = nlc_stealth::actor_speed();
+    float increment = get_visible_value(distance, object_distance, time_delta, velocity, luminocity, trans);
+    // NLC: rank and stance factor for the actor as target (not inside always_visible_distance)
+    if (nlc_stealth::g_actor_rate_factor && m_object && game_object == g_actor && object_distance > current_state().m_always_visible_distance)
+        increment *= nlc_stealth::actor_rate_factor(m_object);
+    if (game_object == g_actor && g_actor && current_state().m_nlc_actor_rate_k != 1.f &&
+            object_distance > current_state().m_always_visible_distance) // NLC: vision section actor factor
+        increment *= current_state().m_nlc_actor_rate_k;
+    if (m_stalker && g_actor && game_object == g_actor) // NLC: suspicion rate factor and noticed point
+    {
+        if (m_nlc_rate_k != 1.f && object_distance > current_state().m_always_visible_distance)
+            increment *= m_nlc_rate_k;
+        if (increment > 0.f)
+        {
+            m_nlc_point = g_actor->Position();
+            m_nlc_point_time = Device.dwTimeGlobal;
+        }
+    }
+    else if (g_actor && game_object == g_actor && m_nlc_rate_k != 1.f && object_distance > current_state().m_always_visible_distance)
+        increment *= m_nlc_rate_k; // NLC pass 5: monster hunt / alert
+    object->m_value += increment;
     clamp(object->m_value, 0.f, current_state().m_visibility_threshold + EPS_L);
     object->m_prev_time = get_prev_time(game_object);
+    // NLC: a monster half-noticing the actor goes to investigate (nlc_stealth monster_notice_v; off by default)
+    if (nlc_stealth::g_monster_notice_v > 0.f && !m_stalker && m_object && g_actor && game_object == g_actor)
+        nlc_stealth::monster_visual_notice(m_object, object->m_value / current_state().m_visibility_threshold);
+
+    if (nlc_log) // NLC
+    {
+        nlc_sample.increment = increment;
+        nlc_sample.velocity = velocity;
+        nlc_sample.luminocity_used = luminocity;
+        nlc_sample.trans = trans;
+        nlc_sample.always_visible = object_distance <= current_state().m_always_visible_distance;
+        nlc_sample.sum_after = object->m_value;
+        nlc_stealth::on_vision(m_object, current_state(), nlc_sample);
+    }
 
     return (object->m_value >= current_state().m_visibility_threshold);
 }
@@ -572,6 +720,46 @@ struct CVisibleObjectPredicateEx
     }
 };
 
+// NLC: per-NPC vision profile (nlc_stealth_set_vision); same Load flags as reload()
+bool CVisualMemoryManager::nlc_set_vision_sections(LPCSTR free_section, LPCSTR danger_section)
+{
+    if (!m_object)
+        return false;
+    const bool not_a_stalker = m_stalker ? true : !!m_client;
+    if (free_section && *free_section)
+    {
+        if (!pSettings->section_exist(free_section))
+            return false;
+        m_free.Load(free_section, not_a_stalker);
+    }
+    if (danger_section && *danger_section)
+    {
+        if (!pSettings->section_exist(danger_section))
+            return false;
+        m_danger.Load(danger_section, not_a_stalker);
+    }
+    return true;
+}
+
+// NLC: actor sum / threshold (0..1) for suspicion stages; a harness-forced value counts until it expires
+float CVisualMemoryManager::nlc_suspicion()
+{
+    float value = 0.f;
+    if (g_actor)
+        if (const CNotYetVisibleObject* entry = not_yet_visible_object(g_actor))
+        {
+            const float threshold = visibility_threshold();
+            if (threshold > 0.f)
+                value = entry->m_value / threshold;
+        }
+    if (m_nlc_forced_until && Device.dwTimeGlobal < m_nlc_forced_until)
+        value = _max(value, m_nlc_forced);
+    if (Device.dwTimeGlobal < m_nlc_heard_until) // NLC M3: heard concern (faint shot, near miss)
+        value = _max(value, m_nlc_heard);
+    clamp(value, 0.f, 1.f);
+    return value;
+}
+
 void CVisualMemoryManager::remove_links(CObject* object)
 {
     {
@@ -649,15 +837,39 @@ void CVisualMemoryManager::update(float time_delta)
     }
     STOP_PROFILE
 
+    // NLC: stealth diagnostics - the actor was not evaluated this update, so the loop below resets (or decays) its sum
+    const CNotYetVisibleObject* nlc_actor_entry = nullptr;
+    float nlc_sum_before = 0.f;
+    bool nlc_skipped = false;
+    if (nlc_stealth::g_track && m_object && g_actor && nlc_stealth::tracked(m_object->ID()))
+    {
+        nlc_actor_entry = not_yet_visible_object(g_actor);
+        nlc_skipped = !nlc_actor_entry || nlc_actor_entry->m_update_time < Device.dwTimeGlobal;
+        nlc_sum_before = nlc_actor_entry ? nlc_actor_entry->m_value : 0.f;
+    }
+
     START_PROFILE("Memory Manager/visuals/update/make_not_yet_visible")
     {
         xr_vector<CNotYetVisibleObject>::iterator I = m_not_yet_visible_objects.begin();
         xr_vector<CNotYetVisibleObject>::iterator E = m_not_yet_visible_objects.end();
         for (; I != E; ++I)
             if ((*I).m_update_time < Device.dwTimeGlobal)
-                (*I).m_value = 0.f;
+            {
+                // NLC: stalkers keep a fading actor sum instead of the instant reset (nlc_stealth mem_hold_ms, mem_decay_s; off by default)
+                if (nlc_stealth::g_memory_decay && m_stalker && g_actor && (*I).m_object == g_actor)
+                    (*I).m_value = nlc_stealth::forget_actor_sum((*I).m_value, current_state().m_visibility_threshold, Device.dwTimeGlobal - (*I).m_update_time, time_delta);
+                else if (nlc_stealth::g_monster_memory_decay && !m_stalker && m_object && g_actor && (*I).m_object == g_actor) // NLC: monsters
+                    (*I).m_value =
+                        nlc_stealth::forget_actor_sum((*I).m_value, current_state().m_visibility_threshold, Device.dwTimeGlobal - (*I).m_update_time, time_delta, true);
+                else
+                    (*I).m_value = 0.f;
+            }
     }
     STOP_PROFILE
+
+    if (nlc_skipped) // NLC
+        nlc_stealth::on_vision_skipped(m_object, visible_transparency_threshold(g_actor), transparency_threshold(), nlc_sum_before,
+                                       nlc_actor_entry ? nlc_actor_entry->m_value : 0.f);
 
     START_PROFILE("Memory Manager/visuals/update/removing_offline")
     // verifying if object is online

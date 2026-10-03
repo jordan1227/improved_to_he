@@ -1256,6 +1256,17 @@ function create_corpse(section, pos, gvid, lvid, story_id, custom_data) -- созда
 	data.upd.health = 0
 	if custom_data then data.custom_data = custom_data end
 	pk:set(data)   
+	-- scripted body: keep its inventory, death_manager.create_release_item would wipe it
+	local se_obj = alife():object(obj.id) or obj
+	se_obj.death_droped = true
+	-- the engine already put supplies and a device_pda on it; keep supplies, drop the usual junk
+	local junk = {}
+	for id, o in alife():objects() do
+		if o.parent_id == obj.id and death_manager.is_always_off_item(o:section_name()) then
+			table.insert(junk, id)
+		end
+	end
+	for _, id in ipairs(junk) do misc.release_obj(id) end
 	return obj
 end
 
@@ -1525,6 +1536,7 @@ local flt_tbl = { ["razgruzka"] = {"_new"},
 				  ["banka"] = {"full","alko"},
 				  ["podsumok"] = {"_feik","_mem"},
 				  ["device_pda_npc"] = {"_gg"},
+				  ["doc_blood"] = {"_ice"},
 				}
 function have_items_count(itm, items_count, new_flag, capsule_flag)
 	if type(itm) == "table" then -- для проверки группы элементов, используется синтаксис: have_items_count({ bread = 3, conserva = 3}) 
@@ -1536,6 +1548,11 @@ function have_items_count(itm, items_count, new_flag, capsule_flag)
 		end
 		return true
 	end
+
+	if items_count == nil then
+		log2("#WARN: have_items_count(%s): nil count, defaulting to 1", tostring(itm))
+	end
+	items_count = tonumber(items_count) or 1
 
 	-- wprintf(" check have~C0A %s~C0B x~C0D %d~C07", itm, items_count)
 	if strpos(itm, "grenade_") then
@@ -4649,6 +4666,9 @@ function add_tail()
 	if lname=="l04_darkvalley" then
 		nlc_fixes.val_scaintist_docs_old_save()
 	end
+	nlc_fixes.quest_corpse_items_old_save()
+	-- [HE-PORT]
+	nlc_fixes.mar_leader_job_article_old_save()
 	if lname=="l03_agroprom" then
 		agro_mines_check()
 	end
@@ -5023,6 +5043,9 @@ if lname == "l12_stancia_new" or lname == "l12_stancia_2_new" then
 			end
 		if lname~="l01_escape" then 
 			actor:give_info_portion("esc_lamp_1_off") 
+		end
+		if actor:has_info("borov_31_start") then
+			add_bandit_body() -- recovers a missing Borov corpse (old saves, cleaner)
 		end
 		if lname~="l02_garbage" and actor:has_info("borov_harmonica_have") then 
 			obj= g_sim:story_object(9495)
@@ -6802,7 +6825,34 @@ function sak_tele_art( path )
     end
 end
 
+function borov_body_finished()
+	return has_alife_info("borov_31_done")
+		or has_alife_info("borov_31_failed")
+		or has_alife_info("borov_harmonica_have")
+end
+function borov_body_pending()
+	return has_alife_info("borov_31_start") and not borov_body_finished()
+end
+function borov_body_has_harmonica(body_id)
+	for id, o in alife():objects() do
+		if o.parent_id == body_id and o:section_name() == "harmonica_b" then
+			return true
+		end
+	end
+	return false
+end
 function add_bandit_body()
+	-- also runs as the action of borov_31_start, so do not require that info here
+	if borov_body_finished() then return end
+	local body = alife():story_object(9495)
+	if body then
+		-- death_manager used to wipe the corpse inventory; restore the harmonica if it is missing
+		if not borov_body_has_harmonica(body.id) then
+			body.death_droped = true
+			misc.spawn_to("harmonica_b", body)
+		end
+		return
+	end
 	local obj= create_corpse ("trup_bandit1",
                                             v3f(-292.71,-3.0,-195.81),260,797,
                                             9495,
@@ -13180,7 +13230,7 @@ function mil_dolg_attacking()
 end
 function not_drinked_vodka() return flag_drink end
 function not_have_items_count( itm, items_count )
-	return not have_items_count( itm, items_count, af_flag, capsule_flag )
+	return not have_items_count( itm, items_count, nil, nil )
 end
 function release_agr_soldiers()
     local actor = db.actor

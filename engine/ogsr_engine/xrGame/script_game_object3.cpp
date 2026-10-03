@@ -8,6 +8,7 @@
 
 #include "stdafx.h"
 #include "fl_hook.h"
+#include "nlc_stealth.h" // NLC: stealth diagnostics
 #include "script_game_object.h"
 #include "ai_space.h"
 #include "script_engine.h"
@@ -916,6 +917,7 @@ void CScriptGameObject::make_object_visible_somewhen(CScriptGameObject* object)
         return;
     }
 
+    nlc_stealth::on_script_touch(stalker, entity_alive); // NLC: stealth diagnostics (script-induced awareness)
     stalker->memory().make_object_visible_somewhen(entity_alive);
 }
 

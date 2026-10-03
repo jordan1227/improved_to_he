@@ -1,0 +1,103 @@
+-- sivol: stealth debug overlay (docs/STEALTH_DESIGN.md 20.7). Off by default; for testing.
+-- Shows the stalker under the crosshair, or else the nearest one in front of the actor:
+-- suspicion value and stage, temperament, last heard kind, camp alert, detection rate factor.
+--   g_loadstring sivol_stealth_hud.toggle()
+
+enabled = false
+period_ms = 250
+range = 60          -- metres
+cone_cos = 0.7      -- in front of the actor: within about 45 degrees of the view direction
+
+local STATIC = "nlc_stealth_debug" -- own static (ui_custom_msgs*.xml); dsh_coordinator rewrites gul_debug every update
+local next_update = 0
+local shown = false
+
+local function pick()
+    local obj = level.get_target_obj()
+    if obj and obj:is_stalker() and obj:alive() then
+        return obj
+    end
+    local apos, dir = db.actor:position(), device().cam_dir
+    local best, best_d = nil, range
+    for id in pairs(db.storage) do
+        local o = level.object_by_id(id)
+        if o and o:is_stalker() and o:alive() and o:id() ~= db.actor:id() then
+            local p = o:position()
+            local d = p:distance_to(apos)
+            if d < best_d then
+                local to = vector():set(p.x - apos.x, 0, p.z - apos.z):normalize()
+                local flat = vector():set(dir.x, 0, dir.z):normalize()
+                if to:dotproduct(flat) > cone_cos then
+                    best, best_d = o, d
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function static()
+    local hud = get_hud()
+    if not hud then
+        return nil
+    end
+    local cs = hud:GetCustomStatic(STATIC)
+    if not cs then
+        hud:AddCustomStatic(STATIC, true)
+        cs = hud:GetCustomStatic(STATIC)
+    end
+    return cs
+end
+
+local function hide()
+    local hud = get_hud()
+    if hud and shown then
+        hud:RemoveCustomStatic(STATIC)
+    end
+    shown = false
+end
+
+local function on_update()
+    if not enabled then
+        if shown then
+            hide()
+        end
+        return
+    end
+    local now = time_global()
+    if now < next_update or not db.actor then
+        return
+    end
+    next_update = now + period_ms
+    local cs = static()
+    if not cs then
+        return
+    end
+    shown = true
+    local obj = pick()
+    if not obj or not sivol_stealth_suspicion then
+        cs:wnd():SetText("[stealth] no stalker in view")
+        return
+    end
+    local s = sivol_stealth_suspicion.debug_state(obj)
+    local text = string.format(
+        "[stealth] %s\\n%s %s d=%.0f\\nsusp=%.2f heard=%s\\nstage=%d plan=%s\\ntemper=%s (episode %s)\\nalert=%s rate=%.2f concern=%d\\neligible=%s truce=%s",
+        obj:name(), obj:character_community(), ranks.get_obj_rank_name(obj), obj:position():distance_to(db.actor:position()),
+        s.value, s.kind, s.stage, tostring(s.plan), s.temper, tostring(s.episode_temper), s.alert, s.rate_k, s.concern,
+        tostring(s.eligible), tostring(s.truce))
+    cs:wnd():SetText(text)
+end
+
+function toggle(on)
+    if on == nil then
+        enabled = not enabled
+    else
+        enabled = on and true or false
+    end
+    next_update = 0
+    log2("~ [stealth] hud %s", enabled and "on" or "off")
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_update", fun = on_update })
+end

@@ -8,6 +8,7 @@
 #include "PHElement.h"
 #include "..\Include/xrRender/Kinematics.h"
 #include "..\Include/xrRender/KinematicsAnimated.h"
+#include "nlc_stealth.h" // NLC: AI light from lamps
 #include "game_object_space.h"
 #include "script_callback_ex.h"
 #include "script_game_object.h"
@@ -61,6 +62,7 @@ void CHangingLamp::Load(LPCSTR section) { inherited::Load(section); }
 
 void CHangingLamp::net_Destroy()
 {
+    nlc_stealth::register_lamp(this, false); // NLC
     light_render.destroy();
     light_ambient.destroy();
     RespawnInit();
@@ -108,6 +110,8 @@ BOOL CHangingLamp::net_Spawn(CSE_Abstract* DC)
     light_render->set_range(lamp->range);
     light_render->set_color(clr);
     light_render->set_cone(lamp->spot_cone_angle);
+    m_nlc_cone = lamp->spot_cone_angle; // NLC
+    m_nlc_spot = this_is_spot;
     light_render->set_texture(*lamp->light_texture);
     light_render->set_virtual_size(lamp->m_virtual_size);
 
@@ -162,6 +166,8 @@ BOOL CHangingLamp::net_Spawn(CSE_Abstract* DC)
     setVisible((BOOL) !!Visual());
     setEnabled((BOOL) !!collidable.model);
 
+    nlc_stealth::register_lamp(this, true); // NLC: AI light from lamps
+    m_nlc_pos = Position();
     return (TRUE);
 }
 
@@ -229,6 +235,8 @@ void CHangingLamp::UpdateCL()
         }
         light_render->set_rotation(xf.k, xf.i);
         light_render->set_position(xf.c);
+        m_nlc_pos = xf.c; // NLC
+        m_nlc_dir = xf.k;
 
         // update T&R from ambient bone
         if (light_ambient)
@@ -410,4 +418,18 @@ void CHangingLamp::script_register(lua_State* L)
                            .def("set_volumetric_intensity", [](CHangingLamp* self, const float val) { self->light_render->set_volumetric_intensity(val); })
                            .def("set_volumetric_distance", [](CHangingLamp* self, const float val) { self->light_render->set_volumetric_distance(val); })
     ];
+}
+
+// NLC: light state for the AI light term (nlc_stealth lamp_k)
+bool CHangingLamp::nlc_light(Fvector& pos, Fvector& dir, float& range, float& bright, float& cos_half) const
+{
+    if (fHealth <= 0.f || !light_render || !const_cast<ref_light&>(light_render)->get_active())
+        return false;
+    pos = m_nlc_pos;
+    dir = m_nlc_dir;
+    range = light_render->get_range();
+    const Fcolor c = light_render->get_color();
+    bright = _max(c.r, _max(c.g, c.b));
+    cos_half = m_nlc_spot ? _cos(m_nlc_cone * 0.5f) : -2.f;
+    return range > 0.f && bright > 0.f;
 }

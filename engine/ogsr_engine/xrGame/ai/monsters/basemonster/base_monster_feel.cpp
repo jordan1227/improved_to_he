@@ -16,6 +16,7 @@
 #include "../../../../Include/xrRender/KinematicsAnimated.h"
 #include "../../../sound_player.h"
 #include "../../../level.h"
+#include "../../../nlc_stealth.h" // NLC: stealth diagnostics
 #include "../../../script_callback_ex.h"
 #include "../../../script_game_object.h"
 #include "../../../game_object_space.h"
@@ -44,12 +45,22 @@ void CBaseMonster::feel_sound_new(CObject* who, int eType, CSound_UserDataPtr us
     if (eType == 0xffffffff)
         return;
 
+    // NLC M4: outfit noise, surface and rain masking of the actor's quiet sounds, walls (identity by default)
+    if (nlc_stealth::g_actor_sound_factor && g_actor && who == g_actor)
+        power *= nlc_stealth::actor_sound_factor(eType, this, Position);
+
     // ignore distant sounds
     Fvector center;
     Center(center);
     float dist = center.distance_to(Position);
+    // NLC: stealth diagnostics for sounds owned by the actor (nlc_stealth; off unless a watch is set)
+    const bool nlc_log = nlc_stealth::g_track && g_actor && who == g_actor;
     if (dist > db().m_max_hear_dist)
+    {
+        if (nlc_log)
+            nlc_stealth::on_monster_sound(this, eType, dist, power, db().m_fSoundThreshold, false, false, "max_hear_dist");
         return;
+    }
 
     // ignore sounds if not from enemies and not help sounds
     CEntityAlive* entity = smart_cast<CEntityAlive*>(who);
@@ -66,11 +77,20 @@ void CBaseMonster::feel_sound_new(CObject* who, int eType, CSound_UserDataPtr us
 
     // if ((eType & SOUND_TYPE_WEAPON_SHOOTING) == SOUND_TYPE_WEAPON_SHOOTING) power = 1.f;
 
-    if (((eType & SOUND_TYPE_WEAPON_BULLET_HIT) == SOUND_TYPE_WEAPON_BULLET_HIT) && (dist < 2.f))
+    // NLC: named for the diagnostics; the shooter range gate is a species key (near_hit_shooter_max_distance, off by default)
+    const bool near_hit = ((eType & SOUND_TYPE_WEAPON_BULLET_HIT) == SOUND_TYPE_WEAPON_BULLET_HIT) && (dist < 2.f) && nlc_stealth::monster_near_hit_allowed(this, who);
+    if (near_hit)
         HitMemory.add_hit(who, eSideFront);
+
+    if (nlc_log) // NLC
+        nlc_stealth::on_monster_sound(this, eType, dist, power, db().m_fSoundThreshold, power >= db().m_fSoundThreshold, near_hit, nullptr);
 
     // execute callback
     sound_callback(who, eType, Position, power);
+
+    // NLC M3: a faint heard actor shot only sends the monster to look (nlc_stealth monster_shot_alert_pow / species shot_alert_pow)
+    if (g_actor && who == g_actor && power >= db().m_fSoundThreshold && nlc_stealth::monster_faint_shot(this, eType, Position, power))
+        return;
 
     // register in sound memory
     if (power >= db().m_fSoundThreshold)
@@ -234,7 +254,8 @@ BOOL CBaseMonster::feel_vision_isRelevant(CObject* O)
         {
             // если видит друга - проверить наличие у него врагов
             CBaseMonster* monster = smart_cast<CBaseMonster*>(entity);
-            if (monster && !m_skip_transfer_enemy)
+            // NLC: pack sharing gate and visible-body exclusion (nlc_stealth pack_gate)
+            if (monster && !m_skip_transfer_enemy && !nlc_stealth::monster_pack_share(this, monster))
                 EnemyMan.transfer_enemy(monster);
             return FALSE;
         }
@@ -280,7 +301,11 @@ void CBaseMonster::HitSignal(float amount, Fvector& vLocalDir, CObject* who, s16
     // если нейтрал - добавить как врага
     CEntityAlive* obj = smart_cast<CEntityAlive*>(who);
     if (obj && (tfGetRelationType(obj) == ALife::eRelationTypeNeutral))
+    {
+        nlc_stealth::set_monster_add_source("hit_neutral"); // NLC: diagnostics tag
         EnemyMan.add_enemy(obj);
+        nlc_stealth::set_monster_add_source(nullptr);
+    }
 }
 
 void CBaseMonster::SetAttackEffector()

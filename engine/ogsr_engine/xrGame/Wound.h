@@ -27,6 +27,8 @@ public:
 
     //заживление раны
     void Incarnation(float percent, float min_wound_size);
+    // NLC: wound_model 2, every type shrinks by `keep_factor` (exponential healing)
+    void IncarnationProportional(float keep_factor, float min_wound_size);
     u16 GetBoneNum() { return m_iBoneNum; }
     void SetBoneNum(u16 bone_num) { m_iBoneNum = bone_num; }
 

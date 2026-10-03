@@ -57,6 +57,7 @@
 #include "ui/UIBtnHint.h"
 
 #include "embedded_editor/embedded_editor_main.h"
+#include "nlc_stealth.h"
 #include "..\xr_3da\xr_ioc_cmd.h"
 
 CPHWorld* ph_world = 0;
@@ -419,6 +420,7 @@ void CLevel::OnFrame()
 
     m_ph_commander->update();
     m_ph_commander_scripts->update();
+    nlc_stealth::on_frame(); // NLC: bolt contacts queued by the physics thread, handled here on the main thread (Lua, AI memory)
 
     //просчитать полет пуль
     Device.Statistic->BulletManager.Begin();

@@ -11,11 +11,30 @@
 #include "ai_monster_squad_manager.h"
 #include "../../actor.h"
 #include "../../actor_memory.h"
+#include "../../nlc_stealth.h" // NLC: stealth diagnostics
+
+namespace
+{
+constexpr LPCSTR TARGET_SELECTION_SECTION = "monster_target_selection";
+bool s_target_debug_log = false;
+
+// global [monster_target_selection] value, overridden by the monster's own section
+float read_target_param(LPCSTR section, LPCSTR key, float def)
+{
+    float value = READ_IF_EXISTS(pSettings, r_float, TARGET_SELECTION_SECTION, key, def);
+    return READ_IF_EXISTS(pSettings, r_float, section, key, value);
+}
+} // namespace
 
 CMonsterEnemyMemory::CMonsterEnemyMemory()
 {
     monster = 0;
     time_memory = 15000;
+
+    m_actor_bias = 1.f;
+    m_target_stickiness = 1.f;
+    m_hit_bonus = 1.f;
+    m_hit_bonus_time = 0;
 }
 
 CMonsterEnemyMemory::~CMonsterEnemyMemory() {}
@@ -24,6 +43,24 @@ void CMonsterEnemyMemory::init_external(CBaseMonster* M, TTime mem_time)
 {
     monster = M;
     time_memory = mem_time;
+}
+
+void CMonsterEnemyMemory::load(LPCSTR section)
+{
+    m_actor_bias = std::clamp(read_target_param(section, "actor_bias", 1.f), 0.1f, 10.f);
+    m_target_stickiness = std::clamp(read_target_param(section, "target_stickiness", 1.f), 0.1f, 10.f);
+    m_hit_bonus = std::clamp(read_target_param(section, "hit_bonus", 1.f), 0.1f, 10.f);
+    m_hit_bonus_time = TTime(std::max(read_target_param(section, "hit_bonus_time", 0.f), 0.f));
+
+    s_target_debug_log = !!READ_IF_EXISTS(pSettings, r_bool, TARGET_SELECTION_SECTION, "debug_log", false);
+}
+
+bool CMonsterEnemyMemory::target_debug_log() { return s_target_debug_log; }
+
+float CMonsterEnemyMemory::get_danger(const CEntityAlive* enemy) const
+{
+    const auto it = m_objects.find(enemy);
+    return (it != m_objects.end()) ? it->second.danger : -1.f;
 }
 
 void CMonsterEnemyMemory::update()
@@ -43,6 +80,7 @@ void CMonsterEnemyMemory::update()
             if (monster->CCustomMonster::useful(&monster->memory().enemy(), enemy) &&
                 monster->Position().distance_to(enemy->Position()) < monster->get_feel_enemy_who_just_hit_max_distance())
             {
+                nlc_stealth::set_monster_add_source("hit"); // NLC: stealth diagnostics source tag
                 add_enemy(enemy);
 
                 bool const self_is_dog = !!smart_cast<const CAI_Dog*>(monster);
@@ -67,8 +105,11 @@ void CMonsterEnemyMemory::update()
                 float const xz_dist = monster->Position().distance_to_xz(enemy->Position());
                 float const y_dist = _abs(monster->Position().y - enemy->Position().y);
 
-                if (monster->CCustomMonster::useful(&monster->memory().enemy(), enemy) && y_dist < 10 && xz_dist < monster->get_feel_enemy_who_made_sound_max_distance())
+                // NLC: impact and whine sounds make the shooter an enemy only within the species range (off by default)
+                if (monster->CCustomMonster::useful(&monster->memory().enemy(), enemy) && y_dist < 10 && xz_dist < monster->get_feel_enemy_who_made_sound_max_distance() &&
+                    nlc_stealth::monster_impact_allowed(monster, sound.type == WEAPON_BULLET_RICOCHET && g_actor && sound.who == g_actor, xz_dist))
                 {
+                    nlc_stealth::set_monster_add_source("sound"); // NLC: stealth diagnostics source tag
                     add_enemy(enemy);
 
                     bool const self_is_dog = !!smart_cast<const CAI_Dog*>(monster);
@@ -88,7 +129,10 @@ void CMonsterEnemyMemory::update()
         const bool feel_enemy = monster->Position().distance_to(enemy->Position()) < monster->get_feel_enemy_max_distance();
 
         if (feel_enemy || monster->memory().visual().visible_now(*I))
+        {
+            nlc_stealth::set_monster_add_source(feel_enemy ? "feel" : "sight"); // NLC: stealth diagnostics source tag
             add_enemy(*I);
+        }
     }
 
     float const feel_enemy_max_distance = monster->get_feel_enemy_max_distance();
@@ -99,23 +143,47 @@ void CMonsterEnemyMemory::update()
         float const y_dist = _abs(monster->Position().y - Actor()->Position().y);
 
         if (xz_dist < feel_enemy_max_distance && y_dist < 10 && monster->memory().enemy().is_useful(Actor()) && Actor()->memory().visual().visible_now(monster))
+        {
+            nlc_stealth::set_monster_add_source("actor_sees_monster"); // NLC: stealth diagnostics source tag
             add_enemy(Actor());
+        }
     }
+    nlc_stealth::set_monster_add_source(nullptr); // NLC
 
     // удалить устаревших врагов
     remove_non_actual();
 
     // обновить опасность
+    // EnemyMan.update() runs after this, so get_enemy() is still the previous target (pointer compare only)
+    const CEntityAlive* const current_target = monster->EnemyMan.get_enemy();
+    const CEntityAlive* const actor = Actor();
+
     for (ENEMIES_MAP_IT it = m_objects.begin(); it != m_objects.end(); it++)
     {
         u8 relation_value = u8(monster->tfGetRelationType(it->first));
         float dist = monster->Position().distance_to(it->second.position);
-        it->second.danger = (1 + relation_value * relation_value * relation_value) / (1 + dist);
+        float danger = (1 + relation_value * relation_value * relation_value) / (1 + dist);
+
+        if (actor && it->first == actor)
+            danger *= m_actor_bias;
+
+        if (m_hit_bonus_time > 0)
+        {
+            const TTime hit_time = monster->HitMemory.get_last_hit_time(it->first);
+            if (hit_time != 0 && Device.dwTimeGlobal < hit_time + m_hit_bonus_time)
+                danger *= m_hit_bonus;
+        }
+
+        if (current_target && it->first == current_target)
+            danger *= m_target_stickiness;
+
+        it->second.danger = danger;
     }
 }
 
 void CMonsterEnemyMemory::add_enemy(const CEntityAlive* enemy)
 {
+    nlc_stealth::on_monster_firsthand(monster, enemy); // NLC M4: own senses (pack sharing uses the positional overload)
     SMonsterEnemy enemy_info;
     enemy_info.position = enemy->Position();
     enemy_info.vertex = enemy->ai_location().level_vertex_id();
@@ -132,6 +200,7 @@ void CMonsterEnemyMemory::add_enemy(const CEntityAlive* enemy)
     {
         // добавить врага в список объектов
         m_objects.insert(std::make_pair(enemy, enemy_info));
+        nlc_stealth::on_monster_enemy_added(monster, enemy, false); // NLC: stealth diagnostics
     }
 }
 
@@ -154,6 +223,7 @@ void CMonsterEnemyMemory::add_enemy(const CEntityAlive* enemy, const Fvector& po
     {
         // добавить врага в список объектов
         m_objects.insert(std::make_pair(enemy, enemy_info));
+        nlc_stealth::on_monster_enemy_added(monster, enemy, true); // NLC: stealth diagnostics
     }
 }
 

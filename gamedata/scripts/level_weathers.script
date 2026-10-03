@@ -1,4 +1,5 @@
 local weather_manager = nil
+local warned_empty_graphs = {}
 --18.02.2008 - added dynamic weather
 
 class "WeatherManager"
@@ -15,6 +16,53 @@ function WeatherManager:__init()
 	if not self.graphs_ini then
 		abort("error when open weather_dynamic_graphs.ltx")
 	end
+	-- [HE-PORT]
+	self.frames = nil
+	self.frames_restore = nil
+	self.last_shift = 0
+	weather_manager = self
+end
+
+-- [HE-PORT]
+local function frame_id(idx)
+	local d = level.environment():getCurrentWeather(idx)
+	return d and d.m_identifier
+end
+
+local function time_key()
+	return string.format("%d:%d:%d", level.get_time_days(), level.get_time_hours(), level.get_time_minutes())
+end
+
+function WeatherManager:track_frames()
+	if level.is_wfx_playing() then
+		self.frames = nil
+		return
+	end
+	local shift = level.get_weather_last_shift()
+	if self.frames and shift == self.last_shift then
+		return
+	end
+	self.last_shift = shift
+	local w = level.get_weather()
+	if self.frames and frame_id(0) == self.frames.id1 then
+		self.frames = {w0 = self.frames.w1, w1 = w, id1 = frame_id(1)}
+	else
+		self.frames = {w0 = w, w1 = w, id1 = frame_id(1)}
+	end
+end
+
+function WeatherManager:restore_frames(cur)
+	local r = self.frames_restore
+	self.frames_restore = nil
+	if not r or r.lvl ~= level.name() or r.tm ~= time_key() then
+		return
+	end
+	level.set_weather(r.w0, true)
+	level.set_weather_next(r.w1)
+	level.set_weather(cur, false)
+	self.frames = {w0 = r.w0, w1 = r.w1, id1 = frame_id(1)}
+	self.last_shift = level.get_weather_last_shift()
+	log2("WEATHER: frames restored '%s' -> '%s', cycle '%s'", r.w0, r.w1, cur)
 end
 
 -- Вызывается после load(). Состояние погоды уже загружено.
@@ -38,6 +86,7 @@ function WeatherManager:reset()
 		self.weather_list = xr_logic.parse_condlist(db.actor, level.name(), "weather", weather)
 	end
     self:select_weather(true)
+	self.frames_restore = nil -- [HE-PORT]
 	self.last_hour=level.get_time_hours()
 end
 function WeatherManager:forced_weather_change()
@@ -50,6 +99,7 @@ function WeatherManager:update()
 	else
 		self.weather_fx = nil
 	end
+	self:track_frames() -- [HE-PORT]
 	-- if not benchmark.weather then
 		if self.last_hour~=level.get_time_hours() then
 				self.last_hour=level.get_time_hours()
@@ -103,6 +153,7 @@ function WeatherManager:select_weather(now)
 			return
 		end
 		level.set_weather(weather_section_name,now)
+		self:restore_frames(weather_section_name) -- [HE-PORT]
 	elseif self.weather_fx then
 		level.start_weather_fx_from_time(self.weather_fx, self.wfx_time)
 	end
@@ -133,7 +184,7 @@ function get_next_state(graph,state)
 			break
 		end
 	end
-	return next_state
+	return next_state or state
 end
 
 -- Устанавливаем состояние менеджера, распарсивая строку состояния
@@ -163,9 +214,11 @@ function WeatherManager:get_state_as_string()
 	for lvl_name,st in pairs(self.state) do
 		--local lvl=self:pack_level(lvl_name)
 		local curs=self:pack_state(st.current_state)
-		local nexs=self:pack_state(st.next_state)
+		local nexs=self:pack_state(st.next_state or st.current_state)
 		local grn=self:pack_graph_name(st.graph_name)
-		table.insert(lvlstrings,grn.."="..curs..","..nexs)
+		if curs and nexs then
+			table.insert(lvlstrings,grn.."="..curs..","..nexs)
+		end
 	end
 	return table.concat(lvlstrings,";")
 end
@@ -173,7 +226,16 @@ end
 -- Получить граф (таблицу переходов состояний погоды) по его названию и названию игрового уровня
 function WeatherManager:get_graph_by_name(name)
 	if not self.graphs[name] then
-		self.graphs[name] = amk.parse_ini_section_to_array(self.graphs_ini,name)
+		local graph = amk.parse_ini_section_to_array(self.graphs_ini,name)
+		if next(graph) == nil then
+			-- missing/empty graph section: treat as a plain weather section, not a graph
+			if not warned_empty_graphs[name] then
+				warned_empty_graphs[name] = true
+				log2("WEATHER: graph [%s] is missing or empty in dynamic_weather_graphs.ltx", name)
+			end
+			return nil
+		end
+		self.graphs[name] = graph
 	end
 	return self.graphs[name]
 end
@@ -220,6 +282,10 @@ function WeatherManager:load(F)
 		self.weather_fx = str
 		self.wfx_time = d.wt
 	end
+	-- [HE-PORT]
+	if d.fw0 then
+		self.frames_restore = {w0 = d.fw0, w1 = d.fw1, lvl = d.flv, tm = d.ftm}
+	end
 	-- set_save_marker(F, "load", true, "WeatherManager")
 end
 
@@ -237,6 +303,13 @@ function WeatherManager:save(F)
 	d.str = tostring(self.weather_fx)
 	if(self.weather_fx) then
 		d.wt = level.get_wfx_time()
+	end
+	-- [HE-PORT]
+	if self.frames then
+		d.fw0 = self.frames.w0
+		d.fw1 = self.frames.w1
+		d.flv = level.name()
+		d.ftm = time_key()
 	end
 	set_value("weather_data",d)
 	-- set_save_marker(F, "save", true, "WeatherManager")

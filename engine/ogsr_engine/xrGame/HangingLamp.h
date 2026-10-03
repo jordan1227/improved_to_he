@@ -62,6 +62,17 @@ public:
     virtual float Radius() const;
 
     void SetLSFParams(float _speed, float _amount, float _jit);
+
+    // NLC: light state for the AI light term (nlc_stealth lamp_k); false when off or broken
+    bool nlc_light(Fvector& pos, Fvector& dir, float& range, float& bright, float& cos_half) const;
+
+private:
+    Fvector m_nlc_pos{};
+    Fvector m_nlc_dir{};
+    float m_nlc_cone{};
+    bool m_nlc_spot{};
+
+public:
     DECLARE_SCRIPT_REGISTER_FUNCTION
 };
 add_to_type_list(CHangingLamp)

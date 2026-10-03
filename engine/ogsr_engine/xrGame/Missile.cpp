@@ -27,6 +27,8 @@
 #include "../xr_3da/gamemtllib.h"
 #include "debug_renderer.h"
 #include "ActorEffector.h"
+#include "Bolt.h"
+#include "nlc_stealth.h"
 
 CUIProgressShape* g_MissileForceShape = NULL;
 
@@ -838,6 +840,16 @@ void CMissile::ExitContactCallback(bool& do_colide, bool bo1, dContact& c, SGame
         VERIFY(material);
         if (material->Flags.is(SGameMtl::flPassable))
             return;
+
+        // NLC pass 5: first hard contact of a bolt thrown by the actor (nlc_stealth bolt_range; off by default)
+        if (l_this && !l_this->m_nlc_contact && l_this->m_pOwner && l_this->m_pOwner == g_actor && l_contact_obj != l_this->m_pOwner &&
+            smart_cast<CBolt*>(l_this))
+        {
+            l_this->m_nlc_contact = true;
+            // the contact point, not Position(): this runs on the physics thread
+            nlc_stealth::bolt_contact(l_this, l_contact_obj, Fvector().set(float(c.geom.pos[0]), float(c.geom.pos[1]), float(c.geom.pos[2])),
+                                      material->m_Name.c_str());
+        }
 
         if (!l_this || (!l_this->m_kick_on_explode || (smart_cast<CActor*>(l_this->m_pOwner) && smart_cast<CActor*>(l_contact_obj))) || l_this->has_already_contact)
             return;

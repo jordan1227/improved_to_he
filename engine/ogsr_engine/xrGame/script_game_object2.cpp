@@ -8,6 +8,7 @@
 
 #include "stdafx.h"
 #include "script_game_object.h"
+#include "nlc_stealth.h" // NLC: stealth diagnostics
 #include "ai_space.h"
 #include "script_engine.h"
 #include "explosive.h"
@@ -238,7 +239,11 @@ void CScriptGameObject::enable_memory_object(CScriptGameObject* game_object, boo
     if (!monster)
         ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError, "CGameObject : cannot access class member enable_memory_object!");
     else
+    {
         monster->memory().enable(&game_object->object(), enable);
+        if (enable) // NLC: stealth diagnostics (script-induced awareness)
+            nlc_stealth::on_script_touch(monster, &game_object->object());
+    }
 }
 
 const xr_vector<CNotYetVisibleObject>& CScriptGameObject::not_yet_visible_objects() const

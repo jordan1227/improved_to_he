@@ -1,0 +1,122 @@
+-- sivol: one-time swap of the full MP-153 (wpn_winchester_m1) for the MP-133 (wpn_mp133_full).
+--
+-- The full MP-153 was handed out early in this build (stashes, task rewards, traders); the
+-- MP-133 is the intended early shotgun, the MP-153 becomes a late Sultan/quest weapon again.
+-- On the first update after loading a save, every server object of the old section is
+-- replaced: actor inventory and hands, stashes and boxes, NPC inventories, items on the
+-- ground. The MP-133 keeps the owner/place and condition; loaded shells come back as ammo in
+-- the same place; a weapon that sat in an actor slot goes back into it. A save flag
+-- (xvars "sivol_mp153_swap_v1") makes it run once per save; new games just set the flag.
+
+local FLAG = "sivol_mp153_swap_v1"
+local OLD_SECTION = "wpn_winchester_m1"
+local NEW_SECTION = "wpn_mp133_full"
+
+local NPC_CLASSES = {
+    [clsid.script_stalker] = true, [clsid.stalker] = true,
+    [clsid.script_trader] = true, [clsid.trader] = true,
+}
+
+local pending_slot = nil   -- { id = new MP-133 id, slot = actor slot, active = bool }
+
+local function ammo_sections()
+    local list = {}
+    if sys_ini:line_exist(OLD_SECTION, "ammo_class") then
+        for ammo in string.gmatch(sys_ini:r_string(OLD_SECTION, "ammo_class"), "([%w%._%-]+)") do
+            list[#list + 1] = ammo
+        end
+    end
+    return list
+end
+
+local function actor_slot_of(id)
+    if not db.actor then return nil end
+    for slot = 0, 12 do
+        local ok, item = pcall(db.actor.item_in_slot, db.actor, slot)
+        if ok and item and item:id() == id then return slot end
+    end
+    return nil
+end
+
+local function swap_one(sobj, ammo_list, actor_id)
+    local ok_data, data = pcall(function() return get_netpk(sobj, 1):get() end)
+    if not ok_data or not data then return nil end
+
+    local parent = sobj.parent_id
+    local pos, lvid, gvid = sobj.position, sobj.m_level_vertex_id, sobj.m_game_vertex_id
+    local slot, active = nil, false
+    if parent == actor_id then
+        slot = actor_slot_of(sobj.id)
+        active = slot ~= nil and db.actor:active_slot() == slot
+    end
+
+    local new_obj = g_sim:create(NEW_SECTION, pos, lvid, gvid, parent)
+    if not new_obj then return nil end
+    pcall(function()
+        local pk = get_netpk(new_obj, 1)
+        local nd = pk:get()
+        nd.condition = data.condition or 1
+        nd.ammo_elapsed = 0
+        pk:set(nd)
+    end)
+
+    local shells = tonumber(data.ammo_elapsed) or 0
+    if shells > 0 and #ammo_list > 0 then
+        local ammo = ammo_list[(tonumber(data.ammo_type) or 0) + 1] or ammo_list[1]
+        pcall(g_sim.create_ammo, g_sim, ammo, pos, lvid, gvid, parent, shells)
+    end
+
+    g_sim:release(sobj, true)
+    if slot then pending_slot = { id = new_obj.id, slot = slot, active = active } end
+    return new_obj
+end
+
+local function run_swap()
+    if get_value(FLAG, false) then return end
+    local actor_id = db.actor and db.actor:id() or 0
+    local ammo_list = ammo_sections()
+
+    local found = {}
+    for id = 1, 65534 do
+        local sobj = g_sim:object(id)
+        if sobj and sobj:section_name() == OLD_SECTION then found[#found + 1] = sobj end
+    end
+
+    local swapped, players = 0, 0
+    for _, sobj in ipairs(found) do
+        local parent = sobj.parent_id
+        local parent_sobj = parent and parent ~= 65535 and g_sim:object(parent) or nil
+        local npc_owned = parent_sobj and NPC_CLASSES[parent_sobj:clsid()] or false
+        if swap_one(sobj, ammo_list, actor_id) then
+            swapped = swapped + 1
+            if parent == actor_id or (parent_sobj and not npc_owned) then players = players + 1 end
+        end
+    end
+
+    set_value(FLAG, true)
+    log2("[sivol_mp153_swap] swapped %d of %d %s (%d actor/stash) for %s",
+        swapped, #found, OLD_SECTION, players, NEW_SECTION)
+    if players > 0 and sak and sak.send_tip then
+        sak.send_tip("Зона опять шутит: ночью все твои МР-153 тихо превратились в МР-133. Учёные разводят руками, Сидорович говорит, что так и было.",
+            "Странности Зоны", 0, 15, "ui_npc_u_hunter_dan", "sak", "green")
+    end
+end
+
+local function on_first_update()
+    local ok, err = pcall(run_swap)
+    if not ok then log2("[sivol_mp153_swap] ERROR: %s", tostring(err)) end
+end
+
+local function on_update()
+    if not pending_slot or not db.actor then return end
+    local obj = level.object_by_id(pending_slot.id)
+    if not obj then return end
+    pcall(db.actor.move_to_slot, db.actor, obj, true)
+    if pending_slot.active then pcall(db.actor.activate_slot, db.actor, pending_slot.slot) end
+    pending_slot = nil
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_first_update", fun = on_first_update })
+    sm:subscribe({ signal = "on_update", fun = on_update })
+end

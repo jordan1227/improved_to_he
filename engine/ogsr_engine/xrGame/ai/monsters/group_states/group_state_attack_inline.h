@@ -207,7 +207,8 @@ void CStateGroupAttackAbstract::execute()
         }
 
         // установить целевое состояние
-        if (!can_attack_on_move && b_melee)
+        // NLC: attack-on-move monsters may use the standing melee when very close (aom_close_melee_dist)
+        if (b_melee && (!can_attack_on_move || object->aom_close_melee_allowed(prev_substate == eStateAttack_Melee)))
         {
             // check if enemy is behind me for a long time
             // [TODO] make specific state and replace run_away state (to avoid rotation jumps)

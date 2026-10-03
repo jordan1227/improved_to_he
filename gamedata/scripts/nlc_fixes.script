@@ -110,7 +110,7 @@ end
 
 function save()
 	_G.flag_can_save = true
-	if get_value("blowout", 0) == 0 and _G.flag_can_save then
+	if _G.flag_can_save then -- [HE-PORT]
 		local lname = level.name()
 		local where = ( lname == "l01_escape" and "Бункер Сидоровича" ) or "Бункер Сахарова"
 		local bl_save = string.format( "День %s %s. %s [%s]", timers.Get_Game_Days(), level.get_time_hours(), level.get_time_minutes(), where )
@@ -215,6 +215,13 @@ function create_freeman_case()
   end
 end
 
+-- [HE-PORT]
+function mar_leader_job_article_old_save()
+	if has_alife_info( "mar_leader_job_done" ) and not has_alife_info( "mar_factory_corps_done" ) then
+		db.actor:give_info_portion( "mar_factory_corps_done" )
+	end
+end
+
 -- \\ all spawn - перенести после прохождения \\
 
 function vergas_krujka_old_save(nomer)
@@ -241,4 +248,68 @@ function val_scaintist_docs_old_save()
 	if not corpse then return end
 	set_value( "val_scaintist_docs_fixed", true )
 	misc.spawn_to( "scaintist_docs", corpse )
+end
+
+-- Scripted quest corpses used to lose their items to death_manager.create_release_item.
+-- sak.create_corpse now marks bodies death_droped; this restores items on saves made before that.
+local quest_corpse_rows = {
+	{ sid = 9840, item = "yantar_docs",     done = "info_artmod_dummy_dummy_mosquito_bald" },
+	{ sid = 9841, item = "red_forest_docs", done = "info_artmod_dummy_spring_galant" },
+	{ sid = 9842, item = "rad_docs",        done = "info_artmod_dummy_pellicle_gravi_zone" }
+}
+local mil_kurjer_sid = 10121
+local mil_kurjer_items = { "mil_kurjer_pda", "belt_2_art", "af_full_akkum", "af_baloon" }
+local mil_kurjer_conds = { af_full_akkum = 0.05, af_baloon = 0.80 }
+local mil_kurjer_seen = {
+	"mil_kurjer_have_docent_info", "mil_kurjer_have_ivancov_info", "mil_kurjer_have_voronin_info",
+	"mil_kurjer_have_barman_info", "mil_kurjer_have_skrjaga_info", "mil_kurjer_have_docent_done"
+}
+
+local function mil_kurjer_pending()
+	if not db.actor or db.actor:object( "mil_kurjer_pda" ) then return false end
+	for _, inf in ipairs( mil_kurjer_seen ) do
+		if has_alife_info( inf ) then return false end
+	end
+	return true
+end
+
+function quest_corpse_items_old_save()
+	local pending = {}
+	for _, row in ipairs( quest_corpse_rows ) do
+		if not has_alife_info( row.done ) then
+			local corpse = alife():story_object( row.sid )
+			if corpse then pending[ corpse.id ] = { corpse = corpse, items = { row.item } } end
+		end
+	end
+	local kurjer = alife():story_object( mil_kurjer_sid )
+	if kurjer and mil_kurjer_pending() then
+		pending[ kurjer.id ] = { corpse = kurjer, items = mil_kurjer_items, all_or_nothing = true }
+	end
+	if next( pending ) == nil then return end
+
+	local has = {}
+	for _, o in alife():objects() do
+		local p = o.parent_id
+		if p and pending[ p ] then has[ p .. ":" .. o:section_name() ] = true end
+	end
+	for id, entry in pairs( pending ) do
+		local missing = {}
+		for _, sect in ipairs( entry.items ) do
+			if not has[ id .. ":" .. sect ] then table.insert( missing, sect ) end
+		end
+		if entry.all_or_nothing and #missing ~= #entry.items then missing = {} end
+		if #missing > 0 then
+			entry.corpse.death_droped = true
+			for _, sect in ipairs( missing ) do
+				local sobj = misc.spawn_to( sect, entry.corpse )
+				local cond = mil_kurjer_conds[ sect ]
+				if sobj and cond and entry.all_or_nothing then
+					local pk = get_netpk( sobj )
+					local data = pk:get()
+					data.condition = cond
+					pk:set( data )
+				end
+			end
+		end
+	end
 end

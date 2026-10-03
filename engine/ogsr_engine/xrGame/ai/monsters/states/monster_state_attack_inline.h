@@ -95,6 +95,11 @@ void CStateMonsterAttackAbstract::execute()
         select_state(eStateAttack_RunAway);
     else if (!can_attack_on_move && check_run_attack_state())
         select_state(eStateAttack_RunAttack);
+    // NLC: attack-on-move monsters may use the standing melee when very close (aom_close_melee_dist)
+    else if (can_attack_on_move &&
+             (prev_substate == eStateAttack_Melee ? (!get_state_current()->check_completion() && object->aom_close_melee_allowed(true)) :
+                                                     (get_state(eStateAttack_Melee)->check_start_conditions() && object->aom_close_melee_allowed(false))))
+        select_state(eStateAttack_Melee);
     else if (can_attack_on_move)
         select_state(eStateAttack_Attack_On_Run);
     else

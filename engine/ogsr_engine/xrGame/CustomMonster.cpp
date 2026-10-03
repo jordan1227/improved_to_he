@@ -46,6 +46,7 @@
 #include "alife_simulator.h"
 #include "alife_object_registry.h"
 #include "client_spawn_manager.h"
+#include "nlc_stealth.h" // NLC: stealth ray_resample
 
 #ifdef DEBUG
 #include "debug_renderer.h"
@@ -786,6 +787,14 @@ void CCustomMonster::load_killer_clsids(LPCSTR section)
 bool CCustomMonster::is_special_killer(CObject* obj) { return (obj && (std::find(m_killer_clsids.begin(), m_killer_clsids.end(), obj->CLS_ID) != m_killer_clsids.end())); }
 
 float CCustomMonster::feel_vision_mtl_transp(CObject* O, u32 element) { return (memory().visual().feel_vision_mtl_transp(O, element)); }
+
+// NLC: stalkers re-trace the actor every update with a new sample point (nlc_stealth ray_resample, off by default)
+bool CCustomMonster::feel_vision_resample(const CObject* O)
+{
+    if (!O || !g_actor || O != g_actor)
+        return false;
+    return human_being() ? nlc_stealth::g_ray_resample > 0.f : nlc_stealth::g_monster_ray_resample > 0.f;
+}
 
 void CCustomMonster::feel_sound_new(CObject* who, int type, CSound_UserDataPtr user_data, const Fvector& position, float power)
 {
