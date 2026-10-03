@@ -152,8 +152,20 @@ function read(custom_data)
 		or parse_block(custom_data, "capsule", "capsule")
 end
 
+-- A descriptor without a tier ("capsule@af_cristall") means "any tier" when matching, but a stored
+-- capsule of a tiered artifact must hold a dynNd copy, or it opens into the untiered base section.
+-- Bases without dynNd sections (af_dummy_*) stay untiered.
+function resolve_tier(payload)
+	if payload and payload.kind == "capsule" and not payload.dyn and valid_dyn(payload.base, 1) then
+		payload.dyn = dsh.get_next_random("nlc_capsules.regular_dyn", 1, 6)
+		return payload, true
+	end
+	return payload, false
+end
+
 function encode(payload, custom_data)
 	if not payload or not payload.base then return custom_data end
+	resolve_tier(payload)
 	local result = remove_block(custom_data, "capsule")
 	result = remove_block(result, "mayatnik_capsule")
 	local name = payload.kind == "mayatnik_capsule" and "mayatnik_capsule" or "capsule"
@@ -219,7 +231,14 @@ function read_server(object_or_id)
 	local pk = get_netpk(sobj, 1)
 	if not pk then return nil, nil end
 	local data = pk:get()
-	return read(data.custom_data), data.custom_data
+	local payload = read(data.custom_data)
+	-- Saves made before resolve_tier hold untiered capsules of tiered artifacts: fix them on first read.
+	local _, rolled = resolve_tier(payload)
+	if rolled then
+		data.custom_data = encode(payload, data.custom_data)
+		pk:set(data)
+	end
+	return payload, data.custom_data
 end
 
 function write_server(sobj, payload)
