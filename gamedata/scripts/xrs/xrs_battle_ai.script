@@ -448,6 +448,15 @@ function check_corpse( npc, obj )
   end
 
   local enemy = level.object_by_id( killer_id )
+  -- NLC stealth: a body tells who died, not where the killer is; the actor becomes a target only if this
+  -- NPC sees him now (otherwise the corpse rules of sivol_stealth_suspicion: investigate, camp alert)
+  if
+    enemy and enemy:is_actor() and sivol_stealth_suspicion
+    and sivol_stealth_suspicion.enabled and type( nlc_stealth_suspicion ) == "function"
+    and not npc:see( enemy )
+  then
+    return false
+  end
   if is_danger_corpse( npc, enemy ) then
     register_as_target( npc, enemy, enemy:is_actor() )
     return true
@@ -1507,6 +1516,8 @@ function friend_is_near( npc, obj )
       (
         radio_comms[ npc:character_community() ]
         and npc:character_community() == obj:character_community()
+        -- NLC stealth: radio range (sivol_stealth_alert.radio_range)
+        and ( not sivol_stealth_alert or sivol_stealth_alert.in_radio_range( npc, obj ) )
       )
       or (
         npc:alive() and npc:relation( obj ) == game_object.friend
@@ -1584,11 +1595,29 @@ end
 
 function notify_friend_of( npc, obj, enemy, wounded )
   if not friend_is_near( npc, obj ) then return end
+  -- NLC stealth: no relay chains; a mate who only heard about the actor and has not seen him does not pass it on
+  if enemy:is_actor() and sivol_stealth_alert and sivol_stealth_alert.relay_blocked( npc ) then
+    if wounded then process_wounded( obj, npc ) end
+    return
+  end
+  -- NLC stealth: a friend reached only by radio gets the actor's last known position after a
+  -- delay and investigates it; no call if the caller dies first (sivol_stealth_alert)
+  if
+    enemy:is_actor() and sivol_stealth_alert
+    and sivol_stealth_alert.radio_only( npc, obj )
+  then
+    sivol_stealth_alert.radio_queue( npc, obj, wounded )
+    return
+  end
   if wounded then
     process_wounded( obj, npc )
   end
   if not get_target_info( obj, enemy:id() ) then
     process_enemy( obj, enemy )
+    -- NLC stealth: told second-hand (sivol_stealth_alert.relay_blocked)
+    if enemy:is_actor() and sivol_stealth_alert and get_target_info( obj, enemy:id() ) then
+      sivol_stealth_alert.told( obj )
+    end
   end
 end
 
@@ -1747,7 +1776,11 @@ function death_place( npc, who )
   expire_death_places( npc )
   local silent_kill = false
   if who:is_actor() then
-    if wpn_is_silent( he_bai_compat.who_hit_wpn( npc ) ) then -- [HE-PORT] NLC stealth: any suppressed weapon or a knife (was suppressed pistols only)
+    -- [HE-PORT] NLC stealth: any suppressed weapon or a knife (was suppressed pistols only); the actor's
+    -- weapon in hand, because on a one-shot kill the death callback can come before the hit that records it
+    local wpn = sivol_stealth_alert and sivol_stealth_alert.actor_hit_weapon( npc )
+      or who:active_item() or he_bai_compat.who_hit_wpn( npc )
+    if wpn_is_silent( wpn ) then
       silent_kill = true
     else
       local lvid = locked_vertexes[ npc:id() ]
@@ -1887,6 +1920,14 @@ function we_are_under_attack( npc, enemy )
       return true
     elseif bd_obj and bd_obj:is_actor() then
       local bd_type = bd:type()
+      -- NLC stealth: a heard actor step is suspicion, not an attack; a ricochet only from the
+      -- second one within a few seconds (sivol_stealth_suspicion)
+      if
+        needed_dangers[ bd_type ] and sivol_stealth_suspicion
+        and not sivol_stealth_suspicion.actor_danger_is_attack( npc, bd )
+      then
+        return false
+      end
       if needed_dangers[ bd_type ] then
         return true
       end
@@ -3503,6 +3544,7 @@ function add_to_binder( object, ini, scheme, section, storage )
     action:add_precondition( world_property( rx_gl.evid_gl_reload, false ) )
   end
   manager:add_action( operators.gogogo, action )
+  storage.nlc_altcombat_action = true -- NLC: the action exists (sivol_stealth_suspicion links it to xr_camper)
 
   for _, id in ipairs({
     "action_alife_planner",

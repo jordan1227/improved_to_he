@@ -1,0 +1,165 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+-- sivol: bolts and NPCs (docs/STEALTH_DESIGN.md 20.6).
+--
+-- The engine (nlc_stealth bolt_range) makes a landing bolt a faint noise for stalkers and mutants
+-- nearby (hostile ones go and check) and calls on_hit(npc) when a bolt thrown by the actor hits a
+-- stalker. A non-hostile stalker (or one under a truce) turns to the actor with a line; after
+-- hits_to_punch hits within hit_window_ms he either punches (actor close), runs at the actor for a
+-- few seconds and then punches (chase_chance), or just swears. The punch is the vanilla abuse
+-- punch (xr_abuse) in its soft form: no weapon drop, no input lock. A delayed PDA message may
+-- follow (news_chance). No goodwill or reputation change. Quest NPCs with abuse disabled ignore it.
+-- Live edits: g_loadstring sivol_stealth_bolt.chase_chance = 1
+
+enabled = true
+hits_to_punch = 3
+hit_window_ms = 60000
+punch_range = 3           -- metres: closer than this, the punch comes at once
+chase_chance = 0.18
+chase_max_range = 25      -- metres: no chase from farther away
+chase_ms = 8000
+face_ms = { 2500, 4000 }  -- milliseconds
+news_chance = 0.3
+-- exclusions: story NPCs (a story id) and the names below only turn and swear, never chase or punch;
+-- ignore_names do not react at all
+no_punch_story = true
+no_punch_names = { bar_bar_guard = true, bar_barman = true, bar_bar_osvedomitel = true }
+ignore_names = {}
+
+news_templates = {
+    "Тут один умник болтами швыряется. Ещё раз прилетит - найду и объясню, для чего болты нужны.",
+    "Кто-то кинул в меня болтом. Смешно ему. В следующий раз смешно будет мне.",
+    "Для особо одарённых: болты кидают в аномалии, а не в людей. Запомни, пока зубы целы.",
+    "Получил болтом по затылку. Шутника я запомнил, пусть теперь по сторонам смотрит.",
+}
+
+local hits = {}       -- npc id -> { n, last }
+local soft = {}       -- npc id -> true: the next actor_punch is soft
+local bolt_abuse = {} -- npc id -> time of a bolt punch (news_main.on_abuse sends the bolt message instead)
+
+local function say(fmt, ...)
+    if sivol_stealth_suspicion and sivol_stealth_suspicion.log_stages then
+        log2("~ [stealth] bolt " .. fmt, ...)
+    end
+end
+
+local function rand_range(t)
+    return t[1] + math.random() * (t[2] - t[1])
+end
+
+local function play(npc, theme)
+    if xr_sound and xr_sound.set_sound_play then
+        xr_sound.set_sound_play(npc, theme)
+    end
+end
+
+local function send_news(npc)
+    if math.random() >= news_chance or not (news_main and news_main.do_news) then
+        return
+    end
+    local name = news_main.get_npc_name and news_main.get_npc_name(npc)
+    if not name or name == "" then
+        return
+    end
+    local text = news_templates[math.random(#news_templates)]
+    news_main.do_news(text, name, math.random(20, 100), 15, "stalker", npc:id())
+end
+
+-- the vanilla abuse punch, soft; nothing when this NPC's abuse is disabled (quest logic)
+local function punch(npc)
+    if not (xr_abuse and xr_abuse.is_abuse and xr_abuse.is_abuse(npc)) then
+        say("t=%d obs=%s punch skipped: abuse disabled", time_global(), npc:name())
+        return
+    end
+    soft[npc:id()] = time_global()
+    bolt_abuse[npc:id()] = time_global()
+    xr_abuse.add_abuse(npc, 100)
+    say("t=%d obs=%s punch", time_global(), npc:name())
+end
+
+-- engine (nlc_stealth bolt_noise): a bolt thrown by the actor hit this stalker
+function on_hit(npc)
+    if not (enabled and npc and npc:alive() and db.actor) or npc:best_enemy() then
+        return
+    end
+    if xr_wounded and xr_wounded.is_wounded and xr_wounded.is_wounded(npc) then
+        return
+    end
+    -- hostile NPCs hear the bolt as a noise (engine); only non-hostile ones (or truces) take offence
+    if npc:relation(db.actor) == game_object.enemy then
+        local truce = dsh_enemies and dsh_enemies.actor_ignored and dsh_enemies.actor_ignored(npc)
+        if not truce then
+            return
+        end
+    end
+    if ignore_names[npc:name()] or (sivol_stealth_suspicion and sivol_stealth_suspicion.ignore_names[npc:name()]) then
+        return
+    end
+    local now = time_global()
+    local id = npc:id()
+    local h = hits[id]
+    if not h or now - h.last > hit_window_ms then
+        h = { n = 0 }
+        hits[id] = h
+    end
+    h.n, h.last = h.n + 1, now
+    local d = npc:position():distance_to(db.actor:position())
+    say("t=%d obs=%s hit n=%d d=%.1f", now, npc:name(), h.n, d)
+    if h.n < hits_to_punch then
+        play(npc, h.n == 1 and "threat_back" or "threat_stop")
+        if sivol_stealth_suspicion then
+            sivol_stealth_suspicion.bolt_react(npc, "face", rand_range(face_ms))
+        end
+        return
+    end
+    h.n = 0
+    play(npc, "use_abuse")
+    local no_punch = no_punch_names[npc:name()] or (no_punch_story and npc:story_id() < 4294967295)
+    if no_punch then
+        say("t=%d obs=%s no punch (excluded)", now, npc:name())
+        if sivol_stealth_suspicion then
+            sivol_stealth_suspicion.bolt_react(npc, "face", rand_range(face_ms))
+        end
+        send_news(npc)
+    elseif d <= punch_range then
+        punch(npc)
+    elseif d <= chase_max_range and math.random() < chase_chance and xr_abuse and xr_abuse.is_abuse and xr_abuse.is_abuse(npc)
+        and sivol_stealth_suspicion and sivol_stealth_suspicion.may_move(npc)
+        and sivol_stealth_suspicion and sivol_stealth_suspicion.bolt_react(npc, "chase", chase_ms) then
+        say("t=%d obs=%s chase", now, npc:name())
+    else
+        if sivol_stealth_suspicion then
+            sivol_stealth_suspicion.bolt_react(npc, "face", rand_range(face_ms))
+        end
+        send_news(npc)
+    end
+end
+
+-- sivol_stealth_suspicion: the chase reached the actor
+function chase_arrived(npc)
+    punch(npc)
+end
+
+-- xr_effects.actor_punch: true once after a bolt punch (keep the weapon, no input lock)
+function take_soft_punch(npc)
+    local t = npc and soft[npc:id()]
+    if not t then
+        return false
+    end
+    soft[npc:id()] = nil
+    return time_global() - t < 30000 -- a punch that never landed does not soften a later real one
+end
+
+-- news_main.on_abuse: a bolt punch sends the bolt message (by chance) instead of the vanilla one
+function is_bolt_abuse(obj)
+    local id = obj and obj.id and (type(obj.id) == "function" and obj:id() or obj.id)
+    local t = id and bolt_abuse[id]
+    if not t then
+        return false
+    end
+    bolt_abuse[id] = nil
+    if time_global() - t > 30000 then
+        return false
+    end
+    send_news(obj)
+    return true
+end

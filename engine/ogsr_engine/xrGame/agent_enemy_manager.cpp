@@ -21,6 +21,10 @@
 #include "visual_memory_manager.h"
 #include "sound_memory_manager.h"
 #include "hit_memory_manager.h"
+#include "nlc_stealth.h"
+#include "Actor.h"
+#include "entity_alive.h"
+#include "EntityCondition.h"
 #include "enemy_manager.h"
 #include "memory_space_impl.h"
 #include <bitset>
@@ -83,6 +87,11 @@ void CAgentEnemyManager::fill_enemies()
         for (; I != E; ++I)
         {
             (*I)->probability(1.f);
+            // NLC: a member killed by the hit (health 0, death not processed yet) does not pass his attacker to the
+            // squad; a silent one-shot kill no longer alerts every squad member (nlc_stealth squad_dying_share)
+            if (nlc_stealth::g_squad_dying_block && (*I)->object().conditions().GetHealth() <= 0.f &&
+                (*I)->object().memory().enemy().selected() == smart_cast<const CEntityAlive*>(Actor()))
+                continue;
             (*I)->object().memory().fill_enemies(CEnemyFiller(&m_enemies, object().member().mask(&(*I)->object())));
         }
     }

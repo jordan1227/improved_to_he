@@ -140,6 +140,24 @@ public:
     u32 m_nlc_firsthand = 0; // monsters: last time this monster acquired the actor by its own senses
     u32 m_nlc_notice_serial = 0; // monsters: bumped by every accepted investigate impulse (the investigate state retargets)
     u32 m_nlc_notice_prio = 0; // monsters: priority of the active impulse (corpse 1, others 2)
+    // NLC pass 5 (docs/STEALTH_DESIGN.md 20)
+    Fvector m_nlc_notice_point{}; // monsters: target of the active impulse (no retarget to points close to it)
+    u32 m_nlc_concern_total = 0; // monsters: concern events in the window, not reset by escalation (shrinks the point error)
+    u32 m_nlc_hunt_until = 0; // monsters: committed search around the guessed shooter point
+    u32 m_nlc_hunt_next = 0;
+    Fvector m_nlc_hunt_point{};
+    u32 m_nlc_alert_until = 0; // monsters: "lost the trail" alert after a hunt (faster detection)
+    u32 m_nlc_pack_losses = 0; // monsters: pack mates killed near this one recently
+    u32 m_nlc_pack_loss_time = 0;
+    float m_nlc_hunt_time = 25000.f; // species: hunt duration (ms)
+    float m_nlc_hunt_error_k = 0.5f; // species: hunt point error relative to the last guess
+    float m_nlc_hunt_detect_k = 1.5f; // species: vision and senses rate factor while hunting or alert
+    float m_nlc_hunt_alert_ms = 30000.f; // species: alert after an empty hunt
+    float m_nlc_hunt_flankers = 0.f; // species: pack mates sent to flank the hunt point
+    float m_nlc_hunt_flee_losses = 0.f; // species: pack losses after which a bold monster flees instead (0 = never)
+    u32 m_nlc_wall_time = 0; // listeners: wall check cache for actor sounds
+    float m_nlc_wall_k = 1.f;
+    Fvector m_nlc_wall_from{};
     struct NlcSense // aura sense (psy or smell), generalised from the poltergeist detection
     {
         float range = 0.f; // 0 = none

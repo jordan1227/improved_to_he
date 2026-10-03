@@ -45,9 +45,9 @@ void CBaseMonster::feel_sound_new(CObject* who, int eType, CSound_UserDataPtr us
     if (eType == 0xffffffff)
         return;
 
-    // NLC M4: outfit noise, surface and rain masking of the actor's quiet sounds (identity by default)
+    // NLC M4: outfit noise, surface and rain masking of the actor's quiet sounds, walls (identity by default)
     if (nlc_stealth::g_actor_sound_factor && g_actor && who == g_actor)
-        power *= nlc_stealth::actor_sound_factor(eType);
+        power *= nlc_stealth::actor_sound_factor(eType, this, Position);
 
     // ignore distant sounds
     Fvector center;

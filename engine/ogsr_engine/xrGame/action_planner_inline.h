@@ -89,6 +89,46 @@ void CPlanner::update()
             if (initialized())
             {
                 Msg("! [CPlanner::update]: %s has solution().empty()", m_object->cName().c_str());
+                // NLC: once per freeze, the world state (evaluator id=value), the goal and every action's unmet preconditions;
+                // a script evaluator failing here is caught by this function's __except (SEH also catches C++ exceptions)
+                {
+                    xr_map<u32, bool> world;
+                    std::string line;
+                    for (const auto& it : this->evaluators())
+                    {
+                        const bool v = !!it.second->evaluate();
+                        world[u32(it.first)] = v;
+                        line += std::to_string(u32(it.first)) + "=" + (v ? "1 " : "0 ");
+                        if (line.size() > 2000)
+                        {
+                            Msg("! [CPlanner::update]: %s world: %s", m_object->cName().c_str(), line.c_str());
+                            line.clear();
+                        }
+                    }
+                    Msg("! [CPlanner::update]: %s world: %s", m_object->cName().c_str(), line.c_str());
+                    line.clear();
+                    for (const auto& c : this->target_state().conditions())
+                        line += std::to_string(u32(c.condition())) + "=" + (c.value() ? "1 " : "0 ");
+                    Msg("! [CPlanner::update]: %s goal: %s", m_object->cName().c_str(), line.c_str());
+                    line.clear();
+                    for (const auto& op : this->operators())
+                    {
+                        line += std::to_string(u32(op.m_operator_id)) + "[";
+                        for (const auto& c : op.m_operator->conditions().conditions())
+                        {
+                            const auto w = world.find(u32(c.condition()));
+                            if (w == world.end() || w->second != !!c.value())
+                                line += std::to_string(u32(c.condition())) + (c.value() ? "=1 " : "=0 ");
+                        }
+                        line += "] ";
+                        if (line.size() > 2000)
+                        {
+                            Msg("! [CPlanner::update]: %s unmet: %s", m_object->cName().c_str(), line.c_str());
+                            line.clear();
+                        }
+                    }
+                    Msg("! [CPlanner::update]: %s unmet: %s", m_object->cName().c_str(), line.c_str());
+                }
                 if (current_action_id() != _action_id_type(-1))
                 {
                     current_action().finalize();

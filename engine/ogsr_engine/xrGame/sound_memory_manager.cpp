@@ -126,9 +126,9 @@ void CSoundMemoryManager::feel_sound_new(CObject* object, int sound_type, CSound
     if (!m_sounds)
         return;
 
-    // NLC M4: outfit noise, surface and rain masking of the actor's quiet sounds (nlc_stealth; identity by default)
+    // NLC M4: outfit noise, surface and rain masking of the actor's quiet sounds, walls (nlc_stealth; identity by default)
     if (nlc_stealth::g_actor_sound_factor && g_actor && object == g_actor)
-        sound_power *= nlc_stealth::actor_sound_factor(sound_type);
+        sound_power *= nlc_stealth::actor_sound_factor(sound_type, m_object, position);
     const float nlc_raw_power = sound_power; // NLC: stealth diagnostics
 
     if (user_data)

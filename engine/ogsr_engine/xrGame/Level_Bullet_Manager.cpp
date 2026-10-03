@@ -218,10 +218,6 @@ bool CBulletManager::CalcBullet(collide::rq_results& rq_storage, xr_vector<ISpat
 
     bullet->flags.ricochet_was = 0;
 
-    // NLC M3: actor bullets passing close to creatures cause concern (nlc_stealth near_miss_range; off by default)
-    if (nlc_stealth::g_near_miss_range > 0.f && g_actor && bullet->parent_id == g_actor->ID())
-        nlc_stealth::bullet_near_miss(bullet->pos, cur_dir, range);
-
     collide::ray_defs RD(bullet->pos, bullet->dir, range, CDB::OPT_CULL, collide::rqtBoth);
     BOOL result = FALSE;
     VERIFY(!fis_zero(RD.dir.square_magnitude()));
@@ -232,6 +228,11 @@ bool CBulletManager::CalcBullet(collide::rq_results& rq_storage, xr_vector<ISpat
         range = (rq_storage.r_begin() + rq_storage.r_count() - 1)->range;
     }
     range = std::max(EPS_L, range);
+
+    // NLC M3: actor bullets passing close to creatures cause concern (nlc_stealth near_miss_range; off by default);
+    // the segment the bullet really flew this step (clipped at its hit), capped against frame hitches
+    if (nlc_stealth::g_near_miss_range > 0.f && g_actor && bullet->parent_id == g_actor->ID())
+        nlc_stealth::bullet_near_miss(bullet->pos, cur_dir, std::min(range, 60.f));
 
     bullet->flags.skipped_frame = (Device.dwFrame >= bullet->frame_num);
 

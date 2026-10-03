@@ -5,6 +5,110 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.16 (2026-10-03)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `64321D0632C68F12C95F556FA554C7825E18F81E9698D77E45FA98016DFACB49`
+- **Status:** runtime pending. Fixes from a code review of the stealth base (nlc-3.589.4 to .10).
+
+### NLC
+
+- **NPC-vs-NPC sight restored:** vision sections get `nlc_actor_rate_k` (actor-only rate factor);
+  `stalker_vision_danger` is back to vanilla `time_quant` 0.001 with `nlc_actor_rate_k` 0.35 (same actor
+  detection as tested). Before, the slower danger vision applied to every target (NPCs re-acquired
+  NPC enemies about 2.9x slower).
+- **Monster gates actor-only:** pack enemy sharing, the impact range gate and the near-hit gate apply
+  only to the actor; NPC enemies and shooters as vanilla.
+- **Near misses** use the segment the bullet really flew (clipped at its hit, capped at 60 m), not the
+  whole step (NPCs behind a wall got near misses).
+- **Pack far notices** are queued and handled on the main thread.
+- **Squad share skip** (`squad_dying_share`) only for a dying member whose enemy is the actor.
+- **Wall muffle cost:** listeners within 60 m only, 500 ms staggered cache, 3 m position tolerance.
+- **Surface table** read in file order (`Ordered_Data`; first match wins as documented).
+- **Psy/smell senses:** actor speed clamped (10 m/s); a jump over 5 m (teleport) is not movement.
+- Outfit key caches keyed by id and section; species `pack_share_delay_min` and `nlc_rain_k` clamped.
+
+## nlc-3.589.15 (2026-10-03)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `30B28B98AF2C159417A643BF11C34D06B6C7AA222F5EAC64D7BA52E2BCE81D98`
+- **Status:** runtime pending. Fixes from a code review of the stealth pass 5 engine changes.
+
+### NLC
+
+- **Wall muffle:** passable hits (bushes) are stepped over instead of ending the check, and the ray runs
+  both ways (the static pick culls back faces, so single-sided walls blocked in one direction only).
+- **Psy auras:** `actor_psy_k` defaults to -1 = the actor's telepathic immunity (vanilla) until the
+  script pushes the gear factor; before, psy gear stopped helping when the script had not run.
+- **Queues:** an atomic flag replaces the unlocked `empty()` checks; queued bolt contacts and near-miss
+  segments carry their level and are dropped after a level change (ids are reused).
+- **Bolt contact** position from the contact geometry (the hook runs on the physics thread).
+- **Monster hunts:** search and flank points are never swallowed by the "no retarget within 8 m" rule;
+  hunt, alert, concern and wall-cache state reset on reinit; species hunt keys clamped.
+- **Planner dump** relies on `CPlanner::update`'s own `__except` (a C++ try is not allowed there).
+
+## nlc-3.589.14 (2026-10-03)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F6AAE6CE16302CC05DFDEA8B7A915E4F4602DB11DCB6AC2D14D0D2F1B60B2154`
+- **Status:** runtime pending.
+
+### NLC
+
+- **Squad enemy share** (`agent_enemy_manager.cpp`, `squad_dying_share`): the squad agent shares the
+  enemies of its combat members with the squad (`make_object_visible_somewhen`, memory masks). A
+  member killed by a hit stays alive for a frame or two with the attacker as his enemy, so a silent
+  one-shot kill told the whole squad (all Agroprom military) where the actor was. With
+  `squad_dying_share` 0 a member at 0 health contributes no enemies; living members share as before.
+
+## nlc-3.589.13 (2026-10-03)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `CBBCEF9E8FB60240EB8503CF250537DB3EE4501CF2024FD265BEEC48E2AD499D`
+- **Status:** runtime pending. Diagnostics only on top of `nlc-3.589.12`.
+
+### NLC
+
+- **Planner freeze diagnostics** (`action_planner_inline.h`): when an action planner finds no
+  solution (the NPC freezes, `[CPlanner::update]: <name> has solution().empty()`), the engine also
+  logs, once per freeze, every evaluator's value (`world:`), the goal (`goal:`) and each action's
+  unmet preconditions (`unmet:`). Freezes of Agroprom soldiers and others predate the stealth work
+  (logs of 30.09 and 02.10 before the suspicion scheme); this finds the blocking property.
+
+## nlc-3.589.12 (2026-10-03)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `7131F07152D3DE0DB4290B47F6D6956660D0055F10ADB446D91417E055135FB9`
+- **Status:** runtime pending (stealth pass 5, `docs/STEALTH_DESIGN.md` 20). Replaces the
+  unshipped test build `nlc-3.589.11` (`C30A6943`), which crashed on the second bolt hit: the
+  queued bolt contacts were handled in `CPHWorld::OnFrame`, which runs on the second thread
+  (`seqFrameMT`), and called Lua from there. Now handled in `CLevel::OnFrame` (main thread).
+  Actor bullet near misses (M3, from the bullet manager's parallel update) are queued and handled
+  there too, so AI memory is no longer written from the parallel thread.
+
+### NLC: stealth pass 5 (`xrGame/nlc_stealth.cpp/.h`)
+
+New parameters are identity by default; `sivol_stealth_cfg.script` switches them on.
+
+- **Monster hunt** (`hunt`; species `hunt_time`, `hunt_error_k`, `hunt_detect_k`, `hunt_alert_ms`,
+  `hunt_flankers`, `hunt_flee_losses`): a bold monster whose third concern finds the actor out of
+  `concern_enemy_range` commits to a hunt of the guessed shooter point (half the error), searches
+  around it, sends pack flankers to points beside it, and afterwards stays alert ("lost the
+  trail"); vision and aura senses run faster (`m_nlc_rate_k`, now applied to monsters too).
+  A pack that lost `hunt_flee_losses` members flees instead.
+- **Investigate impulses:** every repeated concern halves the point error; the gait is chosen
+  once per episode and only upgrades; no retarget to a point within 8 m of the current target;
+  the creature a bullet passes through gets no near miss.
+- **Psy auras** use the live `actor_psy_k` (pushed by script from suit and belt) instead of the
+  actor's telepathic immunity, which scales with difficulty.
+- **Wall muffle** (`wall_mute`): actor sounds (not bullet impacts) heard through solid static
+  geometry are scaled by `1 - wall_mute`; one static ray per listener, cached 250 ms; passable
+  materials (bushes) do not count.
+- **Bolts** (`bolt_range`): the first hard contact of a bolt thrown by the actor
+  (`CMissile::ExitContactCallback`, physics thread, queued; handled in `CLevel::OnFrame`) is a faint noise
+  (stalkers: heard kind 4; monsters: investigate) within `bolt_range` x the
+  `[nlc_step_surface]` factor; a direct hit on a stalker calls `sivol_stealth_bolt.on_hit`.
+
 ## nlc-3.589.10 (2026-10-02)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

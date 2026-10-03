@@ -23,6 +23,7 @@ struct CVisionParameters
     float m_fog_factor;
     float m_fog_pow;
     float m_transparency_factor;
+    float m_nlc_actor_rate_k; // NLC: detection rate factor for the actor only (nlc_actor_rate_k, 1 = vanilla)
 
     void Load(LPCSTR section, bool not_a_stalker);
 };

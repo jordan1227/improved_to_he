@@ -142,6 +142,10 @@ void CVisualMemoryManager::reinit()
     m_nlc_torch_time = 0;
     m_nlc_torch_on = false;
     m_nlc_nvd = false;
+    m_nlc_hunt_until = m_nlc_alert_until = m_nlc_hunt_next = 0; // NLC pass 5: monster hunt state
+    m_nlc_concern_total = m_nlc_concern_count = 0;
+    m_nlc_wall_time = 0;
+    m_nlc_wall_k = 1.f;
 
     if (m_object)
         m_object->feel_vision_clear();
@@ -472,6 +476,9 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
         // NLC: rank and stance factor for the actor as target (not inside always_visible_distance)
         if (nlc_stealth::g_actor_rate_factor && m_object && game_object == g_actor && object_distance > current_state().m_always_visible_distance)
             new_object.m_value *= nlc_stealth::actor_rate_factor(m_object);
+        if (game_object == g_actor && g_actor && current_state().m_nlc_actor_rate_k != 1.f &&
+            object_distance > current_state().m_always_visible_distance) // NLC: vision section actor factor
+            new_object.m_value *= current_state().m_nlc_actor_rate_k;
         if (m_stalker && g_actor && game_object == g_actor) // NLC: suspicion rate factor and noticed point
         {
             if (m_nlc_rate_k != 1.f && object_distance > current_state().m_always_visible_distance)
@@ -482,6 +489,8 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
                 m_nlc_point_time = Device.dwTimeGlobal;
             }
         }
+        else if (g_actor && game_object == g_actor && m_nlc_rate_k != 1.f && object_distance > current_state().m_always_visible_distance)
+            new_object.m_value *= m_nlc_rate_k; // NLC pass 5: monster hunt / alert
         if (nlc_log) // NLC
         {
             nlc_sample.increment = new_object.m_value;
@@ -510,6 +519,9 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
     // NLC: rank and stance factor for the actor as target (not inside always_visible_distance)
     if (nlc_stealth::g_actor_rate_factor && m_object && game_object == g_actor && object_distance > current_state().m_always_visible_distance)
         increment *= nlc_stealth::actor_rate_factor(m_object);
+    if (game_object == g_actor && g_actor && current_state().m_nlc_actor_rate_k != 1.f &&
+            object_distance > current_state().m_always_visible_distance) // NLC: vision section actor factor
+        increment *= current_state().m_nlc_actor_rate_k;
     if (m_stalker && g_actor && game_object == g_actor) // NLC: suspicion rate factor and noticed point
     {
         if (m_nlc_rate_k != 1.f && object_distance > current_state().m_always_visible_distance)
@@ -520,6 +532,8 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
             m_nlc_point_time = Device.dwTimeGlobal;
         }
     }
+    else if (g_actor && game_object == g_actor && m_nlc_rate_k != 1.f && object_distance > current_state().m_always_visible_distance)
+        increment *= m_nlc_rate_k; // NLC pass 5: monster hunt / alert
     object->m_value += increment;
     clamp(object->m_value, 0.f, current_state().m_visibility_threshold + EPS_L);
     object->m_prev_time = get_prev_time(game_object);

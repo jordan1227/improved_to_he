@@ -98,6 +98,7 @@ protected:
     float m_safe_dist_to_explode{};
 
     bool has_already_contact{};
+    bool m_nlc_contact{}; // NLC: first contact of a thrown bolt reported (nlc_stealth::bolt_contact)
 
     //относительная точка и направление вылета гранаты
     Fvector m_vThrowPoint;

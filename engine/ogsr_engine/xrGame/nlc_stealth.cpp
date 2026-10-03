@@ -35,8 +35,11 @@
 #include "ai/monsters/monster_sound_memory.h"
 #include "ParticlesObject.h"
 #include "../Include/xrRender/Kinematics.h"
+#include "script_game_object.h"
+#include "enemy_manager.h"
 
 #include <mutex>
+#include <atomic>
 
 namespace nlc_stealth
 {
@@ -63,6 +66,7 @@ float g_shot_alert_pow = 0.f;
 float g_near_miss_range = 0.f;
 float g_step_alert_pow = 0.f;
 bool g_actor_sound_factor = false;
+bool g_squad_dying_block = false;
 bool g_monster_memory_decay = false;
 
 namespace
@@ -107,6 +111,12 @@ float p_surface_noise = 0.f; // > 0: [nlc_step_surface] factors by ground materi
 float p_rain_mask = 0.f; // quiet actor sounds (steps, items, reloads) x (1 - rain_mask x rain density)
 float p_lamp_k = 0.f; // dynamic lamps lighting the actor (0 = off)
 float p_lamp_period_ms = 250.f;
+// pass 5 (docs/STEALTH_DESIGN.md 20)
+float p_wall_mute = 0.f; // actor sounds behind static geometry x (1 - wall_mute) (0 = off)
+float p_actor_psy_k = -1.f; // psy auras: the actor's psy gear factor, pushed by script (1 = unprotected); < 0: telepathic immunity (vanilla)
+float p_bolt_range = 0.f; // a landing bolt thrown by the actor is heard this far, x surface factor (0 = off)
+float p_hunt = 0.f; // > 0: bold monsters commit to a hunt when escalation finds the actor out of range
+float p_squad_dying_share = 1.f; // 0: a squad member killed by a hit does not pass his attacker to the squad (1 = vanilla)
 
 struct ParamDef
 {
@@ -179,6 +189,11 @@ ParamDef s_params[] = {
     {"rain_mask", &p_rain_mask, 0.f, 1.f, 0.f},
     {"lamp_k", &p_lamp_k, 0.f, 4.f, 0.f},
     {"lamp_period_ms", &p_lamp_period_ms, 0.f, 5000.f, 250.f},
+    {"wall_mute", &p_wall_mute, 0.f, 1.f, 0.f},
+    {"actor_psy_k", &p_actor_psy_k, -1.f, 3.f, -1.f},
+    {"bolt_range", &p_bolt_range, 0.f, 60.f, 0.f},
+    {"hunt", &p_hunt, 0.f, 1.f, 0.f},
+    {"squad_dying_share", &p_squad_dying_share, 0.f, 1.f, 1.f},
 };
 
 constexpr u32 MAX_WATCH = 4;
@@ -259,8 +274,9 @@ void refresh()
     g_actor_rate_factor = g_actor_rate_factor || p_outfit_vis > 0.f || p_rain_k > 0.f;
     g_memory_decay = p_mem_hold_ms > 0.f || p_mem_decay_s > 0.f;
     g_monster_memory_decay = p_monster_mem_hold_ms > 0.f || p_monster_mem_decay_s > 0.f;
-    g_actor_sound_factor = p_outfit_noise > 0.f || p_surface_noise > 0.f || p_rain_mask > 0.f;
+    g_actor_sound_factor = p_outfit_noise > 0.f || p_surface_noise > 0.f || p_rain_mask > 0.f || p_wall_mute > 0.f;
     g_actor_light_bonus = g_actor_light_bonus || p_lamp_k > 0.f;
+    g_squad_dying_block = p_squad_dying_share <= 0.f;
 }
 
 float outfit_k()
@@ -268,9 +284,11 @@ float outfit_k()
     CActor* a = Actor();
     const CCustomOutfit* outfit = a ? a->GetOutfit() : nullptr;
     const u16 id = outfit ? outfit->ID() : u16(-1);
-    if (id != s_outfit_id)
+    static shared_str sect;
+    if (id != s_outfit_id || (outfit && sect != outfit->cNameSect()))
     {
         s_outfit_id = id;
+        sect = outfit ? outfit->cNameSect() : shared_str();
         s_outfit_k = outfit ? READ_IF_EXISTS(pSettings, r_float, outfit->cNameSect(), "stealth_visibility_k", 1.f) : 1.f;
     }
     return s_outfit_k;
@@ -281,15 +299,29 @@ float outfit_noise_k()
     CActor* a = Actor();
     const CCustomOutfit* outfit = a ? a->GetOutfit() : nullptr;
     const u16 id = outfit ? outfit->ID() : u16(-1);
-    if (id != s_noise_outfit_id)
+    static shared_str sect;
+    if (id != s_noise_outfit_id || (outfit && sect != outfit->cNameSect()))
     {
         s_noise_outfit_id = id;
+        sect = outfit ? outfit->cNameSect() : shared_str();
         s_noise_k = outfit ? READ_IF_EXISTS(pSettings, r_float, outfit->cNameSect(), "stealth_noise_k", 1.f) : 1.f;
     }
     return s_noise_k;
 }
 
-// ground material under the actor and its footstep factor ([nlc_step_surface]: substring of the material name = factor)
+// [nlc_step_surface] factor of a material name (substring of the material name = factor)
+float surface_k_of(LPCSTR name)
+{
+    if (!name || !pSettings->section_exist("nlc_step_surface"))
+        return 1.f;
+    CInifile::Sect& sect = pSettings->r_section("nlc_step_surface");
+    for (const auto& [key, value] : sect.Ordered_Data) // file order: the first matching key wins
+        if (strstr(name, key.c_str()))
+            return float(atof(value.c_str()));
+    return 1.f;
+}
+
+// ground material under the actor and its footstep factor
 float surface_k(LPCSTR* name_out = nullptr)
 {
     static u16 last_idx = u16(-1);
@@ -302,19 +334,9 @@ float surface_k(LPCSTR* name_out = nullptr)
     if (idx != last_idx)
     {
         last_idx = idx;
-        last_k = 1.f;
         const SGameMtl* mtl = GMLib.GetMaterialByIdx(idx);
         last_name = mtl ? mtl->m_Name : shared_str("?");
-        if (mtl && pSettings->section_exist("nlc_step_surface"))
-        {
-            CInifile::Sect& sect = pSettings->r_section("nlc_step_surface");
-            for (const auto& [key, value] : sect.Data)
-                if (strstr(last_name.c_str(), key.c_str()))
-                {
-                    last_k = float(atof(value.c_str()));
-                    break;
-                }
-        }
+        last_k = mtl ? surface_k_of(last_name.c_str()) : 1.f;
     }
     if (name_out)
         *name_out = last_name.c_str();
@@ -568,9 +590,10 @@ void load_monster_keys(CVisualMemoryManager& v, LPCSTR section)
 {
     v.m_nlc_light_k = READ_IF_EXISTS(pSettings, r_float, section, "nlc_light_k", 0.f);
     v.m_nlc_dark_floor = READ_IF_EXISTS(pSettings, r_float, section, "nlc_dark_floor", 0.f);
-    v.m_nlc_rain_k = READ_IF_EXISTS(pSettings, r_float, section, "nlc_rain_k", 0.f);
+    v.m_nlc_rain_k = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "nlc_rain_k", 0.f), 0.f, 1.f);
     v.m_nlc_pack_range = READ_IF_EXISTS(pSettings, r_float, section, "pack_share_range", 0.f);
     v.m_nlc_pack_delay_min = READ_IF_EXISTS(pSettings, r_float, section, "pack_share_delay_min", 0.5f);
+    v.m_nlc_pack_delay_min = _max(0.f, v.m_nlc_pack_delay_min);
     v.m_nlc_pack_delay_max = _max(v.m_nlc_pack_delay_min, READ_IF_EXISTS(pSettings, r_float, section, "pack_share_delay_max", 1.5f));
     v.m_nlc_impact_max = READ_IF_EXISTS(pSettings, r_float, section, "feel_enemy_who_made_impact_max_distance", -1.f);
     v.m_nlc_near_hit_max = READ_IF_EXISTS(pSettings, r_float, section, "near_hit_shooter_max_distance", -1.f);
@@ -579,6 +602,16 @@ void load_monster_keys(CVisualMemoryManager& v, LPCSTR section)
     v.m_nlc_corpse_radius = READ_IF_EXISTS(pSettings, r_float, section, "corpse_check_radius", 0.f);
     v.m_nlc_concern_bold = READ_IF_EXISTS(pSettings, r_float, section, "concern_bold", -1.f);
     v.m_nlc_concern_range = READ_IF_EXISTS(pSettings, r_float, section, "concern_enemy_range", 30.f);
+    v.m_nlc_hunt_time = READ_IF_EXISTS(pSettings, r_float, section, "hunt_time", 25000.f);
+    v.m_nlc_hunt_error_k = READ_IF_EXISTS(pSettings, r_float, section, "hunt_error_k", 0.5f);
+    v.m_nlc_hunt_detect_k = READ_IF_EXISTS(pSettings, r_float, section, "hunt_detect_k", 1.5f);
+    v.m_nlc_hunt_alert_ms = READ_IF_EXISTS(pSettings, r_float, section, "hunt_alert_ms", 30000.f);
+    v.m_nlc_hunt_flankers = READ_IF_EXISTS(pSettings, r_float, section, "hunt_flankers", 0.f);
+    v.m_nlc_hunt_flee_losses = READ_IF_EXISTS(pSettings, r_float, section, "hunt_flee_losses", 0.f);
+    v.m_nlc_hunt_time = _max(0.f, v.m_nlc_hunt_time);
+    v.m_nlc_hunt_alert_ms = _max(0.f, v.m_nlc_hunt_alert_ms);
+    v.m_nlc_hunt_flankers = std::clamp(v.m_nlc_hunt_flankers, 0.f, 8.f);
+    v.m_nlc_hunt_flee_losses = _max(0.f, v.m_nlc_hunt_flee_losses);
     if (pSettings->line_exist(section, "investigate_style_weights"))
     {
         LPCSTR w = pSettings->r_string(section, "investigate_style_weights");
@@ -734,28 +767,71 @@ Fvector blurred(const Fvector& from, const Fvector& target, float k)
 
 static constexpr LPCSTR STYLE_NAMES[] = {"vanilla", "walk", "sneak", "hold", "run"};
 
-void monster_notice(CBaseMonster* monster, const Fvector& point, LPCSTR why, u32 style)
+// gait order for upgrades inside one episode: hold < walk < sneak < run
+u32 style_rank(u32 style)
+{
+    switch (style)
+    {
+    case 3: return 0;
+    case 2: return 2;
+    case 4: return 3;
+    default: return 1;
+    }
+}
+
+void notice_log(CBaseMonster* monster, LPCSTR why, const Fvector& point, LPCSTR extra)
+{
+    if (!(g_track && (watched(monster->ID()) || on(p_log_events)) && on(p_log_events + p_log_vision)))
+        return;
+    std::scoped_lock lock(s_lock);
+    if (can_log())
+    {
+        const CVisualMemoryManager& v = monster->memory().visual();
+        string128 n;
+        Msg("~ [stealth] mnotice t=%u obs=%s why=%s style=%s d=%.1f point=%.1f,%.1f,%.1f%s", Device.dwTimeGlobal, obj_name(monster, n), why,
+            STYLE_NAMES[std::min(v.m_nlc_inv_style, 4u)], monster->Position().distance_to(point), point.x, point.y, point.z, extra ? extra : "");
+    }
+}
+
+void send_flankers(CBaseMonster* leader, const Fvector& point);
+
+void monster_notice(CBaseMonster* monster, const Fvector& point_in, LPCSTR why, u32 style)
 {
     CActor* a = Actor();
     if (!monster || !a || !monster->g_Alive())
         return;
     CVisualMemoryManager& v = monster->memory().visual();
+    const u32 now = Device.dwTimeGlobal;
+    Fvector point = point_in;
 
-    // repeated concern (near misses, faint shots): hurry on the second, then attack (bold) or flee (timid)
+    // repeated concern (near misses, faint shots): hurry on the second, then attack (bold) or flee (timid);
+    // a bold monster with the actor out of reach commits to a hunt of the guessed shooter point (hunt)
     const bool concern = !xr_strcmp(why, "near_miss") || !xr_strcmp(why, "shot_far");
     if (concern && p_concern_escalate > 0.f && v.m_nlc_concern_bold >= 0.f)
     {
-        const u32 now = Device.dwTimeGlobal;
         if (now > v.m_nlc_concern_last + u32(p_concern_window_ms))
+        {
             v.m_nlc_concern_count = 0;
+            v.m_nlc_concern_total = 0;
+        }
         v.m_nlc_concern_last = now;
         ++v.m_nlc_concern_count;
+        ++v.m_nlc_concern_total;
+        // every repeat halves the guess error: the shooter is found sooner (12, 6, 3 m)
+        if (v.m_nlc_concern_total > 1)
+        {
+            const float k = powf(0.5f, float(_min(v.m_nlc_concern_total, 4u) - 1));
+            Fvector err;
+            err.sub(point, a->Position());
+            point.mad(a->Position(), err, k);
+        }
         if (v.m_nlc_concern_count == 2)
             style = 4; // run there
         else if (v.m_nlc_concern_count >= 3)
         {
             v.m_nlc_concern_count = 0;
-            if (v.m_nlc_concern_bold > 0.5f)
+            const bool losses_flee = v.m_nlc_hunt_flee_losses > 0.f && float(v.m_nlc_pack_losses) >= v.m_nlc_hunt_flee_losses;
+            if (v.m_nlc_concern_bold > 0.5f && !losses_flee)
             {
                 if (monster->Position().distance_to(a->Position()) < v.m_nlc_concern_range && monster->EnemyMan.is_enemy(a))
                 {
@@ -765,35 +841,136 @@ void monster_notice(CBaseMonster* monster, const Fvector& point, LPCSTR why, u32
                     return;
                 }
                 style = 4;
+                if (p_hunt > 0.f)
+                {
+                    Fvector err;
+                    err.sub(point, a->Position());
+                    point.mad(a->Position(), err, std::clamp(v.m_nlc_hunt_error_k, 0.f, 1.f));
+                    v.m_nlc_hunt_point = point;
+                    v.m_nlc_hunt_until = now + u32(v.m_nlc_hunt_time);
+                    v.m_nlc_hunt_next = now + 6000;
+                    v.m_nlc_alert_until = 0;
+                    v.m_nlc_rate_k = _max(1.f, v.m_nlc_hunt_detect_k);
+                    why = "hunt";
+                }
             }
             else
             {
-                // timid: a dangerous sound with no owner makes it run away from that point
-                monster->SoundMemory.HearSound(nullptr, SOUND_TYPE_WEAPON_SHOOTING, point, 1.f, Device.dwTimeGlobal);
-                why = "flee";
+                // timid (or a pack that lost too many): a dangerous sound with no owner makes it run away from that point
+                monster->SoundMemory.HearSound(nullptr, SOUND_TYPE_WEAPON_SHOOTING, point, 1.f, now);
+                why = losses_flee ? "flee_losses" : "flee";
             }
         }
     }
 
     // a corpse check does not override a more urgent impulse (near miss, shot, sight) still in progress
     const u32 prio = (!xr_strcmp(why, "corpse") || !xr_strcmp(why, "corpse_watch")) ? 1u : 2u;
-    if (Device.dwTimeGlobal < v.m_nlc_inv_until && prio < v.m_nlc_notice_prio)
+    const bool active = now < v.m_nlc_inv_until;
+    if (active && prio < v.m_nlc_notice_prio)
         return;
-    v.m_nlc_notice_prio = prio;
-    ++v.m_nlc_notice_serial;
 
-    v.m_nlc_inv_style = style ? style : roll_style(monster);
-    v.m_nlc_inv_until = Device.dwTimeGlobal + 20000;
-    monster->SoundMemory.HearSound(a, SOUND_TYPE_MONSTER_STEP, point, 1.f, Device.dwTimeGlobal);
-    if (g_track && (watched(monster->ID()) || on(p_log_events)) && on(p_log_events + p_log_vision))
+    // the gait is chosen once per episode; later impulses can only upgrade it (the hunt search sneaks)
+    u32 new_style = style ? style : ((active && v.m_nlc_inv_style) ? v.m_nlc_inv_style : roll_style(monster));
+    if (active && v.m_nlc_inv_style && style_rank(v.m_nlc_inv_style) > style_rank(new_style) && xr_strcmp(why, "hunt_search"))
+        new_style = v.m_nlc_inv_style;
+    const bool upgraded = active && new_style != v.m_nlc_inv_style;
+    v.m_nlc_inv_style = new_style;
+    v.m_nlc_inv_until = _max(now + 20000, v.m_nlc_hunt_until);
+
+    // no retarget to a point close to the current target (unless the gait changed or a hunt starts)
+    if (active && !upgraded && prio == v.m_nlc_notice_prio && xr_strcmp(why, "hunt") && xr_strcmp(why, "hunt_search") && xr_strcmp(why, "flank") &&
+        v.m_nlc_notice_point.distance_to(point) < 8.f)
     {
-        std::scoped_lock lock(s_lock);
-        if (can_log())
+        notice_log(monster, why, point, " keep");
+        return;
+    }
+    v.m_nlc_notice_prio = prio;
+    v.m_nlc_notice_point = point;
+    ++v.m_nlc_notice_serial;
+    monster->SoundMemory.HearSound(a, SOUND_TYPE_MONSTER_STEP, point, 1.f, now);
+    notice_log(monster, why, point, nullptr);
+    if (!xr_strcmp(why, "hunt"))
+        send_flankers(monster, point);
+}
+
+// pack flanking: the nearest pack mates go to points beside the hunt point (+-50 degrees around it, half way)
+void send_flankers(CBaseMonster* leader, const Fvector& point)
+{
+    const CVisualMemoryManager& lv = leader->memory().visual();
+    const u32 want = u32(lv.m_nlc_hunt_flankers);
+    if (!want)
+        return;
+    const float radius = lv.m_nlc_pack_range > 0.f ? lv.m_nlc_pack_range : 30.f;
+    xr_vector<CObject*> nearest;
+    Level().ObjectSpace.GetNearest(nearest, leader->Position(), radius, leader);
+    xr_vector<std::pair<float, CBaseMonster*>> mates;
+    for (CObject* o : nearest)
+    {
+        CBaseMonster* m = smart_cast<CBaseMonster*>(o);
+        if (!m || m == leader || !m->g_Alive() || ignored(m) || m->EnemyMan.get_enemy())
+            continue;
+        if (m->g_Team() != leader->g_Team() || m->g_Squad() != leader->g_Squad() || m->g_Group() != leader->g_Group())
+            continue;
+        mates.emplace_back(m->Position().distance_to(leader->Position()), m);
+    }
+    std::sort(mates.begin(), mates.end(), [](const auto& l, const auto& r) { return l.first < r.first; });
+    Fvector arm;
+    arm.sub(leader->Position(), point);
+    arm.y = 0.f;
+    arm.mul(0.5f);
+    const u32 now = Device.dwTimeGlobal;
+    for (u32 i = 0; i < mates.size() && i < want; ++i)
+    {
+        const float ang = deg2rad((i % 2) ? -50.f : 50.f);
+        Fvector p;
+        p.set(point.x + arm.x * _cos(ang) - arm.z * _sin(ang), point.y, point.z + arm.x * _sin(ang) + arm.z * _cos(ang));
+        CVisualMemoryManager& mv = mates[i].second->memory().visual();
+        mv.m_nlc_hunt_point = point;
+        mv.m_nlc_hunt_until = lv.m_nlc_hunt_until;
+        mv.m_nlc_hunt_next = now + 8000;
+        mv.m_nlc_alert_until = 0;
+        mv.m_nlc_rate_k = _max(1.f, mv.m_nlc_hunt_detect_k);
+        monster_notice(mates[i].second, p, "flank", 4);
+    }
+}
+
+// hunt: search around the hunt point until it times out, then stay alert for a while ("lost the trail")
+void monster_hunt_update(CBaseMonster* monster)
+{
+    CVisualMemoryManager& v = monster->memory().visual();
+    if (!v.m_nlc_hunt_until && !v.m_nlc_alert_until)
+        return;
+    const u32 now = Device.dwTimeGlobal;
+    if (monster->EnemyMan.get_enemy())
+    {
+        v.m_nlc_hunt_until = v.m_nlc_alert_until = 0;
+        v.m_nlc_rate_k = 1.f;
+        return;
+    }
+    if (v.m_nlc_hunt_until)
+    {
+        if (now >= v.m_nlc_hunt_until)
         {
-            string128 n;
-            Msg("~ [stealth] mnotice t=%u obs=%s why=%s style=%s d=%.1f point=%.1f,%.1f,%.1f", Device.dwTimeGlobal, obj_name(monster, n), why,
-                STYLE_NAMES[std::min(v.m_nlc_inv_style, 4u)], monster->Position().distance_to(point), point.x, point.y, point.z);
+            v.m_nlc_hunt_until = 0;
+            v.m_nlc_alert_until = now + u32(v.m_nlc_hunt_alert_ms);
+            notice_log(monster, "lost_trail", v.m_nlc_hunt_point, nullptr);
+            return;
         }
+        if (now >= v.m_nlc_hunt_next)
+        {
+            v.m_nlc_hunt_next = now + u32(::Random.randI(4000, 7000));
+            const float ang = ::Random.randF(0.f, PI_MUL_2);
+            const float r = ::Random.randF(8.f, 12.f);
+            Fvector p;
+            p.set(v.m_nlc_hunt_point.x + r * _cos(ang), v.m_nlc_hunt_point.y, v.m_nlc_hunt_point.z + r * _sin(ang));
+            monster_notice(monster, p, "hunt_search", 2);
+        }
+        return;
+    }
+    if (now >= v.m_nlc_alert_until)
+    {
+        v.m_nlc_alert_until = 0;
+        v.m_nlc_rate_k = 1.f;
     }
 }
 
@@ -873,23 +1050,87 @@ void stalker_near_impact(CAI_Stalker* stalker, const Fvector& position)
     set_heard(v, blurred(stalker->Position(), origin, 0.15f), p_near_miss_value, 2);
 }
 
-float actor_sound_factor(int sound_type)
+// true when solid static geometry (not passable: bushes, grass) lies between two points
+// one direction: RayPick returns the nearest front face only, so passable hits (bushes) are stepped over
+bool solid_hit(Fvector from, const Fvector& dir, float len)
+{
+    for (int i = 0; i < 3 && len > 0.5f; ++i)
+    {
+        collide::rq_result rq;
+        if (!Level().ObjectSpace.RayPick(from, dir, len, collide::rqtStatic, rq, nullptr) || rq.range >= len - 0.5f)
+            return false;
+        bool passable = false;
+        if (rq.element >= 0)
+        {
+            const CDB::TRI* T = Level().ObjectSpace.GetStaticTris() + rq.element;
+            const SGameMtl* mtl = GMLib.GetMaterialByIdx(T->material);
+            passable = mtl && mtl->Flags.is(SGameMtl::flPassable);
+        }
+        if (!passable)
+            return true;
+        const float step = rq.range + 0.05f;
+        from.mad(dir, step);
+        len -= step;
+    }
+    return false;
+}
+
+// true when solid static geometry (not passable: bushes, grass) lies between two points; both directions,
+// because the pick culls back faces (single-sided walls and fences block in one direction only)
+bool wall_between(const Fvector& from, const Fvector& to)
+{
+    Fvector dir;
+    dir.sub(to, from);
+    const float len = dir.magnitude();
+    if (len <= 1.f)
+        return false;
+    dir.div(len);
+    if (solid_hit(from, dir, len))
+        return true;
+    Fvector back;
+    back.invert(dir);
+    return solid_hit(to, back, len);
+}
+
+float actor_sound_factor(int sound_type, const CCustomMonster* listener, const Fvector& position)
 {
     const u32 t = u32(sound_type);
-    if ((t & SOUND_TYPE_WEAPON_SHOOTING) == SOUND_TYPE_WEAPON_SHOOTING || (t & SOUND_TYPE_WEAPON_BULLET_HIT) == SOUND_TYPE_WEAPON_BULLET_HIT)
-        return 1.f;
+    const bool impact = (t & SOUND_TYPE_WEAPON_BULLET_HIT) == SOUND_TYPE_WEAPON_BULLET_HIT;
+    const bool shot = (t & SOUND_TYPE_WEAPON_SHOOTING) == SOUND_TYPE_WEAPON_SHOOTING;
     float k = 1.f;
-    const bool step = (t & SOUND_TYPE_MONSTER_STEP) == SOUND_TYPE_MONSTER_STEP;
-    if (step)
+    if (!shot && !impact)
     {
-        if (p_outfit_noise > 0.f)
-            k *= outfit_noise_k();
-        if (p_surface_noise > 0.f)
-            k *= surface_k();
+        const bool step = (t & SOUND_TYPE_MONSTER_STEP) == SOUND_TYPE_MONSTER_STEP;
+        if (step)
+        {
+            if (p_outfit_noise > 0.f)
+                k *= outfit_noise_k();
+            if (p_surface_noise > 0.f)
+                k *= surface_k();
+        }
+        const bool quiet = step || (t & SOUND_TYPE_ITEM) || (t & SOUND_TYPE_WEAPON_RECHARGING) == SOUND_TYPE_WEAPON_RECHARGING;
+        if (quiet && p_rain_mask > 0.f)
+            k *= 1.f - p_rain_mask * rain_density();
     }
-    const bool quiet = step || (t & SOUND_TYPE_ITEM) || (t & SOUND_TYPE_WEAPON_RECHARGING) == SOUND_TYPE_WEAPON_RECHARGING;
-    if (quiet && p_rain_mask > 0.f)
-        k *= 1.f - p_rain_mask * rain_density();
+    // walls: one static ray from the sound to the listener, cached per listener for 250 ms (bullet impacts excluded)
+    // cost: only listeners within 60 m (farther sounds are faint anyway), cached 500 ms per listener
+    // (staggered by id) and kept while the sound moves less than 3 m
+    if (p_wall_mute > 0.f && listener && !impact && listener->Position().distance_to_sqr(position) < 3600.f)
+    {
+        CVisualMemoryManager& v = const_cast<CCustomMonster*>(listener)->memory().visual();
+        const u32 now = Device.dwTimeGlobal;
+        if (now >= v.m_nlc_wall_time + 500 + (listener->ID() % 8) * 25 || now < v.m_nlc_wall_time || v.m_nlc_wall_from.distance_to(position) > 3.f)
+        {
+            Fvector from = position;
+            from.y += 0.6f;
+            Fvector to;
+            listener->Center(to);
+            v.m_nlc_wall_k = wall_between(from, to) ? 1.f - p_wall_mute : 1.f;
+            v.m_nlc_wall_time = now;
+            v.m_nlc_wall_from = position;
+        }
+        k *= v.m_nlc_wall_k;
+    }
     return k;
 }
 
@@ -908,7 +1149,29 @@ void register_lamp(CHangingLamp* lamp, bool add)
         s_lamps.erase(it);
 }
 
+// bullet segments come from the bullet manager's parallel update: queued, handled on the main thread (on_frame)
+struct NearMissSeg
+{
+    Fvector start, dir;
+    float length;
+    const void* level; // the level that queued it: entries left over from a previous level are dropped
+};
+xr_vector<NearMissSeg> s_near_miss;
+std::atomic<bool> s_queued{false}; // set by the producers under s_lock, read unlocked by on_frame
+
 void bullet_near_miss(const Fvector& start, const Fvector& dir, float length)
+{
+    if (g_near_miss_range <= 0.f || length <= EPS_L)
+        return;
+    std::scoped_lock lock(s_lock);
+    if (s_near_miss.size() < 256)
+    {
+        s_near_miss.push_back({start, dir, length, g_pGameLevel});
+        s_queued = true;
+    }
+}
+
+void near_miss_process(const Fvector& start, const Fvector& dir, float length)
 {
     CActor* a = Actor();
     if (!a || g_near_miss_range <= 0.f || length <= EPS_L)
@@ -930,7 +1193,11 @@ void bullet_near_miss(const Fvector& start, const Fvector& dir, float length)
         const float along = std::clamp(to.dotproduct(dir), 0.f, length);
         Fvector closest;
         closest.mad(start, dir, along);
-        if (closest.distance_to(center) > g_near_miss_range)
+        const float miss = closest.distance_to(center);
+        if (miss > g_near_miss_range)
+            continue;
+        // the bullet goes through this creature: a hit, not a near miss
+        if (miss < creature->Radius() * 0.75f)
             continue;
         CVisualMemoryManager& v = creature->memory().visual();
         if (now < v.m_nlc_near_miss_next)
@@ -958,21 +1225,30 @@ void on_monster_death(CBaseMonster* dead)
         return;
     const CVisualMemoryManager& dv = dead->memory().visual();
     const u32 count = u32(dv.m_nlc_corpse_count);
-    if (!count || dv.m_nlc_corpse_radius <= 0.f)
-        return;
     const Fvector corpse = dead->Position();
+    const u32 now = Device.dwTimeGlobal;
     xr_vector<CObject*> nearest;
-    Level().ObjectSpace.GetNearest(nearest, corpse, dv.m_nlc_corpse_radius, dead);
+    Level().ObjectSpace.GetNearest(nearest, corpse, dv.m_nlc_corpse_radius > 0.f ? dv.m_nlc_corpse_radius : 30.f, dead);
     xr_vector<std::pair<float, CBaseMonster*>> mates;
     for (CObject* o : nearest)
     {
         CBaseMonster* m = smart_cast<CBaseMonster*>(o);
-        if (!m || m == dead || !m->g_Alive() || ignored(m) || m->EnemyMan.get_enemy())
+        if (!m || m == dead || !m->g_Alive() || ignored(m))
             continue;
         if (m->g_Team() != dead->g_Team() || m->g_Squad() != dead->g_Squad() || m->g_Group() != dead->g_Group())
             continue;
+        // pack losses (hunt_flee_losses), forgotten after ten minutes without a new loss
+        CVisualMemoryManager& mv = m->memory().visual();
+        if (now > mv.m_nlc_pack_loss_time + 600000)
+            mv.m_nlc_pack_losses = 0;
+        ++mv.m_nlc_pack_losses;
+        mv.m_nlc_pack_loss_time = now;
+        if (m->EnemyMan.get_enemy())
+            continue;
         mates.emplace_back(m->Position().distance_to(corpse), m);
     }
+    if (!count || dv.m_nlc_corpse_radius <= 0.f)
+        return;
     std::sort(mates.begin(), mates.end(), [](const auto& l, const auto& r) { return l.first < r.first; });
     for (u32 i = 0; i < mates.size(); ++i)
     {
@@ -982,6 +1258,139 @@ void on_monster_death(CBaseMonster* dead)
         else
             monster_notice(mates[i].second, corpse, "corpse_watch", 3);
     }
+}
+
+// monster notices requested off the main thread (pack gate on the vision thread)
+struct QueuedNotice
+{
+    u16 id;
+    Fvector point;
+    LPCSTR why; // string literal
+    const void* level;
+};
+xr_vector<QueuedNotice> s_notices;
+
+void queue_notice(CBaseMonster* monster, const Fvector& point, LPCSTR why)
+{
+    std::scoped_lock lock(s_lock);
+    if (s_notices.size() < 64)
+    {
+        s_notices.push_back({monster->ID(), point, why, g_pGameLevel});
+        s_queued = true;
+    }
+}
+
+// bolts thrown by the actor: contacts are queued in the physics step and handled once per frame
+struct BoltContact
+{
+    Fvector pos;
+    u16 contact;
+    shared_str material;
+    const void* level;
+};
+xr_vector<BoltContact> s_bolts;
+
+void bolt_contact(CObject* bolt, CObject* contact, const Fvector& position, LPCSTR material)
+{
+    if (p_bolt_range <= 0.f || !bolt)
+        return;
+    std::scoped_lock lock(s_lock);
+    if (s_bolts.size() < 16)
+    {
+        s_bolts.push_back({position, contact ? contact->ID() : u16(-1), shared_str(material ? material : ""), g_pGameLevel});
+        s_queued = true;
+    }
+}
+
+void bolt_noise(const BoltContact& b)
+{
+    CActor* a = Actor();
+    if (!a)
+        return;
+    CObject* hit_obj = b.contact != u16(-1) ? Level().Objects.net_Find(b.contact) : nullptr;
+    CAI_Stalker* hit = smart_cast<CAI_Stalker*>(hit_obj);
+    if (hit && hit->g_Alive())
+    {
+        // a direct hit on a stalker: the script decides the reaction (sivol_stealth_bolt)
+        luabind::functor<void> f;
+        if (ai().script_engine().functor("sivol_stealth_bolt.on_hit", f))
+            f(hit->lua_game_object());
+    }
+    const float range = p_bolt_range * surface_k_of(b.material.c_str());
+    if (g_track && on(p_log_events))
+    {
+        std::scoped_lock lock(s_lock);
+        if (can_log())
+            Msg("~ [stealth] bolt t=%u at=%.1f,%.1f,%.1f mtl=%s range=%.1f hit=%s", Device.dwTimeGlobal, b.pos.x, b.pos.y, b.pos.z, b.material.c_str(), range,
+                hit ? hit->cName().c_str() : "-");
+    }
+    if (range <= 0.f)
+        return;
+    xr_vector<CObject*> nearest;
+    Level().ObjectSpace.GetNearest(nearest, b.pos, range, nullptr);
+    Fvector from = b.pos;
+    from.y += 0.3f;
+    for (CObject* o : nearest)
+    {
+        CCustomMonster* c = smart_cast<CCustomMonster*>(o);
+        if (!c || c == hit || !c->g_Alive() || ignored(c))
+            continue;
+        Fvector center;
+        c->Center(center);
+        const float d = center.distance_to(b.pos);
+        float r = range;
+        if (p_wall_mute > 0.f && wall_between(from, center))
+            r *= 1.f - p_wall_mute;
+        if (d > r)
+            continue;
+        if (CAI_Stalker* s = smart_cast<CAI_Stalker*>(c))
+        {
+            if (s->memory().enemy().selected())
+                continue;
+            // close: go and check; farther: look
+            set_heard(s->memory().visual(), blurred(s->Position(), b.pos, 0.1f), d < r * 0.5f ? 0.75f : 0.5f, 4);
+        }
+        else if (CBaseMonster* m = smart_cast<CBaseMonster*>(c))
+        {
+            if (m->EnemyMan.get_enemy() || !m->EnemyMan.is_enemy(a))
+                continue;
+            CVisualMemoryManager& v = m->memory().visual();
+            if (Device.dwTimeGlobal < v.m_nlc_notice_next)
+                continue;
+            v.m_nlc_notice_next = Device.dwTimeGlobal + u32(p_monster_notice_ms);
+            monster_notice(m, b.pos, "noise");
+        }
+    }
+}
+
+void on_frame()
+{
+    if (!s_queued)
+        return;
+    xr_vector<BoltContact> list;
+    xr_vector<NearMissSeg> segs;
+    xr_vector<QueuedNotice> notices;
+    {
+        std::scoped_lock lock(s_lock);
+        list.swap(s_bolts);
+        segs.swap(s_near_miss);
+        notices.swap(s_notices);
+        s_queued = false;
+    }
+    for (const QueuedNotice& n : notices)
+    {
+        if (n.level != g_pGameLevel)
+            continue;
+        CBaseMonster* m = smart_cast<CBaseMonster*>(Level().Objects.net_Find(n.id));
+        if (m && m->g_Alive() && !m->getDestroy())
+            monster_notice(m, n.point, n.why);
+    }
+    for (const NearMissSeg& s : segs)
+        if (s.level == g_pGameLevel)
+            near_miss_process(s.start, s.dir, s.length);
+    for (const BoltContact& b : list)
+        if (b.level == g_pGameLevel)
+            bolt_noise(b);
 }
 
 void monster_visual_notice(CCustomMonster* observer, float ratio)
@@ -1000,6 +1409,8 @@ void monster_visual_notice(CCustomMonster* observer, float ratio)
 
 void monster_sense_update(CBaseMonster* monster)
 {
+    if (!ignored(monster) && monster->g_Alive())
+        monster_hunt_update(monster);
     CVisualMemoryManager& v = monster->memory().visual();
     CVisualMemoryManager::NlcSense& s = v.m_nlc_sense;
     if (s.range <= 0.f || p_sense_mult <= 0.f || ignored(monster))
@@ -1025,7 +1436,9 @@ void monster_sense_update(CBaseMonster* monster)
     if (s.rain_k > 0.f)
         range *= 1.f - s.rain_k * rain_density();
     const float dist = monster->Position().distance_to(actor_pos);
-    const float speed = actor_pos.distance_to(s.last_actor) / dt;
+    // a teleport (scripts, anomalies) is not movement: speed clamped, a jump over 5 m only resets the reference
+    const float moved = actor_pos.distance_to(s.last_actor);
+    const float speed = moved > 5.f ? 0.f : _min(moved / dt, 10.f);
     s.last_actor = actor_pos;
 
     float gain = 0.f;
@@ -1055,8 +1468,9 @@ void monster_sense_update(CBaseMonster* monster)
                 speed_k = 0.f;
             else if (s.speed_pow > 0.f)
                 speed_k = pow(1.f + speed, s.speed_pow) - 1.f;
-            const float psy_k = s.psy ? a->conditions().GetHitImmunity(ALife::eHitTypeTelepatic) : 1.f;
-            gain = dt * s.rate * range_k * speed_k * psy_k * p_sense_mult;
+            // psy gear factor pushed by script (actor_psy_k: 1 = unprotected, any difficulty); hunt / alert rate factor
+            const float psy_k = !s.psy ? 1.f : (p_actor_psy_k >= 0.f ? p_actor_psy_k : a->conditions().GetHitImmunity(ALife::eHitTypeTelepatic));
+            gain = dt * s.rate * range_k * speed_k * psy_k * p_sense_mult * v.m_nlc_rate_k;
         }
     }
     const float cap = 1.5f * _max(s.success, s.notice);
@@ -1099,6 +1513,8 @@ bool monster_pack_share(CBaseMonster* self, CBaseMonster* mate)
     const CEntityAlive* enemy = mate->EnemyMan.get_enemy();
     if (!enemy)
         return true;
+    if (enemy != Actor())
+        return false; // NPC and monster enemies are shared as vanilla
     // already hunting it: refresh freely, so an alerted pack stays hard to lose
     if (self->EnemyMemory.get_danger(enemy) >= 0.f)
         return false;
@@ -1122,7 +1538,7 @@ bool monster_pack_share(CBaseMonster* self, CBaseMonster* mate)
     if (now >= v.m_nlc_notice_next)
     {
         v.m_nlc_notice_next = now + u32(p_monster_notice_ms);
-        monster_notice(self, mate->EnemyMan.get_enemy_position(), "pack_far");
+        queue_notice(self, mate->EnemyMan.get_enemy_position(), "pack_far"); // vision thread: handled in on_frame
     }
     return true;
 }
@@ -1137,6 +1553,8 @@ bool monster_impact_allowed(CBaseMonster* monster, bool impact, float distance)
 
 bool monster_near_hit_allowed(CBaseMonster* monster, const CObject* shooter)
 {
+    if (!shooter || shooter != Actor())
+        return true; // the stealth gates are for the actor; NPC shooters as vanilla
     const float limit = monster->memory().visual().m_nlc_near_hit_max;
     return limit < 0.f || !shooter || monster->Position().distance_to(shooter->Position()) < limit;
 }

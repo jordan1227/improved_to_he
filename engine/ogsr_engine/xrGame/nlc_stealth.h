@@ -41,7 +41,8 @@ extern bool g_monster_memory_decay; // monster_mem_hold_ms or monster_mem_decay_
 extern float g_shot_alert_pow; // stalkers: a heard actor shot below this weighted power is concern (suspicion), not danger (0 = off)
 extern float g_near_miss_range; // > 0: an actor bullet passing this close to a creature causes concern (metres)
 extern float g_step_alert_pow; // stalkers: a heard actor footstep below this power is concern (suspicion), not danger (0 = off)
-extern bool g_actor_sound_factor; // outfit noise, surface or rain masking active
+extern bool g_squad_dying_block; // a squad member at 0 health does not share his enemies (agent_enemy_manager)
+extern bool g_actor_sound_factor; // outfit noise, surface, rain masking or wall muffling active
 
 // vision increment multiplier for an observer (stalker free/danger profile, or monster)
 inline float rate_mult(bool stalker, bool danger) { return stalker ? (danger ? g_danger_rate_mult : g_free_rate_mult) : g_monster_rate_mult; }
@@ -145,7 +146,8 @@ u32 monster_notice_serial(CBaseMonster* monster);
 bool monster_faint_shot(CBaseMonster* monster, int sound_type, const Fvector& position, float power);
 // a heard actor shot below g_shot_alert_pow (CSoundMemoryManager::feel_sound_new)
 void stalker_faint_shot(CAI_Stalker* stalker, const Fvector& position, float weighted_power);
-// an actor bullet segment (CBulletManager::CalcBullet): creatures it passes within g_near_miss_range get concern
+// an actor bullet segment (CBulletManager::CalcBullet, parallel thread): queued; creatures it passes within
+// g_near_miss_range get concern in on_frame
 void bullet_near_miss(const Fvector& start, const Fvector& dir, float length);
 // a monster died (CBaseMonster::Die): pack mates check the corpse
 void on_monster_death(CBaseMonster* monster);
@@ -157,8 +159,9 @@ u32 heard_kind(const CVisualMemoryManager& v);
 void stalker_faint_step(CAI_Stalker* stalker, const Fvector& position, float power);
 // an actor bullet hit sound close to a stalker (impact near him): concern like a near miss
 void stalker_near_impact(CAI_Stalker* stalker, const Fvector& position);
-// multiplier for an actor-owned sound's AI power: outfit noise and surface (steps), rain masking (quiet sounds)
-float actor_sound_factor(int sound_type);
+// multiplier for an actor-owned sound's AI power: outfit noise and surface (steps), rain masking (quiet sounds),
+// static geometry between the sound and the listener (wall_mute; listener may be nullptr)
+float actor_sound_factor(int sound_type, const CCustomMonster* listener, const Fvector& position);
 // a monster acquired an enemy by its own senses (CMonsterEnemyMemory::add_enemy, non-positional)
 void on_monster_firsthand(CBaseMonster* monster, const CEntityAlive* enemy);
 // lamps with a dynamic light (CHangingLamp net_Spawn / net_Destroy)
@@ -175,6 +178,12 @@ bool monster_impact_allowed(CBaseMonster* monster, bool impact, float distance);
 bool monster_near_hit_allowed(CBaseMonster* monster, const CObject* shooter);
 // the visible-body helper (section actor_legs) is not a real monster
 bool is_visible_body(const CObject* o);
+
+// ---- pass 5 (docs/STEALTH_DESIGN.md 20) ----
+// first hard contact of a bolt thrown by the actor (CMissile::ExitContactCallback, physics step): queued
+void bolt_contact(CObject* bolt, CObject* contact, const Fvector& position, LPCSTR material);
+// once per frame on the main thread (CLevel::OnFrame): queued near-miss segments and bolt contacts
+void on_frame();
 
 void script_register(lua_State* L);
 } // namespace nlc_stealth
