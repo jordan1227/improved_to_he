@@ -10,6 +10,7 @@
 
 #include "visual_memory_params.h"
 #include "memory_space.h"
+#include <atomic>
 
 class CCustomMonster;
 class CAI_Stalker;
@@ -91,6 +92,8 @@ public:
     virtual void reload(LPCSTR section);
     virtual void update(float time_delta);
     virtual float feel_vision_mtl_transp(CObject* O, u32 element);
+    // NLC: stalker rays towards the actor take the foliage table and foliage_k (vision thread); others as above
+    float feel_vision_mtl_transp(CObject* O, u32 element, const CObject* target);
     void remove_links(CObject* object);
     // NLC: per-NPC vision profile (nlc_stealth_set_vision); "" keeps that profile
     bool nlc_set_vision_sections(LPCSTR free_section, LPCSTR danger_section);
@@ -158,6 +161,10 @@ public:
     u32 m_nlc_wall_time = 0; // listeners: wall check cache for actor sounds
     float m_nlc_wall_k = 1.f;
     Fvector m_nlc_wall_from{};
+    // NLC 20.15: muzzle-flash reveal and the debug overlay
+    u32 m_nlc_flash_shot = 0; // actor shot already turned into a reveal by this observer
+    u32 m_nlc_flash_next = 0; // no new reveal before this time
+    std::atomic<u16> m_nlc_ray_mtl{u16(-1)}; // last partly see-through material on a ray to the actor (vision thread)
     struct NlcSense // aura sense (psy or smell), generalised from the poltergeist detection
     {
         float range = 0.f; // 0 = none

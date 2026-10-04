@@ -43,6 +43,7 @@ extern float g_near_miss_range; // > 0: an actor bullet passing this close to a 
 extern float g_step_alert_pow; // stalkers: a heard actor footstep below this power is concern (suspicion), not danger (0 = off)
 extern bool g_squad_dying_block; // a squad member at 0 health does not share his enemies (agent_enemy_manager)
 extern bool g_actor_sound_factor; // outfit noise, surface, rain masking or wall muffling active
+extern bool g_vis_mtl; // foliage table or foliage_k active (stalker rays towards the actor)
 
 // vision increment multiplier for an observer (stalker free/danger profile, or monster)
 inline float rate_mult(bool stalker, bool danger) { return stalker ? (danger ? g_danger_rate_mult : g_free_rate_mult) : g_monster_rate_mult; }
@@ -184,6 +185,15 @@ bool is_visible_body(const CObject* o);
 void bolt_contact(CObject* bolt, CObject* contact, const Fvector& position, LPCSTR material);
 // once per frame on the main thread (CLevel::OnFrame): queued near-miss segments and bolt contacts
 void on_frame();
+
+// ---- 20.15: foliage and muzzle flash ----
+// ray cutoff for a stalker looking at the actor at this distance (vision thread): the section threshold,
+// fading to foliage_near_threshold inside foliage_near_range
+float actor_ray_threshold(float distance, float base);
+// see-through of a material on a stalker ray towards the actor (vision thread): [nlc_vis_transparency], then ^foliage_k
+float actor_mtl_transp(u16 mtl, float vis);
+// one-time sum bump (fraction of the visibility threshold) after an unsuppressed actor shot (CVisualMemoryManager::visible)
+float flash_reveal(CCustomMonster* observer, CVisualMemoryManager& v, float distance);
 
 void script_register(lua_State* L);
 } // namespace nlc_stealth

@@ -209,6 +209,8 @@ public:
     IC CMemoryManager& memory() const;
     virtual float feel_vision_mtl_transp(CObject* O, u32 element);
     virtual bool feel_vision_resample(const CObject* O); // NLC: nlc_stealth ray_resample
+    virtual float feel_vision_mtl_transp_for(CObject* O, u32 element, const CObject* target); // NLC: foliage table, foliage_k
+    virtual float feel_vision_threshold(const CObject* target, float distance, float base); // NLC: close-range foliage cutoff
     virtual void feel_sound_new(CObject* who, int type, CSound_UserDataPtr user_data, const Fvector& Position, float power);
 
     virtual bool useful(const CItemManager* manager, const CGameObject* object) const;

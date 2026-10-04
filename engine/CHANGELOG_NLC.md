@@ -5,6 +5,30 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.17 (2026-10-04)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `8B3254F5CDC441C9E70F29A527B2D41B5008103375EB52043C0A158E5991D823`
+- **Status:** runtime pending. Foliage and muzzle flash (docs STEALTH_DESIGN 20.15); first test accepted.
+
+### NLC
+
+- **Close-range foliage:** for stalkers looking at the actor the ray cutoff fades from the vision
+  section `transparency_threshold` to `foliage_near_threshold` inside `foliage_near_range` (0 = off).
+  New `Feel::Vision` virtuals `feel_vision_threshold` and `feel_vision_mtl_transp_for` (vanilla defaults);
+  NPC targets and mutants unchanged.
+- **Foliage table:** optional `[nlc_vis_transparency]` (material name substring = see-through, first match
+  wins) and `foliage_k` (vis^k) for stalker rays towards the actor; every partly see-through material is
+  logged once ("vis mtl").
+- **Muzzle-flash reveal:** an unsuppressed actor shot gives stalkers in range that already have the actor
+  in view a one-time sum bump of `flash_reveal` x darkness x threshold (`flash_reveal_range`,
+  `flash_reveal_gap_ms`; 0 = off).
+- **Lua:** `nlc_stealth_ray(id)`: see-through of the stalker's ray to the actor, cutoff, distance, last
+  see-through material (debug overlay).
+- **Follow-ups after the first test:** `nolos` log lines show the effective (near-faded) cutoff;
+  no flash reveal for a stalker already fighting the actor. Game data: `bush_sux = 0.5` in
+  `[nlc_vis_transparency]` (one thin-bush face no longer blocks sight at any range).
+
 ## nlc-3.589.16 (2026-10-03)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

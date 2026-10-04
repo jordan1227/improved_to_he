@@ -98,6 +98,9 @@ public:
     virtual float feel_vision_mtl_transp(CObject* O, u32 element) = 0;
     // NLC: true = re-trace this object every update with a new sample point (partial cover; nlc_stealth ray_resample)
     virtual bool feel_vision_resample(const CObject* O) { return false; }
+    // NLC: material see-through for a ray towards this target, and the ray cutoff for it (nlc_stealth foliage terms; defaults = vanilla)
+    virtual float feel_vision_mtl_transp_for(CObject* O, u32 element, const CObject* target) { return feel_vision_mtl_transp(O, element); }
+    virtual float feel_vision_threshold(const CObject* target, float distance, float base) { return base; }
 
     float feel_vision_get_transparency(const CObject* _O) const;
 };

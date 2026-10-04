@@ -68,6 +68,7 @@ float g_step_alert_pow = 0.f;
 bool g_actor_sound_factor = false;
 bool g_squad_dying_block = false;
 bool g_monster_memory_decay = false;
+bool g_vis_mtl = false;
 
 namespace
 {
@@ -117,6 +118,13 @@ float p_actor_psy_k = -1.f; // psy auras: the actor's psy gear factor, pushed by
 float p_bolt_range = 0.f; // a landing bolt thrown by the actor is heard this far, x surface factor (0 = off)
 float p_hunt = 0.f; // > 0: bold monsters commit to a hunt when escalation finds the actor out of range
 float p_squad_dying_share = 1.f; // 0: a squad member killed by a hit does not pass his attacker to the squad (1 = vanilla)
+// 20.15: foliage and muzzle flash (stalkers looking at the actor)
+float p_foliage_near_range = 0.f; // > 0: inside this range the ray cutoff fades from the section threshold to foliage_near_threshold
+float p_foliage_near_threshold = 0.15f; // ray cutoff at zero distance
+float p_foliage_k = 1.f; // partly see-through materials: vis^foliage_k (> 1 denser, < 1 thinner)
+float p_flash_reveal = 0.f; // unsuppressed actor shot: one-time sum bump, x visibility threshold x darkness (0 = off)
+float p_flash_reveal_range = 18.f;
+float p_flash_reveal_gap_ms = 2000.f; // per observer: no new reveal before this gap (full-auto)
 
 struct ParamDef
 {
@@ -194,6 +202,12 @@ ParamDef s_params[] = {
     {"bolt_range", &p_bolt_range, 0.f, 60.f, 0.f},
     {"hunt", &p_hunt, 0.f, 1.f, 0.f},
     {"squad_dying_share", &p_squad_dying_share, 0.f, 1.f, 1.f},
+    {"foliage_near_range", &p_foliage_near_range, 0.f, 50.f, 0.f},
+    {"foliage_near_threshold", &p_foliage_near_threshold, 0.f, 1.f, 0.15f},
+    {"foliage_k", &p_foliage_k, 0.2f, 5.f, 1.f},
+    {"flash_reveal", &p_flash_reveal, 0.f, 1.f, 0.f},
+    {"flash_reveal_range", &p_flash_reveal_range, 1.f, 60.f, 18.f},
+    {"flash_reveal_gap_ms", &p_flash_reveal_gap_ms, 0.f, 10000.f, 2000.f},
 };
 
 constexpr u32 MAX_WATCH = 4;
@@ -264,8 +278,40 @@ xr_vector<CHangingLamp*> s_lamps;
 u16 s_noise_outfit_id = u16(-2);
 float s_noise_k = 1.f;
 
+// [nlc_vis_transparency] by material index (-1 = the material's own value); built once on the main thread
+xr_vector<float> s_mtl_vis;
+bool s_mtl_built = false;
+bool s_mtl_any = false;
+
+// material name substring = see-through for stalker rays towards the actor; file order, the first matching key wins.
+// Logs every partly see-through material once (tuning reference).
+void build_mtl_table()
+{
+    s_mtl_built = true;
+    s_mtl_vis.assign(GMLib.CountMaterial(), -1.f);
+    CInifile::Sect* sect = pSettings->section_exist("nlc_vis_transparency") ? &pSettings->r_section("nlc_vis_transparency") : nullptr;
+    u16 idx = 0;
+    for (auto it = GMLib.FirstMaterial(); it != GMLib.LastMaterial(); ++it, ++idx)
+    {
+        LPCSTR name = (*it)->m_Name.c_str();
+        if (sect && name)
+            for (const auto& [key, value] : sect->Ordered_Data)
+                if (strstr(name, key.c_str()))
+                {
+                    s_mtl_vis[idx] = std::clamp(float(atof(value.c_str())), 0.f, 1.f);
+                    s_mtl_any = true;
+                    break;
+                }
+        const float vis = (*it)->fVisTransparencyFactor;
+        if ((vis > 0.f && vis < 1.f) || s_mtl_vis[idx] >= 0.f)
+            Msg("~ [stealth] vis mtl [%s] %.2f -> %.2f", name ? name : "?", vis, s_mtl_vis[idx] >= 0.f ? s_mtl_vis[idx] : vis);
+    }
+}
+
 void refresh()
 {
+    if (!s_mtl_built)
+        build_mtl_table();
     g_track = s_watch_n > 0 || p_log_events > 0.f;
     g_actor_light_bonus = g_sky_k > 0.f || p_torch_k > 0.f || p_flash_k > 0.f || p_near_k > 0.f;
     g_actor_rate_factor = p_crouch_k != 1.f || p_creep_k != 1.f;
@@ -277,6 +323,7 @@ void refresh()
     g_actor_sound_factor = p_outfit_noise > 0.f || p_surface_noise > 0.f || p_rain_mask > 0.f || p_wall_mute > 0.f;
     g_actor_light_bonus = g_actor_light_bonus || p_lamp_k > 0.f;
     g_squad_dying_block = p_squad_dying_share <= 0.f;
+    g_vis_mtl = s_mtl_any || p_foliage_k != 1.f;
 }
 
 float outfit_k()
@@ -568,6 +615,53 @@ void on_actor_shot(bool silenced, LPCSTR section)
     s_last_shot_any = Device.dwTimeGlobal;
     s_last_shot_section = section;
     s_last_shot_sil = silenced;
+}
+
+float actor_ray_threshold(float distance, float base)
+{
+    if (p_foliage_near_range <= 0.f || distance >= p_foliage_near_range || p_foliage_near_threshold >= base)
+        return base;
+    const float t = _max(distance, 0.f) / p_foliage_near_range;
+    return p_foliage_near_threshold + (base - p_foliage_near_threshold) * t;
+}
+
+float actor_mtl_transp(u16 mtl, float vis)
+{
+    if (mtl < s_mtl_vis.size() && s_mtl_vis[mtl] >= 0.f)
+        vis = s_mtl_vis[mtl];
+    if (p_foliage_k != 1.f && vis > 0.f && vis < 1.f)
+        vis = std::pow(vis, p_foliage_k);
+    return vis;
+}
+
+float flash_reveal(CCustomMonster* observer, CVisualMemoryManager& v, float distance)
+{
+    constexpr u32 WINDOW_MS = 1000; // the observer's next vision update after the shot
+    const u32 now = Device.dwTimeGlobal;
+    if (p_flash_reveal <= 0.f || !s_last_shot || now < s_last_shot || now - s_last_shot > WINDOW_MS || v.m_nlc_flash_shot == s_last_shot)
+        return 0.f;
+    if (distance > p_flash_reveal_range)
+        return 0.f;
+    if (observer && Actor() && observer->memory().enemy().selected() == Actor())
+        return 0.f; // already fighting the actor: nothing to reveal
+    if (now < v.m_nlc_flash_next && v.m_nlc_flash_next - now <= u32(p_flash_reveal_gap_ms))
+        return 0.f;
+    v.m_nlc_flash_shot = s_last_shot;
+    v.m_nlc_flash_next = now + u32(p_flash_reveal_gap_ms);
+    CActor* a = Actor();
+    if (!a)
+        return 0.f;
+    float light = a->ROS()->get_luminocity();
+    if (g_sky_k > 0.f)
+        light += g_sky_k * sky_light(a);
+    const float dark = 1.f - std::clamp(light, 0.f, 1.f);
+    const float bump = p_flash_reveal * dark;
+    if (observer && tracked(observer->ID()) && can_log())
+    {
+        string128 nb;
+        Msg("~ [stealth] flash_reveal t=%u obs=%s d=%.1f light=%.2f bump=%.2f", now, obj_name(observer, nb), distance, light, bump);
+    }
+    return bump;
 }
 
 float forget_actor_sum(float value, float threshold, u32 since_ms, float time_delta, bool monster)
@@ -2197,6 +2291,27 @@ int lua_last_seen(lua_State* L)
     lua_pushnumber(L, it->second.seen_time);
     return 4;
 }
+
+// debug overlay (20.15): see-through of this stalker's last ray to the actor (-1 = actor not in its view cone),
+// the ray cutoff at the current distance, eye-to-actor distance, last partly see-through material on such a ray
+int lua_ray(lua_State* L)
+{
+    CAI_Stalker* s = lua_stalker(L, 1);
+    CActor* a = Actor();
+    if (!s || !a)
+        return 0;
+    CVisualMemoryManager& v = s->memory().visual();
+    Fvector eye, c;
+    eye.set(s->eye_matrix.c);
+    a->Center(c);
+    const float d = eye.distance_to(c);
+    lua_pushnumber(L, v.visible_transparency_threshold(a));
+    lua_pushnumber(L, actor_ray_threshold(d, v.transparency_threshold()));
+    lua_pushnumber(L, d);
+    const u16 mtl = v.m_nlc_ray_mtl.load(std::memory_order_relaxed);
+    lua_pushstring(L, mtl < GMLib.CountMaterial() ? GMLib.GetMaterialByIdx(mtl)->m_Name.c_str() : "-");
+    return 4;
+}
 } // namespace
 
 void script_register(lua_State* L)
@@ -2217,5 +2332,6 @@ void script_register(lua_State* L)
     lua_register(L, "nlc_stealth_eye_glow", lua_eye_glow);
     lua_register(L, "nlc_stealth_env_light", lua_env_light);
     lua_register(L, "nlc_stealth_actor_surface", lua_actor_surface);
+    lua_register(L, "nlc_stealth_ray", lua_ray);
 }
 } // namespace nlc_stealth

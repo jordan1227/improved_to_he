@@ -146,6 +146,8 @@ void CVisualMemoryManager::reinit()
     m_nlc_concern_total = m_nlc_concern_count = 0;
     m_nlc_wall_time = 0;
     m_nlc_wall_k = 1.f;
+    m_nlc_flash_shot = m_nlc_flash_next = 0;
+    m_nlc_ray_mtl.store(u16(-1), std::memory_order_relaxed);
 
     if (m_object)
         m_object->feel_vision_clear();
@@ -483,6 +485,7 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
         {
             if (m_nlc_rate_k != 1.f && object_distance > current_state().m_always_visible_distance)
                 new_object.m_value *= m_nlc_rate_k;
+            new_object.m_value += nlc_stealth::flash_reveal(m_object, *this, object_distance) * current_state().m_visibility_threshold; // NLC 20.15
             if (new_object.m_value > 0.f)
             {
                 m_nlc_point = g_actor->Position();
@@ -526,6 +529,7 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
     {
         if (m_nlc_rate_k != 1.f && object_distance > current_state().m_always_visible_distance)
             increment *= m_nlc_rate_k;
+        increment += nlc_stealth::flash_reveal(m_object, *this, object_distance) * current_state().m_visibility_threshold; // NLC 20.15
         if (increment > 0.f)
         {
             m_nlc_point = g_actor->Position();
@@ -692,6 +696,26 @@ float CVisualMemoryManager::feel_vision_mtl_transp(CObject* O, u32 element)
         CDB::TRI* T = Level().ObjectSpace.GetStaticTris() + element;
         vis = GMLib.GetMaterialByIdx(T->material)->fVisTransparencyFactor;
     }
+    return vis;
+}
+
+float CVisualMemoryManager::feel_vision_mtl_transp(CObject* O, u32 element, const CObject* target)
+{
+    if (!nlc_stealth::g_vis_mtl || !m_stalker || !target || !g_actor || target != g_actor)
+        return feel_vision_mtl_transp(O, element);
+    u16 mtl = u16(-1);
+    if (O)
+    {
+        if (IKinematics* V = smart_cast<IKinematics*>(O->Visual()))
+            mtl = V->LL_GetData((u16)element).game_mtl_idx;
+    }
+    else
+        mtl = (Level().ObjectSpace.GetStaticTris() + element)->material;
+    if (mtl == u16(-1))
+        return 1.f;
+    const float vis = nlc_stealth::actor_mtl_transp(mtl, GMLib.GetMaterialByIdx(mtl)->fVisTransparencyFactor);
+    if (vis > 0.f && vis < 1.f)
+        m_nlc_ray_mtl.store(mtl, std::memory_order_relaxed);
     return vis;
 }
 
@@ -868,7 +892,10 @@ void CVisualMemoryManager::update(float time_delta)
     STOP_PROFILE
 
     if (nlc_skipped) // NLC
-        nlc_stealth::on_vision_skipped(m_object, visible_transparency_threshold(g_actor), transparency_threshold(), nlc_sum_before,
+        nlc_stealth::on_vision_skipped(m_object, visible_transparency_threshold(g_actor),
+                                       m_stalker ? nlc_stealth::actor_ray_threshold(m_object->eye_matrix.c.distance_to(g_actor->Position()), transparency_threshold())
+                                                 : transparency_threshold(),
+                                       nlc_sum_before,
                                        nlc_actor_entry ? nlc_actor_entry->m_value : 0.f);
 
     START_PROFILE("Memory Manager/visuals/update/removing_offline")

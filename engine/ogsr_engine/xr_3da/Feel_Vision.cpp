@@ -24,7 +24,7 @@ struct SFeelParam
 IC BOOL feel_vision_callback(collide::rq_result& result, LPVOID params)
 {
     SFeelParam* fp = (SFeelParam*)params;
-    float vis = fp->parent->feel_vision_mtl_transp(result.O, result.element);
+    float vis = fp->parent->feel_vision_mtl_transp_for(result.O, result.element, fp->item->O); // NLC: target-aware
     fp->vis *= vis;
     if (nullptr == result.O && fis_zero(vis))
     {
@@ -225,7 +225,7 @@ void Vision::o_trace(Fvector& P, float dt, float vis_threshold)
             D.div(f);
             // setup ray defs & feel params
             collide::ray_defs RD(P, D, f, CDB::OPT_CULL, collide::rq_target(collide::rqtStatic | collide::rqtObstacle));
-            SFeelParam feel_params(this, &*I, vis_threshold);
+            SFeelParam feel_params(this, &*I, feel_vision_threshold(I->O, f, vis_threshold)); // NLC: per-target cutoff
             // check cache
             if (I->Cache.result && I->Cache.similar(P, D, f))
             {

@@ -796,6 +796,19 @@ bool CCustomMonster::feel_vision_resample(const CObject* O)
     return human_being() ? nlc_stealth::g_ray_resample > 0.f : nlc_stealth::g_monster_ray_resample > 0.f;
 }
 
+// NLC: the foliage terms apply to stalkers looking at the actor; NPC targets and monsters stay vanilla
+float CCustomMonster::feel_vision_mtl_transp_for(CObject* O, u32 element, const CObject* target)
+{
+    return memory().visual().feel_vision_mtl_transp(O, element, target);
+}
+
+float CCustomMonster::feel_vision_threshold(const CObject* target, float distance, float base)
+{
+    if (!target || !g_actor || target != g_actor || !human_being())
+        return base;
+    return nlc_stealth::actor_ray_threshold(distance, base);
+}
+
 void CCustomMonster::feel_sound_new(CObject* who, int type, CSound_UserDataPtr user_data, const Fvector& position, float power)
 {
     if (getDestroy())
