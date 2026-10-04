@@ -411,9 +411,53 @@ protected:
 
     void fill_bones_body_parts(LPCSTR body_part, CriticalWoundType wound_type);
 
-    LPCSTR m_critical_wound_anim_head;
-    LPCSTR m_critical_wound_anim_torso;
-    LPCSTR m_critical_wound_anim_legs;
+    LPCSTR m_critical_wound_anim_head{};
+    LPCSTR m_critical_wound_anim_torso{};
+    LPCSTR m_critical_wound_anim_legs{};
+
+    //////////////////////////////////////////////////////////////////////////
+    // NLC: external stagger and movement slow (pseudogiant stomp)
+    //////////////////////////////////////////////////////////////////////////
+private:
+    s8 m_nlc_stagger_state{-1}; // -1 = not resolved, 0 = no usable anim, 1 = m_nlc_stagger_anim valid
+    LPCSTR m_nlc_stagger_anim{};
+    float m_nlc_slow_k{};
+    u32 m_nlc_slow_start{};
+    u32 m_nlc_slow_end{};
+    float m_nlc_speed_base{1.f}; // section key move_speed_k (movement + clip speed together)
+    float m_nlc_speed_bonus{1.f}; // persistent multiplier (pseudogiant rage)
+    float m_nlc_haste_k{1.f}; // temporary multiplier (pseudogiant charge)
+    u32 m_nlc_haste_end{};
+
+public:
+    void nlc_set_speed_bonus(float k) { m_nlc_speed_bonus = k; }
+    void nlc_set_speed_base(float k) { m_nlc_speed_base = k; }
+    void nlc_set_haste(float k, u32 time_ms)
+    {
+        m_nlc_haste_k = k;
+        m_nlc_haste_end = Device.dwTimeGlobal + time_ms;
+    }
+    void nlc_clear_haste() { m_nlc_haste_end = 0; }
+    // forces the damaged walk/run (clips + velocities) for time_ms, on top of the DamagedThreshold health rule
+    void nlc_force_damaged(u32 time_ms) { m_nlc_damaged_until = Device.dwTimeGlobal + time_ms; }
+    // attack run substate: path to this point instead of the enemy (e.g. a locked charge line)
+    virtual bool nlc_run_target_override(Fvector& position, u32& vertex) { return false; }
+
+private:
+    u32 m_nlc_damaged_until{};
+
+public:
+    // called from Hit with the health actually lost (fraction of max health)
+    virtual void nlc_on_health_lost(const CObject* who, float fraction) {}
+    // plays the species' critical-hit animation (torso, legs, head key order), ignoring the threshold
+    bool nlc_stagger();
+    // k = fraction of speed removed (0..0.9), fades out over the last quarter of time_ms
+    void nlc_apply_move_slow(float k, u32 time_ms);
+    float nlc_move_speed_k() const;
+
+    // threaten (stomp) control hooks: skip the facing check / scale the animation speed
+    virtual bool threaten_skip_facing() { return false; }
+    virtual float threaten_anim_speed_k() { return 1.f; }
 
     //////////////////////////////////////////////////////////////////////////
 

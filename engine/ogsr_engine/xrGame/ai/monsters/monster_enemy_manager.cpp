@@ -54,9 +54,11 @@ void CMonsterEnemyManager::update()
             {
                 // the old target is only named while it is still remembered (pointer known valid)
                 const float old_danger = monster->EnemyMemory.get_danger(old_enemy);
-                Msg("~ [monster_target] [%s]: [%s] (%.3f) -> [%s] (%.3f)", monster->cName().c_str(),
+                // dmg = recent health lost to that attacker (fraction of max), as used by damage_threat_k
+                Msg("~ [monster_target] [%s]: [%s] (%.3f, dmg %.3f) -> [%s] (%.3f, dmg %.3f)", monster->cName().c_str(),
                     old_enemy ? (old_danger >= 0.f ? old_enemy->cName().c_str() : "<forgotten>") : "none", old_danger,
-                    enemy ? enemy->cName().c_str() : "none", monster->EnemyMemory.get_danger(enemy));
+                    old_danger >= 0.f ? monster->HitMemory.get_recent_damage(old_enemy) : 0.f, enemy ? enemy->cName().c_str() : "none",
+                    monster->EnemyMemory.get_danger(enemy), enemy ? monster->HitMemory.get_recent_damage(enemy) : 0.f);
             }
         }
 

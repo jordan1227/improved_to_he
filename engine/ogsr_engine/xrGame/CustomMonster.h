@@ -293,6 +293,12 @@ protected:
 public:
     IC void critical_wounded_state_stop();
 
+    // NLC: start a critical-wound (stagger) of the given type without the hit-power threshold
+    // (e.g. the pseudogiant stomp); false if already wounded or the conditions are not suitable
+    bool force_critical_wound(CriticalWoundType type);
+    // NLC: a killing hit from this object skips the CoP death animation, so the ragdoll gets the full impulse
+    virtual bool nlc_kill_hit_ragdoll() const { return false; }
+
 public:
     IC bool critically_wounded();
     IC const u32& critical_wound_type() const;

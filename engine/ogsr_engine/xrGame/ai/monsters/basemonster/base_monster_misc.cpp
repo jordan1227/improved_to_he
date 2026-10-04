@@ -38,6 +38,8 @@ void CBaseMonster::UpdateMemory()
 
     // Setup is own additional flags
     m_bDamaged = ((conditions().GetHealth() < db().m_fDamagedThreshold) ? true : false);
+    if (Device.dwTimeGlobal < m_nlc_damaged_until) // NLC: forced limp (pseudogiant charge stumble)
+        m_bDamaged = true;
 
     m_bAggressive = hear_dangerous_sound || (EnemyMan.get_enemies_count() > 0) || HitMemory.is_hit();
 }

@@ -11,6 +11,9 @@ class CControlRunAttack : public CControl_ComCustom<>
 
     u32 m_time_next_attack{};
 
+    // -1 = not checked yet, 0 = the visual has no run-attack cycle, 1 = usable
+    s8 m_cycle_state{-1};
+
 public:
     virtual void load(LPCSTR section);
     virtual void reinit();

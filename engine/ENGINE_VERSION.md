@@ -7,9 +7,9 @@ Build history: `engine/CHANGELOG_NLC.md`.
 
 | | |
 |---|---|
-| Engine build in `bin_x64/xrEngine.exe` | `nlc-3.589.19` |
+| Engine build in `bin_x64/xrEngine.exe` | `nlc-3.589.25` |
 | Upstream base | OGSR `main` `2021123` (2026-09-27) |
-| exe SHA-256 | `F3B6C843EA4ED42781E9614C71920A18526335D7CBFDE8992A9AB6D0837AB60D` |
-| PDB | `nlc_tools/builds/20261004_160008_f3b6c843` until the GitHub Release `nlc-3.589.19` exists (never in git) |
+| exe SHA-256 | `6DA80D5FFF05401EC30D2A30BAF4EB01B9C4E9DD61549C148C667D004C0B9DDC` |
+| PDB | `nlc_tools/builds/20261004_235240_6da80d5f` until the GitHub Release `nlc-3.589.25` exists (never in git) |
 
 Update this file whenever a new engine exe is committed to `bin_x64/`.

@@ -55,6 +55,11 @@ void CBaseMonster::Load(LPCSTR section)
     // NLC: target selection weights ([monster_target_selection] + per-section overrides)
     EnemyMemory.load(section);
 
+    // NLC: species speed multiplier (movement and non-accel-chain clips together, no foot sliding)
+    float speed_k = READ_IF_EXISTS(pSettings, r_float, section, "move_speed_k", 1.f);
+    clamp(speed_k, 0.3f, 2.f);
+    nlc_set_speed_base(speed_k);
+
     m_head_bone_name = READ_IF_EXISTS(pSettings, r_string, section, "bone_head", "bip01_head");
     m_left_eye_bone_name = READ_IF_EXISTS(pSettings, r_string, section, "bone_eye_left", 0);
     m_right_eye_bone_name = READ_IF_EXISTS(pSettings, r_string, section, "bone_eye_right", 0);

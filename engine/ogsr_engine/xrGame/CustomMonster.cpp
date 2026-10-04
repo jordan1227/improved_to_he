@@ -970,6 +970,23 @@ bool CCustomMonster::update_critical_wounded(const u16& bone_id, const float& po
     return (false);
 }
 
+bool CCustomMonster::force_critical_wound(CriticalWoundType type)
+{
+    if (!g_Alive() || critically_wounded())
+        return (false);
+
+    if (!critical_wound_external_conditions_suitable())
+        return (false);
+
+    m_last_hit_time = 0;
+    m_critical_wound_accumulator = 0.f;
+    m_critical_wound_type = type;
+
+    critical_wounded_state_start();
+
+    return (true);
+}
+
 #ifdef DEBUG
 
 extern void dbg_draw_frustum(float FOV, float _FAR, float A, Fvector& P, Fvector& D, Fvector& U);

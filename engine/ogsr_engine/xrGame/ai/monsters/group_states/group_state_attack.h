@@ -36,6 +36,11 @@ protected:
     u32 m_time_start_drive_out;
     bool m_drive_out;
 
+    // NLC: [monster_melee] debug_log throttling
+    u32 m_nlc_melee_log_time{};
+    u32 m_nlc_melee_log_state{u32(-1)};
+    void nlc_log_melee_decision(const CEntityAlive* enemy);
+
 protected:
     bool check_home_point();
     bool check_behinder();

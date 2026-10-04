@@ -18,8 +18,11 @@ void CControlMovement::update_frame()
 {
     velocity_lerp(m_velocity_current, m_data.velocity_target, m_data.acc, m_object->client_update_fdelta());
 
-    m_object->m_fCurSpeed = m_velocity_current;
-    m_man->path_builder().set_desirable_speed(m_velocity_current);
+    // NLC: temporary slow (pseudogiant stomp); the lerp state itself stays unscaled
+    const float velocity = m_velocity_current * m_object->nlc_move_speed_k();
+
+    m_object->m_fCurSpeed = velocity;
+    m_man->path_builder().set_desirable_speed(velocity);
 }
 
 float CControlMovement::real_velocity()

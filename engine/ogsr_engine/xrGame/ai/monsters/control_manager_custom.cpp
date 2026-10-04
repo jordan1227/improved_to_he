@@ -245,8 +245,35 @@ void CControlManagerCustom::seq_run(MotionID motion)
 
     ctrl_data->motions.clear();
     ctrl_data->motions.push_back(motion);
+    ctrl_data->speed_k = 1.f; // NLC
 
     m_man->activate(ControlCom::eControlSequencer);
+}
+
+void CControlManagerCustom::seq_run(MotionID motion, float speed_k)
+{
+    if (!m_man->check_start_conditions(ControlCom::eControlSequencer))
+        return;
+
+    m_man->capture(this, ControlCom::eControlSequencer);
+
+    SAnimationSequencerData* ctrl_data = (SAnimationSequencerData*)m_man->data(this, ControlCom::eControlSequencer);
+    if (!ctrl_data)
+        return;
+
+    ctrl_data->motions.clear();
+    ctrl_data->motions.push_back(motion);
+    ctrl_data->speed_k = speed_k;
+
+    m_man->activate(ControlCom::eControlSequencer);
+}
+
+bool CControlManagerCustom::seq_active() { return m_sequencer && m_sequencer->is_active(); }
+
+void CControlManagerCustom::seq_stop()
+{
+    if (seq_active())
+        m_man->release(this, ControlCom::eControlSequencer);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -549,6 +576,8 @@ void CControlManagerCustom::check_jump_over_physics()
 
 void CControlManagerCustom::check_rotation_jump()
 {
+    if (m_rot_jump_data.empty()) // NLC: no usable animation set (see add_rotation_jump_data)
+        return;
     if (!m_man->check_start_conditions(ControlCom::eControlRotationJump))
         return;
     if (!m_object->check_start_conditions(ControlCom::eControlRotationJump))
@@ -570,6 +599,16 @@ void CControlManagerCustom::add_rotation_jump_data(LPCSTR left1, LPCSTR left2, L
 {
     SControlRotationJumpData data;
     fill_rotation_data(data, left1, left2, right1, right2, angle, flags);
+
+    // NLC: drop sets whose named animations are missing in the model (e.g. the pseudogiant's
+    // placeholder names "1".."4"); playing an invalid motion leaves a null blend, as in the run attack
+    if ((left1 && !data.anim_stop_ls.valid()) || (left2 && !data.anim_run_ls.valid()) || (right1 && !data.anim_stop_rs.valid()) ||
+        (right2 && !data.anim_run_rs.valid()))
+    {
+        Msg("! [rotation_jump] [%s]: animations [%s, %s, %s, %s] missing in the model, rotation jump disabled", m_object->cName().c_str(), left1 ? left1 : "-",
+            left2 ? left2 : "-", right1 ? right1 : "-", right2 ? right2 : "-");
+        return;
+    }
 
     m_rot_jump_data.push_back(data);
 }

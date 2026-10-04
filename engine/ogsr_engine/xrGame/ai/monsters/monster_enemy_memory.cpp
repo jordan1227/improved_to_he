@@ -35,6 +35,10 @@ CMonsterEnemyMemory::CMonsterEnemyMemory()
     m_target_stickiness = 1.f;
     m_hit_bonus = 1.f;
     m_hit_bonus_time = 0;
+    m_damage_threat_k = 0.f;
+    m_damage_threat_max = 1.f;
+    m_back_hit_threat = 0.f;
+    m_back_hit_max_dist = 0.f;
 }
 
 CMonsterEnemyMemory::~CMonsterEnemyMemory() {}
@@ -51,6 +55,11 @@ void CMonsterEnemyMemory::load(LPCSTR section)
     m_target_stickiness = std::clamp(read_target_param(section, "target_stickiness", 1.f), 0.1f, 10.f);
     m_hit_bonus = std::clamp(read_target_param(section, "hit_bonus", 1.f), 0.1f, 10.f);
     m_hit_bonus_time = TTime(std::max(read_target_param(section, "hit_bonus_time", 0.f), 0.f));
+    m_damage_threat_k = std::clamp(read_target_param(section, "damage_threat_k", 0.f), 0.f, 100.f);
+    m_damage_threat_max = std::clamp(read_target_param(section, "damage_threat_max", 1.f), 1.f, 10.f);
+    m_back_hit_threat = std::clamp(read_target_param(section, "back_hit_threat", 0.f), 0.f, 1.f);
+    m_back_hit_max_dist = std::max(read_target_param(section, "back_hit_max_dist", 0.f), 0.f);
+    monster->HitMemory.set_damage_memory_time(TTime(std::max(read_target_param(section, "damage_memory_time", 0.f), 0.f)));
 
     s_target_debug_log = !!READ_IF_EXISTS(pSettings, r_bool, TARGET_SELECTION_SECTION, "debug_log", false);
 }
@@ -61,6 +70,14 @@ float CMonsterEnemyMemory::get_danger(const CEntityAlive* enemy) const
 {
     const auto it = m_objects.find(enemy);
     return (it != m_objects.end()) ? it->second.danger : -1.f;
+}
+
+float CMonsterEnemyMemory::damage_threat_multiplier(const CEntityAlive* enemy) const
+{
+    if (m_damage_threat_k <= 0.f || !enemy)
+        return 1.f;
+
+    return std::min(1.f + m_damage_threat_k * monster->HitMemory.get_recent_damage(enemy), m_damage_threat_max);
 }
 
 void CMonsterEnemyMemory::update()
@@ -173,6 +190,8 @@ void CMonsterEnemyMemory::update()
             if (hit_time != 0 && Device.dwTimeGlobal < hit_time + m_hit_bonus_time)
                 danger *= m_hit_bonus;
         }
+
+        danger *= damage_threat_multiplier(it->first);
 
         if (current_target && it->first == current_target)
             danger *= m_target_stickiness;

@@ -320,6 +320,9 @@ void CStateGroupAttackAbstract::execute()
         m_time_start_check_behinder = 0;
     }
 
+    if (CMeleeChecker::debug_log()) // NLC
+        nlc_log_melee_decision(enemy);
+
     get_state_current()->execute();
 
     prev_substate = current_substate;
@@ -510,6 +513,41 @@ bool CStateGroupAttackAbstract::check_behinder()
     }
 
     return false;
+}
+
+// NLC: one line per substate change, or once per second, while the enemy is within 4 m
+TEMPLATE_SPECIALIZATION
+void CStateGroupAttackAbstract::nlc_log_melee_decision(const CEntityAlive* enemy)
+{
+    if (!enemy)
+        return;
+
+    const float centre = enemy->Position().distance_to(object->Position());
+    if (centre > 4.f)
+        return;
+
+    if (current_substate == m_nlc_melee_log_state && time() < m_nlc_melee_log_time + 1000)
+        return;
+    m_nlc_melee_log_state = current_substate;
+    m_nlc_melee_log_time = time();
+
+    LPCSTR name = "other";
+    switch (current_substate)
+    {
+    case eStateAttack_Melee: name = "melee"; break;
+    case eStateAttack_RunAway: name = "runaway"; break;
+    case eStateAttack_Attack_On_Run: name = "attack_on_run"; break;
+    case eStateAttack_Run: name = "run"; break;
+    case eStateAttack_RunAttack: name = "run_attack"; break;
+    case eStateAttack_Steal: name = "steal"; break;
+    case eStateAttack_MoveToHomePoint: name = "home"; break;
+    }
+
+    const bool aom = object->can_attack_on_move();
+    Msg("~ [melee] [%s] -> [%s]: centre %.2f, eff %.2f, cur_min %.2f, see %d, start %d, close %d, behinder %d, state %s", object->cName().c_str(), enemy->cName().c_str(),
+        centre, object->MeleeChecker.distance_to_enemy(enemy), object->MeleeChecker.get_min_distance(), object->EnemyMan.see_enemy_now() ? 1 : 0,
+        get_state(eStateAttack_Melee)->check_start_conditions() ? 1 : 0, aom ? (object->aom_close_melee_allowed(prev_substate == eStateAttack_Melee) ? 1 : 0) : -1,
+        m_time_start_behinder ? 1 : 0, name);
 }
 
 TEMPLATE_SPECIALIZATION

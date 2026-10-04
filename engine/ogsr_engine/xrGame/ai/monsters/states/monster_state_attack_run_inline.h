@@ -21,8 +21,9 @@ void CStateMonsterAttackRunAbstract::execute()
     object->anim().accel_activate(eAT_Aggressive);
     object->anim().accel_set_braking(false);
 
-    u32 const level_vertex = object->EnemyMan.get_enemy()->ai_location().level_vertex_id();
-    Fvector const level_pos = ai().level_graph().vertex_position(level_vertex);
+    u32 level_vertex = object->EnemyMan.get_enemy()->ai_location().level_vertex_id();
+    Fvector level_pos = ai().level_graph().vertex_position(level_vertex);
+    object->nlc_run_target_override(level_pos, level_vertex); // NLC: e.g. the pseudogiant's locked charge point
     object->path().set_target_point(level_pos, level_vertex);
 
     if (level_vertex == object->ai_location().level_vertex_id())

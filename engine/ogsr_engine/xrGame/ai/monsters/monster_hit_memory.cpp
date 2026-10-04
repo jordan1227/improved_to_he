@@ -6,6 +6,7 @@ CMonsterHitMemory::CMonsterHitMemory()
 {
     monster = 0;
     time_memory = 10000;
+    m_damage_memory_time = 0;
 }
 
 CMonsterHitMemory::~CMonsterHitMemory() {}
@@ -20,6 +21,47 @@ void CMonsterHitMemory::update()
 {
     // удалить устаревшие hits
     remove_non_actual();
+
+    // NLC: drop fully decayed damage records
+    m_damage.erase(std::remove_if(m_damage.begin(), m_damage.end(), [this](const SDamageInfo& info) { return decayed_damage(info) <= 0.f; }), m_damage.end());
+}
+
+float CMonsterHitMemory::decayed_damage(const SDamageInfo& info) const
+{
+    if (m_damage_memory_time == 0)
+        return 0.f;
+
+    const TTime age = Device.dwTimeGlobal - info.time;
+    if (age >= m_damage_memory_time)
+        return 0.f;
+
+    return info.damage * (1.f - float(age) / float(m_damage_memory_time));
+}
+
+void CMonsterHitMemory::add_damage(const CObject* who, float health_fraction)
+{
+    if (!who || m_damage_memory_time == 0 || health_fraction <= 0.f)
+        return;
+
+    auto it = std::find_if(m_damage.begin(), m_damage.end(), [who](const SDamageInfo& info) { return info.who == who; });
+    if (it == m_damage.end())
+    {
+        m_damage.push_back({who, health_fraction, Device.dwTimeGlobal});
+        return;
+    }
+
+    // fold the decayed remainder into the new record, restart decay from now
+    it->damage = decayed_damage(*it) + health_fraction;
+    it->time = Device.dwTimeGlobal;
+}
+
+float CMonsterHitMemory::get_recent_damage(const CObject* who) const
+{
+    for (const SDamageInfo& info : m_damage)
+        if (info.who == who)
+            return decayed_damage(info);
+
+    return 0.f;
 }
 
 bool CMonsterHitMemory::is_hit(CObject* pO) { return (std::find(m_hits.begin(), m_hits.end(), pO) != m_hits.end()); }
@@ -168,4 +210,8 @@ struct predicate_old_info
     IC bool operator()(const SMonsterHit& hit_info) { return (object == hit_info.object); }
 };
 
-void CMonsterHitMemory::remove_hit_info(const CObject* obj) { m_hits.erase(std::remove_if(m_hits.begin(), m_hits.end(), predicate_old_info(obj)), m_hits.end()); }
+void CMonsterHitMemory::remove_hit_info(const CObject* obj)
+{
+    m_hits.erase(std::remove_if(m_hits.begin(), m_hits.end(), predicate_old_info(obj)), m_hits.end());
+    m_damage.erase(std::remove_if(m_damage.begin(), m_damage.end(), [obj](const SDamageInfo& info) { return info.who == obj; }), m_damage.end()); // NLC
+}

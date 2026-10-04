@@ -399,7 +399,12 @@ void CCharacterPhysicsSupport::KillHit(SHit& H)
     }
 #endif
 
-    if (g_bCopDeathAnim)
+    // NLC: some killers (pseudogiant stomp) throw the body instead of playing a death animation
+    CGameObject* killer = smart_cast<CGameObject*>(H.who);
+    const CCustomMonster* killer_monster = killer ? killer->cast_custom_monster() : nullptr;
+    const bool ragdoll_kill = (H.type() == ALife::eHitTypeStrike || H.type() == ALife::eHitTypeExplosion) && killer_monster && killer_monster->nlc_kill_hit_ragdoll();
+
+    if (g_bCopDeathAnim && !ragdoll_kill)
     {
         float hit_angle = 0;
         MotionID m = m_death_anims.motion(m_EntityAlife, H, hit_angle);

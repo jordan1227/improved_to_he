@@ -5,6 +5,115 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.25 (2026-10-04)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `6DA80D5FFF05401EC30D2A30BAF4EB01B9C4E9DD61549C148C667D004C0B9DDC`
+- **Status:** runtime pending.
+
+### NLC
+
+- **Pseudogiant charge rework:** the rush paths to a point locked `Charge_Overshoot` m past the target's spot
+  (`CBaseMonster::nlc_run_target_override`, used by the attack run substate), so sidestepping escapes; reaching
+  that point without contact counts as dodged. Wind-up plays `Charge_Windup_Anim` in place at
+  `Charge_Windup_Anim_Speed` through the animation sequencer; the charge requires facing the target
+  (`Charge_Face_Yaw`). The stumble is a forced damaged walk (limp clip and `Velocity_WalkFwdDamaged`) for
+  `Charge_Stumble_Time` instead of a speed multiplier. `Charge_Max_Turn` is no longer used.
+- **Animation sequencer:** optional playback speed (`seq_run(motion, speed_k)`) and early stop (`seq_stop`).
+- **Forced damaged walk:** `CBaseMonster::nlc_force_damaged` on top of the `DamagedThreshold` health rule.
+
+### Required game data
+
+- `m_giant.ltx` `Charge_Windup_Anim*`, `Charge_Face_Yaw`, `Charge_Overshoot`, `Charge_Stumble_Time 2500`.
+
+## nlc-3.589.24 (2026-10-04)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `B2DD779B6A2A2B8D843993A808D3EDEFC1B3D38DAD395B4E6DB23FDEF288A7F9`
+- **Status:** runtime pending.
+
+### NLC
+
+- **Species speed:** `move_speed_k` in a monster section scales movement and walk clip speed together
+  (pseudogiant 0.83); rage and charge stack on it.
+- **Pseudogiant charge:** wind-up telegraph (`Charge_Windup`: attack sound, near stop while aiming), locked rush
+  line (`Charge_Max_Turn`: a target that sidesteps out of it makes the rush abort with a stumble), ram hit on touch
+  (`Charge_Contact_*`) instead of waiting for an attack animation.
+
+### Required game data
+
+- `m_giant.ltx` `move_speed_k`, `Charge_Contact_*`, `Charge_Windup`, `Charge_Max_Turn`.
+
+## nlc-3.589.23 (2026-10-04)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A5B2E5121060BDBEA0E7D446920B7A7CCB9E53E86A84E7D346BB29A062D45378`
+- **Status:** runtime pending.
+
+### NLC
+
+- **Melee phase 2:** `[monster_melee] trace_ignore_objects` (the actor line-of-hit trace is blocked only by
+  level geometry, not pack mates or loose objects); `close_yaw_dist` / `close_yaw_half` (wider bite yaw window
+  at body contact).
+- **Monster speed multipliers:** persistent bonus and temporary haste next to the stomp slow; movement clips
+  without an accel chain now scale their speed with the multiplier (no foot sliding).
+- **Pseudogiant moves** (each with its own switch in `m_giant.ltx`): rage below a health fraction (faster,
+  wider, more frequent stomps, entry stomp), recovery stomp on burst damage, charge (rush on a clear line,
+  empowered first strike, stumble on a miss).
+
+### Required game data
+
+- `game_relations.ltx` `[monster_melee]` keys; `m_giant.ltx` `HugeKick_Rage_*`, `HugeKick_Recover_*`,
+  `Charge_*`, `stand_attack_1` impulse 400.
+
+## nlc-3.589.22 (2026-10-04)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `813BE01F917A2F0B2F6507A8E18071D98A5FFFA43064C8E086DB8F086407E056`
+- **Status:** runtime pending.
+
+### NLC
+
+- **Surface-aware melee distance (opt-in):** `melee_surface_distance` / `melee_surface_offset` in a monster
+  section make `CMeleeChecker::distance_to_enemy` and the bite range check in `check_hit` measure to the
+  target's collision surface (+ offset) instead of centre to centre (the original ray test queried the
+  attacker's own collision form). Large targets such as the pseudogiant now count as close.
+- **Melee diagnostics:** `[monster_melee] debug_log` logs group-attack decisions (enemy within 4 m) and every
+  bite attempt (distance, yaw/pitch window, hit/miss).
+- **Rotation jump guard:** animation sets whose names are missing in the model are dropped with a log line
+  (pseudogiant placeholders `"1".."4"`); no rotation jump starts without a valid set.
+
+### Required game data
+
+- `game_relations.ltx` `[monster_melee]`; `m_dog.ltx`, `m_pseudodog.ltx` (`melee_surface_*`).
+
+## nlc-3.589.21 (2026-10-04)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `C371FCC9D14F42DC8BF5F4918AD696E368B74E749BE27450A02C05A52ECD3023`
+- **Status:** runtime accepted (quick tests): target switching, damage threat, back-stab aggro, crowd stomp,
+  splash damage, stagger, mutant slow, ragdoll kills, jump dodge, grenade-deflection stomp. Includes the
+  unreleased `nlc-3.589.20`.
+
+### NLC
+
+- **Monster target selection:** `[monster_target_selection]` in `game_relations.ltx` (per-section overrides):
+  player bias, current-target stickiness, recent-hit bonus, damage-weighted threat (per-attacker health lost,
+  fading over `damage_memory_time`), back-stab provocation (`back_hit_threat`), `debug_log` for target switches.
+  Missing keys keep the original danger formula.
+- **Pseudogiant stomp:** crowd trigger, splash on enemies (optionally neutrals) with falloff, height gate,
+  configurable hit type/bone per victim kind, knockback, stagger (stalker leg-hit / mutant critical-hit anims),
+  mutant movement slow, actor hit inside the splash, precise jump dodge (feet clearance at impact),
+  grenade-deflection stomp at a faster animation speed. All `HugeKick_*` keys optional.
+- **Stomp kills** skip the CoP death animation, so the body is thrown as a ragdoll.
+- **Run attack guard:** monsters whose model lacks `stand_attack_run_0` (pseudogiant) no longer start the run
+  attack (null blend crash in `CControlRunAttack::on_event`).
+
+### Required game data
+
+- `game_relations.ltx` `[monster_target_selection]`, `m_giant.ltx` (`HugeKick_*`, damage table, `health_hit_part`),
+  `m_flesh.ltx` (`target_stickiness`).
+
 ## nlc-3.589.19 (2026-10-04)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

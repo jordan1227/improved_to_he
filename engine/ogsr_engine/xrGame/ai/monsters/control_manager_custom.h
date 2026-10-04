@@ -56,6 +56,10 @@ public:
     void seq_add(MotionID motion);
     void seq_switch(); // Перейти в следующее состояние, если такового не имеется - завершить
     void seq_run(MotionID motion);
+    // NLC: single motion at a speed multiplier; seq_stop ends a running sequence early
+    void seq_run(MotionID motion, float speed_k);
+    void seq_stop();
+    bool seq_active();
 
     //-------------------------------------------------------------------------------
     // Triple Animation

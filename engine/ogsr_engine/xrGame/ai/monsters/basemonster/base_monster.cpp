@@ -405,8 +405,20 @@ void CBaseMonster::Hit(SHit* pHDS)
         if (!critically_wounded())
             update_critical_wounded(HDS.boneID, HDS.power);
 
+    // NLC: health actually lost (after immunities), per attacker, for damage-weighted target selection
+    const float health_before = conditions().GetHealth();
+
     //	inherited::Hit(P,dir,who,element,p_in_object_space,impulse,hit_type);
     inherited::Hit(&HDS);
+
+    const float max_health = conditions().GetMaxHealth();
+    if (HDS.who && HDS.who != this && max_health > 0.f)
+    {
+        const float lost = (health_before - conditions().GetHealth()) / max_health;
+        HitMemory.add_damage(HDS.who, lost);
+        if (lost > 0.f && g_Alive())
+            nlc_on_health_lost(HDS.who, lost);
+    }
 }
 
 void CBaseMonster::PHHit(SHit& H) { m_pPhysics_support->in_Hit(H); }

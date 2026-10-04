@@ -592,7 +592,20 @@ void CControlAnimationBase::set_animation_speed()
     SControlAnimationData* ctrl_data = (SControlAnimationData*)m_man->data(this, ControlCom::eControlAnimation);
     if (!ctrl_data)
         return;
-    ctrl_data->set_speed(m_cur_anim.speed._get_target());
+
+    float speed = m_cur_anim.speed._get_target();
+
+    // NLC: movement clips without an accel chain (natural speed, target -1) follow the monster's speed multiplier
+    // (haste / rage / stomp slow) so the feet do not slide; accel-chain clips already follow the real velocity
+    const float k = m_object->nlc_move_speed_k();
+    if (speed <= 0.f && !fsimilar(k, 1.f) && m_man->movement().velocity_current() > 0.5f && ctrl_data->global.get_motion().valid())
+    {
+        IKinematicsAnimated* skel = smart_cast<IKinematicsAnimated*>(m_object->Visual());
+        if (skel)
+            speed = skel->LL_GetMotionDef(ctrl_data->global.get_motion())->Speed() * k;
+    }
+
+    ctrl_data->set_speed(speed);
 }
 
 class ray_query_param
@@ -621,6 +634,8 @@ ICF static BOOL check_hit_trace_callback(collide::rq_result& result, LPVOID para
             return TRUE;
         else if (entity_alive == param->m_enemy)
             param->m_can_hit_enemy = true;
+        else if (CMeleeChecker::trace_ignore_objects())
+            return TRUE; // NLC: other creatures (pack mates) and loose objects do not block the bite
     }
     else
     {
@@ -646,8 +661,11 @@ void CControlAnimationBase::check_hit(MotionID motion, float time_perc)
     // определить дистанцию до врага
     Fvector d;
     d.sub(enemy->Position(), m_object->Position());
-    if (d.magnitude() > params.dist)
+    // NLC: surface-aware distance when the species enables melee_surface_distance (large targets)
+    const float hit_dist = m_object->MeleeChecker.surface_mode() ? m_object->MeleeChecker.distance_to_enemy(enemy) : d.magnitude();
+    if (hit_dist > params.dist)
         should_hit = false;
+    const bool dbg_dist_ok = should_hit;
 
     // проверка на  Field-Of-Hit
     float my_h, my_p;
@@ -659,13 +677,18 @@ void CControlAnimationBase::check_hit(MotionID motion, float time_perc)
     float from = angle_normalize(my_h + params.foh.from_yaw);
     float to = angle_normalize(my_h + params.foh.to_yaw);
 
-    if (!is_angle_between(h, from, to))
+    // NLC: at body-contact range the centre-to-centre heading is unstable, so the window is at least +-close_yaw_half
+    const bool close_yaw = CMeleeChecker::close_yaw_dist() > 0.f && hit_dist < CMeleeChecker::close_yaw_dist() &&
+        _abs(angle_difference(h, my_h)) <= CMeleeChecker::close_yaw_half();
+    const bool dbg_yaw_ok = close_yaw || is_angle_between(h, from, to);
+    if (!dbg_yaw_ok)
         should_hit = false;
 
     from = angle_normalize(my_p + params.foh.from_pitch);
     to = angle_normalize(my_p + params.foh.to_pitch);
 
-    if (!is_angle_between(p, from, to))
+    const bool dbg_pitch_ok = is_angle_between(p, from, to);
+    if (!dbg_pitch_ok)
         should_hit = false;
 
     const CActor* pA = smart_cast<const CActor*>(enemy);
@@ -683,6 +706,10 @@ void CControlAnimationBase::check_hit(MotionID motion, float time_perc)
         Level().ObjectSpace.RayQuery(RQR, RD, check_hit_trace_callback, &params, NULL, m_object);
         should_hit = params.m_can_hit_enemy;
     }
+
+    if (CMeleeChecker::debug_log())
+        Msg("~ [melee] [%s] bite -> [%s]: dist %.2f / %.2f %s, yaw %s, pitch %s -> %s", m_object->cName().c_str(), enemy->cName().c_str(), hit_dist, params.dist,
+            dbg_dist_ok ? "ok" : "far", dbg_yaw_ok ? "ok" : "out", dbg_pitch_ok ? "ok" : "out", should_hit ? "hit" : "miss");
 
     if (should_hit)
         m_object->HitEntity(enemy, params.hit_power, params.impulse, params.impulse_dir);

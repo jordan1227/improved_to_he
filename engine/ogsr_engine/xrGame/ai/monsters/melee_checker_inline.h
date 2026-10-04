@@ -7,6 +7,15 @@ IC void CMeleeChecker::load(LPCSTR section)
 
     m_min_attack_distance = pSettings->r_float(section, "MinAttackDist");
     m_max_attack_distance = pSettings->r_float(section, "MaxAttackDist");
+
+    // NLC
+    m_surface_mode = !!READ_IF_EXISTS(pSettings, r_bool, section, "melee_surface_distance", false);
+    m_surface_offset = READ_IF_EXISTS(pSettings, r_float, section, "melee_surface_offset", 0.3f);
+    m_cache_frame = u32(-1);
+    s_debug_log = !!READ_IF_EXISTS(pSettings, r_bool, "monster_melee", "debug_log", false);
+    s_trace_ignore_objects = !!READ_IF_EXISTS(pSettings, r_bool, "monster_melee", "trace_ignore_objects", false);
+    s_close_yaw_dist = READ_IF_EXISTS(pSettings, r_float, "monster_melee", "close_yaw_dist", 0.f);
+    s_close_yaw_half = READ_IF_EXISTS(pSettings, r_float, "monster_melee", "close_yaw_half", 0.f);
 }
 
 IC void CMeleeChecker::init_attack()

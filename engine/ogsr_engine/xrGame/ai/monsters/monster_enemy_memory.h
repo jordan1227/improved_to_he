@@ -18,6 +18,10 @@ class CMonsterEnemyMemory
     float m_target_stickiness;
     float m_hit_bonus;
     TTime m_hit_bonus_time;
+    float m_damage_threat_k; // multiplier = min(1 + k * recent_damage, max); 0 = off
+    float m_damage_threat_max;
+    float m_back_hit_threat; // recorded as damage on a back hit from within m_back_hit_max_dist; 0 = off
+    float m_back_hit_max_dist;
 
 public:
     CMonsterEnemyMemory();
@@ -29,6 +33,9 @@ public:
 
     // danger score of a remembered enemy, -1 if it is not remembered
     float get_danger(const CEntityAlive* enemy) const;
+    float damage_threat_multiplier(const CEntityAlive* enemy) const;
+    float back_hit_threat() const { return m_back_hit_threat; }
+    float back_hit_max_dist() const { return m_back_hit_max_dist; }
     static bool target_debug_log();
 
     // -----------------------------------------------------

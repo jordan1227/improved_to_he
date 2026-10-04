@@ -6,6 +6,7 @@
 struct SAnimationSequencerData : public ControlCom::IComData
 {
     xr_vector<MotionID> motions;
+    float speed_k{1.f}; // NLC: playback speed multiplier for all motions of the sequence
 };
 
 class CAnimationSequencer : public CControl_ComCustom<SAnimationSequencerData>

@@ -1,8 +1,14 @@
 #include "stdafx.h"
 #include "control_sequencer.h"
 #include "control_manager.h"
+#include "BaseMonster/base_monster.h" // NLC: speed_k (visual, motion defs)
+#include "../../../Include/xrRender/KinematicsAnimated.h"
 
-void CAnimationSequencer::reset_data() { m_data.motions.clear(); }
+void CAnimationSequencer::reset_data()
+{
+    m_data.motions.clear();
+    m_data.speed_k = 1.f; // NLC
+}
 
 void CAnimationSequencer::on_capture()
 {
@@ -39,6 +45,10 @@ void CAnimationSequencer::on_event(ControlCom::EEventType type, ControlCom::IEve
 
 void CAnimationSequencer::on_release()
 {
+    // NLC: drop the speed override before giving the animation back
+    if (SControlAnimationData* ctrl_data = (SControlAnimationData*)m_man->data(this, ControlCom::eControlAnimation))
+        ctrl_data->set_speed(-1.f);
+
     m_man->release_pure(this);
     m_man->unsubscribe(this, ControlCom::eventAnimationEnd);
 }
@@ -51,6 +61,13 @@ void CAnimationSequencer::play_selected()
 
     ctrl_data->global.set_motion(m_data.motions[m_index]);
     ctrl_data->global.actual = false;
+
+    // NLC: optional faster/slower playback (absolute blend speed, as in CControlThreaten)
+    IKinematicsAnimated* skel = smart_cast<IKinematicsAnimated*>(m_object->Visual());
+    if (!fsimilar(m_data.speed_k, 1.f) && skel && m_data.motions[m_index].valid())
+        ctrl_data->set_speed(skel->LL_GetMotionDef(m_data.motions[m_index])->Speed() * m_data.speed_k);
+    else
+        ctrl_data->set_speed(-1.f);
 }
 
 bool CAnimationSequencer::check_start_conditions()

@@ -18,6 +18,7 @@ void CControlRunAttack::reinit()
     CControl_ComCustom<>::reinit();
 
     m_time_next_attack = 0;
+    m_cycle_state = -1; // the visual may change on respawn
 }
 
 void CControlRunAttack::activate()
@@ -63,6 +64,17 @@ bool CControlRunAttack::check_start_conditions()
         fl_hook::boar_result(fl_hook::eBoarActive);
         return false;
     }
+
+    // NLC: some models (e.g. the pseudogiant) have no run-attack cycle; LL_PlayCycle then returns a null blend
+    if (m_cycle_state < 0)
+    {
+        IKinematicsAnimated* ka = smart_cast<IKinematicsAnimated*>(m_object->Visual());
+        m_cycle_state = (ka && ka->ID_Cycle_Safe("stand_attack_run_0").valid()) ? 1 : 0;
+        if (!m_cycle_state)
+            Msg("! [run_attack] [%s]: no stand_attack_run_0 in the model, run attack disabled", m_object->cName().c_str());
+    }
+    if (!m_cycle_state)
+        return false;
 
     const CEntityAlive* enemy = m_object->EnemyMan.get_enemy();
     if (!enemy)
@@ -140,6 +152,11 @@ void CControlRunAttack::on_event(ControlCom::EEventType type, ControlCom::IEvent
 
         CBlend* blend = m_man->animation().current_blend();
         VERIFY(blend);
+        if (!blend || !m_object->EnemyMan.get_enemy())
+        {
+            m_man->notify(ControlCom::eventRunAttackEnd, 0);
+            break;
+        }
 
         // animation time
         float anim_time = blend->timeTotal / blend->speed;
