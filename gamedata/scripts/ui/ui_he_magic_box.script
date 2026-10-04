@@ -60,6 +60,28 @@ local function set_item_icon( sect, s, x, y, sw, sh )
 end
 
 
+-- [HE-PORT]
+local function art_container_slots( sect )
+  if not string.find( sect, "arc_art_box_", 1, true ) then return nil end
+  local slots = get_u32( sect, "container_slots", 0 )
+  if not slots or slots < 1 then return nil end
+  return slots
+end
+
+
+-- [HE-PORT]
+local function decode_art_container( item, slots )
+  local cd = item.info
+  if not cd or cd == "" then return {} end
+  local parts = 1
+  for _ in string.gmatch( cd, "," ) do parts = parts + 1 end
+  if parts > slots * 3 then return {} end
+  local ok, list = pcall( arc_radiation.decode_custom_data, cd, item.section, slots )
+  if ( not ok ) or ( not list ) then return {} end
+  return list
+end
+
+
 -------------------------------------------------------------------------------
 
 class "magic_box_item" ( CUIListItemEx )
@@ -629,6 +651,7 @@ function he_magic_box_ui:show_item_descr( ui_item )
   self.item_descr = self.xml:InitStatic( "main_dialog:descr_text", self.descr_scroll )
   self.item_descr:SetText( self:get_item_description( ui_item.data ) )
   self.item_descr:AdjustHeightToText()
+  self:show_art_container( ui_item.data, self.item_descr:GetHeight() + 6 ) -- [HE-PORT]
 end
 
 
@@ -647,43 +670,62 @@ function he_magic_box_ui:get_item_description( item )
       text = af_text .. "\\n%c[default]" .. text
     end
   end
-  local box_text = self:get_box_contents_text( item )
-  if box_text then
-    text = text .. "\\n \\n" .. box_text
-  end
   return string.format(
     game.translate_string( "ui_he_mbox_descr" ), weight, cost, text
   )
 end
 
 
-function he_magic_box_ui:get_box_contents_text( item )
-  local sect = item.section
-  if not string.find( sect, "arc_art_box_", 1, true ) then return nil end
-  local slots = get_u32( sect, "container_slots", 0 )
-  if slots <= 0 then return nil end
-  local ok, arts = pcall( arc_radiation.decode_custom_data, item.info or "", sect, slots )
-  if not ok or type( arts ) ~= "table" then return nil end
-  local lines, filled = {}, 0
+-- [HE-PORT]
+function he_magic_box_ui:show_art_container( item, y )
+  for _, wnd in ipairs( self.art_rows or {} ) do wnd:DetachFromParent() end
+  self.art_rows = {}
+  local slots = art_container_slots( item.section )
+  if not slots then return end
+  local arts   = decode_art_container( item, slots )
+  local filled = 0
   for _, a in ipairs( arts ) do
-    if a.section then
-      filled = filled + 1
-      local dyn = ""
-      if not string.find( a.section, "_capsule", 1, true ) then
-        local n = string.match( a.section, "_dyn(%d)d" )
-        if n then
-          dyn = " " .. ui_inv_descr.get_dyn_color( a.section ) .. "[" .. n .. "]%c[default]"
-        end
-      end
-      local cond = math.floor( ( tonumber( a.condition ) or 1 ) * 100 + 0.5 )
-      table.insert( lines, string.format( "%%c[default]• %s%s - %d%%",
-        game.translate_string( g_inv_name( a.section ) ), dyn, cond ) )
-    end
+    if a.section then filled = filled + 1 end
   end
-  table.insert( lines, 1, string.format(
-    "%%c[255,160,255,160]Количество слотов: [%d/%d]%%c[default]",
-    filled, slots ) )
-  return table.concat( lines, "\\n" )
+  local head = self.xml:InitStatic( "main_dialog:arts_head", self.descr_scroll )
+  head:SetWndPos( 0, y )
+  head:SetText( string.format( game.translate_string( "ui_he_mbox_cont_arts" ), filled, slots ) )
+  table.insert( self.art_rows, head )
+  y = y + 18 + 4
+  for _, a in ipairs( arts ) do
+    if a.section then y = self:add_art_row( a, y ) end
+  end
+end
+
+
+-- [HE-PORT]
+function he_magic_box_ui:add_art_row( art, y )
+  local row = self.xml:InitStatic( "main_dialog:arts_row", self.descr_scroll )
+  row:SetWndPos( 0, y )
+  local icon = self.xml:InitStatic( "main_dialog:arts_row:art_icon", row )
+  CIconParams( art.section ):set_shader( icon )
+  local name = self.xml:InitStatic( "main_dialog:arts_row:art_name", row )
+  name:SetText( self:get_art_row_text( art ) )
+  name:SetWidth( 238 )
+  name:AdjustHeightToText()
+  local h = math.max( 26, name:GetHeight() + 4 )
+  row:SetWndSize( 266, h )
+  name:SetWndSize( 238, h - 2 )
+  table.insert( self.art_rows, row )
+  return y + h
+end
+
+
+-- [HE-PORT]
+function he_magic_box_ui:get_art_row_text( art )
+  local name = he_magic_box.make_item_name( art.section )
+  local dyn  = string.match( art.section, "_dyn(%d)d" )
+  if dyn and not string.find( art.section, "_capsule", 1, true ) then
+    name = name .. " " .. ui_inv_descr.get_dyn_color( art.section ) .. "[" .. dyn .. "]%c[default]"
+  end
+  return string.format(
+    "%s - %d%%", name, math.floor( ( tonumber( art.condition ) or 1 ) * 100 + 0.5 )
+  )
 end
 
 
