@@ -1,6 +1,56 @@
-<!-- nlc-changelog-head: 14f733907723002506416f992849f0f84cc84b30 -->
+<!-- nlc-changelog-head: e094482bc43983d0fea855bcabc9f902b6166440 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: e094482bc43983d0fea855bcabc9f902b6166440 -->
+## 05.10.26 01:35 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [e094482](https://github.com/jordan1227/improved_to_he/commit/e094482bc43983d0fea855bcabc9f902b6166440)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/task_manager.ltx
+- M gamedata/config/creatures/m_giant.ltx
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 479b93f0b1e3683ec392663faaf8fce247267995 -->
+## 05.10.26 01:34 МСК - Tweak giant scaling and aggression
+
+Commit: [479b93f](https://github.com/jordan1227/improved_to_he/commit/479b93f0b1e3683ec392663faaf8fce247267995)
+
+### Description
+
+Lower explosion resistance for the standard and strong giant variants, and increase the strong giant's charge and stomp aggression settings. This keeps the creature balance tuning focused on survivability and pressure without affecting unrelated monster behavior.
+
+### Game files changed
+
+- M gamedata/config/creatures/m_giant.ltx
+
+<!-- nlc-changelog-commit: b7a26cd3f99cf1f146101baa751494c8e08e95ff -->
+## 05.10.26 01:08 МСК - манифест
+
+Commit: [b7a26cd](https://github.com/jordan1227/improved_to_he/commit/b7a26cd3f99cf1f146101baa751494c8e08e95ff)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 14f733907723002506416f992849f0f84cc84b30 -->
 ## 05.10.26 01:06 МСК - Pseudogiant AI and monster threat rework
