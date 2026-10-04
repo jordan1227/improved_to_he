@@ -5,6 +5,36 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.19 (2026-10-04)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F3B6C843EA4ED42781E9614C71920A18526335D7CBFDE8992A9AB6D0837AB60D`
+- **Status:** runtime pending.
+
+### NLC
+
+- **wpn_knife_m1 walking return:** optional `knife_return_moving_speed` in `wpn_knife_m1_hud` scales the
+  `anm_hitN2idle` return clip when it replaces a moving idle (default 1.0; tuning experiment).
+
+### Required game data
+
+- `w_knife.ltx` key `knife_return_moving_speed` (optional).
+
+## nlc-3.589.18 (2026-10-04)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `1DB407E47AD7ED1343CE05F9DE60FE3EB5F3BAEFA363A41FDA76CF70A634D361`
+- **Status:** runtime pending.
+
+### NLC
+
+- **wpn_knife_m1 walking return:** the swing-to-idle return clip (`anm_hitN2idle`) is now also used when the
+  next idle request is a moving idle (`anm_idle_moving*`), so the return no longer cuts straight into the walk cycle.
+
+### Required game data
+
+- None (the torch rework and `liz_knife_flash` ship as script/config/asset changes).
+
 ## nlc-3.589.17 (2026-10-04)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

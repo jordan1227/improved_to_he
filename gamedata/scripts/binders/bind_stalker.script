@@ -994,17 +994,8 @@ local key_actions = {
 	long_press_timer = 600,
 },
 
--- [HE-PORT]
-	[key_bindings.kTORCH] = {
-		func = function()
-			nlc_torch.switch_torch()
-		end,
-		long_press = function()
-			nlc_torch.torch_switch_cone_hold()
-		end,
-		long_press_timer = 400,
-	},
-	
+-- kTORCH (flashlight) is not handled here: nlc_torch.on_key_press (signal on_key) owns the press and
+-- polls the key for the hold, because only_allow_movekeys hides key events during its animation.
 -- [HE-PORT]
 [key_bindings.kUSE_MEDKIT] = {
 	long_press = function()
@@ -1068,13 +1059,24 @@ local accepted_keys    = {}
 local key_press_time   = {}
 local long_press_fired = {}
 local last_action_time = {}
+local key_last_seen    = {}
 local ACTION_COOLDOWN  = 200
+-- The engine drops key events (only_allow_movekeys, UI, pause), so a press or release can go missing.
+-- Hold events arrive every frame while the key is down; a longer gap means the tracked press is stale.
+local KEY_STALE_GAP    = 400
+
+local function forget_key( key )
+	accepted_keys[key]    = nil
+	key_press_time[key]   = nil
+	long_press_fired[key] = nil
+end
 
 -- [HE-PORT]
 hud_fx_busy = false
 
 local function is_input_blocked()
 	return level.main_input_receiver() ~= nil
+		or level.only_movekeys_allowed()
 		or device():is_paused()
 		or db.actor:ph_capture()
 		or hud_fx_busy
@@ -1112,6 +1114,8 @@ end
 
 function actor_binder:on_key(key, bind)
 	hold_keys[key] = true
+	forget_key(key)
+	key_last_seen[key] = time_global()
 	--
 	if key == DIK_keys.DIK_NUMPAD0 and is_debug_mode then
 		cmd("demo_record 1")
@@ -1141,6 +1145,11 @@ function actor_binder:on_key(key, bind)
 end
 
 function actor_binder:on_key_hold(key, bind)
+	local now = time_global()
+	if accepted_keys[key] and now - (key_last_seen[key] or now) > KEY_STALE_GAP then
+		forget_key(key)
+	end
+	key_last_seen[key] = now
 	local accepted_bind = accepted_keys[key]
 	local tbl = accepted_bind and key_actions[accepted_bind]
 	if tbl and not long_press_fired[key] and not is_input_blocked() then

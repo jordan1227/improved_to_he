@@ -1030,7 +1030,7 @@ u32 knife_play_motion(CHudItem* self, LPCSTR key, bool mix_in, u32 state, bool r
     const bool secondary = !xr_strcmp(key, "anm_attack2");
     if (!primary && !secondary)
     {
-        if ((!xr_strcmp(key, "anm_idle") || !xr_strcmp(key, "anm_idle_aim")) && knife_return_owner == self)
+        if ((!xr_strcmp(key, "anm_idle") || !xr_strcmp(key, "anm_idle_aim") || !strncmp(key, "anm_idle_moving", 15)) && knife_return_owner == self)
         {
             static constexpr LPCSTR return_keys[3] = {"anm_hit12idle", "anm_hit22idle", "anm_hit32idle"};
             const u32 elapsed = Device.dwTimeGlobal - knife_return_start_ms;
@@ -1039,11 +1039,14 @@ u32 knife_play_motion(CHudItem* self, LPCSTR key, bool mix_in, u32 state, bool r
             knife_return_owner = nullptr;
             if (elapsed >= threshold && elapsed <= knife_return_duration + 400u && index < 3u && knife_combo_has_key(return_keys[index]))
             {
-                const u32 duration = play(return_keys[index]);
+                // NLC: the return clip played while walking can be slowed/sped through wpn_knife_m1_hud/knife_return_moving_speed
+                const bool moving = !strncmp(key, "anm_idle_moving", 15);
+                const float k = (moving && knife_combo_has_key("knife_return_moving_speed")) ? pSettings->r_float("wpn_knife_m1_hud", "knife_return_moving_speed") : 1.f;
+                const u32 duration = self->PlayHUDMotion_base(return_keys[index], mix_in, state, random, speed == 1.f ? k : speed * k);
                 if (duration)
                 {
                     if (knife_return_logged++ < 12u)
-                        Msg("~ [knife_combo] %s -> %s (%u ms)", key, return_keys[index], duration);
+                        Msg("~ [knife_combo] %s -> %s (%u ms, speed x%.2f)", key, return_keys[index], duration, k);
                     return duration;
                 }
             }

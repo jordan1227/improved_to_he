@@ -57,7 +57,13 @@ local TORCH_COLOR_TEMP_MAX              = 1.0    -- Neutral RGB color temp multi
 local TORCH_ANGLE_FACTOR_MIN            = 0.9    -- Min beam angle scaling factor when battery is nearly dead
 local TORCH_ANGLE_FACTOR_MAX            = 1.1    -- Max beam angle scaling factor when battery is fully charged
 local TORCH_UPDATE_TIME_BASE            = 5000   -- Battery condition discharge update interval in milliseconds (5000 ms = 5 seconds)
-local TORCH_DEVICE_ANIM_LOCK            = 800    -- Input lock in ms while the engine plays the held item's device animation (no motion length available to Lua)
+local TORCH_TOUCH_FRACTION              = 0.45   -- Empty-hands animation: fraction of the motion at which the hand reaches the lamp and the light changes (_unarmed_headlamp: arm fully out around frame 13 of 29; tune in-game)
+local TORCH_PENDING_TIMEOUT             = 3000   -- ms after which an unconsumed key press is dropped
+local TORCH_PENDING_GRACE               = 150    -- ms before a held-item device animation that left eDeviceSwitch counts as finished or rejected
+local TORCH_DEBUG_LOG                   = false  -- Log press/contact timing to the game log (set false once the contact point is tuned)
+local TORCH_HOLD_MS                     = 300    -- Key held this long (and still down) = cone switch; keep below the shortest lock_time_end_anm_headlamp_on
+local TORCH_OVERLAY_CUT                 = 0.62   -- Left-hand overlay: fraction of the motion after which it is stopped (before its rest-pose tail)
+local TORCH_SWAY_GAP                    = 1200   -- ms between key presses that start a sway/animation (the sway effector must finish before it is re-added)
 
 -- ===== upgraded torch (from dsh_torch) — TUNE THESE, not verified in-game =====
 local UPGRADED_RANGE_MULT       = 1.5   -- dsh_torch: near 20->30 (1.5x), far 50->70 (1.4x) — using 1.5x for both as a starting point
@@ -87,8 +93,13 @@ local last_spike_time      = 0       -- Timestamp tracking when the last Electra
 local lvl                  = string.lower(level.name())
 local cached_is_aver       = lvl == "aver"
 local cached_is_underground = const.ground_levels and const.ground_levels[lvl] == false or false
-local torch_busy           = false   -- Prevents input spam while torch animation is playing
-torch_switch_guard         = false   -- Prevents infinite recursion when reasserting torch state
+local torch_busy           = false   -- Prevents input spam while the Lua-owned (empty hands) torch animation is playing
+local torch_pending        = nil     -- Key press waiting for its contact point: { id, t, engine, intent, seen }
+local torch_press_id       = 0       -- Counter of accepted key presses
+local torch_anim_gen       = 0       -- Generation counter that invalidates timers of a superseded Lua-owned animation
+local torch_overlay_gen   = 0       -- Generation counter for the left-hand overlay cut timer
+local torch_key_blocked  = false   -- kTORCH is blocked in the engine (see torch_key_gate)
+local torch_last_sway      = -100000 -- time_global of the last camera sway
 local cached_torch_slot
 local cached_torch_obj
 local torch_cache_dirty = true
@@ -177,16 +188,6 @@ end
 
 local click_snd = sound_object("device\\light_on")
 
-local wpn_flags = {
-    [global_flags.eFire]    = true,
-    [global_flags.eFire2]   = true,
-    [global_flags.eReload]  = true,
-    [global_flags.eShowing] = true,
-    [global_flags.eSwitch]  = true,
-    [global_flags.eMisfire] = true,
-    [global_flags.eHiding]  = true,
-}
-
 -- [HE-PORT]
 function torch_apply_state( torch, on_off )
 	torch.disable_switch = false
@@ -201,30 +202,51 @@ function has_weapon_in_hands()
 	return wpn and wpn:is_weapon()
 end
 
--- [HE-PORT]
-function engine_plays_device_anim()
-	return db.actor:active_item() ~= nil
+-- Hud state of an item the engine animates, or nil when it has none.
+function item_hud_state( item )
+    if item and item:is_hud_item() then return item:get_hud_item_state() end
+    return nil
 end
 
--- [HE-PORT]
-function lock_torch_input()
-	torch_busy = true
-	dsh.timeout( TORCH_DEVICE_ANIM_LOCK, function() torch_busy = false end )
+function torch_log( fmt, ... )
+    if TORCH_DEBUG_LOG then log2( "[nlc_torch] " .. fmt, ... ) end
+end
+
+-- Mirrors the key dispatcher's input gate (bind_stalker.script is_input_blocked).
+function torch_input_blocked( lua_owned )
+    if level.main_input_receiver() or device():is_paused() or not db.actor:alive() then return true end
+    if lua_owned then
+        return db.actor:ph_capture() or bind_stalker.hud_fx_busy or false
+    end
+    return false
 end
 
 -- The held-item device animation does not include the scripted camera sway.
 -- Keep the sway separate so both the engine and HUD-motion paths can use it.
 function play_torch_cam_sway()
+	-- re-adding effector 7539 while it still plays cancels it, so a new sway waits for the previous one
+	local now = time_global()
+	if now - torch_last_sway < TORCH_SWAY_GAP then return end
+	torch_last_sway = now
 	level.add_cam_effector("camera_effects\\headlamp_cam.anm", 7539, false, "", 0, false)
 end
 
 -- [HE-PORT]
 function on_before_switch_torch()
-	if nlc_torch_script_switch then return end
-	local _, torch_obj = get_cached_torch()
-	if db.actor:alive() and torch_obj then
-		torch_obj.disable_switch = true
-	end
+    if nlc_torch_script_switch then return end
+    local _, torch_obj = get_cached_torch()
+    if not (db.actor:alive() and torch_obj) then return end
+
+    -- The native toggle stays vetoed: Lua owns the torch state.
+    torch_obj.disable_switch = true
+
+    -- The held item's device animation reached its contact point (lock_time_end_<motion>) and the
+    -- engine asks the torch to switch: this is the moment the hand touches the lamp.
+    local pending = torch_pending
+    if (pending and pending.engine) or item_hud_state( db.actor:active_item() ) == global_flags.eDeviceSwitch then
+        commit_torch_action( "contact" )
+        torch_obj.disable_switch = true   -- torch_apply_state() lowered it; the native toggle that follows must still be vetoed
+    end
 end
 
 function attach(sm)
@@ -233,10 +255,15 @@ function attach(sm)
     sm:subscribe({ signal = "on_late_init_all",  fun = on_late_init_all })
     sm:subscribe({ signal = "on_update",         fun = update })
     sm:subscribe({ signal = "on_before_switch_torch", fun = on_before_switch_torch })
+    sm:subscribe({ signal = "on_key",           fun = on_key_press })
     sm:subscribe({ signal = "on_emp_malfunction", fun = on_emp_malfunction })
     sm:subscribe({ signal = "on_spawn", fun = function()
         refresh_level_cache()
         invalidate_torch_cache()
+        torch_pending = nil
+        torch_busy = false
+        torch_anim_gen = torch_anim_gen + 1
+        torch_key_blocked = false
     end })
     sm:subscribe({ signal = "on_item_to_slot", fun = invalidate_torch_cache })
     sm:subscribe({ signal = "on_item_to_ruck", fun = invalidate_torch_cache })
@@ -285,37 +312,30 @@ function reassert_torch_state()
     local _, t_obj = get_cached_torch()
     if not t_obj then return end
 
-    -- Set guard to true so this enable() call doesn't trigger another reassert
-    torch_switch_guard = true
     if torch_mode == "off" then
         torch_apply_state( t_obj, false )
     else
         torch_apply_state( t_obj, true )
         update_torch_parameters()
     end
-    torch_switch_guard = false
 end
 
-function switch_torch()
-    if level.main_input_receiver() then return end
-    if not db.actor:alive() then return end
-    if torch_busy then return end
-
-    local torch = db.actor:item_in_slot(9)
-    if not (torch and torch:is_torch()) then return end
-    local wpn = db.actor:active_item()
-    if wpn and wpn:is_weapon() and wpn_flags[wpn:get_hud_item_state()] then return end
-
-    click_snd:play(db.actor, 0, sound_object.s2d)
-
+-- Resolve a key press into the next torch state.
+-- "toggle": on <-> off (restoring the last cone) in alt control mode, or the classic cycle.
+-- "cone"  : hold in alt control mode. Flips the remembered cone; the light only follows when it is already on.
+function apply_torch_intent( intent )
     local state = get_value("nlc_torch_state", "off")
+    local last_cone = get_value("nlc_torch_last_cone", "near")
     local next_state
 
-    if TORCH_ALT_CONTROL_MODE then
-        -- toggle: on <-> off, restoring whichever cone was last used
-        next_state = (state == "off") and get_value("nlc_torch_last_cone", "near") or "off"
+    if intent == "cone" and TORCH_ALT_CONTROL_MODE then
+        last_cone = (last_cone == "near") and "far" or "near"
+        set_value("nlc_torch_last_cone", last_cone)
+        if state == "off" then return end   -- light stays off; only the remembered cone changes for next time on
+        next_state = last_cone
+    elseif TORCH_ALT_CONTROL_MODE then
+        next_state = (state == "off") and last_cone or "off"
     else
-        -- classic cycle
         if state == "off" then next_state = "near"
         elseif state == "near" then next_state = "far"
         else next_state = "off" end
@@ -326,55 +346,138 @@ function switch_torch()
     if next_state ~= "off" then
         set_value("nlc_torch_last_cone", next_state)
     end
-
     reassert_torch_state()
-    if engine_plays_device_anim() then
+end
+
+function begin_torch_press( engine_owned, key )
+    torch_press_id = torch_press_id + 1
+    torch_pending = { id = torch_press_id, t = time_global(), engine = engine_owned, intent = "toggle", seen = false, key = key }
+    torch_log( "press id=%s engine=%s", tostring( torch_press_id ), tostring( engine_owned ) )
+    return torch_press_id
+end
+
+-- The hand has reached the lamp: change the light, play the click and consume the pending press.
+function commit_torch_action( why )
+    local pending = torch_pending
+    torch_pending = nil
+    if pending then torch_sample_hold( pending, time_global() ) end
+    local intent = pending and pending.intent or "toggle"
+    torch_log( "commit %s press=%s intent=%s after=%sms", why, tostring( pending and pending.id ), intent, tostring( pending and (time_global() - pending.t) or "?" ) )
+    click_snd:play( db.actor, 0, sound_object.s2d )
+    apply_torch_intent( intent )
+end
+
+-- Key press. The Lua key callback runs before the engine's own handler.
+-- Held item : the engine plays the device animation and reports its contact point through
+--             on_before_switch_torch; the light changes there.
+-- Empty hands: Lua owns the animation and schedules the contact point itself.
+-- The camera sway starts here, on the press, in both cases.
+function on_key_press( key, bind )
+    if bind ~= key_bindings.kTORCH then return end
+    if torch_input_blocked( false ) then return end
+
+    local _, torch_obj = get_cached_torch()
+    if not torch_obj then return end
+
+    local wpn = db.actor:active_item()
+    if wpn then
+        -- Same acceptance rule as the engine: the device animation only starts from idle.
+        -- A left-hand script animation (the watch) or a busy weapon also refuses the torch.
+        if torch_busy or item_hud_state( wpn ) ~= global_flags.eIdle or not game.hud_motion_allowed() then
+            torch_log( "press ignored, held item busy" )
+            return
+        end
+        begin_torch_press( true, key )
         play_torch_cam_sway()
-        lock_torch_input()
-    else
-        play_torch_anim()
+        -- Items without a usable left-hand device motion (knife): the left hand plays the script motion
+        -- over the item's own, which only holds the pose. Started before the engine's handler runs.
+        if torch_left_overlay( wpn ) then
+            play_torch_left_overlay()
+        end
+        return
+    end
+
+    if torch_busy or time_global() - torch_last_sway < TORCH_SWAY_GAP or torch_input_blocked( true ) or not game.hud_motion_allowed() then return end
+    local id = begin_torch_press( false, key )
+    play_torch_anim( function()
+        if torch_pending and torch_pending.id == id then commit_torch_action( "timer" ) end
+    end )
+end
+
+-- Left-hand script motion over a held item. The clip retracts the hand to its unarmed rest pose (low on
+-- screen) at the end, so it is stopped early and the engine blends the hand back to the item instead.
+function play_torch_left_overlay()
+    local len = game.play_hud_motion( 1, "anim_headlamp", "anm_switch", false, 1.1 ) or 0
+    if len > 0 then
+        torch_overlay_gen = torch_overlay_gen + 1
+        local gen = torch_overlay_gen
+        dsh.timeout( math.floor( len * TORCH_OVERLAY_CUT ), function()
+            if gen == torch_overlay_gen then game.stop_hud_motion() end
+        end )
+    end
+    return len
+end
+
+-- hud section key torch_left_overlay = true: the item's device motion leaves the left hand to Lua.
+local left_overlay_cache = {}
+function torch_left_overlay( wpn )
+    local sect = wpn:section()
+    local v = left_overlay_cache[sect]
+    if v == nil then
+        local ini = system_ini()
+        v = false
+        if ini:line_exist( sect, "hud" ) then
+            local hud = ini:r_string( sect, "hud" )
+            v = ini:line_exist( hud, "torch_left_overlay" ) and ini:r_bool( hud, "torch_left_overlay" ) or false
+        end
+        left_overlay_cache[sect] = v
+    end
+    return v
+end
+
+-- The engine owns the held item's device animation and cannot be told to skip it, so while another
+-- script animation holds the left hand (the watch) or the item is busy the torch key is blocked outright.
+function torch_key_gate()
+    local want = db.actor:alive() and db.actor:active_item() ~= nil and not game.hud_motion_allowed()
+    if want == torch_key_blocked then return end
+    torch_key_blocked = want
+    if want then level.block_action( key_bindings.kTORCH ) else level.unblock_action( key_bindings.kTORCH ) end
+end
+
+-- Hold (alt control mode only): switches the cone width regardless of on/off. The key dispatcher cannot
+-- see it (only_allow_movekeys drops key events during the Lua-owned animation), so the physical key is
+-- polled: a key still down TORCH_HOLD_MS after the press turns the pending toggle into a cone switch.
+function torch_sample_hold( pending, now )
+    if not TORCH_ALT_CONTROL_MODE or pending.intent == "cone" or not pending.key then return end
+    if now - pending.t >= TORCH_HOLD_MS and key_state( pending.key ) ~= 0 then
+        pending.intent = "cone"
+        torch_log( "hold: press=%s becomes a cone switch", tostring( pending.id ) )
     end
 end
 
--- Hold: only meaningful in alt control mode. Switches near/far regardless of on/off.
-function torch_switch_cone_hold()
-    if not TORCH_ALT_CONTROL_MODE then return end
-    if level.main_input_receiver() then return end
-    if not db.actor:alive() then return end
-    if torch_busy then return end
+-- Per-frame housekeeping for a held-item press that has not reached its contact point yet.
+function torch_pending_tick( now )
+    local pending = torch_pending
+    if not pending then return end
 
-    local torch = db.actor:item_in_slot(9)
-    if not (torch and torch:is_torch()) then return end
-    local wpn = db.actor:active_item()
-    if wpn and wpn:is_weapon() and wpn_flags[wpn:get_hud_item_state()] then return end
-
-    local state = get_value("nlc_torch_state", "off")
-    local last_cone = get_value("nlc_torch_last_cone", "near")
-    local new_cone = (last_cone == "near") and "far" or "near"
-    set_value("nlc_torch_last_cone", new_cone)
-
-    click_snd:play(db.actor, 0, sound_object.s2d)
-
-    if state == "off" then
-        -- Changing the remembered cone while the torch is off still needs the
-        -- same visual feedback as an active cone switch.
-        if engine_plays_device_anim() then
-            play_torch_cam_sway()
-            lock_torch_input()
-        else
-            play_torch_anim()
-        end
-        return  -- light stays off; only the remembered cone changes for next time on
+    if now - pending.t > TORCH_PENDING_TIMEOUT then
+        torch_log( "press %s dropped, timeout", tostring( pending.id ) )
+        torch_pending = nil
+        return
     end
+    torch_sample_hold( pending, now )
+    if not pending.engine then return end   -- empty hands: the scheduled timer commits
 
-    torch_mode = new_cone
-    set_value("nlc_torch_state", new_cone)
-    reassert_torch_state()
-    if engine_plays_device_anim() then
-        play_torch_cam_sway()
-        lock_torch_input()
-    else
-        play_torch_anim()
+    local state = item_hud_state( db.actor:active_item() )
+    if state == global_flags.eDeviceSwitch then
+        pending.seen = true
+    elseif now - pending.t >= TORCH_PENDING_GRACE then
+        if pending.seen and state == global_flags.eIdle then
+            commit_torch_action( "anim-end" )   -- the animation ended before its lock_time_end_<motion> contact point
+        else
+            torch_log( "press %s dropped, rejected or interrupted", tostring( pending.id ) )
+            torch_pending = nil
+        end
     end
 end
 
@@ -600,6 +703,9 @@ end
 function update()
     local now = time_global()
 
+    torch_pending_tick( now )
+    torch_key_gate()
+
     if now - last_battery_tick >= TORCH_UPDATE_TIME_BASE then
         last_battery_tick = now
         local torch = get_cached_torch()
@@ -615,15 +721,38 @@ function update()
 end
 
 -- ============ misc ============
-function play_torch_anim()
+-- Lua-owned device animation (empty hands, or the left-hand overlay while an item is held).
+-- on_touch runs when the hand reaches the lamp: touch_ms after the start, by default
+-- TORCH_TOUCH_FRACTION of the motion.
+function play_torch_anim( on_touch, touch_ms )
     torch_busy = true
+    torch_anim_gen = torch_anim_gen + 1
+    local gen = torch_anim_gen
     level.only_allow_movekeys(true)
     level.set_actor_allow_ladder(false)
-    
+
     play_torch_cam_sway()
-    local torch_anm_duration = game.play_hud_motion(db.actor:active_item() and 1 or 2, "anim_headlamp", "anm_switch", false, 1.1)
-    
+    local torch_anm_duration
+    if db.actor:active_item() then
+        torch_anm_duration = play_torch_left_overlay()
+    else
+        torch_anm_duration = game.play_hud_motion(2, "anim_headlamp", "anm_switch", false, 1.1)
+    end
+
+    if on_touch then
+        local delay = touch_ms or math.floor( torch_anm_duration * TORCH_TOUCH_FRACTION )
+        torch_log( "anim length=%sms contact in %sms", tostring( torch_anm_duration ), tostring( delay ) )
+        if delay <= 0 then
+            on_touch()
+        else
+            dsh.timeout( delay, function()
+                if gen == torch_anim_gen then on_touch() end
+            end )
+        end
+    end
+
     dsh.timeout(torch_anm_duration + 10, function()
+        if gen ~= torch_anim_gen then return end
         level.only_allow_movekeys(false)
         level.set_actor_allow_ladder(true)
         torch_busy = false
@@ -653,14 +782,16 @@ function torch_handler(flag)
         if flag == "on" then
             local prev_mode = get_value("nlc_torch_prev_mode", "near")
             if prev_mode ~= "off" then
-                play_torch_anim()
-                dsh.timeout(800, function()
+                -- the light comes on when the hand reaches the lamp, like a key press
+                play_torch_anim( function()
+                    local _, t = get_cached_torch()
+                    if not t then return end
                     if prev_mode == "far" then
-                        set_far_mode(torch)
+                        set_far_mode(t)
                     else
-                        set_near_mode(torch)
+                        set_near_mode(t)
                     end
-                end)
+                end )
             end
         end
     end
