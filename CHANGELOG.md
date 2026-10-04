@@ -1,6 +1,636 @@
-<!-- nlc-changelog-head: c8e3df0e2fc08993fcf13c8611baa708d31fdaa1 -->
+<!-- nlc-changelog-head: 14f733907723002506416f992849f0f84cc84b30 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 14f733907723002506416f992849f0f84cc84b30 -->
+## 05.10.26 01:06 МСК - Pseudogiant AI and monster threat rework
+
+Commit: [14f7339](https://github.com/jordan1227/improved_to_he/commit/14f733907723002506416f992849f0f84cc84b30)
+
+### Description
+
+Adds NLC monster movement and melee tuning, target-selection damage weighting, and a major pseudogiant stomp/charge overhaul. Includes speed multipliers, stagger/slow hooks, melee diagnostics, charge wind-up and lock-point rush logic, splash/crowd stomp behavior, and related config updates for giant and monster balance.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/game_relations.ltx
+- M gamedata/config/creatures/m_dog.ltx
+- M gamedata/config/creatures/m_flesh.ltx
+- M gamedata/config/creatures/m_giant.ltx
+- M gamedata/config/creatures/m_pseudodog.ltx
+
+### Other repository files changed
+
+- M .gitignore
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/CharacterPhysicsSupport.cpp
+- M engine/ogsr_engine/xrGame/CustomMonster.cpp
+- M engine/ogsr_engine/xrGame/CustomMonster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_feel.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_misc.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_startup.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation_base.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager_custom.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager_custom.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_movement.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_run_attack.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_run_attack.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_sequencer.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_sequencer.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_threaten.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/group_states/group_state_attack.h
+- M engine/ogsr_engine/xrGame/ai/monsters/group_states/group_state_attack_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/melee_checker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/melee_checker.h
+- M engine/ogsr_engine/xrGame/ai/monsters/melee_checker_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_manager.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.h
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_hit_memory.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_hit_memory.h
+- M engine/ogsr_engine/xrGame/ai/monsters/pseudogigant/pseudo_gigant.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/pseudogigant/pseudo_gigant.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_run_inline.h
+
+<!-- nlc-changelog-commit: 2ad552751f756cf58a2cd4fe1eb3e8b96f2ea5df -->
+## 04.10.26 20:40 МСК - Манифест
+
+Commit: [2ad5527](https://github.com/jordan1227/improved_to_he/commit/2ad552751f756cf58a2cd4fe1eb3e8b96f2ea5df)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: bdce6b3433caa35bf708ec9e0310e3a4401d3fee -->
+## 04.10.26 20:39 МСК - Поправил
+
+Commit: [bdce6b3](https://github.com/jordan1227/improved_to_he/commit/bdce6b3433caa35bf708ec9e0310e3a4401d3fee)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/ui/ui_he_magic_box.script
+
+<!-- nlc-changelog-commit: e6f31479d075af35672dd950b4898b724df8b86d -->
+## 04.10.26 20:19 МСК - Манифест
+
+Commit: [e6f3147](https://github.com/jordan1227/improved_to_he/commit/e6f31479d075af35672dd950b4898b724df8b86d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 98663a0039aa64b1a04f1ece088c6d9d13569e5d -->
+## 04.10.26 20:18 МСК - Иконки артов в контейнере
+
+Commit: [98663a0](https://github.com/jordan1227/improved_to_he/commit/98663a0039aa64b1a04f1ece088c6d9d13569e5d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/string_table_he_magic_box.xml
+- M gamedata/config/text/rus/string_table_he_magic_box.xml
+- M gamedata/config/ui/ui_he_magic_box.xml
+- M gamedata/scripts/ui/ui_he_magic_box.script
+
+<!-- nlc-changelog-commit: 909ea91887ef3571f6efdcec2f256fd287904268 -->
+## 04.10.26 20:17 МСК - Манифест: перенос артов в контейнере
+
+Commit: [909ea91](https://github.com/jordan1227/improved_to_he/commit/909ea91887ef3571f6efdcec2f256fd287904268)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 7073713874e30de3b7938c0445ebc4630b3908e1 -->
+## 04.10.26 19:13 МСК - Перенос артов в контейнере
+
+Commit: [7073713](https://github.com/jordan1227/improved_to_he/commit/7073713874e30de3b7938c0445ebc4630b3908e1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/kotovod/ui_arc_container_menu.script
+
+<!-- nlc-changelog-commit: bbf00feb8d63df569a3d0b8ea23117a1ec7f5af5 -->
+## 04.10.26 19:37 МСК - Манифест
+
+Commit: [bbf00fe](https://github.com/jordan1227/improved_to_he/commit/bbf00feb8d63df569a3d0b8ea23117a1ec7f5af5)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: cc4b2f0ba9440644d597e0152528b660cd17728d -->
+## 04.10.26 19:08 МСК - Удалил функции
+
+Commit: [cc4b2f0](https://github.com/jordan1227/improved_to_he/commit/cc4b2f0ba9440644d597e0152528b660cd17728d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 11e4f480e5a67cab4245059caf4db4ef3fb72874 -->
+## 04.10.26 19:29 МСК - Манифест
+
+Commit: [11e4f48](https://github.com/jordan1227/improved_to_he/commit/11e4f480e5a67cab4245059caf4db4ef3fb72874)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: dd60f38b65d9006a496d1c557bd59ebf526f6084 -->
+## 04.10.26 19:29 МСК - Enhance stealth notice & readiness logic
+
+Commit: [dd60f38](https://github.com/jordan1227/improved_to_he/commit/dd60f38b65d9006a496d1c557bd59ebf526f6084)
+
+### Description
+
+Introduce richer notice/look-back and readiness rules for stealth reactions. Changes include:
+
+- New notice parameters (notice_look_ms, notice_look_rate_k, notice_hold_v, notice_lost_ms, tactical_cover_chance) and faction_rate_k/rate_k_cap.
+- readiness_of() to classify ready/normal/sloppy NPCs; sloppy delays/callouts handling.
+- New flow: look_until/react_until/callout_at, decide_after_look(), start_check() to transition from notice->investigation.
+- wanted_rate_k now factors look multiplier and faction cap.
+- New plans: alert_look (weapon up) and casual_look (sloppy, weapon down) and immediate draw for ready NPCs.
+- Fix: eligible() now checks db.actor:alive().
+- Clear newly added state fields in end_episode and start_shot_reaction; move callout timing to when NPC turns.
+
+Comments reference docs/STEALTH_DESIGN.md for behavior rationale.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+
+### Game files changed
+
+- M gamedata/scripts/sivol/sivol_stealth_suspicion.script
+
+<!-- nlc-changelog-commit: 8065496022adde947a677d08f0234adaac23a2f1 -->
+## 04.10.26 17:38 МСК - Манифест
+
+Commit: [8065496](https://github.com/jordan1227/improved_to_he/commit/8065496022adde947a677d08f0234adaac23a2f1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 534efad309cab477385b5cf62a02a899c7b4b993 -->
+## 04.10.26 17:38 МСК - Фикс ножа, фонарика, часов. Rework torch input and knife return timing
+
+Commit: [534efad](https://github.com/jordan1227/improved_to_he/commit/534efad309cab477385b5cf62a02a899c7b4b993)
+
+### Description
+
+This change overhauls the flashlight input flow: it handles held-item engine device animations, Lua-owned empty-hand presses, hold-to-cone switching, and left-hand overlay timing while guarding stale key events. It also fixes the knife swing-to-idle return so walking idles reuse the return clip, with an optional speed multiplier for wpn_knife_m1, and updates the tied config/mesh/script assets.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_rat.ltx
+- M gamedata/config/weapons/w_knife.ltx
+- M gamedata/meshes/anomaly_weapons/hud_hands_animation/liz_knife_hud_hand_animations.omf
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/he_watch_trim.script
+- M gamedata/scripts/kotovod/nlc_torch.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/fl_hook.cpp
+
+<!-- nlc-changelog-commit: 1041c27636ec4535045d15f3aae60799733d032b -->
+## 04.10.26 16:57 МСК - Содержимое в контейнерах в списочном UI
+
+Commit: [1041c27](https://github.com/jordan1227/improved_to_he/commit/1041c27636ec4535045d15f3aae60799733d032b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/ui/ui_he_magic_box.script
+
+<!-- nlc-changelog-commit: 111273b420315c79465b2a3d8dbc60e0c86cb765 -->
+## 04.10.26 15:44 МСК - Манифест
+
+Commit: [111273b](https://github.com/jordan1227/improved_to_he/commit/111273b420315c79465b2a3d8dbc60e0c86cb765)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: b175f8a54bea332f6d63f6cedcf01fae4214a00d -->
+## 04.10.26 15:40 МСК - Add foliage transparency and flash reveal
+
+Commit: [b175f8a](https://github.com/jordan1227/improved_to_he/commit/b175f8a54bea332f6d63f6cedcf01fae4214a00d)
+
+### Description
+
+Engine nlc-3.589.17: implement stalker foliage transparency and muzzle-flash reveal. Adds material table ([nlc_vis_transparency]) and foliage_k handling, near-range cutoff fade (foliage_near_range / foliage_near_threshold), and an unsuppressed-shot flash_reveal bump with per-observer cooldown. Introduces actor-aware material/transparency APIs (headers/CustomMonster/Feel_Vision/visual_memory_manager), builds mtl table at refresh, logs see-through materials, and exposes nlc_stealth_ray Lua debug call. Updates scripts (cfg, HUD overlay) and docs/changelog/ENGINE_VERSION. Runtime behavior is pending manual tests.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_stalker.ltx
+- M gamedata/scripts/sivol/sivol_stealth_cfg.script
+- M gamedata/scripts/sivol/sivol_stealth_hud.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/CustomMonster.cpp
+- M engine/ogsr_engine/xrGame/CustomMonster.h
+- M engine/ogsr_engine/xrGame/nlc_stealth.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.h
+- M engine/ogsr_engine/xrGame/visual_memory_manager.cpp
+- M engine/ogsr_engine/xrGame/visual_memory_manager.h
+- M engine/ogsr_engine/xr_3da/Feel_Vision.cpp
+- M engine/ogsr_engine/xr_3da/Feel_Vision.h
+
+<!-- nlc-changelog-commit: d7f3b8df381382870a11023266b346be9d683667 -->
+## 04.10.26 12:34 МСК - Удалил варку Семенова ЭБ, тексты тайников
+
+Commit: [d7f3b8d](https://github.com/jordan1227/improved_to_he/commit/d7f3b8df381382870a11023266b346be9d683667)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/dialogs_yantar.xml
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/config/scripts/yan/yan_ecolog_semenov.ltx
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/stable_treasure_manager.xml
+- M gamedata/config/text/rus/string_table_pda_treasure.xml
+- M gamedata/scripts/he_semenov.script
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 9908aef889bc5549c31ce3a71cf1013ab4cbd784 -->
+## 03.10.26 22:59 МСК - Семенов и остальные
+
+Commit: [9908aef](https://github.com/jordan1227/improved_to_he/commit/9908aef889bc5549c31ce3a71cf1013ab4cbd784)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/yan/yan_ecolog_semenov.ltx
+- A gamedata/scripts/ai_additions/rx_karavan.script
+- M gamedata/scripts/he_semenov.script
+- M gamedata/scripts/modules.script
+
+<!-- nlc-changelog-commit: cfc70d6bb67d6b5088ad908be0df603d953aedd1 -->
+## 03.10.26 22:58 МСК - Манифест
+
+Commit: [cfc70d6](https://github.com/jordan1227/improved_to_he/commit/cfc70d6bb67d6b5088ad908be0df603d953aedd1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 94c9cfbab7f522c492c314a0bb2cf3dc7580e4e9 -->
+## 03.10.26 22:57 МСК - ИИ, продолжение. Stealth pass 5: hunts, alerts, and bolt fixes
+
+Commit: [94c9cfb](https://github.com/jordan1227/improved_to_he/commit/94c9cfbab7f522c492c314a0bb2cf3dc7580e4e9)
+
+### Description
+
+This patch completes the stealth pass by restoring actor-only vision tuning, fixing NPC/NPC sight and pack sharing gates, and adding monster hunt/search behavior, wall muffling, and bolt-triggered reactions. It also adds camp alert logic, corpse/ricochet investigation rules, deferred body alarms, runtime HUD debugging, and queued main-thread processing for near misses and bolt contacts to keep AI memory writes off the physics thread.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_bloodsucker.ltx
+- M gamedata/config/creatures/m_boar.ltx
+- M gamedata/config/creatures/m_chimera.ltx
+- M gamedata/config/creatures/m_dog.ltx
+- M gamedata/config/creatures/m_pseudodog.ltx
+- M gamedata/config/creatures/m_snork.ltx
+- M gamedata/config/creatures/m_stalker.ltx
+- M gamedata/config/misc/gulag_agroprom.ltx
+- M gamedata/config/text/eng/string_news_mikelik.xml
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/string_news_mikelik.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+- M gamedata/config/ui/ui_custom_msgs.xml
+- M gamedata/config/ui/ui_custom_msgs_16.xml
+- M gamedata/config/ui/ui_mm_loading_screen.xml
+- M gamedata/scripts/ai_additions/rx_gl.script
+- M gamedata/scripts/dsh_enemies.script
+- M gamedata/scripts/news/news_main.script
+- M gamedata/scripts/news/news_mikelik.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- A gamedata/scripts/sivol/sivol_stealth_alert.script
+- A gamedata/scripts/sivol/sivol_stealth_bolt.script
+- M gamedata/scripts/sivol/sivol_stealth_cfg.script
+- A gamedata/scripts/sivol/sivol_stealth_hud.script
+- M gamedata/scripts/sivol/sivol_stealth_suspicion.script
+- M gamedata/scripts/xr/xr_conditions.script
+- M gamedata/scripts/xr/xr_danger.script
+- M gamedata/scripts/xr/xr_effects.script
+- M gamedata/scripts/xrs/xrs_battle_ai.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Level.cpp
+- M engine/ogsr_engine/xrGame/Level_Bullet_Manager.cpp
+- M engine/ogsr_engine/xrGame/Missile.cpp
+- M engine/ogsr_engine/xrGame/Missile.h
+- M engine/ogsr_engine/xrGame/action_planner_inline.h
+- M engine/ogsr_engine/xrGame/agent_enemy_manager.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_feel.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.h
+- M engine/ogsr_engine/xrGame/sound_memory_manager.cpp
+- M engine/ogsr_engine/xrGame/visual_memory_manager.cpp
+- M engine/ogsr_engine/xrGame/visual_memory_manager.h
+- M engine/ogsr_engine/xrGame/visual_memory_params.cpp
+- M engine/ogsr_engine/xrGame/visual_memory_params.h
+
+<!-- nlc-changelog-commit: 51538f5bd2520d68aca520badcff8eebe533c999 -->
+## 03.10.26 22:52 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [51538f5](https://github.com/jordan1227/improved_to_he/commit/51538f5bd2520d68aca520badcff8eebe533c999)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_bar.xml
+- M gamedata/config/gameplay/sak_dalogs_lim_atp.xml
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/scripts/xr/xr_sound.script
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 225088b6c1ef4ca1b2a55208a5fa8d81e72173bd -->
+## 03.10.26 19:55 МСК - Фикс вылета ERROR: ILLEGAL PLAY SOUND!!!  Skip unknown sound themes gracefully
+
+Commit: [225088b](https://github.com/jordan1227/improved_to_he/commit/225088b6c1ef4ca1b2a55208a5fa8d81e72173bd)
+
+### Description
+
+xr_sound.play_sound no longer aborts when a sound theme is missing from the theme table. Undefined themes are now skipped with a warning log instead of terminating playback, preventing crashes from invalid references while preserving valid sound selection.
+
+### Game files changed
+
+- M gamedata/scripts/xr/xr_sound.script
+
+<!-- nlc-changelog-commit: a5cdb7e528bc46ed9399abe0d026636e72271ae9 -->
+## 03.10.26 19:28 МСК - Манифест
+
+Commit: [a5cdb7e](https://github.com/jordan1227/improved_to_he/commit/a5cdb7e528bc46ed9399abe0d026636e72271ae9)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 5b32024788ffaa38bf942b9f33181c81d36b5600 -->
+## 03.10.26 19:28 МСК - Фиксы капсул еще раз Fix capsule artifact container compatibility
+
+Commit: [5b32024](https://github.com/jordan1227/improved_to_he/commit/5b32024788ffaa38bf942b9f33181c81d36b5600)
+
+### Description
+
+This patch fixes legacy artefact container data by restoring old section-based entries, resolving tiered capsule payloads, and writing capsule shells into arc containers. It also updates treasure and static box generation to use the new capsule-aware container encoding without breaking existing saves.
+
+### Game files changed
+
+- M gamedata/scripts/doc.script
+- M gamedata/scripts/kotovod/arc_radiation.script
+- M gamedata/scripts/nlc_capsules.script
+- M gamedata/scripts/oxyr.script
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 0b8e0db8262a58066eaf633ac3165f0764cf0777 -->
+## 03.10.26 19:24 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [0b8e0db](https://github.com/jordan1227/improved_to_he/commit/0b8e0db8262a58066eaf633ac3165f0764cf0777)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/config/gameplay/sak_dalogs_agr_dv.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 14470300fb678790efd1c9565c3b49144570e1c3 -->
+## 03.10.26 19:24 МСК - Fix bandit dialog scene trigger
+
+Commit: [1447030](https://github.com/jordan1227/improved_to_he/commit/14470300fb678790efd1c9565c3b49144570e1c3)
+
+### Description
+
+Moves the val_dram_scene_end info grant to the start branch of the Agr Dv dialogue so the scene-end state is set when the interaction begins. This prevents the final branch from granting the info after the dialogue has already concluded and keeps the flow aligned with the intended trigger.
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_agr_dv.xml
+
+<!-- nlc-changelog-commit: ca4d424fa8d32e71fe38851932f93303a545d9de -->
+## 03.10.26 16:41 МСК - Манифест
+
+Commit: [ca4d424](https://github.com/jordan1227/improved_to_he/commit/ca4d424fa8d32e71fe38851932f93303a545d9de)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 95d6bea1539655e2227c757d78daed0329b66ee0 -->
+## 03.10.26 16:40 МСК - Стелс не трогает перемирия
+
+Commit: [95d6bea](https://github.com/jordan1227/improved_to_he/commit/95d6bea1539655e2227c757d78daed0329b66ee0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/dsh_enemies.script
+- M gamedata/scripts/sivol/sivol_stealth_suspicion.script
+
+<!-- nlc-changelog-commit: c293406a4517ee84f818cf30499ac4b291117bdc -->
+## 03.10.26 16:32 МСК - Манифест
+
+Commit: [c293406](https://github.com/jordan1227/improved_to_he/commit/c293406a4517ee84f818cf30499ac4b291117bdc)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 5fdba94ebc92d04ef498a512cdb17f8afe1b68e5 -->
+## 03.10.26 16:15 МСК - Рашпиль берет со слотов
+
+Commit: [5fdba94](https://github.com/jordan1227/improved_to_he/commit/5fdba94ebc92d04ef498a512cdb17f8afe1b68e5)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/kotovod.script
+
+<!-- nlc-changelog-commit: 08191c2508acb660884e011e50db3a541cd814f1 -->
+## 03.10.26 00:09 МСК - Манифест
+
+Commit: [08191c2](https://github.com/jordan1227/improved_to_he/commit/08191c2508acb660884e011e50db3a541cd814f1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: c8e3df0e2fc08993fcf13c8611baa708d31fdaa1 -->
 ## 03.10.26 00:03 МСК - ИИ, стелс. Add stealth AI suspicion and perception pass
