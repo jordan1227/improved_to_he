@@ -77,6 +77,30 @@ story_static = true          -- story NPCs (a story id) never leave their place:
 no_move_names = {}           -- these stay in place (look, duck); e.g. no_move_names.bar_bar_guard = true
 ignore_names = {}            -- these get no stealth reactions at all
 corpse_novice_false_alarm = 0.25 -- novice: chance to check an old body of his own side
+-- notice (docs/STEALTH_DESIGN.md 20.16): every temperament first turns to the point with the weapon up
+-- (danger stance = the danger vision profile, about 2.4x the calm rate), then decides by temperament:
+-- lazy looks a little longer, curious goes to check, careful crouches and watches then checks,
+-- tactical watches then checks (cover first only when a glimpse was lost)
+notice_look_ms = { 1500, 3000 }  -- look-back time after the rank reaction delay
+notice_look_rate_k = 1           -- extra detection factor while looking back (the stance already boosts)
+notice_hold_v = 0.15             -- the notice goes on while the value holds at least this
+notice_lost_ms = 1500            -- tactical: no sight for this long after a glimpse = take cover first
+tactical_cover_chance = 0        -- tactical: chance of cover first without a lost glimpse
+-- faction perceptiveness: detection rate factor by community (the engine adds rank on top)
+faction_rate_k = { military = 1.2, monolith = 1.2, killer = 1.2, sniper = 1.2, dolg = 1.1, ecolog = 0.9, bandit = 0.85 }
+rate_k_cap = 1.8                 -- cap of faction x (on edge or camp alert) x look-back
+-- readiness on a notice (docs/STEALTH_DESIGN.md 20.17): ready NPCs start drawing the weapon at once (only the
+-- turn waits for the rank delay); normal ones turn with the weapon coming up; sloppy ones react slower and
+-- look with the weapon still on the back (calm stance = calm vision), drawing only when they go to check
+-- or the notice repeats. The notice callout plays when the NPC turns (sloppy: a second later).
+ready_communities = { military = true, monolith = true, killer = true, sniper = true } -- any rank
+ready_senior_communities = { dolg = true }  -- veterans and masters
+ready_senior_tempers = { careful = true, tactical = true } -- veterans and masters of any community
+sloppy_novice_communities = { bandit = true } -- novices, any temperament
+sloppy_novice_tempers = { stalker = { lazy = true, curious = true } } -- novices of these communities with these temperaments
+sloppy_lazy = true               -- any lazy NPC (not ready) is sloppy
+sloppy_delay_k = 1.5             -- sloppy: reaction delay factor
+sloppy_callout_ms = 1000         -- sloppy: the callout this long after the turn
 
 -- seconds; {min, max}
 timing = {
@@ -311,7 +335,7 @@ local function eligible(npc, st, now)
     end
     st.elig_until = now + eligible_ms
     local test = test_ids[npc:id()]
-    local ok = npc:alive() and db.actor ~= nil
+    local ok = npc:alive() and db.actor ~= nil and db.actor:alive()
         and not EXCLUDED_COMMUNITIES[npc:character_community()] and not ignore_names[npc:name()]
         and (test or npc:relation(db.actor) == game_object.enemy)
         and not (xr_wounded.is_wounded and xr_wounded.is_wounded(npc))
@@ -326,6 +350,23 @@ local function eligible(npc, st, now)
     end
     st.elig = ok and true or false
     return st.elig
+end
+
+-- "ready", "normal" or "sloppy" for this episode's temperament
+local function readiness_of(npc, temper)
+    local comm = npc:character_community()
+    local rank = ranks.get_obj_rank_name(npc)
+    local sen = rank == "veteran" or rank == "master"
+    if ready_communities[comm] or (sen and (ready_senior_communities[comm] or ready_senior_tempers[temper])) then
+        return "ready"
+    end
+    if rank == "novice" and (sloppy_novice_communities[comm] or (sloppy_novice_tempers[comm] and sloppy_novice_tempers[comm][temper])) then
+        return "sloppy"
+    end
+    if sloppy_lazy and temper == "lazy" then
+        return "sloppy"
+    end
+    return "normal"
 end
 
 local function end_episode(st, npc, now, why)
@@ -344,6 +385,8 @@ local function end_episode(st, npc, now, why)
         st.corpse_id = nil
     end
     st.scene_until, st.scene_point, st.duck_until, st.flank_at, st.shot_at = nil, nil, nil, nil, nil
+    st.look_until, st.decided, st.check_after, st.post = nil, nil, nil, nil
+    st.ready, st.callout_at = nil, nil
     st.stage = 0
     st.plan = nil
     st.phase = nil
@@ -533,6 +576,8 @@ local function start_shot_reaction(npc, st, now, point, extra_floor, why, forced
         r = "lookback"
     end
     st.stage, st.phase, st.external, st.done = 1, nil, nil, nil
+    st.look_until, st.decided, st.check_after = nil, nil, nil
+    st.ready, st.callout_at = nil, nil
     st.point = point
     st.plan = r
     st.cover_lvid, st.in_cover = nil, nil
@@ -632,7 +677,47 @@ local function wanted_rate_k(npc, st, now, edge)
         st.alert_k_until = now + 2000
         st.alert_k = sivol_stealth_alert and sivol_stealth_alert.rate_k_of(npc) or 1
     end
-    return math.max(edge and rate_k_suspicious or 1, st.alert_k or 1)
+    local k = math.max(edge and rate_k_suspicious or 1, st.alert_k or 1)
+    if st.stage == 1 and st.look_until and now < st.look_until then
+        k = k * notice_look_rate_k
+    end
+    k = k * (faction_rate_k[npc:character_community()] or 1)
+    return math.min(k, rate_k_cap)
+end
+
+-- notice -> investigation of the noticed point
+local function start_check(npc, st, now, why)
+    st.stage, st.phase = 2, nil
+    st.look_until, st.check_after = nil, nil
+    local res = plan_investigation(npc, st, now)
+    say("t=%d obs=%s stage=investigate why=%s temper=%s plan=%s (%s) d=%.1f point=%s", now, npc:name(), why, st.temper, st.plan, res,
+        npc:position():distance_to(st.point), vec_str(st.point))
+    return 2
+end
+
+-- after the look-back: what the temperament does next (returns the new stage)
+local function decide_after_look(npc, st, now, age)
+    local t = st.temper
+    if t == "lazy" then
+        st.plan = st.ready == "sloppy" and "casual_look" or "look"
+    elseif t == "curious" then
+        if not st.post then
+            return start_check(npc, st, now, "notice_curious")
+        end
+        st.plan = "look"
+    elseif t == "careful" then
+        st.plan = "duck"
+        st.check_after = not st.post
+    else
+        local lost = (st.kind or 0) == 0 and age and age > notice_lost_ms
+        if not st.post and (lost or math.random() < tactical_cover_chance) then
+            st.plan = "cover"
+            st.cover_lvid, st.in_cover = nil, nil
+        end
+        st.check_after = not st.post
+    end
+    say("t=%d obs=%s notice next plan=%s check=%s age=%s", now, npc:name(), st.plan, tostring(st.check_after), tostring(age))
+    return 1
 end
 
 local function update(npc, st)
@@ -697,22 +782,43 @@ local function update(npc, st)
                 end
             else
                 st.stage = 1
-                local post = LOOK_ONLY_SCHEMES[db.storage[id].active_scheme or ""] or not may_move_local(npc)
-                st.plan = (st.temper == "tactical" and not post) and "cover" or "look"
+                st.post = LOOK_ONLY_SCHEMES[db.storage[id].active_scheme or ""] or not may_move_local(npc)
+                -- look back first (20.16), weapon by readiness (20.17); the temperament decides after the look
+                st.ready = readiness_of(npc, st.temper)
+                st.plan = st.ready == "sloppy" and "casual_look" or "alert_look"
                 st.phase = nil
-                st.stage_until = now + rand_range(timing[st.temper].notice) * 1000
-                say("t=%d obs=%s stage=notice v=%.2f temper=%s plan=%s kind=%s d=%.1f point=%s", now, npc:name(), v, st.temper, st.plan,
-                    KIND_NAMES[st.kind or 0] or "?", npc:position():distance_to(st.point), vec_str(st.point))
-                callout(npc, st, st.point)
+                st.decided, st.check_after = nil, nil
+                local delay = rand_range(react_delay[ranks.get_obj_rank_name(npc)] or react_delay.experienced) * 1000
+                if st.ready == "sloppy" then
+                    delay = delay * sloppy_delay_k
+                end
+                st.react_until = now + delay
+                st.look_until = st.react_until + rand_range(notice_look_ms)
+                st.stage_until = math.max(st.look_until, now + rand_range(timing[st.temper].notice) * 1000)
+                st.callout_at = st.react_until + (st.ready == "sloppy" and sloppy_callout_ms or 0) -- when he has turned
+                say("t=%d obs=%s stage=notice v=%.2f temper=%s ready=%s plan=%s kind=%s d=%.1f point=%s", now, npc:name(), v, st.temper, st.ready,
+                    st.plan, KIND_NAMES[st.kind or 0] or "?", npc:position():distance_to(st.point), vec_str(st.point))
             end
         end
         stage = st.stage
     end
 
     if stage > 0 then
+        -- the notice callout once the NPC has turned (20.17)
+        if st.callout_at and now >= st.callout_at then
+            st.callout_at = nil
+            if not st.shot_at and not st.external then -- also when the notice already became a check
+                callout(npc, st, st.point)
+            end
+        end
         -- keep the notice going while the value stays up
-        if stage == 1 and not st.external and not st.shot_at and v >= notice_v then
+        if stage == 1 and not st.external and not st.shot_at and v >= notice_hold_v then
             st.stage_until = math.max(st.stage_until or 0, now + 1000)
+        end
+        -- look-back over: the temperament decides
+        if stage == 1 and st.look_until and not st.decided and not st.shot_at and not st.external and now >= st.look_until then
+            st.decided = true
+            stage = decide_after_look(npc, st, now, age)
         end
         -- flank: after holding cover, move on the shooter point
         if stage == 1 and st.plan == "flank" and st.flank_at and now >= st.flank_at then
@@ -723,7 +829,9 @@ local function update(npc, st)
             say("t=%d obs=%s stage=investigate why=flank plan=%s (%s) point=%s", now, npc:name(), st.plan, why, vec_str(st.point))
             stage = 2
         end
-        if st.done or now >= (st.stage_until or 0) then
+        if stage == 1 and st.check_after and not st.done and not st.shot_at and not st.external and now >= (st.stage_until or 0) then
+            stage = start_check(npc, st, now, "after_notice")
+        elseif st.done or now >= (st.stage_until or 0) then
             end_episode(st, npc, now, st.done and "done" or "timeout")
             st.shot_at = nil
             stage = 0
@@ -855,7 +963,11 @@ function action_suspicion:execute()
     local now = time_global()
     local plan = st.plan
     if st.react_until and now < st.react_until then
-        return -- not reacted yet
+        -- not reacted yet; a ready NPC already draws the weapon (20.17)
+        if plan == "alert_look" and st.ready == "ready" then
+            self:enter("ready_draw", function() state_mgr.set_state(npc, "threat") end)
+        end
+        return
     end
 
     if plan == "duck" then
@@ -868,6 +980,14 @@ function action_suspicion:execute()
         else
             self:enter("lookback_look", function() look_at(npc, "guard", st.point) end)
         end
+
+    elseif plan == "alert_look" then
+        -- notice: turn to the point with the weapon up (danger stance)
+        self:enter("alert_look", function() look_at(npc, "threat", st.point) end)
+
+    elseif plan == "casual_look" then
+        -- sloppy notice: turn and look, the weapon stays where it is (calm stance)
+        self:enter("casual_look", function() look_at(npc, npc:weapon_unstrapped() and "guard" or "wait_na", st.point) end)
 
     elseif plan == "look" or plan == "watch" then
         self:enter(plan, function() look_at(npc, "guard", st.point) end)
