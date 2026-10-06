@@ -174,6 +174,7 @@ void CConsole::Initialize()
 	m_cmd_history.reserve(m_cmd_history_max + 2);
 	m_cmd_history.clear();
 	reset_cmd_history_idx();
+	load_cmd_history();
 
 	m_tips.reserve(MAX_TIPS_COUNT + 1);
     m_tips.clear();

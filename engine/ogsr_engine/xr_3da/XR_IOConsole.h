@@ -207,9 +207,13 @@ protected:
 
 protected:
 	void add_cmd_history(shared_str const& str);
+	void push_cmd_history(shared_str const& str);
+	void load_cmd_history();
+	void save_cmd_history();
 	void next_cmd_history_idx();
 	void prev_cmd_history_idx();
 	void reset_cmd_history_idx();
+	bool is_cmd_history_selected();
 
 	void next_selected_tip();
 	void check_next_selected_tip();

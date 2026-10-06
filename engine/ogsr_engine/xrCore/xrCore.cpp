@@ -133,7 +133,7 @@ const char* xrCore::GetEngineVersion()
     if (strlen(APPVEYOR_BUILD_VERSION))
         std::snprintf(buff, sizeof(buff), APPVEYOR_BUILD_VERSION " (%s) from repo: [" APPVEYOR_REPO_NAME "]", GetBuildConfiguration());
     else
-        std::snprintf(buff, sizeof(buff), "[OGSR Engine %s (nlc-3.589.25, OGSR main 2021123) (%sbuild: " __DATE__ " " __TIME__ ")]", GetBuildConfiguration(), "DEV ");
+        std::snprintf(buff, sizeof(buff), "[OGSR Engine %s (nlc-3.589.26, OGSR main 2021123) (%sbuild: " __DATE__ " " __TIME__ ")]", GetBuildConfiguration(), "DEV ");
     return buff;
 }
 
