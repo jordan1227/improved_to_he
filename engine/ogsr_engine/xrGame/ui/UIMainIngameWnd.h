@@ -77,6 +77,7 @@ protected:
     CUIStatic UISleepIcon;
     CUIStatic UIInvincibleIcon;
     CUIStatic UIThirstIcon;
+    CUIStatic UIPainIcon; // NLC
     //	CUIStatic			UISleepIcon;
     //	CUIStatic			UIArtefactIcon;
 
@@ -98,6 +99,7 @@ public:
         ewiSleep,
         ewiInvincible,
         ewiThirst,
+        ewiPain, // NLC: body health pain
         //		ewiArtefact,
     };
 

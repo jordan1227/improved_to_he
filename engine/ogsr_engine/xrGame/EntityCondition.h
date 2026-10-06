@@ -29,6 +29,8 @@ public:
 
 class CEntityCondition : public CEntityConditionSimple, public CHitImmunity
 {
+    friend class CActorBodyHealth; // NLC
+
 private:
     bool m_use_limping_state;
     CEntityAlive* m_object;

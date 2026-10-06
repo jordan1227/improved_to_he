@@ -14,6 +14,7 @@
 #include "UI.h"
 #include "string_table.h"
 #include "actorcondition.h"
+#include "nlc_body_health.h"
 #include "game_cl_base.h"
 #include "WeaponMagazined.h"
 #include "CharacterPhysicsSupport.h"
@@ -398,6 +399,8 @@ void CActor::g_cl_CheckControls(u32 mstate_wf, Fvector& vControlAccel, float& Ju
                     else
                         scale *= m_fWalk_StrafeFactor;
                 }
+
+                scale *= conditions().body().LegsSpeedK(!!bAccelerated, !!(mstate_real & mcSprint)); // NLC: legs health
 
                 vControlAccel.mul(scale);
                 cam_eff_factor = scale;

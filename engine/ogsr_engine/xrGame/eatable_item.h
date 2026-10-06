@@ -19,6 +19,7 @@ public:
     bool use_for_every_item{};
     bool eat_portions_influence{};
     bool disable_use{};
+    bool effects_zeroed{}; // NLC: zero_effects() was called, a script applies the item instead
 
 public:
     CEatableItem();

@@ -64,7 +64,7 @@ static CUIMainIngameWnd* GetMainIngameWindow()
     return nullptr;
 }
 
-static CUIStatic* warn_icon_list[9]{};
+static CUIStatic* warn_icon_list[10]{};
 
 // alpet: для возможности внешнего контроля иконок (используется в NLC6 вместо типичных индикаторов). Никак не влияет на игру для остальных модов.
 static bool external_icon_ctrl = false;
@@ -113,6 +113,7 @@ CUIMainIngameWnd::CUIMainIngameWnd()
     warn_icon_list[ewiSleep] = &UISleepIcon;
     warn_icon_list[ewiInvincible] = &UIInvincibleIcon;
     warn_icon_list[ewiThirst] = &UIThirstIcon;
+    warn_icon_list[ewiPain] = &UIPainIcon; // NLC
 }
 
 #include "UIProgressShape.h"
@@ -224,6 +225,13 @@ void CUIMainIngameWnd::Init()
     {
         xml_init.InitStatic(uiXml, "thirst_static", 0, &UIThirstIcon);
         UIThirstIcon.Show(false);
+    }
+
+    // NLC: pain icon of the body health system, driven by scripts (setup_game_icon 9)
+    if (uiXml.NavigateToNode("pain_static", 0))
+    {
+        xml_init.InitStatic(uiXml, "pain_static", 0, &UIPainIcon);
+        UIPainIcon.Show(false);
     }
 
     constexpr const char* warningStrings[] = {
@@ -548,6 +556,10 @@ void CUIMainIngameWnd::SetWarningIconColor(EWarningIcons icon, const u32 cl)
             break;
     case ewiThirst:
         SetWarningIconColor(&UIThirstIcon, cl);
+        if (bMagicFlag)
+            break;
+    case ewiPain: // NLC
+        SetWarningIconColor(&UIPainIcon, cl);
         if (bMagicFlag)
             break;
     case ewiPsyHealth:

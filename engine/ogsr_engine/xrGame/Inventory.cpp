@@ -941,7 +941,10 @@ CInventoryItem* CInventory::get_object_by_id(ALife::_OBJECT_ID tObjectID)
 #include "game_object_space.h"
 #include "script_callback_ex.h"
 #include "script_game_object.h"
-bool CInventory::Eat(PIItem pIItem)
+#include "ActorCondition.h"
+#include "nlc_body_health.h"
+
+bool CInventory::Eat(PIItem pIItem, u8 use_part)
 {
     R_ASSERT(pIItem->m_pCurrentInventory == this);
     //устанаовить съедобна ли вещь
@@ -951,12 +954,19 @@ bool CInventory::Eat(PIItem pIItem)
     CEntityAlive* entity_alive = smart_cast<CEntityAlive*>(m_pOwner);
     R_ASSERT(entity_alive);
 
+    // NLC: the chosen body part stays readable from Lua until the use callbacks are done
+    CActorBodyHealth* body = Actor()->m_inventory == this ? &Actor()->conditions().body() : nullptr;
+    if (body)
+        body->SetUsePart(use_part);
+
     if (Actor()->m_inventory == this)
         Actor()->callback(GameObject::eOnBeforeUseItem)((smart_cast<CGameObject*>(pIItem))->lua_game_object());
 
     if (pItemToEat->disable_use)
     {
         pItemToEat->disable_use = false;
+        if (body)
+            body->SetUsePart(body_part::automatic);
         return true;
     }
 
@@ -964,6 +974,8 @@ bool CInventory::Eat(PIItem pIItem)
 
     if (Actor()->m_inventory == this)
         Actor()->callback(GameObject::eUseObject)((smart_cast<CGameObject*>(pIItem))->lua_game_object());
+    if (body)
+        body->SetUsePart(body_part::automatic);
 
     if (pItemToEat->Empty() && entity_alive->Local())
     {

@@ -11,10 +11,12 @@ template <typename _return_type>
 class CScriptCallbackEx;
 
 class CActor;
+class CActorBodyHealth; // NLC
 
 class CActorCondition : public CEntityCondition
 {
     friend class CScriptActor;
+    friend class CActorBodyHealth; // NLC
 
 public:
     typedef CEntityCondition inherited;
@@ -39,6 +41,7 @@ public:
 
 private:
     CActor* m_object;
+    CActorBodyHealth* m_body{}; // NLC
     void UpdateTutorialThresholds();
     void UpdateSatiety();
     void UpdateThirst();
@@ -49,6 +52,8 @@ public:
 
     virtual void LoadCondition(LPCSTR section);
     virtual void reinit();
+
+    CActorBodyHealth& body() const { return *m_body; } // NLC
 
     virtual CWound* ConditionHit(SHit* pHDS);
     virtual void UpdateCondition();

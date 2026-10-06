@@ -16,6 +16,7 @@
 #include "weapon.h"
 #include "PDA.h"
 #include "ai/monsters/BaseMonster/base_monster.h"
+#include "nlc_body_health.h"
 
 #define MAX_SATIETY 1.0f
 #define START_SATIETY 0.5f
@@ -56,9 +57,15 @@ CActorCondition::CActorCondition(CActor* object) : inherited(object)
 
     monsters_feel_touch = xr_new<Feel::Touch>();
     monsters_aura_radius = 0.f;
+
+    m_body = xr_new<CActorBodyHealth>(this); // NLC
 }
 
-CActorCondition::~CActorCondition(void) { xr_delete(monsters_feel_touch); }
+CActorCondition::~CActorCondition(void)
+{
+    xr_delete(monsters_feel_touch);
+    xr_delete(m_body); // NLC
+}
 
 void CActorCondition::LoadCondition(LPCSTR entity_section)
 {
@@ -135,6 +142,8 @@ void CActorCondition::LoadCondition(LPCSTR entity_section)
     }
 
     m_MaxWalkWeight = pSettings->r_float(section, "max_walk_weight");
+
+    m_body->Load(section); // NLC
 }
 
 //вычисление параметров с ходом времени
@@ -231,6 +240,8 @@ void CActorCondition::UpdateCondition()
         UpdateThirst();
 
     inherited::UpdateCondition();
+
+    m_body->Update(m_fDeltaTime); // NLC
 
     UpdateTutorialThresholds();
 
@@ -422,7 +433,17 @@ CWound* CActorCondition::ConditionHit(SHit* pHDS)
 {
     if (GodMode())
         return NULL;
-    return inherited::ConditionHit(pHDS);
+
+    // NLC: health lost by a hit goes to the body part, the total is their average
+    const float delta_before = m_fDeltaHealth;
+    CWound* wound = inherited::ConditionHit(pHDS);
+    if (m_body->Enabled())
+    {
+        const float lost = delta_before - m_fDeltaHealth;
+        m_fDeltaHealth = delta_before;
+        m_body->OnHit(pHDS, lost);
+    }
+    return wound;
 }
 
 void CActorCondition::PowerHit(float power, bool apply_outfit)
@@ -538,6 +559,7 @@ void CActorCondition::save(NET_Packet& output_packet)
     if (m_gamedata_flag_tmp > m_gamedata_flag)
         m_gamedata_flag = m_gamedata_flag_tmp;
     save_data(m_gamedata_flag, output_packet);
+    m_body->save(output_packet); // NLC
 }
 
 #include "alife_registry_wrappers.h"
@@ -555,6 +577,7 @@ void CActorCondition::load(IReader& input_packet)
         load_data(m_gamedata_flag, input_packet);
         Msg("Gamedata flags: [%f]", m_gamedata_flag);
     }
+    m_body->load(input_packet); // NLC
 }
 
 void CActorCondition::reinit()
@@ -566,6 +589,7 @@ void CActorCondition::reinit()
     m_fSatiety = 1.f;
     m_fAlcohol = 0.f;
     m_fThirst = 1.f;
+    m_body->Reinit(); // NLC
 }
 
 void CActorCondition::ChangeAlcohol(float value) { m_fAlcohol += value; }

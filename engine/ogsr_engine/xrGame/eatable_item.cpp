@@ -14,6 +14,9 @@
 #include "EntityCondition.h"
 #include "InventoryOwner.h"
 #include "xrServer_Objects_ALife_Items.h"
+#include "Actor.h"
+#include "ActorCondition.h"
+#include "nlc_body_health.h"
 
 CEatableItem::CEatableItem()
 {
@@ -115,11 +118,24 @@ void CEatableItem::UseBy(CEntityAlive* entity_alive)
     R_ASSERT(IO);
     R_ASSERT(m_pCurrentInventory == IO->m_inventory);
     R_ASSERT(object().H_Parent()->ID() == entity_alive->ID());
-    entity_alive->conditions().ChangeHealth(m_fHealthInfluence);
+    // NLC: items with target_parts heal the chosen body part
+    CActor* actor = smart_cast<CActor*>(entity_alive);
+    CActorBodyHealth* body = actor && actor->conditions().body().IsBodyItem(object().cNameSect().c_str()) ? &actor->conditions().body() : nullptr;
+    // after zero_effects() the script applies the item itself (body_health.use_item)
+    if (body && !effects_zeroed)
+    {
+        const u8 part = body->ResolveUsePart(object().cNameSect().c_str(), body->UsePart());
+        body->SetUsePart(part);
+        body->UseItem(object().cNameSect().c_str(), part);
+    }
+    else if (!body)
+    {
+        entity_alive->conditions().ChangeHealth(m_fHealthInfluence);
+        entity_alive->conditions().ChangeBleeding(m_fWoundsHealPerc);
+    }
     entity_alive->conditions().ChangePower(m_fPowerInfluence);
     entity_alive->conditions().ChangeSatiety(m_fSatietyInfluence);
     entity_alive->conditions().ChangeRadiation(m_fRadiationInfluence);
-    entity_alive->conditions().ChangeBleeding(m_fWoundsHealPerc);
     entity_alive->conditions().ChangePsyHealth(m_fPsyHealthInfluence);
     entity_alive->conditions().ChangeThirst(m_fThirstInfluence);
 
@@ -143,6 +159,7 @@ void CEatableItem::UseBy(CEntityAlive* entity_alive)
 }
 void CEatableItem::ZeroAllEffects()
 {
+    effects_zeroed = true; // NLC
     m_fHealthInfluence = 0.f;
     m_fPowerInfluence = 0.f;
     m_fSatietyInfluence = 0.f;

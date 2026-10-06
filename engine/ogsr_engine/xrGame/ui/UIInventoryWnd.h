@@ -19,6 +19,8 @@ class CUI3tButton;
 class CUIDragDropListEx;
 class CUICellItem;
 
+class CUIBodyHealthWnd; // NLC
+
 class CUIInventoryWnd : public CUIDialogWnd
 {
 private:
@@ -137,6 +139,8 @@ protected:
 
     //информация о персонаже
     CUIOutfitInfo UIOutfitInfo;
+    CUIBodyHealthWnd* m_pUIBodyHealth{}; // NLC
+    void AddBodyPartUseItems(bool& b_show); // NLC
     CUIItemInfo UIItemInfo;
 
     CInventory* m_pInv;
@@ -153,7 +157,7 @@ protected:
     void SendEvent_Item2Belt(PIItem pItem);
     void SendEvent_Item2Ruck(PIItem pItem);
     void SendEvent_Item_Drop(PIItem pItem);
-    void SendEvent_Item_Eat(PIItem pItem);
+    void SendEvent_Item_Eat(PIItem pItem, u8 body_part = 0xFF); // NLC: body_part
     void SendEvent_ActivateSlot(PIItem pItem);
 
     //---------------------------------------------------------------------
@@ -162,7 +166,7 @@ protected:
     void ActivatePropertiesBox();
 
     void DropCurrentItem(bool b_all);
-    void EatItem(PIItem itm);
+    void EatItem(PIItem itm, u8 body_part = 0xFF); // NLC: body_part
 
     bool ToSlot(CUICellItem* itm, u8 _slot_id, bool force_place);
     bool ToSlot(CUICellItem* itm, bool force_place);

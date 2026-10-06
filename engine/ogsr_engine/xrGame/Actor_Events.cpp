@@ -136,7 +136,7 @@ void CActor::OnEvent(NET_Packet& P, u16 type)
         case GEG_PLAYER_ITEM2SLOT: inventory().Slot(smart_cast<CInventoryItem*>(O)); break;
         case GEG_PLAYER_ITEM2BELT: inventory().Belt(smart_cast<CInventoryItem*>(O)); break;
         case GEG_PLAYER_ITEM2RUCK: inventory().Ruck(smart_cast<CInventoryItem*>(O)); break;
-        case GEG_PLAYER_ITEM_EAT: inventory().Eat(smart_cast<CInventoryItem*>(O)); break;
+        case GEG_PLAYER_ITEM_EAT: inventory().Eat(smart_cast<CInventoryItem*>(O), P.r_eof() ? u8(0xFF) : P.r_u8()); break; // NLC: body part
         case GEG_PLAYER_ACTIVATEARTEFACT: {
             CArtefact* pArtefact = smart_cast<CArtefact*>(O);
             pArtefact->ActivateArtefact();

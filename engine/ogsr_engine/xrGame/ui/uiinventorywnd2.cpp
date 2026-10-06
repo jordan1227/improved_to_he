@@ -402,8 +402,17 @@ void CUIInventoryWnd::AddItemToBag(PIItem pItem)
     m_pUIBagList->SetItem(itm);
 }
 
+#include "UIBodyHealthWnd.h"
+#include "../ActorCondition.h"
+
 bool CUIInventoryWnd::OnItemStartDrag(CUICellItem* itm)
 {
+    // NLC: let the body window show which parts the item can be used on
+    if (m_pUIBodyHealth)
+    {
+        PIItem item = (PIItem)itm->m_pData;
+        m_pUIBodyHealth->SetDragSection(item && Actor()->conditions().body().IsBodyItem(item->object().cNameSect().c_str()) ? item->object().cNameSect().c_str() : nullptr);
+    }
     return false; // default behaviour
 }
 
@@ -430,6 +439,19 @@ bool CUIInventoryWnd::AllowPutInSlot(CUICellItem* itm, u8 slot)
 
 bool CUIInventoryWnd::OnItemDrop(CUICellItem* itm)
 {
+    // NLC: medical item dropped onto a body part
+    if (m_pUIBodyHealth)
+    {
+        m_pUIBodyHealth->SetDragSection(nullptr);
+        PIItem item = (PIItem)itm->m_pData;
+        const u8 part = m_pUIBodyHealth->PartUnderCursor();
+        if (item && part != body_part::none && Actor()->conditions().body().ItemTargetsPart(item->object().cNameSect().c_str(), part))
+        {
+            EatItem(item, part);
+            return true;
+        }
+    }
+
     auto old_owner = itm->OwnerList();
     auto new_owner = CUIDragDropListEx::m_drag_item->BackList();
     if (old_owner == new_owner || !old_owner || !new_owner)

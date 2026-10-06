@@ -25,19 +25,81 @@
 #include "../script_engine.h"
 #include "../script_game_object.h"
 
-void CUIInventoryWnd::EatItem(PIItem itm)
+void CUIInventoryWnd::EatItem(PIItem itm, u8 body_part)
 {
     SetCurrentItem(NULL);
     if (!itm->Useful())
         return;
 
-    SendEvent_Item_Eat(itm);
+    SendEvent_Item_Eat(itm, body_part);
 
     PlaySnd(eInvItemUse);
 }
 
 #include "../Medkit.h"
 #include "../Antirad.h"
+#include "../ActorCondition.h"
+#include "../nlc_body_health.h"
+#include "UIListBoxItem.h"
+
+// NLC: A.R.E.A. part rows: "use on head (70%) {0.12} [20%]", colored by the part state
+void CUIInventoryWnd::AddBodyPartUseItems(bool& b_show)
+{
+    const CActorBodyHealth& B = Actor()->conditions().body();
+    LPCSTR sect = CurrentIItem()->object().cNameSect().c_str();
+    const u8 mask = B.ItemHealMask(sect);
+    const bool only_damaged = READ_IF_EXISTS(pSettings, r_bool, sect, "show_when_damaged", false);
+
+    for (u8 p = body_part::head; p < body_part::count; ++p)
+    {
+        if (!B.ItemTargetsPart(sect, p))
+            continue;
+        const float hp = B.PartHealth(p) * 100.f;
+        const float bleed = B.Bleeding(p);
+        const float frac = B.Fracture(p) * 100.f;
+        if (only_damaged && fis_zero(B.PartDamage(p, mask)))
+            continue;
+
+        string32 key;
+        xr_sprintf(key, "st_use_on_%s", body_part::name(p));
+        string256 txt;
+        xr_strcpy(txt, CStringTable().translate(key).c_str());
+        string32 tmp;
+        if (mask & body_part::heal_health)
+        {
+            xr_sprintf(tmp, hp < 99.5f ? " (%.0f%%)" : " (*)", hp);
+            xr_strcat(txt, tmp);
+        }
+        if (mask & body_part::heal_bleeding)
+        {
+            xr_sprintf(tmp, bleed > 0.f ? " {%.2f}" : " {*}", bleed);
+            xr_strcat(txt, tmp);
+        }
+        if (mask & body_part::heal_fracture)
+        {
+            xr_sprintf(tmp, frac > 0.f ? " [%.0f%%]" : " [*]", frac);
+            xr_strcat(txt, tmp);
+        }
+
+        u32 color = 0xFF00FF00;
+        if (hp < 25.f || frac > 50.f || bleed > 1.f)
+            color = 0xFFFF0000;
+        else if (hp < 50.f || frac > 25.f || bleed > 0.5f)
+            color = 0xFFFFA500;
+        else if (hp < 75.f || frac > 0.f || bleed > 0.01f)
+            color = 0xFFFFFF00;
+
+        CUIListBoxItem* row = UIPropertiesBox.AddItemEx(txt, (void*)(__int64)p, INVENTORY_EAT_BODY_PART);
+        row->SetTextColor(color, color);
+        b_show = true;
+    }
+
+    if (B.ItemTargetsPart(sect, body_part::all))
+    {
+        UIPropertiesBox.AddItemEx("st_use_on_all", (void*)(__int64)body_part::all, INVENTORY_EAT_BODY_PART);
+        b_show = true;
+    }
+}
 void CUIInventoryWnd::ActivatePropertiesBox()
 {
     // Флаг-признак для невлючения пункта контекстного меню: Dreess Outfit, если костюм уже надет
@@ -177,6 +239,13 @@ void CUIInventoryWnd::ActivatePropertiesBox()
     if (pEatableItem && !pEatableItem->use_for_every_item)
         use_count = 1;
 
+    // NLC: "use on <body part>" rows replace the plain use row
+    if (pEatableItem && Actor()->conditions().body().IsBodyItem(CurrentIItem()->object().cNameSect().c_str()))
+    {
+        AddBodyPartUseItems(b_show);
+        use_count = 0;
+    }
+
     for (u32 i = 0; i < use_count; ++i)
     {
         PIItem cur = i == 0 ? CurrentIItem() : (PIItem)cell->Child(i - 1)->m_pData;
@@ -289,6 +358,7 @@ void CUIInventoryWnd::ProcessPropertiesBoxClicked()
             EatItem(item ? item : CurrentIItem());
         }
         break;
+        case INVENTORY_EAT_BODY_PART: EatItem(CurrentIItem(), u8((__int64)UIPropertiesBox.GetClickedItem()->GetData())); break; // NLC
         case INVENTORY_HANDLE_BATT_TORCH: {
             auto item = (PIItem)UIPropertiesBox.GetClickedItem()->GetData();
             if (!item)

@@ -22,6 +22,7 @@ public:
 
     bool AddItem(const char* str, void* pData = NULL, u32 tag_value = 0);
     bool AddItem_script(const char* str) { return AddItem(str); };
+    CUIListBoxItem* AddItemEx(const char* str, void* pData, u32 tag_value); // NLC: returns the row (to color it)
     u32 GetItemsCount() { return m_UIListWnd.GetSize(); };
     void RemoveItemByTAG(u32 tag_value);
     void RemoveAll();

@@ -59,6 +59,14 @@ bool CUIPropertiesBox::AddItem(const char* str, void* pData, u32 tag_value)
 
     return true;
 }
+CUIListBoxItem* CUIPropertiesBox::AddItemEx(const char* str, void* pData, u32 tag_value)
+{
+    CUIListBoxItem* itm = m_UIListWnd.AddItem(str);
+    itm->SetTAG(tag_value);
+    itm->SetData(pData);
+    return itm;
+}
+
 void CUIPropertiesBox::RemoveItemByTAG(u32 tag) { m_UIListWnd.RemoveWindow(m_UIListWnd.GetItemByTAG(tag)); }
 
 void CUIPropertiesBox::RemoveAll() { m_UIListWnd.Clear(); }

@@ -27,6 +27,7 @@ using namespace InventoryUtilities;
 #include "../game_cl_base.h"
 #include "../ActorCondition.h"
 #include "UIDragDropListEx.h"
+#include "UIBodyHealthWnd.h"
 #include "UIOutfitSlot.h"
 #include "UI3tButton.h"
 #include <format>
@@ -106,6 +107,15 @@ void CUIInventoryWnd::Init()
 
     AttachChild(&UIOutfitInfo);
     UIOutfitInfo.InitFromXml(uiXml);
+
+    // NLC: body parts window
+    if (uiXml.NavigateToNode("body_health", 0))
+    {
+        m_pUIBodyHealth = xr_new<CUIBodyHealthWnd>();
+        m_pUIBodyHealth->SetAutoDelete(true);
+        AttachChild(m_pUIBodyHealth);
+        m_pUIBodyHealth->InitFromXml(uiXml, "body_health");
+    }
     //.	xml_init.InitStatic					(uiXml, "outfit_info_window",0, &UIOutfitInfo);
 
     //Элементы автоматического добавления
@@ -485,12 +495,13 @@ void CUIInventoryWnd::SendEvent_Item_Drop(PIItem pItem)
     m_b_need_update_stats = true;
 };
 
-void CUIInventoryWnd::SendEvent_Item_Eat(PIItem pItem)
+void CUIInventoryWnd::SendEvent_Item_Eat(PIItem pItem, u8 body_part)
 {
     R_ASSERT(pItem->m_pCurrentInventory == m_pInv);
     NET_Packet P;
     pItem->object().u_EventGen(P, GEG_PLAYER_ITEM_EAT, pItem->object().H_Parent()->ID());
     P.w_u16(pItem->object().ID());
+    P.w_u8(body_part); // NLC
     pItem->object().u_EventSend(P);
 };
 
