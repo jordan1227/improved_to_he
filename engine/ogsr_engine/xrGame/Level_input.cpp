@@ -110,6 +110,88 @@ extern bool g_block_all_except_movement;
 
 static u32 pause_cooldown{};
 
+// NLC: controller input scramble groups (see CLevel::nlc_scramble_input)
+static const EGameActions nlc_scramble_group[2][4] = {{kFWD, kBACK, kL_STRAFE, kR_STRAFE}, {kWPN_FIRE, kWPN_ZOOM, kWPN_FIRE, kWPN_ZOOM}};
+static const u32 nlc_scramble_size[2] = {4, 2};
+
+static int nlc_scramble_group_of(EGameActions action)
+{
+    for (int g = 0; g < 2; ++g)
+        for (u32 i = 0; i < nlc_scramble_size[g]; ++i)
+            if (nlc_scramble_group[g][i] == action)
+                return g;
+    return -1;
+}
+
+void CLevel::nlc_scramble_input(int group, u32 duration_ms)
+{
+    if (group < 0 || group > 1)
+        return;
+    const u32 n = nlc_scramble_size[group];
+    u32 perm[4] = {0, 1, 2, 3};
+    // a random derangement: no action keeps its own key
+    for (bool fixed = true; fixed;)
+    {
+        for (u32 i = n - 1; i > 0; --i)
+            std::swap(perm[i], perm[::Random.randI(int(i + 1))]);
+        fixed = false;
+        for (u32 i = 0; i < n; ++i)
+            fixed = fixed || perm[i] == i;
+    }
+    m_nlc_remap[group].clear();
+    for (u32 i = 0; i < n; ++i)
+        m_nlc_remap[group][nlc_scramble_group[group][i]] = nlc_scramble_group[group][perm[i]];
+    m_nlc_remap_until[group] = Device.dwTimeGlobal + duration_ms;
+}
+
+void CLevel::nlc_clear_input_scramble()
+{
+    m_nlc_remap_until[0] = m_nlc_remap_until[1] = 0;
+}
+
+EGameActions CLevel::nlc_remap_current(EGameActions action) const
+{
+    const int g = nlc_scramble_group_of(action);
+    if (g < 0 || Device.dwTimeGlobal >= m_nlc_remap_until[g])
+        return action;
+    const auto it = m_nlc_remap[g].find(action);
+    return it != m_nlc_remap[g].end() ? it->second : action;
+}
+
+EGameActions CLevel::nlc_remap_press(int key, EGameActions action)
+{
+    if (nlc_scramble_group_of(action) < 0)
+        return action;
+    const EGameActions mapped = nlc_remap_current(action);
+    m_nlc_pressed[key] = mapped;
+    return mapped;
+}
+
+EGameActions CLevel::nlc_remap_hold(int key, EGameActions action)
+{
+    const int g = nlc_scramble_group_of(action);
+    if (g < 0)
+        return action;
+    // movement follows the scramble at once; fire/zoom stay what they were pressed as (paired start/stop)
+    if (g == 1)
+    {
+        const auto it = m_nlc_pressed.find(key);
+        if (it != m_nlc_pressed.end())
+            return it->second;
+    }
+    return nlc_remap_current(action);
+}
+
+EGameActions CLevel::nlc_remap_release(int key, EGameActions action)
+{
+    const auto it = m_nlc_pressed.find(key);
+    if (it == m_nlc_pressed.end())
+        return action;
+    const EGameActions pressed = it->second;
+    m_nlc_pressed.erase(it);
+    return pressed;
+}
+
 void CLevel::IR_OnKeyboardPress(int key)
 {
     if (CImGuiEditor::Get().Editor_KeyPress(key))
@@ -122,6 +204,13 @@ void CLevel::IR_OnKeyboardPress(int key)
 
     if (m_blocked_actions.find(_curr) != m_blocked_actions.end())
         return; // Real Wolf. 14.10.2014
+
+    _curr = nlc_remap_press(key, _curr); // NLC: controller input scramble
+    if (m_blocked_actions.find(_curr) != m_blocked_actions.end())
+    {
+        m_nlc_pressed.erase(key); // a key scrambled onto a blocked action is blocked too
+        return;
+    }
 
     const bool b_ui_exist = (Has_HUD() && HUD().GetUI());
 
@@ -180,10 +269,19 @@ void CLevel::IR_OnKeyboardPress(int key)
 
     if (Actor())
     {
+        m_nlc_consume_key = false; // NLC
         Actor()->callback(GameObject::eOnKeyPress)(key, _curr);
 
         if (g_bDisableAllInput)
             return;
+
+        // NLC: a script consumed this press (controller fire reaction: the shot must not leave first)
+        if (m_nlc_consume_key)
+        {
+            m_nlc_consume_key = false;
+            if (!HUD().GetUI()->MainInputReceiver()) // never swallow a click meant for an open window
+                return;
+        }
     }
 
     if (b_ui_exist && HUD().GetUI()->IR_OnKeyboardPress(key))
@@ -358,7 +456,12 @@ void CLevel::IR_OnKeyboardRelease(int key)
 
     EGameActions _curr = get_binded_action(key);
 
-   if (m_blocked_actions.find(_curr) != m_blocked_actions.end())
+    // NLC: controller input scramble. A key released as the action it was pressed as; that release (the
+    // CMD_STOP of fire / zoom) is never blocked, or the weapon would keep firing
+    const bool nlc_paired = m_nlc_pressed.find(key) != m_nlc_pressed.end();
+    _curr = nlc_remap_release(key, _curr);
+
+   if (!nlc_paired && m_blocked_actions.find(_curr) != m_blocked_actions.end())
         return; // Real Wolf. 14.10.2014
 
     if (g_block_all_except_movement)
@@ -404,6 +507,8 @@ void CLevel::IR_OnKeyboardHold(int key)
 
     if (m_blocked_actions.find(_curr) != m_blocked_actions.end())
         return; // Real Wolf. 14.10.2014
+
+    _curr = nlc_remap_hold(key, _curr); // NLC: controller input scramble
 
     if (g_block_all_except_movement)
     {

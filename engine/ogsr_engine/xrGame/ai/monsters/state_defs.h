@@ -111,6 +111,7 @@ enum EMonsterState
 
     eStateControlled_Follow_Wait = eStateControlled | 3,
     eStateControlled_Follow_WalkToObject = eStateControlled | 4,
+    eStateControlled_Move = eStateControlled | 5, // NLC: controller thrall flank/guard point
 
     // -------------------------------------------------------------
 
@@ -258,6 +259,7 @@ inline xr_string make_xrstr(EMonsterState state)
     case eStateControlled_Attack: return "Controlled_Attack";
     case eStateControlled_Follow_Wait: return "Controlled_Follow_Wait";
     case eStateControlled_Follow_WalkToObject: return "Controlled_Follow_WalkToObject";
+    case eStateControlled_Move: return "Controlled_Move";
     case eStateThreaten: return "Threaten";
     case eStateFindEnemy: return "FindEnemy";
     case eStateFindEnemy_Run: return "FindEnemy_Run";

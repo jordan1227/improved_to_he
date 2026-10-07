@@ -98,7 +98,7 @@ public:
         m_threaten_time = time;
     }
 
-    void critical_wound(LPCSTR anim);
+    void critical_wound(LPCSTR anim, float speed_k = 1.f); // NLC: speed_k
 
     void remove_links(CObject* object);
 

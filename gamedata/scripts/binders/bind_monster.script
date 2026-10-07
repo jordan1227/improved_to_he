@@ -231,10 +231,201 @@ local function controller_fire_reaction_chance( normalized_dist, dwell_ms, zoom_
 	return chance, weapon_threat, zoom_mult, precision_mult, distance_factor, dwell_factor
 end
 
+-- Mirage decoys (nlc_ctrl_decoy) are illusions: no script kit, phantoms or fire reactions.
+-- Per-variant mind kit (m_controller.ltx nlc_ctrl_kit_*): which effects a controller works on the actor,
+-- how often, and how its engine phase (cover loop) scales them. Defaults reproduce the pre-kit behavior.
+local controller_kits = {}
+local CONTROLLER_KIT_ABILITIES = { "movement", "fire_binds", "stamina", "mask", "camera", "forced_fire",
+	"misdirection", "phantom_pain", "herd_call" }
+local CONTROLLER_KIT_OFF_BY_DEFAULT = { misdirection = true, phantom_pain = true, herd_call = true }
+local CONTROLLER_KIT_PHASES = { "off", "hide", "camp", "peek", "aim", "hold" }
+
+local function kit_read( ini, section, key, default )
+	if not ini:line_exist( section, key ) then return default end
+	if type( default ) == "boolean" then return ini:r_bool( section, key ) end
+	if type( default ) == "number" then return ini:r_float( section, key ) end
+	return ini:r_string( section, key )
+end
+
+local function controller_kit( controller )
+	local section = controller:section()
+	local kit = controller_kits[ section ]
+	if kit then return kit end
+	local ini = system_ini()
+	local strong = controller_is_strong( controller )
+	kit = {
+		range = kit_read( ini, section, "nlc_ctrl_kit_range", strong and 100 or 80 ),
+		chance_k = kit_read( ini, section, "nlc_ctrl_kit_chance_k", 1.0 ),
+		sensed = kit_read( ini, section, "nlc_ctrl_kit_sensed", true ),
+		target = kit_read( ini, section, "nlc_ctrl_kit_target", true ),
+		phantoms = kit_read( ini, section, "nlc_ctrl_kit_phantoms", true ),
+		phantom_rate = kit_read( ini, section, "nlc_ctrl_kit_phantom_rate", 0.4 ),
+		real_phantoms = kit_read( ini, section, "nlc_ctrl_kit_real_phantoms", strong and 0.65 or 0.5 ),
+		warn = kit_read( ini, section, "nlc_ctrl_kit_warn", false ),
+		warn_ms = kit_read( ini, section, "nlc_ctrl_kit_warn_ms", 700 ),
+		herd_min = kit_read( ini, section, "nlc_ctrl_kit_herd_min", 2 ),
+		movement_ms = kit_read( ini, section, "nlc_ctrl_kit_movement_ms", 4000 ),
+		fire_ms = kit_read( ini, section, "nlc_ctrl_kit_fire_ms", 2500 ),
+		retaliate = kit_read( ini, section, "nlc_ctrl_kit_retaliate", 0 ),
+		retaliate_cooldown = kit_read( ini, section, "nlc_ctrl_kit_retaliate_cooldown", 2500 ),
+		retaliate_scramble = kit_read( ini, section, "nlc_ctrl_kit_retaliate_scramble", 0 ),
+		inert_max = kit_read( ini, section, "nlc_ctrl_kit_inert_max", 0 ),
+		inert_range = kit_read( ini, section, "nlc_ctrl_kit_inert_range", 30 ),
+		w = {}, phase = {}, phantom_phase = {},
+	}
+	for _, a in ipairs( CONTROLLER_KIT_ABILITIES ) do
+		kit.w[ a ] = kit_read( ini, section, "nlc_ctrl_kit_" .. a, CONTROLLER_KIT_OFF_BY_DEFAULT[ a ] and 0 or 1 )
+	end
+	for _, ph in ipairs( CONTROLLER_KIT_PHASES ) do
+		kit.phase[ ph ] = kit_read( ini, section, "nlc_ctrl_kit_phase_" .. ph, 1 )
+		kit.phantom_phase[ ph ] = kit_read( ini, section, "nlc_ctrl_kit_phantom_phase_" .. ph, 1 )
+	end
+	controller_kits[ section ] = kit
+	return kit
+end
+
+-- engine ranged phase (nlc-3.589.28+): off, hide, camp, peek, aim, hold
+local function controller_phase( controller )
+	local ok, phase = pcall( function()
+		local cm = controller:get_custom_monster()
+		return cm and cm.nlc_controller_phase and cm:nlc_controller_phase()
+	end )
+	return ok and phase and phase ~= "" and phase or "off"
+end
+
+local function controller_thrall_count( controller )
+	local ok, ids = pcall( function()
+		local cm = controller:get_custom_monster()
+		return cm and cm.nlc_controller_thralls and cm:nlc_controller_thralls()
+	end )
+	if not ok or not ids or ids == "" then return 0 end
+	local n = 1
+	for _ in string.gmatch( ids, "," ) do n = n + 1 end
+	return n
+end
+
+-- sounds come from archives: only names that exist are used (checked once)
+local controller_sound_exists = {}
+local function controller_pick_sound( names )
+	local found = {}
+	for _, name in ipairs( names ) do
+		if controller_sound_exists[ name ] == nil then
+			controller_sound_exists[ name ] = getFS():exist( "$game_sounds$", name .. ".ogg" ) and true or false
+		end
+		if controller_sound_exists[ name ] then table.insert( found, name ) end
+	end
+	return #found > 0 and found[ lua_random( 1, #found ) ] or nil
+end
+
+local MISDIRECTION_SOUNDS = {
+	"monsters\\controller\\controller_idle_0", "monsters\\controller\\controller_idle_1",
+	"monsters\\controller\\controller_idle_2", "monsters\\controller\\controller_attack_0",
+	"monsters\\controller\\controller_attack_1", "monsters\\controller\\controller_control1",
+}
+local WARNING_SOUNDS = { "monsters\\controller\\controller_control1" }
+
+-- misdirection: the controller's voice from a wrong direction (90-180 degrees off, 8-18 m from the actor)
+local function controller_misdirection( controller, actor )
+	local name = controller_pick_sound( MISDIRECTION_SOUNDS )
+	if not name then return false end
+	local cp, ap = controller:position(), actor:position()
+	local dir = vector():set( cp.x - ap.x, 0, cp.z - ap.z )
+	if dir:magnitude() < 0.1 then dir = vector():set( 1, 0, 0 ) end
+	dir:normalize()
+	local fake = vector_rotate_y( dir, ( lua_random() < 0.5 and -1 or 1 ) * ( 90 + 90 * lua_random() ) )
+	local dist = 8 + 10 * lua_random()
+	xr_sound.get_safe_sound_object( name ):play_at_pos( actor, vector():set( ap.x + fake.x * dist, ap.y + 1, ap.z + fake.z * dist ), 0 )
+	return true
+end
+
+-- phantom pain: a hit from behind that does (next to) nothing - the stock hit feedback sells it
+local function controller_phantom_pain( controller, actor )
+	local h = hit()
+	h.type = hit.wound
+	h.power = 0.0001
+	h.impulse = 0
+	h.draftsman = controller
+	h.direction = actor:direction() -- travelling forward: it came from behind
+	actor:hit( h )
+	return true
+end
+
+local function controller_herd_call( controller )
+	local ok, n = pcall( function() return controller:get_custom_monster():nlc_controller_herd_call( 6000 ) end )
+	if not ok or not n or n <= 0 then return 0 end
+	local name = controller_pick_sound( WARNING_SOUNDS )
+	if name then xr_sound.get_safe_sound_object( name ):play_at_pos( controller, controller:position(), 0 ) end
+	return n
+end
+
+-- optional telegraph (nlc_ctrl_kit_warn, off by default): a whisper, then the effect after warn_ms
+local function controller_run_effect( kit, controller_id, effect )
+	if not kit.warn then
+		effect()
+		return
+	end
+	local name = controller_pick_sound( WARNING_SOUNDS )
+	if name and db.actor then
+		local snd = xr_sound.get_safe_sound_object( name )
+		snd.volume = 0.5
+		snd:play_at_pos( db.actor, vector():set( 0, 0, 0 ), 0, sound_object.s2d )
+	end
+	dsh.timeout( kit.warn_ms, function()
+		local c = level.object_by_id( controller_id )
+		if c and c:alive() and db.actor and db.actor:alive() then effect() end
+	end )
+end
+
+-- Heavy head: camera inertia rises as the actor gets closer to a hunting controller (params.script owns
+-- cam_inert and takes the strongest controller's value as a floor; 0.05 steps keep console writes rare)
+local controller_inert = {} -- controller id -> inertia it imposes
+local controller_inert_pushed = 0
+local function controller_set_inert( id, value )
+	value = value and math.floor( value * 20 + 0.5 ) / 20 or 0
+	local now = time_global()
+	if ( controller_inert[ id ] or 0 ) == value and now < controller_inert_pushed + 2000 then return end
+	controller_inert_pushed = now
+	controller_inert[ id ] = value > 0 and value or nil -- refreshed every update: the floor expires otherwise
+	local strongest = 0
+	for _, v in pairs( controller_inert ) do strongest = math.max( strongest, v ) end
+	if params and params.set_inert_floor then params.set_inert_floor( "controller", strongest ) end
+end
+
+-- phantom pain is rare by design: one at most per minute across all controllers
+local controller_phantom_pain_ready = 0
+
+local controller_decoy_sections = {}
+local function controller_is_decoy( controller )
+	local section = controller:section()
+	local cached = controller_decoy_sections[ section ]
+	if cached == nil then
+		cached = system_ini():line_exist( section, "nlc_ctrl_decoy" ) and system_ini():r_bool( section, "nlc_ctrl_decoy" ) or false
+		controller_decoy_sections[ section ] = cached
+	end
+	return cached
+end
+
 local function controller_reticle_on( controller )
 	local ok, rq = pcall( function() return level.get_current_ray_query() end )
 	local target = ok and rq and rq.object
 	return target and target:id() == controller:id() or false
+end
+
+-- The delayed shot must clearly miss the controller: after a small yank its body (plus weapon
+-- spread) can still be on the line of fire although the reticle ray no longer hits it.
+local function controller_aim_clear( controller )
+	local dev = device()
+	if not dev or not dev.cam_pos or not dev.cam_dir then return false end
+	local target = vector():set( controller:position() )
+	target.y = target.y + 1.1
+	local to_target = vector():sub( target, dev.cam_pos )
+	local dist = to_target:magnitude()
+	if dist < 0.5 then return false end
+	to_target:normalize()
+	local dir = vector():set( dev.cam_dir ):normalize()
+	local angle = math.acos( clamp( dir:dotproduct( to_target ), -1, 1 ) )
+	-- body half-width about 0.6 m plus 4 degrees for spread
+	return angle > math.atan( 0.6 / dist ) + math.rad( 4 )
 end
 
 local function observe_controller_phantoms( controller_id )
@@ -364,6 +555,43 @@ end
 -- sparse and irregular to measure a 60-140 ms flick. sivol_weapon calls this
 -- from its existing 16 ms camera update; the 750 ms ability decisions remain
 -- owned by the monster binder below.
+-- Retaliation: shooting a controller is answered right away, whatever it is doing (cover loop phase,
+-- cooldowns of the normal kit): the aim is wrenched off it and, sometimes, the fire keys swap for a moment.
+-- Chance nlc_ctrl_kit_retaliate x psy protection factor, once per nlc_ctrl_kit_retaliate_cooldown.
+local controller_retaliate_ready = {}
+local function controller_retaliate( controller, kit )
+	local actor = db.actor
+	if not actor or not actor:alive() or kit.retaliate <= 0 then return end
+	local id = controller:id()
+	local now = time_global()
+	if now < ( controller_retaliate_ready[ id ] or 0 ) then return end
+	if actor:position():distance_to( controller:position() ) > kit.range * 1.5 then return end
+	controller_retaliate_ready[ id ] = now + kit.retaliate_cooldown
+	local defense = get_psy_defense_context()
+	local mask = get_cached_mask_k()
+	local chance = clamp( kit.retaliate * defense.manipulation_factor, 0, 0.95 )
+	if lua_random() >= chance then
+		diagnostic_log( "controller_retaliate_" .. id, 0, "controller id=%d retaliate result=miss chance=%.3f", id, chance )
+		return
+	end
+	local ads = wpn_params.get_zie_obj() ~= nil
+	local strength = ( ads and 1.6 or 1.0 ) * mask
+	local dh = ( lua_random() < 0.5 and -1 or 1 ) * ( 0.25 + 0.2 * lua_random() ) * strength
+	local dp = ( 0.5 - lua_random() ) * 0.3 * strength
+	if sivol_weapon and sivol_weapon.start_psy_divert then
+		sivol_weapon.start_psy_divert( dh, dp, 220 )
+	end
+	if sivol_weapon and sivol_weapon.release_manual_hold_breath then
+		sivol_weapon.release_manual_hold_breath( "controller retaliation", false, true, true )
+	end
+	local scrambled = lua_random() < kit.retaliate_scramble * defense.manipulation_factor
+	if scrambled then sak.rebind_fire( 1500 ) end
+	controller_play_psy_trigger_sound()
+	diagnostic_log( "controller_retaliate_" .. id, 0,
+		"controller id=%d retaliate result=proc chance=%.3f ads=%s dh=%.3f dp=%.3f fire_scramble=%s",
+		id, chance, tostring( ads ), dh, dp, tostring( scrambled ) )
+end
+
 function update_controller_reticle_pressure()
 	local actor = db.actor
 	if not actor or not actor:alive() then return end
@@ -554,9 +782,9 @@ function on_actor_fire_pressed( key )
 			then
 				return
 			end
-			if controller_reticle_on( live_controller ) then
+			if controller_reticle_on( live_controller ) or not controller_aim_clear( live_controller ) then
 				diagnostic_log( "controller_fire_reaction_" .. controller_id, 0,
-					"controller id=%d fire-reaction delayed_fire=cancelled reason=reticle_still_on_controller", controller_id )
+					"controller id=%d fire-reaction delayed_fire=cancelled reason=aim_still_on_controller", controller_id )
 				return
 			end
 			wpn_params.start_fire( item_id )
@@ -909,31 +1137,31 @@ function generic_object_binder:update( delta )
 		end
 	end
 
-	if classid == CLID_CONTROLLER and sfobj:alive() and actor:alive() then
+	if classid == CLID_CONTROLLER and sfobj:alive() and actor:alive() and not controller_is_decoy( sfobj ) then
 		local now = time_global()
 		local easy_mult = game_difficulty == 0 and 0.9 or 1.0
 		local range_mult = game_difficulty == 0 and 0.8 or 1.0
 		local configured_range = balance_conf.controller_dist or bconf.controller_dist or 80
 		local strong_controller = controller_is_strong( sfobj )
-		local tier_range = strong_controller and 100 or 80
-		local controller_range = math.max( configured_range, tier_range ) * range_mult
+		local kit = controller_kit( sfobj )
+		local phase = controller_phase( sfobj )
+		-- the balance preset scales the variant's range (80 is the default preset's value)
+		local controller_range = kit.range * ( configured_range / 80 ) * range_mult
 		local normalized_dist = clamp( dist_to_actor / controller_range, 0, 1 )
 		local defense = get_psy_defense_context()
 
 		observe_controller_phantoms( sfobj:id() )
 		if ( self.ctrl_phantom_t or 0 ) < now then
 			self.ctrl_phantom_t = now + 3000
-			if scripted_controller_phantoms_enabled and dist_to_actor < math.min( 90, controller_range )
-				and lua_random() < 0.4 and phantom_manager.phantom_count() < 5
+			if scripted_controller_phantoms_enabled and kit.phantoms and dist_to_actor < math.min( 90, controller_range )
+				and lua_random() < kit.phantom_rate * ( kit.phantom_phase[ phase ] or 1 ) and phantom_manager.phantom_count() < 5
 			then
 				local act_pos = actor:position()
 				local yaw = 3 * lua_random()
 				local radius = 10 * ( lua_random() + 0.5 )
 				local pos = vector():set( math.sin( yaw ) * radius + act_pos.x, act_pos.y + 2, math.cos( yaw ) * radius + act_pos.z )
 				controller_last_scripted_phantom_request = now
-				local real_phantom_chance = strong_controller
-					and scripted_controller_real_phantom_chance_strong
-					or scripted_controller_real_phantom_chance_normal
+				local real_phantom_chance = kit.real_phantoms
 				local real_ai_phantom = scripted_controller_real_ai_enabled
 					and sivol_psy_phantoms and lua_random() < real_phantom_chance
 				if real_ai_phantom then
@@ -978,7 +1206,10 @@ function generic_object_binder:update( delta )
 			phantom_manager.phantom_count(), tostring( scripted_controller_phantoms_enabled ) )
 
 		local enemy = sfobj:get_enemy()
-		if not enemy or enemy:id() ~= actor:id() or dist_to_actor > controller_range then return end
+		local hunting = enemy and enemy:id() == actor:id()
+		controller_set_inert( sfobj:id(), ( hunting and kit.inert_max > 0 )
+			and kit.inert_max * clamp( 1 - dist_to_actor / kit.inert_range, 0, 1 ) * clamp( defense.manipulation_factor, 0, 1 ) or 0 )
+		if not hunting or dist_to_actor > controller_range then return end
 		if not self.ctrl_next_decision then
 			self.ctrl_next_decision = now + math.floor( lua_random() * 750 )
 			self.ctrl_global_ready = 0
@@ -1013,8 +1244,8 @@ function generic_object_binder:update( delta )
 		local exposure = physical_rays / 3
 		local reticle_dwell_ms = reticle_on and math.max( 0, now - ( runtime.reticle_since or now ) ) or 0
 		local reticle_dwell_k = clamp( reticle_dwell_ms / 150, 0, 1 )
-		local sensed_ready = now >= ( self.ctrl_sensed_ready or 0 )
-		local target_ready = target_los and now >= ( self.ctrl_target_ready or 0 )
+		local sensed_ready = kit.sensed and now >= ( self.ctrl_sensed_ready or 0 )
+		local target_ready = kit.target and target_los and now >= ( self.ctrl_target_ready or 0 )
 		if not sensed_ready and not target_ready then return end
 
 		local pool
@@ -1040,7 +1271,9 @@ function generic_object_binder:update( delta )
 			spatial_chance = ads and math.min( base_chance * ads_chance_mult, 0.95 ) or base_chance
 		end
 		local controller_chance_mult = ( balance_conf.controller_chance or bconf.controller_chance ) / 0.65
-		local proc_chance = clamp( spatial_chance * defense.manipulation_factor * easy_mult * controller_chance_mult, 0, 0.95 )
+		local phase_k = kit.phase[ phase ] or 1
+		local proc_chance = clamp( spatial_chance * defense.manipulation_factor * easy_mult * controller_chance_mult
+			* kit.chance_k * phase_k, 0, 0.95 )
 		if lua_random() >= proc_chance then
 			diagnostic_log( "controller_roll_" .. sfobj:id(), 1000,
 				"controller id=%d pool=%s result=miss chance=%.3f base=%.3f manip=%.3f outfit=%.3f belt=%.3f physical_rays=%d/3 effective_rays=%d/3 ads=%s reticle=%s pressure=%.3f dwell=%dms zoom=%.2fx dist=%.1f range=%.1f difficulty_mult=%.2f",
@@ -1053,90 +1286,130 @@ function generic_object_binder:update( delta )
 
 		local ready = self.ctrl_ability_ready
 		local ability
+		local cid = sfobj:id()
+		local function add( choices, key, weight )
+			local w = weight * ( kit.w[ key ] or 0 )
+			if w > 0 then table.insert( choices, { key = key, weight = w } ) end
+		end
 		if pool == "sensed" then
 			local choices = {}
-			if now >= ( ready.movement or 0 ) then table.insert( choices, { key = "movement", weight = 30 } ) end
-			if now >= ( ready.fire_binds or 0 ) then table.insert( choices, { key = "fire_binds", weight = 30 } ) end
-			if now >= ( ready.stamina or 0 ) then table.insert( choices, { key = "stamina", weight = 25 } ) end
+			if now >= ( ready.movement or 0 ) then add( choices, "movement", 30 ) end
+			if now >= ( ready.fire_binds or 0 ) then add( choices, "fire_binds", 30 ) end
+			if now >= ( ready.stamina or 0 ) then add( choices, "stamina", 25 ) end
 			if now >= ( ready.mask_toggle or 0 ) and vergas_masks.get_flag_mask() == true
 				and dist_to_actor < 35
 			then
-				table.insert( choices, { key = "mask_toggle", weight = dist_to_actor <= 15 and 80 or 25 } )
+				add( choices, "mask", dist_to_actor <= 15 and 80 or 25 )
+			end
+			if now >= ( ready.misdirection or 0 ) then add( choices, "misdirection", 30 ) end
+			if now >= ( ready.phantom_pain or 0 ) and now >= controller_phantom_pain_ready and dist_to_actor < 40 then
+				add( choices, "phantom_pain", 6 )
+			end
+			-- the herd only answers when there is one: a lone shepherd in a lab never rolls it
+			if now >= ( ready.herd_call or 0 ) and ( kit.w.herd_call or 0 ) > 0 and controller_thrall_count( sfobj ) >= kit.herd_min then
+				add( choices, "herd_call", 40 )
 			end
 			ability = controller_choose_weighted( choices )
 			if not ability then return end
 
 			if ability == "movement" then
-				sak.rebind_movement()
 				ready.movement = now + 8000
+				controller_run_effect( kit, cid, function() sak.rebind_movement( kit.movement_ms ) end )
 			elseif ability == "fire_binds" then
-				sak.rebind_fire()
 				ready.fire_binds = now + 4000
+				controller_run_effect( kit, cid, function() sak.rebind_fire( kit.fire_ms ) end )
 			elseif ability == "stamina" then
-				local drain = ( 0.08 + 0.12 * ( 1 - normalized_dist ) ) * defense.manipulation_factor * easy_mult
-				actor.power = math.max( 0, actor.power - drain )
-				local wobble_ms = 3500
-				local wobble_k = 1.75
-				if sivol_weapon and sivol_weapon.start_controller_stamina_wobble then
-					sivol_weapon.start_controller_stamina_wobble( wobble_ms, wobble_k )
-				end
-				diagnostic_log( "controller_stamina_" .. sfobj:id(), 0,
-					"controller id=%d stamina drain=%.4f wobble_k=%.2f wobble_ms=%d dist=%.1f",
-					sfobj:id(), drain, wobble_k, wobble_ms, dist_to_actor )
 				ready.stamina = now + 6000
-			elseif ability == "mask_toggle" then
-				vergas_masks.on_off_mask()
+				controller_run_effect( kit, cid, function()
+					local drain = ( 0.08 + 0.12 * ( 1 - normalized_dist ) ) * defense.manipulation_factor * easy_mult
+					actor.power = math.max( 0, actor.power - drain )
+					local wobble_ms = 3500
+					local wobble_k = 1.75
+					if sivol_weapon and sivol_weapon.start_controller_stamina_wobble then
+						sivol_weapon.start_controller_stamina_wobble( wobble_ms, wobble_k )
+					end
+					diagnostic_log( "controller_stamina_" .. cid, 0,
+						"controller id=%d stamina drain=%.4f wobble_k=%.2f wobble_ms=%d dist=%.1f",
+						cid, drain, wobble_k, wobble_ms, dist_to_actor )
+				end )
+			elseif ability == "mask" then
 				ready.mask_toggle = now + 15000
+				controller_run_effect( kit, cid, function()
+					if vergas_masks.get_flag_mask() == true then vergas_masks.on_off_mask() end
+				end )
+			elseif ability == "misdirection" then
+				ready.misdirection = now + 9000
+				controller_run_effect( kit, cid, function()
+					local c = level.object_by_id( cid )
+					if c then controller_misdirection( c, db.actor ) end
+				end )
+			elseif ability == "phantom_pain" then
+				ready.phantom_pain = now + 90000
+				controller_phantom_pain_ready = now + 60000
+				controller_run_effect( kit, cid, function()
+					local c = level.object_by_id( cid )
+					if c then controller_phantom_pain( c, db.actor ) end
+				end )
+			elseif ability == "herd_call" then
+				ready.herd_call = now + 25000
+				local n = controller_herd_call( sfobj )
+				diagnostic_log( "controller_herd_" .. cid, 0, "controller id=%d herd call thralls=%d", cid, n )
 			end
 			self.ctrl_sensed_ready = now + ( 1800 + 2200 * normalized_dist ) * ( 0.85 + 0.30 * lua_random() )
 		else
 			local choices = {}
 			local camera_weight = ads and ( 65 + math.min( 20, ( zoom_mag - 1 ) * 6 ) ) or 50
 			if ads and reticle_on then camera_weight = camera_weight + 60 + 80 * reticle_dwell_k end
-			if now >= ( ready.camera or 0 ) then table.insert( choices, { key = "camera", weight = camera_weight } ) end
-			if now >= ( ready.fire_binds or 0 ) then table.insert( choices, { key = "fire_binds", weight = ads and 45 or 20 } ) end
+			if now >= ( ready.camera or 0 ) then add( choices, "camera", camera_weight ) end
+			if now >= ( ready.fire_binds or 0 ) then add( choices, "fire_binds", ads and 45 or 20 ) end
 			if not reticle_on and now >= ( ready.forced_fire or 0 ) then
-				table.insert( choices, { key = "forced_fire", weight = ads and 15 or 40 } )
+				add( choices, "forced_fire", ads and 15 or 40 )
 			end
 			ability = controller_choose_weighted( choices )
 			if not ability then return end
 
 			if ability == "camera" then
-				local distance_intensity = 0.55 + 0.45 * ( 1 - normalized_dist )
-				local ads_intensity = ads and 1.6 or 1.0
-				local magnification_intensity = ads and clamp( 1 + 0.18 * ( zoom_mag - 1 ), 1, 1.9 ) or 1
-				local camera_strength = distance_intensity * mask_k * easy_mult * ads_intensity * magnification_intensity
-				local dh = ( 0.5 - lua_random() ) * 0.9 * camera_strength
-				local dp = ( 0.5 - lua_random() ) * 0.4 * camera_strength
-				local duration = ads and math.floor( clamp( 240 - 20 * ( zoom_mag - 1 ), 140, 240 ) ) or 250
-				if sivol_weapon and sivol_weapon.start_psy_divert then
-					sivol_weapon.start_psy_divert( dh, dp, duration )
-				elseif coord_params and coord_params.camera_angles then
-					local h, p = coord_params.camera_angles()
-					coord_params.camera_angles( h + dh, p + dp )
-				end
-				local hold_breath_interrupted = ads and sivol_weapon and sivol_weapon.is_manual_hold_breath_active
-					and sivol_weapon.is_manual_hold_breath_active() or false
-				if ads and sivol_weapon and sivol_weapon.release_manual_hold_breath then
-					sivol_weapon.release_manual_hold_breath( "controller camera yank", false, true, true )
-				end
-				diagnostic_log( "controller_camera_" .. sfobj:id(), 0,
-					"controller id=%d camera strength=%.3f dh=%.3f dp=%.3f duration=%d mask_k=%.3f hold_breath=%s reticle=%s dwell=%dms zoom=%.2fx dist=%.1f",
-					sfobj:id(), camera_strength, dh, dp, duration, mask_k, tostring( hold_breath_interrupted ), tostring( reticle_on ), reticle_dwell_ms, zoom_mag, dist_to_actor )
 				ready.camera = now + ( ads and ( reticle_on and ( 900 - 150 * reticle_dwell_k )
 					or math.max( 900, 1600 - 100 * ( zoom_mag - 1 ) ) ) or 2200 )
+				controller_run_effect( kit, cid, function()
+					local distance_intensity = 0.55 + 0.45 * ( 1 - normalized_dist )
+					local ads_intensity = ads and 1.6 or 1.0
+					local magnification_intensity = ads and clamp( 1 + 0.18 * ( zoom_mag - 1 ), 1, 1.9 ) or 1
+					local camera_strength = distance_intensity * mask_k * easy_mult * ads_intensity * magnification_intensity
+					local dh = ( 0.5 - lua_random() ) * 0.9 * camera_strength
+					local dp = ( 0.5 - lua_random() ) * 0.4 * camera_strength
+					local duration = ads and math.floor( clamp( 240 - 20 * ( zoom_mag - 1 ), 140, 240 ) ) or 250
+					if sivol_weapon and sivol_weapon.start_psy_divert then
+						sivol_weapon.start_psy_divert( dh, dp, duration )
+					elseif coord_params and coord_params.camera_angles then
+						local h, p = coord_params.camera_angles()
+						coord_params.camera_angles( h + dh, p + dp )
+					end
+					local hold_breath_interrupted = ads and sivol_weapon and sivol_weapon.is_manual_hold_breath_active
+						and sivol_weapon.is_manual_hold_breath_active() or false
+					if ads and sivol_weapon and sivol_weapon.release_manual_hold_breath then
+						sivol_weapon.release_manual_hold_breath( "controller camera yank", false, true, true )
+					end
+					diagnostic_log( "controller_camera_" .. cid, 0,
+						"controller id=%d camera strength=%.3f dh=%.3f dp=%.3f duration=%d mask_k=%.3f hold_breath=%s reticle=%s dwell=%dms zoom=%.2fx dist=%.1f",
+						cid, camera_strength, dh, dp, duration, mask_k, tostring( hold_breath_interrupted ), tostring( reticle_on ), reticle_dwell_ms, zoom_mag, dist_to_actor )
+				end )
 			elseif ability == "fire_binds" then
-				sak.rebind_fire()
 				ready.fire_binds = now + 4000
+				controller_run_effect( kit, cid, function() sak.rebind_fire( kit.fire_ms ) end )
 			elseif ability == "forced_fire" then
 				if controller_reticle_on( sfobj ) then
 					ability = "forced_fire_blocked_reticle"
 					ready.forced_fire = now + 750
 				else
-					local slots = { 1, 2, 4 }
-					actor:activate_slot( slots[ lua_random( #slots ) ] )
-					sak.start_fire()
 					ready.forced_fire = now + 4500
+					controller_run_effect( kit, cid, function()
+						local c = level.object_by_id( cid )
+						if c and controller_reticle_on( c ) then return end -- the warning gave time to aim at it
+						local slots = { 1, 2, 4 }
+						db.actor:activate_slot( slots[ lua_random( #slots ) ] )
+						sak.start_fire()
+					end )
 				end
 			end
 			local reticle_delay_base = 900 - 150 * reticle_dwell_k
@@ -1149,8 +1422,8 @@ function generic_object_binder:update( delta )
 		controller_actor_lockout_until = now + 600
 		self.ctrl_last_script_effect = now
 		diagnostic_log( "controller_proc_" .. sfobj:id(), 0,
-			"controller id=%d pool=%s ability=%s chance=%.3f base=%.3f manip=%.3f gear=%.3f outfit=%.3f belt=%.3f mask_k=%.3f physical_rays=%d/3 effective_rays=%d/3 target_los=%s ads=%s reticle=%s pressure=%.3f dwell=%dms zoom=%.2fx dist=%.1f norm=%.3f range=%.1f difficulty_mult=%.2f",
-			sfobj:id(), pool, ability, proc_chance, base_chance, defense.manipulation_factor,
+			"controller id=%d pool=%s ability=%s phase=%s phase_k=%.2f chance=%.3f base=%.3f manip=%.3f gear=%.3f outfit=%.3f belt=%.3f mask_k=%.3f physical_rays=%d/3 effective_rays=%d/3 target_los=%s ads=%s reticle=%s pressure=%.3f dwell=%dms zoom=%.2fx dist=%.1f norm=%.3f range=%.1f difficulty_mult=%.2f",
+			sfobj:id(), pool, ability, phase, phase_k, proc_chance, base_chance, defense.manipulation_factor,
 			defense.gear_mult, defense.outfit_protection, defense.belt_mult, mask_k,
 			physical_rays, effective_rays, tostring( target_los ), tostring( ads ), tostring( reticle_on ),
 			runtime.reticle_pressure, reticle_dwell_ms, zoom_mag, dist_to_actor,
@@ -1391,6 +1664,8 @@ function generic_object_binder:death_callback(victim, who)
 	end
 	if string.find(section, "controller", 1, true) then
 		controller_runtime[ victim:id() ] = nil
+		controller_set_inert( victim:id(), 0 )
+		controller_retaliate_ready[ victim:id() ] = nil
 		sak.controller_restore_all_binds()
 		diagnostic_log( "controller_restore", 0, "controller id=%d death forced bind restoration", victim:id() )
 	end
@@ -1489,6 +1764,12 @@ function generic_object_binder:hit_callback(obj, amount, local_direction, who, b
 	end
 	
 	self.am:call( "on_monster_hit", obj, amount, local_direction, who, bone_index)
+
+	if obj:clsid() == CLID_CONTROLLER and who and db.actor and who:id() == db.actor:id() and obj:alive()
+		and not controller_is_decoy( obj )
+	then
+		controller_retaliate( obj, controller_kit( obj ) )
+	end
 
 	-- sivol: bloodsucker head combo + temple bonus (sivol_bloodsucker_head.script;
 	-- replaces the old "second head hit = 4..7 raw power" rule)
@@ -1616,6 +1897,8 @@ function generic_object_binder:net_destroy()
 	self:clear_callbacks()
 	if self.object and self.object:clsid() == CLID_CONTROLLER then
 		controller_runtime[ self.object:id() ] = nil
+		controller_set_inert( self.object:id(), 0 )
+		controller_retaliate_ready[ self.object:id() ] = nil
 	end
 	
 	if table.getn(self.particles)>0 then

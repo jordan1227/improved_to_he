@@ -5,6 +5,100 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.29 (2026-10-07)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `9D6F0A194F42DC54A3D09A19AD43360BA7616F1D82B0423BCDA8244274E6A948`
+- **Status:** runtime pending. Fixes from the multi-agent review of the controller work.
+
+### NLC
+
+- **Crash fix:** `CController::net_Relcase` clears a destroyed enemy from its thralls' task object (thralls hold
+  the controller's enemy; an offline switch or release of that enemy left a dangling pointer).
+- **Controller vs non-actor enemies:** the cover / peek loop only runs against the actor (the tube targets only
+  the actor); stalkers and monsters get the stock fight instead of an endless peek without attacking.
+- **Thrall eyes:** the strike no longer silences the hum of a real tube that started during the wind-up; a
+  wind-up dies with the controller.
+- **Staggers:** a pending thrall stagger that cannot start within 1.5 s is dropped (no late, random staggers);
+  thralls restored after a load do not stagger.
+- **Recruit channel:** stops only the sequencer it started. **Herd call:** reports 0 when thralls do not attack.
+- **Stalker aim:** psy health 0 (never regenerates for NPCs) no longer means permanent x4 spread.
+- **Input scramble:** a key scrambled onto a blocked action is blocked too, and a recorded fire / zoom release
+  is never blocked; a consumed fire press never swallows a click meant for an open UI window.
+
+## nlc-3.589.28 (2026-10-07)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `8D8B793A437871A0DC1ACD8CAFDDD4D94D22D6B46828DF288516DB8F0E7A6229`
+- **Status:** runtime pending.
+
+### NLC
+
+- **Controller input scramble without binds:** `level.nlc_scramble_input(group, ms)` (0 movement, 1 fire/zoom)
+  remaps the game actions in `CLevel` input dispatch for a while (random derangement); a key keeps the action it
+  was pressed as until release, so fire/zoom cannot stick. The binds in `user.ltx` are never touched, so a load,
+  quit or crash cannot leave them scrambled. `level.nlc_clear_input_scramble()` ends it.
+- **Thrall eyes as a quick tube:** the thrall's head flares with the tube particles and the tube hums for
+  `nlc_ctrl_thrall_eyes_windup` ms, then the tube hit sounds and the psy jolt land (cancelled if the thrall loses
+  sight of the actor).
+- **Script access:** `nlc_controller_phase()` (ranged phase name) and `nlc_controller_herd_call(ms)` (every thrall
+  attacks the controller's enemy, posts and flanks dropped) on `CCustomMonster`.
+
+## nlc-3.589.27 (2026-10-06)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `43EB91F4A9394AC1510A5F7957977A9A12865381A8F1EA8DF14BFC2201074C61`
+- **Status:** runtime pending.
+
+### NLC
+
+- **Controller thralls attack:** monsters taken under control now hunt the controller's enemy
+  (`nlc_ctrl_thrall_attack`, `nlc_ctrl_thrall_memory`) instead of only following it and sitting down
+  (stock code never called `set_controlled_task`).
+- **Controller reposition:** when its enemy is inaccessible (roof, crate, vehicle, outside home, restrictor)
+  the controller walks to cover (tube recharging or recently hit) or to a tube-range point
+  (`nlc_ctrl_reposition`, `nlc_ctrl_cover_dist`, `nlc_ctrl_range_dist`, `nlc_ctrl_hold_time`,
+  `nlc_ctrl_move_timeout`) instead of standing in the open.
+- **Controller ignores its thralls:** `game_relations.ltx` keeps the species hostile, so the controller
+  forgets a thrall as enemy and attacker on capture and `is_relation_enemy` is false for its thralls.
+- **Controller cover loop:** hides in cover while the tube recharges, peeks to a point with line of sight when
+  it is ready, stock melee when close, stock hunt when the enemy is lost (`nlc_ctrl_cover_loop`, `nlc_ctrl_close_dist`,
+  `nlc_ctrl_lost_time`, `nlc_ctrl_peek_radius`, `nlc_ctrl_aim_time`); real run to cover with `nlc_ctrl_run_anim`
+  when the visual has the clip.
+- **Controller thralls:** species roles and weights (`nlc_ctrl_thrall_table`): hunt, flank, guard (new
+  `eTaskMove` / `CStateMonsterControlledMove` for every controllable species); weight budget, leash, release
+  stagger and slow; active recruitment channel (`nlc_ctrl_recruit_*`) that any hit breaks.
+- **Thrall release:** repeated, slowed stagger (`nlc_ctrl_release_stagger = count, speed`; new
+  `CBaseMonster::nlc_stagger_repeat`, critical-wound playback speed); thralls ignore their home while controlled
+  (`CMonsterHome::nlc_suspend/nlc_resume`).
+- **Controller tube:** while aiming from a peek point with a clear ray to the actor seen within 3 s, the tube
+  does not wait for the vision build-up (`CController::nlc_psy_sense`).
+- **Controller Mirage decoy:** on reaching cover a controller may spawn a decoy controller (`nlc_ctrl_decoy_section`,
+  `_chance`, `_cooldown`) and stays hidden while it lives; a decoy (`nlc_ctrl_decoy`) has no tube, thralls or
+  recruits and is destroyed on any hit or after `nlc_ctrl_decoy_life` (no corpse, loot or kill).
+- **Controller guards:** posts resolved without misusing `accessible_nearest` (it requires an inaccessible
+  point), closer fallbacks, one guard plus flank/hunt overflow, guard promotion, 3 s thrall status log.
+- **Stalker psy aim:** `nlc_psy_dispersion_k` scales weapon dispersion with lost psy health (`CAI_Stalker`).
+- **Controller flushed reaction** (`nlc_ctrl_flush_*`): an enemy close to its cover gets a psy jolt, then the
+  controller repositions nearby. **Thrall eyes** (`nlc_ctrl_thrall_eyes*`): a weak psy jab through a thrall that
+  sees the actor while the controller does not.
+- **Script hooks on `CCustomMonster`:** `nlc_set_phantom` (invisible to AI, no grenades), `nlc_add_enemy`,
+  `nlc_controller_thralls`, `nlc_controller_take` (thrall persistence across save/load).
+- **Stalker smart-terrain evaluator:** no crash when a script released the server object this frame.
+- **Script:** `level.consume_key_press()` skips native handling of the current key press (controller fire reaction).
+- **Diagnostics:** `CBaseMonster::nlc_inaccessible_reason()`; `nlc_ctrl_debug` logs `~ [controller]` lines.
+
+### Required game data
+
+- `m_controller.ltx` `nlc_ctrl_*` keys, `[nlc_controller_thralls]`, `[m_controller_shepherd]` (all keys optional;
+  missing keys keep stock behavior); `sivol_weapon.script` (consume the fire press), `rx_gl.script` (no launcher for phantoms), `sivol_controller_psy.script` (stalker domination and guards, Mirage swap and tells, thrall persistence),
+  `m_stalker.ltx` `nlc_psy_dispersion_k`.
+
+## nlc-3.589.26 (2026-10-06)
+
+- Co-dev build: body-part health / skeleton system from A.R.E.A (`nlc_body_health`, `UIBodyHealthWnd`),
+  console command history; see commit `7090f09b` and `19db1c3c`. Changelog entry not written by the co-dev.
+
 ## nlc-3.589.25 (2026-10-04)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

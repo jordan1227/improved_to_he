@@ -207,13 +207,14 @@ bool accessible_epsilon(CBaseMonster* const object, Fvector const pos, float eps
     return false;
 }
 
-static bool enemy_inaccessible(CBaseMonster* const object)
+// NLC: returns the first failing check (CBaseMonster::ENlcInaccessible) instead of a bool, for diagnostics
+static u8 enemy_inaccessible(CBaseMonster* const object)
 {
     if (object->getDestroy())
-        return false;
+        return CBaseMonster::eNlcAccessible;
     CEntityAlive const* enemy = object->EnemyMan.get_enemy();
     if (!enemy || enemy->getDestroy())
-        return false;
+        return CBaseMonster::eNlcAccessible;
 
     Fvector const enemy_pos = enemy->Position();
     Fvector const enemy_vert_pos = ai().level_graph().vertex_position(enemy->ai_location().level_vertex_id());
@@ -222,24 +223,24 @@ static bool enemy_inaccessible(CBaseMonster* const object)
     float const y_dist_to_vertex = _abs(enemy_vert_pos.y - enemy_pos.y);
 
     if (xz_dist_to_vertex > 0.5f && y_dist_to_vertex > 3.f)
-        return true;
+        return CBaseMonster::eNlcInaccessibleHigh;
 
     if (xz_dist_to_vertex >= 1.2f || y_dist_to_vertex >= 1.2f)
-        return true;
+        return CBaseMonster::eNlcInaccessibleOffMap;
 
     if (!object->Home->at_home(enemy_pos))
-        return true;
+        return CBaseMonster::eNlcInaccessibleHome;
 
     if (!accessible_epsilon(object, enemy_pos, 1.5f))
-        return true;
+        return CBaseMonster::eNlcInaccessibleRestrictor;
 
     if (!ai().level_graph().valid_vertex_position(enemy_pos))
-        return true;
+        return CBaseMonster::eNlcInaccessibleVertexPos;
 
     if (!ai().level_graph().valid_vertex_id(enemy->ai_location().level_vertex_id()))
-        return true;
+        return CBaseMonster::eNlcInaccessibleVertexId;
 
-    return false;
+    return CBaseMonster::eNlcAccessible;
 }
 
 bool CBaseMonster::enemy_accessible()
@@ -276,10 +277,12 @@ void CBaseMonster::update_enemy_accessible_and_at_home_info()
     {
         m_first_tick_enemy_inaccessible = 0;
         m_last_tick_enemy_inaccessible = 0;
+        m_nlc_inaccessible_reason = eNlcAccessible;
         return;
     }
 
-    if (::enemy_inaccessible(this))
+    m_nlc_inaccessible_reason = ::enemy_inaccessible(this); // NLC
+    if (m_nlc_inaccessible_reason != eNlcAccessible)
     {
         if (!m_first_tick_enemy_inaccessible)
             m_first_tick_enemy_inaccessible = Device.dwTimeGlobal;
@@ -330,6 +333,7 @@ void CBaseMonster::shedule_Update(u32 dt)
     }
 
     nlc_stealth::monster_sense_update(this); // NLC: psy / smell aura (species nlc_sense_* keys)
+    nlc_update_stagger_repeat(); // NLC: controller thrall release
 
     m_psy_aura.update_schedule();
     m_fire_aura.update_schedule();

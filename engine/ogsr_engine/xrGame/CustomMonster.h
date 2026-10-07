@@ -19,6 +19,7 @@ struct SBoneRotation;
 };
 
 class CMotionDef;
+class CScriptGameObject; // NLC
 class IKinematicsAnimated;
 class CMemoryManager;
 class CItemManager;
@@ -323,6 +324,24 @@ public:
 
     bool m_visible_for_zones;
     virtual bool IsVisibleForZones() { return m_visible_for_zones; }
+
+    // NLC: scripted psy phantom (sivol_psy_phantoms): invisible to AI vision (hit / sound memory can still pick it),
+    // stalkers never throw grenades
+    void nlc_set_phantom(bool value);
+    bool nlc_phantom() const { return m_nlc_phantom; }
+    // NLC: a monster knows `enemy` at once (phantom awareness without the zero-power hit); not for stalkers
+    void nlc_add_enemy(CScriptGameObject* enemy);
+    // NLC: controller thralls for scripts (save/load): ids as "1,2,3", and re-taking one after a load
+    LPCSTR nlc_controller_thralls();
+    bool nlc_controller_take(CScriptGameObject* thrall);
+    LPCSTR nlc_controller_phase();
+    u32 nlc_controller_herd_call(u32 duration_ms);
+
+private:
+    bool m_nlc_phantom{};
+    shared_str m_nlc_thralls_buf;
+
+public:
     void ForceTransform(const Fmatrix& m) override;
 
     // -----------------------------------------------------------------------------

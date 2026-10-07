@@ -472,5 +472,11 @@ void CCustomMonsterScript::script_register(lua_State* L)
     module(L)[class_<CCustomMonster, bases<CEntityAlive>>("CCustomMonster")
                   .def("get_dest_vertex_id", &CCustomMonsterScript::GetDestVertexId)
                   .def_readwrite("visible_for_zones", &CCustomMonster::m_visible_for_zones)
+                  .def("nlc_set_phantom", &CCustomMonster::nlc_set_phantom) // NLC
+                  .def("nlc_add_enemy", &CCustomMonster::nlc_add_enemy)
+                  .def("nlc_controller_thralls", &CCustomMonster::nlc_controller_thralls)
+                  .def("nlc_controller_take", &CCustomMonster::nlc_controller_take)
+                  .def("nlc_controller_phase", &CCustomMonster::nlc_controller_phase)
+                  .def("nlc_controller_herd_call", &CCustomMonster::nlc_controller_herd_call)
                   .def("anomaly_detector", &CCustomMonster::anomaly_detector)];
 }

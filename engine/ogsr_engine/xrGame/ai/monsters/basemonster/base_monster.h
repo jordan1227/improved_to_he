@@ -450,7 +450,17 @@ public:
     // called from Hit with the health actually lost (fraction of max health)
     virtual void nlc_on_health_lost(const CObject* who, float fraction) {}
     // plays the species' critical-hit animation (torso, legs, head key order), ignoring the threshold
-    bool nlc_stagger();
+    bool nlc_stagger(float speed_k = 1.f);
+    // plays the stagger `count` times in a row (controller thrall release), speed_k < 1 = slower
+    void nlc_stagger_repeat(u32 count, float speed_k);
+    void nlc_update_stagger_repeat();
+
+private:
+    u32 m_nlc_stagger_left{};
+    float m_nlc_stagger_speed{1.f};
+    u32 m_nlc_stagger_until{}; // a stagger that cannot start by then (running, busy sequencer) is dropped
+
+public:
     // k = fraction of speed removed (0..0.9), fades out over the last quarter of time_ms
     void nlc_apply_move_slow(float k, u32 time_ms);
     float nlc_move_speed_k() const;
@@ -613,6 +623,23 @@ private:
     TTime m_first_tick_enemy_inaccessible;
     TTime m_last_tick_enemy_inaccessible;
     TTime m_first_tick_object_not_at_home;
+
+public:
+    // NLC: why the current enemy counts as inaccessible (last update), for diagnostics
+    enum ENlcInaccessible : u8
+    {
+        eNlcAccessible = 0,
+        eNlcInaccessibleHigh, // far above/below its ai-map vertex (roof, ledge)
+        eNlcInaccessibleOffMap, // more than 1.2 m off its ai-map vertex (crate, vehicle)
+        eNlcInaccessibleHome, // outside this monster's home restrictor
+        eNlcInaccessibleRestrictor, // no accessible point within 1.5 m (restrictor, anomaly)
+        eNlcInaccessibleVertexPos,
+        eNlcInaccessibleVertexId,
+    };
+    u8 nlc_inaccessible_reason() const { return m_nlc_inaccessible_reason; }
+
+private:
+    u8 m_nlc_inaccessible_reason{eNlcAccessible};
 
 public:
     virtual bool run_home_point_when_enemy_inaccessible() const { return true; }

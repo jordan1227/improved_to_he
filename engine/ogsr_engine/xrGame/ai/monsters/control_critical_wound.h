@@ -4,6 +4,7 @@
 struct SControlCriticalWoundData : public ControlCom::IComData
 {
     LPCSTR animation;
+    float speed_k{1.f}; // NLC: playback speed multiplier
 };
 
 class CControlCriticalWound : public CControl_ComCustom<SControlCriticalWoundData>

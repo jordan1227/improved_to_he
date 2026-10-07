@@ -161,7 +161,15 @@ bool check_actor_visibility(const Fvector trace_from, const Fvector trace_to, CO
 
 } // namespace detail
 
-bool CControllerPsyHit::see_enemy() { return m_object->EnemyMan.see_enemy_now(Actor()); }
+bool CControllerPsyHit::see_enemy()
+{
+    if (m_object->EnemyMan.see_enemy_now(Actor()))
+        return true;
+
+    // NLC: a controller aiming from a peek point senses the actor it saw moments ago (clear ray)
+    const CController* controller = smart_cast<const CController*>(m_object);
+    return controller && controller->nlc_psy_sense();
+}
 
 bool CControllerPsyHit::check_conditions_final()
 {

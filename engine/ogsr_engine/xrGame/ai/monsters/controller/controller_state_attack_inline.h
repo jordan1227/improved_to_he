@@ -52,6 +52,7 @@ void CStateControllerAttackAbstract::execute()
 
     if (check_home_point())
     {
+        object->nlc_reposition_stop("home point"); // NLC
         select_state(eStateAttack_MoveToHomePoint);
         get_state_current()->execute();
         prev_substate = current_substate;
@@ -76,11 +77,12 @@ void CStateControllerAttackAbstract::execute()
             state_id = eStateAttack_Run;
     }
 
-    if (!object->enemy_accessible() && state_id == eStateAttack_Run)
-    {
-        current_substate = (u32)eStateUnknown;
-        prev_substate = current_substate;
+    // NLC: a controller running to cover does not stop for melee unless the enemy is right on top of it
+    if (state_id == eStateAttack_Melee && object->nlc_keep_ranged())
+        state_id = eStateAttack_Run;
 
+    // NLC: stand and face the enemy (stock inaccessible behavior, also the ranged hold)
+    auto stand_facing_enemy = [&]() {
         Fvector dir_xz = object->Direction();
         dir_xz.y = 0;
         Fvector self_to_enemy_xz = enemy->Position() - object->Position();
@@ -96,6 +98,31 @@ void CStateControllerAttackAbstract::execute()
         }
 
         object->set_action(ACT_STAND_IDLE);
+    };
+
+    const bool inaccessible = !object->enemy_accessible() && state_id == eStateAttack_Run;
+
+    // NLC: ranged behavior (cover loop, or reposition when the enemy is inaccessible); melee keeps priority
+    if (state_id != eStateAttack_Melee)
+    {
+        const CController::ENlcRanged ranged = object->nlc_ranged_execute(inaccessible);
+        if (ranged != CController::eNlcRangedStock)
+        {
+            current_substate = (u32)eStateUnknown;
+            prev_substate = current_substate;
+            if (ranged == CController::eNlcRangedHold)
+                stand_facing_enemy();
+            return;
+        }
+    }
+    else
+        object->nlc_reposition_stop("melee");
+
+    if (inaccessible)
+    {
+        current_substate = (u32)eStateUnknown;
+        prev_substate = current_substate;
+        stand_facing_enemy();
         return;
     }
 
@@ -114,6 +141,7 @@ TEMPLATE_SPECIALIZATION
 void CStateControllerAttackAbstract::finalize()
 {
     inherited::finalize();
+    object->nlc_reposition_stop(); // NLC
     // object->set_mental_state(CController::eStateIdle);
 }
 
@@ -121,6 +149,7 @@ TEMPLATE_SPECIALIZATION
 void CStateControllerAttackAbstract::critical_finalize()
 {
     inherited::critical_finalize();
+    object->nlc_reposition_stop(); // NLC
     // object->set_mental_state(CController::eStateIdle);
 }
 

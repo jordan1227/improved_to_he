@@ -226,6 +226,22 @@ public:
     void unblock_action(EGameActions cmd);
     // Real Wolf. End. 14.10.2014
 
+    // NLC: called from the on_key_press script callback, the current key press skips native handling
+    void nlc_consume_key_press() { m_nlc_consume_key = true; }
+    bool m_nlc_consume_key{};
+
+    // NLC: controller input scramble. Game actions of a group (0 movement, 1 fire/zoom) are remapped for a
+    // while; the key binds are never touched, so nothing can stay scrambled after a load or a crash.
+    void nlc_scramble_input(int group, u32 duration_ms);
+    void nlc_clear_input_scramble();
+    EGameActions nlc_remap_press(int key, EGameActions action);
+    EGameActions nlc_remap_hold(int key, EGameActions action);
+    EGameActions nlc_remap_release(int key, EGameActions action);
+    EGameActions nlc_remap_current(EGameActions action) const;
+    xr_map<EGameActions, EGameActions> m_nlc_remap[2];
+    u32 m_nlc_remap_until[2]{};
+    xr_map<int, EGameActions> m_nlc_pressed; // key -> the action it was pressed as; it is released as the same
+
     int get_RPID(LPCSTR name);
 
     // Game

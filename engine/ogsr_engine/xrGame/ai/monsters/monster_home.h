@@ -43,4 +43,34 @@ public:
     IC bool has_home() { return (m_path != 0 || m_level_vertex_id != u32(-1)); }
     IC bool is_aggressive() { return m_aggressive; }
     void setup(CPatrolPath*, float, float, bool = false, float = 0.f);
+
+    // NLC: a controller thrall ignores its home (the attack state would send it back there);
+    // nlc_resume restores it unless a script set a new home meanwhile
+    void nlc_suspend()
+    {
+        if (m_nlc_suspended)
+            return;
+        m_nlc_path = m_path;
+        m_nlc_level_vertex_id = m_level_vertex_id;
+        m_nlc_aggressive = m_aggressive;
+        m_nlc_suspended = true;
+        remove_home();
+    }
+    void nlc_resume()
+    {
+        if (!m_nlc_suspended)
+            return;
+        m_nlc_suspended = false;
+        if (has_home())
+            return;
+        m_path = m_nlc_path;
+        m_level_vertex_id = m_nlc_level_vertex_id;
+        m_aggressive = m_nlc_aggressive;
+    }
+
+private:
+    bool m_nlc_suspended{};
+    const CPatrolPath* m_nlc_path{};
+    u32 m_nlc_level_vertex_id{u32(-1)};
+    bool m_nlc_aggressive{};
 };

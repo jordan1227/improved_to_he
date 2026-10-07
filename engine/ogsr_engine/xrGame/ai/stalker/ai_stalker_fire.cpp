@@ -67,6 +67,15 @@ constexpr float start_fire_angle_difference = PI_DIV_8;
 
 float CAI_Stalker::GetWeaponAccuracy() const
 {
+    // NLC: psy damage (controller pressure, psy fields) shakes the aim. Psy health never regenerates from
+    // exactly 0 (CEntityCondition::UpdatePsyHealth), so 0 counts as unaffected instead of inaccurate for good.
+    const float psy = conditions().GetPsyHealth();
+    const float psy_k = psy > 0.f ? 1.f + m_nlc_psy_disp_k * (1.f - std::clamp(psy, 0.f, 1.f)) : 1.f;
+    return nlc_weapon_accuracy_base() * psy_k;
+}
+
+float CAI_Stalker::nlc_weapon_accuracy_base() const
+{
     float base = PI / 180.f;
 
     //влияние ранга на меткость
