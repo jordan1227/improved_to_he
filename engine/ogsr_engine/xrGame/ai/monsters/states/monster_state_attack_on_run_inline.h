@@ -261,6 +261,7 @@ void ATTACK_ON_RUN_STATE::update_movement_target()
         m_target_vertex = enemy->ai_location().level_vertex_id();
         m_target = ai().level_graph().vertex_position(m_target_vertex);
         m_predicted_enemy_pos = m_target;
+        object->nlc_zz_target(m_target, m_target_vertex); // NLC: zigzag far from the enemy (the predicted position stays the enemy's)
         return;
     }
 

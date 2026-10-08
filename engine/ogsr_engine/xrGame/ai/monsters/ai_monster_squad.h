@@ -95,6 +95,13 @@ public:
 
     bool SquadActive();
     u8 squad_alife_count();
+    // NLC: every registered member (siege watchers, pack losses)
+    void nlc_members(xr_vector<CEntity*>& out) const
+    {
+        out.clear();
+        for (const auto& it : m_goals)
+            out.push_back(it.first);
+    }
 
     // -----------------------------------------------------------------
 

@@ -644,6 +644,294 @@ private:
 public:
     virtual bool run_home_point_when_enemy_inaccessible() const { return true; }
     virtual bool need_shotmark() const { return true; }
+
+    //////////////////////////////////////////////////////////////////////////
+    // NLC: siege of an elevated enemy (docs/DESIGN_monster_elevation_siege.md). Config
+    // [monster_elevation] in game_relations.ltx, the same keys override per monster section.
+    //////////////////////////////////////////////////////////////////////////
+public:
+    // species without the attack substate or with their own logic return false
+    virtual bool nlc_siege_capable() const { return true; }
+    // the attack state machine owns a siege substate (CStateMonsterAttackSiege)
+    void nlc_siege_register() { m_nlc_siege_supported = true; }
+    bool nlc_siege_wanted() const { return m_nlc_siege.want; }
+    bool nlc_siege_active() const { return m_nlc_siege.active; }
+    void nlc_siege_begin();
+    void nlc_siege_execute();
+    void nlc_siege_end(bool clear_anim = true);
+    // hooks: a heard sound (feel_sound_new, before the faint-shot return), a near miss and a bolt
+    // (nlc_stealth, main thread), a squad mate died (Die)
+    void nlc_siege_on_noise(const CObject* who, int sound_type, const Fvector& position, float power);
+    void nlc_siege_on_near_miss(const Fvector& origin);
+    bool nlc_siege_on_bolt(const Fvector& position);
+    void nlc_siege_on_pack_loss();
+
+    // a point on the ai-map reachable for this monster at or near `wanted` (also used by the controller)
+    bool nlc_point_on_map(const Fvector& wanted, Fvector& pos, u32& node) const;
+    // static-geometry line from `feet` + eye_height to the enemy's chest
+    bool nlc_los_to(const Fvector& feet, const CEntityAlive* enemy, float eye_height) const;
+    // the siege's hidden test for species tactics: can the enemy see a monster standing at `feet`
+    bool nlc_hidden_test_visible(const Fvector& feet, const CEntityAlive* enemy) const { return nlc_siege_visible(feet, enemy); }
+    // a bloodsucker's ambush hold: siege active, not fled, holding a hidden point or moving there unseen
+    bool nlc_siege_hidden_hold() const;
+    bool nlc_siege_perch() const { return m_nlc_siege.active && m_nlc_siege.perch; } // NLC: holding a perch-strike spot
+    // NLC: arrived at the perch-strike spot and holding it
+    bool nlc_siege_perch_holding() const { return m_nlc_siege.active && m_nlc_siege.perch && m_nlc_siege.move == eNlcSiegeHold; }
+    // NLC: leave the perch-strike spot: the siege picks a hidden point next (the species blocks the perch strike itself)
+    void nlc_siege_perch_abandon();
+    // NLC: a species that can jump up at a perched enemy goes to strike_dist from its ground point instead of hiding
+    virtual bool nlc_siege_perch_strike(const CEntityAlive* enemy, float& strike_dist) { return false; }
+    // NLC: shot at the perch-strike spot: the species stops using it for a while
+    virtual void nlc_siege_perch_shot() {}
+    // NLC: CControlJump ignores velocity bounces this long after takeoff (0 = stock)
+    virtual u32 nlc_jump_bounce_grace() const { return 0; }
+    // turn toward a point with the standing turn clips (the siege's facing, for species tactics)
+    void nlc_face_point(const Fvector& point) { nlc_siege_face(point); }
+    // NLC: the attack state machine owns a tactic substate (CStateMonsterAttackTactic); species override the hooks
+    virtual bool nlc_tactic_wanted() { return false; }
+    virtual void nlc_tactic_begin() {}
+    virtual void nlc_tactic_execute() {}
+    virtual void nlc_tactic_end() {}
+
+private:
+    enum ENlcSiegeMove : u8
+    {
+        eNlcSiegeNone,
+        eNlcSiegeGoto, // to a hidden point
+        eNlcSiegeHold, // at a hidden point
+        eNlcSiegePeek, // watcher: to / at a point with line of sight
+        eNlcSiegeRetreat, // shot: out of sight, farther away
+        eNlcSiegeDistract, // bolt: go and look
+        eNlcSiegeFlee, // pack losses: far away, no lock
+    };
+
+    struct SNlcSiegeParams
+    {
+        bool enabled{};
+        bool vs_npc{};
+        bool distractible{};
+        u32 grace_first{3000};
+        u32 grace_repeat{1000};
+        float reengage_close{10.f};
+        Fvector reengage_delay{3000.f, 6000.f, 10000.f};
+        u32 toggle_decay{60000};
+        u32 min_episode{1000};
+        float reach_height{1.6f};
+        u32 reach_timeout{4000};
+        float eye_height{1.f};
+        Fvector2 ambush_dist{8.f, 20.f};
+        u32 ambush_time{45000};
+        Fvector2 watch_dist{20.f, 35.f};
+        u32 watch_count{1};
+        Fvector2 peek_interval{15000.f, 25000.f};
+        u32 peek_time{2500};
+        float peek_detect_k{1.5f}; // vision rate factor while a watcher peeks
+        Fvector2 hold_time{6000.f, 12000.f};
+        Fvector2 growl_interval{8000.f, 15000.f};
+        float lock_radius{10.f};
+        u32 patience{75000};
+        u32 faint_patience{30000};
+        u32 distract_after{10000};
+        float retreat_dist{28.f};
+        u32 retreat_time{7000};
+        u32 max_time{600000};
+        u32 flee_losses{}; // 0 = never
+        EAction gait{ACT_RUN};
+        EAction rest{ACT_STAND_IDLE};
+        bool pick_near_anchor{}; // ambush placement: the hidden point nearest the enemy's ground point wins (elev_pick_near_anchor)
+    };
+
+    struct SNlcSiege
+    {
+        // tracking, every UpdateCL
+        u16 enemy_id{u16(-1)};
+        bool want{};
+        bool owns{}; // elevation case handled by the siege: stock enemy_accessible() stays true
+        u32 elev_since{};
+        u32 ground_since{};
+        u32 reach_since{};
+        u32 reach_block_until{}; // low-perch attack given up: not again before this
+        u32 toggles{};
+        u32 toggle_time{};
+        LPCSTR end_reason{};
+        // siege
+        bool active{};
+        bool watch{}; // Watch phase (else Ambush)
+        bool watcher{};
+        bool patience_over{};
+        bool max_logged{};
+        bool fled{};
+        bool sneak{}; // this move uses the species gait (started out of sight)
+        bool escape{}; // side guard: a radial escape move; on arrival the monster reselects at once
+        bool perch{}; // NLC: a perch-strike spot (nlc_siege_perch_strike): visible on purpose, no exposure reselect
+        bool fallback{}; // holding a visible point (no hidden one found): lie low, no exposure checks
+        bool peek_boost{}; // m_nlc_rate_k raised for this peek
+        u32 diag_until{}; // debug: log which state interrupted the siege
+        u32 start{};
+        u32 last_exec{}; // a siege not executed for 2 s was left without finalize: ended by tracking
+        u32 contact{};
+        Fvector anchor{};
+        u32 anchor_node{u32(-1)};
+        u32 pack_losses{};
+        // movement
+        ENlcSiegeMove move{eNlcSiegeNone};
+        bool reselect{};
+        Fvector target{};
+        u32 target_node{u32(-1)};
+        u32 locked_node{u32(-1)};
+        u32 move_until{};
+        u32 hold_until{};
+        u32 next_los{};
+        u32 next_peek{};
+        u32 next_growl{};
+        u32 next_watcher{};
+        u32 next_near_miss{};
+        u32 hit_seen{};
+        u32 burned[3]{u32(-1), u32(-1), u32(-1)};
+        u8 burned_next{};
+    };
+
+    void nlc_siege_load(LPCSTR section);
+    void nlc_siege_track();
+    void nlc_siege_reset();
+    bool nlc_siege_pick(ENlcSiegeMove kind, LPCSTR why);
+    void nlc_siege_set_target(const Fvector& pos, u32 node, ENlcSiegeMove kind, u32 timeout);
+    void nlc_siege_hold(u32 time_ms);
+    void nlc_siege_burn_target();
+    void nlc_siege_unlock();
+    void nlc_siege_update_watcher();
+    void nlc_siege_face(const Fvector& point);
+    // can the enemy see a monster standing at `feet` (head and both body ends; hidden only if all are blocked)
+    bool nlc_siege_visible(const Fvector& feet, const CEntityAlive* enemy) const;
+    bool nlc_siege_in_ring(const Fvector& pos) const;
+
+    SNlcSiegeParams m_nlc_siege_p;
+    SNlcSiege m_nlc_siege;
+    bool m_nlc_siege_supported{};
+    static bool s_nlc_siege_debug;
+
+    //////////////////////////////////////////////////////////////////////////
+    // NLC: evasion pass (docs/DESIGN_monster_movement_under_fire.md): threat test, zigzag approach, side
+    // guard, dodge speed. Config [monster_evasion] in game_relations.ltx, the same keys override per monster
+    // section; every feature has its own key and defaults to off.
+    //////////////////////////////////////////////////////////////////////////
+public:
+    enum ENlcThreat : u8
+    {
+        eThreatWatched = 1, // the enemy looks toward this monster and has a clear line to it
+        eThreatArmed = 2, // the enemy holds a gun (no knife, no binoculars)
+        eThreatAimed = 4, // armed and the crosshair cone is on this monster
+        eThreatLocked = 8, // actor: the crosshair ray hits this monster
+    };
+
+    // flags above, recomputed at most every 200 ms; 0 without an enemy or with evade_enabled off
+    u8 nlc_threat();
+    // eye position and view direction of an enemy (actor camera, NPC head and Direction())
+    bool nlc_enemy_eye(const CEntityAlive* enemy, Fvector& eye, Fvector& view) const;
+    // active item is a CWeapon, not a knife or binoculars
+    bool nlc_enemy_armed(const CEntityAlive* enemy) const;
+    // zigzag: replaces the charge target and returns true while a leg is active
+    bool nlc_zz_target(Fvector& pos, u32& node);
+    // an enemy shot heard, a near miss or a hit: the next leg goes to the other side
+    void nlc_zz_on_fire();
+    // side guard and the threat test says watched
+    bool nlc_side_guard_watched();
+    // would a move from here to `pt` cross the line of sight of a watching enemy (side guard)
+    bool nlc_guard_lateral(const Fvector& pt, const CEntityAlive* enemy) const;
+    // lateral sampler (diagnostics), after nlc_siege_track
+    void nlc_evade_update();
+
+    // timed speed factor on top of nlc_move_speed_k (zigzag legs, lunge); not the giant's haste slot
+    void nlc_set_dodge(float k, u32 time_ms)
+    {
+        m_nlc_evade.dodge_k = k;
+        m_nlc_evade.dodge_end = Device.dwTimeGlobal + time_ms;
+    }
+    void nlc_clear_dodge() { m_nlc_evade.dodge_end = 0; }
+    // the dodge factor now (1 = none); the heading speed follows it so the turn radius stays as planned
+    float nlc_dodge_k() const { return Device.dwTimeGlobal < m_nlc_evade.dodge_end ? m_nlc_evade.dodge_k : 1.f; }
+    float nlc_run_attack_haste_k() const { return m_nlc_evade_p.enabled ? m_nlc_evade_p.run_attack_haste_k : 1.f; }
+
+    bool nlc_evade_enabled() const { return m_nlc_evade_p.enabled; }
+    bool nlc_side_guard_on() const { return m_nlc_evade_p.enabled && m_nlc_evade_p.side_guard; }
+    float nlc_watch_cone() const { return m_nlc_evade_p.watch_cone; }
+    u32 nlc_last_watched() const { return m_nlc_evade.last_watched; }
+    static bool nlc_evade_debug() { return s_nlc_evade_debug; }
+
+    // bloodsucker: a cloaked monster keeps its sneak gait for an edge approach (TranslateActionToPathParams)
+    virtual bool nlc_cloak_keeps_gait() { return false; }
+
+private:
+    struct SNlcEvadeParams
+    {
+        bool enabled{true};
+        float watch_cone{deg2rad(55.f)};
+        float aim_angle{deg2rad(12.f)};
+        bool zz_enabled{};
+        int zz_need_gun{}; // 0 watched, 1 watched and armed, 2 aimed, 3 aiming down sights or crosshair lock
+        u32 zz_react_ms{}; // the trigger must hold this long before the first leg (reaction time)
+        Fvector2 zz_dist{8.f, 40.f};
+        float zz_speed_k{1.2f};
+        float zz_max_angle{deg2rad(35.f)};
+        Fvector2 zz_leg_time{500.f, 900.f};
+        float zz_aim_leg_k{0.7f};
+        float zz_lock_leg_k{0.5f};
+        float zz_same_side{0.25f};
+        bool zz_fire_switch{true};
+        bool zz_vs_npc{};
+        u32 zz_seen_grace{800}; // ms the "monster sees the enemy" gate holds after the last sighting (vision flickers)
+        float zz_chance{1.f}; // chance that a burst of legs starts (rolled per burst)
+        Fvector2 zz_burst{0.f, 0.f}; // legs per burst (0, 0 = continuous zigzag)
+        Fvector2 zz_rest{0.f, 0.f}; // ms of straight run between bursts (and after a failed roll)
+        float zz_turn_share{0.5f}; // the side switch (2 x leg angle) must fit in this share of a leg at the run turn rate
+        float zz_min_leg_k{1.5f}; // a leg shorter than this x the run turn radius runs straight instead
+        float zz_heading_gate{deg2rad(60.f)}; // no new leg while the body heads more than this away from the enemy
+        bool side_guard{};
+        float side_guard_angle{deg2rad(30.f)};
+        float side_guard_short{3.f};
+        float run_attack_haste_k{1.f};
+    };
+
+    struct SNlcEvade
+    {
+        u16 enemy_id{u16(-1)};
+        // threat cache
+        u32 threat_next{};
+        u8 threat{};
+        u32 last_watched{};
+        // zigzag
+        bool zz_on{};
+        bool zz_leg{}; // a leg is planned
+        bool zz_flip{}; // fire switch pending: the next leg goes to the other side
+        s8 zz_side{}; // +1 / -1, 0 = no leg yet
+        u32 zz_threat_until{}; // the threat gate holds for 1 s after it last passed
+        u32 zz_seen_until{}; // the sight gate holds until then (zz_seen_grace)
+        u32 zz_ok_since{}; // the trigger holds since (zz_react_ms), 0 = not now
+        u32 zz_legs_left{}; // legs left in the current burst (0 = none: rest or roll)
+        u32 zz_rest_until{}; // straight run until then (between bursts)
+        u32 zz_leg_start{};
+        u32 zz_leg_end{};
+        Fvector zz_target{};
+        u32 zz_node{u32(-1)};
+        u32 zz_log_next{};
+        // dodge speed factor
+        float dodge_k{1.f};
+        u32 dodge_end{};
+        // lateral sampler
+        u32 next_sample{};
+        u32 lateral_since{};
+        float lateral_max{};
+    };
+
+    void nlc_evade_load(LPCSTR section);
+    void nlc_evade_reset();
+    // resets the runtime state when the enemy changed; true with an enemy
+    bool nlc_evade_sync(const CEntityAlive* enemy);
+    void nlc_zz_stop(const char* reason);
+
+    SNlcEvadeParams m_nlc_evade_p;
+    SNlcEvade m_nlc_evade;
+    static bool s_nlc_evade_debug;
 };
 
 #include "base_monster_inline.h"

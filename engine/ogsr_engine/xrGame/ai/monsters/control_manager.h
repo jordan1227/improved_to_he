@@ -77,6 +77,9 @@ public:
 
     void lock(CControl_Com*, ControlCom::EControlType);
     void unlock(CControl_Com*, ControlCom::EControlType);
+    // NLC: only the elements `com` still owns (see control_manager.cpp)
+    void release_pure_owned(CControl_Com*);
+    void unlock_owned(CControl_Com*, ControlCom::EControlType);
 
     ControlCom::IComData* data(CControl_Com*, ControlCom::EControlType);
 

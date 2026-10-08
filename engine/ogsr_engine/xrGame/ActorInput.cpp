@@ -390,6 +390,9 @@ void CActor::IR_OnMouseMove(int dx, int dy)
         return;
     }
 
+    if (m_input_external_handler)
+        m_input_external_handler->on_mouse_move(dx, dy); // NLC
+
     float LookFactor = GetLookFactor();
 
     CCameraBase* C = cameras[cam_active];

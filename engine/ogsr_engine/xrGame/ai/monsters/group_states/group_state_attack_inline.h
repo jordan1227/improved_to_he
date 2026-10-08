@@ -4,6 +4,7 @@
 #include "../states/monster_state_attack_run_attack.h"
 #include "../states/state_hide_from_point.h"
 #include "../states/monster_state_find_enemy.h"
+#include "../states/monster_state_attack_siege.h" // NLC
 #include "group_state_squad_move_to_radius.h "
 #include "group_state_home_point_attack.h"
 #include "group_state_custom.h"
@@ -27,6 +28,7 @@ CStateGroupAttackAbstract::CStateGroupAttack(_Object* obj) : inherited(obj)
     add_state(eStateAttack_RunAway, xr_new<CStateMonsterHideFromPoint<_Object>>(obj));
     add_state(eStateAttack_FindEnemy, xr_new<CStateMonsterFindEnemy<_Object>>(obj));
     add_state(eStateAttack_MoveToHomePoint, xr_new<CStateMonsterAttackMoveToHomePoint<_Object>>(obj));
+    add_state(eStateAttack_Siege, xr_new<CStateMonsterAttackSiege<_Object>>(obj)); // NLC
 
     add_state(eStateCustom, xr_new<CStateGroupSquadMoveToRadius<_Object>>(obj));
     add_state(eStateAttack_AttackHidden, xr_new<CStateGroupSquadMoveToRadius<_Object>>(obj));
@@ -175,7 +177,11 @@ void CStateGroupAttackAbstract::execute()
         aggressive = true;
     }
 
-    if (check_home_point())
+    if (object->nlc_siege_wanted()) // NLC: elevated enemy
+    {
+        select_state(eStateAttack_Siege);
+    }
+    else if (check_home_point())
     {
         if (prev_substate == eStateAttack_MoveToHomePoint)
         {
@@ -541,6 +547,7 @@ void CStateGroupAttackAbstract::nlc_log_melee_decision(const CEntityAlive* enemy
     case eStateAttack_RunAttack: name = "run_attack"; break;
     case eStateAttack_Steal: name = "steal"; break;
     case eStateAttack_MoveToHomePoint: name = "home"; break;
+    case eStateAttack_Siege: name = "siege"; break;
     }
 
     const bool aom = object->can_attack_on_move();

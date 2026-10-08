@@ -28,6 +28,7 @@ private:
     u32 m_cache_frame{u32(-1)};
     u16 m_cache_enemy{u16(-1)};
     float m_cache_value{};
+    u32 m_last_attempt_time{}; // NLC
     static bool s_debug_log;
     static bool s_trace_ignore_objects;
     static float s_close_yaw_dist;
@@ -48,6 +49,8 @@ public:
     float distance_to_enemy(const CEntity* enemy);
 
     bool surface_mode() const { return m_surface_mode; }
+    // NLC: time of the last bite/strike hit check (siege low-crate fallback)
+    u32 last_attempt_time() const { return m_last_attempt_time; }
     // [monster_melee] debug_log in game_relations.ltx
     static bool debug_log() { return s_debug_log; }
     // [monster_melee] trace_ignore_objects: the actor line-of-hit trace is blocked only by level geometry

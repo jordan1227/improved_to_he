@@ -21,6 +21,21 @@ void CStateBloodsuckerVampireExecuteAbstract::initialize()
 
     object->CControlledActor::install();
 
+    // NLC: ambush grab: the camera may move slowly after the turn (a struggle), and one grab at a time over all bloodsuckers
+    m_nlc_struggled = false;
+    m_nlc_fired = false;
+    if (object->m_nlc_vampire_ambush)
+    {
+        object->nlc_set_struggle_look(object->m_nlc_b.vampire_struggle_look);
+        CAI_Bloodsucker::m_time_last_vampire = Device.dwTimeGlobal;
+        object->nlc_backhit_grab_started(); // NLC: a back hit's rest of the damage waits for the grab's end
+        // visible for the hold at once (the stock call below waits for the visibility delay); the triple animation
+        // starts on the first execute, after this model swap
+        object->nlc_set_cloak(CAI_Bloodsucker::full_visibility, true);
+        if (CBaseMonster::nlc_evade_debug())
+            Msg("~ [evade] [%s]: vampire: grab start", object->cName().c_str());
+    }
+
     look_head();
 
     m_action = eActionPrepare;
@@ -115,6 +130,11 @@ void CStateBloodsuckerVampireExecuteAbstract::cleanup()
 {
     // Actor()->set_inventory_disabled	(false);
 
+    if (object->m_nlc_vampire_ambush && CBaseMonster::nlc_evade_debug())
+        Msg("~ [evade] [%s]: vampire: grab end after %u ms (%s)", object->cName().c_str(), time_vampire_started ? Device.dwTimeGlobal - time_vampire_started : 0u,
+            m_action == eActionCompleted ? "completed" : "interrupted");
+    object->nlc_backhit_end(m_nlc_fired); // NLC: a broken back-hit grab lets the rest of the hit land
+
     if (object->com_man().ta_is_active())
         object->com_man().ta_deactivate();
 
@@ -150,6 +170,28 @@ TEMPLATE_SPECIALIZATION
 bool CStateBloodsuckerVampireExecuteAbstract::check_start_conditions()
 {
     const CEntityAlive* enemy = object->EnemyMan.get_enemy();
+
+    // NLC: vampire_ambush replaces the want / hit-count / facing gates with the ambush rules (cloaked, unseen, behind the
+    // player, a chance per approach, one grab at a time); the stock actor, melee and line checks stay
+    if (object->m_nlc_vampire_ambush)
+    {
+        if (!smart_cast<CActor const*>(enemy) || object->CControlledActor::is_controlling())
+            return false;
+        if (CAI_Bloodsucker::m_time_last_vampire && Device.dwTimeGlobal < CAI_Bloodsucker::m_time_last_vampire + object->m_vampire_min_delay)
+            return false;
+        // a hit that landed from behind (vampire_backhit_chance) skips the cloak, unseen and roll rules
+        const bool backhit = object->nlc_backhit_ready();
+        if (!backhit && !object->state_invisible)
+            return false;
+        if (smart_cast<CActor const*>(enemy)->input_external_handler_installed())
+            return false;
+        u32 const vertex_id = ai().level_graph().check_position_in_direction(object->ai_location().level_vertex_id(), object->Position(), enemy->Position());
+        if (!ai().level_graph().valid_vertex_id(vertex_id))
+            return false;
+        if (!object->MeleeChecker.can_start_melee(enemy))
+            return false;
+        return backhit || object->nlc_vampire_ambush_ok(enemy);
+    }
 
     // проверить дистанцию
     // 	float dist		= object->MeleeChecker.distance_to_enemy	(enemy);
@@ -209,7 +251,20 @@ void CStateBloodsuckerVampireExecuteAbstract::execute_vampire_continue()
     const CEntityAlive* enemy = object->EnemyMan.get_enemy();
 
     // if (object->Position().distance_to(Actor()->Position()) > 2.f) {
-    if (!object->MeleeChecker.can_start_melee(enemy))
+    // NLC: the ambush grab breaks only beyond vampire_break_dist (else MaxAttackDist): with the stock start distance
+    // (MinAttackDist) a back-hit grab broke 220 ms after its start, the hit's knock-back carried the actor past it
+    bool broken;
+    if (object->m_nlc_vampire_ambush)
+    {
+        const float d = object->MeleeChecker.distance_to_enemy(enemy);
+        const float limit = object->m_nlc_b.vampire_break_dist > 0.f ? object->m_nlc_b.vampire_break_dist : object->MeleeChecker.get_max_distance();
+        broken = d > limit;
+        if (broken && CBaseMonster::nlc_evade_debug())
+            Msg("~ [evade] [%s]: vampire: grab broken after %u ms at %.1f m (limit %.1f)", object->cName().c_str(), Device.dwTimeGlobal - time_vampire_started, d, limit);
+    }
+    else
+        broken = !object->MeleeChecker.can_start_melee(enemy);
+    if (broken)
     {
         object->com_man().ta_deactivate();
         m_action = eActionCompleted;
@@ -224,6 +279,17 @@ void CStateBloodsuckerVampireExecuteAbstract::execute_vampire_continue()
         m_health_loss_activated = true;
     }
 
+    // NLC: struggle: enough mouse travel ends the hold early (the grab still lands, with a smaller wound)
+    if (object->m_nlc_vampire_ambush && !m_nlc_struggled && object->m_nlc_b.vampire_struggle_need > 0.f && object->nlc_struggle_sum() >= object->m_nlc_b.vampire_struggle_need)
+    {
+        m_nlc_struggled = true;
+        m_action = eActionFire;
+        if (CBaseMonster::nlc_evade_debug())
+            Msg("~ [evade] [%s]: vampire: struggle: shaken off after %u ms, mouse travel %.0f", object->cName().c_str(), Device.dwTimeGlobal - time_vampire_started,
+                object->nlc_struggle_sum());
+        return;
+    }
+
     if (time_vampire_started + object->m_vampire_hold_time < Device.dwTimeGlobal)
     {
         m_action = eActionFire;
@@ -233,6 +299,7 @@ void CStateBloodsuckerVampireExecuteAbstract::execute_vampire_continue()
 TEMPLATE_SPECIALIZATION
 void CStateBloodsuckerVampireExecuteAbstract::execute_vampire_hit()
 {
+    m_nlc_fired = true; // NLC
     object->com_man().ta_pointbreak();
     object->sound().play(CAI_Bloodsucker::eVampireHit);
     object->SatisfyVampire();
@@ -247,8 +314,10 @@ void CStateBloodsuckerVampireExecuteAbstract::execute_vampire_hit()
 
     if (smart_cast<CActor const*>(enemy) && !fis_zero(object->m_vampire_wound))
     {
+        // NLC: a shaken-off grab wounds less (local copy, the member stays)
+        const float wound = m_nlc_struggled ? object->m_vampire_wound * object->m_nlc_b.vampire_struggle_wound_k : object->m_vampire_wound;
         IKinematics* pK = smart_cast<IKinematics*>(const_cast<CEntityAlive*>(enemy)->Visual());
-        enemy->conditions().AddWound(object->m_vampire_wound, ALife::eHitTypeWound, pK->LL_BoneID("bip01_head"));
+        enemy->conditions().AddWound(wound, ALife::eHitTypeWound, pK->LL_BoneID("bip01_head"));
     }
 }
 

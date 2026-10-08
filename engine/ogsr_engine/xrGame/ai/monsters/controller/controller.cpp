@@ -1281,22 +1281,7 @@ void CController::nlc_log_thralls(const CEntityAlive* enemy)
 
 bool CController::nlc_resolve_point(CBaseMonster* monster, const Fvector& wanted, Fvector& pos, u32& node) const
 {
-    const CRestrictedObject& restrictions = monster->movement().restrictions();
-
-    node = ai().level_graph().vertex_id(wanted);
-    if (ai().level_graph().valid_vertex_id(node) && restrictions.accessible(wanted))
-    {
-        pos = wanted;
-        return true;
-    }
-
-    // accessible_nearest requires an inaccessible point (VERIFY in CRestrictedObject::accessible_nearest);
-    // called on an accessible one it returns some restrictor border vertex far away
-    if (restrictions.accessible(wanted))
-        return false; // accessible but off the ai-map
-
-    node = restrictions.accessible_nearest(wanted, pos);
-    return ai().level_graph().valid_vertex_id(node) && (pos.distance_to_xz(wanted) <= 6.f);
+    return monster->nlc_point_on_map(wanted, pos, node); // NLC: moved to CBaseMonster (siege uses it too)
 }
 
 // Elder/Shepherd: dominate an eligible mutant in sight. The channel plays a clip and is broken by any hit.
@@ -1421,19 +1406,7 @@ void CController::play_control_sound_start_at(const CEntityAlive* target)
 
 bool CController::nlc_has_los(const Fvector& feet, const CEntityAlive* enemy) const
 {
-    Fvector from = feet;
-    from.y += 1.6f;
-    Fvector to = enemy->Position();
-    to.y += 1.4f;
-
-    Fvector dir = Fvector().sub(to, from);
-    const float range = dir.magnitude();
-    if (range < EPS_L)
-        return true;
-    dir.div(range);
-
-    collide::rq_result R;
-    return !Level().ObjectSpace.RayPick(from, dir, range, collide::rqtStatic, R, const_cast<CController*>(this));
+    return nlc_los_to(feet, enemy, 1.6f); // NLC: moved to CBaseMonster (siege uses it too)
 }
 
 bool CController::nlc_set_target(Fvector pos, u32 node, ENlcPhase phase, LPCSTR kind)

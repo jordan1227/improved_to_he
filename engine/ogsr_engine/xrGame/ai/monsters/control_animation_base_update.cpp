@@ -240,8 +240,11 @@ void CControlAnimationBase::SelectVelocities()
     set_animation_speed();
 
     // установка угловой скорости
+    // NLC: the dodge factor (zigzag legs, lunge) speeds up turning as much as running, so the turn radius the path
+    // was planned with holds (a faster body with the same turn rate overshot and looped: strong cats)
+    const float nlc_turn_k = m_object->nlc_dodge_k();
     if (m_object->state_invisible)
-        m_object->dir().set_heading_speed(path_vel.angular);
+        m_object->dir().set_heading_speed(path_vel.angular * nlc_turn_k);
     else
     {
         item_it = m_anim_storage[cur_anim_info().get_motion()];
@@ -254,7 +257,7 @@ void CControlAnimationBase::SelectVelocities()
             m_object->dir().set_heading_speed(vel * m_object->m_melee_rotation_factor); // todo: make as an external factor
         }
         else
-            m_object->dir().set_heading_speed(item_it->velocity.velocity.angular_real);
+            m_object->dir().set_heading_speed(item_it->velocity.velocity.angular_real * nlc_turn_k);
     }
 }
 

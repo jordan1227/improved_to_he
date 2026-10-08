@@ -111,6 +111,7 @@ public:
 
 public:
     virtual bool run_home_point_when_enemy_inaccessible() const { return false; }
+    virtual bool nlc_siege_capable() const { return false; } // NLC: flies
 
 private:
     void Hide();

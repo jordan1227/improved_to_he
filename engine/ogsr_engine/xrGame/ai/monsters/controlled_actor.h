@@ -17,9 +17,14 @@ class CControlledActor : public CActorInputHandler
 
     bool m_need_turn{};
 
+    // NLC: bloodsucker grab struggle (vampire_struggle_*): look factor after the turn (0 = frozen, stock) and the mouse travel so far
+    float m_nlc_struggle_look{};
+    float m_nlc_struggle_sum{};
+
 public:
     virtual void reinit();
-    virtual float mouse_scale_factor() { return flt_max; }
+    virtual float mouse_scale_factor();
+    virtual void on_mouse_move(int dx, int dy);
     virtual void release();
     virtual void install(CActor*);
     virtual void install();
@@ -33,6 +38,9 @@ public:
     bool is_controlling() { return m_actor != 0; }
 
     void dont_need_turn() { m_need_turn = false; }
+
+    void nlc_set_struggle_look(float k) { m_nlc_struggle_look = k; }
+    float nlc_struggle_sum() const { return m_nlc_struggle_sum; }
 
 private:
     void reset();

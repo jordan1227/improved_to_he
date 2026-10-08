@@ -31,6 +31,7 @@ public:
     virtual void on_activate_control(ControlCom::EControlType);
 
     virtual bool run_home_point_when_enemy_inaccessible() const { return false; }
+    virtual bool nlc_siege_capable() const { return false; } // NLC: species pass (jumps)
 
     /*
     private:

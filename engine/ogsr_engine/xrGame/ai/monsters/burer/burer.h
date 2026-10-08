@@ -124,6 +124,8 @@ public:
     CBurer();
     virtual ~CBurer();
 
+    virtual bool nlc_siege_capable() const { return false; } // NLC: own attack state (species pass)
+
     virtual void reinit();
     virtual void reload(LPCSTR section);
 

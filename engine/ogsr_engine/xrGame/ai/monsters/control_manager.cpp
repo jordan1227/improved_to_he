@@ -368,6 +368,23 @@ void CControl_Manager::lock(CControl_Com* com, ControlCom::EControlType type)
     check_active_com(m_control_elems[type], eRemove);
 }
 
+// NLC: release / unlock only what `com` still holds. capture() steals without asking, so a control can lose its
+// captures to a later one (a lunge during a pounce, nlc-3.589.32 crash); releasing a stolen element would take it
+// from its new owner and read data that is no longer this control's.
+void CControl_Manager::release_pure_owned(CControl_Com* com)
+{
+    const ControlCom::EControlType types[] = {ControlCom::eControlPath, ControlCom::eControlAnimation, ControlCom::eControlMovement, ControlCom::eControlDir};
+    for (const ControlCom::EControlType type : types)
+        if (check_capturer(com, type))
+            release(com, type);
+}
+
+void CControl_Manager::unlock_owned(CControl_Com* com, ControlCom::EControlType type)
+{
+    if (check_capturer(com, type))
+        unlock(com, type);
+}
+
 void CControl_Manager::unlock(CControl_Com* com, ControlCom::EControlType type)
 {
     VERIFY(is_pure(m_control_elems[type]));

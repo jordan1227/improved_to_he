@@ -203,12 +203,38 @@ void CAI_Bloodsucker::Load(LPCSTR section)
     m_visibility_state = unset;
     m_visibility_state_last_changed_time = 0;
 
+    nlc_bs_load(section); // NLC: evasion pass keys
+
     PostLoad(section);
 }
 
 void CAI_Bloodsucker::reinit()
 {
     m_force_visibility_state = unset;
+    m_nlc_tac = SNlcTactic{}; // NLC
+    m_nlc_allow_jump = false;
+    m_nlc_next_pounce = 0;
+    m_nlc_melee_logged = false;
+    m_nlc_reveal_until = 0;
+    m_nlc_grab_intent = false;
+    m_nlc_full_since = 0;
+    m_nlc_pounce_ready_at = 0;
+    m_nlc_cloak_until = 0;
+    m_nlc_roll_flat = SNlcPounceRoll{};
+    m_nlc_roll_perch = SNlcPounceRoll{};
+    m_nlc_pounce_fail_log = 0;
+    m_nlc_perch_since = 0;
+    m_nlc_perch_block_until = 0;
+    m_nlc_strike_reveal_since = 0;
+    m_nlc_strike_reveal_block_until = 0;
+    m_nlc_backhit = false;
+    m_nlc_backhit_in_grab = false;
+    m_nlc_backhit_until = 0;
+    m_nlc_backhit_target = u16(-1);
+    m_nlc_backhit_rest = 0.f;
+    m_nlc_flank_side = 0;
+    m_nlc_flank_side_until = 0;
+    m_nlc_flank_on = false;
 
     inherited::reinit();
     CControlledActor::reinit();
@@ -221,6 +247,10 @@ void CAI_Bloodsucker::reinit()
 
     com_man().ta_fill_data(anim_triple_vampire, "vampire_0", "vampire_1", "vampire_2", TA_EXECUTE_LOOPED, TA_DONT_SKIP_PREPARE,
                            0); // ControlCom::eCapturePath | ControlCom::eCaptureMovement);
+
+    // NLC: pounce (amb_pounce): the only clip with both hands forward, played as the glide; no prepare, no ground state
+    if (m_nlc_b.amb_pounce)
+        com_man().load_jump_data(0, 0, "stand_attack_1", 0, u32(-1), MonsterMovement::eVelocityParameterRunNormal, 0);
 
     m_alien_control.reinit();
 
@@ -460,6 +490,8 @@ void CAI_Bloodsucker::update_invisibility()
 
     using namespace detail::bloodsucker;
 
+    visibility_t nlc_state = unset; // NLC
+
     if (!g_Alive())
     {
         set_visibility_state(full_visibility);
@@ -471,6 +503,10 @@ void CAI_Bloodsucker::update_invisibility()
     else if (Device.dwTimeGlobal < m_runaway_invisible_time + default_runaway_invisible_time)
     {
         set_visibility_state(no_visibility);
+    }
+    else if (nlc_cloak_override(nlc_state)) // NLC: ambush hold, melee reveal, tactic cloak, lunge radius
+    {
+        set_visibility_state(nlc_state);
     }
     else if (CEntityAlive const* const enemy = EnemyMan.get_enemy())
     {
@@ -497,7 +533,16 @@ void CAI_Bloodsucker::update_invisibility()
 
 void CAI_Bloodsucker::UpdateCL()
 {
+    nlc_tactic_update(); // NLC: before the visibility rule (forced cloak state, grab roll reset)
     update_invisibility();
+    // NLC: fully visible since (strike_reveal_ms tell)
+    if (get_visibility_state() == full_visibility)
+    {
+        if (!m_nlc_full_since)
+            m_nlc_full_since = Device.dwTimeGlobal;
+    }
+    else
+        m_nlc_full_since = 0;
     inherited::UpdateCL();
     CControlledActor::frame_update();
     // character_physics_support()->movement()->CollisionEnable(!is_collision_off()); -- that cause crash
@@ -507,6 +552,8 @@ void CAI_Bloodsucker::UpdateCL()
         // update vampire need
         m_vampire_want_value += m_vampire_want_speed * client_update_fdelta();
         clamp(m_vampire_want_value, 0.f, 1.f);
+        nlc_pounce_update(); // NLC
+        nlc_backhit_update(); // NLC
     }
 }
 
@@ -529,6 +576,8 @@ void CAI_Bloodsucker::shedule_Update(u32 dt)
 
 void CAI_Bloodsucker::Die(CObject* who)
 {
+    m_nlc_tac.want = false; // NLC
+    m_nlc_tac.force_vis = unset;
     stop_invisible_predator();
     inherited::Die(who);
 }
@@ -549,7 +598,8 @@ bool CAI_Bloodsucker::check_start_conditions(ControlCom::EControlType type)
 {
     if (type == ControlCom::eControlJump)
     {
-        return false;
+        // NLC: stock never jumps; the pounce opens the gate for the duration of its own call (m_nlc_allow_jump)
+        return m_nlc_allow_jump && inherited::check_start_conditions(type);
     }
 
     if (!inherited::check_start_conditions(type))
@@ -559,10 +609,46 @@ bool CAI_Bloodsucker::check_start_conditions(ControlCom::EControlType type)
 
     if (type == ControlCom::eControlRunAttack)
     {
-        return !state_invisible;
+        // NLC: no lunge while a grab from behind is planned; run_attack_decloak lets the lunge start cloaked
+        if (m_nlc_grab_intent)
+            return false;
+        // NLC: no lunge during a siege or at a perched enemy: it cannot reach it (it lunged at once at a perch-strike
+        // spot, then stood visible, nlc-3.589.35)
+        if (m_nlc_on)
+        {
+            float h = 0.f;
+            if (nlc_siege_active() || nlc_siege_wanted() || (nlc_enemy_perch_h(EnemyMan.get_enemy(), h) && h >= 0.4f))
+                return false;
+        }
+        if (m_nlc_on && !nlc_strike_tell_done())
+            return false; // strike_reveal_margin: fully visible for strike_reveal_ms first (the tell)
+        if (state_invisible && !m_nlc_b.run_attack_decloak)
+            return false;
+        // NLC: reveal here, right before the control activates: a visual swap (cloak <-> full) must never happen while
+        // the lunge plays (the swap replaces the model and restarts its animations; nlc-3.589.31 crash with the pounce)
+        if (m_nlc_on && m_nlc_b.run_attack_decloak)
+            nlc_strike_reveal("lunge", false);
+        if (m_nlc_on && nlc_evade_debug() && EnemyMan.get_enemy())
+            Msg("~ [evade] [%s]: lunge at %.1f m", cName().c_str(), EnemyMan.get_enemy()->Position().distance_to(Position()));
+        return true;
     }
 
     return true;
+}
+
+void CAI_Bloodsucker::on_activate_control(ControlCom::EControlType type)
+{
+    inherited::on_activate_control(type);
+
+    if (type == ControlCom::eControlRunAttack && m_nlc_on)
+        m_nlc_tac.rolled_grab = false; // NLC: a lunge re-opens the grab roll
+}
+
+void CAI_Bloodsucker::HitEntityInJump(const CEntity* pEntity)
+{
+    // NLC: pounce strike, the both-hands clip's hit parameters (as CChimera::HitEntityInJump)
+    SAAParam& params = anim().AA_GetParams("stand_attack_1");
+    HitEntity(pEntity, params.hit_power, params.impulse, params.impulse_dir);
 }
 
 void CAI_Bloodsucker::set_alien_control(bool val) { val ? m_alien_control.activate() : m_alien_control.deactivate(); }
@@ -632,7 +718,10 @@ void CAI_Bloodsucker::HitEntity(const CEntity* pEntity, float fDamage, float imp
     //	impulse *= 10.f;
     // }
 
-    inherited::HitEntity(pEntity, fDamage, impulse, dir);
+    // NLC: a hit from behind may turn into the grab (vampire_backhit_chance)
+    if (nlc_backhit_try(pEntity, fDamage, impulse, dir, hit_type, draw_hit_marks))
+        return;
+    inherited::HitEntity(pEntity, fDamage, impulse, dir, hit_type, draw_hit_marks); // NLC: pass the hit type and marks on
 }
 
 bool CAI_Bloodsucker::in_solid_state() { return true; }

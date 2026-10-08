@@ -20,6 +20,8 @@ class CStateBloodsuckerVampireExecute : public CState<_Object>
 
     bool m_effector_activated;
     bool m_health_loss_activated;
+    bool m_nlc_struggled; // NLC: the player shook the grab off early (vampire_struggle_*)
+    bool m_nlc_fired; // NLC: the grab reached its hit (a back hit's rest of the damage is dropped)
 
 public:
     CStateBloodsuckerVampireExecute(_Object* obj) : inherited(obj) {}

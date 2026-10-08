@@ -66,6 +66,10 @@ void CStateManagerDog::execute()
 
         if (object->Home->at_mid_home(enemy_pos))
             atack = true;
+
+        // NLC: a siege keeps the pack in the attack state (silent waiting lets the 8 s home danger expire)
+        if (object->nlc_siege_active() || object->nlc_siege_wanted())
+            atack = true;
     }
 
     if (!object->is_under_control())

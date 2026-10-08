@@ -76,6 +76,8 @@ float CMeleeChecker::distance_to_enemy(const CEntity* enemy)
 
 void CMeleeChecker::on_hit_attempt(bool hit_success)
 {
+    m_last_attempt_time = Device.dwTimeGlobal; // NLC
+
     // добавить новый элемент в стек
     for (u32 i = HIT_STACK_SIZE - 1; i > 0; i--)
         m_hit_stack[i] = m_hit_stack[i - 1];

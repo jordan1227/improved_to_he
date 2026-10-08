@@ -23,6 +23,10 @@ class CMonsterEnemyMemory
     float m_back_hit_threat; // recorded as damage on a back hit from within m_back_hit_max_dist; 0 = off
     float m_back_hit_max_dist;
 
+    // NLC: siege lock; this enemy is not forgotten by age until m_pin_until (other removal rules still apply)
+    const CEntityAlive* m_pin{};
+    TTime m_pin_until{};
+
 public:
     CMonsterEnemyMemory();
     ~CMonsterEnemyMemory();
@@ -45,7 +49,20 @@ public:
 
     const ENEMIES_MAP& get_memory() { return m_objects; }
 
-    void clear() { m_objects.clear(); }
+    void clear()
+    {
+        m_objects.clear();
+        m_pin = nullptr;
+    }
+
+    // NLC: siege lock (position and time of the entry stay as last sensed)
+    void pin(const CEntityAlive* enemy, TTime until)
+    {
+        m_pin = enemy;
+        m_pin_until = until;
+    }
+    void unpin() { m_pin = nullptr; }
+    TTime memory_time() const { return time_memory; }
     void remove_links(CObject* O);
 
     void add_enemy(const CEntityAlive* enemy);

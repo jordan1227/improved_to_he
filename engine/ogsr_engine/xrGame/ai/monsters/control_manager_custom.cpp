@@ -39,6 +39,14 @@ void CControlManagerCustom::reinit()
     m_rot_jump_data.clear();
 }
 
+void CControlManagerCustom::nlc_load_ability(ControlCom::EControlType type, LPCSTR section)
+{
+    if (type == ControlCom::eControlRunAttack && m_run_attack)
+        m_run_attack->load(section);
+    else if (type == ControlCom::eControlJump && m_jump)
+        m_jump->load(section);
+}
+
 void CControlManagerCustom::add_ability(ControlCom::EControlType type)
 {
     switch (type)

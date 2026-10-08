@@ -114,7 +114,9 @@ void CAI_Dog::Load(LPCSTR section)
     // anim().AddAnim(eAnimJumpGlide,   	"stand_jump_left_",		 0, &velocity_none,		PS_STAND);
     anim().AddAnim(eAnimJumpGlide, "stand_jump_left_", 0, &velocity_none, PS_STAND);
 
-    anim().AddAnim(eAnimSteal, "stand_walk_fwd_", -1, &velocity_steal, PS_STAND);
+    // NLC: anim_steal (evasion pass): stand_steal_ for the sneak / steal gait; default stays the stock walk clip
+    LPCSTR anim_steal = READ_IF_EXISTS(pSettings, r_string, section, "anim_steal", "stand_walk_fwd_");
+    anim().AddAnim(eAnimSteal, anim_steal, -1, &velocity_steal, PS_STAND);
     anim().AddAnim(eAnimThreaten, "stand_threaten_", -1, &velocity_none, PS_STAND);
 
     anim().AddAnim(eAnimSitLieDown, "sit_lie_down_", -1, &velocity_none, PS_SIT);

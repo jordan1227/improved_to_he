@@ -61,6 +61,8 @@ enum EMonsterState
     eStateAttack_HomePoint_Camp = eStateAttack | 23,
     eStateAttack_HomePoint_LookOpenPlace = eStateAttack | 24,
     eStateAttack_Attack_On_Run = eStateAttack | 25,
+    eStateAttack_Siege = eStateAttack | 26, // NLC: elevated enemy (docs/DESIGN_monster_elevation_siege.md)
+    eStateAttack_NlcTactic = eStateAttack | 27, // NLC: species tactic (bloodsucker, docs/DESIGN_monster_movement_under_fire.md 20)
 
     // -------------------------------------------------------------
 
@@ -232,6 +234,8 @@ inline xr_string make_xrstr(EMonsterState state)
     case eStateAttack_HomePoint_Hide: return "Attack_HomePoint_Hide";
     case eStateAttack_HomePoint_Camp: return "Attack_HomePoint_Camp";
     case eStateAttack_HomePoint_LookOpenPlace: return "Attack_HomePoint_LookOpenPlace";
+    case eStateAttack_Siege: return "Attack_Siege";
+    case eStateAttack_NlcTactic: return "Attack_NlcTactic";
     case eStatePanic: return "Panic";
     case eStatePanic_Run: return "Panic_Run";
     case eStatePanic_FaceUnprotectedArea: return "Panic_FaceUnprotectedArea";

@@ -42,13 +42,13 @@ void CControlRotationJump::activate()
 
 void CControlRotationJump::on_release()
 {
-    m_man->unlock(this, ControlCom::eControlPath);
+    m_man->unlock_owned(this, ControlCom::eControlPath);
 
     SControlDirectionData* ctrl_data_dir = (SControlDirectionData*)m_man->data(this, ControlCom::eControlDir);
     if (ctrl_data_dir)
         ctrl_data_dir->linear_dependency = true;
 
-    m_man->release_pure(this);
+    m_man->release_pure_owned(this); // NLC: owner-safe
     m_man->unsubscribe(this, ControlCom::eventAnimationEnd);
 
     m_time_next_rotation_jump = Device.dwTimeGlobal + Random.randI(ROTATION_JUMP_DELAY_MIN, ROTATION_JUMP_DELAY_MAX);
@@ -72,7 +72,8 @@ bool CControlRotationJump::check_start_conditions()
         return false;
 
     SVelocityParam& velocity_run = m_object->move().get_velocity(MonsterMovement::eVelocityParameterRunNormal);
-    if (!fsimilar(m_man->movement().velocity_current(), velocity_run.velocity.linear, START_SPEED_DELTA))
+    // NLC: faster than the normal run counts too (a cloaked bloodsucker runs 9 m/s: the quick turn never fired)
+    if (m_man->movement().velocity_current() < velocity_run.velocity.linear - START_SPEED_DELTA)
         return false;
 
     return true;

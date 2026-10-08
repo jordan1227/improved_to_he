@@ -145,6 +145,8 @@ u32 monster_inv_style(CBaseMonster* monster);
 u32 monster_notice_serial(CBaseMonster* monster);
 // a heard actor shot below the alert power: concern only (CBaseMonster::feel_sound_new); true = handled
 bool monster_faint_shot(CBaseMonster* monster, int sound_type, const Fvector& position, float power);
+// the same test without side effects: an actor shot below the monster's alert tier (siege lock renewal)
+bool monster_shot_is_faint(const CBaseMonster* monster, int sound_type, float power);
 // a heard actor shot below g_shot_alert_pow (CSoundMemoryManager::feel_sound_new)
 void stalker_faint_shot(CAI_Stalker* stalker, const Fvector& position, float weighted_power);
 // an actor bullet segment (CBulletManager::CalcBullet, parallel thread): queued; creatures it passes within

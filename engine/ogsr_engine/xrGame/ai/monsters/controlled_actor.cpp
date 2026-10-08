@@ -22,6 +22,22 @@ void CControlledActor::release()
 {
     inherited::release();
     reset();
+    m_nlc_struggle_look = 0.f;
+    m_nlc_struggle_sum = 0.f;
+}
+
+// NLC: frozen while the camera turns to the bloodsucker; afterwards frozen too unless a struggle look factor is set
+float CControlledActor::mouse_scale_factor()
+{
+    if (is_turning() || m_nlc_struggle_look <= 0.f)
+        return flt_max;
+    return m_nlc_struggle_look;
+}
+
+void CControlledActor::on_mouse_move(int dx, int dy)
+{
+    if (!is_turning())
+        m_nlc_struggle_sum += float(_abs(dx) + _abs(dy));
 }
 
 void CControlledActor::frame_update()
@@ -36,12 +52,16 @@ void CControlledActor::install(CActor* a)
 {
     inherited::install(a);
     m_need_turn = true;
+    m_nlc_struggle_look = 0.f;
+    m_nlc_struggle_sum = 0.f;
 }
 
 void CControlledActor::install()
 {
     inherited::install();
     m_need_turn = true;
+    m_nlc_struggle_look = 0.f;
+    m_nlc_struggle_sum = 0.f;
 }
 
 void CControlledActor::look_point(const Fvector& point) { m_target_point = point; }

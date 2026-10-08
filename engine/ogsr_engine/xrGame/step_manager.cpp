@@ -154,7 +154,8 @@ void CStepManager::update()
 
                 Fvector sound_pos = m_object->Position();
                 sound_pos.y += 0.5;
-                GET_RANDOM(mtl_pair->StepSounds).play_no_feedback(m_object, 0, 0, &sound_pos, &m_step_info.params.step[i].power);
+                float step_vol = m_step_info.params.step[i].power * step_volume_k(); // NLC: the actor callback below keeps the original power
+                GET_RANDOM(mtl_pair->StepSounds).play_no_feedback(m_object, 0, 0, &sound_pos, &step_vol);
 
                 if (actor)
                     actor->callback(GameObject::eOnActorFootStep)(actor->lua_game_object(), m_step_info.params.step[i].power);

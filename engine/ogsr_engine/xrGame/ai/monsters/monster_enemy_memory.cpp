@@ -256,9 +256,13 @@ void CMonsterEnemyMemory::remove_non_actual()
         nit = it;
         ++nit;
         // проверить условия удаления
-        if (!it->first || !it->first->g_Alive() || it->first->getDestroy() || (it->second.time + time_memory < cur_time) || (it->first->g_Team() == monster->g_Team()) ||
-            !monster->memory().enemy().is_useful(it->first))
+        // NLC: a pinned enemy (siege lock) does not age out
+        const bool pinned = it->first && it->first == m_pin && cur_time < m_pin_until;
+        if (!it->first || !it->first->g_Alive() || it->first->getDestroy() || (!pinned && (it->second.time + time_memory < cur_time)) ||
+            (it->first->g_Team() == monster->g_Team()) || !monster->memory().enemy().is_useful(it->first))
         {
+            if (it->first == m_pin)
+                m_pin = nullptr;
             m_objects.erase(it);
         }
     }
@@ -325,6 +329,9 @@ void CMonsterEnemyMemory::remove_links(CObject* O)
     {
         monster->EnemyMan.remove_links(O);
     }
+
+    if (m_pin == O) // NLC
+        m_pin = nullptr;
 
     for (ENEMIES_MAP_IT I = m_objects.begin(); I != m_objects.end(); ++I)
     {

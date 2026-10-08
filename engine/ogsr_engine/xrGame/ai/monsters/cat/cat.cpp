@@ -6,13 +6,22 @@
 #include "../control_animation_base.h"
 #include "../control_movement_base.h"
 
-CCat::CCat() { StateMan = xr_new<CStateManagerCat>(this); }
+CCat::CCat()
+{
+    StateMan = xr_new<CStateManagerCat>(this);
+    // NLC: added before control().load() so the jump_* keys are read; off unless nlc_jump_attack / nlc_turn180 (check_start_conditions)
+    com_man().add_ability(ControlCom::eControlJump);
+    com_man().add_ability(ControlCom::eControlRotationJump);
+}
 
 CCat::~CCat() { xr_delete(StateMan); }
 
 void CCat::Load(LPCSTR section)
 {
     inherited::Load(section);
+
+    m_nlc_jump_attack = !!READ_IF_EXISTS(pSettings, r_bool, section, "nlc_jump_attack", false); // NLC
+    m_nlc_turn180 = !!READ_IF_EXISTS(pSettings, r_bool, section, "nlc_turn180", false); // NLC
 
     anim().accel_load(section);
     anim().accel_chain_add(eAnimWalkFwd, eAnimRun);
@@ -93,6 +102,12 @@ void CCat::reinit()
     VERIFY(def3);
 
     // CJumpingAbility::reinit(def1, def2, def3);
+
+    // NLC: prepare in the run (jump_attack_0), glide (jump_attack_1), landing (jump_attack_2), as the dog's jump data
+    if (m_nlc_jump_attack && def1.valid() && def2.valid() && def3.valid())
+        com_man().load_jump_data(0, "jump_attack_0", "jump_attack_1", "jump_attack_2", MonsterMovement::eVelocityParameterRunNormal, MonsterMovement::eVelocityParameterRunNormal, 0);
+    if (m_nlc_turn180)
+        com_man().add_rotation_jump_data("run_turn_180_r_0", "run_turn_180_r_1", "run_turn_180_r_0", "run_turn_180_r_1", deg(179));
 }
 
 void CCat::try_to_jump()
@@ -141,6 +156,16 @@ void CCat::CheckSpecParams(u32 spec_params)
 }
 
 void CCat::UpdateCL() { inherited::UpdateCL(); }
+
+bool CCat::check_start_conditions(ControlCom::EControlType type)
+{
+    // NLC: the jump and turn abilities exist for every cat (added in the constructor), used only when configured
+    if (type == ControlCom::eControlJump && !m_nlc_jump_attack)
+        return false;
+    if (type == ControlCom::eControlRotationJump && !m_nlc_turn180)
+        return false;
+    return inherited::check_start_conditions(type);
+}
 
 void CCat::HitEntityInJump(const CEntity* pEntity)
 {

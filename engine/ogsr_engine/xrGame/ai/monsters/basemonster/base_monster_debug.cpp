@@ -209,6 +209,8 @@ void CBaseMonster::debug_fsm()
     case eStateAttack_HomePoint_Hide: sprintf_s(st, "Attack :: Home Point :: Hide"); break;
     case eStateAttack_HomePoint_Camp: sprintf_s(st, "Attack :: Home Point :: Camp"); break;
     case eStateAttack_HomePoint_LookOpenPlace: sprintf_s(st, "Attack :: Home Point :: Look Open Place"); break;
+    case eStateAttack_Siege: sprintf_s(st, "Attack :: Siege"); break; // NLC
+    case eStateAttack_NlcTactic: sprintf_s(st, "Attack :: Tactic"); break; // NLC
 
     case eStatePanic_Run: sprintf_s(st, "Panic :: Run Away"); break;
     case eStatePanic_FaceUnprotectedArea: sprintf_s(st, "Panic :: Face Unprotected Area"); break;

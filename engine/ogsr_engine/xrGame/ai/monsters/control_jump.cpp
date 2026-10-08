@@ -92,13 +92,13 @@ void CControlJump::activate()
 
 void CControlJump::on_release()
 {
-    m_man->unlock(this, ControlCom::eControlPath);
+    // NLC: owner-safe (a later control may have taken some of the captures; nlc-3.589.32 crash here)
+    m_man->unlock_owned(this, ControlCom::eControlPath);
 
-    SControlDirectionData* ctrl_data_dir = (SControlDirectionData*)m_man->data(this, ControlCom::eControlDir);
-    VERIFY(ctrl_data_dir);
-    ctrl_data_dir->linear_dependency = true;
+    if (SControlDirectionData* ctrl_data_dir = (SControlDirectionData*)m_man->data(this, ControlCom::eControlDir))
+        ctrl_data_dir->linear_dependency = true;
 
-    m_man->release_pure(this);
+    m_man->release_pure_owned(this);
     m_man->unsubscribe(this, ControlCom::eventVelocityBounce);
     m_man->unsubscribe(this, ControlCom::eventAnimationEnd);
     m_man->unsubscribe(this, ControlCom::eventAnimationStart);
@@ -127,7 +127,12 @@ void CControlJump::start_jump(const Fvector& point)
     m_target_position = point;
     m_blend_speed = -1.f;
 
+    // NLC: evasion pass diagnostics (item 4): jumps whose target is above the monster (chimera / snork ledges)
+    if (CBaseMonster::nlc_evade_debug() && point.y - m_object->Position().y > 1.f)
+        Msg("~ [evade] [%s]: jump up %.1f m, %.1f m away", m_object->cNameSect().c_str(), point.y - m_object->Position().y, point.distance_to(m_object->Position()));
+
     m_jump_start_pos = m_object->Position();
+    m_nlc_end_reason = "?";
     m_time_started = 0;
     m_jump_time = 0;
     m_last_saved_pos_time = 0;
@@ -301,6 +306,7 @@ void CControlJump::update_frame()
     // check if all jump stages are ended
     if (m_velocity_bounced && m_man->path_builder().is_path_end(0.1f))
     {
+        m_nlc_end_reason = "landed";
         stop();
         return;
     }
@@ -343,7 +349,10 @@ void CControlJump::update_frame()
 
     // check if we landed
     if (is_on_the_ground())
+    {
+        m_nlc_end_reason = "landed";
         grounding();
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -413,7 +422,20 @@ void CControlJump::grounding()
     }
 }
 
-void CControlJump::stop() { m_man->notify(ControlCom::eventJumpEnd, 0); }
+void CControlJump::stop()
+{
+    // NLC: evasion pass diagnostics: where an upward jump ended, relative to the ai-map under it
+    if (CBaseMonster::nlc_evade_debug() && m_target_position.y - m_jump_start_pos.y > 1.f)
+    {
+        const u32 vertex = m_object->ai_location().level_vertex_id();
+        if (ai().level_graph().valid_vertex_id(vertex))
+            Msg("~ [evade] [%s]: upward jump ended (%s, %u ms), %.1f m above its ai vertex", m_object->cNameSect().c_str(), m_nlc_end_reason ? m_nlc_end_reason : "?",
+                m_time_started ? time() - m_time_started : 0u, m_object->Position().y - ai().level_graph().vertex_position(vertex).y);
+        else
+            Msg("~ [evade] [%s]: upward jump ended, no ai vertex", m_object->cNameSect().c_str());
+    }
+    m_man->notify(ControlCom::eventJumpEnd, 0);
+}
 
 //////////////////////////////////////////////////////////////////////////
 // Get target point in world space
@@ -448,6 +470,11 @@ void CControlJump::on_event(ControlCom::EEventType type, ControlCom::IEventData*
         // !TEMP!
         if ((event_data->m_ratio < 0) && !m_velocity_bounced && (m_jump_time != 0))
         {
+            // NLC: a bounce right at takeoff (the feet scraping the ground or a rock edge) ended half of the bloodsucker's
+            // pounces after one frame; a species may ignore bounces for its first nlc_jump_bounce_grace() ms
+            if (const u32 grace = m_object->nlc_jump_bounce_grace(); grace && time() < m_time_started + grace)
+                return;
+            m_nlc_end_reason = "velocity bounce";
             if (is_on_the_ground())
             {
                 m_velocity_bounced = true;
@@ -468,6 +495,17 @@ void CControlJump::on_event(ControlCom::EEventType type, ControlCom::IEventData*
         // start new animation
         SControlAnimationData* ctrl_data = (SControlAnimationData*)m_man->data(this, ControlCom::eControlAnimation);
         VERIFY(ctrl_data);
+
+        // NLC: a lost capture or a null blend (LL_PlayCycle can return none, e.g. after a visual swap) used to crash
+        // below (nlc-3.589.31, bloodsucker pounce); end the jump instead, as the run attack does
+        if (!ctrl_data || ((m_anim_state_current == eStateGlide) && (m_anim_state_prev == eStateGlide) &&
+                              (!m_man->animation().current_blend() || !m_man->data(this, ControlCom::eControlDir))))
+        {
+            Msg("! [jump] [%s]: animation start without %s, jump ended", m_object->cName().c_str(),
+                !ctrl_data ? "animation capture" : (!m_man->animation().current_blend() ? "blend" : "direction capture"));
+            stop();
+            return;
+        }
 
         if ((m_anim_state_current == eStateGlide) && (m_anim_state_prev == eStateGlide))
         {

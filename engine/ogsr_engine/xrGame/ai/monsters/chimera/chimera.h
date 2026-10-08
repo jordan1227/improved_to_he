@@ -39,6 +39,7 @@ private:
 
 public:
     attack_params const& get_attack_params() const { return m_attack_params; }
+    virtual bool nlc_siege_capable() const { return false; } // NLC: own attack state (species pass)
 
     DECLARE_SCRIPT_REGISTER_FUNCTION
 };

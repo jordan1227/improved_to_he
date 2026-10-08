@@ -23,15 +23,21 @@ void CStateMonsterAttackRunAbstract::execute()
 
     u32 level_vertex = object->EnemyMan.get_enemy()->ai_location().level_vertex_id();
     Fvector level_pos = ai().level_graph().vertex_position(level_vertex);
-    object->nlc_run_target_override(level_pos, level_vertex); // NLC: e.g. the pseudogiant's locked charge point
+    const bool nlc_override = object->nlc_run_target_override(level_pos, level_vertex); // NLC: e.g. the pseudogiant's locked charge point
+    const bool nlc_zz = !nlc_override && object->nlc_zz_target(level_pos, level_vertex); // NLC: zigzag leg instead of the straight charge
     object->path().set_target_point(level_pos, level_vertex);
 
     if (level_vertex == object->ai_location().level_vertex_id())
+    {
         object->set_action(ACT_STAND_IDLE);
+        // NLC: standing under an enemy on a low perch it kept whatever heading it arrived with (often side-on: a
+        // bloodsucker's temple exposed for seconds); face the enemy (the stand turn clips play on their own)
+        object->dir().face_target(object->EnemyMan.get_enemy());
+    }
     else
         object->set_action(ACT_RUN);
 
-    object->path().set_rebuild_time(object->get_attack_rebuild_time());
+    object->path().set_rebuild_time(nlc_zz ? 150 : object->get_attack_rebuild_time()); // NLC: legs switch quickly
     object->path().set_use_covers();
     object->path().set_cover_params(0.1f, 30.f, 1.f, 30.f);
     object->path().set_try_min_time(false);
@@ -48,7 +54,7 @@ void CStateMonsterAttackRunAbstract::execute()
         SSquadCommand command;
         squad->GetCommand(object, command);
 
-        if (command.type == SC_ATTACK)
+        if (command.type == SC_ATTACK && !object->nlc_side_guard_watched()) // NLC: a watched side-guard monster charges straight, no encircle
         {
             object->path().set_use_dest_orient(true);
             object->path().set_dest_direction(command.direction);

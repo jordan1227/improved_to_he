@@ -245,6 +245,10 @@ static u8 enemy_inaccessible(CBaseMonster* const object)
 
 bool CBaseMonster::enemy_accessible()
 {
+    // NLC: an elevated enemy is handled by the siege substate (or attacked: low crate), never by the home point
+    if (m_nlc_siege.owns)
+        return true;
+
     if (!m_first_tick_enemy_inaccessible)
         return true;
 
@@ -278,6 +282,8 @@ void CBaseMonster::update_enemy_accessible_and_at_home_info()
         m_first_tick_enemy_inaccessible = 0;
         m_last_tick_enemy_inaccessible = 0;
         m_nlc_inaccessible_reason = eNlcAccessible;
+        nlc_siege_track(); // NLC
+        nlc_evade_update(); // NLC
         return;
     }
 
@@ -297,6 +303,9 @@ void CBaseMonster::update_enemy_accessible_and_at_home_info()
             m_last_tick_enemy_inaccessible = 0;
         }
     }
+
+    nlc_siege_track(); // NLC
+    nlc_evade_update(); // NLC
 }
 
 void CBaseMonster::UpdateCL()
@@ -377,6 +386,19 @@ void CBaseMonster::Die(CObject* who)
         sound().play(MonsterSound::eMonsterSoundDieInAnomaly);
     else
         sound().play(MonsterSound::eMonsterSoundDie);
+
+    // NLC: besieging squad mates count the loss (siege exit after flee_losses)
+    if (CMonsterSquad* squad = monster_squad().get_squad(this))
+    {
+        xr_vector<CEntity*> mates;
+        squad->nlc_members(mates);
+        for (CEntity* e : mates)
+        {
+            CBaseMonster* mate = smart_cast<CBaseMonster*>(e);
+            if (mate && mate != this && mate->g_Alive() && !mate->getDestroy())
+                mate->nlc_siege_on_pack_loss();
+        }
+    }
 
     monster_squad().remove_member((u8)g_Team(), (u8)g_Squad(), (u8)g_Group(), this);
 
@@ -640,7 +662,7 @@ void CBaseMonster::TranslateActionToPathParams()
         break;
     }
 
-    if (state_invisible)
+    if (state_invisible && !(action == ACT_STEAL && nlc_cloak_keeps_gait())) // NLC: a cloaked edge approach keeps the sneak gait
     {
         vel_mask = MonsterMovement::eVelocityParamsInvisible;
         des_mask = MonsterMovement::eVelocityParameterInvisible;

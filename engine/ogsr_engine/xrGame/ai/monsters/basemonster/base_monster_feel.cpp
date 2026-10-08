@@ -38,6 +38,10 @@ void CBaseMonster::feel_sound_new(CObject* who, int eType, CSound_UserDataPtr us
     if (this == who)
         return;
 
+    // NLC: the enemy fired a weapon: a zigzagging charge switches side (no-op unless a zigzag leg is running)
+    if (who && m_nlc_evade.zz_on && EnemyMan.get_enemy() && who->ID() == EnemyMan.get_enemy()->ID() && (eType & SOUND_TYPE_WEAPON_SHOOTING) == SOUND_TYPE_WEAPON_SHOOTING)
+        nlc_zz_on_fire();
+
     if (user_data)
         user_data->accept(sound_user_data_visitor());
 
@@ -87,6 +91,10 @@ void CBaseMonster::feel_sound_new(CObject* who, int eType, CSound_UserDataPtr us
 
     // execute callback
     sound_callback(who, eType, Position, power);
+
+    // NLC: a besieged enemy's sound renews the siege lock (faint shots only partly); before the faint-shot return
+    if (m_nlc_siege.active && power >= db().m_fSoundThreshold)
+        nlc_siege_on_noise(who, eType, Position, power);
 
     // NLC M3: a faint heard actor shot only sends the monster to look (nlc_stealth monster_shot_alert_pow / species shot_alert_pow)
     if (g_actor && who == g_actor && power >= db().m_fSoundThreshold && nlc_stealth::monster_faint_shot(this, eType, Position, power))
@@ -294,6 +302,10 @@ void CBaseMonster::HitSignal(float amount, Fvector& vLocalDir, CObject* who, s16
 
     HitMemory.add_hit(who, hit_side);
 
+    // NLC: a hit by the enemy switches the zigzag side (feel_sound_new above already did for a shot sound; the call is idempotent)
+    if (who && EnemyMan.get_enemy() && who->ID() == EnemyMan.get_enemy()->ID())
+        nlc_zz_on_fire();
+
     // NLC: a hit in the back from close range provokes (threat only, no health), so a flanking
     // knife pulls aggro even when it barely hurts
     if (hit_side == eSideBack && who && who != this && EnemyMemory.back_hit_threat() > 0.f && who->Position().distance_to(Position()) <= EnemyMemory.back_hit_max_dist())
@@ -482,6 +494,8 @@ float CBaseMonster::nlc_move_speed_k() const
     float k = m_nlc_speed_base * m_nlc_speed_bonus;
     if (now < m_nlc_haste_end)
         k *= m_nlc_haste_k;
+    if (now < m_nlc_evade.dodge_end)
+        k *= m_nlc_evade.dodge_k; // NLC: zigzag legs, lunge
 
     if (now >= m_nlc_slow_end || m_nlc_slow_end <= m_nlc_slow_start)
         return k;

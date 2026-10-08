@@ -11,6 +11,8 @@ void CControlRunAttack::load(LPCSTR section)
 {
     read_distance(section, "Run_Attack_Dist", m_min_dist, m_max_dist);
     read_delay(section, "Run_Attack_Delay", m_min_delay, m_max_delay);
+    m_cooldown = READ_IF_EXISTS(pSettings, r_u32, section, "Run_Attack_Cooldown", 2200); // NLC
+    m_overshoot = READ_IF_EXISTS(pSettings, r_float, section, "Run_Attack_Overshoot", -1.f); // NLC
 }
 
 void CControlRunAttack::reinit()
@@ -23,6 +25,15 @@ void CControlRunAttack::reinit()
 
 void CControlRunAttack::activate()
 {
+    // NLC: the cooldown is armed by a lunge that really starts. It used to be armed in check_start_conditions, before the
+    // species gate (CBaseMonster::check_start_conditions) could refuse, so a refused lunge locked the control out for 2.2 s.
+    // A charge that ends early must still not re-lock at once.
+    m_time_next_attack = Device.dwTimeGlobal + m_cooldown;
+
+    // NLC: lunge speed (run_attack_haste_k, evasion pass; 1 = stock)
+    if (m_object->nlc_run_attack_haste_k() > 1.f)
+        m_object->nlc_set_dodge(m_object->nlc_run_attack_haste_k(), 2000);
+
     m_man->capture_pure(this);
     m_man->subscribe(this, ControlCom::eventAnimationEnd);
     m_man->subscribe(this, ControlCom::eventAnimationStart);
@@ -48,8 +59,11 @@ void CControlRunAttack::activate()
 
 void CControlRunAttack::on_release()
 {
-    m_man->unlock(this, ControlCom::eControlPath);
-    m_man->release_pure(this);
+    if (m_object->nlc_run_attack_haste_k() > 1.f)
+        m_object->nlc_clear_dodge(); // NLC
+
+    m_man->unlock_owned(this, ControlCom::eControlPath); // NLC: owner-safe
+    m_man->release_pure_owned(this);
     m_man->unsubscribe(this, ControlCom::eventAnimationEnd);
     m_man->unsubscribe(this, ControlCom::eventAnimationStart);
 }
@@ -60,6 +74,15 @@ bool CControlRunAttack::check_start_conditions()
     // the face cone is ~30 deg and the speed must match run speed within 2. The ram has to start
     // while charging toward the enemy without taking over standing melee (paws).
     if (is_active())
+    {
+        fl_hook::boar_result(fl_hook::eBoarActive);
+        return false;
+    }
+
+    // NLC: never steal the controls from another special control (a jump / pounce, the vampire grab, a stagger):
+    // capture_pure takes them without asking (nlc-3.589.32 crash: a lunge during a pounce). The chase's base path
+    // builder and animation are base controllers and do not count as captured.
+    if (m_object->com_man().is_jumping() || m_man->is_captured(ControlCom::eControlAnimation))
     {
         fl_hook::boar_result(fl_hook::eBoarActive);
         return false;
@@ -130,8 +153,7 @@ bool CControlRunAttack::check_start_conditions()
         return false;
     }
 
-    // activate() snaps the heading to the enemy: a charge that ends early must not re-lock at once
-    m_time_next_attack = now + 2200;
+    // NLC: the 2.2 s cooldown is armed in activate() (see there)
 
     fl_hook::boar_result(fl_hook::eBoarOk);
     return true;
@@ -167,10 +189,17 @@ void CControlRunAttack::on_event(ControlCom::EEventType type, ControlCom::IEvent
 
         // distance
         float path_dist = anim_time * velocity.velocity.linear;
+        if (m_object->nlc_run_attack_haste_k() > 1.f)
+            path_dist *= m_object->nlc_move_speed_k(); // NLC: the line matches the boosted lunge speed
 
         Fvector dir;
         dir.sub(m_object->EnemyMan.get_enemy()->Position(), m_object->Position());
         dir.normalize_safe();
+
+        // NLC: Run_Attack_Overshoot: stop shortly past the enemy instead of running the whole clip on (the long
+        // loop back afterwards looked like circling away)
+        if (m_overshoot >= 0.f)
+            path_dist = std::min(path_dist, std::max(m_object->EnemyMan.get_enemy()->Position().distance_to(m_object->Position()) + m_overshoot, 1.f));
 
         Fvector target_position;
         target_position.mad(m_object->Position(), dir, path_dist);

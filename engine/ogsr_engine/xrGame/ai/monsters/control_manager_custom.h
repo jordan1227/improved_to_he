@@ -49,6 +49,10 @@ public:
     virtual void update_schedule();
 
     void add_ability(ControlCom::EControlType);
+    // NLC: bloodsucker / boar add the run attack and jump abilities after control().load(), so their keys were never
+    // read; the bloodsucker loads them on request (run_attack_cfg, amb_pounce) and reads the run attack state
+    void nlc_load_ability(ControlCom::EControlType type, LPCSTR section);
+    CControlRunAttack* nlc_run_attack() const { return m_run_attack; }
 
     //-------------------------------------------------------------------------------
     // Sequencer

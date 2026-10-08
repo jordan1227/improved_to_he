@@ -34,6 +34,9 @@ public:
     // process event
     virtual void event_on_step() {}
 
+    // NLC: factor on the step sound volume (and so on how far monsters hear it); only the bloodsucker overrides it
+    virtual float step_volume_k() { return 1.f; }
+
 protected:
     Fvector get_foot_position(ELegType leg_type);
     virtual bool is_on_ground() { return true; }

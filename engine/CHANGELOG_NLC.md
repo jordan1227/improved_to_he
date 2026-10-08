@@ -5,6 +5,223 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.38 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `69190B60364EC350DA37B4FEA85A8FC8E59D8C1B74F7CC9CCAA3B24896C37F93` (archived with its PDB in `nlc_tools/builds/20261008_133415_69190b60`).
+- **Status:** runtime pending. Fixes after the `.37` tests (`xray_hawkl_08-10-26_13-10-00.log`, `13-20-54`).
+
+### NLC
+
+- **Pounce:** 3 of 5 pounces ended one frame after takeoff (a velocity bounce at the start); `CControlJump` ignores
+  bounces for `nlc_jump_bounce_grace()` ms (bloodsucker `pounce_bounce_grace_ms` 150, other species 0 = stock). The
+  upward-jump log names why and after how long a jump ended; a ready perch pounce that does not start logs why.
+- **Perch strike:** shot at the perch-strike spot, the bloodsucker leaves it for `pounce_perch_block_ms` (it re-picked the
+  same spot after every shot when no retreat point existed).
+- **Bait and flank:** a bait no longer restarts while a flanker's strike is still fresh (every later bait ended after
+  0.2 s).
+
+## nlc-3.589.37 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `34CB9B7F2F65E5C42B9D2133BA458CE8ED05AF261854BD88C917BE2F6A1B3766` (archived with its PDB in `nlc_tools/builds/20261008_130858_34cb9b7f`).
+- **Status:** runtime pending. Fixes after the `.36` test (`xray_hawkl_08-10-26_12-47-40.log`) and a code review.
+
+### NLC
+
+- **Back-hit grab:** it broke 220 ms after its start (the stock start distance, `MinAttackDist`, was also the break
+  distance); the ambush grab now breaks only beyond `vampire_break_dist` (3.5 m) and logs why and when it ends. A grab
+  that breaks early lets the held-back rest of the hit land; the rest keeps its world direction. The back hit is rolled
+  only when a grab can start from there, and the actor is checked again (jumping, climbing, facing it) before the grab.
+- **Cloak:** fully visible while its grab holds the actor (a strike's x-ray window could swap the model mid-grab).
+- **Pounce:** range measured as `CControlJump::can_jump` does (3D, feet to the enemy's centre).
+- **Zigzag:** the `zz_react_ms` reaction time restarts after the enemy left sight or range.
+- **Stalk:** the flank preference restarts with each stalk and each new enemy; `pounce_perch_block_ms` at least 2 s.
+
+## nlc-3.589.36 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `86154D49B50015A6CC36D172A65C60CECCDFFDE846F6D69E00933A75CF9D07CB` (archived with its PDB in `nlc_tools/builds/20261008_124644_86154d49`).
+- **Status:** runtime pending. Round 6 after the `.35` test (`xray_hawkl_08-10-26_12-09-38.log`), design doc 21.
+
+### NLC
+
+- **Perch strike:** no lunge during a siege or at a perched enemy; the perch-strike spot stays cloaked until the pounce
+  is ready; a refused perch roll or no pounce within `pounce_perch_wait_ms` gives the spot up for
+  `pounce_perch_block_ms` (it hides instead of standing there).
+- **Pounce:** all variants at a perched enemy (`pounce_perch_chance`, `pounce_perch_max_h`); flat ground only with
+  `pounce_flat` (strong). The rolls happen per cycle before the reveal; a failed jump is logged.
+- **Cloak:** a strike reveal without a strike ends after `strike_reveal_max_ms`, then no strike reveal for
+  `strike_reveal_block_ms`.
+- **Back-hit grab:** a hit from behind may turn into the grab (`vampire_backhit_chance`); `vampire_backhit_damage_k` of
+  it lands at once, the rest only when no grab starts within `vampire_backhit_window_ms`.
+- **Flanks:** stalk points on the player's flank first (`tac_stalk_flank`); an unwatched charge curves toward the flank
+  or back (`charge_flank`, bloodsucker `nlc_run_target_override`).
+- **Zigzag trigger:** `zz_need_gun 3` (aiming down sights at it or the crosshair on it) and `zz_react_ms`.
+
+## nlc-3.589.35 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `56DA4D67D582E71170C8A2D7E11B1C24FB4B4D197AFCA0AA8BFF38F83F1EE649` (archived with its PDB in `nlc_tools/builds/20261008_014521_56da4d67`).
+- **Status:** runtime pending. After the `.34` test (`xray_hawkl_08-10-26_01-17-40.log`).
+
+### NLC
+
+- **Bloodsucker cloak:** the strike reveal applies only while charging (attack run, facing within 45 degrees, enemy
+  seen) or at a siege perch-strike spot (margin now 2 m); every other siege hold or move stays cloaked; a feint ends with
+  a cloak window (`tac_feint_cloak_ms`).
+- **Perch strike:** a strong bloodsucker besieging a player on a perch it can jump to goes to pounce distance and
+  pounces (`nlc_siege_perch_strike`, `CBaseMonster` hook).
+- **Feint:** shows itself while charging (no stop); with no hidden point it charges on cloaked.
+- **Stalk:** points on its own side of the player (the route across ended the stalk at once).
+- **Hit and run:** `tac_recover_break_health` breaks away even at point blank; with no hidden point it takes a point
+  out of the enemy's view, else runs straight away.
+- **Turning back after a pass:** the rotation jump also starts above the normal run speed (a cloaked bloodsucker
+  never turned quickly); `Run_Attack_Overshoot` ends the lunge line shortly past the enemy. The rotation jump
+  releases only the controls it owns.
+- **Cats:** the stock attack jump was never wired (`nlc_jump_attack`), and the `run_turn_180_r` running turnaround
+  (`nlc_turn180`); both on in `m_cat.ltx`.
+- **Logs:** every lunge (`lunge at`).
+- **Config:** bloodsucker `jump_factor 0.9` (strong), `tac_feint_show_ms 700`, break health 0.2 / 0.3; cats
+  `zz_max_angle 14`; dogs `zz_min_leg_k 2`.
+
+## nlc-3.589.34 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `3B287996E5A2FF6C811E2BFD6D91EC51EF270A7B9A568C5A9D530FCEBF4DBAB1` (archived with its PDB in `nlc_tools/builds/20261008_011344_3b287996`).
+- **Status:** runtime pending. After the `.33` test (`xray_hawkl_08-10-26_00-49-32.log`).
+
+### NLC
+
+- **Bloodsucker strike tell:** `strike_reveal_margin` (3 m): fully visible within the start distance of a ready lunge or
+  pounce plus the margin, else within `cloak_cooldown_radius` (5 m); a strike needs `strike_reveal_ms` (300) fully
+  visible first. The pounce only opens the after-strike window (no model swap under a running jump).
+  `Run_Attack_Cooldown` (stock 2200 ms) and `pounce_chance` (strong 0.5: else the lunge) are config keys.
+- **Perch:** a besieging bloodsucker may pounce at a perched enemy it can reach (`jump_max_height`); bloodsuckers hold
+  the low-perch bite window 0.8 s (`elev_reach_timeout`); a side-guard species tries the retreat ring before holding a
+  visible spot, and holds one standing and facing the enemy. The attack-run state faces the enemy when it stands in
+  place (all species; it kept its arrival heading, side-on).
+- **Zigzag turning:** the heading speed follows the dodge factor (the turn radius the path was planned with holds);
+  leg angle capped by the run turn rate (`zz_turn_share`), legs shorter than `zz_min_leg_k` x the turn radius run
+  straight (no walk-speed curves), no new leg while heading more than `zz_heading_gate` off the enemy (cats circled).
+- **Config:** cats `zz_max_angle 20`, legs 700-1000 ms, `zz_seen_grace 1500`; bloodsucker `lunge_reveal 2`,
+  `vampire_struggle_need 2500`, `Melee_Rotation_Factor 3.0`.
+
+## nlc-3.589.33 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `8D411AAFC272EBF79D586492A2FFE77DA7FFAE00118CDECCF0088D21D218BB29` (archived with its PDB in `nlc_tools/builds/20261008_004826_8d411aaf`).
+- **Status:** runtime pending. Fixes after the `.32` test (`xray_hawkl_08-10-26_00-39-43.log`).
+
+### NLC
+
+- **Crash fix (control capture steal):** a lunge started during a pounce (NLC had dropped the run attack's stock
+  "nothing else captured" check for the boar ram); `capture_pure` took the jump's controls, the jump ended and
+  `CControlJump::on_release` read the direction data it no longer owned. The run attack now refuses while a jump runs or
+  a non-base control holds the animation (jump, vampire grab, stagger); the jump and the run attack release and unlock
+  only the elements they still own (`CControl_Manager::release_pure_owned`, `unlock_owned`).
+- **Grab from behind:** never starts while a lunge or jump plays or in the x-ray window after a strike (a grab started
+  0.35 s into a lunge was carried past the player and ended at once: a camera twitch, no hold).
+
+## nlc-3.589.32 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `782D95F57F65A2A7C7ECE0E21DE4A0BC598F097C38DEABEA11B28D33AB7C705B` (archived with its PDB in `nlc_tools/builds/20261008_003651_782d95f5`).
+- **Status:** runtime pending. Fixes after the first `.31` test (`xray_hawkl_08-10-26_00-13-52.log`).
+
+### NLC
+
+- **Crash fix (bloodsucker pounce):** `CControlJump::on_event` ended in a null dereference on the first glide frame;
+  the pounce decloaked to full visibility in the same tick, which swaps the model and restarts its animations. The
+  jump now ends (logged) instead of crashing when its animation capture, direction capture or blend is missing; the
+  pounce reveals only to x-ray (same predator visual); the bloodsucker's visibility is frozen while a jump or lunge
+  plays; the lunge reveals right before the control activates, not during it.
+- **Strike reveal:** `lunge_reveal` (1 x-ray, 2 full) and `lunge_reveal_ms`: after a lunge or pounce the bloodsucker
+  stays in that state until the first melee swing (which decloaks at once).
+- **Grab from behind reachable:** `vampire_intent_dist`: when a grab from behind is planned (cloaked, unseen, behind
+  the player, chance rolled), the lunge and pounce stand down and the cloak holds until grab range. The grab start
+  decloaks at once. The pounce also never fires in a siege.
+- **Stalking:** the enemy is pinned in memory during stalk, hit-and-run and feint (memory 40 s vs. stalks up to 60 s);
+  hiding and stalk points are picked around the last known position, not the true one.
+- **Tuning keys:** `tac_recover_min_time`, `tac_feint_vis`, `tac_bait_vis` (1 x-ray, 2 full).
+- **Zigzag:** `zz_seen_grace` (the monster's own sight flickers between vision updates and stopped legs), per-variant
+  frequency `zz_chance`, `zz_burst`, `zz_rest`; dog, pseudodog and cat variants tuned (weak dogs least, pseudodogs
+  and cats most).
+- **Game data:** `game_relations.ltx` (new zigzag keys; `evade_debug_log` / `elev_debug_log` true for the test
+  round), `m_bloodsucker.ltx`, `m_dog.ltx`, `m_pseudodog.ltx`, `m_cat.ltx`.
+
+## nlc-3.589.31 (2026-10-07)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `764E22AE64F1EA523025F0D1F277D4FC1B19DEE90A0B7A557428FD55B9C56E3E` (engine/bin_x64; archived with its PDB in `nlc_tools/builds/20261007_235838_764e22ae`).
+- **Status:** runtime pending. Design: `docs/DESIGN_monster_movement_under_fire.md`; handoff:
+  `docs/HANDOFF_monster_movement_under_fire.md`. Rides on top of the uncommitted siege pass (`nlc-3.589.30`).
+
+### NLC
+
+- **Evasion pass (`base_monster_evade.cpp`, `[monster_evasion]` in `game_relations.ltx`):** every feature has its own
+  key and defaults to off; `evade_enabled = false` (shared or per section) turns all of it off for a species;
+  `evade_debug_log` writes `~ [evade]` lines.
+  - **Threat test:** `nlc_threat()` (cached 200 ms): watched (view cone `evade_watch_cone` + one static ray), armed
+    (a gun, no knife or binoculars), aimed (`evade_aim_angle`), locked (crosshair ray, actor only).
+  - **Zigzag approach:** `zz_*` keys. Charging species leave the straight line in legs of `acos(1/zz_speed_k)` degrees
+    (capped by `zz_max_angle`) with a dodge speed factor (`nlc_set_dodge`, separate from the giant's haste), from
+    `zz_dist.y` to `zz_dist.x`, when watched (`zz_need_gun`: 0 watched, 1 armed, 2 aimed); shot sounds, near misses
+    and hits switch the side. Hooks in `CStateMonsterAttackRun::execute` and the far branch of the attack-on-move state.
+    On in: dog, pseudodog, cat, bloodsucker.
+  - **Side guard (`side_guard`, bloodsucker):** a watched guarded monster ignores the squad encircle orientation; siege
+    goto / retreat / flee picks skip points that would cross the line of sight (`side_guard_angle`,
+    `side_guard_short`); with none left, a radial escape straight away from the enemy; lateral-run diagnostics.
+  - **Run attack:** the 2.2 s cooldown is armed when the lunge really starts (it was armed before the species gate could
+    refuse it); `run_attack_haste_k` speeds up the lunge. **Found:** `CAI_Bloodsucker` and `CAI_Boar` add the run attack
+    after `control().load()`, so `Run_Attack_Dist` / `Run_Attack_Delay` were never read (code floors: 2.5-5.5 m, no
+    delay). New bloodsucker key `run_attack_cfg` loads them (off by default; the boar is unchanged).
+  - **Siege placement:** `elev_pick_near_anchor` ranks ambush points by their distance to the enemy's ground point.
+  - **Dog sneak:** `anim_steal` (dog, `stand_steal_`); upward-jump diagnostics in `CControlJump`.
+- **Bloodsucker behaviour set (`bloodsucker_tactics.cpp`, `eStateAttack_NlcTactic`):** cloak hold at the siege ambush
+  (`amb_cloak_hold`), full visibility only inside `cloak_lunge_radius` while the lunge is ready, lunge from cloak with
+  decloak (`run_attack_decloak`), melee reveal, faint steps while cloaked (`CStepManager::step_volume_k`), edge sneak
+  (`sneak_near_dist`), hit and run (`tac_recover_*`), stalk for openings (`tac_stalk_*`, `tac_open_*`), feint
+  (`tac_feint_*`), bait and flank pair (`tac_pair_enabled`), night boldness (`tac_night_*`), vampire grab as a true
+  ambush from behind with a chance per variant and a mouse-shake struggle (`vampire_*`, `CActorInputHandler::on_mouse_move`),
+  experimental pounce (`amb_pounce`, strong). Variants in `m_bloodsucker.ltx`; the phantom is excluded.
+- **Game data:** `game_relations.ltx` (`[monster_evasion]`), `m_bloodsucker.ltx`, `m_dog.ltx`, `m_pseudodog.ltx`,
+  `m_cat.ltx`. Vampire numbers and the variant table are untuned starting values.
+
+## nlc-3.589.30 (2026-10-07)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `9FCCF18989CAC0DD9038095D4E1FE06D8A5487CA330E74FB638AD1A4EC4DCFE4`
+- **Status:** runtime pending. Design: `docs/DESIGN_monster_elevation_siege.md`.
+
+### NLC
+
+- **Siege of an elevated enemy:** an enemy out of reach because of height (roof, ledge, vehicle) is besieged
+  instead of the stock home-point shuffle (`eStateAttack_Siege`, `base_monster_siege.cpp`): monsters wait at points
+  the enemy cannot see near its ground point (ambush ring, then a looser watch ring with one peeking watcher per
+  squad), move when exposed or near-missed, retreat out of sight when shot, rest per species. Config
+  `[monster_elevation]` in `game_relations.ltx` (`elev_enabled` master switch, `elev_vs_npc`), per-section overrides.
+- **Anti-bait:** an enemy coming down within `elev_reengage_close` is attacked at once; farther away the re-engage
+  delay grows with each bait (3 / 6 / 10 s), and the break-off grace drops to 1 s after the first.
+- **Hostility kept (lock):** noise or sight pins the enemy in monster memory (`CMonsterEnemyMemory::pin`) for the
+  species patience, then the stock 20 s memory; faint (suppressed outer-tier) shots renew up to
+  `elev_faint_patience`; losing the enemy this way starts the stealth "lost the trail" alert.
+- **Exits:** a squad that loses `elev_flee_losses` (default `hunt_flee_losses`) members during a siege abandons it;
+  a bolt far from the enemy pulls one distractible besieger (boar, flesh) away; a low perch (up to
+  `elev_reach_height`) is attacked until no bite was tried for `elev_reach_timeout`.
+- **Moved helpers:** `nlc_point_on_map` / `nlc_los_to` from `CController` to `CBaseMonster` (controller unchanged).
+- **After the first test rounds:** hidden = three static rays from the enemy's eyes (head, both body ends) all
+  blocked; an outer ring before a visible fallback (lies down there); a still-hidden spot is kept; the sneak gait
+  only from out of sight; the low-perch attack never inside a siege, dropped when shot without biting, 15 s block;
+  dogs stay in the attack state during a siege (`dog_state_manager`: the 6 m / mid-home / 8 s danger gate let them
+  idle); at most 4 point searches per frame over all monsters.
+  The lock survives an interrupted siege (hit reaction, sound states) and a restart keeps the patience running;
+  a peeking watcher gets the vision factor `elev_peek_detect_k` (dogs 2, peek 4 s).
+- **Opt-outs:** controller, poltergeist, snork, burer, chimera.
+- **Game data:** `game_relations.ltx` (`[monster_elevation]`), species keys in `m_dog`, `m_pseudodog`,
+  `m_bloodsucker`, `m_boar`, `m_flesh`, `m_giant`, `m_zombie`; `dsh_battle_radius.script` releases the gunfire
+  pursuit 25 m out when the actor is elevated.
+
 ## nlc-3.589.29 (2026-10-07)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

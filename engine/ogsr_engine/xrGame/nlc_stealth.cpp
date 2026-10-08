@@ -1076,14 +1076,20 @@ u32 monster_inv_style(CBaseMonster* monster)
     return Device.dwTimeGlobal < v.m_nlc_inv_until ? v.m_nlc_inv_style : 0;
 }
 
-bool monster_faint_shot(CBaseMonster* monster, int sound_type, const Fvector& position, float power)
+bool monster_shot_is_faint(const CBaseMonster* monster, int sound_type, float power)
 {
     if ((u32(sound_type) & SOUND_TYPE_WEAPON_SHOOTING) != SOUND_TYPE_WEAPON_SHOOTING)
         return false;
     const CVisualMemoryManager& v = monster->memory().visual();
     const float alert = v.m_nlc_shot_alert_pow >= 0.f ? v.m_nlc_shot_alert_pow : p_monster_shot_alert_pow;
-    if (alert <= 0.f || power >= alert)
+    return alert > 0.f && power < alert;
+}
+
+bool monster_faint_shot(CBaseMonster* monster, int sound_type, const Fvector& position, float power)
+{
+    if (!monster_shot_is_faint(monster, sound_type, power))
         return false;
+    const CVisualMemoryManager& v = monster->memory().visual();
     if (!monster->EnemyMan.get_enemy() && Device.dwTimeGlobal >= v.m_nlc_notice_next)
     {
         monster->memory().visual().m_nlc_notice_next = Device.dwTimeGlobal + u32(p_monster_notice_ms);
@@ -1307,6 +1313,12 @@ void near_miss_process(const Fvector& start, const Fvector& dir, float length)
         {
             if (!monster->EnemyMan.get_enemy())
                 monster_notice(monster, origin, "near_miss");
+            else
+            {
+                monster->nlc_siege_on_near_miss(origin); // NLC: a besieger's spot is exposed (no-op outside a siege)
+                if (monster->EnemyMan.get_enemy()->ID() == a->ID())
+                    monster->nlc_zz_on_fire(); // NLC: a zigzagging charge switches side (no-op without a running leg)
+            }
         }
         else if (smart_cast<CAI_Stalker*>(creature))
             set_heard(v, origin, p_near_miss_value, 2);
@@ -1424,6 +1436,7 @@ void bolt_noise(const BoltContact& b)
     Level().ObjectSpace.GetNearest(nearest, b.pos, range, nullptr);
     Fvector from = b.pos;
     from.y += 0.3f;
+    bool siege_distracted = false; // NLC: one besieger per bolt
     for (CObject* o : nearest)
     {
         CCustomMonster* c = smart_cast<CCustomMonster*>(o);
@@ -1446,6 +1459,9 @@ void bolt_noise(const BoltContact& b)
         }
         else if (CBaseMonster* m = smart_cast<CBaseMonster*>(c))
         {
+            // NLC: a distractible besieger goes to look (docs/DESIGN_monster_elevation_siege.md 4.9)
+            if (m->EnemyMan.get_enemy() && !siege_distracted && m->nlc_siege_on_bolt(b.pos))
+                siege_distracted = true;
             if (m->EnemyMan.get_enemy() || !m->EnemyMan.is_enemy(a))
                 continue;
             CVisualMemoryManager& v = m->memory().visual();

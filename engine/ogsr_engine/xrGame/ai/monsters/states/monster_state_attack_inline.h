@@ -9,6 +9,8 @@
 #include "monster_state_steal.h"
 #include "monster_state_attack_camp.h"
 #include "monster_state_home_point_attack.h"
+#include "monster_state_attack_siege.h" // NLC
+#include "monster_state_attack_tactic.h" // NLC
 
 #include "../ai_monster_squad.h"
 #include "../ai_monster_squad_manager.h"
@@ -31,6 +33,8 @@ CStateMonsterAttackAbstract::CStateMonsterAttack(_Object* obj) : inherited(obj)
     add_state(eStateAttack_Steal, xr_new<CStateMonsterSteal<_Object>>(obj));
     add_state(eStateAttackCamp, xr_new<CStateMonsterAttackCamp<_Object>>(obj));
     add_state(eStateAttack_MoveToHomePoint, xr_new<CStateMonsterAttackMoveToHomePoint<_Object>>(obj));
+    add_state(eStateAttack_Siege, xr_new<CStateMonsterAttackSiege<_Object>>(obj)); // NLC
+    add_state(eStateAttack_NlcTactic, xr_new<CStateMonsterAttackTactic<_Object>>(obj)); // NLC
 }
 
 // Lain: added
@@ -46,6 +50,8 @@ CStateMonsterAttackAbstract::CStateMonsterAttack(_Object* obj, state_ptr state_m
     add_state(eStateAttack_Steal, xr_new<CStateMonsterSteal<_Object>>(obj));
     add_state(eStateAttackCamp, xr_new<CStateMonsterAttackCamp<_Object>>(obj));
     add_state(eStateAttack_MoveToHomePoint, state_move2home);
+    add_state(eStateAttack_Siege, xr_new<CStateMonsterAttackSiege<_Object>>(obj)); // NLC
+    add_state(eStateAttack_NlcTactic, xr_new<CStateMonsterAttackTactic<_Object>>(obj)); // NLC
 }
 
 TEMPLATE_SPECIALIZATION
@@ -60,6 +66,8 @@ CStateMonsterAttackAbstract::CStateMonsterAttack(_Object* obj, state_ptr state_r
     add_state(eStateAttack_Steal, xr_new<CStateMonsterSteal<_Object>>(obj));
     add_state(eStateAttackCamp, xr_new<CStateMonsterAttackCamp<_Object>>(obj));
     add_state(eStateAttack_MoveToHomePoint, xr_new<CStateMonsterAttackMoveToHomePoint<_Object>>(obj));
+    add_state(eStateAttack_Siege, xr_new<CStateMonsterAttackSiege<_Object>>(obj)); // NLC
+    add_state(eStateAttack_NlcTactic, xr_new<CStateMonsterAttackTactic<_Object>>(obj)); // NLC
 }
 
 TEMPLATE_SPECIALIZATION
@@ -83,7 +91,11 @@ void CStateMonsterAttackAbstract::execute()
 {
     bool can_attack_on_move = object->can_attack_on_move();
 
-    if (check_home_point())
+    if (object->nlc_siege_wanted()) // NLC: elevated enemy
+        select_state(eStateAttack_Siege);
+    else if (object->nlc_tactic_wanted()) // NLC: species tactic (bloodsucker)
+        select_state(eStateAttack_NlcTactic);
+    else if (check_home_point())
         select_state(eStateAttack_MoveToHomePoint);
     else if (check_steal_state())
         select_state(eStateAttack_Steal);
