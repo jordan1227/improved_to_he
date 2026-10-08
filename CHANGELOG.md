@@ -1,6 +1,219 @@
-<!-- nlc-changelog-head: f98f23b39fe25bf259522e040fc5bae3d3ed1504 -->
+<!-- nlc-changelog-head: 1d0e5e4a998d6d737468dc76f1592da45e4d5ef8 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 1d0e5e4a998d6d737468dc76f1592da45e4d5ef8 -->
+## 08.10.26 14:41 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [1d0e5e4](https://github.com/jordan1227/improved_to_he/commit/1d0e5e4a998d6d737468dc76f1592da45e4d5ef8)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/items.ltx
+- M gamedata/config/misc/rx_gl.ltx
+- M gamedata/config/misc/shop_sakharov/trade_sakharov.ltx
+- M gamedata/config/text/eng/st_body_health.xml
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/st_body_health.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+- A gamedata/meshes/dynamics/items/drugs/morphine.ogf
+- M gamedata/scripts/ai_additions/rx_gl.script
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/dsh_hud_icons.script
+- M gamedata/scripts/gulag/gulag_escape.script
+- M gamedata/scripts/he_body_health.script
+- M gamedata/scripts/level_weathers.script
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/scripts/ui/ui_cheat_flask_quickly.script
+- M gamedata/scripts/vergas/razgruzka.script
+- M gamedata/spawns/all.spawn
+- A gamedata/textures/item/item_morphine.dds
+- M gamedata/textures/textures.ltx
+- M gamedata/textures/ui/ui_icon_equipment_15.dds
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/game_relations.ltx
+- M gamedata/config/creatures/m_bloodsucker.ltx
+- M gamedata/config/creatures/m_boar.ltx
+- M gamedata/config/creatures/m_cat.ltx
+- M gamedata/config/creatures/m_dog.ltx
+- M gamedata/config/creatures/m_flesh.ltx
+- M gamedata/config/creatures/m_giant.ltx
+- M gamedata/config/creatures/m_pseudodog.ltx
+- M gamedata/config/creatures/m_zombie.ltx
+- M gamedata/scripts/dsh_battle_radius.script
+- M gamedata/scripts/sivol/sivol_bloodsucker_head.script
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l06_rostok.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/way_l06_rostok.ltx
+- M manifest.txt
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorInput.cpp
+- M engine/ogsr_engine/xrGame/actor_input_handler.h
+- M engine/ogsr_engine/xrGame/ai/monsters/ai_monster_squad.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_debug.cpp
+- A engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_evade.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_feel.cpp
+- A engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_siege.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_startup.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.h
+- A engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_tactics.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_vampire_execute.h
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_vampire_execute_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer.h
+- M engine/ogsr_engine/xrGame/ai/monsters/cat/cat.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/cat/cat.h
+- M engine/ogsr_engine/xrGame/ai/monsters/chimera/chimera.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation_base_update.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager_custom.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager_custom.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_rotation_jump.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_run_attack.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_run_attack.h
+- M engine/ogsr_engine/xrGame/ai/monsters/controlled_actor.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controlled_actor.h
+- M engine/ogsr_engine/xrGame/ai/monsters/controller/controller.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controller/controller.h
+- M engine/ogsr_engine/xrGame/ai/monsters/dog/dog.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/dog/dog_state_manager.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/group_states/group_state_attack_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/melee_checker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/melee_checker.h
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.h
+- M engine/ogsr_engine/xrGame/ai/monsters/poltergeist/poltergeist.h
+- M engine/ogsr_engine/xrGame/ai/monsters/snork/snork.h
+- M engine/ogsr_engine/xrGame/ai/monsters/state_defs.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_on_run_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_run_inline.h
+- A engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_siege.h
+- A engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_tactic.h
+- M engine/ogsr_engine/xrGame/nlc_stealth.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.h
+- M engine/ogsr_engine/xrGame/step_manager.cpp
+- M engine/ogsr_engine/xrGame/step_manager.h
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+
+<!-- nlc-changelog-commit: 654e31db2725956b6fdff5d20785e0a397559745 -->
+## 08.10.26 14:41 МСК - Кровососы и игрок-возвышенность Add elevated-siege and evasion AI pass
+
+Commit: [654e31d](https://github.com/jordan1227/improved_to_he/commit/654e31db2725956b6fdff5d20785e0a397559745)
+
+### Description
+
+This commit adds the NLC monster AI pass for elevated enemy sieges, danger-side zigzag evasion, and bloodsucker pounce/ambush tactics. It also hardens control ownership during jumps and run-attacks, adds vampire grab struggle and back-hit handling, and updates the affected species configs and engine version/changelog metadata.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/game_relations.ltx
+- M gamedata/config/creatures/m_bloodsucker.ltx
+- M gamedata/config/creatures/m_boar.ltx
+- M gamedata/config/creatures/m_cat.ltx
+- M gamedata/config/creatures/m_dog.ltx
+- M gamedata/config/creatures/m_flesh.ltx
+- M gamedata/config/creatures/m_giant.ltx
+- M gamedata/config/creatures/m_pseudodog.ltx
+- M gamedata/config/creatures/m_zombie.ltx
+- M gamedata/scripts/dsh_battle_radius.script
+- M gamedata/scripts/sivol/sivol_bloodsucker_head.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorInput.cpp
+- M engine/ogsr_engine/xrGame/actor_input_handler.h
+- M engine/ogsr_engine/xrGame/ai/monsters/ai_monster_squad.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_debug.cpp
+- A engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_evade.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_feel.cpp
+- A engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_siege.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_startup.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.h
+- A engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_tactics.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_vampire_execute.h
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_vampire_execute_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer.h
+- M engine/ogsr_engine/xrGame/ai/monsters/cat/cat.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/cat/cat.h
+- M engine/ogsr_engine/xrGame/ai/monsters/chimera/chimera.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation_base_update.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager_custom.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager_custom.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_rotation_jump.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_run_attack.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_run_attack.h
+- M engine/ogsr_engine/xrGame/ai/monsters/controlled_actor.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controlled_actor.h
+- M engine/ogsr_engine/xrGame/ai/monsters/controller/controller.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controller/controller.h
+- M engine/ogsr_engine/xrGame/ai/monsters/dog/dog.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/dog/dog_state_manager.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/group_states/group_state_attack_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/melee_checker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/melee_checker.h
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.h
+- M engine/ogsr_engine/xrGame/ai/monsters/poltergeist/poltergeist.h
+- M engine/ogsr_engine/xrGame/ai/monsters/snork/snork.h
+- M engine/ogsr_engine/xrGame/ai/monsters/state_defs.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_on_run_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_run_inline.h
+- A engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_siege.h
+- A engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_tactic.h
+- M engine/ogsr_engine/xrGame/nlc_stealth.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.h
+- M engine/ogsr_engine/xrGame/step_manager.cpp
+- M engine/ogsr_engine/xrGame/step_manager.h
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+
+<!-- nlc-changelog-commit: 5fc8095c1f189755c06621ff65618022af2b9ece -->
+## 07.10.26 17:26 МСК - Манифест
+
+Commit: [5fc8095](https://github.com/jordan1227/improved_to_he/commit/5fc8095c1f189755c06621ff65618022af2b9ece)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: f98f23b39fe25bf259522e040fc5bae3d3ed1504 -->
 ## 07.10.26 17:24 МСК - Controller AI, psy hooks, and input scramble
