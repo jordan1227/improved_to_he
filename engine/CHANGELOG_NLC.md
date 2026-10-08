@@ -5,6 +5,95 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.44 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `2B56763F9A336785A4990E8696766B02C2129BEC51E0B7E026FFB2D11A29DBF8` (archived with its PDB in `nlc_tools/builds/20261008_165525_2b56763f`).
+- **Status:** runtime pending. After the `.43` test (`xray_hawkl_08-10-26_16-44-30.log`).
+
+### NLC
+
+- **Pounce relaunch:** "on the ground" is less than half the expected flight progress, checked from 120 ms through the
+  first half of the jump; the jump measures from the relaunch point (a jump started at a run kept the run's momentum,
+  passed the fixed 0.5 m test and still died, moved 0.5 m).
+- **Config:** `jump_max_height` 4.0 (a perch seen from a dip is 3.2-3.4 m to the target centre: "jump not possible"),
+  `pounce_perch_block_ms` 8 s (a blocked perch strike left it holding a visible fallback beside the rock).
+
+## nlc-3.589.43 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `49741AC1102173306FC4E7CA3493EA3769F2245FC212144D3DD4D3ECCF9F2679` (archived with its PDB in `nlc_tools/builds/20261008_164043_49741ac1`).
+- **Status:** runtime pending. After the `.42` test (`xray_hawkl_08-10-26_16-28-12.log`).
+
+### NLC
+
+- **Pounce:** "baby jumps" also at the stock factor (moved 0.2-0.6 m, flat and perch, at random): the character kept its
+  ground contact over the launch step, took ground control back and the speed limit ate the jump velocity.
+  `CControlJump::update_frame` launches a jump that is still on the ground 120 ms after its start again, at most twice
+  (species with an NLC jump only).
+- **Perch strike:** the spot is chosen out of 12 directions around the enemy, preferring its back and sides (away
+  from its view) over a long way around.
+
+## nlc-3.589.42 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `D7E1D3CA141E85A1D18E6404D889F41EBF2158C27B4C05E7D6205D40C4FA3531` (archived with its PDB in `nlc_tools/builds/20261008_162742_d7e1d3ca`).
+- **Status:** runtime pending. After the `.41` test (`xray_hawkl_08-10-26_16-17-02.log`).
+
+### NLC
+
+- **Flat pounce:** still died in place at `pounce_flat_factor` 1.9 although the takeoff passed 6 m/s upward (the target
+  is the enemy's centre, ~1 m up); 3 of 4 failed, every flat pounce at the stock factor flew. Config: factor 0
+  (= `jump_factor`); the engine jump cannot launch that flat and fast.
+- **Pounce:** the sight gate also accepts the visual memory's "visible now" (it waited 2 m from a visible player:
+  "visible right now" flickers between vision updates).
+
+## nlc-3.589.41 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `890DD254CA9B59C6E1BEB65F695AA55A28D8F5BA96F3F6915646FB0554400DC3` (archived with its PDB in `nlc_tools/builds/20261008_161632_890dd254`).
+- **Status:** runtime pending. After the `.40` test.
+
+### NLC
+
+- **Flat pounce:** with `pounce_flat_factor` 1.9 the takeoff was too flat: the character stayed in ground contact,
+  regained ground control and the pounce died in place (the running-attack clip played standing, "moved 0.3 m").
+  `CControlJump::calculate_jump_time` lowers a forced factor until the takeoff is at least `nlc_jump_min_vy()` upward
+  (bloodsucker `pounce_min_vy` 6 m/s; world gravity 19.62).
+
+## nlc-3.589.40 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `093B74820D81AB2C18FF77659C72220B0143533CD6E23E43ED2E6EF166F61743` (archived with its PDB in `nlc_tools/builds/20261008_160140_093b7482`).
+- **Status:** runtime pending. After the `.39` test (`xray_hawkl_08-10-26_15-46-50.log`).
+
+### NLC
+
+- **Flat pounce:** `pounce_flat_factor` never applied (`CControlManagerCustom::jump` resets `force_factor`); it is set
+  after the start and reset when the pounce ends.
+- **Perch pounce:** the facing tolerance follows `jump_max_angle` (0.6 rad; it waited 24-28 deg off, the siege turns
+  only beyond 30); the perch spot tries other sides around the enemy when the straight one is off the ai-map.
+- **Tactics:** a re-entry of the tactic state no longer drops the running tactic (a recover ended after 1 s, idle).
+- **Logs:** every bloodsucker pounce logs how it ended, after how long and how far it moved.
+
+## nlc-3.589.39 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `CFF14B93350028F169121244F092CC8D65C2C6F55F6FC790340847C534A698EA` (archived with its PDB in `nlc_tools/builds/20261008_154404_cff14b93`).
+- **Status:** runtime pending. After the `.38` test (`xray_hawkl_08-10-26_15-11-26.log`).
+
+### NLC
+
+- **Perch strike:** the spot is placed around the enemy itself, at the xz distance that puts the 3D jump range mid band
+  (it stood 7-9 m away, out of range, when the enemy's ai vertex lay off on the rock); out of range at the spot, it
+  picks a new one.
+- **Pounce:** separate ranges for a perch (`pounce_perch_dist`) and flat ground (`pounce_flat_dist`); flat ground is
+  lower, faster and longer (`pounce_flat_factor`); the glide clip is configurable (`pounce_anim`, now the running
+  attack); an own hit test, centre to centre (`pounce_hit_dist`), as the stock one missed perched players; one hit per pounce.
+- **Cloak:** never fully invisible within `cloak_xray_radius` of the enemy (weak 3, normal 2.5, strong 2 m).
+- **Tactics:** hit and run for all variants (35/45/55% health, `tac_recover_cooldown_rand`); weak bloodsuckers stalk
+  (closer, shorter); normal ones feint (rarer); a pair forms when one member has `tac_pair_lead` (strong), who baits.
+
 ## nlc-3.589.38 (2026-10-08)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

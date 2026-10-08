@@ -232,7 +232,16 @@ public:
         float sneak_near_dist{}; // edge sneak: closer than this, unseen, near the edge of the view (0 = off)
         float sneak_edge_cone{deg2rad(75.f)};
         bool amb_pounce{}; // experimental jump strike
-        float pounce_min{4.f}, pounce_max{7.f};
+        float pounce_min{4.f}, pounce_max{7.f}; // perch pounce range (pounce_perch_dist, else jump_min/max_distance), 3D feet to the enemy's centre
+        float pounce_flat_min{4.f}, pounce_flat_max{7.f}; // flat-ground pounce range (pounce_flat_dist)
+        float pounce_flat_factor{};
+        float pounce_min_vy{}; // the flat pounce keeps at least this takeoff speed upward (m/s; too flat, it dies in place) // jump time divider on flat ground (> jump_factor: lower, faster, longer; 0 = jump_factor)
+        shared_str pounce_anim; // glide clip (pounce_anim, default stand_attack_1)
+        float pounce_hit_dist{2.2f};
+        float pounce_max_angle{deg2rad(20.f)}; // jump_max_angle (rad in the config, as CControlJump reads it) // own hit test during the pounce: centre to centre (the stock test missed perched targets)
+        float cloak_xray_radius{}; // never fully invisible this close to the enemy: at least x-ray (0 = off)
+        u32 tac_recover_cooldown_rand{}; // + random 0..this ms on the hit-and-run cooldown
+        bool tac_pair_lead{}; // can be the bait of a pair; a pair forms only with at least one lead
         u8 lunge_reveal{2}; // visibility a lunge or pounce reveals: 1 x-ray (partial), 2 full (stock-like); the pounce never goes above x-ray
         u32 lunge_reveal_ms{}; // after a lunge or pounce: hold the reveal state this long or until the first melee swing (0 = off)
         float vampire_intent_dist{8.f}; // a grab from behind is planned this close: no lunge or pounce, stay cloaked
@@ -303,6 +312,8 @@ public:
     void nlc_bs_load(LPCSTR section);
     void nlc_set_cloak(visibility_t state, bool bypass_delay);
     bool nlc_cloak_override(visibility_t& state);
+    bool nlc_cloak_rules(visibility_t& state);
+    void nlc_pounce_hit_update();
     bool nlc_lunge_ready();
     bool nlc_vampire_ambush_ok(const CEntityAlive* enemy);
     void nlc_tactic_update();
@@ -312,6 +323,7 @@ public:
     virtual bool nlc_siege_perch_strike(const CEntityAlive* enemy, float& strike_dist);
     virtual void nlc_siege_perch_shot();
     virtual u32 nlc_jump_bounce_grace() const { return m_nlc_on ? m_nlc_b.pounce_bounce_grace_ms : 0; }
+    virtual float nlc_jump_min_vy() const { return m_nlc_on ? m_nlc_b.pounce_min_vy : 0.f; }
     virtual void nlc_tactic_begin();
     virtual void nlc_tactic_execute();
     virtual void nlc_tactic_end();
@@ -402,6 +414,9 @@ private:
     SNlcPounceRoll m_nlc_roll_flat, m_nlc_roll_perch;
     u32 m_nlc_pounce_fail_log{};
     u32 m_nlc_perch_block_log{}; // diagnostics: why a ready perch pounce does not start
+    u32 m_nlc_perch_repick_at{}; // perch spot out of pounce range: pick it again (not before this)
+    bool m_nlc_pounce_hit{}; // the current pounce has hit (own hit test or CControlJump)
+    bool m_nlc_pouncing{}; // a pounce of ours is in the air
     u32 m_nlc_perch_since{}; // holding the siege perch-strike spot since
     u32 m_nlc_perch_block_until{}; // no perch strike before this
     // strike reveal timeout (strike_reveal_max_ms)

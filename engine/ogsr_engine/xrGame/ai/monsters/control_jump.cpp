@@ -133,6 +133,7 @@ void CControlJump::start_jump(const Fvector& point)
 
     m_jump_start_pos = m_object->Position();
     m_nlc_end_reason = "?";
+    m_nlc_relaunch = 0;
     m_time_started = 0;
     m_jump_time = 0;
     m_last_saved_pos_time = 0;
@@ -311,6 +312,34 @@ void CControlJump::update_frame()
         return;
     }
 
+    // NLC: a jump that is still on the ground shortly after its launch: the character kept its ground contact over the
+    // launch step, took ground control back and the speed limit ate the jump velocity (it "landed" after the jump
+    // time having moved 0.3 m, at random, flat or perch). Launch it again from here, at most twice; only species
+    // with an NLC jump (nlc_jump_bounce_grace). "On the ground": less than half the expected flight progress, checked
+    // from 120 ms through the first half of the jump (a fixed 0.5 m test missed a jump started at a run: the run's own
+    // momentum carried it 0.5 m)
+    bool nlc_stuck = false;
+    if (m_time_started && m_nlc_relaunch < 2 && m_object->nlc_jump_bounce_grace() && m_jump_time > EPS_L)
+    {
+        const float elapsed = float(time() - m_time_started) / 1000.f;
+        if (elapsed > 0.12f && elapsed < 0.5f * m_jump_time)
+        {
+            const float expected = m_target_position.distance_to_xz(m_jump_start_pos) * elapsed / m_jump_time;
+            nlc_stuck = m_object->Position().distance_to_xz(m_jump_start_pos) < 0.5f * expected;
+        }
+    }
+    if (nlc_stuck)
+    {
+        ++m_nlc_relaunch;
+        m_jump_start_pos = m_object->Position();
+        calculate_jump_time(m_target_position, true);
+        m_object->character_physics_support()->movement()->Jump(m_target_position, m_jump_time);
+        m_time_started = time();
+        m_time_next_allowed = m_time_started + m_delay_after_jump;
+        if (CBaseMonster::nlc_evade_debug())
+            Msg("~ [evade] [%s]: jump still on the ground, launched again (%u)", m_object->cNameSect().c_str(), m_nlc_relaunch);
+    }
+
     if (m_anim_state_current == eStateGlide && in_auto_aim())
     {
         // set angular speed in exclusive force mode
@@ -425,12 +454,12 @@ void CControlJump::grounding()
 void CControlJump::stop()
 {
     // NLC: evasion pass diagnostics: where an upward jump ended, relative to the ai-map under it
-    if (CBaseMonster::nlc_evade_debug() && m_target_position.y - m_jump_start_pos.y > 1.f)
+    if (CBaseMonster::nlc_evade_debug() && (m_target_position.y - m_jump_start_pos.y > 1.f || m_object->nlc_jump_bounce_grace()))
     {
         const u32 vertex = m_object->ai_location().level_vertex_id();
         if (ai().level_graph().valid_vertex_id(vertex))
-            Msg("~ [evade] [%s]: upward jump ended (%s, %u ms), %.1f m above its ai vertex", m_object->cNameSect().c_str(), m_nlc_end_reason ? m_nlc_end_reason : "?",
-                m_time_started ? time() - m_time_started : 0u, m_object->Position().y - ai().level_graph().vertex_position(vertex).y);
+            Msg("~ [evade] [%s]: jump ended (%s, %u ms, moved %.1f m), %.1f m above its ai vertex", m_object->cNameSect().c_str(), m_nlc_end_reason ? m_nlc_end_reason : "?",
+                m_time_started ? time() - m_time_started : 0u, m_object->Position().distance_to(m_jump_start_pos), m_object->Position().y - ai().level_graph().vertex_position(vertex).y);
         else
             Msg("~ [evade] [%s]: upward jump ended, no ai vertex", m_object->cNameSect().c_str());
     }
@@ -458,6 +487,26 @@ void CControlJump::calculate_jump_time(Fvector const& target, bool const check_f
     float ph_time = m_object->character_physics_support()->movement()->JumpMinVelTime(target);
     // выполнить прыжок в соответствии с делителем времени
     float cur_factor = (check_force_factor && m_data.force_factor > 0) ? m_data.force_factor : m_jump_factor;
+
+    // NLC: a forced faster (flatter) jump keeps a minimum takeoff speed upward (nlc_jump_min_vy): too flat, the
+    // character stays in ground contact on the first physics step, regains ground control and the jump dies in place
+    // (bloodsucker flat pounce: "landed" after 0.5 s, moved 0.3 m)
+    if (check_force_factor && m_data.force_factor > 0)
+    {
+        const float vy_min = m_object->nlc_jump_min_vy();
+        const float g = ph_world->Gravity();
+        const float dy = target.y - m_object->Position().y;
+        const float f0 = cur_factor;
+        for (int i = 0; vy_min > 0.f && i < 40 && cur_factor > 0.5f; ++i)
+        {
+            const float t = ph_time / cur_factor;
+            if (t > EPS_L && dy / t + 0.5f * g * t >= vy_min)
+                break;
+            cur_factor *= 0.95f;
+        }
+        if (CBaseMonster::nlc_evade_debug() && cur_factor < f0)
+            Msg("~ [evade] [%s]: jump factor %.2f -> %.2f (takeoff at least %.1f m/s up)", m_object->cNameSect().c_str(), f0, cur_factor, vy_min);
+    }
 
     m_jump_time = ph_time / cur_factor;
 }

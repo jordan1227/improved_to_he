@@ -73,6 +73,7 @@ class CControlJump : public CControl_ComCustom<SControlJumpData>
     float m_auto_aim_factor{};
     Fvector m_jump_start_pos{};
     LPCSTR m_nlc_end_reason{}; // NLC: diagnostics, why the jump ended
+    u8 m_nlc_relaunch{}; // NLC: relaunches of a jump that stayed on the ground
 
     // run-time params
     u32 m_time_next_allowed{};

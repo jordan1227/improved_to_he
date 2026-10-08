@@ -13,6 +13,7 @@
 #include "../ai_monster_squad_manager.h"
 #include "../control_animation_base.h"
 #include "../control_direction_base.h"
+#include "../control_jump.h"
 #include "../control_manager.h"
 #include "../control_path_builder_base.h"
 #include "../control_run_attack.h"
@@ -127,8 +128,22 @@ void CAI_Bloodsucker::nlc_bs_load(LPCSTR section)
     b.sneak_near_dist = std::max(F("sneak_near_dist", 0.f), 0.f);
     b.sneak_edge_cone = deg2rad(std::clamp(F("sneak_edge_cone", 75.f), 5.f, 170.f));
     b.amb_pounce = B("amb_pounce", false);
-    b.pounce_min = std::max(F("jump_min_distance", 4.f), 1.f);
-    b.pounce_max = std::max(F("jump_max_distance", 7.f), b.pounce_min);
+    {
+        const Fvector2 jd = V2("pounce_perch_dist", Fvector2().set(F("jump_min_distance", 4.f), F("jump_max_distance", 7.f)));
+        b.pounce_min = std::max(jd.x, 1.f);
+        b.pounce_max = std::max(jd.y, b.pounce_min);
+        const Fvector2 fd = V2("pounce_flat_dist", jd);
+        b.pounce_flat_min = std::max(fd.x, 1.f);
+        b.pounce_flat_max = std::max(fd.y, b.pounce_flat_min);
+    }
+    b.pounce_flat_factor = std::max(F("pounce_flat_factor", 0.f), 0.f);
+    b.pounce_min_vy = std::max(F("pounce_min_vy", 0.f), 0.f);
+    b.pounce_anim = READ_IF_EXISTS(pSettings, r_string, section, "pounce_anim", "stand_attack_1");
+    b.pounce_hit_dist = std::max(F("pounce_hit_dist", 2.2f), 0.f);
+    b.pounce_max_angle = std::clamp(F("jump_max_angle", 0.35f), 0.05f, 1.2f);
+    b.cloak_xray_radius = std::max(F("cloak_xray_radius", 0.f), 0.f);
+    b.tac_recover_cooldown_rand = MS("tac_recover_cooldown_rand", 0);
+    b.tac_pair_lead = B("tac_pair_lead", false);
     b.lunge_reveal = u8(std::clamp(int(F("lunge_reveal", 2.f)), 1, 2));
     b.lunge_reveal_ms = MS("lunge_reveal_ms", 0);
     b.vampire_intent_dist = std::max(F("vampire_intent_dist", 8.f), 0.f);
@@ -297,7 +312,10 @@ bool CAI_Bloodsucker::nlc_siege_perch_strike(const CEntityAlive* enemy, float& s
     float h;
     if (!nlc_enemy_perch_h(enemy, h) || h < 0.4f || h > m_nlc_b.pounce_max_h)
         return false;
-    strike_dist = 0.5f * (m_nlc_b.pounce_min + m_nlc_b.pounce_max);
+    // the jump range is 3D, feet to the enemy's centre (about 0.9 m above its feet): the xz distance that puts it mid band
+    const float mid = 0.5f * (m_nlc_b.pounce_min + m_nlc_b.pounce_max);
+    const float dy = h + 0.9f;
+    strike_dist = _sqrt(std::max(mid * mid - dy * dy, 1.f));
     return true;
 }
 
@@ -342,8 +360,25 @@ void CAI_Bloodsucker::nlc_strike_reveal(const char* what, bool pounce)
     }
 }
 
-// first match wins; false = the stock distance rule
+// the rules below, then: never fully invisible within cloak_xray_radius of the enemy (x-ray at least; partial and none
+// share the predator visual, so this never swaps the model); the stock rule when no rule applies
 bool CAI_Bloodsucker::nlc_cloak_override(visibility_t& state)
+{
+    const bool ruled = nlc_cloak_rules(state);
+    if (!m_nlc_on || m_nlc_b.cloak_xray_radius <= 0.f)
+        return ruled;
+    const CEntityAlive* enemy = EnemyMan.get_enemy();
+    if (!enemy || enemy->Position().distance_to(Position()) > m_nlc_b.cloak_xray_radius)
+        return ruled;
+    if (!ruled)
+        return false; // the stock rule: full within full_visibility_radius, else partial
+    if (state == no_visibility && !com_man().is_jumping())
+        state = partial_visibility;
+    return true;
+}
+
+// first match wins; false = the stock distance rule
+bool CAI_Bloodsucker::nlc_cloak_rules(visibility_t& state)
 {
     if (!m_nlc_on)
         return false;
@@ -448,7 +483,7 @@ bool CAI_Bloodsucker::nlc_cloak_override(visibility_t& state)
             if (!perch && !perch_enemy && b.run_attack_decloak && ra && !ra->is_active() && now >= ra->time_next_attack())
                 strike_reveal = std::max(strike_reveal, ra->nlc_dist_max() + b.strike_reveal_margin);
             if (nlc_pounce_wanted(perch_enemy) && h <= b.pounce_max_h)
-                strike_reveal = std::max(strike_reveal, b.pounce_max + b.strike_reveal_margin);
+                strike_reveal = std::max(strike_reveal, (perch_enemy ? b.pounce_max : b.pounce_flat_max) + b.strike_reveal_margin);
         }
         const float d = enemy->Position().distance_to(Position());
         const bool strike_shown = strike_reveal > 0.f && d <= strike_reveal && d > reveal;
@@ -816,7 +851,9 @@ void CAI_Bloodsucker::nlc_pounce_update()
     const CEntityAlive* enemy = EnemyMan.get_enemy();
     if (!enemy)
         return;
-    if (!EnemyMan.see_enemy_now())
+    // "right now" flickers between vision updates (it stood 2 m from a visible player waiting); the visual memory's
+    // "visible now" holds across them
+    if (!EnemyMan.see_enemy_now() && !EnemyMan.see_enemy_recently())
         return blocked("enemy not seen");
     if (CControlledActor::is_controlling() || com_man().is_jumping())
         return blocked("grab or jump running");
@@ -843,8 +880,19 @@ void CAI_Bloodsucker::nlc_pounce_update()
     Fvector target;
     enemy->Center(target);
     const float dist = target.distance_to(Position());
-    if (dist < m_nlc_b.pounce_min || dist > m_nlc_b.pounce_max)
+    const float dmin = perch ? b.pounce_min : b.pounce_flat_min;
+    const float dmax = perch ? b.pounce_max : b.pounce_flat_max;
+    if (dist < dmin || dist > dmax)
     {
+        // the perch spot is out of range (the player moved on the rock): pick it again from the enemy's position
+        if (nlc_siege_perch_holding() && now >= m_nlc_perch_repick_at)
+        {
+            m_nlc_perch_repick_at = now + 3000;
+            m_nlc_perch_since = 0;
+            TAC_LOG("~ [evade] [%s]: perch spot out of range (%.1f m), new spot", cName().c_str(), dist);
+            nlc_siege_perch_abandon();
+            return;
+        }
         string64 why;
         xr_sprintf(why, "distance %.1f m", dist);
         return blocked(why);
@@ -854,18 +902,25 @@ void CAI_Bloodsucker::nlc_pounce_update()
     Fvector to;
     to.sub(enemy->Position(), Position());
     to.y = 0.f;
-    if (face.square_magnitude() < EPS_L || to.square_magnitude() < EPS_L || angle_between_vectors(face, to) > deg2rad(20.f))
+    if (face.square_magnitude() < EPS_L || to.square_magnitude() < EPS_L || angle_between_vectors(face, to) > b.pounce_max_angle)
     {
         string64 why;
         xr_sprintf(why, "facing %.0f deg off", (face.square_magnitude() < EPS_L || to.square_magnitude() < EPS_L) ? 0.f : rad2deg(angle_between_vectors(face, to)));
         return blocked(why);
     }
 
+    // flat ground: a lower, faster, longer jump (pounce_flat_factor divides the jump time); a perch keeps jump_factor
+    // (CControlManagerCustom::jump() resets force_factor; the physical jump starts later, on the glide's animation start)
+    CControlJump* jc = com_man().get_jump_control();
     m_nlc_allow_jump = true;
     const bool ok = com_man().jump_if_possible(target, const_cast<CEntityAlive*>(enemy), true, true, true);
     m_nlc_allow_jump = false;
+    if (ok && jc && !perch && b.pounce_flat_factor > 0.f)
+        jc->setup_data().force_factor = b.pounce_flat_factor;
     if (ok)
     {
+        m_nlc_pounce_hit = false;
+        m_nlc_pouncing = true;
         // x-ray only: partial and no visibility share the predator visual, so the model is not swapped mid-jump
         // (a full decloak here replaced the model under the starting glide: crash in CControlJump::on_event, nlc-3.589.31)
         nlc_strike_reveal("pounce", true);
@@ -881,6 +936,33 @@ void CAI_Bloodsucker::nlc_pounce_update()
         TAC_LOG("~ [evade] [%s]: pounce: jump not possible (%.1f m, target %.1f m above the feet%s)", cName().c_str(), Position().distance_to(target), target.y - Position().y,
             perch ? ", perch" : "");
     }
+}
+
+// the stock jump hit test needs the enemy within +-30 deg of the monster's pitch, measured to its feet: a perched
+// player was often missed although the glide reached it. Ours: centre to centre within pounce_hit_dist, once per pounce
+void CAI_Bloodsucker::nlc_pounce_hit_update()
+{
+    if (!m_nlc_pouncing)
+        return;
+    if (!com_man().is_jumping())
+    {
+        m_nlc_pouncing = false;
+        if (CControlJump* jc = com_man().get_jump_control())
+            jc->setup_data().force_factor = -1.f;
+        return;
+    }
+    if (m_nlc_pounce_hit || m_nlc_b.pounce_hit_dist <= 0.f)
+        return;
+    const CEntityAlive* enemy = EnemyMan.get_enemy();
+    if (!enemy || !enemy->g_Alive())
+        return;
+    Fvector mc, ec;
+    Center(mc);
+    enemy->Center(ec);
+    if (mc.distance_to(ec) > m_nlc_b.pounce_hit_dist)
+        return;
+    TAC_LOG("~ [evade] [%s]: pounce hit at %.1f m", cName().c_str(), mc.distance_to(ec));
+    HitEntityInJump(enemy);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1154,7 +1236,8 @@ void CAI_Bloodsucker::nlc_tac_update_role(const CEntityAlive* enemy)
     {
         xr_vector<CEntity*> mates;
         squad->nlc_members(mates);
-        bool any = false, lowest = true;
+        // a pair needs at least one lead (tac_pair_lead, strong): the lowest-ID lead baits (tanky), the rest flank
+        bool any = false, any_lead = m_nlc_b.tac_pair_lead, lowest_lead = m_nlc_b.tac_pair_lead;
         for (CEntity* e : mates)
         {
             CAI_Bloodsucker* m = smart_cast<CAI_Bloodsucker*>(e);
@@ -1164,11 +1247,15 @@ void CAI_Bloodsucker::nlc_tac_update_role(const CEntityAlive* enemy)
             if (!me || me->ID() != enemy->ID())
                 continue;
             any = true;
-            if (m->ID() < ID())
-                lowest = false;
+            if (m->m_nlc_b.tac_pair_lead)
+            {
+                any_lead = true;
+                if (m->ID() < ID())
+                    lowest_lead = false;
+            }
         }
-        if (any)
-            role = lowest ? eRoleBait : eRoleFlanker;
+        if (any && any_lead)
+            role = lowest_lead ? eRoleBait : eRoleFlanker;
     }
     if (role != t.role)
     {
@@ -1392,7 +1479,7 @@ void CAI_Bloodsucker::nlc_tac_continue(const CEntityAlive* enemy, bool actor_ene
         if (healed || now >= t.mode_start + b.tac_recover_max_time)
         {
             t.left_dir = flat_dir(enemy->Position(), Position());
-            t.recover_cd = now + b.tac_recover_cooldown;
+            t.recover_cd = now + b.tac_recover_cooldown + (b.tac_recover_cooldown_rand ? u32(::Random.randI(int(b.tac_recover_cooldown_rand) + 1)) : 0u);
             to_stalk(t.left_dir, b.tac_return_angle, healed ? "recovered" : "recover time");
         }
         break;
@@ -1607,6 +1694,10 @@ void CAI_Bloodsucker::nlc_tactic_end()
     anim().clear_override_animation();
     SNlcTactic& t = m_nlc_tac;
     t.force_vis = unset;
+    // the state machine re-entered the tactic state itself (end + begin): keep the tactic (a recover was dropped
+    // after 1 s and the monster stood idle)
+    if (t.mode != eTacNone && StateMan && StateMan->get_state_type() == eStateAttack_NlcTactic)
+        return;
     if (t.mode != eTacNone)
     {
         // left by the state machine (a higher-priority state), not by the tactic itself

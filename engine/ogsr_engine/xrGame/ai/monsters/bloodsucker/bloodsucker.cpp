@@ -229,6 +229,9 @@ void CAI_Bloodsucker::reinit()
     m_nlc_strike_reveal_block_until = 0;
     m_nlc_backhit = false;
     m_nlc_backhit_in_grab = false;
+    m_nlc_perch_repick_at = 0;
+    m_nlc_pounce_hit = false;
+    m_nlc_pouncing = false;
     m_nlc_backhit_until = 0;
     m_nlc_backhit_target = u16(-1);
     m_nlc_backhit_rest = 0.f;
@@ -250,7 +253,7 @@ void CAI_Bloodsucker::reinit()
 
     // NLC: pounce (amb_pounce): the only clip with both hands forward, played as the glide; no prepare, no ground state
     if (m_nlc_b.amb_pounce)
-        com_man().load_jump_data(0, 0, "stand_attack_1", 0, u32(-1), MonsterMovement::eVelocityParameterRunNormal, 0);
+        com_man().load_jump_data(0, 0, m_nlc_b.pounce_anim.size() ? m_nlc_b.pounce_anim.c_str() : "stand_attack_1", 0, u32(-1), MonsterMovement::eVelocityParameterRunNormal, 0);
 
     m_alien_control.reinit();
 
@@ -554,6 +557,7 @@ void CAI_Bloodsucker::UpdateCL()
         clamp(m_vampire_want_value, 0.f, 1.f);
         nlc_pounce_update(); // NLC
         nlc_backhit_update(); // NLC
+        nlc_pounce_hit_update(); // NLC
     }
 }
 
@@ -646,7 +650,11 @@ void CAI_Bloodsucker::on_activate_control(ControlCom::EControlType type)
 
 void CAI_Bloodsucker::HitEntityInJump(const CEntity* pEntity)
 {
-    // NLC: pounce strike, the both-hands clip's hit parameters (as CChimera::HitEntityInJump)
+    // NLC: pounce strike, the both-hands clip's hit parameters (as CChimera::HitEntityInJump); once per pounce (the
+    // stock jump test and ours, nlc_pounce_hit_update, may both fire)
+    if (m_nlc_pounce_hit)
+        return;
+    m_nlc_pounce_hit = true;
     SAAParam& params = anim().AA_GetParams("stand_attack_1");
     HitEntity(pEntity, params.hit_power, params.impulse, params.impulse_dir);
 }

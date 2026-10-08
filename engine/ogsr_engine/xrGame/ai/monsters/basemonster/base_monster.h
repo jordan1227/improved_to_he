@@ -685,6 +685,8 @@ public:
     virtual void nlc_siege_perch_shot() {}
     // NLC: CControlJump ignores velocity bounces this long after takeoff (0 = stock)
     virtual u32 nlc_jump_bounce_grace() const { return 0; }
+    // NLC: a forced (faster) jump keeps at least this takeoff speed upward, m/s (0 = stock)
+    virtual float nlc_jump_min_vy() const { return 0.f; }
     // turn toward a point with the standing turn clips (the siege's facing, for species tactics)
     void nlc_face_point(const Fvector& point) { nlc_siege_face(point); }
     // NLC: the attack state machine owns a tactic substate (CStateMonsterAttackTactic); species override the hooks

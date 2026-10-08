@@ -739,16 +739,50 @@ bool CBaseMonster::nlc_siege_pick(ENlcSiegeMove kind, LPCSTR why)
     float strike_d = 0.f;
     if (kind == eNlcSiegeGoto && nlc_siege_perch_strike(enemy, strike_d))
     {
+        // NLC: around the enemy itself (its ai vertex can lie metres away on a rock: the spot was 9 m off)
+        Fvector base = enemy->Position();
+        base.y = ground.y;
         Fvector side;
-        side.set(Position().x - ground.x, 0.f, Position().z - ground.z);
+        side.set(Position().x - base.x, 0.f, Position().z - base.z);
         if (side.square_magnitude() < EPS_L)
             side.set(0.f, 0.f, 1.f);
         side.normalize();
         Fvector wanted;
-        wanted.mad(ground, side, strike_d);
         Fvector pos;
         u32 node;
-        if (nlc_point_on_map(wanted, pos, node) && Home->at_home(pos))
+        bool found = false;
+        // 12 directions around the enemy: behind it and at its sides first (away from its view), on its own side of the
+        // rock next; the straight one was often off the ai-map, and a spot in front is the one it is watched from
+        Fvector eye{}, view{};
+        const bool have_view = nlc_enemy_eye(enemy, eye, view) && (view.y = 0.f, view.square_magnitude() > EPS_L);
+        if (have_view)
+            view.normalize();
+        float best = -flt_max;
+        Fvector best_pos{};
+        u32 best_node = u32(-1);
+        for (int i = 0; i < 12; ++i)
+        {
+            const float r = deg2rad(30.f * float(i)), cs = _cos(r), sn = _sin(r);
+            Fvector d;
+            d.set(side.x * cs - side.z * sn, 0.f, side.x * sn + side.z * cs);
+            // score: off the enemy's view (0 in front .. 1 behind), minus the way around from its own side
+            const float off_view = have_view ? angle_between_vectors(view, d) / PI : 0.5f;
+            const float around = _abs(angle_normalize_signed(r)) / PI;
+            const float score = off_view - 0.35f * around;
+            if (score <= best)
+                continue;
+            wanted.mad(base, d, strike_d);
+            if (nlc_point_on_map(wanted, pos, node) && Home->at_home(pos) && _abs(pos.y - base.y) < 1.5f)
+            {
+                best = score;
+                best_pos = pos;
+                best_node = node;
+                found = true;
+            }
+        }
+        pos = best_pos;
+        node = best_node;
+        if (found)
         {
             nlc_siege_set_target(pos, node, eNlcSiegeGoto, 6000 + u32(pos.distance_to(Position()) * 300.f));
             s.perch = true;
