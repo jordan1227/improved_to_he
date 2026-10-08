@@ -1,0 +1,1060 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+-- Controller psy pressure on stalkers (domination) and the Mirage swap.
+-- Design and safety rules: docs/CONTROLLER_REDESIGN.md, section 2.3c.
+-- Engine side (cover loop, thralls, decoy): CController, nlc_ctrl_* keys in m_controller.ltx.
+
+local TICK_MS = 500
+local AWARE_AT = 0.25
+local SHAKEN_AT = 0.4
+local PANIC_AT = 0.45
+local BROKEN_AT = 1.0
+local BASE_RATE = 0.25 -- pressure per second: seen, point blank, no resistance
+local FIRST_CONTACT = 0.35 -- immediate pressure when a stalker first comes in range (scaled by 1 - resist)
+local UNSEEN_K = 0.35 -- pressure rate while the controller does not see the stalker
+local FALLOFF = 0.6 -- share of the rate lost at the edge of the radius
+-- Psy health follows the pressure. Below 0.5 the stock xr_wounded psy_state puts the stalker in psy_pain
+-- (weapon strapped, clutching its head): the stun. Below 0.2 it would switch to psy_shoot (suicide), so
+-- the drain never goes under PSY_FLOOR.
+local PSY_PER_PRESSURE = 0.8
+local PSY_FLOOR = 0.25
+local PSY_STUN = 0.5 -- xr_wounded psy_state threshold (psy_pain below it)
+local STUN_MIN_MS = 11000 -- visible stun (the psy pain animation plays through) before a stalker can break
+local COME_TO_MS = 7000 -- psy pain shown when a dominated or stunned stalker is freed
+local DECAY = 0.08 -- per second outside the radius
+local RELEASE_DIST = 70
+local PANIC_MIN_MS, PANIC_MAX_MS = 8000, 12000
+local PSTOR_KEY = "sivol_ctrl_dom"
+local SWAP_MIN_DIST, SWAP_MAX_DIST, SWAP_ACTOR_CLEARANCE = 6, 35, 6
+local NO_STORY_ID = 4294967295
+
+-- zombified-stalker guards: a script combat action that holds a post between the controller and its enemy
+local GUARD_EVAL = xr_evaluators_id.narrator_evaluators + 700 -- unused id range (narrator_*)
+local GUARD_ACT = xr_actions_id.narrator_actions + 700
+local FOLLOW_EVAL = GUARD_EVAL + 1
+local FOLLOW_ACT = GUARD_ACT + 1
+local FOLLOW_NEAR, FOLLOW_FAR, FOLLOW_RUN = 4, 7, 15 -- stop within, start walking beyond, run beyond (m)
+local GUARD_DIST = 5
+local GUARD_SPREAD = 2.2
+local GUARD_ADOPT_RADIUS = 30
+local NO_VERTEX = 4294967295
+-- thrall persistence and the Mirage tell
+local THRALLS_PSTOR = "sivol_ctrl_thralls"
+local THRALL_RESTORE_MS = 15000
+local TELL_MASK_K = 0.75 -- psy mask factor (sivol.get_mask_psy_k: 0.5 science suits .. 0.75 gas masks, 1 bare) at
+                         -- or below which the player sees through decoys and swaps
+local TELL_PARTICLE = "monsters\\phantom_death"
+local SWAP_TELL_PARTICLE = "zones\\teleport_out"
+local TELL_PERIOD_MS = 2000
+
+local ALLY_COMMUNITIES = { zombied = true, monolith = true, stranger = true, trader = true }
+local COMMUNITY_RESIST = { ecolog = 0.4, army = 0.15, military = 0.15, dolg = 0.1, bandit = -0.05 }
+
+local cfg_cache = {}
+local controllers = {} -- id -> true (online controllers)
+local npcs = {} -- id -> true (online stalkers)
+local pressure = {} -- npc id -> { value, controller_id, aware, shaken, panic_until }
+local dominated = {} -- npc id -> { controller_id, community, expires }
+local swap_next = {} -- controller id -> time
+local coming_to = {} -- npc id -> time when the release psy pain ends
+local come_to_diag = {} -- npc id -> next coming-to diagnostic line
+local muted = {} -- npc id -> talk was enabled before the stun / domination
+local psy_set_at = {} -- npc id -> time of the last psy change (it is applied on the next condition update)
+local PSY_SET_INTERVAL_MS = 1500
+-- shaking a stunned stalker awake (use key): each press sets the domination back, enough presses break the stun
+local SHAKE_DELAY_MS = 2000
+local SHAKES_TO_SNAP = 4
+local SHAKE_WINDOW_MS = 5000 -- presses further apart than this start the count again
+local COME_TO_SHAKE_MS = 2000 -- each press cuts the coming-to episode short by this much
+local SNAP_GUARD_MS = 20000 -- after a snap the controller's pressure on that stalker builds slower for a while
+local SNAP_RATE_K = 0.3
+local voice_at = {} -- npc id -> time of the last psy voice played by a shake
+local psy_refresh = {} -- npc id -> { target, since }: xr_wounded must re-read psy once the delta is applied
+local PSY_REFRESH_MAX_MS = 3000
+local guards = {} -- npc id -> { controller_id, index }
+local guard_installed = {} -- npc id -> true once the guard action is in its planner
+local thralls_saved = {} -- controller id -> last ids string written to pstor
+local thralls_restore = {} -- controller id -> { ids = { ... }, expires }
+local decoys = {} -- decoy id -> next tell time
+local phantom_tells = {} -- phantom id -> next tell time
+local next_tick = 0
+local last_tick = 0
+
+local function log(fmt, ...)
+	log2("[sivol_controller_psy] " .. fmt, ...)
+end
+
+local function read(section, key, default)
+	local ini = system_ini()
+	if not ini:line_exist(section, key) then return default end
+	if type(default) == "boolean" then return ini:r_bool(section, key) end
+	if type(default) == "number" then return ini:r_float(section, key) end
+	return ini:r_string(section, key)
+end
+
+local function mask_k_value()
+	if not (sivol and sivol.get_mask_psy_k) then return 1.0 end
+	local ok, value = pcall(sivol.get_mask_psy_k)
+	return ok and (tonumber(value) or 1.0) or 1.0
+end
+
+local function cfg(controller)
+	local section = controller:section()
+	local c = cfg_cache[section]
+	if c then return c end
+	c = {
+		debug = read(section, "nlc_ctrl_debug", false),
+		decoy = read(section, "nlc_ctrl_decoy", false),
+		humans = read(section, "nlc_ctrl_dominate_humans", false),
+		radius = read(section, "nlc_ctrl_dominate_radius", 25),
+		max = read(section, "nlc_ctrl_dominate_max", 0),
+		time = read(section, "nlc_ctrl_dominate_time", 120000),
+		swap = read(section, "nlc_ctrl_mirage_swap", false),
+		swap_chance = read(section, "nlc_ctrl_mirage_swap_chance", 0.5),
+		swap_cooldown = read(section, "nlc_ctrl_mirage_swap_cooldown", 25000),
+		stalker_guards = read(section, "nlc_ctrl_stalker_guards", 0),
+	}
+	cfg_cache[section] = c
+	return c
+end
+
+local function is_controller(obj)
+	return obj and obj:clsid() == CLID_CONTROLLER
+end
+
+local function mask_k()
+	if not (sivol and sivol.get_mask_psy_k) then return 1.0 end
+	local ok, value = pcall(sivol.get_mask_psy_k)
+	if not ok then return 1.0 end
+	return math.max(0, math.min(1.5, tonumber(value) or 1.0))
+end
+
+---------------------------------------------------------------------------------------------------
+-- Eligibility (allowlist): only runtime-created simulation stalkers, never story, quest, reinforced,
+-- protected, allied, companion or phantom NPCs. See the safety audit in the design document.
+---------------------------------------------------------------------------------------------------
+local function eligible(npc)
+	if not npc or not npc:alive() or not IsStalker(npc) or npc:id() == db.actor:id() then return false end
+	if npc:name() ~= npc:section() .. npc:id() then return false end -- all.spawn / story NPCs have custom names
+	if npc:story_id() < NO_STORY_ID then return false end
+	local ok, visible = pcall(function() return npc:get_custom_monster().visible_for_zones end)
+	if not ok or visible == false then return false end -- reinforced NPCs (xr_motivator) and psy phantoms
+	if olr_protected and olr_protected.is_no_offline_alife_obj then
+		local ok2, protected = pcall(olr_protected.is_no_offline_alife_obj, npc:name())
+		if not ok2 or protected then return false end
+	end
+	if ALLY_COMMUNITIES[npc:character_community()] then return false end
+	if npc:is_talking() then return false end
+	local ok3, invulnerable = pcall(function() return npc:invulnerable() end)
+	if not ok3 or invulnerable then return false end
+	local targets = get_value("kill_targets", nil) -- kill-task targets (xr_meet): their squad would kill them
+	if type(targets) == "table" then
+		for _, v in pairs(targets) do
+			if type(v) == "table" and v.id == npc:id() then return false end
+		end
+	end
+	local st = db.storage[npc:id()]
+	if st then
+		if st.companion and st.companion.enabled then return false end
+		if st.active_scheme == "companion" or st.active_scheme == "follower" then return false end
+	end
+	return true
+end
+
+local function resistance(npc)
+	local rank = npc:character_rank() or 0
+	local r = (rank < 300 and 0) or (rank < 600 and 0.15) or (rank < 900 and 0.3) or 0.45
+	r = r + (COMMUNITY_RESIST[npc:character_community()] or 0)
+	local visual = string.lower(npc:get_visual_name() or "")
+	if string.find(visual, "scien", 1, true) or string.find(visual, "ecolog", 1, true) or string.find(visual, "seva", 1, true) then
+		r = r + 0.3
+	elseif string.find(visual, "exo", 1, true) then
+		r = r + 0.2
+	elseif string.find(visual, "gas", 1, true) or string.find(visual, "mask", 1, true) then
+		r = r + 0.1
+	end
+	return math.max(0, math.min(0.9, r))
+end
+
+---------------------------------------------------------------------------------------------------
+-- Domination
+---------------------------------------------------------------------------------------------------
+local function count_dominated(controller_id)
+	local n = 0
+	for _, d in pairs(dominated) do
+		if d.controller_id == controller_id then n = n + 1 end
+	end
+	return n
+end
+
+local function play_psy_voice(npc)
+	pcall(xr_sound.set_sound_play, npc, "wounded_psy")
+end
+
+-- no talking (and no "give me a medkit" dialog) while stunned or dominated
+local function mute(npc)
+	if muted[npc:id()] == nil then
+		muted[npc:id()] = npc:is_talk_enabled()
+		npc:disable_talk()
+	end
+end
+
+local function unmute(npc)
+	pcall(xr_logic.pstor_store, npc, "sivol_ctrl_stun", nil) -- every stun ends through unmute
+	local was = muted[npc:id()]
+	muted[npc:id()] = nil
+	if was then npc:enable_talk() end
+end
+
+
+-- a freed stalker that is not hostile to the actor stops treating it as a target
+local function forget_actor_unless_hostile(npc)
+	local actor = db.actor
+	if actor and npc:relation(actor) ~= game_object.enemy then
+		pcall(function() npc:enable_memory_object(actor, false) end)
+	end
+end
+
+local function wound_state(npc)
+	local st = db.storage[npc:id()]
+	local wm = st and st.wounded and st.wounded.wound_manager
+	return wm and tostring(wm.state) or "?"
+end
+
+-- moves psy health toward `target` (the psy_health property adds a delta: ChangePsyHealth)
+-- The psy_health property calls CEntityCondition::ChangePsyHealth, which only accumulates a delta that the
+-- engine applies on the next condition update; reading psy_health in between returns the old value. So at
+-- most one change per PSY_SET_INTERVAL_MS, computed from the applied value (stacked deltas drove a stalker
+-- below 0.2, into the psy_shoot suicide state).
+local function set_psy(npc, target)
+	local now = time_global()
+	local id = npc:id()
+	if now < (psy_set_at[id] or 0) + PSY_SET_INTERVAL_MS then return end
+	local current = npc.psy_health
+	target = math.max(PSY_FLOOR, math.min(1, target))
+	if current and math.abs(current - target) > 0.02 then
+		psy_set_at[id] = now
+		npc.psy_health = target - current
+		-- xr_wounded re-evaluates psy_state (psy_pain stun) only from its hit callback, and the delta is applied
+		-- on the stalker's next condition update: refresh_wounds calls it once the new value is readable
+		psy_refresh[id] = { target = target, since = now }
+	end
+end
+
+local function refresh_wounds(now)
+	for id, r in pairs(psy_refresh) do
+		local npc = level.object_by_id(id)
+		if not npc or not npc:alive() then
+			psy_refresh[id] = nil
+		else
+			local applied = math.abs((npc.psy_health or r.target) - r.target) < 0.03
+			if applied or now - r.since > PSY_REFRESH_MAX_MS then
+				psy_refresh[id] = nil
+				if xr_wounded and xr_wounded.hit_callback then pcall(xr_wounded.hit_callback, id) end
+				if not applied then log("psy not applied npc=%s psy=%.2f target=%.2f", npc:name(), npc.psy_health or -1, r.target) end
+			end
+		end
+	end
+end
+
+-- restore at once (release, death of the source): skips the interval, never stacks with a pending drain
+local function reset_psy(npc)
+	psy_set_at[npc:id()] = nil
+	set_psy(npc, 1)
+end
+
+-- freed stalker: a short psy pain episode (stock animation and voice), then full recovery
+local function come_to(npc, now)
+	if coming_to[npc:id()] then return end
+	psy_set_at[npc:id()] = nil
+	set_psy(npc, PSY_STUN - 0.1)
+	play_psy_voice(npc)
+	mute(npc)
+	coming_to[npc:id()] = now + COME_TO_MS
+	log("coming to npc=%s psy=%.2f -> %.2f", npc:name(), npc.psy_health or -1, PSY_STUN - 0.1)
+end
+
+local function restore_npc_state(npc)
+	pcall(function() npc:restore_max_ignore_monster_distance() end)
+	pcall(function() npc:set_default_panic_threshold() end)
+	if npc:alive() then reset_psy(npc) end
+end
+
+-- evaluator_wound sets st.regen once it sees the zombied community and never clears it
+local function reset_wound_regen(npc)
+	local st = db.storage[npc:id()]
+	if st and st.wounded then st.wounded.regen = nil end
+end
+
+-- xr_wounded picks its defaults by community when the logic is set up; a logic switch while zombied left the
+-- zombie defaults (no psy states, no medkit, a 50% hp wound nothing re-evaluates): rebuild them
+local function reinit_wounded(npc)
+	local st = db.storage[npc:id()]
+	if st and st.wounded then
+		st.wounded.wounded_section = nil
+		pcall(xr_wounded.reset_wounded, npc, st.active_scheme, st, st.active_section)
+	end
+end
+
+-- The original community / goodwill also go to the actor's save store: pstor lives in the stalker's
+-- client_data, which the engine clears when it goes offline (CSE_ALifeDynamicObject::switch_offline)
+local BACKUP_PREFIX = "sivol_ctrl_dom_"
+
+local function store_backup(npc, community, goodwill)
+	set_value(BACKUP_PREFIX .. npc:id(), community .. "|" .. tostring(goodwill or ""))
+end
+
+local function clear_backup(id)
+	remove_value(BACKUP_PREFIX .. id)
+end
+
+local function read_backup(id)
+	local v = get_value(BACKUP_PREFIX .. id, nil)
+	if type(v) ~= "string" then return nil end
+	local community, goodwill = string.match(v, "^([^|]*)|(.*)$")
+	if not community or community == "" then return nil end
+	return community, tonumber(goodwill)
+end
+
+local function release(npc_id, why)
+	local d = dominated[npc_id]
+	dominated[npc_id] = nil
+	guards[npc_id] = nil
+	pressure[npc_id] = nil
+	local npc = level.object_by_id(npc_id)
+	if not npc then return end
+	if d and d.community and npc:alive() then
+		pcall(function() npc:set_character_community(d.community, 0, 0) end)
+		if d.goodwill and db.actor then pcall(function() npc:set_goodwill(d.goodwill, db.actor) end) end
+		reset_wound_regen(npc)
+		reinit_wounded(npc)
+	end
+	clear_backup(npc_id)
+	pcall(function() npc:restore_max_ignore_monster_distance() end)
+	pcall(function() npc:set_default_panic_threshold() end)
+	if npc:alive() then
+		come_to(npc, time_global())
+		forget_actor_unless_hostile(npc)
+	end
+	xr_logic.pstor_store(npc, PSTOR_KEY, nil)
+	xr_logic.pstor_store(npc, PSTOR_KEY .. "_gw", nil)
+	log("released npc=%s community=%s reason=%s", npc:name(), tostring(d and d.community), why)
+end
+
+local install_guard -- defined with the guard combat type below
+
+local function dominate(npc, controller, c, now)
+	local community = npc:character_community()
+	local goodwill = db.actor and npc:goodwill(db.actor) or nil
+	dominated[npc:id()] = { controller_id = controller:id(), community = community, goodwill = goodwill, expires = now + c.time }
+	xr_logic.pstor_store(npc, PSTOR_KEY, community)
+	if goodwill then xr_logic.pstor_store(npc, PSTOR_KEY .. "_gw", goodwill) end
+	store_backup(npc, community, goodwill)
+	npc:set_character_community("zombied", 0, 0)
+	-- the community change alone keeps its personal goodwill: it must turn on the actor too
+	if db.actor then npc:set_relation(game_object.enemy, db.actor) end
+	mute(npc)
+	install_guard(npc)
+	npc:set_default_panic_threshold()
+	reset_psy(npc) -- a thrall fights; the stun was the way in
+	play_psy_voice(npc)
+	particles_object("monsters\\phantom_death"):play_at_pos(npc:bone_position("bip01_head"))
+	log("dominated npc=%s community=%s by=%s for_ms=%d", npc:name(), community, controller:name(), c.time)
+end
+
+local function press(controller, c, now, dt, engaged)
+	local cpos = controller:position()
+	local cid = controller:id()
+	for npc_id in pairs(npcs) do
+		local npc = level.object_by_id(npc_id)
+		if npc and not dominated[npc_id] then
+			local p = pressure[npc_id]
+			local dist = npc:position():distance_to(cpos)
+			local in_range = dist < c.radius and eligible(npc)
+			if in_range and (p and (p.controller_id == cid or p.value <= 0) or not p and engaged) then
+				local resist = resistance(npc)
+				if not p then
+					-- first contact: an immediate psy hit, so a pair of stalkers cannot simply gun it down
+					p = { value = FIRST_CONTACT * (1 - resist), controller_id = cid }
+					pressure[npc_id] = p
+					if c.debug then log("first contact npc=%s pressure=%.2f resist=%.2f dist=%.1f", npc:name(), p.value, resist, dist) end
+				end
+				p.controller_id = cid
+				local seen = controller:see(npc)
+				local rate = BASE_RATE * (seen and 1 or UNSEEN_K) * (1 - FALLOFF * dist / c.radius) * (1 - resist)
+				if p.snapped_until and now < p.snapped_until then rate = rate * SNAP_RATE_K end
+				p.value = math.min(BROKEN_AT, p.value + rate * dt)
+				local psy_target = math.max(PSY_FLOOR, 1 - p.value * PSY_PER_PRESSURE)
+				set_psy(npc, psy_target)
+				if psy_target < PSY_STUN and not p.stun_since then
+					p.stun_since = now
+					mute(npc)
+					xr_logic.pstor_store(npc, "sivol_ctrl_stun", true)
+					if c.debug then log("stunned npc=%s pressure=%.2f", npc:name(), p.value) end
+				end
+
+				if p.value >= AWARE_AT and not p.aware then
+					-- fight back beyond the 15 m monster ignore rule (stalker max_ignore_distance)
+					p.aware = true
+					npc:max_ignore_monster_distance(c.radius + 10)
+					if c.debug then log("aware npc=%s pressure=%.2f dist=%.1f", npc:name(), p.value, dist) end
+				end
+				if p.value >= SHAKEN_AT and not p.shaken then
+					p.shaken = true
+					play_psy_voice(npc)
+					if c.debug then log("shaken npc=%s pressure=%.2f resist=%.2f", npc:name(), p.value, resistance(npc)) end
+				end
+				if p.value >= PANIC_AT and not p.panic_until and not p.stun_since and resistance(npc) < 0.4
+					and lua_random() < 0.25 * (1 - resistance(npc) / 0.4)
+				then
+					p.panic_until = now + lua_random(PANIC_MIN_MS, PANIC_MAX_MS)
+					npc:set_custom_panic_threshold(1)
+					if c.debug then log("panic npc=%s pressure=%.2f", npc:name(), p.value) end
+				end
+				-- the stun is the domination in progress: it completes after STUN_MIN_MS while the controller is in
+				-- range, even if it has retreated out of sight (it used to stall for over a minute in cover)
+				if p.stun_since and now - p.stun_since >= STUN_MIN_MS and c.max > 0 and count_dominated(cid) < c.max then
+					dominate(npc, controller, c, now)
+				end
+			elseif p and p.controller_id == cid then
+				p.value = p.value - DECAY * dt
+				if p.value <= 0 then
+					restore_npc_state(npc)
+					unmute(npc)
+					pressure[npc_id] = nil
+				else
+					set_psy(npc, math.max(PSY_FLOOR, 1 - p.value * PSY_PER_PRESSURE)) -- comes to as the pressure fades
+				end
+			end
+		end
+	end
+end
+
+local function presses(controller_id)
+	for _, p in pairs(pressure) do
+		if p.controller_id == controller_id then return true end
+	end
+	return false
+end
+
+local function update_panic_and_release(now)
+	for npc_id, p in pairs(pressure) do
+		local npc = level.object_by_id(npc_id)
+		local controller = level.object_by_id(p.controller_id)
+		if not npc then
+			pressure[npc_id] = nil
+		elseif not controller or not controller:alive() then
+			-- the source is dead or gone: the stalker comes to
+			if npc:alive() then
+				pcall(function() npc:restore_max_ignore_monster_distance() end)
+				pcall(function() npc:set_default_panic_threshold() end)
+				if p.stun_since then come_to(npc, now) else reset_psy(npc); unmute(npc) end
+				forget_actor_unless_hostile(npc)
+			end
+			pressure[npc_id] = nil
+		elseif p.panic_until and now >= p.panic_until then
+			p.panic_until = nil
+			pcall(function() npc:set_default_panic_threshold() end)
+		end
+	end
+	for npc_id, t in pairs(coming_to) do
+		if now >= t then
+			coming_to[npc_id] = nil
+			local npc = level.object_by_id(npc_id)
+			if npc and npc:alive() and not pressure[npc_id] and not dominated[npc_id] then
+				reset_psy(npc)
+				unmute(npc)
+				log("came to npc=%s wound_state=%s", npc:name(), wound_state(npc))
+			end
+			come_to_diag[npc_id] = nil
+		else
+			local npc = level.object_by_id(npc_id)
+			if npc and npc:alive() then
+				set_psy(npc, PSY_STUN - 0.1) -- holds the episode in psy pain against regen and other writers
+				if now >= (come_to_diag[npc_id] or 0) then
+					come_to_diag[npc_id] = now + 1000
+					local ok, act = pcall(function() return npc:motivation_action_manager():current_action_id() end)
+					log("coming to tick npc=%s psy=%.2f wound_state=%s action=%s (wounded=%s)", npc:name(), npc.psy_health or -1,
+						wound_state(npc), ok and tostring(act) or "?", tostring(xr_actions_id.sidor_act_wounded_base))
+				end
+			end
+		end
+	end
+	for npc_id, d in pairs(dominated) do
+		local npc = level.object_by_id(npc_id)
+		local controller = level.object_by_id(d.controller_id)
+		if not npc or not npc:alive() then
+			dominated[npc_id] = nil
+		elseif not controller or not controller:alive() then
+			release(npc_id, "controller dead or gone")
+		elseif npc:position():distance_to(controller:position()) > RELEASE_DIST then
+			release(npc_id, "too far from the controller")
+		elseif now >= d.expires then
+			release(npc_id, "timeout")
+		end
+	end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Mirage swap: the controller trades places with one of its humanoid phantoms when shot
+---------------------------------------------------------------------------------------------------
+local function try_swap(controller)
+	local c = cfg(controller)
+	if not c.swap or c.decoy then return end
+	local now = time_global()
+	local cid = controller:id()
+	if now < (swap_next[cid] or 0) then return end
+	if not (sivol_psy_phantoms and sivol_psy_phantoms.source_phantoms) then return end
+
+	local actor = db.actor
+	local best, best_dist
+	for _, ph in ipairs(sivol_psy_phantoms.source_phantoms(cid)) do
+		local obj = ph.kind == "npc" and level.object_by_id(ph.id)
+		if obj and obj:alive() then
+			local d = obj:position():distance_to(controller:position())
+			if d >= SWAP_MIN_DIST and d <= SWAP_MAX_DIST
+				and obj:position():distance_to(actor:position()) >= SWAP_ACTOR_CLEARANCE
+				and (not best or d < best_dist)
+			then
+				best, best_dist = obj, d
+			end
+		end
+	end
+	if not best then return end
+
+	swap_next[cid] = now + c.swap_cooldown
+	local chance = c.swap_chance * mask_k()
+	if lua_random() >= chance then
+		if c.debug then log("swap miss controller=%s chance=%.2f", controller:name(), chance) end
+		return
+	end
+
+	local cpos = vector():set(controller:position())
+	local ppos = vector():set(best:position())
+	level.add_pp_effector("psy_antenna.ppe", 3995, false)
+	particles_object("monsters\\phantom_death"):play_at_pos(vector():set(cpos.x, cpos.y + 1, cpos.z))
+	particles_object("monsters\\phantom_death"):play_at_pos(vector():set(ppos.x, ppos.y + 1, ppos.z))
+	controller:set_npc_position(ppos, false)
+	best:set_npc_position(cpos, false)
+	if mask_k_value() <= TELL_MASK_K then
+		particles_object(SWAP_TELL_PARTICLE):play_at_pos(vector():set(ppos.x, ppos.y + 1, ppos.z))
+	end
+	log("swap controller=%s phantom=%s dist=%.1f chance=%.2f", controller:name(), best:name(), best_dist, chance)
+end
+
+---------------------------------------------------------------------------------------------------
+-- Zombified-stalker guards: hold a post between the controller and the enemy and fire from there.
+-- A script combat action in the stalker planner (like xr_combat_camper); the engine combat planner is
+-- blocked only while the npc is a guard.
+---------------------------------------------------------------------------------------------------
+class "evaluator_ctrl_guard" (property_evaluator)
+
+function evaluator_ctrl_guard:__init(name) super(nil, name)
+end
+
+function evaluator_ctrl_guard:evaluate()
+	local g = guards[self.object:id()]
+	if not g or not self.object:alive() or not self.object:best_enemy() then return false end
+	local controller = level.object_by_id(g.controller_id)
+	return controller ~= nil and controller:alive()
+end
+
+class "action_ctrl_guard" (action_base)
+
+function action_ctrl_guard:__init(name) super(nil, name)
+end
+
+function action_ctrl_guard:initialize()
+	action_base.initialize(self)
+	self.object:set_desired_direction()
+	self.object:set_detail_path_type(move.line)
+	self.object:set_path_type(game_object.level_path)
+	self.dest_vid = nil
+	self.state = nil
+end
+
+function action_ctrl_guard:post_vertex(controller, enemy)
+	local npc = self.object
+	local g = guards[npc:id()]
+	local cpos = controller:position()
+	local dir = vector():sub(enemy:position(), cpos)
+	dir.y = 0
+	if dir:magnitude() < 0.1 then dir = vector():set(controller:direction()) end
+	dir:normalize()
+	local i = g and g.index or 0
+	local lateral = (i == 0) and 0 or GUARD_SPREAD * math.floor((i + 1) / 2) * ((i % 2 == 1) and 1 or -1)
+	local post = vector():set(cpos.x + dir.x * GUARD_DIST - dir.z * lateral, cpos.y, cpos.z + dir.z * GUARD_DIST + dir.x * lateral)
+	local vid = level.vertex_id(post)
+	if vid and vid < NO_VERTEX and npc:accessible(vid) then return vid end
+	-- off the ai-map or restricted: stay right next to the controller
+	vid = controller:level_vertex_id()
+	if npc:accessible(vid) then return vid end
+	local nearest = npc:accessible_nearest(level.vertex_position(vid), vector())
+	return nearest
+end
+
+function action_ctrl_guard:set_state(state, enemy)
+	if state ~= self.state then
+		self.state = state
+		state_mgr.set_state(self.object, state, nil, nil, { look_object = enemy })
+	end
+end
+
+function action_ctrl_guard:execute()
+	action_base.execute(self)
+	local npc = self.object
+	local g = guards[npc:id()]
+	local controller = g and level.object_by_id(g.controller_id)
+	local enemy = npc:best_enemy()
+	if not controller or not enemy then return end
+
+	local vid = self:post_vertex(controller, enemy)
+	local see = npc:see(enemy)
+	if vid and npc:position():distance_to(level.vertex_position(vid)) > 2 then
+		if vid ~= self.dest_vid then
+			self.dest_vid = vid
+			npc:set_dest_level_vertex_id(vid)
+		end
+		self:set_state(see and "raid_fire" or "raid", enemy)
+	else
+		self:set_state(see and "hide_fire" or "hide", enemy)
+	end
+end
+
+function action_ctrl_guard:finalize()
+	action_base.finalize(self)
+	self.state = nil
+end
+
+-- out of combat a dominated stalker keeps close to its controller (instead of its old smart-terrain job)
+class "evaluator_ctrl_follow" (property_evaluator)
+
+function evaluator_ctrl_follow:__init(name) super(nil, name)
+end
+
+function evaluator_ctrl_follow:evaluate()
+	local d = dominated[self.object:id()]
+	if not d or not self.object:alive() or self.object:best_enemy() then return false end
+	local controller = level.object_by_id(d.controller_id)
+	return controller ~= nil and controller:alive()
+end
+
+class "action_ctrl_follow" (action_base)
+
+function action_ctrl_follow:__init(name) super(nil, name)
+end
+
+function action_ctrl_follow:initialize()
+	action_base.initialize(self)
+	self.object:set_desired_direction()
+	self.object:set_detail_path_type(move.line)
+	self.object:set_path_type(game_object.level_path)
+	self.dest_vid = nil
+	self.state = nil
+	self.moving = false
+end
+
+function action_ctrl_follow:execute()
+	action_base.execute(self)
+	local npc = self.object
+	local d = dominated[npc:id()]
+	local controller = d and level.object_by_id(d.controller_id)
+	if not controller then return end
+	local dist = npc:position():distance_to(controller:position())
+	-- hysteresis: start moving beyond FOLLOW_FAR, stop within FOLLOW_NEAR
+	if dist > FOLLOW_FAR then self.moving = true elseif dist < FOLLOW_NEAR then self.moving = false end
+	local state
+	if self.moving then
+		local vid = controller:level_vertex_id()
+		if not npc:accessible(vid) then
+			vid = npc:accessible_nearest(level.vertex_position(vid), vector())
+		end
+		if vid ~= self.dest_vid then
+			self.dest_vid = vid
+			npc:set_dest_level_vertex_id(vid)
+		end
+		state = dist > FOLLOW_RUN and "rush" or "patrol"
+	else
+		state = "guard_na"
+	end
+	if state ~= self.state then
+		self.state = state
+		state_mgr.set_state(npc, state, nil, nil, self.moving and nil or { look_object = controller })
+	end
+end
+
+function action_ctrl_follow:finalize()
+	action_base.finalize(self)
+	self.state = nil
+end
+
+function install_guard(npc) -- assigns the forward-declared local
+	if guard_installed[npc:id()] ~= nil then return guard_installed[npc:id()] end
+	local ok, err = pcall(function()
+		local manager = npc:motivation_action_manager()
+		manager:add_evaluator(GUARD_EVAL, evaluator_ctrl_guard("sivol_ctrl_guard"))
+		local action = action_ctrl_guard("sivol_ctrl_guard_hold")
+		action:add_precondition(world_property(stalker_ids.property_alive, true))
+		action:add_precondition(world_property(stalker_ids.property_enemy, true))
+		action:add_precondition(world_property(stalker_ids.property_anomaly, false))
+		action:add_precondition(world_property(GUARD_EVAL, true))
+		xr_motivator.addCommonPrecondition(action)
+		action:add_effect(world_property(stalker_ids.property_enemy, false))
+		manager:add_action(GUARD_ACT, action)
+		manager:action(stalker_ids.action_combat_planner):add_precondition(world_property(GUARD_EVAL, false))
+
+		manager:add_evaluator(FOLLOW_EVAL, evaluator_ctrl_follow("sivol_ctrl_follow"))
+		local follow = action_ctrl_follow("sivol_ctrl_follow_move")
+		follow:add_precondition(world_property(stalker_ids.property_alive, true))
+		follow:add_precondition(world_property(stalker_ids.property_enemy, false))
+		follow:add_precondition(world_property(stalker_ids.property_danger, false))
+		follow:add_precondition(world_property(stalker_ids.property_anomaly, false))
+		follow:add_precondition(world_property(FOLLOW_EVAL, true))
+		xr_motivator.addCommonPrecondition(follow)
+		follow:add_effect(world_property(FOLLOW_EVAL, false))
+		manager:add_action(FOLLOW_ACT, follow)
+		manager:action(xr_actions_id.alife):add_precondition(world_property(FOLLOW_EVAL, false))
+	end)
+	guard_installed[npc:id()] = ok
+	if not ok then log("guard install failed npc=%s err=%s", npc:name(), tostring(err)) end
+	return ok
+end
+
+-- existing zombified stalkers (runtime spawns only) can be adopted as guards; they cost no thrall budget
+local function eligible_zombie(npc)
+	if not npc or not npc:alive() or not IsStalker(npc) or npc:character_community() ~= "zombied" then return false end
+	if npc:name() ~= npc:section() .. npc:id() or npc:story_id() < NO_STORY_ID then return false end
+	local ok, visible = pcall(function() return npc:get_custom_monster().visible_for_zones end)
+	if not ok or visible == false then return false end
+	if olr_protected and olr_protected.is_no_offline_alife_obj then
+		local ok2, protected = pcall(olr_protected.is_no_offline_alife_obj, npc:name())
+		if not ok2 or protected then return false end
+	end
+	return true
+end
+
+local function update_guards(controller, c)
+	local cid = controller:id()
+	local count = 0
+	for npc_id, g in pairs(guards) do
+		if g.controller_id == cid then
+			local npc = level.object_by_id(npc_id)
+			if npc and npc:alive() then count = count + 1 else guards[npc_id] = nil end
+		end
+	end
+	if count >= c.stalker_guards then return end
+
+	local cpos = controller:position()
+	for npc_id in pairs(npcs) do
+		if count >= c.stalker_guards then break end
+		if not guards[npc_id] then
+			local npc = level.object_by_id(npc_id)
+			local d = dominated[npc_id]
+			local candidate = npc and ((d and d.controller_id == cid)
+				or (not d and npc:position():distance_to(cpos) < GUARD_ADOPT_RADIUS and eligible_zombie(npc)))
+			if candidate and install_guard(npc) then
+				guards[npc_id] = { controller_id = cid, index = count }
+				count = count + 1
+				log("guard npc=%s controller=%s index=%d", npc:name(), controller:name(), count - 1)
+			end
+		end
+	end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Fauna thrall persistence: the engine forgets control on load; the controller's pstor keeps the ids
+---------------------------------------------------------------------------------------------------
+local function update_thrall_persistence(controller, now)
+	local cid = controller:id()
+	local ok, cm = pcall(function() return controller:get_custom_monster() end)
+	if not ok or not cm or not cm.nlc_controller_thralls then return end
+
+	local pending = thralls_restore[cid]
+	if pending then
+		for i = #pending.ids, 1, -1 do
+			local thrall = level.object_by_id(pending.ids[i])
+			if thrall and thrall:alive() and cm:nlc_controller_take(thrall) then
+				log("thrall restored controller=%s thrall=%s", controller:name(), thrall:name())
+				table.remove(pending.ids, i)
+			elseif thrall and not thrall:alive() then
+				table.remove(pending.ids, i)
+			end
+		end
+		if #pending.ids == 0 or now >= pending.expires then thralls_restore[cid] = nil end
+		return
+	end
+
+	local ids = cm:nlc_controller_thralls() or ""
+	if ids ~= thralls_saved[cid] then
+		thralls_saved[cid] = ids
+		xr_logic.pstor_store(controller, THRALLS_PSTOR, ids ~= "" and ids or nil)
+	end
+end
+
+local function queue_thrall_restore(controller)
+	local ids = xr_logic.pstor_retrieve(controller, THRALLS_PSTOR, nil)
+	if not ids or ids == "" then return end
+	local list = {}
+	for id in string.gmatch(ids, "%d+") do table.insert(list, tonumber(id)) end
+	if #list > 0 then
+		thralls_restore[controller:id()] = { ids = list, expires = time_global() + THRALL_RESTORE_MS }
+		log("thrall restore queued controller=%s ids=%s", controller:name(), ids)
+	end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Mirage tell: a well-protected player sees decoys smoke
+---------------------------------------------------------------------------------------------------
+local function play_tell(obj)
+	local pos = obj:position()
+	particles_object(TELL_PARTICLE):play_at_pos(vector():set(pos.x, pos.y + 1.2, pos.z))
+end
+
+local function update_decoy_tells(now)
+	if mask_k_value() > TELL_MASK_K then return end
+	for id, next_time in pairs(decoys) do
+		local decoy = level.object_by_id(id)
+		if not decoy then
+			decoys[id] = nil
+		elseif now >= next_time then
+			decoys[id] = now + TELL_PERIOD_MS
+			play_tell(decoy)
+		end
+	end
+	-- psy phantoms (controller and ambient) give themselves away the same way
+	if sivol_psy_phantoms and sivol_psy_phantoms.phantom_ids then
+		local live = {}
+		for _, id in ipairs(sivol_psy_phantoms.phantom_ids()) do
+			live[id] = true
+			local obj = level.object_by_id(id)
+			if obj and obj:alive() then
+				local t = phantom_tells[id]
+				if not t then
+					phantom_tells[id] = now + lua_random(0, TELL_PERIOD_MS) -- a pack does not puff in sync
+				elseif now >= t then
+					phantom_tells[id] = now + TELL_PERIOD_MS
+					play_tell(obj)
+				end
+			end
+		end
+		for id in pairs(phantom_tells) do
+			if not live[id] then phantom_tells[id] = nil end
+		end
+	end
+end
+
+-- xr_wounded re-enables talk on every tick of its action; it asks here first (dominated stalkers stay mute)
+function is_muted(npc_id)
+	return muted[npc_id] ~= nil
+end
+
+local function shake_feedback(npc, now)
+	if now >= (voice_at[npc:id()] or 0) then
+		voice_at[npc:id()] = now + 1500
+		play_psy_voice(npc)
+	end
+end
+
+-- breaks the stun: pressure back to the aware level, building slower for SNAP_GUARD_MS
+local function snap_out(npc, p, now)
+	p.value = AWARE_AT
+	p.stun_since = nil
+	p.panic_until = nil
+	p.shakes = 0
+	p.snapped_until = now + SNAP_GUARD_MS
+	pcall(function() npc:set_default_panic_threshold() end)
+	psy_set_at[npc:id()] = nil
+	set_psy(npc, 1 - AWARE_AT * PSY_PER_PRESSURE)
+	unmute(npc)
+	log("snapped out npc=%s (stun broken, pressure %.2f)", npc:name(), p.value)
+end
+
+-- the actor presses use on a stunned stalker (talk is off, the use callback still fires): every press sets the
+-- domination back, SHAKES_TO_SNAP quick presses break the stun; on a stalker coming to, each press shortens it
+local function on_npc_use(npc, who)
+	if not npc or not who or not db.actor or who:id() ~= db.actor:id() or not npc:alive() then return end
+	local id = npc:id()
+	if dominated[id] then return end
+	local now = time_global()
+	local p = pressure[id]
+	if p and p.stun_since then
+		if now - (p.shake_at or 0) > SHAKE_WINDOW_MS then p.shakes = 0 end
+		p.shake_at = now
+		p.shakes = (p.shakes or 0) + 1
+		p.stun_since = math.min(now, p.stun_since + SHAKE_DELAY_MS)
+		shake_feedback(npc, now)
+		log("shake npc=%s presses=%d/%d", npc:name(), p.shakes, SHAKES_TO_SNAP)
+		if p.shakes >= SHAKES_TO_SNAP then snap_out(npc, p, now) end
+	elseif coming_to[id] then
+		coming_to[id] = coming_to[id] - COME_TO_SHAKE_MS
+		shake_feedback(npc, now)
+		log("shake npc=%s (coming to, %d ms left)", npc:name(), math.max(0, coming_to[id] - now))
+	end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Signals
+---------------------------------------------------------------------------------------------------
+local function on_update()
+	local now = time_global()
+	if now < next_tick or not db.actor then return end
+	local dt = (last_tick > 0) and math.min(2, (now - last_tick) / 1000) or TICK_MS / 1000
+	last_tick = now
+	next_tick = now + TICK_MS
+
+	for cid in pairs(controllers) do
+		local controller = level.object_by_id(cid)
+		if not controller then
+			controllers[cid] = nil
+		elseif controller:alive() then
+			local c = cfg(controller)
+			if not c.decoy then
+				if c.humans then
+					local engaged = controller:best_enemy() ~= nil
+					if engaged or presses(cid) then press(controller, c, now, dt, engaged) end
+				end
+				if c.stalker_guards > 0 and controller:best_enemy() then
+					update_guards(controller, c)
+				end
+				update_thrall_persistence(controller, now)
+			end
+		end
+	end
+	update_panic_and_release(now)
+	refresh_wounds(now)
+	update_decoy_tells(now)
+end
+
+local function on_monster_spawn(obj)
+	if not is_controller(obj) then return end
+	if cfg(obj).decoy then
+		decoys[obj:id()] = 0
+		local k = mask_k_value()
+		log("decoy %s spawned, mask_k=%.2f tells=%s", obj:name(), k, tostring(k <= TELL_MASK_K))
+		return
+	end
+	controllers[obj:id()] = true
+	queue_thrall_restore(obj)
+end
+
+local function on_monster_net_destroy(obj)
+	if obj then
+		controllers[obj:id()] = nil
+		swap_next[obj:id()] = nil
+		decoys[obj:id()] = nil
+		thralls_saved[obj:id()] = nil
+		thralls_restore[obj:id()] = nil
+	end
+end
+
+local function on_monster_hit(obj, amount, dir, who)
+	if is_controller(obj) and obj:alive() and who and db.actor and who:id() == db.actor:id() and (tonumber(amount) or 0) > 0 then
+		try_swap(obj)
+	end
+end
+
+-- runs before xr_gulag sets up the logic, so xr_wounded / xr_meet build their defaults for the right community
+local function on_npc_before_spawn(npc)
+	if not npc then return end
+	local id = npc:id()
+	local community, goodwill = read_backup(id)
+	if not community then return end
+	clear_backup(id)
+	if not npc:alive() or dominated[id] then return end -- a corpse keeps the zombied community
+	pcall(function() npc:set_character_community(community, 0, 0) end)
+	if goodwill and db.actor then pcall(function() npc:set_goodwill(goodwill, db.actor) end) end
+	reset_wound_regen(npc)
+	log("restored npc=%s community=%s on spawn (dominated when it went offline or was saved)", npc:name(), community)
+end
+
+local function on_npc_spawn(npc)
+	if not npc then return end
+	if not npc:alive() then return end -- corpses are never pressed
+	npcs[npc:id()] = true
+	if xr_logic.pstor_retrieve(npc, "sivol_ctrl_stun", nil) then
+		xr_logic.pstor_store(npc, "sivol_ctrl_stun", nil)
+		if not pressure[npc:id()] then reset_psy(npc) end
+	end
+	-- a save made while dominated: the domination ends on load
+	local community = xr_logic.pstor_retrieve(npc, PSTOR_KEY, nil)
+	if community and not dominated[npc:id()] then
+		if npc:alive() then
+			pcall(function() npc:set_character_community(community, 0, 0) end)
+			local goodwill = xr_logic.pstor_retrieve(npc, PSTOR_KEY .. "_gw", nil)
+			if goodwill and db.actor then pcall(function() npc:set_goodwill(goodwill, db.actor) end) end
+			reset_wound_regen(npc)
+			npc:enable_talk()
+		end
+		xr_logic.pstor_store(npc, PSTOR_KEY, nil)
+		xr_logic.pstor_store(npc, PSTOR_KEY .. "_gw", nil)
+		log("restored npc=%s community=%s after load", npc:name(), community)
+	end
+end
+
+local function on_npc_net_destroy(npc)
+	if npc then
+		npcs[npc:id()] = nil
+		pressure[npc:id()] = nil
+		guards[npc:id()] = nil
+		guard_installed[npc:id()] = nil -- the planner is rebuilt on the next spawn
+		muted[npc:id()] = nil
+		coming_to[npc:id()] = nil
+		come_to_diag[npc:id()] = nil
+		psy_set_at[npc:id()] = nil
+		psy_refresh[npc:id()] = nil
+		voice_at[npc:id()] = nil
+		-- dominated and going offline: the backup restores it on its next spawn (changing the community of an
+		-- object being destroyed is not safe)
+		if dominated[npc:id()] then
+			dominated[npc:id()] = nil
+			log("dominated npc=%s went offline, restored on its next spawn", npc:name())
+		end
+	end
+end
+
+-- the corpse keeps the zombied community: changing the community of a dead stalker changes its team,
+-- which the engine does not allow for dead objects (crashed in CAI_Stalker::on_before_change_team)
+local function on_npc_death(npc)
+	if npc then
+		guards[npc:id()] = nil
+		npcs[npc:id()] = nil
+		clear_backup(npc:id())
+	end
+	if npc and dominated[npc:id()] then
+		dominated[npc:id()] = nil
+		pressure[npc:id()] = nil
+		xr_logic.pstor_store(npc, PSTOR_KEY, nil)
+		xr_logic.pstor_store(npc, PSTOR_KEY .. "_gw", nil)
+		log("dominated npc=%s died", npc:name())
+	end
+end
+
+-- a controller does not attack the stalker it is stunning: the stun is the domination in progress
+local function monster_enemy_callback(obj, enemy, result)
+	local p = obj and enemy and pressure[enemy:id()]
+	if p and p.stun_since and p.controller_id == obj:id() then
+		table.insert(result, false)
+		return true
+	end
+end
+
+-- a dominated stalker never targets a controller
+local function enemy_callback(obj, enemy, result)
+	if obj and enemy and dominated[obj:id()] and is_controller(enemy) then
+		table.insert(result, false)
+		return true
+	end
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = on_update })
+	sm:subscribe({ signal = "on_monster_spawn", fun = on_monster_spawn })
+	sm:subscribe({ signal = "on_monster_net_destroy", fun = on_monster_net_destroy })
+	sm:subscribe({ signal = "on_monster_hit", fun = on_monster_hit })
+	sm:subscribe({ signal = "on_npc_before_spawn", fun = on_npc_before_spawn })
+	sm:subscribe({ signal = "on_npc_spawn", fun = on_npc_spawn })
+	sm:subscribe({ signal = "on_npc_net_destroy", fun = on_npc_net_destroy })
+	sm:subscribe({ signal = "on_npc_death", fun = on_npc_death })
+	sm:subscribe({ signal = "on_npc_enemy_callback", fun = enemy_callback })
+	sm:subscribe({ signal = "on_monster_enemy_callback", fun = monster_enemy_callback })
+	sm:subscribe({ signal = "npc_use", fun = on_npc_use })
+end
