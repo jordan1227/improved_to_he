@@ -1,6 +1,165 @@
-<!-- nlc-changelog-head: 1d0e5e4a998d6d737468dc76f1592da45e4d5ef8 -->
+<!-- nlc-changelog-head: 2a60e9d45af28164a8818b2642b619b085628be6 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 2a60e9d45af28164a8818b2642b619b085628be6 -->
+## 08.10.26 18:00 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [2a60e9d](https://github.com/jordan1227/improved_to_he/commit/2a60e9d45af28164a8818b2642b619b085628be6)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_bloodsucker.ltx
+- M gamedata/scripts/sak/sak_minigame.script
+- M gamedata/scripts/sivol/sivol_masks.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+
+### Other repository files changed
+
+- M manifest.txt
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_siege.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.h
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_tactics.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.h
+
+<!-- nlc-changelog-commit: ace0a59b2bcac04b121cc2149247ac210273a878 -->
+## 08.10.26 18:00 МСК - Fix bloodsucker pounce and evade tuning
+
+Commit: [ace0a59](https://github.com/jordan1227/improved_to_he/commit/ace0a59b2bcac04b121cc2149247ac210273a878)
+
+### Description
+
+Adjust bloodsucker NLC evasion for pounce and perch behavior: add flat/perch range and angle tuning, enforce minimum upward takeoff speed, add hit-once and relaunch safeguards, and improve perch re-picking and cloak/tactic logic. Also updates the engine version string and changelog for the 3.589.44 build.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_bloodsucker.ltx
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_siege.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.h
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_tactics.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.h
+
+<!-- nlc-changelog-commit: 0fff7ecb689fb356659363f576fae6326d5a8128 -->
+## 08.10.26 17:37 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [0fff7ec](https://github.com/jordan1227/improved_to_he/commit/0fff7ecb689fb356659363f576fae6326d5a8128)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/kotovod/arc_radiation.script
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_minigame.script
+- M gamedata/scripts/sivol/sivol_masks.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 7070e14cc7a1f2629f29ba3f56b87a461d479490 -->
+## 08.10.26 17:37 МСК - Зависимость статов маски от состояния маски. фикс чн3-а
+
+Commit: [7070e14](https://github.com/jordan1227/improved_to_he/commit/7070e14cc7a1f2629f29ba3f56b87a461d479490)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sivol/sivol_masks.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+
+<!-- nlc-changelog-commit: 23f74cda71e8cad5e2826701e432e220526c2cfb -->
+## 08.10.26 17:10 МСК - мини-игры
+
+Commit: [23f74cd](https://github.com/jordan1227/improved_to_he/commit/23f74cda71e8cad5e2826701e432e220526c2cfb)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak_minigame.script
+
+<!-- nlc-changelog-commit: 47a516fd74fc510694c5282fac637dd55b8ace09 -->
+## 08.10.26 14:57 МСК - Манифест
+
+Commit: [47a516f](https://github.com/jordan1227/improved_to_he/commit/47a516fd74fc510694c5282fac637dd55b8ace09)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 4c51ef5fc1ecc1d29088369c9426f6e3c5a285b0 -->
+## 08.10.26 14:57 МСК - Фикс Стаса. Reset Stas vodka wins by day
+
+Commit: [4c51ef5](https://github.com/jordan1227/improved_to_he/commit/4c51ef5fc1ecc1d29088369c9426f6e3c5a285b0)
+
+### Description
+
+Fix the vodka minigame win tracking so Stas's wins are counted per game day instead of persisting across unrelated resets. The counter now lazily resets when the current day changes, while keeping the per-day win limit consistent for the minigame.
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_minigame.script
+
+<!-- nlc-changelog-commit: 81fdb3a038787570c165c23bb76ea3e1076c3dc0 -->
+## 08.10.26 14:44 МСК - Манифест
+
+Commit: [81fdb3a](https://github.com/jordan1227/improved_to_he/commit/81fdb3a038787570c165c23bb76ea3e1076c3dc0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 1d0e5e4a998d6d737468dc76f1592da45e4d5ef8 -->
 ## 08.10.26 14:41 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
