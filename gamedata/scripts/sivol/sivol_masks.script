@@ -148,6 +148,13 @@ function sivol.get_base_section(sect)
     return base
 end
 
+-- Mask filter strength follows the mask's own condition (vergas_masks mask/t4, 0-100), not the suit's body
+-- condition. Shared by the outfit stat apply, get_mask_psy_k and the outfit description.
+function sivol.get_mask_rad_scale(armor)
+    local mask_cond = vergas_masks.get_mask_condition(armor:id()) or 100
+    return sivol.get_condition_rad_scale(mask_cond / 100)
+end
+
 function sivol.round(num)
     return math.floor(num + 0.5)
 end
@@ -184,8 +191,7 @@ function sivol.apply_mask_effects()
     local mod = sivol.mask_modifiers[base_sect] or sivol.mask_modifiers[mask_root] or sivol.mask_modifiers[mask_type]
 
     if mod then
-        local cond = armor:condition()
-        local rad_scale = sivol.get_condition_rad_scale(cond)
+        local rad_scale = sivol.get_mask_rad_scale(armor)
 
         local deltas = {}
         for key, value in pairs(mod) do
@@ -232,6 +238,13 @@ function sivol.remove_mask_effects()
     effects_applied = false
 end
 
+-- Clears and re-applies the worn mask's stats after its own condition changed (headshot damage, repair).
+-- With the mask off this only clears.
+function sivol.refresh_mask_effects()
+    if effects_applied then sivol.remove_mask_effects() end
+    if vergas_masks.get_flag_mask() then sivol.apply_mask_effects() end
+end
+
 -- ’уки в vergas_masks - init_mask, set_mask_on_off_flag, mask_update
 --[[
 function sivol.validate_mask_effects()
@@ -276,8 +289,7 @@ function sivol.get_mask_psy_k()
     local base_psy_k = mod and mod.psy_k or 0.6
     
     -- —читаем износ
-    local cond = armor:condition()
-    local scale = sivol.get_condition_rad_scale(cond)
+    local scale = sivol.get_mask_rad_scale(armor)
     
     -- Ћогика: защита Ч это (1.0 - множитель). Ёту разницу мы и масштабируем.
     -- ѕример: если psy_k = 0.6 (40% защиты), то при scale 0.5 защита станет 20% (множитель 0.8)
@@ -298,6 +310,17 @@ function sivol_masks.init_module()
     module_initialized = true
 
     log1("~~~ [SIVOL DEBUG]: init_module() loaded")
+
+    -- Mask condition changes (headshot damage, repair) go through vergas_masks.set_mask_condition.
+    -- Re-derive the worn mask's stats then, so they track the mask's own condition.
+    local orig_set_mask_condition = vergas_masks.set_mask_condition
+    function vergas_masks.set_mask_condition(id, cond, force_mode)
+        orig_set_mask_condition(id, cond, force_mode)
+        local armor = db.actor and db.actor:item_in_slot(6)
+        if armor and armor:id() == tonumber(id) then
+            sivol.refresh_mask_effects()
+        end
+    end
 
     local sm = ogse_signals.get_mgr()
 
