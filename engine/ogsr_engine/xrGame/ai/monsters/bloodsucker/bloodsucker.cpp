@@ -621,7 +621,7 @@ bool CAI_Bloodsucker::check_start_conditions(ControlCom::EControlType type)
         if (m_nlc_on)
         {
             float h = 0.f;
-            if (nlc_siege_active() || nlc_siege_wanted() || (nlc_enemy_perch_h(EnemyMan.get_enemy(), h) && h >= 0.4f))
+            if (nlc_siege_active() || nlc_siege_wanted() || (EnemyMan.get_enemy() && nlc_enemy_perched(EnemyMan.get_enemy(), h)))
                 return false;
         }
         if (m_nlc_on && !nlc_strike_tell_done())

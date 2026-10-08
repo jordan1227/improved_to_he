@@ -5,6 +5,37 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.46 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `D17BB1BDB6E088D51144D8465CE8B2F0E6E90533A190646297A3D306850B2639` (archived with its PDB in `nlc_tools/builds/20261008_184236_d17bb1bd`).
+- **Status:** runtime pending. Design after the `.45` test (`xray_hawkl_08-10-26_18-25-29.log`, open ground).
+
+### NLC
+
+- **Perch:** a perch counts after the enemy stood 0.4 m or more above its ground point for `pounce_perch_hold_ms`, not
+  jumping, and off the ai-map as the siege sees it (weak ones "perch" pounced on flat ground at a jumping player).
+- **Pair:** `tac_pair_rank` (strong 2, normal 1): the highest rank baits, so a normal + weak pair forms too. The
+  flanker moves cloaked on an arc (`tac_flank_arc_dist`) until `tac_flank_arc_angle` off the player's view, then
+  strikes when the player watches the bait or after `tac_flank_wait_ms` (`tac_flank_arc_max_ms` cap). The bait makes
+  mock charges (`tac_bait_mock`), roars when the flanker strikes and charges for real once the flanker is within
+  `tac_bait_sync_dist` (3 s cap). Both charged at once from the front before (the flanker struck 0.2 s into its stalk).
+- **Open ground:** `cloak_counts_hidden`: cloaked beyond the x-ray radius and outside the view cone counts as hidden
+  (siege, stalk, feint, hit and run found no cover in a field); hit and run runs zigzag legs while watched
+  (`tac_recover_zz`); a feint aimed at vanishes sideways (`tac_feint_lateral`).
+
+## nlc-3.589.45 (2026-10-08)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `879DD54560C94C78B5BFBF0E7EDC6A0A20E6B93FA9B0B1B482575BB69745EAE8` (archived with its PDB in `nlc_tools/builds/20261008_182500_879dd545`).
+- **Status:** runtime pending. After the `.44` test (`xray_hawkl_08-10-26_18-12-38.log`); the relaunch fixed the
+  standing pounces (Runtime accepted).
+
+### NLC
+
+- **Bait:** starts only beyond `tac_bait_dist` (it entered at 2-3 m in melee and stopped for 0.2 s, again and again);
+  in place it walks slowly at the player (`tac_bait_advance`) instead of standing until its time ran out.
+
 ## nlc-3.589.44 (2026-10-08)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

@@ -241,7 +241,18 @@ public:
         float pounce_max_angle{deg2rad(20.f)}; // jump_max_angle (rad in the config, as CControlJump reads it) // own hit test during the pounce: centre to centre (the stock test missed perched targets)
         float cloak_xray_radius{}; // never fully invisible this close to the enemy: at least x-ray (0 = off)
         u32 tac_recover_cooldown_rand{}; // + random 0..this ms on the hit-and-run cooldown
-        bool tac_pair_lead{}; // can be the bait of a pair; a pair forms only with at least one lead
+        int tac_pair_rank{}; // pair: the highest rank baits (strong 2, normal 1); a pair forms only with a rank >= 1
+        Fvector2 tac_flank_arc_dist{12.f, 15.f}; // flanker: the arc around the player it moves on, cloaked
+        float tac_flank_arc_angle{deg2rad(110.f)}; // ... until this far off the player's view (side or back)
+        u32 tac_flank_arc_max_ms{8000}; // ... strikes anyway after this long
+        u32 tac_flank_wait_ms{1500}; // in position: strikes when the player watches the bait, or after this long
+        bool tac_bait_mock{}; // bait: mock charges in and out, roaring, instead of standing
+        float tac_bait_mock_dist{3.5f};
+        float tac_bait_sync_dist{5.f}; // bait: the real charge once a striking flanker is this close to the player
+        bool cloak_counts_hidden{}; // cloaked, beyond the x-ray radius and outside the view cone counts as hidden
+        bool tac_recover_zz{}; // hit and run: zigzag legs while it is watched
+        bool tac_feint_lateral{}; // feint: vanish sideways when aimed at
+        u32 pounce_perch_hold_ms{500}; // a perch counts after the enemy stood on it this long (a jump is no perch)
         u8 lunge_reveal{2}; // visibility a lunge or pounce reveals: 1 x-ray (partial), 2 full (stock-like); the pounce never goes above x-ray
         u32 lunge_reveal_ms{}; // after a lunge or pounce: hold the reveal state this long or until the first melee swing (0 = off)
         float vampire_intent_dist{8.f}; // a grab from behind is planned this close: no lunge or pounce, stay cloaked
@@ -301,6 +312,7 @@ public:
         bool tac_pair_enabled{};
         Fvector2 tac_bait_dist{10.f, 14.f};
         u32 tac_bait_max_time{15000};
+        bool tac_bait_advance{}; // the bait in place walks slowly at the player instead of standing
         u8 tac_bait_vis{2}; // 1 x-ray, 2 full
         float tac_night_brightness{0.15f}, tac_night_dist_k{1.3f}, tac_night_time_k{1.5f}, tac_night_chance_add{0.2f};
     };
@@ -322,6 +334,7 @@ public:
     virtual bool nlc_tactic_wanted() { return m_nlc_tac.want; }
     virtual bool nlc_siege_perch_strike(const CEntityAlive* enemy, float& strike_dist);
     virtual void nlc_siege_perch_shot();
+    virtual bool nlc_siege_cloak_hidden(const Fvector& feet, const CEntityAlive* enemy) const;
     virtual u32 nlc_jump_bounce_grace() const { return m_nlc_on ? m_nlc_b.pounce_bounce_grace_ms : 0; }
     virtual float nlc_jump_min_vy() const { return m_nlc_on ? m_nlc_b.pounce_min_vy : 0.f; }
     virtual void nlc_tactic_begin();
@@ -386,6 +399,15 @@ private:
         u32 next_rank{};
         u32 committed_until{}; // this monster left a stalk to strike (the bait reads it)
         u32 next_growl{};
+        u32 flank_pos_since{}; // flanker in position (off the view) since
+        bool flank_struck{}; // flanker committed from the arc (the bait reads it)
+        bool mock_out{}; // bait: on the way in of a mock charge
+        u32 next_mock{};
+        Fvector bait_home{};
+        u32 bait_home_node{u32(-1)};
+        bool roared{}; // bait: the tell before the flanker strikes
+        s8 zz_side{}; // recover: zigzag leg side
+        u32 zz_next{};
         // vampire grab roll (tactics.cpp)
         u8 bias_stage{}; // stalk pick preference: 0 flank (tac_stalk_flank), 1 own side, 2 none; back to 0 after a pick
         bool rolled_grab{};
@@ -415,6 +437,7 @@ private:
     u32 m_nlc_pounce_fail_log{};
     u32 m_nlc_perch_block_log{}; // diagnostics: why a ready perch pounce does not start
     u32 m_nlc_perch_repick_at{}; // perch spot out of pounce range: pick it again (not before this)
+    u32 m_nlc_perched_since{}; // the enemy stands on a perch since (pounce_perch_hold_ms)
     bool m_nlc_pounce_hit{}; // the current pounce has hit (own hit test or CControlJump)
     bool m_nlc_pouncing{}; // a pounce of ours is in the air
     u32 m_nlc_perch_since{}; // holding the siege perch-strike spot since
@@ -440,6 +463,9 @@ private:
     void nlc_pounce_cooldown(u32 ms); // next pounce cycle in ms (a new roll then)
     bool nlc_pounce_wanted(bool perch) const; // ready and this cycle's roll allows it
     bool nlc_enemy_perch_h(const CEntityAlive* enemy, float& h) const; // enemy feet above its ground point
+    bool nlc_enemy_perched(const CEntityAlive* enemy, float& h); // on a perch for real: held, not a jump, off the ai-map
+    bool nlc_tac_hidden(const Fvector& pt, const CEntityAlive* enemy) const; // out of sight, or cloaked out of view
+    bool nlc_tac_lateral(const CEntityAlive* enemy, float min_d, float max_d, Fvector& pos, u32& node); // sideways off the line of fire
     void nlc_perch_give_up(const char* why);
     void nlc_backhit_update();
     bool nlc_strike_tell_done() const; // fully visible long enough to strike (always true without strike_reveal_margin)
@@ -463,7 +489,7 @@ private:
     void nlc_tac_try_enter(const CEntityAlive* enemy, bool actor_enemy);
     void nlc_tac_continue(const CEntityAlive* enemy, bool actor_enemy);
     void nlc_tac_update_role(const CEntityAlive* enemy);
-    bool nlc_tac_flanker_struck(const CEntityAlive* enemy); // a flanker of this squad left its stalk to strike
+    bool nlc_tac_flanker_struck(const CEntityAlive* enemy, float* nearest = nullptr); // a flanker of this squad left its stalk to strike (and its distance to the enemy)
     bool nlc_tac_night();
     // hidden / unwatched point on 3 radii x 8 angles around `center`, nearest to the monster (at most 4 searches per frame, all bloodsuckers)
     int nlc_tac_pick(const Fvector& center, Fvector2 ring, float bias_angle, const Fvector* bias_dir, bool need_hidden, bool prefer_hidden, bool need_unwatched, Fvector& pos,

@@ -143,7 +143,18 @@ void CAI_Bloodsucker::nlc_bs_load(LPCSTR section)
     b.pounce_max_angle = std::clamp(F("jump_max_angle", 0.35f), 0.05f, 1.2f);
     b.cloak_xray_radius = std::max(F("cloak_xray_radius", 0.f), 0.f);
     b.tac_recover_cooldown_rand = MS("tac_recover_cooldown_rand", 0);
-    b.tac_pair_lead = B("tac_pair_lead", false);
+    b.tac_pair_rank = std::clamp(int(F("tac_pair_rank", 0.f)), 0, 9);
+    b.tac_flank_arc_dist = V2("tac_flank_arc_dist", Fvector2().set(12.f, 15.f));
+    b.tac_flank_arc_angle = deg2rad(std::clamp(F("tac_flank_arc_angle", 110.f), 45.f, 180.f));
+    b.tac_flank_arc_max_ms = MS("tac_flank_arc_max_ms", 8000);
+    b.tac_flank_wait_ms = MS("tac_flank_wait_ms", 1500);
+    b.tac_bait_mock = B("tac_bait_mock", false);
+    b.tac_bait_mock_dist = std::max(F("tac_bait_mock_dist", 3.5f), 1.f);
+    b.tac_bait_sync_dist = std::max(F("tac_bait_sync_dist", 5.f), 0.f);
+    b.cloak_counts_hidden = B("cloak_counts_hidden", false);
+    b.tac_recover_zz = B("tac_recover_zz", false);
+    b.tac_feint_lateral = B("tac_feint_lateral", false);
+    b.pounce_perch_hold_ms = MS("pounce_perch_hold_ms", 500);
     b.lunge_reveal = u8(std::clamp(int(F("lunge_reveal", 2.f)), 1, 2));
     b.lunge_reveal_ms = MS("lunge_reveal_ms", 0);
     b.vampire_intent_dist = std::max(F("vampire_intent_dist", 8.f), 0.f);
@@ -211,6 +222,7 @@ void CAI_Bloodsucker::nlc_bs_load(LPCSTR section)
     b.tac_pair_enabled = B("tac_pair_enabled", false);
     b.tac_bait_dist = V2("tac_bait_dist", Fvector2().set(10.f, 14.f));
     b.tac_bait_max_time = MS("tac_bait_max_time", 15000);
+    b.tac_bait_advance = B("tac_bait_advance", false);
 
     b.tac_night_brightness = std::max(F("tac_night_brightness", 0.15f), 0.f);
     b.tac_night_dist_k = std::max(F("tac_night_dist_k", 1.3f), 0.5f);
@@ -299,6 +311,85 @@ bool CAI_Bloodsucker::nlc_enemy_perch_h(const CEntityAlive* enemy, float& h) con
         return false;
     h = enemy->Position().y - ai().level_graph().vertex_position(ev).y;
     return true;
+}
+
+// on a perch for real: 0.4 m or more above its ground point for pounce_perch_hold_ms, not jumping, and off the ai-map
+// as the siege sees it (a jumping player, or the ai-map lying low on a bump, made weak ones "perch" pounce on flat ground)
+bool CAI_Bloodsucker::nlc_enemy_perched(const CEntityAlive* enemy, float& h)
+{
+    const u32 now = Device.dwTimeGlobal;
+    bool raw = nlc_enemy_perch_h(enemy, h) && h >= 0.4f;
+    if (raw)
+    {
+        if (CActor* a = smart_cast<CActor*>(const_cast<CEntityAlive*>(enemy)))
+            raw = !a->is_jump();
+    }
+    if (raw)
+    {
+        const u8 r = nlc_inaccessible_reason();
+        raw = r == eNlcInaccessibleHigh || r == eNlcInaccessibleOffMap;
+    }
+    if (!raw)
+    {
+        m_nlc_perched_since = 0;
+        return false;
+    }
+    if (!m_nlc_perched_since)
+        m_nlc_perched_since = now;
+    return now >= m_nlc_perched_since + m_nlc_b.pounce_perch_hold_ms;
+}
+
+// open ground (cloak_counts_hidden): cloaked beyond the x-ray (partial visibility) radius and outside the enemy's
+// view cone counts as hidden; feint, hit and run, stalk and the siege found no cover in a field
+bool CAI_Bloodsucker::nlc_siege_cloak_hidden(const Fvector& feet, const CEntityAlive* enemy) const
+{
+    if (!m_nlc_on || !m_nlc_b.cloak_counts_hidden || !enemy)
+        return false;
+    if (feet.distance_to(enemy->Position()) <= const_cast<CAI_Bloodsucker*>(this)->get_partial_visibility_radius())
+        return false;
+    Fvector eye, view;
+    if (!nlc_enemy_eye(enemy, eye, view))
+        return false;
+    Fvector to;
+    to.set(feet.x - eye.x, feet.y + 1.f - eye.y, feet.z - eye.z);
+    return angle_between_vectors(view, to) > nlc_watch_cone();
+}
+
+bool CAI_Bloodsucker::nlc_tac_hidden(const Fvector& pt, const CEntityAlive* enemy) const { return !nlc_hidden_test_visible(pt, enemy); }
+
+// a point sideways off the line from the enemy (either side, the nearer one to the monster's heading first)
+bool CAI_Bloodsucker::nlc_tac_lateral(const CEntityAlive* enemy, float min_d, float max_d, Fvector& pos, u32& node)
+{
+    const Fvector away = flat_dir(enemy->Position(), Position());
+    const u32 mine = ai_location().level_vertex_id();
+    if (away.square_magnitude() < EPS_L || !ai().level_graph().valid_vertex_id(mine))
+        return false;
+    const float first = ::Random.randI(2) ? 1.f : -1.f;
+    for (float side : {first, -first})
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            const float d = min_d + (max_d - min_d) * float(i) / 2.f;
+            // 70 degrees off "away": mostly sideways, a little back
+            const Fvector dir = rotate_y(away, side * deg2rad(70.f));
+            Fvector pt;
+            pt.set(Position().x + dir.x * d, Position().y, Position().z + dir.z * d);
+            if (!ai().level_graph().valid_vertex_position(pt))
+                continue;
+            const u32 n = ai().level_graph().vertex_id(pt);
+            if (!ai().level_graph().valid_vertex_id(n))
+                continue;
+            pt = ai().level_graph().vertex_position(n);
+            if (_abs(pt.y - Position().y) > 3.f || !movement().restrictions().accessible(pt) || !Home->at_home(pt))
+                continue;
+            if (!ai().level_graph().valid_vertex_id(ai().level_graph().check_position_in_direction(mine, Position(), pt)))
+                continue;
+            pos = pt;
+            node = n;
+            return true;
+        }
+    }
+    return false;
 }
 
 // a bloodsucker besieging a player on a low perch goes to pounce distance and pounces instead of hiding; not again
@@ -462,7 +553,7 @@ bool CAI_Bloodsucker::nlc_cloak_rules(visibility_t& state)
         float reveal = b.cloak_cooldown_radius;
         float strike_reveal = 0.f; // > 0: a ready strike reveals within this
         float h = 0.f;
-        const bool perch_enemy = nlc_enemy_perch_h(enemy, h) && h >= 0.4f;
+        const bool perch_enemy = nlc_enemy_perched(enemy, h);
         const bool blocked = now < m_nlc_strike_reveal_block_until;
         // only while actually charging (attack run, facing the enemy within 45 degrees, seeing it) or at a perch-strike
         // spot: with "any ready strike" one was nearly always ready and the bloodsucker stayed visible within 10 m
@@ -802,7 +893,8 @@ void CAI_Bloodsucker::nlc_pounce_update()
     // the rolls happen before any reveal (a refused roll used to reveal it for nothing), each only while the enemy is
     // on that kind of ground
     float eh = 0.f;
-    if (nlc_pounce_ready() && nlc_enemy_perch_h(EnemyMan.get_enemy(), eh))
+    const bool eperch = EnemyMan.get_enemy() && nlc_enemy_perched(EnemyMan.get_enemy(), eh);
+    if (nlc_pounce_ready() && EnemyMan.get_enemy())
     {
         auto roll = [&](SNlcPounceRoll& r, float chance, const char* what) {
             if (chance <= 0.f || (r.rolled && (r.go || now < r.next)))
@@ -813,7 +905,7 @@ void CAI_Bloodsucker::nlc_pounce_update()
             if (!r.go)
                 TAC_LOG("~ [evade] [%s]: pounce: %s roll %.2f -> no, again in %u ms", cName().c_str(), what, chance, b.pounce_delay);
         };
-        if (eh >= 0.4f)
+        if (eperch)
             roll(m_nlc_roll_perch, b.pounce_perch_chance, "perch");
         else
             roll(m_nlc_roll_flat, b.pounce_flat ? b.pounce_chance : 0.f, "flat");
@@ -863,9 +955,9 @@ void CAI_Bloodsucker::nlc_pounce_update()
     // a perched enemy (feet 0.4 m or more above its ground point, up to pounce_perch_max_h) uses the perch roll, flat
     // ground the flat roll (pounce_flat); in a siege only the perch
     float h = 0.f;
+    const bool perch = nlc_enemy_perched(enemy, h);
     if (!nlc_enemy_perch_h(enemy, h) || h > b.pounce_max_h)
         return blocked("enemy too high or off the ai-map");
-    const bool perch = h >= 0.4f;
     if (!perch && (nlc_siege_active() || nlc_siege_wanted()))
         return blocked("enemy no longer perched");
     if (!nlc_pounce_wanted(perch))
@@ -1236,8 +1328,11 @@ void CAI_Bloodsucker::nlc_tac_update_role(const CEntityAlive* enemy)
     {
         xr_vector<CEntity*> mates;
         squad->nlc_members(mates);
-        // a pair needs at least one lead (tac_pair_lead, strong): the lowest-ID lead baits (tanky), the rest flank
-        bool any = false, any_lead = m_nlc_b.tac_pair_lead, lowest_lead = m_nlc_b.tac_pair_lead;
+        // a pair needs a member of rank >= 1 (tac_pair_rank: strong 2, normal 1); the highest rank baits (tanky),
+        // a tie goes to the lowest ID; the rest flank
+        const int my_rank = m_nlc_b.tac_pair_rank;
+        bool any = false, top = true;
+        int best = my_rank;
         for (CEntity* e : mates)
         {
             CAI_Bloodsucker* m = smart_cast<CAI_Bloodsucker*>(e);
@@ -1247,15 +1342,13 @@ void CAI_Bloodsucker::nlc_tac_update_role(const CEntityAlive* enemy)
             if (!me || me->ID() != enemy->ID())
                 continue;
             any = true;
-            if (m->m_nlc_b.tac_pair_lead)
-            {
-                any_lead = true;
-                if (m->ID() < ID())
-                    lowest_lead = false;
-            }
+            const int r = m->m_nlc_b.tac_pair_rank;
+            best = std::max(best, r);
+            if (r > my_rank || (r == my_rank && m->ID() < ID()))
+                top = false;
         }
-        if (any && any_lead)
-            role = lowest_lead ? eRoleBait : eRoleFlanker;
+        if (any && best >= 1)
+            role = top ? eRoleBait : eRoleFlanker;
     }
     if (role != t.role)
     {
@@ -1264,7 +1357,7 @@ void CAI_Bloodsucker::nlc_tac_update_role(const CEntityAlive* enemy)
     }
 }
 
-bool CAI_Bloodsucker::nlc_tac_flanker_struck(const CEntityAlive* enemy)
+bool CAI_Bloodsucker::nlc_tac_flanker_struck(const CEntityAlive* enemy, float* nearest)
 {
     CMonsterSquad* squad = monster_squad().get_squad(this);
     if (!squad || !enemy)
@@ -1272,6 +1365,8 @@ bool CAI_Bloodsucker::nlc_tac_flanker_struck(const CEntityAlive* enemy)
     const u32 now = Device.dwTimeGlobal;
     xr_vector<CEntity*> mates;
     squad->nlc_members(mates);
+    bool struck = false;
+    float best = flt_max;
     for (CEntity* e : mates)
     {
         CAI_Bloodsucker* m = smart_cast<CAI_Bloodsucker*>(e);
@@ -1279,9 +1374,14 @@ bool CAI_Bloodsucker::nlc_tac_flanker_struck(const CEntityAlive* enemy)
             continue;
         const CEntityAlive* me = m->EnemyMan.get_enemy();
         if (me && me->ID() == enemy->ID() && now < m->m_nlc_tac.committed_until)
-            return true;
+        {
+            struck = true;
+            best = std::min(best, m->Position().distance_to(enemy->Position()));
+        }
     }
-    return false;
+    if (nearest)
+        *nearest = best;
+    return struck;
 }
 
 void CAI_Bloodsucker::nlc_tac_enter(ENlcTacMode mode, const Fvector& target, u32 node)
@@ -1313,6 +1413,8 @@ void CAI_Bloodsucker::nlc_tac_enter(ENlcTacMode mode, const Fvector& target, u32
     case eTacStalk:
         t.force_vis = no_visibility;
         t.bias_stage = 0;
+        t.flank_pos_since = 0;
+        t.flank_struck = false;
         t.next_pick = now;
         t.next_repick_ok = now + 1500;
         TAC_LOG("~ [evade] [%s]: tactic stalk: enemy %.1f m%s%s", cName().c_str(), dist, t.night ? ", night" : "", t.bias_set ? ", from another side" : "");
@@ -1333,6 +1435,11 @@ void CAI_Bloodsucker::nlc_tac_enter(ENlcTacMode mode, const Fvector& target, u32
         t.force_vis = m_nlc_b.tac_bait_vis == 1 ? partial_visibility : full_visibility; // NLC: tac_bait_vis
         t.next_pick = now + 1000;
         t.next_growl = now + u32(::Random.randI(4000, 7000));
+        t.mock_out = false;
+        t.next_mock = 0;
+        t.roared = false;
+        t.bait_home = target;
+        t.bait_home_node = node;
         nlc_set_cloak(t.force_vis, true);
         TAC_LOG("~ [evade] [%s]: tactic bait: enemy %.1f m, going to %.1f m from it", cName().c_str(), dist, enemy ? target.distance_to_xz(enemy->Position()) : 0.f);
         break;
@@ -1382,7 +1489,8 @@ void CAI_Bloodsucker::nlc_tac_try_enter(const CEntityAlive* enemy, bool actor_en
         return; // NPC enemies: only recover
 
     // 2. bait of a pair
-    if (b.tac_pair_enabled && t.role == eRoleBait && now >= t.stalk_block && EnemyMan.see_enemy_now() && !nlc_tac_flanker_struck(enemy))
+    // not in a fight already (it dropped out of melee at 2-3 m for 0.2 s, again and again)
+    if (b.tac_pair_enabled && t.role == eRoleBait && now >= t.stalk_block && dist > b.tac_bait_dist.x && EnemyMan.see_enemy_now() && !nlc_tac_flanker_struck(enemy))
     {
         Fvector pos{};
         u32 node = u32(-1);
@@ -1407,8 +1515,10 @@ void CAI_Bloodsucker::nlc_tac_try_enter(const CEntityAlive* enemy, bool actor_en
         }
     }
 
-    // 4. stalk: a far bloodsucker shadows the enemy instead of charging (a close one just attacks)
-    if (b.tac_stalk_enabled && now >= t.stalk_block && dist > b.tac_stalk_dist.x * (t.night ? b.tac_night_dist_k : 1.f) && EnemyMan.see_enemy_now())
+    // 4. stalk: a far bloodsucker shadows the enemy instead of charging (a close one just attacks); a flanker of a pair
+    // goes onto its arc from closer
+    const float stalk_from = t.role == eRoleFlanker ? 8.f : b.tac_stalk_dist.x * (t.night ? b.tac_night_dist_k : 1.f);
+    if (b.tac_stalk_enabled && now >= t.stalk_block && dist > stalk_from && EnemyMan.see_enemy_now())
         nlc_tac_enter(eTacStalk, Position(), ai_location().level_vertex_id());
 }
 
@@ -1496,6 +1606,61 @@ void CAI_Bloodsucker::nlc_tac_continue(const CEntityAlive* enemy, bool actor_ene
             t.next_repick_ok = now + 1500;
             t.next_pick = now;
             TAC_LOG("~ [evade] [%s]: stalk: watched here, new point", cName().c_str());
+        }
+
+        // a flanker of a pair: first onto the arc, off the player's view (side or back); then it strikes when the
+        // player watches the bait or after tac_flank_wait_ms; after tac_flank_arc_max_ms it strikes anyway. The bait
+        // reads flank_struck (its real charge and the tell)
+        if (t.role == eRoleFlanker)
+        {
+            Fvector eye{}, view{};
+            bool in_pos = false;
+            if (nlc_enemy_eye(enemy, eye, view))
+            {
+                view.y = 0.f;
+                const Fvector r = flat_dir(enemy->Position(), Position());
+                in_pos = view.square_magnitude() > EPS_L && r.square_magnitude() > EPS_L && angle_between_vectors(view, r) >= b.tac_flank_arc_angle - deg2rad(15.f);
+            }
+            if (in_pos && !t.flank_pos_since)
+            {
+                t.flank_pos_since = now;
+                TAC_LOG("~ [evade] [%s]: flank: in position at %.1f m", cName().c_str(), dist);
+            }
+            else if (!in_pos)
+                t.flank_pos_since = 0;
+            bool watches_bait = false;
+            if (in_pos && nlc_enemy_eye(enemy, eye, view))
+            {
+                if (CMonsterSquad* squad = monster_squad().get_squad(this))
+                {
+                    xr_vector<CEntity*> mates;
+                    squad->nlc_members(mates);
+                    for (CEntity* e : mates)
+                    {
+                        CAI_Bloodsucker* m = smart_cast<CAI_Bloodsucker*>(e);
+                        if (!m || m == this || !m->g_Alive() || m->m_nlc_tac.role != eRoleBait)
+                            continue;
+                        const CEntityAlive* me = m->EnemyMan.get_enemy();
+                        if (me && me->ID() == enemy->ID() && angle_between_vectors(view, Fvector().sub(m->Position(), eye)) < deg2rad(25.f))
+                            watches_bait = true;
+                    }
+                }
+            }
+            const char* why = nullptr;
+            if (in_pos && watches_bait)
+                why = "flank: the player watches the bait, strike";
+            else if (t.flank_pos_since && now >= t.flank_pos_since + b.tac_flank_wait_ms)
+                why = "flank: in position, strike";
+            else if (now >= t.mode_start + b.tac_flank_arc_max_ms)
+                why = "flank: arc time, strike";
+            else if (dist < 5.f)
+                why = "flank: close, strike";
+            if (why)
+            {
+                nlc_tac_commit(why);
+                t.flank_struck = true;
+            }
+            break;
         }
 
         if (dist < std::max(6.f, b.tac_stalk_dist.x * dk * 0.5f))
@@ -1592,7 +1757,17 @@ void CAI_Bloodsucker::nlc_tac_continue(const CEntityAlive* enemy, bool actor_ene
             m_nlc_cloak_until = now + b.tac_feint_cloak_ms; // stays cloaked after force_vis ends (tactic end, strike reveal)
             Fvector pos{};
             u32 node = u32(-1);
-            if (nlc_tac_radial(enemy, 6.f, 14.f, true, pos, node))
+            // aimed at (crosshair cone or lock): out of the line of fire sideways, cloaked; else straight away
+            const u8 th = nlc_threat();
+            if (b.tac_feint_lateral && (th & (eThreatAimed | eThreatLocked)) && nlc_tac_lateral(enemy, 5.f, 8.f, pos, node))
+            {
+                t.target = pos;
+                t.node = node;
+                t.have_target = t.moving = true;
+                t.move_until = now + 4000;
+                TAC_LOG("~ [evade] [%s]: feint: aimed at, vanishing sideways %.1f m", cName().c_str(), Position().distance_to(pos));
+            }
+            else if (nlc_tac_radial(enemy, 6.f, 14.f, true, pos, node))
             {
                 t.target = pos;
                 t.node = node;
@@ -1620,18 +1795,30 @@ void CAI_Bloodsucker::nlc_tac_continue(const CEntityAlive* enemy, bool actor_ene
             nlc_tac_finish("no longer the bait");
             break;
         }
-        // a flanker struck, the bait waited long enough, or the player came close
-        if (nlc_tac_flanker_struck(enemy))
+        // a flanker struck: the tell (a roar) at once, the real charge once it is close to the player (or 3 s after),
+        // so the two hit from two sides about together
+        float fl_d = flt_max;
+        if (nlc_tac_flanker_struck(enemy, &fl_d))
         {
-            nlc_tac_commit("bait: a flanker struck, charge");
-            break;
+            if (!t.roared)
+            {
+                t.roared = true;
+                t.feint_until = now; // reused: the flanker's strike time
+                sound().play(CAI_Bloodsucker::eGrowl);
+                TAC_LOG("~ [evade] [%s]: bait: the flanker strikes (%.1f m), roar", cName().c_str(), fl_d);
+            }
+            if (fl_d <= b.tac_bait_sync_dist || now >= t.feint_until + 3000)
+            {
+                nlc_tac_commit("bait: the flanker is on the player, charge");
+                break;
+            }
         }
         if (now >= t.mode_start + b.tac_bait_max_time)
         {
             nlc_tac_commit("bait: time, charge");
             break;
         }
-        if (dist < b.tac_bait_dist.x * 0.6f)
+        if (dist < b.tac_bait_dist.x * 0.6f - (t.mock_out ? b.tac_bait_mock_dist : 0.f))
         {
             nlc_tac_commit("bait: close, charge");
             break;
@@ -1668,6 +1855,9 @@ void CAI_Bloodsucker::nlc_tac_continue(const CEntityAlive* enemy, bool actor_ene
             {
                 t.target = pos;
                 t.node = node;
+                t.bait_home = pos;
+                t.bait_home_node = node;
+                t.mock_out = false;
                 t.have_target = t.moving = true;
                 t.move_until = now + 6000 + u32(Position().distance_to(pos) * 300.f);
             }
@@ -1741,6 +1931,8 @@ void CAI_Bloodsucker::nlc_tactic_execute()
         const float dk = t.night ? b.tac_night_dist_k : 1.f;
         Fvector2 ring;
         ring.set(b.tac_stalk_dist.x * dk, b.tac_stalk_dist.y * dk);
+        if (t.role == eRoleFlanker)
+            ring = b.tac_flank_arc_dist; // the flanker's arc (wider than the bait, closer than a stalk)
 
         const Fvector* bias = nullptr;
         Fvector bias_dir{};
@@ -1760,7 +1952,7 @@ void CAI_Bloodsucker::nlc_tactic_execute()
                 {
                     bias_dir.normalize();
                     bias = &bias_dir;
-                    bias_angle = deg2rad(60.f);
+                    bias_angle = PI - b.tac_flank_arc_angle + deg2rad(5.f); // within the arc's goal: tac_flank_arc_angle off the view
                 }
             }
         }
@@ -1837,12 +2029,89 @@ void CAI_Bloodsucker::nlc_tactic_execute()
         }
     }
 
+    if (t.moving && t.have_target && t.mode == eTacRecover && b.tac_recover_zz && (nlc_threat() & eThreatWatched) &&
+        Position().distance_to_xz(t.target) > 4.f)
+    {
+        // legs 30 degrees to either side of the way to the hiding point, switching every 0.9-1.3 s
+        if (!t.zz_side || now >= t.zz_next)
+        {
+            t.zz_side = t.zz_side > 0 ? -1 : 1;
+            t.zz_next = now + u32(::Random.randI(900, 1300));
+        }
+        const Fvector to = flat_dir(Position(), t.target);
+        const Fvector leg = rotate_y(to, float(t.zz_side) * deg2rad(30.f));
+        Fvector pt;
+        pt.mad(Position(), leg, std::min(5.f, Position().distance_to_xz(t.target)));
+        Fvector pos;
+        u32 node;
+        if (to.square_magnitude() > EPS_L && nlc_point_on_map(pt, pos, node))
+        {
+            nlc_tac_move(pos, node, ACT_RUN);
+            return;
+        }
+    }
+
     if (t.moving && t.have_target)
     {
         // the slow gait only in the edge case (cloaked, close, near the edge of the view); else the cloaked run
         const EAction act = (t.mode == eTacStalk && nlc_cloak_keeps_gait()) ? ACT_STEAL : ACT_RUN;
         nlc_tac_move(t.target, t.node, act);
         return;
+    }
+
+    // the bait in place: mock charges, straight in and back out (no side exposure), roaring, every 1.5-3 s
+    if (t.mode == eTacBait && b.tac_bait_mock)
+    {
+        if (t.mock_out)
+        {
+            // back to its spot after the run in
+            t.mock_out = false;
+            t.target = t.bait_home;
+            t.node = t.bait_home_node;
+            t.have_target = t.moving = true;
+            t.move_until = now + 3000;
+            t.next_mock = now + u32(::Random.randI(1500, 3000));
+            nlc_tac_move(t.target, t.node, ACT_RUN);
+            return;
+        }
+        if (now >= t.next_mock)
+        {
+            const Fvector in = flat_dir(Position(), enemy->Position());
+            Fvector pt;
+            pt.mad(Position(), in, b.tac_bait_mock_dist);
+            Fvector pos;
+            u32 node;
+            if (in.square_magnitude() > EPS_L && nlc_point_on_map(pt, pos, node))
+            {
+                t.mock_out = true;
+                t.target = pos;
+                t.node = node;
+                t.have_target = t.moving = true;
+                t.move_until = now + 2000;
+                sound().play(CAI_Bloodsucker::eGrowl);
+                t.next_growl = now + u32(::Random.randI(4000, 7000));
+                nlc_tac_move(t.target, t.node, ACT_RUN);
+                return;
+            }
+            t.next_mock = now + 1000;
+        }
+    }
+
+    // the bait in place advances slowly on the player (it stood still for seconds: "stopped in its tracks"); straight
+    // in, so no side exposure; "bait: close" turns it into the charge
+    if (t.mode == eTacBait && b.tac_bait_advance)
+    {
+        const u32 ev = enemy->ai_location().level_vertex_id();
+        if (ai().level_graph().valid_vertex_id(ev))
+        {
+            nlc_tac_move(ai().level_graph().vertex_position(ev), ev, ACT_WALK_FWD);
+            if (now >= t.next_growl)
+            {
+                t.next_growl = now + u32(::Random.randI(4000, 7000));
+                sound().play(CAI_Bloodsucker::eGrowl);
+            }
+            return;
+        }
     }
 
     nlc_tac_hold(enemy);

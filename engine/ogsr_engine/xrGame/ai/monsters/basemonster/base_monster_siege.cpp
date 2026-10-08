@@ -1105,6 +1105,8 @@ void CBaseMonster::nlc_siege_update_watcher()
 // static geometry only (bushes do not hide)
 bool CBaseMonster::nlc_siege_visible(const Fvector& feet, const CEntityAlive* enemy) const
 {
+    if (nlc_siege_cloak_hidden(feet, enemy)) // NLC: open ground, cloaked out of view
+        return false;
     Fvector eye = enemy->Position();
     eye.y += 1.7f;
     Fvector side = Fvector().sub(feet, eye);

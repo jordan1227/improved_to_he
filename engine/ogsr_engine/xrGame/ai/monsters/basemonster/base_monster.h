@@ -683,6 +683,8 @@ public:
     virtual bool nlc_siege_perch_strike(const CEntityAlive* enemy, float& strike_dist) { return false; }
     // NLC: shot at the perch-strike spot: the species stops using it for a while
     virtual void nlc_siege_perch_shot() {}
+    // NLC: a point the enemy cannot see the monster at although in its line of sight (a cloaked bloodsucker far enough)
+    virtual bool nlc_siege_cloak_hidden(const Fvector& feet, const CEntityAlive* enemy) const { return false; }
     // NLC: CControlJump ignores velocity bounces this long after takeoff (0 = stock)
     virtual u32 nlc_jump_bounce_grace() const { return 0; }
     // NLC: a forced (faster) jump keeps at least this takeoff speed upward, m/s (0 = stock)
