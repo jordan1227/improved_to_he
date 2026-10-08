@@ -53,6 +53,7 @@ public:
     void SetUserEnabled(bool on);
 
     void OnHit(SHit* hit, float health_lost);
+    void OnRadiation(float health_lost);
     void Update(float dt);
 
     u8 PartByBone(u16 bone);
@@ -116,6 +117,8 @@ private:
     float m_fracture[body_part::count]{};
     float m_pain{};
     float m_last_total{1.f};
+    float m_rad_lost{};
+    float m_rad_deficit{};
     u8 m_use_part{body_part::automatic};
     xr_vector<SBoost> m_boosts;
 

@@ -239,6 +239,9 @@ void CActorCondition::UpdateCondition()
     if (Core.Features.test(xrCore::Feature::actor_thirst))
         UpdateThirst();
 
+    if (m_fRadiation > 0.f && CanBeHarmed())
+        m_body->OnRadiation(m_change_v.m_fV_RadiationHealth * m_fRadiation * m_fDeltaTime); // NLC
+
     inherited::UpdateCondition();
 
     m_body->Update(m_fDeltaTime); // NLC

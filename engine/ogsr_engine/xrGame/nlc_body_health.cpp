@@ -120,6 +120,8 @@ void CActorBodyHealth::Reinit()
     m_pain = 0.f;
     m_boosts.clear();
     m_use_part = automatic;
+    m_rad_lost = 0.f;
+    m_rad_deficit = 0.f;
     m_last_total = m_owner->GetHealth();
 }
 
@@ -153,6 +155,8 @@ void CActorBodyHealth::load(IReader& P)
     }
     m_pain = 0.f;
     m_boosts.clear();
+    m_rad_lost = 0.f;
+    m_rad_deficit = 0.f;
     m_last_total = total;
 
     if (P.elapsed() < int(sizeof(u32) + sizeof(u8)))
@@ -182,6 +186,7 @@ void CActorBodyHealth::load(IReader& P)
     }
     (void)version;
     Clamp();
+    m_rad_deficit = std::max(0.f, std::min(PartHealth(all), m_owner->GetMaxHealth()) - total);
 }
 
 void CActorBodyHealth::ResolveBones()
@@ -340,6 +345,13 @@ void CActorBodyHealth::ChangePain(float value)
     clamp(m_pain, 0.f, m_pain_max);
 }
 
+// radiation lowers only the total health, the parts stay (A.R.E.A. UpdateRadiation)
+void CActorBodyHealth::OnRadiation(float lost)
+{
+    if (Enabled() && lost > 0.f)
+        m_rad_lost += lost;
+}
+
 void CActorBodyHealth::OnHit(SHit* hit, float lost)
 {
     if (lost <= 0.f)
@@ -438,12 +450,18 @@ void CActorBodyHealth::Update(float dt)
     if (total <= 0.f)
     {
         m_last_total = total;
+        m_rad_lost = 0.f;
         return;
     }
 
-    float diff = total - m_last_total;
+    float diff = total - m_last_total + m_rad_lost;
+    m_rad_deficit += m_rad_lost;
+    m_rad_lost = 0.f;
     if (diff > 0.f)
+    {
         diff = std::max(0.f, diff - m_pain * m_pain_coef * dt);
+        m_rad_deficit = std::max(0.f, m_rad_deficit - diff);
+    }
     if (!fis_zero(diff))
         for (u8 i = head; i < count; ++i)
             m_health[i] += diff;
@@ -464,10 +482,12 @@ void CActorBodyHealth::Update(float dt)
             dead = true;
 
     const float avg = PartHealth(all);
-    if (dead || avg <= 0.f)
+    const float top = std::min(avg, m_owner->GetMaxHealth());
+    m_rad_deficit = std::min(m_rad_deficit, std::max(0.f, top));
+    if (dead || avg <= 0.f || top - m_rad_deficit <= 0.f)
         total = 0.f;
     else
-        total = std::min(avg, m_owner->GetMaxHealth());
+        total = top - m_rad_deficit;
     m_last_total = total;
 
     const float legs = (m_health[left_leg] + m_health[right_leg]) * 0.5f;
