@@ -1,6 +1,469 @@
-<!-- nlc-changelog-head: e094482bc43983d0fea855bcabc9f902b6166440 -->
+<!-- nlc-changelog-head: f98f23b39fe25bf259522e040fc5bae3d3ed1504 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: f98f23b39fe25bf259522e040fc5bae3d3ed1504 -->
+## 07.10.26 17:24 МСК - Controller AI, psy hooks, and input scramble
+
+Commit: [f98f23b](https://github.com/jordan1227/improved_to_he/commit/f98f23b39fe25bf259522e040fc5bae3d3ed1504)
+
+### Description
+
+Adds the controller redesign and related psy-control features: ranged cover/peek logic, thrall management and persistence, Mirage decoy behavior, stalker domination / guard logic, phantom awareness, and input scrambling/consumption for scripted controller effects. This also fixes controller enemy cleanup, stagger timing, and the save/load / bind recovery issues that could leave state stuck or crashing.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_controller.ltx
+- M gamedata/config/creatures/m_stalker.ltx
+- M gamedata/config/misc/he_random_fauna.ltx
+- M gamedata/config/scripts/amk/darkscape.ltx
+- M gamedata/scripts/ai_additions/rx_gl.script
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/kotovod/spawner.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/params/params.script
+- M gamedata/scripts/sak/sak.script
+- A gamedata/scripts/sivol/sivol_controller_psy.script
+- M gamedata/scripts/sivol/sivol_psy_phantoms.script
+- M gamedata/scripts/sivol/sivol_weapon.script
+- M gamedata/scripts/xr/xr_wounded.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/CustomMonster.cpp
+- M engine/ogsr_engine/xrGame/CustomMonster.h
+- M engine/ogsr_engine/xrGame/Level.h
+- M engine/ogsr_engine/xrGame/Level_input.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_feel.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_critical_wound.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_critical_wound.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager_custom.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_manager_custom.h
+- M engine/ogsr_engine/xrGame/ai/monsters/controlled_entity.h
+- M engine/ogsr_engine/xrGame/ai/monsters/controller/controller.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controller/controller.h
+- M engine/ogsr_engine/xrGame/ai/monsters/controller/controller_psy_hit.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controller/controller_state_attack_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_home.h
+- M engine/ogsr_engine/xrGame/ai/monsters/state_defs.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_controlled_inline.h
+- A engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_controlled_move.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.cpp
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker_fire.cpp
+- M engine/ogsr_engine/xrGame/derived_client_classes.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/stalker_property_evaluators.cpp
+
+<!-- nlc-changelog-commit: b3a30d4d94464d7777289c044f2200d9634f3766 -->
+## 07.10.26 16:36 МСК - Update engine_callbacks.script
+
+Commit: [b3a30d4](https://github.com/jordan1227/improved_to_he/commit/b3a30d4d94464d7777289c044f2200d9634f3766)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/engine_callbacks.script
+
+<!-- nlc-changelog-commit: 95312a09bcbfd58dcb37175f86b5b953a439bc3e -->
+## 07.10.26 16:34 МСК - манифест
+
+Commit: [95312a0](https://github.com/jordan1227/improved_to_he/commit/95312a09bcbfd58dcb37175f86b5b953a439bc3e)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: c8944abbb28ae1a52f0ef680bfce7986b42ef8e2 -->
+## 07.10.26 16:33 МСК - Так вроде должно быть?
+
+Commit: [c8944ab](https://github.com/jordan1227/improved_to_he/commit/c8944abbb28ae1a52f0ef680bfce7986b42ef8e2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/engine_callbacks.script
+
+<!-- nlc-changelog-commit: f158a5f6cc5d6a7df4c52f648a1773d30b3dee3c -->
+## 07.10.26 16:30 МСК - манифест
+
+Commit: [f158a5f](https://github.com/jordan1227/improved_to_he/commit/f158a5f6cc5d6a7df4c52f648a1773d30b3dee3c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: f86dc097c8985a5aafb145cceafc994f587661f5 -->
+## 07.10.26 16:06 МСК - Пару фиксов, плюс кошачий глаз сохраняется при переходах
+
+Commit: [f86dc09](https://github.com/jordan1227/improved_to_he/commit/f86dc097c8985a5aafb145cceafc994f587661f5)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/task_manager.script
+- M gamedata/scripts/vergas/vergas_medical_elastic.script
+
+<!-- nlc-changelog-commit: 97e8069b1236e42bb0e704d4455928cbf5b7bdc6 -->
+## 06.10.26 20:39 МСК - Вылет по кейсу
+
+Commit: [97e8069](https://github.com/jordan1227/improved_to_he/commit/97e8069b1236e42bb0e704d4455928cbf5b7bdc6)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/sak_quest_items.ltx
+- A gamedata/meshes/equipments/irepair_box.ogf
+- A gamedata/textures/item/irepair_box.dds
+- A gamedata/textures/item/irepair_box.thm
+
+<!-- nlc-changelog-commit: 7090f09bad259034cbca9b36d0ed164c42cb6588 -->
+## 06.10.26 20:23 МСК - Система скелета из A.R.E.A
+
+Commit: [7090f09](https://github.com/jordan1227/improved_to_he/commit/7090f09bad259034cbca9b36d0ed164c42cb6588)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/actor.ltx
+- M gamedata/config/misc/items.ltx
+- M gamedata/config/misc/shop_sakharov/trade_sakharov.ltx
+- M gamedata/config/misc/shop_sidor/trade_sidor.ltx
+- M gamedata/config/system.ltx
+- A gamedata/config/text/eng/st_body_health.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- A gamedata/config/text/rus/st_body_health.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/inventory_new.xml
+- M gamedata/config/ui/inventory_new_16.xml
+- M gamedata/config/ui/maingame.xml
+- M gamedata/config/ui/maingame_16.xml
+- A gamedata/config/ui/textures_descr/ui_body_health.xml
+- A gamedata/config/ui/ui_hud_pain_he.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/dsh_hud_icons.script
+- M gamedata/scripts/figure.script
+- A gamedata/scripts/he_body_health.script
+- M gamedata/scripts/kotovod/game_options.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/vergas/vergas_medical_elastic.script
+- A gamedata/textures/ui/ui_actor_body_parts.dds
+- A gamedata/textures/ui/ui_hud_pain_he.dds
+- A gamedata/textures/ui/ui_icon_equipment_15.dds
+
+### Other repository files changed
+
+- M engine/ogsr_engine/COMMON_AI/script_engine_export.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.h
+- M engine/ogsr_engine/xrGame/Actor_Events.cpp
+- M engine/ogsr_engine/xrGame/Actor_Movement.cpp
+- M engine/ogsr_engine/xrGame/EntityCondition.h
+- M engine/ogsr_engine/xrGame/Inventory.cpp
+- M engine/ogsr_engine/xrGame/Inventory.h
+- M engine/ogsr_engine/xrGame/eatable_item.cpp
+- M engine/ogsr_engine/xrGame/eatable_item.h
+- A engine/ogsr_engine/xrGame/nlc_body_health.cpp
+- A engine/ogsr_engine/xrGame/nlc_body_health.h
+- A engine/ogsr_engine/xrGame/ui/UIBodyHealthWnd.cpp
+- A engine/ogsr_engine/xrGame/ui/UIBodyHealthWnd.h
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd.h
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd3.cpp
+- M engine/ogsr_engine/xrGame/ui/UIMainIngameWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIMainIngameWnd.h
+- M engine/ogsr_engine/xrGame/ui/UIMessages.h
+- M engine/ogsr_engine/xrGame/ui/UIPropertiesBox.cpp
+- M engine/ogsr_engine/xrGame/ui/UIPropertiesBox.h
+- M engine/ogsr_engine/xrGame/ui/uiinventorywnd2.cpp
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+
+<!-- nlc-changelog-commit: b7f8f0a33afca74f317a757eeced0f71a2f23868 -->
+## 06.10.26 17:39 МСК - Доцент возвращает маятник, отравление
+
+Commit: [b7f8f0a](https://github.com/jordan1227/improved_to_he/commit/b7f8f0a33afca74f317a757eeced0f71a2f23868)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: f2cca1b3a225fe3b18911ccb919855869a8c34e9 -->
+## 06.10.26 15:37 МСК - Манифест
+
+Commit: [f2cca1b](https://github.com/jordan1227/improved_to_he/commit/f2cca1b3a225fe3b18911ccb919855869a8c34e9)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 19db1c3ca434be4c2ebbaba73ae052fdf96ebffe -->
+## 06.10.26 15:34 МСК - История команд в консоли после выхода из игры
+
+Commit: [19db1c3](https://github.com/jordan1227/improved_to_he/commit/19db1c3ca434be4c2ebbaba73ae052fdf96ebffe)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+
+### Other repository files changed
+
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xr_3da/XR_IOConsole.cpp
+- M engine/ogsr_engine/xr_3da/XR_IOConsole.h
+- M engine/ogsr_engine/xr_3da/XR_IOConsole_callback.cpp
+- M engine/ogsr_engine/xr_3da/XR_IOConsole_control.cpp
+
+<!-- nlc-changelog-commit: 3c18df7f78c2e9402515e9b5add28a9681e939bf -->
+## 05.10.26 22:58 МСК - Манифест
+
+Commit: [3c18df7](https://github.com/jordan1227/improved_to_he/commit/3c18df7f78c2e9402515e9b5add28a9681e939bf)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 9fae7f4b850046cff73c2eaa6559824902875cf0 -->
+## 05.10.26 22:58 МСК - Fix monster-part loot transfer
+
+Commit: [9fae7f4](https://github.com/jordan1227/improved_to_he/commit/9fae7f4b850046cff73c2eaa6559824902875cf0)
+
+### Description
+
+This change snapshots monster inventory items before transferring part loot to a monster killer, avoiding mutation while iterating over the same inventory. It also adds a debug log for monster-vs-monster kills to make part-drop behavior easier to trace.
+
+### Game files changed
+
+- M gamedata/scripts/kotovod/monster_parts.script
+
+<!-- nlc-changelog-commit: 2ba65e352cc7fae19bddc23a36bfe82cafd6f1d2 -->
+## 05.10.26 21:12 МСК - Лечение врагов: убран Гавр с охраной
+
+Commit: [2ba65e3](https://github.com/jordan1227/improved_to_he/commit/2ba65e352cc7fae19bddc23a36bfe82cafd6f1d2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/xr/xr_wounded.script
+
+<!-- nlc-changelog-commit: 0a681c8c614be8b8eae4d218c5d8c7e13b7565d1 -->
+## 05.10.26 21:10 МСК - Лечение врагов
+
+Commit: [0a681c8](https://github.com/jordan1227/improved_to_he/commit/0a681c8c614be8b8eae4d218c5d8c7e13b7565d1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/dialogs/dialogs.script
+- M gamedata/scripts/xr/xr_wounded.script
+
+<!-- nlc-changelog-commit: fb97dfff0b966c876f06c949b02f322fcfacd1f3 -->
+## 05.10.26 19:36 МСК - Подбор пустого рюкзака при открытии
+
+Commit: [fb97dff](https://github.com/jordan1227/improved_to_he/commit/fb97dfff0b966c876f06c949b02f322fcfacd1f3)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_rucksack_pickup.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+
+<!-- nlc-changelog-commit: 9a2bd2b27848c0ce1df7dd8f5e239834ff4a83e2 -->
+## 05.10.26 19:28 МСК - Чёрная метка без защищённых лок
+
+Commit: [9a2bd2b](https://github.com/jordan1227/improved_to_he/commit/9a2bd2b27848c0ce1df7dd8f5e239834ff4a83e2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/amk/amk_mod.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 36395f3f310e5cb2ef2659f437c26558d1ef65ba -->
+## 05.10.26 19:11 МСК - Мезо и гипер в неизвестном контейнере
+
+Commit: [36395f3](https://github.com/jordan1227/improved_to_he/commit/36395f3f310e5cb2ef2659f437c26558d1ef65ba)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/treasure_manager.script
+
+<!-- nlc-changelog-commit: 3d17da8679028f7b75332092d19c1732c40d5393 -->
+## 05.10.26 19:09 МСК - Гипер в неизвестном контейнере
+
+Commit: [3d17da8](https://github.com/jordan1227/improved_to_he/commit/3d17da8679028f7b75332092d19c1732c40d5393)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/treasure_manager.script
+
+<!-- nlc-changelog-commit: 7e0375d9e4fe67f003248608d3530ca1dc364f78 -->
+## 05.10.26 19:05 МСК - Модификат Рашпиля 70 и подбор пустого рюкзака
+
+Commit: [7e0375d](https://github.com/jordan1227/improved_to_he/commit/7e0375d9e4fe67f003248608d3530ca1dc364f78)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_agr_dv.xml
+- M gamedata/scripts/binders/bind_stalker.script
+- A gamedata/scripts/he_rucksack_pickup.script
+
+<!-- nlc-changelog-commit: 78a44b53e789ab09858bd73b736bd6f4ef721391 -->
+## 05.10.26 18:31 МСК - Починил отбирание рецептов у рашпиля
+
+Commit: [78a44b5](https://github.com/jordan1227/improved_to_he/commit/78a44b53e789ab09858bd73b736bd6f4ef721391)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: fb8aed36891c574955009e011592773d483d1cc5 -->
+## 05.10.26 18:17 МСК - Разнообразие брони в тайниках
+
+Commit: [fb8aed3](https://github.com/jordan1227/improved_to_he/commit/fb8aed36891c574955009e011592773d483d1cc5)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/treasure_manager.ltx
+
+<!-- nlc-changelog-commit: c7170e8c8e155e838ea638895846938ce976ac2d -->
+## 05.10.26 01:54 МСК - Update he_watch_trim.script
+
+Commit: [c7170e8](https://github.com/jordan1227/improved_to_he/commit/c7170e8c8e155e838ea638895846938ce976ac2d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_watch_trim.script
+
+<!-- nlc-changelog-commit: effc9625ac2c530db4fdeb8480b20cd7c6e374ed -->
+## 05.10.26 01:36 МСК - Манифест
+
+Commit: [effc962](https://github.com/jordan1227/improved_to_he/commit/effc9625ac2c530db4fdeb8480b20cd7c6e374ed)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: e094482bc43983d0fea855bcabc9f902b6166440 -->
 ## 05.10.26 01:35 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he

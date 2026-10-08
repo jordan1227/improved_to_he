@@ -52,7 +52,9 @@ local gl_sets = {forbiddens = {factions = {},npcs = {}},
 				enabled = read_from_ini(gl_ini,"main","enabled",true,0),
 				check_prd = read_from_ini(gl_ini,"main","check_period",2000),
 				check_prd_c = read_from_ini(gl_ini,"main","check_period_covert",6000),
-				spawn_ammo = read_from_ini(gl_ini,"main","spawn_ammo",false,0)}
+				spawn_ammo = read_from_ini(gl_ini,"main","spawn_ammo",false,0),
+				-- [HE-PORT]
+				corpse_ammo = read_from_ini(gl_ini,"main","corpse_ammo_chance",1)}
 
 for k,v in ipairs(rx_utils.get_rank_list()) do
 	gl_sets.ranks[v] = {
@@ -181,6 +183,15 @@ function evaluator_gl_ready:death_callback()
 			delete_obj(item:id())
 		end
 	end
+	-- [HE-PORT]
+	local vog = xr_logic.pstor_retrieve(npc,"rx_gl_vog")
+	if vog then
+		xr_logic.pstor_store(npc,"rx_gl_vog",nil)
+		local so = sim:object(vog)
+		if so and so.parent_id == npc:id() and string.find(so:section_name(),"^ammo_") and math.random() >= gl_sets.corpse_ammo then
+			delete_obj(vog)
+		end
+	end
 end
 
 
@@ -193,6 +204,10 @@ end
 function evaluator_launch_grenade:evaluate()
 	local stor = self.st
 	if not stor.can_fire then
+		return false
+	end
+	-- sivol: scripted psy phantoms never fire grenade launchers
+	if sivol_psy_phantoms and sivol_psy_phantoms.is_phantom and sivol_psy_phantoms.is_phantom(self.object) then
 		return false
 	end
 	if skull_quest_blocks(self.object) then
@@ -781,7 +796,11 @@ function check_ammo(npc)	-- проверить наличие оружия и патронов
 		end
 		if gl_sets.spawn_ammo then
 			local shells = config_data[wpn:section()].shells
-			alife():create(shells[math.random(#shells)],npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
+			-- [HE-PORT]
+			local so = alife():create(shells[math.random(#shells)],npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
+			if so then
+				xr_logic.pstor_store(npc,"rx_gl_vog",so.id)
+			end
 			return false
 		end
 	end
@@ -864,7 +883,7 @@ function pick_visible_target(npc,radius)
 	radius,min_dist,max_dist = radius*radius,min_dist*min_dist,max_dist*max_dist
 	local friends
 	local enemy = npc:best_enemy()
-	if npc:see(enemy) then	-- сначала проверяем лучшего врага
+	if enemy and npc:see(enemy) then	-- сначала проверяем лучшего врага
 		local en_pos = enemy:center()
 		local dist = npc_pos:distance_to_sqr(en_pos)
 		if dist > min_dist then
@@ -889,7 +908,7 @@ function pick_visible_target(npc,radius)
 		return
 	end
 	friends = friends or get_friendspos_list(npc)
-	local tg,npc_id,be_id = time_global(),npc:id(),enemy:id()
+	local tg,npc_id,be_id = time_global(),npc:id(),enemy and enemy:id()
 	local max_dist_monster = math.min(npc:max_ignore_monster_distance()^2,max_dist)
 --	local mem = enemy_memory[squad]
 	for o in npc:memory_visible_objects() do	-- затем всех в зоне видимости
@@ -931,6 +950,9 @@ function pick_covert_target(npc,radius,squad)
 	local mem = enemy_memory[squad]
 	if aim_be_only then
 		local enemy = npc:best_enemy()
+		if not enemy then
+			return
+		end
 		local embe = mem[enemy:id()]
 		if embe then
 			if embe[3]+10000 > tg then

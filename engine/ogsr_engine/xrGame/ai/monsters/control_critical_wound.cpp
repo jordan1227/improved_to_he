@@ -18,12 +18,23 @@ void CControlCriticalWound::activate()
 
     SControlAnimationData* ctrl_anim = (SControlAnimationData*)m_man->data(this, ControlCom::eControlAnimation);
     VERIFY(ctrl_anim);
-    ctrl_anim->global.set_motion(skel->ID_Cycle_Safe(m_data.animation));
+    const MotionID motion = skel->ID_Cycle_Safe(m_data.animation);
+    ctrl_anim->global.set_motion(motion);
     ctrl_anim->global.actual = false;
+
+    // NLC: optional slower/faster playback (absolute blend speed, as in CAnimationSequencer)
+    if (!fsimilar(m_data.speed_k, 1.f) && motion.valid())
+        ctrl_anim->set_speed(skel->LL_GetMotionDef(motion)->Speed() * m_data.speed_k);
+    else
+        ctrl_anim->set_speed(-1.f);
 }
 
 void CControlCriticalWound::on_release()
 {
+    // NLC: drop the speed override before giving the animation back
+    if (SControlAnimationData* ctrl_anim = (SControlAnimationData*)m_man->data(this, ControlCom::eControlAnimation))
+        ctrl_anim->set_speed(-1.f);
+
     m_man->release_pure(this);
     m_man->unsubscribe(this, ControlCom::eventAnimationEnd);
 

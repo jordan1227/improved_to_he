@@ -390,7 +390,7 @@ void CBaseMonster::critical_wounded_state_start()
     com_man().critical_wound(anim);
 }
 
-bool CBaseMonster::nlc_stagger()
+bool CBaseMonster::nlc_stagger(float speed_k)
 {
     if (!g_Alive() || critically_wounded())
         return false;
@@ -420,8 +420,40 @@ bool CBaseMonster::nlc_stagger()
 
     // marks the monster as critically wounded until CControlCriticalWound::on_release clears it
     m_critical_wound_type = critical_wound_type_torso;
-    com_man().critical_wound(m_nlc_stagger_anim);
+    com_man().critical_wound(m_nlc_stagger_anim, speed_k);
     return true;
+}
+
+void CBaseMonster::nlc_stagger_repeat(u32 count, float speed_k)
+{
+    m_nlc_stagger_left = count;
+    m_nlc_stagger_speed = std::clamp(speed_k, 0.3f, 3.f);
+    m_nlc_stagger_until = Device.dwTimeGlobal + 1500;
+    nlc_update_stagger_repeat();
+}
+
+// schedule update: start the next stagger once the previous one has ended
+void CBaseMonster::nlc_update_stagger_repeat()
+{
+    if (!m_nlc_stagger_left)
+        return;
+    if (!g_Alive())
+    {
+        m_nlc_stagger_left = 0;
+        return;
+    }
+    if (critically_wounded())
+    {
+        m_nlc_stagger_until = Device.dwTimeGlobal + 1500; // the previous stagger is still playing
+        return;
+    }
+    if (nlc_stagger(m_nlc_stagger_speed))
+    {
+        --m_nlc_stagger_left;
+        m_nlc_stagger_until = Device.dwTimeGlobal + 1500;
+    }
+    else if (m_nlc_stagger_state == 0 || Device.dwTimeGlobal > m_nlc_stagger_until)
+        m_nlc_stagger_left = 0; // no usable clip, or it could not start in time (a late stagger looks random)
 }
 
 void CBaseMonster::nlc_apply_move_slow(float k, u32 time_ms)

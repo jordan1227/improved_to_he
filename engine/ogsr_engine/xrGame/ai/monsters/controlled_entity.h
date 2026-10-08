@@ -7,6 +7,7 @@ enum ETask
 {
     eTaskFollow = u32(0),
     eTaskAttack,
+    eTaskMove, // NLC: go to m_position (m_node) and hold there within m_radius, facing m_object if set
     eTaskNone = u32(-1)
 };
 

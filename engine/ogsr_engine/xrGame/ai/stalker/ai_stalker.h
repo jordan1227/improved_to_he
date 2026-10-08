@@ -101,6 +101,8 @@ private:
     float m_disp_stand_crouch;
     float m_disp_stand_stand_zoom;
     float m_disp_stand_crouch_zoom;
+    float m_nlc_psy_disp_k{}; // NLC: nlc_psy_dispersion_k, dispersion x (1 + k * (1 - psy health))
+    float nlc_weapon_accuracy_base() const;
     bool m_fast_can_kill_entity;
 
 private:

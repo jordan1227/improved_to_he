@@ -6,6 +6,7 @@ function attach(sm)
   sm:subscribe({signal = "on_init_modules", fun = this.init_module})
   sm:subscribe({signal = "on_late_init_all", fun = this.late_init})
   sm:subscribe({signal = "on_before_save_game", fun = this.controller_restore_all_binds})
+  sm:subscribe({signal = "on_first_update", fun = this.controller_recover_binds})
   sm:subscribe({signal = "on_update", fun = this.actor_heart})
   sm:subscribe({signal = "on_update", fun = this.hazards_handle})
   sm:subscribe({signal = "on_update", fun = this.discharge_tasks})
@@ -4339,9 +4340,11 @@ end
 function ros_bandit_veterans_ignore_actor( npc )
 	if not npc or not db.actor then return false end
 	if not IsStalker( npc ) or npc:character_community() ~= "bandit" then return false end
-	if has_alife_info( "dt_bandit_veterans_fire" ) then return false end
+	if has_alife_info( "dt_bandit_veterans_fire" ) or has_alife_info( "dt_fraer_smart_fire" ) then return false end
+	local name = npc:name()
+	if name == "td_stalker_fraer" or name == "td_kocherga" or string.find( name, "^td_bandit_veteran_" ) then return true end
 	local g = xr_gulag.get_npc_gulag( npc )
-	return g ~= nil and g.name == "dt_bandit_veterans"
+	return g ~= nil and ( g.name == "dt_bandit_veterans" or g.name == "dt_fraer_smart" )
 end
 
 -- [HE-PORT]
@@ -4667,6 +4670,8 @@ function add_tail()
 	nlc_fixes.quest_corpse_items_old_save()
 	-- [HE-PORT]
 	nlc_fixes.mar_leader_job_article_old_save()
+	-- [HE-PORT]
+	nlc_fixes.rostok_fraer_vertex_old_save()
 	if lname=="l03_agroprom" then
 		agro_mines_check()
 	end
@@ -5925,6 +5930,7 @@ function some_updates()
 		npc:disable_info_portion("ros3_monsters_have")
 		npc:disable_info_portion("blowout_dialog")
 		npc:disable_info_portion("gar_monster_bandits_have")
+		npc:disable_info_portion("escape_trader_jobs_new") -- [HE-PORT]
 		npc:disable_info_portion("gg_luser")
 		npc:disable_info_portion("prosha_out_info")
 		npc:disable_info_portion("lim_monster_enter_have")
@@ -10530,6 +10536,25 @@ local function controller_group_name(actions)
 	return actions == controller_movement_actions and "movement" or "fire"
 end
 
+-- The original keys also go to he_stor (a file outside the save): the binds themselves live in user.ltx, so a
+-- load or quit during a scramble used to leave them swapped for good once this Lua state was gone.
+local CONTROLLER_BINDS_STOR = "controller_binds"
+
+local function controller_persist_binds(actions, state)
+	if not he_stor then return end
+	local group = controller_group_name(actions)
+	for _, v in ipairs(actions) do
+		he_stor.stor_write(group .. "_" .. v.action, state.saved[v.action] or "", CONTROLLER_BINDS_STOR)
+	end
+	he_stor.stor_write(group .. "_active", "true", CONTROLLER_BINDS_STOR)
+end
+
+local function controller_clear_persisted(actions)
+	if he_stor then
+		he_stor.stor_write(controller_group_name(actions) .. "_active", "false", CONTROLLER_BINDS_STOR)
+	end
+end
+
 local function controller_save_binds(actions, state)
 	if state.active then return end
 	state.saved = {}
@@ -10537,6 +10562,7 @@ local function controller_save_binds(actions, state)
 		state.saved[v.action] = controller_get_keyname(v.key)
 	end
 	state.active = true
+	controller_persist_binds(actions, state)
 end
 
 local function controller_issue_restore(actions, state)
@@ -10576,6 +10602,7 @@ controller_verify_restore = function(actions, state, generation, attempt)
 		state.active = false
 		state.restoring = false
 		state.saved = {}
+		controller_clear_persisted(actions)
 		controller_bind_log("restored verified group=%s attempts=%d", controller_group_name(actions), attempt)
 		return
 	end
@@ -10585,6 +10612,7 @@ controller_verify_restore = function(actions, state, generation, attempt)
 		-- Preserve the saved mapping instead of falsely declaring success. A later
 		-- forced restoration can retry it, and no new scramble may overwrite it.
 		state.restoring = false
+		controller_clear_persisted(actions) -- otherwise every later load re-applies the stale snapshot
 		controller_bind_log("restore failed group=%s saved mapping retained", controller_group_name(actions))
 		return
 	end
@@ -10610,8 +10638,30 @@ function controller_restore_binds(actions)
 end
 
 function controller_restore_all_binds()
+	if level and level.nlc_clear_input_scramble then level.nlc_clear_input_scramble() end
 	controller_restore_state(controller_movement_actions, controller_bind_state.movement)
 	controller_restore_state(controller_fire_actions, controller_bind_state.fire)
+end
+
+-- first update after a load or a new game: a scramble left over from a previous load or session is undone
+local function controller_recover_group(actions)
+	local state = controller_state_for_actions(actions)
+	local group = controller_group_name(actions)
+	if state.active or not he_stor or he_stor.stor_read(group .. "_active", "false", CONTROLLER_BINDS_STOR) ~= "true" then
+		return
+	end
+	state.saved = {}
+	for _, v in ipairs(actions) do
+		state.saved[v.action] = he_stor.stor_read(group .. "_" .. v.action, nil, CONTROLLER_BINDS_STOR)
+	end
+	state.active = true
+	log2("[bind_monster] controller binds: restoring group=%s left scrambled by a load or quit", group)
+	controller_restore_state(actions, state)
+end
+
+function controller_recover_binds()
+	controller_recover_group(controller_movement_actions)
+	controller_recover_group(controller_fire_actions)
 end
 
 local function controller_build_derangements(count)
@@ -10706,16 +10756,29 @@ sak.controller_fire_actions = controller_fire_actions
 sak.controller_restore_binds = controller_restore_binds
 sak.controller_restore_all_binds = controller_restore_all_binds
 
-function rebind_movement()
-	controller_begin_rebind(controller_movement_actions, 4000)
+-- nlc-3.589.28+: the engine remaps the actions for a while and never touches the binds (nothing can stay
+-- scrambled after a load, quit or crash); the bind rewrite below is the fallback for older engines
+local function controller_engine_scramble(actions, duration)
+	if not (level and level.nlc_scramble_input) then return false end
+	level.nlc_scramble_input(actions == controller_movement_actions and 0 or 1, duration)
+	controller_bind_log("engine scramble group=%s duration=%d", controller_group_name(actions), duration)
+	return true
+end
+
+function rebind_movement(duration)
+	duration = duration or 4000
+	if controller_engine_scramble(controller_movement_actions, duration) then return end
+	controller_begin_rebind(controller_movement_actions, duration)
 end
 
 function restore_movement()
 	controller_restore_binds(controller_movement_actions)
 end
 
-function rebind_fire()
-	controller_begin_rebind(controller_fire_actions, 2500)
+function rebind_fire(duration)
+	duration = duration or 2500
+	if controller_engine_scramble(controller_fire_actions, duration) then return end
+	controller_begin_rebind(controller_fire_actions, duration)
 end
 
 function restore_fire()

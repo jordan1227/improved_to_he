@@ -1181,7 +1181,10 @@ void CLevel::script_register(lua_State* L)
             def("get_effector_bobbing", &get_effector_bobbing), def("is_ray_intersect_sphere", &is_ray_intersect_sphere),
 
             def("block_action", [](EGameActions action) { Level().block_action(action); }),
-            def("unblock_action", [](EGameActions action) { Level().unblock_action(action); })
+            def("unblock_action", [](EGameActions action) { Level().unblock_action(action); }),
+            def("consume_key_press", [] { Level().nlc_consume_key_press(); }), // NLC
+            def("nlc_scramble_input", [](int group, u32 duration_ms) { Level().nlc_scramble_input(group, duration_ms); }), // NLC
+            def("nlc_clear_input_scramble", [] { Level().nlc_clear_input_scramble(); }) // NLC
     )],
 
         module(L, "actor_stats")[(def("add_points", &add_actor_points), def("add_points_str", &add_actor_points_str), def("get_points", &get_actor_points),

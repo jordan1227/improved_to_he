@@ -9,6 +9,37 @@ local FAINT_PAIN_RELIEF = 0.3
 
 local faint_ready = 0
 
+local PAIN_BOOSTS = {
+	vodka    = { 0.001, 35 },
+	morphine = { 0.015, 320 },
+}
+local pain_boosts = {}
+local TRADE_ITEMS = { improvised_splint = true, survival_kit = true, morphine = true }
+local last_update
+
+function item_used(sect)
+	local b = PAIN_BOOSTS[sect]
+	if b then
+		table.insert(pain_boosts, { b[1], b[2] })
+	end
+end
+
+local function update_pain_boosts(dt)
+	local k = level.get_time_factor()
+	local relief = 0
+	for i = #pain_boosts, 1, -1 do
+		local b = pain_boosts[i]
+		relief = relief + b[1] * math.min(dt, b[2]) * k
+		b[2] = b[2] - dt
+		if b[2] <= 0 then
+			table.remove(pain_boosts, i)
+		end
+	end
+	if relief > 0 then
+		body_health.change_pain(-relief)
+	end
+end
+
 function attach(sm)
 	sm:subscribe({ signal = "on_update", fun = this.on_update })
 end
@@ -22,11 +53,38 @@ local function faint()
 	sleep_manager.main(FAINT_SCALE)
 end
 
+local function strip_traders()
+	if db.actor:is_talking() then return end
+	for id, tt in pairs(trade_manager) do
+		local npc = type(id) == "number" and type(tt) == "table" and level.object_by_id(id)
+		if npc then
+			local ids = {}
+			npc:iterate_inventory(function(_, item)
+				if TRADE_ITEMS[item:section()] then
+					ids[#ids + 1] = item:id()
+				end
+			end, npc)
+			for _, item_id in ipairs(ids) do
+				misc.release_obj(item_id)
+			end
+		end
+	end
+end
+
 function on_update()
 	ogse_signals.get_mgr():reschedule(UPDATE_MS)
+	local now = time_global()
+	local dt = last_update and (now - last_update) / 1000 or 0
+	last_update = now
 	if not db.actor or not db.actor:alive() or not body_health then return end
 	body_health.set_enabled(game_options.BodyHealth ~= false)
-	if not body_health.enabled() then return end
+	if not body_health.enabled() then
+		strip_traders()
+		return
+	end
+	if #pain_boosts > 0 then
+		update_pain_boosts(dt)
+	end
 
 	local pain = body_health.pain()
 	local psy = db.actor.psy_health

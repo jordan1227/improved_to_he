@@ -728,7 +728,7 @@ void CControlManagerCustom::fill_rotation_data(SControlRotationJumpData& data, L
 }
 
 //////////////////////////////////////////////////////////////////////////
-void CControlManagerCustom::critical_wound(LPCSTR anim)
+void CControlManagerCustom::critical_wound(LPCSTR anim, float speed_k)
 {
     if (!m_man->check_start_conditions(ControlCom::eComCriticalWound))
         return;
@@ -740,6 +740,7 @@ void CControlManagerCustom::critical_wound(LPCSTR anim)
         return;
 
     ctrl_data->animation = anim;
+    ctrl_data->speed_k = speed_k; // NLC
 
     m_man->activate(ControlCom::eComCriticalWound);
 }

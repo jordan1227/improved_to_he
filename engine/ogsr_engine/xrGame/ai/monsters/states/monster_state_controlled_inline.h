@@ -2,6 +2,7 @@
 
 #include "monster_state_controlled_attack.h"
 #include "monster_state_controlled_follow.h"
+#include "monster_state_controlled_move.h" // NLC
 
 #define TEMPLATE_SPECIALIZATION template <typename _Object>
 
@@ -12,6 +13,7 @@ CStateMonsterControlledAbstract::CStateMonsterControlled(_Object* obj) : inherit
 {
     add_state(eStateControlled_Attack, xr_new<CStateMonsterControlledAttack<_Object>>(obj));
     add_state(eStateControlled_Follow, xr_new<CStateMonsterControlledFollow<_Object>>(obj));
+    add_state(eStateControlled_Move, xr_new<CStateMonsterControlledMove<_Object>>(obj)); // NLC
 }
 
 TEMPLATE_SPECIALIZATION
@@ -32,6 +34,8 @@ void CStateMonsterControlledAbstract::execute()
             select_state(eStateControlled_Attack);
         break;
     }
+    case eTaskMove: select_state(eStateControlled_Move); break; // NLC
+
     default: NODEFAULT;
     }
 

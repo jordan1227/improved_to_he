@@ -47,6 +47,9 @@
 #include "alife_object_registry.h"
 #include "client_spawn_manager.h"
 #include "nlc_stealth.h" // NLC: stealth ray_resample
+#include "ai/stalker/ai_stalker.h" // NLC: phantom flag
+#include "ai/monsters/controller/controller.h" // NLC: controller thrall script access
+#include "script_game_object.h"
 
 #ifdef DEBUG
 #include "debug_renderer.h"
@@ -1126,4 +1129,57 @@ void CCustomMonster::ForceTransform(const Fmatrix& m)
 
     character_physics_support()->set_movement_position(m.c);
     character_physics_support()->movement()->SetVelocity(0, 0, 0);
+}
+
+//////////////////////////////////////////////////////////////////////////
+// NLC: script hooks (phantoms, controller thralls)
+//////////////////////////////////////////////////////////////////////////
+
+void CCustomMonster::nlc_set_phantom(bool value)
+{
+    m_nlc_phantom = value;
+    if (value)
+        spatial.type &= ~STYPE_VISIBLEFORAI;
+    else
+        spatial.type |= STYPE_VISIBLEFORAI;
+
+    if (CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(this))
+        stalker->can_throw_grenades(!value);
+}
+
+void CCustomMonster::nlc_add_enemy(CScriptGameObject* enemy)
+{
+    CEntityAlive* e = enemy ? smart_cast<CEntityAlive*>(&enemy->object()) : nullptr;
+    CBaseMonster* self = smart_cast<CBaseMonster*>(this);
+    if (!e || !self || !e->g_Alive() || !g_Alive())
+        return;
+    self->EnemyMemory.add_enemy(e);
+}
+
+LPCSTR CCustomMonster::nlc_controller_thralls()
+{
+    xr_string ids;
+    if (CController* controller = smart_cast<CController*>(this))
+        controller->nlc_thrall_ids(ids);
+    m_nlc_thralls_buf = ids.c_str();
+    return m_nlc_thralls_buf.size() ? m_nlc_thralls_buf.c_str() : "";
+}
+
+bool CCustomMonster::nlc_controller_take(CScriptGameObject* thrall)
+{
+    CController* controller = smart_cast<CController*>(this);
+    CEntityAlive* entity = thrall ? smart_cast<CEntityAlive*>(&thrall->object()) : nullptr;
+    return controller && entity && controller->nlc_script_take(entity);
+}
+
+LPCSTR CCustomMonster::nlc_controller_phase()
+{
+    CController* controller = smart_cast<CController*>(this);
+    return controller ? controller->nlc_script_phase() : "";
+}
+
+u32 CCustomMonster::nlc_controller_herd_call(u32 duration_ms)
+{
+    CController* controller = smart_cast<CController*>(this);
+    return controller ? controller->nlc_herd_call(duration_ms) : 0;
 }
