@@ -47,7 +47,124 @@ namespace NlcLauncher
             string path = relative.Replace('\\', '/').TrimStart('/');
             foreach (string prefix in ProtectedPrefixes)
                 if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return true;
+            return IsExcluded(path);
+        }
+
+        public const string ExcludeFile = "updater_exclude.txt";
+        public static readonly List<string> ExcludeRules = new List<string>();
+        static readonly List<System.Text.RegularExpressions.Regex> ExcludeMasks =
+            new List<System.Text.RegularExpressions.Regex>();
+
+        const string ExcludeTemplate =
+            "# Исключения апдейтера: файлы и папки, которые он не скачивает, не заменяет и не удаляет.\r\n" +
+            "# Один путь на строку: от папки gamedata (config\\weapons) или от корня игры (gamedata\\config\\weapons).\r\n" +
+            "# Строки, начинающиеся с # или ;, не читаются.\r\n" +
+            "#\r\n" +
+            "# Вся папка со всем содержимым:\r\n" +
+            "# gamedata\\config\\weapons\r\n" +
+            "#\r\n" +
+            "# Один файл:\r\n" +
+            "# gamedata\\config\\system.ltx\r\n" +
+            "#\r\n" +
+            "# Маска: * - любые символы (в том числе во вложенных папках), ? - один символ:\r\n" +
+            "# gamedata\\textures\\act\\*.dds\r\n" +
+            "#\r\n" +
+            "# Исключённые файлы остаются такими, какие лежат у вас; обновления сборки до них не дойдут.\r\n" +
+            "# Чтобы снова получать обновления файла, удалите или закомментируйте его строку.\r\n";
+
+        public static void LoadExcludes()
+        {
+            ExcludeRules.Clear();
+            ExcludeMasks.Clear();
+            string file = Path.Combine(GameRoot, ExcludeFile);
+            try
+            {
+                if (!File.Exists(file))
+                {
+                    File.WriteAllText(file, ExcludeTemplate, new UTF8Encoding(true));
+                    return;
+                }
+                foreach (string raw in File.ReadAllLines(file, Encoding.UTF8))
+                {
+                    string rule = NormalizeRule(raw);
+                    if (rule == null) continue;
+                    string body = System.Text.RegularExpressions.Regex.Escape(rule)
+                        .Replace("\\*", ".*").Replace("\\?", "[^/]");
+                    string head = rule.StartsWith("gamedata/", StringComparison.OrdinalIgnoreCase)
+                        ? "^" : "^(gamedata/)?";
+                    string pattern = head + body + (rule.EndsWith("/") ? "" : "(/|$)");
+                    ExcludeRules.Add(rule);
+                    ExcludeMasks.Add(new System.Text.RegularExpressions.Regex(pattern,
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                        | System.Text.RegularExpressions.RegexOptions.CultureInvariant));
+                }
+            }
+            catch { }
+        }
+
+        public static string NormalizeRule(string raw)
+        {
+            if (raw == null) return null;
+            string line = raw.Trim();
+            if (line.Length == 0 || line[0] == '#' || line[0] == ';') return null;
+            string rule = line.Replace('\\', '/');
+            while (rule.StartsWith("./")) rule = rule.Substring(2);
+            rule = rule.TrimStart('/');
+            if (rule.Length == 0 || rule.Contains("..")) return null;
+            return rule;
+        }
+
+        public static void SaveExcludes(IList<string> rules)
+        {
+            string file = Path.Combine(GameRoot, ExcludeFile);
+            var want = new List<string>();
+            var wantSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string r in rules)
+            {
+                string n = NormalizeRule(r);
+                if (n != null && wantSet.Add(n)) want.Add(r.Trim());
+            }
+            string[] old = File.Exists(file)
+                ? File.ReadAllLines(file, Encoding.UTF8)
+                : ExcludeTemplate.Split(new string[] { "\r\n" }, StringSplitOptions.None);
+            var lines = new List<string>();
+            var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string raw in old)
+            {
+                string n = NormalizeRule(raw);
+                if (n == null)
+                {
+                    string t = raw.Trim();
+                    if (t.Length == 0 || t[0] == '#' || t[0] == ';') lines.Add(raw);
+                    continue;
+                }
+                if (wantSet.Contains(n) && written.Add(n)) lines.Add(raw);
+            }
+            foreach (string r in want)
+                if (written.Add(NormalizeRule(r))) lines.Add(r);
+            File.WriteAllText(file, string.Join("\r\n", lines.ToArray()) + "\r\n", new UTF8Encoding(true));
+            LoadExcludes();
+        }
+
+        public static bool IsExcluded(string relative)
+        {
+            if (relative == null || ExcludeMasks.Count == 0) return false;
+            string path = relative.Replace('\\', '/').TrimStart('/');
+            foreach (var mask in ExcludeMasks)
+                if (mask.IsMatch(path)) return true;
             return false;
+        }
+
+        public static List<string> UnusedExcludes(IEnumerable<string> paths)
+        {
+            var used = new bool[ExcludeMasks.Count];
+            foreach (string p in paths)
+                for (int i = 0; i < ExcludeMasks.Count; i++)
+                    if (!used[i] && ExcludeMasks[i].IsMatch(p)) used[i] = true;
+            var unused = new List<string>();
+            for (int i = 0; i < used.Length; i++)
+                if (!used[i]) unused.Add(ExcludeRules[i]);
+            return unused;
         }
 
         public static string StateDir { get { return Path.Combine(GameRoot, @"appdata\updater"); } }
@@ -425,18 +542,35 @@ namespace NlcLauncher
         }
     }
 
+    class PickItem
+    {
+        public string Path;
+        public string Note;
+        public PickItem(string path, string note) { Path = path; Note = note; }
+        public override string ToString() { return Path + "   — " + Note; }
+    }
+
     class MainForm : Form
     {
+        const int ChoiceCancel = 0;
+        const int ChoiceUpdate = 1;
+        const int ChoiceRescan = 2;
+
         Label lblStatus;
         Label lblDetail;
         ProgressBar bar;
         TextBox log;
+        SplitContainer split;
+        CheckedListBox pick;
+        Button btnExclude;
         Button btnUpdate;
         Button btnPlay;
         Button btnCancel;
         Thread worker;
         volatile bool cancelRequested;
-        volatile bool confirmed;
+        volatile bool picking;
+        volatile int choice;
+        volatile List<string> picked = new List<string>();
         readonly ManualResetEvent answered = new ManualResetEvent(false);
 
         public MainForm()
@@ -447,8 +581,8 @@ namespace NlcLauncher
             Text = "Апдейтер";
 #endif
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(620, 320);
-            MinimumSize = new Size(560, 260);
+            ClientSize = new Size(620, 440);
+            MinimumSize = new Size(560, 360);
             Font = new Font("Segoe UI", 9f);
 
             lblStatus = new Label();
@@ -473,32 +607,68 @@ namespace NlcLauncher
             log.ReadOnly = true;
             log.ScrollBars = ScrollBars.Vertical;
             log.BackColor = Color.White;
-            log.SetBounds(12, 84, 596, 190);
-            log.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            log.Dock = DockStyle.Fill;
+
+            var hint = new Label();
+            hint.Text = "Снятая галочка добавляет файл в исключения — апдейтер больше не будет его трогать. "
+                + "Папки и маски — кнопка «Исключения…».";
+            hint.ForeColor = SystemColors.GrayText;
+            hint.Dock = DockStyle.Top;
+            hint.Height = 36;
+            hint.Padding = new Padding(0, 4, 0, 0);
+
+            pick = new CheckedListBox();
+            pick.CheckOnClick = true;
+            pick.IntegralHeight = false;
+            pick.HorizontalScrollbar = true;
+            pick.Dock = DockStyle.Fill;
+
+            split = new SplitContainer();
+            split.Orientation = Orientation.Horizontal;
+            split.SetBounds(12, 84, 596, 310);
+            split.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            split.Panel1.Controls.Add(log);
+            split.Panel2.Controls.Add(pick);
+            split.Panel2.Controls.Add(hint);
+            split.Panel1MinSize = 60;
+            split.Panel2MinSize = 100;
+            split.Panel2Collapsed = true;
+
+            btnExclude = new Button();
+            btnExclude.Text = "Исключения…";
+            btnExclude.SetBounds(12, 402, 110, 26);
+            btnExclude.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            btnExclude.Enabled = false;
+            btnExclude.Click += delegate { EditExcludes(); };
 
             btnUpdate = new Button();
             btnUpdate.Text = "Обновить";
-            btnUpdate.SetBounds(348, 282, 80, 26);
+            btnUpdate.SetBounds(348, 402, 80, 26);
             btnUpdate.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             btnUpdate.Enabled = false;
             btnUpdate.Click += delegate
             {
+                var off = new List<string>();
+                for (int k = 0; k < pick.Items.Count; k++)
+                    if (!pick.GetItemChecked(k)) off.Add(((PickItem)pick.Items[k]).Path);
+                picked = off;
                 btnUpdate.Enabled = false;
                 btnPlay.Enabled = false;
-                confirmed = true;
+                btnExclude.Enabled = false;
+                choice = ChoiceUpdate;
                 answered.Set();
             };
 
             btnPlay = new Button();
             btnPlay.Text = "Играть";
-            btnPlay.SetBounds(438, 282, 80, 26);
+            btnPlay.SetBounds(438, 402, 80, 26);
             btnPlay.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             btnPlay.Enabled = false;
             btnPlay.Click += delegate { LaunchAndExit(); };
 
             btnCancel = new Button();
             btnCancel.Text = "Отмена";
-            btnCancel.SetBounds(528, 282, 80, 26);
+            btnCancel.SetBounds(528, 402, 80, 26);
             btnCancel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             btnCancel.Click += delegate
             {
@@ -509,10 +679,25 @@ namespace NlcLauncher
                 Say("Отмена...");
             };
 
-            Controls.AddRange(new Control[] { lblStatus, lblDetail, bar, log,
-                                              btnUpdate, btnPlay, btnCancel });
+            Controls.AddRange(new Control[] { lblStatus, lblDetail, bar, split,
+                                              btnExclude, btnUpdate, btnPlay, btnCancel });
             Shown += delegate { Start(); };
             FormClosing += delegate { cancelRequested = true; answered.Set(); };
+        }
+
+        void EditExcludes()
+        {
+            using (var dlg = new ExcludeForm())
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            }
+            Say("Исключения сохранены: правил — " + Cfg.ExcludeRules.Count + ".");
+            if (!picking) return;
+            btnUpdate.Enabled = false;
+            btnPlay.Enabled = false;
+            btnExclude.Enabled = false;
+            choice = ChoiceRescan;
+            answered.Set();
         }
 
         void Start()
@@ -577,28 +762,44 @@ namespace NlcLauncher
                 btnPlay.Enabled = File.Exists(Util.Local(Cfg.GameExe));
                 if (btnPlay.Enabled) btnPlay.Focus();
                 btnCancel.Text = "Выход";
+                btnExclude.Enabled = true;
                 btnCancel.Enabled = true;
                 cancelRequested = true;
                 if (Cfg.ExitWhenDone) Close();
             });
         }
 
-        // Ask before touching files the updater did not install itself.
-        bool Confirm(string status)
+        int Choose(List<PickItem> items, string status)
         {
             answered.Reset();
-            confirmed = false;
+            choice = ChoiceCancel;
+            picked = new List<string>();
             Ui(delegate
             {
                 lblStatus.Text = status;
                 bar.Style = ProgressBarStyle.Continuous;
+                pick.BeginUpdate();
+                pick.Items.Clear();
+                foreach (PickItem it in items) pick.Items.Add(it, true);
+                pick.EndUpdate();
+                split.Panel2Collapsed = false;
+                split.SplitterDistance = Math.Max(split.Panel1MinSize, split.Height / 3);
+                picking = true;
                 btnUpdate.Enabled = true;
                 btnUpdate.Focus();
+                btnExclude.Enabled = true;
                 btnPlay.Enabled = File.Exists(Util.Local(Cfg.GameExe));
             });
             answered.WaitOne();
-            Ui(delegate { btnUpdate.Enabled = false; btnPlay.Enabled = false; });
-            return confirmed && !cancelRequested;
+            Ui(delegate
+            {
+                picking = false;
+                split.Panel2Collapsed = true;
+                btnUpdate.Enabled = false;
+                btnPlay.Enabled = false;
+                btnExclude.Enabled = false;
+            });
+            return cancelRequested ? ChoiceCancel : choice;
         }
 
         void Run()
@@ -682,133 +883,157 @@ namespace NlcLauncher
                     }
 
                 var state = State.Load();
-                var todo = new List<Entry>();
-                var removed = new List<string>();
+                var installed = new Dictionary<string, StateRec>(state, StringComparer.OrdinalIgnoreCase);
+                List<Entry> todo = null;
+                List<string> removed = null;
+                List<string> shadows = null;
                 long todoBytes = 0;
-                int kept = 0;
-                int protectedFiles = 0;
-                int protectedStale = 0;
 
-                Status("Сверка файлов...");
-                Marquee(false);
-                int i = 0;
-                foreach (var kv in manifest)
+                while (true)
                 {
-                    if (cancelRequested) { Cancelled(); return; }
-                    i++;
-                    if ((i & 63) == 0)
+                    Cfg.LoadExcludes();
+                    if (Cfg.ExcludeRules.Count > 0)
                     {
-                        Progress((int)(100L * i / manifest.Count));
-                        Detail(i + " / " + manifest.Count);
-                    }
-                    Entry e = kv.Value;
-                    if (Cfg.IsProtected(e.Path)) { protectedFiles++; continue; }
-                    if (keep.Contains(e.Path)) { kept++; continue; }
-                    string local = Util.Local(e.Path);
-                    if (!File.Exists(local))
-                    {
-                        e.LocalExists = false;
-                        e.Ours = false;
-                        todo.Add(e);
-                        todoBytes += e.Size;
-                        continue;
+                        Say("Исключения (" + Cfg.ExcludeFile + "): "
+                            + string.Join(", ", Cfg.ExcludeRules.ToArray()));
+                        var paths = new List<string>(manifest.Keys);
+                        paths.AddRange(state.Keys);
+                        foreach (string rule in Cfg.UnusedExcludes(paths))
+                            Say("Исключение \"" + rule + "\" не совпало ни с одним файлом сборки — проверьте путь (например config\\weapons или gamedata\\config\\weapons).");
                     }
 
-                    e.LocalExists = true;
-                    var fi = new FileInfo(local);
-                    StateRec rec;
-                    bool known = state.TryGetValue(e.Path, out rec);
-                    string sha;
-                    if (known && rec.Size == fi.Length && rec.Mtime == fi.LastWriteTimeUtc.Ticks)
+                    todo = new List<Entry>();
+                    removed = new List<string>();
+                    todoBytes = 0;
+                    int kept = 0;
+                    int protectedFiles = 0;
+                    int protectedStale = 0;
+                    int excludedFiles = 0;
+
+                    Status("Сверка файлов...");
+                    Marquee(false);
+                    int i = 0;
+                    foreach (var kv in manifest)
                     {
-                        sha = rec.Sha;
-                    }
-                    else
-                    {
-                        try { sha = Util.Sha256(local); }
-                        catch
+                        if (cancelRequested) { Cancelled(); return; }
+                        i++;
+                        if ((i & 63) == 0)
                         {
+                            Progress((int)(100L * i / manifest.Count));
+                            Detail(i + " / " + manifest.Count);
+                        }
+                        Entry e = kv.Value;
+                        if (Cfg.IsExcluded(e.Path)) { excludedFiles++; continue; }
+                        if (Cfg.IsProtected(e.Path)) { protectedFiles++; continue; }
+                        if (keep.Contains(e.Path)) { kept++; continue; }
+                        string local = Util.Local(e.Path);
+                        if (!File.Exists(local))
+                        {
+                            e.LocalExists = false;
                             e.Ours = false;
                             todo.Add(e);
                             todoBytes += e.Size;
                             continue;
                         }
-                        state[e.Path] = new StateRec
-                        {
-                            Sha = sha,
-                            Size = fi.Length,
-                            Mtime = fi.LastWriteTimeUtc.Ticks
-                        };
-                    }
-                    // "ours" == this exact file is what the updater last installed
-                    e.Ours = known && string.Equals(rec.Sha, sha, StringComparison.OrdinalIgnoreCase);
-                    if (!string.Equals(sha, e.Sha, StringComparison.OrdinalIgnoreCase))
-                    {
-                        todo.Add(e);
-                        todoBytes += e.Size;
-                    }
-                }
 
-                foreach (var kv in state)
-                {
-                    if (Cfg.IsProtected(kv.Key)) { protectedStale++; continue; }
-                    if (manifest.ContainsKey(kv.Key)) continue;
-                    if (keep.Contains(kv.Key)) continue;
-                    string local = Util.Local(kv.Key);
-                    if (!File.Exists(local)) continue;
-                    try
-                    {
+                        e.LocalExists = true;
                         var fi = new FileInfo(local);
-                        string sha = (kv.Value.Size == fi.Length && kv.Value.Mtime == fi.LastWriteTimeUtc.Ticks)
-                            ? kv.Value.Sha : Util.Sha256(local);
-                        if (string.Equals(sha, kv.Value.Sha, StringComparison.OrdinalIgnoreCase))
-                            removed.Add(kv.Key);
+                        StateRec rec;
+                        bool known = state.TryGetValue(e.Path, out rec);
+                        string sha;
+                        if (known && rec.Size == fi.Length && rec.Mtime == fi.LastWriteTimeUtc.Ticks)
+                        {
+                            sha = rec.Sha;
+                        }
+                        else
+                        {
+                            try { sha = Util.Sha256(local); }
+                            catch
+                            {
+                                e.Ours = false;
+                                todo.Add(e);
+                                todoBytes += e.Size;
+                                continue;
+                            }
+                            state[e.Path] = new StateRec
+                            {
+                                Sha = sha,
+                                Size = fi.Length,
+                                Mtime = fi.LastWriteTimeUtc.Ticks
+                            };
+                        }
+                        // "ours" == this exact file is what the updater last installed
+                        StateRec was;
+                        e.Ours = installed.TryGetValue(e.Path, out was)
+                            && string.Equals(was.Sha, sha, StringComparison.OrdinalIgnoreCase);
+                        if (!string.Equals(sha, e.Sha, StringComparison.OrdinalIgnoreCase))
+                        {
+                            todo.Add(e);
+                            todoBytes += e.Size;
+                        }
                     }
-                    catch { }
-                }
 
-                var shadows = Util.ShadowScripts(manifest, keep);
+                    foreach (var kv in state)
+                    {
+                        if (Cfg.IsExcluded(kv.Key)) continue;
+                        if (Cfg.IsProtected(kv.Key)) { protectedStale++; continue; }
+                        if (manifest.ContainsKey(kv.Key)) continue;
+                        if (keep.Contains(kv.Key)) continue;
+                        string local = Util.Local(kv.Key);
+                        if (!File.Exists(local)) continue;
+                        try
+                        {
+                            var fi = new FileInfo(local);
+                            string sha = (kv.Value.Size == fi.Length && kv.Value.Mtime == fi.LastWriteTimeUtc.Ticks)
+                                ? kv.Value.Sha : Util.Sha256(local);
+                            if (string.Equals(sha, kv.Value.Sha, StringComparison.OrdinalIgnoreCase))
+                                removed.Add(kv.Key);
+                        }
+                        catch { }
+                    }
 
-                Detail("");
-                if (protectedFiles > 0)
-                    Say("Защищённые папки: " + protectedFiles
-                        + " файл(ов) в манифесте пропущено.");
-                if (protectedStale > 0)
-                    Say("Защищённые папки: " + protectedStale
-                        + " устаревших записей пропущено при очистке.");
-                if (keep.Count > 0)
-                    Say("Установленные варианты: " + variant + " — " + kept
-                        + " файл(ов) пропущено (-nokeep снимает защиту).");
-                if (todo.Count == 0 && removed.Count == 0 && shadows.Count == 0)
-                {
-                    State.Save(state);
-                    Progress(100);
-                    Status("Сборка актуальна — запуск игры");
-                    Say("Обновлений нет.");
-                    LaunchAndExit();
-                    return;
-                }
+                    shadows = Util.ShadowScripts(manifest, keep);
 
-                // Files that already exist and were not installed by the updater are
-                // somebody's own: local edits, another mod, a variant pack. Overwriting
-                // them silently is how an update eats work, so it needs a yes.
-                var foreign = new List<Entry>();
-                foreach (Entry e in todo)
-                    if (e.LocalExists && !e.Ours) foreign.Add(e);
+                    Detail("");
+                    if (excludedFiles > 0)
+                        Say("Исключения: " + excludedFiles + " файл(ов) сборки пропущено.");
+                    if (protectedFiles > 0)
+                        Say("Защищённые папки: " + protectedFiles
+                            + " файл(ов) в манифесте пропущено.");
+                    if (protectedStale > 0)
+                        Say("Защищённые папки: " + protectedStale
+                            + " устаревших записей пропущено при очистке.");
+                    if (keep.Count > 0)
+                        Say("Установленные варианты: " + variant + " — " + kept
+                            + " файл(ов) пропущено (-nokeep снимает защиту).");
+                    if (todo.Count == 0 && removed.Count == 0 && shadows.Count == 0)
+                    {
+                        State.Save(state);
+                        Progress(100);
+                        Status("Сборка актуальна — запуск игры");
+                        Say("Обновлений нет.");
+                        LaunchAndExit();
+                        return;
+                    }
 
-                Say("К загрузке: " + todo.Count + " файл(ов), " + Util.Mb(todoBytes)
-                    + (removed.Count > 0 ? "; удалить: " + removed.Count : ""));
+                    // Files that already exist and were not installed by the updater are
+                    // somebody's own: local edits, another mod, a variant pack. Overwriting
+                    // them silently is how an update eats work, so it needs a yes.
+                    var foreign = new List<Entry>();
+                    foreach (Entry e in todo)
+                        if (e.LocalExists && !e.Ours) foreign.Add(e);
 
-                if (shadows.Count > 0)
-                {
-                    Say("Найдены лишние копии модулей сборки — X-Ray адресует скрипт по имени файла,");
-                    Say("поэтому такие копии подменяют собой настоящие модули и ломают игру:");
-                    foreach (string p in shadows) Say("  " + p);
-                    Say("Они будут убраны в appdata\\updater\\backup.");
-                }
+                    Say("К загрузке: " + todo.Count + " файл(ов), " + Util.Mb(todoBytes)
+                        + (removed.Count > 0 ? "; удалить: " + removed.Count : ""));
 
-                if ((foreign.Count > 0 || shadows.Count > 0) && !Cfg.AssumeYes)
-                {
+                    if (shadows.Count > 0)
+                    {
+                        Say("Найдены лишние копии модулей сборки — X-Ray адресует скрипт по имени файла,");
+                        Say("поэтому такие копии подменяют собой настоящие модули и ломают игру:");
+                        foreach (string p in shadows) Say("  " + p);
+                        Say("Они будут убраны в appdata\\updater\\backup.");
+                    }
+
                     if (foreign.Count > 0)
                     {
                         Say("Из них " + foreign.Count + " файл(ов) в папке игры отличаются, и ставил их не апдейтер:");
@@ -817,15 +1042,68 @@ namespace NlcLauncher
                         {
                             if (shown++ == 15) { Say("  ... и ещё " + (foreign.Count - 15)); break; }
                             Say("  " + e.Path);
+                        }
+                        Say("Они будут заменены версиями из сборки. Копии сохранятся в appdata\\updater\\backup.");
                     }
-                    Say("Они будут заменены версиями из сборки. Копии сохранятся в appdata\\updater\\backup.");
+
+                    if (Cfg.AssumeYes) break;
+
+                    var items = new List<PickItem>();
+                    foreach (Entry e in todo)
+                        items.Add(new PickItem(e.Path, !e.LocalExists ? "новый"
+                            : e.Ours ? "обновление" : "ваш файл, будет заменён"));
+                    foreach (string p in removed) items.Add(new PickItem(p, "удаление"));
+                    foreach (string p in shadows) items.Add(new PickItem(p, "лишняя копия модуля, будет убрана"));
+
+                    int answer = Choose(items, "Найдено обновлений: " + items.Count + " файл(ов), "
+                        + Util.Mb(todoBytes) + ". Снимите галочки с ненужного.");
+                    if (answer == ChoiceRescan)
+                    {
+                        Say("Исключения изменены — повторная сверка.");
+                        continue;
                     }
-                    if (!Confirm("Подтвердите изменение " + (foreign.Count + shadows.Count) + " файл(ов)"))
+                    if (answer != ChoiceUpdate)
                     {
                         Say("Обновление отменено пользователем.");
                         OfferPlay("Обновление отменено");
                         return;
                     }
+
+                    var skipped = picked;
+                    if (skipped.Count > 0)
+                    {
+                        var rules = new List<string>(Cfg.ExcludeRules);
+                        foreach (string p in skipped) rules.Add(p.Replace('/', '\\'));
+                        try
+                        {
+                            Cfg.SaveExcludes(rules);
+                            Say("В исключения добавлено: " + skipped.Count + " файл(ов).");
+                            int shown = 0;
+                            foreach (string p in skipped)
+                            {
+                                if (shown++ == 15) { Say("  ... и ещё " + (skipped.Count - 15)); break; }
+                                Say("  " + p);
+                            }
+                        }
+                        catch (Exception ex) { Say("не удалось сохранить исключения: " + ex.Message); }
+                        var skip = new HashSet<string>(skipped, StringComparer.OrdinalIgnoreCase);
+                        todo.RemoveAll(x => skip.Contains(x.Path));
+                        removed.RemoveAll(skip.Contains);
+                        shadows.RemoveAll(skip.Contains);
+                        todoBytes = 0;
+                        foreach (Entry e in todo) todoBytes += e.Size;
+                    }
+                    break;
+                }
+
+                if (todo.Count == 0 && removed.Count == 0 && shadows.Count == 0)
+                {
+                    State.Save(state);
+                    Progress(100);
+                    Status("Нечего обновлять — запуск игры");
+                    Say("Все файлы обновления сняты.");
+                    LaunchAndExit();
+                    return;
                 }
 
                 Status("Загрузка обновления...");
@@ -979,6 +1257,172 @@ namespace NlcLauncher
                 return;
             }
             Ui(delegate { Close(); });
+        }
+    }
+
+    class ExcludeForm : Form
+    {
+        ListBox list;
+        TextBox input;
+
+        public ExcludeForm()
+        {
+            Text = "Исключения апдейтера";
+            StartPosition = FormStartPosition.CenterParent;
+            ClientSize = new Size(560, 400);
+            MinimumSize = new Size(480, 320);
+            Font = new Font("Segoe UI", 9f);
+            ShowInTaskbar = false;
+            MinimizeBox = false;
+
+            var help = new Label();
+            help.Text = "Файлы и папки, которые апдейтер не скачивает, не заменяет и не удаляет. "
+                + "Путь — от папки gamedata (config\\weapons) или от корня игры; "
+                + "* — любые символы, ? — один символ.";
+            help.SetBounds(12, 10, 536, 36);
+            help.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+            list = new ListBox();
+            list.SelectionMode = SelectionMode.MultiExtended;
+            list.IntegralHeight = false;
+            list.HorizontalScrollbar = true;
+            list.SetBounds(12, 52, 420, 268);
+            list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            Cfg.LoadExcludes();
+            foreach (string rule in Cfg.ExcludeRules) list.Items.Add(rule.Replace('/', '\\'));
+
+            var btnDir = new Button();
+            btnDir.Text = "Папка…";
+            btnDir.SetBounds(442, 52, 106, 26);
+            btnDir.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            btnDir.Click += delegate { AddFolder(); };
+
+            var btnFiles = new Button();
+            btnFiles.Text = "Файлы…";
+            btnFiles.SetBounds(442, 84, 106, 26);
+            btnFiles.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            btnFiles.Click += delegate { AddFiles(); };
+
+            var btnRemove = new Button();
+            btnRemove.Text = "Удалить";
+            btnRemove.SetBounds(442, 126, 106, 26);
+            btnRemove.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            btnRemove.Click += delegate
+            {
+                var sel = new List<object>();
+                foreach (object o in list.SelectedItems) sel.Add(o);
+                foreach (object o in sel) list.Items.Remove(o);
+            };
+
+            input = new TextBox();
+            input.SetBounds(12, 328, 420, 24);
+            input.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+
+            var btnAdd = new Button();
+            btnAdd.Text = "Добавить";
+            btnAdd.SetBounds(442, 327, 106, 26);
+            btnAdd.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+            btnAdd.Click += delegate
+            {
+                if (Add(input.Text)) input.Clear();
+                input.Focus();
+            };
+
+            var btnOk = new Button();
+            btnOk.Text = "Сохранить";
+            btnOk.SetBounds(352, 364, 96, 26);
+            btnOk.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+            btnOk.Click += delegate { Save(); };
+
+            var btnCancel = new Button();
+            btnCancel.Text = "Отмена";
+            btnCancel.DialogResult = DialogResult.Cancel;
+            btnCancel.SetBounds(452, 364, 96, 26);
+            btnCancel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+
+            AcceptButton = btnAdd;
+            CancelButton = btnCancel;
+            Controls.AddRange(new Control[] { help, list, btnDir, btnFiles, btnRemove,
+                                              input, btnAdd, btnOk, btnCancel });
+        }
+
+        bool Add(string text)
+        {
+            string rule = Cfg.NormalizeRule(text);
+            if (rule == null) return false;
+            foreach (object o in list.Items)
+                if (string.Equals(Cfg.NormalizeRule((string)o), rule, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            list.Items.Add(text.Trim().Replace('/', '\\'));
+            return true;
+        }
+
+        static string Relative(string full)
+        {
+            string root = Path.GetFullPath(Cfg.GameRoot).TrimEnd('\\') + "\\";
+            full = Path.GetFullPath(full);
+            if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return null;
+            string rel = full.Substring(root.Length).TrimEnd('\\');
+            return rel.Length > 0 ? rel : null;
+        }
+
+        string StartDir()
+        {
+            string gd = Path.Combine(Cfg.GameRoot, "gamedata");
+            return Directory.Exists(gd) ? gd : Cfg.GameRoot;
+        }
+
+        void Outside()
+        {
+            MessageBox.Show(this, "Можно выбрать только то, что лежит внутри папки игры:\r\n" + Cfg.GameRoot,
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        void AddFolder()
+        {
+            using (var dlg = new FolderBrowserDialog())
+            {
+                dlg.Description = "Папка, которую апдейтер не будет трогать";
+                dlg.ShowNewFolderButton = false;
+                dlg.SelectedPath = StartDir();
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                string rel = Relative(dlg.SelectedPath);
+                if (rel == null) { Outside(); return; }
+                Add(rel + "\\");
+            }
+        }
+
+        void AddFiles()
+        {
+            using (var dlg = new OpenFileDialog())
+            {
+                dlg.Title = "Файлы, которые апдейтер не будет трогать";
+                dlg.Multiselect = true;
+                dlg.CheckFileExists = true;
+                dlg.InitialDirectory = StartDir();
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                foreach (string f in dlg.FileNames)
+                {
+                    string rel = Relative(f);
+                    if (rel == null) { Outside(); return; }
+                    Add(rel);
+                }
+            }
+        }
+
+        void Save()
+        {
+            var rules = new List<string>();
+            foreach (object o in list.Items) rules.Add((string)o);
+            try { Cfg.SaveExcludes(rules); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Не удалось сохранить " + Cfg.ExcludeFile + ": " + ex.Message,
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            DialogResult = DialogResult.OK;
+            Close();
         }
     }
 
