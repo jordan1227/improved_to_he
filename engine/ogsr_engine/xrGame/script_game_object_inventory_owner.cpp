@@ -30,6 +30,8 @@
 #include "huditem.h"
 #include "ui/UItalkWnd.h"
 #include "ui/UITradeWnd.h"
+#include "ui/UIPdaWnd.h"
+#include "game_news.h"
 #include "inventory.h"
 #include "infoportion.h"
 #include "AI/Monsters/BaseMonster/base_monster.h"
@@ -75,6 +77,16 @@ void AddIconedTalkMessage(CScriptGameObject*, LPCSTR text, LPCSTR texture_name, 
     CUIGameSP* pGameSP = smart_cast<CUIGameSP*>(HUD().GetUI()->UIGame());
     if (!pGameSP)
         return;
+
+    if (Actor() && texture_name && xr_strlen(texture_name)) // NLC: keep script talk messages in the PDA news log
+    {
+        GAME_NEWS_DATA news_data;
+        news_data.news_text = text;
+        news_data.texture_name = texture_name;
+        news_data.tex_rect = tex_rect;
+        Actor()->PushNewsData(news_data);
+        pGameSP->PdaMenu->PdaContentsChanged(pda_section::news);
+    }
 
     if (pGameSP->TalkMenu->IsShown())
         pGameSP->TalkMenu->AddIconedMessage(text, texture_name, tex_rect, templ_name ? templ_name : "iconed_answer_item");
