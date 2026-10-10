@@ -8,6 +8,7 @@
 #include "xrmessages.h"
 #include "../Include/xrRender/Kinematics.h"
 #include "PHWorld.h"
+#include "entity_alive.h"
 CTeleWhirlwind ::CTeleWhirlwind()
 {
     m_owner_object = NULL;
@@ -138,7 +139,11 @@ void CTeleWhirlwindObject::release()
 bool CTeleWhirlwindObject::destroy_object(const Fvector dir, float val)
 {
     if (object->story_id() != INVALID_STORY_ID)
-        return false;
+    {
+        const CEntityAlive* EA = smart_cast<const CEntityAlive*>(object);
+        if (!EA || EA->g_Alive()) // NLC: story corpses are torn by anomalies too
+            return false;
+    }
 
     CPHDestroyable* D = object->ph_destroyable();
     if (D)
