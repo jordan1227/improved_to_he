@@ -9,6 +9,10 @@ local REGION_SHARE = 75
 local CUR_LEVEL_MIN_DIST = 400
 local RECYCLE_BATCH = 6
 local keep_smarts = { mil_freedom = true, mil_fblockpost = true, mil_fneutral = true }
+-- [HE-PORT]
+local MONO_TARGET = 15
+local MONO_MAX = 18
+local MONO_NORTH_WEIGHT = 30
 local spawned_ids = {}
 local squad_counter = 0
 -- [HE-PORT]
@@ -122,8 +126,29 @@ local function level_set(kind)
 	return nil
 end
 
+-- [HE-PORT]
+local function actor_in_north()
+	local ok, lname = pcall(level.name)
+	return ok and lname ~= nil and olr_faction_policy.north_levels[lname] == true
+end
+
+-- [HE-PORT]
+local function north_weights(list)
+	if not actor_in_north() then return list end
+	local out = {}
+	for _, fw in ipairs(list) do
+		if fw[1] == "monolith_north" then
+			table.insert(out, { fw[1], MONO_NORTH_WEIGHT })
+		else
+			table.insert(out, fw)
+		end
+	end
+	return out
+end
+
 local function pick_random_faction()
 	local list = he_mil_dolg_reward.olr_weights(faction_weights) -- [HE-PORT]
+	list = north_weights(list) -- [HE-PORT]
 	local total = 0
 	for _, fw in ipairs(list) do total = total + fw[2] end
 	local roll = math.random(1, total)
@@ -160,6 +185,11 @@ local function store_spawned_ids()
 	set_value(SQUAD_IDS_KEY, t)
 end
 
+-- [HE-PORT]
+local function is_mono(obj)
+	return string.sub(obj:section_name(), 1, 13) == "olr_monolith_"
+end
+
 local function count_alive_spawned()
 	load_spawned_ids()
 	local sim = g_sim
@@ -169,7 +199,9 @@ local function count_alive_spawned()
 	for id, _ in pairs(spawned_ids) do
 		local obj = sim:object(id)
 		if obj and obj:alive() then
-			alive = alive + 1
+			if not is_mono(obj) then -- [HE-PORT]
+				alive = alive + 1
+			end
 		else
 			table.insert(dead_ids, id)
 		end
@@ -178,6 +210,20 @@ local function count_alive_spawned()
 		spawned_ids[id] = nil
 	end
 	return alive
+end
+
+-- [HE-PORT]
+local function count_mono()
+	local sim = g_sim
+	if not sim then return 0 end
+	local n = 0
+	for id, _ in pairs(spawned_ids) do
+		local obj = sim:object(id)
+		if obj and obj:alive() and is_mono(obj) then
+			n = n + 1
+		end
+	end
+	return n
 end
 
 -- [HE-PORT]
@@ -206,6 +252,7 @@ local function recycle_far(limit)
 		local obj = sim:object(id)
 		if obj and obj:alive() and not obj.online and IsStalker(obj)
 			and string.sub(obj:section_name(), 1, 4) == "olr_"
+			and not is_mono(obj) -- [HE-PORT]
 			and not region[ olr_smart_index.object_level(obj) or "" ]
 		then
 			local sid = obj:smart_terrain_id()
@@ -365,6 +412,10 @@ function update()
 
 	local alive = count_alive_spawned()
 	-- [HE-PORT]
+	if count_mono() < MONO_TARGET then
+		spawn_squad("monolith_north", actor_in_north())
+	end
+	-- [HE-PORT]
 	if count_in_region() < REGION_TARGET then
 		time_next_spawn = time_global() + SPAWN_INTERVAL_LOW
 		if alive >= MAX_SQUADS_TOTAL then
@@ -383,7 +434,9 @@ function update()
 	for i = 1, num_squads do
 		if count_alive_spawned() >= MAX_SQUADS_TOTAL then break end
 		local faction = pick_random_faction()
-		spawn_squad(faction, math.random(1, 100) <= REGION_SHARE) -- [HE-PORT]
+		if not ( faction == "monolith_north" and count_mono() >= MONO_MAX ) then -- [HE-PORT]
+			spawn_squad(faction, math.random(1, 100) <= REGION_SHARE) -- [HE-PORT]
+		end
 	end
 
 	store_spawned_ids()
