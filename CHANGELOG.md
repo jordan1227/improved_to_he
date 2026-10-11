@@ -1,6 +1,667 @@
-<!-- nlc-changelog-head: 2a60e9d45af28164a8818b2642b619b085628be6 -->
+<!-- nlc-changelog-head: 75ac654dc2511e2d693c24e94fc99ce3399256a0 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 75ac654dc2511e2d693c24e94fc99ce3399256a0 -->
+## 11.10.26 18:48 МСК - Add NLC burer AI and telekinesis
+
+Commit: [75ac654](https://github.com/jordan1227/improved_to_he/commit/75ac654dc2511e2d693c24e94fc99ce3399256a0)
+
+### Description
+
+This patch overhauls the burer combat loop with telekinesis, grenade handling, shield/deflection logic, puppet-gun behavior, tactical movement, and gaze/NPC-disarm hooks. It also adds the hospital burer gun spawns and updates the config, scripts, and engine callbacks needed to support the new behavior.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_burer.ltx
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/logic/smart_terrain.script
+- A gamedata/scripts/nlc_burer_hospital.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/CustomRocket.cpp
+- M engine/ogsr_engine/xrGame/CustomRocket.h
+- M engine/ogsr_engine/xrGame/EntityCondition.h
+- M engine/ogsr_engine/xrGame/ExplosiveRocket.cpp
+- M engine/ogsr_engine/xrGame/ExplosiveRocket.h
+- M engine/ogsr_engine/xrGame/Grenade.cpp
+- M engine/ogsr_engine/xrGame/Grenade.h
+- M engine/ogsr_engine/xrGame/Missile.cpp
+- M engine/ogsr_engine/xrGame/Missile.h
+- M engine/ogsr_engine/xrGame/PHSimpleCharacter.cpp
+- M engine/ogsr_engine/xrGame/PhysicsShellHolder.cpp
+- M engine/ogsr_engine/xrGame/PhysicsShellHolder.h
+- M engine/ogsr_engine/xrGame/PhysicsSkeletonObject.cpp
+- M engine/ogsr_engine/xrGame/PhysicsSkeletonObject.h
+- M engine/ogsr_engine/xrGame/Weapon.h
+- M engine/ogsr_engine/xrGame/WeaponFire.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.h
+- M engine/ogsr_engine/xrGame/WeaponMagazinedWGrenade.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazinedWGrenade.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer.h
+- A engine/ogsr_engine/xrGame/ai/monsters/burer/burer_nlc.cpp
+- A engine/ogsr_engine/xrGame/ai/monsters/burer/burer_nlc5.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_attack.h
+- A engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_attack_cast.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_attack_gravi_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_attack_inline.h
+- A engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_attack_repulse.h
+- A engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_attack_repulse_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_attack_shield_inline.h
+- A engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_attack_tactical.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_attack_tele.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_attack_tele_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer_state_manager.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/poltergeist/poltergeist_telekinesis.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/state_defs.h
+- M engine/ogsr_engine/xrGame/ai/monsters/telekinesis.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/telekinesis.h
+- A engine/ogsr_engine/xrGame/ai/monsters/telekinesis_hit_callback.h
+- M engine/ogsr_engine/xrGame/ai/monsters/telekinetic_object.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/telekinetic_object.h
+- M engine/ogsr_engine/xrGame/inventory_item.cpp
+- M engine/ogsr_engine/xrGame/inventory_item.h
+- M engine/ogsr_engine/xrGame/ui/UIGameTutorial.cpp
+- M engine/ogsr_engine/xrGame/ui/UIGameTutorial.h
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+- M engine/ogsr_engine/xr_3da/xr_input.h
+
+<!-- nlc-changelog-commit: 3a85794d48a1d8ea5a03293928d0b244f92fd899 -->
+## 11.10.26 18:35 МСК - Защищаем санаторий от Алайф до 1-ого визита игрока Prevent offline ALife moving boss/story monsters
+
+Commit: [3a85794](https://github.com/jordan1227/improved_to_he/commit/3a85794d48a1d8ea5a03293928d0b244f92fd899)
+
+### Description
+
+Add protection for story/boss monsters so offline A-Life won't move or spawn them. Introduce protected_monster_sections and is_protected_monster in gamedata/scripts/olr/olr_protected.script (includes 'burer_hos'). Skip protected monsters when building monster cache (olr_offline_task.script) and in offline walk/kill checks (olr_offline_walk.script). Also block offline A-Life on the hospital level until the player's first visit via nlc_burer_hospital check in olr_faction_policy.script. Files changed: olr_protected.script, olr_offline_task.script, olr_offline_walk.script, olr_faction_policy.script.
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_faction_policy.script
+- M gamedata/scripts/olr/olr_offline_task.script
+- M gamedata/scripts/olr/olr_offline_walk.script
+- M gamedata/scripts/olr/olr_protected.script
+
+<!-- nlc-changelog-commit: 78d360ab91aef230ad792641732944bb2af2de66 -->
+## 10.10.26 19:38 МСК - Строки для Вахтанга
+
+Commit: [78d360a](https://github.com/jordan1227/improved_to_he/commit/78d360ab91aef230ad792641732944bb2af2de66)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/rus/string_table_tasks_standart.xml
+
+<!-- nlc-changelog-commit: 3bb01a63990d86fb0aacafb3febea05bcc29473c -->
+## 10.10.26 19:37 МСК - Подкрутил алайф для монолита.
+
+Commit: [3bb01a6](https://github.com/jordan1227/improved_to_he/commit/3bb01a63990d86fb0aacafb3febea05bcc29473c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_squads.script
+
+<!-- nlc-changelog-commit: 31ce557684d0e52c10f28df55d703b746e7ac14f -->
+## 10.10.26 19:26 МСК - Монгол переезжает в Лиманск после радара.
+
+Commit: [31ce557](https://github.com/jordan1227/improved_to_he/commit/31ce557684d0e52c10f28df55d703b746e7ac14f)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l04_darkvalley.ltx
+
+<!-- nlc-changelog-commit: 5ebfadf9e4931db84e1e2bfbe876ec6dac9a42dc -->
+## 10.10.26 19:13 МСК - Меняем Кирпичу группу и делаем другом к ГГ.
+
+Commit: [5ebfadf](https://github.com/jordan1227/improved_to_he/commit/5ebfadf9e4931db84e1e2bfbe876ec6dac9a42dc)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_agr_dv.xml
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 2b638dadaa2ed7fa092f4699cf3cb29d9ad55c81 -->
+## 10.10.26 19:08 МСК - Merge remote-tracking branch 'origin/main'
+
+Commit: [2b638da](https://github.com/jordan1227/improved_to_he/commit/2b638dadaa2ed7fa092f4699cf3cb29d9ad55c81)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- A gamedata/meshes/monsters/burer/burer.ogf
+- A gamedata/meshes/monsters/burer/burer_dead.ogf
+- A gamedata/meshes/monsters/burer/burer_hos.ogf
+- A gamedata/meshes/monsters/burer/burer_strong.ogf
+- A gamedata/meshes/monsters/burer/burer_weak.ogf
+- A gamedata/meshes/monsters/burer_animation.omf
+- A gamedata/meshes/monsters/burer_animation1.omf
+- M gamedata/scripts/binders/bind_physic_object.script
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 0161dd56aeb6a1ed073e97fa7cc1eddc532fc096 -->
+## 10.10.26 19:07 МСК - Снял защиту от кражи с ящика на кордоне
+
+Commit: [0161dd5](https://github.com/jordan1227/improved_to_he/commit/0161dd56aeb6a1ed073e97fa7cc1eddc532fc096)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/binders/bind_physic_object.script
+
+<!-- nlc-changelog-commit: 1fd901453c87571db8b94faaa88f095454b37882 -->
+## 10.10.26 18:43 МСК - Долговцы пропускают бесплатно
+
+Commit: [1fd9014](https://github.com/jordan1227/improved_to_he/commit/1fd901453c87571db8b94faaa88f095454b37882)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_mil_rad.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+
+<!-- nlc-changelog-commit: 9cc1ef4803c54738edef504f6ec5b482ffd8e86c -->
+## 10.10.26 18:30 МСК - Убрал спавн на глазах, миграция.
+
+Commit: [9cc1ef4](https://github.com/jordan1227/improved_to_he/commit/9cc1ef4803c54738edef504f6ec5b482ffd8e86c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_monsters_sim.script
+- M gamedata/scripts/olr/olr_raids.script
+
+<!-- nlc-changelog-commit: 38a3638200da0f4f17c6cbff8d226747c4b45fa3 -->
+## 10.10.26 18:22 МСК - Merge remote-tracking branch 'origin/main'
+
+Commit: [38a3638](https://github.com/jordan1227/improved_to_he/commit/38a3638200da0f4f17c6cbff8d226747c4b45fa3)
+
+### Description
+
+# Conflicts:
+#	manifest.txt
+
+### Game files changed
+
+- M gamedata/config/scripts/esc/esc_sleep_matras.ltx
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+- M gamedata/scripts/sak/sak_dialog.script
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 9e4eff4352d1aa0a5fb532b5e8db3622ebe29a0a -->
+## 10.10.26 18:20 МСК - Время Сахарова
+
+Commit: [9e4eff4](https://github.com/jordan1227/improved_to_he/commit/9e4eff4352d1aa0a5fb532b5e8db3622ebe29a0a)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 30b14bee891861bff97f1a459a8362a145fd0d44 -->
+## 10.10.26 16:13 МСК - Капсула Семецкого остается на месте, а не идет за игроком
+
+Commit: [30b14be](https://github.com/jordan1227/improved_to_he/commit/30b14bee891861bff97f1a459a8362a145fd0d44)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 3042c063a6c457e296ca7ce969bad07cfac3be61 -->
+## 10.10.26 15:44 МСК - Сообщения из диалогов сохраняются в истории ПДА
+
+Commit: [3042c06](https://github.com/jordan1227/improved_to_he/commit/3042c063a6c457e296ca7ce969bad07cfac3be61)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+
+### Other repository files changed
+
+- M engine/ogsr_engine/xrGame/script_game_object_inventory_owner.cpp
+
+<!-- nlc-changelog-commit: 9a188769df16de8774ba8c01389fb9de6ff213ea -->
+## 10.10.26 15:24 МСК - Сюжетные трупы рвутся в аномалиях
+
+Commit: [9a18876](https://github.com/jordan1227/improved_to_he/commit/9a188769df16de8774ba8c01389fb9de6ff213ea)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+
+### Other repository files changed
+
+- M engine/ogsr_engine/xrGame/TeleWhirlwind.cpp
+
+<!-- nlc-changelog-commit: 37e9f8fd38acaea54b178943d4116c36cc5a21f6 -->
+## 10.10.26 01:47 МСК - Крысы в баре
+
+Commit: [37e9f8f](https://github.com/jordan1227/improved_to_he/commit/37e9f8fd38acaea54b178943d4116c36cc5a21f6)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/creatures/m_rat.ltx
+
+<!-- nlc-changelog-commit: 9452e88449d4a67c75208afd4339a6970bb49852 -->
+## 09.10.26 22:44 МСК - Квест Волка
+
+Commit: [9452e88](https://github.com/jordan1227/improved_to_he/commit/9452e88449d4a67c75208afd4339a6970bb49852)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/sak_quest_items.ltx
+- M gamedata/config/misc/trade_npc/trade_generic.ltx
+- M gamedata/config/text/eng/sak_strings.xml
+- M gamedata/config/text/eng/string_table_items.xml
+- M gamedata/config/text/rus/sak_strings.xml
+- M gamedata/config/text/rus/string_table_items.xml
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 93fe587e448331118e7d12e8f656e36c4207425a -->
+## 09.10.26 21:31 МСК - Фикс ВОГов в трупах
+
+Commit: [93fe587](https://github.com/jordan1227/improved_to_he/commit/93fe587e448331118e7d12e8f656e36c4207425a)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/rx_gl.ltx
+- M gamedata/scripts/ai_additions/rx_gl.script
+- M gamedata/scripts/death_manager.script
+
+<!-- nlc-changelog-commit: faaf00dcf586e01d3255aebbeb1a782f40eb965c -->
+## 09.10.26 21:14 МСК - Замеры в сейве, расширил радиус, кинул в документы
+
+Commit: [faaf00d](https://github.com/jordan1227/improved_to_he/commit/faaf00dcf586e01d3255aebbeb1a782f40eb965c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/vergas/inv_buttons_use.script
+
+<!-- nlc-changelog-commit: 9824d59dcedafbdd59bb4f920cd48d3e7c47e6bc -->
+## 09.10.26 19:08 МСК - манифест
+
+Commit: [9824d59](https://github.com/jordan1227/improved_to_he/commit/9824d59dcedafbdd59bb4f920cd48d3e7c47e6bc)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 659d4e071c948d5ed9961bb56ebfb240f6b0a76e -->
+## 09.10.26 19:07 МСК - Фикс вылета с переходом сидор контейнер
+
+Commit: [659d4e0](https://github.com/jordan1227/improved_to_he/commit/659d4e071c948d5ed9961bb56ebfb240f6b0a76e)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: d580f63d052b5fc08e23f8ffd4a9e85d63558e6e -->
+## 09.10.26 18:22 МСК - манифест
+
+Commit: [d580f63](https://github.com/jordan1227/improved_to_he/commit/d580f63d052b5fc08e23f8ffd4a9e85d63558e6e)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: af6943ac74071a4dd639b5786e1e3a5edf961e4f -->
+## 09.10.26 18:21 МСК - Фикс вронского
+
+Commit: [af6943a](https://github.com/jordan1227/improved_to_he/commit/af6943ac74071a4dd639b5786e1e3a5edf961e4f)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/encyclopedia_sak_way.xml
+- M gamedata/config/gameplay/info_sak_way.xml
+
+<!-- nlc-changelog-commit: 794d3df5af0642215440d36c60fd17a2b5276169 -->
+## 09.10.26 01:27 МСК - ТП Глузова на базу
+
+Commit: [794d3df](https://github.com/jordan1227/improved_to_he/commit/794d3df5af0642215440d36c60fd17a2b5276169)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/kotovod.script
+
+<!-- nlc-changelog-commit: c59fdbcccaa1f3b482610ad07e8165ad6f322c8c -->
+## 08.10.26 23:49 МСК - манифест
+
+Commit: [c59fdbc](https://github.com/jordan1227/improved_to_he/commit/c59fdbcccaa1f3b482610ad07e8165ad6f322c8c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 5943c7025c91359ff4a9604eaf8c1a7235e44e3f -->
+## 08.10.26 23:44 МСК - Вроснкий
+
+Commit: [5943c70](https://github.com/jordan1227/improved_to_he/commit/5943c7025c91359ff4a9604eaf8c1a7235e44e3f)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/doc.script
+
+<!-- nlc-changelog-commit: fe439b704e267577ec6472f5fa8588bd8e0a5ed2 -->
+## 08.10.26 23:26 МСК - Шина 2.5кг и доки Сахарова
+
+Commit: [fe439b7](https://github.com/jordan1227/improved_to_he/commit/fe439b704e267577ec6472f5fa8588bd8e0a5ed2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/items.ltx
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/scripts/actor_take_item.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 6827cfcb7da177923b26a140724d8c658dcaf47a -->
+## 08.10.26 22:34 МСК - Госпиталь: лестница, Кордон: без невидимых стен у моста
+
+Commit: [6827cfc](https://github.com/jordan1227/improved_to_he/commit/6827cfcb7da177923b26a140724d8c658dcaf47a)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/levels/l01_escape/level.cform
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_hospital.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/hospital.sections
+
+<!-- nlc-changelog-commit: c7cefd888d9973666be173a07f0276ae5f1fb810 -->
+## 08.10.26 22:26 МСК - Монолит на ЧАЭС
+
+Commit: [c7cefd8](https://github.com/jordan1227/improved_to_he/commit/c7cefd888d9973666be173a07f0276ae5f1fb810)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/creatures/spawn_sections.ltx
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l12_stancia_2_new.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l12_stancia_new.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/way_l12_stancia_2.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/way_l12_stancia_2_new.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/way_l12_stancia_new.ltx
+
+<!-- nlc-changelog-commit: 913b81c7d03c8aa521433085e0bdd98171f1d853 -->
+## 08.10.26 22:26 МСК - Болота: уровень в репо, без невидимой стены
+
+Commit: [913b81c](https://github.com/jordan1227/improved_to_he/commit/913b81c7d03c8aa521433085e0bdd98171f1d853)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- A gamedata/levels/marsh/build_details.dds
+- A gamedata/levels/marsh/level
+- A gamedata/levels/marsh/level.cform
+- A gamedata/levels/marsh/level.env_mod
+- A gamedata/levels/marsh/level.fog_vol
+- A gamedata/levels/marsh/level.geom
+- A gamedata/levels/marsh/level.geomx
+- A gamedata/levels/marsh/level.hom
+- A gamedata/levels/marsh/level_lods.dds
+- A gamedata/levels/marsh/level_lods_nm.dds
+- A gamedata/levels/marsh/lmap#1_1.dds
+- A gamedata/levels/marsh/lmap#1_2.dds
+- A gamedata/levels/marsh/lmap#2_1.dds
+- A gamedata/levels/marsh/lmap#2_2.dds
+- A gamedata/levels/marsh/terrain/terrain_marsh.dds
+- A gamedata/levels/marsh/terrain/terrain_marsh_lm.dds
+
+<!-- nlc-changelog-commit: 78be78fbe11d33bb1fe85cd09d37a50c53acfb5d -->
+## 08.10.26 21:21 МСК - Поменял ребус в x18
+
+Commit: [78be78f](https://github.com/jordan1227/improved_to_he/commit/78be78fbe11d33bb1fe85cd09d37a50c53acfb5d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/sak_strings_attention.xml
+- M gamedata/config/text/rus/sak_strings_attention.xml
+
+<!-- nlc-changelog-commit: 41489bf18e42b6fa1e0c2bee8b9dd07c99f1e3b0 -->
+## 08.10.26 19:56 МСК - Текст
+
+Commit: [41489bf](https://github.com/jordan1227/improved_to_he/commit/41489bf18e42b6fa1e0c2bee8b9dd07c99f1e3b0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/string_table_enc_zone.xml
+- M gamedata/config/text/rus/string_table_enc_zone.xml
+
+<!-- nlc-changelog-commit: e9de7772abbc8424ab956cf1eb0f62a7448368d9 -->
+## 08.10.26 19:48 МСК - Манифест
+
+Commit: [e9de777](https://github.com/jordan1227/improved_to_he/commit/e9de7772abbc8424ab956cf1eb0f62a7448368d9)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 280db47336ddf48d9355647e385b4cc649344f08 -->
+## 08.10.26 19:48 МСК - Improve bloodsucker tactical AI and perch logic
+
+Commit: [280db47](https://github.com/jordan1227/improved_to_he/commit/280db47336ddf48d9355647e385b4cc649344f08)
+
+### Description
+
+Refine bloodsucker siege and tactic behavior: perch detection now waits for sustained high ground and ignores jumping/non-map states; cloaked enemies in open ground can count as hidden; flanking bait/pair logic, mock charges, and lateral feints/recover movement were tuned. Updated config keys and version/changelog metadata for nlc-3.589.46.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_bloodsucker.ltx
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_siege.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.h
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_tactics.cpp
+
+<!-- nlc-changelog-commit: b9258c2eb91934f0abfcf4eff6665f7db2d5e397 -->
+## 08.10.26 18:37 МСК - Радиация не влияет на скелет
+
+Commit: [b9258c2](https://github.com/jordan1227/improved_to_he/commit/b9258c2eb91934f0abfcf4eff6665f7db2d5e397)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+
+### Other repository files changed
+
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.h
+
+<!-- nlc-changelog-commit: 961743f3467ef766aba0f61ea68b82c033db835c -->
+## 08.10.26 18:03 МСК - Манифест
+
+Commit: [961743f](https://github.com/jordan1227/improved_to_he/commit/961743f3467ef766aba0f61ea68b82c033db835c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 2a60e9d45af28164a8818b2642b619b085628be6 -->
 ## 08.10.26 18:00 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
