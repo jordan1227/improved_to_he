@@ -396,6 +396,7 @@ void CPseudoGigant::load_moves_params(LPCSTR section)
     m_charge_windup = READ_IF_EXISTS(pSettings, r_u32, section, "Charge_Windup", 0);
     m_charge_max_turn = READ_IF_EXISTS(pSettings, r_float, section, "Charge_Max_Turn", 0.f);
     m_charge_overshoot = READ_IF_EXISTS(pSettings, r_float, section, "Charge_Overshoot", 3.f);
+    m_charge_track_rate = deg2rad(std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "Charge_Track_Rate", 0.f), 0.f, 180.f));
     m_charge_face_yaw = READ_IF_EXISTS(pSettings, r_float, section, "Charge_Face_Yaw", 0.5f);
     m_charge_windup_anim = READ_IF_EXISTS(pSettings, r_string, section, "Charge_Windup_Anim", "");
     m_charge_windup_anim_speed = READ_IF_EXISTS(pSettings, r_float, section, "Charge_Windup_Anim_Speed", 1.f);
@@ -540,10 +541,39 @@ void CPseudoGigant::update_charge()
             m_charge_point = ai().level_graph().vertex_position(vertex);
             m_charge_vertex = vertex;
             m_charge_locked = true;
+            m_charge_track_time = now;
 
             nlc_set_haste(m_charge_speed_k, m_charge_until - now);
             if (CMonsterEnemyMemory::target_debug_log())
                 Msg("~ [giant_moves] [%s]: charge rush at %.1f m, locked point %.1f m away", cName().c_str(), dist, m_charge_point.distance_to_xz(Position()));
+        }
+
+        // slight tracking: the line turns toward the target at Charge_Track_Rate while the target is still ahead;
+        // once the giant reaches the target's depth the point freezes, so a late sidestep still makes it run past
+        if (m_charge_locked && m_charge_track_rate > 0.f)
+        {
+            const float dt = float(now - m_charge_track_time) / 1000.f;
+            m_charge_track_time = now;
+
+            Fvector rel;
+            rel.sub(enemy->Position(), Position());
+            rel.y = 0.f;
+            if (rel.dotproduct(m_charge_dir) > m_charge_contact_dist + 1.f && dt > 0.f)
+            {
+                const float cur = m_charge_dir.getH();
+                const float want = to_enemy.getH();
+                const float step = std::clamp(angle_normalize_signed(want - cur), -m_charge_track_rate * dt, m_charge_track_rate * dt);
+                m_charge_dir.setHP(cur + step, 0.f);
+
+                Fvector point;
+                point.mad(Position(), m_charge_dir, rel.dotproduct(m_charge_dir) + m_charge_overshoot);
+                const u32 vertex = ai().level_graph().vertex_id(point);
+                if (ai().level_graph().valid_vertex_id(vertex))
+                {
+                    m_charge_point = ai().level_graph().vertex_position(vertex);
+                    m_charge_vertex = vertex;
+                }
+            }
         }
 
         if (m_charge_contact_dist > 0.f)

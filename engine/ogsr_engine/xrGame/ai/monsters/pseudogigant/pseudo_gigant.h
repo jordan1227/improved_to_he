@@ -123,6 +123,8 @@ private:
     Fvector m_charge_point{}; // locked rush point
     u32 m_charge_vertex{u32(-1)};
     bool m_charge_locked{};
+    float m_charge_track_rate{}; // Charge_Track_Rate, deg/s: the locked line turns toward the target (0 = fixed line)
+    u32 m_charge_track_time{};
     u32 m_charge_rush_start{}; // rush begins (end of wind-up)
     Fvector m_charge_dir{}; // locked rush direction (xz)
     u32 m_time_next_charge{};

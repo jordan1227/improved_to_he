@@ -220,7 +220,18 @@ static u8 enemy_inaccessible(CBaseMonster* const object)
     Fvector const enemy_vert_pos = ai().level_graph().vertex_position(enemy->ai_location().level_vertex_id());
 
     float const xz_dist_to_vertex = enemy_vert_pos.distance_to_xz(enemy_pos);
-    float const y_dist_to_vertex = _abs(enemy_vert_pos.y - enemy_pos.y);
+
+    // NLC: a jumping actor is measured from the ground under his feet, not from his feet: a jump on flat ground
+    // put him 1.2+ m above his vertex ("off the ai-map", a low-perch siege flicker), a jump on a real perch stays a perch
+    float enemy_y = enemy_pos.y;
+    if (CActor* actor = smart_cast<CActor*>(const_cast<CEntityAlive*>(enemy)); actor && actor->is_jump())
+    {
+        collide::rq_result R;
+        Fvector const start = Fvector().set(enemy_pos.x, enemy_pos.y + 0.1f, enemy_pos.z);
+        if (Level().ObjectSpace.RayPick(start, Fvector().set(0.f, -1.f, 0.f), 5.f, collide::rqtStatic, R, actor))
+            enemy_y = start.y - R.range;
+    }
+    float const y_dist_to_vertex = _abs(enemy_vert_pos.y - enemy_y);
 
     if (xz_dist_to_vertex > 0.5f && y_dist_to_vertex > 3.f)
         return CBaseMonster::eNlcInaccessibleHigh;
