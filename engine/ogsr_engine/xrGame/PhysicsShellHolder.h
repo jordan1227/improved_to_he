@@ -63,8 +63,15 @@ public:
     virtual CCharacterPhysicsSupport* character_physics_support() { return nullptr; }
     virtual CCharacterPhysicsSupport* character_physics_support() const { return nullptr; }
     virtual CIKLimbsController* character_ik_controller() { return nullptr; }
-    virtual ICollisionHitCallback* get_collision_hit_callback() { return nullptr; }
-    virtual void set_collision_hit_callback(ICollisionHitCallback* cc) { ; }
+    // NLC: base storage, so inventory items (thrown guns) carry a telekinetic collision-hit callback too; classes with
+    // their own slot (CPhysicObject, CPhysicsSkeletonObject, CEntityAlive) keep overriding these
+    virtual ICollisionHitCallback* get_collision_hit_callback() { return m_nlc_collision_hit_callback; }
+    virtual void set_collision_hit_callback(ICollisionHitCallback* cc);
+
+private:
+    ICollisionHitCallback* m_nlc_collision_hit_callback{};
+
+public:
     virtual void enable_notificate() { ; }
 
     virtual IPhysicsShell* physics_shell() const override;

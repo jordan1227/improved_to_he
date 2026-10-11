@@ -8,10 +8,35 @@
 #include "../states/state_move_to_restrictor.h"
 #include "burer_state_attack_run_around.h"
 #include "burer_state_attack_antiaim.h"
+#include "burer_state_attack_repulse.h"
+#include "burer_state_attack_tactical.h"
+#include "burer_state_attack_cast.h"
 
 namespace burer
 {
 float const health_delta = 0.01f;
+
+inline LPCSTR nlc_state_name(u32 state)
+{
+    switch (state)
+    {
+    case eStateBurerAttack_Tele: return "tele";
+    case eStateBurerAttack_Gravi: return "gravi";
+    case eStateBurerAttack_Melee: return "melee";
+    case eStateBurerAttack_FaceEnemy: return "face_enemy";
+    case eStateBurerAttack_RunAround: return "run_around";
+    case eStateBurerAttack_Shield: return "shield";
+    case eStateBurerAttack_AntiAim: return "anti_aim";
+    case eStateBurerAttack_Repulse: return "repulse";
+    case eStateAttack_Run: return "approach";
+    case eStateCustomMoveToRestrictor: return "to_restrictor";
+    case eStateBurerAttack_Tactical: return "tactical";
+    case eStateBurerAttack_Stare: return "stare";
+    case eStateBurerAttack_NpcDisarm: return "npc_disarm";
+    case eStateBurerAttack_Pull: return "pull";
+    default: return "none";
+    }
+}
 
 } // namespace burer
 
@@ -25,6 +50,11 @@ CStateBurerAttack<Object>::CStateBurerAttack(Object* obj) : inherited(obj)
     add_state(eStateBurerAttack_RunAround, xr_new<CStateBurerAttackRunAround<Object>>(obj));
     add_state(eStateBurerAttack_Shield, xr_new<CStateBurerShield<Object>>(obj));
     add_state(eStateBurerAttack_AntiAim, xr_new<CStateBurerAntiAim<Object>>(obj));
+    add_state(eStateBurerAttack_Repulse, xr_new<CStateBurerRepulse<Object>>(obj));
+    add_state(eStateBurerAttack_Tactical, xr_new<CStateBurerTactical<Object>>(obj));
+    add_state(eStateBurerAttack_Stare, xr_new<CStateBurerCast<Object>>(obj, u32(CBurer::eNlcCastStare)));
+    add_state(eStateBurerAttack_NpcDisarm, xr_new<CStateBurerCast<Object>>(obj, u32(CBurer::eNlcCastNpcDisarm)));
+    add_state(eStateBurerAttack_Pull, xr_new<CStateBurerCast<Object>>(obj, u32(CBurer::eNlcCastPull)));
     add_state(eStateAttack_Run, xr_new<CStateMonsterAttackRun<Object>>(obj));
     add_state(eStateCustomMoveToRestrictor, xr_new<CStateMonsterMoveToRestrictor<Object>>(obj));
 
@@ -43,6 +73,11 @@ void CStateBurerAttack<Object>::initialize()
     m_next_runaway_allowed_tick = 0;
     m_allow_anti_aim = false;
     m_wait_state_end = false;
+    m_nlc_logged_substate = u32(-1);
+
+    const CEntityAlive* enemy = object->EnemyMan.get_enemy();
+    object->nlc_log("attack start enemy=%s dist=%.1f hp=%.2f", enemy ? enemy->cName().c_str() : "-", enemy ? enemy->Position().distance_to(object->Position()) : -1.f,
+        object->conditions().GetHealth());
 
     // 	CMonsterSquad *squad					=	monster_squad().get_squad(object);
     // 	if ( squad )
@@ -55,6 +90,18 @@ template <typename Object>
 void CStateBurerAttack<Object>::execute()
 {
     CEntityAlive* enemy = const_cast<CEntityAlive*>(object->EnemyMan.get_enemy());
+
+    // NLC: casting / channelling / shielding: no passive deflection then (CBurer::nlc_try_deflect)
+    object->m_nlc_busy = current_substate == eStateBurerAttack_Tele || current_substate == eStateBurerAttack_Gravi ||
+        current_substate == eStateBurerAttack_Repulse || current_substate == eStateBurerAttack_AntiAim || current_substate == eStateBurerAttack_Shield ||
+        current_substate == eStateBurerAttack_Stare || current_substate == eStateBurerAttack_NpcDisarm || current_substate == eStateBurerAttack_Pull;
+
+    if (current_substate != m_nlc_logged_substate)
+    {
+        m_nlc_logged_substate = current_substate;
+        object->nlc_log("state %s dist=%.1f hp=%.2f see=%d", burer::nlc_state_name(current_substate), enemy ? enemy->Position().distance_to(object->Position()) : -1.f,
+            object->conditions().GetHealth(), object->EnemyMan.see_enemy_now() ? 1 : 0);
+    }
 
     // Notify squad
     CMonsterSquad* squad = monster_squad().get_squad(object);
@@ -95,13 +142,25 @@ void CStateBurerAttack<Object>::execute()
     bool const anti_aim_ready = get_state(eStateBurerAttack_AntiAim)->check_start_conditions();
     m_allow_anti_aim = false;
 
+    bool const repulse_ready = get_state(eStateBurerAttack_Repulse)->check_start_conditions();
+    bool const pull_ready = get_state(eStateBurerAttack_Pull)->check_start_conditions();
     bool const gravi_ready = get_state(eStateBurerAttack_Gravi)->check_start_conditions();
     bool const shield_ready = get_state(eStateBurerAttack_Shield)->check_start_conditions();
+    bool const npc_disarm_ready = get_state(eStateBurerAttack_NpcDisarm)->check_start_conditions();
+    bool const stare_ready = get_state(eStateBurerAttack_Stare)->check_start_conditions();
     bool const tele_ready = get_state(eStateBurerAttack_Tele)->check_start_conditions();
 
     bool selected_state = true;
 
-    if (gravi_ready)
+    if (repulse_ready)
+    {
+        select_state(eStateBurerAttack_Repulse);
+    }
+    else if (pull_ready)
+    {
+        select_state(eStateBurerAttack_Pull);
+    }
+    else if (gravi_ready)
     {
         select_state(eStateBurerAttack_Gravi);
     }
@@ -110,9 +169,17 @@ void CStateBurerAttack<Object>::execute()
         m_lost_delta_health = false;
         select_state(eStateBurerAttack_Shield);
     }
+    else if (npc_disarm_ready)
+    {
+        select_state(eStateBurerAttack_NpcDisarm);
+    }
     else if (anti_aim_ready)
     {
         select_state(eStateBurerAttack_AntiAim);
+    }
+    else if (stare_ready)
+    {
+        select_state(eStateBurerAttack_Stare);
     }
     else if (tele_ready && current_substate != eStateBurerAttack_RunAround)
     {
@@ -157,6 +224,42 @@ void CStateBurerAttack<Object>::execute()
         return;
     }
 
+    // NLC brain: cover when hurt (or wounded with nothing ready), cover hops when far, a peek when blind
+    if (current_substate == eStateBurerAttack_Tactical)
+    {
+        if (!get_state_current()->check_completion())
+        {
+            get_state_current()->execute();
+            prev_substate = current_substate;
+            return;
+        }
+        object->nlc_on_move_end(); // the state is re-selected below: its finalize would not run
+    }
+    if (object->m_nlc_brain && !in_runaway_range)
+    {
+        const u32 now = Device.dwTimeGlobal;
+        const bool hurt = m_lost_delta_health || object->m_nlc_force_cover;
+        const bool hit_recently = object->HitMemory.is_hit() && object->HitMemory.get_last_hit_time() + 2500 > now;
+        const bool ready = gravi_ready || tele_ready || object->nlc_puppet_active() || object->nlc_grudge_hunt();
+        const bool holding = now < object->m_nlc_hold_until;
+        const bool want_cover = hurt || (object->nlc_phase() >= 1 && hit_recently) || (object->nlc_phase() >= 1 && !ready && !holding && object->EnemyMan.see_enemy_now());
+        if ((now >= object->m_nlc_move_next || hurt) && (!holding || hurt) && now >= object->m_nlc_pick_retry)
+        {
+            if (object->nlc_brain_pick_move(want_cover, hurt, ready))
+            {
+                m_lost_delta_health = false;
+                object->m_nlc_force_cover = false;
+                object->m_nlc_move_next = now + 3000;
+                select_state(eStateBurerAttack_Tactical);
+                get_state_current()->execute();
+                prev_substate = current_substate;
+                return;
+            }
+            // nothing found (cover, overwatch, peek searches cost rays): not every frame
+            object->m_nlc_pick_retry = now + 750;
+        }
+    }
+
     if (current_substate == eStateBurerAttack_RunAround)
     {
         if (get_state_current()->check_completion())
@@ -179,7 +282,7 @@ void CStateBurerAttack<Object>::execute()
         m_lost_delta_health = false;
         select_state(eStateBurerAttack_RunAround);
     }
-    else if (!in_normal_range)
+    else if (!in_normal_range && !(object->m_nlc_brain && Device.dwTimeGlobal < object->m_nlc_hold_until) && !object->m_nlc_elev)
     {
         select_state(eStateAttack_Run);
     }
@@ -208,6 +311,8 @@ void CStateBurerAttack<Object>::execute()
 template <typename Object>
 void CStateBurerAttack<Object>::finalize()
 {
+    object->m_nlc_busy = false;
+    object->nlc_log("attack end hp=%.2f", object->conditions().GetHealth());
     if (object->anim().has_override_animation())
     {
         object->anim().clear_override_animation();
@@ -219,6 +324,7 @@ void CStateBurerAttack<Object>::finalize()
 template <typename Object>
 void CStateBurerAttack<Object>::critical_finalize()
 {
+    object->m_nlc_busy = false; // panic / hit reaction: the passive deflection works again
     if (object->anim().has_override_animation())
     {
         object->anim().clear_override_animation();

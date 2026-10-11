@@ -5,6 +5,300 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.64 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `36CFB24A2FE97AFD6F992DD52CE6E471635D1DB7EDC21539B08014968F0A7A8E` (archived with its PDB in `nlc_tools/builds/20261011_174621_36cfb24a`).
+- **Status:** runtime pending (`docs/BURER_REDESIGN.md` 5.21).
+
+### NLC
+
+- **Burer grudge hunt:** with no peek point nearby it walks toward the enemy's last known position, stopping 8 m short
+  (`move search`); it stood still behind a large rock before.
+
+## nlc-3.589.63 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `8D3C5E6CE0CFA03A8F8D8C40D4B51DE9E09A35A15A674F4E2E026CAA4CC0250E` (archived with its PDB in `nlc_tools/builds/20261011_173347_8d3c5e6c`).
+- **Status:** runtime pending. After the `.62` tests (`docs/BURER_REDESIGN.md` 5.20).
+
+### NLC
+
+- **Burer puppet gun:** a gun is thrown only when empty, at the actor, in sight (a loaded gun or one landing at a
+  stalker re-armed the enemy); put down after `nlc_puppet_blind_ms` without a shot or line of fire.
+- **Burer tele:** at the end, held objects are thrown only at an enemy in sight; guns thrown faster
+  (`nlc_tele_weapon_speed_k`); every telekinetic throw flies without air drag (`CTelekineticObject::fire_t`).
+- **Barricade:** spring gain and acceleration per object (`CTelekineticObject::m_nlc_gain`, `nlc_barricade_gain` /
+  `_accel`); faster broad-side turn.
+- **Grudge:** `grudge: hunting` diagnostic.
+
+## nlc-3.589.62 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E7B4CF256436F00295C809FD8B6E1982E558F31A7FB7A14A38A44D4B159D773D` (archived with its PDB in `nlc_tools/builds/20261011_152135_e7b4cf25`).
+- **Status:** runtime pending. Spare pistol for disarmed stalkers (`docs/BURER_REDESIGN.md` 5.19).
+
+### NLC
+
+- **Burer NPC disarm:** a stalker without another gun it can fire gets a worn spare pistol and a box at the disarm
+  (`nlc_npc_disarm_spare*`, `CBurer::nlc_npc_give_spare`); with a spare configured every main-gun stalker can be disarmed.
+
+## nlc-3.589.61 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `133A6B8E226A7160372421DA4420D5A5F2A5032F507F5DEBA1292C17D3F91B15` (archived with its PDB in `nlc_tools/builds/20261011_150322_133a6b8e`).
+- **Status:** runtime pending. Fixes from the review of the burer redesign (`docs/BURER_REDESIGN.md` 5.17-5.18).
+
+### NLC
+
+- **Crash fix:** `CExplosiveRocket::net_Relcase` clears a raw owner that is being destroyed (caught / puppet rounds).
+- **Burer:** an interrupted tactical move ends its bookkeeping (`critical_finalize`); objects held by any burer are
+  skipped by every search (`CBurer::nlc_held_by_any`); gaze effect switched off on `net_Destroy`; launchers are not
+  disarmed; `m_nlc_busy` reset outside the attack state.
+- **Performance:** failed tactical picks retried after 750 ms; round scan every 150 ms; barricade extents every 100 ms.
+- `Grenade.h` default of `m_nlc_detonation_explosion_hit` matches `Load` (5).
+
+## nlc-3.589.60 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `D0C73EE29F65878F77619710BE5F9A980CC579A03A4555302613B540AD828D19` (archived with its PDB in `nlc_tools/builds/20261011_050830_d0c73ee2`).
+- **Status:** runtime pending. Sidearms, grudge, tells, hospital guns (`docs/BURER_REDESIGN.md` 5.16).
+
+### NLC
+
+- **Burer NPC disarm:** only stalkers left with another usable gun (`nlc_npc_disarm_need_sidearm`).
+- **Burer grudge** (`nlc_grudge_ms`): the enemy that hurt it stays pinned in memory; it peeks for a line of sight.
+- **Burer overwatch:** settle time after arriving, no points under 3 m.
+- **Burer shield catch tell:** flare at every caught bullet before the volley, faster glow pulse near the shield's end.
+
+## nlc-3.589.59 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `53DF1355A180445C4E566BB688817744883F6B4D6CF74143CD9D88DC93D21CB8` (archived with its PDB in `nlc_tools/builds/20261011_041056_53df1355`).
+- **Status:** runtime pending. Burers vs stalkers (`docs/BURER_REDESIGN.md` 5.15).
+
+### NLC
+
+- **Burer tele:** no guns lifted or thrown while fighting a stalker (`CBurer::nlc_tele_skip`); cooldown also on
+  `critical_finalize` (a tele cut short by damage restarted every few frames); empty object searches throttled.
+- **Burer NPC disarm:** timing (magazine share, not reloading), gun flung toward the burer and locked for pickup, short
+  seize delay for it, weapons-left log; stalkers aiming at the burer fill the threat meter.
+- **Burer shield catch:** the shield's bullet glow replayed at each caught bullet (`nlc_catch_glow`).
+- **Burer:** overwatch ring from the enemy's position; a grenade held 4 s is thrown at a target from 5 m.
+
+## nlc-3.589.58 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `C3450A98850DF81A16CEAA65ED149D038D06CDC28415BFC973AD272CB75FEF0D` (archived with its PDB in `nlc_tools/builds/20261011_025201_c3450a98`).
+- **Status:** runtime pending. After the `.57` test (`docs/BURER_REDESIGN.md` 5.14).
+
+### NLC
+
+- **Crash fix (stock):** `CUISequencer` forwarded input to the receiver stored at its start; a tutorial started during
+  `demo_record` crashed in `IR_OnKeyboardHold` once the demo recorder was gone. It now forwards only while that
+  receiver is still on the input stack (`CInput::nlc_has_receiver`).
+- **Burer push:** the character is woken before the velocity is set (a standing actor's sleeping body ignored it);
+  logs read the real body velocity.
+- **Burer barricade:** height from the physics shell's extents (a corpse's bind-pose box lifted it above the burer);
+  `barricade hold` log of bottom / top height.
+- **Burer:** no stare window during a tactical move; god mode logged when it skips the stamina attack.
+
+## nlc-3.589.57 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `7F94708B6E4FCFBD680E6A306EE5271916269386C7917ADFF068EED4725404B7` (archived with its PDB in `nlc_tools/builds/20261011_023939_7f94708b`).
+- **Status:** runtime pending. Burer pass 5 (`docs/BURER_REDESIGN.md` 5.13).
+
+### NLC
+
+- **Burer barricade fit:** box centre at chest height over the ground under the post, lowest point >= 0.2 m, broad side
+  to the enemy (`CTelekineticObject::m_nlc_axis` / `m_nlc_axis_twoway` / turn rate), effort tremor; experimental
+  one-bone grip for corpses (`m_nlc_grip`, `nlc_barricade_grip`).
+- **Gravi push** the frame after the hit, away from the burer; push velocity logs.
+- **NPC disarm** state (stalkers aiming a main weapon at the burer), lead for any moving target, puppet-gun taker log.
+- **Grenade snatch** (`CGrenade::nlc_snatch_arm`): the actor's grenade is dropped, armed and held by the burer.
+- **Shield bullet catch:** blocked bullets held and returned through the bullet manager, dropped on a break.
+- **Pull** state against an elevated enemy; **elevation** tracking with a memory pin and overwatch / siege-hide moves.
+- **Gaze meter** with a stare-window state, forcing the stock anti-aim stamina attack; script effects
+  (`bind_monster.burer_gaze`); the script stare is removed.
+
+## nlc-3.589.56 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `1BEFB583DD0EFD3F0402CAC5AC4A90EE629A938D90DBBE1F877767B6D9171B1C` (archived with its PDB in `nlc_tools/builds/20261011_005924_1befb583`).
+- **Status:** runtime pending. After the `.55` test (`docs/BURER_REDESIGN.md` 5.11).
+
+### NLC
+
+- **Burer barricade:** dropped only after 2 s beyond `nlc_barricade_leash` from its post (a corpse pulled in from 6-10 m
+  was dropped at once), held object speed `nlc_barricade_speed` 9 m/s (5 could not keep up with a running burer).
+- **Puppet gun:** keep-away moves at most once a second; seize log shows launcher rounds and the attached round object.
+
+## nlc-3.589.55 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `ABAFDDB2ACDFEAD8536B1B1554326005838D9CC546DCC11C7F992188DDDBACFE` (archived with its PDB in `nlc_tools/builds/20261011_003936_abafddb2`).
+- **Status:** runtime pending. After the `.54` test (`docs/BURER_REDESIGN.md` 5.10).
+
+### NLC
+
+- **Telekinetic spring steering** (`CTelekineticObject::nlc_steer`, `m_nlc_max_accel`): eased moves and turns.
+- **Burer puppet gun:** one flow for both gun modes (launcher mode switched to the rifle at the seize); launched round's
+  owner = the gun (it exploded on its own launcher); capped jams with sounds and a 3 s unjam
+  (`CWeaponMagazined::nlc_puppet_shot(..., jam_cap)`, `nlc_puppet_sound`); hover points kept 2.5 s, moved after 0.6 s
+  without a line of fire, rising first.
+- **Burer barricade** as a free action in its own container (`nlc_barricade_mode` 1 / 2); own gravi / repulse skip
+  objects it holds.
+- **Knockback:** gravi hit pushes (`nlc_gravi_push_*`), repulse falloff / hold keys, shared `CBurer::nlc_push` with a
+  displacement log.
+
+## nlc-3.589.54 (2026-10-10)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F52C7AF20ABB6D40BA7BCAC3BAA8574FD0AD15C516B80C09054305A1ADDB9852` (archived with its PDB in `nlc_tools/builds/20261010_230618_f52c7af2`).
+- **Status:** runtime pending. After the `.53` test and crash (`docs/BURER_REDESIGN.md` 5.9).
+
+### NLC
+
+- **Crash fix:** `CPHSimpleCharacter::HitCallback` looks the touched object's callback up again by id instead of
+  returning the pointer cached at contact time (a telekinetic re-throw, a release or the object's destruction freed
+  it before `CPHMovementControl::Calculate` called it: access violation in `Calculate`, line 168).
+- **Burer puppet UBGL:** works in launcher mode (round first, then `PerformSwitchGL` to the rifle) and in rifle mode;
+  retried until the target is `nlc_puppet_ubgl_min_dist` away (was spent silently when closer).
+- **Puppet gun:** stronger two-wave bob, vertical bounce per shot.
+
+## nlc-3.589.53 (2026-10-10)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0F41710BC4CA6416E4EA202D3076BB258B4D02566B8290F7C3EA94A9751660E4` (archived with its PDB in `nlc_tools/builds/20261010_225057_0f41710b`).
+- **Status:** runtime pending. Burer round after the `.52` test (`docs/BURER_REDESIGN.md` 5.8).
+
+### NLC
+
+- **Burer puppet gun:** UBGL rifles qualify (only RPG-7 / RG-6 excluded); wobble, tumble, overshoot, sag, pre-burst
+  lean; one underbarrel round after 6-8 s (`CWeaponMagazinedWGrenade::nlc_puppet_launch`).
+- **Burer shield:** strain in health (`nlc_shield_strain_hp`), graded leak, break reaction (psi pulse, cover, wrench);
+  passive deflection (`nlc_deflect_chance`). `CEntityCondition::nlc_health_hit_part`.
+- **Burer round counter:** VOG / RPG rounds caught, held and returned (`CCustomRocket::nlc_fuse_pause / nlc_set_owner`,
+  `CExplosiveRocket::nlc_clear_safe_dist`).
+- **Burer brain:** move arrival handled on completion (holds now stick), cover retry, peek only when ready, straight
+  advance after a failed cover advance. Eased camera wrench with pitch, overshoot and shake.
+
+## nlc-3.589.52 (2026-10-10)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `1CB7ACD29959D4830B5259FEB85AD3CB17F73C574926F1EE113E92CA51D20E90` (archived with its PDB in `nlc_tools/builds/20261010_220324_1cb7acd2`).
+- **Status:** runtime pending. Burer passes 2-4 combined (`docs/BURER_REDESIGN.md` 5.7).
+
+### NLC
+
+- **Burer puppet gun:** loaded guns lying around are raised, steered, aimed and fired at the enemy
+  (`CWeaponMagazined::nlc_puppet_shot`, shots credited to the burer via `CWeapon::m_nlc_shot_owner`); thrown when
+  empty or jammed. Held items cannot be taken (`CInventoryItem::m_nlc_tele_held`, lock after release).
+- **Telekinetic steering:** `CTelekineticObject::nlc_steer` (target point + barrel axis), `CTelekinesis::find_object`.
+- **Burer defenses:** threat meter (crosshair on the burer) raises the shield without a state change; shield strain;
+  camera wrench for strong / hos; a size-checked barricade object (or an allowed corpse) held in front while it
+  channels tele.
+- **Burer brain:** health phases, `eStateBurerAttack_Tactical` cover / advance / peek moves, gravi only along a clear
+  line, tele vs NPC enemies.
+- New file `xrGame/ai/monsters/burer/burer_nlc.cpp` (project updated).
+
+## nlc-3.589.51 (2026-10-10)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `ACBA64D93D183AC430AC2AE12EF2D9E39506B1B23F868549C860DF5691D9E64A` (archived with its PDB in `nlc_tools/builds/20261010_212836_acba64d9`).
+- **Status:** runtime pending. Burer pass 1 round 5 (`xray_hawkl_10-10-26_21-11-16.log`, `docs/BURER_REDESIGN.md` 5.6).
+
+### NLC
+
+- **Eaten grenades fixed:** a throw interrupted after release left `CGrenade::m_thrown` set and `Throw` skipped every
+  later throw; any state change after release now runs the `eThrowEnd` cleanup (`nlc_finish_thrown`).
+- **Thrown inventory items hurt:** `CPhysicsShellHolder` stores a collision-hit callback by default (was a no-op).
+- **Burer repulse** sets the target's velocity (`nlc_repulse_push_*`) instead of `ApplyImpulse`, which the character
+  controller turns downward or cancels; **burer tele** pauses `nlc_tele_cooldown` between tele states.
+
+## nlc-3.589.50 (2026-10-10)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `3EEE07B9BA8EDB5C4197018974B80922CC3CA10BDD10827D5B0B14A9C1164D13` (archived with its PDB in `nlc_tools/builds/20261010_211021_3eee07b9`).
+- **Status:** runtime pending. Burer pass 1 round 4 after the `.49` test (`xray_hawkl_10-10-26_20-51-18.log`, `docs/BURER_REDESIGN.md` 5.5).
+
+### NLC
+
+- **Burer gravi:** inventory items (a just-disarmed gun) get `nlc_gravi_item_impulse` x mass instead of
+  `Gravi_Impulse_To_Objects`; no wave within `nlc_gravi_after_disarm_ms` of any burer disarm
+  (`bind_monster.burer_disarm_age`).
+- **Grenades:** explosion detonation threshold default 0.5 -> 5 (`nlc_detonation_explosion_hit`); the burer's own
+  thrown-back grenade set off the next held one from about 12 m.
+- **Diagnostics:** `top state` lines from `CStateManagerBurer`; `~ [grenade]` lines for the actor's grenade
+  states, throw and release (same `nlc_burer_debug` switch).
+
+## nlc-3.589.49 (2026-10-10)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `6418EF03812E6E837CC3B703AD56C1C1823208C5FED6926A4DB44D8A0975A041` (archived with its PDB in `nlc_tools/builds/20261010_204831_6418ef03`).
+- **Status:** runtime pending. Burer pass 1 round 3 after the `.48` test (`xray_hawkl_10-10-26_20-32-40.log`, `docs/BURER_REDESIGN.md` 5.4).
+
+### NLC
+
+- **Grenades detonate on hits:** any parentless grenade that is not exploding yet explodes when a bullet hits it
+  (`nlc_detonate_by_bullet`, default true) or an explosion hits it with at least `nlc_detonation_explosion_hit` (0.5);
+  the shooter / blast source is the initiator. Stock tested `CExplosive::Initiator() == u16(-1)`, which never holds.
+- **Burer gravi wave** no longer shoves grenades (500 x mass launched thrown grenades out of sight: the "vanishing"
+  grenades near an aggroed burer).
+- **Tele damage on bone pieces:** `CPhysicsSkeletonObject` (`ph_skeleton_object`) owns a collision-hit callback slot;
+  `nlc_tele_set_hit_callback` attaches to any object that keeps it (read back, freed otherwise).
+- **Burer repulse** skips the visible-body helper (`actor_legs`); stronger push in `m_burer.ltx`.
+- `tele end` logged once per tele state.
+
+## nlc-3.589.48 (2026-10-10)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `10E577E3CE618F82B83B711351A22EDD302DB72733D056604B60BC7357E1B953` (archived with its PDB in `nlc_tools/builds/20261010_203122_10e577e3`).
+- **Status:** runtime pending. Burer pass 1 round 2 after the user's `.47` test (`docs/BURER_REDESIGN.md` 5.3).
+
+### NLC
+
+- **Burer grenades:** `nlc_grenade_fuse_extra_ms` (airburst fuse = flight + 100 ms + extra; 1500 in `m_burer.ltx`);
+  hold time from `nlc_grenade_min_hold_ms` (2000 in the config).
+- **Burer repulse push:** `nlc_repulse_impulse` is now x the target's movement mass (the first version passed a raw 300
+  to `ApplyImpulse`, about 1/140 of the stock controller pull), plus `nlc_repulse_lift`.
+- **Burer diagnostics:** `nlc_burer_debug` enables `~ [burer]` lines (attack states, tele, gravi, shield, anti-aim,
+  grenades, repulse, scan).
+
+## nlc-3.589.47 (2026-10-10)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `627C82A9C148F15A11C9B3508C145D26D3457555C0A9935F6C73363E87E4AD17` (archived with its PDB in `nlc_tools/builds/20261010_193131_627c82a9`).
+- **Status:** runtime pending. Burer pass 1 (`docs/BURER_REDESIGN.md` 5.2).
+
+### NLC
+
+- **Burer tele throws hurt:** the poltergeist's collision-damage callback (`SCollisionHitCallback`) moved to the shared
+  `ai/monsters/telekinesis_hit_callback.h` (poltergeist unchanged); burer throws attach it with a mass-scaled hit
+  (`nlc_tele_damage_min/max`, `nlc_tele_damage_mass_min/max`, props only, expires 3 s after the throw), lead a moving
+  actor (`nlc_tele_lead`), and a kept object is only thrown along a clear path to the head. Slower throws via
+  `tele_fly_velocity` in `m_burer.ltx`.
+- **Burer grenade catch:** own telekinesis container in `CBurer`, active in every state (`HandleGrenades` removed
+  from the tele state). Catches live grenades (`nlc_grenade_*`), pauses the fuse (`CMissile::nlc_fuse_pause/resume`),
+  stops them dead, holds them (`CGrenade::m_nlc_tele_held`: not takeable), throws them back at the thrower or the
+  enemy when visible and at least `nlc_grenade_safe_dist` away, fuse set to the flight time (`nlc_grenade_airburst`),
+  initiator = the burer. A held grenade explodes when shot (initiator = the shooter). Death/destroy drops held
+  grenades with their stored fuse.
+- **Burer repulse:** new attack substate `eStateBurerAttack_Repulse` (before gravi): springboard blast within
+  `nlc_repulse_radius` when the enemy is close (`nlc_repulse_*`): strike hit + push (movement-control impulse) on
+  entities, radial impulse on props and bodies, `bind_monster.burer_repulse_actor` raises the camera inertia floor.
+- **Burer scan feedback:** the old `scan_sound` + `scan_effector_section` play when the M2 psy sense level crosses
+  `nlc_sense_notice` (`nlc_scan_fx`, `nlc_scan_fx_cooldown`; one burer at a time).
+- **Burer disarm grace:** `CBurer::StaminaHit` asks `bind_monster.burer_disarm_allowed` before a weapon drop and
+  reports it with `bind_monster.burer_on_disarm` (`nlc_disarm_grace`), shared with the script stare.
+
+### Required game data
+
+- `gamedata/config/creatures/m_burer.ltx` (new keys, head 1.5 / neck 1.2),
+  `gamedata/scripts/binders/bind_monster.script` (stare keys, shared disarm grace, repulse camera hook, unload roll
+  removed). The script functions are optional for the exe (missing functors are skipped).
+
 ## nlc-3.589.46 (2026-10-08)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

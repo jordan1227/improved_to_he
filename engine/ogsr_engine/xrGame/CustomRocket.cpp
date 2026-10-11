@@ -364,7 +364,26 @@ void CCustomRocket::OnH_B_Independent(bool just_before_destroy)
     inherited::OnH_B_Independent(just_before_destroy);
     //-------------------------------------------
     m_pOwner = H_Parent() ? smart_cast<CGameObject*>(H_Parent()->H_Root()) : NULL;
+    // NLC: a burer puppet launch (parentless gun) keeps the burer as the owner
+    if (m_nlc_owner_id != u16(-1))
+        if (CGameObject* owner = smart_cast<CGameObject*>(Level().Objects.net_Find(m_nlc_owner_id)))
+            m_pOwner = owner;
     //-------------------------------------------
+}
+
+float CCustomRocket::nlc_fuse_pause()
+{
+    const float left = m_time_to_explode - Device.fTimeGlobal;
+    m_time_to_explode = flt_max;
+    if (m_eState == eEngine)
+        StopEngine();
+    return left;
+}
+
+void CCustomRocket::nlc_set_owner(CGameObject* owner)
+{
+    m_pOwner = owner;
+    m_nlc_owner_id = owner ? owner->ID() : u16(-1);
 }
 
 void CCustomRocket::OnH_A_Independent()

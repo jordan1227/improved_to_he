@@ -18,6 +18,7 @@ protected:
 
 public:
     IInputReceiver* m_pStoredInputReceiver{};
+    bool nlc_stored_ir(); // NLC: the stored receiver is still alive (on the input stack)
     CUISequencer();
     void Start(LPCSTR tutor_name);
     void Stop();

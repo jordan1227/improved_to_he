@@ -40,6 +40,8 @@ public:
     virtual void Hit(SHit* pHDS);
 
     void PutNextToSlot();
+    void nlc_finish_thrown(); // NLC: the eThrowEnd cleanup, also used for an interrupted throw
+    void nlc_snatch_arm(u16 initiator); // NLC burer snatch: the pin of a dropped grenade is pulled (sound, fuse)
 
     virtual void Deactivate(bool = false);
     virtual void GetBriefInfo(xr_string& str_name, xr_string& icon_sect_name, xr_string& str_count);
@@ -55,6 +57,8 @@ protected:
 private:
     void TrySwitchGrenade(CGrenade* grenade = nullptr);
     float m_grenade_detonation_threshold_hit{};
+    bool m_nlc_detonate_by_bullet{true}; // NLC: a bullet detonates a parentless grenade
+    float m_nlc_detonation_explosion_hit{5.f}; // NLC: explosion hit power that detonates a parentless grenade
     bool m_thrown{};
 
 protected:

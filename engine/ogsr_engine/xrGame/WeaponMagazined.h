@@ -67,6 +67,14 @@ protected:
     virtual void OnShot();
     virtual void PerformForcedShot() override;
 
+public:
+    // NLC burer puppet gun: one shot along the barrel of this parentless gun; 0 = fired, 1 = jammed, 2 = empty / unusable
+    int nlc_puppet_shot(u16 owner_id, float disp_k, float hit_k, float jam_cap);
+    void nlc_puppet_sound(bool unjam); // jammed breech (or an empty click) / the bolt working again
+    int nlc_ammo_elapsed() const { return iAmmoElapsed; }
+
+protected:
+
     virtual void OnEmptyClick();
 
     virtual void OnAnimationEnd(u32 state);

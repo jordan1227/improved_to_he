@@ -89,6 +89,17 @@ public:
     shared_str grenade_bone_name;
 
     int GetAmmoElapsed2() const override { return iAmmoElapsed2; }
+    // NLC burer puppet gun: an underbarrel round from this parentless rifle (rifle mode, round attached)
+    bool nlc_ubgl_ready();
+    int nlc_puppet_launch(u16 owner_id, const Fvector& target);
+    bool nlc_rifle_ammo() const { return m_bGrenadeMode ? iAmmoElapsed2 > 0 : iAmmoElapsed > 0; }
+    int nlc_launcher_rounds() const { return m_bGrenadeMode ? iAmmoElapsed : iAmmoElapsed2; }
+    u32 nlc_attached_rounds() { return getRocketCount(); }
+    void nlc_switch_to_rifle()
+    {
+        if (m_bGrenadeMode)
+            PerformSwitchGL();
+    }
     bool IsGrenadeMode() const override { return m_bGrenadeMode; }
     virtual float Weight() const;
 

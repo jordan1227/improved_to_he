@@ -30,15 +30,16 @@ public:
     virtual void execute();
     virtual void finalize();
     virtual void critical_finalize();
-    virtual void remove_links(CObject* object) { inherited::remove_links(object); }
+    virtual void remove_links(CObject* O)
+    {
+        inherited::remove_links(O);
+    }
 
     virtual bool check_start_conditions();
     virtual bool check_completion();
 
 private:
     void FindObjects();
-
-    void HandleGrenades();
 
     void ExecuteTeleContinue();
     void ExecuteTeleFire();
@@ -50,14 +51,18 @@ private:
 
     // internal for FindObjects
     void FindFreeObjects(xr_vector<CObject*>& tpObjects, const Fvector& pos);
-    void OnGrenadeDestroyed(CGrenade* const grenade);
+
+    // NLC: led throw with the mass-scaled impact damage callback; clear path to the enemy's head
+    void FireObject(CPhysicsShellHolder* obj);
+    bool IsPathClear(CPhysicsShellHolder* obj);
 
     void FireAllToEnemy();
     void deactivate();
 
 private:
-    TTime m_last_grenade_scan;
     TTime m_anim_end_tick;
+    bool m_nlc_end_logged{};
+    u32 m_nlc_find_next{}; // nothing found: no new search before then (the search is three spatial queries)
     TTime m_end_tick{};
     float m_initial_health{};
 };

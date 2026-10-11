@@ -5,10 +5,17 @@
 #include "xrserver_objects_alife.h"
 #include "../Include/xrRender/Kinematics.h"
 #include "../xr_3da/xr_collide_form.h"
+#include "IColisiondamageInfo.h"
 
 CPhysicsSkeletonObject::CPhysicsSkeletonObject() {}
 
-CPhysicsSkeletonObject::~CPhysicsSkeletonObject() {}
+CPhysicsSkeletonObject::~CPhysicsSkeletonObject() { xr_delete(m_collision_hit_callback); }
+
+void CPhysicsSkeletonObject::set_collision_hit_callback(ICollisionHitCallback* cc)
+{
+    xr_delete(m_collision_hit_callback);
+    m_collision_hit_callback = cc;
+}
 
 BOOL CPhysicsSkeletonObject::net_Spawn(CSE_Abstract* DC)
 {
@@ -38,6 +45,7 @@ void CPhysicsSkeletonObject::SpawnInitPhysics(CSE_Abstract* D)
 
 void CPhysicsSkeletonObject::net_Destroy()
 {
+    xr_delete(m_collision_hit_callback);
     inherited::net_Destroy();
     CPHSkeleton::RespawnInit();
 }

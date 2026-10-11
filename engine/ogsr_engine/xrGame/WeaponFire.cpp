@@ -41,12 +41,20 @@ void CWeapon::FireTrace(const Fvector& P, const Fvector& D)
 
     float fire_disp = GetFireDispersion(true);
 
-    bool SendHit = SendHitAllowed(H_Parent());
-    const u16 parent_id = m_bForcedFire ? Actor()->ID() : H_Parent()->ID();
+    // NLC burer puppet gun: no parent; the burer owns the shot
+    const bool nlc_puppet = m_nlc_shot_owner != u16(-1);
+    bool SendHit = nlc_puppet ? true : SendHitAllowed(H_Parent());
+    const u16 parent_id = nlc_puppet ? m_nlc_shot_owner : (m_bForcedFire ? Actor()->ID() : H_Parent()->ID());
+    CCartridge nlc_cartridge = l_cartridge;
+    if (nlc_puppet)
+    {
+        fire_disp *= m_nlc_shot_disp_k;
+        nlc_cartridge.m_kHit *= m_nlc_shot_hit_k;
+    }
     //выстерлить пулю (с учетом возможной стрельбы дробью)
     for (int i = 0; i < l_cartridge.m_buckShot; ++i)
     {
-        FireBullet(P, D, fire_disp, l_cartridge, parent_id, ID(), SendHit);
+        FireBullet(P, D, fire_disp, nlc_puppet ? nlc_cartridge : l_cartridge, parent_id, ID(), SendHit);
     }
 
     if (m_bLightShotEnabled)

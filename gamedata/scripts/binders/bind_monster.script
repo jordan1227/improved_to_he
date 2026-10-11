@@ -1111,31 +1111,7 @@ function generic_object_binder:update( delta )
 		return
 	end
 
-	if classid == CLID_BURER and sfobj:alive() and actor:alive() then
-		local burer_section = sfobj:section()
-		local burer_range, burer_cooldown = 25, 6000
-		if burer_section == "burer_weak" then
-			burer_range, burer_cooldown = 20, 7000
-		elseif burer_section == "burer_strong" then
-			burer_range, burer_cooldown = 28, 5000
-		elseif burer_section == "burer_hos" or burer_section == "burer_yan" then
-			burer_range, burer_cooldown = 30, 4500
-		end
-		local enemy = sfobj:get_enemy()
-		if enemy and enemy:id() == actor:id() and ( self.burer_hit_timer or 0 ) < time_global() then
-			local v1, v2 = sfobj:direction(), actor:direction()
-			if
-				( v1.x * v2.x ) + ( v1.z * v2.z ) < -0.6
-				and sfobj:see( actor )
-				and dist_to_actor < burer_range
-			then
-				actor.power = -1.0
-				local dropped = burer_mask_item_drop()
-				diagnostic_log( "burer_" .. sfobj:id(), 500, "burer id=%d attack dist=%.1f range=%.1f dropped=%s cooldown_base=%d", sfobj:id(), dist_to_actor, burer_range, tostring( dropped ), burer_cooldown )
-				self.burer_hit_timer = time_global() + burer_cooldown * ( 0.8 + 0.4 * lua_random() )
-			end
-		end
-	end
+	-- burer: the script stare is gone; the engine gaze meter replaced it (CBurer::nlc_gaze_update, docs/BURER_REDESIGN.md 5.13)
 
 	if classid == CLID_CONTROLLER and sfobj:alive() and actor:alive() and not controller_is_decoy( sfobj ) then
 		local now = time_global()
@@ -2060,43 +2036,113 @@ function actor_in_monolith_outfit()
 	return armor ~= nil and string.find( armor:section(), "monolit", 1, true ) ~= nil
 end
 
-function burer_mask_item_drop()
-	local actor = db.actor
-	if not actor then return false end
-	local sleep_k = 0
-	local sleep_curr = sleep_manager.get_sleepiness()
-	if sleep_curr > 180 then
-		sleep_k = 0.05
-	elseif sleep_curr > 120 then
-		sleep_k = 0.02
-	elseif sleep_curr <= 70 then
-		sleep_k = -0.05
-	end
-	local active_slot = actor:active_slot()
-	local slot_k = ( active_slot == 1 or active_slot == 4 ) and 0.7 or 1
-	local drop = ( 0.42 + sleep_k + ( 0.03 * game_difficulty ) ) * dog_shield * slot_k
-	local armor = actor:item_in_slot( 6 )
-	if armor and string.find( armor:section(), "exo", 1, true ) then
-		drop = drop * 0.7
-	end
-	if lua_random() >= drop then return false end
+-- (burer_mask_item_drop removed: the script stare is gone, the gaze uses the engine stamina attack)
 
-	add_dirt_outfit()
-	local active_item = actor:active_item()
-	if not active_item or active_item:section() == "bolt" then return false end
-	local item_id = active_item:id()
-	local section = active_item:section()
-	actor:drop_item( active_item )
-	local no_unload = section == "wpn_knife"
-		or string.find( section, "_toz", 1, true )
-		or string.find( section, "wpn_spas", 1, true )
-		or string.find( section, "wpn_bm16", 1, true )
-		or string.find( section, "wpn_winchester", 1, true )
-		or string.find( section, "wpn_mp153", 1, true )
-	if not no_unload and lua_random( 1, 60 ) < 20 then
-		schedule.add( "unload_weapon", "sak_dialog.weapon_unload(" .. item_id .. ")", 250 )
+-- NLC burer pass 1 (docs/BURER_REDESIGN.md 5.2): stare keys per profile and one shared disarm grace period
+local burer_disarm_until = 0
+local burer_disarm_last = -1000000
+local burer_debug = nil
+
+-- "~ [burer]" test log, switched by nlc_burer_debug in [m_burer_e] (the engine reads the same key)
+function burer_log( fmt, ... )
+	if burer_debug == nil then
+		local ini = system_ini()
+		burer_debug = ini:section_exist( "m_burer_e" ) and ini:line_exist( "m_burer_e", "nlc_burer_debug" ) and ini:r_bool( "m_burer_e", "nlc_burer_debug" ) or false
 	end
-	return true
+	if burer_debug then
+		log2( "~ [burer] t=%d " .. fmt, time_global(), ... )
+	end
+end
+
+-- also called by the engine (CBurer::StaminaHit) before an anti-aim weapon drop
+function burer_disarm_allowed()
+	return time_global() >= burer_disarm_until
+end
+
+-- also called by the engine after an anti-aim weapon drop; grace = that burer's nlc_disarm_grace (ms)
+function burer_on_disarm( grace, source )
+	burer_disarm_last = time_global()
+	burer_disarm_until = burer_disarm_last + ( tonumber( grace ) or 20000 )
+	burer_log( "disarm source=%s grace=%d", tostring( source ), tonumber( grace ) or 20000 )
+end
+
+-- engine call (CBurer::nlc_gravi_blocked_by_disarm): ms since the last burer disarm of the actor
+function burer_disarm_age()
+	return time_global() - burer_disarm_last
+end
+
+-- engine call (burer repulse blast hit the actor): k = distance falloff 0..1
+function burer_repulse_actor( inert, k )
+	local v = ( tonumber( inert ) or 0 ) * ( tonumber( k ) or 1 )
+	if params and params.set_inert_floor then params.set_inert_floor( "burer_repulse", v ) end
+	burer_log( "repulse actor cam_inert=%.2f k=%.2f", v, tonumber( k ) or 1 )
+end
+
+-- NLC burer pass 5 (docs/BURER_REDESIGN.md 5.13): the gaze meter's effects. Engine call (CBurer::nlc_gaze_update,
+-- 10 Hz while it is above zero): meter 0..1 of one burer; the strongest drives the screen effect and the whispers.
+-- Placeholders, set in [m_burer_e]: nlc_gaze_fx_start, nlc_gaze_ppe, nlc_gaze_ppe_id, nlc_gaze_whisper.
+local burer_gaze_levels = {}
+local burer_gaze_fx = nil
+local burer_gaze_cfg = nil
+
+local function burer_gaze_config()
+	if not burer_gaze_cfg then
+		local ini = system_ini()
+		local function str( key, default )
+			if ini:section_exist( "m_burer_e" ) and ini:line_exist( "m_burer_e", key ) then return ini:r_string( "m_burer_e", key ) end
+			return default
+		end
+		burer_gaze_cfg = {
+			start = tonumber( str( "nlc_gaze_fx_start", "0.25" ) ) or 0.25,
+			ppe = str( "nlc_gaze_ppe", "" ) or "",
+			ppe_id = tonumber( str( "nlc_gaze_ppe_id", "2071" ) ) or 2071,
+			whisper = str( "nlc_gaze_whisper", "" ) or "",
+		}
+	end
+	return burer_gaze_cfg
+end
+
+function burer_gaze( id, meter, window )
+	local now = time_global()
+	burer_gaze_levels[ id ] = { meter = tonumber( meter ) or 0, t = now }
+	local top = 0
+	for key, entry in pairs( burer_gaze_levels ) do
+		if now - entry.t > 1000 or entry.meter <= 0 then
+			burer_gaze_levels[ key ] = nil
+		elseif entry.meter > top then
+			top = entry.meter
+		end
+	end
+
+	local cfg = burer_gaze_config()
+	if top >= cfg.start and db.actor and db.actor:alive() then
+		local k = ( top - cfg.start ) / math.max( 1 - cfg.start, 0.01 )
+		if not burer_gaze_fx then
+			burer_gaze_fx = {}
+			if cfg.ppe ~= "" then
+				level.add_pp_effector( cfg.ppe, cfg.ppe_id, true )
+				burer_gaze_fx.ppe = true
+			end
+			if cfg.whisper ~= "" then
+				burer_gaze_fx.snd = sound_object( cfg.whisper )
+				burer_gaze_fx.snd:play( db.actor, 0, sound_object.s2d + sound_object.looped )
+			end
+			burer_log( "gaze fx on at %.2f%s", top, window and " (stare window)" or "" )
+		end
+		if burer_gaze_fx.ppe then level.set_pp_effector_factor( cfg.ppe_id, 0.2 + 0.8 * k ) end
+		if burer_gaze_fx.snd then burer_gaze_fx.snd.volume = 0.3 + 0.7 * k end
+	elseif burer_gaze_fx then
+		if burer_gaze_fx.ppe then level.remove_pp_effector( cfg.ppe_id ) end
+		if burer_gaze_fx.snd and burer_gaze_fx.snd:playing() then burer_gaze_fx.snd:stop() end
+		burer_gaze_fx = nil
+		burer_log( "gaze fx off" )
+	end
+end
+
+-- engine call (CBurer gaze seize, before the stamina attack's hit): the old stare's mask effect
+function burer_on_gaze_seize( id )
+	add_dirt_outfit()
+	burer_log( "gaze seize by %s", tostring( id ) )
 end
 
 function add_dirt_outfit()
@@ -2105,10 +2151,10 @@ function add_dirt_outfit()
 	local armor_custom = vergas_masks.set_get_armor_custom( 2 )
 	if not armor_custom or armor_custom == "none|none|none" then return end
 	if vergas_masks.get_flag_mask() == false then
-		diagnostic_log( "burer_mask", 250, "burer mask effect mode=mask_off health=-0.12" )
+		-- the old -12 % health (params.health_add, past god mode and psy protection) is removed (NLC burer pass)
+		diagnostic_log( "burer_mask", 250, "burer mask effect mode=mask_off" )
 		misc.easy_sound( "scripts\\actor_gripp" )
 		level.add_pp_effector( "black_cats.ppe", 1039, false )
-		params.health_add( -0.12 )
 		return
 	end
 	local custom = vergas_lib.str_explode( "|", armor_custom, true )

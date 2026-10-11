@@ -15,6 +15,7 @@ class CPhysicsShellHolder;
 class CTelekineticObject;
 class CPHUpdateObject;
 class CTelekinesis;
+class CPhysicsElement;
 class CTelekineticObject
 {
     ETelekineticState state;
@@ -75,6 +76,23 @@ public:
     bool operator==(const CPhysicsShellHolder* obj) { return (object == obj); }
 
     void rotate();
+
+    // NLC: steered hold (burer barricade / puppet gun): velocity toward m_nlc_target every physics step instead of the
+    // height hover, and optionally the object's forward axis (XFORM.k) turned onto m_nlc_dir
+    bool m_nlc_steer{};
+    Fvector m_nlc_target{};
+    float m_nlc_max_speed{6.f};
+    float m_nlc_max_accel{10.f}; // m/s^2: moves ease in and out instead of snapping
+    float m_nlc_gain{2.5f}; // wanted speed per metre off the target (higher: snaps into place faster)
+    bool m_nlc_orient{};
+    Fvector m_nlc_dir{};
+    Fvector m_nlc_spin{}; // angular velocity while not oriented (a loose tumble)
+    u8 m_nlc_axis{2}; // local axis turned onto m_nlc_dir: 0 = XFORM.i, 1 = XFORM.j, 2 = XFORM.k
+    bool m_nlc_axis_twoway{}; // either end of the axis may face m_nlc_dir (a barricade's broad side)
+    float m_nlc_turn_k{12.f}; // turn rate per radian off the goal, and its cap (rad/s)
+    float m_nlc_turn_max{14.f};
+    CPhysicsElement* m_nlc_grip{}; // steer only this element; the rest of the shell hangs under gravity
+    void nlc_steer();
 
 private:
     void update_hold_sound();

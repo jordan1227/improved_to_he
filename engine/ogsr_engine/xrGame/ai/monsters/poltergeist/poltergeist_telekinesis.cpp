@@ -4,6 +4,7 @@
 #include "../../../level.h"
 #include "../../../actor.h"
 #include "../../../IColisiondamageInfo.h"
+#include "../telekinesis_hit_callback.h"
 CPolterTele::CPolterTele(CPoltergeist* polter) : inherited(polter), m_pmt_object_collision_damage(0.5f) {}
 
 CPolterTele::~CPolterTele() {}
@@ -265,34 +266,6 @@ bool CPolterTele::tele_raise_objects()
 
     return false;
 }
-struct SCollisionHitCallback : public ICollisionHitCallback
-
-{
-    //	CollisionHitCallbackFun				*m_collision_hit_callback
-    //;
-    CPhysicsShellHolder* m_object;
-    float m_pmt_object_collision_damage;
-
-    bool done = false;
-
-    SCollisionHitCallback(CPhysicsShellHolder* object, float pmt_object_collision_damage) : m_object(object), m_pmt_object_collision_damage(pmt_object_collision_damage)
-    {
-        VERIFY(object);
-    }
-    void call(CPhysicsShellHolder* obj, float min_cs, float max_cs, float& cs, float& hl, ICollisionDamageInfo* di) override
-    {
-        if (done)
-            return;
-
-        if (cs > min_cs * 0.5f)
-            hl = m_pmt_object_collision_damage;
-
-        di->SetInitiated();
-
-        done = true;
-    }
-};
-
 void CPolterTele::tele_fire_objects()
 {
     for (u32 i = 0; i < m_object->CTelekinesis::get_objects_total_count(); i++)

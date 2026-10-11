@@ -140,5 +140,10 @@ protected:
 public:
     virtual u32 ef_weapon_type() const;
     IC u32 destroy_time() const { return m_dwDestroyTime; };
+    // NLC burer grenade catch (docs/BURER_REDESIGN.md 5.2): fuse time left on the clock CMissile::shedule_Update
+    // checks (Level().timeServer()); pause stops the fuse and returns that time, resume starts it again.
+    u32 nlc_fuse_remaining() const;
+    u32 nlc_fuse_pause();
+    void nlc_fuse_resume(u32 remaining);
     static void ExitContactCallback(bool& do_colide, bool bo1, dContact& c, SGameMtl* /*material_1*/, SGameMtl* /*material_2*/);
 };

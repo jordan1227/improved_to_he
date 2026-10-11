@@ -1,0 +1,151 @@
+-- NLC burer redesign (docs/BURER_REDESIGN.md 5.16-5.18): rusty guns around the hospital burer (burer_hos) for its
+-- puppet gun. Spawned once per save from the first update of the game (offline, on the hospital level) while burer_hos
+-- is alive: two AK-74U, one AK-74 and one PM shuffled over four spots, 30-40 % condition, full magazines (the burer fires
+-- them). The player who picks one up gets it (almost) empty: 0-3 rounds.
+
+local SPOTS = {
+	{ -89.133, 31.947, 648.160, 2844, 3032 },
+	{ -80.943, 24.958, 641.745, 5189, 3057 },
+	{ -90.200, 24.956, 670.000, 2435, 3044 },
+	{ -75.876, 31.961, 645.713, 7054, 3063 },
+}
+local GUNS = { "wpn_ak74u", "wpn_ak74u", "wpn_ak74", "wpn_pm" }
+local BURER_SECTION = "burer_hos"
+local BURER_NAME = "hos_burer_hos" -- its all.spawn name (not in the simulator at the start of a game: spawned later)
+local RESIDENTS_KEY = "nlc_hos_residents_logged"
+local BURER_LEVEL = "hospital"
+local DONE_KEY = "nlc_hos_burer_guns2" -- v2: .61/.62 set the old key when the burer was not spawned yet
+local OPEN_KEY = "nlc_hos_open" -- offline A-life may enter the hospital (set on the player's first arrival)
+local IDS_KEY = "nlc_hos_burer_gun_ids"
+
+local function log_line( fmt, ... )
+	if bind_monster and bind_monster.burer_log then bind_monster.burer_log( fmt, ... ) end
+end
+
+-- "id=section,id=section": the section guards against a reused id
+local function read_ids()
+	local ids = {}
+	for id, sect in string.gmatch( get_value( IDS_KEY, "" ) or "", "(%d+)=([%w_]+)" ) do
+		ids[ tonumber( id ) ] = sect
+	end
+	return ids
+end
+
+local function write_ids( ids )
+	local parts = {}
+	for id, sect in pairs( ids ) do parts[ #parts + 1 ] = tostring( id ) .. "=" .. sect end
+	set_value( IDS_KEY, table.concat( parts, "," ) )
+end
+
+local function object_level( sim, se_obj )
+	local gvid = se_obj.m_game_vertex_id
+	if not gvid or not game_graph():valid_vertex_id( gvid ) then return nil end
+	return sim:level_name( game_graph():vertex( gvid ):level_id() )
+end
+
+-- the hospital is closed to newcomers (olr_faction_policy.accepts, smart_terrain_accepts_obj) until the first visit
+function is_closed()
+	return get_value( OPEN_KEY, false ) ~= true
+end
+
+-- who lives on the hospital level (the gate cannot remove residents); a full object scan (30-50 ms), once per save
+local function log_residents( sim )
+	if get_value( RESIDENTS_KEY, false ) == true then return end
+	set_value( RESIDENTS_KEY, true )
+	local residents = {}
+	for id = 1, 65534 do
+		local se_obj = sim:object( id )
+		if se_obj and se_obj.health and se_obj:alive() and object_level( sim, se_obj ) == BURER_LEVEL then
+			local sect = se_obj:section_name()
+			residents[ sect ] = ( residents[ sect ] or 0 ) + 1
+		end
+	end
+	local parts = {}
+	for sect, n in pairs( residents ) do parts[ #parts + 1 ] = sect .. " x" .. n end
+	log_line( "hospital residents: %s", #parts > 0 and table.concat( parts, ", " ) or "none" )
+end
+
+-- the hospital burer, by its all.spawn name: nil = not spawned yet, else its server object
+local function hospital_burer( sim )
+	local se_obj = sim:object( BURER_NAME )
+	if se_obj and se_obj:section_name() == BURER_SECTION then return se_obj end
+	return nil
+end
+
+local function spawn_guns( sim )
+	local order = { 1, 2, 3, 4 }
+	for i = #order, 2, -1 do
+		local j = math.random( 1, i )
+		order[ i ], order[ j ] = order[ j ], order[ i ]
+	end
+	local ids, spawned = {}, 0
+	local ini = system_ini()
+	for i, section in ipairs( GUNS ) do
+		local spot = SPOTS[ order[ i ] ]
+		local se_obj = sim:create( section, vector():set( spot[1], spot[2] + 0.3, spot[3] ), spot[4], spot[5] )
+		if se_obj then
+			local condition = 0.3 + 0.1 * math.random()
+			local mag = ini:line_exist( section, "ammo_mag_size" ) and ini:r_u32( section, "ammo_mag_size" ) or 0
+			local ok, err = pcall( function()
+				local pk = get_netpk( se_obj, 1 )
+				local data = pk:get()
+				data.condition = condition
+				data.ammo_elapsed = mag
+				pk:set( data )
+			end )
+			if not ok then log_line( "hospital gun %s(%d): condition / ammo not set: %s", section, se_obj.id, tostring( err ) ) end
+			ids[ se_obj.id ] = section
+			spawned = spawned + 1
+			log_line( "hospital gun %s(%d) at spot %d, condition %.2f, rounds %d", section, se_obj.id, order[ i ], condition, mag )
+		else
+			log_line( "hospital gun %s: create failed at spot %d", section, order[ i ] )
+		end
+	end
+	write_ids( ids )
+	return spawned
+end
+
+local function on_first_update()
+	if level.name() == BURER_LEVEL and is_closed() then
+		set_value( OPEN_KEY, true )
+		log_line( "hospital opened to offline A-life (first visit)" )
+	end
+	local sim = alife()
+	if not sim then return end
+	log_residents( sim )
+	if get_value( DONE_KEY, false ) == true then return end
+	-- the burer is spawned some time after the start of a game: checked again on every level load until it exists
+	local burer = hospital_burer( sim )
+	if not burer then
+		log_line( "hospital guns: burer not spawned yet (%s), checked again on the next load", BURER_NAME )
+		return
+	end
+	if not burer:alive() then
+		log_line( "hospital guns: burer dead, none spawned" )
+		set_value( DONE_KEY, true )
+		return
+	end
+	log_line( "hospital guns: burer %s(%d) alive on %s", BURER_NAME, burer.id, tostring( object_level( sim, burer ) ) )
+	if spawn_guns( sim ) > 0 then set_value( DONE_KEY, true ) end
+end
+
+-- the player takes one: (almost) empty, the burer's rounds are not loot
+local function on_take( obj )
+	if not obj then return end
+	local ids = read_ids()
+	local sect = ids[ obj:id() ]
+	if not sect then return end
+	ids[ obj:id() ] = nil
+	write_ids( ids )
+	if sect ~= obj:section() then return end -- the id was reused by another object
+	local rounds = math.min( math.random( 0, 3 ), obj:get_ammo_in_magazine() or 0 )
+	obj:set_ammo_elapsed( rounds )
+	log_line( "hospital gun %s(%d) taken by the actor, rounds left %d", obj:section(), obj:id(), rounds )
+end
+
+function attach( sm )
+	sm:subscribe( { signal = "on_first_update", fun = on_first_update } )
+	-- on_take is skipped on some inventory paths (rucksack, flags); on_take_after_all fires on every take
+	sm:subscribe( { signal = "on_take", fun = on_take } )
+	sm:subscribe( { signal = "on_take_after_all", fun = on_take } )
+end

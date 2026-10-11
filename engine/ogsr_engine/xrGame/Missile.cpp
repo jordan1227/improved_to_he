@@ -257,6 +257,23 @@ void CMissile::UpdateCL()
     UpdateHUDSounds();
 }
 
+u32 CMissile::nlc_fuse_remaining() const
+{
+    if (m_dwDestroyTime == 0xffffffff)
+        return 0;
+    const u32 now = Level().timeServer();
+    return m_dwDestroyTime > now ? m_dwDestroyTime - now : 1;
+}
+
+u32 CMissile::nlc_fuse_pause()
+{
+    const u32 remaining = nlc_fuse_remaining();
+    m_dwDestroyTime = 0xffffffff;
+    return remaining;
+}
+
+void CMissile::nlc_fuse_resume(u32 remaining) { m_dwDestroyTime = Level().timeServer() + _max(remaining, u32(1)); }
+
 void CMissile::shedule_Update(u32 dt)
 {
     inherited::shedule_Update(dt);

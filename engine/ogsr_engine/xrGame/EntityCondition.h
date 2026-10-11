@@ -75,6 +75,8 @@ public:
     void ChangeEntityMorale(float value);
 
     virtual CWound* ConditionHit(SHit* pHDS);
+    // NLC: health share of a hit type (burer shield strain counts the health a blocked hit would have cost)
+    float nlc_health_hit_part(ALife::EHitType type) const { return m_fHealthHitPart[type]; }
     //обновления состояния с течением времени
     virtual void UpdateCondition();
     void UpdateWounds();

@@ -65,6 +65,13 @@ public:
 #ifdef DEBUG
     CGameObject* owner() { return m_pOwner; }
 #endif
+    // NLC burer telekinesis (docs/BURER_REDESIGN.md): pause / resume the force-explode fuse, change the owner (contact
+    // with the owner never detonates; the owner also survives OnH_B_Independent through m_nlc_owner_id)
+    u16 m_nlc_owner_id{u16(-1)};
+    bool nlc_in_flight() const { return m_eState == eEngine || m_eState == eFlying; }
+    float nlc_fuse_pause();
+    void nlc_fuse_resume(float seconds) { m_time_to_explode = Device.fTimeGlobal + seconds; }
+    void nlc_set_owner(CGameObject* owner);
     virtual void StartEngine();
     virtual void StopEngine();
     virtual void UpdateEngine();

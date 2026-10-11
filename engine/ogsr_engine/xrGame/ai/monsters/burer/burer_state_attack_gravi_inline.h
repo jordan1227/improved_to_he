@@ -14,7 +14,7 @@ void CStateBurerAttackGravi<Object>::initialize()
     m_action = ACTION_GRAVI_STARTED;
     m_time_gravi_started = 0;
     m_anim_end_tick = 0;
-    m_next_gravi_allowed_tick = current_time() + object->m_gravi.cooldown;
+    m_next_gravi_allowed_tick = current_time() + TTime(object->m_gravi.cooldown * object->nlc_phase_k(1.f, 1.f, 0.7f));
     object->set_force_gravi_attack(false);
     object->set_script_capture(false);
 }
@@ -84,6 +84,12 @@ bool CStateBurerAttackGravi<Object>::check_start_conditions()
         return false;
     if (!object->control().direction().is_face_target(object->EnemyMan.get_enemy(), deg(45)))
         return false;
+    // NLC: a wave right after a disarm flung the dropped gun away; give the player a moment
+    if (object->nlc_gravi_blocked_by_disarm())
+        return false;
+    // NLC: the wave travels in a straight line and dies on the first wall; do not spend it into cover
+    if (!object->nlc_gravi_path_clear())
+        return false;
 
     return true;
 }
@@ -132,6 +138,7 @@ void CStateBurerAttackGravi<Object>::ExecuteGraviFire()
     target_pos.y += 0.5f;
 
     object->m_gravi_object.activate(object->EnemyMan.get_enemy(), from_pos, target_pos);
+    object->nlc_log("gravi fire dist=%.1f", from_pos.distance_to(target_pos));
 
     object->StopGraviPrepare();
     object->sound().play(CBurer::eMonsterSoundGraviAttack);

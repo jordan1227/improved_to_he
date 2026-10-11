@@ -187,7 +187,11 @@ public:
     void Ruck(bool on_ruck) { m_flags.set(Fruck, on_ruck); }
     bool RuckDefault() { return !!m_flags.test(FRuckDefault); }
 
-    virtual bool CanTake() const { return !!m_flags.test(FCanTake); }
+    virtual bool CanTake() const;
+    // NLC burer telekinesis (docs/BURER_REDESIGN.md): a held item (grenade, puppet gun) cannot be taken, nor for a
+    // short time after the burer lets go
+    bool m_nlc_tele_held{};
+    u32 m_nlc_tele_lock_until{};
     bool CanTrade(bool check_listed = false) const;
     virtual bool IsNecessaryItem(CInventoryItem* item);
     virtual bool IsNecessaryItem(const shared_str& item_sect) { return false; };

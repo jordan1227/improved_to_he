@@ -230,6 +230,13 @@ const char* CInventoryItem::NameShort() { return *m_nameShort; }
 
 bool CInventoryItem::Useful() const { return CanTake(); }
 
+bool CInventoryItem::CanTake() const
+{
+    if (m_nlc_tele_held || Device.dwTimeGlobal < m_nlc_tele_lock_until)
+        return false;
+    return !!m_flags.test(FCanTake);
+}
+
 bool CInventoryItem::Activate(bool now) { return false; }
 
 void CInventoryItem::Deactivate(bool now) {}

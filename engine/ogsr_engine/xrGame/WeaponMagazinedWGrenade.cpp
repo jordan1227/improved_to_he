@@ -422,6 +422,68 @@ void CWeaponMagazinedWGrenade::SwitchState(u32 S)
     }
 }
 
+bool CWeaponMagazinedWGrenade::nlc_ubgl_ready()
+{
+    // launcher mode keeps the launcher rounds in m_magazine, rifle mode in m_magazine2
+    return !H_Parent() && IsGrenadeLauncherAttached() && (m_bGrenadeMode ? iAmmoElapsed > 0 : iAmmoElapsed2 > 0) && getRocketCount() > 0;
+}
+
+int CWeaponMagazinedWGrenade::nlc_puppet_launch(u16 owner_id, const Fvector& target)
+{
+    if (!nlc_ubgl_ready())
+        return 2;
+
+    const Fvector p1 = get_LastFP2();
+    Fvector d = get_LastFD();
+    Fvector transference;
+    transference.sub(target, p1);
+    Fvector res[2];
+    if (TransferenceAndThrowVelToThrowDir(transference, CRocketLauncher::m_fLaunchSpeed, EffectiveGravity(), res) != 0)
+        d = res[0];
+    d.normalize();
+
+    Fmatrix launch_matrix;
+    launch_matrix.identity();
+    launch_matrix.k.set(d);
+    Fvector::generate_orthonormal_basis(launch_matrix.k, launch_matrix.j, launch_matrix.i);
+    launch_matrix.c.set(p1);
+    d.mul(CRocketLauncher::m_fLaunchSpeed);
+    CRocketLauncher::LaunchRocket(launch_matrix, d, {});
+
+    if (CExplosiveRocket* round = smart_cast<CExplosiveRocket*>(getCurrentRocket()))
+    {
+        round->SetInitiator(owner_id);
+        const xr_vector<shared_str>& types = m_bGrenadeMode ? m_ammoTypes : m_ammoTypes2;
+        const u32 type = m_bGrenadeMode ? m_ammoType : m_ammoType2;
+        if (!types.empty())
+            round->SetRealGrenadeName(types[type < types.size() ? type : 0]);
+        round->m_nlc_owner_id = ID(); // touching the floating gun at launch blew it up when the burer was the owner
+        round->nlc_clear_safe_dist();
+    }
+    if (Local())
+    {
+        NET_Packet P;
+        u_EventGen(P, GE_LAUNCH_ROCKET, ID());
+        P.w_u16(getCurrentRocket()->ID());
+        u_EventSend(P);
+    }
+    PlaySound(sndShotG, p1);
+
+    if (m_bGrenadeMode)
+    {
+        if (!m_magazine.empty())
+            m_magazine.pop_back();
+        --iAmmoElapsed;
+    }
+    else
+    {
+        if (!m_magazine2.empty())
+            m_magazine2.pop_back();
+        --iAmmoElapsed2;
+    }
+    return 0;
+}
+
 void CWeaponMagazinedWGrenade::OnEvent(NET_Packet& P, u16 type)
 {
     inherited::OnEvent(P, type);

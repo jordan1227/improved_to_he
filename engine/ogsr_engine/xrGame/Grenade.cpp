@@ -30,13 +30,25 @@ void CGrenade::Load(LPCSTR section)
     HUD_SOUND::LoadSound(section, "snd_checkout", sndCheckout, m_eSoundCheckout);
 
     m_grenade_detonation_threshold_hit = READ_IF_EXISTS(pSettings, r_float, section, "detonation_threshold_hit", 100);
+    m_nlc_detonate_by_bullet = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_detonate_by_bullet", true);
+    m_nlc_detonation_explosion_hit = READ_IF_EXISTS(pSettings, r_float, section, "nlc_detonation_explosion_hit", 5.f);
 }
 
 void CGrenade::Hit(SHit* pHDS)
 {
-    if (ALife::eHitTypeExplosion == pHDS->hit_type && m_grenade_detonation_threshold_hit < pHDS->damage() && CExplosive::Initiator() == u16(-1))
+    // NLC: a grenade lying or flying in the world (no owner, not exploding yet) explodes when a bullet hits it or an
+    // explosion hits it with at least nlc_detonation_explosion_hit; the shooter / blast source becomes the initiator.
+    // Stock tested CExplosive::Initiator() == u16(-1), which never holds (it falls back to the grenade's own ID).
+    const bool by_bullet = m_nlc_detonate_by_bullet && ALife::eHitTypeFireWound == pHDS->hit_type;
+    const bool by_blast = ALife::eHitTypeExplosion == pHDS->hit_type && pHDS->damage() >= m_nlc_detonation_explosion_hit;
+    if ((by_bullet || by_blast) && !H_Parent() && CExplosive::Useful() && !getDestroy())
     {
-        CExplosive::SetCurrentParentID(pHDS->who->ID());
+        const bool held = m_nlc_tele_held;
+        m_nlc_tele_held = false;
+        if (pHDS->who)
+            CExplosive::SetCurrentParentID(pHDS->who->ID());
+        Msg("~ [grenade] %s [%d]%s detonated by %s from [%s] damage=%.2f", cNameSect().c_str(), ID(), held ? " (burer-held)" : "", by_bullet ? "bullet" : "explosion",
+            pHDS->who ? pHDS->who->cName().c_str() : "?", pHDS->damage());
         Destroy();
     }
     inherited::Hit(pHDS);
@@ -69,7 +81,27 @@ void CGrenade::net_Destroy()
 
 void CGrenade::OnH_B_Independent(bool just_before_destroy) { inherited::OnH_B_Independent(just_before_destroy); }
 
-void CGrenade::OnH_A_Independent() { inherited::OnH_A_Independent(); }
+// NLC: actor grenade throw diagnostics (a throw that "never left the hand" near burers), same switch as the burer log
+static bool nlc_grenade_debug()
+{
+    static int value = -1;
+    if (value < 0)
+        value = pSettings->line_exist("m_burer_e", "nlc_burer_debug") && pSettings->r_bool("m_burer_e", "nlc_burer_debug") ? 1 : 0;
+    return value == 1;
+}
+
+void CGrenade::OnH_A_Independent()
+{
+    inherited::OnH_A_Independent();
+    if (nlc_grenade_debug() && m_pOwner && smart_cast<CActor*>(m_pOwner))
+    {
+        Fvector vel{};
+        if (m_pPhysicsShell)
+            m_pPhysicsShell->get_LinearVel(vel);
+        Msg("~ [grenade] t=%u %s [%d] left the hand: shell=%d active=%d fuse=%u speed=%.1f", Device.dwTimeGlobal, cNameSect().c_str(), ID(), m_pPhysicsShell ? 1 : 0,
+            m_pPhysicsShell && m_pPhysicsShell->isActive() ? 1 : 0, nlc_fuse_remaining(), vel.magnitude());
+    }
+}
 
 void CGrenade::OnH_A_Chield()
 {
@@ -79,9 +111,18 @@ void CGrenade::OnH_A_Chield()
 
 void CGrenade::State(u32 state, u32 oldState)
 {
+    if (nlc_grenade_debug() && smart_cast<CActor*>(H_Parent()) && (state == eThrowStart || state == eReady || state == eThrow || state == eThrowEnd))
+        Msg("~ [grenade] t=%u actor %s [%d] state %u -> %u fake=%d thrown=%d", Device.dwTimeGlobal, cNameSect().c_str(), ID(), oldState, state,
+            m_fake_missile ? int(m_fake_missile->ID()) : -1, m_thrown ? 1 : 0);
     switch (state)
     {
     case eThrowStart: {
+        if (m_thrown) // NLC: see default below
+        {
+            Msg("~ [grenade] %s [%d] throw interrupted (state %u -> %u), finishing it", cNameSect().c_str(), ID(), oldState, state);
+            nlc_finish_thrown();
+            break;
+        }
         Fvector C;
         Center(C);
         PlaySound(sndCheckout, C);
@@ -89,31 +130,58 @@ void CGrenade::State(u32 state, u32 oldState)
     break;
     case eThrowEnd: {
         if (m_thrown)
-        {
-            if (m_pPhysicsShell)
-                m_pPhysicsShell->Deactivate();
-            xr_delete(m_pPhysicsShell);
-            m_dwDestroyTime = 0xffffffff;
-
-            if (H_Parent())
-                PutNextToSlot();
-
-            if (Local())
-            {
-#ifdef DEBUG
-                Msg("Destroying local grenade[%d][%d]", ID(), Device.dwFrame);
-#endif
-                DestroyObject();
-            }
-        };
+            nlc_finish_thrown();
     }
     break;
+    default:
+        // NLC: the throw animation was interrupted after the grenade left the hand (eThrow -> idle / hide without
+        // eThrowEnd); m_thrown stayed set and CGrenade::Throw returned early on every later throw, eating grenades.
+        // Finish the old throw the way eThrowEnd does.
+        if (m_thrown && state != eThrow)
+        {
+            Msg("~ [grenade] %s [%d] throw interrupted (state %u -> %u), finishing it", cNameSect().c_str(), ID(), oldState, state);
+            nlc_finish_thrown();
+        }
+        break;
     };
     inherited::State(state, oldState);
 }
 
+void CGrenade::nlc_finish_thrown()
+{
+    m_thrown = false; // finish once: the object is destroyed below, later state changes must not repeat this
+    if (m_pPhysicsShell)
+        m_pPhysicsShell->Deactivate();
+    xr_delete(m_pPhysicsShell);
+    m_dwDestroyTime = 0xffffffff;
+
+    if (H_Parent())
+        PutNextToSlot();
+
+    if (Local())
+    {
+#ifdef DEBUG
+        Msg("Destroying local grenade[%d][%d]", ID(), Device.dwFrame);
+#endif
+        DestroyObject();
+    }
+}
+
+void CGrenade::nlc_snatch_arm(u16 initiator)
+{
+    Fvector C;
+    Center(C);
+    PlaySound(sndCheckout, C);
+    set_destroy_time(m_dwDestroyTimeMax);
+    SetInitiator(initiator);
+    Msg("~ [grenade] %s [%d] snatched: pin pulled by [%u], fuse %u ms", cNameSect().c_str(), ID(), initiator, m_dwDestroyTimeMax);
+}
+
 void CGrenade::Throw()
 {
+    if (nlc_grenade_debug() && smart_cast<CActor*>(H_Parent()))
+        Msg("~ [grenade] t=%u actor throw %s [%d] fake=%d thrown=%d point_updated=%d", Device.dwTimeGlobal, cNameSect().c_str(), ID(),
+            m_fake_missile ? int(m_fake_missile->ID()) : -1, m_thrown ? 1 : 0, m_bThrowPointUpdated ? 1 : 0);
     if (!m_fake_missile || m_thrown)
         return;
 
@@ -169,7 +237,7 @@ void CGrenade::Destroy()
 
 bool CGrenade::Useful() const
 {
-    return m_dwDestroyTime == 0xffffffff && CExplosive::Useful() && TestServerFlag(CSE_ALifeObject::flCanSave);
+    return !m_nlc_tele_held && m_dwDestroyTime == 0xffffffff && CExplosive::Useful() && TestServerFlag(CSE_ALifeObject::flCanSave);
 }
 
 void CGrenade::OnEvent(NET_Packet& P, u16 type)
@@ -351,6 +419,8 @@ void CGrenade::GetBriefInfo(xr_string& str_name, xr_string& icon_sect_name, xr_s
 
 bool CGrenade::CanTake() const
 {
+    if (m_nlc_tele_held)
+        return false;
     if (!inherited::CanTake())
         return false;
 

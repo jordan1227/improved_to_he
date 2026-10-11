@@ -19,8 +19,16 @@ void CStateBurerShield<Object>::initialize()
     m_next_particle_allowed = 0;
     m_started = false;
 
+    // NLC: one cooldown with the threat shield; the state takes over a running threat shield
+    object->nlc_overlay_shield_stop("shield state");
+    object->m_nlc_shield_next = Device.dwTimeGlobal + u32(object->m_shield_time + object->m_shield_cooldown);
+    object->m_nlc_shield_strain = 0.f;
+    object->m_nlc_shield_ends = Device.dwTimeGlobal + u32(object->m_shield_time);
+
     MotionID motion;
     object->anim().get_animation_info(eAnimShieldStart, 0, motion, m_shield_start_anim_length_sec);
+
+    object->nlc_log("shield up hp=%.2f", object->conditions().GetHealth());
 }
 
 template <class Object>
@@ -48,6 +56,7 @@ void CStateBurerShield<Object>::execute()
 template <class Object>
 void CStateBurerShield<Object>::finalize()
 {
+    object->nlc_log("shield down after %u ms reload=%d", u32(current_time() - m_last_shield_started), actor_is_reloading_weapon() ? 1 : 0);
     inherited::finalize();
     object->DeactivateShield();
     object->set_script_capture(true);
@@ -66,6 +75,8 @@ bool CStateBurerShield<Object>::check_start_conditions()
 {
     if (current_time() < m_last_shield_started + object->m_shield_time + object->m_shield_cooldown)
         return false;
+    if (!object->nlc_shield_allowed())
+        return false;
 
     const CEntityAlive* enemy = object->EnemyMan.get_enemy();
     const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(enemy);
@@ -82,6 +93,10 @@ template <class Object>
 bool CStateBurerShield<Object>::check_completion()
 {
     if (current_time() > m_last_shield_started + object->m_shield_time)
+        return true;
+
+    // NLC: broken by strain (CBurer::nlc_on_shield_blocked)
+    if (m_started && !object->m_shield_active)
         return true;
 
     CEntityAlive const* enemy = object->EnemyMan.get_enemy();

@@ -59,6 +59,28 @@ void CStateManagerBurer::execute()
 
     select_state(state);
 
+    // NLC: nlc_burer_debug log of the top-level state (attack / panic / rest ...)
+    if (state != object->m_nlc_logged_top_state)
+    {
+        object->m_nlc_logged_top_state = state;
+        LPCSTR name = "other";
+        switch (state)
+        {
+        case eStateRest: name = "rest"; break;
+        case eStatePanic: name = "panic"; break;
+        case eStateAttack: name = "attack"; break;
+        case eStateEat: name = "eat"; break;
+        case eStateHearInterestingSound: name = "hear_interesting"; break;
+        case eStateHearDangerousSound: name = "hear_dangerous"; break;
+        case eStateHitted: name = "hitted"; break;
+        case eStateBurerScanning: name = "scanning"; break;
+        }
+        const CEntityAlive* enemy = object->EnemyMan.get_enemy();
+        object->nlc_log("top state %s enemy=%s danger=%d dist=%.1f hp=%.2f morale=%.2f", name, enemy ? enemy->cName().c_str() : "-",
+            enemy ? int(object->EnemyMan.get_danger_type()) : -1, enemy ? enemy->Position().distance_to(object->Position()) : -1.f, object->conditions().GetHealth(),
+            object->Morale.get_morale());
+    }
+
     get_state_current()->execute();
 
     prev_substate = current_substate;

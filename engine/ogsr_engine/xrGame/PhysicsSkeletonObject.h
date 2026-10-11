@@ -22,6 +22,13 @@ public:
     virtual BOOL net_SaveRelevant();
     virtual BOOL UsedAI_Locations();
 
+    // NLC: collision damage of a telekinetic throw (telekinesis_hit_callback.h), owned as in CPhysicObject
+    virtual ICollisionHitCallback* get_collision_hit_callback() { return m_collision_hit_callback; }
+    virtual void set_collision_hit_callback(ICollisionHitCallback* cc);
+
+private:
+    ICollisionHitCallback* m_collision_hit_callback{};
+
 protected:
     virtual CPhysicsShellHolder* PPhysicsShellHolder() { return PhysicsShellHolder(); }
     virtual CPHSkeleton* PHSkeleton() { return this; }

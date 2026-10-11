@@ -6,6 +6,7 @@
 #include "../../PHElement.h"
 #include "../../level.h"
 #include "../../gameobject.h"
+#include "../../PhysicsCommon.h"
 
 #define KEEP_IMPULSE_UPDATE 200
 #define FIRE_TIME 3000
@@ -112,10 +113,83 @@ void CTelekineticObject::switch_state(ETelekineticState new_state)
     }
     state = new_state;
 }
+void CTelekineticObject::nlc_steer()
+{
+    if (!object || !object->m_pPhysicsShell || !object->m_pPhysicsShell->isActive())
+        return;
+
+    CPhysicsShell* shell = object->m_pPhysicsShell;
+    // gripped by one element (a corpse held by the head or the torso): that element is steered, the rest hangs
+    CPhysicsElement* grip = m_nlc_grip;
+    Fvector pos = object->Position();
+    Fvector velocity;
+    if (grip)
+    {
+        Fmatrix m;
+        grip->GetGlobalTransformDynamic(&m);
+        pos = m.c;
+        grip->get_LinearVel(velocity);
+    }
+    else
+        shell->get_LinearVel(velocity);
+
+    // spring toward the target: a wanted velocity (capped), reached with limited acceleration
+    Fvector wanted;
+    wanted.sub(m_nlc_target, pos);
+    wanted.mul(m_nlc_gain);
+    const float speed = wanted.magnitude();
+    if (speed > m_nlc_max_speed)
+        wanted.mul(m_nlc_max_speed / speed);
+    Fvector change;
+    change.sub(wanted, velocity);
+    const float max_change = m_nlc_max_accel * fixed_step;
+    const float change_len = change.magnitude();
+    if (change_len > max_change)
+        change.mul(max_change / change_len);
+    velocity.add(change);
+    if (grip)
+    {
+        grip->set_LinearVel(velocity);
+        update_hold_sound();
+        return;
+    }
+    shell->set_LinearVel(velocity);
+
+    Fvector spin = m_nlc_spin;
+    if (m_nlc_orient && m_nlc_dir.square_magnitude() > EPS)
+    {
+        const Fmatrix& xf = object->XFORM();
+        Fvector forward = m_nlc_axis == 0 ? xf.i : (m_nlc_axis == 1 ? xf.j : xf.k);
+        if (m_nlc_axis_twoway && forward.dotproduct(m_nlc_dir) < 0.f)
+            forward.invert();
+        Fvector axis;
+        axis.crossproduct(forward, m_nlc_dir);
+        const float s = axis.magnitude();
+        const float angle = atan2f(s, forward.dotproduct(m_nlc_dir));
+        if (s > EPS_L)
+        {
+            axis.div(s);
+            spin.mul(axis, _min(angle * m_nlc_turn_k, m_nlc_turn_max));
+        }
+    }
+    // the turn eases too
+    Fvector turning;
+    shell->get_AngularVel(turning);
+    turning.lerp(turning, spin, _min(fixed_step * 12.f, 1.f));
+    shell->set_AngularVel(turning);
+    update_hold_sound();
+}
+
 void CTelekineticObject::raise(float step)
 {
     if (!object || !object->m_pPhysicsShell || !object->m_pPhysicsShell->isActive())
         return;
+
+    if (m_nlc_steer)
+    {
+        nlc_steer();
+        return;
+    }
 
     step *= strength;
 
@@ -159,6 +233,13 @@ void CTelekineticObject::keep()
 
     if (!object || !object->m_pPhysicsShell || !object->m_pPhysicsShell->isActive())
         return;
+
+    if (m_nlc_steer)
+    {
+        nlc_steer();
+        time_keep_updated = Device.dwTimeGlobal;
+        return;
+    }
 
     // проверить высоту
     float cur_h = object->Position().y;
@@ -212,6 +293,8 @@ void CTelekineticObject::fire_t(const Fvector& target, float time)
 
     // включить гравитацию
     object->m_pPhysicsShell->set_ApplyByGravity(TRUE);
+    // NLC: the ballistic solution assumes no drag; with the default air resistance throws fell short
+    object->m_pPhysicsShell->SetAirResistance(0.f, 0.f);
 
     Fvector transference;
     transference.sub(target, object->Position());

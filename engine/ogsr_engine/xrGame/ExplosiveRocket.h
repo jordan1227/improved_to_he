@@ -21,6 +21,8 @@ public:
     virtual DLL_Pure* _construct();
 
 public:
+    // NLC burer: a returned / puppet-launched round explodes on any contact (no owner safe distance)
+    void nlc_clear_safe_dist() { m_safe_dist_to_explode = 0.f; }
     virtual CExplosive* cast_explosive() { return this; }
     virtual CInventoryItem* cast_inventory_item() { return this; }
     virtual CAttachableItem* cast_attachable_item() { return this; }

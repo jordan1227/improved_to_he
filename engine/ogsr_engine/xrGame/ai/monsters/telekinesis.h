@@ -51,6 +51,9 @@ public:
     // вернуть количество контролируемых объектов (в состоянии TS_Raise & TS_Keep)
     u32 get_objects_count();
 
+    // NLC: the live telekinetic object of `obj` (steering targets are set on it), or nullptr
+    CTelekineticObject* find_object(CPhysicsShellHolder* obj);
+
     // вернуть количество контролируемых объектов (всех)
     u32 get_objects_total_count() { return u32(objects.size()); }
 

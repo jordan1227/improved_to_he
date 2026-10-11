@@ -29,6 +29,7 @@ private:
     bool m_wait_state_end;
     bool m_lost_delta_health;
     bool m_allow_anti_aim;
+    u32 m_nlc_logged_substate{u32(-1)}; // NLC: substate last written to the nlc_burer_debug log
     float m_last_health{};
     TTime m_next_runaway_allowed_tick{};
 };

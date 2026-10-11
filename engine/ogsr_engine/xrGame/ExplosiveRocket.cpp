@@ -140,6 +140,12 @@ void CExplosiveRocket::create_physic_shell() { inherited::create_physic_shell();
 bool CExplosiveRocket::Useful() const { return (inherited::Useful()); }
 void CExplosiveRocket::net_Relcase(CObject* O)
 {
+    // NLC: a caught (burer) or puppet-launched (gun) round keeps a raw owner; Contact dereferenced it after it was gone
+    if (m_pOwner && m_pOwner == O)
+    {
+        m_pOwner = nullptr;
+        m_nlc_owner_id = u16(-1);
+    }
     CExplosive::net_Relcase(O);
     inherited::net_Relcase(O);
 }

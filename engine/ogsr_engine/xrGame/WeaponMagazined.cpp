@@ -909,6 +909,59 @@ void CWeaponMagazined::PerformForcedShot()
     UpdateSounds();
 }
 
+void CWeaponMagazined::nlc_puppet_sound(bool unjam)
+{
+    if (unjam)
+    {
+        if (!m_sndBreech.sounds.empty())
+            PlaySound(m_sndBreech, get_LastFP());
+        else
+            PlaySound(sndEmptyClick, get_LastFP());
+        return;
+    }
+    if (!m_sndBreechJammed.sounds.empty())
+        PlaySound(m_sndBreechJammed, get_LastFP());
+    else
+        PlaySound(sndEmptyClick, get_LastFP());
+}
+
+int CWeaponMagazined::nlc_puppet_shot(u16 owner_id, float disp_k, float hit_k, float jam_cap)
+{
+    if (H_Parent() || m_magazine.empty() || IsMisfire() || IsGrenadeMode())
+        return 2;
+
+    // the gun's condition decides jams (CheckForMisfire only rolls for the actor), capped; the burer clears the jam
+    // itself, so the gun is not left in the misfire state
+    if (::Random.randF(0.f, 1.f) < _min(GetConditionMisfireProbability(), jam_cap))
+    {
+        nlc_puppet_sound(false);
+        return 1;
+    }
+
+    const Fvector p1 = get_LastFP();
+    const Fvector d = get_LastFD();
+    PlaySound(*m_pSndShotCurrent, p1, true);
+
+    Fvector vel;
+    PHGetLinearVell(vel);
+    OnShellDrop(get_LastSP(), vel);
+    if (ShouldPlayFlameParticles())
+    {
+        StartFlameParticles();
+        ForceUpdateFireParticles();
+    }
+    StartSmokeParticles(p1, vel);
+
+    m_nlc_shot_owner = owner_id;
+    m_nlc_shot_disp_k = disp_k;
+    m_nlc_shot_hit_k = hit_k;
+    FireTrace(p1, d);
+    m_nlc_shot_owner = u16(-1);
+    m_nlc_shot_disp_k = 1.f;
+    m_nlc_shot_hit_k = 1.f;
+    return 0;
+}
+
 void CWeaponMagazined::OnShot()
 {
     // Если актор бежит - останавливаем его

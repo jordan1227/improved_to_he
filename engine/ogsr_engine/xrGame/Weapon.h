@@ -385,6 +385,18 @@ protected:
     virtual void PerformForcedShot() {}
     bool m_bForcedFire{};
 
+public:
+    // NLC burer puppet gun (docs/BURER_REDESIGN.md 3.1): FireTrace credits m_nlc_shot_owner (not H_Parent / the actor)
+    // and scales dispersion and hit while it is set
+    u16 m_nlc_shot_owner{u16(-1)};
+    float m_nlc_shot_disp_k{1.f};
+    float m_nlc_shot_hit_k{1.f};
+    float nlc_shot_interval() const { return fTimeToFire; }
+    float nlc_bullet_speed() const { return m_fStartBulletSpeed; }
+    float nlc_misfire_probability() const { return GetConditionMisfireProbability(); }
+
+protected:
+
     virtual void Fire2Start();
     virtual void Fire2End();
     virtual void Reload();

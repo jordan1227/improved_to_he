@@ -118,6 +118,15 @@ void CUISequencer::Start(LPCSTR tutor_name)
     m_bActive = true;
 }
 
+// NLC: a tutorial started while demo_record had the input stored the demo recorder; ending demo_record destroyed it
+// and the next held key crashed in IR_OnKeyboardHold
+bool CUISequencer::nlc_stored_ir()
+{
+    if (m_pStoredInputReceiver && !(pInput && pInput->nlc_has_receiver(m_pStoredInputReceiver)))
+        m_pStoredInputReceiver = nullptr;
+    return m_pStoredInputReceiver != nullptr;
+}
+
 void CUISequencer::Destroy()
 {
     m_bActive = false;
@@ -209,49 +218,49 @@ bool CUISequencer::GrabInput()
 
 void CUISequencer::IR_OnMousePress(int btn)
 {
-    if (m_bActive && !GrabInput() && m_pStoredInputReceiver)
+    if (m_bActive && !GrabInput() && nlc_stored_ir())
         m_pStoredInputReceiver->IR_OnMousePress(btn);
 }
 
 void CUISequencer::IR_OnMouseRelease(int btn)
 {
-    if (m_bActive && !GrabInput() && m_pStoredInputReceiver)
+    if (m_bActive && !GrabInput() && nlc_stored_ir())
         m_pStoredInputReceiver->IR_OnMouseRelease(btn);
 }
 
 void CUISequencer::IR_OnMouseHold(int btn)
 {
-    if (m_bActive && !GrabInput() && m_pStoredInputReceiver)
+    if (m_bActive && !GrabInput() && nlc_stored_ir())
         m_pStoredInputReceiver->IR_OnMouseHold(btn);
 }
 
 void CUISequencer::IR_OnMouseMove(int x, int y)
 {
-    if (m_bActive && !GrabInput() && m_pStoredInputReceiver)
+    if (m_bActive && !GrabInput() && nlc_stored_ir())
         m_pStoredInputReceiver->IR_OnMouseMove(x, y);
 }
 
 void CUISequencer::IR_OnMouseStop(int x, int y)
 {
-    if (m_bActive && !GrabInput() && m_pStoredInputReceiver)
+    if (m_bActive && !GrabInput() && nlc_stored_ir())
         m_pStoredInputReceiver->IR_OnMouseStop(x, y);
 }
 
 void CUISequencer::IR_OnKeyboardRelease(int dik)
 {
-    if (m_bActive && !GrabInput() && m_pStoredInputReceiver)
+    if (m_bActive && !GrabInput() && nlc_stored_ir())
         m_pStoredInputReceiver->IR_OnKeyboardRelease(dik);
 }
 
 void CUISequencer::IR_OnKeyboardHold(int dik)
 {
-    if (m_bActive && !GrabInput() && m_pStoredInputReceiver)
+    if (m_bActive && !GrabInput() && nlc_stored_ir())
         m_pStoredInputReceiver->IR_OnKeyboardHold(dik);
 }
 
 void CUISequencer::IR_OnMouseWheel(int direction)
 {
-    if (m_bActive && !GrabInput() && m_pStoredInputReceiver)
+    if (m_bActive && !GrabInput() && nlc_stored_ir())
         m_pStoredInputReceiver->IR_OnMouseWheel(direction);
 }
 
@@ -273,7 +282,7 @@ void CUISequencer::IR_OnKeyboardPress(int dik)
         return;
     }
 
-    if (b && !GrabInput() && m_pStoredInputReceiver)
+    if (b && !GrabInput() && nlc_stored_ir())
         m_pStoredInputReceiver->IR_OnKeyboardPress(dik);
 }
 

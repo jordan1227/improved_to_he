@@ -1749,7 +1749,15 @@ ALife::EHitType CPHSimpleCharacter::HitType() const
 } //
 CElevatorState* CPHSimpleCharacter::ElevatorState() { return &m_elevator_state; }
 
-ICollisionHitCallback* CPHSimpleCharacter::HitCallback() const { return m_collision_damage_info.m_hit_callback; }
+ICollisionHitCallback* CPHSimpleCharacter::HitCallback() const
+{
+    // NLC: the cached pointer may already be freed (a telekinetic re-throw replaces the callback, a release clears it,
+    // the object can be destroyed); ask the touched object for its current callback instead
+    if (!m_collision_damage_info.m_hit_callback || m_collision_damage_info.m_obj_id == u16(-1))
+        return nullptr;
+    CPhysicsShellHolder* obj = smart_cast<CPhysicsShellHolder*>(Level().Objects.net_Find(m_collision_damage_info.m_obj_id));
+    return obj && !obj->getDestroy() ? obj->get_collision_hit_callback() : nullptr;
+}
 const float resolve_depth = 0.05f;
 static float restrictor_depth = 0.f;
 void CPHSimpleCharacter::TestRestrictorContactCallbackFun(bool& do_colide, bool bo1, dContact& c, SGameMtl* material_1, SGameMtl* material_2)

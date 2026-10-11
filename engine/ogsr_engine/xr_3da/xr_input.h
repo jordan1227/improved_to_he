@@ -80,6 +80,8 @@ public:
     virtual void OnAppDeactivate(void);
 
     IInputReceiver* CurrentIR() const;
+    // NLC: still on the receiver stack (a stored receiver may have been released and destroyed since)
+    bool nlc_has_receiver(const IInputReceiver* p) const { return p && std::find(cbStack.begin(), cbStack.end(), p) != cbStack.end(); }
 
     void exclusive_mode(const bool exclusive);
     bool exclusive_mode() const { return is_exclusive_mode; }

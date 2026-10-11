@@ -174,6 +174,11 @@ enum EMonsterState
     eStateBurerAttack_Melee = eStateCustom | eStateAttack | 10,
     eStateBurerAttack_Shield = eStateCustom | eStateAttack | 11,
     eStateBurerAttack_AntiAim = eStateCustom | eStateAttack | 12,
+    eStateBurerAttack_Repulse = eStateCustom | eStateAttack | 21, // NLC burer pass 1
+    eStateBurerAttack_Tactical = eStateCustom | eStateAttack | 22, // NLC burer brain: cover / advance / peek moves
+    eStateBurerAttack_Stare = eStateCustom | eStateAttack | 23, // NLC burer pass 5: the gaze's stare window
+    eStateBurerAttack_NpcDisarm = eStateCustom | eStateAttack | 24, // NLC burer pass 5
+    eStateBurerAttack_Pull = eStateCustom | eStateAttack | 25, // NLC burer pass 5
 
     eStatePredator_MoveToCover = eStateCustom | eStateAttack | 13,
     eStatePredator_LookOpenPlace = eStateCustom | eStateAttack | 14,

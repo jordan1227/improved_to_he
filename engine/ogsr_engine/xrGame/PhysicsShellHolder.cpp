@@ -23,10 +23,18 @@ CPhysicsShellHolder::CPhysicsShellHolder() { init(); }
 CPhysicsShellHolder::~CPhysicsShellHolder()
 {
     xr_delete(m_ph_sound_player);
+    xr_delete(m_nlc_collision_hit_callback);
+}
+
+void CPhysicsShellHolder::set_collision_hit_callback(ICollisionHitCallback* cc)
+{
+    xr_delete(m_nlc_collision_hit_callback);
+    m_nlc_collision_hit_callback = cc;
 }
 
 void CPhysicsShellHolder::net_Destroy()
 {
+    xr_delete(m_nlc_collision_hit_callback);
     //удалить партиклы из ParticlePlayer
     CParticlesPlayer::net_DestroyParticles();
     CCharacterPhysicsSupport* char_support = character_physics_support();
