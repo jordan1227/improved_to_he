@@ -97,6 +97,13 @@ void CControlDirection::update_frame()
         m_man->notify(ControlCom::eventRotationEnd, &event_data);
 }
 
+// NLC: current and target heading are the same value afterwards, so update_frame() keeps the pose
+void CControlDirection::nlc_force_heading(float yaw)
+{
+    m_heading.current_angle = yaw;
+    m_data.heading.target_angle = yaw;
+}
+
 void CControlDirection::pitch_correction()
 {
     if (!m_object->ability_pitch_correction())

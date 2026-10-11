@@ -34,11 +34,16 @@
 #include "actor.h"
 #include "..\Include/xrRender/KinematicsAnimated.h"
 #include "../xr_3da/camerabase.h"
+#include "../xr_3da/motion.h" // NLC: esmFX in nlc_set_cycle_speed
 #include "ai/stalker/ai_stalker.h"
 #include "car.h"
 #include "movement_manager.h"
 #include "detail_path_manager.h"
 #include "CharacterPhysicsSupport.h"
+#include "ai/monsters/basemonster/base_monster.h" // NLC: nlc_set_npc_transform
+#include "ai/monsters/control_manager.h"
+#include "ai/monsters/control_direction.h"
+#include "ai/monsters/control_direction_base.h"
 
 void CScriptGameObject::explode(u32 level_time)
 {
@@ -404,6 +409,110 @@ void CScriptGameObject::SetNpcPosition(Fvector pos, bool skipCollisionCorrect)
     }
     else
         ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError, "ScriptGameObject : attempt to call SetNpcPosition method for non-CCustomMonster object");
+}
+
+// NLC: pose of a script-driven puppet in one call. set_npc_position keeps the rotation and the heading is
+// otherwise reached through the look action, which the AI only processes in its 100-250 ms schedule tick;
+// the puppet then slid to its position first and turned later. Position is set as in SetNpcPosition (skip
+// collision correction); the heading goes into XFORM, the movement body and the monster direction controls
+// so the next update_frame() does not lerp it back.
+void CScriptGameObject::nlc_set_npc_transform(Fvector pos, Fvector dir)
+{
+    CCustomMonster* obj = smart_cast<CCustomMonster*>(&object());
+    if (!obj)
+    {
+        ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError, "ScriptGameObject : nlc_set_npc_transform on a non-CCustomMonster object");
+        return;
+    }
+
+    dir.y = 0.f;
+    const float len = dir.magnitude();
+    if (len < EPS_L)
+    {
+        SetNpcPosition(pos, true);
+        return;
+    }
+    dir.div(len);
+
+    float yaw, pitch;
+    dir.getHP(yaw, pitch);
+
+    Fmatrix F;
+    F.setHPB(yaw, 0.f, 0.f);
+    F.c = pos;
+    obj->XFORM().set(F);
+
+    obj->movement().m_body.current.yaw = obj->movement().m_body.target.yaw = -yaw;
+    obj->movement().m_body.current.pitch = obj->movement().m_body.target.pitch = 0.f;
+
+    if (CBaseMonster* monster = smart_cast<CBaseMonster*>(obj))
+    {
+        monster->dir().set_heading(-yaw, true);
+        monster->control().direction().nlc_force_heading(-yaw);
+    }
+
+    if (obj->character_physics_support()->movement()->CharacterExist())
+    {
+        obj->character_physics_support()->movement()->SetPosition(F.c);
+        obj->character_physics_support()->movement()->SetVelocity(0.f, 0.f, 0.f);
+    }
+
+    obj->movement().detail().make_inactual();
+    if (obj->animation_movement_controlled())
+        obj->destroy_anim_mov_ctrl();
+}
+
+// NLC: sets the velocity of a living character directly (the burer's push, CBurer::nlc_push). ApplyImpulse on a
+// character is cancelled by the ground controller within a few steps (20-30 cm) and turned straight down when
+// the character is jumping or has lost control. Not held: for the actor the burer re-applies it for push_ms.
+bool CScriptGameObject::nlc_push(Fvector dir, float speed, float up)
+{
+    CEntityAlive* entity = smart_cast<CEntityAlive*>(&object());
+    CCharacterPhysicsSupport* cps = entity ? entity->character_physics_support() : nullptr;
+    if (!entity || !entity->g_Alive() || !cps || !cps->movement() || !cps->movement()->CharacterExist())
+        return false;
+
+    dir.y = 0.f;
+    if (dir.magnitude() > EPS_L)
+        dir.normalize();
+
+    Fvector velocity;
+    velocity.mul(dir, speed);
+    velocity.y = up;
+    cps->movement()->EnableCharacter(); // a body at rest sleeps: a velocity set on it never moves it
+    cps->movement()->SetVelocity(velocity);
+    return true;
+}
+
+// NLC: playback speed of the running cycles as a multiple of their authored speed (1 = as authored).
+// Cycles restart at their motion-def speed on every play_cycle, so call it after play_cycle.
+void CScriptGameObject::nlc_set_cycle_speed(float scale)
+{
+    IKinematicsAnimated* sa = smart_cast<IKinematicsAnimated*>(object().Visual());
+    if (!sa)
+    {
+        ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError, "ScriptGameObject : nlc_set_cycle_speed on a non-animated object");
+        return;
+    }
+    clamp(scale, 0.1f, 4.f);
+
+    struct SetSpeed : public IterateBlendsCallback
+    {
+        IKinematicsAnimated* sa;
+        float scale;
+        void operator()(CBlend& B) override
+        {
+            if (!B.playing)
+                return;
+            CMotionDef* md = sa->LL_GetMotionDef(B.motionID);
+            if (!md || (md->flags & esmFX))
+                return;
+            B.speed = md->Speed() * scale;
+        }
+    } cb;
+    cb.sa = sa;
+    cb.scale = scale;
+    sa->LL_IterateBlends(cb);
 }
 
 CHolderCustom* CScriptGameObject::get_current_holder()

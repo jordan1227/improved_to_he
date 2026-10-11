@@ -1,0 +1,134 @@
+-- sivol_kick_configs: every tunable of the script-owned kick (sivol_kick.script).
+-- Edit values here; no engine rebuild is involved. A game restart reloads them.
+--
+-- The native engine kick (kKICK in ActorInput.cpp) is silenced through
+-- [actor] kick_delay in creatures/actor.ltx; sivol_kick.script owns the kick.
+--
+-- Profile resolution for a target (first match wins, later layers override):
+--   base  ->  kinds[kind]  ->  prefixes (section prefix)  ->  sections (exact)
+-- and, inside a matched layer, its optional .alive / .dead sub-table.
+-- kind: item | object | human_alive | human_dead | monster_alive | monster_dead
+--
+-- Profile fields (all optional, inherited from base):
+--   enabled        false = the kick does nothing to this target
+--   hit_type       numeric hit type: 10 physic_strike (engine kick), 3 wound,
+--                  7 explosion. Pushing a LIVING character only works with 3 or 7
+--                  (CPHMovementControl::ApplyHit); physic_strike moves bodies/items.
+--   power          fixed hit power; when nil: clamp(mass, 0.1, mass_cap) * power_per_kg
+--   power_per_kg, mass_cap
+--   impulse_mode   "velocity" (default): the impulse is chosen so the target
+--                  leaves at about target_speed m/s, with heavy bodies
+--                  compressed: m_eff = m for m <= mass_ref, else
+--                  mass_ref * (m / mass_ref) ^ mass_exp, and
+--                  impulse = clamp(m_eff * target_speed, impulse_min, impulse_max).
+--                  m is the physics-shell mass (obj:mass()). So a 750 kg wheel
+--                  still shuffles visibly instead of barely moving.
+--                  "fixed": use impulse as is (the old engine behaviour, 150).
+--   target_speed, mass_ref (kg), mass_exp, impulse_min, impulse_max
+--   impulse        fixed impulse for impulse_mode = "fixed"
+--   push_hold_ms   keep re-applying the push for this long (the monster's own
+--                  movement control overwrites a single velocity)
+--   kill_impulse   impulse of a killing kick when the profile pushes
+--   push_speed, push_up   LIVING characters: velocity push (m/s, m/s up) through
+--                  the engine's game_object:nlc_push (the burer's mechanism); it
+--                  replaces the impulse and forces hit_type 10.
+--   knock_speed    fallback when nlc_push is absent: impulse = knock_speed (m/s) *
+--                  ph_mass of the target section (weak: the ground controller
+--                  cancels it within a few steps)
+--   up_bias        vertical component of the kick direction (horizontal is 1)
+--   bone           "ray" = bone under the crosshair, "" = default, or a bone name
+--   damage_frac    extra health loss as a fraction of full health (living only)
+--   non_lethal     true: damage_frac may not drop the target below 1% health;
+--                  false: a kick at health <= damage_frac kills (killing hit)
+--   kill           living target is killed outright (kill_power hit, then kill())
+--   kill_power     hit power of the killing hit (engine multiplies the impulse of
+--                  a killing hit by the section's ph_skel_fatal_impulse_factor)
+
+config = {
+	enabled = true,
+
+	-- Swing timing. The impact lands hit_delay_ms after the key press so it
+	-- meets the foot in the actor_kick clip (31 frames, about 1.0 s).
+	hit_delay_ms = 600,
+	cooldown_ms = 1100,        -- at least the clip length
+	max_range = 2.0,           -- metres to the target (engine take_dist is 2)
+	range_slack = 0.35,        -- extra range allowed at impact time
+	retarget = true,           -- at impact, prefer what the crosshair is on now
+	cancel_on_blocked_state = true, -- jump/sprint/crouch/ladder during the swing cancels the hit
+
+	stamina_cost = 0.05,       -- power spent per kick (0 = free)
+
+	camera_anm = "camera_effects\\kick.anm",
+	camera_id = 7791,
+	swing_sound = "kick\\kick",
+
+	-- The vertical lean the engine kick used (15 degrees above the heading).
+	up_bias = 0.2588,
+
+	-- One [KICK_DIAG] line per kick (target, profile, values, outcome).
+	diagnostics = false,
+}
+
+-- Matches the previous native kick: the same impulse and a tiny hit power.
+base = {
+	enabled = true,
+	hit_type = 10,
+	impulse_mode = "velocity",
+	target_speed = 8.0,
+	mass_ref = 60,
+	mass_exp = 0.5,
+	impulse_min = 0,
+	impulse_max = 4000,
+	impulse = 150,
+	power_per_kg = 0.001,
+	mass_cap = 100,
+	bone = "ray",
+	non_lethal = true,
+}
+
+kinds = {
+	item = { target_speed = 12.0 },
+	object = { target_speed = 8.0 },
+	human_alive = { impulse_mode = "fixed" },   -- light non-lethal hit, as before
+	human_dead = { target_speed = 3.5 },
+	monster_alive = { impulse_mode = "fixed" },
+	monster_dead = { target_speed = 6.0 },
+}
+
+-- Section prefixes, checked in order. alive/dead apply to characters.
+prefixes = {
+	-- Rats (m_rat.ltx): one shot, the dead body is thrown (post-death impulse).
+	-- The impulse is multiplied by ph_skel_fatal_impulse_factor (3.0 for rats).
+	{ "rat_", {
+		alive = {
+			kill = true,
+			kill_power = 5.0,
+			hit_type = 10,
+			impulse_mode = "fixed",
+			impulse = 60,
+			up_bias = 0.45,
+			bone = "",
+		},
+	} },
+
+	-- Tushkanos (m_tushkano.ltx): knocked back about 2 m, half their health lost.
+	{ "tushkano_", {
+		alive = {
+			hit_type = 3,           -- fallback path (no nlc_push in the engine)
+			impulse_mode = "fixed",
+			power = 0.001,
+			knock_speed = 6.0,      -- fallback path
+			push_speed = 9.0,       -- m/s, the burer's repulse push (nlc_push)
+			push_up = 6.5,          -- m/s up (a low value is often swallowed by the ground controller)
+			push_hold_ms = 200,     -- re-applied every frame for this long
+			kill_impulse = 350,     -- killing kick: ragdoll impulse (x ph_skel_fatal_impulse_factor 6.0; the dead body weighs ~147 kg: 350 -> ~14 m/s)
+			up_bias = 0.35,
+			damage_frac = 0.5,
+			non_lethal = false, -- a kick at <= 50% health kills
+			bone = "",
+		},
+	} },
+}
+
+-- Exact sections, e.g. sections["wpn_pm"] = { impulse = 40 }
+sections = {}

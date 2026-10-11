@@ -13,6 +13,7 @@
 #include "weapon.h"
 #include "ui/UIMessagesWindow.h"
 #include "game_cl_single.h"
+#include "../Include/xrRender/Kinematics.h" // NLC: actor leg bones follow the visible body (shadow)
 
 CFontManager::CFontManager()
 {
@@ -264,6 +265,129 @@ void CHUDManager::Render_MAIN(u32 context_id)
     // Render_Actor_FirstPersonBody(context_id);
 }
 
+// NLC: the actor model's shadow (g_actor_shadow) is the only one cast (the visible-body puppet never reaches the
+// shadow maps) and the model has another animation set than the legs the player sees, so the shadow desynced from
+// them. While the puppet is shown, the actor model's leg bones take the puppet's current leg rotation (relative to
+// the parent bone; the actor keeps its own bone offsets so the mesh is not stretched, the first model-space version
+// stretched the boot soles), so the shadow is the actor's torso/arms/weapon on the same legs. The script reports the puppet through
+// level.nlc_visible_body_active(active, id); g_actor_shadow_legs_from_body 0 switches this off.
+static bool g_nlc_visible_body_active = false;
+static u16 g_nlc_visible_body_id = u16(-1);
+int g_nlc_shadow_legs_from_body = 1;
+
+namespace
+{
+struct SNlcLegBone
+{
+    LPCSTR name;
+    u16 actor_id;
+    u16 puppet_id;
+    IKinematics* puppet_kin;
+    u16 actor_parent;
+    u16 puppet_parent;
+};
+
+SNlcLegBone g_nlc_leg_bones[] = {
+    {"bip01_l_thigh", BI_NONE, BI_NONE, nullptr, BI_NONE, BI_NONE}, {"bip01_l_calf", BI_NONE, BI_NONE, nullptr, BI_NONE, BI_NONE}, {"bip01_l_foot", BI_NONE, BI_NONE, nullptr, BI_NONE, BI_NONE},
+    {"bip01_l_toe0", BI_NONE, BI_NONE, nullptr, BI_NONE, BI_NONE},  {"bip01_r_thigh", BI_NONE, BI_NONE, nullptr, BI_NONE, BI_NONE}, {"bip01_r_calf", BI_NONE, BI_NONE, nullptr, BI_NONE, BI_NONE},
+    {"bip01_r_foot", BI_NONE, BI_NONE, nullptr, BI_NONE, BI_NONE},  {"bip01_r_toe0", BI_NONE, BI_NONE, nullptr, BI_NONE, BI_NONE},
+};
+IKinematics* g_nlc_leg_actor_kin = nullptr; // the actor skeleton the callbacks are installed on
+
+void nlc_leg_bone_callback(CBoneInstance* B)
+{
+    if (!g_nlc_visible_body_active)
+        return;
+    SNlcLegBone* leg = static_cast<SNlcLegBone*>(B->callback_param());
+    CObject* puppet = g_pGameLevel ? g_pGameLevel->Objects.net_Find(g_nlc_visible_body_id) : nullptr;
+    IKinematics* pk = puppet ? PKinematics(puppet->Visual()) : nullptr;
+    if (!leg || !pk)
+        return;
+    if (leg->puppet_kin != pk)
+    {
+        leg->puppet_kin = pk;
+        leg->puppet_id = pk->LL_BoneID(leg->name);
+        leg->puppet_parent = leg->puppet_id != BI_NONE ? pk->GetBoneData(leg->puppet_id).GetParentID() : BI_NONE;
+    }
+    IKinematics* ak = g_nlc_leg_actor_kin;
+    if (!ak || leg->puppet_id == BI_NONE || leg->puppet_parent == BI_NONE || leg->actor_parent == BI_NONE)
+        return;
+    pk->CalculateBones(TRUE); // same-ms calls return at once
+
+    // puppet bone rotation relative to its parent, with the actor bone's own local offset
+    Fmatrix puppet_parent_inv, actor_parent_inv, puppet_local, actor_local;
+    if (!puppet_parent_inv.invert_b(pk->LL_GetBoneInstance(leg->puppet_parent).mTransform))
+        return;
+    const Fmatrix& actor_parent = ak->LL_GetBoneInstance(leg->actor_parent).mTransform; // final: parents are calculated first
+    if (!actor_parent_inv.invert_b(actor_parent))
+        return;
+    puppet_local.mul_43(puppet_parent_inv, pk->LL_GetBoneInstance(leg->puppet_id).mTransform);
+    actor_local.mul_43(actor_parent_inv, B->mTransform);
+    puppet_local.c.set(actor_local.c);
+    B->mTransform.mul_43(actor_parent, puppet_local);
+}
+
+void nlc_leg_bones_uninstall()
+{
+    if (!g_nlc_leg_actor_kin)
+        return;
+    // the kinematics may be gone (visual swap): only touch it while the actor still has it
+    CActor* a = Actor();
+    IKinematics* now = a ? PKinematics(a->Visual()) : nullptr;
+    if (now == g_nlc_leg_actor_kin)
+    {
+        for (SNlcLegBone& leg : g_nlc_leg_bones)
+        {
+            if (leg.actor_id == BI_NONE)
+                continue;
+            CBoneInstance& bi = now->LL_GetBoneInstance(leg.actor_id);
+            if (bi.callback() == nlc_leg_bone_callback)
+                bi.reset_callback();
+        }
+        now->CalculateBones_Invalidate();
+    }
+    g_nlc_leg_actor_kin = nullptr;
+}
+
+void nlc_leg_bones_install(CActor* a)
+{
+    IKinematics* k = PKinematics(a->Visual());
+    if (!k)
+        return;
+    if (k == g_nlc_leg_actor_kin)
+        return;
+    g_nlc_leg_actor_kin = nullptr; // a different skeleton (outfit visual swap): the old one is not ours to touch
+    for (SNlcLegBone& leg : g_nlc_leg_bones)
+    {
+        leg.actor_id = k->LL_BoneID(leg.name);
+        leg.puppet_kin = nullptr;
+        leg.puppet_id = BI_NONE;
+        leg.puppet_parent = BI_NONE;
+        leg.actor_parent = leg.actor_id != BI_NONE ? k->GetBoneData(leg.actor_id).GetParentID() : BI_NONE;
+        if (leg.actor_id == BI_NONE)
+            continue;
+        CBoneInstance& bi = k->LL_GetBoneInstance(leg.actor_id);
+        if (bi.callback()) // never replace another system's callback
+        {
+            leg.actor_id = BI_NONE;
+            leg.actor_parent = BI_NONE;
+            continue;
+        }
+        bi.set_callback(bctCustom, nlc_leg_bone_callback, &leg, FALSE);
+    }
+    g_nlc_leg_actor_kin = k;
+    k->CalculateBones_Invalidate();
+}
+} // namespace
+
+void nlc_visible_body_set(bool active, u16 id)
+{
+    g_nlc_visible_body_active = active;
+    g_nlc_visible_body_id = id;
+    if (!active || !g_nlc_shadow_legs_from_body)
+        nlc_leg_bones_uninstall();
+}
+
 void CHUDManager::Render_Actor_Shadow(u32 context_id) // added by KD
 {
     if (!psActorFlags.test(AF_ACTOR_SHADOW))
@@ -298,6 +422,8 @@ void CHUDManager::Render_Actor_Shadow(u32 context_id) // added by KD
         return;
 
     std::scoped_lock slock(render_lock);
+    if (g_nlc_visible_body_active && g_nlc_shadow_legs_from_body)
+        nlc_leg_bones_install(A); // NLC: cheap when already installed on this skeleton
     O->renderable_Render(context_id, O->H_Root());
 }
 

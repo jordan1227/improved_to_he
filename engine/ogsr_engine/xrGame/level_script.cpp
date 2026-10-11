@@ -400,6 +400,8 @@ script_rq_result PerformRayQuery(Fvector start, Fvector dir, float range, collid
     psCallbackFlags.set(_fl, true);
 }*/
 
+void nlc_visible_body_set(bool active, u16 id); // NLC: HUDManager.cpp
+
 float GetTargetDist() { return ((CHUDManager*)g_hud)->GetTarget()->GetDist(); }
 
 script_rq_result GetCurrentRayQuery()
@@ -1166,6 +1168,7 @@ void CLevel::script_register(lua_State* L)
 
             def("advance_game_time", &AdvanceGameTime),
 
+            def("nlc_visible_body_active", [](bool active, u16 id) { nlc_visible_body_set(active, id); }), // NLC: HUDManager.cpp
             def("get_target_dist", &GetTargetDist), def("get_target_obj", &GetTargetObj), def("get_current_ray_query", &GetCurrentRayQuery),
             //
             def("send_event_key_press", &send_event_key_press), def("send_event_key_release", &send_event_key_release), def("send_event_key_hold", &send_event_key_hold),

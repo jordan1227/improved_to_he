@@ -10,9 +10,79 @@ local CAMERA_DISTANCE_SQ = 2.25
 local CAMERA_DIRECTION_DOT = 0.85
 local LADDER_HEIGHT = -0.1
 
-local FORWARD_OFFSET = -0.65
+-- Kick one-shot (clips live in lancew_legs_krovosos.omf, triggered through
+-- try_kick() by sivol_kick). Movement state bits that forbid a kick: crouch,
+-- jump start/idle/end, ladder, sprint.
+local KICK_ANIM = "actor_kick"
+local KICK_ANIM_DOWN = "actor_kick_down"
+local KICK_LOOK_DOWN_Y = -0.8
+local KICK_FALLBACK_MS = 1000
+local KICK_BLOCK_BITS = { 16, 128, 256, 512, 1024, 2048, 4096 }
+
 local SIDE_OFFSET = 0.0
-local HEIGHT_OFFSET = 0.0
+
+-- Body placement relative to the camera, blended by view pitch (aim.y goes
+-- from PITCH_BLEND_START to PITCH_BLEND_END as the view tilts down). "level"
+-- is looking ahead, "down" is looking at the feet. Defaults are the values
+-- tuned in game 2026-10-12 (the original port used a constant -0.65 / 0.0); tune live with the numpad keys while PLACEMENT_TUNER
+-- is on (values are logged as [VB_TUNE] and shown as a news tip). Keys:
+-- see on_key_tune.
+local placement = {
+	fwd_level = -0.12, -- was -0.05; a little lower keeps a sharp turn from showing the inside of the body
+	fwd_down = -0.55,
+	height_level = 0.0,
+	height_down = -0.02,
+}
+local PITCH_BLEND_START = 0.3
+local PITCH_BLEND_END = 0.95
+local PLACEMENT_TUNER = true
+local PLACEMENT_TUNER_LOG = false -- true: also write each tuner step to the log as [VB_TUNE]
+
+-- Legs yaw model (replaces rigid camera-yaw following). The legs stay planted
+-- while the view turns; past TURN_THRESHOLD they step around to the view at
+-- TURN_RATE and the turn-in-place clips play. While moving (or on a ladder)
+-- they align to the view quickly. Mirrors the engine's own 45 degree model
+-- realignment (Actor_Movement.cpp) without its strafe yaw delta.
+local TURN_THRESHOLD = 0.6109 -- rad, 35 degrees (the engine's own model realignment uses 45)
+local TURN_RATE = 8.0 -- rad/s minimum while stepping around
+local TURN_GAIN = 14.0 -- 1/s: the rate also grows with the remaining angle, so a sharp 180 turn finishes fast
+local TURN_RATE_MAX = 60.0 -- rad/s
+local TURN_DONE = 0.05 -- rad, turn finished below this error
+local MOVE_ALIGN_RATE = 40.0 -- rad/s while moving (effectively a snap, like the engine)
+local MIN_HEADING_LENGTH = 0.002 -- below this the view is too vertical for a heading
+local TURN_CLIP_SWAP = false -- true if the turn_left/turn_right clips turn out mirrored
+local TURN_USE_WALK_CLIPS = false -- true: play the strafe-walk clips (walk_l/walk_r) as the step instead
+local TURN_ANIM_MS = 650 -- a step clip plays at least this long, even if the yaw is already aligned
+local TURN_COOLDOWN_MS = 200 -- pause before the next step may start
+-- 0..1: how much the body position is anchored on the view heading instead of the (planted) legs heading.
+-- 1 keeps the body trailing right behind the camera, so a sharp turn never swings it through the view.
+local ANCHOR_VIEW_FOLLOW = 1.0
+
+-- Measured-speed refinements of the packed movement state.
+local SPEED_SMOOTH = 0.25 -- s, speed low-pass
+local STILL_SPEED = 0.15 -- m/s, "pushing against a wall" threshold
+local STILL_HOLD_MS = 150
+local RUN_LEARN_MIN = 1.0 -- m/s, below this a run speed is not learned
+local RUN_REF_DECAY = 5.0 -- s, how fast the learned run speed follows slower running
+local WALK_ENTER_RATIO = 0.62 -- running bits but slower than this share of the run speed: walk clips
+local WALK_EXIT_RATIO = 0.72
+local RUN_SETTLE_MS = 700 -- running bits held this long before speed may re-class the clip or scale playback
+
+-- Re-issue rates for the per-frame commands.
+local LOOK_REISSUE_EPS = 0.01
+local LOOK_REISSUE_MS = 400
+local CAPTURE_REASSERT_MS = 500
+
+-- Learned across puppet respawns: the actor's unburdened run speed.
+local run_speed_ref = nil
+
+-- Playback speed follows the measured speed (engine nlc_set_cycle_speed): per
+-- locomotion class the highest smoothed speed seen is the clip's nominal speed.
+local CLASS_REF_DECAY = 8.0 -- s, how fast a class reference follows lower speeds
+local CYCLE_SCALE_MIN = 0.6
+local CYCLE_SCALE_MAX = 1.25
+local CYCLE_SCALE_STEP = 0.03
+local class_speed_ref = {}
 
 -- Test-build master switch. Set false to disable every diagnostic callback,
 -- level-object scan, and VISIBLE_BODY_DIAG log line.
@@ -299,6 +369,20 @@ local function can_show_body()
 	return dot >= CAMERA_DIRECTION_DOT
 end
 
+-- Engine: the actor model's shadow is suppressed while the puppet is shown
+-- (the puppet casts its own, correctly animated one). Older exes lack this.
+local shadow_flag, shadow_id = nil, nil
+local function report_body_active(active, id)
+	id = active and id or 65535
+	if shadow_flag == active and shadow_id == id then
+		return
+	end
+	shadow_flag, shadow_id = active, id
+	if level and level.nlc_visible_body_active then
+		level.nlc_visible_body_active(active, id)
+	end
+end
+
 local function clear_body_state()
 	body_server_id = nil
 	body_section = nil
@@ -471,6 +555,8 @@ local function on_update()
 	if module_ready then
 		reconcile_body()
 	end
+	local puppet = active_body_binder and active_body_binder.object
+	report_body_active(body_present and puppet ~= nil, puppet and puppet:id() or 65535)
 	if DIAGNOSTICS and body_present and active_body_binder then
 		active_body_binder:diagnostic_scan(time_global())
 	end
@@ -478,7 +564,10 @@ end
 
 class "visible_body_binder" (object_binder)
 
-local function animation_for_state(state)
+-- turn: "left"/"right" while the legs step around a standing actor, else nil.
+-- force_slow: moving bits say run but the measured speed is walk-like.
+-- force_still: moving bits are held but the actor is not actually moving.
+local function animation_for_state(state, turn, force_slow, force_still)
 	if bit_and(state, 64) ~= 0 then
 		state = state - 64
 	end
@@ -497,7 +586,7 @@ local function animation_for_state(state)
 	end
 
 	local crouch = bit_and(state, 16) ~= 0
-	local slow = bit_and(state, 32) ~= 0
+	local slow = bit_and(state, 32) ~= 0 or force_slow == true
 	local jump_start = bit_and(state, 128) ~= 0
 	local jump_idle = bit_and(state, 256) ~= 0
 	local jump_end = bit_and(state, 512) ~= 0 or bit_and(state, 1024) ~= 0
@@ -524,8 +613,16 @@ local function animation_for_state(state)
 	local back = bit_and(state, 2) ~= 0
 	local left = bit_and(state, 4) ~= 0
 	local right = bit_and(state, 8) ~= 0
+	if force_still then
+		forward, back, left, right = false, false, false, false
+	end
 
 	if forward and bit_and(state, 4096) ~= 0 then
+		if left then
+			return "lancew_legs_sprint_left"
+		elseif right then
+			return "lancew_legs_sprint_right"
+		end
 		return "lancew_legs_sprint"
 	end
 
@@ -581,12 +678,44 @@ local function animation_for_state(state)
 		return "lancew_legs_moving_r"
 	end
 
+	if turn and not crouch then
+		local left_clip = turn == "left"
+		if TURN_CLIP_SWAP then
+			left_clip = not left_clip
+		end
+		if TURN_USE_WALK_CLIPS then
+			return left_clip and "lancew_legs_walk_l" or "lancew_legs_walk_r"
+		end
+		return left_clip and "lancew_legs_turn_left" or "lancew_legs_turn_right"
+	end
 	if slow and crouch then
 		return "lancew_legs_idle_sc"
 	elseif crouch then
 		return "lancew_legs_idle_c"
 	end
 	return "lancew_legs_idle"
+end
+
+-- Rotates the unit XZ vector a toward b by at most max_step radians. Returns
+-- the new unit vector and the signed remaining angle (> 0: b is to the right
+-- of a, X-Ray's left-handed X right / Z forward).
+local function rotate_toward(ax, az, bx, bz, max_step)
+	local dot = ax * bx + az * bz
+	local cross = az * bx - ax * bz
+	local angle = math.atan2(cross, dot)
+	if math.abs(angle) <= max_step then
+		return bx, bz, 0
+	end
+	local step = angle > 0 and max_step or -max_step
+	local c, s = math.cos(step), math.sin(step)
+	local nx = ax * c + az * s
+	local nz = az * c - ax * s
+	local length = math.sqrt(nx * nx + nz * nz)
+	return nx / length, nz / length, angle - step
+end
+
+local function signed_angle(ax, az, bx, bz)
+	return math.atan2(az * bx - ax * bz, ax * bx + az * bz)
 end
 
 function visible_body_binder:__init(obj)
@@ -600,8 +729,14 @@ function visible_body_binder:__init(obj)
 	self.object:enable_vision(false)
 	self.object:skip_transfer_enemy(true)
 	self.position = vector()
-	self.last_state = nil
+	self.facing = vector()
 	self.last_animation = nil
+	-- Engine bindings of nlc-3.589.69; older exes keep the look-action path.
+	local obj = self.object
+	local ok_t, f_t = pcall(function() return obj.nlc_set_npc_transform end)
+	local ok_s, f_s = pcall(function() return obj.nlc_set_cycle_speed end)
+	self.has_transform = ok_t and f_t ~= nil
+	self.has_cycle_speed = ok_s and f_s ~= nil
 	self.diagnostic_next_scan = 0
 	self.diagnostic_npc_states = {}
 	self.diagnostic_body_enemy_id = -1
@@ -695,10 +830,20 @@ function visible_body_binder:fastcall()
 		return true
 	end
 
+	local now = time_global()
+	local dt = 0
+	if self.last_tick then
+		dt = math.min((now - self.last_tick) / 1000, 0.25)
+	end
+	self.last_tick = now
+
 	-- Keep the creature out of native monster navigation/logic. Its position
 	-- and animation are driven entirely by this binder.
-	if xr_logic and type(xr_logic.mob_capture) == "function" then
-		xr_logic.mob_capture(self.object, true)
+	if now >= (self.next_capture or 0) then
+		if xr_logic and type(xr_logic.mob_capture) == "function" then
+			xr_logic.mob_capture(self.object, true)
+		end
+		self.next_capture = now + CAPTURE_REASSERT_MS
 	end
 
 	local dev = device()
@@ -707,54 +852,213 @@ function visible_body_binder:fastcall()
 	end
 
 	local state = actor_body_state(actor)
+	local ladder = bit_and(state, 2048) ~= 0
+	local moving = bit_and(state, 15) ~= 0
 
 	local actor_pos = actor:position()
-	local body_y = actor_pos.y + HEIGHT_OFFSET
-	if bit_and(state, 2048) ~= 0 then
+
+	-- View heading from the standard first-eye camera: device().cam_dir carries
+	-- camera effectors (kick.anm) that flip the heading near vertical.
+	local aim = dev.cam_dir
+	local standard_camera = actor_camera(0)
+	if standard_camera and standard_camera.direction then
+		aim = standard_camera.direction
+	end
+	local view_length = math.sqrt(aim.x * aim.x + aim.z * aim.z)
+	if view_length > MIN_HEADING_LENGTH then
+		self.view_x = aim.x / view_length
+		self.view_z = aim.z / view_length
+	elseif not self.view_x then
+		local actor_direction = actor:direction()
+		local length = math.sqrt(actor_direction.x * actor_direction.x + actor_direction.z * actor_direction.z)
+		if length > 0.0001 then
+			self.view_x = actor_direction.x / length
+			self.view_z = actor_direction.z / length
+		else
+			self.view_x, self.view_z = 0, 1
+		end
+	end
+
+	-- Placement offsets blended by how far the view is tilted down.
+	local down_t = (-aim.y - PITCH_BLEND_START) / (PITCH_BLEND_END - PITCH_BLEND_START)
+	if down_t < 0 then
+		down_t = 0
+	elseif down_t > 1 then
+		down_t = 1
+	end
+	local forward_offset = placement.fwd_level + (placement.fwd_down - placement.fwd_level) * down_t
+	local body_y = actor_pos.y + placement.height_level + (placement.height_down - placement.height_level) * down_t
+	if ladder then
 		body_y = body_y + LADDER_HEIGHT
 	end
 
-	local forward_x = dev.cam_dir.x
-	local forward_z = dev.cam_dir.z
-	local horizontal_length = math.sqrt(forward_x * forward_x + forward_z * forward_z)
-	if horizontal_length <= 0.0001 then
-		local actor_direction = actor:direction()
-		forward_x = actor_direction.x
-		forward_z = actor_direction.z
-		horizontal_length = math.sqrt(forward_x * forward_x + forward_z * forward_z)
-	end
-	if horizontal_length > 0.0001 then
-		forward_x = forward_x / horizontal_length
-		forward_z = forward_z / horizontal_length
-	end
-
-	local right_x = forward_z
-	local right_z = -forward_x
-	local body_x = dev.cam_pos.x + forward_x * FORWARD_OFFSET + right_x * SIDE_OFFSET
-	local body_z = dev.cam_pos.z + forward_z * FORWARD_OFFSET + right_z * SIDE_OFFSET
-	self.position:set(body_x, body_y, body_z)
-	self.object:set_npc_position(self.position, true)
-
-	-- The body is a scripted visual puppet, so its facing must be driven by
-	-- the same look action used by the original SWM implementation. Keep this
-	-- before play_cycle: the animation command can reset the puppet's facing.
-	local body_direction = actor:direction()
-	if dev.cam_dir.y > -0.65 then
-		body_direction = vector():setHP(dev.cam_dir:getH(), 0)
-	end
-
-	local look_direction = look()
-	look_direction:type(2)
-	look_direction:direct(body_direction)
-	action(self.object, look_direction, cond(cond.look_end))
-
-	if state ~= self.last_state then
-		local animation = animation_for_state(state)
-		if animation ~= self.last_animation then
-			self.object:play_cycle(animation, true)
-			self.last_animation = animation
+	-- Measured horizontal speed (smoothed): refines the packed movement bits.
+	if self.prev_x and dt > 0 then
+		local moved = math.sqrt((actor_pos.x - self.prev_x) ^ 2 + (actor_pos.z - self.prev_z) ^ 2)
+		if moved < 2.5 then
+			local k = math.min(1, dt / SPEED_SMOOTH)
+			self.speed = (self.speed or 0) + (moved / dt - (self.speed or 0)) * k
+		else
+			self.speed = 0
 		end
-		self.last_state = state
+	end
+	self.prev_x, self.prev_z = actor_pos.x, actor_pos.z
+	local speed = self.speed or 0
+
+	-- Planted legs: yaw state machine (see the TURN_* constants).
+	if not self.legs_x then
+		self.legs_x, self.legs_z = self.view_x, self.view_z
+	end
+	local turn = nil
+	if moving or ladder then
+		self.legs_x, self.legs_z = rotate_toward(self.legs_x, self.legs_z, self.view_x, self.view_z, MOVE_ALIGN_RATE * dt)
+		self.turning = false
+		self.turn_anim_until = 0
+	else
+		local error_angle = signed_angle(self.legs_x, self.legs_z, self.view_x, self.view_z)
+		local ready = now >= (self.turn_ready_at or 0) or math.abs(error_angle) > 1.6 -- a view > ~90 degrees off never waits
+		if not self.turning and ready and math.abs(error_angle) > TURN_THRESHOLD then
+			self.turning = true
+			self.turn_anim_until = now + TURN_ANIM_MS
+			self.turn_ready_at = self.turn_anim_until + TURN_COOLDOWN_MS
+		end
+		if self.turning then
+			local rate = math.min(math.max(TURN_RATE, TURN_GAIN * math.abs(error_angle)), TURN_RATE_MAX)
+			self.legs_x, self.legs_z, error_angle = rotate_toward(self.legs_x, self.legs_z, self.view_x, self.view_z, rate * dt)
+			self.turn_side = error_angle > 0 and "right" or "left"
+			if math.abs(error_angle) < TURN_DONE then
+				self.turning = false
+			end
+		end
+		if self.turning or now < (self.turn_anim_until or 0) then
+			turn = self.turn_side
+		end
+	end
+
+	-- Body position: anchored on the view heading (blended with the planted legs heading).
+	local anchor_x = self.legs_x + (self.view_x - self.legs_x) * ANCHOR_VIEW_FOLLOW
+	local anchor_z = self.legs_z + (self.view_z - self.legs_z) * ANCHOR_VIEW_FOLLOW
+	local anchor_length = math.sqrt(anchor_x * anchor_x + anchor_z * anchor_z)
+	if anchor_length > 0.0001 then
+		anchor_x, anchor_z = anchor_x / anchor_length, anchor_z / anchor_length
+	else
+		anchor_x, anchor_z = self.legs_x, self.legs_z
+	end
+
+	local right_x = anchor_z
+	local right_z = -anchor_x
+	self.position:set(
+		dev.cam_pos.x + anchor_x * forward_offset + right_x * SIDE_OFFSET,
+		body_y,
+		dev.cam_pos.z + anchor_z * forward_offset + right_z * SIDE_OFFSET)
+	if self.has_transform then
+		-- Position and heading in one call: no AI turn lag.
+		self.facing:set(self.legs_x, 0, self.legs_z)
+		self.object:nlc_set_npc_transform(self.position, self.facing)
+	else
+		self.object:set_npc_position(self.position, true)
+	end
+
+	if moving then
+		self.moving_since = self.moving_since or now
+	else
+		self.moving_since = nil
+	end
+
+	-- Animation choice (pure function of the state, recomputed each frame).
+	local animation = nil
+	local force_still_flag = false
+	if now >= (self.kick_until or 0) then
+		local running = moving and bit_and(state, 4096 + 32 + 16) == 0 and bit_and(state, 128 + 256 + 512 + 1024) == 0 and not ladder
+		if running and speed > RUN_LEARN_MIN then
+			if not run_speed_ref or speed > run_speed_ref then
+				run_speed_ref = speed
+			else
+				run_speed_ref = run_speed_ref + (speed - run_speed_ref) * math.min(1, dt / RUN_REF_DECAY)
+			end
+		end
+
+		local force_still = false
+		if moving and speed < STILL_SPEED then
+			self.still_since = self.still_since or now
+			force_still = now - self.still_since >= STILL_HOLD_MS
+		else
+			self.still_since = nil
+		end
+
+		local force_slow = false
+		local settled = self.moving_since ~= nil and now - self.moving_since >= RUN_SETTLE_MS
+		if running and run_speed_ref and (settled or self.speed_slow) then
+			local ratio = speed / run_speed_ref
+			if self.speed_slow then
+				self.speed_slow = ratio < WALK_EXIT_RATIO
+			else
+				self.speed_slow = ratio < WALK_ENTER_RATIO
+			end
+			force_slow = self.speed_slow
+		else
+			self.speed_slow = false
+		end
+
+		animation = animation_for_state(state, turn, force_slow, force_still)
+		force_still_flag = force_still
+	end
+	local animation_changed = animation ~= nil and animation ~= self.last_animation
+
+	-- The body is a scripted visual puppet, so its facing must be driven by a
+	-- look action. Keep it before play_cycle (the animation command can reset
+	-- the puppet's facing) and only re-issue it when needed.
+	local face_x, face_z = self.legs_x, self.legs_z
+	if not self.has_transform and (animation_changed
+		or math.abs(face_x - (self.look_x or 9)) + math.abs(face_z - (self.look_z or 9)) > LOOK_REISSUE_EPS
+		or now - (self.look_at or 0) > LOOK_REISSUE_MS) then
+		local look_direction = look()
+		look_direction:type(2)
+		look_direction:direct(vector():set(face_x, 0, face_z))
+		action(self.object, look_direction, cond(cond.look_end))
+		self.look_x, self.look_z, self.look_at = face_x, face_z, now
+	end
+
+	if animation_changed then
+		self.object:play_cycle(animation, true)
+		self.last_animation = animation
+		self.cycle_scale = nil
+	end
+
+	-- Playback speed from the measured speed, per locomotion class.
+	if self.has_cycle_speed and animation then
+		local class = nil
+		if moving and not force_still_flag then
+			if bit_and(state, 4096) ~= 0 then
+				class = "sprint"
+			elseif bit_and(state, 16) ~= 0 then
+				class = (bit_and(state, 32) ~= 0 or self.speed_slow) and "crouch_walk" or "crouch_run"
+			elseif bit_and(state, 32) ~= 0 or self.speed_slow then
+				class = "walk"
+			else
+				class = "run"
+			end
+		end
+		local scale = 1.0
+		if class and speed > STILL_SPEED and not ladder and self.moving_since and now - self.moving_since >= RUN_SETTLE_MS then
+			local ref = class_speed_ref[class]
+			if not ref or speed > ref then
+				ref = speed
+			else
+				ref = ref + (speed - ref) * math.min(1, dt / CLASS_REF_DECAY)
+			end
+			class_speed_ref[class] = ref
+			scale = speed / ref
+			if scale < CYCLE_SCALE_MIN then
+				scale = CYCLE_SCALE_MIN
+			elseif scale > CYCLE_SCALE_MAX then
+				scale = CYCLE_SCALE_MAX
+			end
+		end
+		if self.cycle_scale == nil or math.abs(scale - self.cycle_scale) > CYCLE_SCALE_STEP then
+			self.object:nlc_set_cycle_speed(scale)
+			self.cycle_scale = scale
+		end
 	end
 end
 
@@ -774,11 +1078,122 @@ function visible_body_binder:net_destroy()
 	object_binder.net_destroy(self)
 end
 
+-- True while the actor's movement state forbids a kick (crouch, jump,
+-- ladder, sprint). Independent of whether the body puppet exists.
+function kick_blocked()
+	local actor = db and db.actor
+	if not actor then
+		return true
+	end
+	local state = actor_body_state(actor)
+	for _, bit in ipairs(KICK_BLOCK_BITS) do
+		if bit_and(state, bit) ~= 0 then
+			return true
+		end
+	end
+	return false
+end
+
+-- Plays the one-shot kick clip on the body puppet. Returns the clip duration
+-- in milliseconds, or nil plus a reason: "no_body" (no puppet; the kick itself
+-- may still happen), "blocked" (movement state), "busy" (a kick is playing),
+-- "dead".
+function try_kick()
+	local actor = db and db.actor
+	if not actor or not actor:alive() then
+		return nil, "dead"
+	end
+	if kick_blocked() then
+		return nil, "blocked"
+	end
+	local binder = active_body_binder
+	if not body_present or not binder or not binder.object then
+		return nil, "no_body"
+	end
+	local now = time_global()
+	if now < (binder.kick_until or 0) then
+		return nil, "busy"
+	end
+
+	local dev = device()
+	local anim = KICK_ANIM
+	if dev and dev.cam_dir and dev.cam_dir.y <= KICK_LOOK_DOWN_Y then
+		anim = KICK_ANIM_DOWN
+	end
+
+	-- play_cycle returns the blend's total time; a truncated 0..49 value is
+	-- seconds, anything larger is already milliseconds.
+	local total = binder.object:play_cycle(anim, true)
+	local duration = KICK_FALLBACK_MS
+	if type(total) == "number" and total > 0 then
+		duration = total < 50 and total * 1000 or total
+	end
+	diagnostic_log("kick anim=%s total=%s duration=%d", anim, tostring(total), duration)
+
+	binder.kick_until = now + duration
+	-- Force the movement animation to be re-selected when the kick ends.
+	binder.last_animation = nil
+	return duration
+end
+
 function bind(obj)
 	obj:bind_object(visible_body_binder(obj))
 end
 
+-- Live placement tuner (no numpad needed): HOME/END fwd_level +/-,
+-- PAGE UP/PAGE DOWN fwd_down +/-, INSERT/DELETE height_down +/-,
+-- hold LEFT SHIFT with INSERT/DELETE for height_level. Step 0.05 / 0.02.
+local function tuner_show()
+	local text = string.format("fwd_level=%.2f fwd_down=%.2f height_level=%.2f height_down=%.2f",
+		placement.fwd_level, placement.fwd_down, placement.height_level, placement.height_down)
+	if PLACEMENT_TUNER_LOG then
+		log2("[VB_TUNE] " .. text)
+	end
+	local actor = db and db.actor
+	if actor and actor.give_game_news then
+		actor:give_game_news("%c[255,160,160,160]VISIBLE BODY" .. string.char(92) .. "n%c[default]" .. text, "ui" .. string.char(92) .. "ui_iconsTotal", Frect():set(0, 706, 83, 47), 0, 2500)
+	end
+end
+
+local function on_key_tune(key)
+	if not PLACEMENT_TUNER then
+		return
+	end
+	local D = DIK_keys
+	local f, h = 0.05, 0.02
+	local shift = false
+	if key_state then
+		local ok, v = pcall(key_state, D.DIK_LSHIFT)
+		shift = ok and (v == true or (type(v) == "number" and v ~= 0))
+	end
+	if key == D.DIK_HOME then
+		placement.fwd_level = placement.fwd_level + f
+	elseif key == D.DIK_END then
+		placement.fwd_level = placement.fwd_level - f
+	elseif key == D.DIK_PRIOR then
+		placement.fwd_down = placement.fwd_down + f
+	elseif key == D.DIK_NEXT then
+		placement.fwd_down = placement.fwd_down - f
+	elseif key == D.DIK_INSERT then
+		if shift then
+			placement.height_level = placement.height_level + h
+		else
+			placement.height_down = placement.height_down + h
+		end
+	elseif key == D.DIK_DELETE then
+		if shift then
+			placement.height_level = placement.height_level - h
+		else
+			placement.height_down = placement.height_down - h
+		end
+	else
+		return
+	end
+	tuner_show()
+end
+
 function attach(sm)
+	sm:subscribe({ signal = "on_key", fun = on_key_tune })
 	sm:subscribe({ signal = "on_init_modules", fun = on_init_modules })
 	sm:subscribe({ signal = "on_first_update", fun = on_first_update })
 	sm:subscribe({ signal = "on_update", fun = on_update })

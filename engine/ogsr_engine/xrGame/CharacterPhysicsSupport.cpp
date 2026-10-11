@@ -402,7 +402,10 @@ void CCharacterPhysicsSupport::KillHit(SHit& H)
     // NLC: some killers (pseudogiant stomp) throw the body instead of playing a death animation
     CGameObject* killer = smart_cast<CGameObject*>(H.who);
     const CCustomMonster* killer_monster = killer ? killer->cast_custom_monster() : nullptr;
-    const bool ragdoll_kill = (H.type() == ALife::eHitTypeStrike || H.type() == ALife::eHitTypeExplosion) && killer_monster && killer_monster->nlc_kill_hit_ragdoll();
+    // NLC: the actor's kick (the only user of eHitTypePhysicStrike) throws the body too: a death animation would take
+    // 90 % of its impulse and the body would collapse on the spot
+    const bool kick_kill = H.type() == ALife::eHitTypePhysicStrike;
+    const bool ragdoll_kill = kick_kill || ((H.type() == ALife::eHitTypeStrike || H.type() == ALife::eHitTypeExplosion) && killer_monster && killer_monster->nlc_kill_hit_ragdoll());
 
     if (g_bCopDeathAnim && !ragdoll_kill)
     {

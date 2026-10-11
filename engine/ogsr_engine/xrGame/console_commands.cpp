@@ -1868,6 +1868,10 @@ void CCC_RegisterCommands()
     CMD4(CCC_Float, "g_cam_lookout_speed", &cam_LookoutSpeed, 1.0f, 4.0f);
 
     CMD3(CCC_Mask, "g_actor_shadow", &psActorFlags, AF_ACTOR_SHADOW);
+    {
+        extern int g_nlc_shadow_legs_from_body; // NLC: see HUDManager.cpp
+        CMD4(CCC_Integer, "g_actor_shadow_legs_from_body", &g_nlc_shadow_legs_from_body, 0, 1);
+    }
 
     CMD3(CCC_Mask, "g_throw_dbg", &psActorFlags, AF_THROW_DEBUG);
 

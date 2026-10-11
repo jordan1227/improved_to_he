@@ -54,6 +54,9 @@ public:
 
     bool is_turning(float eps_angle = EPS);
 
+    // NLC: script-driven puppets (sivol_visible_body) set the heading at once instead of lerping to it
+    void nlc_force_heading(float yaw);
+
     void get_heading(float& current, float& target);
     float get_heading_current();
 

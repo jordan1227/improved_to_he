@@ -5,6 +5,90 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.73 (2026-10-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `B8C594361C9CC1A3CAE922C1A8CC20972CDD46E74AE04DCB3CD07C7C0CF0831F` (archived with its PDB in `nlc_tools/builds/20261012_014144_b8c59436`).
+- **Status:** runtime pending.
+
+### NLC
+
+- **Actor shadow legs, rotation only:** the `.72` leg-bone callbacks copied the puppet's model-space bone matrices, so the
+  actor mesh was pulled between joints of another rig and the boot soles stretched in the shadow. The callbacks now take
+  the puppet bone's rotation relative to its parent and keep the actor bone's own local offset
+  (`new = actor_parent x [puppet_local_rotation | actor_local_translation]`).
+
+## nlc-3.589.72 (2026-10-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `495BB151F05F319CD56AF28D19C03F07DF695662DE080F970A860AFAEB3A2FD1` (archived with its PDB in `nlc_tools/builds/20261012_012649_495bb151`).
+- **Status:** runtime pending (visible body / kick pass).
+- **Required game data:** `gamedata/scripts/sivol/sivol_visible_body.script`, `sivol_kick.script`, `sivol_kick_configs.script`.
+
+### NLC
+
+- **Kick kills are ragdoll kills:** `CCharacterPhysicsSupport::KillHit` treats `eHitTypePhysicStrike` (used only by the
+  actor's kick) like the pseudogiant stomp: no death animation. A death animation took 90 % of the impulse
+  (`H.impulse *= 0.1`) and the body collapsed on the spot (tushkanos: about 1 m/s from a 250 impulse).
+- **Actor shadow follows the visible body:** the visible-body puppet never reaches the shadow maps and the actor model's
+  shadow (`g_actor_shadow`) had another animation set, so it desynced from the legs the player sees. While the script
+  reports the puppet (`level.nlc_visible_body_active(active, id)`), bone callbacks on the actor model's eight leg bones
+  copy the puppet's current model-space leg pose; the shadow is the actor's torso/arms/weapon on the visible legs. The
+  callbacks are installed on demand, never replace another callback, and are removed when the puppet goes away.
+  `g_actor_shadow_legs_from_body 0` disables it. The explicit puppet render and `g_actor_shadow_with_body` of `.70`/`.71`
+  are gone.
+
+## nlc-3.589.71 (2026-10-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `1FCEEAAA622FA8879BC2310F54376AD04CEBF12A5FAD6542A536FDC0A4E326AA` (archived with its PDB in `nlc_tools/builds/20261012_010810_1fceeaaa`).
+- **Status:** runtime pending (visible body / kick pass).
+- **Required game data:** `gamedata/scripts/sivol/sivol_visible_body.script` (calls `level.nlc_visible_body_active(active, id)`).
+
+### NLC
+
+- **Visible-body shadow:** `level.nlc_visible_body_active` takes the puppet's object id. With `g_actor_shadow` on and the
+  puppet shown, `CHUDManager::Render_Actor_Shadow` renders the puppet into the shadow maps in place of the actor model
+  (the puppet did not reach them through the normal traversal, and the actor model's shadow desynced from the legs).
+  `g_actor_shadow_with_body 1` keeps the actor model's shadow.
+
+## nlc-3.589.70 (2026-10-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `7D9ABC443163B8F69FDD7A3CC2FEEE891720DF318A45E82499823FE98A5177C1` (archived with its PDB in `nlc_tools/builds/20261012_005213_7d9abc44`).
+- **Status:** runtime pending (visible body / kick pass).
+- **Required game data:** `gamedata/scripts/sivol/sivol_visible_body.script` (calls `level.nlc_visible_body_active`).
+
+### NLC
+
+- **Actor shadow vs visible body:** `g_actor_shadow` renders the actor model, which has another animation set and sits
+  behind the visible-body puppet, so its shadow doubled and desynced the puppet's own. The script reports the puppet through
+  `level.nlc_visible_body_active(bool)`; while it is shown the actor model's shadow is skipped
+  (`g_actor_shadow_with_body 1` restores both).
+- **Stealth/burer ignore all body variants:** `nlc_stealth::is_visible_body` compared the section with `actor_legs`
+  exactly, so the outfit variants (`actor_legs_<mesh>`) were treated as ordinary monsters; it matches the prefix now.
+
+## nlc-3.589.69 (2026-10-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `4111D70FF47050B490C4EC56BC92C7903266F626C6A3C55D405ABCA5A428A3AE` (archived with its PDB in `nlc_tools/builds/20261012_003546_4111d70f`).
+- **Status:** runtime pending (visible body / kick pass).
+- **Required game data:** `gamedata/scripts/sivol/sivol_visible_body.script`, `sivol_kick.script`, `sivol_kick_configs.script`
+  (all three feature-detect the new bindings and keep a fallback on older exes).
+
+### NLC
+
+- **`game_object:nlc_set_npc_transform(pos, dir)`:** position and heading of a script-driven monster in one call
+  (`script_game_object2.cpp`). `set_npc_position` keeps the rotation and the heading otherwise comes from the look action,
+  which the AI processes only in its 100-250 ms schedule tick, so the visible-body puppet slid to its position first and
+  turned later. The heading is written into XFORM, `movement().m_body` and the monster direction controls
+  (`CControlDirection::nlc_force_heading`) so `update_frame()` does not lerp it back.
+- **`game_object:nlc_push(dir, speed, up)`:** sets the velocity of a living character directly (the burer's
+  `CBurer::nlc_push`, without the actor hold). ApplyImpulse on a character is cancelled by the ground controller within a
+  few steps. Used by the kick for tushkanos (`push_speed`/`push_up` in `sivol_kick_configs.script`).
+- **`game_object:nlc_set_cycle_speed(scale)`:** playback speed of the running (non-FX) cycles as a multiple of their
+  authored motion-def speed; the visible body scales walk/run/sprint clips by the measured speed.
+
 ## nlc-3.589.68 (2026-10-11)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

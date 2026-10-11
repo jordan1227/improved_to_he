@@ -1,0 +1,520 @@
+-- sivol_kick: the script-owned kick.
+--
+-- The native engine kick (kKICK in xrGame/ActorInput.cpp) is silenced through
+-- [actor] kick_delay in creatures/actor.ltx, so this module owns the whole
+-- action: gate -> leg clip + camera + sound -> delayed impact -> hit/impulse.
+-- Every tunable lives in sivol_kick_configs.script; nothing here needs an
+-- engine rebuild.
+--
+-- Presentation comes from the "Kick 'Em All" addon (clips actor_kick /
+-- actor_kick_down in lancew_legs_krovosos.omf, kick.anm, kick.ogg); its
+-- script-side hit logic is replaced by the profile system below.
+
+local HIT_PHYSIC_STRIKE = 10
+
+local kick_bind = key_bindings and key_bindings.kKICK
+local kick_snd
+local next_kick_at = 0
+local pending = nil
+local followups = {}
+
+local function cfg()
+	return sivol_kick_configs.config
+end
+
+local function diag(format, ...)
+	if cfg().diagnostics then
+		log2("[KICK_DIAG] " .. format, ...)
+	end
+end
+
+-- ============================================================
+-- Target classification and profile resolution
+-- ============================================================
+
+-- alive() is only valid on entities (it logs an error on items/objects), so
+-- it is asked of characters only.
+local function target_kind(target)
+	if target:is_stalker() then
+		return target:alive() and "human_alive" or "human_dead"
+	end
+	if target:is_monster() then
+		return target:alive() and "monster_alive" or "monster_dead"
+	end
+	if system_ini():line_exist(target:section(), "inv_weight") then
+		return "item"
+	end
+	return "object"
+end
+
+local function merge(dst, src)
+	if src then
+		for k, v in pairs(src) do
+			if k ~= "alive" and k ~= "dead" then
+				dst[k] = v
+			end
+		end
+	end
+end
+
+local function apply_layer(profile, layer, state)
+	if not layer then
+		return
+	end
+	merge(profile, layer)
+	if state then
+		merge(profile, layer[state])
+	end
+end
+
+-- Returns the merged profile table and a short description of the layers used.
+local function resolve_profile(target, kind)
+	local configs = sivol_kick_configs
+	local state = nil
+	if string.find(kind, "_alive", 1, true) then
+		state = "alive"
+	elseif string.find(kind, "_dead", 1, true) then
+		state = "dead"
+	end
+
+	local profile = {}
+	local used = { "base" }
+	merge(profile, configs.base)
+	if configs.kinds and configs.kinds[kind] then
+		apply_layer(profile, configs.kinds[kind], state)
+		used[#used + 1] = kind
+	end
+
+	local section = target:section()
+	if configs.prefixes then
+		for _, entry in ipairs(configs.prefixes) do
+			local prefix = entry[1]
+			if string.sub(section, 1, string.len(prefix)) == prefix then
+				apply_layer(profile, entry[2], state)
+				used[#used + 1] = prefix .. "*"
+			end
+		end
+	end
+	if configs.sections and configs.sections[section] then
+		apply_layer(profile, configs.sections[section], state)
+		used[#used + 1] = section
+	end
+	return profile, table.concat(used, ">")
+end
+
+-- ============================================================
+-- Numbers: mass, power, impulse, direction, bone
+-- ============================================================
+
+local function target_mass(target, kind)
+	local mass
+	if kind == "item" then
+		local ok, w = pcall(target.weight, target)
+		if ok and type(w) == "number" then
+			mass = w
+		end
+	end
+	if not mass then
+		local ok, m = pcall(target.mass, target)
+		if ok and type(m) == "number" then
+			mass = m
+		end
+	end
+	return math.max(mass or 1, 1)
+end
+
+local function ph_mass(target)
+	local ini = system_ini()
+	local section = target:section()
+	if ini:line_exist(section, "ph_mass") then
+		return ini:r_float(section, "ph_mass")
+	end
+	return nil
+end
+
+local function clamp(v, lo, hi)
+	if v < lo then
+		return lo
+	end
+	if v > hi then
+		return hi
+	end
+	return v
+end
+
+local function shell_mass(target)
+	local ok, m = pcall(target.mass, target)
+	if ok and type(m) == "number" and m > 0 then
+		return m
+	end
+	return nil
+end
+
+-- Returns mass, power, impulse, effective mass, expected speed change (m/s).
+local function compute_numbers(profile, target, kind)
+	local mass = target_mass(target, kind)
+
+	local power = profile.power
+	if power == nil then
+		local m = mass >= 0.1 and math.min(mass, profile.mass_cap or 100) or 0.1
+		power = m * (profile.power_per_kg or 0.001)
+	end
+
+	local impulse = profile.impulse or 0
+	local m_eff, dv = nil, nil
+	if profile.impulse_mode == "velocity" then
+		local m = shell_mass(target) or mass
+		local ref = profile.mass_ref or 60
+		m_eff = m
+		if m > ref then
+			m_eff = ref * (m / ref) ^ (profile.mass_exp or 0.5)
+		end
+		impulse = clamp(m_eff * (profile.target_speed or 8), profile.impulse_min or 0, profile.impulse_max or 1e9)
+		dv = impulse / m
+	end
+	if profile.impulse_per_kg then
+		impulse = clamp(mass * profile.impulse_per_kg, profile.impulse_min or 0, profile.impulse_max or 1e9)
+	end
+	if profile.knock_speed then
+		impulse = profile.knock_speed * (ph_mass(target) or 10)
+	end
+	return mass, power, impulse, m_eff, dv
+end
+
+local function kick_direction(up_bias)
+	local actor = db.actor
+	local d = actor:direction()
+	local hl = math.sqrt(d.x * d.x + d.z * d.z)
+	if hl < 0.0001 then
+		local cam = device().cam_dir
+		d = cam
+		hl = math.sqrt(cam.x * cam.x + cam.z * cam.z)
+		if hl < 0.0001 then
+			return vector():set(0, 1, 0)
+		end
+	end
+	local v = vector():set(d.x / hl, up_bias, d.z / hl)
+	v:normalize()
+	return v
+end
+
+local function resolve_bone(profile, target, kind)
+	local bone = profile.bone
+	if bone ~= "ray" then
+		return bone or ""
+	end
+	-- The ray element is only a bone index on skeletal targets.
+	if kind == "item" or kind == "object" then
+		return ""
+	end
+	local ok, rq = pcall(level.get_current_ray_query)
+	if ok and rq and rq.object and rq.object:id() == target:id() and rq.element and rq.element >= 0 then
+		local ok2, name = pcall(target.get_bone_name, target, rq.element)
+		if ok2 and type(name) == "string" then
+			return name
+		end
+	end
+	return ""
+end
+
+-- ============================================================
+-- Hit application
+-- ============================================================
+
+local function send_hit(target, dir, power, impulse, hit_type, bone)
+	local h = hit()
+	h.draftsman = db.actor
+	h.direction = dir
+	h.power = power
+	h.impulse = impulse
+	h.type = hit_type
+	if bone and bone ~= "" then
+		h:bone(bone)
+	end
+	target:hit(h)
+end
+
+local function add_followup(delay_ms, window_ms, fn)
+	local now = time_global()
+	followups[#followups + 1] = { at = now + delay_ms, expire = now + delay_ms + window_ms, fn = fn }
+end
+
+-- After a script kill() the ragdoll may not exist yet: wait for the shell,
+-- then push the body.
+local function post_kill_impulse(target_id, dir, impulse, hit_type)
+	add_followup(0, 800, function()
+		local target = level.object_by_id(target_id)
+		if not target then
+			return true
+		end
+		if target:get_physics_shell() then
+			send_hit(target, dir, 0.0, impulse, hit_type, "")
+			return true
+		end
+		return false
+	end)
+end
+
+local function verify_kill(target_id, dir, impulse, hit_type)
+	add_followup(150, 0, function()
+		local target = level.object_by_id(target_id)
+		if target and target:alive() then
+			diag("kill hit left %s alive, falling back to kill()", tostring(target:name()))
+			target:kill(db.actor)
+			post_kill_impulse(target_id, dir, impulse, hit_type)
+		end
+		return true
+	end)
+end
+
+-- The monster's own movement control overwrites a single velocity set within a
+-- frame or two (the push "sometimes fails"); re-apply it for hold_ms.
+local function start_push(target_id, dir, speed, up, hold_ms)
+	local target = level.object_by_id(target_id)
+	if target then
+		target:nlc_push(dir, speed, up)
+	end
+	if hold_ms > 0 then
+		add_followup(0, hold_ms, function()
+			local t = level.object_by_id(target_id)
+			if not t or not t:alive() then
+				return true
+			end
+			t:nlc_push(dir, speed, up)
+			return false
+		end)
+	end
+end
+
+local function track_knock(target_id, start_pos, health)
+	add_followup(700, 0, function()
+		local target = level.object_by_id(target_id)
+		if target then
+			diag("knock result %s moved=%.2fm health %.3f -> %.3f alive=%s", tostring(target:name()),
+				target:position():distance_to(start_pos), health, target.health, tostring(target:alive()))
+		end
+		return true
+	end)
+end
+
+local function apply_kick(target, press_dist)
+	local c = cfg()
+	local kind = target_kind(target)
+	local profile, layers = resolve_profile(target, kind)
+	if profile.enabled == false then
+		diag("impact %s kind=%s profile=%s DISABLED", tostring(target:name()), kind, layers)
+		return
+	end
+
+	local mass, power, impulse, m_eff, dv = compute_numbers(profile, target, kind)
+
+	-- Velocity push for living characters (engine nlc_push, the burer's push).
+	-- Without the binding the profile's own hit_type/knock_speed impulse is used.
+	local push = nil
+	local has_push = false
+	if profile.push_speed then
+		local ok, f = pcall(function() return target.nlc_push end)
+		has_push = ok and f ~= nil
+	end
+	if has_push and string.find(kind, "_alive", 1, true) then
+		push = true
+		impulse = 0
+	end
+	local dir = kick_direction(profile.up_bias or c.up_bias)
+	local bone = resolve_bone(profile, target, kind)
+	local hit_type = profile.hit_type or HIT_PHYSIC_STRIKE
+	if push then
+		hit_type = HIT_PHYSIC_STRIKE -- ApplyHit would add its own weak single-step impulse for wound/explosion
+	end
+	local id = target:id()
+	local alive = string.find(kind, "_alive", 1, true) ~= nil
+	local start_pos = vector():set(target:position())
+	local health = alive and target.health or 0
+
+	-- A kick that would take the last of a damage_frac target's health is a kill:
+	-- it goes through the killing-hit path (kill credit, fatal ragdoll impulse).
+	local lethal = alive and profile.kill == true
+	if alive and not lethal and profile.damage_frac and not profile.non_lethal and target.health <= profile.damage_frac then
+		lethal = true
+	end
+
+	local damage = 0
+	if lethal then
+		power = profile.kill_power or 5.0
+		-- a push profile has no impulse of its own; the ragdoll needs one
+		if profile.kill_impulse then
+			impulse = profile.kill_impulse
+		elseif push then
+			impulse = (profile.knock_speed or 6) * (ph_mass(target) or 5)
+		end
+	end
+
+	send_hit(target, dir, power, impulse, hit_type, bone)
+
+	if lethal then
+		verify_kill(id, dir, impulse, hit_type)
+	elseif profile.damage_frac and alive then
+		damage = profile.damage_frac
+		if profile.non_lethal then
+			damage = math.min(damage, math.max(target.health - 0.01, 0))
+		end
+		if damage > 0 then
+			target.health = -damage
+		end
+	end
+	if push and not lethal then
+		start_push(id, dir, profile.push_speed, profile.push_up or 0, profile.push_hold_ms or 0)
+	end
+	if (push or profile.knock_speed) and alive and c.diagnostics then
+		track_knock(id, start_pos, health)
+	end
+
+	diag("impact %s section=%s kind=%s profile=%s mass=%.1f m_eff=%s dv=%s power=%.4f impulse=%.1f type=%d bone=%s dmg=%.2f kill=%s dist=%s",
+		tostring(target:name()), tostring(target:section()), kind, layers, mass,
+		m_eff and string.format("%.1f", m_eff) or "-", dv and string.format("%.1fm/s", dv) or "-", power, impulse, hit_type,
+		bone ~= "" and bone or "-", damage, tostring(lethal), tostring(press_dist))
+end
+
+-- ============================================================
+-- Swing flow
+-- ============================================================
+
+local function play_swing_sound()
+	if not kick_snd then
+		kick_snd = sound_object(cfg().swing_sound)
+	end
+	kick_snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+end
+
+local function resolve_target(pend)
+	local c = cfg()
+	local actor = db.actor
+	local reach = c.max_range + c.range_slack
+
+	local function current()
+		local t = level.get_target_obj()
+		if t and level.get_target_dist() <= reach then
+			return t
+		end
+		return nil
+	end
+	local function pressed()
+		if not pend.target_id then
+			return nil
+		end
+		local o = level.object_by_id(pend.target_id)
+		if o and o:position():distance_to(actor:position()) <= reach + 0.5 then
+			return o
+		end
+		return nil
+	end
+
+	if c.retarget then
+		return current() or pressed()
+	end
+	return pressed() or current()
+end
+
+local function on_key(key, bind)
+	if not kick_bind or bind ~= kick_bind then
+		return
+	end
+	local c = cfg()
+	if not c.enabled then
+		return
+	end
+	local actor = db.actor
+	if not actor or not actor:alive() then
+		return
+	end
+	if level.main_input_receiver and level.main_input_receiver() then
+		return
+	end
+
+	local now = time_global()
+	if now < next_kick_at then
+		return
+	end
+
+	local vb = sivol_visible_body
+	if vb and vb.kick_blocked and vb.kick_blocked() then
+		return
+	end
+
+	-- A missing body puppet (option off / hidden) must not disable the kick.
+	local duration, reason
+	if vb and vb.try_kick then
+		duration, reason = vb.try_kick()
+		if not duration and reason ~= "no_body" then
+			return
+		end
+	end
+
+	next_kick_at = now + math.max(c.cooldown_ms, duration or 0)
+
+	if c.stamina_cost and c.stamina_cost > 0 then
+		actor.power = -c.stamina_cost
+	end
+	level.add_cam_effector(c.camera_anm, c.camera_id, false, "")
+	play_swing_sound()
+
+	local target = level.get_target_obj()
+	local press_dist = target and level.get_target_dist() or -1
+	pending = {
+		at = now + c.hit_delay_ms,
+		target_id = (target and press_dist <= c.max_range + c.range_slack) and target:id() or nil,
+		press_dist = press_dist,
+	}
+	diag("swing anim=%s duration_ms=%s press_target=%s dist=%.2f", tostring(duration ~= nil), tostring(duration),
+		target and tostring(target:name()) or "<none>", press_dist)
+end
+
+local function run_followups(now)
+	local i = 1
+	while i <= #followups do
+		local f = followups[i]
+		local remove = false
+		if now >= f.at then
+			local done = f.fn()
+			if done or now >= f.expire then
+				remove = true
+			end
+		end
+		if remove then
+			table.remove(followups, i)
+		else
+			i = i + 1
+		end
+	end
+end
+
+local function on_update()
+	local now = time_global()
+	if pending and now >= pending.at then
+		local pend = pending
+		pending = nil
+		local c = cfg()
+		local actor = db.actor
+		local vb = sivol_visible_body
+		if not actor or not actor:alive() then
+			-- the swing is lost with the actor
+		elseif c.cancel_on_blocked_state and vb and vb.kick_blocked and vb.kick_blocked() then
+			diag("impact cancelled: blocked movement state")
+		else
+			local target = resolve_target(pend)
+			if target then
+				apply_kick(target, string.format("%.2f", pend.press_dist))
+			else
+				diag("impact missed: nothing in range")
+			end
+		end
+	end
+	if #followups > 0 then
+		run_followups(now)
+	end
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_key", fun = on_key })
+	sm:subscribe({ signal = "on_update", fun = on_update })
+end

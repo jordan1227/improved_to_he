@@ -268,6 +268,9 @@ class_<CScriptGameObject> script_register_game_object1(class_<CScriptGameObject>
         .def("set_actor_direction", &CScriptGameObject::SetActorDirection)
 
         .def("set_npc_position", &CScriptGameObject::SetNpcPosition)
+        .def("nlc_set_npc_transform", &CScriptGameObject::nlc_set_npc_transform)
+        .def("nlc_push", &CScriptGameObject::nlc_push)
+        .def("nlc_set_cycle_speed", &CScriptGameObject::nlc_set_cycle_speed)
 
         .def("vertex_in_direction", &CScriptGameObject::vertex_in_direction)
 

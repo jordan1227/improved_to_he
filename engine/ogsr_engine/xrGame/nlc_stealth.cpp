@@ -490,7 +490,8 @@ int obj_rank(const CObject* o)
 
 // the NLC visible-body helper (sivol_visible_body, section actor_legs) is a monster object
 // that follows the actor; it is not an observer worth logging
-bool ignored(const CObject* o) { return o && !xr_strcmp(o->cNameSect().c_str(), "actor_legs"); }
+// NLC: outfit variants are sections "actor_legs_<mesh>" (sivol_visible_body.ltx), so match the prefix
+bool ignored(const CObject* o) { return o && !strncmp(o->cNameSect().c_str(), "actor_legs", 10); }
 
 LPCSTR actor_state()
 {

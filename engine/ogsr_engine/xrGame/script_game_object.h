@@ -239,6 +239,10 @@ public:
 
     void ChangeTeam(u8 team, u8 squad, u8 group);
     void SetNpcPosition(Fvector pos, bool skipCollisionCorrect);
+    // NLC: puppet pose in one call (position + heading, no AI turn lag), impulse-free push, cycle playback speed
+    void nlc_set_npc_transform(Fvector pos, Fvector dir);
+    bool nlc_push(Fvector dir, float speed, float up);
+    void nlc_set_cycle_speed(float scale);
 
     // CAI_Stalker
     CScriptGameObject* GetCurrentWeapon() const;
