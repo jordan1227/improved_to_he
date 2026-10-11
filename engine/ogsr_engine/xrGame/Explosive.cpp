@@ -756,6 +756,17 @@ void CExplosive::net_Relcase(CObject* O)
     }
 }
 
+u16 CExplosive::nlc_blame(CObject* who)
+{
+    if (!who)
+        return u16(-1);
+    CGameObject* object = smart_cast<CGameObject*>(who);
+    CExplosive* explosive = object ? object->cast_explosive() : nullptr;
+    if (explosive && explosive->CurrentParentID() != u16(-1) && explosive->CurrentParentID() != who->ID())
+        return explosive->CurrentParentID();
+    return who->ID();
+}
+
 u16 CExplosive::Initiator()
 {
     u16 initiator = CurrentParentID();

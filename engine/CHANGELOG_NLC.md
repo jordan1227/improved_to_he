@@ -5,6 +5,19 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.65 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `61A1737E3239F6C95BDE6D54017CBF3EA0BC3D34C98315AFF4BA5CEC8B0D7EAC` (archived with its PDB in `nlc_tools/builds/20261011_184422_61a1737e`).
+- **Status:** runtime pending.
+
+### NLC
+
+- **Explosion blame (stock bug):** `CExplosiveItem::Hit` tested `Initiator() == u16(-1)`, which never holds, so a shot
+  canister / gas cylinder (`amk_kanistra`, `amk_ballon`, explosive barrels) credited nobody and friendly NPCs could be
+  killed unpunished. It now records whoever set it off; `CExplosive::nlc_blame` passes the owner of a hitting
+  explosive on, so chains (shot canister -> grenade) blame the first shooter (also in `CGrenade::Hit`).
+
 ## nlc-3.589.64 (2026-10-11)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

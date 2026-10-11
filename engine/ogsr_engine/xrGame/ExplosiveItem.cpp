@@ -35,10 +35,12 @@ void CExplosiveItem::Hit(SHit* pHDS)
     if (CDelayedActionFuse::isActive())
         pHDS->power = 0.f;
     inherited::Hit(pHDS);
-    if (!CDelayedActionFuse::isActive() && CDelayedActionFuse::CheckCondition(GetCondition()) && CExplosive::Initiator() == u16(-1))
+    // NLC: stock tested Initiator() == u16(-1), which never holds (it falls back to the item's own ID): a shot canister
+    // blamed nobody, so friendly NPCs could be killed with it unpunished. The owner of a hitting explosive passes on.
+    if (!CDelayedActionFuse::isActive() && CDelayedActionFuse::CheckCondition(GetCondition()) && CExplosive::CurrentParentID() == u16(-1) && pHDS->who)
     {
         //запомнить того, кто взорвал вещь
-        SetInitiator(pHDS->who->ID());
+        SetInitiator(CExplosive::nlc_blame(pHDS->who));
     }
 }
 void CExplosiveItem::StartTimerEffects() { CParticlesPlayer::StartParticles(pSettings->r_string(*cNameSect(), "set_timer_particles"), Fvector().set(0, 1, 0), ID()); }

@@ -46,7 +46,7 @@ void CGrenade::Hit(SHit* pHDS)
         const bool held = m_nlc_tele_held;
         m_nlc_tele_held = false;
         if (pHDS->who)
-            CExplosive::SetCurrentParentID(pHDS->who->ID());
+            CExplosive::SetCurrentParentID(CExplosive::nlc_blame(pHDS->who));
         Msg("~ [grenade] %s [%d]%s detonated by %s from [%s] damage=%.2f", cNameSect().c_str(), ID(), held ? " (burer-held)" : "", by_bullet ? "bullet" : "explosion",
             pHDS->who ? pHDS->who->cName().c_str() : "?", pHDS->damage());
         Destroy();

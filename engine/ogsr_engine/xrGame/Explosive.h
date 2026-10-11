@@ -47,6 +47,8 @@ public:
     virtual void OnBeforeExplosion();
     virtual void SetCurrentParentID(u16 parent_id) { m_iCurrentParentID = parent_id; }
     IC u16 CurrentParentID() const { return m_iCurrentParentID; }
+    // NLC: who set this off: the owner of a hitting explosive (chains: shot canister -> grenade), else the hitter
+    static u16 nlc_blame(CObject* who);
 
     virtual void SetInitiator(u16 id) { SetCurrentParentID(id); }
     virtual u16 Initiator();
