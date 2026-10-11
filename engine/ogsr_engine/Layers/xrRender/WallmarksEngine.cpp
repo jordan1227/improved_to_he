@@ -5,6 +5,8 @@
 #include "stdafx.h"
 #include "WallmarksEngine.h"
 #include "SkeletonCustom.h"
+#include "../../xr_3da/igame_persistent.h"
+#include "../../xr_3da/environment.h"
 
 namespace WallmarksEngine
 {
@@ -31,6 +33,16 @@ struct wallmark_static_queue_item
     Fvector contact_point{};
     ref_shader shader{};
     float size{};
+    // NLC: see wm_static_params
+    float life{};
+    float grow{};
+    float dry{};
+    float age{};
+    float faint{};
+    bool rain{};
+    float rot{};
+    u32 owner{};
+    bool rot_set{};
 };
 } // namespace WallmarksEngine
 
@@ -107,6 +119,17 @@ CWallmarksEngine::static_wallmark* CWallmarksEngine::static_wm_allocate()
     }
 
     W->ttl = ps_r__WallmarkTTL;
+    W->ttl_max = ps_r__WallmarkTTL;
+    W->born = Device.fTimeGlobal;
+    W->grow_start = 0.f;
+    W->grow_dur = 0.f;
+    W->dry_dur = 0.f;
+    W->owner = 0;
+    W->shaped = false;
+    W->faint = 0.f;
+    W->wash = 0.f;
+    W->rain = false;
+    W->washed = false;
     W->verts.clear();
     return W;
 }
@@ -116,15 +139,42 @@ void CWallmarksEngine::static_wm_destroy(CWallmarksEngine::static_wallmark* W) {
 // render
 void CWallmarksEngine::static_wm_render(const CWallmarksEngine::static_wallmark* W, FVF::LIT*& V)
 {
-    const float a = 1 - (W->ttl / ps_r__WallmarkTTL);
+    // NLC: shaped marks (blood pools) stay solid and fade over the last quarter of their life
+    float a;
+    if (W->shaped)
+        a = 1.f - clampr(W->ttl / W->ttl_max * 4.f, 0.f, 1.f);
+    else
+        a = 1 - (W->ttl / ps_r__WallmarkTTL);
+    // NLC: faint old stains and rain wash-off take opacity away smoothly
+    const float keep = (1.f - W->faint) * (1.f - W->wash);
+    if (keep < 1.f)
+        a = std::max(a, 1.f - keep);
     int aC = iFloor(a * 255.f);
     clamp(aC, 0, 255);
-    const u32 C = color_rgba(128, 128, 128, aC);
+
+    // NLC: drying tint travels in the red channel (effects_wallmark_blood.ps; 128 = none)
+    int rC = 128;
+    if (W->dry_dur > 0.f)
+        rC = 128 + iFloor(clampr((Device.fTimeGlobal - W->born) / W->dry_dur, 0.f, 1.f) * 127.f);
+    const u32 C = color_rgba(rC, 128, 128, aC);
+
+    // NLC: spread from the centre by shrinking the texture window; the geometry is already full size
+    float inv_s = 1.f;
+    if (W->grow_dur > 0.f)
+    {
+        const float k = clampr((Device.fTimeGlobal - W->grow_start) / W->grow_dur, 0.f, 1.f);
+        const float e = 1.f - (1.f - k) * (1.f - k);
+        inv_s = 1.f / std::max(e, 0.03f);
+    }
+
     for (const auto& el : W->verts)
     {
         V->p.set(el.p);
         V->color = C;
-        V->t.set(el.t);
+        if (inv_s > 1.f)
+            V->t.set(0.5f + (el.t.x - 0.5f) * inv_s, 0.5f + (el.t.y - 0.5f) * inv_s);
+        else
+            V->t.set(el.t);
         V++;
     }
 }
@@ -233,6 +283,15 @@ void CWallmarksEngine::add_static_wallmark_internal(const WallmarksEngine::wallm
 
     ZoneScoped;
 
+    // NLC: a pool the rain has washed away stays gone (the script keeps refreshing it)
+    if (q.owner)
+    {
+        for (wm_slot* s : marks)
+            for (const static_wallmark* m : s->static_items)
+                if (m->owner == q.owner && m->washed)
+                    return;
+    }
+
     // query for polygons in bounding box
     // calculate adjacency
 
@@ -269,12 +328,27 @@ void CWallmarksEngine::add_static_wallmark_internal(const WallmarksEngine::wallm
     Fmatrix mView, mRot;
     BuildMatrix(mView, 1 / q.size, q.contact_point);
     const float angle = ::Random.randF(deg2rad(-20.f), deg2rad(20.f));
-    mRot.rotateZ(ps_wm_rotfix ? 0.f : angle);
+    mRot.rotateZ(q.rot_set ? q.rot : (ps_wm_rotfix ? 0.f : angle)); // NLC: explicit rotation wins
     mView.mulA_43(mRot);
     sml_clipper.CreateFromMatrix(mView, FRUSTUM_P_LRTB);
 
     // create wallmark
     static_wallmark* W = static_wm_allocate();
+    if (q.life > 0.f)
+    {
+        W->ttl = W->ttl_max = clampr(q.life, 1.f, 7200.f);
+        W->shaped = true;
+    }
+    if (q.grow > 0.f)
+    {
+        W->grow_dur = q.grow;
+        W->grow_start = Device.fTimeGlobal;
+    }
+    W->dry_dur = q.dry;
+    W->born = Device.fTimeGlobal - q.age;
+    W->owner = q.owner;
+    W->faint = clampr(q.faint, 0.f, 0.95f);
+    W->rain = q.rain;
 
     {
         ZoneScopedN("RecurseTri");
@@ -297,23 +371,45 @@ void CWallmarksEngine::add_static_wallmark_internal(const WallmarksEngine::wallm
 
     // append to slot
 
+    // NLC: a mark with an owner replaces that owner's earlier mark wherever it lies (any slot), keeping its age
+    if (W->owner)
+    {
+        for (wm_slot* s : marks)
+        {
+            auto& items = s->static_items;
+            const auto it = std::find_if(items.begin(), items.end(), [&](const static_wallmark* m) { return m->owner == W->owner; });
+            if (it != items.end())
+            {
+                W->born = (*it)->born;
+                W->wash = (*it)->wash;
+                static_wm_destroy(*it);
+                items.erase(it);
+                break;
+            }
+        }
+    }
+
     //if (W->bounds.R < 1.f)
     {
         // search if similar wallmark exists
         wm_slot* slot = FindSlot(q.shader);
         if (slot)
         {
-            StaticWMVecIt it = slot->static_items.begin();
-            StaticWMVecIt end = slot->static_items.end();
-            for (; it != end; ++it)
+            // NLC: owned marks never merge by position
+            if (!W->owner)
             {
-                static_wallmark* wm = *it;
-                if (wm->bounds.P.similar(W->bounds.P, 0.02f))
+                StaticWMVecIt it = slot->static_items.begin();
+                StaticWMVecIt end = slot->static_items.end();
+                for (; it != end; ++it)
                 {
-                    // replace
-                    static_wm_destroy(wm);
-                    *it = W;
-                    return;
+                    static_wallmark* wm = *it;
+                    if (!wm->owner && wm->bounds.P.similar(W->bounds.P, 0.02f))
+                    {
+                        // replace
+                        static_wm_destroy(wm);
+                        *it = W;
+                        return;
+                    }
                 }
             }
         }
@@ -331,13 +427,31 @@ void CWallmarksEngine::add_static_wallmark_internal(const WallmarksEngine::wallm
     //}
 }
 
-void CWallmarksEngine::AddStaticWallmark(CDB::TRI* pTri, const Fvector* pVerts, const Fvector& contact_point, const ref_shader& sh, const float wm_size)
+void CWallmarksEngine::AddStaticWallmark(CDB::TRI* pTri, const Fvector* pVerts, const Fvector& contact_point, const ref_shader& sh, const float wm_size, const wm_static_params* prm)
 {
     // optimization cheat: don't allow wallmarks more than 100 m from viewer/actor
     if (contact_point.distance_to_sqr(Device.vCameraPosition) > _sqr(100.f))
         return;
 
-    static_items_to_add.emplace_back(pTri, pVerts, contact_point, sh, wm_size);
+    WallmarksEngine::wallmark_static_queue_item item;
+    item.pTri = pTri;
+    item.pVerts = pVerts;
+    item.contact_point = contact_point;
+    item.shader = sh;
+    item.size = wm_size;
+    if (prm)
+    {
+        item.life = prm->life;
+        item.grow = prm->grow;
+        item.dry = prm->dry;
+        item.age = prm->age;
+        item.faint = prm->faint;
+        item.rain = prm->rain;
+        item.rot = prm->rot;
+        item.owner = prm->owner;
+        item.rot_set = prm->rot_set;
+    }
+    static_items_to_add.push_back(item);
 
     // make sure to submit for next parallel call
     Device.add_to_seq_parallel(fastdelegate::MakeDelegate(this, &CWallmarksEngine::add_static_wallmarks_async));
@@ -419,10 +533,19 @@ void CWallmarksEngine::Render()
 
     float ssaCLIP = r_ssaDISCARD / 4;
 
+    // NLC: rain intensity for the wash-off of open-air blood pools
+    float rain_k = 0.f;
+    if (ps_wm_wash_seconds > 0.f && g_pGamePersistent && g_pGamePersistent->Environment().CurrentEnv)
+        rain_k = clampr(g_pGamePersistent->Environment().CurrentEnv->rain_density, 0.f, 1.f);
+
     lock.Enter(); // Physics may add wallmarks in parallel with rendering
 
     for (const auto& slot : marks)
     {
+        // NLC: idle slots (24 blood pool textures, most bullet marks) used to cost two vertex buffer locks each per frame
+        if (slot->static_items.empty() && slot->skeleton_items.empty())
+            continue;
+
         u32 w_offset;
         FVF::LIT *w_verts, *w_start;
         BeginStream(hGeom, w_offset, w_verts, w_start);
@@ -450,6 +573,26 @@ void CWallmarksEngine::Render()
             else
             {
                 W->ttl -= Device.fTimeDelta;
+            }
+            // NLC: rain washes open-air marks away gradually (the fade happens in static_wm_render)
+            if (W->rain && rain_k > 0.f && !W->washed)
+            {
+                W->wash += Device.fTimeDelta * rain_k / ps_wm_wash_seconds;
+                if (W->wash >= 1.f)
+                {
+                    if (W->owner)
+                    {
+                        // keep an empty marker so the script's refresh cannot bring the pool back
+                        W->washed = true;
+                        W->verts.clear();
+                        W->verts.shrink_to_fit();
+                        W->ttl = W->ttl_max = 3.0e8f;
+                    }
+                    else
+                    {
+                        W->ttl = 0.f;
+                    }
+                }
             }
             if (W->ttl <= EPS)
             {

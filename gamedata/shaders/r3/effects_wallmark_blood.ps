@@ -1,0 +1,56 @@
+/**
+ * @ Version: SCREEN SPACE SHADERS - UPDATE 17
+ * @ Description: Blood Decal - Pixel Shader
+ * @ Modified time: 2023-07-06 12:28
+ * @ NLC: texture window mask and drying tint for blood pool wallmarks
+ * @ Author: https://www.moddb.com/members/ascii1457
+ * @ Mod: https://www.moddb.com/mods/stalker-anomaly/addons/screen-space-shaders
+ */
+
+#include "common.h"
+
+uniform float4 ssfx_blood_decals;
+
+// NLC: soak halo. The faint outer part of the pool texture (alpha below the hard cut of the
+// pool itself) is blurred with a low mip and drawn as a dark, translucent stain, so blood
+// soaks into the ground around the pool. Tune here.
+#define NLC_SOAK_LOD   2.5f   // mip used for the blur (higher = wider, softer)
+#define NLC_SOAK_ALPHA 0.55f  // opacity of the stain at its darkest
+#define NLC_SOAK_DRIED 0.5f   // fraction of the stain that is left when the blood has dried
+
+float4 main(p_TL I) : SV_Target
+{
+    float4 res = s_base.Sample(smp_base, I.Tex0);
+
+    // NLC: blood pools spread by shrinking the texture window (WallmarksEngine::static_wm_render).
+    // smp_base wraps, so everything outside the texture has to stay transparent.
+    float2 win = step(-0.0005f, I.Tex0) * step(I.Tex0, 1.0005f);
+
+    // Color intensity
+    res.rgb *= ssfx_blood_decals.x;
+
+    // NLC: drying tint. Vertex red 128 (0.5) is a stock mark; pools raise it towards 255 as the
+    // blood dries, which darkens and browns the colour.
+    float dried = saturate((I.Color.r - 0.51f) * 2.0f);
+    res.rgb *= lerp(float3(1.0f, 1.0f, 1.0f), float3(0.55f, 0.42f, 0.36f), dried);
+
+    // Alpha adjustments (the pool itself)
+    float core = saturate(res.a * 1.7f - 0.7f);
+
+    // NLC: soak halo. This shader is shared by every wm_blood_* mark, so combat splats and
+    // blood drops get the same stain around them (lower NLC_SOAK_ALPHA to tone it down).
+    float soak = s_base.SampleLevel(smp_base, I.Tex0, NLC_SOAK_LOD).a;
+    float halo = smoothstep(0.04f, 0.45f, soak) * NLC_SOAK_ALPHA * lerp(1.0f, NLC_SOAK_DRIED, dried);
+    float3 halo_rgb = float3(0.05f, 0.02f, 0.015f) * saturate(ssfx_blood_decals.x);
+
+    float3 rgb = lerp(halo_rgb, res.rgb, core);
+    float a = max(core, halo) * ssfx_blood_decals.y;
+
+    // Lifespan fade-out
+    a *= 1.0 - I.Color.a;
+
+    // NLC: texture window (see above)
+    a *= win.x * win.y;
+
+    return float4(rgb, a);
+}

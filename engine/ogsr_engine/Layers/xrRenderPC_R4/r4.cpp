@@ -4,6 +4,7 @@
 #include "../../xr_3da/CustomHUD.h"
 #include "../../xr_3da/igame_persistent.h"
 #include "../../xr_3da/environment.h"
+#include "../../xr_3da/GameMtlLib.h"
 #include "../xrRender/SkeletonCustom.h"
 #include "../xrRender/LightTrack.h"
 #include "../xrRender/dxRenderDeviceRender.h"
@@ -365,9 +366,20 @@ void CRender::add_StaticWallmark(ref_shader& S, const Fvector& P, float s, CDB::
 void CRender::add_StaticWallmark(IWallMarkArray* pArray, const Fvector& P, float s, CDB::TRI* T, Fvector* V)
 {
     dxWallMarkArray* pWMA = smart_cast<dxWallMarkArray*>(pArray);
-    ref_shader* pShader = pWMA->dxGenerateWallmark();
+    ref_shader* pShader = pWMA->dxGenerateWallmark(pWMA->has_soft() && T && GMLib.NLCSoftSurface(u16(T->material)));
     if (pShader)
         add_StaticWallmark(*pShader, P, s, T, V);
+}
+
+// NLC: static wallmark with per-mark parameters (blood pools)
+void CRender::add_StaticWallmark(IWallMarkArray* pArray, const Fvector& P, float s, CDB::TRI* T, Fvector* V, const wm_static_params& prm)
+{
+    dxWallMarkArray* pWMA = smart_cast<dxWallMarkArray*>(pArray);
+    ref_shader* pShader = pWMA->dxGenerateWallmark(pWMA->has_soft() && T && GMLib.NLCSoftSurface(u16(T->material)));
+    if (!pShader || T->suppress_wm)
+        return;
+    VERIFY(_valid(P) && _valid(s) && T && V && (s > EPS_L), "Invalid static wallmark params");
+    Wallmarks->AddStaticWallmark(T, V, P, &**pShader, s, &prm);
 }
 
 void CRender::add_StaticWallmark(const wm_shader& S, const Fvector& P, float s, CDB::TRI* T, Fvector* V)

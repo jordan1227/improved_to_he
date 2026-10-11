@@ -10,6 +10,21 @@
 class IUIShader;
 typedef FactoryPtr<IUIShader> wm_shader;
 
+// NLC: optional per-mark parameters of a static wallmark (blood pools, fl_hook "bpm").
+// A default-constructed value reproduces the vanilla wallmark behaviour.
+struct wm_static_params
+{
+    float life{}; // seconds until the mark has faded away at the off-screen decay rate (0 = r__wallmark_ttl)
+    float grow{}; // seconds the mark takes to spread from its centre to full size (0 = full size at once)
+    float dry{}; // seconds over which the mark darkens (0 = no tint)
+    float age{}; // seconds the mark counts as already old when created (starts partly or fully dried)
+    float faint{}; // 0..0.95: share of the opacity that is always taken away (a faint old stain)
+    bool rain{}; // open to the sky: rain washes the mark away gradually
+    float rot{}; // fixed decal rotation in radians, used when rot_set
+    u32 owner{}; // non-zero: replaces the earlier mark of the same owner instead of stacking
+    bool rot_set{};
+};
+
 // refs
 class ENGINE_API IRenderable;
 struct ENGINE_API FSlideWindowItem;
@@ -186,6 +201,8 @@ public:
     virtual void add_StaticWallmark(const wm_shader& S, const Fvector& P, float s, CDB::TRI* T, Fvector* V) = 0;
     //	Prefer this function when possible
     virtual void add_StaticWallmark(IWallMarkArray* pArray, const Fvector& P, float s, CDB::TRI* T, Fvector* V) = 0;
+    // NLC: same with per-mark parameters (see wm_static_params)
+    virtual void add_StaticWallmark(IWallMarkArray* pArray, const Fvector& P, float s, CDB::TRI* T, Fvector* V, const wm_static_params& prm) = 0;
     //	Prefer this function when possible
     virtual void add_SkeletonWallmark(Fmatrix* xf, IKinematics* obj, IWallMarkArray* pArray, Fvector& start, Fvector& dir, float size) = 0;
 

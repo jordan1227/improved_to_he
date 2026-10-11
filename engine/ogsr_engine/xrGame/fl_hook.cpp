@@ -1169,7 +1169,20 @@ static bool step_material_read(LPCSTR& ground, LPCSTR& self, int& gid)
 }
 
 // ---------------------------------------------------------------------------
-// blood pool wallmarks (sivol_blood_pools.script: bpm x y z dist size [tex])
+// blood pool wallmarks (sivol_blood_pools.script:
+//   bpm x y z dist size [tex [life [grow [rot_deg [owner [dry [age [faint]]]]]]]])
+//   tex   1..24 pool texture, 0 = random
+//   life  seconds until the pool has faded at the off-screen decay rate (0 = r__wallmark_ttl)
+//   grow  seconds the pool takes to spread to full size (0 = at once)
+//   rot   decal rotation in degrees (>= 900 = vanilla: random unless rotfix)
+//   owner non-zero id: a later bpm with the same owner replaces the earlier pool (refresh / relocate)
+//   dry   seconds over which the pool darkens (0 = no tint)
+//   age   seconds the pool already counts as old (a replaced pool keeps its own age)
+//   faint 0..0.95 share of the opacity taken away for good (old dried stain)
+//   bpm mtl         lists the game materials with their blood surface class
+//   bpm wash <sec>  seconds of full rain that wash an open-air pool away (0 = off)
+//   The engine picks the soft-ground blood shader from the hit material, and marks pools that
+//   are open to the sky for rain wash-off.
 // ---------------------------------------------------------------------------
 
 static constexpr LPCSTR BP_TEX[] = {
@@ -1213,7 +1226,7 @@ static bool bp_fail_with(int reason)
     return false;
 }
 
-static bool bp_place(float x, float y, float z, float dist, float size, int tex)
+static bool bp_place(float x, float y, float z, float dist, float size, int tex, const wm_static_params& prm)
 {
     if (!has_level())
         return bp_fail_with(1);
@@ -1253,7 +1266,17 @@ static bool bp_place(float x, float y, float z, float dist, float size, int tex)
     if (!::Render)
         return bp_fail_with(8);
 
-    ::Render->add_StaticWallmark(arr, end, size, tri, verts);
+    // open to the sky? (rain washes such pools away)
+    wm_static_params p = prm;
+    {
+        collide::rq_result U;
+        const Fvector up{0.f, 1.f, 0.f};
+        Fvector from = end;
+        from.y += 0.3f;
+        p.rain = !Level().ObjectSpace.RayPick(from, up, 40.f, collide::rqtStatic, U, nullptr);
+    }
+
+    ::Render->add_StaticWallmark(arr, end, size, tri, verts, p);
     bp_reason = 0;
     ++bp_ok;
     return true;
@@ -1266,8 +1289,27 @@ static void cmd_bpm(LPCSTR a)
     if (!*a)
     {
         Msg("~ [bpm] ok=%d fail=%d", bp_ok, bp_fail);
-        Msg("~ [bpm] last_reason=%d (0ok 3no_hit 7not_bloodmark)", bp_reason);
+        Msg("~ [bpm] last_reason=%d (0ok 3no_hit 7not_bloodmark 9bad_args)", bp_reason);
         Msg("~ [bpm] rotfix=%d (decal rotation jitter off)", ps_wm_rotfix);
+        return;
+    }
+    if (a[0] == 'm' && a[1] == 't' && a[2] == 'l')
+    {
+        const u32 n = GMLib.CountMaterial();
+        for (u32 i = 0; i < n; ++i)
+        {
+            SGameMtl* m = GMLib.GetMaterialByIdx(u16(i));
+            if (m)
+                Msg("~ [bpm] mtl %3u %-28s %s%s", i, m->m_Name.c_str(), GMLib.NLCSoftSurface(u16(i)) ? "soft" : "hard", m->Flags.test(SGameMtl::flBloodmark) ? "" : "  (no bloodmark)");
+        }
+        return;
+    }
+    if (a[0] == 'w' && a[1] == 'a' && a[2] == 's' && a[3] == 'h')
+    {
+        float v = ps_wm_wash_seconds;
+        if (parse_float(a + 4, &v))
+            ps_wm_wash_seconds = clampr(v, 0.f, 36000.f);
+        Msg("~ [bpm] wash=%.0f s of full rain (0 = off)", ps_wm_wash_seconds);
         return;
     }
     // decal rotation jitter: affects all static wallmarks, not just pools
@@ -1281,7 +1323,7 @@ static void cmd_bpm(LPCSTR a)
         Msg("~ [bpm] rotfix=%d", ps_wm_rotfix);
         return;
     }
-    float x, y, z, dist, size, tex = 0.f;
+    float x, y, z, dist, size, tex = 0.f, life = 0.f, grow = 0.f, rot = 999.f, owner = 0.f, dry = 0.f, age = 0.f, faint = 0.f;
     LPCSTR p = parse_float(a, &x);
     if (p)
         p = parse_float(p, &y);
@@ -1293,11 +1335,40 @@ static void cmd_bpm(LPCSTR a)
         p = parse_float(p, &size);
     if (!p)
     {
-        Msg("!! [bpm] usage: bpm x y z dist size [tex]");
+        Msg("!! [bpm] usage: bpm x y z dist size [tex [life [grow [rot_deg [owner [dry [age [faint]]]]]]]]");
         return;
     }
-    parse_float(p, &tex);
-    bp_place(x, y, z, dist, size, int(tex));
+    float* const opt[] = {&tex, &life, &grow, &rot, &owner, &dry, &age, &faint};
+    for (float* o : opt)
+    {
+        p = parse_float(p, o);
+        if (!p)
+            break;
+    }
+
+    // size 0 would divide by zero in the projection; absurd values only cost time
+    const float* const all[] = {&x, &y, &z, &dist, &size, &tex, &life, &grow, &rot, &owner, &dry, &age, &faint};
+    for (const float* v : all)
+    {
+        if (!_valid(*v))
+        {
+            bp_fail_with(9);
+            return;
+        }
+    }
+    wm_static_params prm;
+    prm.life = clampr(life, 0.f, 7200.f);
+    prm.grow = clampr(grow, 0.f, 120.f);
+    prm.dry = clampr(dry, 0.f, 7200.f);
+    prm.age = clampr(age, 0.f, 7200.f);
+    prm.owner = u32(clampr(owner, 0.f, 16777215.f));
+    prm.faint = clampr(faint, 0.f, 0.95f);
+    if (rot < 900.f)
+    {
+        prm.rot = deg2rad(rot);
+        prm.rot_set = true;
+    }
+    bp_place(x, y, z, clampr(dist, 0.1f, 8.f), clampr(size, 0.05f, 4.f), int(tex), prm);
 }
 
 // ---------------------------------------------------------------------------

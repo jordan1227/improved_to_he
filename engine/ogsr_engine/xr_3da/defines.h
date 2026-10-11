@@ -54,3 +54,4 @@ enum
 ENGINE_API extern u32 psCurrentVidMode[];
 ENGINE_API extern Flags32 psDeviceFlags;
 ENGINE_API extern int ps_wm_rotfix;
+ENGINE_API extern float ps_wm_wash_seconds; // NLC: seconds of full rain that wash an open-air blood pool away (0 = off)

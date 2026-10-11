@@ -268,6 +268,7 @@ public:
 
     // wallmarks
     virtual void add_StaticWallmark(IWallMarkArray* pArray, const Fvector& P, float s, CDB::TRI* T, Fvector* V);
+    virtual void add_StaticWallmark(IWallMarkArray* pArray, const Fvector& P, float s, CDB::TRI* T, Fvector* V, const wm_static_params& prm); // NLC
     virtual void add_StaticWallmark(const wm_shader& S, const Fvector& P, float s, CDB::TRI* T, Fvector* V);
 
     virtual void append_SkeletonWallmark(intrusive_ptr<CSkeletonWallmark> wm);

@@ -1,0 +1,42 @@
+/**
+ * @ NLC: blood wallmark on soft ground (earth, grass, sand). Output is a colour multiplier for the
+ * ground (blend destcolor, zero), so the ground texture stays visible under the blood.
+ * Same inputs as effects_wallmark_blood.ps: vertex red = drying (0.5 = none), vertex alpha = fade.
+ */
+
+#include "common.h"
+
+uniform float4 ssfx_blood_decals;
+
+#define NLC_SOFT_BLOOD_K   0.80f  // how strongly the blood colour is multiplied into the ground
+#define NLC_SOFT_SOAK_LOD  3.0f   // mip used for the soak ring (higher = wider, softer)
+#define NLC_SOFT_SOAK_K    0.85f  // darkness of the soak ring
+#define NLC_SOFT_SOAK_DRY  0.6f   // share of the soak ring left when the blood has dried
+
+float4 main(p_TL I) : SV_Target
+{
+    float4 res = s_base.Sample(smp_base, I.Tex0);
+
+    // smp_base wraps: everything outside the texture window stays untouched
+    float2 win = step(-0.0005f, I.Tex0) * step(I.Tex0, 1.0005f);
+
+    // drying (see effects_wallmark_blood.ps)
+    float dried = saturate((I.Color.r - 0.51f) * 2.0f);
+
+    // the pool itself and a wider, blurred soak ring around it
+    float core = saturate(res.a * 1.7f - 0.7f);
+    float soak = s_base.SampleLevel(smp_base, I.Tex0, NLC_SOFT_SOAK_LOD).a;
+    float ring = smoothstep(0.03f, 0.40f, soak) * (1.0f - core);
+
+    float3 one = float3(1.0f, 1.0f, 1.0f);
+    float3 blood = lerp(one, saturate(res.rgb * ssfx_blood_decals.x), NLC_SOFT_BLOOD_K);
+    blood *= lerp(one, float3(0.70f, 0.60f, 0.55f), dried);
+    float3 stain = lerp(one, float3(0.42f, 0.34f, 0.30f), NLC_SOFT_SOAK_K * lerp(1.0f, NLC_SOFT_SOAK_DRY, dried));
+
+    float3 m = lerp(one, blood, core) * lerp(one, stain, ring);
+
+    // fade (life, faint old stains, rain wash-off) and the global decal strength
+    float k = saturate((1.0f - I.Color.a) * ssfx_blood_decals.y) * win.x * win.y;
+
+    return float4(lerp(one, m, k), 1.0f);
+}

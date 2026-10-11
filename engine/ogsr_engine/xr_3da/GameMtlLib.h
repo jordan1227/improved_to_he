@@ -197,8 +197,14 @@ class ENGINE_API CGameMtlLibrary
     u32 material_count;
     GameMtlPairVec material_pairs_rt;
 
+    xr_vector<u8> m_nlc_surface; // NLC: 0 = not decided, 1 = hard, 2 = soft (blood soaks in)
+
 public:
     CGameMtlLibrary();
+
+    // NLC: surfaces that soak blood in (earth, grass...), decided by material name; the substring
+    // lists come from config\misc\blood_pool_surfaces.ltx ([soft] / [hard]).
+    bool NLCSoftSurface(u16 idx);
     ~CGameMtlLibrary()
     {
         /*
@@ -209,6 +215,7 @@ public:
     }
     IC void Unload()
     {
+        m_nlc_surface.clear();
         material_count = 0;
         material_pairs_rt.clear();
 

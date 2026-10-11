@@ -11,6 +11,7 @@ struct wm_slot;
 
 class CSkeletonWallmark;
 class CKinematics;
+struct wm_static_params; // xr_3da/Render.h
 
 class CWallmarksEngine
 {
@@ -23,6 +24,18 @@ public:
         Fsphere bounds;
         xr_vector<FVF::LIT> verts;
         float ttl;
+        // NLC: optional per-mark behaviour (blood pools); all zero = vanilla mark
+        float ttl_max; // fade reference in seconds (r__wallmark_ttl unless shaped)
+        float born; // Device.fTimeGlobal at creation (drying tint)
+        float grow_start; // Device.fTimeGlobal when the spread started
+        float grow_dur; // 0 = full size at once
+        float dry_dur; // 0 = no tint
+        u32 owner; // non-zero: a new mark of the same owner replaces this one
+        bool shaped; // custom life: solid, then fades over the last quarter of it
+        float faint; // 0..0.95: share of the opacity that is always taken away
+        float wash; // 0..1: how much rain has washed the mark away
+        bool rain; // open to the sky: rain washes it away
+        bool washed; // fully washed away: kept empty so a refresh does not bring it back
     };
     DEFINE_VECTOR(static_wallmark*, StaticWMVec, StaticWMVecIt);
     DEFINE_VECTOR(wm_slot*, WMSlotVec, WMSlotVecIt);
@@ -64,7 +77,7 @@ public:
     CWallmarksEngine();
     ~CWallmarksEngine();
 
-    void AddStaticWallmark(CDB::TRI* pTri, const Fvector* pVerts, const Fvector& contact_point, const ref_shader& sh, float wm_size);
+    void AddStaticWallmark(CDB::TRI* pTri, const Fvector* pVerts, const Fvector& contact_point, const ref_shader& sh, float wm_size, const wm_static_params* prm = nullptr);
 
     void AddSkeletonWallmark(Fmatrix* xf, CKinematics* obj, const ref_shader& sh, const Fvector& start, const Fvector& dir, float size);
     void AppendSkeletonWallmark(intrusive_ptr<CSkeletonWallmark> wm);

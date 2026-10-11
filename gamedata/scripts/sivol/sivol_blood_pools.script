@@ -1,190 +1,471 @@
 -- =============================================================================
--- BLOOD POOLS CONFIGURATION
+-- BLOOD POOLS
+--
+-- A pool is a function of a corpse, not of a death event: every corpse that is
+-- online gets one stamped under it, so pools also appear after a save/load, when
+-- a corpse comes online, and when the engine mark has expired.
+--
+-- Engine side: fl_hook.cpp "bpm" places a static wallmark that belongs to an owner
+-- id (the corpse), lives for a given time, spreads by itself (no script ticks) and
+-- darkens as it dries. Stamping with the same owner replaces the old mark.
+-- Design notes: BLOOD_POOLS.md in the docs folder of the repository.
 -- =============================================================================
 
 local settings = {
-    -- How long (in seconds) the fully grown pool stays on the ground before disappearing.
-    -- (Note: The engine's wallmark TTL handles the actual fading, this just dictates logic). 200
-    pool_lifetime  = 600,
-    
-    -- How many times the pool updates/grows from start to finish.
-    -- 80 updates makes the growth very smooth and gradual.
-    num_of_updates = 90,
-    
-    -- Time in seconds between each growth update.
-    -- 0.06 seconds means a pool fully grows in ~4.8 seconds (80 * 0.06).
-    update_freq    = 0.07,
-    
-    -- The maximum radius/size of a blood pool at its final stage of growth.
-    -- Increase this to make pools generally larger for everyone.
+    -- Radius (m) of a pool at size_mult 1.0 and amount 1.0.
     max_pool_size  = 1.0,
+
+    -- Seconds a pool survives while it is off screen. In view the engine ages
+    -- it 10x slower. The pool is stamped again every refresh_period while the
+    -- player is within stamp_range, which restarts this clock.
+    pool_life      = 900,
+    refresh_period = 150,
+
+    -- Seconds a fresh pool takes to spread to full size.
+    grow_time      = 7.0,
+
+    -- Seconds for the blood to dry to its darkest (engine-side tint).
+    dry_time       = 420,
+
+    -- A new corpse gets settle_min..settle_max seconds to come to rest before the
+    -- pool starts. A body that moves less than rest_eps (m, manhattan) between two
+    -- checks (0.5 s apart) is at rest.
+    settle_min     = 2.0,
+    settle_max     = 10.0,
+    rest_eps       = 0.03,
+
+    -- Only corpses closer than this (m) get a pool. The engine drops wallmarks
+    -- farther than 100 m from the camera anyway.
+    stamp_range    = 70,
+
+    -- A body that rests this far (m) from where it was last stamped leaves its pool
+    -- where it is and bleeds a new, smaller one at the new spot (at most max_pools
+    -- per corpse). The old pool keeps spreading and is refreshed like the others.
+    move_eps       = 0.35,
+    max_pools      = 4,
+    move_size_k    = 0.7,
+    move_grow      = 4.0,
+
+    -- Ray: starts start_height above the spine bone and goes down trace_dist.
+    -- Raise trace_dist if pools are missing under bodies that lie on ledges.
+    start_height   = 0.5,
+    trace_dist     = 2.5,
+
+    -- Corpses older than this (game hours) are not given a fresh pool when they come
+    -- online: they get a faint dried stain instead (faint = share of opacity removed).
+    -- A corpse whose death time is unknown (killed before this was recorded) counts as old.
+    old_age_hours  = 12,
+    stain_faint    = 0.65,
+    -- A pool whose corpse has become old fades to the stain in steps of this size, one
+    -- per refresh (no pop).
+    stain_step     = 0.22,
+
+    -- At most this many first stamps / refreshes per check (0.5 s), so a crowded area
+    -- does not stamp dozens of pools in one frame after a load.
+    stamps_per_tick = 3,
+
+    -- Total of (hit power x bleed weight) below which a corpse leaves no pool
+    -- (died of fire, shock, radiation or psy damage alone).
+    min_bleed      = 0.02,
 }
 
--- The number of available blood pool textures in the engine (wm_blood_pool_1 to 24)
+-- The number of pool textures in the engine (wm_blood_pool_1 to 24).
 local pool_textures = 24
 
--- How long (in seconds) to wait after an NPC dies before starting the blood pool.
--- This allows time for the ragdoll to settle on the ground.
-local pool_starts_in = 5
+-- How much a hit type bleeds. Hit types not listed here (burn, shock, radiation,
+-- telepatic) do not bleed. Resolved lazily because the hit table is an engine class.
+local hit_weight_names = {
+    fire_wound    = 1.0,   -- bullets
+    wound         = 1.0,   -- knife, claws
+    strike        = 0.7,   -- blunt impact, mutant strikes
+    explosion     = 1.6,   -- gore
+    chemical_burn = 0.15,
+}
+local hit_weight
 
--- How far downward (in meters) to scan from the body's bone to find the floor.
--- If pools are appearing floating in the air, increase this. 
-local pool_trace_dist = 3.0
-
--- =============================================================================
-
-local function vecSimilar(v1, v2, eps)
-	eps = eps or 0.4
-	local abs = math.abs
-	return abs(v1.x - v2.x) < eps and abs(v1.y - v2.y) < eps and abs(v1.z - v2.z) < eps
+local function get_hit_weight()
+    if hit_weight then return hit_weight end
+    hit_weight = {}
+    for name, w in pairs(hit_weight_names) do
+        local t = hit[name]
+        if t ~= nil then hit_weight[t] = w end
+    end
+    return hit_weight
 end
 
-local enable_debug = false
-local function printf(...)
-	if enable_debug then
-		_G.printf(...)
-	end
+-- Pool radius multiplier per monster class. Unlisted monsters use 1.0; poltergeist
+-- is non-corporeal and leaves nothing.
+local monster_mult_names = {
+    dog_s         = 0.35,
+    pseudodog_s   = 0.45,
+    psy_dog_s     = 0.45,
+    boar_s        = 0.7,
+    flesh_s       = 0.85,
+    bloodsucker_s = 0.65,
+    snork_s       = 0.5,
+    tushkano_s    = 0.1,
+    zombie_s      = 0.15,
+    gigant_s      = 1.1,
+    chimera_s     = 0.95,
+    burer_s       = 0.5,
+    controller_s  = 0.6,
+    cat_s         = 0.3,
+    poltergeist_s = 0.0,
+}
+-- Humans (stalkers). Was effectively 1.0 in the original script (its 0.6 entry was
+-- only consulted for monsters); lowered to 0.6 on request.
+local human_mult = 0.6
+local monster_mult
+
+local function class_mult(obj)
+    if not IsMonster(obj) then return human_mult end
+    if not monster_mult then
+        monster_mult = {}
+        for name, m in pairs(monster_mult_names) do
+            local c = clsid[name]
+            if c ~= nil then monster_mult[c] = m end
+        end
+    end
+    return monster_mult[obj:clsid()] or 1
 end
 
-local pool_size_mult = {
-    [clsid.actor]            = 0.6,  
-    [clsid.script_stalker]   = 0.6,  
-	[clsid.dog_s]             = 0.35,
-	[clsid.pseudodog_s]       = 0.45,
-	[clsid.psy_dog_s]         = 0.45,
-	[clsid.boar_s]            = 0.7,
-	[clsid.flesh_s]           = 0.85,
-	[clsid.bloodsucker_s]     = 0.65,
-	[clsid.snork_s]           = 0.5,
-	[clsid.tushkano_s]        = 0.1,
-	[clsid.zombie_s]          = 0.15,
-	[clsid.gigant_s]          = 1.1,
-	[clsid.chimera_s]         = 0.95,
-	[clsid.burer_s]           = 0.5,
-	[clsid.controller_s]      = 0.6,
-	[clsid.cat_s]             = 0.3,
-	-- not in your creatures_clslist/monster_classes, so unconfirmed -- kept as a guess since
-	-- rat is a stock SoC critter type; drop this line if it's wrong or you don't want it
-	-- poltergeist has no entry here on purpose: it wasn't in the original Anomaly table at all
-	-- (no prior multiplier to carry over), and it's non-corporeal -- worth deciding whether it
-	-- should leave a blood pool at all before giving it one. Unlisted monsters just fall back
-	-- to the default multiplier of 1 below, so it's not broken, just unconsidered.
+-- Sections that look like corpses but are not bodies that bled.
+local skip_sections = {
+    zombie_trup_fc      = true,
+    nlc_corpse_skeleton = true,
 }
 
 local boneList = {
-	"bip01_spine",
-	"bip01_spine1",
-	"spine",
-	"spine1",
+    "bip01_spine",
+    "bip01_spine1",
+    "spine",
+    "spine1",
 }
 
-local function getBloodPoolPos(obj)
-	for _, v in ipairs(boneList) do
-		if obj:get_bone_id(v) ~= 65535 then
-			return obj:bone_position(v)
-		end
-	end
-	return obj:position():add(vector():set(0, 0.5, 0))
+local enable_debug = false
+local function dbg(...)
+    if enable_debug then
+        _G.printf(...)
+    end
 end
 
-local saved_pool = {}
+-- -----------------------------------------------------------------------------
+-- state
+-- -----------------------------------------------------------------------------
 
-local function start_blood_pool(id)
-	local obj = level.object_by_id(id)
-	if not obj then return end
+-- [id] = accumulated bleeding (hit power x weight) of a victim that was hit
+local bleed = {}
 
-	local pos = getBloodPoolPos(obj)
-	saved_pool[id] = {}
-	saved_pool[id].pos = pos
-	saved_pool[id].moved = false
-	saved_pool[id].size_mult = 1
-	saved_pool[id].tex = math.random(1, pool_textures)
+-- [id] = record of a corpse that gets a pool:
+--   id, size (pool radius), tex, rot (deg), die (time_global ms of a death seen
+--   live, nil for a restored corpse), px/py/pz (last position), calm (consecutive
+--   rest checks), next (ms of the next check), stamped_at (ms), sx/sy/sz
+--   (position of the body at the last stamp), pools (list of stamped pools),
+--   died (game second of death, may be nil), faint (0..1 opacity taken away),
+--   refresh_at (ms of the next refresh)
+local corpses = {}
 
-	if IsMonster(obj) then
-		saved_pool[id].size_mult = pool_size_mult[obj:clsid()] or 1
-	end
+local timer
 
-	local function draw_pool(size, npc_id, i, size_i)
-		local npc = level.object_by_id(npc_id)
+-- -----------------------------------------------------------------------------
+-- persistence: se_stalker carries s_storage in the save, se_monster blood_amount
+-- -----------------------------------------------------------------------------
 
-		if not npc or i >= settings.num_of_updates then
-			saved_pool[npc_id] = nil
-			return true
-		end
+local STORAGE_SECTION = "nlc_blood"
 
-		if not saved_pool[npc_id] then
-			return true
-		end
-
-		local function genNextEvent()
-			size_i = size_i + 1
-			i = i + 1
-			dsh.timeout(settings.update_freq * 1000, function() draw_pool(size, id, i, size_i) end)
-		end
-
-		local pos = getBloodPoolPos(npc)
-		if saved_pool[npc_id].moved then
-			if vecSimilar(saved_pool[npc_id].pos, pos, 0.01) then
-				printf("body %s settled", npc_id)
-				saved_pool[npc_id].moved = false
-				saved_pool[npc_id].pos = pos
-				size_i = 1
-			else
-				printf("body %s still moving", npc_id)
-				size_i = settings.num_of_updates * 0.08
-				saved_pool[npc_id].pos = pos
-			end
-		else
-			if not vecSimilar(saved_pool[npc_id].pos, pos) then
-				printf("body %s is moved", npc_id)
-				saved_pool[npc_id].moved = true
-				saved_pool[npc_id].pos = pos
-				genNextEvent()
-				return true
-			end
-		end
-
-		local vec_pos = vector():set(
-			saved_pool[npc_id].pos.x,
-			saved_pool[npc_id].pos.y + 1,
-			saved_pool[npc_id].pos.z
-		)
-		local t = size_i / settings.num_of_updates
-		if t > 1 then t = 1 end
-		size = t * saved_pool[npc_id].size_mult * settings.max_pool_size
-		get_console():execute(string.format("bpm %f %f %f %f %f %d",
-			vec_pos.x, vec_pos.y, vec_pos.z, pool_trace_dist, size, saved_pool[npc_id].tex))
-
-		genNextEvent()
-		return true
-	end
-
-	local i = 1
-	local size_i = 1
-	local size = (size_i / settings.num_of_updates) * settings.max_pool_size
-	dsh.timeout(pool_starts_in * 1000, function() draw_pool(size, id, i, size_i) end)
-	return true
+local function game_seconds()
+    return game.get_game_time():diffSec(game.CTime())
 end
 
-local function on_death_callback(npc)
-	local npc_id = npc:id()
-	dsh.timeout(3000, function() start_blood_pool(npc_id) end)
+-- Stored with the corpse: the amount (0..1.2) and the game second of death.
+-- Stalkers: [nlc_blood] in se_stalker.s_storage. Monsters: se_monster.blood_amount and
+-- blood_died, saved as "amount;died".
+local function save_amount(obj, amount)
+    local died = math.floor(game_seconds())
+    local ok = pcall(function()
+        local sim = alife()
+        local sobj = sim and sim:object(obj:id())
+        if not sobj then return end
+        if sobj.s_storage == nil then
+            sobj.blood_amount = amount
+            sobj.blood_died = died
+            return
+        end
+        local data = {}
+        if sobj.s_storage ~= "_" and sobj.s_storage ~= "" then
+            data = amk.parse_custom_data(sobj.s_storage)
+        end
+        data[STORAGE_SECTION] = { amount = string.format("%.2f", amount), died = tostring(died) }
+        sobj.s_storage = amk.gen_custom_data(data)
+    end)
+    if not ok then dbg("[blood_pools] save_amount failed for %s", tostring(obj:id())) end
 end
 
-local actor_was_alive = true
+-- returns amount, died (either may be nil)
+local function load_amount(obj)
+    local amount, died
+    pcall(function()
+        local sim = alife()
+        local sobj = sim and sim:object(obj:id())
+        if not sobj then return end
+        if sobj.s_storage == nil then
+            amount = tonumber(sobj.blood_amount)
+            died = tonumber(sobj.blood_died)
+            return
+        end
+        if not sobj.s_storage or sobj.s_storage == "_" or sobj.s_storage == "" then return end
+        local data = amk.parse_custom_data(sobj.s_storage)
+        local sect = data[STORAGE_SECTION]
+        if sect then
+            amount = tonumber(sect.amount)
+            died = tonumber(sect.died)
+        end
+    end)
+    return amount, died
+end
 
-local function on_update()
-	if not db.actor then return end
-	local alive = db.actor:alive()
-	if actor_was_alive and not alive then
-		printf("actor died, spawn pool")
-		on_death_callback(db.actor)
-	end
-	actor_was_alive = alive
+-- -----------------------------------------------------------------------------
+-- pool placement
+-- -----------------------------------------------------------------------------
+
+local function pool_pos(obj)
+    local pos = obj:position()
+    for _, bone in ipairs(boneList) do
+        if obj:get_bone_id(bone) ~= 65535 then
+            local bp = obj:bone_position(bone)
+            -- a ragdoll's spine stays close to its root; anything farther is a stale bone matrix
+            if bp:distance_to(pos) < 1.6 then
+                return bp
+            end
+            break
+        end
+    end
+    return vector():set(pos.x, pos.y + 0.5, pos.z)
+end
+
+-- Sends one pool of a corpse to the engine. A pool that has to be created for an old
+-- corpse (restored, or died longer than dry_time ago) starts already dried; a pool
+-- that still exists keeps its own age. Owner = corpse id + 65536 * (pool number - 1).
+local function send(rec, pl, grow, now)
+    local old = (rec.die == nil) or (now - rec.die > settings.dry_time * 1000)
+    get_console():execute(string.format("bpm %.3f %.3f %.3f %.2f %.3f %d %.0f %.2f %.0f %d %.0f %.0f %.2f",
+        pl.x, pl.y + settings.start_height, pl.z, settings.trace_dist, pl.size, pl.tex,
+        settings.pool_life, grow, pl.rot, pl.owner, settings.dry_time,
+        old and settings.dry_time or 0, rec.faint))
+    dbg("[blood_pools] stamp %s #%d size %.2f grow %.1f old %s faint %.2f", tostring(rec.id), pl.n, pl.size, grow, tostring(old), rec.faint)
+end
+
+local function new_pool(rec, obj, n, grow, now)
+    local p = pool_pos(obj)
+    local pl = {
+        n = n, x = p.x, y = p.y, z = p.z,
+        size = n == 1 and rec.size or rec.size * settings.move_size_k,
+        tex = 1 + (rec.tex + n - 2) % pool_textures,
+        rot = (rec.rot + 53 * (n - 1)) % 360,
+        owner = rec.id + 65536 * (n - 1),
+    }
+    rec.pools[n] = pl
+    send(rec, pl, grow, now)
+end
+
+-- -----------------------------------------------------------------------------
+-- periodic check of the known corpses
+-- -----------------------------------------------------------------------------
+
+local stamp_budget = 0
+
+local function check(rec, obj, now)
+    local p = obj:position()
+    local moved = math.abs(p.x - rec.px) + math.abs(p.y - rec.py) + math.abs(p.z - rec.pz)
+    rec.px, rec.py, rec.pz = p.x, p.y, p.z
+    if moved < settings.rest_eps then
+        rec.calm = rec.calm + 1
+    else
+        rec.calm = 0
+    end
+
+    local dist = db.actor:position():distance_to(p)
+
+    if not rec.stamped_at then
+        if rec.die then
+            local age = now - rec.die
+            if age < settings.settle_min * 1000 then
+                rec.next = now + 500
+                return
+            end
+            if rec.calm < 2 and age < settings.settle_max * 1000 then
+                rec.next = now + 500
+                return
+            end
+        elseif rec.calm < 1 then
+            rec.next = now + 500
+            return
+        end
+        if dist > settings.stamp_range then
+            rec.next = now + 4000
+            return
+        end
+        -- only a death the player is around for plays the spreading
+        local grow = 0
+        if rec.die and now - rec.die < 20000 then
+            grow = settings.grow_time
+        end
+        if stamp_budget <= 0 then
+            rec.next = now + 500
+            return
+        end
+        stamp_budget = stamp_budget - 1
+        local pos = obj:position()
+        rec.sx, rec.sy, rec.sz = pos.x, pos.y, pos.z
+        rec.stamped_at = now
+        rec.refresh_at = now + settings.refresh_period * 1000 * (0.8 + 0.4 * math.random())
+        new_pool(rec, obj, 1, grow, now)
+        rec.next = now + 3000
+        return
+    end
+
+    local drift = math.abs(p.x - rec.sx) + math.abs(p.y - rec.sy) + math.abs(p.z - rec.sz)
+    if dist <= settings.stamp_range then
+        if drift > settings.move_eps and rec.calm >= 2 then
+            rec.sx, rec.sy, rec.sz = p.x, p.y, p.z
+            drift = 0
+            if #rec.pools < settings.max_pools then
+                new_pool(rec, obj, #rec.pools + 1, settings.move_grow, now)
+            end
+        elseif now >= rec.refresh_at and stamp_budget > 0 then
+            stamp_budget = stamp_budget - 1
+            rec.stamped_at = now
+            rec.refresh_at = now + settings.refresh_period * 1000 * (0.8 + 0.4 * math.random())
+            -- a corpse that has become old fades to a faint stain, one step per refresh
+            if rec.died and rec.faint < settings.stain_faint
+                and game_seconds() - rec.died > settings.old_age_hours * 3600 then
+                rec.faint = math.min(settings.stain_faint, rec.faint + settings.stain_step)
+            end
+            for _, pl in ipairs(rec.pools) do
+                send(rec, pl, 0, now)
+            end
+        end
+    end
+    if drift > settings.move_eps then
+        rec.next = now + 500
+    else
+        rec.next = now + 3000
+    end
+end
+
+local function tick()
+    if not db.actor then return end
+    local now = time_global()
+    stamp_budget = settings.stamps_per_tick
+    for id, rec in pairs(corpses) do
+        if now >= rec.next then
+            local obj = level.object_by_id(id)
+            if not obj or obj:alive() then
+                corpses[id] = nil
+            else
+                check(rec, obj, now)
+            end
+        end
+    end
+end
+
+local function start_timer()
+    if not timer then
+        timer = dsh.exec_periodic(500, function() tick() end)
+    end
+end
+
+-- -----------------------------------------------------------------------------
+-- events
+-- -----------------------------------------------------------------------------
+
+local function add_corpse(obj, amount, fresh, died, faint)
+    local id = obj:id()
+    if corpses[id] then return end
+    local size = class_mult(obj) * amount * settings.max_pool_size
+    -- stable per-corpse variation, so a restamp never changes the pool
+    size = size * (0.9 + ((id * 13) % 21) * 0.01)
+    if size < 0.05 then return end
+    local p = obj:position()
+    local now = time_global()
+    corpses[id] = {
+        id   = id,
+        size = size,
+        tex  = 1 + (id * 7 + 3) % pool_textures,
+        rot  = (id * 37) % 360,
+        die  = fresh and now or nil,
+        px = p.x, py = p.y, pz = p.z,
+        calm = 0,
+        pools = {},
+        died = died,
+        faint = faint or 0,
+        refresh_at = 0,
+        next = now + (fresh and settings.settle_min * 1000 or 500),
+    }
+    start_timer()
+end
+
+local function on_death(obj)
+    if not obj then return end
+    local id = obj:id()
+    local b = bleed[id]
+    bleed[id] = nil
+    -- no recorded hit (scripted kill): a normal pool
+    local amount = 1.0
+    if b ~= nil then
+        if b < settings.min_bleed then
+            amount = 0
+        else
+            amount = 0.5 + 0.7 * math.min(b, 1.0)
+        end
+    end
+    save_amount(obj, amount)
+    if amount > 0 and not skip_sections[obj:section()] then
+        add_corpse(obj, amount, true, math.floor(game_seconds()), 0)
+    end
+end
+
+local function on_spawn(obj)
+    if not obj or obj:alive() then return end
+    if corpses[obj:id()] or skip_sections[obj:section()] then return end
+    local amount, died = load_amount(obj)
+    if amount == nil then amount = 1.0 end
+    if amount > 0 then
+        -- an old corpse (or one with no recorded death time) only gets a faint dried stain
+        local faint = 0
+        if died == nil or game_seconds() - died > settings.old_age_hours * 3600 then
+            faint = settings.stain_faint
+        end
+        add_corpse(obj, amount, false, died, faint)
+    end
+end
+
+local function on_net_destroy(obj)
+    if not obj then return end
+    local id = obj:id()
+    corpses[id] = nil
+    bleed[id] = nil
+end
+
+local function on_before_hit(obj, hit_data)
+    if not obj or not hit_data or hit_data.ignore_hit then return end
+    local id = obj:id()
+    local sum = bleed[id] or 0
+    local w = get_hit_weight()[hit_data.hit_type]
+    local power = tonumber(hit_data.power) or 0
+    if w and power > 0 then
+        sum = sum + w * power
+    end
+    bleed[id] = sum
 end
 
 function attach(sm)
-	sm:subscribe({signal = "on_npc_death", fun = on_death_callback})
-	sm:subscribe({signal = "on_monster_death", fun = on_death_callback})
-	sm:subscribe({signal = "on_update", fun = on_update})
+    sm:subscribe({ signal = "on_npc_death",          fun = on_death })
+    sm:subscribe({ signal = "on_monster_death",      fun = on_death })
+    sm:subscribe({ signal = "on_npc_spawn",          fun = on_spawn })
+    sm:subscribe({ signal = "on_monster_spawn",      fun = on_spawn })
+    sm:subscribe({ signal = "on_npc_net_destroy",    fun = on_net_destroy })
+    sm:subscribe({ signal = "on_monster_net_destroy", fun = on_net_destroy })
+    sm:subscribe({ signal = "on_npc_before_hit",     fun = on_before_hit })
+    sm:subscribe({ signal = "on_monster_before_hit", fun = on_before_hit })
 end

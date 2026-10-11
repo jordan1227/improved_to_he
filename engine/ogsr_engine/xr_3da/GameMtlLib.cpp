@@ -205,3 +205,79 @@ LPCSTR SGameMtlPair::dbg_Name()
     return nm;
 }
 #endif
+
+// NLC: blood soaks into earth and grass instead of lying on top of it (misc\blood_pool_surfaces.ltx)
+static xr_vector<xr_string> g_nlc_soft_names;
+static xr_vector<xr_string> g_nlc_hard_names;
+static bool g_nlc_names_loaded = false;
+
+static void nlc_load_surface_names()
+{
+    if (g_nlc_names_loaded)
+        return;
+    g_nlc_names_loaded = true;
+
+    string_path fn;
+    if (FS.exist(fn, "$game_config$", "misc\\blood_pool_surfaces.ltx"))
+    {
+        CInifile ini(fn);
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            LPCSTR sect = pass ? "hard" : "soft";
+            auto& dst = pass ? g_nlc_hard_names : g_nlc_soft_names;
+            if (!ini.section_exist(sect))
+                continue;
+            const u32 n = ini.line_count(sect);
+            for (u32 i = 0; i < n; ++i)
+            {
+                const char* key = nullptr;
+                const char* val = nullptr;
+                if (ini.r_line(sect, i, &key, &val) && key && *key)
+                {
+                    xr_string s = key;
+                    for (auto& c : s)
+                        c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                    dst.push_back(s);
+                }
+            }
+        }
+    }
+    if (g_nlc_soft_names.empty())
+    {
+        Msg("! [blood pools] misc\\blood_pool_surfaces.ltx missing or empty, using built-in soft surface names");
+        for (LPCSTR d : {"earth", "grass", "sand", "dirt", "soil", "mud", "clay", "gravel", "moss"})
+            g_nlc_soft_names.emplace_back(d);
+    }
+}
+
+bool CGameMtlLibrary::NLCSoftSurface(u16 idx)
+{
+    if (idx >= materials.size())
+        return false;
+    if (m_nlc_surface.size() != materials.size())
+        m_nlc_surface.assign(materials.size(), 0);
+    u8& c = m_nlc_surface[idx];
+    if (!c)
+    {
+        nlc_load_surface_names();
+        xr_string n = materials[idx] ? *materials[idx]->m_Name : "";
+        for (auto& ch : n)
+            ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+        bool soft = false;
+        for (const auto& s : g_nlc_soft_names)
+            if (n.find(s) != xr_string::npos)
+            {
+                soft = true;
+                break;
+            }
+        if (soft)
+            for (const auto& h : g_nlc_hard_names)
+                if (n.find(h) != xr_string::npos)
+                {
+                    soft = false;
+                    break;
+                }
+        c = soft ? 2 : 1;
+    }
+    return c == 2;
+}

@@ -5,6 +5,49 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.68 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0F0A5396657BC6195622CBCC4E809753EABC69B899841BD16F071419F5A6F64C` (archived with its PDB in `nlc_tools/builds/20261011_212245_0f0a5396`).
+- **Status:** runtime pending (`docs/BLOOD_POOLS.md`).
+- **Required game data:** `gamedata/shaders/r3/effects_wallmark_blood_soft.{s,ps}` (without the `.s` the blood marks
+  cannot be created), `gamedata/config/misc/blood_pool_surfaces.ltx`, `gamedata/scripts/sivol/sivol_blood_pools.script`,
+  `gamedata/scripts/se/se_monster.script` (extra saved string per monster).
+
+### NLC
+
+- **Soft-ground blood:** blood wallmarks (`wm_blood_*`, pools, splats, drops) use a second shader on earth/grass/sand:
+  the blood is multiplied into the ground colour (texture shows through, no gloss). The class comes from the hit
+  material name (`CGameMtlLibrary::NLCSoftSurface`, `misclood_pool_surfaces.ltx`); `bpm mtl` lists the materials.
+- **Rain wash-off:** open-air pools (upward ray at stamp time) fade gradually while it rains
+  (`ps_wm_wash_seconds`, default 240 s of full rain; `bpm wash <s>`). A washed pool leaves an empty marker so the
+  script's refresh cannot bring it back; it returns after a reload.
+- **Faint old stains:** `bpm` argument `faint` takes a share of the opacity away for good; owner ids go up to 16777215
+  (one per pool of a corpse).
+
+## nlc-3.589.67 (2026-10-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `BD24EE72D01CF83ABE54457726B58B1C7135C874CCBA1A7E3E4D7EE4E3D2A1FA` (archived with its PDB in `nlc_tools/builds/20261011_192548_bd24ee72`).
+- **Status:** runtime pending (`docs/BLOOD_POOLS.md` section 6). Build `.66` (giant buff, high-jump AI fix) has no entry here.
+- **Required game data:** `gamedata/scripts/sivol/sivol_blood_pools.script`, `gamedata/shaders/r3/effects_wallmark_blood.ps`
+  (loose override: texture-window mask, drying tint), `gamedata/textures/wm/wm_blood_pool_*.dds` (mip chains).
+
+### NLC
+
+- **Static wallmark parameters (`wm_static_params`, `IRender_interface::add_StaticWallmark` overload):** per-mark life
+  (overrides `r__wallmark_ttl`; the mark stays solid and fades over the last quarter), spread time, drying tint, age,
+  explicit rotation and an owner id. A mark with an owner replaces that owner's earlier mark in any slot and keeps its age;
+  owned marks never merge by the 2 cm position test. Vanilla callers are unchanged.
+- **`bpm x y z dist size [tex [life [grow [rot_deg [owner [dry [age]]]]]]]`:** drives the above. Spreading no longer
+  rebuilds the geometry: it is built once at full size and `static_wm_render` shrinks the texture window per frame.
+  Inputs are clamped; bad arguments are counted (`last_reason=9`).
+- **`ps_wm_rotfix` now defaults to 0:** blood pools pass an explicit rotation, so bullet holes and splats get their vanilla
+  random rotation back (`bpm rot 1` still forces the fixed one).
+- **`CWallmarksEngine::Render`:** slots without marks no longer lock the vertex buffer (twice per slot per frame).
+- **Blood pools script:** corpse-driven (restored after load, refreshed while the player is near, moved with the body,
+  amount from the hits taken, no pool for fire/shock/radiation/psy deaths); see `docs/BLOOD_POOLS.md`.
+
 ## nlc-3.589.65 (2026-10-11)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
