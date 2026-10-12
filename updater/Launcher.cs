@@ -370,6 +370,7 @@ namespace NlcLauncher
             "gamedata/variant_weapons.ltx",
             "gamedata/variant_weather.ltx",
             "gamedata/variant_bolt.ltx",
+            "gamedata/variant_music.ltx",
         };
 
         // -> names of every optional variant installed in the game folder.
