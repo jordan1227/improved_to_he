@@ -1,0 +1,46 @@
+/**
+ * @ Description: SSR gloss-based blur ( separable )
+ * @ Based on: SCREEN SPACE SHADERS - UPDATE 21 ssfx_ssr_gloss / ssfx_ssr_blur ( https://www.moddb.com/members/ascii1457 )
+ * @ NLC: 2026-10-12 - radius from the surface gloss ( rough = blurry ), taps weighted by depth and reflection
+ *        strength so edges and non-reflective pixels do not bleed in.
+ */
+
+#include "common.h"
+
+Texture2D ssr_image;
+
+uniform float4 blur_setup; // xy: direction * texel size, z: blur strength
+
+float4 main(p_screen I) : SV_Target
+{
+    float4 center = ssr_image.SampleLevel(smp_nofilter, I.tc0, 0);
+    if (center.a <= 0.001f || blur_setup.z <= 0)
+        return center;
+
+    float gloss = s_diffuse.SampleLevel(smp_nofilter, I.tc0, 0).a;
+    float z0 = s_position.SampleLevel(smp_nofilter, I.tc0, 0).z;
+
+    // Up to 12 pixels each side on rough surfaces
+    float radius = saturate(1.0f - gloss) * blur_setup.z * 12.0f;
+    if (radius < 0.5f)
+        return center;
+
+    float3 sum = center.rgb;
+    float weight = 1.0f;
+
+    [unroll] for (int i = 1; i <= 4; i++)
+    {
+        [unroll] for (int s = -1; s <= 1; s += 2)
+        {
+            float2 uv = I.tc0 + blur_setup.xy * (radius * 0.25f * i * s);
+            float4 c = ssr_image.SampleLevel(smp_rtlinear, uv, 0);
+            float z = s_position.SampleLevel(smp_nofilter, uv, 0).z;
+
+            float w = saturate(c.a * 4.0f) * exp2(-abs(1.0f - z / max(z0, 0.0001f)) * 16.0f);
+            sum += c.rgb * w;
+            weight += w;
+        }
+    }
+
+    return float4(sum / weight, center.a);
+}

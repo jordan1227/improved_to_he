@@ -1,0 +1,119 @@
+/**
+ * @ Version: SCREEN SPACE SHADERS - UPDATE 21
+ * @ Description: SSR
+ * @ Modified time: 2025-02-09 00:25
+ * @ Author: https://www.moddb.com/members/ascii1457
+ * @ Mod: https://www.moddb.com/mods/stalker-anomaly/addons/screen-space-shaders
+ * @ NLC: 2026-10-12 - OGSR ray and shading ( screenspace_reflections.h ) with the SSS 21 accumulation: history is
+ *        reprojected at the reflected point, rejected on disocclusion and HUD pixels, kept in 16-bit float
+ *        ( the OGSR pass blended at the same UV in an 8-bit target ). x of ssfx_ssr_setup scales the strength
+ *        ( dry surfaces ).
+ */
+
+#include "screenspace_reflections.h"
+#include "ssfx_temporal.h"
+
+Texture2D s_ssfx_ssr_history; // $user$ssfx_ssr_hist
+
+uniform float4 ssfx_ssr_setup; // x: strength ( 1 wet, ssfx_ssr_dry otherwise ), y: blur
+
+// SSFX_ScreenSpaceReflections ( screenspace_reflections.h, SSS 18 ) with the hit depth as output
+void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, inout float4 color, out float hit_depth)
+{
+    bool m_terrain = abs(P.w - 0.95f) <= 0.02f;
+    bool m_flora = abs(P.w - MAT_FLORA) <= 0.04f;
+
+    float refl_power = gloss;
+
+    float3 inVec = normalize(P.xyz);
+    float3 reVec = reflect(inVec, N);
+
+    float3 nw = mul(m_inv_V, N);
+    float3 v2point = mul(m_inv_V, inVec);
+    float3 v2reflect = reflect(v2point, nw);
+
+    float fresnel = saturate(dot(v2reflect, v2point));
+    float fresnel_amount = pow(fresnel, 3);
+    refl_power *= fresnel_amount;
+
+    float4 hit_uv = 0;
+    if (refl_power > 0.02f)
+        hit_uv = SSFX_ssr_fast_ray(P.xyz, reVec, tc);
+
+    float3 reflection = 0;
+    float2 uvcoor = 0;
+    hit_depth = 0;
+
+#ifdef G_SSR_CHEAP_SKYBOX
+    reflection = SSFX_calc_env(v2reflect) * ssfx_ssr_2.y * !ssfx_is_underground.x;
+#else
+    reflection = SSFX_calc_sky(v2reflect) * ssfx_ssr_2.y * !ssfx_is_underground.x;
+#endif
+
+    if (all(hit_uv.xy))
+    {
+        float3 refl_ray = SSFX_get_image(hit_uv.xy, 0);
+        uvcoor = hit_uv.xy;
+        hit_depth = hit_uv.z;
+
+        float refl_fog = 1.0 - saturate((length(float3(inVec.x, inVec.y, hit_uv.z)) * fog_params.w + fog_params.x));
+        float HitFade = saturate(hit_uv.y * refl_fog * refl_fog * G_SSR_VERTICAL_SCREENFADE);
+
+        reflection = lerp(reflection, refl_ray, HitFade);
+    }
+    else
+    {
+        refl_power = gloss * fresnel_amount;
+        uvcoor = float2(0, hit_uv.w);
+    }
+
+    float ray_fade = saturate(saturate(uvcoor.y * G_SSR_VERTICAL_SCREENFADE) + 1.0f * m_terrain);
+
+    refl_power *= m_flora ? G_SSR_FLORA_INTENSITY : 1.0f;
+
+    float WeaponFactor = smoothstep(G_SSR_WEAPON_MAX_LENGTH - 0.2f, G_SSR_WEAPON_MAX_LENGTH, length(P.xyz));
+    WeaponFactor = saturate(WeaponFactor + 1.0f * m_terrain);
+
+    float main_clamp = clamp(refl_power * ssfx_ssr_2.x, 0, G_SSR_MAX_INTENSITY);
+    float rain_extra = G_SSR_WEAPON_RAIN_FACTOR * rain_params.x;
+    float wpn_clamp = clamp((refl_power + rain_extra) * ssfx_ssr_2.z, 0, ssfx_ssr_2.w + rain_extra);
+
+    refl_power = lerp(wpn_clamp, main_clamp, WeaponFactor);
+    refl_power *= ray_fade;
+
+    float fog = 1.0 - saturate((length(P.xyz) * fog_params.w + fog_params.x));
+
+    color = float4(reflection, refl_power * fog * fog);
+}
+
+float4 main(p_screen I) : SV_Target
+{
+    float2 tc = I.tc0;
+
+    float4 Pos = s_position.Sample(smp_nofilter, tc);
+    float gloss = s_diffuse.Sample(smp_nofilter, tc).a;
+
+    float3 P = float3(Pos.z * (I.hpos.xy * pos_decompression_params.zw - pos_decompression_params.xy), Pos.z);
+    float3 N = gbuf_unpack_normal(Pos.xy);
+    float mtl = gbuf_unpack_mtl(Pos.w);
+
+    float4 ssr_result = 0;
+    float hit_depth = 0;
+    ssfx_ssr_shade(tc, float4(P, mtl), N, gloss, ssr_result, hit_depth);
+
+    // Reflected point along the pixel ray ( sky: far away )
+    float3 Hit_Pv = hit_depth > SKY_EPS ? float3(hit_depth * (I.hpos.xy * pos_decompression_params.zw - pos_decompression_params.xy), hit_depth)
+                                        : float3(P.xy, 100000);
+    float2 prev_tc = tc - ssfx_camera_motion_uv(Hit_Pv);
+
+    // The surface itself moved or was hidden last frame
+    float docc = ssfx_disocclusion(P.z, tc - ssfx_motion_uv(tc)) * 5.0f;
+    float hud = ssfx_hud_mask(tc);
+    float sky_weight = hit_depth <= SKY_EPS ? 0.2f : 0.0f;
+
+    float weight = saturate(0.8f - (ssfx_offscreen(prev_tc) + docc + sky_weight + hud));
+
+    float3 prev = s_ssfx_ssr_history.SampleLevel(smp_rtlinear, prev_tc, 0).rgb;
+
+    return float4(lerp(ssr_result.rgb, prev, weight), ssr_result.a * ssfx_ssr_setup.x);
+}
