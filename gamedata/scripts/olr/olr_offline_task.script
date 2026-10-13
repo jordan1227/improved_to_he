@@ -51,16 +51,16 @@ local stalker_ids_cache = {}
 local monster_ids_cache = {}
 local zombie_ids_cache = {}
 local cache_time = 0
-local CACHE_TTL = 30000
+local CACHE_TTL = 120000 -- [HE-PORT]
 local cache_scan_pos = 1
-local CACHE_SCAN_BATCH = 80
+local CACHE_SCAN_BATCH = 1024 -- [HE-PORT]
 local cache_building = false
 local cache_stalker_tmp = {}
 local cache_monster_tmp = {}
 local cache_zombie_tmp = {}
 
-local function rebuild_cache()
-	if not cache_building and time_global() - cache_time < CACHE_TTL then return end
+local function rebuild_cache(full) -- [HE-PORT]
+	if not full and not cache_building and time_global() - cache_time < CACHE_TTL then return end
 	local sim = g_sim
 	if not sim then return end
 
@@ -72,7 +72,7 @@ local function rebuild_cache()
 		cache_zombie_tmp = {}
 	end
 
-	local scan_end = cache_scan_pos + CACHE_SCAN_BATCH - 1
+	local scan_end = full and MAX_OBJ_ID or (cache_scan_pos + CACHE_SCAN_BATCH - 1) -- [HE-PORT]
 	if scan_end > MAX_OBJ_ID then scan_end = MAX_OBJ_ID end
 	for id = cache_scan_pos, scan_end do
 		local obj = sim:object(id)
@@ -113,6 +113,17 @@ function cached_stalkers( comm )
 	return stalker_ids_cache[ comm ] or {}
 end
 
+-- [HE-PORT]
+function prime_cache()
+	cache_building = false
+	rebuild_cache(true)
+end
+
+-- [HE-PORT]
+function cache_tick()
+	rebuild_cache()
+end
+
 local function current_smart_name(kill)
 	local strn_id = kill:smart_terrain_id()
 	if not strn_id or strn_id == BAD_OBJ_ID then return nil end
@@ -128,6 +139,7 @@ local WANDER_MIN_H  = 12
 local WANDER_MAX_H  = 24
 local WANDER_SHARE  = 0.5
 local WANDER_ROLL   = 2
+local MIGRATE_ROLL  = 4
 
 -- [HE-PORT]
 function has_wander_record( name )
@@ -200,7 +212,6 @@ local function migrate_stalker(kill, community_name)
 	smart_terrain.unregister_npc(kill)
 	if kill.brain then
 		kill:brain():can_choose_alife_tasks(true)
-		kill:brain():update(true)
 	end
 
 	if not xrs_utils.set_smart_terrain(kill, target) then return false end
@@ -259,7 +270,7 @@ local function faction_migration(community_name)
 
 	for _, id in ipairs(id_list) do
 		local kill = sim:object(id)
-		if kill and kill:alive() and not kill.online then
+		if kill and kill:alive() and not kill.online and not olr_protected.is_no_offline_alife_obj(kill:name()) then -- [HE-PORT]
 			local strn_id = kill:smart_terrain_id()
 			local nm = kill:name()
 			if strn_id == BAD_OBJ_ID then
@@ -270,7 +281,7 @@ local function faction_migration(community_name)
 						wanderers = wanderers - 1
 					end
 				end
-			elseif math.random(1, 2) == 1 then
+			elseif math.random(1, MIGRATE_ROLL) == 1 then -- [HE-PORT]
 				if wanderers < wander_cap and math.random( 1, WANDER_ROLL ) == 1 then
 					local ok, res = pcall( send_wandering, kill )
 					if ok and res then wanderers = wanderers + 1 end
@@ -337,7 +348,7 @@ function bar_sweep()
 		if olr_faction_policy.level_denied(comm, "l05_bar") then
 			for _, id in ipairs(ids) do
 				local kill = sim:object(id)
-				if kill and kill:alive() and not kill.online and has_wander_record(kill:name()) then
+				if kill and kill:alive() and not kill.online and has_wander_record(kill:name()) and not olr_protected.is_no_offline_alife_obj(kill:name()) then -- [HE-PORT]
 					if obj_level_name(kill) == "l05_bar" then
 						local target = olr_smart_index.pick_name(comm, nil, "l05_bar")
 						local smart = target and olr_smart_index.get_obj(target)
@@ -365,7 +376,7 @@ function guest_sweep()
 	for comm, ids in pairs(stalker_ids_cache) do
 		for _, id in ipairs(ids) do
 			local kill = sim:object(id)
-			if kill and kill:alive() and not kill.online then
+			if kill and kill:alive() and not kill.online and not olr_protected.is_no_offline_alife_obj(kill:name()) then -- [HE-PORT]
 				local lname = obj_level_name(kill)
 				local okd, denied = pcall(olr_faction_policy.is_guest_denied, comm, lname)
 				if okd and denied then
@@ -434,7 +445,7 @@ local function monster_migration()
 		if kill and kill:alive() and not kill.online then
 			local strn_id = kill:smart_terrain_id()
 			if strn_id ~= BAD_OBJ_ID then
-				if math.random(1, 2) == 1 then
+				if math.random(1, MIGRATE_ROLL) == 1 then -- [HE-PORT]
 					local cls = kill:clsid()
 					local comm = monster_comm_by_clsid[cls]
 					if not comm then
@@ -471,7 +482,7 @@ function zombies_task_select()
 		if kill and kill:alive() and not kill.online then
 			local strn_id = kill:smart_terrain_id()
 			if strn_id ~= BAD_OBJ_ID then
-				if math.random(1, 2) == 1 then
+				if math.random(1, MIGRATE_ROLL) == 1 then -- [HE-PORT]
 					pcall(migrate_monster, kill, "zombied")
 				end
 			end

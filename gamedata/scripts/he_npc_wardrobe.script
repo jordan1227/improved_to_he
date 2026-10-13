@@ -1,0 +1,564 @@
+-- [HE-PORT]
+local INI_PATH = "misc\\he_npc_wardrobe.ltx"
+local PASS_KEY = "he_wardrobe_pass"
+local REC = "he_wardrobe"
+local HOLD_MS = 20000
+local RETRY_MS = 60000
+local COND_FIX_MS = 10000
+local PROT = {
+	fire_wound_protection = 3,
+	wound_protection = 1,
+	strike_protection = 1,
+	explosion_protection = 1,
+	burn_protection = 0.5,
+	shock_protection = 0.5,
+	chemical_burn_protection = 0.5,
+	radiation_protection = 0.5,
+	telepatic_protection = 0.5,
+}
+
+local loaded = false
+local cfg = {
+	enabled = false,
+	spawn_variety = true,
+	refit_online = true,
+	refit_min_dist = 30,
+	check_period = 5000,
+	tier_low = 0.7,
+	tier_high = 1.3,
+	better_ratio = 1.1,
+	corpse_cond = 0.6,
+	drop_cond_min = 0.6,
+	drop_cond_max = 0.9,
+}
+local outfits = {}
+local vis_outfit = {}
+local variety = {}
+local comms = {}
+local profiles = {}
+local excluded = {}
+local pending = {}
+local hold = {}
+local cond_fix = {}
+local unique = {}
+local unstuck = false
+
+local function read_section(ini, sec, fn)
+	if not ini:section_exist(sec) then return end
+	for i = 0, ini:line_count(sec) - 1 do
+		local res, id, val = ini:r_line(sec, i, "", "")
+		if id and id ~= "" then
+			fn(string.lower(id), val or "")
+		end
+	end
+end
+
+local function fields(s)
+	local t = {}
+	for f in string.gmatch((s or "") .. "|", "([^|]*)|") do
+		table.insert(t, f)
+	end
+	return t
+end
+
+local function list(s)
+	local t = {}
+	for p in string.gmatch(s or "", "[^,%s]+") do
+		table.insert(t, string.lower(p))
+	end
+	return t
+end
+
+local function norm_vis(v)
+	v = string.lower(v or "")
+	v = string.gsub(v, "/", "\\")
+	v = string.gsub(v, "%.ogf$", "")
+	if string.find(v, "actors\\", 1, true) ~= 1 then
+		v = "actors\\" .. v
+	end
+	return v
+end
+
+local function calc_score(sys, sect)
+	local s = 0
+	for k, w in pairs(PROT) do
+		if sys:line_exist(sect, k) then
+			s = s + sys:r_float(sect, k) * w
+		end
+	end
+	return s
+end
+
+local function load()
+	if loaded then return end
+	loaded = true
+	local ini = ini_file(INI_PATH)
+	if not ini or not ini:section_exist("settings") then return end
+	read_section(ini, "settings", function(k, v)
+		if type(cfg[k]) == "boolean" then
+			cfg[k] = v == "true" or v == "1" or v == "on"
+		elseif type(cfg[k]) == "number" then
+			cfg[k] = tonumber(v) or cfg[k]
+		end
+	end)
+	local sys = system_ini()
+	local fs = getFS()
+	local alias = {}
+	read_section(ini, "outfits", function(sect, val)
+		if not sys:section_exist(sect) then return end
+		local f = fields(val)
+		local fam = list(f[1])[1]
+		if not fam then return end
+		local o = { family = fam, score = calc_score(sys, sect) }
+		outfits[sect] = o
+		local vis = list(f[2])
+		if vis[1] and string.sub(vis[1], 1, 1) == "@" then
+			alias[sect] = string.sub(vis[1], 2)
+			return
+		end
+		local pool = {}
+		for _, v in ipairs(vis) do
+			v = norm_vis(v)
+			if fs:exist("$game_meshes$", v .. ".ogf") then
+				table.insert(pool, v)
+				vis_outfit[v] = vis_outfit[v] or sect
+			end
+		end
+		if #pool > 0 then
+			o.pool = pool
+			table.insert(variety, sect)
+		end
+	end)
+	for sect, base in pairs(alias) do
+		local b = outfits[base]
+		if b and b.pool then
+			outfits[sect].pool = b.pool
+		end
+	end
+	read_section(ini, "visuals", function(sect, val)
+		if not outfits[sect] then return end
+		for _, v in ipairs(list(val)) do
+			v = norm_vis(v)
+			vis_outfit[v] = vis_outfit[v] or sect
+		end
+	end)
+	read_section(ini, "unique", function(v, sect)
+		sect = string.lower(sect)
+		if not outfits[sect] then return end
+		v = norm_vis(v)
+		unique[v] = sect
+		vis_outfit[v] = vis_outfit[v] or sect
+	end)
+	read_section(ini, "communities", function(comm, val)
+		local f = fields(val)
+		local c = { chance = tonumber(f[1]) or 0, allow = {}, foreign = {}, native = {} }
+		for _, fam in ipairs(list(f[2])) do
+			c.allow[fam] = true
+			c.native[fam] = true
+		end
+		for _, fam in ipairs(list(f[3])) do
+			c.allow[fam] = true
+			c.foreign[fam] = true
+		end
+		for _, fam in ipairs(list(f[4])) do
+			c.allow[fam] = true
+		end
+		comms[comm] = c
+	end)
+	read_section(ini, "native", function(comm, val)
+		local c = comms[comm]
+		if not c then return end
+		c.born = {}
+		for _, fam in ipairs(list(val)) do
+			c.born[fam] = true
+		end
+	end)
+	read_section(ini, "profiles", function(p) profiles[p] = true end)
+	read_section(ini, "exclude", function(p) excluded[p] = true end)
+end
+
+local function read_rec(se)
+	local s = se.s_storage
+	if s == nil or s == "" or s == "_" then return nil, nil end
+	local data = amk.parse_custom_data(s)
+	return data[REC], data
+end
+
+local function write_rec(se, rec)
+	if se.s_storage == nil then return end
+	local old, data = read_rec(se)
+	if rec == nil and old == nil then return end
+	data = data or {}
+	data[REC] = rec
+	local s = amk.gen_custom_data(data)
+	se.s_storage = s ~= "" and s or "_"
+end
+
+local function is_story(se)
+	local sid = se.m_story_id
+	return sid ~= nil and sid >= 1 and sid < 65535
+end
+
+local function eligible(se)
+	if not (se and se.id ~= 0 and IsStalker(se) and se.s_storage ~= nil and se:alive()) then return nil end
+	if is_story(se) then return nil end
+	local c = comms[string.lower(se:community() or "")]
+	if not c then return nil end
+	local prof = string.lower(se:profile_name() or "")
+	if not profiles[prof] or excluded[prof] or excluded[string.lower(se:name())] then return nil end
+	local cur = vis_outfit[norm_vis(se.visual_name)]
+	if not cur then return nil end
+	local ini = se:spawn_ini()
+	if ini and (ini:section_exist("dont_spawn_loot") or ini:section_exist("spawn") or ini:section_exist("spawner")) then return nil end
+	return c, cur
+end
+
+local function cond_k(c)
+	c = tonumber(c) or 1
+	if c < 0 then c = 0 elseif c > 1 then c = 1 end
+	return 0.5 + 0.5 * c
+end
+
+local function worn_score(se, cur)
+	local rec = read_rec(se)
+	local o = rec and rec.o and outfits[rec.o]
+	if o then
+		return o.score * cond_k(rec.c)
+	end
+	return outfits[cur].score
+end
+
+local function pick_visual(sect, avoid)
+	local pool = outfits[sect] and outfits[sect].pool
+	if not pool then return nil end
+	local v = pool[math.random(#pool)]
+	if v == avoid and #pool > 1 then
+		v = pool[math.random(#pool)]
+	end
+	return v
+end
+
+local function wants(se, sect, cond)
+	local c, cur = eligible(se)
+	if not c then return false end
+	local o = outfits[sect]
+	if not (o and o.pool and c.allow[o.family]) then return false end
+	return o.score * cond_k(cond) > worn_score(se, cur) * cfg.better_ratio
+end
+
+local function apply(se, p)
+	if p.item then
+		local it = alife():object(p.item)
+		if not (it and it.parent_id == se.id) then return end
+		alife():release(it, true)
+	end
+	if p.item or p.real then
+		write_rec(se, { o = p.o, c = string.format("%.3f", tonumber(p.c) or 1) })
+	elseif p.loud then
+		write_rec(se, nil)
+	end
+	if p.v then
+		se.visual_name = p.v
+	end
+end
+
+local function dress_variety(se)
+	local c, cur = eligible(se)
+	if not c or c.chance <= 0 or math.random(100) > c.chance or read_rec(se) then return end
+	local base = outfits[cur].score
+	local cands = {}
+	for _, sect in ipairs(variety) do
+		local o = outfits[sect]
+		if c.foreign[o.family] and o.score >= base * cfg.tier_low and o.score <= base * cfg.tier_high then
+			table.insert(cands, sect)
+		end
+	end
+	if #cands == 0 then return end
+	local v = pick_visual(cands[math.random(#cands)])
+	if se.online then
+		pending[se.id] = { v = v }
+	else
+		se.visual_name = v
+	end
+end
+
+local function unstick(se)
+	if not (se and se.id ~= 0 and IsStalker(se) and se.s_storage ~= nil) or is_story(se) then return end
+	if not profiles[string.lower(se:profile_name() or "")] then return end
+	local nv = norm_vis(se.visual_name)
+	local c = comms[string.lower(se:community() or "")]
+	local cur = unique[nv]
+	local fits = function(fam) return not c or c.allow[fam] or (c.born and c.born[fam]) end
+	if not cur then
+		cur = vis_outfit[nv]
+		if not (cur and c) or fits(outfits[cur].family) then return end
+	end
+	local rec = read_rec(se)
+	if rec and rec.o and outfits[rec.o] and not fits(outfits[rec.o].family) then
+		write_rec(se, nil)
+		rec = nil
+	end
+	local sect = rec and rec.o and outfits[rec.o] and outfits[rec.o].pool and rec.o or cur
+	local v = fits(outfits[sect].family) and pick_visual(sect) or nil
+	if not v then
+		local fam = outfits[cur].family
+		local score = outfits[cur].score
+		local cands, best = {}, nil
+		for _, s in ipairs(variety) do
+			local f = outfits[s].family
+			if c and c.native[f] or (not c and f == fam) then
+				local d = math.floor(math.abs(outfits[s].score - score) * 100 + 0.5)
+				if best == nil or d < best then
+					cands, best = { s }, d
+				elseif d == best then
+					table.insert(cands, s)
+				end
+			end
+		end
+		if #cands == 0 then return end
+		v = pick_visual(cands[math.random(#cands)])
+	end
+	if not level.object_by_id(se.id) then
+		se.visual_name = v
+	elseif se:alive() and not pending[se.id] then
+		pending[se.id] = { v = v }
+	end
+end
+
+local function seen_by_actor(npc)
+	local actor = db.actor
+	local pos = npc:position()
+	local d = actor:position():distance_to(pos)
+	if d < cfg.refit_min_dist or actor:see(npc) then return true end
+	if d < 100 then
+		local dir = vector():set(pos):sub(device().cam_pos)
+		dir:normalize()
+		if dir:dotproduct(device().cam_dir) > 0.5 then return true end
+	end
+	return false
+end
+
+local function can_refit(npc, se)
+	if npc:best_enemy() or npc:is_talking() or xr_wounded.is_wounded(npc) then return false end
+	if amk.convert_npc[se.id] ~= nil or se.dont_spawn_online then return false end
+	if se.get_job_online and se:get_job_online() ~= nil then return false end
+	return not seen_by_actor(npc)
+end
+
+local function corpse_outfit(cs)
+	if not (cs and IsStalker(cs) and cs.s_storage ~= nil) or cs:alive() or is_story(cs) then return nil end
+	local rec = read_rec(cs)
+	if rec and rec.x then return nil end
+	if rec and rec.o and outfits[rec.o] then
+		return rec.o, tonumber(rec.c) or cfg.corpse_cond, true
+	end
+	local o = vis_outfit[norm_vis(cs.visual_name)]
+	if o then
+		return o, cfg.corpse_cond, false
+	end
+	return nil
+end
+
+local function take_from_corpse(se, cs)
+	local o, cond, real = corpse_outfit(cs)
+	if not (o and wants(se, o, cond)) then return nil end
+	write_rec(cs, { x = "1" })
+	return { o = o, c = cond, real = real, v = pick_visual(o, norm_vis(se.visual_name)), loud = true }
+end
+
+function held(id)
+	return hold[id] ~= nil
+end
+
+function on_se_spawn(se)
+	if get_value(PASS_KEY) == nil then return end
+	load()
+	if cfg.enabled and cfg.spawn_variety then
+		dress_variety(se)
+	end
+end
+
+function on_death_drop(npc, se)
+	if not (npc and se) then return false end
+	local rec = read_rec(se)
+	if not (rec and rec.o) or rec.x then return false end
+	load()
+	write_rec(se, { x = "1" })
+	if not system_ini():section_exist(rec.o) then return false end
+	if death_manager.he_corpse_outfit_banned(npc, rec.o) then return true end
+	local cond = (tonumber(rec.c) or 1) * (cfg.drop_cond_min + math.random() * (cfg.drop_cond_max - cfg.drop_cond_min))
+	local it = alife():create(rec.o, npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc:id())
+	if it then
+		local ii = it:get_inventory_item()
+		if ii then
+			ii.item_condition = cond
+		end
+		cond_fix[it.id] = { cond = cond, t = time_global() + COND_FIX_MS }
+	end
+	return true
+end
+
+function mark_stripped(se)
+	if se then
+		write_rec(se, { x = "1" })
+	end
+end
+
+function strip_corpse(npc, corpse)
+	load()
+	if not (cfg.enabled and npc and corpse and npc:alive()) then return end
+	local id = npc:id()
+	if pending[id] then return end
+	local se, cs = alife():object(id), alife():object(corpse:id())
+	if se and cs then
+		pending[id] = take_from_corpse(se, cs)
+	end
+end
+
+function strip_corpse_offline(se, cs)
+	load()
+	if not (cfg.enabled and se and cs) or se.online or pending[se.id] then return end
+	local p = take_from_corpse(se, cs)
+	if p then
+		apply(se, p)
+	end
+end
+
+function wear_offline(se, it)
+	load()
+	if not (cfg.enabled and se and it) or se.online or pending[se.id] then return false end
+	local sect = it:section_name()
+	if not (outfits[sect] and outfits[sect].pool) then return false end
+	local ii = it:get_inventory_item()
+	local cond = ii and ii.item_condition or 1
+	if not wants(se, sect, cond) then return false end
+	apply(se, { o = sect, c = cond, real = true, v = pick_visual(sect, norm_vis(se.visual_name)) })
+	return true
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = this.on_update })
+	sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
+	sm:subscribe({ signal = "on_npc_death", fun = this.on_npc_death })
+end
+
+function on_update()
+	ogse_signals.get_mgr():reschedule(500)
+	if not db.actor then return end
+	load()
+	if get_value(PASS_KEY) == nil then
+		set_value(PASS_KEY, 1)
+		if cfg.enabled and cfg.spawn_variety then
+			for _, se in alife():objects() do
+				dress_variety(se)
+			end
+		end
+	end
+	if not unstuck then
+		unstuck = true
+		if cfg.enabled and next(unique) then
+			for _, se in alife():objects() do
+				unstick(se)
+			end
+		end
+	end
+	local now = time_global()
+	for id, p in pairs(pending) do
+		local se = alife():object(id)
+		if not (se and IsStalker(se) and se:alive()) then
+			pending[id] = nil
+			hold[id] = nil
+		elseif not level.object_by_id(id) then
+			apply(se, p)
+			pending[id] = nil
+			hold[id] = nil
+		elseif hold[id] and hold[id] < now then
+			hold[id] = nil
+		end
+	end
+	for id, f in pairs(cond_fix) do
+		local obj = level.object_by_id(id)
+		if obj then
+			obj:set_condition(f.cond)
+			cond_fix[id] = nil
+		elseif f.t < now then
+			cond_fix[id] = nil
+		end
+	end
+end
+
+function on_npc_spawn(npc)
+	if not (npc and npc:alive()) then return end
+	load()
+	if not cfg.enabled then return end
+	local id = npc:id()
+	if eligible(alife():object(id)) then
+		ogse_signals.get_mgr():subscribe({ signal = "on_npc_update." .. id, fun = this.on_npc_tick })
+	end
+end
+
+function on_npc_death(npc)
+	if npc then
+		pending[npc:id()] = nil
+		hold[npc:id()] = nil
+	end
+end
+
+function on_npc_tick(npc)
+	ogse_signals.get_mgr():reschedule(cfg.check_period + math.random(1000))
+	if not (db.actor and npc:alive()) then return end
+	local id = npc:id()
+	local se = alife():object(id)
+	if not se then return end
+	local p = pending[id]
+	if p then
+		local now = time_global()
+		if p.loud and cfg.refit_online and not hold[id] and (p.retry == nil or p.retry < now) and can_refit(npc, se) then
+			hold[id] = now + HOLD_MS
+			p.retry = now + RETRY_MS
+		end
+		return
+	end
+	local c, cur = eligible(se)
+	if not c then return end
+	local need = worn_score(se, cur) * cfg.better_ratio
+	local best, best_s
+	npc:iterate_inventory(function(_, item)
+		local o = item:is_outfit() and outfits[item:section()]
+		if o and o.pool and c.allow[o.family] then
+			local s = o.score * cond_k(item:condition())
+			if s > need and (best_s == nil or s > best_s) then
+				best, best_s = item, s
+			end
+		end
+	end, nil)
+	if best then
+		pending[id] = { item = best:id(), o = best:section(), c = best:condition(), v = pick_visual(best:section(), norm_vis(se.visual_name)), loud = true }
+	end
+end
+
+function report()
+	load()
+	local n, foreign, worn, stripped = 0, 0, 0, 0
+	for _, se in alife():objects() do
+		if se.id ~= 0 and IsStalker(se) and se.s_storage ~= nil then
+			local rec = read_rec(se)
+			if rec and rec.o then worn = worn + 1 end
+			if rec and rec.x then stripped = stripped + 1 end
+			local c, cur = eligible(se)
+			if c then
+				n = n + 1
+				if c.foreign[outfits[cur].family] then foreign = foreign + 1 end
+			end
+		end
+	end
+	local p, h = 0, 0
+	for _ in pairs(pending) do p = p + 1 end
+	for _ in pairs(hold) do h = h + 1 end
+	local text = string.format("he_npc_wardrobe: on=%s npc=%d foreign=%d worn=%d stripped=%d pending=%d held=%d",
+		tostring(cfg.enabled), n, foreign, worn, stripped, p, h)
+	log2("[%s]", text)
+	if db.actor then
+		db.actor:give_game_news(text, "ui\\ui_iconsTotal", Frect():set(0, 0, 83, 47), 0, 15000)
+	end
+end

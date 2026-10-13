@@ -93,6 +93,7 @@ VARIANT_CATEGORIES = {
     "Опционально/оружие/": "gamedata/variant_weapons.ltx",
     "Опционально/погода/": "gamedata/variant_weather.ltx",
     "Опционально/болтяры/": "gamedata/variant_bolt.ltx",
+    "Опционально/музыка/": "gamedata/variant_music.ltx",
 }
 # A pack's file is protected when the build ships the same path, and always for
 # scripts: X-Ray addresses a module by bare filename, so a pack script sitting in
