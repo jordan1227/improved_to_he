@@ -102,7 +102,56 @@ u32 ps_preset = 2;
 constexpr xr_token qpreset_token[] = {{"Minimum", 0}, {"Low", 1}, {"Default", 2}, {"High", 3}, {"Extreme", 4}, {nullptr, 0}};
 
 u32 ps_r_ao_mode = AO_MODE_SSDO;
-constexpr xr_token ao_mode_token[] = {{"st_gtao", AO_MODE_GTAO}, {"st_ssdo", AO_MODE_SSDO}, {nullptr, 0}};
+constexpr xr_token ao_mode_token[] = {{"st_gtao", AO_MODE_GTAO}, {"st_ssdo", AO_MODE_SSDO}, {"st_ssfx_ao", AO_MODE_SSFX}, {nullptr, 0}};
+
+// NLC: SSS 23 temporal passes
+float ps_ssfx_flora_variation{1.0f};
+int ps_ssfx_ao_res{1};
+float ps_ssfx_ao_intensity{1.0f};
+float ps_ssfx_ao_radius{2.5f};
+int ps_ssfx_il_res{6};
+int ps_ssfx_il_quality{3};
+float ps_ssfx_il_intensity{1.0f};
+float ps_ssfx_il_flashlight{1.0f}; // NLC: indirect light multiplier of the player's torch only
+int ps_ssfx_sss_quality{2};
+int ps_ssfx_sss_lights{1};
+float ps_ssfx_sss_length{1.0f};
+int ps_ssfx_compare{};
+
+// NLC: SSS 23 Build B ( water, fog scattering, volumetric resolution, foliage, glass, SSR )
+BOOL ps_ssfx_water_enable{TRUE};
+BOOL ps_ssfx_rain_beams{TRUE}; // NLC .85: rain refracts the current HDR scene + volumetric light ( game restart )
+int ps_ssfx_water_res{2};
+int ps_ssfx_water_quality{2};
+int ps_ssfx_water_parallax{2};
+float ps_ssfx_water_blur{0.8f};
+float ps_ssfx_water_reflection{1.0f};
+float ps_ssfx_fog_scattering{0.5f};
+int ps_ssfx_volumetric_res{2};
+float ps_ssfx_tree_variation{1.0f};
+BOOL ps_ssfx_foliage_mask{FALSE};
+BOOL ps_ssfx_glass_enable{TRUE};
+BOOL ps_ssfx_ssr_enable{TRUE};
+float ps_ssfx_ssr_dry{0.0f};
+float ps_ssfx_ssr_blur{0.5f};
+
+// NLC: SSS 23 Build C
+float ps_ssfx_wind_gusts{0.5f};
+float ps_ssfx_bloom_hud{0.5f};
+float ps_ssfx_fog_sun{0.5f};
+float ps_ssfx_spec_occlusion{1.0f};
+int ps_ssfx_ssr_res{1};
+float ps_ssfx_cloud_shadows{1.0f};
+int ps_ssfx_debug_clouds{}; // NLC: cloud shadow debug view ( live )
+float ps_ssfx_ao_direct{0.3f}; // NLC .84: AO on the direct light
+u32 ps_ssfx_look{1}; // NLC .85: look preset ( img_corrections.h ), default NLC
+int ps_ssfx_settings_version{}; // NLC .89: one-time migration of changed defaults ( CRender::create )
+float ps_ssfx_contrast{1.f}, ps_ssfx_color_r{1.f}, ps_ssfx_color_g{1.f}, ps_ssfx_color_b{1.f};
+constexpr xr_token ssfx_look_token[] = {{"st_ssfx_look_neutral", 0}, {"st_ssfx_look_nlc", 1}, {"st_ssfx_look_cold", 2}, {"st_ssfx_look_classic", 3}, {nullptr, 0}};
+float ps_ssfx_ground_mist{0.5f}; // NLC .84: ground mist ( from 0: game restart )
+float ps_ssfx_step_ripples{1.0f};
+BOOL ps_ssfx_spec_aa{TRUE};
+BOOL ps_ssfx_mblur_objects{FALSE};
 
 u32 ps_r_ao_quality = 0;
 constexpr xr_token qssao_token[] = {{"st_opt_off", 0},
@@ -285,11 +334,11 @@ Fvector4 ps_ssfx_rain_3{0.15f, 1.f, 0.0f, 0.0f}; // Alpha, Refraction ( Splashes
 Fvector3 ps_ssfx_shadow_cascades{25.f, 60.f, 160.f};
 Fvector4 ps_ssfx_grass_shadows = {0.0f, 0.0f, 50.0f, 0.0f}; // X - каскады на которых будут рендериться тени (0 - на первом, 1 - на первом и втором, 2 - на всех трёх), Y - устарело и более не используется, Z - дальность на которой будут рендериться тени от источников света (НЕ СОЛНЦА)
 Fvector4 ps_ssfx_grass_interactive{1.f, static_cast<float>(GRASS_SHADER_DATA_COUNT), 2000.f, 1.0f};
-Fvector4 ps_ssfx_int_grass_params_1{2.0f, 1.0f, 1.0f, 25.f};
+Fvector4 ps_ssfx_int_grass_params_1{1.2f, 1.0f, 1.0f, 25.f}; // NLC: player bend radius 2 -> 1.2 m ( footprint-sized NPC benders )
 Fvector4 ps_ssfx_int_grass_params_2{1.0f, 5.0f, 1.0f, 1.0f};
 
 BOOL ps_ssfx_terrain_grass_align{TRUE}; // Grass align
-float ps_ssfx_terrain_grass_slope{1.0f}; // Grass slope limit
+float ps_ssfx_terrain_grass_slope{0.5f}; // Grass slope limit ( NLC .85: 1 -> 0.5, no grass on steep slopes )
 
 float ps_ssfx_wpn_dof_2 = 0.5f;
 
@@ -700,6 +749,15 @@ public:
     }
 };
 
+// NLC: ssfx_compare is a session-only A/B switch: it is never written to user.ltx, so a forgotten
+// comparison cannot hide the SSS 23 passes in later sessions.
+// .89: an on / off command ( was CCC_Integer: the Shaders tab checkbox could not switch it )
+class CCC_SsfxCompare final : public CCC_Bool
+{
+public:
+    CCC_SsfxCompare(LPCSTR N, BOOL* V) : CCC_Bool(N, V) { SetCanSave(false); }
+};
+
 void xrRender_initconsole()
 {
     if (!FS.path_exist(fsgame::game_weathers))
@@ -1007,6 +1065,58 @@ void xrRender_initconsole()
     CMD3(CCC_Mask64, "ssfx_inter_grass", &ps_r2_ls_flags_ext, R2FLAGEXT_SSFX_INTER_GRASS);
     CMD3(CCC_Mask64, "ssfx_inter_branches", &ps_r2_ls_flags_ext, R2FLAGEXT_SSFX_INTER_BRANCHES);
     CMD3(CCC_Mask64, "r_font_shadows", &ps_r2_ls_flags_ext, R2FLAGEXT_FONT_SHADOWS);
+
+    // NLC: SSS 23 temporal passes. Resolution and quality values are compile-time ( vid_restart ).
+    CMD4(CCC_Float, "ssfx_flora_variation", &ps_ssfx_flora_variation, 0.f, 2.f);
+    CMD4(CCC_Integer, "ssfx_ao_resolution", &ps_ssfx_ao_res, 1, 4);
+    CMD4(CCC_Float, "ssfx_ao_intensity", &ps_ssfx_ao_intensity, 0.f, 2.f);
+    CMD4(CCC_Float, "ssfx_ao_radius", &ps_ssfx_ao_radius, 0.5f, 5.f);
+    CMD4(CCC_Integer, "ssfx_il_resolution", &ps_ssfx_il_res, 2, 8);
+    CMD4(CCC_Integer, "ssfx_il_quality", &ps_ssfx_il_quality, 1, 3);
+    CMD4(CCC_Float, "ssfx_il_intensity", &ps_ssfx_il_intensity, 0.f, 2.f);
+    CMD4(CCC_Float, "ssfx_il_flashlight", &ps_ssfx_il_flashlight, 0.f, 2.f); // NLC: flashlight bounce strength, 0 = none
+    CMD4(CCC_Integer, "ssfx_sss_quality", &ps_ssfx_sss_quality, 1, 3);
+    CMD4(CCC_Integer, "ssfx_sss_lights", &ps_ssfx_sss_lights, 0, 1);
+    CMD4(CCC_Float, "ssfx_sss_length", &ps_ssfx_sss_length, 0.f, 2.f); // 0 = no contact shadows
+    CMD2(CCC_SsfxCompare, "ssfx_compare", &ps_ssfx_compare); // session only, never saved
+
+    // NLC: SSS 23 Build B. Switches and quality are a per-session snapshot ( game restart ), resolutions need vid_restart.
+    CMD2(CCC_Bool, "ssfx_water_enable", &ps_ssfx_water_enable);
+    CMD2(CCC_Bool, "ssfx_rain_beams", &ps_ssfx_rain_beams);
+    CMD4(CCC_Integer, "ssfx_water_resolution", &ps_ssfx_water_res, 1, 4);
+    CMD4(CCC_Integer, "ssfx_water_quality", &ps_ssfx_water_quality, 1, 3);
+    CMD4(CCC_Integer, "ssfx_water_parallax", &ps_ssfx_water_parallax, 0, 3);
+    CMD4(CCC_Float, "ssfx_water_blur", &ps_ssfx_water_blur, 0.f, 1.f);
+    CMD4(CCC_Float, "ssfx_water_reflection", &ps_ssfx_water_reflection, 0.f, 2.f);
+    CMD4(CCC_Float, "ssfx_fog_scattering", &ps_ssfx_fog_scattering, 0.f, 1.f); // 0 = pass off
+    CMD4(CCC_Integer, "ssfx_volumetric_resolution", &ps_ssfx_volumetric_res, 1, 4); // 1 = full ( old path )
+    CMD4(CCC_Float, "ssfx_tree_variation", &ps_ssfx_tree_variation, 0.f, 2.f);
+    CMD2(CCC_Bool, "ssfx_foliage_mask", &ps_ssfx_foliage_mask);
+    CMD2(CCC_Bool, "ssfx_glass_enable", &ps_ssfx_glass_enable);
+    CMD2(CCC_Bool, "ssfx_ssr_enable", &ps_ssfx_ssr_enable);
+    CMD4(CCC_Float, "ssfx_ssr_dry", &ps_ssfx_ssr_dry, 0.f, 1.f);
+    CMD4(CCC_Float, "ssfx_ssr_blur", &ps_ssfx_ssr_blur, 0.f, 1.f);
+
+    // NLC: SSS 23 Build C. Gusts and sun fog: turning them on from 0 needs a game restart ( shader macros ).
+    CMD4(CCC_Float, "ssfx_wind_gusts", &ps_ssfx_wind_gusts, 0.f, 1.f);
+    CMD4(CCC_Float, "ssfx_bloom_hud", &ps_ssfx_bloom_hud, 0.f, 1.f); // 1 = HUD blooms like the world
+    CMD4(CCC_Float, "ssfx_fog_sun", &ps_ssfx_fog_sun, 0.f, 1.f);
+    CMD4(CCC_Float, "ssfx_spec_occlusion", &ps_ssfx_spec_occlusion, 0.f, 1.f);
+    CMD4(CCC_Integer, "ssfx_ssr_resolution", &ps_ssfx_ssr_res, 1, 2);
+    CMD4(CCC_Float, "ssfx_cloud_shadows", &ps_ssfx_cloud_shadows, 0.f, 1.f); // 0 = off ( from 0: game restart )
+    CMD4(CCC_Float, "ssfx_ao_direct", &ps_ssfx_ao_direct, 0.f, 1.f);
+    CMD3(CCC_Token, "ssfx_look", &ps_ssfx_look, ssfx_look_token);
+    CMD4(CCC_Integer, "ssfx_settings_version", &ps_ssfx_settings_version, 0, 100);
+    CMD4(CCC_Float, "ssfx_contrast", &ps_ssfx_contrast, 0.8f, 1.2f);
+    CMD4(CCC_Float, "ssfx_color_r", &ps_ssfx_color_r, 0.8f, 1.2f);
+    CMD4(CCC_Float, "ssfx_color_g", &ps_ssfx_color_g, 0.8f, 1.2f);
+    CMD4(CCC_Float, "ssfx_color_b", &ps_ssfx_color_b, 0.8f, 1.2f);
+    CMD4(CCC_Float, "ssfx_sunshafts", &ps_ssfx_sunshafts, 0.f, 2.f); // NLC .85: automatic shafts at low sun
+    CMD4(CCC_Float, "ssfx_ground_mist", &ps_ssfx_ground_mist, 0.f, 1.f);
+    CMD4(CCC_Integer, "ssfx_debug_clouds", &ps_ssfx_debug_clouds, 0, 1); // r = cloud opacity, g = sun up, b = weather clouds
+    CMD4(CCC_Float, "ssfx_step_ripples", &ps_ssfx_step_ripples, 0.f, 2.f); // 0 = off ( from 0: game restart )
+    CMD2(CCC_Bool, "ssfx_spec_aa", &ps_ssfx_spec_aa); // game restart
+    CMD2(CCC_Bool, "ssfx_mblur_objects", &ps_ssfx_mblur_objects); // with r2_mblur_enable, game restart
 
     CMD4(CCC_Integer, "ssfx_bloom_use_presets", &ps_ssfx_bloom_use_presets, 0, 1);
     CMD4(CCC_Vector4, "ssfx_bloom_1", &ps_ssfx_bloom_1, (Fvector4{1, 1, 0, 0}), (Fvector4{10, 100, 100, 10}));

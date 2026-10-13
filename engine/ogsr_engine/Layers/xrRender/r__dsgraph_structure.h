@@ -57,6 +57,9 @@ public:
     R_dsgraph::mapSorted_T mapWmark; // sorted
     R_dsgraph::mapSorted_T mapEmissive;
 
+    // NLC: static water surfaces of this frame ( drawn normally, plus the SSS 23 water reflection prepass ). Cleared by the prepass.
+    xr_vector<dxRender_Visual*> waterNodes;
+
     // Runtime structures
     xr_vector<R_dsgraph::_LodItem> lstLODs;
     xr_vector<R_dsgraph::mapNormal_T::const_iterator> normalSorted;

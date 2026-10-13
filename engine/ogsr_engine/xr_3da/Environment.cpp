@@ -235,6 +235,12 @@ void CEnvironment::SetWeather(const shared_str& name, const bool forced)
         if (forced)
         {
             Invalidate();
+            if (Device.fTimeGlobal < wetness_reset_window) // NLC: weather restored after a level / save load ( first forced set only )
+            {
+                wetness_reset_pending = true;
+                wetness_reset_window = 0.f;
+                Msg("~ [wetness] reset re-armed by the weather restore [%s]", name.c_str());
+            }
         }
         if (!b_wfx)
         {

@@ -12,6 +12,9 @@ function element_0(shader, t_base, t_second, t_detail)
 	shader:dx10texture("env_s1", "$user$env_s1")
 	shader:dx10texture("sky_s0", "$user$sky0")
 	shader:dx10texture("sky_s1", "$user$sky1")
+	-- NLC: SSS 23 temporal AO / IL results ( ignored when the shader does not use them )
+	shader:dx10texture("s_ssfx_ao", "$user$ssfx_ao_a")
+	shader:dx10texture("s_ssfx_il", "$user$ssfx_il_a")
 
 	jitter.jitter(shader)
 
@@ -52,6 +55,7 @@ function element_3(shader, t_base, t_second, t_detail)
 	shader:begin("stub_screen_space", "combine_2_naa")
 		:fog(false)
 		:zb(false, false)
+	shader:dx10texture("s_mblur_velocity", "$user$velocity") -- NLC: per-object motion blur
 	shader:dx10texture("s_position", "$user$position")
 	shader:dx10texture("s_image", "$user$postprocess0")
 	shader:dx10texture("s_bloom", "$user$bloom1")

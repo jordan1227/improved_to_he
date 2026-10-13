@@ -22,6 +22,7 @@
 #include "level_path_builder.h"
 #include "detail_path_builder.h"
 #include "../xr_3da/IGame_Persistent.h"
+#include "../Include/xrRender/RenderVisual.h"
 
 using namespace MovementManager;
 
@@ -321,8 +322,17 @@ void CMovementManager::on_frame(CPHMovementControl* movement_control, Fvector& d
 
     move_along_path(movement_control, dest_position, object().client_update_fdelta());
 
-    // Update Grass benders
-    g_pGamePersistent->GrassBendersUpdate(object().ID(), grassbender_id, grassbender_frame, object().Position(), -1.0f, 1.0f);
+    // Update Grass benders. NLC: radius and strength follow the creature's ground footprint ( visual box xz half-extent,
+    // a human ~0.35 m ): a rat barely parts the grass, a pseudogiant flattens a wide patch. The bounding-sphere radius
+    // ( height included ) made boars push grass like an aura.
+    float foot = 0.35f;
+    if (IRenderVisual* V = object().Visual())
+    {
+        const Fbox& box = V->getVisData().box;
+        foot = 0.5f * std::max(box.x2 - box.x1, box.z2 - box.z1);
+    }
+    g_pGamePersistent->GrassBendersUpdate(object().ID(), grassbender_id, grassbender_frame, object().Position(), std::clamp(1.5f * foot, 0.25f, 1.5f),
+                                          std::clamp(foot / 0.35f, 0.3f, 1.5f));
 }
 
 void CMovementManager::on_travel_point_change(const u32& previous_travel_point_index) { detail().on_travel_point_change(previous_travel_point_index); }

@@ -11,6 +11,7 @@ class CRandom final
 
 public:
     CRandom() = default;
+    explicit CRandom(const u32 seed) : generator{seed} {} // NLC: deterministic sequence (detail placement)
 
     [[nodiscard]] inline s32 randI() { return nextValue(maxI); }
     [[nodiscard]] inline s32 randI(const s32 max) { return !max ? max : nextValue(max); }

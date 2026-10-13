@@ -58,6 +58,7 @@ void CBlender_Tree::LoadIni(CInifile* ini_file, LPCSTR section)
 // R3
 //////////////////////////////////////////////////////////////////////////
 #include "uber_deffer.h"
+#include "../xrRenderPC_R4/ssfx_features.h"
 void CBlender_Tree::Compile(CBlender_Compile& C)
 {
     IBlender::Compile(C);
@@ -92,7 +93,8 @@ void CBlender_Tree::Compile(CBlender_Compile& C)
             tvs = "tree_branch";
         }
 
-        uber_deffer(C, true, tvs, "base", oBlend.value, nullptr, true);
+        // NLC: SSS 23 foliage: branch-only PS ( always foliage, per-tree colour variation )
+        uber_deffer(C, true, tvs, (ssfx_foliage_enabled() && oBlend.value && !oNotAnTree.value) ? "tree_branch" : "base", oBlend.value, nullptr, true);
         C.r_Stencil(TRUE, D3DCMP_ALWAYS, 0xff, 0x7f, D3DSTENCILOP_KEEP, D3DSTENCILOP_REPLACE, D3DSTENCILOP_KEEP);
         C.r_StencilRef(0x01);
         C.r_dx10Texture("s_waves", "fx\\wind_wave");

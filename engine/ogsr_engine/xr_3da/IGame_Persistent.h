@@ -63,6 +63,14 @@ public:
         BENDER_ANIM_PULSE = 5,
     }; 
 
+    // NLC: the player's active torch ( CTorch::UpdateCL ), read by the render for the flashlight indirect light
+    struct SActorTorch
+    {
+        u32 frame{}; // Device.dwFrame of the last update ( stale = off )
+        Fvector pos{}, dir{}, color{};
+        float range{}, cone{}; // cone: full angle, radians
+    } actor_torch;
+
   	void GrassBendersUpdateAnimations();
     void GrassBendersAddExplosion(const u16 id, const Fvector& position, const Fvector3& dir, const float fade, const float speed, const float intensity, const float radius);
     void GrassBendersAddShot(const u16 id, const Fvector& position, const Fvector3& dir, const float fade, const float speed, const float intensity, const float radius);

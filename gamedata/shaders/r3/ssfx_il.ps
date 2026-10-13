@@ -1,0 +1,122 @@
+/**
+ * @ Description: Indirect light ( reduced resolution + temporal accumulation )
+ * @ Based on: SCREEN SPACE SHADERS - UPDATE 21 ssfx_il.ps ( https://www.moddb.com/members/ascii1457 )
+ * @ NLC: 2026-10-12 - OGSR G-buffer / velocity, shared reprojection helpers; sample positions on their
+ *        own view ray. Bounces come from the current frame light accumulator ( linear, as with ES ).
+ *        Output: rgb = indirect light
+ */
+
+#include "common.h"
+#include "screenspace_common.h"
+#include "ssfx_temporal.h"
+
+#ifndef SSFX_IL_QUALITY
+#define SSFX_IL_QUALITY 32
+#endif
+
+uniform float4 ssfx_il_params; // Res divider, intensity, vibrance, distance
+uniform float4 ssfx_il_params2; // HUD intensity, flora intensity, -, -
+
+Texture2D ssfx_il_history; // $user$ssfx_il
+uniform float4 ssfx_torch[3]; // NLC: player torch, view space: pos / inv range^2, dir / cos half cone, colour x ( multiplier - 1 ) / active
+
+float4 main(p_screen I) : SV_Target
+{
+    float2 tc = I.tc0.xy;
+
+    gbuffer_data gbd = gbuffer_load_data(tc, tc * render_res.xy);
+    float3 P = gbd.P;
+    float3 N = gbd.N;
+
+    if (P.z >= ssfx_il_params.w || P.z <= SKY_EPS)
+        return float4(0, 0, 0, 0);
+
+    bool mat_flora = abs(gbd.mtl - MAT_FLORA) <= 0.04f;
+
+    // Flora: fake upward normal to align the hemisphere
+    N = mat_flora ? mul(m_V, float3(0.0f, 0.25f, 0.0f)) : N;
+
+    float3 ao_noise = ssfx_hash33(float3(tc * 100.0f, timers.x * 100.0f));
+
+    float3 il = 0;
+    float torch_il = 0; // NLC: flashlight bounce ( alpha )
+    float3 gain = 1.0f;
+    float Seed = 0.04f;
+    float radius = 3.0f;
+
+    [unroll(SSFX_IL_QUALITY)]
+    for (int i = 0; i < SSFX_IL_QUALITY; i++)
+    {
+        ao_noise = ssfx_hash33(float3(tc.x + Seed, ao_noise.x + Seed, ao_noise.z - Seed)) * 2.0f - 1.0f;
+        Seed += 0.1031f;
+
+        float3 sample_ray = reflect(ssfx_hemisphere[i], ao_noise * 1.5f) + N;
+        float3 occ_pos = P + sample_ray * radius;
+
+        float2 occ_uv = SSFX_view_to_uv(occ_pos);
+
+        if (SSFX_is_valid_uv(occ_uv))
+        {
+            float4 sample_raw = s_position.SampleLevel(smp_nofilter, occ_uv, 0);
+
+            // Surface point on the sample's own view ray, relative to the probe point
+            float3 diff = occ_pos * (sample_raw.z / max(occ_pos.z, 0.0001f) - 1.0f);
+            float Dist = length(diff);
+
+            float il_intensity = 1.0f - saturate(Dist * 0.066f);
+            il_intensity *= max(0.0f, dot(gbuf_unpack_normal(sample_raw.xy), normalize(diff)) + 0.25f);
+
+            bool IsFlora = (abs(gbuf_unpack_mtl(sample_raw.w) - MAT_FLORA) <= 0.04f) || mat_flora;
+            il_intensity *= 1.0f - saturate(IsFlora - ssfx_il_params2.y);
+
+            float3 L = saturate(s_accumulator.SampleLevel(smp_nofilter, occ_uv, 0).rgb * 10.0f);
+
+            // NLC: flashlight indirect light ( ssfx_il_flashlight ). The torch's light at the sample surface is rebuilt
+            // from its cone and range and gathered on its own ( alpha ): combine adds it as light, so it also works
+            // where there is no ambient to modulate ( undergrounds ) and keeps the torch colour ( not the sky's ).
+            [branch] if (ssfx_torch[2].w > 0.0f)
+            {
+                float3 S = occ_pos * (sample_raw.z / max(occ_pos.z, 0.0001f)); // sample surface point
+                float3 Lv = ssfx_torch[0].xyz - S;
+                // NLC .84: inverse-square-like falloff with a soft 5 m limit ( the torch range is 30 - 50 m: far walls
+                // counted fully and a dark room lit up evenly )
+                float d2 = dot(Lv, Lv);
+                float att = (1.0f / (1.0f + d2 * 0.25f)) * (1.0f - smoothstep(9.0f, 25.0f, d2));
+                float3 Ld = Lv * rsqrt(max(d2, 1e-4f)); // .90: no NaN at the torch position
+                float cone = smoothstep(ssfx_torch[1].w, lerp(ssfx_torch[1].w, 1.0f, 0.4f), dot(-Ld, ssfx_torch[1].xyz));
+                float ndl = saturate(dot(gbuf_unpack_normal(sample_raw.xy), Ld));
+                torch_il += att * cone * ndl * il_intensity;
+            }
+
+            il += L * gain * il_intensity * 300.0f;
+            gain *= 1.0f / (1.0f + il);
+        }
+    }
+
+    il /= SSFX_IL_QUALITY;
+    torch_il /= SSFX_IL_QUALITY;
+
+    // Distance fade
+    il *= 1.0f - smoothstep(ssfx_il_params.w * 0.7f, ssfx_il_params.w, P.z);
+
+    // Temporal accumulation -------------------------------------------------------------
+
+    float HudMask = ssfx_hud_mask(tc);
+    float2 mv = ssfx_motion_uv(tc);
+    float2 prev_tc = tc - mv;
+
+    float vel = HudMask > 0 ? 0.0f : length(mv);
+
+    float4 prev = ssfx_il_history.SampleLevel(smp_linear, saturate(prev_tc), 0);
+
+    float outoffsrc = ssfx_offscreen(prev_tc);
+    float docc = ssfx_disocclusion(P.z, prev_tc);
+
+    float weight = saturate(0.97f - vel - outoffsrc);
+
+    il = saturate(il - 0.01f); // Small decay
+    il = lerp(il, prev.rgb, saturate(weight - docc * 0.5f));
+    torch_il = lerp(torch_il, prev.a, saturate(weight - docc * 0.5f));
+
+    return saturate(float4(il, torch_il));
+}

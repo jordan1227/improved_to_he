@@ -285,6 +285,8 @@ public:
     float wind_strength_factor;
     float wind_gust_factor;
 	float wetness_factor;
+    bool wetness_reset_pending{true}; // NLC: set from the current weather on the next update ( level / save load )
+    float wetness_reset_window{}; // NLC: Device.fTimeGlobal until which a forced weather set re-arms the reset
 
     Fvector3 wind_anim{}, wind_anim_old{};
 
@@ -414,3 +416,4 @@ public:
 ENGINE_API extern Flags32 psEnvFlags;
 ENGINE_API extern float psVisDistance;
 extern ENGINE_API float ps_r_sunshafts_intensity;
+extern ENGINE_API float ps_ssfx_sunshafts;

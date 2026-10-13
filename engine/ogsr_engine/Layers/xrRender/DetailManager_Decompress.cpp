@@ -75,6 +75,10 @@ void CDetailManager::cache_Decompress(Slot* S)
 
     DetailSlot& DS = QueryDB(D.sx, D.sz);
 
+    // NLC: per-slot seed, so the same slot always gets the same grass (independent of the
+    // decompression order and thread); the global generator made placement differ per load.
+    CRandom rng{static_cast<u32>(D.sx) * 73856093u ^ static_cast<u32>(D.sz) * 19349663u ^ 0x12071980u};
+
     // Select polygons
     Fvector bC, bD;
     D.vis.box.get_CD(bC, bD);
@@ -113,8 +117,8 @@ void CDetailManager::cache_Decompress(Slot* S)
         for (u32 x = 0; x <= d_size; x++)
         {
             // shift
-            const u32 shift_x = Random.randI(16);
-            const u32 shift_z = Random.randI(16);
+            const u32 shift_x = rng.randI(16);
+            const u32 shift_z = rng.randI(16);
 
             // Iterpolate and dither palette
             selected.clear();
@@ -136,7 +140,7 @@ void CDetailManager::cache_Decompress(Slot* S)
             if (selected.size() == 1)
                 index = selected[0];
             else
-                index = selected[Random.randI(selected.size())];
+                index = selected[rng.randI(selected.size())];
 
             CDetail& Dobj = objects.at(DS.r_id(index));
 
@@ -144,7 +148,7 @@ void CDetailManager::cache_Decompress(Slot* S)
             float rx = (float(x) / float(d_size)) * dm_slot_size + D.vis.box.min.x;
             float rz = (float(z) / float(d_size)) * dm_slot_size + D.vis.box.min.z;
 
-            Fvector Item_P{rx + Random.randFs(jitter), D.vis.box.max.y, rz + Random.randFs(jitter)};
+            Fvector Item_P{rx + rng.randFs(jitter), D.vis.box.max.y, rz + rng.randFs(jitter)};
 
             // Position (Y)
             float y = D.vis.box.min.y - 5;
@@ -174,7 +178,7 @@ void CDetailManager::cache_Decompress(Slot* S)
 
             // Slope Limit
             const float DotP = terrain_normal.dotproduct(dir);
-            if (DotP > -(1.0f - Random.randF(ps_ssfx_terrain_grass_slope * 0.8f, ps_ssfx_terrain_grass_slope)))
+            if (DotP > -(1.0f - rng.randF(ps_ssfx_terrain_grass_slope * 0.8f, ps_ssfx_terrain_grass_slope)))
                 continue;
 
             if (y < D.vis.box.min.y)
@@ -184,14 +188,14 @@ void CDetailManager::cache_Decompress(Slot* S)
             auto& Item = D.G[index].items.emplace_back();
 
             // Angles and scale
-            Item.scale = Random.randF(Dobj.m_fMinScale * 0.5f, Dobj.m_fMaxScale * 0.9f);
+            Item.scale = rng.randF(Dobj.m_fMinScale * 0.5f, Dobj.m_fMaxScale * 0.9f);
 
             Item.scale *= ps_current_detail_scale;
             // X-Form BBox
             Fmatrix mScale, mXform;
             Fbox ItemBB;
 
-            Item.xform.rotateY(Random.randF(0, PI_MUL_2));
+            Item.xform.rotateY(rng.randF(0, PI_MUL_2));
 
             // Terrain Alignment
             if (ps_ssfx_terrain_grass_align)

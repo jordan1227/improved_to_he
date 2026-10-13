@@ -11,6 +11,7 @@
 #include <zstd.h>
 
 #include "alife_storage_manager.h"
+#include "GamePersistent.h"
 #include "alife_simulator_header.h"
 #include "alife_time_manager.h"
 #include "alife_spawn_registry.h"
@@ -175,6 +176,12 @@ bool CALifeStorageManager::load(LPCSTR save_name)
     VERIFY(graph().actor());
 
     Msg("* Game %s is successfully loaded from file '%s' (%.3fs)", save_name, file_name, timer.GetElapsed_sec());
+
+    // NLC: wetness restarts from the restored weather. Same-level loads skip CLevel::Load_GameSpecific_After, so the
+    // reset is armed here too: the weather script's forced set_weather after the load re-arms it with the saved weather.
+    g_pGamePersistent->Environment().wetness_reset_pending = true;
+    g_pGamePersistent->Environment().wetness_reset_window = Device.fTimeGlobal + 120.f;
+    Msg("~ [wetness] save load: reset armed ( wetness %.3f )", g_pGamePersistent->Environment().wetness_factor);
 
     return (true);
 }

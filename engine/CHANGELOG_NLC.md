@@ -5,6 +5,300 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.90 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `685E3AD474AF5A79367A7B094F31498E2D543855A2FAEBE91F9FBA572266D7DB` (archived with its PDB in `nlc_tools/builds/20261013_191025_685e3ad4`).
+- **Status:** runtime pending ( review fixes ).
+- **Required game data:** `rain_patch_normal.ps`, `rain_apply_gloss.ps`, `ssfx_il.ps`.
+
+### NLC
+
+- Review: rain porosity / gloss packing safe in FP16; no NaN in the flashlight IL term; fog scattering not skipped
+  while ground mist is on; HUD prefetch flag only for file names ending in `_hud`.
+
+## nlc-3.589.89 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `D97B4E39B3111E724DD57736F9B762F62B6094C41E3D19A8CEEAFC4A2C96FC85` (archived with its PDB in `nlc_tools/builds/20261013_185528_d97b4e39`).
+- **Status:** runtime pending.
+- **Required game data:** `ui_mm_opt_shaders.script`.
+
+### NLC
+
+- `ssfx_compare` is an on / off command ( the Shaders tab checkbox could not switch the integer command ).
+- `ssfx_settings_version`: one-time migration of changed defaults for players who update ( grass slope 0.5, player
+  grass bend radius 1.2 ), in `CRender::create`.
+
+## nlc-3.589.88 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F981FB64611B1CB9A86BBD89655911D3B505939729B1719E5D97C719C886FB45` (archived with its PDB in `nlc_tools/builds/20261013_184136_f981fb64`).
+- **Status:** runtime pending.
+
+### NLC
+
+- **HUD visuals in `prefetch_visuals_*`** ( NLC `prefetch_globals.ltx`, ~375 weapon `*_hud` models ) are prefetched as
+  HUD visuals ( `CModelPool::Prefetch` ); they were loaded with world shaders and reused for the HUD, so many weapons
+  had no HUD rain drops. `.87` `[hudvis]` diagnostic removed.
+
+## nlc-3.589.87 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `55BB943798F4249CFAC0CA67341B57B58AD214F326960BDB246F4B8F921CB282` (archived with its PDB in `nlc_tools/builds/20261013_183047_55bb9437`).
+- **Status:** diagnostic build.
+
+### NLC
+
+- `~ [hudvis]` log line per HUD model part ( shader, texture, compiled pixel shader ): HUD rain drops missing on some
+  weapons.
+
+## nlc-3.589.86 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `74C3A1464BB8CC81BBE7F558D680E3BC548E3087A9D4233A3183C56566372160` (archived with its PDB in `nlc_tools/builds/20261013_173701_74c3a146`).
+- **Status:** runtime pending.
+- **Required game data:** `ssfx_rain.ps`, `effects_rain.ps`, menu files.
+
+### NLC
+
+- `ssfx_look` default NLC; automatic sun shafts also for a higher sun ( weaker ), floor 0.06.
+- Rain lit by the player's torch and by volumetric beams ( shader side, `ssfx_torch` constants ).
+
+## nlc-3.589.85 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `006CC5819BDD6BB80CB641A2532C71E094C1DA258EFDF307EB6F8F737F41FC4A` (archived with its PDB in `nlc_tools/builds/20261013_170720_006cc581`).
+- **Status:** runtime pending.
+- **Required game data:** `ssfx_rain.s/.ps`, `effects_rain.s/.ps`, `img_corrections.h`, presets, menu files.
+
+### NLC
+
+- **Rain refraction buffer** ( `ssfx_rain_beams`, `SSFX_RAIN_PASS`, SSS 22 ): 1/8 HDR scene + volumetric light before
+  the forward pass; rain no longer refracts the previous tone-mapped frame.
+- **Look presets** ( `ssfx_look` Neutral / NLC / Cold / Classic ), `ssfx_contrast`, `ssfx_color_r/g/b` ( LDR grading in
+  `img_corrections.h`, constants `ssfx_look`, `ssfx_color_balance` ).
+- **Automatic sun shafts** ( `ssfx_sunshafts` ): floor for a low bright sun in `CEnvDescriptorMixer::lerp`.
+- `ssfx_terrain_grass_slope` default 1 -> 0.5; light SSS slots keyed by `light::ssfx_uid`.
+
+## nlc-3.589.84 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `CFCBC75C214F4170DB5D81F07ABC204141635A8838ED87322A8ECFEE2D2748DC` (archived with its PDB in `nlc_tools/builds/20261013_054500_cfcbc75c`).
+- **Status:** runtime pending (tuning + performance batch).
+- **Required game data:** shaders ( `shadow.h`, `combine_1.ps`, `ssfx_il.ps`, `ssfx_mist.h`, `ssfx_extra.h`, `ssfx_fog_sun.h`,
+  `ssfx_fog_scattering.ps`, `ssfx_water.ps`, `ssfx_ssr.s`, `ssfx_ssr_combine.ps`, `ssfx_volumetric.s`,
+  `ssfx_volumetric_combine.ps`, `ssfx_sss_lights.ps`, `rain_patch_normal.ps`, `rain_apply_gloss.ps`,
+  `settings_screenspace_FLORA.h`, HUD rain drops / watch files ), presets, menu files.
+
+### NLC
+
+- **Performance:** grass / tree colour variation behind `SSFX_FLORA_VARIATION` ( off on Minimum / Low ); light SSS
+  passes skipped when their 4 slots are empty; SSR combined by blending into `rt_Generic_0` ( no scratch copy ); glass
+  copy only after an SSR pass; fog scattering skipped without visible fog; sun SSS skipped at night; sun and spot
+  volumetrics share one reduced target; volumetric spot fade only at reduced resolution, from the light's range edge.
+- **New:** `ssfx_ao_direct` ( AO on direct light, default 0.3 ), `ssfx_ground_mist` ( `SSFX_GROUND_MIST`, default 0.5 ),
+  constant `ssfx_extra2`. Defaults: `ssfx_cloud_shadows` 1, `ssfx_il_flashlight` 1 ( range 0 ~ 2 ).
+
+## nlc-3.589.83 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A14ECCFD6DEBFD9869BDBD40506DD48BD320C496FD77D0F3ABDBAF02B8417267` (archived with its PDB in `nlc_tools/builds/20261013_041832_a14eccfd`).
+- **Status:** runtime pending.
+- **Required game data:** `combine_1.ps`.
+
+### NLC
+
+- **Wetness reset on same-level save loads** ( they skip `Load_GameSpecific_After` ): armed in
+  `CALifeStorageManager::load` too.
+- **Flashlight bounce:** normalised torch colour ( brightness = `ssfx_il_flashlight` ), shader multiplies by albedo.
+
+## nlc-3.589.82 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A0A783CC9AFE0548E4A883FFC2A2C3363B29A7A94E1FF9EDAC493558D0A5D06F` (archived with its PDB in `nlc_tools/builds/20261013_035126_a0a783cc`).
+- **Status:** runtime pending (`.81` test fixes).
+- **Required game data:** `ssfx_il.ps`, `ssfx_il_blur.ps`, `combine_1.ps`, `screenspace_wind.h`,
+  `deffer_terrain_high_flat.ps`, menu files.
+
+### NLC
+
+- **Flashlight indirect light** is gathered in the IL alpha and added as light in the torch colour ( was a multiplier
+  of the ambient: nothing underground, sky-blue indoors ); `ssfx_il_flashlight` is now the strength ( default 1.1 ).
+- **Cloud shadows** default 0.85.
+- **Wetness reset log lines** ( `~ [wetness] ...` ) at level load, weather restore and reset.
+
+## nlc-3.589.81 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E6F4E7B5C84F67C3324920232805F31F06C288FFDFCEA2F893F52949145CF5D1` (archived with its PDB in `nlc_tools/builds/20261013_031355_e6f4e7b5`).
+- **Status:** runtime pending (`.80` test fixes, review fixes).
+- **Required game data:** `ssfx_cloud_shadows.h`, `accum_sun_cascade0/2.ps`, `screenspace_wind.h`, `ssfx_il.ps`,
+  `water_puddles.ps`, `effects_water_puddles.s`, `deffer_terrain_high_flat.ps`, `ssfx_ssr.ps`, `ssfx_water_ssr.ps`,
+  `ssfx_ao.ps`, menu files.
+
+### NLC
+
+- **Wetness after a save load:** the weather script restores the saved weather with a forced `set_weather` some seconds
+  after the level load; the first forced set inside a 120 s window re-arms the wetness reset ( `.79` / `.80` reset from
+  the previous save's weather ).
+- **Cloud shadows:** the cloud texture redirection no longer releases a reference it never took ( `surface_get` does
+  not AddRef ); `ssfx_debug_clouds 1` debug view.
+- **Flashlight indirect light** ( `ssfx_il_flashlight`, default 2 ): `CTorch` publishes the player's torch
+  ( `IGame_Persistent::actor_torch` ), binder `ssfx_torch` ( view space ).
+- **Review fixes:** SSS / water / SSR histories cleared when their pass resumes after skipped frames; SSFX histories
+  reset on camera cuts ( with `ResetTemporalHistory` ).
+
+## nlc-3.589.80 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `61D2F63FDA2DB90AE1BF00E442DDBA4A413F5CA3AC3D0F9760DB9686C324DC64` (archived with its PDB in `nlc_tools/builds/20261013_023139_61d2f63f`).
+- **Status:** runtime pending (`.79` test fixes).
+- **Required game data:** `accum_sun_cascade0.s`, `accum_sun_cascade2.s`, `screenspace_wind.h`, `water_puddles.ps`,
+  `deffer_terrain_high_flat.ps`.
+
+### NLC
+
+- **Grass benders sized by the ground footprint** ( visual box xz half-extent, radius 0.25 ~ 1.5 m ); the bounding
+  radius ( height included ) made boars push grass like an aura. Player bend radius default 2 -> 1.2 m
+  ( `ssfx_int_grass_params_1.x` ).
+- **Footstep ripples fade** over ~1.5 s after the walker stops ( was cut the same frame ).
+
+## nlc-3.589.79 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `6B00994FC890321F120C7BDCE24BC5D7BA54EA02DE35431261279958381004BC` (archived with its PDB in `nlc_tools/builds/20261013_015421_6b00994f`).
+- **Status:** runtime pending (wetness fix, Build C extras).
+
+### NLC
+
+- **Wetness:** `wetness_factor` changes per second ( was per frame: soak / dry time depended on the FPS; defaults keep the
+  100 FPS timing ) and restarts from the current weather after every level / save load ( a rainy save no longer leaves the
+  next one wet ).
+- **Grass benders sized by the creature** ( `CMovementManager::on_frame`: radius and strength from the bounding radius ).
+- **Cloud shadows** ( `ssfx_cloud_shadows`, `SSFX_CLOUD_SHADOWS` ): the current weather's cloud textures, bound as
+  `$user$ssfx_clouds0/1` every frame, projected along the sun in the sun cascades.
+- **Footstep ripples** ( `ssfx_step_ripples`, `SSFX_STEP_RIPPLES`, `ssfx_steps` binder: player + nearest moving benders ).
+- **Volumetric distance fade** ( spot lights, 20 -> 120 m, skipped beyond ).
+- **Specular AA** ( `ssfx_spec_aa`, `SSFX_SPEC_AA` ) and **object motion blur** ( `ssfx_mblur_objects`, `SSFX_MBLUR_OBJECTS` ).
+- SSS 23 temporal history reset on level load.
+
+## nlc-3.589.78 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A21DE08CD950A3DEF650DB9CDA5B1596798EAD57C3DECAEE27556BD663EAC5E3` (archived with its PDB in `nlc_tools/builds/20261013_004518_a21de08c`).
+- **Status:** runtime pending (SSS 23 Build C).
+- **Required game data:** `screenspace_wind.h`, `combine_1.ps`, `ssfx_hmodel.h`, `ssfx_fog_sun.h`, `ssfx_extra.h`,
+  `ogsr_bloom.ps/.s`, `ssfx_water.ps`, `ssfx_ssr.ps/.s`, `ssfx_ssr_combine.ps`, menu files, presets, anomaly configs.
+
+### NLC
+
+- **Water prepass:** camera matrices are set before the element ( binders such as `m_texgen` run at `set_Element` );
+  `.77` traced the water reflections from the last drawn object's matrix ( shader workaround already deployed ).
+- **`ssfx_extra` constant** ( x wind gusts, y HUD bloom, z sun-coloured fog, w specular occlusion; neutral with
+  `ssfx_compare` ) and cvars `ssfx_wind_gusts`, `ssfx_bloom_hud`, `ssfx_fog_sun`, `ssfx_spec_occlusion`;
+  macros `SSFX_WIND_GUSTS`, `SSFX_FOG_SUN` when the value is > 0 at game start.
+- **`ssfx_ssr_resolution` 1 / 2:** SSS 23 SSR targets at full or half size ( `vid_restart` ).
+
+## nlc-3.589.77 (2026-10-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `AF1F470576390FE8F748A4C265B235C04216D52B5599F90EA5F23D8B286F552F` (archived with its PDB in `nlc_tools/builds/20261012_205227_af1f4705`).
+- **Status:** runtime pending (SSS 23 Build B, `docs/SSS_UPGRADE_DESIGN.md`).
+- **Required game data:** Build B shaders ( `ssfx_water*`, `ssfx_fog_scattering*`, `ssfx_volumetric*`, `ssfx_ssr*`,
+  `ssfx_glass*`, `ssfx_tree_branch.h`, `deffer_tree_branch_aref_*`, overrides of `effects_water*.s`,
+  `accum_volumetric_sun.ps`, `deffer_tree_branch_bump-hq.vs`, `deffer_base_aref_bump-hq.ps` ), textures
+  `fx\ssfx_water_*`, `water\ssfx_water_perlin`, `fx\ssfx_glass_normal`, menu files.
+
+### NLC
+
+- **SSS 23 water:** water surfaces ( `effects_water*`, not puddles ) are flagged at shader creation
+  ( `ShaderElement::flags.isWater` ) and collected per frame ( `R_dsgraph_structure::waterNodes` ). A reflection prepass
+  draws them into reduced-size targets ( `ssfx_water_resolution` ), accumulates over frames and blurs; a 512x512 wave
+  height target feeds the parallax waves. The surfaces still render in the normal graph with their own `.s`; their
+  pixel shaders fall back to the OGSR `water.ps` when the feature is off. `ssfx_water_enable`, `ssfx_water_quality`,
+  `ssfx_water_parallax` ( game restart ), `ssfx_water_blur`, `ssfx_water_reflection`.
+- **Fog scattering:** `ssfx_fog_scattering` ( 0 = off ), HDR pass before bloom with its own 1/4 and 1/2 targets.
+- **Volumetric lights at reduced resolution:** `ssfx_volumetric_resolution` 1-4 ( 1 = old full-resolution path ).
+  Spot and sun volumetrics render into reduced targets without a depth buffer ( both shaders have no depth test ),
+  combined with a depth-aware 4x4 filter ( `ssfx_volumetric_combine.ps` ).
+- **SSR:** `ssfx_ssr_enable` ( game restart, needs `r_sslr_enable` ) replaces the OGSR SSR pass: reflected-point
+  reprojection, disocclusion and HUD rejection, 16-bit history, gloss-based blur ( `ssfx_ssr_blur` ); `ssfx_ssr_dry`
+  > 0 also reflects on dry glossy surfaces.
+- **Glass:** `ssfx_glass_enable` ( game restart ) gives transparent `Model_EbB` glass ( not HUD ) refraction, chromatic
+  aberration and fresnel ( `ssfx_glass` ).
+- **Foliage:** with `ssfx_tree_variation` > 0 or `ssfx_foliage_mask` at game start, tree branches use their own pixel
+  shaders ( `deffer_tree_branch_aref_*` ): always foliage, per-tree colour variation. `ssfx_foliage_mask 1` gives other
+  alpha-tested surfaces ( fences, nets ) their own material instead of the foliage material.
+- `ssfx_compare 1` also shows the old water, glass, SSR and full-resolution volumetrics, skips fog scattering and
+  removes grass / tree colour variation and the foliage mask.
+
+## nlc-3.589.76 (2026-10-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `C33500C66E62B7185665EB840F9829D175FCB6DD9D1706CF74A460B4A0394783` (archived with its PDB in `nlc_tools/builds/20261012_195119_c33500c6`).
+- **Status:** runtime pending (SSS 23 Build A menu fixes after the `.75` test).
+- **Required game data:** as `.75` ( menu files changed: `ui_mm_opt.xml`, `ui_mm_opt_main.script`,
+  `ui_mm_opt_shaders.script`, `ui_mm_opt_video_adv.script`, `ui_st_mm.xml` eng/rus ).
+
+### NLC
+
+- **`ssfx_compare` is session-only** ( `CCC_SsfxCompare`, never written to `user.ltx` ), so a forgotten comparison cannot
+  hide the SSS 23 passes in later sessions.
+- Menu ( game data ): the effect switches ( AO type/quality, indirect light, contact shadows ) moved into the Shaders
+  panel and its Defaults button turns the effects on; option group renamed `mm_opt_video_shaders` because OGSR clears
+  the `vid_restart` flag only for `mm_opt_video*` groups ( `.75` restarted the renderer on every Accept ).
+
+## nlc-3.589.75 (2026-10-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `5112ACABCD1AC64AFFA3974C53BD314645EBD43C33D0AC4DE96A27F45558031B` (archived with its PDB in `nlc_tools/builds/20261012_193448_5112acab`).
+- **Status:** runtime pending (SSS 23 Build A fixes after the first `.74` test).
+- **Required game data:** as `.74`, plus `ui_mm_opt_video.script`, `ui_mm_opt_video_adv.script`.
+
+### NLC
+
+- **SSS 23 passes, session snapshot:** `.74` read the pass switches at every `vid_restart`, but a renderer restart does
+  not recompile shaders, so passes enabled in the menu never reached the compiled `combine_1` / cascade shaders ( and a
+  pass disabled in-session would have left the shaders sampling a released target ). The switches, quality levels and
+  lamp shadows are now a snapshot taken once per game session ( `ssfx_features.h`, logged as `* [SSFX] session state` );
+  they apply after a game restart. Resolution dividers still apply on `vid_restart`.
+- **`ssfx_compare` ( 0/1 ):** skips all SSS 23 passes and makes their consumers neutral, without a restart, for
+  screenshot and FPS comparison; history restarts when it is switched off.
+- **`ssfx_sss_length` 0** turns screen-space shadows off ( range 0-2 ).
+
+## nlc-3.589.74 (2026-10-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A85D465F88815A3D7E6A2FB7B7AF26D6ED6EAF40049A761A51A5D6E18195C5E5` (archived with its PDB in `nlc_tools/builds/20261012_184726_a85d465f`).
+- **Status:** runtime pending (SSS 23 Build A, `docs/SSS_UPGRADE_DESIGN.md`).
+- **Required game data:** `gamedata/shaders/r3/ssfx_*.{ps,s,h}`, `accum_base.ps`, `accum_sun_cascade0/2.{ps,s}`,
+  `accum_spot.s`, `accum_omni.s`, `combine.s`, `combine_1.ps`, `combine_2_naa.ps`, `settings_screenspace_SSS.h`,
+  `deffer_grass.{vs,ps}`, `settings_screenspace_FLORA.h`; options menu: `ui_mm_opt.xml`, `ui_mm_opt_shaders.script`,
+  `ui_mm_opt_main.script`, `ui_st_mm.xml` ( eng/rus ); presets `rspec_*.ltx`.
+
+### NLC
+
+- **SSS 23 temporal passes ( `r4_rendertarget_phase_ssfx.cpp`, `ssfx_features.h` ):** ports of the Screen Space Shaders
+  23 AO, indirect light and screen-space shadows as separate passes that reproject their previous result with the OGSR
+  velocity buffer and reject it with a copy of the previous position buffer.
+  - Sun screen-space shadows before sun accumulation ( `ssfx_sss_enable` ), read by the cascade shaders.
+  - Light screen-space shadows for up to 8 shadowed spot/omni lights ( `ssfx_sss_lights` ), slot per light in
+    `light::ssfx_sss_id`, read by `accum_base.ps` through the `ssfx_sss_id` constant.
+  - AO as a new `r_ao_mode` token `st_ssfx_ao` at `ssfx_ao_resolution` ( 1-4 divider ), quality from `r2_ssao`.
+  - Indirect light at `ssfx_il_resolution` ( 2-8 divider ) when `ssfx_indirect_light` is on; replaces the inline
+    Update 14.5 IL.
+  - HUD mask from the depth copy ( HUD drawn in `[0, 0.02]` depth ) instead of an extra HUD render pass.
+  - Targets exist only for enabled passes; toggles and resolution/quality changes take effect on `vid_restart`
+    ( `UIOptionsItem.cpp` list ). New commands: `ssfx_ao_resolution`, `ssfx_ao_intensity`, `ssfx_ao_radius`,
+    `ssfx_il_resolution`, `ssfx_il_quality`, `ssfx_il_intensity`, `ssfx_sss_quality`, `ssfx_sss_lights`,
+    `ssfx_sss_length`, `ssfx_flora_variation`.
+- **Grass colour variation constant:** `ssfx_flora_variation` ( 0 = off ) bound for `deffer_grass.ps`; changes apply
+  immediately.
+- **Deterministic grass placement:** `CDetailManager::cache_Decompress` seeds a local `CRandom` per detail slot
+  ( new `CRandom(u32 seed)` ). Placement no longer depends on decompression order or thread, so the same spot gets the
+  same grass on every load.
+
 ## nlc-3.589.73 (2026-10-12)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

@@ -13,6 +13,7 @@
 #include "../xrGame/ShapeData.h"
 
 ENGINE_API float ps_r_sunshafts_intensity = 0.0f;
+ENGINE_API float ps_ssfx_sunshafts = 1.0f; // NLC .85: automatic sun shafts at low sun ( 0 = weather values only )
 ENGINE_API float puddles_drying = 0.2f;
 ENGINE_API float puddles_wetting = 4.f;
 ENGINE_API BOOL bLevelEnvModExport{};
@@ -660,10 +661,19 @@ void CEnvDescriptorMixer::lerp(CEnvironment* env, CEnvDescriptor& A, CEnvDescrip
 
     sun_color.lerp(A.sun_color, B.sun_color, f);
 
-	if (rain_density > 0.f)
-        env->wetness_factor += (rain_density * puddles_wetting) / 10000.f;
+    // NLC: per second ( was per frame: soak / dry time depended on the FPS ); the defaults keep the old timing at 100 FPS
+    // ( about 25 s to soak in heavy rain, about 8 min to dry ). After a level / save load the wetness starts from the
+    // current weather instead of the previous session's value.
+    if (env->wetness_reset_pending)
+    {
+        env->wetness_reset_pending = false;
+        Msg("~ [wetness] reset %.3f -> %.3f ( weather [%s] )", env->wetness_factor, rain_density, env->GetWeather().c_str());
+        env->wetness_factor = rain_density;
+    }
+    else if (rain_density > 0.f)
+        env->wetness_factor += rain_density * puddles_wetting * 0.01f * Device.fTimeDelta;
     else
-        env->wetness_factor -= 0.0001f * puddles_drying;
+        env->wetness_factor -= puddles_drying * 0.01f * Device.fTimeDelta;
 
     clamp(env->wetness_factor, 0.f, 1.f);
 
@@ -673,6 +683,18 @@ void CEnvDescriptorMixer::lerp(CEnvironment* env, CEnvDescriptor& A, CEnvDescrip
     R_ASSERT(_valid(sun_dir));
 
     VERIFY(sun_dir.y < 0, "Invalid sun direction settings while lerp");
+
+    // NLC .85: most NLC weathers have sun_shafts_intensity 0. A bright sun gets a floor of shafts, strongest when low
+    // ( morning / evening ), weaker high up; none for a dim sun ( overcast, night ). Larger weather
+    // values win. Skipped while the debug override r_sunshafts_intensity is set.
+    if (ps_r_sunshafts_intensity <= 0.f && ps_ssfx_sunshafts > 0.f)
+    {
+        const auto smoothstep = [](float e0, float e1, float x) { const float t = std::clamp((x - e0) / (e1 - e0), 0.f, 1.f); return t * t * (3.f - 2.f * t); };
+        const float elev = -sun_dir.y; // 0 = horizon, 1 = zenith
+        const float low_sun = smoothstep(0.03f, 0.1f, elev) * (1.f - 0.6f * smoothstep(0.3f, 0.9f, elev)); // .85: also a high sun, weaker
+        const float bright = std::clamp((sun_color.x * 0.3f + sun_color.y * 0.59f + sun_color.z * 0.11f) * 2.f, 0.f, 1.f);
+        m_fSunShaftsIntensity = std::max(m_fSunShaftsIntensity, 0.06f * ps_ssfx_sunshafts * low_sun * bright);
+    }
 }
 
 //-----------------------------------------------------------------------------

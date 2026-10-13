@@ -304,6 +304,7 @@ void CRender::Render()
         Device.vCameraDirection.dotproduct(Device.vCameraDirectionSaved) < temporalCameraCutDirectionDot)
     {
         Target->ResetTemporalHistory();
+        Target->ssfx_history_valid = false; // NLC: SSS 23 temporal passes too ( teleport, cut-scene )
     }
 
     if (ps_r_pp_aa_mode == DLSS || ps_r_pp_aa_mode == FSR3 || ps_r_pp_aa_mode == TAA || ps_r2_ls_flags.test(R2FLAG_DBG_TAA_JITTER_ENABLE))
@@ -444,11 +445,19 @@ void CRender::Render()
         r_rain.sync();
     }
 
+    // NLC: SSS 23 temporal passes - per-frame matrices / history reset ( no-op when all are off )
+    Target->ssfx_begin_frame();
+
     // Directional light - fucking sun
     if (bSUN)
     {
         PIX_EVENT(DEFER_SUN);
         stats.l_visible++;
+
+        // NLC: sun screen-space shadows, read by the cascade shaders. Issued on the immediate context
+        // before r_sun.sync() submits the cascade command lists, so the GPU runs it first.
+        Target->phase_ssfx_sss(cmd_list);
+
         {
             r_sun.sync();
         }
@@ -516,6 +525,8 @@ void CRender::Render()
         //LP_normal_copy.vis_update();
         LP_normal_copy.sort();
 
+        Target->phase_ssfx_sss_lights(cmd_list, LP_normal_copy); // NLC: light screen-space shadows ( slots read by accum_base )
+
         Target->phase_accumulator(cmd_list); // init accum here
         render_lights(LP_normal_copy);
     }
@@ -525,6 +536,8 @@ void CRender::Render()
         PIX_EVENT(DEFER_COMBINE);
         Target->phase_combine(cmd_list); // calls CRender::render_forward()
     }
+
+    Target->ssfx_end_frame(cmd_list); // NLC: position buffer -> previous frame ( SSS 23 temporal passes )
 
     if (Details)
         Details->Clear();

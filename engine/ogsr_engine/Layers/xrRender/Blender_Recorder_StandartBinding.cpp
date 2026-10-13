@@ -593,6 +593,180 @@ static class ssfx_florafixes_2 final : public R_constant_setup
     void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_florafixes_2); }
 } ssfx_florafixes_2;
 
+// NLC: flora colour variation ( ssfx_flora_variation.h ), x = grass strength, y = tree strength, z = 1: only tree branches use the foliage material
+static class ssfx_flora_variation final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        if (ps_ssfx_compare) // A/B: no variation, foliage material as upstream
+            cmd_list.set_c(C, 0.f, 0.f, 0.f, 0.f);
+        else
+            cmd_list.set_c(C, ps_ssfx_flora_variation, ps_ssfx_tree_variation, ps_ssfx_foliage_mask ? 1.f : 0.f, 0.f);
+    }
+} ssfx_flora_variation;
+
+// NLC: SSS 23 water ( ssfx_water*.ps ), x = reflection resolution divider, y = reflection blur, z = reflection strength
+static class ssfx_water final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        cmd_list.set_c(C, static_cast<float>(std::clamp(ps_ssfx_water_res, 1, 4)), ps_ssfx_water_blur, ps_ssfx_water_reflection, 0.f);
+    }
+} ssfx_water;
+
+// NLC: Build C strengths ( ssfx_extra.h ), x: wind gusts, y: HUD bloom, z: sun-coloured fog, w: specular occlusion
+static class ssfx_extra final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        if (ps_ssfx_compare)
+            cmd_list.set_c(C, 0.f, 1.f, 0.f, 0.f);
+        else
+            cmd_list.set_c(C, ps_ssfx_wind_gusts, ps_ssfx_bloom_hud, ps_ssfx_fog_sun, ps_ssfx_spec_occlusion);
+    }
+} ssfx_extra;
+
+// NLC: cloud shadows ( ssfx_cloud_shadows.h ), x: sky rotation, y: clouds opacity, z: strength, w: 0 while ssfx_compare
+static class ssfx_clouds final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        const CEnvDescriptor& E = *g_pGamePersistent->Environment().CurrentEnv;
+        cmd_list.set_c(C, E.sky_rotation, E.clouds_color.w, ps_ssfx_cloud_shadows, ps_ssfx_compare ? 0.f : (ps_ssfx_debug_clouds ? 2.f : 1.f));
+    }
+} ssfx_clouds;
+
+// NLC: footstep ripples ( ssfx_step_ripples.h ), 8 x float4: xyz feet position, w: movement 0 ~ 1 ( x strength ).
+// Slot 0 is the player ( camera ), the others the nearest moving grass benders ( NPCs, mutants ). Movement is measured
+// here once per frame from the positions of the previous frame; it fades over ~1.5 s after stopping, so the rings
+// die out instead of vanishing the frame the walker stops.
+static class ssfx_steps final : public R_constant_setup
+{
+    static constexpr u32 count = 8;
+    u32 frame{};
+    Fvector4 data[count]{};
+    Fvector prev_cam{};
+    float act_cam{};
+    float act[GRASS_SHADER_DATA_COUNT]{};
+    Fvector prev_pos[GRASS_SHADER_DATA_COUNT]{};
+    u16 prev_id[GRASS_SHADER_DATA_COUNT]{};
+
+    void update()
+    {
+        const float dt = std::max(Device.fTimeDelta, 0.001f);
+        const float strength = ps_ssfx_compare ? 0.f : ps_ssfx_step_ripples;
+        const float fade = dt / 1.5f;
+        const Fvector& cam = Device.vCameraPosition;
+
+        act_cam = std::max(std::clamp(cam.distance_to_xz(prev_cam) / dt / 2.f, 0.f, 1.f), act_cam - fade);
+        if (cam.distance_to_xz(prev_cam) > 5.f) // teleport / level change
+            act_cam = 0.f;
+        data[0].set(cam.x, cam.y - 1.6f, cam.z, act_cam * strength);
+        prev_cam = cam;
+
+        struct cand
+        {
+            float dist;
+            Fvector4 v;
+        };
+        cand list[GRASS_SHADER_DATA_COUNT];
+        u32 n = 0;
+        for (u32 i = 1; i < GRASS_SHADER_DATA_COUNT; ++i)
+        {
+            const Fvector p{grass_shader_data.pos[i].x, grass_shader_data.pos[i].y, grass_shader_data.pos[i].z};
+            const u16 id = grass_shader_data.id[i];
+            const bool same = id != 0 && prev_id[i] == id;
+            const float move = same ? std::clamp(p.distance_to_xz(prev_pos[i]) / dt / 2.f, 0.f, 1.f) : 0.f;
+            act[i] = same ? std::max(move, act[i] - fade) : 0.f;
+            prev_pos[i] = p;
+            prev_id[i] = id;
+
+            if (id == 0 || grass_shader_data.anim[i] != IGame_Persistent::BENDER_ANIM_DEFAULT || act[i] <= 0.f)
+                continue;
+            list[n++] = {cam.distance_to_sqr(p), Fvector4{p.x, p.y, p.z, act[i] * strength}};
+        }
+        std::sort(list, list + n, [](const cand& a, const cand& b) { return a.dist < b.dist; });
+
+        for (u32 s = 1; s < count; ++s)
+            data[s] = s - 1 < n ? list[s - 1].v : Fvector4{0.f, -1000.f, 0.f, 0.f};
+    }
+
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        if (frame != Device.dwFrame)
+        {
+            frame = Device.dwFrame;
+            update();
+        }
+        for (u32 s = 0; s < count; ++s)
+            cmd_list.set_ca(C, s, data[s]);
+    }
+} ssfx_steps;
+
+// NLC: SSS 23 indirect light combine ( combine_1.ps ), x = intensity, y = vibrance
+static class ssfx_il_combine final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_il_intensity, 1.f, 0.f, 0.f); }
+} ssfx_il_combine;
+
+// NLC .84: ssfx_extra2 ( ssfx_extra.h ), x: AO on direct light, y: ground mist; 0 while ssfx_compare
+static class ssfx_extra2 final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        if (ps_ssfx_compare)
+            cmd_list.set_c(C, 0.f, 0.f, 0.f, 0.f);
+        else
+            cmd_list.set_c(C, ps_ssfx_ao_direct, ps_ssfx_ground_mist, 0.f, 0.f);
+    }
+} ssfx_extra2;
+
+// NLC .85: look presets ( img_corrections.h ), x: preset 0..3, y: contrast; ssfx_color_balance: r, g, b. Neutral while
+// ssfx_compare
+static class ssfx_look final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        cmd_list.set_c(C, ps_ssfx_compare ? 0.f : static_cast<float>(ps_ssfx_look), ps_ssfx_compare ? 1.f : ps_ssfx_contrast, 0.f, 0.f);
+    }
+} ssfx_look;
+
+static class ssfx_color_balance final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        if (ps_ssfx_compare)
+            cmd_list.set_c(C, 1.f, 1.f, 1.f, 0.f);
+        else
+            cmd_list.set_c(C, ps_ssfx_color_r, ps_ssfx_color_g, ps_ssfx_color_b, 0.f);
+    }
+} ssfx_color_balance;
+
+// NLC: flashlight indirect light ( ssfx_il.ps ), 3 x float4 in view space: [0] torch position, 1 / range^2;
+// [1] direction, cos( half cone ); [2] normalised colour, ssfx_il_flashlight ( 0 = off / torch off ).
+static class ssfx_torch final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        const auto& T = g_pGamePersistent->actor_torch;
+        const bool on = !ps_ssfx_compare && T.range > 0.f && T.frame + 1 >= Device.dwFrame && T.frame <= Device.dwFrame;
+        Fvector p{}, d{};
+        Device.mView.transform_tiny(p, T.pos);
+        Device.mView.transform_dir(d, T.dir);
+        const float k = on ? ps_ssfx_il_flashlight : 0.f;
+        cmd_list.set_ca(C, 0, Fvector4{p.x, p.y, p.z, on ? 1.f / (T.range * T.range) : 0.f});
+        cmd_list.set_ca(C, 1, Fvector4{d.x, d.y, d.z, _cos(T.cone * 0.5f)});
+        const float cmax = std::max({T.color.x, T.color.y, T.color.z, 0.001f}); // colour only, brightness is the cvar
+        cmd_list.set_ca(C, 2, Fvector4{T.color.x / cmax, T.color.y / cmax, T.color.z / cmax, k});
+    }
+} ssfx_torch;
+
+// NLC: SSS 23 compare toggle, x = 1 when the passes are skipped ( consumers use neutral values )
+static class ssfx_compare final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_compare ? 1.f : 0.f, 0.f, 0.f, 0.f); }
+} ssfx_compare;
+
 static class ssfx_wind_grass final : public R_constant_setup
 {
     void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_wind_grass); }
@@ -898,6 +1072,17 @@ void CBlender_Compile::SetMapping() const
     r_Constant("ssfx_gloss", &ssfx_gloss);
     r_Constant("ssfx_florafixes_1", &ssfx_florafixes_1);
     r_Constant("ssfx_florafixes_2", &ssfx_florafixes_2);
+    r_Constant("ssfx_flora_variation", &ssfx_flora_variation); // NLC
+    r_Constant("ssfx_il_combine", &ssfx_il_combine); // NLC
+    r_Constant("ssfx_compare", &ssfx_compare); // NLC
+    r_Constant("ssfx_water", &ssfx_water); // NLC
+    r_Constant("ssfx_extra", &ssfx_extra); // NLC
+    r_Constant("ssfx_clouds", &ssfx_clouds); // NLC
+    r_Constant("ssfx_torch", &ssfx_torch); // NLC
+    r_Constant("ssfx_extra2", &ssfx_extra2); // NLC
+    r_Constant("ssfx_look", &ssfx_look); // NLC
+    r_Constant("ssfx_color_balance", &ssfx_color_balance); // NLC
+    r_Constant("ssfx_steps", &ssfx_steps); // NLC
 
     r_Constant("wind_params", &binder_wind_params);
     r_Constant("wind_params_old", &binder_wind_params_old);

@@ -1,0 +1,60 @@
+/**
+ * @ Description: Screen-space shadows - point/spot lights, 4 lights per pass ( one per channel )
+ * @ Based on: SCREEN SPACE SHADERS - UPDATE 22 ssfx_sss_ext.ps ( https://www.moddb.com/members/ascii1457 )
+ * @ NLC: 2026-10-12 - OGSR G-buffer / velocity; the two passes write two full-resolution
+ *        targets read directly by accum_base.ps ( no half-width combine atlas ).
+ *        Like SSS, it only adds contact shadows to grass, terrain and the HUD; other surfaces
+ *        already get them from the light shadow maps.
+ */
+
+#include "common.h"
+#include "ssfx_sss.h"
+
+float4 ssfx_lights_data[4]; // View space position ( xyz ), fade ( w: 0 = full ~ 1 = off, +2 = slot got a new light )
+
+Texture2D sss_image; // History of this pass
+
+float4 main(p_screen I) : SV_Target
+{
+    float2 tc = I.tc0;
+
+    gbuffer_data gbd = gbuffer_load_data(tc, I.hpos.xy);
+    float3 P = gbd.P;
+
+    float HudMask = ssfx_hud_mask(tc);
+
+    bool mat_flora = abs(gbd.mtl - MAT_FLORA) <= 0.04f;
+    bool mat_terrain = abs(gbd.mtl - 0.95f) <= 0.04f;
+
+    if (P.z <= SKY_EPS || (!mat_flora && !mat_terrain && HudMask <= 0))
+        return 1;
+
+    float4 sss;
+    float4 fresh; // 1 = this slot changed light this frame: ignore its history
+    [unroll]
+    for (int x = 0; x < 4; x++)
+    {
+        float w = ssfx_lights_data[x].w;
+        fresh[x] = w > 1.5f ? 1.0f : 0.0f;
+
+        // NLC .84: empty or fully faded slots ( w = 1 ) skip the trace
+        [branch] if (w - 2.0f * fresh[x] < 0.999f)
+            sss[x] = saturate(SSFX_ScreenSpaceShadows_Light(P, gbd.mtl, tc, ssfx_lights_data[x].xyz, HudMask) + (w - 2.0f * fresh[x]));
+        else
+            sss[x] = 1.0f;
+    }
+
+    // Reprojection ( no camera motion term: lights move with the world )
+    float2 mv = ssfx_motion_uv(tc);
+    float2 prev_tc = tc - mv;
+
+    float vel = HudMask > 0 ? (abs(mv.x) + abs(mv.y)) * 50.0f : 0.0f;
+    float docc = ssfx_disocclusion(P.z, prev_tc) * 2.5f * (1.0f + 10.0f * HudMask);
+    float outoffsrc = ssfx_offscreen(prev_tc);
+
+    float4 prev = sss_image.Sample(smp_rtlinear, prev_tc + ssfx_history_noise(tc, 0.25f));
+
+    float4 weight = saturate(0.97f - (outoffsrc + docc + vel)) * (1.0f - fresh);
+
+    return lerp(sss, prev, weight);
+}

@@ -54,6 +54,13 @@ public:
 
     float virtual_size;
 
+    // NLC: SSS 23 light screen-space shadows ( CRenderTarget::phase_ssfx_sss_lights )
+    light* ssfx_parent{}; // omni light that owns this OMNIPART ( the 6 parts share one slot )
+    int ssfx_sss_id{-1}; // slot 0..7 in the light SSS buffers, valid only when ssfx_sss_frame == Device.dwFrame
+    u32 ssfx_sss_frame{};
+    static inline u32 ssfx_uid_counter{};
+    u32 ssfx_uid{++ssfx_uid_counter}; // NLC .85: unique per light object ( a reused address is a new light )
+
     smapvis svis[R__NUM_CONTEXTS]; // used for 6-cubemap faces
 
     ref_shader s_spot;

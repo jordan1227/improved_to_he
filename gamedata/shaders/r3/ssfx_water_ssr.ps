@@ -1,0 +1,199 @@
+/**
+ * @ Version: SCREEN SPACE SHADERS - UPDATE 21
+ * @ Description: Water SSR ( reflection prepass )
+ * @ Modified time: 2025-02-08 15:52
+ * @ Author: https://www.moddb.com/members/ascii1457
+ * @ Mod: https://www.moddb.com/mods/stalker-anomaly/addons/screen-space-shaders
+ * @ NLC: 2026-10-12 - OGSR port: OGSR water VS output, reduced-size target addressed by UV, water hidden behind
+ *        scene depth is skipped, history rejects reflected objects that move and HUD hits.
+ */
+
+#include "common.h"
+#include "check_screenspace.h"
+#include "screenspace_common.h"
+#include "settings_screenspace_SSFX_WATER.h"
+#include "ssfx_temporal.h"
+
+struct vf
+{
+    float2 tbase : TEXCOORD0;
+    float4 tnorm0 : TEXCOORD1;
+    float3 position_w : TEXCOORD2;
+    float3 M1 : TEXCOORD3;
+    float3 M2 : TEXCOORD4;
+    float3 M3 : TEXCOORD5;
+    float3 v2point_w : TEXCOORD6;
+    float4 tctexgen : TEXCOORD7;
+    float3 c0 : COLOR0;
+    float fog : FOG;
+    float4 hpos : SV_Position;
+};
+
+Texture2D s_bluenoise;
+Texture2D s_ssfx_water_history; // $user$ssfx_water: last frame's unblurred reflection
+
+uniform float4 ssfx_is_underground;
+
+#ifndef SSFX_WATER_QUALITY
+#define SSFX_WATER_QUALITY 2
+#endif
+
+static const int2 ssfx_water_steps[4] = {int2(8, 3), int2(16, 2), int2(24, 2), int2(32, 2)};
+
+// SSS 22 water ray ( screenspace_water.h ), HitDepth = scene depth at the hit
+float3 ssfx_water_trace(float3 ray_start_vs, float3 ray_dir_vs, float noise, out float HitDepth, float2 tc)
+{
+    const int steps = ssfx_water_steps[SSFX_WATER_QUALITY].x;
+
+    float4 prev_step;
+    int prev_sign;
+    float3 behind_hit = 0;
+    HitDepth = 0;
+
+    float RayThick = clamp(48.0f / steps, 1.0f, 3.0f);
+
+    RayTrace ssr_ray = SSFX_ray_init(ray_start_vs, ray_dir_vs, 150, steps, noise);
+
+    // Horizontal stretch to avoid borders
+    float2 stretch_uv = 1.0f - smoothstep(0.9f, 1.0f, float2(tc.x, 1.0 - tc.x));
+    ssr_ray.r_step.x *= saturate(stretch_uv.x * stretch_uv.y + saturate(eye_direction.y * 3.0f));
+    ssr_ray.r_pos = ssr_ray.r_start + ssr_ray.r_step * noise;
+
+    float ray_depthstart = SSFX_get_depth(ssr_ray.r_start, 0);
+
+    [unroll(steps)] for (int st = 1; st <= steps; st++)
+    {
+        if (!SSFX_is_valid_uv(ssr_ray.r_pos.xy))
+        {
+            HitDepth = 0; // NLC: no hit = sky path ( was the last sampled depth )
+            return 0;
+        }
+
+        float3 ray_check = SSFX_ray_intersect(ssr_ray, 0);
+        HitDepth = ray_check.y;
+
+        // Not weapon or sky
+        bool NoWpnSky = ray_check.y > 1.3f;
+        ray_check.x *= NoWpnSky;
+
+        if (ray_check.x > 0)
+        {
+            if (ray_check.x <= RayThick || (ray_depthstart + 40.0f < ray_check.y))
+                return float3(ssr_ray.r_pos, ray_check.y);
+
+            prev_step.xy = ssr_ray.r_pos;
+            prev_step.zw = ssr_ray.r_step;
+            prev_sign = -1;
+
+            // Binary search
+            for (int x = 0; x < ssfx_water_steps[SSFX_WATER_QUALITY].y; x++)
+            {
+                if (sign(ray_check.x) != prev_sign)
+                {
+                    ssr_ray.r_step *= -0.5f;
+                    prev_sign = sign(ray_check.x);
+                }
+
+                ssr_ray.r_pos += ssr_ray.r_step;
+                ray_check = SSFX_ray_intersect(ssr_ray, 0);
+                HitDepth = ray_check.y;
+
+                if (abs(ray_check.x) <= RayThick)
+                    return float3(ssr_ray.r_pos, ray_check.y);
+            }
+
+            ssr_ray.r_pos = prev_step.xy;
+            ssr_ray.r_step = prev_step.zw;
+        }
+        else
+        {
+            behind_hit = float3(ssr_ray.r_pos, ray_check.y);
+            behind_hit *= (ray_depthstart - 2.0f < ray_check.y) && NoWpnSky;
+        }
+
+        // Try to pass through closer objects ( weapons and sights )
+        bool PTh = (!NoWpnSky && ray_check.y > 0.01f && st > steps * 0.4f);
+        ssr_ray.r_pos += ssr_ray.r_step * (1.0f + 2.5f * PTh);
+    }
+
+    HitDepth = behind_hit.z; // NLC: 0 when nothing was hit
+    return behind_hit;
+}
+
+float4 main(vf I) : SV_Target
+{
+    // Screen UV of the water surface from the pixel position in the reduced target. NLC 2026-10-12: not from
+    // tctexgen: m_texgen is a binder evaluated when the element is set, and the .77 engine sets the element before
+    // the camera matrices, so tctexgen.xy came from the last drawn object ( wrong rays, sky-only reflections that
+    // changed with the camera angle ). tctexgen.z ( view depth, from the matrix-tracked m_V ) is valid.
+    float2 target_size;
+    s_ssfx_water_history.GetDimensions(target_size.x, target_size.y);
+    float2 PosTc = I.hpos.xy / target_size;
+    float3 Pv = float3(I.tctexgen.z * (PosTc * screen_res.xy * pos_decompression_params.zw - pos_decompression_params.xy), I.tctexgen.z);
+
+    // Water behind scene geometry or the HUD: nothing to reflect ( the target has no depth buffer )
+    float scene_z = SSFX_get_depth(PosTc, 0);
+    if (scene_z > SKY_EPS && scene_z < Pv.z - 0.05f)
+        discard;
+
+    // Flat water normal ( waves are added in the final water shader )
+    float3 Nw = normalize(float3(I.M1.z, I.M2.z, I.M3.z));
+    float3 v2point = normalize(I.v2point_w);
+    float3 vreflect = reflect(v2point, Nw.xyz);
+
+    float3 eyedir = normalize(Pv);
+    float3 Nv = normalize(mul(m_V, Nw));
+
+    // Blue noise
+    float2 uv_noise = PosTc * 1.33f + (timers.xx * 0.02f);
+    uv_noise.x *= screen_res.x / screen_res.y;
+    float blue_noise = s_bluenoise.SampleLevel(smp_linear, uv_noise, 0).x * 1.5f;
+
+    float HitDepth = 0;
+    float3 ssr_hit_uv = 0.0f;
+    float3 wreflect = reflect(eyedir, Nv);
+
+    // Rays towards the camera are not traced; NLC: faded over 0 ~ -0.3 instead of a hard step at -0.3 ( SSS ), which
+    // switched whole water bodies between scene and sky reflections when the camera pitched
+    float edgeFade = saturate(-dot(-eyedir, wreflect) / 0.3f);
+    if (edgeFade > 0.0f)
+        ssr_hit_uv = ssfx_water_trace(Pv, wreflect, blue_noise, HitDepth, PosTc);
+
+    float3 refl_skybox = SSFX_calc_sky(vreflect) * G_SSFX_WATER_SKY_REFLECTION * !ssfx_is_underground.x;
+    float3 reflection = refl_skybox;
+    float object_motion = 0;
+
+    if (all(ssr_hit_uv.xy))
+    {
+        float3 refl_ray = SSFX_get_image(ssr_hit_uv.xy, 0);
+
+        float ray_fade = ssr_hit_uv.y * 5.0f;
+        float fog = 1.0 - saturate((length(float3(Pv.x, Pv.y, ssr_hit_uv.z)) * fog_params.w + fog_params.x) * 1.4f);
+        float refl_power = saturate(ray_fade * edgeFade * fog);
+
+        reflection = lerp(refl_skybox, refl_ray * G_SSFX_WATER_MAP_REFLECTION, refl_power);
+
+        // Reflected object moves on its own ( NPC, mutant ): its velocity differs from the camera-only motion
+        float3 Hit_P = float3(HitDepth * (ssr_hit_uv.xy * screen_res.xy * pos_decompression_params.zw - pos_decompression_params.xy), HitDepth);
+        float2 hit_motion = ssfx_motion_uv(ssr_hit_uv.xy) - ssfx_camera_motion_uv(Hit_P);
+        object_motion = saturate(length(hit_motion * screen_res.xy) * 0.25f) * refl_power;
+
+        // HUD in the reflection ( weapon over the water ): never keep it in history
+        object_motion = max(object_motion, ssfx_hud_mask(ssr_hit_uv.xy));
+    }
+
+    // Reprojection of the reflected point ( sky: far away along the ray )
+    float3 Hit_Pv = float3(HitDepth * (PosTc * screen_res.xy * pos_decompression_params.zw - pos_decompression_params.xy), HitDepth);
+    float4 P4 = float4(HitDepth <= SKY_EPS ? Pv * (100000.0f / max(Pv.z, 0.0001f)) : Hit_Pv, 1.0); // NLC: along the pixel ray
+    float2 prev_tc = PosTc - ssfx_camera_motion_uv(P4.xyz) + ssfx_history_noise(PosTc, 0.25f);
+
+    float4 prev = s_ssfx_water_history.SampleLevel(smp_rtlinear, prev_tc, 0);
+
+    // Previous frame had no water there ( alpha 0 ), offscreen, sky, moving object
+    float sky_weight = HitDepth <= SKY_EPS ? 0.2f : 0.0f;
+    float weight = saturate(G_SSFX_WATER_HISTORY - (sky_weight + ssfx_offscreen(prev_tc) + object_motion)) * prev.a;
+
+    reflection = lerp(reflection, prev.rgb, weight);
+
+    return float4(reflection, 1.0f);
+}

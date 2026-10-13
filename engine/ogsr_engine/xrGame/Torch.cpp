@@ -11,6 +11,7 @@
 
 #include "HUDManager.h"
 #include "level.h"
+#include "../xr_3da/IGame_Persistent.h"
 #include "../Include/xrRender/Kinematics.h"
 #include "../xr_3da/camerabase.h"
 #include "inventory.h"
@@ -296,7 +297,8 @@ BOOL CTorch::net_Spawn(CSE_Abstract* DC)
     light_omni->set_color(clr_o);
     light_omni->set_range(range_o);
 
-    light_render->set_cone(deg2rad(pUserData->r_float("torch_definition", "spot_angle")));
+    m_spot_cone = deg2rad(pUserData->r_float("torch_definition", "spot_angle"));
+    light_render->set_cone(m_spot_cone);
     light_render->set_texture(pUserData->r_string("torch_definition", "spot_texture"));
 
     //включить/выключить фонарик
@@ -407,7 +409,7 @@ void CTorch::UpdateCL()
                     angle_inertion_var(m_prev_hp.y, -actor->cam_FirstEye()->pitch, TORCH_INERTION_SPEED_MIN, TORCH_INERTION_SPEED_MAX, TORCH_INERTION_CLAMP, Device.fTimeDelta);
             }
 
-            Fvector dir, pos, right, up;
+            Fvector dir, pos, right, up, spot_pos;
             if (m_bind_to_camera && actor->active_cam() == eacFirstEye)
             {
                 float target_dist = HUD().GetTarget()->GetRealDist();
@@ -424,6 +426,7 @@ void CTorch::UpdateCL()
                 offset.mad(up, m_camera_torch_offset.y);
                 offset.mad(dir, m_camera_torch_offset.z - target_dist);
                 light_render->set_position(offset);
+                spot_pos = offset;
                 offset = pos;
                 offset.mad(right, m_camera_omni_offset.x);
                 offset.mad(up, m_camera_omni_offset.y);
@@ -440,6 +443,7 @@ void CTorch::UpdateCL()
                 offset.mad(M.j, TORCH_OFFSET.y);
                 offset.mad(M.k, TORCH_OFFSET.z);
                 light_render->set_position(offset);
+                spot_pos = offset;
                 offset = pos;
                 offset.mad(M.i, OMNI_OFFSET.x);
                 offset.mad(M.j, OMNI_OFFSET.y);
@@ -449,6 +453,18 @@ void CTorch::UpdateCL()
 
 			light_render->set_rotation( dir, right );
 			light_omni->set_rotation( dir, right );
+
+            // NLC: publish the player's torch for the flashlight indirect light ( ssfx_il_flashlight )
+            if (actor == Level().CurrentViewEntity())
+            {
+                auto& T = g_pGamePersistent->actor_torch;
+                T.frame = Device.dwFrame;
+                T.pos = spot_pos;
+                T.dir = dir;
+                T.range = light_render->get_range();
+                T.cone = m_spot_cone;
+                T.color.set(m_color.r, m_color.g, m_color.b);
+            }
 		}// if(actor)
 		else 
 		{
@@ -504,6 +520,8 @@ void CTorch::UpdateCL()
 
     light_render->set_color(fclr);
     light_omni->set_color(fclr);
+    if (g_pGamePersistent->actor_torch.frame == Device.dwFrame && H_Parent() == Level().CurrentViewEntity()) // NLC: animated colour
+        g_pGamePersistent->actor_torch.color.set(fclr.r, fclr.g, fclr.b);
 }
 
 void CTorch::create_physic_shell() { CPhysicsShellHolder::create_physic_shell(); }

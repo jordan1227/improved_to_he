@@ -759,6 +759,10 @@ ShaderElement* CBlender_Compile::_lua_Compile(LPCSTR namesp, LPCSTR name)
     element(ac, t_0, t_1, t_d);
     r_End();
 
+    // NLC: SSS 23 water surfaces get a reflection prepass ( r4_rendertarget_phase_ssfx.cpp ); puddles are a separate OGSR shader
+    if (strstr(namesp, "effects_water") && !strstr(namesp, "puddles"))
+        E.flags.isWater = TRUE;
+
     ShaderElement* _r = dxRenderDeviceRender::Instance().Resources->_CreateElement(std::move(E));
     return _r;
 }

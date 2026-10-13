@@ -1,0 +1,62 @@
+#include "common.h"
+#include "sload.h"
+#include "screenspace_hud_raindrops.h" // NLC: rain drops ( alpha-tested HUD models without a bump map had none )
+
+f_deffer main(p_flat I)
+{
+    f_deffer O;
+
+    // NLC: HUD rain drops, as deffer_base_hud_flat.ps ( SSS Update 17 )
+    float4 drops = 0; // xy = Normal | z = Overall str | w = reflection str
+
+    if (ssfx_hud_drops_1.y > 0)
+    {
+        drops.xyz = ssfx_hud_raindrops(s_hud_rain, I.RDrops.xyz, 1.0f);
+        drops.xyz *= saturate(I.RDrops.w); // facing up surfaces
+        drops.xyz *= ssfx_hud_drops_1.y; // cover + rain intensity
+
+        drops.w = ssfx_hud_drops_1.z * dot(L_hemi_color, SSFX_HUD_LIGHTVECTOR);
+        drops.w = max(drops.w, 3.0f); // .86: as the bump path
+    }
+
+    // 1. Base texture + kill pixels with low alpha ( alpha test on the undistorted coordinates )
+
+    float4 D = tbase(I.tcdh);
+
+    calc_alpha_test(I.tcdh.xy, D.a);
+
+    // NLC: drop refraction of the colour ( after the alpha test )
+    if (ssfx_hud_drops_1.y > 0)
+        D.rgb = tbase(saturate(I.tcdh.xy + drops.xy * ssfx_hud_drops_1.w)).rgb;
+
+#ifdef USE_TDETAIL
+    // D.rgb = 2*D.rgb*tex2D(s_detail, I.tcdbump).rgb;
+    D.rgb = 2 * D.rgb * s_detail.Sample(smp_base, I.tcdbump).rgb;
+#endif
+
+    // hemi,sun,material
+    float ms = xmaterial;
+#ifdef USE_LM_HEMI
+    // float4 lm = tex2D(s_hemi, I.lmh);
+    float4 lm = s_hemi.Sample(smp_rtlinear, I.lmh);
+    // float h = dot(lm.rgb,1.h/3.h);
+    float h = get_hemi(lm);
+#ifdef USE_R2_STATIC_SUN
+    // ms = lm.w ;
+    ms = get_sun(lm);
+#endif
+#else
+    float h = I.position.w;
+#ifdef USE_R2_STATIC_SUN
+    ms = I.tcdh.w;
+#endif
+#endif
+
+    // 2. Standart output
+    float4 Ne = float4(normalize((float3)I.N.xyz + float3(drops.xy * drops.w, 0.0f)), h);
+    O = pack_gbuffer(Ne, float4(I.position.xyz + Ne.xyz * def_virtualh / 2.h, ms), float4(D.rgb, def_gloss + (ssfx_hud_drops_1.y * ssfx_hud_drops_2.z) + drops.z * ssfx_hud_drops_2.w));
+
+    O.Velocity = get_motion_vector(I.hpos_curr, I.hpos_old);
+
+    return O;
+}

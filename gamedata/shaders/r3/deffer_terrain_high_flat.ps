@@ -19,6 +19,9 @@
 
 // Setup
 #include "settings_screenspace_TERRAIN.h"
+#ifdef SSFX_STEP_RIPPLES
+#include "ssfx_step_ripples.h"
+#endif
 
 // Puddles textures
 #ifdef SSFX_PUDDLES
@@ -340,6 +343,12 @@ f_deffer main(p_bumped I)
     }
 #endif
 
+#ifdef SSFX_STEP_RIPPLES
+    // NLC: footstep ripples in puddles
+    [branch] if (I.position.z < 30.0f && puddles > 0.0f)
+        ripplesNormal.xy += ssfx_step_ripples(mul(m_inv_V, float4(I.position.xyz, 1.0f)).xyz) * saturate(puddles * 2.0f) * 2.0f;
+#endif
+
     // Refraction Normal
     N_refra = ripplesNormal.xy;
 
@@ -375,17 +384,30 @@ f_deffer main(p_bumped I)
     if (need_render_puddles)
     {
 
+    // NLC 2026-10-13: material-aware wetness. Earth and grass texels ( green / brown: g > b ) are soft ground,
+    // asphalt and concrete stay grey. Mirror puddles need real wetness ( dry first ) and on soft ground only form in
+    // the hollows of the splat height; soft ground otherwise gets damp ( darker, low gloss ) instead of a mirror.
+    float soft = saturate((C.g - C.b) * 6.0f);
+    float wet = saturate(rain_params.y * 2.0f);
+    puddles *= smoothstep(0.5f, 0.8f, rain_params.y) * lerp(1.0f, saturate(1.0f - PixelHeight * 3.0f) * 0.6f, soft);
+
     // Normal Up and ripples for puddles
     float3 PuddlesNormal = mul(m_V, float3(ripplesNormal.x, 1, ripplesNormal.y));
 
     // Puddles Normal
-    Ne = lerp(Ne, PuddlesNormal, saturate(puddles * puddles * 2));
+    Ne = lerp(Ne, PuddlesNormal, saturate(puddles * puddles * 2) * (1.0f - 0.5f * soft)); // NLC .82: muddy puddles keep some ground relief
 
     // Puddles Color
     C.rgb = lerp(C.rgb, C.rgb * G_PUDDLES_TINT, puddles);
+    C.rgb = lerp(C.rgb, C.rgb * float3(0.7f, 0.6f, 0.45f), puddles * soft); // NLC .80: muddy water on soft ground
 
     // Puddles Gloss
-    G = lerp(G, 0.95, puddles);
+    G = lerp(G, lerp(0.95f, 0.45f, soft), puddles); // NLC .80 / .82: earth puddles less mirror-like ( muddy sheen )
+
+    // NLC: damp soft ground outside the puddles
+    float damp = wet * soft * (1.0f - puddles);
+    C.rgb *= 1.0f - 0.2f * damp;
+    G = lerp(G, max(G, 0.3f), damp);
 
     }
 #endif

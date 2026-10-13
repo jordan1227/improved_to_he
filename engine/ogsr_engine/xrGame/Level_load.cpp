@@ -108,6 +108,12 @@ BOOL CLevel::Load_GameSpecific_After()
     g_pGamePersistent->Environment().SetGameTime(GetEnvironmentGameDayTimeSec(), game->GetEnvironmentGameTimeFactor());
 
     g_pGamePersistent->Environment().Invalidate();
+    // NLC: no wetness carried over from another save. The weather script restores the saved weather with a forced
+    // set_weather some seconds later ( after the texture upload ); until then the previous save's weather is current,
+    // so a forced weather set inside this window resets the wetness again.
+    g_pGamePersistent->Environment().wetness_reset_pending = true;
+    Msg("~ [wetness] level load: reset pending ( wetness %.3f, weather [%s] )", g_pGamePersistent->Environment().wetness_factor, g_pGamePersistent->Environment().GetWeather().c_str());
+    g_pGamePersistent->Environment().wetness_reset_window = Device.fTimeGlobal + 120.f;
 
     return TRUE;
 }

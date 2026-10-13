@@ -352,6 +352,10 @@ void R_dsgraph_structure::r_dsgraph_insert_static(dxRender_Visual* pVisual)
     if (!pmask[sh->flags.iPriority / 2])
         return;
 
+    // NLC: SSS 23 water reflection prepass ( the surface itself still renders in the normal graph )
+    if (sh->flags.isWater && phase == CRender::PHASE_NORMAL)
+        waterNodes.push_back(pVisual);
+
     // strict-sorting selection
     if (sh->flags.bStrictB2F)
     {
@@ -786,6 +790,7 @@ void R_dsgraph_structure::reset()
     lstLODs.clear();
     lstLODgroups.clear();
     lstRenderables.clear();
+    waterNodes.clear();
 
     for (int i = 0; i < SHADER_PASSES_MAX; ++i)
     {

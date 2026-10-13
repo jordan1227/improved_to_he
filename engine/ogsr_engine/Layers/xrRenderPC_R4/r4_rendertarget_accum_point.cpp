@@ -84,6 +84,7 @@ void CRenderTarget::accum_point(CBackend& cmd_list, light* L)
         cmd_list.set_c("Ldynamic_pos", L_pos.x, L_pos.y, L_pos.z, 1 / (L_R * L_R));
         cmd_list.set_c("Ldynamic_color", L_clr.x, L_clr.y, L_clr.z, L_spec);
         cmd_list.set_c("m_texgen", m_Texgen);
+        cmd_list.set_c("ssfx_sss_id", ssfx_sss_slot(L), 0.f, 0.f, 0.f); // NLC: light screen-space shadow slot
 
         cmd_list.set_CullMode(CULL_CW); // back
         // Render if (light_id <= stencil && z-pass)

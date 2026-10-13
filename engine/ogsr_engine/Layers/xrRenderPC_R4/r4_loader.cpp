@@ -107,6 +107,10 @@ void CRender::level_Load(IReader* fs)
     // pApp->LoadTitle			("Loading lights...");
     LoadLights(fs);
 
+    // NLC: SSS 23 temporal passes start without history on a new level ( no reprojection from the previous level )
+    if (Target)
+        Target->ssfx_history_valid = false;
+
     current_level_puddles.clear();
     string_path puddles_file{};
     if (FS.exist(puddles_file, "$level$", "level.puddles"))

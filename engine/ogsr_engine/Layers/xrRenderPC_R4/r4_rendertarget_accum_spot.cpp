@@ -138,6 +138,7 @@ void CRenderTarget::accum_spot(CBackend& cmd_list, light* L)
         cmd_list.set_c("m_shadow", m_Shadow);
         cmd_list.set_ca("m_lmap", 0, m_Lmap._11, m_Lmap._21, m_Lmap._31, m_Lmap._41);
         cmd_list.set_ca("m_lmap", 1, m_Lmap._12, m_Lmap._22, m_Lmap._32, m_Lmap._42);
+        cmd_list.set_c("ssfx_sss_id", ssfx_sss_slot(L), 0.f, 0.f, 0.f); // NLC: light screen-space shadow slot
 
         cmd_list.set_Stencil(TRUE, D3DCMP_LESSEQUAL, dwLightMarkerID, 0xff, 0x00);
         render_volume(cmd_list, L);
@@ -154,11 +155,16 @@ void CRenderTarget::accum_volumetric(CBackend& cmd_list, light* L)
     if (!L->flags.bVolumetric)
         return;
 
-    //float dist_normalized = std::max(L->vis.distance - 20.0f, 0.0f);
-    //float falloff = 1.f - std::min(dist_normalized * dist_normalized * 0.0001f, 1.0f);
-
-    //if (falloff <= 0.f)
-    //    return;
+    // NLC: SSS 23 distance fade ( 20 m -> 120 m ): far lamp beams fade out instead of costing a full ray march.
+    // .84: reduced-resolution volumetrics only, measured from the edge of the light's range ( searchlights stay )
+    float falloff = 1.f;
+    if (!ps_ssfx_compare && ssfx_volumetric_reduced())
+    {
+        const float edge = std::max(L->vis.distance - L->range, 0.f);
+        falloff = 1.f - std::clamp((edge - 20.0f) * 0.01f, 0.0f, 1.0f);
+        if (falloff <= 0.f)
+            return;
+    }
 
     phase_vol_accumulator(cmd_list, false);
 
@@ -197,7 +203,7 @@ void CRenderTarget::accum_volumetric(CBackend& cmd_list, light* L)
     Fvector L_dir, L_clr, L_pos;
     L_clr.set(L->color.r, L->color.g, L->color.b);
     L_clr.mul(L->m_volumetric_intensity);
-    // L_clr.mul(falloff);
+    L_clr.mul(falloff);
     // L_clr.mul(L->m_volumetric_distance); // SIMP: ????
     // L_clr.mul(L->get_LOD()); // SIMP: ????
 
@@ -225,4 +231,7 @@ void CRenderTarget::accum_volumetric(CBackend& cmd_list, light* L)
 
     geom_volume(cmd_list, L);
     render_volume(cmd_list, L);
+
+    if (ssfx_volumetric_reduced())
+        ssfx_volumetric_restore_viewport(cmd_list);
 }

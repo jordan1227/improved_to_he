@@ -15,3 +15,7 @@
 #define G_SSDO_WEAPON_LENGTH 1.5f // Maximum distance to apply weapon factors.
 #define G_SSDO_WEAPON_HARDNESS 1.0f // Weapon shadow hardness. 0.0f to disable weapon shadows.
 #define G_SSDO_WEAPON_SHADOW_LENGTH 0.09f // Weapon maximum shadow length.
+
+// [ NLC ] SSS 22/23 temporal pass ( ssfx_sss.h ). Samples come from ssfx_sss_quality.
+#define G_SSS_DETAIL 0.003f // Limit detail. [ Closer to 0 == more detail ]
+#define G_SSS_WEAPON_LENGTH 0.09f // HUD ( weapon/hands ) maximum shadow length.

@@ -5,6 +5,7 @@ function element_0(shader, t_base, t_second, t_detail)
 	shader:dx10texture("s_position", "$user$position")
 	shader:dx10texture("s_scene", "$user$blur_2")
 	shader:dx10texture("s_emissive", "$user$ssfx_bloom_emissive")
+	shader:dx10texture("s_ssfx_zbuffer", "$user$zbuffer") -- NLC: HUD bloom strength
 	shader:dx10sampler("smp_linear")
 	shader:dx10sampler("smp_rtlinear")
 	shader:dx10sampler("smp_nofilter")

@@ -529,7 +529,14 @@ void CModelPool::Prefetch()
                 fname.sprintf("%s.ogf", low_name.c_str());
                 if (FS.exist(fsgame::game_meshes, fname.c_str()))
                 {
+                    // NLC: HUD visuals in the prefetch list ( NLC prefetch_globals.ltx lists ~375 weapon *_hud models ) were
+                    // loaded with world shaders; the pooled instance was then reused for the HUD, so those weapons had no
+                    // HUD shaders ( rain drops, HUD mask ). Load them as HUD visuals.
+                    const size_t ln = low_name.size(); // .90: "_hud" as the file name suffix only
+                    const bool hud = ln >= 4 && !_stricmp(low_name.c_str() + ln - 4, "_hud");
+                    ::Render->shader_option_hud_loading(hud);
                     dxRender_Visual* V = Create(low_name.c_str());
+                    ::Render->shader_option_hud_loading(false);
                     Delete(V, FALSE);
                     cnt++;
                 }

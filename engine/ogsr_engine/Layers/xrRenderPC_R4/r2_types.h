@@ -87,6 +87,31 @@
 #define r2_RT_ssr1 "$user$ssr1" // [Ascii1457] SSS new Phase
 #define r2_RT_ssr2 "$user$ssr2" // [ SSS ] Full res - D3DFMT_A8B8G8R8F
 
+// NLC: SSS 23 temporal passes ( r4_rendertarget_phase_ssfx.cpp ). Created only when the pass is on.
+#define r2_RT_ssfx_prev_pos "$user$ssfx_prev_pos" // Previous frame position buffer ( disocclusion )
+#define r2_RT_ssfx_sss "$user$ssfx_sss" // Sun SSS: history ( r ) + blurred result ( b )
+#define r2_RT_ssfx_sss_a "$user$ssfx_sss_a"
+#define r2_RT_ssfx_sss_b "$user$ssfx_sss_b"
+#define r2_RT_ssfx_sss_ext "$user$ssfx_sss_ext" // Light SSS, slots 0-3 ( rgba )
+#define r2_RT_ssfx_sss_ext2 "$user$ssfx_sss_ext2" // Light SSS, slots 4-7 ( rgba )
+#define r2_RT_ssfx_ao "$user$ssfx_ao" // AO history ( reduced res )
+#define r2_RT_ssfx_ao_a "$user$ssfx_ao_a" // AO result ( w ) after blur
+#define r2_RT_ssfx_ao_b "$user$ssfx_ao_b"
+#define r2_RT_ssfx_il "$user$ssfx_il" // IL history ( reduced res )
+#define r2_RT_ssfx_il_a "$user$ssfx_il_a" // IL result after blur
+#define r2_RT_ssfx_il_b "$user$ssfx_il_b"
+#define r2_RT_ssfx_water "$user$ssfx_water" // Water reflection history ( unblurred, reduced res )
+#define r2_RT_ssfx_water_a "$user$ssfx_water_a" // Water reflection, blurred result
+#define r2_RT_ssfx_water_b "$user$ssfx_water_b"
+#define r2_RT_ssfx_water_waves "$user$ssfx_water_waves" // Animated wave height ( 512 x 512 )
+#define r2_RT_ssfx_fog_4 "$user$ssfx_fog_4" // Fog scattering blur, 1/4 res
+#define r2_RT_ssfx_fog_2 "$user$ssfx_fog_2" // Fog scattering blur, 1/2 res
+#define r2_RT_ssfx_vol_sun "$user$ssfx_vol_sun" // Sun volumetric, reduced res ( replaces generic2 )
+#define r2_RT_ssfx_ssr "$user$ssfx_ssr" // SSR result ( rgb, a: strength ), after the gloss blur
+#define r2_RT_ssfx_ssr_b "$user$ssfx_ssr_b" // SSR blur temp
+#define r2_RT_ssfx_ssr_hist "$user$ssfx_ssr_hist" // SSR history ( unblurred )
+#define r2_RT_ssfx_rain "$user$ssfx_rain" // NLC .85: rain refraction buffer, 1/8 res HDR scene + volumetrics
+
 constexpr const char* c_sbase = "s_base";
 
 #define r2_RT_ssfx_bloom1 "$user$ssfx_bloom1" // Bloom

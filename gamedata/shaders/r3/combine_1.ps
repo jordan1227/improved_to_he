@@ -1,0 +1,221 @@
+#include "common.h"
+
+uniform float4 fakescope;
+
+// Check MODs
+#include "check_screenspace.h"
+
+#ifdef SSFX_BEEFS_NVG
+#include "night_vision.h"
+#endif
+
+#ifdef SSFX_FOG
+#include "screenspace_fog.h"
+#endif
+
+#ifdef SSFX_FOG_SUN
+#include "ssfx_fog_sun.h" // NLC: sun-coloured fog
+#endif
+
+#if defined(SSFX_FOG) && defined(SSFX_GROUND_MIST)
+#include "ssfx_mist.h" // NLC .84: ground mist ( inside ssfx_height_fog_sun with sun fog )
+#endif
+
+#if defined(SSFX_INDIRECT_LIGHT) && !defined(SSFX_IL_PASS)
+#include "screenspace_il.h"
+#endif
+
+// NLC: SSS 23 temporal AO / IL results ( r4_rendertarget_phase_ssfx.cpp )
+#if defined(SSFX_AO_PASS) || defined(SSFX_IL_PASS)
+uniform float4 ssfx_compare; // x = 1: passes skipped ( ssfx_compare )
+#endif
+#ifdef SSFX_AO_PASS
+Texture2D s_ssfx_ao; // $user$ssfx_ao_a, .w = occlusion
+#endif
+#ifdef SSFX_IL_PASS
+Texture2D s_ssfx_il; // $user$ssfx_il_a, .rgb = indirect light
+uniform float4 ssfx_il_combine; // x: intensity, y: vibrance
+uniform float4 ssfx_torch[3]; // NLC: [2].rgb = torch colour x ssfx_il_flashlight, .w = active
+#endif
+
+#include "lmodel.h"
+#include "hmodel.h"
+
+#if defined(SSFX_AO_PASS) || defined(SSFX_IL_PASS)
+// NLC 2026-10-13: depth-aware upsample of the reduced-size AO / IL results ( bilinear across depth edges left dark
+// or bright halos around thin objects ). 2x2 low-res taps, bilinear weights times depth similarity.
+float4 ssfx_upsample(Texture2D t, float2 tc, float z0)
+{
+    float2 size;
+    t.GetDimensions(size.x, size.y);
+    float2 f = tc * size - 0.5f;
+    float2 base = floor(f);
+    float2 fr = f - base;
+
+    float4 sum = 0;
+    float wsum = 0;
+    [unroll] for (int i = 0; i < 4; i++)
+    {
+        float2 o = float2(i & 1, i >> 1);
+        float2 uv = (base + o + 0.5f) / size;
+        float z = s_position.SampleLevel(smp_nofilter, uv, 0).z;
+        float wb = (o.x ? fr.x : 1.0f - fr.x) * (o.y ? fr.y : 1.0f - fr.y);
+        float w = wb * exp2(-abs(1.0f - z / max(z0, 0.0001f)) * 16.0f) + 0.0001f * wb;
+        sum += t.SampleLevel(smp_nofilter, uv, 0) * w;
+        wsum += w;
+    }
+    return sum / max(wsum, 0.00001f);
+}
+#endif
+
+#ifdef SSFX_AO_PASS
+#include "ssfx_hmodel.h" // NLC: specular occlusion
+#include "ssfx_extra.h" // w: specular occlusion strength
+#endif
+
+#if defined(SSAO_QUALITY) && !defined(SSFX_AO_PASS)
+#ifdef USE_GTAO
+#include "gtao.h"
+#else
+#include "ssdo.ps"
+#endif
+#endif
+
+float4 main(p_screen I) : SV_Target
+{
+    gbuffer_data gbd = gbuffer_load_data(I.tc0, I.hpos);
+
+    // Sample the buffers:
+    float4 P = float4(gbd.P, gbd.mtl); // position.(mtl or sun)
+    float4 N = float4(gbd.N, gbd.hemi); // normal.hemi
+    float4 D = float4(gbd.C, gbd.gloss); // rgb.gloss
+
+    float4 L = s_accumulator.Sample(smp_nofilter, I.tc0); // diffuse.specular
+
+#ifndef SSFX_NEWGLOSS
+    if (abs(P.w - MAT_FLORA) <= 0.05)
+    {
+        // Reapply distance factor to fix overtly glossy plants in distance
+        // Unfortunately some trees etc don't seem to use the same detail shader
+        float fAtten = 1 - smoothstep(0, 50, P.z);
+        D.a *= (fAtten * fAtten);
+    }
+#endif
+
+    // static sun
+    float mtl = P.w;
+
+#ifdef USE_R2_STATIC_SUN
+    float sun_occ = P.w * 2;
+
+    mtl = xmaterial;
+    L += SRGBToLinear(D.rgb * Ldynamic_color.rgb * sun_occ) * plight_infinity(mtl, P.xyz, N.xyz, D.xyzw, Ldynamic_dir);
+#endif
+
+    float3 occ = float3(1.0, 1.0, 1.0);
+    float ao_raw = 1.0f;
+
+#ifdef SSAO_QUALITY
+#if defined(SSFX_AO_PASS)
+    occ = lerp(ssfx_upsample(s_ssfx_ao, I.tc0, P.z).www, 1.0f, ssfx_compare.x);
+    ao_raw = occ.x;
+#elif defined(USE_GTAO)
+    occ = calc_gtao(P, N, I.tc0, 0);
+#else
+    occ = calc_ssdo(P, N, I.tc0, I.hpos, 0);
+#endif
+    occ = compute_colored_ao(occ.x, D.xyz);
+#endif
+
+#ifdef SSFX_AO_PASS
+    // NLC .84: AO softly shades the direct light too ( debris, crevices and objects stop floating in full sun );
+    // ssfx_extra2.x strength, 0 = the old ambient-only AO
+    L.rgb *= lerp(1.0f, ao_raw, ssfx_extra2.x);
+#endif
+    L.rgb += L.a * SRGBToLinear(D.rgb); // illum in alpha
+
+    // hemisphere
+    float3 hdiffuse, hspecular;
+#ifdef SSFX_AO_PASS
+    // NLC: ambient specular separately, occluded below with specular occlusion
+    float h_rough;
+    ssfx_hmodel_split(hdiffuse, hspecular, mtl, N.w, D, P.xyz, N.xyz, h_rough);
+#else
+    hmodel(hdiffuse, hspecular, mtl, N.w, D, P.xyz, N.xyz);
+#endif
+
+    // NLC: SSS 23 indirect light ( Enhanced Shaders path of SSS 23 combine_1 )
+#ifdef SSFX_IL_PASS
+    float4 IL_full = ssfx_upsample(s_ssfx_il, I.tc0, P.z);
+    float3 IL_sample = IL_full.rgb;
+    IL_sample *= 1.0f / (1.0f + IL_sample); // Lower highs, higher lows
+    IL_sample = vibrance(IL_sample, ssfx_il_combine.y);
+    hdiffuse *= lerp(1.0f, IL_sample * (30.0f * ssfx_il_combine.x), IL_sample * (1.0f - ssfx_compare.x));
+
+    // NLC: flashlight bounce ( ssfx_il.ps alpha ): light in the torch colour ( normalised ) on the surface albedo,
+    // x ssfx_il_flashlight; added after the AO, which only half-occludes it ( bounce light fills contact shadows )
+    // .84: x0.05 ( even 0.1 lit a dark room ), slight warm bias ( bounce off concrete / wood )
+    float3 torch_bounce = ssfx_torch[2].rgb * float3(1.0f, 0.95f, 0.85f) * (IL_full.a * ssfx_torch[2].w * 0.05f) * SRGBToLinear(D.rgb) * (1.0f - ssfx_compare.x);
+#endif
+
+    // AO implementation
+#ifdef SSAO_QUALITY
+#ifdef SSFX_AO
+    hdiffuse *= (1.0f - SRGBToLinear(1.0f - occ) * (1.0f - dot(hdiffuse.rgb, LUMINANCE_VECTOR)));
+#else
+    hdiffuse *= occ;
+#endif
+#endif
+
+#ifdef SSFX_AO_PASS
+    // NLC: specular occlusion ( ssfx_extra.w strength, 0 = reflections occluded like the diffuse light )
+    float3 so_diffuse_like = hspecular * (1.0f - SRGBToLinear(1.0f - ao_raw) * (1.0f - dot(hspecular, LUMINANCE_VECTOR)));
+    float so = ssfx_specular_occlusion(saturate(dot(N.xyz, -normalize(P.xyz))), ao_raw, h_rough);
+    hdiffuse += lerp(so_diffuse_like, hspecular * so, ssfx_extra.w);
+#endif
+
+#ifdef SSFX_IL_PASS
+#ifdef SSFX_AO_PASS
+    torch_bounce *= lerp(1.0f, ao_raw, 0.5f);
+#endif
+    hdiffuse += torch_bounce;
+#endif
+
+    float3 color = L.rgb + hdiffuse.rgb;
+    color = LinearTosRGB(color); // gamma correct
+
+#ifdef SSFX_BEEFS_NVG
+    if (pnv_param_1.z > 0.f)
+    {
+        float lua_param_nvg_num_tubes = pnv_param_4.x; // 1, 2, 4, 1.1, or 1.2
+
+        // NVG reduces gloss to 0 inside mask
+        D.a *= (1.0 - compute_lens_mask(aspect_ratio_correction(I.tc0), lua_param_nvg_num_tubes));
+    }
+#endif
+
+#ifdef SSFX_FOG
+    float3 WorldP = mul(m_inv_V, float4(P.xyz, 1));
+#ifdef SSFX_FOG_SUN
+    float fog = ssfx_height_fog_sun(P.xyz, WorldP.y, color);
+#else
+    float fog = SSFX_HEIGHT_FOG(P.xyz, WorldP.y, color);
+#ifdef SSFX_GROUND_MIST
+    color = lerp(color, fog_color, ssfx_mist(WorldP, length(P.xyz), smoothstep(G_FOG_HEIGHT, -G_FOG_HEIGHT, WorldP.y) * G_FOG_HEIGHT_INTENSITY));
+#endif
+#endif
+#else
+    float3 pos = P.xyz;
+    float distance = length(pos);
+    float fog = saturate(distance * fog_params.w + fog_params.x);
+#ifdef SSFX_FOG_SUN
+    color = lerp(color, ssfx_fog_color_sun(normalize(mul(m_inv_V, pos))), fog);
+#else
+    color = lerp(color, fog_color, fog);
+#endif
+#endif
+
+    float skyblend = saturate(pow(fog, 3.0)); //float skyblend = saturate(fog * fog);
+
+    return float4(color, skyblend);
+}

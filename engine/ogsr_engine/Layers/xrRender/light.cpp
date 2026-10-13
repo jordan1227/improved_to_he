@@ -430,6 +430,7 @@ void light::export_to(light_Package& package)
 
                     f->set_type(IRender_Light::OMNIPART);
                     f->flags.bShadow = true;
+                    f->ssfx_parent = this; // NLC: SSS light slot is per omni light
                 }
 
             for (int f = 0; f < 6; f++)

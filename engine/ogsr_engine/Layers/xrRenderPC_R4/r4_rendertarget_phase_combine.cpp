@@ -4,6 +4,7 @@
 #include "../../xr_3da/xr_efflensflare.h"
 #include "../../xr_3da/CustomHUD.h"
 #include "../xrRender/dxEnvironmentRender.h"
+#include "ssfx_features.h"
 
 void CRenderTarget::phase_combine(CBackend& cmd_list)
 {
@@ -16,6 +17,10 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
         // if (t_LUM_dest != rt_LUM_pool[1]->pTexture)
             t_LUM_dest->surface_set(rt_LUM_pool[1]->pSurface);
     }
+
+    // NLC: SSS 23 temporal AO / IL, sampled by combine_1 ( no-op when off )
+    phase_ssfx_ao(cmd_list);
+    phase_ssfx_il(cmd_list);
 
     u_setrt(cmd_list, rt_Generic_0, nullptr, nullptr, nullptr, rt_Base_Depth->pZRT[cmd_list.context_id]);
     cmd_list.set_CullMode(CULL_NONE);
@@ -95,7 +100,8 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
     // Copy rt_Generic_0 to new RT
     HW.get_context(cmd_list.context_id)->CopyResource(rt_Generic_0_temp->pSurface, rt_Generic_0->pSurface);
 
-    if (ps_r2_ls_flags_ext.test(R2FLAGEXT_SSLR) && !fis_zero(g_pGamePersistent->Environment().wetness_factor))
+    // NLC: SSS 23 SSR when on ( reprojection, gloss blur ), otherwise the OGSR pass
+    if (!phase_ssfx_ssr(cmd_list) && ps_r2_ls_flags_ext.test(R2FLAGEXT_SSLR) && !fis_zero(g_pGamePersistent->Environment().wetness_factor))
     {
         PIX_EVENT(PHASE_SSR_BLUR);
 
@@ -123,7 +129,19 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
         });
 
         HW.get_context(CHW::IMM_CTX_ID)->CopyResource(rt_Generic_0->pSurface, rt_Generic_scene_scratch->pSurface);
+        ssfx_ssr_composited = true;
     }
+
+    // NLC: SSS 23 glass refracts the scene behind it ( with SSR ), water uses the same copy. .84: only when an SSR pass
+    // changed the scene, otherwise rt_Generic_0_temp is still equal to rt_Generic_0 ( copy above )
+    if (ssfx_glass_enabled() && ssfx_ssr_composited)
+        HW.get_context(cmd_list.context_id)->CopyResource(rt_Generic_0_temp->pSurface, rt_Generic_0->pSurface);
+
+    // NLC: SSS 23 water reflection prepass ( no-op when off )
+    phase_ssfx_water(cmd_list);
+
+    // NLC .85: rain refraction buffer ( no-op when off or dry )
+    phase_ssfx_rain(cmd_list);
 
     // Forward rendering
     {
@@ -167,6 +185,9 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
             HW.get_context(cmd_list.context_id)->CopyResource(rt_Generic_0->pSurface, rt_Generic_scene_scratch->pSurface);
         }
     }
+
+    // NLC: SSS 23 fog scattering ( HDR, before bloom; no-op at strength 0 )
+    phase_ssfx_fog_scattering(cmd_list);
 
     {
         // Perform blooming filter and distortion if needed
@@ -396,8 +417,8 @@ void CRenderTarget::phase_combine_volumetric(CBackend& cmd_list)
     //	Sets limits to both render targets
     cmd_list.set_ColorWriteEnable(D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
 
-    // Draw
-    cmd_list.set_Element(s_combine_volumetric->E[0]);
+    // Draw ( NLC: reduced-size targets are upsampled depth-aware, ssfx_volumetric.s )
+    cmd_list.set_Element(ssfx_volumetric_reduced() ? s_ssfx_volumetric->E[0] : s_combine_volumetric->E[0]);
     cmd_list.set_Geometry(TriangleGeom);
     cmd_list.Render(D3DPT_TRIANGLELIST, 0, 0, 3, 0, 1);
     cmd_list.set_ColorWriteEnable();

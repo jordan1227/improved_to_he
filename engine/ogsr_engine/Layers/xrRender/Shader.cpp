@@ -112,6 +112,8 @@ BOOL ShaderElement::equal(ShaderElement& S)
         return FALSE;
     if (flags.bDistort != S.flags.bDistort)
         return FALSE;
+    if (flags.isWater != S.flags.isWater)
+        return FALSE;
     if (passes.size() != S.passes.size())
         return FALSE;
     for (u32 p = 0; p < passes.size(); p++)

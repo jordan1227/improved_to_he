@@ -1,0 +1,25 @@
+function element_0(shader, t_base, t_second, t_detail)
+	shader:begin("accum_sun", "accum_sun_cascade2")
+		:fog(false)
+		:zb(true, false)
+		:blend(false, blend.one, blend.zero)
+	shader:dx10cullmode(1)
+	shader:dx10texture("s_position", "$user$position")
+	shader:dx10texture("s_accumulator", "$user$accum")
+	shader:dx10texture("s_lmap", "sunmask")
+	shader:dx10texture("s_smap", "$user$smap_sun_cascade_2")
+	shader:dx10texture("s_diffuse", "$user$albedo")
+	shader:dx10texture("s_ssfx_sss", "$user$ssfx_sss") -- NLC: SSS 23 temporal pass ( ignored when the shader does not use it )
+	shader:dx10texture("s_ssfx_clouds0", "$user$ssfx_clouds0") -- NLC: cloud shadows ( current weather clouds )
+	shader:dx10texture("s_ssfx_clouds1", "$user$ssfx_clouds1")
+
+	shader:dx10sampler("smp_nofilter")
+	shader:dx10sampler("smp_material")
+	shader:dx10sampler("smp_linear")
+	
+	jitter.jitter(shader)
+	
+	local s_smap = shader:dx10sampler("smp_smap")
+	shader:dx10adress(s_smap, 4)
+	shader:dx10bordercolor(s_smap, 255, 255, 255, 255)
+end

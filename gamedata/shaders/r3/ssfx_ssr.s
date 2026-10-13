@@ -52,7 +52,8 @@ function element_3(shader, t_base, t_second, t_detail)
 	shader:begin("stub_screen_space", "ssfx_ssr_combine")
 		:fog(false)
 		:zb(false, false)
-	shader:dx10texture("s_image", "$user$generic_temp")
+		:blend(true, blend.one, blend.invsrcalpha) -- NLC .84: blended into the scene ( premultiplied ), no copy
 	shader:dx10texture("ssr_image", "$user$ssfx_ssr")
 	shader:dx10sampler("smp_nofilter")
+	shader:dx10sampler("smp_rtlinear")
 end

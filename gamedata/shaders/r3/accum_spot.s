@@ -7,6 +7,9 @@ local function elements(shader, t_base, t_second, t_detail, ps_shader, jitter_en
 	shader:dx10texture("s_accumulator", "$user$accum")
 	shader:dx10texture("s_lmap", t_base)
 	shader:dx10texture("s_diffuse", "$user$albedo")
+	-- NLC: SSS 23 light screen-space shadows ( ignored when the shader does not use them )
+	shader:dx10texture("s_ssfx_sss_ext", "$user$ssfx_sss_ext")
+	shader:dx10texture("s_ssfx_sss_ext2", "$user$ssfx_sss_ext2")
 	
 	if jitter_enable then
 		shader:dx10texture("s_smap", "$user$smap_lights")

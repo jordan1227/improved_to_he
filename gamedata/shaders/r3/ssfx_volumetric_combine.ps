@@ -1,0 +1,52 @@
+/**
+ * @ Description: Reduced-size volumetric lights, upsample + filter ( replaces combine_volumetric.ps when
+ *                ssfx_volumetric_resolution > 1 )
+ * @ Based on: SCREEN SPACE SHADERS - UPDATE 22 volumetric blur / combine ( https://www.moddb.com/members/ascii1457 )
+ * @ NLC: 2026-10-12 - the OGSR 4x4 filter ( removes the ray-march dither ) runs on the reduced targets and every
+ *        tap is weighted by its depth against the full-resolution pixel, so light does not bleed across edges.
+ */
+
+#include "common.h"
+
+Texture2D s_vol_sun; // $user$ssfx_vol_sun: sun + spot volumetrics ( .84: one shared additive target, 48 -> 32 fetches )
+
+float ssfx_vol_depth(float z) { return z > SKY_EPS ? z : 10000.0f; } // sky as far away
+
+float4 main(p_screen I) : SV_Target
+{
+    float2 low_size;
+    s_vol_sun.GetDimensions(low_size.x, low_size.y);
+    float2 low_texel = 1.0f / low_size;
+
+    float z0 = ssfx_vol_depth(s_position.SampleLevel(smp_nofilter, I.tc0, 0).z);
+
+    // 4x4 low-res texels around the pixel
+    float2 base = (floor(I.tc0 * low_size - 0.5f) - 1.0f + 0.5f) * low_texel;
+
+    float3 color = 0;
+    float3 box = 0;
+    float weight = 0;
+
+    [unroll] for (int y = 0; y < 4; y++)
+    {
+        [unroll] for (int x = 0; x < 4; x++)
+        {
+            float2 uv = base + float2(x, y) * low_texel;
+
+            float3 v = s_vol_sun.SampleLevel(smp_nofilter, uv, 0).rgb;
+            float z = ssfx_vol_depth(s_position.SampleLevel(smp_nofilter, uv, 0).z);
+
+            // Relative depth difference: same surface ~1, across an edge ~0
+            float w = exp2(-abs(1.0f - z / z0) * 16.0f);
+
+            color += v * w;
+            box += v;
+            weight += w;
+        }
+    }
+
+    // No tap on the pixel's surface ( thin objects ): plain filter
+    color = weight > 0.05f ? color / weight : box * 0.0625f;
+
+    return float4(color, 0);
+}

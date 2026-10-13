@@ -28,6 +28,7 @@ protected:
 
     Fvector m_focus;
     Fcolor m_color;
+    float m_spot_cone{}; // NLC: spot cone, radians ( actor torch for the flashlight indirect light )
     bool m_bind_to_camera;
     Fvector m_camera_torch_offset;
     Fvector m_camera_omni_offset;

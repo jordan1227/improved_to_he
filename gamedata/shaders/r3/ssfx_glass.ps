@@ -1,0 +1,83 @@
+/**
+ * @ Version: SCREEN SPACE SHADERS - UPDATE 23
+ * @ Description: Glass Shader - PS
+ * @ Modified time: 2025-05-28 20:32:33
+ * @ Author: https://www.moddb.com/members/ascii1457
+ * @ Mod: https://www.moddb.com/mods/stalker-anomaly/addons/screen-space-shaders
+ * @ NLC: 2026-10-12 - OGSR port: refracted scene is linear HDR ( $user$generic_temp ), so the glass tint is converted
+ *        to linear; ssfx_compare 1 returns the OGSR model_env_lq result. NLC look: the glass colour is the OGSR
+ *        model_env_lq colour, blended over the refracted scene by the texture opacity exactly like the old alpha
+ *        blend ( SSS multiplied the scene by the tint: NLC window textures turned everything behind them blue );
+ *        the refraction, chromatic aberration and fresnel highlight are the SSS additions.
+ */
+
+#include "common.h"
+#include "settings_screenspace_GLASS.h"
+
+struct v2p
+{
+    float2 tc0 : TEXCOORD0;
+    float3 tc1 : TEXCOORD1;
+    float3 c0 : COLOR0;
+    float3 P : TEXCOORD2;
+    float3 v2point : TEXCOORD3;
+    float3 nor : TEXCOORD4;
+    float fog : FOG;
+    float4 hpos : SV_Position;
+};
+
+TextureCube s_env;
+Texture2D s_glass;
+Texture2D s_screen;
+
+uniform float4 ssfx_compare;
+
+float4 main(v2p I) : SV_Target
+{
+    float4 t_base = s_base.Sample(smp_base, I.tc0);
+    float4 t_env = s_env.Sample(smp_rtlinear, I.tc1);
+
+    float3 base = lerp(t_env.rgb, t_base.rgb, t_base.a);
+
+    // OGSR model_env_lq colour
+    float3 old = lerp(fog_color, I.c0 * base * 2, I.fog);
+    if (ssfx_compare.x > 0)
+        return float4(old, t_base.a * I.fog * I.fog);
+
+    float2 tc_screen = I.hpos.xy * screen_res.zw;
+    float2 pixelsize = screen_res.zw * 2.0f;
+
+    float acc = saturate(s_accumulator.Sample(smp_nofilter, tc_screen).r * 2000);
+
+    // Fresnel
+    float fresnel = saturate(dot(reflect(I.v2point, I.nor), I.v2point));
+    fresnel = pow(fresnel, 5);
+
+    // Fake triplanar: major axis of the face normal
+    float3 d1 = ddx(I.P);
+    float3 d2 = ddy(I.P);
+    float3 n = abs(normalize(cross(d1, d2)));
+
+    int3 ma = (n.x > n.y && n.x > n.z) ? int3(0, 1, 2) : (n.y > n.z) ? int3(1, 2, 0) : int3(2, 0, 1);
+    float2 uvs = float2(I.P[ma.y], I.P[ma.z]);
+
+    // Normal offset
+    float2 tc_offset = s_glass.Sample(smp_base, uvs * SSFX_GLASS_BUMP_SCALE).xy;
+    tc_offset = (tc_offset * 2 - 1) * max((SSFX_GLASS_REFRACTION + fresnel * 0.05) / I.hpos.w, (SSFX_GLASS_REFRACTION + fresnel * 0.05));
+    tc_offset = clamp(tc_offset, -1.0f, 1.0f);
+
+    // Chromatic aberration
+    float3 screen;
+    screen.r = s_screen.SampleLevel(smp_rtlinear, (tc_screen + pixelsize.xx) + tc_offset, 0).r;
+    screen.g = s_screen.SampleLevel(smp_rtlinear, tc_screen + tc_offset, 0).g;
+    screen.b = s_screen.SampleLevel(smp_rtlinear, (tc_screen - pixelsize.xx) + tc_offset, 0).b;
+
+    // Glass colour over the refracted scene by its opacity ( = the old alpha blend when nothing is refracted )
+    float3 final = lerp(screen, old, t_base.a * I.fog * I.fog);
+
+    // Fresnel
+    final += fresnel.xxx * SSFX_GLASS_FRESNEL * float3(0.9f, 1.0f, 0.9f) * acc;
+
+    // Opaque output: the scene behind is already in 'screen'. Far glass fades to the unrefracted scene.
+    return float4(final, I.fog * I.fog);
+}

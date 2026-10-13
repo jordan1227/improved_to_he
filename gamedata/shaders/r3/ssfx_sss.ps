@@ -1,0 +1,50 @@
+/**
+ * @ Description: Screen-space shadows - sun ( trace + temporal accumulation )
+ * @ Based on: SCREEN SPACE SHADERS - UPDATE 22 ssfx_sss.ps ( https://www.moddb.com/members/ascii1457 )
+ * @ NLC: 2026-10-12 - OGSR G-buffer / velocity, shared reprojection helpers.
+ *        Output: r = accumulated shadow, g = disocclusion, b = 1 ( blurred later ), a = offscreen / object motion
+ */
+
+#include "common.h"
+#include "ssfx_sss.h"
+
+Texture2D sss_image; // History ( $user$ssfx_sss )
+
+float4 main(p_screen I) : SV_Target
+{
+    float2 tc = I.tc0;
+
+    gbuffer_data gbd = gbuffer_load_data(tc, I.hpos.xy);
+    float3 P = gbd.P;
+
+    if (P.z <= SKY_EPS)
+        return float4(1.0f, 0.0f, 1.0f, 0.0f);
+
+    float HudMask = ssfx_hud_mask(tc);
+    float2 mv = ssfx_motion_uv(tc);
+
+    // Current frame
+    float sss = SSFX_ScreenSpaceShadows_Sun(P, tc, HudMask);
+
+    // Reprojection
+    float2 prev_tc = tc - mv;
+
+    // Object motion only ( camera motion removed ), used by the blur
+    float vel_history = length(mv - ssfx_camera_motion_uv(P) * (1.0f - HudMask)) * 200.0f;
+    float vel = length(mv) * 30.0f * HudMask; // HUD only
+
+    float docc = ssfx_disocclusion(P.z, prev_tc) * (1.0f + 10.0f * HudMask);
+
+    float4 prev = sss_image.Sample(smp_rtlinear, prev_tc + ssfx_history_noise(tc, 0.5f * saturate(1.0f - length(mv) * 10.0f)));
+
+    float outoffsrc = lerp(ssfx_offscreen(prev_tc), prev.a, 0.95f);
+
+    // 0 = current frame ~ 1 = previous frame
+    float2 weight;
+    weight.x = saturate(0.95f - (outoffsrc + docc + vel)); // Shadow
+    weight.y = saturate(0.60f - (outoffsrc + docc)); // Disocclusion mask
+
+    float2 result = lerp(float2(sss, docc), prev.rg, weight);
+
+    return float4(result, 1.0f, max(ssfx_offscreen(prev_tc), lerp(saturate(vel_history), prev.a, 0.95f)));
+}

@@ -88,6 +88,9 @@ void CUIOptionsItem::SaveValue()
         m_entry == "r2_sun_quality" || m_entry == "r_ao_mode" || m_entry == "r2_ssao" ||
         m_entry == "r_sslr_enable" || m_entry == "ssfx_height_fog" || m_entry == "ssfx_sky_debanding" || m_entry == "ssfx_indirect_light"
         || m_entry == "r2_mblur_enable"
+        // NLC: SSS 23 temporal passes ( targets and shader macros )
+        || m_entry == "ssfx_sss_enable" || m_entry == "ssfx_sss_quality" || m_entry == "ssfx_sss_lights" || m_entry == "ssfx_ao_resolution"
+        || m_entry == "ssfx_il_resolution" || m_entry == "ssfx_il_quality" || m_entry == "ssfx_water_resolution" || m_entry == "ssfx_volumetric_resolution" || m_entry == "ssfx_ssr_resolution"
         )
         m_optionsManager.DoVidRestart();
 

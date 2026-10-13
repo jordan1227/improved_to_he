@@ -1,0 +1,49 @@
+/**
+ * @ Description: Ambient occlusion - depth-aware blur ( AO resolution )
+ * @ Based on: SCREEN SPACE SHADERS - UPDATE 21 ssfx_ao_blur.ps ( https://www.moddb.com/members/ascii1457 )
+ * @ NLC: 2026-10-12 - runs at the AO target size ( OGSR creates reduced targets, no viewport subrect ).
+ */
+
+#include "common.h"
+
+#ifndef G_SSDO_AO_BLUR_SAMPLES
+#define G_SSDO_AO_BLUR_SAMPLES 4
+#endif
+
+uniform float4 blur_setup; // x: res divider, y: radius, zw: AO target size
+
+Texture2D ao_image;
+
+static const float2x2 ssfx_ao_rotation = {-0.666276f, 0.745705f, -0.745705f, -0.666276f};
+
+float4 main(p_screen I) : SV_Target
+{
+    float2 tc = I.tc0.xy;
+
+    float4 base_image = ao_image.SampleLevel(smp_nofilter, tc, 0);
+    float Depth = s_position.SampleLevel(smp_nofilter, tc, 0).z;
+
+    float2 buffer_pixel_size = 1.0f / blur_setup.zw;
+    float2 offset = blur_setup.yy;
+
+    float blur = 0;
+    float r = 2.0f;
+
+    [unroll(G_SSDO_AO_BLUR_SAMPLES)]
+    for (int i = 0; i < G_SSDO_AO_BLUR_SAMPLES; i++)
+    {
+        r += 1.0f / r;
+        offset = mul(offset, ssfx_ao_rotation);
+
+        float2 blur_tc = saturate(tc + offset * (r - 1.0f) * buffer_pixel_size);
+
+        float SampleAO = ao_image.SampleLevel(smp_rtlinear, blur_tc, 0).a;
+        float SDepth = s_position.SampleLevel(smp_nofilter, blur_tc, 0).z;
+
+        // Keep the centre value across depth edges
+        blur += lerp(SampleAO, base_image.a, saturate(abs(Depth - SDepth) * 10.0f));
+    }
+    blur /= G_SSDO_AO_BLUR_SAMPLES;
+
+    return float4(base_image.r, base_image.g, base_image.b, blur);
+}

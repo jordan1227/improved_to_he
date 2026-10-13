@@ -52,9 +52,58 @@ extern ECORE_API u32 ps_r_ao_quality; //	=	0;
 enum : u32
 {
     AO_MODE_GTAO,
-    AO_MODE_SSDO
+    AO_MODE_SSDO,
+    AO_MODE_SSFX, // NLC: SSS 23 temporal AO pass
 };
 extern ECORE_API u32 ps_r_ao_mode;
+
+// NLC: SSS 23 temporal passes ( r4_rendertarget_phase_ssfx.cpp ). All scalar so the options menu can bind them.
+extern float ps_ssfx_flora_variation; // grass colour variation strength, 0 = off
+extern int ps_ssfx_ao_res; // AO resolution divider ( 1 = full )
+extern float ps_ssfx_ao_intensity;
+extern float ps_ssfx_ao_radius;
+extern int ps_ssfx_il_res; // IL resolution divider
+extern int ps_ssfx_il_quality; // 1..3
+extern float ps_ssfx_il_intensity;
+extern int ps_ssfx_sss_quality; // 1..3, sun samples
+extern int ps_ssfx_sss_lights; // 0/1, shadows from up to 8 point/spot lights
+extern float ps_ssfx_sss_length;
+extern int ps_ssfx_compare; // 1 = skip the passes and show the image without them ( instant A/B )
+
+// NLC: SSS 23 Build B
+extern BOOL ps_ssfx_rain_beams; // NLC .85: SSS 22 rain buffer, game restart
+extern BOOL ps_ssfx_water_enable; // SSS 23 water ( reflection prepass, waves ), game restart
+extern int ps_ssfx_water_res; // water reflection resolution divider
+extern int ps_ssfx_water_quality; // 1..3, reflection ray steps, game restart
+extern int ps_ssfx_water_parallax; // 0..3, parallax wave steps, game restart
+extern float ps_ssfx_water_blur;
+extern float ps_ssfx_water_reflection;
+extern float ps_ssfx_fog_scattering; // 0 = off
+extern int ps_ssfx_volumetric_res; // volumetric light resolution divider, 1 = full ( old path )
+extern float ps_ssfx_tree_variation; // tree / bush colour variation strength
+extern BOOL ps_ssfx_foliage_mask; // only tree branches use the foliage material
+extern BOOL ps_ssfx_glass_enable; // SSS 23 glass on transparent model glass, game restart
+extern BOOL ps_ssfx_ssr_enable; // SSS 23 SSR ( reprojection, gloss blur ), game restart
+extern float ps_ssfx_ssr_dry; // SSR strength on dry glossy surfaces, 0 = wet surfaces only
+extern float ps_ssfx_ssr_blur;
+
+// NLC: SSS 23 Build C
+extern float ps_ssfx_wind_gusts; // travelling wind gusts on grass and trees ( SSFX_WIND_GUSTS when > 0 at game start )
+extern float ps_ssfx_bloom_hud; // bloom strength of HUD items
+extern float ps_ssfx_fog_sun; // fog tinted towards the sun ( SSFX_FOG_SUN when > 0 at game start )
+extern float ps_ssfx_spec_occlusion; // specular occlusion from the SSS 23 AO
+extern int ps_ssfx_ssr_res; // SSS 23 SSR resolution divider ( 1 / 2 )
+extern float ps_ssfx_cloud_shadows;
+extern int ps_ssfx_debug_clouds;
+extern float ps_ssfx_ao_direct, ps_ssfx_ground_mist;
+extern u32 ps_ssfx_look;
+extern int ps_ssfx_settings_version;
+extern float ps_ssfx_terrain_grass_slope;
+extern float ps_ssfx_contrast, ps_ssfx_color_r, ps_ssfx_color_g, ps_ssfx_color_b;
+extern float ps_ssfx_il_flashlight;
+extern float ps_ssfx_step_ripples;
+extern BOOL ps_ssfx_spec_aa; // specular anti-aliasing in the G-buffer ( SSFX_SPEC_AA )
+extern BOOL ps_ssfx_mblur_objects; // motion blur from the velocity buffer ( SSFX_MBLUR_OBJECTS ) // ripples around moving feet in water and puddles ( SSFX_STEP_RIPPLES when > 0 at game start ) // shadows of the weather's clouds ( SSFX_CLOUD_SHADOWS when > 0 at game start )
 
 extern ECORE_API u32 ps_r_sun_quality; //	=	0;
 

@@ -300,5 +300,8 @@ void CRenderTarget::accum_direct_volumetric(CBackend& cmd_list, u32 sub_phase, c
             cmd_list.set_ZFunc(D3DCMP_ALWAYS);
 
         cmd_list.Render(D3DPT_TRIANGLELIST, Offset, 0, 8, i_offset, 16);
+
+        if (ssfx_volumetric_reduced())
+            ssfx_volumetric_restore_viewport(cmd_list);
     }
 }

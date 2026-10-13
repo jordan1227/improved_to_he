@@ -1,0 +1,60 @@
+/**
+ * @ Version: SCREEN SPACE SHADERS - UPDATE 23
+ * @ Description: Simple and fast Fog Scattering
+ * @ Modified time: 2025-05-11 21:28:20
+ * @ Author: https://www.moddb.com/members/ascii1457
+ * @ Mod: https://www.moddb.com/mods/stalker-anomaly/addons/screen-space-shaders
+ * @ NLC: 2026-10-12 - runs on the HDR scene before bloom ( OGSR fog is applied in combine_1 ): the light leak test
+ *        works on Reinhard-mapped colours, no 8-bit debanding, fog factor = OGSR distance fog + height fog,
+ *        sky unchanged.
+ */
+
+#include "common.h"
+
+#ifdef SSFX_FOG
+#include "settings_screenspace_FOG.h"
+#ifdef SSFX_GROUND_MIST
+#include "ssfx_mist.h"
+#endif
+#endif
+
+// s_image ( common ): $user$generic0, HDR scene
+Texture2D s_fog_blur; // $user$ssfx_fog_2
+
+uniform float4 ssfx_scattering_setup; // x: strength
+
+// HDR -> [ 0, 1 ), roughly perceptual ( the SSS test was written for gamma-space LDR colours )
+float3 ssfx_reinhard(float3 c) { return sqrt(c / (1.0f + c)); }
+
+float4 main(p_screen I) : SV_Target
+{
+    float3 img = s_image.Sample(smp_nofilter, I.tc0).rgb;
+    float4 Pos = s_position.Sample(smp_nofilter, I.tc0);
+
+    if (Pos.z <= SKY_EPS)
+        return float4(img, 1);
+
+    float3 P = float3(Pos.z * (I.hpos.xy * pos_decompression_params.zw - pos_decompression_params.xy), Pos.z);
+
+    // Fog factor as combine_1 applies it ( distance fog + SSS height fog )
+    float fog = saturate(length(P) * fog_params.w + fog_params.x);
+#ifdef SSFX_FOG
+    float world_y = mul(m_inv_V, float4(P, 1)).y;
+    float fog_height = smoothstep(G_FOG_HEIGHT, -G_FOG_HEIGHT, world_y) * G_FOG_HEIGHT_INTENSITY;
+    fog = saturate(fog + fog_height * (fog * G_FOG_HEIGHT_DENSITY));
+#ifdef SSFX_GROUND_MIST
+    fog = saturate(fog + ssfx_mist(mul(m_inv_V, float4(P, 1)).xyz, length(P), fog_height)); // NLC .84: as combine
+#endif
+#endif
+    fog *= fog;
+
+    float3 blur = s_fog_blur.Sample(smp_rtlinear, I.tc0).rgb;
+
+    // Dark foreground in front of bright fog keeps its colour ( SSS light leak test, on mapped colours )
+    float Delta = dot(ssfx_reinhard(blur), ssfx_reinhard(img));
+    fog *= saturate(Delta * Delta);
+
+    float3 scattering = lerp(img, max(img, blur), smoothstep(0.1f, 1.0f - (ssfx_scattering_setup.x * 0.8f), fog));
+
+    return float4(scattering, 1);
+}

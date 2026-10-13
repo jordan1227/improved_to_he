@@ -1,0 +1,132 @@
+/**
+ * @ Description: Ambient occlusion ( reduced resolution + temporal accumulation )
+ * @ Based on: SCREEN SPACE SHADERS - UPDATE 23 ssfx_ao.ps ( https://www.moddb.com/members/ascii1457 )
+ * @ NLC: 2026-10-12 - OGSR G-buffer / velocity / material flora mask, shared reprojection helpers.
+ *        Fixes: the inner ring loop advanced the outer index ( `for (j...; i++)` ), so the second
+ *        sample ring never ran; sample positions are now taken on their own view ray instead of
+ *        the centre pixel ray.
+ *        Output: r = disocclusion mask, g = offscreen, b = object motion, a = occlusion ( 1 = none )
+ */
+
+#include "common.h"
+#include "screenspace_common.h"
+#include "ssfx_temporal.h"
+
+#ifndef SSFX_AO_QUALITY
+#define SSFX_AO_QUALITY 4
+#endif
+
+uniform float4 ssfx_ao_params; // Res divider, intensity, radius, distance
+uniform float4 ssfx_ao_params2; // HUD intensity, flora intensity, max occlusion, -
+
+Texture2D ssfx_ao_history; // $user$ssfx_ao
+
+float4 main(p_screen I) : SV_Target
+{
+    float2 tc = I.tc0.xy; // [ 0 ~ 1 ] over the whole screen at any AO resolution
+
+    gbuffer_data gbd = gbuffer_load_data(tc, tc * render_res.xy);
+    float3 P = gbd.P;
+    float3 N = gbd.N;
+
+    if (P.z >= ssfx_ao_params.w || P.z <= SKY_EPS)
+        return float4(0, 0, 0, 1);
+
+    bool mat_flora = abs(gbd.mtl - MAT_FLORA) <= 0.04f;
+
+    float WeaponFactor = ssfx_hud_mask(tc);
+    float HUD_Multiply = clamp(1.0f - WeaponFactor, ssfx_ao_params2.x, 1.0f);
+
+    float3 ao_noise = ssfx_hash33(float3(tc * 100.0f, timers.x * 100.0f));
+
+    float occ = 0;
+    float Seed = 0.04f;
+
+    // Sample radius ( smaller on the HUD )
+    float radius = 0.1f * clamp(1.0f - WeaponFactor, 0.1f, 1.0f);
+
+    [unroll(SSFX_AO_QUALITY)]
+    for (int i = 0; i < SSFX_AO_QUALITY; i++)
+    {
+        [unroll(2)]
+        for (int j = 1; j <= 2; j++)
+        {
+            ao_noise = ssfx_hash33(float3(frac(tc.x + Seed), ao_noise.x + Seed, ao_noise.z - Seed)) * 2.0f - 1.0f;
+            Seed += 0.1031f;
+
+            // Hemisphere distribution around the normal
+            float3 sample_ray = reflect(ssfx_hemisphere[i], ao_noise * ssfx_ao_params.z) + N;
+            float3 occ_pos = P + sample_ray * radius * j;
+
+            float2 occ_uv = SSFX_view_to_uv(occ_pos);
+
+            if (SSFX_is_valid_uv(occ_uv))
+            {
+                float4 sample_raw = s_position.SampleLevel(smp_nofilter, occ_uv, 0);
+                float sample_z = sample_raw.z;
+
+                // Surface point on the sample's own view ray, relative to the probe point
+                float3 diff = occ_pos * (sample_z / max(occ_pos.z, 0.0001f) - 1.0f);
+                float Dist = length(diff);
+
+                float3 sample_N = gbuf_unpack_normal(sample_raw.xy);
+
+                float AO = saturate(dot(sample_N, diff) + 0.1f);
+                AO *= 1.0f - saturate(dot(sample_N, N));
+
+                // Flora: distance based, softer
+                bool sample_flora = abs(gbuf_unpack_mtl(sample_raw.w) - MAT_FLORA) <= 0.04f;
+                if (sample_flora || mat_flora)
+                    AO = (1.0f - smoothstep(0.0f, 0.5f, Dist)) * ssfx_ao_params2.y;
+
+                AO *= saturate((1.0f + ssfx_ao_params.z * 0.2f) - Dist);
+
+                AO *= !is_sky(sample_z);
+
+                // No AO from the HUD onto the world or the other way round
+                AO *= (WeaponFactor > 0) == (ssfx_hud_mask(occ_uv) > 0);
+
+                occ += AO * HUD_Multiply;
+            }
+            else
+            {
+                radius *= 0.5f;
+            }
+        }
+    }
+
+    occ /= SSFX_AO_QUALITY * 2;
+    occ = saturate(1.0f - occ * 2.0f);
+    occ = pow(max(occ, 0.0001f), max(ssfx_ao_params.y * 10.0f, 0.001f)); // NLC: pow( 0, 0 ) = NaN at intensity 0
+
+    // Distance fade
+    occ = saturate(occ + smoothstep(ssfx_ao_params.w * 0.7f, ssfx_ao_params.w, P.z));
+
+    // Temporal accumulation -------------------------------------------------------------
+
+    float2 mv = ssfx_motion_uv(tc);
+
+    float vel = length(mv) * 10.0f;
+
+    float vel_history = length(mv - ssfx_camera_motion_uv(P) * (1.0f - WeaponFactor)) * 100.0f;
+    if (WeaponFactor > 0)
+        vel_history *= 0.2f;
+
+    float2 prev_tc = tc - mv;
+    float2 Rep_Tc = prev_tc + ssfx_history_noise(tc, 0.25f);
+
+    float4 prev = ssfx_ao_history.SampleLevel(smp_rtlinear, saturate(Rep_Tc), 0);
+
+    float outoffsrc = lerp(ssfx_offscreen(Rep_Tc), prev.g, 0.9f);
+
+    float docc = ssfx_disocclusion(P.z, Rep_Tc) * (1.0f + WeaponFactor);
+
+    float weight = saturate(0.92f - (vel + outoffsrc + docc + prev.b));
+
+    occ = lerp(occ, prev.a, weight);
+    occ = clamp(occ, ssfx_ao_params2.z, 1.0f);
+
+    float docc_mask = lerp((docc + vel + outoffsrc) * 10.0f, prev.r, 0.95f);
+
+    return saturate(float4(docc_mask, outoffsrc, lerp(vel_history, saturate(prev.b - 0.001f), 0.92f), occ));
+}

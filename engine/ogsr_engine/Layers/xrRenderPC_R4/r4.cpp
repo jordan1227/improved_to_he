@@ -16,6 +16,7 @@
 #include "../xrRenderDX10/3DFluid/dx103DFluidManager.h"
 #include "../xrRender/ShaderResourceTraits.h"
 #include "../../xr_3da/x_ray.h"
+#include "ssfx_features.h"
 
 CRender RImplementation;
 
@@ -73,6 +74,16 @@ public:
 // Just two static storage
 void CRender::create()
 {
+    // NLC .89: user.ltx keeps every saved value, so a changed default never reaches players who update. Settings that
+    // existed before the SSS 23 upgrade and got new defaults are moved once; new settings start at their defaults anyway.
+    if (ps_ssfx_settings_version < 1)
+    {
+        ps_ssfx_terrain_grass_slope = 0.5f; // was 1 ( grass on every slope )
+        ps_ssfx_int_grass_params_1.x = 1.2f; // player grass bend radius, was 2 m
+        ps_ssfx_settings_version = 1;
+        Msg("* [SSFX] settings migrated to version %d", ps_ssfx_settings_version);
+    }
+
     particles_pool.init();
     light_pool.init();
     r_sun.sun_cascade_pool.init();
@@ -702,6 +713,12 @@ HRESULT CRender::shader_compile(LPCSTR name, DWORD const* pSrcData, UINT SrcData
     char c_rain_quality[10]{};
     char c_ssfx_pom_refine[10]{};
     char c_ssfx_terrain_pom_refine[10]{};
+    char c_ssfx_ao_quality[10]{};
+    char c_ssfx_il_quality[10]{};
+    char c_ssfx_sss_dir_quality[10]{};
+    char c_ssfx_sss_omni_quality[10]{};
+    char c_ssfx_water_quality[10]{};
+    char c_ssfx_water_parallax[10]{};
 
     {
         sprintf_s(c_smapsize, "%d", m_SMAPSize);
@@ -803,6 +820,49 @@ HRESULT CRender::shader_compile(LPCSTR name, DWORD const* pSrcData, UINT SrcData
     appendShaderOption(ps_r2_ls_flags.test(R2FLAGEXT_SSFX_SHADOWS), "SSFX_SHADOWS", "1");
 
     appendShaderOption(ps_r2_ls_flags.test(R2FLAGEXT_SSFX_SSS), "SSFX_SSS", "1");
+
+    // NLC: SSS 23 temporal passes ( see ssfx_features.h )
+    if (ssfx_ao_pass_enabled())
+    {
+        defines.emplace_back("SSFX_AO_PASS", "1");
+        sprintf_s(c_ssfx_ao_quality, "%d", ssfx_ao_samples());
+        defines.emplace_back("SSFX_AO_QUALITY", c_ssfx_ao_quality);
+    }
+    if (ssfx_il_pass_enabled())
+    {
+        defines.emplace_back("SSFX_IL_PASS", "1");
+        sprintf_s(c_ssfx_il_quality, "%d", ssfx_il_samples());
+        defines.emplace_back("SSFX_IL_QUALITY", c_ssfx_il_quality);
+    }
+    if (ssfx_sss_pass_enabled())
+    {
+        defines.emplace_back("SSFX_SSS_PASS", "1");
+        sprintf_s(c_ssfx_sss_dir_quality, "%d", ssfx_sss_dir_samples());
+        defines.emplace_back("SSFX_SSS_DIR_QUALITY", c_ssfx_sss_dir_quality);
+        sprintf_s(c_ssfx_sss_omni_quality, "%d", ssfx_sss_omni_samples());
+        defines.emplace_back("SSFX_SSS_OMNI_QUALITY", c_ssfx_sss_omni_quality);
+    }
+    appendShaderOption(ssfx_sss_lights_enabled(), "SSFX_SSS_LIGHTS", "1");
+    if (ssfx_water_enabled())
+    {
+        defines.emplace_back("SSFX_WATER_PASS", "1");
+        sprintf_s(c_ssfx_water_quality, "%d", ssfx_features().water_quality);
+        defines.emplace_back("SSFX_WATER_QUALITY", c_ssfx_water_quality);
+        sprintf_s(c_ssfx_water_parallax, "%d", ssfx_features().water_parallax);
+        defines.emplace_back("SSFX_WATER_PARALLAX", c_ssfx_water_parallax);
+    }
+    appendShaderOption(ssfx_glass_enabled(), "SSFX_GLASS_PASS", "1");
+    appendShaderOption(ssfx_ssr_enabled(), "SSFX_SSR_PASS", "1");
+    appendShaderOption(ssfx_foliage_enabled(), "SSFX_FOLIAGE_PASS", "1");
+    appendShaderOption(ssfx_features().flora_variation, "SSFX_FLORA_VARIATION", "1");
+    appendShaderOption(ssfx_features().ground_mist, "SSFX_GROUND_MIST", "1");
+    appendShaderOption(ssfx_features().rain_beams, "SSFX_RAIN_PASS", "1");
+    appendShaderOption(ssfx_features().gusts, "SSFX_WIND_GUSTS", "1");
+    appendShaderOption(ssfx_features().fog_sun, "SSFX_FOG_SUN", "1");
+    appendShaderOption(ssfx_features().cloud_shadows, "SSFX_CLOUD_SHADOWS", "1");
+    appendShaderOption(ssfx_features().step_ripples, "SSFX_STEP_RIPPLES", "1");
+    appendShaderOption(ssfx_features().spec_aa, "SSFX_SPEC_AA", "1");
+    appendShaderOption(ssfx_features().mblur_objects, "SSFX_MBLUR_OBJECTS", "1");
 
     appendShaderOption(ps_r2_ls_flags.test(R2FLAGEXT_SSFX_INTER_GRASS), "SSFX_INTER_GRASS", "1");
 

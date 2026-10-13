@@ -276,6 +276,8 @@ CRenderTarget::CRenderTarget()
         rt_ssr1.create(r2_RT_ssr1, w, h, DXGI_FORMAT_R8G8B8A8_UNORM); // Generic RT
         rt_ssr2.create(r2_RT_ssr2, w, h, DXGI_FORMAT_R8G8B8A8_UNORM); // Temp RT 8B
 
+        ssfx_create_targets(w, h); // NLC: SSS 23 temporal passes ( only the enabled ones )
+
         rt_flares.create(r2_RT_flares, displayW, displayH, DXGI_FORMAT_R8G8B8A8_UNORM);
 
         rt_Velocity.create(r2_RT_velocity, w, h, DXGI_FORMAT_R16G16_FLOAT);
@@ -571,6 +573,13 @@ CRenderTarget::~CRenderTarget()
     t_envmap_1->surface_set(nullptr);
     t_envmap_0.destroy();
     t_envmap_1.destroy();
+    if (t_ssfx_clouds0) // NLC: cloud shadows
+    {
+        t_ssfx_clouds0->surface_set(nullptr);
+        t_ssfx_clouds1->surface_set(nullptr);
+    }
+    t_ssfx_clouds0.destroy();
+    t_ssfx_clouds1.destroy();
 
     //	TODO: DX10: Check if we need old style SMAPs
     //	_RELEASE					(rt_smap_ZB);
