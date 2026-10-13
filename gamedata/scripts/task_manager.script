@@ -98,6 +98,8 @@ local return_task_by_type = {
 
 local hash_to_id={}
 local id_to_hash={}
+-- [HE-PORT]
+local hash_ids={}
 local ct_to_hash={}
 local hash_to_ct={}
 local i,k,v 
@@ -145,6 +147,9 @@ function Clua_randomTask:__init()
 		end
 		hash_to_id[hash] = id
 		id_to_hash[id]   = hash
+		-- [HE-PORT]
+		hash_ids[hash] = hash_ids[hash] or {}
+		table.insert(hash_ids[hash], id)
 		self.task_info[id] = {}
 		local curr_task_info = self.task_info[id]
 		curr_task_info.type = self.task_ini:r_string(id, "type")
@@ -365,7 +370,8 @@ function Clua_randomTask:save(p)
 		ASSERT(id_to_hash[k], "Cannot find hash for id %s!", k)
 		ASSERT(status_to_num[v.status], "Wrong status '%s' for task %s!", v.status, k)
 		table.insert(tasks, {
-			id_to_hash[k],
+			-- [HE-PORT]
+			k,
 			v.enabled,
 			v.enabled_props,
 			status_to_num[v.status],
@@ -378,8 +384,9 @@ function Clua_randomTask:save(p)
 		ASSERT(ct_to_hash[k], "Cannot find hash for complex type %s!", k)
 		ASSERT(id_to_hash[v], "Cannot find hash for task id %s!", v)
 		table.insert(active, {
-			ct_to_hash[k],
-			id_to_hash[v]
+			-- [HE-PORT]
+			k,
+			v
 		})
 	end
 	set_value("task_manager.tasks", tasks)
@@ -391,10 +398,37 @@ function Clua_randomTask:load(p)
 	local tasks, active = get_value("task_manager.tasks"), get_value("task_manager.active")
 	if not (tasks and active) then return end
 	local skipped = 0
-	for _, t in ipairs(tasks) do
-		local id = hash_to_id[t[1]]
 	-- [HE-PORT]
-		if id then
+	for _, t in ipairs(active) do
+		local ct, tid = t[1], t[2]
+		if type(ct) ~= "string" then ct = hash_to_ct[ct] end
+		if type(tid) ~= "string" then tid = hash_to_id[tid] end
+		if ct and tid and self.task_info[tid] then
+			self.active_task_by_type[ct] = tid
+		end
+	end
+	local active_ids = {}
+	for _, v in pairs(self.active_task_by_type) do active_ids[v] = true end
+	for _, t in ipairs(tasks) do
+		local id = t[1]
+		if type(id) ~= "string" then
+			local ids = hash_ids[id]
+			if ids and #ids > 1 then
+				id = nil
+				if num_to_status[t[4]] ~= "normal" then
+					for _, cid in ipairs(ids) do
+						if not id and active_ids[cid] then
+							id = cid
+							active_ids[cid] = nil
+						end
+					end
+				end
+			else
+				id = hash_to_id[id]
+			end
+		end
+	-- [HE-PORT]
+		if id and self.task_info[id] then
 		self.task_info[id].enabled = t[2]
 		self.task_info[id].enabled_props = t[3]
 		self.task_info[id].status = num_to_status[t[4]]
@@ -411,12 +445,10 @@ function Clua_randomTask:load(p)
 			skipped = skipped + 1
 		end
 	end
-	for _, t in ipairs(active) do
-		local cthash, hash = t[1], t[2]
-		local id = hash_to_ct[cthash]
 	-- [HE-PORT]
-		if id and hash_to_id[hash] then
-		self.active_task_by_type[id] = hash_to_id[hash]
+	for _, v in pairs(self.active_task_by_type) do
+		if self.task_info[v].status == "normal" then
+			self.task_info[v].restore_status = true
 		end
 	end
 	log2("[%s.Clua_randomTask:load]: tasks loaded: tasks|active: %s|%s", script_name(), #tasks, #active)
@@ -1102,6 +1134,22 @@ end
 
 function Clua_randomTask:actor_update()
 	day = timers.Get_Game_Days()
+	-- [HE-PORT]
+	for ct, v in pairs(self.active_task_by_type) do
+		local ti = self.task_info[v]
+		if ti and ti.restore_status then
+			ti.restore_status = nil
+			if db.actor:get_task_state(ct, 0) == task.in_progress then
+				if db.actor:get_task_state(ct, 1) == task.completed then
+					ti.status = "completed"
+				else
+					ti.status = "selected"
+				end
+			else
+				self:task_callback(ct, 0, task.fail)
+			end
+		end
+	end
 	for k,v in pairs(self.task_id_self_inited) do
 		if self.task_info[v].status=="normal" then
 			self:check_task_props(v)
