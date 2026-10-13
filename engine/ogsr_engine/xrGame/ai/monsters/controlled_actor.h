@@ -20,6 +20,9 @@ class CControlledActor : public CActorInputHandler
     // NLC: bloodsucker grab struggle (vampire_struggle_*): look factor after the turn (0 = frozen, stock) and the mouse travel so far
     float m_nlc_struggle_look{};
     float m_nlc_struggle_sum{};
+    float m_nlc_turn_min{0.5f};
+    float m_nlc_turn_max{4.f};
+    float m_nlc_struggle_turn_k{};
 
 public:
     virtual void reinit();
@@ -40,6 +43,13 @@ public:
     void dont_need_turn() { m_need_turn = false; }
 
     void nlc_set_struggle_look(float k) { m_nlc_struggle_look = k; }
+    // NLC: camera turn speed range (rad/s) and the struggle share counted while the camera still turns
+    void nlc_set_turn(float min_speed, float max_speed, float struggle_turn_k)
+    {
+        m_nlc_turn_min = min_speed;
+        m_nlc_turn_max = std::max(max_speed, min_speed);
+        m_nlc_struggle_turn_k = struggle_turn_k;
+    }
     float nlc_struggle_sum() const { return m_nlc_struggle_sum; }
 
 private:

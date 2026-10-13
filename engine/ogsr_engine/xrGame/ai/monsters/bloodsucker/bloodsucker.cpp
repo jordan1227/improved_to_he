@@ -232,6 +232,14 @@ void CAI_Bloodsucker::reinit()
     m_nlc_perch_repick_at = 0;
     m_nlc_pounce_hit = false;
     m_nlc_pouncing = false;
+    m_nlc_perched_last = 0;
+    m_nlc_dodge_active = false;
+    m_nlc_dodge_until = m_nlc_dodge_next = m_nlc_dodge_cd = 0;
+    m_nlc_dodge_left = 0;
+    m_nlc_dodge_prev = 0;
+    m_nlc_dodge_wait = 0;
+    m_nlc_perch_unseen = 0;
+    m_nlc_breath_next = 0;
     m_nlc_backhit_until = 0;
     m_nlc_backhit_target = u16(-1);
     m_nlc_backhit_rest = 0.f;
@@ -285,6 +293,12 @@ void CAI_Bloodsucker::reload(LPCSTR section)
     sound().add_deferred(pSettings->r_string(section, "Sound_Vampire_StartHunt"), DEFAULT_SAMPLE_COUNT, SOUND_TYPE_MONSTER_ATTACKING, MonsterSound::eHighPriority + 5, MonsterSound::eBaseChannel, eVampireStartHunt, "bip01_head");
     sound().add_deferred(pSettings->r_string(section, "Sound_Invisibility_Change_State"), DEFAULT_SAMPLE_COUNT, SOUND_TYPE_MONSTER_ATTACKING, MonsterSound::eNormalPriority, MonsterSound::eChannelIndependent << 1, eChangeVisibility, "bip01_head");
     sound().add_deferred(pSettings->r_string(section, "Sound_Growl"), DEFAULT_SAMPLE_COUNT, SOUND_TYPE_MONSTER_ATTACKING, MonsterSound::eHighPriority + 6, MonsterSound::eBaseChannel, eGrowl, "bip01_head");
+    // NLC: the breathing tell while cloaked (cloak_breath_dist)
+    sound().add_deferred(READ_IF_EXISTS(pSettings, r_string, section, "Sound_Cloak_Breath", "monsters\\bloodsucker\\sucker_breath_"), DEFAULT_SAMPLE_COUNT, SOUND_TYPE_MONSTER_ATTACKING,
+        MonsterSound::eNormalPriority, MonsterSound::eChannelIndependent << 2, eCloakBreath, "bip01_head");
+    // NLC: the dodge growl on its own channel (the base-channel growl was cut by the swing sounds)
+    sound().add_deferred(pSettings->r_string(section, "Sound_Growl"), DEFAULT_SAMPLE_COUNT, SOUND_TYPE_MONSTER_ATTACKING, MonsterSound::eHighPriority,
+        MonsterSound::eChannelIndependent << 3, eDodgeGrowl, "bip01_head");
     sound().add_deferred(pSettings->r_string(section, "Sound_Alien"), DEFAULT_SAMPLE_COUNT, SOUND_TYPE_MONSTER_ATTACKING, MonsterSound::eCriticalPriority, u32(MonsterSound::eCaptureAllChannels), eAlien, "bip01_head");
 }
 
@@ -558,6 +572,8 @@ void CAI_Bloodsucker::UpdateCL()
         nlc_pounce_update(); // NLC
         nlc_backhit_update(); // NLC
         nlc_pounce_hit_update(); // NLC
+        nlc_melee_dodge_update(); // NLC
+        nlc_breath_update(); // NLC
     }
 }
 
@@ -615,6 +631,9 @@ bool CAI_Bloodsucker::check_start_conditions(ControlCom::EControlType type)
     {
         // NLC: no lunge while a grab from behind is planned; run_attack_decloak lets the lunge start cloaked
         if (m_nlc_grab_intent)
+            return false;
+        // NLC: no lunge right after a dodge step (the turn finishes first)
+        if (nlc_dodge_recent())
             return false;
         // NLC: no lunge during a siege or at a perched enemy: it cannot reach it (it lunged at once at a perch-strike
         // spot, then stood visible, nlc-3.589.35)

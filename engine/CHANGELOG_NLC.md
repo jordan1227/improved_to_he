@@ -5,6 +5,117 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.98 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `45E01248889FFACD1C28053505A8F45C0AE696D2FA68F4EAC9EB08AE3DF12B68` (archived with its PDB in `nlc_tools/builds/20261013_233846_45e01248`).
+- **Status:** runtime pending. `.97` accepted overall (`xray_hawkl_13-10-26_23-22-37.log`: retreats 16-42 m, perch pounces follow "not seen" within 0.4 s); melee dodges still stalled (13 of 18).
+- Cause: `CControlAnimationBase::select_animation` keeps an attack animation until it ends, so a dodge started mid-swing timed out before the run animation could start. A melee dodge decided mid-swing now starts its clock, start point and boost when the swing ends (`melee_dodge_swing_wait_ms`, 700; dropped as `dodge end (swing)` past that); log `dodge waited N ms for the swing`.
+
+## nlc-3.589.97 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `C371233E5D68C88BCF1C5E86E81FDE880C7088C99BADC62FB1436151FC93F4A1` (archived with its PDB in `nlc_tools/builds/20261013_231645_c371233e`).
+- **Status:** runtime pending. From `xray_hawkl_13-10-26_22-55-20.log`: melee dodges still stalled in `.96` (41 steps, 0.33 m average) - the target lay 120-150 degrees off its heading while it faced the player; two perch strikes waited on "enemy not seen" with the player in plain view; pack retreats started at 6-20% health to cover points 1-3 m away.
+- Melee dodge steps circle the player at its own distance (forward diagonal); a step needing more than `melee_dodge_max_turn` (100 degrees) or covering under `melee_dodge_min_clear` (60%) of its length is skipped.
+- Perch spot: unseen for `pounce_perch_blind_ms` (400) but seen within `pounce_perch_blind_mem_ms` (5 s): pounces anyway; logs `perch pounce: enemy not seen (N deg up, ...)` and `perch pounce blind`.
+- Dodge growl on its own sound channel (`eDodgeGrowl`).
+- Retreat threshold floor `tac_recover_pack_min` (0.3); retreat points closer than `tac_recover_min_move` (6 m) are skipped (`recover: <src> point only N m away, looking farther`).
+
+## nlc-3.589.96 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `6542F557BFD0C1213E5996BFFD5299F59B3D674C2341BC3CC849F07DC5A1D474` (archived with its PDB in `nlc_tools/builds/20261013_225359_6542f557`).
+- **Status:** runtime pending. `.95` dodges accepted overall (`xray_hawkl_13-10-26_22-40-24.log`); melee steps that switched sides stalled (28 of 48 under 0.3 m: a 180 degree turn eats the step).
+- Melee dodge bursts keep one side (`melee_dodge_alternate = false`); a step that still switches side soon after the last one (blocked side, strafe) also backs off `melee_dodge_reverse_back` (1 m) so the turn is about 90 degrees; log `, reversal, backs off`.
+
+## nlc-3.589.95 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F1DA679E1AAEF815325F46D3BB932B52861A665C8A84C8C8C326C0BC13A43640` (archived with its PDB in `nlc_tools/builds/20261013_223951_f1da679e`).
+- **Status:** runtime pending. Bloodsucker dodge rework (`xray_hawkl_13-10-26_22-25-54.log`: small steps).
+
+### NLC
+
+- **Dodge:** step time from its length at run speed (+150 ms, `melee_dodge_max_ms` cap; a fixed 400 ms ran out after
+  about 1 m from standstill), a start boost (`melee_dodge_start_k`); closing steps into swing range from the gap
+  between swing and lunge range (`melee_dodge_close_range`), also while the player reloads; a counter-strike chance
+  after a burst (`melee_dodge_counter`); a burst ends when the player stops aiming; the side goes against the player's
+  strafe; a blocked side (wall) takes the other one; a growl on the first step (`melee_dodge_sound`); a `dodge end`
+  log line with distance, angle around the player and duration.
+
+## nlc-3.589.94 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `D9291A54668CD45D2BC89D60D1BC3A45EB04D57CD07B7DCE6E33829948B4EE70` (archived with its PDB in `nlc_tools/builds/20261013_222506_d9291a54`).
+- **Status:** runtime pending. After the `.93` test (`xray_hawkl_13-10-26_22-09-09.log`).
+
+### NLC
+
+- **Bloodsucker dodge:** a fixed step length (`melee_dodge_step` 2.2-2.8 m, the angle follows; an angle alone moved it
+  1.6 m close in), at least `melee_dodge_min_ms`; no lunge for `melee_dodge_lunge_ms` after a step.
+- **Hit and run:** shot with no other hiding point: a speed burst and an early zigzag switch (`tac_recover_shot_boost_*`).
+- **Config:** the retreat zigzag, the blocked-retreat time, the pack radius and the dodge gap are keys now.
+
+## nlc-3.589.93 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `7D845120EC6984B6EC9C962ABC927F6DA0527EF46663AD1C364859F3285B4707` (archived with its PDB in `nlc_tools/builds/20261013_220456_7d845120`).
+- **Status:** runtime pending. After the `.92` test (`xray_hawkl_13-10-26_21-47-32.log`).
+
+### NLC
+
+- **Bloodsucker perch:** 0.8 m or more above its ground point counts as a perch without the off-map reason (a 1.1 m
+  rock was "accessible" by the 1.2 m rule; a weak one stood below biting).
+- **Config:** invisible speed -20% (7.2 / 7.56 / 7.92); the run attack's second hit at 40% of the clip and +-0.7 rad
+  (at 60% it landed after the run past the player); cats zigzag from 5 m with `zz_min_leg_k` 1.0.
+
+## nlc-3.589.92 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0642698D602237C6554AD57BC3404F866889F9CF66F875DCD904F06ED3765C4E` (archived with its PDB in `nlc_tools/builds/20261013_214706_0642698d`).
+- **Status:** runtime pending. After the `.91` test (`xray_hawkl_13-10-26_21-33-53.log`, crash).
+
+### NLC
+
+- **Crash fix:** a bloodsucker retreat closed its wounds with `ClearWounds()`, which deleted wounds that
+  `CEntityAlive::m_BloodWounds` still pointed to (FATAL in `LL_GetBoneInstance` from `UpdateBloodDrops`, bone 1478).
+  It uses the stock healing path `ChangeBleeding(1)` now.
+- **Bloodsucker dodge:** also while charging in (attack run, `melee_dodge_range` 6 m; the run target override takes
+  the step), also when the player's shots hit it; steps around the player at `melee_dodge_dist` (a step capped at
+  the current distance went to 1 m of the player); faster and more often (cooldown 1.5 s, strong 3 steps).
+- **Zigzag:** from 4 m (`zz_dist`, was 8: it stopped zigzagging 8-10 m out); cats from 6 m (attack jump).
+
+## nlc-3.589.91 (2026-10-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `460876987FFEF6572C3EDC654A9EEFA3038126E23939AC7331669854B523CB15` (archived with its PDB in `nlc_tools/builds/20261013_211208_46087698`).
+- **Status:** runtime pending. Bloodsucker toughness and tactics pass after tester feedback ("too easy").
+
+### NLC
+
+- **Mutants and anomalies:** the anomaly detector ran only at rest, so fights and retreats went through anomalies
+  (Red Forest bloodsuckers died in them); `anomaly_detect_combat` keeps it on while there is an enemy, with a log line.
+- **Zigzag variety (all species):** random leg angle (`zz_angle_rand`), fake legs (`zz_fake_chance`), speed bursts
+  (`zz_boost_chance`), short pauses (`zz_pause_chance`) and an early switch when the crosshair is on it
+  (`zz_aim_switch`); the fixed angle and rhythm were easy to lead.
+- **Impact slow (all species, experiment):** health lost within `impact_slow_window_ms` above `impact_slow_damage`
+  slows the monster briefly (`impact_slow_k`, `_k2`); 0 switches it off.
+- **Bloodsucker hit and run:** earlier (45/55/65%), more often, back at 90%; a retreat finds its point through the
+  ring, the cover finder, an ai-map walk (tunnels) or a straight line, and logs which; extra regeneration rolled per
+  retreat, wounds closed; a retreat that makes no way ends in a fight; bolder with mates near; relentless when hurt
+  and the retreat is on cooldown; a bait charges when the player reloads.
+- **Bloodsucker perch pounce:** always at a reachable perch; a perch latch against flickers; it turns to face the
+  player; the spot is re-picked after 1 s.
+- **Bloodsucker melee dodge:** diagonal steps around the player while aimed at in melee range, sped up, with a turn
+  boost (`melee_dodge_*`); the melee substate hands movement over (`nlc_melee_override`).
+- **Bloodsucker grab:** camera turn 2-6 rad/s; the struggle counts at half while the camera still turns.
+- **Bloodsucker breathing tell** while cloaked within 6 m (`cloak_breath_dist`, `Sound_Cloak_Breath`).
+- **NPCs against a cloaked bloodsucker:** weapon dispersion x3 while invisible, x1.8 in x-ray (`npc_disp_k_*`, in
+  `CAI_Stalker::GetWeaponAccuracy` next to the psy factor).
+- **Config:** normal +5% and strong +10% speed; weak and normal `health_fire_wound_hit_part` 0.4 (was 0.5).
+- **Scripts:** buckshot pellets reach the bloodsucker temple bonus (`sivol_bloodsucker_head.on_pellet`, per shot).
+
 ## nlc-3.589.90 (2026-10-13)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

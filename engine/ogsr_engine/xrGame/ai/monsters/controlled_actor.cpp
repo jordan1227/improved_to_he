@@ -24,6 +24,9 @@ void CControlledActor::release()
     reset();
     m_nlc_struggle_look = 0.f;
     m_nlc_struggle_sum = 0.f;
+    m_nlc_turn_min = SPEED_MIN;
+    m_nlc_turn_max = SPEED_MAX;
+    m_nlc_struggle_turn_k = 0.f;
 }
 
 // NLC: frozen while the camera turns to the bloodsucker; afterwards frozen too unless a struggle look factor is set
@@ -36,8 +39,9 @@ float CControlledActor::mouse_scale_factor()
 
 void CControlledActor::on_mouse_move(int dx, int dy)
 {
-    if (!is_turning())
-        m_nlc_struggle_sum += float(_abs(dx) + _abs(dy));
+    // NLC: the struggle also counts while the camera still turns, at m_nlc_struggle_turn_k
+    const float k = is_turning() ? m_nlc_struggle_turn_k : 1.f;
+    m_nlc_struggle_sum += k * float(_abs(dx) + _abs(dy));
 }
 
 void CControlledActor::frame_update()
@@ -92,7 +96,7 @@ void CControlledActor::update_turn()
     }
     else
     {
-        speed = SPEED_MIN + speed_factor * (SPEED_MAX - SPEED_MIN);
+        speed = m_nlc_turn_min + speed_factor * (m_nlc_turn_max - m_nlc_turn_min); // NLC
 
         if (from_right(cam_target_yaw, cam_current_yaw))
             m_actor->cam_Active()->Move(kLEFT, speed * Device.fTimeDelta);
@@ -112,7 +116,7 @@ void CControlledActor::update_turn()
     }
     else
     {
-        speed = SPEED_MIN + speed_factor * (SPEED_MAX - SPEED_MIN);
+        speed = m_nlc_turn_min + speed_factor * (m_nlc_turn_max - m_nlc_turn_min); // NLC
 
         if (from_right(cam_target_pitch, cam_current_pitch))
             m_actor->cam_Active()->Move(kDOWN, speed * Device.fTimeDelta);

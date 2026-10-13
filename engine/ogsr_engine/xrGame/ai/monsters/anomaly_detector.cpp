@@ -6,6 +6,7 @@
 #include "../../space_restriction_manager.h"
 #include "../../movement_manager.h"
 #include "ai_monster_utils.h"
+#include "basemonster/base_monster.h"
 
 CAnomalyDetector::CAnomalyDetector(CCustomMonster* monster) : m_object(monster) {}
 
@@ -128,6 +129,8 @@ void CAnomalyDetector::on_contact(CObject* obj)
     {
         info.ignored = false;
         info.time_registered = 0;
+        if (CBaseMonster::nlc_evade_debug())
+            Msg("~ [evade] [%s]: anomaly [%s] noticed, avoided", m_object->cName().c_str(), obj->cName().c_str());
     }
     m_storage.emplace_back(std::move(info));
 }

@@ -854,6 +854,16 @@ public:
     void nlc_clear_dodge() { m_nlc_evade.dodge_end = 0; }
     // the dodge factor now (1 = none); the heading speed follows it so the turn radius stays as planned
     float nlc_dodge_k() const { return Device.dwTimeGlobal < m_nlc_evade.dodge_end ? m_nlc_evade.dodge_k : 1.f; }
+    // NLC: heading speed factor on top of the dodge factor (melee dodge: turn fast, keep the temples away)
+    void nlc_set_turn_boost(float k, u32 time_ms)
+    {
+        m_nlc_evade.turn_k = k;
+        m_nlc_evade.turn_end = Device.dwTimeGlobal + time_ms;
+    }
+    float nlc_turn_boost_k() const { return Device.dwTimeGlobal < m_nlc_evade.turn_end ? m_nlc_evade.turn_k : 1.f; }
+    // NLC: the melee substate hands movement to the species this frame (bloodsucker dodge steps)
+    virtual bool nlc_melee_override() { return false; }
+    void nlc_impact_hit(float lost); // impact slow bookkeeping (CBaseMonster::Hit)
     float nlc_run_attack_haste_k() const { return m_nlc_evade_p.enabled ? m_nlc_evade_p.run_attack_haste_k : 1.f; }
 
     bool nlc_evade_enabled() const { return m_nlc_evade_p.enabled; }
@@ -890,6 +900,19 @@ private:
         float zz_turn_share{0.5f}; // the side switch (2 x leg angle) must fit in this share of a leg at the run turn rate
         float zz_min_leg_k{1.5f}; // a leg shorter than this x the run turn radius runs straight instead
         float zz_heading_gate{deg2rad(60.f)}; // no new leg while the body heads more than this away from the enemy
+        float zz_angle_rand{}; // leg angle x random(1 - this .. 1) (the same angle every leg was easy to lead)
+        float zz_fake_chance{}; // a leg reverses after 150-250 ms
+        float zz_boost_chance{}; // a leg starts with a short speed burst
+        float zz_boost_k{1.2f};
+        float zz_pause_chance{}; // a short straight run before the next leg
+        Fvector2 zz_pause_ms{300.f, 500.f};
+        bool zz_aim_switch{}; // the crosshair on it mid-leg: switch side early (once per leg)
+        bool anomaly_combat{}; // the anomaly detector also runs while it has an enemy (stock: only at rest)
+        float impact_damage{}; // health lost within impact_window: a short slow (0 = off)
+        u32 impact_window{500};
+        float impact_k{0.3f}; // slow at impact_damage; impact_k2 at twice that
+        float impact_k2{0.5f};
+        u32 impact_ms{400};
         bool side_guard{};
         float side_guard_angle{deg2rad(30.f)};
         float side_guard_short{3.f};
@@ -918,6 +941,15 @@ private:
         Fvector zz_target{};
         u32 zz_node{u32(-1)};
         u32 zz_log_next{};
+        u32 zz_boost_until{};
+        u32 zz_pause_until{};
+        bool zz_aim_switched{};
+        // turn-rate boost (bloodsucker melee dodge)
+        float turn_k{1.f};
+        u32 turn_end{};
+        // impact slow
+        float impact_sum{};
+        u32 impact_start{};
         // dodge speed factor
         float dodge_k{1.f};
         u32 dodge_end{};

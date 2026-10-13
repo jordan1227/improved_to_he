@@ -13,6 +13,8 @@ CStateMonsterAttackMeleeAbstract::~CStateMonsterAttackMelee() {}
 TEMPLATE_SPECIALIZATION
 void CStateMonsterAttackMeleeAbstract::execute()
 {
+    if (object->nlc_melee_override()) // NLC: the species moves this frame (bloodsucker dodge step)
+        return;
     object->set_action(ACT_ATTACK);
     if (object->control().direction().is_face_target(object->EnemyMan.get_enemy(), PI_DIV_3))
         object->dir().face_target(object->EnemyMan.get_enemy(), 800);

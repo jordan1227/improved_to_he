@@ -58,6 +58,8 @@ using namespace StalkerSpace;
 const float DANGER_DISTANCE = 3.f;
 const u32 DANGER_INTERVAL = 120000;
 
+#include "../monsters/bloodsucker/bloodsucker.h" // NLC: cloak dispersion
+
 const float PRECISE_DISTANCE = 2.5f;
 const float FLOOR_DISTANCE = 2.f;
 const float NEAR_DISTANCE = 2.5f;
@@ -71,7 +73,12 @@ float CAI_Stalker::GetWeaponAccuracy() const
     // exactly 0 (CEntityCondition::UpdatePsyHealth), so 0 counts as unaffected instead of inaccurate for good.
     const float psy = conditions().GetPsyHealth();
     const float psy_k = psy > 0.f ? 1.f + m_nlc_psy_disp_k * (1.f - std::clamp(psy, 0.f, 1.f)) : 1.f;
-    return nlc_weapon_accuracy_base() * psy_k;
+    // NLC: a cloaked bloodsucker is hard to hit (npc_disp_k_cloaked / npc_disp_k_xray in its section)
+    float cloak_k = 1.f;
+    if (const CEntityAlive* e = const_cast<CAI_Stalker*>(this)->memory().enemy().selected())
+        if (const CAI_Bloodsucker* bs = smart_cast<const CAI_Bloodsucker*>(e))
+            cloak_k = bs->nlc_npc_disp_k();
+    return nlc_weapon_accuracy_base() * psy_k * cloak_k;
 }
 
 float CAI_Stalker::nlc_weapon_accuracy_base() const

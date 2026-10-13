@@ -27,6 +27,7 @@ void CStateBloodsuckerVampireExecuteAbstract::initialize()
     if (object->m_nlc_vampire_ambush)
     {
         object->nlc_set_struggle_look(object->m_nlc_b.vampire_struggle_look);
+        object->nlc_set_turn(object->m_nlc_b.vampire_turn_speed.x, object->m_nlc_b.vampire_turn_speed.y, object->m_nlc_b.vampire_struggle_turn_k); // NLC
         CAI_Bloodsucker::m_time_last_vampire = Device.dwTimeGlobal;
         object->nlc_backhit_grab_started(); // NLC: a back hit's rest of the damage waits for the grab's end
         // visible for the hold at once (the stock call below waits for the visibility delay); the triple animation

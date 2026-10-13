@@ -119,6 +119,19 @@ void CBaseMonster::nlc_evade_load(LPCSTR section)
     p.zz_turn_share = std::clamp(evade_f(section, "zz_turn_share", 0.5f), 0.1f, 1.f);
     p.zz_min_leg_k = std::clamp(evade_f(section, "zz_min_leg_k", 1.5f), 0.f, 5.f);
     p.zz_heading_gate = deg2rad(std::clamp(evade_f(section, "zz_heading_gate", 60.f), 10.f, 180.f));
+    p.zz_angle_rand = std::clamp(evade_f(section, "zz_angle_rand", 0.f), 0.f, 0.9f);
+    p.zz_fake_chance = std::clamp(evade_f(section, "zz_fake_chance", 0.f), 0.f, 1.f);
+    p.zz_boost_chance = std::clamp(evade_f(section, "zz_boost_chance", 0.f), 0.f, 1.f);
+    p.zz_boost_k = std::clamp(evade_f(section, "zz_boost_k", 1.2f), 1.f, 1.6f);
+    p.zz_pause_chance = std::clamp(evade_f(section, "zz_pause_chance", 0.f), 0.f, 1.f);
+    p.zz_pause_ms = evade_v2(section, "zz_pause_ms", Fvector2().set(300.f, 500.f));
+    p.zz_aim_switch = evade_b(section, "zz_aim_switch", false);
+    p.anomaly_combat = evade_b(section, "anomaly_detect_combat", false);
+    p.impact_damage = std::max(evade_f(section, "impact_slow_damage", 0.f), 0.f);
+    p.impact_window = u32(std::clamp(evade_f(section, "impact_slow_window_ms", 500.f), 50.f, 3000.f));
+    p.impact_k = std::clamp(evade_f(section, "impact_slow_k", 0.3f), 0.f, 0.9f);
+    p.impact_k2 = std::clamp(evade_f(section, "impact_slow_k2", 0.5f), 0.f, 0.9f);
+    p.impact_ms = u32(std::clamp(evade_f(section, "impact_slow_ms", 400.f), 0.f, 3000.f));
     p.side_guard = evade_b(section, "side_guard", false);
     p.side_guard_angle = deg2rad(std::clamp(evade_f(section, "side_guard_angle", 30.f), 5.f, 85.f));
     p.side_guard_short = std::max(evade_f(section, "side_guard_short", 3.f), 0.f);
@@ -385,9 +398,33 @@ bool CBaseMonster::nlc_zz_target(Fvector& pos, u32& node)
         return false;
     }
 
+    // NLC: the crosshair on it mid-leg: switch side early, once per leg (it was easy to lead)
+    if (p.zz_aim_switch && e.zz_leg && !e.zz_aim_switched && (th & eThreatLocked) && now > e.zz_leg_start + 200)
+    {
+        e.zz_aim_switched = true;
+        e.zz_flip = true;
+        e.zz_leg_end = 0;
+        EVADE_LOG("~ [evade] [%s]: zigzag: crosshair on it, early switch", cName().c_str());
+    }
+
     // a new leg: none yet, the time is up, the target is reached, or a fire switch asked for one
     if (!e.zz_leg || now >= e.zz_leg_end || me.distance_to_xz(e.zz_target) < 1.5f)
     {
+        // NLC: a short straight run between legs now and then (a steady rhythm was easy to lead)
+        if (now < e.zz_pause_until)
+        {
+            e.zz_leg = false;
+            nlc_clear_dodge();
+            return false;
+        }
+        if (e.zz_leg && p.zz_pause_chance > 0.f && ::Random.randF() < p.zz_pause_chance)
+        {
+            e.zz_leg = false;
+            nlc_clear_dodge();
+            e.zz_pause_until = now + u32(::Random.randF(p.zz_pause_ms.x, p.zz_pause_ms.y));
+            EVADE_LOG("~ [evade] [%s]: zigzag pause %u ms", cName().c_str(), e.zz_pause_until - now);
+            return false;
+        }
         // bursts (zz_burst, zz_rest, zz_chance): a straight run between bursts; a failed roll rests too
         if (e.zz_legs_left == 0)
         {
@@ -458,6 +495,8 @@ bool CBaseMonster::nlc_zz_target(Fvector& pos, u32& node)
         // like the speed, see SelectVelocities); slow-turning species get a smaller angle
         const float w_run = std::max(run_v.velocity.angular_real, 0.1f);
         t = std::min(t, 0.5f * p.zz_turn_share * w_run * p.zz_speed_k * ms / 1000.f);
+        if (p.zz_angle_rand > 0.f)
+            t *= ::Random.randF(1.f - p.zz_angle_rand, 1.f); // NLC: a different angle every leg
         if (t < deg2rad(5.f))
         {
             e.zz_leg = false;
@@ -539,6 +578,16 @@ bool CBaseMonster::nlc_zz_target(Fvector& pos, u32& node)
         e.zz_leg_start = now;
         e.zz_leg_end = now + u32(ms) + 300;
         e.zz_leg = true;
+        e.zz_aim_switched = false;
+        // NLC: a fake leg reverses early; a boosted leg starts with a short burst
+        bool fake = false;
+        if (p.zz_fake_chance > 0.f && ::Random.randF() < p.zz_fake_chance)
+        {
+            fake = true;
+            e.zz_leg_end = now + u32(::Random.randI(150, 250));
+            e.zz_flip = true;
+        }
+        e.zz_boost_until = (p.zz_boost_chance > 0.f && ::Random.randF() < p.zz_boost_chance) ? now + 300 : 0;
         if (e.zz_legs_left != u32(-1) && e.zz_legs_left > 0 && --e.zz_legs_left == 0)
             e.zz_rest_until = e.zz_leg_end + u32(::Random.randF(p.zz_rest.x, p.zz_rest.y)); // the rest starts after this leg
         if (!e.zz_on)
@@ -546,17 +595,46 @@ bool CBaseMonster::nlc_zz_target(Fvector& pos, u32& node)
             e.zz_on = true;
             EVADE_LOG("~ [evade] [%s]: zigzag start vs [%s] at %.1f m, threat %s", cName().c_str(), enemy->cName().c_str(), dist, threat_text(th));
         }
-        EVADE_LOG("~ [evade] [%s]: zigzag leg %s %.0f deg, %.0f ms, %.1f m, k %.2f%s%s", cName().c_str(), side > 0 ? "right" : "left", rad2deg(t), ms, len, p.zz_speed_k,
-            changed_side ? " (side flipped: blocked)" : (flipped ? " (fire switch)" : ""), (th & eThreatLocked) ? " (locked)" : ((th & eThreatAimed) ? " (aimed)" : ""));
+        EVADE_LOG("~ [evade] [%s]: zigzag leg %s %.0f deg, %.0f ms, %.1f m, k %.2f%s%s%s%s", cName().c_str(), side > 0 ? "right" : "left", rad2deg(t), ms, len, p.zz_speed_k,
+            changed_side ? " (side flipped: blocked)" : (flipped ? " (fire switch)" : ""), (th & eThreatLocked) ? " (locked)" : ((th & eThreatAimed) ? " (aimed)" : ""),
+            fake ? " (fake)" : "", e.zz_boost_until ? " (burst)" : "");
     }
 
     if (!e.zz_leg)
         return false;
 
-    nlc_set_dodge(p.zz_speed_k, 400); // refreshed every call; lapses 400 ms after the last one
+    nlc_set_dodge(p.zz_speed_k * (now < e.zz_boost_until ? p.zz_boost_k : 1.f), 400); // refreshed every call; lapses 400 ms after the last one
     pos = e.zz_target;
     node = e.zz_node;
     return true;
+}
+
+// NLC: a hard hit slows the monster briefly (all species, impact_slow_damage = 0 off): health lost within
+// impact_slow_window_ms; impact_slow_k at the threshold, impact_slow_k2 at twice it
+void CBaseMonster::nlc_impact_hit(float lost)
+{
+    const SNlcEvadeParams& p = m_nlc_evade_p;
+    if (!p.enabled || p.impact_damage <= 0.f || lost <= 0.f)
+        return;
+    SNlcEvade& e = m_nlc_evade;
+    const u32 now = Device.dwTimeGlobal;
+    if (now > e.impact_start + p.impact_window)
+    {
+        e.impact_start = now;
+        e.impact_sum = 0.f;
+    }
+    const float before = e.impact_sum;
+    e.impact_sum += lost;
+    float k = 0.f;
+    if (e.impact_sum >= 2.f * p.impact_damage && before < 2.f * p.impact_damage)
+        k = p.impact_k2;
+    else if (e.impact_sum >= p.impact_damage && before < p.impact_damage)
+        k = p.impact_k;
+    if (k > 0.f)
+    {
+        nlc_apply_move_slow(k, p.impact_ms);
+        EVADE_LOG("~ [evade] [%s]: impact: %.2f health in %u ms, slowed %.0f%%", cName().c_str(), e.impact_sum, now - e.impact_start, k * 100.f);
+    }
 }
 
 void CBaseMonster::nlc_zz_on_fire()

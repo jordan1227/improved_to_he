@@ -299,6 +299,10 @@ void CBaseMonster::update_enemy_accessible_and_at_home_info()
     }
 
     m_nlc_inaccessible_reason = ::enemy_inaccessible(this); // NLC
+    // NLC: stock monsters scan for anomalies only at rest, so a fight or a retreat ran through them (Red Forest
+    // bloodsuckers died in them); keep the detector on while there is an enemy (anomaly_detect_combat)
+    if (m_nlc_evade_p.enabled && m_nlc_evade_p.anomaly_combat && g_Alive())
+        anomaly_detector().activate();
     if (m_nlc_inaccessible_reason != eNlcAccessible)
     {
         if (!m_first_tick_enemy_inaccessible)
@@ -454,7 +458,10 @@ void CBaseMonster::Hit(SHit* pHDS)
         const float lost = (health_before - conditions().GetHealth()) / max_health;
         HitMemory.add_damage(HDS.who, lost);
         if (lost > 0.f && g_Alive())
+        {
             nlc_on_health_lost(HDS.who, lost);
+            nlc_impact_hit(lost); // NLC: impact slow
+        }
     }
 }
 

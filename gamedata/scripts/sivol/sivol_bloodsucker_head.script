@@ -23,6 +23,13 @@ local EXTRA_IGNORE_MS = 1000   -- script hits can land a few hundred ms later
 -- Sniper-class weapons (weapon_class = sniper_rifle): every head hit uses the top combo
 -- step, and the temple bonus is multiplied (a softer form of the old sniper rule).
 local SNIPER_TEMPLE_K = 2.0
+-- Buckshot: single pellets never reach on_hit (bind_monster drops hits below 0.015 health), so the temple bonus
+-- missed shotguns entirely. Head pellets of one shot are counted here (on_pellet) and the bonus lands once per shot:
+-- TEMPLE_RAW_BUCK * x^4 * min(1, head pellets / BUCK_FULL). Targets (TOZ-34 point blank, side-on): weak 2 shots,
+-- normal 2, strong 3-4 (frontal: about 4 / 4 / 6).
+local TEMPLE_RAW_BUCK = 3.1
+local BUCK_FULL = 10
+local buck_pending = {}
 
 local state = {}        -- [id] = { streak, last_head, pending, pending_until }
 local params = {}       -- [section] = { head, extra_bone, k }
@@ -137,6 +144,56 @@ function on_hit(obj, amount, local_direction, who, bone_index)
     apply_extra(obj, who, extra_damage, temple_raw, p)
 end
 
+-- one buckshot pellet on a bloodsucker (below the bind_monster threshold): head pellets of one shot are summed
+function on_pellet(obj, amount, local_direction, who, bone_index)
+    if not obj or not who or not db.actor or who:id() ~= db.actor:id() then return end
+    local p = section_params(obj)
+    if bone_index ~= p.head then return end
+    local id = obj:id()
+    local st = state[id]
+    if not st then
+        st = { streak = 0, last_head = 0, pending = 0, pending_until = 0 }
+        state[id] = st
+    end
+    local now = time_global()
+    if not buck_pending[id] then
+        st.buck_n, st.buck_x = 0, 0
+    end
+    local x = 0
+    if local_direction then
+        local len = local_direction:magnitude()
+        if len > 0 then x = math.abs(local_direction.x) / len end
+    end
+    st.buck_n = st.buck_n + 1
+    st.buck_x = st.buck_x + x
+    st.buck_until = now + SAME_SHOT_MS
+    buck_pending[id] = true
+end
+
+local function flush_buck(now)
+    for id, _ in pairs(buck_pending) do
+        local st = state[id]
+        if not st then
+            buck_pending[id] = nil
+        elseif now >= (st.buck_until or 0) then
+            buck_pending[id] = nil
+            local n = st.buck_n or 0
+            local obj = level.object_by_id(id)
+            if n > 0 and obj and obj:alive() then
+                local x = st.buck_x / n
+                local temple_raw = TEMPLE_RAW_BUCK * x * x * x * x * math.min(1, n / BUCK_FULL)
+                if sivol_hit_log and sivol_hit_log.is_enabled and sivol_hit_log.is_enabled() then
+                    log2("[sivol_bloodsucker_head] %s buckshot: %d head pellets, side=%.2f, temple_raw=%.2f", obj:section(), n, x, temple_raw)
+                end
+                if temple_raw > 0.01 then
+                    apply_extra(obj, db.actor, 0, temple_raw, section_params(obj))
+                end
+            end
+            st.buck_n, st.buck_x = 0, 0
+        end
+    end
+end
+
 local function on_actor_weapon_fire(item)
     if not item or not item:is_weapon() or item:is_knife() then return end
     last_fire = time_global()
@@ -144,6 +201,7 @@ local function on_actor_weapon_fire(item)
 end
 
 local function on_update()
+    if next(buck_pending) then flush_buck(time_global()) end
     if not miss_check_at or time_global() < miss_check_at then return end
     miss_check_at = nil
     if last_actor_hit < last_fire then

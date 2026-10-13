@@ -145,6 +145,8 @@ public:
         eGrowl = eAdditionalSounds | 5,
         eChangeVisibility = eAdditionalSounds | 6,
         eAlien = eAdditionalSounds | 7,
+        eCloakBreath = eAdditionalSounds | 8, // NLC: the breathing tell
+        eDodgeGrowl = eAdditionalSounds | 9, // NLC: the dodge tell (own channel: attack sounds cut the base-channel growl)
     };
 
     //--------------------------------------------------------------------
@@ -253,6 +255,51 @@ public:
         bool tac_recover_zz{}; // hit and run: zigzag legs while it is watched
         bool tac_feint_lateral{}; // feint: vanish sideways when aimed at
         u32 pounce_perch_hold_ms{500}; // a perch counts after the enemy stood on it this long (a jump is no perch)
+        u32 pounce_perch_latch_ms{}; // an established perch survives a flicker (a step on the rock) this long
+        Fvector2 tac_recover_regen_v{}; // hit and run: extra health per second while it retreats, rolled per retreat
+        bool tac_recover_stop_bleed{}; // hit and run: its wounds close when the retreat starts
+        float tac_recover_pack_k{}; // hit-and-run threshold lowered by this per bloodsucker mate within 15 m (bolder)
+        bool tac_low_hp_relentless{}; // hurt and no retreat possible: straight at the player (no stalk, feint, bait)
+        Fvector2 vampire_turn_speed{0.5f, 4.f}; // grab camera turn speed range, rad/s (stock 0.5-4)
+        float vampire_struggle_turn_k{}; // struggle share counted while the camera still turns
+        float npc_disp_cloaked{1.f}; // NPC weapon dispersion factor against it: invisible
+        float npc_disp_xray{1.f}; // ... x-ray
+        bool melee_dodge{}; // quick dodge steps in melee range while aimed at
+        float melee_dodge_range{3.5f};
+        int melee_dodge_steps{2}; // steps per burst, then it attacks
+        u32 melee_dodge_cd{3000};
+        float melee_dodge_dist{2.3f}; // step target: this far from the player
+        Fvector2 melee_dodge_angle{40.f, 60.f}; // degrees around the player per step
+        u32 melee_dodge_ms{450};
+        float melee_dodge_speed_k{1.3f}; // speed and animation speed of a step
+        float melee_dodge_turn_k{3.f}; // turn rate during and after a step
+        float cloak_breath_dist{}; // the breathing tell while cloaked this close to the player (0 = off)
+        Fvector2 cloak_breath_ms{3000.f, 5000.f};
+        Fvector2 melee_dodge_step{2.2f, 2.8f}; // step length, m (the angle around the player follows from it)
+        u32 melee_dodge_min_ms{250}; // a step lasts at least this long
+        u32 melee_dodge_gap_ms{350}; // between the steps of a burst
+        u32 melee_dodge_lunge_ms{300}; // no lunge this soon after a step (the turn finishes first)
+        u32 melee_dodge_max_ms{700}; // a step's time: its length at run speed + 150 ms, capped by this
+        float melee_dodge_start_k{1.6f}; // speed factor for the first 150 ms of a step (the start from standstill)
+        float melee_dodge_close_range{3.2f}; // between melee start distance and this (no swing, no lunge): closing steps
+        u32 melee_dodge_close_cd{1200};
+        float melee_dodge_counter{}; // chance to strike at once after the last step of a burst (no lunge pause)
+        bool melee_dodge_sound{}; // a growl on the first step of a burst (the tell)
+        bool melee_dodge_alternate{}; // steps of a burst switch sides (false: a burst circles one way; a switch costs a 180 deg turn)
+        float melee_dodge_reverse_back{1.f}; // a step that switches sides also backs off this far (a 90 deg turn, not 180)
+        float melee_dodge_max_turn{deg2rad(100.f)}; // a step needing a bigger turn is not taken (it turned in place instead of moving)
+        u32 melee_dodge_swing_wait_ms{700}; // a step decided mid-swing starts when the swing animation ends (it cannot be cut), up to this
+        float melee_dodge_min_clear{0.6f}; // a step must cover this share of its length (walls cut it short)
+        u32 pounce_perch_blind_ms{400}; // at the perch spot, enemy not seen this long: pounce at it anyway (seen within pounce_perch_blind_mem_ms)
+        u32 pounce_perch_blind_mem_ms{5000};
+        float tac_recover_pack_min{0.3f}; // the pack never lowers the retreat threshold below this
+        float tac_recover_min_move{6.f}; // a retreat point closer than this to it is no retreat
+        float tac_recover_shot_boost_k{1.f}; // retreating, shot with no other point: a speed burst and a zigzag switch
+        u32 tac_recover_shot_boost_ms{600};
+        float tac_recover_zz_angle{deg2rad(30.f)}; // retreat zigzag: leg angle off the way to the point
+        Fvector2 tac_recover_zz_ms{900.f, 1300.f}; // ... and leg time
+        u32 tac_recover_block_ms{1500}; // a retreat that moved under 1 m in this long ends in a fight
+        float tac_recover_pack_dist{15.f}; // pack mates within this make it bolder (tac_recover_pack_k)
         u8 lunge_reveal{2}; // visibility a lunge or pounce reveals: 1 x-ray (partial), 2 full (stock-like); the pounce never goes above x-ray
         u32 lunge_reveal_ms{}; // after a lunge or pounce: hold the reveal state this long or until the first melee swing (0 = off)
         float vampire_intent_dist{8.f}; // a grab from behind is planned this close: no lunge or pounce, stay cloaked
@@ -335,6 +382,8 @@ public:
     virtual bool nlc_siege_perch_strike(const CEntityAlive* enemy, float& strike_dist);
     virtual void nlc_siege_perch_shot();
     virtual bool nlc_siege_cloak_hidden(const Fvector& feet, const CEntityAlive* enemy) const;
+    virtual bool nlc_melee_override(); // NLC: melee dodge steps
+    float nlc_npc_disp_k() const; // NLC: NPC weapon dispersion factor against this bloodsucker (cloak)
     virtual u32 nlc_jump_bounce_grace() const { return m_nlc_on ? m_nlc_b.pounce_bounce_grace_ms : 0; }
     virtual float nlc_jump_min_vy() const { return m_nlc_on ? m_nlc_b.pounce_min_vy : 0.f; }
     virtual void nlc_tactic_begin();
@@ -408,6 +457,10 @@ private:
         bool roared{}; // bait: the tell before the flanker strikes
         s8 zz_side{}; // recover: zigzag leg side
         u32 zz_next{};
+        float regen_v{}; // recover: extra health per second this retreat
+        u32 regen_last{};
+        Fvector prog_pos{}; // recover: progress check (blocked retreat)
+        u32 prog_time{};
         // vampire grab roll (tactics.cpp)
         u8 bias_stage{}; // stalk pick preference: 0 flank (tac_stalk_flank), 1 own side, 2 none; back to 0 after a pick
         bool rolled_grab{};
@@ -438,6 +491,34 @@ private:
     u32 m_nlc_perch_block_log{}; // diagnostics: why a ready perch pounce does not start
     u32 m_nlc_perch_repick_at{}; // perch spot out of pounce range: pick it again (not before this)
     u32 m_nlc_perched_since{}; // the enemy stands on a perch since (pounce_perch_hold_ms)
+    u32 m_nlc_perched_last{}; // ... last seen on it (pounce_perch_latch_ms)
+    // melee dodge
+    bool m_nlc_dodge_active{};
+    Fvector m_nlc_dodge_target{};
+    u32 m_nlc_dodge_node{u32(-1)};
+    u32 m_nlc_dodge_until{};
+    u32 m_nlc_dodge_next{};
+    u32 m_nlc_dodge_cd{};
+    int m_nlc_dodge_left{};
+    int m_nlc_dodge_side{1};
+    u32 m_nlc_breath_next{};
+    u32 m_nlc_dodge_start{};
+    u32 m_nlc_dodge_ended{}; // the last step ended (melee_dodge_lunge_ms)
+    int m_nlc_dodge_prev{}; // side of the last step (reversal back-off)
+    u32 m_nlc_perch_unseen{}; // at the perch spot, the enemy unseen since (pounce_perch_blind_ms)
+    bool m_nlc_dodge_counter{}; // counter-strike after this burst: no lunge pause
+    bool m_nlc_dodge_closing{}; // the current step closes in (gap between swing and lunge range)
+    bool m_nlc_dodge_boosted{}; // the start boost of the current step is over
+    u32 m_nlc_dodge_wait{}; // the step waits for the swing animation to end since (0: moving)
+    u32 m_nlc_dodge_dur{}; // the step's time once it moves
+    Fvector m_nlc_dodge_from{}; // step start (log)
+    float m_nlc_dodge_bearing0{}; // bearing from the player at the step start (log)
+    Fvector m_nlc_enemy_last{}; // the player's position last frame (strafe reading)
+    float m_nlc_enemy_lat_v{}; // the player's speed across the line to the monster, m/s (+ = toward rotate +)
+    u32 m_nlc_enemy_last_t{};
+public:
+    bool nlc_dodge_recent() const { return m_nlc_on && !m_nlc_dodge_counter && Device.dwTimeGlobal < m_nlc_dodge_ended + m_nlc_b.melee_dodge_lunge_ms; }
+private:
     bool m_nlc_pounce_hit{}; // the current pounce has hit (own hit test or CControlJump)
     bool m_nlc_pouncing{}; // a pounce of ours is in the air
     u32 m_nlc_perch_since{}; // holding the siege perch-strike spot since
@@ -466,6 +547,10 @@ private:
     bool nlc_enemy_perched(const CEntityAlive* enemy, float& h); // on a perch for real: held, not a jump, off the ai-map
     bool nlc_tac_hidden(const Fvector& pt, const CEntityAlive* enemy) const; // out of sight, or cloaked out of view
     bool nlc_tac_lateral(const CEntityAlive* enemy, float min_d, float max_d, Fvector& pos, u32& node); // sideways off the line of fire
+    bool nlc_tac_graph_far(float min_gain, Fvector& pos, u32& node); // a reachable ai-map point away from the enemy (tunnels)
+    u32 nlc_tac_mates_near(float radius); // bloodsucker squad mates on the same enemy within radius
+    void nlc_melee_dodge_update();
+    void nlc_breath_update();
     void nlc_perch_give_up(const char* why);
     void nlc_backhit_update();
     bool nlc_strike_tell_done() const; // fully visible long enough to strike (always true without strike_reveal_margin)
