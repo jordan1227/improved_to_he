@@ -40,6 +40,8 @@ local excluded = {}
 local pending = {}
 local hold = {}
 local cond_fix = {}
+local unique = {}
+local unstuck = false
 
 local function read_section(ini, sec, fn)
 	if not ini:section_exist(sec) then return end
@@ -140,11 +142,19 @@ local function load()
 			vis_outfit[v] = vis_outfit[v] or sect
 		end
 	end)
+	read_section(ini, "unique", function(v, sect)
+		sect = string.lower(sect)
+		if not outfits[sect] then return end
+		v = norm_vis(v)
+		unique[v] = sect
+		vis_outfit[v] = vis_outfit[v] or sect
+	end)
 	read_section(ini, "communities", function(comm, val)
 		local f = fields(val)
-		local c = { chance = tonumber(f[1]) or 0, allow = {}, foreign = {} }
+		local c = { chance = tonumber(f[1]) or 0, allow = {}, foreign = {}, native = {} }
 		for _, fam in ipairs(list(f[2])) do
 			c.allow[fam] = true
+			c.native[fam] = true
 		end
 		for _, fam in ipairs(list(f[3])) do
 			c.allow[fam] = true
@@ -154,6 +164,14 @@ local function load()
 			c.allow[fam] = true
 		end
 		comms[comm] = c
+	end)
+	read_section(ini, "native", function(comm, val)
+		local c = comms[comm]
+		if not c then return end
+		c.born = {}
+		for _, fam in ipairs(list(val)) do
+			c.born[fam] = true
+		end
 	end)
 	read_section(ini, "profiles", function(p) profiles[p] = true end)
 	read_section(ini, "exclude", function(p) excluded[p] = true end)
@@ -261,6 +279,49 @@ local function dress_variety(se)
 		pending[se.id] = { v = v }
 	else
 		se.visual_name = v
+	end
+end
+
+local function unstick(se)
+	if not (se and se.id ~= 0 and IsStalker(se) and se.s_storage ~= nil) or is_story(se) then return end
+	if not profiles[string.lower(se:profile_name() or "")] then return end
+	local nv = norm_vis(se.visual_name)
+	local c = comms[string.lower(se:community() or "")]
+	local cur = unique[nv]
+	local fits = function(fam) return not c or c.allow[fam] or (c.born and c.born[fam]) end
+	if not cur then
+		cur = vis_outfit[nv]
+		if not (cur and c) or fits(outfits[cur].family) then return end
+	end
+	local rec = read_rec(se)
+	if rec and rec.o and outfits[rec.o] and not fits(outfits[rec.o].family) then
+		write_rec(se, nil)
+		rec = nil
+	end
+	local sect = rec and rec.o and outfits[rec.o] and outfits[rec.o].pool and rec.o or cur
+	local v = fits(outfits[sect].family) and pick_visual(sect) or nil
+	if not v then
+		local fam = outfits[cur].family
+		local score = outfits[cur].score
+		local cands, best = {}, nil
+		for _, s in ipairs(variety) do
+			local f = outfits[s].family
+			if c and c.native[f] or (not c and f == fam) then
+				local d = math.floor(math.abs(outfits[s].score - score) * 100 + 0.5)
+				if best == nil or d < best then
+					cands, best = { s }, d
+				elseif d == best then
+					table.insert(cands, s)
+				end
+			end
+		end
+		if #cands == 0 then return end
+		v = pick_visual(cands[math.random(#cands)])
+	end
+	if not level.object_by_id(se.id) then
+		se.visual_name = v
+	elseif se:alive() and not pending[se.id] then
+		pending[se.id] = { v = v }
 	end
 end
 
@@ -389,6 +450,14 @@ function on_update()
 		if cfg.enabled and cfg.spawn_variety then
 			for _, se in alife():objects() do
 				dress_variety(se)
+			end
+		end
+	end
+	if not unstuck then
+		unstuck = true
+		if cfg.enabled and next(unique) then
+			for _, se in alife():objects() do
+				unstick(se)
 			end
 		end
 	end
