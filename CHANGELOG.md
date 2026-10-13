@@ -1,6 +1,981 @@
-<!-- nlc-changelog-head: 75ac654dc2511e2d693c24e94fc99ce3399256a0 -->
+<!-- nlc-changelog-head: 62a8995934024489ae287a516024ce653ae0c91d -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 62a8995934024489ae287a516024ce653ae0c91d -->
+## 13.10.26 20:19 МСК - Шейдеры
+
+Commit: [62a8995](https://github.com/jordan1227/improved_to_he/commit/62a8995934024489ae287a516024ce653ae0c91d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/misc/zone_ameba.ltx
+- M gamedata/config/misc/zone_buzz.ltx
+- M gamedata/config/misc/zone_gravi.ltx
+- M gamedata/config/misc/zone_mincer.ltx
+- M gamedata/config/misc/zone_mine_acidic.ltx
+- M gamedata/config/misc/zone_mosquitobald.ltx
+- M gamedata/config/misc/zone_nogravity.ltx
+- M gamedata/config/misc/zone_sakbuzz.ltx
+- M gamedata/config/misc/zone_zharka_static.ltx
+- M gamedata/config/rspec_default.ltx
+- M gamedata/config/rspec_extreme.ltx
+- M gamedata/config/rspec_high.ltx
+- M gamedata/config/rspec_low.ltx
+- M gamedata/config/rspec_minimum.ltx
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- A gamedata/scripts/ui/ui_mm_opt_shaders.script
+- M gamedata/scripts/ui/ui_mm_opt_video.script
+- M gamedata/scripts/ui/ui_mm_opt_video_adv.script
+- A gamedata/shaders/r3/accum_base.ps
+- M gamedata/shaders/r3/accum_omni.s
+- M gamedata/shaders/r3/accum_spot.s
+- A gamedata/shaders/r3/accum_sun_cascade0.ps
+- A gamedata/shaders/r3/accum_sun_cascade0.s
+- A gamedata/shaders/r3/accum_sun_cascade2.ps
+- A gamedata/shaders/r3/accum_sun_cascade2.s
+- A gamedata/shaders/r3/accum_volumetric_sun.ps
+- M gamedata/shaders/r3/combine.s
+- A gamedata/shaders/r3/combine_1.ps
+- A gamedata/shaders/r3/combine_2_naa.ps
+- A gamedata/shaders/r3/common_functions.h
+- A gamedata/shaders/r3/deffer_base_aref_bump-hq.ps
+- A gamedata/shaders/r3/deffer_base_hud_aref_flat.ps
+- A gamedata/shaders/r3/deffer_base_hud_flat.ps
+- A gamedata/shaders/r3/deffer_grass.ps
+- A gamedata/shaders/r3/deffer_grass.vs
+- M gamedata/shaders/r3/deffer_terrain_high_flat.ps
+- A gamedata/shaders/r3/deffer_tree_branch_aref_bump-hq.ps
+- A gamedata/shaders/r3/deffer_tree_branch_aref_bump_d-hq.ps
+- A gamedata/shaders/r3/deffer_tree_branch_aref_bump_db-hq.ps
+- A gamedata/shaders/r3/deffer_tree_branch_aref_flat.ps
+- A gamedata/shaders/r3/deffer_tree_branch_aref_flat_d.ps
+- A gamedata/shaders/r3/deffer_tree_branch_aref_steep-hq.ps
+- A gamedata/shaders/r3/deffer_tree_branch_aref_steep_d-hq.ps
+- A gamedata/shaders/r3/deffer_tree_branch_aref_steep_db-hq.ps
+- A gamedata/shaders/r3/deffer_tree_branch_bump-hq.vs
+- A gamedata/shaders/r3/effects_rain.ps
+- A gamedata/shaders/r3/effects_rain.s
+- A gamedata/shaders/r3/effects_water.s
+- A gamedata/shaders/r3/effects_water_puddles.s
+- A gamedata/shaders/r3/effects_waterryaska.s
+- A gamedata/shaders/r3/effects_waterstuden.s
+- A gamedata/shaders/r3/effects_waterunderground.s
+- A gamedata/shaders/r3/img_corrections.h
+- A gamedata/shaders/r3/mblur.h
+- A gamedata/shaders/r3/model_hud_glass.s
+- M gamedata/shaders/r3/models_watch_ui.ps
+- A gamedata/shaders/r3/models_watch_ui.s
+- A gamedata/shaders/r3/ogsr_bloom.ps
+- M gamedata/shaders/r3/ogsr_bloom.s
+- A gamedata/shaders/r3/rain_apply_gloss.ps
+- A gamedata/shaders/r3/rain_patch_normal.ps
+- A gamedata/shaders/r3/screenspace_wind.h
+- A gamedata/shaders/r3/settings_screenspace_FLORA.h
+- A gamedata/shaders/r3/settings_screenspace_GLASS.h
+- A gamedata/shaders/r3/settings_screenspace_SSFX_WATER.h
+- M gamedata/shaders/r3/settings_screenspace_SSS.h
+- A gamedata/shaders/r3/shadow.h
+- A gamedata/shaders/r3/ssfx_ao.ps
+- A gamedata/shaders/r3/ssfx_ao.s
+- A gamedata/shaders/r3/ssfx_ao_blur.ps
+- A gamedata/shaders/r3/ssfx_cloud_shadows.h
+- A gamedata/shaders/r3/ssfx_extra.h
+- A gamedata/shaders/r3/ssfx_flora_variation.h
+- A gamedata/shaders/r3/ssfx_fog_scattering.ps
+- A gamedata/shaders/r3/ssfx_fog_scattering.s
+- A gamedata/shaders/r3/ssfx_fog_scattering_blur.ps
+- A gamedata/shaders/r3/ssfx_fog_sun.h
+- A gamedata/shaders/r3/ssfx_glass.ps
+- A gamedata/shaders/r3/ssfx_glass.vs
+- A gamedata/shaders/r3/ssfx_hmodel.h
+- A gamedata/shaders/r3/ssfx_hud_glass.ps
+- A gamedata/shaders/r3/ssfx_il.ps
+- A gamedata/shaders/r3/ssfx_il.s
+- A gamedata/shaders/r3/ssfx_il_blur.ps
+- A gamedata/shaders/r3/ssfx_mist.h
+- A gamedata/shaders/r3/ssfx_rain.ps
+- A gamedata/shaders/r3/ssfx_rain.s
+- M gamedata/shaders/r3/ssfx_ssr.ps
+- M gamedata/shaders/r3/ssfx_ssr.s
+- M gamedata/shaders/r3/ssfx_ssr_blur.ps
+- M gamedata/shaders/r3/ssfx_ssr_combine.ps
+- A gamedata/shaders/r3/ssfx_sss.h
+- A gamedata/shaders/r3/ssfx_sss.ps
+- A gamedata/shaders/r3/ssfx_sss.s
+- A gamedata/shaders/r3/ssfx_sss_blur.ps
+- A gamedata/shaders/r3/ssfx_sss_lights.ps
+- A gamedata/shaders/r3/ssfx_step_ripples.h
+- A gamedata/shaders/r3/ssfx_temporal.h
+- A gamedata/shaders/r3/ssfx_tree_branch.h
+- A gamedata/shaders/r3/ssfx_volumetric.s
+- A gamedata/shaders/r3/ssfx_volumetric_combine.ps
+- A gamedata/shaders/r3/ssfx_water.ps
+- A gamedata/shaders/r3/ssfx_water_blur.ps
+- A gamedata/shaders/r3/ssfx_water_pass.s
+- A gamedata/shaders/r3/ssfx_water_regular.ps
+- A gamedata/shaders/r3/ssfx_water_ryaska.ps
+- A gamedata/shaders/r3/ssfx_water_ssr.ps
+- A gamedata/shaders/r3/ssfx_water_studen.ps
+- A gamedata/shaders/r3/ssfx_water_underground.ps
+- A gamedata/shaders/r3/ssfx_water_waves.ps
+- A gamedata/shaders/r3/water_puddles.ps
+- A gamedata/textures/fx/ssfx_glass_normal.dds
+- A gamedata/textures/fx/ssfx_water_height.dds
+- A gamedata/textures/fx/ssfx_water_normal.dds
+- A gamedata/textures/fx/ssfx_water_wind.dds
+- A gamedata/textures/water/ssfx_water_perlin.dds
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/Layers/xrRender/Blender_Model_EbB.cpp
+- M engine/ogsr_engine/Layers/xrRender/Blender_Recorder_StandartBinding.cpp
+- M engine/ogsr_engine/Layers/xrRender/Blender_tree.cpp
+- M engine/ogsr_engine/Layers/xrRender/DetailManager_Decompress.cpp
+- M engine/ogsr_engine/Layers/xrRender/ModelPool.cpp
+- M engine/ogsr_engine/Layers/xrRender/Shader.cpp
+- M engine/ogsr_engine/Layers/xrRender/Shader.h
+- M engine/ogsr_engine/Layers/xrRender/light.cpp
+- M engine/ogsr_engine/Layers/xrRender/light.h
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_build.cpp
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_structure.h
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.h
+- M engine/ogsr_engine/Layers/xrRenderDX10/dx10ResourceManager_Scripting.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r2_types.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_R_render.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_loader.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_accum_direct.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_accum_point.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_accum_spot.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_accumulator.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_combine.cpp
+- A engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_ssfx.cpp
+- A engine/ogsr_engine/Layers/xrRenderPC_R4/ssfx_features.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/xrRender_R4.vcxproj
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/xrRender_R4.vcxproj.filters
+- M engine/ogsr_engine/xrCore/_random.h
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Level_load.cpp
+- M engine/ogsr_engine/xrGame/Torch.cpp
+- M engine/ogsr_engine/xrGame/Torch.h
+- M engine/ogsr_engine/xrGame/alife_storage_manager.cpp
+- M engine/ogsr_engine/xrGame/movement_manager.cpp
+- M engine/ogsr_engine/xrGame/ui/UIOptionsItem.cpp
+- M engine/ogsr_engine/xr_3da/Environment.cpp
+- M engine/ogsr_engine/xr_3da/Environment.h
+- M engine/ogsr_engine/xr_3da/Environment_misc.cpp
+- M engine/ogsr_engine/xr_3da/IGame_Persistent.h
+
+<!-- nlc-changelog-commit: 368a0dcf277ae07d67bd6d06a44bf48475d015b0 -->
+## 13.10.26 20:18 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [368a0dc](https://github.com/jordan1227/improved_to_he/commit/368a0dcf277ae07d67bd6d06a44bf48475d015b0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/creatures/stalkers.ltx
+- M gamedata/config/gameplay/dialogs_military.xml
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/config/misc/all_outfits_nlc.ltx
+- A gamedata/config/misc/he_npc_wardrobe.ltx
+- A gamedata/config/scripts/bar/bar_transiver.ltx
+- A gamedata/config/scripts/mil/mil_freedom_transiver.ltx
+- A gamedata/config/scripts/mil/mil_merc_transiver.ltx
+- A gamedata/config/scripts/red/red_lesnik_transiver.ltx
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- A gamedata/levels/l05_bar/level.snd_static
+- A gamedata/levels/l07_military/level.snd_static
+- A gamedata/levels/red_forest/level.snd_static
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/amk/amk_mod.script
+- M gamedata/scripts/amk/amk_offline_alife.script
+- M gamedata/scripts/death_manager.script
+- M gamedata/scripts/dsh_remkit.script
+- A gamedata/scripts/he_npc_wardrobe.script
+- A gamedata/scripts/he_quest_target_lock.script
+- M gamedata/scripts/kotovod/detectors_art.script
+- M gamedata/scripts/move_mgr.script
+- M gamedata/scripts/new_quests.script
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/olr/olr_init.script
+- M gamedata/scripts/olr/olr_monsters_sim.script
+- M gamedata/scripts/olr/olr_offline_task.script
+- M gamedata/scripts/olr/olr_protected.script
+- M gamedata/scripts/olr/olr_smart_index.script
+- M gamedata/scripts/olr/olr_squads.script
+- M gamedata/scripts/params/nvd_params.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/se/se_stalker.script
+- M gamedata/scripts/sound_theme.script
+- M gamedata/scripts/ui/ui_he_magic_box.script
+- M gamedata/scripts/watcher_act.script
+- A gamedata/sounds/characters_voice/scenario/dv/borov_music_1.ogg
+- A gamedata/sounds/characters_voice/scenario/dv/borov_music_2.ogg
+- A gamedata/sounds/characters_voice/scenario/dv/borov_music_3.ogg
+- A gamedata/sounds/characters_voice/scenario/dv/borov_music_4.ogg
+- A gamedata/sounds/characters_voice/scenario/dv/borov_music_5.ogg
+- A gamedata/sounds/characters_voice/scenario/dv/borov_music_6.ogg
+- A gamedata/sounds/characters_voice/scenario/dv/borov_music_7.ogg
+- A gamedata/sounds/characters_voice/scenario/dv/borov_music_8.ogg
+- A gamedata/sounds/characters_voice/scenario/dv/borov_music_9.ogg
+- M gamedata/spawns/all.spawn
+- A gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- A gamedata/meshes/monsters/kontroler/kontroler.ogf
+- A gamedata/meshes/monsters/kontroler/kontroler_st.ogf
+- A gamedata/meshes/monsters/kontroler/kontroler_trench.ogf
+- A gamedata/shaders/r3/ssfx_ssr.ps
+- A gamedata/shaders/r3/ssfx_ssr.s
+- A gamedata/shaders/r3/ssfx_ssr_blur.ps
+- A gamedata/shaders/r3/ssfx_ssr_combine.ps
+- A gamedata/textures/act/nlc_mutants/act_burer.dds
+- A gamedata/textures/act/nlc_mutants/act_burer.thm
+- A gamedata/textures/act/nlc_mutants/act_burer_bump#.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_bump.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_hos.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_hos.thm
+- A gamedata/textures/act/nlc_mutants/act_burer_strong.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_strong.thm
+- A gamedata/textures/act/nlc_mutants/act_burer_strong_bump#.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_strong_bump.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_weak.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_weak.thm
+- A gamedata/textures/act/nlc_mutants/act_controller_strong.dds
+- A gamedata/textures/act/nlc_mutants/act_controller_strong.thm
+- A gamedata/textures/act/nlc_mutants/act_controller_strong_bump#.dds
+- A gamedata/textures/act/nlc_mutants/act_controller_strong_bump.dds
+- A gamedata/textures/act/nlc_mutants/act_controller_weak.dds
+- A gamedata/textures/act/nlc_mutants/act_controller_weak.thm
+- A gamedata/textures/act/nlc_mutants/act_controller_weak_bump#.dds
+- A gamedata/textures/act/nlc_mutants/act_controller_weak_bump.dds
+- A gamedata/textures/act/nlc_mutants/kont_trench.dds
+- A gamedata/textures/act/nlc_mutants/kont_trench.thm
+- A gamedata/textures/act/nlc_mutants/kont_trench_bump#.dds
+- A gamedata/textures/act/nlc_mutants/kont_trench_bump.dds
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l04_darkvalley.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l05_bar.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l07_military.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_red_forest.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/l04_darkvalley.sections
+- M all.spawn.improved_3.9.1_ogsr/unpacked/way_l01_escape.ltx
+- M make_manifest.py
+- M manifest.txt
+- M updater/Launcher.cs
+- A updater/build.bat
+- M Апдейтер.exe
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/config/game_levels_music.ltx
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb01.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb02.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb03.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb04.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb05.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb06.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb07.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb08.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb09.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb10.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb11.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb12.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb13.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb14.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb15.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb16.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb17.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb18.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb19.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/day/amb20.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb01.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb02.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb03.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb04.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb05.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb06.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb07.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb08.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb09.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb10.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb11.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/night/night_amb12.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/underground/undergrnd_01.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/underground/undergrnd_02.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/underground/undergrnd_03.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/sounds/music/underground/undergrnd_04.ogg
+- A Опционально/музыка/Dead_Air_Ambient/gamedata/variant_music.ltx
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_1.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_10.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_11.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_12.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_13.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_14.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_15.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_2.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_3.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_4.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_5.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_6.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_7.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_8.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/modern/megafon_music_9.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_1.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_10.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_11.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_12.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_13.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_14.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_15.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_16.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_17.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_18.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_19.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_2.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_20.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_3.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_4.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_5.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_6.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_7.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_8.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/retro/megafon_music_9.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_1.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_10.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_11.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_12.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_13.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_14.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_15.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_16.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_17.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_18.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_19.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_2.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_20.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_3.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_4.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_5.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_6.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_7.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_8.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock/megafon_music_9.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_1.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_10.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_11.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_12.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_13.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_14.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_15.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_16.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_17.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_2.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_3.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_4.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_5.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_6.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_7.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_8.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/rock_n_roll/megafon_music_9.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_1.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_10.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_11.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_12.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_13.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_14.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_15.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_16.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_17.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_18.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_19.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_2.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_20.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_21.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_22.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_3.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_4.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_5.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_6.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_7.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_8.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/bar/radio_music/sidor/megafon_music_9.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_1.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_10.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_11.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_12.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_13.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_14.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_15.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_16.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_17.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_2.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_3.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_4.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_5.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_6.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_7.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_8.ogg
+- A Опционально/музыка/Музыкальный пак музыки в радиоприёмниках (06.06.23)/gamedata/sounds/characters_voice/scenario/marsh/radio_music/silvestr/megafon_music_9.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/config/game_levels_music.ltx
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/agroprom_day/amb_03.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/agroprom_day/amb_04.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/darkvalley_day/amb_01.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/darkvalley_day/amb_04.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/darkvalley_night/amb_01.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/escape_day/amb_02.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/escape_day/rdf.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/marsh_day/amb_01.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/accg_quiet_days_on_earth.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/acclb_deeper_dream.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/acclb_great_order_of_things.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/acclb_new_constellation.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/akac_in_an_arched_world.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/akac_ones_atop_the_unknown.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/alphaxone_enter_the_gates.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/alphaxone_parallel_destiny.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/alphaxone_witchcraft.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/atriumcarceri_hunger_too_deep.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/atriumcarceri_reselected.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/da04.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/da08.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/da11.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/deadmelodies_electrical_sensory.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/deadmelodies_pearlescent_dawn.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/dronnydarko_incubation.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/htdc_seraph1.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/mountshrine_subtotem.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/spharesechs_achernar.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/symphocat_draumur.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/tineidae_sky_burial.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/new/wordclock_when_indecision_strikes.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/pripyat_day/amb_01.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/pripyat_day/asttm.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/pripyat_day/av.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/pripyat_day/kd.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/pripyat_night/amb_02.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/redforest_day/amb_01.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/redforest_day/amb_02.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/redforest_day/amb_03.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/ambient_music/redforest_night/amb_01.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Aes2_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Aes2_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Aes2_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Aes2_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Aes_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Aes_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Aes_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Aes_U.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Agr_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Agr_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Agr_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Agr_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Agr_U.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Amalgamated_Man.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Ancient_Amulet.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Appearance.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Approaching_The_Coven.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Arm_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Arm_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Ash.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Avenoir.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Black_Star.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Bol_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Bol_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Bol_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Bol_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Congregants_requests_3.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Cor_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Cor_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Cor_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Cor_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Dark_Companion_part_1.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Dark_Companion_part_2.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Dead.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Dol_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Dol_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Dol_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Echosphere.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Element.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Elemental_Trigger.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Entrance.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Environment.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Ethereal.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Exit.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Flame.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Frequencies_Converge.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Godeater.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Grooves.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Halls_Of_Steam.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Headplate.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Heresy_Part_III.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Heresy_Part_VI.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Human_Frequencies.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Hut_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Hut_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Hut_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Hut_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Induction.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Infinite_Space.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Interface.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Kis_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Kis_H.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Kis_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Kis_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Les_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Les_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Les_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Les_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Lim_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Lim_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Lim_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Lust.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Oblivion.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Onyx.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Overland.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Pesher_1.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Pesher_2.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Pri_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Pri_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Pri_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Rad_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Rad_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Rad_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Rai_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Rai_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Rai_E2.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Rai_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Rai_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Ros_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Ros_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Sabled_Sun.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/San_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Secret_Path.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Sol_Om_On.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Solar_Halos.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Space_Continuum.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Stir_of_Thoughts.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Strange_Attractor.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Sva_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Sva_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Sva_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Sva_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Tes_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Tes_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Tes_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/The_Daathian_Doorway.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/The_Harrow.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/The_Outer_Shadow.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Undulating_Terrain.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Voices_of_the_Water.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/X10.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/X12-2.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/X12.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/X16.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/X18-2.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/X18.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/X6.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/X8.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Yan_D.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Yan_E.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Yan_M.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/Yan_N.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/agro_day.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb01_new.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb02_new.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb04_new.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb05_new.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb07_new.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb18_new.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb19_new.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb20_new.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb_aa2_1.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb_aa2_2.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb_aa2_4.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb_aa2_5n.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb_aa2_6n.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/amb_aa2_6n_1.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/as_day.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/as_day_new.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/dt_day.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/heifehen_icebreaker.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/heifehen_road_to_the_north.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/music_02.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/music_04.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/music_08.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/music_09.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/music_13.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/night_amb02.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/night_amb_02.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/night_amb_03.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/night_amb_09.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/night_amb_10.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/night_amb_11.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/pripyat_day.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/pripyat_night.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/radaramb02.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/radaramb03.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/rostokamb02.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/rostokamb03.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/station01.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/underground.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/yantaramb01.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music/yantaramb04.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music_emb22/Altered_Xone.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music_emb22/Keosz.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music_emb22/Road_to_Nowhere.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music_emb22/Testament.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music_emb22/amb01.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/sounds/music_emb22/amb23.ogg
+- A Опционально/музыка/Эмбиент (музыка) 31.08.22/gamedata/variant_music.ltx
+
+<!-- nlc-changelog-commit: ab75cd8867461af01b510bc8b306005fb2ea1356 -->
+## 12.10.26 22:22 МСК - Диалоги англ. Спасибо Matin
+
+Commit: [ab75cd8](https://github.com/jordan1227/improved_to_he/commit/ab75cd8867461af01b510bc8b306005fb2ea1356)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- A gamedata/config/text/eng/stable_dialogs_nlc30.xml
+
+<!-- nlc-changelog-commit: 476ef8315122facb2dfe834fd29839cd7af97bac -->
+## 12.10.26 21:40 МСК - Add mutant controller and burer assets
+
+Commit: [476ef83](https://github.com/jordan1227/improved_to_he/commit/476ef8315122facb2dfe834fd29839cd7af97bac)
+
+### Description
+
+This commit adds new monster meshes and texture sets for the controller and burer variants, including trench, strong, and weak material variants with matching bump maps and material definitions. These files establish the new mutant models and skin assignments in the game data.
+
+### Game files changed
+
+- A gamedata/meshes/monsters/kontroler/kontroler.ogf
+- A gamedata/meshes/monsters/kontroler/kontroler_st.ogf
+- A gamedata/meshes/monsters/kontroler/kontroler_trench.ogf
+- A gamedata/shaders/r3/ssfx_ssr.ps
+- A gamedata/shaders/r3/ssfx_ssr.s
+- A gamedata/shaders/r3/ssfx_ssr_blur.ps
+- A gamedata/shaders/r3/ssfx_ssr_combine.ps
+- A gamedata/textures/act/nlc_mutants/act_burer.dds
+- A gamedata/textures/act/nlc_mutants/act_burer.thm
+- A gamedata/textures/act/nlc_mutants/act_burer_bump#.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_bump.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_hos.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_hos.thm
+- A gamedata/textures/act/nlc_mutants/act_burer_strong.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_strong.thm
+- A gamedata/textures/act/nlc_mutants/act_burer_strong_bump#.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_strong_bump.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_weak.dds
+- A gamedata/textures/act/nlc_mutants/act_burer_weak.thm
+- A gamedata/textures/act/nlc_mutants/act_controller_strong.dds
+- A gamedata/textures/act/nlc_mutants/act_controller_strong.thm
+- A gamedata/textures/act/nlc_mutants/act_controller_strong_bump#.dds
+- A gamedata/textures/act/nlc_mutants/act_controller_strong_bump.dds
+- A gamedata/textures/act/nlc_mutants/act_controller_weak.dds
+- A gamedata/textures/act/nlc_mutants/act_controller_weak.thm
+- A gamedata/textures/act/nlc_mutants/act_controller_weak_bump#.dds
+- A gamedata/textures/act/nlc_mutants/act_controller_weak_bump.dds
+- A gamedata/textures/act/nlc_mutants/kont_trench.dds
+- A gamedata/textures/act/nlc_mutants/kont_trench.thm
+- A gamedata/textures/act/nlc_mutants/kont_trench_bump#.dds
+- A gamedata/textures/act/nlc_mutants/kont_trench_bump.dds
+
+<!-- nlc-changelog-commit: a74b929c57e1de00b32cdabbea686a6c610cfa36 -->
+## 12.10.26 15:23 МСК - Манифест
+
+Commit: [a74b929](https://github.com/jordan1227/improved_to_he/commit/a74b929c57e1de00b32cdabbea686a6c610cfa36)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 2afa1a111a3825daf5e3a0233c62adc0bf83bb43 -->
+## 12.10.26 02:47 МСК - Пинок. Можно пинать крыс и тушканов (тушкан 50% хп). Улучшения модели тела Visible-body shadow and kick pass
+
+Commit: [2afa1a1](https://github.com/jordan1227/improved_to_he/commit/2afa1a111a3825daf5e3a0233c62adc0bf83bb43)
+
+### Description
+
+Пинок. Можно пинать крыс и тушканов (тушкан 50% хп). Улучшения модели тела
+Adds script-driven visible-body actor shadow syncing, fixes kick/ragdoll kill behavior, and exposes new movement helpers for transformed puppets and cycle-speed control. Also disables the native kick via actor config and wires the new kick animation, shadow toggle, and timing settings into the script stack.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- A gamedata/anims/camera_effects/kick.anm
+- M gamedata/config/creatures/actor.ltx
+- M gamedata/config/system.ltx
+- M gamedata/meshes/sm/actor_legs/lancew_legs_krovosos.omf
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- A gamedata/scripts/sivol/sivol_kick.script
+- A gamedata/scripts/sivol/sivol_kick_configs.script
+- M gamedata/scripts/sivol/sivol_visible_body.script
+- A gamedata/sounds/kick/kick.ogg
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/CharacterPhysicsSupport.cpp
+- M engine/ogsr_engine/xrGame/HUDManager.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_direction.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_direction.h
+- M engine/ogsr_engine/xrGame/console_commands.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.cpp
+- M engine/ogsr_engine/xrGame/script_game_object.h
+- M engine/ogsr_engine/xrGame/script_game_object2.cpp
+- M engine/ogsr_engine/xrGame/script_game_object_script2.cpp
+
+<!-- nlc-changelog-commit: 6f7648b4e132d1c962a05b89e38636c83a0c5bd6 -->
+## 12.10.26 00:03 МСК - Revert "Disable NVG eye glow with headlamp"
+
+Commit: [6f7648b](https://github.com/jordan1227/improved_to_he/commit/6f7648b4e132d1c962a05b89e38636c83a0c5bd6)
+
+### Description
+
+This reverts commit 3c7b2c377ea6c2c1786a42a077b826a2b0534297.
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/scripts/sivol/sivol_stealth_nvd.script
+- M gamedata/scripts/sr/sr_light.script
+
+<!-- nlc-changelog-commit: 3c7b2c377ea6c2c1786a42a077b826a2b0534297 -->
+## 11.10.26 23:57 МСК - Disable NVG eye glow with headlamp
+
+Commit: [3c7b2c3](https://github.com/jordan1227/improved_to_he/commit/3c7b2c377ea6c2c1786a42a077b826a2b0534297)
+
+### Description
+
+Novikov now spawns with a headlamp, and the stealth NVG logic recognizes worn headlamps so the eye glow is hidden while the lamp remains attached but unlit at night. sr_light now suppresses the torch for NVG wearers without fully disabling the lamp state, preventing conflicting light effects.
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/scripts/sivol/sivol_stealth_nvd.script
+- M gamedata/scripts/sr/sr_light.script
+
+<!-- nlc-changelog-commit: 104310292f50ebf7bd08ae70fa08c2b1a67bab49 -->
+## 11.10.26 23:33 МСК - Лучше бладмарки и лужи крови
+
+Commit: [1043102](https://github.com/jordan1227/improved_to_he/commit/104310292f50ebf7bd08ae70fa08c2b1a67bab49)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- A gamedata/config/misc/blood_pool_surfaces.ltx
+- M gamedata/scripts/se/se_monster.script
+- M gamedata/scripts/sivol/sivol_blood_pools.script
+- A gamedata/shaders/r3/effects_wallmark_blood.ps
+- A gamedata/shaders/r3/effects_wallmark_blood.vs
+- A gamedata/shaders/r3/effects_wallmark_blood_soft.ps
+- A gamedata/shaders/r3/effects_wallmark_blood_soft.s
+- M gamedata/textures/wm/wm_blood_pool_10.dds
+- M gamedata/textures/wm/wm_blood_pool_11.dds
+- M gamedata/textures/wm/wm_blood_pool_12.dds
+- M gamedata/textures/wm/wm_blood_pool_14.dds
+- M gamedata/textures/wm/wm_blood_pool_15.dds
+- M gamedata/textures/wm/wm_blood_pool_16.dds
+- M gamedata/textures/wm/wm_blood_pool_17.dds
+- M gamedata/textures/wm/wm_blood_pool_18.dds
+- M gamedata/textures/wm/wm_blood_pool_19.dds
+- M gamedata/textures/wm/wm_blood_pool_2.dds
+- M gamedata/textures/wm/wm_blood_pool_20.dds
+- M gamedata/textures/wm/wm_blood_pool_21.dds
+- M gamedata/textures/wm/wm_blood_pool_22.dds
+- M gamedata/textures/wm/wm_blood_pool_23.dds
+- M gamedata/textures/wm/wm_blood_pool_24.dds
+- M gamedata/textures/wm/wm_blood_pool_3.dds
+- M gamedata/textures/wm/wm_blood_pool_4.dds
+- M gamedata/textures/wm/wm_blood_pool_5.dds
+- M gamedata/textures/wm/wm_blood_pool_6.dds
+- M gamedata/textures/wm/wm_blood_pool_7.dds
+- M gamedata/textures/wm/wm_blood_pool_8.dds
+- M gamedata/textures/wm/wm_blood_pool_9.dds
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/Layers/xrRender/WallmarksEngine.cpp
+- M engine/ogsr_engine/Layers/xrRender/WallmarksEngine.h
+- M engine/ogsr_engine/Layers/xrRender/dxWallMarkArray.cpp
+- M engine/ogsr_engine/Layers/xrRender/dxWallMarkArray.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4.h
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/fl_hook.cpp
+- M engine/ogsr_engine/xr_3da/GameMtlLib.cpp
+- M engine/ogsr_engine/xr_3da/GameMtlLib.h
+- M engine/ogsr_engine/xr_3da/Render.h
+- M engine/ogsr_engine/xr_3da/defines.cpp
+- M engine/ogsr_engine/xr_3da/defines.h
+
+<!-- nlc-changelog-commit: 885f7069b92d4dff7ed36d0ef8f06fe5dea4c328 -->
+## 11.10.26 23:07 МСК - Отпускаем Небова в алайф в Лиманске
+
+Commit: [885f706](https://github.com/jordan1227/improved_to_he/commit/885f7069b92d4dff7ed36d0ef8f06fe5dea4c328)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_protected.script
+
+<!-- nlc-changelog-commit: e6fd13b76ba64949f204c7083fcc6618025fbaee -->
+## 11.10.26 23:02 МСК - Защитил Кочергу с Фраером
+
+Commit: [e6fd13b](https://github.com/jordan1227/improved_to_he/commit/e6fd13b76ba64949f204c7083fcc6618025fbaee)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_protected.script
+
+<!-- nlc-changelog-commit: 46d28299efc0c1748c208c9d49e9c8de6cac1746 -->
+## 11.10.26 22:30 МСК - Игнор монолита для Фраера
+
+Commit: [46d2829](https://github.com/jordan1227/improved_to_he/commit/46d28299efc0c1748c208c9d49e9c8de6cac1746)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/creatures/stalkers.ltx
+
+<!-- nlc-changelog-commit: 039447dc4ca142f6a91c9336e31777343d52a3bd -->
+## 11.10.26 22:18 МСК - Визуал свободовцев
+
+Commit: [039447d](https://github.com/jordan1227/improved_to_he/commit/039447dc4ca142f6a91c9336e31777343d52a3bd)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_simulation.xml
+
+<!-- nlc-changelog-commit: a93761a5610f45a83956371b40e68969608f4b74 -->
+## 11.10.26 21:44 МСК - Санаторий открывается по смерти бюрера, а не по визиту
+
+Commit: [a93761a](https://github.com/jordan1227/improved_to_he/commit/a93761a5610f45a83956371b40e68969608f4b74)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/logic/smart_terrain.script
+- M gamedata/scripts/nlc_burer_hospital.script
+- M gamedata/scripts/olr/olr_faction_policy.script
+- M gamedata/scripts/olr/olr_protected.script
+
+<!-- nlc-changelog-commit: fac875079ff5b0181467132a2a1a4812715b60fd -->
+## 11.10.26 20:03 МСК - Баф гиганта + фикс ИИ если игрок очень высоко прыгает
+
+Commit: [fac8750](https://github.com/jordan1227/improved_to_he/commit/fac875079ff5b0181467132a2a1a4812715b60fd)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_giant.ltx
+
+### Other repository files changed
+
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/pseudogigant/pseudo_gigant.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/pseudogigant/pseudo_gigant.h
+
+<!-- nlc-changelog-commit: bc7639f159485165c0f246960254a75e866219ad -->
+## 11.10.26 19:48 МСК - Фикс абуза с взрывом баллонов НПС Record explosive blame chains
+
+Commit: [bc7639f](https://github.com/jordan1227/improved_to_he/commit/bc7639f159485165c0f246960254a75e866219ad)
+
+### Description
+
+Fix a stock bug where explosive initiator checks never recorded the true attacker for chain explosions (shot canisters, gas cylinders, barrels). Add CExplosive::nlc_blame(CObject*) which returns the owner of a hitting explosive (propagating blame through explosion chains) or the hitter's ID. Use nlc_blame in CExplosiveItem::Hit and CGrenade::Hit and update the engine version string and CHANGELOG (nlc-3.589.65, exe SHA-256). Runtime status: pending.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Explosive.cpp
+- M engine/ogsr_engine/xrGame/Explosive.h
+- M engine/ogsr_engine/xrGame/ExplosiveItem.cpp
+- M engine/ogsr_engine/xrGame/Grenade.cpp
+
+<!-- nlc-changelog-commit: d10c760314276c19876e1d17dfb285c712b496ca -->
+## 11.10.26 18:50 МСК - Манифест
+
+Commit: [d10c760](https://github.com/jordan1227/improved_to_he/commit/d10c760314276c19876e1d17dfb285c712b496ca)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 75ac654dc2511e2d693c24e94fc99ce3399256a0 -->
 ## 11.10.26 18:48 МСК - Add NLC burer AI and telekinesis
