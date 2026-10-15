@@ -59,12 +59,21 @@ float4 main(p_screen I) : SV_Target
         {
             float4 sample_raw = s_position.SampleLevel(smp_nofilter, occ_uv, 0);
 
-            // Surface point on the sample's own view ray, relative to the probe point
-            float3 diff = occ_pos * (sample_raw.z / max(occ_pos.z, 0.0001f) - 1.0f);
-            float Dist = length(diff);
+            // NLC: surface point on the sample's own view ray ( the emitter ) and its relation to the receiver P.
+            // The old AO-derived weight ( S - occ_pos ) counted any camera-facing occluder in front of the sample,
+            // so a lit facade around a doorway lit the room wall behind it ( only from outside the room )
+            float3 S = occ_pos * (sample_raw.z / max(occ_pos.z, 0.0001f));
+            float3 toP = P - S;
+            float dP = max(length(toP), 0.0001f);
+            toP /= dP;
 
-            float il_intensity = 1.0f - saturate(Dist * 0.066f);
-            il_intensity *= max(0.0f, dot(gbuf_unpack_normal(sample_raw.xy), normalize(diff)) + 0.25f);
+            float il_intensity = saturate(1.0f - dP / (radius * 2.0f)); // falloff by the real distance
+            il_intensity *= saturate(dot(gbuf_unpack_normal(sample_raw.xy), toP)); // emitter faces the receiver
+            il_intensity *= saturate(dot(normalize(N), -toP)); // emitter is in the receiver's hemisphere
+
+            // NLC: hemi gate - a much more open ( sky-visible ) emitter adds little bounce to an enclosed receiver.
+            // View-independent: the facade seen past a doorway no longer lights the room behind it
+            il_intensity *= saturate(1.0f - (gbuf_unpack_hemi(sample_raw.w) - gbd.hemi - 0.15f) * 3.0f);
 
             bool IsFlora = (abs(gbuf_unpack_mtl(sample_raw.w) - MAT_FLORA) <= 0.04f) || mat_flora;
             il_intensity *= 1.0f - saturate(IsFlora - ssfx_il_params2.y);
@@ -76,7 +85,6 @@ float4 main(p_screen I) : SV_Target
             // where there is no ambient to modulate ( undergrounds ) and keeps the torch colour ( not the sky's ).
             [branch] if (ssfx_torch[2].w > 0.0f)
             {
-                float3 S = occ_pos * (sample_raw.z / max(occ_pos.z, 0.0001f)); // sample surface point
                 float3 Lv = ssfx_torch[0].xyz - S;
                 // NLC .84: inverse-square-like falloff with a soft 5 m limit ( the torch range is 30 - 50 m: far walls
                 // counted fully and a dark room lit up evenly )
