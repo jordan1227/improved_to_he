@@ -13,10 +13,16 @@ end
 -- Sleep tuning. Effective rate = base_rate * gear coef * thirst.sleep_quality() * (black tip)
 local SLEEP = {
 	base_rate      = 0.5,   -- sleepiness removed per game minute
-	coef_weapon    = 0.85,  -- weapon in slot 1 or 2
-	coef_gear      = 0.75,  -- backpack or armor worn (overrides coef_weapon)
+	coef_slot      = 0.93,  -- per weapon in slot 1 and in slot 2 (multiplies)
+	coef_outfit    = 0.90,  -- armor worn
+	coef_pack      = 0.90,  -- backpack worn
+	gear_tip_below = 0.85,  -- gear coef under which the easy-difficulty "poor gear" tip is shown
 	black_tip      = 0.7,   -- black tip artifact carried
-	max_hours      = 30,    -- safety net only: worst case (0.75 gear, thirst 1.0) needs 24 h
+	max_hours      = 12,    -- hard cap: the player wakes up even when still sleepy
+	tired_wake     = 30,    -- sleepiness left at a cap/alarm wake-up that earns the "not rested" tip
+	lockout_per_h  = 0.5,   -- game hours of "can't fall asleep" per hour slept
+	lockout_min    = 20,    -- game minutes
+	lockout_max    = 360,   -- game minutes
 	thirst_block   = 0.8,   -- thirst at which going to sleep is refused
 	poor_thirst    = 0.5,   -- thirst at sleep start that earns the "slept badly" note
 	slowdown_sec   = 0.25,  -- keep time factor low enough that a hitch this long cannot overshoot the wake-up
@@ -25,6 +31,11 @@ local SLEEP = {
 
 local start_satiety = 0
 local sleep_timer = misc.game_timer("sleep_timer")
+
+local collapse_sleep = false   -- current sleep is the forced collapse at sleepiness > 250
+local wake_reason             -- "cap" or "alarm" when something other than rested ended the sleep
+local last_sleep_hours = 0    -- length of the sleep that just ended
+local last_sleep_magic = false -- ...and whether it was a scripted (magic) one
 
 function get_sleepiness(default)
 	return get_value("gg_need_sleep", default or 0)
@@ -75,6 +86,7 @@ function test_sleep_pp()
 	end
 	local points = get_sleepiness(50)
 	if points > 250 then
+		collapse_sleep = true
 		sleep_manager.main( 8 + get_value("gg_need_sleep_nrg", 0) )
 		if sak.cats_near() then return db.actor:kill(db.actor) end
 	elseif points > 244 then
@@ -159,14 +171,8 @@ function test_for_need_sleep_vodka()
 	-- snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
 end
 
-function sleep_one_hour()
-	sleep_manager.main(1)
-end
-
-function sleep_three_hours()
-	sleep_manager.main(3)
-end
-
+-- Entry point of the normal sleep. The argument of main() is ignored for normal sleeps:
+-- the sleep lasts until sleepiness is gone or SLEEP.max_hours is reached.
 function sleep_nine_hours()
 	sleep_manager.main(9)
 end
@@ -196,17 +202,17 @@ end
 function restore_coef()
 	local act = db.actor
 	local coef = 1
-	-- вещи в слотах мешают выспаться быстрее
-	if act:item_in_slot(1) or act:item_in_slot(2) then coef = SLEEP.coef_weapon end
-	if gear_worn() then coef = SLEEP.coef_gear end
+	if act:item_in_slot(1) then coef = coef * SLEEP.coef_slot end
+	if act:item_in_slot(2) then coef = coef * SLEEP.coef_slot end
+	if act:item_in_slot(6) then coef = coef * SLEEP.coef_outfit end
+	if pack_worn() then coef = coef * SLEEP.coef_pack end
 	return coef
 end
 
--- backpack or armor worn. Read-only on purpose: get_shadow_inv():update_storage() has side effects
+-- Backpack worn. Read-only on purpose: get_shadow_inv():update_storage() has side effects
 -- (pickup animation) and must not run on every sleep tick.
-function gear_worn()
-	local act = db.actor
-	return (act:object("shadow_inventory") or act:item_in_slot(6)) and true or false
+function pack_worn()
+	return db.actor:object("shadow_inventory") and true or false
 end
 
 function thirst_blocks_sleep()
@@ -244,6 +250,7 @@ function main(scale)
 	params.health_v_add (1.5 - diff * 0.1, sak.level_difficulty[level.name()]) -- скорость восстановления здоровья во сне, относительно сложности
 	sleeping = true
 	stopping = false
+	wake_reason = nil
 	reduce_need_sleep()
 	local sleep_ltx = dsh.cached_ini_file("scripts\\actorsleep.ltx")
 	schemes["ar_sleep"] = "ar_sleep"
@@ -278,7 +285,7 @@ function starter(scale)
 		sleep_note = nil
 		if thirst.get_thirst() >= SLEEP.poor_thirst then
 			sleep_note = "sleep_poor_thirst"
-		elseif gear_worn() then
+		elseif restore_coef() < SLEEP.gear_tip_below then
 			sleep_note = "sleep_poor_gear"
 		end
 		if not subscribed then
@@ -318,6 +325,7 @@ function test_enough_sleep()
 	end
 	if remaining <= 0 or minutes / 60 >= SLEEP.max_hours then
 		if not enough_sleep then
+			if remaining > 0 then wake_reason = wake_reason or "cap" end
 			-- сны смотрим под самое восстановление сил
 			reset_tf()
 			schedule.add("show_dream", "sleep_manager.show_dream()", 40)
@@ -326,15 +334,16 @@ function test_enough_sleep()
 	end
 end
 
-function relaxation() -- убирание сонливости во время сна
+function relaxation() -- remove sleepiness for the time slept
 	local minutes = sleep_minutes()
 	local reduction = sleep_reduction(minutes)
 
-	local sleepiness = get_sleepiness() - reduction
-	params.tiredness_add()
-	dbg("#DBG: sleep_time = %d, decreasing sleepiness %.1f with value %.1f, rate = %.3f",
-                            minutes, get_sleepiness(), reduction, sleep_rate or live_sleep_rate())
+	local before = get_sleepiness()
+	local sleepiness = before - reduction
 	change_sleepiness(sleepiness)
+	params.tiredness_add() -- after the new sleepiness is stored, so wake-up coefficients use it
+	dbg("#DBG: sleep_time = %d, decreasing sleepiness %.1f with value %.1f, rate = %.3f",
+	                    minutes, before, reduction, sleep_rate or live_sleep_rate())
 	return sleepiness
 end
 
@@ -353,6 +362,7 @@ function stopper()
 		return
 	end
 	stopping = true
+	local was_magic = magic_sleep
 	magic_sleep = false
 	relaxation()
 	sleep_rate = nil
@@ -361,7 +371,10 @@ function stopper()
 	ar_sleep.disable_scheme()
 
 	local elapsed = sleep_minutes() / 60.0  -- сколько прошло часов, во время сна
-	ogse_signals.get_mgr():call( "on_sleep_finished", elapsed )
+	last_sleep_hours = elapsed
+	last_sleep_magic = was_magic
+	ogse_signals.get_mgr():call( "on_sleep_finished", elapsed, was_magic, collapse_sleep )
+	collapse_sleep = false
   
 	if db.actor:alive() then
 		level.add_cam_effector("camera_effects\\prison_1.anm", 25, false, "")
@@ -433,9 +446,25 @@ function reset_tf()
 	end
 end
 
+-- game minutes during which the actor cannot fall asleep again: half of the time just slept
+local function lockout_minutes()
+	if last_sleep_magic then return SLEEP.lockout_min end
+	local m = last_sleep_hours * SLEEP.lockout_per_h * 60
+	return math.floor(math.max(SLEEP.lockout_min, math.min(SLEEP.lockout_max, m)))
+end
+
+-- something other than being rested ended the sleep ("alarm" from the watch, "cap" internally)
+function note_wake(reason)
+	wake_reason = wake_reason or reason
+end
+
 function end_sleeping()
 	sleeping = false
 	stopping = false
+	if wake_reason and not last_sleep_magic and db.actor:alive() and get_sleepiness() > SLEEP.tired_wake then
+		sak.send_tip_local(game.translate_string("sleep_wake_" .. wake_reason), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "yellow")
+	end
+	wake_reason = nil
 	if sleep_note and level.get_game_difficulty() == 0 and db.actor:alive() then
 		sak.send_tip_local(game.translate_string(sleep_note), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "yellow")
 	end
@@ -452,7 +481,7 @@ function end_sleeping()
 		end
 	end)
 	db.actor:give_info_portion("sleep_abuse_timer_info")
-	timers.start_timer("sleep_abuse_timer", 0, 0, 20, "sleep_manager.sleep_abuse_off()")
+	timers.start_timer("sleep_abuse_timer", 0, 0, lockout_minutes(), "sleep_manager.sleep_abuse_off()")
 end
 
 function sleep_abuse_off()
