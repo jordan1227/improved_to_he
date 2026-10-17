@@ -282,7 +282,7 @@ local function faction_migration(community_name)
 					end
 				end
 			elseif math.random(1, MIGRATE_ROLL) == 1 then -- [HE-PORT]
-				if wanderers < wander_cap and math.random( 1, WANDER_ROLL ) == 1 then
+				if wanderers < wander_cap and math.random( 1, WANDER_ROLL ) == 1 and not olr_faction_policy.no_wander( olr_smart_index.object_level( kill ) ) then -- [HE-PORT]
 					local ok, res = pcall( send_wandering, kill )
 					if ok and res then wanderers = wanderers + 1 end
 				else
@@ -440,6 +440,76 @@ function monster_level_sweep()
 				and not olr_protected.is_no_offline_alife_obj( kill:name() )
 			then
 				pcall( sweep_one, sim, kill, comm, kill.level_name )
+			end
+		end
+	end
+end
+
+-- [HE-PORT]
+local function zone_comm( comm )
+	if comm == "green" or comm == "nebo" then return "stalker" end
+	return comm
+end
+
+-- [HE-PORT]
+local function zone_target( comm, lname )
+	local target = olr_smart_index.pick_name( comm, nil, nil, { [ lname ] = true } ) or olr_smart_index.pick_name( comm )
+	local dst = target and olr_smart_index.get_obj( target )
+	if not dst then return nil end
+	if olr_faction_policy.danger_zone( comm, olr_smart_index.get_level( target ), dst.position ) then return nil end
+	return target, dst
+end
+
+-- [HE-PORT]
+local function danger_one( sim, kill, comm, lname, pos, online )
+	local zone = olr_faction_policy.danger_zone( comm, lname, pos )
+	if not zone then return end
+	local sid = kill:smart_terrain_id()
+	if sid ~= BAD_OBJ_ID then
+		if online then return end
+		local smart = sim:object( sid )
+		if not smart or olr_smart_index.near_actor( smart:name() ) then return end
+		if olr_smart_index.get_level( smart:name() ) == lname and olr_faction_policy.in_zone( zone, smart.position ) then return end
+		local task = smart.gulag and smart.gulag:get_obj_job_task( kill.id )
+		if task then
+			sim:teleport_object( kill.id, task:position(), task:level_vertex_id(), task:game_vertex_id() )
+		else
+			sim:teleport_object( kill.id, smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id )
+		end
+		return
+	end
+	if not has_wander_record( kill:name() ) and string.sub( kill:section_name(), 1, 4 ) ~= "olr_" then return end
+	local target, dst = zone_target( zone_comm( comm ), lname )
+	if not target then return end
+	if not online and not olr_smart_index.near_actor( target ) then
+		sim:teleport_object( kill.id, dst.position, dst.m_level_vertex_id, dst.m_game_vertex_id )
+	end
+	olr_smart_index.attach_to( kill, target )
+	clear_wandering( kill:name() )
+end
+
+-- [HE-PORT]
+function danger_sweep()
+	if not db.actor then return end
+	if not olr_smart_index.ensure() then return end
+	local sim = g_sim
+	if not sim then return end
+	for comm, ids in pairs( stalker_ids_cache ) do
+		for _, id in ipairs( ids ) do
+			local kill = sim:object( id )
+			if kill and kill:alive() and not kill.online and not olr_protected.is_no_offline_alife_obj( kill:name() ) then
+				pcall( danger_one, sim, kill, comm, olr_smart_index.object_level( kill ), kill.position, false )
+			end
+		end
+	end
+	local lname = level.name()
+	local actor_id = db.actor:id()
+	for id, _ in pairs( db.storage ) do
+		local npc = id ~= actor_id and level.object_by_id( id )
+		if npc and IsStalker( npc ) and npc:alive() then
+			local kill = sim:object( id )
+			if kill and kill.online and not olr_protected.is_no_offline_alife_obj( kill:name() ) then
+				pcall( danger_one, sim, kill, npc:character_community(), lname, npc:position(), true )
 			end
 		end
 	end
