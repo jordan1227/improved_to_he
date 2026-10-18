@@ -256,6 +256,12 @@ float CActorBodyHealth::PartHealth(u8 part) const
 
 void CActorBodyHealth::ChangePartHealth(u8 part, float value)
 {
+    if (value > 0.f && m_rad_deficit > 0.f)
+    {
+        const float paid = std::min(m_rad_deficit, value / 6.f);
+        m_rad_deficit -= paid;
+        value -= paid * 6.f;
+    }
     if (part == all)
     {
         for (u8 i = head; i < count; ++i)
