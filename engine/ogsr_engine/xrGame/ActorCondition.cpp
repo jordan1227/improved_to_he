@@ -447,6 +447,7 @@ CWound* CActorCondition::ConditionHit(SHit* pHDS)
     m_nlc_last_hit.bone = pHDS->boneID;
     m_nlc_last_hit.raw = pHDS->damage();
     m_nlc_last_hit.post = m_nlc_last_hit.raw;
+    m_nlc_hit_weapon = pHDS->weaponID; // NLC: ammo nlc_blunt_k for the bullet model
 
     // NLC: bullets use their own head scale (A5); the damage table keeps serving mutant hits
     const SNlcActorDamage& nlc = nlc_actor_damage();
@@ -522,6 +523,7 @@ void CActorCondition::nlc_dry_hit(SHit* pHDS, float hit_scale)
     m_nlc_last_hit.bone = pHDS->boneID;
     m_nlc_last_hit.raw = pHDS->damage();
     m_nlc_last_hit.post = m_nlc_last_hit.raw;
+    m_nlc_hit_weapon = pHDS->weaponID;
 
     const SNlcActorDamage& nlc = nlc_actor_damage();
     const bool head = pHDS->boneID != BI_NONE && m_body->PartByBone(u16(pHDS->boneID)) == body_part::head;
@@ -564,17 +566,21 @@ float CActorCondition::nlc_bullet_outfit(float hit_power, s16 element, float AP,
     const float cf = std::min(1.f, outfit->GetCondition() / nlc.cond_full);
     const float ap = std::clamp(AP, 0.f, 1.f);
 
-    float cov, armour;
+    float cov, armour, blunt;
+    bool head_bone = false;
     if (u16(element) != BI_NONE && m_body->PartByBone(u16(element)) == body_part::head)
     {
         // the head is covered by the worn mask only (its own condition is in the coverage)
         cov = m_nlc_head_cov;
         armour = m_nlc_head_armour;
+        blunt = nlc.blunt_head * m_nlc_head_cov;
+        head_bone = true;
     }
     else
     {
         cov = bp->getBoneProtection(element);
         armour = bp->getBoneArmour(element) * cf;
+        blunt = bp->getBoneBlunt(element);
     }
 
     const float pen = std::max(hit_power - armour * (1.f - ap), hit_power * bp->m_fHitFrac);
@@ -587,7 +593,9 @@ float CActorCondition::nlc_bullet_outfit(float hit_power, s16 element, float AP,
 
     m_nlc_last_hit.k_eff = k;
     m_nlc_last_hit.armour = armour;
-    return std::min(pen, hit_power) * k;
+    // NLC: blunt-impact minimum (docs/damage_model/DESIGN_npc_damage_model.md 21), same as for NPCs
+    const float result = std::min(pen, hit_power) * k;
+    return blunt > 0.f ? std::max(result, hit_power * blunt * nlc_hit_blunt_k(m_nlc_hit_weapon, head_bone)) : result;
 }
 
 void CActorCondition::PowerHit(float power, bool apply_outfit)

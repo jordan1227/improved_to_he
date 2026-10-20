@@ -21,6 +21,12 @@ float SBoneProtections::getBoneArmour(s16 bone_id)
         return m_default.armour;
 }
 
+float SBoneProtections::getBoneBlunt(s16 bone_id)
+{
+    storage_it it = m_bones_koeff.find(bone_id);
+    return it != m_bones_koeff.end() ? it->second.blunt : m_default.blunt;
+}
+
 void SBoneProtections::reload(const shared_str& bone_sect, IKinematics* kinematics)
 {
     VERIFY(kinematics);
@@ -31,6 +37,7 @@ void SBoneProtections::reload(const shared_str& bone_sect, IKinematics* kinemati
 
     m_default.koeff = 1.0f;
     m_default.armour = 0.0f;
+    m_default.blunt = 0.0f;
 
     CInifile::Sect& protections = pSettings->r_section(bone_sect);
     for (const auto& i : protections.Data)
@@ -42,6 +49,8 @@ void SBoneProtections::reload(const shared_str& bone_sect, IKinematics* kinemati
         BoneProtection BP;
         BP.koeff = Koeff;
         BP.armour = Armour;
+        // NLC: optional third column, blunt-impact minimum (docs/damage_model/DESIGN_npc_damage_model.md 21)
+        BP.blunt = _GetItemCount(i.second.c_str()) > 2 ? (float)atof(_GetItem(i.second.c_str(), 2, buffer)) : 0.f;
 
         if (!xr_strcmp(i.first.c_str(), "default"))
         {

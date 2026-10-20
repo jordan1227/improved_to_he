@@ -5,6 +5,31 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.111 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `4E2EADA8A9D3E170E29B384937EE9C9692521249E45EDE01697450CBACD44867` (archived with its PDB in `nlc_tools/builds/20261020_075443_4e2eada8`).
+- **Status:** runtime pending. Staggers for every weapon type (`docs/damage_model/DESIGN_npc_damage_model.md` 21.2).
+- `nlc_crit_anim_slot`: weapon animation types without critical-hit animations use the automatic set (2), pump shotguns (9) the rifle set (3); stock and NLC staggers both. `* [nlc_stagger]` prints the weapon and its type.
+
+## nlc-3.589.110 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `870FE64FF81DCF80ECC4BC157C067A3BFB092183B502B040072C803FCA724150` (archived with its PDB in `nlc_tools/builds/20261020_073925_870fe64f`).
+- **Status:** runtime pending. Stagger fixes after test 1 of the blunt pass (`docs/damage_model/DESIGN_npc_damage_model.md` 21.1).
+- Forced staggers (impact and helmet concussion) go through `nlc_request_stagger`: `[nlc_npc_damage] stagger_log` prints `* [nlc_stagger]` with the block reason; transient blocks retry from `UpdateCL` for `nlc_stagger_retry` ms; an impact stagger that cannot animate keeps its aim penalty and cooldown.
+- Ammo `nlc_blunt_head_k` (default `nlc_blunt_k`) for the blunt minimum on head bones, NPCs and player.
+- `nlc_no_crouch` (stalker section): `CStalkerMovementManager::set_body_state` turns crouch into stand.
+
+## nlc-3.589.109 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `01C8BDB7AB7E014615614E725E6A09D962090E636C9909DC5E1D2DCCFEFDCC73` (archived with its PDB in `nlc_tools/builds/20261020_071217_01c8bdb7`).
+- **Status:** runtime pending. Blunt-impact minimum and impact stagger (`docs/damage_model/DESIGN_npc_damage_model.md` 21).
+- `SBoneProtections`: optional third column `blunt` per bone line (`getBoneBlunt`, default 0).
+- NPC (`CAI_Stalker::Hit`) and player (`CActorCondition::nlc_bullet_outfit`): `power = max(power, raw * blunt * nlc_blunt_k)`; ammo `nlc_blunt_k` read from the shooter weapon's current ammo type (`nlc_hit_blunt_k`); player head uses `[nlc_actor_damage] blunt_head` x mask coverage.
+- Impact stagger: `nlc_impact_power` / `_window` / `_aim_time` / `_cooldown` in the stalker section; summed torso/pelvis hits stagger an armoured stalker, aim penalty and cooldown start when the stagger ends.
+
 ## nlc-3.589.108 (2026-10-20)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

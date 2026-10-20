@@ -88,6 +88,7 @@ private:
     SNlcLastHit m_nlc_last_hit; // NLC
     float m_nlc_head_cov{}; // NLC
     float m_nlc_head_armour{}; // NLC
+    u16 m_nlc_hit_weapon{}; // NLC: weapon of the hit being processed (ammo nlc_blunt_k)
     bool m_nlc_dry{}; // NLC: nlc_dry_hit running, no outfit wear
     float nlc_bullet_outfit(float hit_power, s16 element, float AP, CCustomOutfit* outfit); // NLC
 

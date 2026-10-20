@@ -35,6 +35,7 @@
 #include "../../object_handler_space.h"
 #include "../../visual_memory_manager.h"
 #include "../../weapon.h"
+#include "../../level.h" // NLC: nlc_hit_blunt_k
 #include "ai_stalker_space.h"
 #include "../../effectorshot.h"
 #include "../../BoneProtections.h"
@@ -591,6 +592,16 @@ void CAI_Stalker::Hit(SHit* pHDS)
             HDS.power *= k + (1.f - k) * ap * nlc.ap_koeff_bypass;
         }
 
+        // NLC: blunt-impact minimum (docs/damage_model/DESIGN_npc_damage_model.md 21): a stopped round still
+        // passes a share of its raw power through the plate or helmet; buckshot spreads it (ammo nlc_blunt_k)
+        if (!nlc_legacy)
+            if (const float blunt = m_boneHitProtection->getBoneBlunt(HDS.bone()); blunt > 0.f)
+            {
+                const auto P = m_bones_body_parts.find(HDS.bone());
+                const bool head = P != m_bones_body_parts.end() && P->second == critical_wound_type_head;
+                HDS.power = std::max(HDS.power, nlc_raw_power * blunt * nlc_hit_blunt_k(HDS.weaponID, head));
+            }
+
         if (wounded())
             HDS.power = 1000.f;
     }
@@ -664,7 +675,160 @@ void CAI_Stalker::Hit(SHit* pHDS)
     // NLC: concussion only for hits the stalker survives; inherited::Hit has computed this hit's health
     // loss (applied on the next condition update), so a killing helmet hit does not start a stagger
     if (HDS.hit_type == ALife::eHitTypeFireWound && g_Alive() && !wounded() && conditions().GetHealth() - conditions().GetHealthLost() > 0.f)
+    {
         nlc_check_concussion(HDS.boneID, nlc_raw_power, HDS.power);
+        nlc_check_impact(HDS.boneID, nlc_raw_power, HDS.power);
+    }
+}
+
+// NLC: ammo nlc_blunt_k / nlc_blunt_head_k of the weapon's current ammo type, cached per ammo section
+float nlc_hit_blunt_k(u16 weapon_id, bool head)
+{
+    const CWeapon* w = smart_cast<const CWeapon*>(Level().Objects.net_Find(weapon_id));
+    if (!w || w->m_ammoType >= w->m_ammoTypes.size())
+        return 1.f;
+    static xr_map<shared_str, std::pair<float, float>> cache;
+    const shared_str& sect = w->m_ammoTypes[w->m_ammoType];
+    auto it = cache.find(sect);
+    if (it == cache.end())
+    {
+        const float k = std::clamp(READ_IF_EXISTS(pSettings, r_float, sect, "nlc_blunt_k", 1.f), 0.f, 1.f);
+        const float kh = std::clamp(READ_IF_EXISTS(pSettings, r_float, sect, "nlc_blunt_head_k", k), 0.f, 1.f);
+        it = cache.emplace(sect, std::make_pair(k, kh)).first;
+    }
+    return head ? it->second.second : it->second.first;
+}
+
+// NLC: critical-hit (stagger) animation set for a weapon animation type: the engine has sets for 1 pistol,
+// 2 automatic, 3 rifle only; 8 (bullpups/SMGs: Groza, MP5) uses 2, 9 (pump shotguns) uses 3, any other
+// firearm type 2. 0 = none. docs/damage_model/DESIGN_npc_damage_model.md 21.2
+u32 nlc_crit_anim_slot(u32 slot)
+{
+    switch (slot)
+    {
+    case 0: return 0;
+    case 1:
+    case 2:
+    case 3: return slot;
+    case 9: return 3;
+    default: return 2;
+    }
+}
+
+// NLC: why a forced stagger cannot start now (nullptr = it can); mirrors critical_wound_external_conditions_suitable
+LPCSTR CAI_Stalker::nlc_stagger_block_reason()
+{
+    if (!g_Alive())
+        return "dead";
+    if (critically_wounded())
+        return "staggering";
+    if (movement().body_state() != eBodyStateStand)
+        return "not_standing";
+    if (animation().non_script_need_update())
+        return "anim_update";
+    CWeapon* w = smart_cast<CWeapon*>(inventory().ActiveItem());
+    if (!w)
+        return "no_weapon";
+    if (!nlc_crit_anim_slot(w->animation_slot()))
+        return "weapon_slot";
+    if (!agent_manager().member().registered_in_combat(this))
+        return "not_in_combat";
+    return nullptr;
+}
+
+// NLC: start a forced stagger (section 21.1). Transient blocks (animation update, combat registration that follows
+// the first hit) are retried for nlc_stagger_retry ms from UpdateCL; when no animation is possible the stagger
+// falls back to its aim penalty and cooldown without the animation.
+void CAI_Stalker::nlc_request_stagger(u32 type, bool impact, LPCSTR source, float raw, float absorbed)
+{
+    LPCSTR reason = nlc_stagger_block_reason();
+    const bool started = !reason && force_critical_wound(CriticalWoundType(type));
+    if (!started && !reason)
+        reason = "force_failed";
+    const bool transient = reason && (!xr_strcmp(reason, "anim_update") || !xr_strcmp(reason, "not_in_combat") || !xr_strcmp(reason, "force_failed"));
+    if (started)
+    {
+        if (impact)
+            m_nlc_impact_pending = true;
+    }
+    else if (transient && m_nlc_stagger_retry)
+    {
+        m_nlc_stagger_queue_type = type;
+        m_nlc_stagger_queue_impact = impact;
+        m_nlc_stagger_queue_until = Device.dwTimeGlobal + m_nlc_stagger_retry;
+    }
+    else
+        nlc_stagger_fallback(impact);
+    if (nlc_npc_damage().stagger_log)
+    {
+        CWeapon* w = smart_cast<CWeapon*>(inventory().ActiveItem());
+        Msg("* [nlc_stagger] %s %s raw=%.3f absorbed=%.2f weapon=%s slot=%u -> %s%s", cName().c_str(), source, raw, absorbed, w ? w->cNameSect().c_str() : "-",
+            w ? w->animation_slot() : 0, started ? "started" : (transient ? "queued: " : "no anim: "), started ? "" : reason);
+    }
+}
+
+void CAI_Stalker::nlc_stagger_fallback(bool impact)
+{
+    if (!impact)
+        return; // a concussion keeps its aim penalty (already running) without the animation
+    m_nlc_concussion_until = std::max(m_nlc_concussion_until, Device.dwTimeGlobal + m_nlc_impact_aim_time);
+    m_nlc_impact_ready = Device.dwTimeGlobal + m_nlc_impact_cooldown;
+}
+
+void CAI_Stalker::nlc_update_stagger_queue()
+{
+    if (!m_nlc_stagger_queue_until)
+        return;
+    LPCSTR reason = nlc_stagger_block_reason();
+    if (!reason && force_critical_wound(CriticalWoundType(m_nlc_stagger_queue_type)))
+    {
+        if (m_nlc_stagger_queue_impact)
+            m_nlc_impact_pending = true;
+        m_nlc_stagger_queue_until = 0;
+        if (nlc_npc_damage().stagger_log)
+            Msg("* [nlc_stagger] %s queued %s -> started", cName().c_str(), m_nlc_stagger_queue_impact ? "impact" : "concussion");
+        return;
+    }
+    if (Device.dwTimeGlobal < m_nlc_stagger_queue_until && (!reason || xr_strcmp(reason, "dead")))
+        return;
+    m_nlc_stagger_queue_until = 0;
+    if (nlc_npc_damage().stagger_log)
+        Msg("* [nlc_stagger] %s queued %s -> no anim: %s", cName().c_str(), m_nlc_stagger_queue_impact ? "impact" : "concussion", reason ? reason : "force_failed");
+    nlc_stagger_fallback(m_nlc_stagger_queue_impact);
+}
+
+// NLC: impact stagger (docs/damage_model/DESIGN_npc_damage_model.md 21). Torso and pelvis bullet hits within
+// nlc_impact_window ms add up (the pellets of one shell); enough raw power that the armour mostly absorbed
+// staggers the stalker. The aim penalty and the cooldown start when the stagger ends (critically_wounded).
+void CAI_Stalker::nlc_check_impact(u16 bone, float raw_power, float power)
+{
+    if (m_nlc_impact_power <= 0.f || raw_power <= EPS)
+        return;
+    const auto I = m_bones_body_parts.find(bone);
+    if (I == m_bones_body_parts.end() || (*I).second != critical_wound_type_torso)
+        return;
+
+    const u32 now = Device.dwTimeGlobal;
+    if (now - m_nlc_impact_start > m_nlc_impact_window)
+    {
+        m_nlc_impact_start = now;
+        m_nlc_impact_raw = 0.f;
+        m_nlc_impact_post = 0.f;
+    }
+    m_nlc_impact_raw += raw_power;
+    m_nlc_impact_post += power;
+
+    if (m_nlc_impact_pending || m_nlc_stagger_queue_until || now < m_nlc_impact_ready || m_nlc_impact_raw < m_nlc_impact_power)
+        return;
+    const float absorbed = 1.f - m_nlc_impact_post / m_nlc_impact_raw;
+    if (absorbed < m_nlc_concussion_min_absorb)
+        return;
+    const float raw = m_nlc_impact_raw;
+    m_nlc_impact_raw = 0.f;
+    m_nlc_impact_post = 0.f;
+    if (critically_wounded())
+        return;
+    nlc_request_stagger(critical_wound_type_torso, true, "impact", raw, absorbed);
 }
 
 void CAI_Stalker::nlc_check_concussion(u16 bone, float raw_power, float power)
@@ -685,8 +849,8 @@ void CAI_Stalker::nlc_check_concussion(u16 bone, float raw_power, float power)
     m_nlc_concussion_until = Device.dwTimeGlobal + m_nlc_concussion_time;
 
     // only a new concussion staggers; repeated hits during one only extend it
-    if (fresh && m_nlc_concussion_force_anim && !critically_wounded())
-        force_critical_wound(critical_wound_type_head);
+    if (fresh && m_nlc_concussion_force_anim && !critically_wounded() && !m_nlc_stagger_queue_until)
+        nlc_request_stagger(critical_wound_type_head, false, "concussion", raw_power, absorbed);
 }
 
 void CAI_Stalker::HitSignal(float amount, Fvector& vLocalDir, CObject* who, s16 element)
@@ -1541,6 +1705,13 @@ bool CAI_Stalker::critically_wounded()
         // follows the recovery (docs/damage_model/DESIGN_npc_damage_model.md 16)
         if (m_nlc_concussion_time && Device.dwTimeGlobal < m_nlc_concussion_until)
             m_nlc_concussion_until = Device.dwTimeGlobal + m_nlc_concussion_time;
+        // NLC: an impact stagger ends: aim penalty and cooldown from here (section 21)
+        if (m_nlc_impact_pending)
+        {
+            m_nlc_impact_pending = false;
+            m_nlc_concussion_until = std::max(m_nlc_concussion_until, Device.dwTimeGlobal + m_nlc_impact_aim_time);
+            m_nlc_impact_ready = Device.dwTimeGlobal + m_nlc_impact_cooldown;
+        }
         critical_wounded_state_stop();
         return (false);
     }
@@ -1560,14 +1731,9 @@ bool CAI_Stalker::critical_wound_external_conditions_suitable()
     if (!active_weapon)
         return (false);
 
-    switch (active_weapon->animation_slot())
-    {
-    case 1: // pistols
-    case 2: // automatic weapon
-    case 3: // rifles
-        break;
-    default: return (false);
-    }
+    // NLC: other weapon animation types use the automatic / rifle critical-hit animations (nlc_crit_anim_slot)
+    if (!nlc_crit_anim_slot(active_weapon->animation_slot()))
+        return (false);
 
     if (!agent_manager().member().registered_in_combat(this))
         return (false);

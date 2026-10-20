@@ -6,6 +6,7 @@ struct SBoneProtections
     {
         float koeff;
         float armour;
+        float blunt{}; // NLC: blunt-impact minimum share of the raw bullet power (third column, 0 = off)
     };
     float m_fHitFrac{};
     shared_str m_section; // NLC: protection section name (script export bone_protection_section)
@@ -21,4 +22,5 @@ struct SBoneProtections
     void reload(const shared_str& outfit_section, IKinematics* kinematics);
     float getBoneProtection(s16 bone_id);
     float getBoneArmour(s16 bone_id);
+    float getBoneBlunt(s16 bone_id); // NLC
 };

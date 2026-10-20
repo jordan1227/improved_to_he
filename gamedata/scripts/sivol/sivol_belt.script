@@ -1,0 +1,270 @@
+-- sivol_belt.script: artifact belt wear, broken belts and reinforced belts.
+-- docs/damage_model/DESIGN_actor_damage_model.md section 19.
+--
+-- Belts are belt_2_art .. belt_6_art (N-1 artifact slots, misc/sak_quest_items.ltx) and their reinforced
+-- copies belt_N_art_r (same slots, half the wear, steel icon in ui_icon_equipment_16). Hits that get
+-- through the armour wear the best working belt (sivol_actor_crit.script calls wear()); below BROKEN the
+-- belt gives no slots (arts/arc_arts.script asks is_broken) until a technician repairs it
+-- (kotovod.belt_repair_*). Dolgovyazy upgrades slots and reinforces every belt, Vergas reinforces the
+-- one-slot belt; payments are artifacts.
+-- Wear follows game_options.AdditionalMobHits (the injury option).
+
+local BROKEN       = 0.05 -- below this the belt gives no artifact slots
+local TEAR         = 0.5  -- "thinking out loud" line when the condition first drops below this
+local FLOOR        = 0.01 -- wear never goes lower (the item is never destroyed)
+local REINFORCED_K = 0.5  -- wear multiplier of a reinforced belt
+
+local function parse( sect )
+	if type( sect ) ~= "string" then return nil end
+	local n, r = string.match( sect, "^belt_([2-6])_art(_?r?)$" )
+	if not n then return nil end
+	if r ~= "" and r ~= "_r" then return nil end
+	return tonumber( n ), r == "_r"
+end
+
+function size_of( sect ) return ( parse( sect ) ) end
+function is_belt( sect ) return parse( sect ) ~= nil end
+function is_reinforced( sect ) local n, r = parse( sect ); return n ~= nil and r end
+function section( n, reinforced ) return string.format( "belt_%d_art%s", n, reinforced and "_r" or "" ) end
+function broken_threshold() return BROKEN end
+
+function is_broken( obj )
+	return obj ~= nil and is_belt( obj:section() ) and obj:condition() < BROKEN
+end
+
+function enabled()
+	return game_options.AdditionalMobHits ~= false
+end
+
+-- the belt that gives the slots: the largest working belt, the better condition on a tie
+function best_belt()
+	if not db.actor then return nil end
+	local best, best_n
+	db.actor:iterate_inventory( function( _, obj )
+		local n = parse( obj:section() )
+		if n and obj:condition() >= BROKEN then
+			if not best or n > best_n or ( n == best_n and obj:condition() > best:condition() ) then
+				best, best_n = obj, n
+			end
+		end
+	end, db.actor )
+	return best
+end
+
+function has_working_belt()
+	return best_belt() ~= nil
+end
+
+local function think( id, colour )
+	sak.send_tip_local( game.translate_string( id ), game.translate_string( "thinking_out_loud" ), 0, 8, "g_g", "sak", colour )
+end
+
+local function refresh_slots()
+	if arc_arts and arc_arts.check_artefact then arc_arts.check_artefact() end
+end
+
+-- amount: wear before the reinforced multiplier (sivol_actor_crit: dealt damage x factor)
+function wear( amount )
+	if not enabled() or not amount or amount <= 0 then return end
+	local belt = best_belt()
+	if not belt then return end
+	local before = belt:condition()
+	local k = is_reinforced( belt:section() ) and REINFORCED_K or 1
+	local after = math.max( FLOOR, before - amount * k )
+	if after >= before then return end
+	belt:set_condition( after )
+	if before >= BROKEN and after < BROKEN then
+		think( "nlc_belt_broken", "red" )
+		refresh_slots()
+	elseif before >= TEAR and after < TEAR then
+		think( "nlc_belt_torn", "yellow" )
+	end
+end
+
+-------------------------------------------------------------------------------
+-- dialogs (gameplay/sak_dalogs_bar_yan.xml dolgovjaz_*_belt, sak_dalogs_esc_gar.xml vergas_reinforce_belt)
+-------------------------------------------------------------------------------
+local function find( n, reinforced )
+	local found
+	db.actor:iterate_inventory( function( _, obj )
+		local bn, br = parse( obj:section() )
+		if bn == n and ( reinforced == nil or br == reinforced ) then
+			if not found or ( br and not is_reinforced( found:section() ) ) then found = obj end
+		end
+	end, db.actor )
+	return found
+end
+
+-- belt of size n, plain or reinforced (slot upgrade)
+function has_size( n ) return find( tonumber( n ) ) ~= nil end
+-- plain belt of size n (reinforcing)
+function has_plain( n ) return find( tonumber( n ), false ) ~= nil end
+
+function can_reinforce_any()
+	if not enabled() then return false end
+	for n = 2, 6 do if has_plain( n ) then return true end end
+	return false
+end
+
+function can_reinforce_vergas()
+	return enabled() and has_plain( 2 )
+end
+
+-- an artifact capsule (exact section; have_items_count matches substrings, e.g. quest he_yan_af_capsule)
+function capsule()
+	local found
+	db.actor:iterate_inventory( function( _, obj )
+		if not found and obj:section() == "af_capsule" then found = obj end
+	end, db.actor )
+	return found
+end
+
+-- artifact payments: condition at least PAY_COND (novice: 0.01), tiers from kotovod.tbl_arts
+-- (lvl1..lvl3, lvl4 = dummies); dyn5d = the best quality (sections *_dyn5d). An ordinary payment takes the
+-- lowest quality first, so a precious dyn5d copy is not spent where any copy would do.
+local PAY_COND = 0.25
+
+local function pay_cond()
+	return tonumber( level.get_game_difficulty() ) == 0 and 0.01 or PAY_COND
+end
+
+local function tier_of( sect, list )
+	local base = string.gsub( sect, "_dyn%dd$", "" )
+	for _, name in ipairs( list ) do
+		if base == name then return tonumber( string.match( sect, "_dyn(%d)d$" ) ) or 0 end
+	end
+	return nil
+end
+
+local function find_art( tier, dyn5d )
+	local list = kotovod.tbl_arts and kotovod.tbl_arts[ "lvl" .. tier ]
+	if not list then return nil end
+	local cond, best, best_dyn = pay_cond()
+	db.actor:iterate_inventory( function( _, obj )
+		local dyn = tier_of( obj:section(), list )
+		if dyn and obj:condition() >= cond and not ( he_gluzov_art and he_gluzov_art.is_locked_id( obj:id() ) )
+			and not db.actor:is_on_belt( obj ) and ( not dyn5d or dyn == 5 ) then
+			if not best or dyn < best_dyn or ( dyn == best_dyn and obj:condition() < best:condition() ) then
+				best, best_dyn = obj, dyn
+			end
+		end
+	end, db.actor )
+	return best
+end
+
+local function give_obj( obj )
+	if not obj then return end
+	local sect = obj:section()
+	misc.release_obj( obj, true )
+	sak.relocate_item( "out", sect, 1 )
+end
+
+-- payment kinds: "t1".."t3" (tier), "t1x".."t3x" (tier, dyn5d), "dummy", "capsule",
+-- "mod" (modificat .75 / mezo .8 / hyper .85 / absolute .9 / af_dummy_buliz .8, Docent's old rule)
+local function pay_find( kind )
+	local t, x = string.match( kind, "^t(%d)(x?)$" )
+	if t then return find_art( tonumber( t ), x == "x" ) end
+	if kind == "dummy" then return find_art( 4, false ) end
+	if kind == "capsule" then return capsule() end
+	return nil
+end
+
+local function have( kind )
+	if kind == "mod" then
+		return kotovod.gg_good_modificat_have() or kotovod.gg_good_mezomodificat_have() or kotovod.gg_good_hypermodificat_have()
+			or kotovod.gg_good_absolut_have() or kotovod.have_with_cond( "af_dummy_buliz", 1, 0.8 )
+	end
+	return pay_find( kind ) ~= nil
+end
+
+local function give( kind )
+	if kind == "mod" then
+		if kotovod.gg_good_modificat_have() then kotovod.gg_good_modificat_give()
+		elseif kotovod.gg_good_mezomodificat_have() then kotovod.gg_good_mezomodificat_give()
+		elseif kotovod.gg_good_hypermodificat_have() then kotovod.gg_good_hypermodificat_give()
+		elseif kotovod.gg_good_absolut_have() then kotovod.gg_good_absolut_give()
+		else kotovod.have_with_cond( "af_dummy_buliz", 1, 0.8, false, true ) end
+		return
+	end
+	give_obj( pay_find( kind ) )
+end
+
+-- reinforcing, by belt size: 1 slot a tier-1 artifact, 2 slots tier 2, 3 slots tier 3,
+-- 4 slots an artifact capsule, 5 slots a dummy
+local REINFORCE_PAY = { [2] = { "t1" }, [3] = { "t2" }, [4] = { "t3" }, [5] = { "capsule" }, [6] = { "dummy" } }
+-- slot upgrades (belt_n -> belt_n+1), option 1 or 2; every kind of an option is paid
+local UPGRADE_PAY = {
+	[2] = { { "t2" }, { "t1x" } },
+	[3] = { { "t3" }, { "t2x" } },
+	[4] = { { "mod" }, { "t3x", "capsule" } },
+}
+
+local function have_all( kinds )
+	if not kinds then return false end
+	for _, k in ipairs( kinds ) do if not have( k ) then return false end end
+	return true
+end
+
+local function give_all( kinds )
+	for _, k in ipairs( kinds ) do give( k ) end
+end
+
+function pay_have( n ) return have_all( REINFORCE_PAY[ tonumber( n ) ] ) end
+function pay_give( n ) give_all( REINFORCE_PAY[ tonumber( n ) ] ) end
+
+function can_upgrade_any()
+	for n = 2, 4 do if has_size( n ) then return true end end
+	return false
+end
+
+function can_upgrade( n, option )
+	local opt = UPGRADE_PAY[ tonumber( n ) ]
+	return has_size( n ) and opt ~= nil and have_all( opt[ tonumber( option ) ] )
+end
+
+-- belt of size n -> n+1, keeps the reinforcement (new belt, full condition)
+function upgrade( n, option )
+	n, option = tonumber( n ), tonumber( option )
+	if not can_upgrade( n, option ) then
+		log2( "[sivol_belt] upgrade %d option %d: belt or payment missing", n, option )
+		return
+	end
+	give_all( UPGRADE_PAY[ n ][ option ] )
+	take_size( n )
+	give_size( n + 1 )
+	schedule.add( "sivol_belt_slots", "sivol_belt.refresh()", 300 )
+end
+
+function can_pay_plain( n ) return has_plain( n ) and pay_have( n ) end
+
+-- the plain belt goes, a reinforced one of the same size comes back (new, full condition)
+function reinforce( n )
+	n = tonumber( n )
+	local belt = find( n, false )
+	if not belt then
+		log2( "[sivol_belt] reinforce: no plain belt_%d_art in the inventory", n )
+		return
+	end
+	pay_give( n )
+	sak_inventory.release_actor_items( belt:section(), 1, true ) -- exact: plain names are substrings of _r
+	sak.create_items( section( n, true ), 1 )
+	sak.send_tip_local( game.translate_string( section( n, true ) ), game.translate_string( "general_in_item" ), 0, 5, "g_g", "sak" )
+	schedule.add( "sivol_belt_slots", "sivol_belt.refresh()", 300 )
+end
+
+-- slot upgrades keep the reinforcement: take_size(n) then give_size(n + 1)
+local last_taken_reinforced = false
+function take_size( n )
+	n = tonumber( n )
+	local belt = find( n )
+	if not belt then return end
+	last_taken_reinforced = is_reinforced( belt:section() )
+	sak_inventory.release_actor_items( belt:section(), 1, true )
+end
+
+function give_size( n )
+	sak.create_items( section( tonumber( n ), last_taken_reinforced ), 1 )
+	last_taken_reinforced = false
+end
+
+function refresh() refresh_slots() end

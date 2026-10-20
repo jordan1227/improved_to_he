@@ -30,6 +30,8 @@ void CStalkerAnimationManager::global_play_callback(CBlend* blend)
     pair.on_animation_end();
 }
 
+u32 nlc_crit_anim_slot(u32 slot); // NLC: ai_stalker_fire.cpp
+
 MotionID CStalkerAnimationManager::global_critical_hit()
 {
     if (!object().critically_wounded())
@@ -41,7 +43,7 @@ MotionID CStalkerAnimationManager::global_critical_hit()
     CWeapon* weapon = smart_cast<CWeapon*>(object().inventory().ActiveItem());
     VERIFY2(weapon, make_string("current active item: %s", object().inventory().ActiveItem() ? *object().inventory().ActiveItem()->object().cName() : "no active item"));
 
-    u32 animation_slot = weapon->animation_slot();
+    u32 animation_slot = nlc_crit_anim_slot(weapon->animation_slot()); // NLC: types 4+ map onto 2 / 3
     VERIFY(animation_slot >= 1);
     VERIFY(animation_slot <= 3);
 

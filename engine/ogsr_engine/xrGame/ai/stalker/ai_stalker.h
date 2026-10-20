@@ -66,6 +66,8 @@ class CBaseMonster;
 class CDangerLocation;
 class CRestrictedObject;
 
+u32 nlc_crit_anim_slot(u32 slot); // NLC: weapon animation type -> critical-hit animation set (ai_stalker_fire.cpp)
+
 class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_PhraseDialogManager, public CStepManager
 {
 private:
@@ -102,6 +104,26 @@ private:
     bool m_nlc_concussion_force_anim{};
     u32 m_nlc_concussion_until{};
     void nlc_check_concussion(u16 bone, float raw_power, float power);
+    // NLC: impact stagger (docs/damage_model/DESIGN_npc_damage_model.md 21), off while nlc_impact_power is 0
+    float m_nlc_impact_power{};
+    u32 m_nlc_impact_window{60};
+    u32 m_nlc_impact_aim_time{};
+    u32 m_nlc_impact_cooldown{};
+    float m_nlc_impact_raw{};
+    float m_nlc_impact_post{};
+    u32 m_nlc_impact_start{};
+    u32 m_nlc_impact_ready{};
+    bool m_nlc_impact_pending{};
+    void nlc_check_impact(u16 bone, float raw_power, float power);
+    // NLC: forced stagger requests (section 21.1): retry queue and the no-animation fallback
+    u32 m_nlc_stagger_retry{};
+    u32 m_nlc_stagger_queue_until{};
+    u32 m_nlc_stagger_queue_type{};
+    bool m_nlc_stagger_queue_impact{};
+    LPCSTR nlc_stagger_block_reason();
+    void nlc_request_stagger(u32 type, bool impact, LPCSTR source, float raw, float absorbed);
+    void nlc_stagger_fallback(bool impact);
+    void nlc_update_stagger_queue();
 
 public:
     // NLC: aim and engagement against mutants (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6, nlc_mutant_aim.h).

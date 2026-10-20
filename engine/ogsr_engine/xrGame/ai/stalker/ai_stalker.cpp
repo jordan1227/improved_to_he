@@ -252,6 +252,14 @@ void CAI_Stalker::reload(LPCSTR section)
     m_nlc_concussion_time = READ_IF_EXISTS(pSettings, r_u32, section, "nlc_concussion_time", 0);
     m_nlc_concussion_disp_k = READ_IF_EXISTS(pSettings, r_float, section, "nlc_concussion_disp_k", 1.f);
     m_nlc_concussion_force_anim = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_concussion_force_anim", false);
+    // NLC: impact stagger, off while nlc_impact_power is 0
+    m_nlc_impact_power = READ_IF_EXISTS(pSettings, r_float, section, "nlc_impact_power", 0.f);
+    m_nlc_impact_window = READ_IF_EXISTS(pSettings, r_u32, section, "nlc_impact_window", 60);
+    m_nlc_impact_aim_time = READ_IF_EXISTS(pSettings, r_u32, section, "nlc_impact_aim_time", 0);
+    m_nlc_impact_cooldown = READ_IF_EXISTS(pSettings, r_u32, section, "nlc_impact_cooldown", 0);
+    m_nlc_stagger_retry = READ_IF_EXISTS(pSettings, r_u32, section, "nlc_stagger_retry", 0);
+    // NLC: never crouch (zombified stalkers)
+    movement().m_nlc_no_crouch = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_no_crouch", false);
 
     m_min_queue_size_far = pSettings->r_u32(*cNameSect(), "weapon_min_queue_size_far"); // 1;
     m_max_queue_size_far = pSettings->r_u32(*cNameSect(), "weapon_max_queue_size_far"); // 6;
@@ -571,6 +579,8 @@ void CAI_Stalker::UpdateCL()
 
         if (memory().visual().m_nlc_glow) // NLC: night-vision eye glow follows the eyes
             nlc_stealth::update_eye_glow(this);
+
+        nlc_update_stagger_queue(); // NLC: queued forced stagger (section 21.1)
 
         if (g_mt_config.test(mtObjectHandler) && CObjectHandler::planner().initialized())
         {

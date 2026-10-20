@@ -9,12 +9,17 @@ struct SNlcNpcDamage
     float ap_koeff_bypass{1.f}; // share of k_ap that lifts koeff towards 1
     bool apply_ap_actor{true};  // ammo k_ap reduces the actor's outfit armour (original behaviour)
     xr_vector<shared_str> legacy_communities; // these communities keep the pre-pass NPC armour path (no k_ap, no koeff)
+    bool stagger_log{}; // one log line per impact / concussion stagger attempt (section 21.1)
 
     bool is_legacy(const shared_str& community) const
     {
         return std::find(legacy_communities.begin(), legacy_communities.end(), community) != legacy_communities.end();
     }
 };
+
+// NLC: ammo nlc_blunt_k (head bones: nlc_blunt_head_k, default nlc_blunt_k) of the weapon that fired a hit
+// (its current ammo type), 1 when unknown. docs/damage_model/DESIGN_npc_damage_model.md 21; ai_stalker_fire.cpp
+float nlc_hit_blunt_k(u16 weapon_id, bool head = false);
 
 inline const SNlcNpcDamage& nlc_npc_damage()
 {
@@ -27,6 +32,7 @@ inline const SNlcNpcDamage& nlc_npc_damage()
             r.use_bone_koeff = READ_IF_EXISTS(pSettings, r_bool, sect, "use_bone_koeff", r.use_bone_koeff);
             r.ap_koeff_bypass = READ_IF_EXISTS(pSettings, r_float, sect, "ap_koeff_bypass", r.ap_koeff_bypass);
             r.apply_ap_actor = READ_IF_EXISTS(pSettings, r_bool, sect, "apply_ap_actor", r.apply_ap_actor);
+            r.stagger_log = READ_IF_EXISTS(pSettings, r_bool, sect, "stagger_log", r.stagger_log);
             if (pSettings->line_exist(sect, "legacy_communities"))
             {
                 LPCSTR list = pSettings->r_string(sect, "legacy_communities");
@@ -55,6 +61,7 @@ struct SNlcActorDamage
     float cond_full{1.f};
     float ap_koeff_bypass{0.5f};
     float bullet_head_scale{-1.f}; // < 0: keep the damage-table hit scale
+    float blunt_head{}; // blunt-impact minimum on the head, x the worn mask's coverage (section 21)
     bool log{};
 };
 
@@ -70,12 +77,13 @@ inline const SNlcActorDamage& nlc_actor_damage()
             r.cond_full = READ_IF_EXISTS(pSettings, r_float, sect, "cond_full", r.cond_full);
             r.ap_koeff_bypass = READ_IF_EXISTS(pSettings, r_float, sect, "ap_koeff_bypass", r.ap_koeff_bypass);
             r.bullet_head_scale = READ_IF_EXISTS(pSettings, r_float, sect, "bullet_head_scale", r.bullet_head_scale);
+            r.blunt_head = READ_IF_EXISTS(pSettings, r_float, sect, "blunt_head", r.blunt_head);
             r.log = READ_IF_EXISTS(pSettings, r_bool, sect, "log", r.log);
         }
         if (r.cond_full < EPS_L)
             r.cond_full = 1.f;
-        Msg("* [nlc_actor_damage] enabled=%d fw_protection_exp=%.2f cond_full=%.2f ap_koeff_bypass=%.2f bullet_head_scale=%.2f log=%d", r.enabled,
-            r.fw_protection_exp, r.cond_full, r.ap_koeff_bypass, r.bullet_head_scale, r.log);
+        Msg("* [nlc_actor_damage] enabled=%d fw_protection_exp=%.2f cond_full=%.2f ap_koeff_bypass=%.2f bullet_head_scale=%.2f blunt_head=%.3f log=%d", r.enabled,
+            r.fw_protection_exp, r.cond_full, r.ap_koeff_bypass, r.bullet_head_scale, r.blunt_head, r.log);
         return r;
     }();
     return s;

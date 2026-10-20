@@ -25,6 +25,7 @@ protected:
 
 public:
     using inherited::speed;
+    bool m_nlc_no_crouch{}; // NLC: crouch requests become stand (nlc_no_crouch, zombified stalkers)
 
 public:
     typedef DetailPathManager::EDetailPathType EDetailPathType;
