@@ -1,6 +1,1973 @@
-<!-- nlc-changelog-head: 62a8995934024489ae287a516024ce653ae0c91d -->
+<!-- nlc-changelog-head: 8a2c8a719a9ade1de77deb234718f664b88b7fe2 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 8a2c8a719a9ade1de77deb234718f664b88b7fe2 -->
+## 20.10.26 07:38 МСК - Retune heavy armor damage and update engine
+
+Commit: [8a2c8a7](https://github.com/jordan1227/improved_to_he/commit/8a2c8a719a9ade1de77deb234718f664b88b7fe2)
+
+### Description
+
+Rebalance heavy-tier NPC damage and armor coefficients, add Berill helmet protection, and adjust weapon AP to preserve torso lethality. Update the engine to nlc-3.589.108, including the radiation health-deficit healing fix.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/damages.ltx
+- M gamedata/config/weapons/weapons.ltx
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+
+<!-- nlc-changelog-commit: 5e3970117812893a84feb3971b7c2b1d6471fecc -->
+## 20.10.26 06:50 МСК - Add damage models, injuries, and mutant AI
+
+Commit: [5e39701](https://github.com/jordan1227/improved_to_he/commit/5e3970117812893a84feb3971b7c2b1d6471fecc)
+
+### Description
+
+Introduce configurable NPC and actor bullet protection, persistent player limb injuries, concussion effects, armour-hit audio and camera feedback, and improved stalker aiming and engagement against mutants. Also add weapon handling penalties, belt repairs, related fixes and assets, and update the engine to nlc-3.589.107
+
+# Броня, урон от пуль и травмы (движок nlc-3.589.99-3.589.107, 18-20.10.26)
+
+Большая переделка: броня теперь работает по одной формуле и у сталкеров, и у игрока. Шлем защищает
+голову, бронебойные патроны пробивают броню, костюмы различаются по классам. Травмы рук и ног
+получаются от урона, который прошёл сквозь броню, а не по случайному броску. Цифры ниже - для
+мастера на близкой дистанции, в игре возможен разброс.
+
+## Сталкеры: сколько попаданий нужно (голова / торс)
+
+| Цель и оружие | Было | Стало |
+|---|---|---|
+| Экзоскелет, ПМ 9x18 FMJ | 1 / 58 | 8 / 27 |
+| Экзоскелет, АК-74 5.45 FMJ | 1 / 7 | 3 / 7 |
+| Экзоскелет, АК-74 5.45 БП | 1 / 4 | 2 / 4 |
+| СКАТ-10, АК-74 5.45 FMJ / БП (торс) | как у "тяжёлых" | 10 / 5 |
+| СКАТ-10, СВД (торс) | 1 любым патроном | 7Н14 - 1, 7Н1 и 7.62x54 БП - 2 |
+| Комбинезон с противогазом, ПМ | 1 / 27 | 1 / 8 |
+| Куртка с маской, ПМ | 1 / 7 | 1 / 5 |
+
+1. **Голова защищена только шлемом.** Раньше любой головной убор давал одинаковую броню, а выстрел
+   в глаз или челюсть был сильнее, чем в лоб. Теперь: без шлема (капюшон, маска, противогаз) хватает
+   одного выстрела из пистолета, сфера и армейский шлем держат пистолет, экзо и СКАТ держат и
+   автомат. Глаза чуть уязвимее лба, челюсть и шея - чуть слабее.
+2. **Бронебойные патроны (БП, ПММ, ПБП и т.п.) всегда лучше обычных**, против брони - заметно. Против
+   куртки разница маленькая, против экзо и СКАТа - почти вдвое.
+3. **Классы брони:** куртка/плащ < жилет < комбинезон < тяжёлые (ЧН, "Небо", военные) < СКАТ-10 и
+   экзо. Руки и ноги прикрыты слабее торса.
+4. **СКАТ-10 - верхний класс**, наравне с экзо. В торс его с одного выстрела убивает только СВД/СВУ
+   с патроном 7Н14.
+5. **Контузия.** Попадание в шлем, который принял на себя больше половины удара, сбивает сталкера
+   (анимация попадания) и на 4 секунды портит ему прицел. Если выстрел убил - контузии нет.
+   Экзоскелеты от ПБ не контузятся.
+6. **Убитый выстрелом в голову больше не кричит** предсмертную фразу.
+7. **Зомбированные - как раньше** (та же живучесть, без контузии). Исправлено одно: выстрел в
+   челюсть зомби давал 2% урона (меньше, чем в кисть), теперь это слабый выстрел в голову.
+8. **Патроны наёмников** (5.45 и 5.56 "merc") были в 4.6 раза сильнее и убивали игрока в любом
+   костюме с 1-2 попаданий. Теперь это обычные бронебойные. Игроку они по-прежнему не достаются (с
+   трупа - обычные БП).
+9. **Монолитовцы** восстанавливаются вдвое медленнее (около 5% здоровья в секунду вместо 10%).
+10. **Исправлены ошибки:** после того как сталкер-медик один раз лечил раненого, все сталкеры
+    переживали любое не смертельное попадание; сталкер, сбитый тяжёлым попаданием, не падал раненым
+    и не просил аптечку; у нескольких моделей (ЧН/"Небо", Серафим, нейтрал, торговец) была сломана
+    броня.
+
+## Игрок: костюмы против пуль
+
+1. **Костюмы снова различаются.** Раньше против пуль почти все не-экзо костюмы были одинаковыми:
+   грудь и голова без защиты, остальное - один и тот же порог. Теперь у каждого костюма класс
+   (куртка, жилет, комбинезон, тяжёлый, СКАТ, экзо), а защита зависит от части тела и износа (полная
+   до 75% состояния, дальше падает).
+2. **Бронебойные патроны сталкеров пробивают и ваш костюм** заметнее, чем обычные.
+3. **Голова.** Раньше голова была самым безопасным местом (20% урона), теперь опасна. Надетая маска
+   прикрывает часть головы: противогаз немного, научная маска больше, военный шлем и шлем экзо - почти
+   всю (зависит от износа маски). Без маски голова ничем не защищена.
+4. **Защита от ваншота:** если у головы или части тела больше 50% здоровья, один выстрел (вместе со
+   всеми дробинами) не опустит её ниже небольшого остатка - убивает только следующее попадание.
+5. **Сталкеры целятся вам в грудь**, а в голову чаще попадают опытные (раньше все целились в голову).
+   Новички разбрасывают сильнее.
+6. Попадание в бронированный торс отнимает немного выносливости (броня держит пулю, но не удар).
+7. Урон мутантов (когти, укусы, пси) - как раньше.
+
+## Игрок: травмы рук и ног
+
+Было: травма по случайному броску от силы удара до брони, даже если броня остановила пулю. Стало:
+урон, прошедший сквозь броню, накапливается по каждой конечности и со временем спадает, поэтому
+хорошая броня спасает от травм.
+
+| | Лёгкая травма | Тяжёлая травма |
+|---|---|---|
+| Ноги | медленнее на 12% | медленнее на 30%, бег невозможен |
+| Руки: раскачка оружия | x1.25 | x1.5 |
+| Руки: отдача | x1.15 | x1.35 |
+| Руки: перезарядка | медленнее на 15% (было: без изменений) | медленнее на 25% (было: на 20%) |
+| Руки: достать/убрать оружие | медленнее на 15% | медленнее на 30% |
+
+1. **Звуки перезарядки и доставания оружия идут в такт анимации** (замедляются вместе с ней и звучат
+   чуть ниже). Раньше звук заканчивался раньше анимации.
+2. **Лечение:** травма проходит сама, когда здоровье полное и прошло время: лёгкая - 30 игровых минут,
+   тяжёлая - 3 игровых часа (сон тоже считается). Аптечки: **обычная травмы не лечит** (было: снижала
+   на уровень), армейская снижает каждую травму на уровень, научная лечит полностью. Бинт травмы не
+   лечит.
+3. **Часы** показывают травмы вместо индикатора кровотечения: фигурка, травмированная конечность
+   жёлтая (лёгкая) или красная (тяжёлая), при контузии - голова. Если вы ещё и кровоточите, индикаторы
+   чередуются.
+4. **"Мысли вслух"** сообщают о травме, ухудшении и выздоровлении примерно через 5 секунд (не во время
+   анимации аптечки).
+5. **Контузия игрока** (попадание в голову): глушит звук и на несколько секунд даёт эффект на экране;
+   маска или шлем сокращают её.
+6. Травмы от мутантов выбираются по анатомии (собака - чаще ноги, кровосос - руки и торс и т.д.).
+7. Травмы сохраняются в сейвах. Настройка: "Дополнительные эффекты попаданий" в опциях.
+
+## Сталкеры против мутантов
+
+Сталкеры раньше часто промахивались по мутантам вплотную (запаздывающий прицел) или не видели угрозы.
+Теперь целятся по текущему направлению взгляда с задержкой по рангу, хуже попадают по невидимому
+кровососу, в упор после удара мутанта вздрагивают и мажут, под пси-воздействием разброс больше,
+помогают вам и друзьям против мутантов рядом.
+
+## Звуки и камера попаданий
+
+Новые звуки попаданий по броне и по маске (по сталкерам и по вам) и встряска камеры по классу
+костюма (переделка аддона Wepl). Подробности - в отдельной записи от этой сессии, если появятся.
+
+## Для проверки (консоль)
+
+- Травма: `g_loadstring sivol_actor_crit.debug_injury("arm", 2)` (`"leg"` или `"arm"`, уровень 0-2;
+  `"head", 1` - контузия).
+- Тестовые сталкеры в спавнере: `nlc_test_skat_military_black` (СКАТ-10), `rad_zombied_respawn_1..3`
+  (зомбированные).
+
+## Что проверить
+
+1. Сколько выстрелов нужно на сталкеров в разной броне (особенно экзо, СКАТ, шлемы против пистолета).
+2. Не стали ли бронированные враги слишком "губками" или, наоборот, слишком лёгкими.
+3. Насколько часто и от чего вы получаете травмы в разных костюмах; не слишком ли долго они лечатся.
+4. Перезарядка и доставание оружия с травмой руки: нет ли зависаний и рассинхрона звука.
+5. Сталкеры против мутантов (кровосос пока кажется слишком лёгким для них - это следующий этап).
+
+### Game files changed
+
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_exo_1.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_exo_2.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_exo_3.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_exo_4.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_exo_5.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_heavy_1.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_heavy_2.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_heavy_3.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_heavy_4.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_heavy_5.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_light_1.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_light_2.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_light_3.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_light_4.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_light_5.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_medium_1.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_medium_2.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_medium_3.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_medium_4.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_medium_5.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_none_1.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_none_2.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_none_3.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_none_4.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/body/hit_none_5.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_exo_1.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_exo_2.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_exo_3.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_exo_4.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_exo_5.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_gasmask_1.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_gasmask_2.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_gasmask_3.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_gasmask_4.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_gasmask_5.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_glass_1.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_glass_2.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_glass_3.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_glass_4.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_glass_5.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_helmet_1.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_helmet_2.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_helmet_3.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_helmet_4.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_helmet_5.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_none_1.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_none_2.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_none_3.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_none_4.anm
+- A gamedata/anims/camera_effects/wepl/hit_effect/head/hit_none_5.anm
+- M gamedata/config/creatures/actor.ltx
+- M gamedata/config/creatures/damages.ltx
+- M gamedata/config/creatures/game_relations.ltx
+- M gamedata/config/creatures/m_burer.ltx
+- M gamedata/config/creatures/m_controller.ltx
+- M gamedata/config/creatures/m_stalker.ltx
+- M gamedata/config/creatures/m_stalker_monolith.ltx
+- M gamedata/config/creatures/m_stalker_zombied.ltx
+- M gamedata/config/creatures/spawn_sections.ltx
+- M gamedata/config/misc/all_outfits_nlc.ltx
+- A gamedata/config/misc/sivol_hit_fx.ltx
+- M gamedata/config/models/capture/exo_helmet_damage_med.ltx
+- M gamedata/config/models/capture/exo_helmet_damage_mon.ltx
+- M gamedata/config/models/capture/exo_helmet_damage_zom.ltx
+- A gamedata/config/models/capture/npc_skat_damage.ltx
+- M gamedata/config/models/capture/stalker_nebo_3.ltx
+- M gamedata/config/models/capture/stalker_nebo_3_.ltx
+- M gamedata/config/models/capture/stalker_neutral_1.ltx
+- M gamedata/config/models/capture/stalker_serafim_1.ltx
+- M gamedata/config/models/capture/stalker_trader_2.ltx
+- A gamedata/config/models/npc_visual_userdata_override.ltx
+- M gamedata/config/system.ltx
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/eng/ui_st_knife_repair.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/config/text/rus/ui_st_knife_repair.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/weapons/weapons.ltx
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/kotovod/spawner.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/ogse_critical_hit.script
+- M gamedata/scripts/ogsr_shaders_control.script
+- M gamedata/scripts/params/params.script
+- M gamedata/scripts/params/wpn_params.script
+- A gamedata/scripts/sivol/sivol_actor_crit.script
+- M gamedata/scripts/sivol/sivol_fuzz_recoil.script
+- A gamedata/scripts/sivol/sivol_hit_fx.script
+- M gamedata/scripts/sivol/sivol_hit_log.script
+- M gamedata/scripts/sivol/sivol_masks.script
+- A gamedata/scripts/sivol/sivol_mut_aim_log.script
+- M gamedata/scripts/vergas/vergas_masks.script
+- M gamedata/scripts/xr/xr_motivator.script
+- M gamedata/scripts/xr/xr_wounded.script
+- M gamedata/scripts/xrs/xrs_battle_ai.script
+- M gamedata/shaders/r3/model_blood_icon.ps
+- M gamedata/shaders/r3/model_blood_icon.s
+- M gamedata/shaders/r3/model_clock.ps
+- M gamedata/shaders/r3/model_clock.s
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_1.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_10.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_11.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_12.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_13.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_14.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_15.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_16.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_17.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_18.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_19.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_2.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_20.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_3.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_4.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_5.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_6.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_7.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_8.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_exo_9.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_1.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_10.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_11.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_12.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_13.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_14.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_15.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_16.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_17.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_18.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_19.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_2.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_20.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_3.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_4.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_5.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_6.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_7.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_8.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_heavy_9.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_1.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_10.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_11.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_12.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_13.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_14.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_15.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_16.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_17.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_18.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_19.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_2.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_20.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_3.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_4.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_5.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_6.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_7.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_8.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_light_9.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_1.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_10.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_11.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_12.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_13.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_14.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_15.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_16.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_17.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_18.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_19.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_2.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_20.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_3.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_4.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_5.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_6.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_7.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_8.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_medium_9.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_1.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_10.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_11.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_12.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_13.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_14.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_15.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_16.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_17.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_18.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_19.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_2.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_20.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_3.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_4.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_5.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_6.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_7.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_8.ogg
+- A gamedata/sounds/wepl/hit_effect/body/hit_none_9.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_1.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_10.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_11.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_12.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_13.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_14.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_15.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_16.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_17.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_18.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_19.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_2.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_20.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_3.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_4.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_5.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_6.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_7.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_8.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_gasmask_9.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_1.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_10.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_11.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_12.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_13.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_14.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_15.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_16.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_17.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_18.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_19.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_2.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_20.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_3.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_4.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_5.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_6.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_7.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_8.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_glass_9.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_1.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_10.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_11.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_12.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_13.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_14.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_15.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_16.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_17.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_18.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_19.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_2.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_20.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_3.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_4.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_5.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_6.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_7.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_8.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_helmet_9.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_1.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_10.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_11.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_12.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_13.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_14.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_15.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_16.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_17.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_18.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_19.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_2.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_20.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_3.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_4.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_5.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_6.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_7.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_8.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_none_9.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_1.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_10.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_11.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_12.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_13.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_14.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_15.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_16.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_17.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_18.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_19.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_2.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_20.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_3.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_4.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_5.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_6.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_7.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_8.ogg
+- A gamedata/sounds/wepl/hit_effect/head/hit_zombie_9.ogg
+- A gamedata/textures/act/watch/icon_injury.dds
+
+### Other repository files changed
+
+- M .gitignore
+- D credit list (unfinished).txt
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.h
+- M engine/ogsr_engine/xrGame/BoneProtections.cpp
+- M engine/ogsr_engine/xrGame/BoneProtections.h
+- M engine/ogsr_engine/xrGame/CustomMonster.cpp
+- M engine/ogsr_engine/xrGame/CustomMonster.h
+- M engine/ogsr_engine/xrGame/CustomOutfit.cpp
+- M engine/ogsr_engine/xrGame/CustomOutfit.h
+- M engine/ogsr_engine/xrGame/EntityCondition.cpp
+- M engine/ogsr_engine/xrGame/EntityCondition.h
+- M engine/ogsr_engine/xrGame/HudItem.cpp
+- M engine/ogsr_engine/xrGame/HudSound.cpp
+- M engine/ogsr_engine/xrGame/HudSound.h
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_startup.cpp
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.cpp
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker_fire.cpp
+- M engine/ogsr_engine/xrGame/enemy_manager.cpp
+- M engine/ogsr_engine/xrGame/enemy_manager.h
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.h
+- A engine/ogsr_engine/xrGame/nlc_mutant_aim.h
+- A engine/ogsr_engine/xrGame/nlc_npc_damage.h
+- M engine/ogsr_engine/xrGame/player_hud.cpp
+- M engine/ogsr_engine/xrGame/player_hud.h
+- M engine/ogsr_engine/xrGame/script_game_object.h
+- M engine/ogsr_engine/xrGame/script_game_object4.cpp
+- M engine/ogsr_engine/xrGame/script_game_object_script3.cpp
+- M engine/ogsr_engine/xrGame/sight_action.cpp
+- M engine/ogsr_engine/xrGame/sight_manager.cpp
+- M engine/ogsr_engine/xrGame/stalker_movement_manager.cpp
+
+<!-- nlc-changelog-commit: bda41637c62223ea637f300418a201f12bbc2a02 -->
+## 19.10.26 16:18 МСК - Метки замеров пси-поля снимаются
+
+Commit: [bda4163](https://github.com/jordan1227/improved_to_he/commit/bda41637c62223ea637f300418a201f12bbc2a02)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 36d155dc700d3b5cef45603f18dc2f9b857c211e -->
+## 19.10.26 15:36 МСК - Телепорт у перехода на Радар убран
+
+Commit: [36d155d](https://github.com/jordan1227/improved_to_he/commit/36d155dc700d3b5cef45603f18dc2f9b857c211e)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/doc.script
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_generators.ltx
+
+<!-- nlc-changelog-commit: 52ea15a1fcee5a8d7ad2f161a6861db702e9cf4d -->
+## 19.10.26 15:26 МСК - Шатунов в игнор алайфа
+
+Commit: [52ea15a](https://github.com/jordan1227/improved_to_he/commit/52ea15a1fcee5a8d7ad2f161a6861db702e9cf4d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_protected.script
+
+<!-- nlc-changelog-commit: d3327313b08fa2523fc2d89343c1601fa4531742 -->
+## 19.10.26 15:26 МСК - Костры в Припяти
+
+Commit: [d332731](https://github.com/jordan1227/improved_to_he/commit/d3327313b08fa2523fc2d89343c1601fa4531742)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/ogse/ogse_campfire.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l11_pripyat.ltx
+
+<!-- nlc-changelog-commit: 11f702a2125c8f2038c91878f1a19ab1fe9e5f55 -->
+## 19.10.26 15:03 МСК - Телепорты лабиринта в Припяти на место
+
+Commit: [11f702a](https://github.com/jordan1227/improved_to_he/commit/11f702a2125c8f2038c91878f1a19ab1fe9e5f55)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/amk/amk_mod.script
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 2f5fc4949bf21fa13d32ef4e2913ffa742222726 -->
+## 19.10.26 14:18 МСК - Убрал жадинки на Радаре из 3.9.1
+
+Commit: [2f5fc49](https://github.com/jordan1227/improved_to_he/commit/2f5fc4949bf21fa13d32ef4e2913ffa742222726)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l10_radar.ltx
+
+<!-- nlc-changelog-commit: 26c010a355abe52842a286a0a0e8fd228640748b -->
+## 19.10.26 13:58 МСК - 10 летний баг с анимациями ящиков
+
+Commit: [26c010a](https://github.com/jordan1227/improved_to_he/commit/26c010a355abe52842a286a0a0e8fd228640748b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/binders/bind_physic_object.script
+- M gamedata/scripts/ph/ph_button.script
+
+<!-- nlc-changelog-commit: 929607ef30f5008ad3f84db213e2913a6b940f15 -->
+## 19.10.26 13:58 МСК - Фикс анимаций, если отменили переход
+
+Commit: [929607e](https://github.com/jordan1227/improved_to_he/commit/929607ef30f5008ad3f84db213e2913a6b940f15)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/hud_animation_owner.script
+
+<!-- nlc-changelog-commit: 13dcfe72abe9b5ae7acd162db77011eee15a6d66 -->
+## 18.10.26 20:22 МСК - Иконка для КМ-2 в слоте
+
+Commit: [13dcfe7](https://github.com/jordan1227/improved_to_he/commit/13dcfe72abe9b5ae7acd162db77011eee15a6d66)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/all_outfits_nlc.ltx
+
+<!-- nlc-changelog-commit: 0e75dec1f033af81c02bcd9264847e69aeca600b -->
+## 18.10.26 19:16 МСК - Новый диалог у Воронина, если база захвачена
+
+Commit: [0e75dec](https://github.com/jordan1227/improved_to_he/commit/0e75dec1f033af81c02bcd9264847e69aeca600b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_bar.xml
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+
+<!-- nlc-changelog-commit: b36ab47de2872814f8dcc4f34995da6b187e334a -->
+## 18.10.26 19:03 МСК - Потроха не кладутся в НЗ, еда гниет на 5% медленнее в ней
+
+Commit: [b36ab47](https://github.com/jordan1227/improved_to_he/commit/b36ab47de2872814f8dcc4f34995da6b187e334a)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/kotovod/parts_decay.script
+- M gamedata/scripts/vergas/bag_on_belt_use.script
+
+<!-- nlc-changelog-commit: b6f84a86444533bab112d028d413c0fbc1980a15 -->
+## 18.10.26 18:51 МСК - Рельсы
+
+Commit: [b6f84a8](https://github.com/jordan1227/improved_to_he/commit/b6f84a86444533bab112d028d413c0fbc1980a15)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 283701937492b73be776edfbf3a327980406ff3a -->
+## 18.10.26 18:23 МСК - Без двойного звука у энергетика
+
+Commit: [2837019](https://github.com/jordan1227/improved_to_he/commit/283701937492b73be776edfbf3a327980406ff3a)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/vergas/vergas_medical_elastic.script
+
+<!-- nlc-changelog-commit: 4c7ac302639c9b416bfa6d7bdd2238090464ca77 -->
+## 18.10.26 18:10 МСК - Поправил радиацию и взаимодействие со скелетом
+
+Commit: [4c7ac30](https://github.com/jordan1227/improved_to_he/commit/4c7ac302639c9b416bfa6d7bdd2238090464ca77)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+
+### Other repository files changed
+
+- M engine/ogsr_engine/xrGame/nlc_body_health.cpp
+
+<!-- nlc-changelog-commit: 58543d3192d0a599472a6618974a4cbaaa226034 -->
+## 18.10.26 17:53 МСК - Жажда после антирада
+
+Commit: [58543d3](https://github.com/jordan1227/improved_to_he/commit/58543d3192d0a599472a6618974a4cbaaa226034)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/thirst.script
+
+<!-- nlc-changelog-commit: 95d8418bd515d3ad33d4559be746df13995c73dc -->
+## 18.10.26 14:47 МСК - Сделал ноги зелеными при НИ, остальное желтое (скелет)
+
+Commit: [95d8418](https://github.com/jordan1227/improved_to_he/commit/95d8418bd515d3ad33d4559be746df13995c73dc)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_body_health.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 89c2d26ee0cc5b798685608356ac226bcae166f2 -->
+## 18.10.26 14:40 МСК - Ящик
+
+Commit: [89c2d26](https://github.com/jordan1227/improved_to_he/commit/89c2d26ee0cc5b798685608356ac226bcae166f2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/mike_dialogs_new_story.xml
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 0dd16857c464c5d44881066d0c93fea3899217d5 -->
+## 18.10.26 01:38 МСК - Сообщения пда
+
+Commit: [0dd1685](https://github.com/jordan1227/improved_to_he/commit/0dd16857c464c5d44881066d0c93fea3899217d5)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- A gamedata/sounds/characters_voice/scenario/bar/pda/voronin_gunfire_pda_1.ogg
+- A gamedata/sounds/characters_voice/scenario/bar/pda/voronin_gunfire_pda_2.ogg
+- A gamedata/sounds/characters_voice/scenario/bar/pda/voronin_gunfire_pda_3.ogg
+- A gamedata/sounds/characters_voice/scenario/bar/pda/voronin_gunfire_pda_4.ogg
+- A gamedata/sounds/characters_voice/scenario/bun/patrol_prikaz.ogg
+- A gamedata/sounds/characters_voice/scenario/duty/duty_request1.ogg
+- A gamedata/sounds/characters_voice/scenario/duty/duty_warning1.ogg
+- A gamedata/sounds/characters_voice/scenario/escape/petruha_raport_p.ogg
+- A gamedata/sounds/characters_voice/scenario/garbage/duty_after_rush_bad.ogg
+- A gamedata/sounds/characters_voice/scenario/garbage/duty_after_rush_good.ogg
+- A gamedata/sounds/characters_voice/scenario/garbage/duty_after_rush_normal.ogg
+- A gamedata/sounds/characters_voice/scenario/rostok/pda_kruglov_help_5.ogg
+- A gamedata/sounds/characters_voice/scenario/rostok/pda_kruglov_help_6.ogg
+- A gamedata/sounds/characters_voice/scenario/rostok/pda_kruglov_stop_enemy_1.ogg
+- A gamedata/sounds/characters_voice/scenario/rostok/pda_kruglov_stop_enemy_2.ogg
+- A gamedata/sounds/characters_voice/scenario/yantar/ghost_pda.ogg
+- A gamedata/sounds/characters_voice/scenario/yantar/kruglov_radiation_quest_13.ogg
+- A gamedata/sounds/characters_voice/scenario/yantar/professor_to_actor_pda_1.ogg
+- A gamedata/sounds/characters_voice/scenario/yantar/professor_to_actor_pda_2.ogg
+- A gamedata/sounds/characters_voice/scenario/yantar/professor_to_actor_pda_3.ogg
+- A gamedata/sounds/characters_voice/scenario/yantar/professor_to_actor_pda_4.ogg
+- A gamedata/sounds/characters_voice/scenario/yantar/professor_to_actor_pda_5.ogg
+- A gamedata/sounds/device/pda/pda_sos.ogg
+- A gamedata/sounds/device/pda/pda_tip.ogg
+
+<!-- nlc-changelog-commit: a476b58f2c755915ac44588b5adda5bfd1642eb4 -->
+## 18.10.26 01:38 МСК - Название рецепта
+
+Commit: [a476b58](https://github.com/jordan1227/improved_to_he/commit/a476b58f2c755915ac44588b5adda5bfd1642eb4)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/string_table_amk_arts_desc.xml
+- M gamedata/config/text/rus/string_table_amk_arts_desc.xml
+
+<!-- nlc-changelog-commit: 46fe3974763d04009867c6c98e3ca2102cdf5996 -->
+## 18.10.26 01:08 МСК - Сахаров заправляет баллон за капсулу
+
+Commit: [46fe397](https://github.com/jordan1227/improved_to_he/commit/46fe3974763d04009867c6c98e3ca2102cdf5996)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/scripts/ballon_refill.script
+
+<!-- nlc-changelog-commit: b2342184b1a5666e49dd7357ac939422f77603f8 -->
+## 17.10.26 20:10 МСК - манифест
+
+Commit: [b234218](https://github.com/jordan1227/improved_to_he/commit/b2342184b1a5666e49dd7357ac939422f77603f8)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: ede7923a1968a533d675d47f14d57f7cd41ee321 -->
+## 17.10.26 20:09 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [ede7923](https://github.com/jordan1227/improved_to_he/commit/ede7923a1968a533d675d47f14d57f7cd41ee321)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_pda.xml
+- M gamedata/config/text/rus/string_table_amk_arts_desc.xml
+- M gamedata/config/text/rus/ui_st_pda.xml
+- M gamedata/scripts/olr/olr_faction_policy.script
+- M gamedata/scripts/olr/olr_init.script
+- M gamedata/scripts/olr/olr_offline_task.script
+- M gamedata/scripts/olr/olr_online_depart.script
+- M gamedata/scripts/sak/sak_artmods.script
+- M gamedata/scripts/new_quests.script
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: cca5a5419fcb070a065d3edd84fbd3284b77fb04 -->
+## 17.10.26 20:09 МСК - Описание заказов Ворону
+
+Commit: [cca5a54](https://github.com/jordan1227/improved_to_he/commit/cca5a5419fcb070a065d3edd84fbd3284b77fb04)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/new_quests.script
+
+<!-- nlc-changelog-commit: 0f5600fd05000561342c245b9567d5b380a089f0 -->
+## 17.10.26 00:55 МСК - манифест
+
+Commit: [0f5600f](https://github.com/jordan1227/improved_to_he/commit/0f5600fd05000561342c245b9567d5b380a089f0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: f69e59da00cde2737cc951f18b7cde69f71393dd -->
+## 17.10.26 00:54 МСК - Rework sleep duration and thirst costs
+
+Commit: [f69e59d](https://github.com/jordan1227/improved_to_he/commit/f69e59da00cde2737cc951f18b7cde69f71393dd)
+
+### Description
+
+Make normal sleep continue until rested or capped at 12 hours, with wake-up tips and a duration-based sleep lockout. Rebalance sleep gear effects, passive and sleep-related thirst, army flask hydration, and black-tip hunger; add localized wake-up messages and alarm logging.
+
+### Game files changed
+
+- M gamedata/config/text/eng/string_table_general.xml
+- M gamedata/config/text/rus/string_table_general.xml
+- M gamedata/scripts/params/params.script
+- M gamedata/scripts/sleep_manager.script
+- M gamedata/scripts/thirst.script
+- M gamedata/scripts/ui/ui_cheat.script
+- M gamedata/scripts/vergas/vergas_watch.script
+
+<!-- nlc-changelog-commit: 43c3d51a8f7adf42bfd16021959e4bcb50355116 -->
+## 17.10.26 00:18 МСК - Бартер
+
+Commit: [43c3d51](https://github.com/jordan1227/improved_to_he/commit/43c3d51a8f7adf42bfd16021959e4bcb50355116)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/trade_manager.script
+
+<!-- nlc-changelog-commit: 52807fa603440bc6a386ef68c44810ac126de0a3 -->
+## 16.10.26 23:51 МСК - манифест
+
+Commit: [52807fa](https://github.com/jordan1227/improved_to_he/commit/52807fa603440bc6a386ef68c44810ac126de0a3)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 4e1137d16d06de3e04c4671e6ede957cd9ad3ec6 -->
+## 16.10.26 23:50 МСК - Adjust artifact transmutation rules and bonuses
+
+Commit: [4e1137d](https://github.com/jordan1227/improved_to_he/commit/4e1137d16d06de3e04c4671e6ede957cd9ad3ec6)
+
+### Description
+
+На лёгкой сложности теперь влияет состояние артов также как на авторской, но даём +10% плоский бонус к любой не-модификат варке.
+
+Варка модификатов теперь восстанавливает +10% кондишена на авторской, на лёгкой +25%.
+
+Не забываем что АО дают +20% бонус дополнительно к состоянию результата в любой варке.
+
+Update dummy recipe descriptions and validation to require at least one of the three artifacts to be fully positive. Add condition bonuses for chained artifact transformations and apply transformed conditions on every difficulty.
+
+### Game files changed
+
+- M gamedata/config/text/eng/sak_strings.xml
+- M gamedata/config/text/rus/string_table_amk_arts_desc.xml
+- M gamedata/scripts/amk/amk_mod.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: d6822f60e72445bb3891d39caced43b83be145eb -->
+## 16.10.26 20:55 МСК - Мюллер логика
+
+Commit: [d6822f6](https://github.com/jordan1227/improved_to_he/commit/d6822f60e72445bb3891d39caced43b83be145eb)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/agr/agr_muller.ltx
+- M gamedata/scripts/dsh_enemies.script
+- M gamedata/scripts/xr/xr_logic.script
+
+<!-- nlc-changelog-commit: dccd8018b330717ed1d01a381a65ef7aa9b57102 -->
+## 16.10.26 20:43 МСК - Мюллер
+
+Commit: [dccd801](https://github.com/jordan1227/improved_to_he/commit/dccd8018b330717ed1d01a381a65ef7aa9b57102)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/olr/olr_protected.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: b599e0c6f22163e4bdc6e9fa2c02b4c0b4886bb9 -->
+## 16.10.26 20:32 МСК - Исправил Матвеева
+
+Commit: [b599e0c](https://github.com/jordan1227/improved_to_he/commit/b599e0c6f22163e4bdc6e9fa2c02b4c0b4886bb9)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/mike.script
+
+<!-- nlc-changelog-commit: 7874bcd6e06412b61fc3796500f204429bde7a3d -->
+## 16.10.26 15:39 МСК - Починил лимит Егерю
+
+Commit: [7874bcd](https://github.com/jordan1227/improved_to_he/commit/7874bcd6e06412b61fc3796500f204429bde7a3d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_lim_atp.xml
+- M gamedata/scripts/trade_manager.script
+
+<!-- nlc-changelog-commit: 3237c717b18474207dac173e1ca80e62be9b8437 -->
+## 15.10.26 21:53 МСК - манифест
+
+Commit: [3237c71](https://github.com/jordan1227/improved_to_he/commit/3237c717b18474207dac173e1ca80e62be9b8437)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: c9c21efb3d1c51f47d378e976592929268e6a7ed -->
+## 15.10.26 21:52 МСК - Update ssfx_il.ps
+
+Commit: [c9c21ef](https://github.com/jordan1227/improved_to_he/commit/c9c21efb3d1c51f47d378e976592929268e6a7ed)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/shaders/r3/ssfx_il.ps
+
+<!-- nlc-changelog-commit: 77b0930977fe3b680deb597896cc3cf40ffef182 -->
+## 15.10.26 21:35 МСК - манифест
+
+Commit: [77b0930](https://github.com/jordan1227/improved_to_he/commit/77b0930977fe3b680deb597896cc3cf40ffef182)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: fc4805aa290a6d6e2c4cab678f13e919e76e7002 -->
+## 15.10.26 21:35 МСК - фикс шейдеров
+
+Commit: [fc4805a](https://github.com/jordan1227/improved_to_he/commit/fc4805aa290a6d6e2c4cab678f13e919e76e7002)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/shaders/r3/combine_1.ps
+- M gamedata/shaders/r3/ssfx_il.ps
+
+<!-- nlc-changelog-commit: 3a06370059188a2fdd1e5f85a209748b90ed8a4e -->
+## 15.10.26 20:53 МСК - volumetric паре аномалькам
+
+Commit: [3a06370](https://github.com/jordan1227/improved_to_he/commit/3a06370059188a2fdd1e5f85a209748b90ed8a4e)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/zone_base.ltx
+- M gamedata/config/misc/zone_buzz.ltx
+- M gamedata/config/misc/zone_torrid.ltx
+
+### Other repository files changed
+
+- M .gitignore
+
+<!-- nlc-changelog-commit: 1128ba825e43e814efc5b69c3071f87e599c3e6b -->
+## 15.10.26 01:24 МСК - Почистил Чащу и Теслу от людей
+
+Commit: [1128ba8](https://github.com/jordan1227/improved_to_he/commit/1128ba825e43e814efc5b69c3071f87e599c3e6b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/logic/smart_terrain.script
+- M gamedata/scripts/olr/olr_faction_policy.script
+- M gamedata/scripts/olr/olr_init.script
+- M gamedata/scripts/olr/olr_offline_task.script
+
+<!-- nlc-changelog-commit: 7f6bdd78a875295f980361efe32ebffaedb2eba6 -->
+## 14.10.26 18:30 МСК - Подправил отношения между НПС
+
+Commit: [7f6bdd7](https://github.com/jordan1227/improved_to_he/commit/7f6bdd78a875295f980361efe32ebffaedb2eba6)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/creatures/game_relations.ltx
+
+<!-- nlc-changelog-commit: 89a6e15bef6e7292df64255d23991a16a7ed2154 -->
+## 14.10.26 17:42 МСК - Поменял анимацию маски на научник.
+
+Commit: [89a6e15](https://github.com/jordan1227/improved_to_he/commit/89a6e15bef6e7292df64255d23991a16a7ed2154)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/vergas/vergas_masks.script
+
+<!-- nlc-changelog-commit: e221a3651730ed532311b5dcdd4b4d1ed0821d67 -->
+## 14.10.26 16:54 МСК - OGSE погода, исправление остальных паков.
+
+Commit: [e221a36](https://github.com/jordan1227/improved_to_he/commit/e221a3651730ed532311b5dcdd4b4d1ed0821d67)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/level_weathers.script
+
+### Other repository files changed
+
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_katakomb.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_np_thunder.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_pre_blowout.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_sws_cloudy.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_sws_cloudy2.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_sws_cloudy3.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_sws_cloudy4.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_sws_cloudy5.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_sws_dark_clouds.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_sws_etalon_clouds.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/default_sws_ogsm.ltx
+- M Опционально/погода/WEATHER_CGIM_Origin/gamedata/config/environment/weathers/indoor.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_katakomb.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_clear.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_clear_depressive.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_clear_mist.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_clear_no_far.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_clear_storm.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_default.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_depressive.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_groza.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_groza_depressive.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_groza_mist.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_groza_no_far.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_groza_storm.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_indoor.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_katakomb.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_mist.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_no_far.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_pasmurno.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_pasmurno_depressive.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_pasmurno_mist.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_pasmurno_no_far.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_pasmurno_storm.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_pripyat.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_radar.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_rain.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_rain_depressive.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_rain_level.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_rain_mist.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_rain_no_far.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_rain_storm.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_sarkofag.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_stancia.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_stancia2.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_storm.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_yantar.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_n7_yantar_indoor.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_np_thunder.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/default_pre_blowout.ltx
+- M Опционально/погода/WEATHER_N7_Original/gamedata/config/environment/weathers/indoor.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_katakomb.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_np_thunder.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_pre_blowout.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_beta.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_clear.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_clear_depressive.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_dark.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_default.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_dry.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_foggy.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_grey.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_groza_depressive.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_indoor_x18.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_no_far.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_ogsm.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_pasmurno.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_pasmurno_depressive.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_pasmurno_october.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_pasmurno_storm.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_pripyat.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_radar.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_rain.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_rain_depressive.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_rainy.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_sarkofag.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_stancia.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_stancia2.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_stancia2_x.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_stancia_x.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_stormy.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_thunder.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_yantar.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/default_sa_yantar_indoor.ltx
+- M Опционально/погода/WEATHER_SA_NLC_Style/gamedata/config/environment/weathers/indoor.ltx
+- M Опционально/погода/WEATHER_VIVID/gamedata/config/environment/weathers/default_katakomb.ltx
+- M Опционально/погода/WEATHER_VIVID/gamedata/config/environment/weathers/default_np_thunder.ltx
+- M Опционально/погода/WEATHER_VIVID/gamedata/config/environment/weathers/default_pre_blowout.ltx
+- M Опционально/погода/WEATHER_VIVID/gamedata/config/environment/weathers/default_vv_vivid.ltx
+- M Опционально/погода/WEATHER_VIVID/gamedata/config/environment/weathers/default_vv_vivid_cloudy.ltx
+- M Опционально/погода/WEATHER_VIVID/gamedata/config/environment/weathers/default_vv_vivid_foggy.ltx
+- M Опционально/погода/WEATHER_VIVID/gamedata/config/environment/weathers/default_vv_vivid_pure.ltx
+- M Опционально/погода/WEATHER_VIVID/gamedata/config/environment/weathers/default_vv_vivid_stormy.ltx
+- M Опционально/погода/WEATHER_VIVID/gamedata/config/environment/weathers/indoor.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/ambients.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/dynamic_weather_graphs.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/effects.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/sound_channels.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/suns.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/thunderbolt_collections.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/thunderbolts.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_katakomb.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_np_thunder.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_boloto.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_clear.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_clear_alt.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_cloudy_dark.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_cloudy_dark_rain.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_cloudy_light.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_cloudy_light_rain.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_indoor.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_monolith.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_sarcophagus.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_storm.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_ugrnd_agro.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_ugrnd_x16.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_ugrnd_x18.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_ogse_ugrnd_x19.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/default_pre_blowout.ltx
+- A Опционально/погода/ogse_weather/gamedata/config/environment/weathers/indoor.ltx
+- A Опционально/погода/ogse_weather/gamedata/sounds/ambient/rnd_outdoor/rnd_bird_1.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/ambient/rnd_outdoor/rnd_bird_2.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/ambient/rnd_outdoor/rnd_bird_3.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/ambient/rnd_outdoor/rnd_boar_1.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/ambient/rnd_outdoor/rnd_boar_2.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/ambient/rnd_outdoor/rnd_boar_3.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/ambient/rnd_outdoor/rnd_boar_4.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/ambient/rnd_outdoor/rnd_crow_13.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/ambient/rnd_outdoor/rnd_crow_14.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_bird_10.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_bird_11.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_bird_4.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_bird_5.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_bird_6.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_bird_7.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_bird_8.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_bird_9.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_crow_4.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_crow_5.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_crow_7.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_dog1.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_dog2.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_dog3.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_wind_1.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_wind_2.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_wind_3.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_wind_4.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/ambient/rnd_outdoor/rnd_wind_tree.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/new_thunder1_hec.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/new_thunder2_hec.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/new_thunder3_hec.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunder-0-hec.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunder-0.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunder-1.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunder-2.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunder-3-hec.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunder-3.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunder-4.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunderNEW1.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunderNEW2.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunderNEW3.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunderNEW4.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunderNEW5.ogg
+- A Опционально/погода/ogse_weather/gamedata/sounds/wthr_ogse/nature/thunderNEW6.ogg
+- A Опционально/погода/ogse_weather/gamedata/textures/fx/shadow.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_04-30#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_04-30.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_05-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_05-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_05-30#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_05-30.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_06-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_06-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_07-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_07-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_08-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_08-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_09-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_09-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_10-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_10-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_11-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_11-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_12-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_12-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_13-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_13-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_14-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_14-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_15-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_15-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_16-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_16-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_17-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_17-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_18-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_18-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_19-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_19-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_20-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_20-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_20-30#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_20-30.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_21-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear/clear_21-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_00-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_00-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_00-00_no_moon#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_00-00_no_moon.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_01-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_01-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_01-00_no_moon#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_01-00_no_moon.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_02-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_02-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_02-00_no_moon#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_02-00_no_moon.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_03-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_03-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_23-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clear_night/clear_night_23-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_05-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_05-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_06-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_06-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_07-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_07-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_08-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_08-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_09-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_09-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_10-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_10-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_11-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_11-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_12-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_12-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_13-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_13-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_14-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_14-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_15-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_15-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_16-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_16-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_17-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_17-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_18-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_18-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_19-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_19-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_20-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds/clouds_20-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_00-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_00-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_00-00_half#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_00-00_half.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_00-00_no_moon#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_00-00_no_moon.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_01-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_01-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_01-00_half#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_01-00_half.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_01-00_no_moon#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_01-00_no_moon.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_02-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_02-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_02-00_half#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_02-00_half.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_02-00_no_moon#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_02-00_no_moon.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_03-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_03-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_03-00_half#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_03-00_half.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_04-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_04-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_04-00_half#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_04-00_half.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_22-00_half#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_22-00_half.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_23-00_full#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_23-00_full.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_23-00_half#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/clouds_night/light_clouds_night_23-00_half.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/cry_4#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/cry_4.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_04-30#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_04-30.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_05-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_05-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_05-30#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_05-30.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_06-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_06-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_07-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_07-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_08-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_08-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_09-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_09-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_10-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_10-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_11-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_11-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_12-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_12-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_13-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_13-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_14-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_14-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_15-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_15-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_16-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_16-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_17-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_17-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_18-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_18-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_19-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_19-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_20-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_20-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_20-30#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_20-30.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_21-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_21-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_21-30#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/light_clouds/light_clouds_21-30.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/sky_8_1_cube#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/sky_8_1_cube.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_07-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_07-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_09-00_19-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_09-00_19-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_13-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_13-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_15-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_15-00-2#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_15-00-2.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_15-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_16-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_16-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_20-00#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/sky/storm/storm_20-00.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/fx/fx_flare1.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/fx/fx_flare2.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/fx/fx_flare3.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/fx/fx_gradient.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/fx/fx_moon2.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/fx/fx_sun.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/fx/fx_sun_gradient.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/fx/fx_sun_rise.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/fx/fx_sunset.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/sky/sky_5_cube#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/sky/sky_5_cube.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/sky/sky_9_cube#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/sky/sky_9_cube.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/sky/sky_dark_cube#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/sky/sky_dark_cube.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/sky/sky_night_cube#small.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/sky/sky_night_cube.dds
+- A Опционально/погода/ogse_weather/gamedata/textures/wthr_ogse/sky/sky_oblaka.dds
+- A Опционально/погода/ogse_weather/gamedata/variant_weather.ltx
+- A Опционально/погода/ogse_weather/user.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_clear.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_clear_depressive.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_clear_mist.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_clear_no_far.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_clear_storm.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_default.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_depressive.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_groza.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_groza_depressive.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_groza_mist.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_groza_no_far.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_groza_storm.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_indoor.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_katakomb.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_mist.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_no_far.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_clear.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_clear2.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_clear3.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_clear4.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_cloudy.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_cloudy2.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_cloudy3.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_cloudy4.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_cloudy5.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_foggy.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_foggy_dark.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_foggy_nosun.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_rain.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_np_thunder.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_pasmurno.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_pasmurno_depressive.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_pasmurno_mist.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_pasmurno_no_far.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_pasmurno_storm.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_pripyat.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_radar.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_rain.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_rain_depressive.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_rain_level.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_rain_mist.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_rain_no_far.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_rain_storm.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_sarkofag.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_stancia.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_stancia2.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_storm.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_swtc_dark.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_swtc_etalon.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_yantar.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_cg24_yantar_indoor.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_katakomb.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_np_thunder.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/default_pre_blowout.ltx
+- M Опционально/погода/Погода CGIM2 + AtmosFear 3 + GSWR + SWTC 15.02.24 (для движка 7520)/gamedata/config/environment/weathers/indoor.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_clear.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_clear_depressive.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_clear_mist.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_clear_no_far.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_clear_storm.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_default.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_depressive.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_groza.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_groza_depressive.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_groza_mist.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_groza_no_far.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_groza_storm.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_indoor.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_katakomb.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_mist.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_no_far.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_pasmurno.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_pasmurno_depressive.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_pasmurno_mist.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_pasmurno_no_far.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_pasmurno_storm.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_pripyat.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_radar.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_rain.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_rain_depressive.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_rain_level.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_rain_mist.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_rain_no_far.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_rain_storm.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_sarkofag.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_stancia.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_stancia2.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_storm.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_yantar.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_cs23_yantar_indoor.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_katakomb.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_np_thunder.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/default_pre_blowout.ltx
+- M Опционально/погода/Погода CGIM2 + SWTC + Туман Atmosfear3 24.07.23/gamedata/config/environment/weathers/indoor.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_katakomb.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_np_thunder.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_pre_blowout.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_clear.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_clear_depressive.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_clear_mist.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_clear_no_far.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_clear_storm.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_default.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_depressive.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_groza.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_groza_depressive.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_groza_mist.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_groza_no_far.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_groza_storm.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_indoor.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_katakomb.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_mist.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_no_far.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_pasmurno.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_pasmurno_depressive.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_pasmurno_mist.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_pasmurno_no_far.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_pasmurno_storm.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_pripyat.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_radar.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_rain.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_rain_depressive.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_rain_level.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_rain_mist.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_rain_no_far.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_rain_storm.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_sarkofag.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_stancia.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_stancia2.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_storm.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_yantar.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/default_sw22_yantar_indoor.ltx
+- M Опционально/погода/Погода SWTC (изм. погода Артёма) 15.11.22/gamedata/config/environment/weathers/indoor.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_katakomb.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_np_thunder.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_pre_blowout.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_clear.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_clear_depressive.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_clear_mist.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_clear_no_far.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_clear_storm.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_default.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_depressive.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_groza.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_groza_depressive.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_groza_mist.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_groza_no_far.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_groza_storm.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_indoor.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_katakomb.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_mist.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_no_far.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_pasmurno.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_pasmurno_depressive.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_pasmurno_mist.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_pasmurno_no_far.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_pasmurno_storm.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_pripyat.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_radar.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_rain.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_rain_depressive.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_rain_level.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_rain_mist.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_rain_no_far.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_rain_storm.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_sarkofag.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_stancia.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_stancia2.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_storm.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_yantar.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/default_sf22_yantar_indoor.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 +  Anomaly build F.E.A.R  (С движком 7520, решейд и user) 12.12.22/gamedata/config/environment/weathers/indoor.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_katakomb.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_np_thunder.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_pre_blowout.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_clear.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_clear_depressive.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_clear_mist.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_clear_no_far.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_clear_storm.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_default.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_depressive.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_groza.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_groza_depressive.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_groza_mist.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_groza_no_far.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_groza_storm.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_indoor.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_katakomb.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_mist.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_no_far.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_pasmurno.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_pasmurno_depressive.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_pasmurno_mist.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_pasmurno_no_far.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_pasmurno_storm.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_pripyat.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_radar.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_rain.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_rain_depressive.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_rain_level.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_rain_mist.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_rain_no_far.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_rain_storm.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_sarkofag.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_stancia.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_stancia2.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_storm.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_yantar.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/default_sg23_yantar_indoor.ltx
+- M Опционально/погода/Погода SWTC + AtmosFear 3 + GSWR + CGIM 1.27 23.07.23/gamedata/config/environment/weathers/indoor.ltx
+
+<!-- nlc-changelog-commit: ce6d5cc6094dda2d9bdc356baa71ee34485879c6 -->
+## 14.10.26 14:25 МСК - Удалил рельсы.
+
+Commit: [ce6d5cc](https://github.com/jordan1227/improved_to_he/commit/ce6d5cc6094dda2d9bdc356baa71ee34485879c6)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/doc.script
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_generators.ltx
+
+<!-- nlc-changelog-commit: 84393e133db2520b472af73670331100d3a1f9f2 -->
+## 14.10.26 00:53 МСК - Манифест
+
+Commit: [84393e1](https://github.com/jordan1227/improved_to_he/commit/84393e133db2520b472af73670331100d3a1f9f2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 571d41ea00a2c5a47e91aeecf960fe8ccd521c43 -->
+## 14.10.26 00:51 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [571d41e](https://github.com/jordan1227/improved_to_he/commit/571d41ea00a2c5a47e91aeecf960fe8ccd521c43)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/task_manager.script
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/game_relations.ltx
+- M gamedata/config/creatures/m_bloodsucker.ltx
+- M gamedata/config/creatures/m_cat.ltx
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/sivol/sivol_bloodsucker_head.script
+
+### Other repository files changed
+
+- M manifest.txt
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/anomaly_detector.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_evade.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.h
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_tactics.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_vampire_execute_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation_base_update.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controlled_actor.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controlled_actor.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_melee_inline.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker_fire.cpp
+
+<!-- nlc-changelog-commit: cc955db90ae344ac9fcbe59516aa839b858d533d -->
+## 14.10.26 00:51 МСК - Bloodsucker evasion and melee dodge tuning
+
+Commit: [cc955db](https://github.com/jordan1227/improved_to_he/commit/cc955db90ae344ac9fcbe59516aa839b858d533d)
+
+### Description
+
+This update refines bloodsucker AI under fire: adds melee dodge steps, better perch and retreat logic, pack-aware recovery, anomaly detection while fighting, and impact-based speed slowdowns. It also tunes bloodsucker config values for zigzag, visibility, turn speed, and NPC accuracy against cloaked targets, plus adds buckshot pellet tracking for bloodsucker temple bonus damage.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/game_relations.ltx
+- M gamedata/config/creatures/m_bloodsucker.ltx
+- M gamedata/config/creatures/m_cat.ltx
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/sivol/sivol_bloodsucker_head.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/anomaly_detector.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_evade.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.h
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_tactics.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_vampire_execute_inline.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation_base_update.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controlled_actor.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controlled_actor.h
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_melee_inline.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker_fire.cpp
+
+<!-- nlc-changelog-commit: 771a3274225ee6847f6994ba0194a846e9194a16 -->
+## 13.10.26 22:33 МСК - Add console hints and simplify options UI
+
+Commit: [771a327](https://github.com/jordan1227/improved_to_he/commit/771a3274225ee6847f6994ba0194a846e9194a16)
+
+### Description
+
+This change cleans up legacy video-option entries, consolidates DOF settings under gameplay, and adds console-command hints to option controls. It also updates missing localization strings, removes unused renderer/profile entries, and adjusts default option values for the current settings schema.
+
+### Game files changed
+
+- M gamedata/config/rspec_default.ltx
+- M gamedata/config/rspec_maximum.ltx
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/kotovod/game_options.script
+- M gamedata/scripts/ui/ui_mm_opt_controls.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_shaders.script
+- M gamedata/scripts/ui/ui_mm_opt_sound.script
+- M gamedata/scripts/ui/ui_mm_opt_video.script
+- M gamedata/scripts/ui/ui_mm_opt_video_adv.script
+
+<!-- nlc-changelog-commit: 89195795d67ab273d0f155c0dcfc8a1e8b8d0f6c -->
+## 13.10.26 21:05 МСК - Вылет на мутанте Семецкого без path_home
+
+Commit: [8919579](https://github.com/jordan1227/improved_to_he/commit/89195795d67ab273d0f155c0dcfc8a1e8b8d0f6c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/mob/mob_home.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: b631c403183c166c97f869f922ef3877d326c3cc -->
+## 13.10.26 20:45 МСК - Разряд не влияет на туловище скелета на Тесле
+
+Commit: [b631c40](https://github.com/jordan1227/improved_to_he/commit/b631c403183c166c97f869f922ef3877d326c3cc)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 1542e1854ae61f823d97789765837762729f8091 -->
+## 13.10.26 20:39 МСК - манифест
+
+Commit: [1542e18](https://github.com/jordan1227/improved_to_he/commit/1542e1854ae61f823d97789765837762729f8091)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: e654507f899eb007bbd25f3b39b5dd1c64603612 -->
+## 13.10.26 20:39 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [e654507](https://github.com/jordan1227/improved_to_he/commit/e654507f899eb007bbd25f3b39b5dd1c64603612)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- A gamedata/meshes/monsters/controller_animation.omf
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: ea2880da38f22f6be292e3fb67a4b70ff7ec16cb -->
+## 13.10.26 20:39 МСК - Create controller_animation.omf
+
+Commit: [ea2880d](https://github.com/jordan1227/improved_to_he/commit/ea2880da38f22f6be292e3fb67a4b70ff7ec16cb)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- A gamedata/meshes/monsters/controller_animation.omf
+
+<!-- nlc-changelog-commit: 712697a94608f4420fdbd6f985b641205f589f1b -->
+## 13.10.26 20:22 МСК - манифест
+
+Commit: [712697a](https://github.com/jordan1227/improved_to_he/commit/712697a94608f4420fdbd6f985b641205f589f1b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 62a8995934024489ae287a516024ce653ae0c91d -->
 ## 13.10.26 20:19 МСК - Шейдеры
