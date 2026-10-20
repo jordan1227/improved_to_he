@@ -11,6 +11,11 @@
 Texture2D s_he_psy; // existing act/watch/icon_thirst2, ten 200x200 frames
 uniform float4 m_he_watch_psy; // x = psy health
 
+// NLC: player limb injuries (sivol_actor_crit via ogsr_shaders_control.script) share the bleeding slot.
+// x = arm level, y = leg level (0 none, 1 light, 2 severe), z = head (1 = concussion running)
+uniform float4 m_he_watch_injury;
+Texture2D s_he_injury; // act\\watch\\icon_injury, 64x64: R head, G arms, B legs, A whole figure
+
 // float4 m_actor_params; //x = health, y = outfit cond, z = wpn cond, w = wpn_loading
 
 struct v2p
@@ -50,6 +55,23 @@ float3 sample_watch_stat(float2 uv, bool psy_icon)
 
 	return t_base.xyz;
 }
+// NLC: injury figure in the bleeding slot: dim body, light injury amber, severe red pulsing
+float3 sample_injury(float2 uv)
+{
+	float3 background = float3(16.0, 18.0, 20.0) / 255.0;
+	float4 m = s_he_injury.SampleLevel(smp_base, uv, 0);
+	float3 severe = float3(1.0, 0.22, 0.12) * lerp(0.3, 1.0, he_watch_alarm_pulse());
+	float3 col = lerp(background, float3(0.45, 0.50, 0.45), m.a * 0.8);
+	if (m_he_watch_injury.z > 0.5) col = lerp(col, m_he_watch_injury.z > 1.5 ? severe : he_watch_alarm_amber, m.r);
+	if (m_he_watch_injury.x > 0.5) col = lerp(col, m_he_watch_injury.x > 1.5 ? severe : he_watch_alarm_amber, m.g);
+	if (m_he_watch_injury.y > 0.5) col = lerp(col, m_he_watch_injury.y > 1.5 ? severe : he_watch_alarm_amber, m.b);
+	if (ElectronicsProblemsBlackout()) col = background;
+
+	float brightness = 1.f;
+	brightness *= calc_glitch_brightness_watch_ui(brightness);
+	return lerp(watchBgColor(), col, brightness);
+}
+
 float4 main(v2p I) : SV_Target
 {
     float2 uv = he_watch_distort_uv(I.tc0);
@@ -60,8 +82,11 @@ float4 main(v2p I) : SV_Target
     float2 psy_uv = uv - float2(1.0 - slide, 0.0);
     // Clip in LOCAL icon coordinates before mapping to either ten-frame atlas.
     // Compose one background rather than adding two opaque texture rectangles.
+    // NLC: while injured the slot shows the injury figure; bleeding at the same time alternates every 2 s
+    bool injured = any(m_he_watch_injury.xyz > 0.5) && m_he_watch_alarm.y < 0.5;
+    bool show_injury = injured && (m_actor_watch_params.y <= 0.0 || frac(timers.x * 0.25) >= 0.5);
     if (slide < 1.0 && all(bleed_uv >= 0.0) && all(bleed_uv <= 1.0))
-        color = sample_watch_stat(bleed_uv, false);
+        color = show_injury ? sample_injury(bleed_uv) : sample_watch_stat(bleed_uv, false);
     if (slide > 0.0 && all(psy_uv >= 0.0) && all(psy_uv <= 1.0))
         color = sample_watch_stat(psy_uv, true);
     return float4(he_watch_apply_signal(color, I.tc0), 1.0);

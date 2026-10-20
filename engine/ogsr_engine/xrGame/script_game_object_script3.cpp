@@ -267,6 +267,28 @@ class_<CScriptGameObject> script_register_game_object2(class_<CScriptGameObject>
         .def("movement_enabled", &CScriptGameObject::movement_enabled)
 
         .def("critically_wounded", &CScriptGameObject::critically_wounded)
+        .def("bone_armour", &CScriptGameObject::bone_armour)
+        .def("bone_koeff", &CScriptGameObject::bone_koeff)
+        .def("bone_hit_fraction", &CScriptGameObject::bone_hit_fraction)
+        .def("bone_protection_section", &CScriptGameObject::bone_protection_section)
+        .def("nlc_last_hit_raw", &CScriptGameObject::nlc_last_hit_raw)
+        .def("nlc_last_hit_post", &CScriptGameObject::nlc_last_hit_post)
+        .def("nlc_last_hit_dealt", &CScriptGameObject::nlc_last_hit_dealt)
+        .def("nlc_last_hit_k", &CScriptGameObject::nlc_last_hit_k)
+        .def("nlc_last_hit_armour", &CScriptGameObject::nlc_last_hit_armour)
+        .def("nlc_last_hit_bone", &CScriptGameObject::nlc_last_hit_bone)
+        .def("nlc_last_hit_type", &CScriptGameObject::nlc_last_hit_type)
+        .def("nlc_last_hit_time", &CScriptGameObject::nlc_last_hit_time)
+        .def("nlc_last_hit_guarded", &CScriptGameObject::nlc_last_hit_guarded)
+        .def("nlc_last_hit_bullet_model", &CScriptGameObject::nlc_last_hit_bullet_model)
+        .def("nlc_set_head_cover", &CScriptGameObject::nlc_set_head_cover)
+        .def("nlc_head_cover", &CScriptGameObject::nlc_head_cover)
+        .def("nlc_mut_get", &CScriptGameObject::nlc_mut_get)
+        .def("nlc_mut_rounds", &CScriptGameObject::nlc_mut_rounds)
+        .def("nlc_mut_hits", &CScriptGameObject::nlc_mut_hits)
+        .def("nlc_mut_pellets", &CScriptGameObject::nlc_mut_pellets)
+        .def("nlc_mut_far_section", &CScriptGameObject::nlc_mut_far_section)
+        .def("nlc_mut_reset", &CScriptGameObject::nlc_mut_reset)
 
         /************************************************** added by Ray Twitty (aka Shadows) START **************************************************/
         // инвентарь

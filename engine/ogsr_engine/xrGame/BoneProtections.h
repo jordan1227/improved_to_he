@@ -8,6 +8,7 @@ struct SBoneProtections
         float armour;
     };
     float m_fHitFrac{};
+    shared_str m_section; // NLC: protection section name (script export bone_protection_section)
     typedef xr_map<s16, BoneProtection> storage_type;
     typedef storage_type::iterator storage_it;
     SBoneProtections()

@@ -15,6 +15,8 @@
 #include "stalker_movement_manager.h"
 #include "ai/stalker/ai_stalker_space.h"
 #include "ai_space.h"
+#include "nlc_mutant_aim.h" // NLC
+#include "ai/monsters/basemonster/base_monster.h"
 
 
 using namespace StalkerSpace;
@@ -59,7 +61,10 @@ void CSightManager::SetFirePointLookAngles(const Fvector& tPosition, float& yaw,
 {
     Fvector tTemp;
 
-    if (object && object->use_center_to_aim())
+    // NLC mutant aim: the centre branch aims from the stalker's own centre while the shot leaves from the eye
+    // (~0.7 m higher); for mutants (bloodsucker, controller, zombie) aim from the eye like everything else
+    const bool nlc_eye = nlc_mutant_aim().enabled && smart_cast<const CBaseMonster*>(object);
+    if (object && object->use_center_to_aim() && !nlc_eye)
     {
         m_object->Center(tTemp);
 #if 1
@@ -79,11 +84,17 @@ void CSightManager::SetFirePointLookAngles(const Fvector& tPosition, float& yaw,
     }
     else
     {
+        // NLC mutant aim: eye_matrix.c is refreshed only every second scheduler tick; while the shot at a mutant
+        // leaves from Position() + m_nlc_eye_offset (A1), aim from the same point (else a moving stalker misses
+        // by a fixed sideways offset). Every other target keeps the stock origin.
+        Fvector eye = m_object->eye_matrix.c;
+        if (nlc_mutant_aim().enabled && nlc_mutant_aim().fresh_fire_dir && m_object->nlc_mut_fire_target())
+            eye.add(m_object->Position(), m_object->m_nlc_eye_offset);
         Fvector my_position;
-        if (m_object->eye_matrix.c.distance_to_xz_sqr(tPosition) < .1f)
+        if (eye.distance_to_xz_sqr(tPosition) < .1f)
             my_position = m_object->Position();
         else
-            my_position = m_object->eye_matrix.c;
+            my_position = eye;
 
         tTemp.sub(tPosition, my_position);
     }

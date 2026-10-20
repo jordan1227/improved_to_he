@@ -237,6 +237,11 @@ public:
     void settings_overrides();
 
     SMonsterSettings& db() { return (m_current_settings); }
+
+    // NLC: stalkers do not ignore this monster inside this distance (nlc_npc_threat_dist, 0 = the stalker's
+    // max_ignore_distance only); docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6 B1
+    float m_nlc_npc_threat_dist{};
+    float nlc_npc_threat_dist() const { return m_nlc_npc_threat_dist; }
     // --------------------------------------------------------------------------------------
 
     CCharacterPhysicsSupport* m_pPhysics_support;

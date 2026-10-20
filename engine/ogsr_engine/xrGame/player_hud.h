@@ -457,3 +457,11 @@ private:
 };
 
 extern player_hud* g_player_hud;
+
+// NLC: actor weapon handling speed factors (player_hud.cpp)
+enum : u8 { NLC_SPEED_NONE, NLC_SPEED_RELOAD, NLC_SPEED_DRAW, NLC_SPEED_KINDS };
+extern float g_nlc_hud_speed_k[NLC_SPEED_KINDS];
+inline float nlc_hud_speed_k(u8 kind) { return kind < NLC_SPEED_KINDS ? g_nlc_hud_speed_k[kind] : 1.f; }
+void nlc_set_hud_speed_factor(u8 kind, LPCSTR name, float k);
+float nlc_get_hud_speed_factor(u8 kind, LPCSTR name);
+u8 nlc_actor_motion_kind(const CHudItem* item, LPCSTR anm_name);

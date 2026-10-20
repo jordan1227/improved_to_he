@@ -26,6 +26,8 @@
 #include "agent_manager.h"
 #include "agent_enemy_manager.h"
 #include "nlc_stealth.h" // NLC: stealth diagnostics
+#include "nlc_mutant_aim.h"
+#include "ai/monsters/basemonster/base_monster.h"
 
 static const u32 ENEMY_INERTIA_TIME_TO_SOMEBODY = 3000;
 static const u32 ENEMY_INERTIA_TIME_TO_ACTOR = 0;
@@ -65,11 +67,54 @@ bool CEnemyManager::useful(const CEntityAlive* entity_alive) const
     if (!ai().get_level_graph() || !ai().level_graph().valid_vertex_id(entity_alive->ai_location().level_vertex_id()))
         return (false);
 
-    if (m_object->human_being() && !entity_alive->human_being() && !expedient(entity_alive) && (evaluate(entity_alive) >= m_ignore_monster_threshold) &&
-        (m_object->Position().distance_to(entity_alive->Position()) >= m_max_ignore_distance))
-        return (false);
+    if (m_object->human_being() && !entity_alive->human_being() && !expedient(entity_alive) && (evaluate(entity_alive) >= m_ignore_monster_threshold))
+    {
+        const float dist = m_object->Position().distance_to(entity_alive->Position());
+        if (dist >= m_max_ignore_distance)
+        {
+            // NLC mutant aim B1/B2: ranged threats and mutants attacking us, a friend or the actor are not ignored
+            const int rule = nlc_mutant_keep_rule(entity_alive, dist);
+            if (!rule)
+                return (false);
+            if (m_stalker)
+                m_stalker->nlc_mut_engage_event(entity_alive, dist, rule);
+        }
+    }
 
     return (m_useful_callback ? m_useful_callback(m_object->lua_game_object(), entity_alive->lua_game_object()) : true);
+}
+
+// NLC mutant aim (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6 B1-B3): why a mutant beyond max_ignore_distance is still an enemy.
+// 1 inside its nlc_npc_threat_dist, 2 it attacks us, 3 it attacks a friendly stalker, 4/5 it attacks the actor and we
+// are his friend / neutral (help_dist_friend / help_dist_neutral). 0 = ignore as before.
+int CEnemyManager::nlc_mutant_keep_rule(const CEntityAlive* entity_alive, float dist) const
+{
+    const SNlcMutantAim& c = nlc_mutant_aim();
+    if (!c.enabled)
+        return 0;
+    const CBaseMonster* monster = smart_cast<const CBaseMonster*>(entity_alive);
+    if (!monster)
+        return 0;
+    if (dist < monster->nlc_npc_threat_dist() * c.threat_k)
+        return 1;
+    if (dist >= c.approach_dist)
+        return 0;
+    const CEntityAlive* target = const_cast<CBaseMonster*>(monster)->EnemyMan.get_enemy();
+    if (!target || !target->g_Alive())
+        return 0;
+    if (target->ID() == m_object->ID())
+        return 2;
+    if (smart_cast<const CAI_Stalker*>(target))
+        return m_object->tfGetRelationType(target) == ALife::eRelationTypeFriend ? 3 : 0;
+    if (smart_cast<const CActor*>(target))
+    {
+        const ALife::ERelationType rel = m_object->tfGetRelationType(target);
+        if (rel == ALife::eRelationTypeFriend && dist < c.help_dist_friend)
+            return 4;
+        if (rel == ALife::eRelationTypeNeutral && dist < c.help_dist_neutral)
+            return 5;
+    }
+    return 0;
 }
 
 float CEnemyManager::do_evaluate(const CEntityAlive* object) const { return (m_object->evaluate(this, object)); }

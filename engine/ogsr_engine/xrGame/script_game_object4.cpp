@@ -895,22 +895,40 @@ bool CScriptGameObject::can_fire_to_enemy(const CScriptGameObject* obj)
     auto enemy = smart_cast<CEntityAlive*>(&(obj->object()));
     ASSERT_FMT(enemy, "[%s]: %s not a CEntityAlive", __FUNCTION__, obj->cName().c_str());
 
+    // NLC mutant aim D1: the result and its reason go to the stalker's mutant-aim record (gate codes:
+    // 1 on the fire line, 2 visible and the ray reaches far enough, -1 not visible and off the line,
+    // -2 head turned more than PI/8 away, -3 ray blocked within 2.5 m, -4 ray stops short of the enemy)
     bool can_kill = stalker->can_kill_enemy();
     bool vis = stalker->memory().visual().visible_right_now(enemy);
-    if ((vis || can_kill) && stalker->can_fire_to_enemy(enemy))
+    if (!(vis || can_kill))
     {
-        if (can_kill)
-            return true; // на линии огня
-        float pick_dist = stalker->pick_distance();
-        if (pick_dist < 2.5f)
-            return false;
-        float enemy_dist = stalker->Position().distance_to(enemy->Position());
-        if (pick_dist < enemy_dist - pick_dist)
-            return false;
-        return true;
+        stalker->nlc_mut_set_gate(-1);
+        return false;
     }
-
-    return false;
+    if (!stalker->can_fire_to_enemy(enemy))
+    {
+        stalker->nlc_mut_set_gate(-2);
+        return false;
+    }
+    if (can_kill)
+    {
+        stalker->nlc_mut_set_gate(1);
+        return true; // на линии огня
+    }
+    float pick_dist = stalker->pick_distance();
+    if (pick_dist < 2.5f)
+    {
+        stalker->nlc_mut_set_gate(-3);
+        return false;
+    }
+    float enemy_dist = stalker->Position().distance_to(enemy->Position());
+    if (pick_dist < enemy_dist - pick_dist)
+    {
+        stalker->nlc_mut_set_gate(-4);
+        return false;
+    }
+    stalker->nlc_mut_set_gate(2);
+    return true;
 }
 
 void CScriptGameObject::register_in_combat()
@@ -936,4 +954,150 @@ void CScriptGameObject::setEnabled(bool value)
 void CScriptGameObject::setVisible(bool value)
 {
     object().setVisible(value);
+}
+
+// NLC: bone protection script exports (docs/damage_model/DESIGN_npc_damage_model.md 14, E5)
+#include "BoneProtections.h"
+#include "inventory.h"
+
+static SBoneProtections* nlc_bone_protection(CGameObject& obj)
+{
+    if (CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(&obj))
+        return stalker->bone_hit_protection();
+    if (CActor* actor = smart_cast<CActor*>(&obj))
+        if (CCustomOutfit* outfit = smart_cast<CCustomOutfit*>(actor->inventory().ItemFromSlot(OUTFIT_SLOT)))
+            return outfit->bullet_protection() ? outfit->bullet_protection() : outfit->bone_protection(); // NLC: bullet table first (A3)
+    return nullptr;
+}
+
+// NLC: actor last hit and mask head cover (docs/damage_model/DESIGN_actor_damage_model.md A2, A6)
+#include "ActorCondition.h"
+
+static CActorCondition* nlc_actor_condition(CGameObject& obj)
+{
+    CActor* actor = smart_cast<CActor*>(&obj);
+    return actor ? &actor->conditions() : nullptr;
+}
+
+float CScriptGameObject::nlc_last_hit_raw()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_last_hit().raw : -1.f;
+}
+float CScriptGameObject::nlc_last_hit_post()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_last_hit().post : -1.f;
+}
+float CScriptGameObject::nlc_last_hit_dealt()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_last_hit().dealt : -1.f;
+}
+float CScriptGameObject::nlc_last_hit_k()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_last_hit().k_eff : -1.f;
+}
+float CScriptGameObject::nlc_last_hit_armour()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_last_hit().armour : -1.f;
+}
+int CScriptGameObject::nlc_last_hit_bone()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? int(c->nlc_last_hit().bone) : -1;
+}
+int CScriptGameObject::nlc_last_hit_type()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? int(c->nlc_last_hit().type) : -1;
+}
+u32 CScriptGameObject::nlc_last_hit_time()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_last_hit().time : 0;
+}
+bool CScriptGameObject::nlc_last_hit_guarded()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c && c->nlc_last_hit().guarded;
+}
+bool CScriptGameObject::nlc_last_hit_bullet_model()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c && c->nlc_last_hit().bullet_model;
+}
+void CScriptGameObject::nlc_set_head_cover(float cov, float armour)
+{
+    if (CActorCondition* c = nlc_actor_condition(object()))
+        c->nlc_set_head_cover(std::clamp(cov, 0.f, 1.f), std::max(armour, 0.f));
+}
+float CScriptGameObject::nlc_head_cover()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_head_cover() : -1.f;
+}
+
+// NLC: stalker aim against mutants, read by sivol_mut_aim_log.script (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6 D).
+// Non-stalkers return -1 / 0 / "".
+float CScriptGameObject::nlc_mut_get(LPCSTR key)
+{
+    const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(&object());
+    return stalker && key ? stalker->nlc_mut_get(key) : -1.f;
+}
+
+u32 CScriptGameObject::nlc_mut_rounds(int band)
+{
+    const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(&object());
+    return stalker && band >= 0 && band < 3 ? stalker->m_nlc_mut.rounds[band] : 0;
+}
+
+u32 CScriptGameObject::nlc_mut_pellets(int band)
+{
+    const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(&object());
+    return stalker && band >= 0 && band < 3 ? stalker->m_nlc_mut.pellets[band] : 0;
+}
+
+u32 CScriptGameObject::nlc_mut_hits(int band)
+{
+    const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(&object());
+    return stalker && band >= 0 && band < 3 ? stalker->m_nlc_mut.hits[band] : 0;
+}
+
+LPCSTR CScriptGameObject::nlc_mut_far_section()
+{
+    const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(&object());
+    return stalker && stalker->m_nlc_mut.far_section.size() ? stalker->m_nlc_mut.far_section.c_str() : "";
+}
+
+void CScriptGameObject::nlc_mut_reset()
+{
+    if (CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(&object()))
+        stalker->nlc_mut_reset_fight();
+}
+
+float CScriptGameObject::bone_armour(u16 bone)
+{
+    SBoneProtections* bp = nlc_bone_protection(object());
+    return bp ? bp->getBoneArmour(s16(bone)) : -1.f;
+}
+
+float CScriptGameObject::bone_koeff(u16 bone)
+{
+    SBoneProtections* bp = nlc_bone_protection(object());
+    return bp ? bp->getBoneProtection(s16(bone)) : -1.f;
+}
+
+float CScriptGameObject::bone_hit_fraction()
+{
+    SBoneProtections* bp = nlc_bone_protection(object());
+    return bp ? bp->m_fHitFrac : -1.f;
+}
+
+LPCSTR CScriptGameObject::bone_protection_section()
+{
+    SBoneProtections* bp = nlc_bone_protection(object());
+    return bp && bp->m_section.size() ? bp->m_section.c_str() : "";
 }

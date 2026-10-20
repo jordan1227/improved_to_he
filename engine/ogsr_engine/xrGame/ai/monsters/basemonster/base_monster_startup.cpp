@@ -61,6 +61,9 @@ void CBaseMonster::Load(LPCSTR section)
     // NLC: evasion pass ([monster_evasion] + per-section overrides)
     nlc_evade_load(section);
 
+    // NLC mutant aim B1: ranged threat distance for stalkers
+    m_nlc_npc_threat_dist = READ_IF_EXISTS(pSettings, r_float, section, "nlc_npc_threat_dist", 0.f);
+
     // NLC: species speed multiplier (movement and non-accel-chain clips together, no foot sliding)
     float speed_k = READ_IF_EXISTS(pSettings, r_float, section, "move_speed_k", 1.f);
     clamp(speed_k, 0.3f, 2.f);

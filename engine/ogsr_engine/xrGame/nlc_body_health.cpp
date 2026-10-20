@@ -49,6 +49,33 @@ void CActorBodyHealth::Load(LPCSTR condition_section)
 {
     LPCSTR sect = READ_IF_EXISTS(pSettings, r_string, condition_section, "body_health_sect", nullptr);
     m_enabled = sect && pSettings->section_exist(sect) && READ_IF_EXISTS(pSettings, r_bool, sect, "enabled", true);
+
+    // NLC: one-shot guard, read even when the system is off (it then guards the single health pool)
+    m_guard_types = 0;
+    if (sect && pSettings->section_exist(sect))
+    {
+        m_guard_above = READ_IF_EXISTS(pSettings, r_float, sect, "guard_above", 2.f);
+        m_guard_floor_head = READ_IF_EXISTS(pSettings, r_float, sect, "guard_floor_head", -1.f);
+        m_guard_floor_body = READ_IF_EXISTS(pSettings, r_float, sect, "guard_floor_body", -1.f);
+        m_guard_window_ms = READ_IF_EXISTS(pSettings, r_u32, sect, "guard_window_ms", 60);
+        LPCSTR types = READ_IF_EXISTS(pSettings, r_string, sect, "guard_hit_types", nullptr);
+        const int n = types ? _GetItemCount(types) : 0;
+        for (int i = 0; i < n; ++i)
+        {
+            string64 tmp;
+            _GetItem(types, i, tmp);
+            bool found = false;
+            for (const xr_token* t = ALife::hit_types_token; t->name; ++t)
+                if (!xr_strcmp(t->name, tmp))
+                {
+                    m_guard_types |= 1u << u32(t->id);
+                    found = true;
+                }
+            if (!found)
+                Msg("! [body_health] guard_hit_types: unknown hit type [%s]", tmp);
+        }
+    }
+
     if (!m_enabled)
         return;
 
@@ -384,13 +411,14 @@ void CActorBodyHealth::OnHit(SHit* hit, float lost)
     else
         part = PartByBone(hit->boneID);
 
+    const bool guard = GuardHitType(hit->hit_type);
     if (part == none)
     {
         for (u8 i = head; i < count; ++i)
-            m_health[i] -= lost * m_spread_hit_k;
+            m_health[i] = guard ? Guard(i, m_health[i], m_health[i] - lost * m_spread_hit_k) : m_health[i] - lost * m_spread_hit_k;
     }
     else
-        m_health[part] -= lost * m_hit_k[part];
+        m_health[part] = guard ? Guard(part, m_health[part], m_health[part] - lost * m_hit_k[part]) : m_health[part] - lost * m_hit_k[part];
 
     ChangePain(lost * (wound ? m_wound_pain_k : strike ? m_strike_pain_k : m_other_pain_k));
 
@@ -401,6 +429,35 @@ void CActorBodyHealth::OnHit(SHit* hit, float lost)
             AddFracture(part, lost);
     }
     Clamp();
+}
+
+float CActorBodyHealth::Guard(u8 part, float before, float after)
+{
+    // the head dies at death_head, the body (and the single pool) at death_body / 0; limbs never kill
+    const float floor = part == head ? m_guard_floor_head : (part == torso || part == all) ? m_guard_floor_body : -1.f;
+    if (floor < 0.f || part >= count)
+        return after;
+
+    const u32 now = Device.dwTimeGlobal;
+    if (now >= m_guard_until[part])
+    {
+        m_guard_start[part] = before;
+        m_guard_until[part] = now + m_guard_window_ms;
+    }
+    if (m_guard_start[part] > m_guard_above && after < floor)
+    {
+        const float guarded = std::max(after, std::min(before, floor));
+        if (guarded > after)
+            m_owner->m_nlc_last_hit.guarded = true;
+        return guarded;
+    }
+    return after;
+}
+
+bool CActorBodyHealth::GuardWould(u8 part, float before, float after) const
+{
+    const float floor = part == head ? m_guard_floor_head : (part == torso || part == all) ? m_guard_floor_body : -1.f;
+    return floor >= 0.f && part < count && before > m_guard_above && after < floor;
 }
 
 void CActorBodyHealth::AddBoost(u8 type, u8 part, float value, float time)

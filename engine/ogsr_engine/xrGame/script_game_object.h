@@ -636,6 +636,33 @@ public:
 
     bool critically_wounded();
 
+    // NLC: bullet protection of a bone (stalker: visual bone_protection profile, actor: equipped outfit).
+    // -1 / "" without a profile. docs/damage_model/DESIGN_npc_damage_model.md 14, E5
+    float bone_armour(u16 bone);
+    float bone_koeff(u16 bone);
+    float bone_hit_fraction();
+    LPCSTR bone_protection_section();
+    // NLC: actor bullet model / last hit (docs/damage_model/DESIGN_actor_damage_model.md A2, A6), actor only
+    float nlc_last_hit_raw();
+    float nlc_last_hit_post();
+    float nlc_last_hit_dealt();
+    float nlc_last_hit_k();
+    float nlc_last_hit_armour();
+    int nlc_last_hit_bone();
+    int nlc_last_hit_type();
+    u32 nlc_last_hit_time();
+    bool nlc_last_hit_guarded();
+    bool nlc_last_hit_bullet_model();
+    void nlc_set_head_cover(float cov, float armour);
+    float nlc_head_cover();
+    // NLC: stalker aim against mutants (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6 D)
+    float nlc_mut_get(LPCSTR key);
+    u32 nlc_mut_rounds(int band);
+    u32 nlc_mut_hits(int band);
+    u32 nlc_mut_pellets(int band);
+    LPCSTR nlc_mut_far_section();
+    void nlc_mut_reset();
+
     bool invulnerable() const;
     void invulnerable(bool invulnerable);
 

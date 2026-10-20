@@ -46,6 +46,14 @@ private:
     shared_str m_full_icon_name;
     SBoneProtections* m_boneProtection;
 
+    SBoneProtections* m_bulletProtection{}; // NLC: bullet_protection_sect (actor bullet model), null when absent
+
+public:
+    SBoneProtections* bone_protection() const { return m_boneProtection; } // NLC: script export
+    SBoneProtections* bullet_protection() const { return m_bulletProtection; } // NLC: actor bullet model
+    float nlc_fire_wound_protection() const { return m_HitTypeProtection[ALife::eHitTypeFireWound]; } // NLC: live value (scripts write it)
+
+private:
     u32 m_ef_equipment_type{};
 
     u32 m_artefact_count{};

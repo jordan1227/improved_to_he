@@ -35,7 +35,11 @@ CCustomOutfit::CCustomOutfit()
     m_fThirstRestoreSpeed = 0.f;
 }
 
-CCustomOutfit::~CCustomOutfit() { xr_delete(m_boneProtection); }
+CCustomOutfit::~CCustomOutfit()
+{
+    xr_delete(m_boneProtection);
+    xr_delete(m_bulletProtection); // NLC
+}
 
 void CCustomOutfit::net_Export(CSE_Abstract* E)
 {
@@ -134,6 +138,13 @@ void CCustomOutfit::OnMoveToSlot()
             if (pSettings->line_exist(cNameSect(), "bones_koeff_protection"))
             {
                 m_boneProtection->reload(pSettings->r_string(cNameSect(), "bones_koeff_protection"), smart_cast<IKinematics*>(pActor->Visual()));
+            }
+            // NLC: per-suit bullet table of the actor bullet model (docs/damage_model/DESIGN_actor_damage_model.md 3.1)
+            if (pSettings->line_exist(cNameSect(), "bullet_protection_sect"))
+            {
+                if (!m_bulletProtection)
+                    m_bulletProtection = xr_new<SBoneProtections>();
+                m_bulletProtection->reload(pSettings->r_string(cNameSect(), "bullet_protection_sect"), smart_cast<IKinematics*>(pActor->Visual()));
             }
 
             if (pSettings->line_exist(cNameSect(), "player_hud_section"))

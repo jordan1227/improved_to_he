@@ -73,6 +73,10 @@ public:
     u32 eye_pp_timestamp;
     Fvector m_tEyeShift;
     float m_fEyeShiftYaw;
+    // NLC: eye position relative to Position() and the time of the last eye_pp_s0 (eye_matrix is refreshed only
+    // on every second scheduler tick; the stalker mutant aim rebuilds the shot ray from current values)
+    Fvector m_nlc_eye_offset{};
+    u32 m_nlc_eye_time{};
     BOOL NET_WasExtrapolating;
 
     Fvector tWatchDirection;
@@ -280,6 +284,10 @@ protected:
     float m_critical_wound_threshold;
     float m_critical_wound_decrease_quant;
     float m_critical_wound_accumulator;
+    // NLC (docs/damage_model/DESIGN_npc_damage_model.md 14, E3): share of the pre-armour bullet power that also charges
+    // the critical wound, and whether a full charge waits for suitable conditions instead of being dropped
+    float m_critical_wound_raw_part{};
+    bool m_critical_wound_keep_charge{};
     CriticalWoundType m_critical_wound_type;
     BODY_PART m_bones_body_parts;
 
@@ -289,7 +297,7 @@ protected:
     virtual bool critical_wound_external_conditions_suitable() { return true; }
     virtual void critical_wounded_state_start() {}
 
-    bool update_critical_wounded(const u16& bone_id, const float& power);
+    bool update_critical_wounded(const u16& bone_id, const float& power, const float raw_power = 0.f);
 
 public:
     IC void critical_wounded_state_stop();

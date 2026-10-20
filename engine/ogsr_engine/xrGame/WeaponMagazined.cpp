@@ -27,6 +27,7 @@
 #include "script_game_object.h"
 #include <regex>
 #include "../xr_3da/x_ray.h"
+#include "player_hud.h"
 
 CUIXml* g_wpnScopeXml = NULL;
 
@@ -136,6 +137,7 @@ void CWeaponMagazined::Load(LPCSTR section)
     // Sounds
     HUD_SOUND::LoadSound(section, "snd_draw", sndShow, m_eSoundShow);
     HUD_SOUND::LoadSound(section, "snd_holster", sndHide, m_eSoundHide);
+    sndShow.m_nlc_speed_kind = sndHide.m_nlc_speed_kind = NLC_SPEED_DRAW; // NLC: follow the actor draw speed
     HUD_SOUND::LoadSound(section, "snd_shoot", sndShot, m_eSoundShot);
     HUD_SOUND::LoadSound(section, "snd_empty", sndEmptyClick, m_eSoundEmptyClick);
 

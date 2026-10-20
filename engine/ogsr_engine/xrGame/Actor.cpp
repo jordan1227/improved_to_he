@@ -523,6 +523,16 @@ void CActor::Hit(SHit* pHDS)
 
     if (GodMode())
     {
+        // NLC: god mode still records what the hit would have done (docs/damage_model/DESIGN_actor_damage_model.md 16)
+        {
+            SHit dry = HDS;
+            dry.power = hit_power;
+            if (dry.hit_type == ALife::eHitTypeWound_2)
+                dry.hit_type = ALife::eHitTypeWound;
+            float hs = 1.f, ws = 1.f;
+            CDamageManager::HitScale(dry.boneID, hs, ws, dry.aim_bullet);
+            conditions().nlc_dry_hit(&dry, hs);
+        }
         HDS.power = 0.0f;
         //				inherited::Hit(0.f,dir,who,element,position_in_bone_space,impulse, hit_type);
         inherited::Hit(&HDS);

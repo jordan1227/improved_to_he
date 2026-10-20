@@ -1,0 +1,515 @@
+-- sivol_actor_crit.script: critical hits on the player, mutant hit zones and mask head cover.
+-- docs/damage_model/DESIGN_actor_damage_model.md sections 6, 13.4, 14.2, 15.3, 18.
+--
+-- Replaces the bone/power part of ogse_critical_hit.script and the mutant bone remap and head
+-- effects of vergas_masks.actor_hit_target. Everything reads the engine's last-hit record
+-- (db.actor:nlc_last_hit_*), so effects follow the damage after armour, not the raw power.
+--
+-- Switches (no options-menu entries; the crit effects still follow game_options.AdditionalMobHits):
+local ENABLED      = true -- critical effects and the bullet-hit camera
+local MUTANT_ZONES = true -- mutant hits land on zones by bone name, old DPS kept (14.2)
+local HEAD_COVER   = true -- the worn mask sets the engine head cover (H1, 15.3)
+local THINKING     = true -- "Thinking out loud" messages on injury, worsening and cure
+local DEBUG        = false
+
+function active() return ENABLED end
+function mutant_zones() return MUTANT_ZONES end
+
+-------------------------------------------------------------------------------
+-- zones by bone name
+-------------------------------------------------------------------------------
+local ZONE = {
+	bip01_head = "head", bip01_neck = "head", eye_left = "head", eye_right = "head",
+	eyelid_1 = "head", jaw_1 = "head",
+	bip01_spine2 = "chest", bip01_spine1 = "chest", bip01_l_clavicle = "chest", bip01_r_clavicle = "chest",
+	bip01_spine = "belly", bip01_pelvis = "belly",
+	bip01_l_upperarm = "arm", bip01_l_forearm = "arm", bip01_l_hand = "arm",
+	bip01_r_upperarm = "arm", bip01_r_forearm = "arm", bip01_r_hand = "arm",
+	bip01_l_thigh = "leg", bip01_l_calf = "leg", bip01_l_foot = "leg", bip01_l_toe0 = "leg",
+	bip01_r_thigh = "leg", bip01_r_calf = "leg", bip01_r_foot = "leg", bip01_r_toe0 = "leg",
+}
+local unknown_logged = {}
+
+local function zone_of(bone_id)
+	if not bone_id or bone_id < 0 or bone_id >= 65535 then return "chest" end
+	local ok, name = pcall(db.actor.get_bone_name, db.actor, bone_id)
+	if not ok or type(name) ~= "string" then return "chest" end
+	local z = ZONE[name]
+	if z then return z end
+	if string.find(name, "finger", 1, true) then return "arm" end
+	if not unknown_logged[name] then
+		unknown_logged[name] = true
+		log2("[sivol_actor_crit] bone %s has no zone, counted as chest", name)
+	end
+	return "chest"
+end
+
+function zone_name(bone_id) return zone_of(bone_id) end
+
+-------------------------------------------------------------------------------
+-- mutant injury zones by anatomy (M2, design 18.5 and 18.8). The damage itself keeps the old
+-- vergas_masks bone remap (same bones, same power, same body-part split), so mutant lethality
+-- is exactly as before with body health on or off. Only the injury zone is picked here, by
+-- anatomy, and its size is computed as for a hit-scale-1.0 limb hit (old class factor k).
+-- Weights head / torso / arm / leg. Melee only (wound / strike).
+-------------------------------------------------------------------------------
+-- head, torso, arm, leg, k
+local function mutant_profile(obj)
+	local clid = obj:clsid()
+	local name = obj:name()
+	if clid == CLID_TUSHKANO or string.find(name, "buzz", 1, true) then
+		return 0, 0, 0, 100, 1.0
+	elseif clid == CLID_BLOODSUCKER then
+		return 25, 40, 35, 0, 0.73
+	elseif clid == CLID_SNORK then
+		return 20, 30, 30, 20, 0.84
+	elseif clid == CLID_CHIMERA then
+		return 20, 40, 30, 10, 0.84
+	elseif clid == CLID_CAT then
+		return 5, 35, 20, 40, 0.84
+	elseif clid == CLID_PSEUDODOG or clid == CLID_PSY_DOG or clid == CLID_PSY_DOG_PHANTOM then
+		return 10, 30, 0, 60, 0.84
+	elseif clid == CLID_DOG then
+		return 10, 30, 0, 60, 1.0
+	elseif clid == CLID_CONTROLLER then
+		return 10, 50, 40, 0, 1.0
+	elseif clid == CLID_BOAR or clid == CLID_FLESH then
+		return 0, 30, 0, 70, 1.0
+	end
+	return nil
+end
+
+local pending_mutant = nil -- { id, zone, k, time } of the melee hit being processed
+
+-- called from vergas_masks.actor_hit_target before its old bone remap (which still runs)
+function note_mutant_hit(hd, obj)
+	pending_mutant = nil
+	if not MUTANT_ZONES or not obj or not db.actor then return end
+	if hd.hit_type ~= hit.wound and hd.hit_type ~= hit.strike then return end
+	local head, torso, arm, leg, k = mutant_profile(obj)
+	if not head then return end
+	local r = math.random() * (head + torso + arm + leg)
+	local zone
+	if r < head then zone = "head"
+	elseif r < head + torso then zone = "chest"
+	elseif r < head + torso + arm then zone = "arm"
+	else zone = "leg" end
+	pending_mutant = { id = obj:id(), zone = zone, k = k, time = time_global() }
+end
+
+-- what a hit of this raw power does to a hit-scale-1.0 limb: outfit protection once in the
+-- outfit stage and once through params.actor_immunities_add (base 0.6 + 0.4 * difficulty)
+local function clamp(v, a, b) if v < a then return a elseif v > b then return b end return v end
+
+local function mutant_limb_damage(raw, htype)
+	local base = 0.6 + 0.4 * (tonumber(level.get_game_difficulty()) or 3)
+	local armor = db.actor:get_current_outfit()
+	local outfit = armor and armor:get_outfit()
+	if not outfit then
+		return raw * base * 5
+	end
+	local prot = htype == hit.strike and outfit.strike_protection or outfit.wound_protection
+	local p = clamp((tonumber(prot) or 0) * armor:condition(), -1, 1)
+	return raw * (1 - p) * base * (1 - p)
+end
+
+-------------------------------------------------------------------------------
+-- mask head cover (H1): coverage and armour of the worn mask, scaled by its condition
+-------------------------------------------------------------------------------
+local MASK_COVER = {
+	hud_gas = { 0.25, 0.03 },
+	hud_mer = { 0.35, 0.05 },
+	hud_sci = { 0.55, 0.08 },
+	hud_mil = { 0.70, 0.10 },
+	hud_exo = { 0.90, 0.10 },
+}
+local MASK_COND_FULL = 0.75
+local next_cover_t = 0
+local last_cov, last_arm = -1, -1
+
+local function update_head_cover(force)
+	if not HEAD_COVER or not db.actor then return end
+	local now = time_global()
+	if not force and now < next_cover_t then return end
+	next_cover_t = now + 500
+	local cov, arm = 0, 0
+	local outfit = db.actor:get_current_outfit()
+	if outfit and vergas_masks and vergas_masks.get_flag_mask() then
+		local t = MASK_COVER[vergas_masks.get_mask_config(outfit:section())]
+		if t then
+			local cond = (tonumber(vergas_masks.get_mask_condition(outfit:id())) or 100) / 100
+			local cf = math.min(1, math.max(0, cond) / MASK_COND_FULL)
+			cov, arm = t[1] * cf, t[2] * cf
+		end
+	end
+	if math.abs(cov - last_cov) > 0.001 or math.abs(arm - last_arm) > 0.001 then
+		last_cov, last_arm = cov, arm
+		db.actor:nlc_set_head_cover(cov, arm)
+		if DEBUG then log2("[sivol_actor_crit] head cover %.2f armour %.2f", cov, arm) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- injuries (C2, design 18.2-18.4): per-zone charge from the damage after armour, no roll.
+-- A hit adds its dealt damage to the zone charge when dealt >= MIN_HIT; the charge decays.
+-- Light injury at T_LIGHT, severe at T_SEVERE. Injuries stay until the limb heals (part
+-- health >= CURE_HEALTH, and the injury is at least CURE_MIN_MIN game minutes old) or an army
+-- medkit lowers them one level / a scientific medkit cures them; levels and times are saved.
+-------------------------------------------------------------------------------
+local MIN_HIT, T_LIGHT, T_SEVERE = 0.06, 0.15, 0.40 -- retune 2026-10-20 (was 0.30 / 0.70)
+local ONE_HIT_SEVERE = 0.35 -- a single counted hit this strong is severe at once
+local DECAY_PER_S = 0.01
+local CURE_HEALTH = 0.95
+local LEG_SPEED   = { 0.88, 0.70 }
+local ARM_RELOAD  = { 0.85, 0.75 } -- reload speed (engine factor "injury"), light / severe
+local ARM_DRAW    = { 0.85, 0.70 } -- draw / holster speed
+local ARM_RECOIL  = { 1.15, 1.35 } -- recoil multiplier (sivol_fuzz_recoil.script)
+local CURE_MIN_MIN = { 30, 180 }   -- game minutes since the injury last worsened before it can heal by itself
+local MEDKIT_CURE = { medkit_army = 1, medkit_scientic = 2 } -- levels removed; the plain medkit removes none
+local HEAD_MIN_DEALT, PING_ABSORBED, PING_RAW = 0.10, 0.5, 0.4
+local CAM_ID, CAM_SAME_MS, CAM_ANY_MS = 100, 1500, 400
+local SAVE = { arm = "nlc_vars.injury_arm", leg = "nlc_vars.injury_leg" }
+local SAVE_T = { arm = "nlc_vars.injury_arm_t", leg = "nlc_vars.injury_leg_t" } -- game minute of the last worsening
+local PARTS = { arm = { "left_arm", "right_arm" }, leg = { "left_leg", "right_leg" } }
+
+local charge = { arm = 0, leg = 0 }
+local level_of = { arm = 0, leg = 0 }
+local since_of = { arm = 0, leg = 0 } -- game minute of the last worsening
+local last_decay_t = 0
+local last_cam_name, next_cam_same_t, next_cam_any_t = nil, 0, 0
+local concussion_end, concussion_vol = 0, nil
+local next_cure_t = 0
+local snd = nil
+local SOUNDS = { "arts_hit_1", "arts_hit_2", "arts_hit_3", "pain_1", "pain_2", "pain_3", "pain_4", "pain_5", "pain_6", "pain_7", "pain_8" }
+
+
+local function play_pain()
+	if snd and snd:playing() then return end
+	snd = xr_sound.get_safe_sound_object("actor\\" .. SOUNDS[math.random(table.getn(SOUNDS))])
+	snd:play_at_pos(db.actor, vector(), 0, sound_object.s2d)
+end
+
+local function camera(info)
+	local now = time_global()
+	if now < next_cam_any_t then return end -- one kick per burst
+	local cam
+	-- armour-class camera from the hit-fx remake; nil (non-bullet, no suit, bare head) keeps the anm below
+	if sivol_hit_fx and sivol_hit_fx.active and sivol_hit_fx.active() then
+		cam = sivol_hit_fx.camera_for(info)
+	end
+	if not cam then
+		if info.zone == "head" then
+			cam = "camera_effects\\head_shot.anm"
+		elseif info.zone == "arm" or info.zone == "leg" then
+			cam = math.random() < 0.5 and "camera_effects\\hit_front_left.anm" or "camera_effects\\hit_front_right.anm"
+		else
+			cam = "camera_effects\\hit_front.anm"
+		end
+	end
+	if cam == last_cam_name and now < next_cam_same_t then return end
+	level.add_cam_effector(cam, CAM_ID, false, "")
+	last_cam_name, next_cam_same_t, next_cam_any_t = cam, now + CAM_SAME_MS, now + CAM_ANY_MS
+end
+
+-- apply the effects of the current levels (also after a load)
+local function apply_levels()
+	if not db.actor then return end
+	local leg = level_of.leg
+	sivol.remove_move_penalty("crit_legs")
+	if leg > 0 then
+		sivol.add_move_penalty("crit_legs", LEG_SPEED[leg])
+	end
+	-- crippled: no sprint (named block of the mod's sprint API; db.actor.cant_sprint is not an engine property)
+	if leg >= 2 and db.actor:alive() then
+		sivol.add_sprint_block("crit_legs")
+	else
+		sivol.remove_sprint_block("crit_legs")
+	end
+	local arm = level_of.arm
+	if arm > 0 then
+		set_value("nlc_vars.add_wobble", arm) -- consumer: params/wpn_params.script (1 = x1.25, 2 = x1.5)
+	else
+		remove_value("nlc_vars.add_wobble")
+	end
+	-- named reload / draw factors (engine nlc-3.589.106+ / .107+), multiplied with other factors such as an artifact bonus
+	if level.nlc_set_reload_speed_factor then
+		level.nlc_set_reload_speed_factor("injury", ARM_RELOAD[arm] or 1.0)
+		if level.nlc_set_draw_speed_factor then
+			level.nlc_set_draw_speed_factor("injury", ARM_DRAW[arm] or 1.0)
+		end
+	elseif level.nlc_set_reload_speed_k then -- engine nlc-3.589.102-.105
+		level.nlc_set_reload_speed_k(ARM_RELOAD[arm] or 1.0)
+	end
+end
+
+-- "Thinking out loud" lines (config/text/*/script_strings.xml, nlc_injury_*), a few variants each
+local THINK_COUNT = { light = 3, severe = 3, eased = 1, healed = 3, ping = 2, hit = 2 }
+local THINK_COLOUR = { light = "red", severe = "red", eased = "yellow", healed = "green", ping = "yellow", hit = "red" }
+
+local function think(zone, event)
+	if not THINKING or not db.actor or not db.actor:alive() then return end
+	local id = string.format("nlc_injury_%s_%s_%d", zone, event, math.random(THINK_COUNT[event] or 1))
+	sak.send_tip_local(game.translate_string(id), game.translate_string("thinking_out_loud"), 0, 8, "g_g", "sak", THINK_COLOUR[event] or "yellow")
+end
+
+-- level-change lines wait THINK_DELAY_MS (not during the medkit animation); a newer change replaces
+-- the waiting line, and nothing is said when the level is back where it was when the wait began
+local THINK_DELAY_MS = 5000
+local pending_think = {} -- zone -> { event, t, from }
+
+local function queue_think(zone, event, old)
+	local p = pending_think[zone]
+	pending_think[zone] = { event = event, t = time_global() + THINK_DELAY_MS, from = p and p.from or old }
+end
+
+local function flush_think(now)
+	for z, p in pairs(pending_think) do
+		if now >= p.t then
+			pending_think[z] = nil
+			if level_of[z] ~= p.from then think(z, p.event) end
+		end
+	end
+end
+
+local function game_min()
+	return game.get_game_time():diffSec(misc.base_time()) / 60
+end
+
+local function set_level(zone, lv)
+	lv = clamp(lv, 0, 2)
+	if lv == level_of[zone] then return end
+	local old = level_of[zone]
+	local worse = lv > old
+	level_of[zone] = lv
+	if worse then
+		since_of[zone] = game_min()
+		set_value(SAVE_T[zone], since_of[zone])
+	elseif lv == 0 then
+		remove_value(SAVE_T[zone])
+	end
+	if worse then
+		queue_think(zone, lv == 2 and "severe" or "light", old)
+	elseif lv == 0 then
+		queue_think(zone, "healed", old)
+	else
+		queue_think(zone, "eased", old)
+	end
+	if lv > 0 then set_value(SAVE[zone], lv) else remove_value(SAVE[zone]) end
+	if lv == 0 then charge[zone] = 0 end
+	apply_levels()
+	if worse then play_pain() end
+	if DEBUG then log2("[sivol_actor_crit] %s injury level %d", zone, lv) end
+end
+
+local function add_charge(zone, dealt)
+	if dealt < MIN_HIT then return end
+	charge[zone] = charge[zone] + dealt
+	local lv = (charge[zone] >= T_SEVERE or dealt >= ONE_HIT_SEVERE) and 2 or (charge[zone] >= T_LIGHT and 1 or 0)
+	if lv > level_of[zone] then set_level(zone, lv) end
+end
+
+local function end_concussion()
+	if concussion_vol then level.set_snd_volume(concussion_vol) end
+	concussion_vol, concussion_end = nil, 0
+end
+
+local next_head_think_t = 0
+local function concussion(dealt, absorbed, mutant)
+	if time_global() >= next_head_think_t then
+		next_head_think_t = time_global() + 20000
+		think("head", (absorbed >= 0.5 and db.actor:nlc_head_cover() > 0) and "ping" or "hit")
+	end
+	local secs = (3 + 5 * clamp(dealt / 0.6, 0, 1)) * (1 - 0.5 * db.actor:nlc_head_cover())
+	if not concussion_vol then
+		concussion_vol = level.get_snd_volume()
+		level.set_snd_volume(concussion_vol * 0.25)
+	end
+	concussion_end = math.max(concussion_end, time_global() + secs * 1000)
+	level.add_pp_effector("amk_shoot.ppe", 2011, false)
+	if absorbed < 0.5 then
+		level.add_pp_effector("black.ppe", 99, false)
+	end
+	-- the helmet took the round: night vision may drop out
+	if absorbed >= 0.5 and db.actor:nlc_head_cover() > 0 and math.random() < 0.3 and nvd_params then
+		nvd_params.disable_NVD()
+	end
+	-- a mutant blow to the head can knock the weapon out of the hands (old vergas behaviour)
+	if mutant and math.random() < 0.10 then
+		local item = db.actor:active_item()
+		if item and item:section() ~= "bolt" and item:section() ~= "wpn_knife" and item:get_slot() ~= 7 then
+			db.actor:drop_item(item)
+		end
+	end
+	play_pain()
+end
+
+local function torso_impact(info)
+	-- blunt trauma on chest/belly: armour stops the round, not its energy (bullets only)
+	if info.type ~= hit.fire_wound or info.absorbed < 0.3 then return end
+	if info.zone ~= "chest" and info.zone ~= "belly" then return end
+	local loss = math.min(0.2, info.raw * info.absorbed * 0.15)
+	if loss > 0.005 then
+		db.actor.power = -loss -- the power setter is a delta (ChangePower)
+	end
+end
+
+-- the injury is old enough, and the actor (total health) and, with body health on, the limb
+-- (both arms / both legs) are healed
+local function healed(zone)
+	if game_min() - since_of[zone] < (CURE_MIN_MIN[level_of[zone]] or 0) then return false end
+	if db.actor.health < CURE_HEALTH then return false end
+	if body_health and body_health.enabled() then
+		local p = PARTS[zone]
+		return (body_health.part_health(p[1]) + body_health.part_health(p[2])) * 0.5 >= CURE_HEALTH
+	end
+	return true
+end
+
+local function update_injuries()
+	if not db.actor:alive() then
+		sivol.remove_sprint_block("crit_legs")
+		return
+	end
+	local now = time_global()
+	local dt = (now - last_decay_t) / 1000
+	last_decay_t = now
+	if dt > 0 and dt < 5 then
+		for z, c in pairs(charge) do
+			if c > 0 then charge[z] = math.max(0, c - DECAY_PER_S * dt) end
+		end
+	end
+	if concussion_end > 0 and now >= concussion_end then end_concussion() end
+	flush_think(now)
+	if now < next_cure_t then return end
+	next_cure_t = now + 1000
+	for z, lv in pairs(level_of) do
+		if lv > 0 and healed(z) then set_level(z, 0) end
+	end
+end
+
+-- an army medkit lowers every injury one level, a scientific one (also _razgr) cures them; the plain medkit does not
+local function medkit_cure(section)
+	for prefix, n in pairs(MEDKIT_CURE) do
+		if string.find(section, prefix, 1, true) == 1 then return n end
+	end
+	return 0
+end
+
+local function on_actor_before_use(item, sobj)
+	if not item then return end
+	local n = medkit_cure(item:section())
+	if n == 0 then return end
+	for z, lv in pairs(level_of) do
+		if lv > 0 then set_level(z, lv - n) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- signals
+-------------------------------------------------------------------------------
+local IGNORED = {}
+
+local function on_actor_hit(obj, amount, local_dir, who, bone_index)
+	if not db.actor or not db.actor:alive() then return end
+	local htype = db.actor:nlc_last_hit_type()
+	if htype < 0 or IGNORED[htype] then return end
+	if who and sivol_psy_phantoms and sivol_psy_phantoms.is_phantom and sivol_psy_phantoms.is_phantom(who:id()) then return end
+
+	local raw, post, dealt = db.actor:nlc_last_hit_raw(), db.actor:nlc_last_hit_post(), db.actor:nlc_last_hit_dealt()
+	local absorbed = raw > 0 and clamp(1 - post / raw, 0, 1) or 0
+	local info = {
+		type = htype, bone = db.actor:nlc_last_hit_bone(), zone = zone_of(db.actor:nlc_last_hit_bone()),
+		raw = raw, post = post, dealt = dealt, absorbed = absorbed,
+		guarded = db.actor:nlc_last_hit_guarded(), who = who,
+		mutant = who and who:is_monster() or false,
+	}
+	-- mutant melee: injury zone by anatomy, size as a limb hit (the damage bone is the old remap)
+	local pm = pending_mutant
+	pending_mutant = nil
+	if pm and who and pm.id == who:id() and time_global() - pm.time < 100 then
+		info.zone = pm.zone
+		info.dealt = mutant_limb_damage(raw, htype) * pm.k
+		dealt = info.dealt
+	end
+
+	-- hook for the hit-fx remake (sounds); the camera stays here
+	ogse_signals.get_mgr():call("on_actor_hit_resolved", info)
+
+	if not ENABLED or game_options.AdditionalMobHits == false then return end
+	if raw < 0.03 then return end
+	if not (info.mutant or (who and (who:is_stalker() or who:is_actor()))) and htype ~= hit.fire_wound then return end
+
+	camera(info)
+	torso_impact(info)
+
+	local z = info.zone
+	if DEBUG then
+		log2("[sivol_actor_crit] %s type=%d raw=%.3f post=%.3f dealt=%.3f abs=%.2f charge arm %.2f leg %.2f",
+			z, htype, raw, post, dealt, absorbed, charge.arm, charge.leg)
+	end
+	if z == "arm" or z == "leg" then
+		add_charge(z, dealt)
+	elseif z == "head" then
+		if dealt >= HEAD_MIN_DEALT or (absorbed >= PING_ABSORBED and raw >= PING_RAW) then
+			concussion(dealt, absorbed, info.mutant)
+		end
+	end
+end
+
+-- console test: g_loadstring sivol_actor_crit.debug_injury("leg", 2)
+-- "arm" / "leg": set level 0..2 through the normal path (messages, effects, save);
+-- "head": level > 0 starts a concussion, 0 ends it
+function debug_injury(zone, lv)
+	lv = tonumber(lv) or 0
+	if not db.actor then return end
+	if zone == "arm" or zone == "leg" then
+		set_level(zone, lv)
+		if lv > 0 then charge[zone] = lv == 2 and T_SEVERE or T_LIGHT end
+	elseif zone == "head" then
+		if lv > 0 then concussion(0.3, 0, false) else end_concussion() end
+	else
+		log2("[sivol_actor_crit] debug_injury: unknown zone %s (arm, leg, head)", tostring(zone))
+		return
+	end
+	log2("[sivol_actor_crit] debug_injury %s %d -> arm %d leg %d head %d", zone, lv, injury_level("arm"), injury_level("leg"), injury_level("head"))
+end
+
+-- state API (watch icon): "arm" / "leg" 0..2, "head" 1 while a concussion runs
+function injury_level(zone)
+	if zone == "head" then return concussion_end > time_global() and 1 or 0 end
+	return level_of[zone] or 0
+end
+function injury_charge(zone) return charge[zone] or 0 end
+-- recoil multiplier of the arm injury (sivol_fuzz_recoil.script)
+function recoil_k() return ARM_RECOIL[level_of.arm] or 1.0 end
+
+local function on_update()
+	update_injuries()
+	update_head_cover(false)
+end
+
+local function on_spawn()
+	end_concussion()
+	pending_think = {}
+	charge.arm, charge.leg = 0, 0
+	-- injuries survive save/load: restore the saved levels and their effects
+	level_of.arm = tonumber(get_value(SAVE.arm, 0)) or 0
+	level_of.leg = tonumber(get_value(SAVE.leg, 0)) or 0
+	-- saves from before the cure timer have no time: count the injury as old
+	since_of.arm = tonumber(get_value(SAVE_T.arm, 0)) or 0
+	since_of.leg = tonumber(get_value(SAVE_T.leg, 0)) or 0
+	last_decay_t = time_global()
+	apply_levels()
+	last_cov, last_arm = -1, -1
+	update_head_cover(true)
+end
+
+function attach(sm)
+	IGNORED[hit.radiation] = true
+	IGNORED[hit.telepatic] = true
+	IGNORED[hit.chemical_burn] = true
+	sm:subscribe({ signal = "on_actor_hit", fun = on_actor_hit })
+	sm:subscribe({ signal = "on_update",    fun = on_update })
+	sm:subscribe({ signal = "on_spawn",     fun = on_spawn })
+	sm:subscribe({ signal = "on_actor_before_use", fun = on_actor_before_use })
+end

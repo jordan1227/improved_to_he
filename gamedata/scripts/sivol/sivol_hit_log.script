@@ -7,9 +7,19 @@
 --   control in a standing idle, so they can be shot at rest. Monsters already
 --   under story/scheme script control are left alone. Set FREEZE = false and
 --   restart (or reload) to release them.
+-- NPC_ENABLED: the same log for actor shots that hit stalkers, with name,
+--   community, rank, visual and lost/raw (health lost per unit of raw power,
+--   which exposes armour and bone multipliers). See docs/damage_model/DESIGN_npc_damage_model.md.
+-- ACTOR_ENABLED: one line per hit on the player (shooter, rank, weapon, ammo, distance,
+--   bone, raw / post-armour / dealt, absorbed share, K, A, guard, body-part health) and
+--   an engagement summary per shooter after ACTOR_SUMMARY_MS without hits.
+--   See docs/damage_model/DESIGN_actor_damage_model.md 15.6 (needs engine nlc-3.589.100 exports).
 
 local ENABLED = false
 local FREEZE = false
+local NPC_ENABLED = false -- [SIVOL TEST] NPC damage-model pass, set false after testing
+local ACTOR_ENABLED = false -- [SIVOL TEST] actor damage-model pass, set false after testing
+local ACTOR_SUMMARY_MS = 5000
 local FREEZE_RADIUS = 40
 local GROUP_MS = 60          -- pellets of one shot arrive within this window
 local REPORT_DELAY_MS = 250  -- health and bleeding are read this long after the shot
@@ -87,6 +97,90 @@ local function on_monster_before_hit(obj, hit_data)
     rec.bones[name] = (rec.bones[name] or 0) + 1
 end
 
+local npc_pending = {} -- [npc id] = shot record
+
+-- calls an optional engine export (nlc-3.589.99+); nil on older engines or on error
+local function try_export(obj, method, ...)
+    local args = {...}
+    local ok, r = pcall(function() return obj[method](obj, unpack(args)) end)
+    if ok then return r end
+    return nil
+end
+
+local function npc_flush(obj, rec)
+    local parts = {}
+    for name, count in pairs(rec.bones) do
+        parts[#parts + 1] = count > 1 and string.format("%s x%d", name, count) or name
+    end
+    table.sort(parts)
+    local health = obj and obj.health or -1
+    local lost = rec.health - health
+    log2("[sivol_hit_log] npc %s (%s, %s %d) visual=%s prot=%s | %s [%s] ap=%.2f | hits=%d | bones: %s | raw_power=%.3f | health %.3f -> %.3f | lost/raw=%.3f",
+        rec.name, rec.community, rec.rank_name, rec.rank, rec.visual, rec.prot, rec.weapon, rec.ammo, rec.ap, rec.hits,
+        table.concat(parts, ", "), rec.power, rec.health, health, rec.power > 0 and lost / rec.power or 0)
+end
+
+local function on_npc_before_hit(obj, hit_data)
+    if not obj or not hit_data or hit_data.ignore_hit then return end
+    if not db.actor or hit_data.who_id ~= db.actor:id() then return end
+    if hit_data.hit_type ~= hit.fire_wound then return end
+    local id = obj:id()
+    local now = time_global()
+    local rec = npc_pending[id]
+    if rec and now - rec.first > GROUP_MS then
+        npc_flush(obj, rec)
+        rec = nil
+    end
+    if not rec then
+        local wpn = hit_data.weapon_id and level.object_by_id(hit_data.weapon_id)
+        rec = {
+            first = now,
+            name = obj:name(),
+            community = obj:character_community(),
+            rank_name = ranks.get_obj_rank_name(obj) or "?",
+            rank = obj:character_rank() or -1,
+            visual = string.gsub(tostring(obj:get_visual_name()), "\\", "/"),
+            prot = try_export(obj, "bone_protection_section") or "?",
+            ap = tonumber(hit_data.ap) or 0,
+            weapon = wpn and wpn:section() or "?",
+            ammo = ammo_section(wpn),
+            health = obj.health or -1,
+            hits = 0,
+            power = 0,
+            bones = {},
+        }
+        npc_pending[id] = rec
+    end
+    rec.hits = rec.hits + 1
+    rec.power = rec.power + (tonumber(hit_data.power) or 0)
+    local name = bone_name(obj, hit_data.bone_id)
+    -- armour / koeff of the bone (engine nlc-3.589.99+ exports; skipped on older engines)
+    local a = try_export(obj, "bone_armour", hit_data.bone_id)
+    local k = try_export(obj, "bone_koeff", hit_data.bone_id)
+    if type(a) == "number" and type(k) == "number" and a >= 0 then
+        name = string.format("%s[A%.2f K%.2f]", name, a, k)
+    end
+    rec.bones[name] = (rec.bones[name] or 0) + 1
+end
+
+local function on_npc_update(obj, delta)
+    if not obj then return end
+    local rec = npc_pending[obj:id()]
+    if rec and time_global() - rec.first >= REPORT_DELAY_MS then
+        npc_flush(obj, rec)
+        npc_pending[obj:id()] = nil
+    end
+end
+
+local function on_npc_death(obj)
+    if not obj then return end
+    local rec = npc_pending[obj:id()]
+    if rec then
+        npc_flush(obj, rec)
+        npc_pending[obj:id()] = nil
+    end
+end
+
 local function hold(obj)
     if not obj:get_script() then
         if not pcall(obj.script, obj, true, script_name()) then return end
@@ -134,7 +228,109 @@ local function on_monster_death(obj)
     frozen[obj:id()] = nil
 end
 
+-------------------------------------------------------------------------------
+-- actor mode
+-------------------------------------------------------------------------------
+local actor_pending = nil   -- before-hit data of the hit being processed
+local engagements = {}      -- [shooter id] = summary
+local fired_flushed = {}    -- [shooter id] = rounds fired at the actor already reported
+
+local function rounds_fired(id)
+    return xrs_battle_ai and xrs_battle_ai.nlc_shots_at_actor and xrs_battle_ai.nlc_shots_at_actor(id) or 0
+end
+
+local function part_health_str()
+    if not body_health or not body_health.enabled() then
+        return string.format("total %.3f", db.actor.health)
+    end
+    return string.format("head %.2f body %.2f arms %.2f/%.2f legs %.2f/%.2f",
+        body_health.part_health("head"), body_health.part_health("body"),
+        body_health.part_health("left_arm"), body_health.part_health("right_arm"),
+        body_health.part_health("left_leg"), body_health.part_health("right_leg"))
+end
+
+local function on_actor_before_hit(obj, hit_data)
+    if not hit_data or hit_data.ignore_hit then return end
+    local who = hit_data.who_id and level.object_by_id(hit_data.who_id)
+    local wpn = hit_data.weapon_id and level.object_by_id(hit_data.weapon_id)
+    actor_pending = {
+        who = who,
+        name = who and who:name() or "?",
+        rank = who and who:is_stalker() and (ranks.get_obj_rank_name(who) or "?") or "-",
+        community = who and who:is_stalker() and who:character_community() or "-",
+        weapon = wpn and wpn:section() or "?",
+        ammo = wpn and ammo_section(wpn) or "?",
+        ap = tonumber(hit_data.ap) or 0,
+        dist = who and who:position():distance_to(db.actor:position()) or -1,
+    }
+end
+
+local function flush_engagement(id, e)
+    local zones = {}
+    for z, n in pairs(e.zones) do zones[#zones + 1] = string.format("%s %d", z, n) end
+    table.sort(zones)
+    local fired = rounds_fired(id) - (fired_flushed[id] or 0)
+    fired_flushed[id] = rounds_fired(id)
+    log2("[sivol_hit_log] actor engagement %s (%s %s) %s: hits=%d of %d rounds (%s) in %.1f s | %s | dealt=%.3f | guarded=%d%s%s",
+        e.name, e.community, e.rank, e.weapon, e.hits, fired, fired > 0 and string.format("%.0f%%", 100 * e.hits / fired) or "?",
+        (e.last - e.first) / 1000, table.concat(zones, ", "), e.dealt, e.guarded,
+        db.actor and db.actor:alive() and get_console():get_bool("g_god") and " | god mode (record only)" or "",
+        db.actor and not db.actor:alive() and " | actor dead" or "")
+end
+
+local function on_actor_hit(obj, amount, local_dir, who, bone_index)
+    if not db.actor then return end
+    local p = actor_pending or {}
+    actor_pending = nil
+    local a = db.actor
+    local raw, post, dealt = a:nlc_last_hit_raw(), a:nlc_last_hit_post(), a:nlc_last_hit_dealt()
+    local htype = a:nlc_last_hit_type()
+    local bone = bone_name(a, a:nlc_last_hit_bone())
+    log2("[sivol_hit_log] actor hit by %s (%s %s) %s [%s] ap=%.2f dist=%.1f | type=%d bone=%s | raw=%.3f post=%.3f dealt=%.3f absorbed=%.2f K=%.3f A=%.3f model=%s guard=%s head_cov=%.2f | %s",
+        p.name or "?", p.community or "?", p.rank or "?", p.weapon or "?", p.ammo or "?", p.ap or 0, p.dist or -1,
+        htype, bone, raw, post, dealt, raw > 0 and 1 - post / raw or 0, a:nlc_last_hit_k(), a:nlc_last_hit_armour(),
+        tostring(a:nlc_last_hit_bullet_model()), tostring(a:nlc_last_hit_guarded()), a:nlc_head_cover(), part_health_str())
+    local id = who and who:id()
+    if not id then return end
+    local now = time_global()
+    local e = engagements[id]
+    if not e then
+        e = { name = p.name or "?", community = p.community or "?", rank = p.rank or "?", weapon = p.weapon or "?",
+              first = now, hits = 0, dealt = 0, guarded = 0, zones = {} }
+        engagements[id] = e
+    end
+    e.last = now
+    e.hits = e.hits + 1
+    e.dealt = e.dealt + math.max(0, dealt)
+    if a:nlc_last_hit_guarded() then e.guarded = e.guarded + 1 end
+    local z = sivol_actor_crit and sivol_actor_crit.zone_name and sivol_actor_crit.zone_name(a:nlc_last_hit_bone()) or bone
+    e.zones[z] = (e.zones[z] or 0) + 1
+end
+
+local next_actor_check = 0
+local function on_actor_update()
+    local now = time_global()
+    if now < next_actor_check then return end
+    next_actor_check = now + 1000
+    for id, e in pairs(engagements) do
+        if now - e.last > ACTOR_SUMMARY_MS or (db.actor and not db.actor:alive()) then
+            flush_engagement(id, e)
+            engagements[id] = nil
+        end
+    end
+end
+
 function attach(sm)
+    if ACTOR_ENABLED then
+        sm:subscribe({ signal = "on_actor_before_hit", fun = on_actor_before_hit })
+        sm:subscribe({ signal = "on_actor_hit", fun = on_actor_hit })
+        sm:subscribe({ signal = "on_update", fun = on_actor_update })
+    end
+    if NPC_ENABLED then
+        sm:subscribe({ signal = "on_npc_before_hit", fun = on_npc_before_hit })
+        sm:subscribe({ signal = "on_npc_update", fun = on_npc_update })
+        sm:subscribe({ signal = "on_npc_death", fun = on_npc_death })
+    end
     if not ENABLED and not FREEZE then return end
     sm:subscribe({ signal = "on_monster_before_hit", fun = on_monster_before_hit })
     sm:subscribe({ signal = "on_monster_update", fun = on_monster_update })

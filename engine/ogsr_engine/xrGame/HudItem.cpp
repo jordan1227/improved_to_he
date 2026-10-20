@@ -452,7 +452,9 @@ u32 CHudItem::PlayHUDMotion_noCB(const shared_str& motion_name, const bool bMixI
     }
     else
     {
-        return g_player_hud->motion_length(motion_name, HudSection(), m_current_motion_def, speed);
+        const u32 length = g_player_hud->motion_length(motion_name, HudSection(), m_current_motion_def, speed);
+        // NLC: no HUD model (third-person view): reload / draw states keep the handling speed factors too
+        return iFloor(length / nlc_hud_speed_k(nlc_actor_motion_kind(this, motion_name.c_str())));
     }
 }
 

@@ -11,5 +11,6 @@ function normal   (shader, t_base, t_second, t_detail)
       : scope_pass  (true)
 	shader:dx10texture	("s_base",	t_base)
 	shader:dx10texture("s_he_psy", "act\\watch\\icon_thirst2")
+	shader:dx10texture("s_he_injury", "act\\watch\\icon_injury") -- NLC: limb injury figure
 	shader:dx10sampler	("smp_base")
 end

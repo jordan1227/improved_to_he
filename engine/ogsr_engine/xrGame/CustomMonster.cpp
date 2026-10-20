@@ -208,6 +208,8 @@ void CCustomMonster::reinit()
     m_critical_wound_accumulator = 0.f;
     m_critical_wound_threshold = pSettings->r_float(cNameSect(), "critical_wound_threshold");
     m_critical_wound_decrease_quant = pSettings->r_float(cNameSect(), "critical_wound_decrease_quant");
+    m_critical_wound_raw_part = READ_IF_EXISTS(pSettings, r_float, cNameSect(), "critical_wound_raw_part", 0.f); // NLC
+    m_critical_wound_keep_charge = READ_IF_EXISTS(pSettings, r_bool, cNameSect(), "critical_wound_keep_charge", false); // NLC
 
     if (m_critical_wound_threshold >= 0)
         load_critical_wound_bones();
@@ -530,6 +532,8 @@ void CCustomMonster::eye_pp_s0()
 
     eye_matrix.setHPB(-rotation.current.yaw + m_fEyeShiftYaw, -rotation.current.pitch, 0);
     eye_matrix.c.add(X.c, m_tEyeShift);
+    m_nlc_eye_offset.sub(eye_matrix.c, Position()); // NLC
+    m_nlc_eye_time = Device.dwTimeGlobal;
 }
 
 void CCustomMonster::update_range_fov(float& new_range, float& new_fov, float start_range, float start_fov)
@@ -923,7 +927,7 @@ void CCustomMonster::load(IReader& packet)
         memory().load(packet);
 }
 
-bool CCustomMonster::update_critical_wounded(const u16& bone_id, const float& power)
+bool CCustomMonster::update_critical_wounded(const u16& bone_id, const float& power, const float raw_power)
 {
     // object should not be critical wounded
     VERIFY(m_critical_wound_type == u32(-1));
@@ -934,7 +938,8 @@ bool CCustomMonster::update_critical_wounded(const u16& bone_id, const float& po
         return (false);
 
     float time_delta = m_last_hit_time ? float(Device.dwTimeGlobal - m_last_hit_time) / 1000.f : 0.f;
-    m_critical_wound_accumulator += power - m_critical_wound_decrease_quant * time_delta;
+    // NLC: raw_power (pre-armour bullet power) adds impact so armoured targets still stagger now and then
+    m_critical_wound_accumulator += power + m_critical_wound_raw_part * raw_power - m_critical_wound_decrease_quant * time_delta;
     clamp(m_critical_wound_accumulator, 0.f, m_critical_wound_threshold);
 
 #if 0 // def DEBUG
@@ -954,23 +959,29 @@ bool CCustomMonster::update_critical_wounded(const u16& bone_id, const float& po
     if (m_critical_wound_accumulator < m_critical_wound_threshold)
         return (false);
 
+    if (!critical_wound_external_conditions_suitable())
+    {
+        // NLC: original behaviour drops the full charge; keep_charge retries on the next hit
+        if (!m_critical_wound_keep_charge)
+        {
+            m_last_hit_time = 0;
+            m_critical_wound_accumulator = 0.f;
+        }
+        return (false);
+    }
+
     m_last_hit_time = 0;
     m_critical_wound_accumulator = 0.f;
 
-    if (critical_wound_external_conditions_suitable())
-    {
-        BODY_PART::const_iterator I = m_bones_body_parts.find(bone_id);
-        if (I == m_bones_body_parts.end())
-            return (false);
+    BODY_PART::const_iterator I = m_bones_body_parts.find(bone_id);
+    if (I == m_bones_body_parts.end())
+        return (false);
 
-        m_critical_wound_type = (*I).second;
+    m_critical_wound_type = (*I).second;
 
-        critical_wounded_state_start();
+    critical_wounded_state_start();
 
-        return (true);
-    }
-
-    return (false);
+    return (true);
 }
 
 bool CCustomMonster::force_critical_wound(CriticalWoundType type)

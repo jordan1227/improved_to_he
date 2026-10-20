@@ -401,6 +401,7 @@ script_rq_result PerformRayQuery(Fvector start, Fvector dir, float range, collid
 }*/
 
 void nlc_visible_body_set(bool active, u16 id); // NLC: HUDManager.cpp
+#include "player_hud.h" // NLC: actor weapon handling speed factors
 
 float GetTargetDist() { return ((CHUDManager*)g_hud)->GetTarget()->GetDist(); }
 
@@ -655,6 +656,7 @@ void set_pp_effector_factor2(int id, float f)
 }
 
 #include "relation_registry.h"
+#include "nlc_mutant_aim.h" // NLC
 
 int g_community_goodwill(LPCSTR _community, int _entity_id)
 {
@@ -1169,6 +1171,14 @@ void CLevel::script_register(lua_State* L)
             def("advance_game_time", &AdvanceGameTime),
 
             def("nlc_visible_body_active", [](bool active, u16 id) { nlc_visible_body_set(active, id); }), // NLC: HUDManager.cpp
+            // NLC: actor weapon handling speed, product of named factors per kind ("injury", later an artifact bonus); total clamped 0.3..2
+            def("nlc_set_reload_speed_factor", [](LPCSTR name, float k) { nlc_set_hud_speed_factor(NLC_SPEED_RELOAD, name, k); }),
+            def("nlc_get_reload_speed_factor", [](LPCSTR name) { return nlc_get_hud_speed_factor(NLC_SPEED_RELOAD, name); }),
+            def("nlc_get_reload_speed_k", [] { return nlc_hud_speed_k(NLC_SPEED_RELOAD); }),
+            def("nlc_set_draw_speed_factor", [](LPCSTR name, float k) { nlc_set_hud_speed_factor(NLC_SPEED_DRAW, name, k); }), // show / hide
+            def("nlc_get_draw_speed_factor", [](LPCSTR name) { return nlc_get_hud_speed_factor(NLC_SPEED_DRAW, name); }),
+            def("nlc_get_draw_speed_k", [] { return nlc_hud_speed_k(NLC_SPEED_DRAW); }),
+            def("nlc_set_reload_speed_k", [](float k) { nlc_set_hud_speed_factor(NLC_SPEED_RELOAD, "injury", k); }), // .102 name, = "injury" factor
             def("get_target_dist", &GetTargetDist), def("get_target_obj", &GetTargetObj), def("get_current_ray_query", &GetCurrentRayQuery),
             //
             def("send_event_key_press", &send_event_key_press), def("send_event_key_release", &send_event_key_release), def("send_event_key_hold", &send_event_key_hold),
@@ -1187,7 +1197,9 @@ void CLevel::script_register(lua_State* L)
             def("unblock_action", [](EGameActions action) { Level().unblock_action(action); }),
             def("consume_key_press", [] { Level().nlc_consume_key_press(); }), // NLC
             def("nlc_scramble_input", [](int group, u32 duration_ms) { Level().nlc_scramble_input(group, duration_ms); }), // NLC
-            def("nlc_clear_input_scramble", [] { Level().nlc_clear_input_scramble(); }) // NLC
+            def("nlc_clear_input_scramble", [] { Level().nlc_clear_input_scramble(); }), // NLC
+            def("nlc_mut_aim_param", [](LPCSTR name, float value) { return nlc_mutant_aim_param(name, value); }), // NLC: nlc_mutant_aim.h
+            def("nlc_mut_aim_get", [](LPCSTR name) { return nlc_mutant_aim_get(name); }) // NLC
     )],
 
         module(L, "actor_stats")[(def("add_points", &add_actor_points), def("add_points_str", &add_actor_points_str), def("get_points", &get_actor_points),

@@ -12,6 +12,7 @@ class CScriptCallbackEx;
 
 class CActor;
 class CActorBodyHealth; // NLC
+class CCustomOutfit; // NLC
 
 class CActorCondition : public CEntityCondition
 {
@@ -55,6 +56,45 @@ public:
 
     CActorBodyHealth& body() const { return *m_body; } // NLC
 
+    // NLC: the last hit on the actor, for scripts (crit system, hit fx, hit log).
+    // docs/damage_model/DESIGN_actor_damage_model.md A2. raw = power after belt artefacts, post = after the
+    // outfit, dealt = health lost (before the body-part split), k_eff/armour = bullet model values.
+    struct SNlcLastHit
+    {
+        u32 time{};
+        u32 type{u32(-1)};
+        s16 bone{-1};
+        float raw{};
+        float post{};
+        float dealt{};
+        float k_eff{1.f};
+        float armour{};
+        bool bullet_model{};
+        bool guarded{};
+    };
+    const SNlcLastHit& nlc_last_hit() const { return m_nlc_last_hit; }
+    // NLC: head protection of the worn mask (A6, set by vergas_masks): coverage 0..1 and armour
+    void nlc_set_head_cover(float cov, float armour)
+    {
+        m_nlc_head_cov = cov;
+        m_nlc_head_armour = armour;
+    }
+    float nlc_head_cover() const { return m_nlc_head_cov; }
+    float nlc_head_armour() const { return m_nlc_head_armour; }
+    // NLC: god mode: fill the last-hit record without changing anything (hit_scale from the damage table)
+    void nlc_dry_hit(SHit* pHDS, float hit_scale);
+
+private:
+    SNlcLastHit m_nlc_last_hit; // NLC
+    float m_nlc_head_cov{}; // NLC
+    float m_nlc_head_armour{}; // NLC
+    bool m_nlc_dry{}; // NLC: nlc_dry_hit running, no outfit wear
+    float nlc_bullet_outfit(float hit_power, s16 element, float AP, CCustomOutfit* outfit); // NLC
+
+protected:
+    virtual float HitOutfitEffect(float hit_power, ALife::EHitType hit_type, s16 element, float AP) override; // NLC
+
+public:
     virtual CWound* ConditionHit(SHit* pHDS);
     virtual void UpdateCondition();
 

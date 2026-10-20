@@ -25,6 +25,7 @@ void SBoneProtections::reload(const shared_str& bone_sect, IKinematics* kinemati
 {
     VERIFY(kinematics);
     m_bones_koeff.clear();
+    m_section = bone_sect;
 
     m_fHitFrac = READ_IF_EXISTS(pSettings, r_float, bone_sect, "hit_fraction", 0.1f);
 

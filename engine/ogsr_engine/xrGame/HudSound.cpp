@@ -7,6 +7,8 @@
 
 #include "HudSound.h"
 #include "../xr_3da/x_ray.h"
+#include "Actor.h"
+#include "player_hud.h"
 
 void HUD_SOUND::LoadSound(LPCSTR section, LPCSTR line, HUD_SOUND& hud_snd, int type)
 {
@@ -25,6 +27,11 @@ void HUD_SOUND::LoadSound(LPCSTR section, LPCSTR line, HUD_SOUND& hud_snd, int t
     } // while
 
     ASSERT_FMT(!hud_snd.sounds.empty(), "there is no sounds [%s] for [%s]", line, section);
+
+    // NLC: magazine / grenade-launcher reloads and shotgun tube loading (see nlc_actor_motion_kind);
+    // weapon draw / holster sounds are tagged by the weapon (WeaponMagazined.cpp)
+    const bool reload = strstr(line, "reload") || strstr(line, "snd_open_weapon") || strstr(line, "snd_add_cartridge") || strstr(line, "snd_close_weapon");
+    hud_snd.m_nlc_speed_kind = reload ? NLC_SPEED_RELOAD : NLC_SPEED_NONE;
 }
 
 void HUD_SOUND::LoadSound(LPCSTR section, LPCSTR line, ref_sound& snd, int type, float* volume, float* delay, float* freq)
@@ -96,6 +103,14 @@ void HUD_SOUND::PlaySound(HUD_SOUND& hud_snd, const Fvector& position, const COb
 
     hud_snd.m_activeSnd = &hud_snd.sounds[Random.randI(hud_snd.sounds.size())];
     float freq = hud_snd.m_activeSnd->freq;
+    float delay = hud_snd.m_activeSnd->delay;
+    // NLC: the actor's reload / draw sounds play at the animation speed (pitch follows), delays scale with it
+    const float nlc_k = nlc_hud_speed_k(hud_snd.m_nlc_speed_kind);
+    if (hud_snd.m_nlc_speed_kind != NLC_SPEED_NONE && parent && parent == Actor() && !fsimilar(nlc_k, 1.f))
+    {
+        freq *= nlc_k;
+        delay /= nlc_k;
+    }
     Fvector pos = (flags & sm_2D) ? Fvector{} : position;
 
     static const float hud_vol = READ_IF_EXISTS(pSettings, r_float, "hud_sound", "hud_sound_vol_k", 1.0f);
@@ -103,11 +118,11 @@ void HUD_SOUND::PlaySound(HUD_SOUND& hud_snd, const Fvector& position, const COb
 
     if (overlap)
     {
-        hud_snd.m_activeSnd->snd.play_no_feedback(const_cast<CObject*>(parent), flags, hud_snd.m_activeSnd->delay, &pos, &vol , &freq);
+        hud_snd.m_activeSnd->snd.play_no_feedback(const_cast<CObject*>(parent), flags, delay, &pos, &vol , &freq);
     }
     else
     {
-        hud_snd.m_activeSnd->snd.play_at_pos(const_cast<CObject*>(parent), pos, flags, hud_snd.m_activeSnd->delay);
+        hud_snd.m_activeSnd->snd.play_at_pos(const_cast<CObject*>(parent), pos, flags, delay);
         hud_snd.m_activeSnd->snd.set_volume(vol);
         hud_snd.m_activeSnd->snd.set_frequency(freq);
     }

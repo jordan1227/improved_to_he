@@ -149,6 +149,57 @@ local headshot_prob = {
   [ "master"      ] = 0.2,
 }
 
+-- NLC: aim and spread against the player (docs/damage_model/DESIGN_actor_damage_model.md 13.2-13.3, X1/X2).
+-- Off = the HE-PORT behaviour (always the head or neck, no extra spread).
+local nlc_actor_aim    = true
+local nlc_actor_spread = true
+-- chance to pick the head instead of the chest when a new aim bone is chosen
+local nlc_actor_headshot_prob = {
+  [ "novice"      ] = 0.05,
+  [ "experienced" ] = 0.10,
+  [ "veteran"     ] = 0.15,
+  [ "master"      ] = 0.25,
+}
+local nlc_actor_torso_bones = { "bip01_spine2", "bip01_spine1" }
+local nlc_actor_aim_repick  = 3000 -- ms an aim bone is kept
+local nlc_actor_peek_check  = 300  -- ms between peek rays (chest hidden, head visible -> head)
+-- extra spread in degrees, added to the weapon cone (stalker_disp_base)
+local nlc_actor_spread_deg = { -- test 1 (2026-10-19): halved, the first values were far too wide
+  [ "novice"      ] = 0.30,
+  [ "experienced" ] = 0.20,
+  [ "veteran"     ] = 0.12,
+  [ "master"      ] = 0.07,
+}
+-- [SIVOL TEST] one line per NPC per second while it fires at the player: rank, distance, aim bone,
+-- spread, aim error (fire direction vs aim point) and rounds fired; set false after tuning
+local nlc_actor_aim_log = false
+local nlc_shots = {} -- [npc id] = { last = ammo in magazine, fired = rounds at the actor, log_t = next log }
+function nlc_shots_at_actor( npc_id )
+  local s = nlc_shots[ npc_id ]
+  return s and s.fired or 0
+end
+-- NLC mutant aim (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6f): delay before the first shot at a new mutant target, by rank;
+-- false = fire at once (the HE-PORT behaviour)
+local nlc_mutant_acquire = true
+local nlc_mutant_acquire_ms = {
+  [ "novice"      ] = 350,
+  [ "experienced" ] = 270,
+  [ "veteran"     ] = 200,
+  [ "master"      ] = 150,
+}
+local nlc_mutant_acquire_reset = 3000 -- ms without engaging it: the same mutant is acquired again
+-- combat start against a mutant closer than this: body turning does not block firing, other reasons at most
+-- nlc_mutant_ready_cap ms (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6g)
+local nlc_mutant_ready_dist = 10
+local nlc_mutant_ready_cap  = 400
+local nlc_actor_spread_community = {
+  [ "zombied"  ] = 3.0,
+  [ "bandit"   ] = 1.15,
+  [ "military" ] = 0.9,
+  [ "killer"   ] = 0.9,
+  [ "monolith" ] = 0.9,
+}
+
 
 function attach( sm )
   sm:subscribe({ signal = "on_monster_death", fun = this.on_monster_death })
@@ -322,18 +373,20 @@ end
 
 
 function is_not_ready_state( npc )
+  return nlc_not_ready_reason( npc ) ~= nil
+end
+
+-- NLC: why the combat action may not start firing yet (nil = ready); the same checks as is_not_ready_state
+function nlc_not_ready_reason( npc )
   local t = db.storage[ npc:id() ]
   if t and t.state_mgr then
     local anim = t.state_mgr.animstate:state()
-    if not_ready_states[ anim ] then return true end
+    if not_ready_states[ anim ] then return "anim_" .. tostring( anim ) end
   end
-  if
-    npc:animation_count() > 0 or npc:body_state() ~= move.standing
-    or npc:is_body_turning()
-  then
-    return true
-  end
-  return false
+  if npc:animation_count() > 0 then return "animations" end
+  if npc:body_state() ~= move.standing then return "body_state" end
+  if npc:is_body_turning() then return "turning" end
+  return nil
 end
 
 
@@ -802,6 +855,7 @@ function action_altcombat:initialize()
   self.fake_battle       = false
   self.can_fire          = false
   self.check_ready_state = true
+  self.nlc_ready_since   = nil
   in_combat[ npc:id() ]  = true
   -- ogse_night.check_night( npc ) -- [HE-PORT]
   sr_light.check_light( npc )
@@ -847,10 +901,28 @@ function action_altcombat:not_ready_state()
   local npc = self.object
   if self.check_ready_state then
     npc:clear_animations()
-    if is_not_ready_state( npc ) then
-      self.aiming = false
-      return true
+    local why = nlc_not_ready_reason( npc )
+    local now = time_global()
+    if why then
+      -- NLC mutant aim (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6g): against a close mutant a turning body does not
+      -- block the start of firing, and the wait is capped (a circling bloodsucker kept the body turning for seconds)
+      self.nlc_ready_since = self.nlc_ready_since or now
+      local be = get_target( npc, true )
+      local close = be and be:is_monster()
+        and npc:position():distance_to( be:position() ) < nlc_mutant_ready_dist
+      -- a sleeping stalker keeps the stock wait (wakes up and stands first)
+      if close and why ~= "anim_sleep"
+        and ( why == "turning" or now - self.nlc_ready_since >= nlc_mutant_ready_cap )
+      then
+        sivol_mut_aim_log.on_ready( npc, be, why, now - self.nlc_ready_since, "forced" )
+      else
+        self.aiming = false
+        return true
+      end
+    elseif self.nlc_ready_since then
+      sivol_mut_aim_log.on_ready( npc, get_target( npc, true ), "-", now - self.nlc_ready_since, "ready" )
     end
+    self.nlc_ready_since = nil
     self.check_ready_state = nil
     stop_state_mgr_update( npc )
   end
@@ -1963,10 +2035,21 @@ function we_are_under_attack( npc, enemy )
     return false
 
   elseif target:is_actor() then
-    local k = nil -- [HE-PORT]
-    if k and k > 0.15 then
-      return npc:relation( target ) == game_object.friend
-        or npc:character_community() == target:character_community()
+    -- NLC mutant aim B3 (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6): the actor's friends help him against a mutant
+    -- within help_dist_friend of the NPC, neutrals only within help_dist_neutral, enemies (also scripted) never
+    if not enemy:is_monster() then return false end
+    if not level.nlc_mut_aim_get or level.nlc_mut_aim_get( "enabled" ) <= 0 then return false end
+    local rel = npc:relation( target )
+    local lim
+    if rel == game_object.friend then
+      lim = level.nlc_mut_aim_get( "help_dist_friend" )
+    elseif rel == game_object.neutral then
+      lim = level.nlc_mut_aim_get( "help_dist_neutral" )
+    end
+    local dist = npc:position():distance_to( enemy:position() )
+    if lim and dist < lim then
+      sivol_mut_aim_log.on_help( npc, enemy, rel, dist )
+      return true
     end
     return false
 
@@ -2638,6 +2721,23 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
         self.aiming  = self:get_npc_reaction_time()
         type_of_fire = object.aim1
       end
+    elseif nlc_mutant_acquire and enemy:is_monster() then
+      -- NLC mutant aim (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6f): a new mutant target (or one not engaged for
+      -- nlc_mutant_acquire_reset ms) is shot only after a rank delay; aim1 meanwhile keeps the gun on it
+      self.aiming = false
+      local now = time_global()
+      if self.nlc_acq_id ~= enemy:id() or now - ( self.nlc_acq_last or 0 ) > nlc_mutant_acquire_reset then
+        local delay = nlc_mutant_acquire_ms[ npc_rank or get_obj_rank_name( npc ) ] or 250
+        self.nlc_acq_id    = enemy:id()
+        self.nlc_acq_until = now + delay
+        sivol_mut_aim_log.on_acquire( npc, enemy, delay )
+      end
+      self.nlc_acq_last = now
+      if now < self.nlc_acq_until then
+        type_of_fire = object.aim1
+      else
+        type_of_fire = object.fire1
+      end
     else
       self.aiming  = false
       type_of_fire = object.fire1
@@ -2647,7 +2747,10 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
   end
 
   if type_of_fire == object.fire1 then
-    if distance > 0 and st and st.use_deviation then
+    if nlc_actor_spread and enemy:is_actor() then
+      self:nlc_add_actor_spread( npc_rank )
+      self:nlc_track_actor_fire( weapon, npc_pos, npc_dir, be_pos, distance, npc_rank )
+    elseif distance > 0 and st and st.use_deviation then
       self:add_deviation( be_pos, weapon, distance, enemy )
     else
       npc:stalker_disp_base( 0 )
@@ -2811,6 +2914,91 @@ function action_altcombat:add_deviation( position, weapon, distance, enemy )
 end
 
 
+-- NLC: is the ray from the NPC's eyes to the actor's bone blocked before it reaches the actor
+local function nlc_ray_blocked( npc, from_pos, to_pos, actor )
+  local dx = to_pos.x - from_pos.x
+  local dy = to_pos.y - from_pos.y
+  local dz = to_pos.z - from_pos.z
+  local distance = math.sqrt( dx * dx + dy * dy + dz * dz )
+  if distance <= 0.05 then return false end
+  local dir = vector():set( dx / distance, dy / distance, dz / distance )
+  local rq = level.ray_query( from_pos, dir, distance, rq_target.rqtBoth, npc )
+  if not rq or not rq.result then return false end
+  if rq.object and rq.object:id() == actor:id() then return false end
+  return rq.range ~= nil and rq.range < distance - 0.3
+end
+
+function nlc_peek_head( npc, actor, torso_bone )
+  local eye = npc:bone_position( "bip01_head" )
+  if nlc_ray_blocked( npc, eye, actor:bone_position( "bip01_head" ), actor ) then
+    return false
+  end
+  -- any hidden torso bone counts (leaning out of cover shows the head and a shoulder at most)
+  return nlc_ray_blocked( npc, eye, actor:bone_position( "bip01_spine2" ), actor )
+    or nlc_ray_blocked( npc, eye, actor:bone_position( "bip01_spine1" ), actor )
+end
+
+-- NLC: rank spread against the player (X2), with the DSH first-second ramp (x1.2 -> x1.0)
+function action_altcombat:nlc_add_actor_spread( npc_rank )
+  local npc  = self.object
+  local deg  = nlc_actor_spread_deg[ npc_rank or get_obj_rank_name( npc ) ] or 0.4
+  local comm = nlc_actor_spread_community[ npc:character_community() ] or 1
+  local k    = firing_actor_disp_min
+  local now  = time_global()
+  if self.start_firing_actor then
+    local t = 1 - ( now - self.start_firing_actor ) / firing_actor_disp_time
+    if t > 0 then
+      k = firing_actor_disp_min + ( firing_actor_disp_max - firing_actor_disp_min ) * t
+    end
+  else
+    self.start_firing_actor = now
+    k = firing_actor_disp_max
+  end
+  self.firing_actor = true
+  npc:stalker_disp_base( math.rad( deg * comm * k ) )
+end
+
+-- NLC: rounds fired at the player and aim diagnostics (test switch nlc_actor_aim_log)
+function action_altcombat:nlc_track_actor_fire( weapon, npc_pos, npc_dir, aim_pos, distance, npc_rank )
+  local npc = self.object
+  local s = nlc_shots[ npc:id() ]
+  if not s then
+    s = { last = -1, fired = 0, log_t = 0 }
+    nlc_shots[ npc:id() ] = s
+  end
+  local ammo = weapon:get_ammo_in_magazine()
+  if s.last >= 0 and ammo < s.last then
+    s.fired = s.fired + ( s.last - ammo )
+  end
+  s.last = ammo
+  if not nlc_actor_aim_log then return end
+  local now = time_global()
+  if now < s.log_t then return end
+  s.log_t = now + 1000
+  local to = vector():set( aim_pos.x - npc_pos.x, aim_pos.y - npc_pos.y, aim_pos.z - npc_pos.z )
+  local len = to:magnitude()
+  local err = 0
+  if len > 0.01 then
+    local d = ( to.x * npc_dir.x + to.y * npc_dir.y + to.z * npc_dir.z ) / len
+    err = math.deg( math.acos( math.max( -1, math.min( 1, d ) ) ) )
+  end
+  local st = self.combat_sight
+  local eye = npc:bone_position( "bip01_head" )
+  local rays = string.format( "head %s spine2 %s spine1 %s",
+    nlc_ray_blocked( npc, eye, db.actor:bone_position( "bip01_head" ), db.actor ) and "blocked" or "clear",
+    nlc_ray_blocked( npc, eye, db.actor:bone_position( "bip01_spine2" ), db.actor ) and "blocked" or "clear",
+    nlc_ray_blocked( npc, eye, db.actor:bone_position( "bip01_spine1" ), db.actor ) and "blocked" or "clear" )
+  -- NLC peek diagnostic (6g): the first-person camera sits ahead of / above the head bone, so the player can see
+  -- over cover while every hit bone is hidden; log the ray to the camera and the camera offset from the head bone
+  local cam  = device().cam_pos
+  local head = db.actor:bone_position( "bip01_head" )
+  local cam_info = string.format( "cam %s, head-cam %.2f m (up %.2f)",
+    nlc_ray_blocked( npc, eye, cam, db.actor ) and "blocked" or "clear", head:distance_to( cam ), cam.y - head.y )
+  log2( "[xrs_aim] %s %s dist=%.1f bone=%s peek=%s (%s; %s) spread=%.2f deg aim_err=%.2f deg (%.2f m) fired=%d seen=%s",
+    npc:name(), tostring( npc_rank ), distance, tostring( st and st.bone ), tostring( st and st.peek_head ), rays, cam_info,
+    math.deg( npc:stalker_disp_base() ), err, math.tan( math.rad( err ) ) * distance, s.fired, tostring( npc:see( db.actor ) ) )
+end
+
 function action_altcombat:set_combat_sight( enemy, weapon )
   local npc = self.object
   if not weapon then
@@ -2844,15 +3032,39 @@ function action_altcombat:set_combat_sight( enemy, weapon )
     bone = st.bone
   else
     local use_deviation = false
+    local keep_ms = 10000
     if enemy:is_actor() then
-      local bones = { "bip01_head", "bip01_neck" }
-      bone = bones[ math.random( table.getn( bones ) ) ]
+      if nlc_actor_aim then
+        -- NLC: chest, the head by rank chance (X1)
+        local prob = nlc_actor_headshot_prob[ get_obj_rank_name( npc ) ] or 0.1
+        if math.random() < prob then
+          bone = "bip01_head"
+        else
+          bone = nlc_actor_torso_bones[ math.random( table.getn( nlc_actor_torso_bones ) ) ]
+        end
+        keep_ms = nlc_actor_aim_repick
+      else
+        local bones = { "bip01_head", "bip01_neck" }
+        bone = bones[ math.random( table.getn( bones ) ) ]
+      end
     end
     st.bone      = bone
     st.enemy_id  = enemy:id()
-    st.time      = time_global() + 10000
+    st.time      = time_global() + keep_ms
     st.use_deviation = use_deviation
     st.weapon_id = weapon:id()
+  end
+
+  -- NLC: peek rule (X1): the chest is hidden behind cover but the head is visible -> aim the head
+  if bone and nlc_actor_aim and enemy:is_actor() and bone ~= "bip01_head" then
+    local now = time_global()
+    if not st.peek_time or st.peek_time < now then
+      st.peek_time = now + nlc_actor_peek_check
+      st.peek_head = nlc_peek_head( npc, enemy, bone )
+    end
+    if st.peek_head then
+      bone = "bip01_head"
+    end
   end
 
   local look_pos

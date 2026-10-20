@@ -4,6 +4,7 @@
 #include "../../../hit.h"
 #include "../../../PHDestroyable.h"
 #include "../../../CharacterPhysicsSupport.h"
+#include "../../stalker/ai_stalker.h" // NLC mutant aim hit counter
 #include "game_level_cross_table.h"
 #include "game_graph.h"
 #include "../../../phmovementcontrol.h"
@@ -451,6 +452,11 @@ void CBaseMonster::Hit(SHit* pHDS)
 
     //	inherited::Hit(P,dir,who,element,p_in_object_space,impulse,hit_type);
     inherited::Hit(&HDS);
+
+    // NLC mutant aim D1: bullet hits by stalkers (engine-side: pellets below 0.015 never reach Lua)
+    if (HDS.hit_type == ALife::eHitTypeFireWound)
+        if (CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(HDS.who))
+            stalker->nlc_mut_on_hit(this);
 
     const float max_health = conditions().GetMaxHealth();
     if (HDS.who && HDS.who != this && max_health > 0.f)

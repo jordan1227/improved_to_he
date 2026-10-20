@@ -591,6 +591,49 @@ void attachable_hud_item::load(const shared_str& sect_name)
     m_hand_motions.load(m_has_separated_hands, m_parent->Model(), animatedHudItem, sect_name);
 }
 
+// NLC: actor weapon handling speed = product of named factors per kind, set from Lua ("injury" for the
+// arm injury, docs/damage_model/DESIGN_actor_damage_model.md 18.3; later e.g. an artifact bonus; total clamped 0.3..2).
+// Kinds: reload (magazine / grenade-launcher reloads, shotgun tube loading) and draw (show / hide).
+// Applied to the actor weapon's HUD motions, their state timing and their sounds (HudSound.cpp).
+float g_nlc_hud_speed_k[NLC_SPEED_KINDS] = {1.f, 1.f, 1.f};
+static xr_map<shared_str, float> g_nlc_hud_factors[NLC_SPEED_KINDS];
+
+void nlc_set_hud_speed_factor(u8 kind, LPCSTR name, float k)
+{
+    if (kind == NLC_SPEED_NONE || kind >= NLC_SPEED_KINDS)
+        return;
+    auto& factors = g_nlc_hud_factors[kind];
+    if (fsimilar(k, 1.f))
+        factors.erase(name);
+    else
+        factors[name] = k;
+    float total = 1.f;
+    for (const auto& [n, f] : factors)
+        total *= f;
+    g_nlc_hud_speed_k[kind] = std::clamp(total, 0.3f, 2.f);
+}
+
+float nlc_get_hud_speed_factor(u8 kind, LPCSTR name)
+{
+    if (kind == NLC_SPEED_NONE || kind >= NLC_SPEED_KINDS)
+        return 1.f;
+    const auto it = g_nlc_hud_factors[kind].find(name);
+    return it == g_nlc_hud_factors[kind].end() ? 1.f : it->second;
+}
+
+// kind of a motion of the actor's weapon (NLC_SPEED_NONE for other items, other owners and other motions)
+u8 nlc_actor_motion_kind(const CHudItem* item, LPCSTR anm_name)
+{
+    if (!item || !smart_cast<CWeapon*>(&item->object()) || item->object().H_Parent() != Actor())
+        return NLC_SPEED_NONE;
+    // show / hide first: the pistol's empty holster motion is "anim_close"
+    if (strstr(anm_name, "show") || strstr(anm_name, "hide") || strstr(anm_name, "draw") || strstr(anm_name, "holster") || !xr_strcmp(anm_name, "anim_close"))
+        return NLC_SPEED_DRAW;
+    if (strstr(anm_name, "reload") || strstr(anm_name, "_open") || strstr(anm_name, "add_cartridge") || strstr(anm_name, "_close"))
+        return NLC_SPEED_RELOAD;
+    return NLC_SPEED_NONE;
+}
+
 u32 attachable_hud_item::anim_play(const shared_str& anm_name_b, BOOL bMixIn, const CMotionDef*& md, bool randomAnim, float speed)
 {
     R_ASSERT(strstr(anm_name_b.c_str(), "anm_") == anm_name_b.c_str() || strstr(anm_name_b.c_str(), "anim_") == anm_name_b.c_str());
@@ -611,6 +654,9 @@ u32 attachable_hud_item::anim_play(const shared_str& anm_name_b, BOOL bMixIn, co
 
     if (speed == 1.f)
         speed = anm->params.speed_k;
+
+    // NLC: handling speed factors (reload, draw); the returned length follows, so weapon states stay in sync
+    speed *= nlc_hud_speed_k(nlc_actor_motion_kind(m_parent_hud_item, anm_name_b.c_str()));
 
     IKinematicsAnimated* ka = m_model->dcast_PKinematicsAnimated();
     u32 ret = g_player_hud->anim_play(m_attach_place_idx, anm->params, M, bMixIn, md, speed, m_has_separated_hands, ka);

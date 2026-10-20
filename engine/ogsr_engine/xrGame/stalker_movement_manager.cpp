@@ -28,6 +28,8 @@
 #include "script_game_object.h"
 #include "stalker_combat_planner.h"
 #endif // DEBUG
+#include "nlc_mutant_aim.h" // NLC
+#include "ai/monsters/basemonster/base_monster.h"
 
 using namespace StalkerMovement;
 
@@ -44,7 +46,14 @@ IC void CStalkerMovementManager::setup_head_speed()
             m_head.speed = PI_DIV_2;
     }
     else
+    {
         m_head.speed = m_danger_head_speed;
+        // NLC mutant aim A4: own head speed against a close mutant (270 deg/s = stock)
+        const SNlcMutantAim& c = nlc_mutant_aim();
+        if (c.enabled)
+            if (const CBaseMonster* m = object().nlc_mut_fire_target(); m && m->Position().distance_to(object().Position()) < c.snap_dist)
+                m_head.speed = deg2rad(c.head_speed);
+    }
 }
 
 IC void CStalkerMovementManager::add_velocity(int mask, float linear, float compute_angular, float angular)

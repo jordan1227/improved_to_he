@@ -53,6 +53,11 @@ public:
     void SetUserEnabled(bool on);
 
     void OnHit(SHit* hit, float health_lost);
+    // NLC: one-shot guard (docs/damage_model/DESIGN_actor_damage_model.md A4, 15.1). Returns the guarded health
+    // of a part (body_part::all = the single health pool when the system is off).
+    bool GuardHitType(u32 hit_type) const { return hit_type < 32 && (m_guard_types & (1u << hit_type)); }
+    float Guard(u8 part, float before, float after);
+    bool GuardWould(u8 part, float before, float after) const; // no state change (god-mode record)
     void OnRadiation(float health_lost);
     void Update(float dt);
 
@@ -147,6 +152,16 @@ private:
     float m_legs_run_k{0.5f};
     float m_legs_sprint_k{0.5f};
     float m_legs_min_speed{0.1f};
+
+    // one-shot guard: a part above m_guard_above when a hit window opens cannot be taken below its
+    // floor by the hits of that window (m_guard_window_ms, so the pellets of one shot count as one)
+    u32 m_guard_types{};
+    float m_guard_above{2.f};
+    float m_guard_floor_head{-1.f};
+    float m_guard_floor_body{-1.f};
+    u32 m_guard_window_ms{60};
+    float m_guard_start[body_part::count]{};
+    u32 m_guard_until[body_part::count]{};
 
     xr_map<shared_str, u8> m_bone_names;
     xr_vector<u8> m_bone_parts;

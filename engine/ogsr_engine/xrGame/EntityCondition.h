@@ -108,7 +108,7 @@ protected:
 
     //изменение силы хита в зависимости от надетого костюма
     //(только для InventoryOwner)
-    float HitOutfitEffect(float hit_power, ALife::EHitType hit_type, s16 element, float AP);
+    virtual float HitOutfitEffect(float hit_power, ALife::EHitType hit_type, s16 element, float AP); // NLC: virtual (actor bullet model)
     //изменение потери сил в зависимости от надетого костюма
     float HitPowerEffect(float power_loss);
 

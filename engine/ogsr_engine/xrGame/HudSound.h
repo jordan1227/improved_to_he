@@ -51,4 +51,5 @@ struct HUD_SOUND
     };
     SSnd* m_activeSnd;
     xr_vector<SSnd> sounds;
+    u8 m_nlc_speed_kind{}; // NLC: NLC_SPEED_* (player_hud.h); the actor's sound follows that handling speed
 };

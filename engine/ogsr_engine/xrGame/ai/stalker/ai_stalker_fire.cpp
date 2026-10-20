@@ -38,6 +38,10 @@
 #include "ai_stalker_space.h"
 #include "../../effectorshot.h"
 #include "../../BoneProtections.h"
+#include "../../nlc_npc_damage.h"
+#include "../../nlc_mutant_aim.h"
+#include "../../sight_manager.h"
+#include "../../sight_control_action.h"
 #include "../../RadioactiveZone.h"
 #include "../../restricted_object.h"
 #include "../../ai_object_location.h"
@@ -73,12 +77,332 @@ float CAI_Stalker::GetWeaponAccuracy() const
     // exactly 0 (CEntityCondition::UpdatePsyHealth), so 0 counts as unaffected instead of inaccurate for good.
     const float psy = conditions().GetPsyHealth();
     const float psy_k = psy > 0.f ? 1.f + m_nlc_psy_disp_k * (1.f - std::clamp(psy, 0.f, 1.f)) : 1.f;
-    // NLC: a cloaked bloodsucker is hard to hit (npc_disp_k_cloaked / npc_disp_k_xray in its section)
+    // NLC: a cloaked bloodsucker is hard to hit (npc_disp_k_cloaked / npc_disp_k_xray in its section). The target is
+    // the mutant the stalker aims at (xrs picks targets the engine enemy manager may ignore), else the selected enemy.
     float cloak_k = 1.f;
-    if (const CEntityAlive* e = const_cast<CAI_Stalker*>(this)->memory().enemy().selected())
-        if (const CAI_Bloodsucker* bs = smart_cast<const CAI_Bloodsucker*>(e))
-            cloak_k = bs->nlc_npc_disp_k();
-    return nlc_weapon_accuracy_base() * psy_k * cloak_k;
+    float cone = 0.f; // NLC mutant aim A3/A5: extra dispersion against mutants (radians)
+    const CBaseMonster* mutant = nlc_mut_fire_target();
+    const CEntityAlive* e = mutant ? mutant : const_cast<CAI_Stalker*>(this)->memory().enemy().selected();
+    if (const CAI_Bloodsucker* bs = smart_cast<const CAI_Bloodsucker*>(e))
+    {
+        cloak_k = bs->nlc_npc_disp_k();
+        const SNlcMutantAim& c = nlc_mutant_aim();
+        if (mutant && c.enabled)
+        {
+            if (bs->get_visibility_state() == CAI_Bloodsucker::no_visibility)
+                cone += deg2rad(c.cloak_cone_deg);
+            else if (bs->get_visibility_state() == CAI_Bloodsucker::partial_visibility)
+                cone += deg2rad(c.xray_cone_deg);
+        }
+    }
+    if (mutant)
+    {
+        const SNlcMutantAim& c = nlc_mutant_aim();
+        if (c.enabled && c.spread_deg > 0.f)
+            cone += deg2rad(c.spread_deg);
+        // psy pressure (controller domination, psy fields): psy_k above only scales the ~0.01 deg stance spread
+        if (c.enabled && c.psy_cone_deg > 0.f && psy > 0.f && psy < 1.f)
+            cone += deg2rad(c.psy_cone_deg) * std::clamp((1.f - psy) / std::max(0.05f, 1.f - c.psy_cone_full), 0.f, 1.f);
+        // melee flinch: being mauled ruins the aim (bloodsucker, boar, snork up close); veterans keep it better
+        if (c.enabled && c.flinch_cone_deg > 0.f && Device.dwTimeGlobal < m_nlc_mut.flinch_until)
+        {
+            const float span = c.rank_points[3] - c.rank_points[0];
+            const float t = span > EPS ? std::clamp((float(Rank()) - c.rank_points[0]) / span, 0.f, 1.f) : 1.f;
+            cone += deg2rad(c.flinch_cone_deg) * (c.flinch_k_novice + (c.flinch_k_master - c.flinch_k_novice) * t);
+        }
+    }
+    // NLC: head-hit concussion (helmet stopped a bullet) throws the aim off for a moment
+    const float concussion_k = Device.dwTimeGlobal < m_nlc_concussion_until ? m_nlc_concussion_disp_k : 1.f;
+    return nlc_weapon_accuracy_base() * psy_k * cloak_k * concussion_k + cone;
+}
+
+// NLC mutant aim: the sight object of the current sight action, when it is a live CBaseMonster
+const CBaseMonster* CAI_Stalker::nlc_mut_sight_target() const
+{
+    const CSightManager& s = const_cast<CAI_Stalker*>(this)->sight();
+    const u32 id = s.current_action_id();
+    for (const auto& a : s.actions())
+    {
+        if (a.first != id)
+            continue;
+        const SightManager::ESightType t = a.second->sight_type();
+        if (t != SightManager::eSightTypeObject && t != SightManager::eSightTypeFireObject)
+            return nullptr;
+        const CBaseMonster* m = smart_cast<const CBaseMonster*>(a.second->object_to_look());
+        return m && m->g_Alive() ? m : nullptr;
+    }
+    return nullptr;
+}
+
+int CAI_Stalker::nlc_mut_sight_type() const
+{
+    const CSightManager& s = const_cast<CAI_Stalker*>(this)->sight();
+    const u32 id = s.current_action_id();
+    for (const auto& a : s.actions())
+        if (a.first == id)
+            return int(a.second->sight_type());
+    return -1;
+}
+
+const CBaseMonster* CAI_Stalker::nlc_mut_fire_target(int* kind) const
+{
+    if (const CBaseMonster* m = nlc_mut_sight_target())
+    {
+        if (kind)
+            *kind = 0;
+        return m;
+    }
+    const CSightManager& s = const_cast<CAI_Stalker*>(this)->sight();
+    const u32 id = s.current_action_id();
+    for (const auto& a : s.actions())
+    {
+        if (a.first != id)
+            continue;
+        if (a.second->sight_type() != SightManager::eSightTypePosition || !a.second->use_torso_look())
+            return nullptr;
+        const CBaseMonster* m = smart_cast<const CBaseMonster*>(const_cast<CAI_Stalker*>(this)->memory().enemy().selected());
+        if (!m || !m->g_Alive())
+            return nullptr;
+        // only when the sight point is the mutant (xrs memory position / vispoint), not the actor or an unseen stalker
+        // that xrs aims at through the same position sight while the selected enemy happens to be a mutant
+        constexpr float near_sqr = 2.f * 2.f;
+        const Fvector& point = a.second->vector3d();
+        Fvector centre;
+        m->Center(centre);
+        if (point.distance_to_sqr(m->Position()) > near_sqr && point.distance_to_sqr(centre) > near_sqr &&
+            point.distance_to_sqr(const_cast<CAI_Stalker*>(this)->memory().memory_position(m)) > near_sqr)
+            return nullptr;
+        if (kind)
+            *kind = 1;
+        return m;
+    }
+    return nullptr;
+}
+
+// NLC mutant aim A2: tracking lag by rank, jittered per burst, x the bloodsucker cloak factor and the psy factor
+float CAI_Stalker::nlc_mut_lag_ms(const CBaseMonster* monster)
+{
+    const SNlcMutantAim& c = nlc_mutant_aim();
+    SNlcMutState& s = m_nlc_mut;
+    const float rank = float(Rank());
+    float lag = c.lag_ms[0];
+    if (rank >= c.rank_points[3])
+        lag = c.lag_ms[3];
+    else
+        for (int i = 0; i < 3; ++i)
+            if (rank < c.rank_points[i + 1])
+            {
+                const float span = c.rank_points[i + 1] - c.rank_points[i];
+                const float t = span > EPS ? std::clamp((rank - c.rank_points[i]) / span, 0.f, 1.f) : 1.f;
+                lag = c.lag_ms[i] + (c.lag_ms[i + 1] - c.lag_ms[i]) * t;
+                break;
+            }
+    const u32 now = Device.dwTimeGlobal;
+    if (now >= s.lag_reroll)
+    {
+        s.lag_jit = 1.f + c.lag_jitter * ::Random.randF(-1.f, 1.f);
+        s.lag_reroll = now + u32(std::max(50.f, c.lag_reroll_ms));
+    }
+    lag *= s.lag_jit * c.lag_k;
+    if (const CAI_Bloodsucker* bs = smart_cast<const CAI_Bloodsucker*>(monster))
+        lag *= bs->nlc_npc_disp_k();
+    const float psy = conditions().GetPsyHealth();
+    if (psy > 0.f)
+        lag *= 1.f + m_nlc_psy_disp_k * (1.f - std::clamp(psy, 0.f, 1.f));
+    return std::clamp(lag, 0.f, c.lag_max_ms);
+}
+
+// NLC mutant aim A2: keeps a short history of the aim point and returns where the mutant was lag ms ago
+Fvector CAI_Stalker::nlc_mut_aim_point(const CBaseMonster* monster, const Fvector& look_pos)
+{
+    SNlcMutState& s = m_nlc_mut;
+    const u32 now = Device.dwTimeGlobal;
+    const u32 last = (s.hist_head + SNlcMutState::HIST - 1) % SNlcMutState::HIST;
+    if (s.target != monster->ID() || (s.hist_n && now - s.hist[last].time > 500))
+    {
+        s.target = monster->ID();
+        s.hist_n = 0;
+        s.hist_head = 0;
+        s.vel.set(0.f, 0.f, 0.f);
+    }
+    const u32 newest = (s.hist_head + SNlcMutState::HIST - 1) % SNlcMutState::HIST;
+    if (!s.hist_n || now - s.hist[newest].time >= 15)
+    {
+        s.hist[s.hist_head] = {look_pos, now};
+        s.hist_head = (s.hist_head + 1) % SNlcMutState::HIST;
+        s.hist_n = std::min(s.hist_n + 1, SNlcMutState::HIST);
+    }
+    // velocity over the last ~150 ms
+    for (u32 i = 1; i < s.hist_n; ++i)
+    {
+        const SNlcMutHist& h = s.hist[(s.hist_head + SNlcMutState::HIST - 1 - i) % SNlcMutState::HIST];
+        const u32 dt = now - h.time;
+        if (dt >= 150 || i + 1 == s.hist_n)
+        {
+            if (dt > 0)
+                s.vel.sub(look_pos, h.pos).mul(1000.f / float(dt));
+            break;
+        }
+    }
+
+    const SNlcMutantAim& c = nlc_mutant_aim();
+    if (!c.enabled)
+    {
+        s.lag_used = 0.f;
+        return look_pos;
+    }
+    s.lag_used = nlc_mut_lag_ms(monster);
+    const u32 lag = iFloor(s.lag_used);
+    if (!lag || s.hist_n < 2)
+        return look_pos;
+    const u32 t = now > lag ? now - lag : 0;
+    // walk back from the newest sample to the pair around t
+    Fvector result = s.hist[(s.hist_head + SNlcMutState::HIST - s.hist_n) % SNlcMutState::HIST].pos; // oldest
+    for (u32 i = 0; i + 1 < s.hist_n; ++i)
+    {
+        const SNlcMutHist& a = s.hist[(s.hist_head + SNlcMutState::HIST - 1 - i) % SNlcMutState::HIST]; // newer
+        const SNlcMutHist& b = s.hist[(s.hist_head + SNlcMutState::HIST - 2 - i) % SNlcMutState::HIST]; // older
+        if (b.time <= t)
+        {
+            const u32 span = a.time - b.time;
+            const float k = span ? std::clamp(float(t - b.time) / float(span), 0.f, 1.f) : 1.f;
+            result.lerp(b.pos, a.pos, k);
+            break;
+        }
+    }
+    return result;
+}
+
+void CAI_Stalker::nlc_mut_reset_fight()
+{
+    SNlcMutState& s = m_nlc_mut;
+    s.fight_start = Device.dwTimeGlobal;
+    for (int i = 0; i < 3; ++i)
+        s.rounds[i] = s.hits[i] = s.pellets[i] = 0;
+    s.rounds_nosight = 0;
+    s.strays = 0;
+}
+
+// NLC mutant aim D1: one sample per shot at a mutant (errors against the current aim point) and the round counters
+void CAI_Stalker::nlc_mut_on_shot(CWeapon* weapon)
+{
+    SNlcMutState& s = m_nlc_mut;
+    ++s.shot_seq; // every shot, so a later hit is matched to a shot even when this one is not counted
+    int kind = 0;
+    const CBaseMonster* m = nlc_mut_fire_target(&kind);
+    if (!m)
+    {
+        if (smart_cast<const CBaseMonster*>(memory().enemy().selected()))
+        {
+            ++s.rounds_nosight;
+            s.nosight_type = nlc_mut_sight_type();
+        }
+        return;
+    }
+    if (s.fight_target != m->ID())
+    {
+        s.fight_target = m->ID();
+        nlc_mut_reset_fight();
+    }
+    Fvector P, D;
+    g_fireParams(weapon, P, D);
+    Fvector target;
+    m->Center(target);
+    Fvector to;
+    to.sub(target, P);
+    const float dist = to.magnitude();
+    s.shot_target = m->ID();
+    s.shot_time = Device.dwTimeGlobal;
+    s.dist = dist;
+    const SNlcMutantAim& c = nlc_mutant_aim();
+    s.mode = c.enabled && c.fresh_fire_dir ? (kind ? 3 : 0) : 1; // 3: fresh direction on a position sight
+    ++s.rounds[nlc_mut_band(dist)];
+    if (dist < EPS_L)
+        return;
+    to.div(dist);
+    auto err = [&](const Fvector& d) { return rad2deg(acosf(std::clamp(to.dotproduct(d), -1.f, 1.f))); };
+    Fmatrix head;
+    head.setHPB(-movement().m_head.current.yaw + m_fEyeShiftYaw, -movement().m_head.current.pitch, 0.f);
+    s.err_head = err(head.k);
+    s.err_stale = err(eye_matrix.k);
+    s.err_shot = err(D);
+    s.eye_age = float(Device.dwTimeGlobal - m_nlc_eye_time);
+    Fvector side = s.target == m->ID() ? s.vel : Fvector().set(0.f, 0.f, 0.f);
+    side.mad(to, -side.dotproduct(to)); // velocity across the line of fire
+    s.side_speed = side.magnitude();
+    s.ang_rate = rad2deg(s.side_speed / std::max(dist, 0.5f));
+}
+
+void CAI_Stalker::nlc_mut_on_hit(const CBaseMonster* monster)
+{
+    SNlcMutState& s = m_nlc_mut;
+    if (s.fight_target != monster->ID())
+    {
+        // a bullet meant for the fight target hit another pack member: a stray, the engagement goes on
+        if (s.fight_target != u16(-1))
+            if (const CEntityAlive* ft = smart_cast<const CEntityAlive*>(Level().Objects.net_Find(s.fight_target)); ft && ft->g_Alive())
+            {
+                ++s.strays;
+                return;
+            }
+        s.fight_target = monster->ID();
+        nlc_mut_reset_fight();
+    }
+    const int band = nlc_mut_band(Position().distance_to(monster->Position()));
+    ++s.pellets[band];
+    if (s.hit_seq != s.shot_seq) // one hit per shot (buckshot: the other pellets go to pellets only)
+    {
+        s.hit_seq = s.shot_seq;
+        ++s.hits[band];
+    }
+}
+
+void CAI_Stalker::nlc_mut_engage_event(const CEntityAlive* monster, float dist, int rule)
+{
+    SNlcMutState& s = m_nlc_mut;
+    s.eng_id = monster->ID();
+    s.eng_dist = dist;
+    s.eng_rule = rule;
+    s.eng_time = Device.dwTimeGlobal;
+}
+
+// NLC: values for the script log by key; -1 for an unknown key
+float CAI_Stalker::nlc_mut_get(LPCSTR key) const
+{
+    const SNlcMutState& s = m_nlc_mut;
+    const std::pair<LPCSTR, float> v[] = {
+        {"shot_target", s.shot_target == u16(-1) ? -1.f : float(s.shot_target)},
+        {"shot_time", float(s.shot_time)},
+        {"dist", s.dist},
+        {"ang_rate", s.ang_rate},
+        {"side_speed", s.side_speed},
+        {"lag_ms", s.lag_used},
+        {"err_head", s.err_head},
+        {"err_stale", s.err_stale},
+        {"err_shot", s.err_shot},
+        {"eye_age", s.eye_age},
+        {"mode", float(s.mode)},
+        {"gate", float(s.gate)},
+        {"gate_time", float(s.gate_time)},
+        {"fight_target", s.fight_target == u16(-1) ? -1.f : float(s.fight_target)},
+        {"fight_start", float(s.fight_start)},
+        {"eng_id", s.eng_id == u16(-1) ? -1.f : float(s.eng_id)},
+        {"eng_dist", s.eng_dist},
+        {"eng_rule", float(s.eng_rule)},
+        {"eng_time", float(s.eng_time)},
+        {"far_id", s.far_id == u16(-1) ? -1.f : float(s.far_id)},
+        {"far_dist", s.far_dist},
+        {"far_time", float(s.far_time)},
+        {"rounds_nosight", float(s.rounds_nosight)},
+        {"strays", float(s.strays)},
+        {"flinch_until", float(s.flinch_until)},
+        {"nosight_type", float(s.nosight_type)},
+        {"ignore_dist", const_cast<CAI_Stalker*>(this)->memory().enemy().max_ignore_monster_distance()},
+    };
+    for (const auto& i : v)
+        if (!xr_strcmp(i.first, key))
+            return i.second;
+    return -1.f;
 }
 
 float CAI_Stalker::nlc_weapon_accuracy_base() const
@@ -202,6 +526,15 @@ void CAI_Stalker::g_fireParams(CHudItem* pHudItem, Fvector& P, Fvector& D, const
 
     P = eye_matrix.c;
     D = eye_matrix.k;
+    // NLC mutant aim A1: eye_matrix is refreshed only on every second scheduler tick (~250-725 ms by camera
+    // distance); against a mutant the shot uses the current head angles and position instead
+    if (nlc_mutant_aim().enabled && nlc_mutant_aim().fresh_fire_dir && nlc_mut_fire_target())
+    {
+        Fmatrix head;
+        head.setHPB(-movement().m_head.current.yaw + m_fEyeShiftYaw, -movement().m_head.current.pitch, 0.f);
+        D = head.k;
+        P.add(Position(), m_nlc_eye_offset);
+    }
     if (weapon_shot_effector().IsActive())
         D = weapon_shot_effector_direction(D);
     VERIFY(!fis_zero(D.square_magnitude()));
@@ -234,18 +567,29 @@ void CAI_Stalker::Hit(SHit* pHDS)
         return;
     //хит может меняться в зависимости от ранга (новички получают больше хита, чем ветераны)
     HDS.power *= m_fRankImmunity;
+    // NLC: bullet power before armour (critical-wound impact share, concussion absorb check)
+    const float nlc_raw_power = HDS.hit_type == ALife::eHitTypeFireWound ? HDS.power : 0.f;
     if (m_boneHitProtection && HDS.hit_type == ALife::eHitTypeFireWound)
     {
-#ifdef APPLY_ARMOR_PIERCING_TO_NPC
-        float BoneArmour = m_boneHitProtection->getBoneArmour(HDS.bone()) * (1 - pHDS->ap);
-#else
-        float BoneArmour = m_boneHitProtection->getBoneArmour(HDS.bone());
-#endif // APPLY_ARMOR_PIERCING_TO_NPC
+        // NLC damage model (docs/damage_model/DESIGN_npc_damage_model.md 14): k_ap reduces the bone armour (E1, was the
+        // APPLY_ARMOR_PIERCING_TO_NPC define) and the bone koeff absorbs a share of what gets through,
+        // which k_ap partly bypasses (E2). Both are off unless [nlc_npc_damage] enables them.
+        const SNlcNpcDamage& nlc = nlc_npc_damage();
+        // legacy communities (zombies) keep the pre-pass path: plain armour, no k_ap, no koeff
+        const bool nlc_legacy = !nlc.legacy_communities.empty() && nlc.is_legacy(CharacterInfo().Community().id());
+        const float ap = nlc.apply_ap && !nlc_legacy ? std::clamp(pHDS->ap, 0.f, 1.f) : 0.f;
+        float BoneArmour = m_boneHitProtection->getBoneArmour(HDS.bone()) * (1 - ap);
         float NewHitPower = HDS.damage() - BoneArmour;
         if (NewHitPower < HDS.power * m_boneHitProtection->m_fHitFrac)
             HDS.power = HDS.power * m_boneHitProtection->m_fHitFrac;
         else
             HDS.power = NewHitPower;
+
+        if (nlc.use_bone_koeff && !nlc_legacy)
+        {
+            const float k = m_boneHitProtection->getBoneProtection(HDS.bone());
+            HDS.power *= k + (1.f - k) * ap * nlc.ap_koeff_bypass;
+        }
 
         if (wounded())
             HDS.power = 1000.f;
@@ -277,7 +621,7 @@ void CAI_Stalker::Hit(SHit* pHDS)
 
         if ((HDS.hit_type == ALife::eHitTypeFireWound || HDS.hit_type == ALife::eHitTypeExplosion) && !wounded() && !already_critically_wounded)
         {
-            bool became_critically_wounded = update_critical_wounded(HDS.boneID, HDS.power);
+            bool became_critically_wounded = update_critical_wounded(HDS.boneID, HDS.power, nlc_raw_power);
             if (!became_critically_wounded && animation().script_animations().empty() && (pHDS->bone() != BI_NONE))
             {
                 Fvector D;
@@ -316,6 +660,33 @@ void CAI_Stalker::Hit(SHit* pHDS)
     }
 
     inherited::Hit(&HDS);
+
+    // NLC: concussion only for hits the stalker survives; inherited::Hit has computed this hit's health
+    // loss (applied on the next condition update), so a killing helmet hit does not start a stagger
+    if (HDS.hit_type == ALife::eHitTypeFireWound && g_Alive() && !wounded() && conditions().GetHealth() - conditions().GetHealthLost() > 0.f)
+        nlc_check_concussion(HDS.boneID, nlc_raw_power, HDS.power);
+}
+
+void CAI_Stalker::nlc_check_concussion(u16 bone, float raw_power, float power)
+{
+    if (!m_nlc_concussion_time || raw_power <= EPS)
+        return;
+
+    const auto I = m_bones_body_parts.find(bone);
+    if (I == m_bones_body_parts.end() || (*I).second != critical_wound_type_head)
+        return;
+
+    // the share of the bullet the head armour stopped (armour + koeff)
+    const float absorbed = 1.f - power / raw_power;
+    if (absorbed < m_nlc_concussion_min_absorb)
+        return;
+
+    const bool fresh = Device.dwTimeGlobal >= m_nlc_concussion_until;
+    m_nlc_concussion_until = Device.dwTimeGlobal + m_nlc_concussion_time;
+
+    // only a new concussion staggers; repeated hits during one only extend it
+    if (fresh && m_nlc_concussion_force_anim && !critically_wounded())
+        force_critical_wound(critical_wound_type_head);
 }
 
 void CAI_Stalker::HitSignal(float amount, Fvector& vLocalDir, CObject* who, s16 element)
@@ -324,7 +695,33 @@ void CAI_Stalker::HitSignal(float amount, Fvector& vLocalDir, CObject* who, s16 
         return;
 
     if (g_Alive())
+    {
         memory().hit().add(amount, vLocalDir, who, element);
+        // NLC: the killing hit is applied on the next condition update, so remember whether the latest hit
+        // was a head hit; Die skips the death line after a headshot (m_headshot below only sees hits on
+        // an already dead body)
+        {
+            const auto H = m_bones_body_parts.find(element);
+            m_nlc_last_hit_head = H != m_bones_body_parts.end() && H->second == critical_wound_type_head;
+            m_nlc_last_hit_time = Device.dwTimeGlobal;
+        }
+        // NLC mutant aim D2: a mutant hit us from beyond the distance at which we would ignore it
+        if (const CBaseMonster* m = smart_cast<const CBaseMonster*>(who))
+        {
+            const float dist = Position().distance_to(m->Position());
+            const float eff = std::max(memory().enemy().max_ignore_monster_distance(), m->nlc_npc_threat_dist() * nlc_mutant_aim().threat_k);
+            const SNlcMutantAim& c = nlc_mutant_aim();
+            if (c.enabled && dist < c.flinch_dist)
+                m_nlc_mut.flinch_until = Device.dwTimeGlobal + u32(std::max(0.f, c.flinch_ms));
+            if (dist >= eff)
+            {
+                m_nlc_mut.far_id = m->ID();
+                m_nlc_mut.far_dist = dist;
+                m_nlc_mut.far_time = Device.dwTimeGlobal;
+                m_nlc_mut.far_section = m->cNameSect();
+            }
+        }
+    }
     else if (!AlreadyDie())
     {
         const auto I = m_bones_body_parts.find(element);
@@ -800,6 +1197,7 @@ bool CAI_Stalker::fire_make_sense()
 // shot effector stuff
 void CAI_Stalker::on_weapon_shot_start(CWeapon* weapon)
 {
+    nlc_mut_on_shot(weapon); // NLC mutant aim diagnostics
     if (!Core.Features.test(xrCore::Feature::npc_simplified_shooting))
     {
         weapon_shot_effector().Shot(weapon->camDispersion + weapon->camDispersionInc * float(weapon->ShotsFired()));
@@ -1139,6 +1537,10 @@ bool CAI_Stalker::critically_wounded()
 
     if (!brain().CStalkerPlanner::m_storage.property(StalkerDecisionSpace::eWorldPropertyCriticallyWounded))
     {
+        // NLC: a concussion running when the stagger ends restarts from here, so its full window
+        // follows the recovery (docs/damage_model/DESIGN_npc_damage_model.md 16)
+        if (m_nlc_concussion_time && Device.dwTimeGlobal < m_nlc_concussion_until)
+            m_nlc_concussion_until = Device.dwTimeGlobal + m_nlc_concussion_time;
         critical_wounded_state_stop();
         return (false);
     }

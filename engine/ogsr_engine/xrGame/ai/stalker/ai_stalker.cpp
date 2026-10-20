@@ -247,6 +247,11 @@ void CAI_Stalker::reload(LPCSTR section)
     m_disp_stand_stand_zoom = pSettings->r_float(section, "disp_stand_stand_zoom");
     m_disp_stand_crouch_zoom = pSettings->r_float(section, "disp_stand_crouch_zoom");
     m_nlc_psy_disp_k = READ_IF_EXISTS(pSettings, r_float, section, "nlc_psy_dispersion_k", 0.f); // NLC
+    // NLC: head-hit concussion, off while nlc_concussion_time is 0
+    m_nlc_concussion_min_absorb = READ_IF_EXISTS(pSettings, r_float, section, "nlc_concussion_min_absorb", 0.5f);
+    m_nlc_concussion_time = READ_IF_EXISTS(pSettings, r_u32, section, "nlc_concussion_time", 0);
+    m_nlc_concussion_disp_k = READ_IF_EXISTS(pSettings, r_float, section, "nlc_concussion_disp_k", 1.f);
+    m_nlc_concussion_force_anim = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_concussion_force_anim", false);
 
     m_min_queue_size_far = pSettings->r_u32(*cNameSect(), "weapon_min_queue_size_far"); // 1;
     m_max_queue_size_far = pSettings->r_u32(*cNameSect(), "weapon_max_queue_size_far"); // 6;
@@ -280,7 +285,7 @@ void CAI_Stalker::Die(CObject* who)
 
     if (is_special_killer(who))
         sound().play(eStalkerSoundDieInAnomaly);
-    else if (!m_headshot)
+    else if (!m_headshot && !(m_nlc_last_hit_head && Device.dwTimeGlobal - m_nlc_last_hit_time < 1000)) // NLC: silent after a headshot
         sound().play(eStalkerSoundDie);
 
     m_hammer_is_clutched = m_clutched_hammer_enabled && !CObjectHandler::planner().m_storage.property(ObjectHandlerSpace::eWorldPropertyStrapped) && !::Random.randI(0, 2);

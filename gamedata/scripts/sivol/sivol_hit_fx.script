@@ -1,0 +1,357 @@
+-- sivol_hit_fx.script: armour hit sounds for bullet hits on NPCs and the player, and the
+-- armour-class camera choice that sivol_actor_crit asks for (the crit module plays the camera).
+-- Remake of "Wepl's Hit Effects": his sounds and camera animations, used with permission
+-- (credit list); logic and data are new. Design: docs/damage_model/DESIGN_hit_fx_remake.md.
+--
+-- NPC hits: on_npc_before_hit runs before rank immunity and armour, so the outcome mirrors
+-- CAI_Stalker::Hit (ai_stalker_fire.cpp) through the bone exports. Player hits: the engine's
+-- last-hit record, delivered by sivol_actor_crit as on_actor_hit_resolved(info).
+-- Data: config\misc\sivol_hit_fx.ltx.
+--
+-- Switches (no options-menu entries; restart after editing):
+local ENABLED    = true  -- armour hit sounds (NPCs and the player)
+local CAMERA     = true  -- armour-class camera anms for sivol_actor_crit (camera_for)
+local NPC_VS_NPC = true  -- sounds for NPC-vs-NPC hits near the player
+local DEBUG      = true  -- [SIVOL TEST] SEVA glass check: one log line per played, dropped or skipped head sound; set false after testing
+
+function active() return ENABLED end
+
+-------------------------------------------------------------------------------
+-- config
+-------------------------------------------------------------------------------
+local OPT = {}
+local SETS = {}         -- [zone_class] = { prefix, count }
+local CAM_ORDER = {}    -- [zone_class] = { n1, ..., n5 } weak -> strong
+local NPC_PROFILES = {} -- [protection section] = { body, head }
+local NPC_VISUALS = {}  -- [visual, lower case] = { body or nil, head or nil }
+local ACTOR_TIERS = {}  -- [bullet_protection_sect] = body class
+local ACTOR_MASKS = {}  -- [mask type] = { sound class, camera class }
+local NPC_DMG = { apply_ap = false, use_bone_koeff = false, bypass = 0, legacy = {} }
+local RANK_NOVICE, RANK_EXPERIENCED = 1, 1
+local loaded = false
+
+local function split(s)
+	local t = {}
+	for item in string.gmatch(s or "", "[^,%s]+") do t[table.getn(t) + 1] = item end
+	return t
+end
+
+local function read_section(ini, sect, fn)
+	if not ini:section_exist(sect) then
+		log2("[sivol_hit_fx] missing section [%s] in misc\\sivol_hit_fx.ltx", sect)
+		return
+	end
+	for i = 0, ini:line_count(sect) - 1 do
+		local _, key, value = ini:r_line(sect, i, "", "")
+		if key and key ~= "" then fn(key, split(value)) end
+	end
+end
+
+local function load_config()
+	if loaded then return end
+	loaded = true
+	local ini = ini_file("misc\\sivol_hit_fx.ltx")
+	read_section(ini, "options", function(k, v) OPT[k] = tonumber(v[1]) end)
+	read_section(ini, "npc_profiles", function(k, v) NPC_PROFILES[k] = { v[1], v[2] } end)
+	read_section(ini, "npc_visuals", function(k, v)
+		local function keep(c) if c and c ~= "-" then return c end end
+		NPC_VISUALS[string.lower(k)] = { keep(v[1]), keep(v[2]) }
+	end)
+	read_section(ini, "actor_tiers", function(k, v) ACTOR_TIERS[k] = v[1] end)
+	read_section(ini, "actor_masks", function(k, v) ACTOR_MASKS[k] = { v[1], v[2] or v[1] } end)
+	read_section(ini, "sets", function(k, v) SETS[k] = { v[1], tonumber(v[2]) or 1 } end)
+	read_section(ini, "camera", function(k, v)
+		local order = {}
+		for i = 1, table.getn(v) do order[i] = tonumber(v[i]) end
+		CAM_ORDER[k] = order
+	end)
+	OPT.max_dist2 = (OPT.max_dist or 60) ^ 2
+	OPT.npc_vs_npc_dist2 = (OPT.npc_vs_npc_dist or 25) ^ 2
+
+	-- engine switches of the NPC armour model, read the same way the engine reads them
+	local s = "nlc_npc_damage"
+	if sys_ini:section_exist(s) then
+		NPC_DMG.apply_ap = sys_ini:line_exist(s, "apply_ap") and sys_ini:r_bool(s, "apply_ap")
+		NPC_DMG.use_bone_koeff = sys_ini:line_exist(s, "use_bone_koeff") and sys_ini:r_bool(s, "use_bone_koeff")
+		NPC_DMG.bypass = sys_ini:line_exist(s, "ap_koeff_bypass") and sys_ini:r_float(s, "ap_koeff_bypass") or 0
+		if sys_ini:line_exist(s, "legacy_communities") then
+			for _, c in ipairs(split(sys_ini:r_string(s, "legacy_communities"))) do NPC_DMG.legacy[c] = true end
+		end
+	end
+	RANK_NOVICE = sys_ini:r_float("ranks_properties", "immunities_novice_k")
+	RANK_EXPERIENCED = sys_ini:r_float("ranks_properties", "immunities_experienced_k")
+end
+
+local function clamp(v, a, b) if v < a then return a elseif v > b then return b end return v end
+
+-------------------------------------------------------------------------------
+-- sound playback: shot groups and a global budget
+-------------------------------------------------------------------------------
+local RANK = { bare = 0, penetrated = 1, partial = 2, stopped = 3 }
+local groups = {}          -- [object id] = { t = first hit, rank = played rank, upgraded = bool }
+local last_variant = {}    -- [zone_class] = last variant number
+local budget_t, budget_n, dropped = 0, 0, 0
+
+local function budget_ok(now)
+	if now - budget_t >= OPT.budget_ms then
+		budget_t, budget_n = now, 0
+	end
+	if budget_n >= OPT.budget_count then
+		dropped = dropped + 1
+		return false
+	end
+	budget_n = budget_n + 1
+	return true
+end
+
+-- true when this hit should play: first loud-enough hit of a shot group, or one upgrade
+local function group_allows(id, rank, now)
+	local g = groups[id]
+	if not g or now - g.t > OPT.group_ms then
+		g = { t = now, rank = 0, upgraded = false }
+		groups[id] = g
+	end
+	if rank <= g.rank then return false end
+	if g.rank > 0 then
+		if g.upgraded then return false end
+		g.upgraded = true
+	end
+	g.rank = rank
+	return true
+end
+
+local unknown_set_logged = {}
+
+local function play_set(key, obj, pos, vol, snd_type)
+	local set = SETS[key]
+	if not set then
+		if not unknown_set_logged[key] then
+			unknown_set_logged[key] = true
+			log2("[sivol_hit_fx] no sound set %s in [sets]", key)
+		end
+		return
+	end
+	local n = math.random(set[2])
+	if set[2] > 1 and n == last_variant[key] then n = n % set[2] + 1 end
+	last_variant[key] = n
+	xr_sound.get_safe_sound_object(set[1] .. "_" .. n):play_no_feedback(obj, snd_type, 0, pos, vol)
+end
+
+local function outcome_volume(outcome, zone)
+	local v = OPT["vol_" .. outcome] or 1
+	if zone == "head" then v = math.max(v, OPT.vol_head_floor or 0) end
+	return v
+end
+
+local function outcome_of(absorb, floor)
+	if floor or absorb >= OPT.stop_absorb then return "stopped" end
+	if absorb >= OPT.partial_absorb then return "partial" end
+	return "penetrated"
+end
+
+-------------------------------------------------------------------------------
+-- NPC hits
+-------------------------------------------------------------------------------
+local HEAD_BONES = { bip01_head = true, eye_left = true, eye_right = true, eyelid_1 = true, jaw_1 = true }
+local CLOSED_HEAD = { helmet = true, helmet_heavy = true, glass = true, zombie = true }
+local bone_names = {}      -- [visual] = { [bone id] = name }
+local profiles = {}        -- [npc id] = profile
+local unmapped_logged = {}
+
+local function bone_name_of(obj, bone)
+	local visual = obj:get_visual_name() or ""
+	local t = bone_names[visual]
+	if not t then
+		t = {}
+		bone_names[visual] = t
+	end
+	local name = t[bone]
+	if not name then
+		name = obj:get_bone_name(bone) or ""
+		t[bone] = name
+	end
+	return name
+end
+
+local function visual_key(obj)
+	local v = string.lower(obj:get_visual_name() or "")
+	v = string.gsub(v, "/", "\\")
+	return (string.gsub(v, "%.ogf$", ""))
+end
+
+local function npc_profile(npc)
+	local id = npc:id()
+	local p = profiles[id]
+	if p and p.name == npc:name() then return p end
+	local vo = NPC_VISUALS[visual_key(npc)]
+	local sect = npc:bone_protection_section() or ""
+	local map = NPC_PROFILES[sect]
+	if not map and sect ~= "" and not unmapped_logged[sect] then
+		unmapped_logged[sect] = true
+		log2("[sivol_hit_fx] protection section %s is not in [npc_profiles], class from bone numbers", sect)
+	end
+	local rk = clamp((npc:character_rank() or 0) / 1000, 0, 1)
+	p = {
+		name = npc:name(),
+		body = map and map[1], head = map and map[2],
+		vis_body = vo and vo[1], vis_head = vo and vo[2],
+		imm = RANK_NOVICE + (RANK_EXPERIENCED - RANK_NOVICE) * rk,
+		legacy = NPC_DMG.legacy[npc:character_community()] == true,
+	}
+	profiles[id] = p
+	return p
+end
+
+-- fallback classes from the numbers of the hit bone (unmapped protection sections)
+local function body_class_from_koeff(k)
+	if k >= 0.95 then return "none" elseif k >= 0.60 then return "light"
+	elseif k >= 0.35 then return "medium" elseif k >= 0.22 then return "heavy" end
+	return "exo"
+end
+local function head_class_from_koeff(k)
+	if k >= 0.95 then return "none" elseif k >= 0.30 then return "helmet" end
+	return "helmet_heavy"
+end
+
+local function on_npc_before_hit(npc, hd)
+	if not ENABLED or not npc or not hd or hd.ignore_hit or hd.hit_type ~= hit.fire_wound then return end
+	local actor = db.actor
+	if not actor or not actor:alive() or not npc:alive() then return end
+	local bone = hd.bone_id
+	if not bone or bone >= 65535 then return end
+	local by_actor = hd.who_id == actor:id()
+	if not by_actor and not NPC_VS_NPC then return end
+	local d2 = npc:position():distance_to_sqr(actor:position())
+	if d2 > (by_actor and OPT.max_dist2 or OPT.npc_vs_npc_dist2) then return end
+
+	local armour = npc:bone_armour(bone) -- -1: no bone protection table for this visual
+	local koeff = npc:bone_koeff(bone)
+	local p = npc_profile(npc)
+	local name = bone_name_of(npc, bone)
+	local numbers = armour >= 0
+	local head_class = p.vis_head or p.head or (numbers and head_class_from_koeff(koeff)) or "none"
+	local zone, class, forced
+	if HEAD_BONES[name] or (name == "bip01_neck" and CLOSED_HEAD[head_class]) then
+		zone, class, forced = "head", head_class, p.vis_head ~= nil
+	else
+		zone, class, forced = "body", p.vis_body or p.body or (numbers and body_class_from_koeff(koeff)) or "none", p.vis_body ~= nil
+	end
+	if class == "none" then return end
+
+	local outcome, absorb, power, ap = "penetrated", 0, 0, 0
+	if not numbers or (armour <= OPT.bare_armour and koeff >= OPT.bare_koeff) then
+		if not forced then return end -- bare: engine flesh sound only
+	else
+		-- mirror of CAI_Stalker::Hit (rank immunity, k_ap, hit_fraction floor, koeff with AP bypass)
+		power = (tonumber(hd.power) or 0) * p.imm
+		if power <= 0 then return end
+		ap = (NPC_DMG.apply_ap and not p.legacy) and clamp(tonumber(hd.ap) or 0, 0, 1) or 0
+		local a = armour * (1 - ap)
+		local hf = npc:bone_hit_fraction()
+		local floor = power - a <= power * hf
+		local post = floor and power * hf or power - a
+		if NPC_DMG.use_bone_koeff and not p.legacy then
+			post = post * (koeff + (1 - koeff) * ap * NPC_DMG.bypass)
+		end
+		absorb = 1 - post / power
+		outcome = outcome_of(absorb, floor)
+	end
+
+	local now = time_global()
+	if not group_allows(npc:id(), RANK[outcome], now) then return end
+	if not budget_ok(now) then
+		if DEBUG then log2("[sivol_hit_fx] dropped %s %s_%s (budget, %d dropped)", npc:name(), zone, class, dropped) end
+		return
+	end
+	local vol = outcome_volume(outcome, zone) * (by_actor and 1 or OPT.vol_npc_vs_npc)
+	play_set(zone .. "_" .. class, npc, npc:bone_position(name), vol, sound_object.s3d)
+	if DEBUG then
+		log2("[sivol_hit_fx] npc %s %s %s_%s %s absorb=%.2f power=%.3f ap=%.2f dist=%.1f vol=%.2f",
+			npc:name(), name, zone, class, outcome, absorb, power, ap, math.sqrt(d2), vol)
+	end
+end
+
+local function on_npc_death(npc)
+	if not npc then return end
+	groups[npc:id()] = nil
+	profiles[npc:id()] = nil
+end
+
+-------------------------------------------------------------------------------
+-- player hits
+-------------------------------------------------------------------------------
+local tier_cache = { id = -1, class = "none" }
+
+-- body class of the worn suit, head classes (sound, camera) of the worn mask
+local function actor_classes()
+	local outfit = db.actor:get_current_outfit()
+	if not outfit then return "none", "none", "none" end
+	if tier_cache.id ~= outfit:id() then
+		local sect = outfit:section()
+		local tier = sys_ini:line_exist(sect, "bullet_protection_sect") and sys_ini:r_string(sect, "bullet_protection_sect")
+		tier_cache.id = outfit:id()
+		tier_cache.class = tier and ACTOR_TIERS[tier] or "none"
+	end
+	local head_snd, head_cam = "none", "none"
+	if vergas_masks and vergas_masks.get_flag_mask() and db.actor:nlc_head_cover() > 0 then
+		local m = ACTOR_MASKS[vergas_masks.get_mask_config(outfit:section())]
+		if m then head_snd, head_cam = m[1], m[2] end
+	end
+	return tier_cache.class, head_snd, head_cam
+end
+
+local function on_actor_hit_resolved(info)
+	if not ENABLED or not info or info.type ~= hit.fire_wound or not db.actor then return end
+	local body, head_snd = actor_classes()
+	local zone = info.zone == "head" and "head" or "body"
+	local class = zone == "head" and head_snd or body
+	if class == "none" then
+		if DEBUG and zone == "head" then
+			local outfit = db.actor:get_current_outfit()
+			log2("[sivol_hit_fx] actor head hit, no head sound: outfit=%s mask=%s mask_on=%s cover=%.2f",
+				outfit and outfit:section() or "none",
+				outfit and vergas_masks and tostring(vergas_masks.get_mask_config(outfit:section())) or "?",
+				vergas_masks and tostring(vergas_masks.get_flag_mask()) or "?", db.actor:nlc_head_cover())
+		end
+		return
+	end
+	local outcome = outcome_of(info.absorbed or 0, false)
+	local now = time_global()
+	if not group_allows(db.actor:id(), RANK[outcome], now) then return end
+	if not budget_ok(now) then return end
+	local vol = outcome_volume(outcome, zone) * OPT.vol_actor
+	play_set(zone .. "_" .. class, db.actor, vector():set(0, 0, 0), vol, sound_object.s2d)
+	if DEBUG then
+		log2("[sivol_hit_fx] actor %s_%s %s absorbed=%.2f dealt=%.3f vol=%.2f", zone, class, outcome, info.absorbed or 0, info.dealt or 0, vol)
+	end
+end
+
+-- camera anm for sivol_actor_crit.camera(info); nil keeps the crit module's own anm
+function camera_for(info)
+	if not ENABLED or not CAMERA or not info or info.type ~= hit.fire_wound or not db.actor then return nil end
+	local body, _, head_cam = actor_classes()
+	local zone = info.zone == "head" and "head" or "body"
+	local class = zone == "head" and head_cam or body
+	local order = CAM_ORDER[zone .. "_" .. class]
+	if class == "none" or not order then return nil end
+	local s = clamp((info.dealt or 0) / OPT.cam_full, 0, 1)
+	local n = order[math.min(table.getn(order), 1 + math.floor(s * table.getn(order)))]
+	if DEBUG then log2("[sivol_hit_fx] camera %s_%s variant %d (dealt %.3f)", zone, class, n, info.dealt or 0) end
+	return "camera_effects\\wepl\\hit_effect\\" .. zone .. "\\hit_" .. class .. "_" .. n .. ".anm"
+end
+
+-------------------------------------------------------------------------------
+-- signals
+-------------------------------------------------------------------------------
+local function on_spawn()
+	groups, profiles = {}, {}
+	tier_cache.id = -1
+end
+
+function attach(sm)
+	load_config()
+	sm:subscribe({ signal = "on_npc_before_hit",     fun = on_npc_before_hit })
+	sm:subscribe({ signal = "on_npc_death",          fun = on_npc_death })
+	sm:subscribe({ signal = "on_actor_hit_resolved", fun = on_actor_hit_resolved })
+	sm:subscribe({ signal = "on_spawn",              fun = on_spawn })
+end

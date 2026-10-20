@@ -13,6 +13,7 @@
 #include "ai_object_location.h"
 #include "stalker_movement_manager.h"
 #include "inventory.h"
+#include "ai/monsters/basemonster/base_monster.h" // NLC mutant aim
 
 //#define SIGHT_TEST
 
@@ -140,6 +141,11 @@ void CSightAction::execute_object()
         look_pos.x = m_object_to_look->Position().x;
         look_pos.z = m_object_to_look->Position().z;
     }
+
+    // NLC mutant aim A2: aim where the mutant was a rank-dependent moment ago (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6)
+    if (m_torso_look)
+        if (const CBaseMonster* monster = smart_cast<const CBaseMonster*>(m_object_to_look); monster && monster->g_Alive())
+            look_pos = m_object->nlc_mut_aim_point(monster, look_pos);
 
     if (m_torso_look)
         object().sight().SetFirePointLookAngles(look_pos, object().movement().m_head.target.yaw, object().movement().m_head.target.pitch, m_object_to_look);

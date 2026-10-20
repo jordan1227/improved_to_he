@@ -9,6 +9,7 @@
 #include "entity_alive.h"
 #include "../Include/xrRender/Kinematics.h"
 #include "object_broker.h"
+#include "nlc_npc_damage.h"
 
 #define MAX_HEALTH 1.0f
 #define MIN_HEALTH -0.01f
@@ -267,7 +268,7 @@ float CEntityCondition::HitOutfitEffect(float hit_power, ALife::EHitType hit_typ
     float new_hit_power = hit_power;
 
     if (hit_type == ALife::eHitTypeFireWound)
-        new_hit_power = pOutfit->HitThruArmour(hit_power, element, AP);
+        new_hit_power = pOutfit->HitThruArmour(hit_power, element, nlc_npc_damage().apply_ap_actor ? AP : 0.f); // NLC: [nlc_npc_damage] apply_ap_actor
     else
         new_hit_power *= pOutfit->GetHitTypeProtection(hit_type, element);
 

@@ -17,6 +17,9 @@
 #include "PDA.h"
 #include "ai/monsters/BaseMonster/base_monster.h"
 #include "nlc_body_health.h"
+#include "CustomOutfit.h" // NLC
+#include "BoneProtections.h" // NLC
+#include "nlc_npc_damage.h" // NLC
 
 #define MAX_SATIETY 1.0f
 #define START_SATIETY 0.5f
@@ -437,16 +440,154 @@ CWound* CActorCondition::ConditionHit(SHit* pHDS)
     if (GodMode())
         return NULL;
 
+    // NLC: last-hit record for scripts (A2); HitOutfitEffect fills post / k_eff / armour
+    m_nlc_last_hit = SNlcLastHit{};
+    m_nlc_last_hit.time = Device.dwTimeGlobal;
+    m_nlc_last_hit.type = u32(pHDS->hit_type);
+    m_nlc_last_hit.bone = pHDS->boneID;
+    m_nlc_last_hit.raw = pHDS->damage();
+    m_nlc_last_hit.post = m_nlc_last_hit.raw;
+
+    // NLC: bullets use their own head scale (A5); the damage table keeps serving mutant hits
+    const SNlcActorDamage& nlc = nlc_actor_damage();
+    if (pHDS->hit_type == ALife::eHitTypeFireWound && nlc.enabled && nlc.bullet_head_scale >= 0.f && pHDS->boneID != BI_NONE &&
+        m_body->PartByBone(u16(pHDS->boneID)) == body_part::head)
+        m_fHitBoneScale = nlc.bullet_head_scale;
+
     // NLC: health lost by a hit goes to the body part, the total is their average
     const float delta_before = m_fDeltaHealth;
     CWound* wound = inherited::ConditionHit(pHDS);
+    const float lost = delta_before - m_fDeltaHealth;
+    m_nlc_last_hit.dealt = lost;
     if (m_body->Enabled())
     {
-        const float lost = delta_before - m_fDeltaHealth;
         m_fDeltaHealth = delta_before;
         m_body->OnHit(pHDS, lost);
     }
+    else if (lost > 0.f && m_body->GuardHitType(u32(pHDS->hit_type)))
+    {
+        // NLC: one-shot guard on the single health pool (body health option off)
+        const float before = GetHealth() + delta_before;
+        const float after = m_body->Guard(body_part::all, before, before - lost);
+        m_fDeltaHealth = delta_before - (before - after);
+    }
+
+    if (nlc.log && pHDS->hit_type == ALife::eHitTypeFireWound)
+        Msg("* [nlc_actor_damage] bone=%d raw=%.3f post=%.3f K=%.3f A=%.3f dealt=%.3f model=%d guard=%d head_cov=%.2f", pHDS->boneID, m_nlc_last_hit.raw,
+            m_nlc_last_hit.post, m_nlc_last_hit.k_eff, m_nlc_last_hit.armour, m_nlc_last_hit.dealt, m_nlc_last_hit.bullet_model, m_nlc_last_hit.guarded,
+            m_nlc_head_cov);
     return wound;
+}
+
+// NLC: actor bullet model (docs/damage_model/DESIGN_actor_damage_model.md 3, A1); other hit types and suits
+// without bullet_protection_sect keep the original outfit path
+float CActorCondition::HitOutfitEffect(float hit_power, ALife::EHitType hit_type, s16 element, float AP)
+{
+    if (hit_type == ALife::eHitTypeFireWound && nlc_actor_damage().enabled)
+    {
+        CCustomOutfit* outfit = smart_cast<CCustomOutfit*>(object().inventory().ItemFromSlot(OUTFIT_SLOT));
+        if (outfit && outfit->bullet_protection())
+        {
+            const float result = nlc_bullet_outfit(hit_power, element, AP, outfit);
+            if (!m_nlc_dry)
+                outfit->Hit(hit_power, hit_type); // wear from the incoming power, as the original path
+            m_nlc_last_hit.post = result;
+            m_nlc_last_hit.bullet_model = true;
+            return result;
+        }
+    }
+    float result;
+    if (m_nlc_dry)
+    {
+        // same as the original path, without outfit wear
+        CCustomOutfit* outfit = smart_cast<CCustomOutfit*>(object().inventory().ItemFromSlot(OUTFIT_SLOT));
+        if (!outfit)
+            result = hit_power;
+        else if (hit_type == ALife::eHitTypeFireWound)
+            result = outfit->HitThruArmour(hit_power, element, nlc_npc_damage().apply_ap_actor ? AP : 0.f);
+        else
+            result = hit_power * outfit->GetHitTypeProtection(hit_type, element);
+    }
+    else
+        result = inherited::HitOutfitEffect(hit_power, hit_type, element, AP);
+    m_nlc_last_hit.post = result;
+    return result;
+}
+
+void CActorCondition::nlc_dry_hit(SHit* pHDS, float hit_scale)
+{
+    m_nlc_last_hit = SNlcLastHit{};
+    m_nlc_last_hit.time = Device.dwTimeGlobal;
+    m_nlc_last_hit.type = u32(pHDS->hit_type);
+    m_nlc_last_hit.bone = pHDS->boneID;
+    m_nlc_last_hit.raw = pHDS->damage();
+    m_nlc_last_hit.post = m_nlc_last_hit.raw;
+
+    const SNlcActorDamage& nlc = nlc_actor_damage();
+    const bool head = pHDS->boneID != BI_NONE && m_body->PartByBone(u16(pHDS->boneID)) == body_part::head;
+    if (pHDS->hit_type == ALife::eHitTypeFireWound && nlc.enabled && nlc.bullet_head_scale >= 0.f && head)
+        hit_scale = nlc.bullet_head_scale;
+
+    m_nlc_dry = true;
+    const float post = HitOutfitEffect(pHDS->damage(), pHDS->hit_type, pHDS->boneID, pHDS->ap);
+    m_nlc_dry = false;
+
+    const ALife::EHitType t = pHDS->hit_type;
+    float dealt = 0.f;
+    if (t == ALife::eHitTypeFireWound || t == ALife::eHitTypeWound || t == ALife::eHitTypeBurn)
+        dealt = post * m_HitTypeK[t] * m_fHealthHitPart[t] * hit_scale;
+    else if (t == ALife::eHitTypeShock || t == ALife::eHitTypeStrike || t == ALife::eHitTypeExplosion || t == ALife::eHitTypePhysicStrike)
+        dealt = post * m_HitTypeK[t] * m_fHealthHitPart[t];
+    m_nlc_last_hit.dealt = dealt;
+
+    // would the one-shot guard have caught it (against the current part health)
+    if (dealt > 0.f && m_body->GuardHitType(u32(t)))
+    {
+        const u8 part = m_body->Enabled() ? (pHDS->boneID == BI_NONE ? body_part::none : m_body->PartByBone(u16(pHDS->boneID))) : body_part::all;
+        if (part != body_part::none)
+        {
+            const float before = part == body_part::all ? GetHealth() : m_body->PartHealth(part);
+            m_nlc_last_hit.guarded = m_body->GuardWould(part, before, before - dealt);
+        }
+    }
+
+    if (nlc.log && t == ALife::eHitTypeFireWound)
+        Msg("* [nlc_actor_damage] (god) bone=%d raw=%.3f post=%.3f K=%.3f A=%.3f dealt=%.3f model=%d guard=%d head_cov=%.2f", pHDS->boneID, m_nlc_last_hit.raw,
+            m_nlc_last_hit.post, m_nlc_last_hit.k_eff, m_nlc_last_hit.armour, m_nlc_last_hit.dealt, m_nlc_last_hit.bullet_model, m_nlc_last_hit.guarded,
+            m_nlc_head_cov);
+}
+
+float CActorCondition::nlc_bullet_outfit(float hit_power, s16 element, float AP, CCustomOutfit* outfit)
+{
+    const SNlcActorDamage& nlc = nlc_actor_damage();
+    SBoneProtections* bp = outfit->bullet_protection();
+    const float cf = std::min(1.f, outfit->GetCondition() / nlc.cond_full);
+    const float ap = std::clamp(AP, 0.f, 1.f);
+
+    float cov, armour;
+    if (u16(element) != BI_NONE && m_body->PartByBone(u16(element)) == body_part::head)
+    {
+        // the head is covered by the worn mask only (its own condition is in the coverage)
+        cov = m_nlc_head_cov;
+        armour = m_nlc_head_armour;
+    }
+    else
+    {
+        cov = bp->getBoneProtection(element);
+        armour = bp->getBoneArmour(element) * cf;
+    }
+
+    const float pen = std::max(hit_power - armour * (1.f - ap), hit_power * bp->m_fHitFrac);
+    const float F = std::clamp(outfit->nlc_fire_wound_protection() * cf, -0.5f, 0.95f);
+    const float absorb = 1.f - powf(1.f - F, nlc.fw_protection_exp);
+    float k = 1.f - cov * absorb;
+    if (k < 1.f)
+        k += (1.f - k) * ap * nlc.ap_koeff_bypass;
+    k = std::max(k, 0.f);
+
+    m_nlc_last_hit.k_eff = k;
+    m_nlc_last_hit.armour = armour;
+    return std::min(pen, hit_power) * k;
 }
 
 void CActorCondition::PowerHit(float power, bool apply_outfit)

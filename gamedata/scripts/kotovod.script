@@ -7031,6 +7031,95 @@ function soldier_repair_items(dlg)
     phrase_script:AddAction( "dialogs.break_dialog" ) 	
 end
 
+-----------------------------------------------------------
+-- sivol: cheap belt repair (belt_2_art..belt_6_art) at Vergas, Shurup and
+-- Dolgovyazy. Instant, no repair queue: the belt stays with the actor and is
+-- restored to 100% on payment. Price: belt_repair_share of the belt's
+-- config cost per 100% missing condition, no technician margin.
+-----------------------------------------------------------
+local belt_repair_share = 0.12
+local belt_repair_min   = 50
+-- keyed by repairer name (r_vergas, r_shurup, r_dolgovjaz from sak_repair_dialog)
+local belt_repair_lines = {
+	[ "vergas" ]    = { quote = "ui_belt_repair_vergas_quote", done = "ui_belt_repair_vergas_done" },
+	[ "shurup" ]    = { quote = "ui_belt_repair_shurup_quote", done = "ui_belt_repair_shurup_done" },
+	[ "dolgovjaz" ] = { quote = "ui_belt_repair_dolgovjaz_quote", done = "ui_belt_repair_dolgovjaz_done" },
+}
+
+local function is_repair_belt( sect )
+	return string.match( sect, "^belt_[2-6]_art$" ) ~= nil
+end
+
+local function belt_repair_cost( obj )
+	local missing = 1 - obj:condition()
+	local cost = get_u32( obj:section(), "cost", 0 ) * belt_repair_share * missing
+	return math.max( belt_repair_min, math.ceil( cost / 10 ) * 10 )
+end
+
+local function damaged_belts()
+	local result = {}
+	db.actor:iterate_inventory( function( _, obj )
+		if is_repair_belt( obj:section() ) and obj:condition() < 0.995 then
+			table.insert( result, obj )
+		end
+	end, db.actor )
+	table.sort( result, function( a, b ) return a:condition() < b:condition() end )
+	return result
+end
+
+-- Adds one branch per damaged belt under the technician's item-choice phrase
+-- (parent: NPC phrase, so the belt line is an actor phrase).
+function add_belt_repair_phrases( dlg, repairer, parent )
+	local lines = belt_repair_lines[ repairer ]
+	if not lines then return end
+	local T = knife_repair.text
+
+	for i, obj in ipairs( damaged_belts() ) do
+		if i > 9 then break end
+		local sect = obj:section()
+		local cost = belt_repair_cost( obj )
+		local cond = math.floor( obj:condition() * 100 )
+		local base = 9000 + i * 10
+		local price = string.format(
+			"%%c[255,238,155,23]%d%%c[default] %s", cost,
+			declension( cost, T( "ui_kr_rub_a1" ), T( "ui_kr_rub_a2" ), T( "ui_kr_rub_a3" ) )
+		)
+
+		local phr = task_manager.Dlg_AddPhrase( dlg, get_inv_name( sect ) .. " [%c[255, 238, 153, 26]" .. tostring( cond ) .. "%%c[default]]", tostring( base ), parent, -10000 )
+		local phrase_script = phr:GetPhraseScript()
+		phrase_script:AddPrecondition( "kotovod.money_have(" .. cost .. ")" )
+
+		phr = task_manager.Dlg_AddPhrase( dlg, T( lines.quote, price ), tostring( base + 1 ), tostring( base ), -10000 )
+
+		phr = task_manager.Dlg_AddPhrase( dlg, "ui_belt_repair_agree", tostring( base + 2 ), tostring( base + 1 ), -10000 )
+		phrase_script = phr:GetPhraseScript()
+		phrase_script:AddPrecondition( "kotovod.money_have(" .. cost .. ")" )
+		phrase_script:AddAction( string.format( "kotovod.belt_repair_do(%d, %d)", obj:id(), cost ) )
+
+		phr = task_manager.Dlg_AddPhrase( dlg, lines.done, tostring( base + 3 ), tostring( base + 2 ), -10000 )
+
+		phr = task_manager.Dlg_AddPhrase( dlg, "ui_belt_repair_thanks", tostring( base + 4 ), tostring( base + 3 ), -10000 )
+		phrase_script = phr:GetPhraseScript()
+		phrase_script:AddAction( "dialogs.break_dialog" )
+
+		phr = task_manager.Dlg_AddPhrase( dlg, "ui_belt_repair_decline", tostring( base + 5 ), tostring( base + 1 ), -10000 )
+		phrase_script = phr:GetPhraseScript()
+		phrase_script:AddAction( "dialogs.break_dialog" )
+	end
+end
+
+function belt_repair_do( id, cost )
+	local obj = level.object_by_id( id )
+	local parent = obj and obj:parent()
+	if not ( parent and parent:id() == db.actor:id() and is_repair_belt( obj:section() ) ) then
+		log2( "[~T].~C0C #ERROR(belt_repair_do):~C07 belt id %s is not in the actor's inventory", tostring( id ) )
+		return
+	end
+	if obj:condition() >= 0.995 or not money_have( cost ) then return end
+	relocate_money( cost, "out" )
+	obj:set_condition( 1 )
+end
+
 function vergas_repair_items(dlg)
     dlg:SetForceReload(true)
 
@@ -7383,6 +7472,9 @@ function vergas_repair_items(dlg)
         phrase_script = phr:GetPhraseScript()	
         phrase_script:AddAction("dialogs.break_dialog")	 
     end
+
+    -- sivol: belt repair
+    kotovod.add_belt_repair_phrases(dlg, r_vergas, "1")
 
     phr = task_manager.Dlg_AddPhrase(dlg, "Я немного занят сейчас. Лучше попозже загляни...", "200", "0", -10000)
     phrase_script = phr:GetPhraseScript()    
@@ -7764,6 +7856,9 @@ function dolgovyaziy_repair_items( dlg )
         phrase_script = phr:GetPhraseScript()	
         phrase_script:AddAction( "dialogs.break_dialog" )	 
     end	
+
+    -- sivol: belt repair
+    kotovod.add_belt_repair_phrases( dlg, r_dolgovjaz, "100" )
 
     -- В процессе ремонта
     phr = task_manager.Dlg_AddPhrase( dlg, "Не видишь, занят я? Не мешай работать, ладно?", "200", "0", -10000 )
@@ -8284,6 +8379,9 @@ function shurup_repair_items( dlg )
 		phrase_script = phr:GetPhraseScript()
 		phrase_script:AddAction( "dialogs.break_dialog" )
 	end
+
+	-- sivol: belt repair
+	kotovod.add_belt_repair_phrases( dlg, r_shurup, "1" )
 
 	-- busy
 	phr = task_manager.Dlg_AddPhrase( dlg, "ui_kr_shurup_busy", "200", "0", -10000 )

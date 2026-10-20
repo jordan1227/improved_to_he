@@ -5,6 +5,82 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.107 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `24244CE14DC708B4E06B2E770CE6B76810DC5D0FA708C86DFB30AE8532DA6C8D` (archived with its PDB in `nlc_tools/builds/20261020_041514_24244ce1`).
+- **Status:** runtime pending. Arm-injury handling penalties (`docs/damage_model/DESIGN_actor_damage_model.md` 18.6).
+- Actor weapon handling speed per kind (`player_hud.cpp` `nlc_set_hud_speed_factor`, `NLC_SPEED_RELOAD` / `NLC_SPEED_DRAW`): new `level.nlc_set_draw_speed_factor(name, k)`, `nlc_get_draw_speed_factor(name)`, `nlc_get_draw_speed_k()` for show / hide motions (`*show*`, `*hide*`, `*draw*`, `*holster*`, pistol `anim_close`) and the weapon's `snd_draw` / `snd_holster` (`HUD_SOUND::m_nlc_speed_kind`). Reload API unchanged.
+- Fix (.106): the pistol's empty holster motion `anim_close` was scaled as a reload.
+
+## nlc-3.589.106 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `4479038DE44043499998F23A9F53A3CF4485D22BE8E5D3B6EC22DC32A5C0BA38` (archived with its PDB in `nlc_tools/builds/20261020_033948_4479038d`).
+- **Status:** runtime pending. Combined build: NPC damage model follow-ups, aim review fixes, reload speed factors.
+- NPC damage (`docs/damage_model/DESIGN_npc_damage_model.md`): `[nlc_npc_damage] legacy_communities` (comma list, `zombied`) keeps the stock armour formula (no AP, no bone koeff) for those communities; the concussion stagger fires only on bullet hits the stalker survives (after `inherited::Hit`, alive, not wounded, health left); no death line when the stalker dies within 1 s of a head hit (`m_nlc_last_hit_head`).
+- Aim vs mutants (`docs/damage_model/DESIGN_npc_aim_vs_mutants.md` 6h): `nlc_mut_fire_target` kind 1 requires the sight point within 2 m of the mutant (no scope leak onto actor/stalker shots); the eye branch of `SetFirePointLookAngles` aims from `Position() + m_nlc_eye_offset` for mutant fire targets; the ready-gate cap no longer applies to `anim_sleep`.
+- Actor reload speed (`docs/damage_model/DESIGN_actor_damage_model.md` 18.6): named factors `level.nlc_set_reload_speed_factor(name, k)` / `nlc_get_reload_speed_factor(name)` / `nlc_get_reload_speed_k()` (product clamped 0.3-2; `nlc_set_reload_speed_k(k)` = the `"injury"` factor). Covers reload and shotgun tube-loading motions (`*reload*`, `*_open*`, `*add_cartridge*`, `*_close*`) of the actor's weapon, third-person state timing (`CHudItem::PlayHUDMotion_noCB`), and the actor's reload sounds (frequency x k, delay / k; `HUD_SOUND::m_nlc_reload`).
+
+## nlc-3.589.105 (2026-10-19)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E9775051036CC137C2A7374F6D460BB8D207A0596CD5DB52FB19F472409A9020` (archived with its PDB in `nlc_tools/builds/20261019_035649_e9775051`).
+- **Status:** runtime pending. Melee flinch after mutant-aim test 3 (`docs/damage_model/DESIGN_npc_aim_vs_mutants.md` 6g).
+- `[nlc_npc_mutant_aim] flinch_*`: a mutant hit from within `flinch_dist` (`CAI_Stalker::HitSignal`) adds `flinch_cone_deg` x rank factor to the dispersion against mutants for `flinch_ms`; `nlc_mut_get("flinch_until")`.
+
+## nlc-3.589.104 (2026-10-19)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `801C96BD795BB6D296B70DEF7847356AE2C68EB35CA49EA185BDC980D08D36D1` (archived with its PDB in `nlc_tools/builds/20261019_032851_801c96bd`).
+- **Status:** runtime pending. Mutant-aim tuning after test 2 (`docs/damage_model/DESIGN_npc_aim_vs_mutants.md` 6e-6f).
+- Psy cone: `[nlc_npc_mutant_aim] psy_cone_deg` / `psy_cone_full`: psy pressure adds dispersion against mutants (the old `nlc_psy_dispersion_k` only scaled the ~0.01 deg stance spread).
+- Diagnostics: a hit on another mutant while the fight target is alive counts as a stray (`nlc_mut_get("strays")`) instead of opening a new engagement.
+
+## nlc-3.589.103 (2026-10-19)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F884368890781B8E7A690C95467A2456FF24969EBE5D3924FF4CA3D611EE9299` (archived with its PDB in `nlc_tools/builds/20261019_030511_f8843688`).
+- **Status:** runtime pending. Fixes after the first mutant-aim test (`docs/damage_model/DESIGN_npc_aim_vs_mutants.md` 6c-6d).
+- `SetFirePointLookAngles`: mutant targets are aimed from the eye, not from the stalker centre (`use_center_to_aim` targets: bloodsucker, controller, zombie had every shot ~0.7 m high).
+- `nlc_mut_fire_target`: A1/A3/A4/A5 also while xrs looks at a mutant through a torso position sight (not seen); `rounds_nosight` / `nosight_type` count shots at a selected mutant with any other sight.
+- Diagnostics: hits counted once per shot, every pellet in `nlc_mut_pellets(band)` (new export).
+
+## nlc-3.589.102 (2026-10-19)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `CC3D293BACF2DBF5A648E2E7D6B26AA0606E680E5A4AEF19059F0938AD5B91B2` (archived with its PDB in `nlc_tools/builds/20261019_023820_cc3d293b`).
+- **Status:** runtime pending. Stalker aim and engagement against mutants (`docs/damage_model/DESIGN_npc_aim_vs_mutants.md` 6, 6b); `[nlc_npc_mutant_aim]` in `game_relations.ltx`, `xrGame/nlc_mutant_aim.h`. Only while the sight target is a `CBaseMonster`; aim at the actor and at stalkers is unchanged.
+- A1: `g_fireParams` shoots along the current head angles and position (`eye_matrix` is refreshed only every second scheduler tick, 250-725 ms by camera distance). A2: `CSightAction::execute_object` aims where the mutant was a rank-dependent lag ago (`lag_ms`, jitter per burst). A3: the bloodsucker cloak factor also scales the lag, plus `cloak_cone_deg` / `xray_cone_deg`; the cloak factor follows the mutant aimed at. A4: `head_speed` within `snap_dist`. A5: `spread_deg`.
+- B1/B2: `CEnemyManager::useful` keeps mutants beyond `max_ignore_distance` inside their `nlc_npc_threat_dist` (new monster key) or within `approach_dist` when they attack the stalker, a friendly stalker, or the actor while the stalker is his friend / neutral (`help_dist_friend` / `help_dist_neutral`).
+- Diagnostics (collected always, printed by `sivol_mut_aim_log.script`): Lua `npc:nlc_mut_get(key)`, `nlc_mut_rounds(band)`, `nlc_mut_hits(band)`, `nlc_mut_far_section()`, `nlc_mut_reset()`; `level.nlc_mut_aim_param(name, value)`, `level.nlc_mut_aim_get(name)`. Bullet hits on monsters by stalkers counted in `CBaseMonster::Hit`; fire-check reason codes from `can_fire_to_enemy`; far hits in `CAI_Stalker::HitSignal`.
+
+## nlc-3.589.101 (2026-10-19)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `5EA5C680C98B108479CA30E0CC0062C064C717D77057C1D937464DA545F2C88D` (archived with its PDB in `nlc_tools/builds/20261019_013604_5ea5c680`).
+- **Status:** runtime pending. God mode (`g_god`) still fills the actor last-hit record (`CActorCondition::nlc_dry_hit`: bullet model, hit scale, immunity, would-be guard, no outfit wear, nothing applied), so the hit log works while testing in god mode.
+
+## nlc-3.589.100 (2026-10-19)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `C48329836629870EAF68584813EFEAB4D77938CD1F0F3BC9900AAC5C20B66FAD` (archived with its PDB in `nlc_tools/builds/20261019_010809_c4832983`).
+- **Status:** runtime pending. Actor bullet damage model (`docs/damage_model/DESIGN_actor_damage_model.md` 3-4, 11-15).
+- `[nlc_actor_damage]` (`xrGame/nlc_npc_damage.h`): with `enabled`, a suit with `bullet_protection_sect` takes bullets through `pen = max(p - A*cf*(1-k_ap), p*hit_fraction)`, `K = 1 - cov*(1 - (1 - F*cf)^fw_protection_exp)` lifted by `k_ap*ap_koeff_bypass`; `F` is the live `fire_wound_protection`, `cf = min(1, condition/cond_full)`. Head-part bones take coverage and armour from `nlc_set_head_cover` (the worn mask) and `bullet_head_scale` instead of the damage-table hit scale. Other hit types and suits without the key keep the original outfit path. `CEntityCondition::HitOutfitEffect` is virtual (overridden by `CActorCondition`).
+- One-shot guard (`nlc_body_health.cpp`, `[actor_body_health] guard_*`): a head or body part above `guard_above` when a hit window opens (`guard_window_ms`, the pellets of one shot) cannot drop below its floor in that window, for the hit types in `guard_hit_types`; with the body-health option off it guards the single health pool. Missing keys = off.
+- Lua (actor): `nlc_last_hit_raw/post/dealt/k/armour/bone/type/time/guarded/bullet_model()`, `nlc_set_head_cover(cov, armour)`, `nlc_head_cover()`; `bone_armour`/`bone_koeff`/`bone_hit_fraction`/`bone_protection_section` return the suit's bullet table when it has one.
+- Stalker concussion: a concussion still running when the critical-wound stagger ends restarts its full window from there.
+
+## nlc-3.589.99 (2026-10-18)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `69AB60E0B2B70DE1E936F31302F3AFDD55B16F7C19700090E046D1BA2D281FDF` (archived with its PDB in `nlc_tools/builds/20261018_063819_69ab60e0`).
+- **Status:** runtime pending. NPC bullet damage model, phase 2 (`docs/damage_model/DESIGN_npc_damage_model.md` 14-15).
+- `[nlc_npc_damage]` (`xrGame/nlc_npc_damage.h`): `apply_ap` (ammo `k_ap` reduces NPC bone armour, replaces the `APPLY_ARMOR_PIERCING_TO_NPC` define), `use_bone_koeff` (the bone-protection koeff column absorbs a share of the post-armour bullet power, `ap_koeff_bypass` lifts it by `k_ap`), `apply_ap_actor` (actor outfit armour and `k_ap`). Missing keys keep the old behaviour.
+- Critical wound (stagger): `critical_wound_raw_part` (share of the pre-armour bullet power that also charges it), `critical_wound_keep_charge` (a full charge waits for suitable conditions instead of being dropped).
+- Stalker head-hit concussion: a surviving head hit where armour stopped at least `nlc_concussion_min_absorb` of the bullet multiplies weapon dispersion by `nlc_concussion_disp_k` for `nlc_concussion_time` ms; `nlc_concussion_force_anim` plays the head critical-hit animation on a new concussion.
+- Lua: `bone_armour(bone)`, `bone_koeff(bone)`, `bone_hit_fraction()`, `bone_protection_section()` (stalker profile, actor outfit).
+
 ## nlc-3.589.98 (2026-10-13)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

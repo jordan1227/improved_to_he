@@ -1,0 +1,247 @@
+-- sivol: stalker aim and engagement against mutants, log only (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6 D).
+-- The engine (nlc-3.589.102+) collects the data; this script prints it. Nothing here changes behaviour.
+--
+-- Switches (edit and restart, or at runtime from the fl console: sivol_mut_aim_log.set("AIM_LOG", false)):
+--   AIM_LOG      [nlc_mut_aim]   one line per stalker per PERIOD_MS while it fires at a mutant: distance, the mutant's
+--                angular rate and sideways speed, lag used, head / stale / shot errors (deg, against the mutant's
+--                centre), eye_matrix age, fire check (gate) and the engagement's rounds/hits.
+--   ENG_LOG      [nlc_mut_eng]   a mutant beyond max_ignore_distance kept as an enemy (rule 1 threat distance,
+--                2 attacks us, 3 attacks a friendly stalker, 4/5 attacks the actor and we are friend/neutral);
+--                [nlc_mut_help]  xrs registered a mutant attacking the actor (B3).
+--   FIGHT_LOG    [nlc_mut_fight] per engagement: duration, rounds and hits per band (<5, 5-15, >15 m), end reason.
+--   (AIM_LOG)    [nlc_mut_ready] the combat start waited (or was cut short) for the stalker to be ready.
+--   (AIM_LOG)    [nlc_mut_acq]   a new mutant target and the delay before the first shot (xrs acquire delay).
+--   FAR_HIT_LOG  [nlc_mut_far_hit] a mutant hit the stalker from beyond the distance at which it is ignored.
+-- Behaviour values: level.nlc_mut_aim_param(name, value) / level.nlc_mut_aim_get(name), e.g.
+--   level.nlc_mut_aim_param("fresh_fire_dir", 0) for the old aim (A/B), ("lag_k", 1.3) for slower tracking.
+
+local SWITCH = {
+    AIM_LOG = false,     -- [SIVOL TEST] mutant aim pass, set false after tuning
+    ENG_LOG = false,     -- [SIVOL TEST]
+    FIGHT_LOG = false,   -- [SIVOL TEST]
+    FAR_HIT_LOG = false, -- [SIVOL TEST]
+}
+local PERIOD_MS = 1000      -- AIM_LOG lines per stalker
+local POLL_MS = 250         -- per-stalker poll of the engine counters
+local FIGHT_IDLE_MS = 10000 -- no shot at the mutant this long: the engagement ends ("dropped")
+local ENG_REPEAT_MS = 5000  -- same stalker + mutant + rule printed again only after this
+local HELP_REPEAT_MS = 5000
+
+local GATE = { [1] = "line", [2] = "vis", [-1] = "novis", [-2] = "yaw", [-3] = "pick<2.5", [-4] = "pick_short", [0] = "-" }
+local MODE = { [0] = "fresh", [1] = "off", [3] = "fresh_pos", [-1] = "-" }
+local SIGHT = { [0] = "cur_dir", [1] = "path_dir", [2] = "dir", [3] = "position", [4] = "object", [5] = "cover",
+    [6] = "search", [7] = "look_over", [8] = "cover_look_over", [9] = "fire_object", [10] = "fire_position", [-1] = "-" }
+local ENG_RULE = { [1] = "threat_dist", [2] = "attacks_me", [3] = "attacks_friend", [4] = "attacks_actor/friend", [5] = "attacks_actor/neutral" }
+local BANDS = { "<5", "5-15", ">15" }
+
+local state = {} -- [npc id] = { poll, aim_log, shot_time, eng_time, far_time, fight = {...}, eng_seen = {}, help_seen = {} }
+local missing_logged = false
+
+function set(name, value)
+    if SWITCH[name] == nil then
+        log2("[sivol_mut_aim_log] unknown switch %s", tostring(name))
+        return
+    end
+    SWITCH[name] = value and true or false
+    log2("[sivol_mut_aim_log] %s = %s", name, tostring(SWITCH[name]))
+end
+
+local function any_on()
+    return SWITCH.AIM_LOG or SWITCH.ENG_LOG or SWITCH.FIGHT_LOG or SWITCH.FAR_HIT_LOG
+end
+
+local function exports_ok()
+    if level.nlc_mut_aim_get then return true end
+    if not missing_logged then
+        missing_logged = true
+        log2("[sivol_mut_aim_log] engine exports missing (needs nlc-3.589.102+), log off")
+    end
+    return false
+end
+
+local function obj_name(id)
+    if not id or id < 0 then return "-" end
+    local o = level.object_by_id(id)
+    if not o then return string.format("#%d(gone)", id) end
+    return string.format("%s(%s)", o:name(), o:section())
+end
+
+local function counts(npc)
+    local r, h, p = {}, {}, {}
+    for b = 0, 2 do
+        r[b] = npc:nlc_mut_rounds(b)
+        h[b] = npc:nlc_mut_hits(b)
+        p[b] = npc:nlc_mut_pellets(b)
+    end
+    return r, h, p
+end
+
+local function fight_line(npc, f, why)
+    local parts, tr, th, tp = {}, 0, 0, 0
+    for b = 0, 2 do
+        tr = tr + f.rounds[b]
+        th = th + f.hits[b]
+        tp = tp + f.pellets[b]
+        if f.rounds[b] > 0 or f.hits[b] > 0 then
+            parts[#parts + 1] = string.format("%s %d/%d (%.0f%%)", BANDS[b + 1], f.hits[b], f.rounds[b],
+                f.rounds[b] > 0 and 100 * f.hits[b] / f.rounds[b] or 0)
+        end
+    end
+    if tr == 0 and th == 0 and f.nosight == 0 then return end
+    log2("[nlc_mut_fight] %s rank=%d vs %s | %.1f s | hits %d/%d (%.0f%%) | %s | pellets=%d strays=%d nosight_rounds=%d | end=%s",
+        npc:name(), npc:character_rank(), f.name, (f.last - f.start) / 1000, th, tr, tr > 0 and 100 * th / tr or 0,
+        table.concat(parts, ", "), tp, f.strays, f.nosight, why)
+end
+
+local function close_fight(npc, s, why)
+    local f = s.fight
+    if f and not f.closed then
+        f.closed = true
+        if SWITCH.FIGHT_LOG then fight_line(npc, f, why) end
+    end
+end
+
+local function poll_fight(npc, s, now)
+    local ft = npc:nlc_mut_get("fight_target")
+    local f = s.fight
+    if f and not f.closed and ft ~= f.target then
+        local o = level.object_by_id(f.target)
+        close_fight(npc, s, (o and o:alive()) and "switched" or "mutant_dead")
+        f = nil
+    end
+    if ft < 0 then return end
+    local reopen = f and f.closed and not f.dead and f.target == ft and npc:nlc_mut_get("shot_time") > f.last
+    if not f or f.target ~= ft or reopen then
+        if f and f.closed and f.target == ft and not reopen then return end
+        f = { target = ft, name = obj_name(ft), start = npc:nlc_mut_get("fight_start"), last = now,
+              rounds = { [0] = 0, 0, 0 }, hits = { [0] = 0, 0, 0 }, pellets = { [0] = 0, 0, 0 }, nosight = 0, strays = 0 }
+        s.fight = f
+    end
+    if f.closed then return end
+    f.rounds, f.hits, f.pellets = counts(npc)
+    f.nosight = npc:nlc_mut_get("rounds_nosight")
+    f.strays = npc:nlc_mut_get("strays")
+    local shot = npc:nlc_mut_get("shot_time")
+    if shot > 0 and shot > f.last then f.last = shot end
+    local o = level.object_by_id(ft)
+    if not o or not o:alive() then
+        f.dead = true -- never reopened (the engine keeps fight_target until the next mutant)
+        close_fight(npc, s, "mutant_dead")
+    elseif now - f.last > FIGHT_IDLE_MS then
+        close_fight(npc, s, "dropped")
+        f.last = npc:nlc_mut_get("shot_time") -- a later shot at the same mutant opens a new engagement
+        npc:nlc_mut_reset()
+    end
+end
+
+local function poll_aim(npc, s, now)
+    local shot = npc:nlc_mut_get("shot_time")
+    if shot <= 0 or shot == s.shot_time or now - s.aim_log < PERIOD_MS then return end
+    s.shot_time = shot
+    s.aim_log = now
+    local r, h = counts(npc)
+    local gate = npc:nlc_mut_get("gate")
+    local ns = npc:nlc_mut_get("rounds_nosight")
+    log2("[nlc_mut_aim] %s rank=%d vs %s dist=%.1f ang=%.0f deg/s side=%.1f m/s lag=%.0f ms err head=%.1f stale=%.1f shot=%.1f deg"
+        .. " eye_age=%.0f ms mode=%s gate=%s (%.0f ms ago) flinch=%s rounds=%d/%d/%d hits=%d/%d/%d nosight=%d (%s)",
+        npc:name(), npc:character_rank(), obj_name(npc:nlc_mut_get("shot_target")), npc:nlc_mut_get("dist"),
+        npc:nlc_mut_get("ang_rate"), npc:nlc_mut_get("side_speed"), npc:nlc_mut_get("lag_ms"), npc:nlc_mut_get("err_head"),
+        npc:nlc_mut_get("err_stale"), npc:nlc_mut_get("err_shot"), npc:nlc_mut_get("eye_age"),
+        MODE[npc:nlc_mut_get("mode")] or "?", GATE[gate] or tostring(gate), now - npc:nlc_mut_get("gate_time"),
+        now < npc:nlc_mut_get("flinch_until") and "yes" or "no",
+        r[0], r[1], r[2], h[0], h[1], h[2], ns, SIGHT[npc:nlc_mut_get("nosight_type")] or "?")
+end
+
+local function poll_eng(npc, s, now)
+    local t = npc:nlc_mut_get("eng_time")
+    if t <= 0 or t == s.eng_time then return end
+    s.eng_time = t
+    local id, rule = npc:nlc_mut_get("eng_id"), npc:nlc_mut_get("eng_rule")
+    local key = id * 10 + rule
+    if s.eng_seen[key] and now - s.eng_seen[key] < ENG_REPEAT_MS then return end
+    s.eng_seen[key] = now
+    log2("[nlc_mut_eng] %s keeps %s at %.1f m (ignore_dist=%.1f) rule=%s", npc:name(), obj_name(id),
+        npc:nlc_mut_get("eng_dist"), npc:nlc_mut_get("ignore_dist"), ENG_RULE[rule] or tostring(rule))
+end
+
+local function poll_far_hit(npc, s)
+    local t = npc:nlc_mut_get("far_time")
+    if t <= 0 or t == s.far_time then return end
+    s.far_time = t
+    log2("[nlc_mut_far_hit] %s hit by %s (%s) from %.1f m, ignore_dist=%.1f", npc:name(),
+        obj_name(npc:nlc_mut_get("far_id")), npc:nlc_mut_far_section(), npc:nlc_mut_get("far_dist"), npc:nlc_mut_get("ignore_dist"))
+end
+
+local function on_npc_update(npc, delta)
+    if not any_on() or not npc:alive() or not exports_ok() then return end
+    local id = npc:id()
+    local now = time_global()
+    local s = state[id]
+    if not s then
+        s = { poll = 0, aim_log = 0, shot_time = 0, eng_time = npc:nlc_mut_get("eng_time"),
+              far_time = npc:nlc_mut_get("far_time"), eng_seen = {}, help_seen = {} }
+        state[id] = s
+    end
+    if now < s.poll then return end
+    s.poll = now + POLL_MS
+    poll_fight(npc, s, now)
+    if SWITCH.AIM_LOG then poll_aim(npc, s, now) end
+    if SWITCH.ENG_LOG then poll_eng(npc, s, now) end
+    if SWITCH.FAR_HIT_LOG then poll_far_hit(npc, s) end
+end
+
+local function on_npc_death(npc, who)
+    local s = state[npc:id()]
+    if s then
+        if s.fight and not s.fight.closed and exports_ok() then
+            s.fight.rounds, s.fight.hits, s.fight.pellets = counts(npc)
+            s.fight.nosight = npc:nlc_mut_get("rounds_nosight")
+            s.fight.strays = npc:nlc_mut_get("strays")
+        end
+        close_fight(npc, s, "npc_dead")
+        state[npc:id()] = nil
+    end
+end
+
+local function on_npc_net_destroy(npc)
+    state[npc:id()] = nil
+end
+
+-- xrs_battle_ai.set_weapons_fire: a new mutant target, first shot after delay ms (AIM_LOG)
+function on_acquire(npc, enemy, delay)
+    if not SWITCH.AIM_LOG then return end
+    log2("[nlc_mut_acq] %s rank=%d acquires %s(%s) at %.1f m, first shot in %d ms", npc:name(), npc:character_rank(),
+        enemy:name(), enemy:section(), npc:position():distance_to(enemy:position()), delay)
+end
+
+-- xrs_battle_ai.not_ready_state (6g): the combat start waited for the stalker to be ready (AIM_LOG); "forced" =
+-- the wait was cut short against a close mutant, "ready" = it ended by itself (printed from READY_LOG_MS on)
+local READY_LOG_MS = 300
+function on_ready(npc, enemy, why, waited, result)
+    if not SWITCH.AIM_LOG then return end
+    if result ~= "forced" and waited < READY_LOG_MS then return end
+    log2("[nlc_mut_ready] %s rank=%d %s after %d ms (blocked by %s), target %s at %s m", npc:name(), npc:character_rank(),
+        result, waited, tostring(why), enemy and string.format("%s(%s)", enemy:name(), enemy:section()) or "-",
+        enemy and string.format("%.1f", npc:position():distance_to(enemy:position())) or "-")
+end
+
+-- xrs_battle_ai.we_are_under_attack (B3): the stalker took a mutant attacking the actor as its target
+function on_help(npc, enemy, rel, dist)
+    if not SWITCH.ENG_LOG then return end
+    local s = state[npc:id()]
+    local now = time_global()
+    if s then
+        local last = s.help_seen[enemy:id()]
+        if last and now - last < HELP_REPEAT_MS then return end
+        s.help_seen[enemy:id()] = now
+    end
+    log2("[nlc_mut_help] %s (%s) helps the actor against %s(%s) at %.1f m", npc:name(),
+        rel == game_object.friend and "friend" or (rel == game_object.neutral and "neutral" or tostring(rel)),
+        enemy:name(), enemy:section(), dist)
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_npc_update", fun = on_npc_update })
+    sm:subscribe({ signal = "on_npc_death", fun = on_npc_death })
+    sm:subscribe({ signal = "on_npc_net_destroy", fun = on_npc_net_destroy })
+end

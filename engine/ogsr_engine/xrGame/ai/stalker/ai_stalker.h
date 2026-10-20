@@ -62,6 +62,7 @@ class CStalkerMovementManager;
 class CStalkerSoundDataVisitor;
 class CWeaponShotEffector;
 struct SBoneProtections;
+class CBaseMonster;
 class CDangerLocation;
 class CRestrictedObject;
 
@@ -87,6 +88,85 @@ private:
     // ALife
 private:
     SBoneProtections* m_boneHitProtection;
+
+public:
+    SBoneProtections* bone_hit_protection() const { return m_boneHitProtection; } // NLC: script export
+
+private:
+    // NLC: head-hit concussion (docs/damage_model/DESIGN_npc_damage_model.md 14, E4). A surviving bullet hit on a
+    // critical-wound head bone where armour absorbed at least nlc_concussion_min_absorb of the power
+    // multiplies the weapon dispersion by nlc_concussion_disp_k for nlc_concussion_time ms.
+    float m_nlc_concussion_min_absorb{};
+    u32 m_nlc_concussion_time{};
+    float m_nlc_concussion_disp_k{1.f};
+    bool m_nlc_concussion_force_anim{};
+    u32 m_nlc_concussion_until{};
+    void nlc_check_concussion(u16 bone, float raw_power, float power);
+
+public:
+    // NLC: aim and engagement against mutants (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6, nlc_mutant_aim.h).
+    // Runtime only (not saved). The script log (sivol_mut_aim_log.script) reads it through nlc_mut_get().
+    struct SNlcMutHist
+    {
+        Fvector pos;
+        u32 time;
+    };
+    struct SNlcMutState
+    {
+        static constexpr u32 HIST = 48;
+        u16 target{u16(-1)}; // monster the aim history belongs to
+        SNlcMutHist hist[HIST]{};
+        u32 hist_n{}, hist_head{}; // ring buffer, hist_head = next write slot
+        Fvector vel{};
+        float lag_jit{1.f};
+        u32 lag_reroll{};
+        float lag_used{};
+        // last shot at a mutant
+        u16 shot_target{u16(-1)};
+        float dist{}, ang_rate{}, side_speed{}, err_head{}, err_stale{}, err_shot{}, eye_age{};
+        int mode{-1}; // 0 fresh direction, 1 switched off, 2 no mutant object sight
+        u32 shot_time{};
+        int gate{}; // last can_fire_to_enemy result (script_game_object4.cpp), > 0 fire, < 0 reason
+        u32 gate_time{};
+        // engagement (reset when the shot target changes or by nlc_mut_reset)
+        u16 fight_target{u16(-1)};
+        u32 fight_start{};
+        u32 rounds[3]{}, hits[3]{}; // bands < 5, 5-15, > 15 m; hits: shots with at least one hit
+        u32 pellets[3]{};            // every bullet/pellet hit (shotguns: several per shot)
+        u32 shot_seq{}, hit_seq{u32(-1)}; // weapon shots so far / shot that already counted a hit
+        u32 flinch_until{};          // melee flinch: a mutant hit us from close range (HitSignal)
+        u32 strays{};                // bullet hits on another mutant while the fight target is alive (packs)
+        u32 rounds_nosight{};        // shots while the selected enemy is a mutant but the sight is not aimed at it
+        int nosight_type{-1};        // sight type of the last such shot (SightManager::ESightType)
+        // range events
+        u16 eng_id{u16(-1)};
+        float eng_dist{};
+        int eng_rule{};
+        u32 eng_time{};
+        u16 far_id{u16(-1)};
+        float far_dist{};
+        u32 far_time{};
+        shared_str far_section;
+    };
+    SNlcMutState m_nlc_mut;
+    const CBaseMonster* nlc_mut_sight_target() const; // sight object is a live CBaseMonster
+    // the mutant the gun points at: the sight object (kind 0), or the selected enemy while a torso position sight looks
+    // at its remembered place (kind 1, xrs look.fire_point when it is not seen)
+    const CBaseMonster* nlc_mut_fire_target(int* kind = nullptr) const;
+    int nlc_mut_sight_type() const; // current sight type, -1 without an action
+    Fvector nlc_mut_aim_point(const CBaseMonster* monster, const Fvector& look_pos); // A2, from CSightAction
+    float nlc_mut_lag_ms(const CBaseMonster* monster);
+    void nlc_mut_on_shot(CWeapon* weapon);
+    void nlc_mut_on_hit(const CBaseMonster* monster);
+    void nlc_mut_engage_event(const CEntityAlive* monster, float dist, int rule);
+    void nlc_mut_set_gate(int code)
+    {
+        m_nlc_mut.gate = code;
+        m_nlc_mut.gate_time = Device.dwTimeGlobal;
+    }
+    void nlc_mut_reset_fight();
+    float nlc_mut_get(LPCSTR key) const;
+    static int nlc_mut_band(float dist) { return dist < 5.f ? 0 : (dist < 15.f ? 1 : 2); }
 
     // weapon dispersion
 public:
@@ -140,6 +220,8 @@ public:
 public:
     bool m_wounded{};
     bool m_headshot{};
+    bool m_nlc_last_hit_head{}; // NLC: latest hit (while alive) was on a critical-wound head bone
+    u32 m_nlc_last_hit_time{};
 
 public:
     CAI_Stalker();

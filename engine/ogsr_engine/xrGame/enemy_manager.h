@@ -27,6 +27,7 @@ private:
     CAI_Stalker* m_stalker;
     float m_ignore_monster_threshold;
     float m_max_ignore_distance;
+    int nlc_mutant_keep_rule(const CEntityAlive* entity_alive, float dist) const; // NLC
     u32 m_last_enemy_time;
     const CEntityAlive* m_last_enemy{};
     USEFULE_CALLBACK m_useful_callback;
