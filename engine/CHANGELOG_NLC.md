@@ -5,6 +5,14 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.108 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `2B60E06ACE97CDF366DB1DD75302DE03230F515E5471ABEAC854B694AE5B6B4F` (archived with its PDB in `nlc_tools/builds/20261020_060505_2b60e06a`).
+- **Status:** runtime pending. Rebuild after merging the co-developer's `4c7ac302`: the `bin_x64/xrEngine.exe` committed with it lacked .99-.107, the installed .107 lacked its fix.
+- Body health (`4c7ac302`, co-developer): healing first pays off the radiation health deficit (`CActorBodyHealth::ChangePartHealth`, `m_rad_deficit`).
+- Otherwise identical to nlc-3.589.107.
+
 ## nlc-3.589.107 (2026-10-20)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
