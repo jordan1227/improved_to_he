@@ -42,6 +42,7 @@ public:
     virtual void Load() { }
 
     virtual void Render_SMAP(u32 context_id) {}
+    virtual bool SMAP_Skip(const class IRenderable* renderable) { return false; } // NLC: keep an object out of the shadow-pass scene traversal
     virtual void Render_MAIN(u32 context_id) {}
 
     virtual void OnFrame() { }

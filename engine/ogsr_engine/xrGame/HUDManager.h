@@ -60,6 +60,7 @@ public:
     virtual void Load();
 
     void Render_SMAP(u32 context_id) override;
+    bool SMAP_Skip(const IRenderable* renderable) override; // NLC: visible-body puppet (HUDManager.cpp)
     void Render_MAIN(u32 context_id) override;
 
     virtual void OnFrame();

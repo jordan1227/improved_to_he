@@ -6,6 +6,7 @@
 #include "ik_anim_state.h"
 #include "CharacterPhysicsSupport.h"
 #include "../xr_3da/motion.h"
+#include "actor.h" // NLC: g_actor_fpv_ik
 #ifdef DEBUG
 #include "PHDebug.h"
 #endif // DEBUG
@@ -238,6 +239,7 @@ void CIKLimbsController::ShiftObject(const SCalculateData cd[max_size])
 }
 
 int ik_shift_object = 1;
+int g_nlc_actor_fpv_ik = 0; // NLC: 1 = the actor's IK also runs in first person (see IKVisualCallback)
 void CIKLimbsController::Calculate()
 {
     update_blend(m_legs_blend);
@@ -325,6 +327,15 @@ void _stdcall CIKLimbsController::IKVisualCallback(IKinematics* K)
 #endif
 
     CGameObject* O = ((CGameObject*)K->GetUpdateCallbackParam());
+    // NLC: in first person the actor model is only seen as a shadow. The IK pass runs after the bone callbacks and rebuilds the
+    // thigh/calf/foot bones with its own callbacks, so it overwrites the visible-body shadow leg bones (HUDManager.cpp) and
+    // readjusts one foot at a time (the shadow legs jittered). g_actor_fpv_ik 1 restores it.
+    if (!g_nlc_actor_fpv_ik)
+    {
+        CActor* actor = smart_cast<CActor*>(O);
+        if (actor && actor->active_cam() == eacFirstEye)
+            return;
+    }
     CPhysicsShellHolder* Sh = smart_cast<CPhysicsShellHolder*>(O);
     VERIFY(Sh);
     CIKLimbsController* ik = Sh->character_ik_controller();

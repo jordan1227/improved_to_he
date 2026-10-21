@@ -733,6 +733,10 @@ void R_dsgraph_structure::build_subspace(const IRender_Sector::sector_id_t& star
                 IRenderable* renderable = spatial->dcast_Renderable();
                 R_ASSERT(renderable);
 
+                // NLC: the visible-body puppet is drawn into the shadow maps by CHUDManager::Render_SMAP, not by the traversal
+                if (phase != CRender::PHASE_NORMAL && g_hud && g_hud->SMAP_Skip(renderable))
+                    continue;
+
                 // casting is faster then using getVis method
                 vis_data& v_orig = renderable->renderable.visual->getVisData();
 

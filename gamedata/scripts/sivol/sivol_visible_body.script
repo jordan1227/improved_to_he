@@ -28,7 +28,7 @@ local SIDE_OFFSET = 0.0
 -- is on (values are logged as [VB_TUNE] and shown as a news tip). Keys:
 -- see on_key_tune.
 local placement = {
-	fwd_level = -0.12, -- was -0.05; a little lower keeps a sharp turn from showing the inside of the body
+	fwd_level = -0.22, -- was -0.12 / -0.05; further back keeps the torso cut and the inside of the body out of the 0.2 m near plane
 	fwd_down = -0.55,
 	height_level = 0.0,
 	height_down = -0.02,
@@ -43,7 +43,8 @@ local PLACEMENT_TUNER_LOG = false -- true: also write each tuner step to the log
 -- TURN_RATE and the turn-in-place clips play. While moving (or on a ladder)
 -- they align to the view quickly. Mirrors the engine's own 45 degree model
 -- realignment (Actor_Movement.cpp) without its strafe yaw delta.
-local TURN_THRESHOLD = 0.6109 -- rad, 35 degrees (the engine's own model realignment uses 45)
+local TURN_THRESHOLD = 0.35 -- rad, 20 degrees (was 35; the engine's own model realignment uses 45). Smaller lag keeps the pelvis out of the frustum edge
+local MAX_LEGS_LAG = 0.8 -- rad, hard cap on legs-vs-view yaw error even while a step is cooling down or a fast turn outruns TURN_RATE_MAX
 local TURN_RATE = 8.0 -- rad/s minimum while stepping around
 local TURN_GAIN = 14.0 -- 1/s: the rate also grows with the remaining angle, so a sharp 180 turn finishes fast
 local TURN_RATE_MAX = 60.0 -- rad/s
@@ -928,6 +929,17 @@ function visible_body_binder:fastcall()
 			self.turn_side = error_angle > 0 and "right" or "left"
 			if math.abs(error_angle) < TURN_DONE then
 				self.turning = false
+			end
+		end
+		-- Hard lag cap: pull the legs along so the error never exceeds MAX_LEGS_LAG.
+		local lag = signed_angle(self.legs_x, self.legs_z, self.view_x, self.view_z)
+		if math.abs(lag) > MAX_LEGS_LAG then
+			self.legs_x, self.legs_z = rotate_toward(self.legs_x, self.legs_z, self.view_x, self.view_z, math.abs(lag) - MAX_LEGS_LAG)
+			self.turn_side = lag > 0 and "right" or "left"
+			if not self.turning then
+				self.turning = true
+				self.turn_anim_until = now + TURN_ANIM_MS
+				self.turn_ready_at = self.turn_anim_until + TURN_COOLDOWN_MS
 			end
 		end
 		if self.turning or now < (self.turn_anim_until or 0) then

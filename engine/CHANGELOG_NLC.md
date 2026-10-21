@@ -5,6 +5,100 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.125 (2026-10-21)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0EA672BFE7D1CEF4C10938449A9B5C162B9133CB0373D2BDCAE0C834AD8EE7F7` (archived with its PDB in `nlc_tools/builds/20261021_120600_0ea672bf`).
+- **Status:** runtime accepted for the shadow legs (tuned in game): `g_actor_shadow_legs_cut` 0.2, `g_actor_shadow_legs_dy` 0.1. Required game data as `.123`.
+
+### NLC
+
+- Defaults baked in: `g_actor_shadow_legs_cut` 0.2, `g_actor_shadow_legs_dy` 0.1 (`g_actor_shadow_legs_fwd` 0). `g_actor_shadow_legs_from_body` 1 is the default, 0 (the actor model's own legs) stays as the fallback.
+- Removed the `.124` in-air pelvis alignment (`g_actor_shadow_legs_air`): no visible difference in game.
+
+## nlc-3.589.124 (2026-10-21)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `72E2076E768D6604983D144576954404591912AF8E855165C3AD2113252E35F7` (archived with its PDB in `nlc_tools/builds/20261021_115144_72e2076e`).
+- **Status:** runtime pending (visible body shadow). Required game data as `.123`.
+
+### NLC
+
+- **Shadow legs in jumps:** the puppet's jump clips tuck the hips about 0.4 m (pelvis 1.0 -> 0.62 m in `lancew_legs_jump_idle`) while the actor model's torso stays high, which opened a gap in the shadow.
+  While the actor is in the air (`CPHMovementControl::Environment() == peInAir`, smoothed at 12/s) the puppet is raised so its pelvis meets the actor model's pelvis (up to 0.6 m, never lowered).
+  `g_actor_shadow_legs_air` (0..1, default 1) scales or disables it.
+
+## nlc-3.589.123 (2026-10-21)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `81A8E7B371BB67A62F822CA90B6EBDAC7410E40C28EC64F1D545164C9452FB5F` (archived with its PDB in `nlc_tools/builds/20261021_114142_81a8e7b3`).
+- **Status:** runtime pending (visible body shadow).
+- **Required game data:** `gamedata/shaders/r3/models_selflight_det_3.s`, `shadow_direct_model_legs.vs`, `shadow_legs.ps`, `gamedata/config/system.ltx` (`[shader_params_export]` `m_nlc_vb_shadow`), `gamedata/scripts/sivol/sivol_visible_body.script`.
+
+### NLC
+
+- **Visible-body shadow = actor torso + puppet legs:** the puppet is a full-body mesh (torso, head, backpack) that only the camera hides. In the shadow pass its pixels above its own
+  pelvis are clipped (`shadow_legs.ps`, height from `shadow_direct_model_legs.vs`, clip height `m_nlc_vb_shadow.x` = puppet pelvis height + `g_actor_shadow_legs_cut`).
+  The puppet is placed with its pelvis under the actor model's pelvis (x/z) instead of origin-to-origin.
+- **Console:** `g_actor_shadow_legs_cut` (default 0.03), `g_actor_shadow_legs_dy`, `g_actor_shadow_legs_fwd` (live tuning); `g_actor_shadow_legs_from_body` is 0/1 now
+  (modes 2 and 3 removed); `g_actor_shadow_debug` logs pelvis/feet heights.
+
+## nlc-3.589.122 (2026-10-21)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `D8F6F3CDBEDBAC3E2F09513EDF6D2FE54494064DD9363FF1817F2C3063405358` (archived with its PDB in `nlc_tools/builds/20261021_112427_d8f6f3cd`).
+- **Status:** runtime pending (visible body shadow).
+- **Required game data:** `gamedata/shaders/r3/models_selflight_det_3.s`, `gamedata/scripts/sivol/sivol_visible_body.script`.
+
+### NLC
+
+- **Why the puppet never reached the shadow maps:** its mesh shader `models\selflight_det_3` (all `sm\actor_legs\*.ogf`) is a script shader with the old
+  `normal`/`l_special` workflow, which compiles no shadow elements (`E[2]`, `E[3]` stay null), so `rimp_select_sh_dynamic` returned null in every shadow phase.
+  The shader now declares `element_0..4` explicitly, with `element_2`/`element_3` as the standard model shadow pass.
+- **`CCustomHUD::SMAP_Skip`:** `build_subspace` skips the puppet in the shadow-phase scene traversal; `CHUDManager::Render_Actor_Shadow` adds it itself (`g_actor_shadow_legs_from_body` 1 / 2),
+  so modes 0 and 3 do not get a second pair of legs.
+
+## nlc-3.589.121 (2026-10-21)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `69CC97CE245822E26C1021C6821856A7F7BFED598F61BD5A72D77C84F1FAC62F` (archived with its PDB in `nlc_tools/builds/20261021_110855_69cc97ce`).
+- **Status:** runtime pending (visible body shadow).
+
+### NLC
+
+- **Actor IK off in first person:** `CIKLimbsController::IKVisualCallback` runs after the bone callbacks and rebuilds the thigh/calf/foot bones with its
+  own callbacks, which overwrote the visible-body shadow leg bones (`.72`, `.119`, `.120` modes) and readjusted one foot at a time (jittering shadow legs).
+  The callback now returns for the actor while `active_cam() == eacFirstEye`; `g_actor_fpv_ik 1` restores it. Third person is unchanged.
+  Logs from `.120` (`g_actor_shadow_debug`) showed the puppet itself grounded (toe -0.01 m) in every mode, so the geometry was not the cause.
+
+## nlc-3.589.120 (2026-10-21)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E843AA4C6DACE205EE445A50AC1C22491A2FFD6D18E5BAFF724441237F80396B` (archived with its PDB in `nlc_tools/builds/20261021_105748_e843aa4c`).
+- **Status:** runtime pending (visible body shadow). `.119` looked worse in game (legs in midair, large hip motion); this build is diagnostic.
+
+### NLC
+
+- **`g_actor_shadow_legs_from_body` 0..3:** 0 actor legs, 1 thighs collapsed + puppet added at the actor's x/z (`.119`), 2 the same with the puppet at its own
+  position, 3 the `.72` rotation copy onto the actor's leg bones. Switchable live to compare.
+- **`g_actor_shadow_debug 1`:** logs `[nlc_shadow]` once a second (mode, leg callbacks skipped because the bone already had a callback, puppet vs actor height,
+  foot/toe/pelvis heights above the actor's feet).
+
+## nlc-3.589.119 (2026-10-21)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `AD7AF35DB1B57102F8D7BAE15016CBD103AC49DB4F9FBA7067C6B542776BF69D` (archived with its PDB in `nlc_tools/builds/20261021_104251_ad7af35d`).
+- **Status:** runtime pending (visible body shadow).
+- **Required game data:** `gamedata/scripts/sivol/sivol_visible_body.script` (unchanged API; script placement/turn-lag tuning shipped separately).
+
+### NLC
+
+- **Visible-body shadow, puppet legs:** the `.72` leg-bone rotation copy is replaced. While the puppet is shown, the actor model's
+  thighs are collapsed into the hip joints (`bip01_l_thigh`/`bip01_r_thigh` callbacks, children are built from them) and
+  `CHUDManager::Render_Actor_Shadow` adds the puppet itself to the same shadow pass (`nlc_render_puppet_shadow`), with its own
+  yaw and pose, moved to the actor's x/z. Bones are calculated explicitly (the shadow phase does not). The actor's own pelvis,
+  bob and strafe yaw no longer mix into the legs. `g_actor_shadow_legs_from_body 0` restores the actor model's own legs.
+
 ## nlc-3.589.118 (2026-10-21)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

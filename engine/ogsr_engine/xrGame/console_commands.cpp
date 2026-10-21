@@ -1870,7 +1870,15 @@ void CCC_RegisterCommands()
     CMD3(CCC_Mask, "g_actor_shadow", &psActorFlags, AF_ACTOR_SHADOW);
     {
         extern int g_nlc_shadow_legs_from_body; // NLC: see HUDManager.cpp
+        extern int g_nlc_shadow_debug;
+        extern float g_nlc_shadow_legs_cut, g_nlc_shadow_legs_dy, g_nlc_shadow_legs_fwd;
         CMD4(CCC_Integer, "g_actor_shadow_legs_from_body", &g_nlc_shadow_legs_from_body, 0, 1);
+        CMD4(CCC_Float, "g_actor_shadow_legs_cut", &g_nlc_shadow_legs_cut, -0.5f, 0.8f);
+        CMD4(CCC_Float, "g_actor_shadow_legs_dy", &g_nlc_shadow_legs_dy, -0.5f, 0.5f);
+        CMD4(CCC_Float, "g_actor_shadow_legs_fwd", &g_nlc_shadow_legs_fwd, -0.5f, 0.5f);
+        CMD4(CCC_Integer, "g_actor_shadow_debug", &g_nlc_shadow_debug, 0, 1);
+        extern int g_nlc_actor_fpv_ik;
+        CMD4(CCC_Integer, "g_actor_fpv_ik", &g_nlc_actor_fpv_ik, 0, 1);
     }
 
     CMD3(CCC_Mask, "g_throw_dbg", &psActorFlags, AF_THROW_DEBUG);
