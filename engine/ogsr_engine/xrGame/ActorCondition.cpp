@@ -559,6 +559,22 @@ void CActorCondition::nlc_dry_hit(SHit* pHDS, float hit_scale)
             m_nlc_head_cov);
 }
 
+float CActorCondition::nlc_bullet_absorb(u16 bone, float power, float ap)
+{
+    if (!nlc_actor_damage().enabled || bone == BI_NONE || power <= 0.f)
+        return -1.f;
+    CCustomOutfit* outfit = smart_cast<CCustomOutfit*>(object().inventory().ItemFromSlot(OUTFIT_SLOT));
+    if (!outfit || !outfit->bullet_protection())
+        return -1.f;
+    const SNlcLastHit saved = m_nlc_last_hit;
+    const u16 saved_weapon = m_nlc_hit_weapon;
+    m_nlc_hit_weapon = u16(-1);
+    const float post = nlc_bullet_outfit(power, s16(bone), ap, outfit);
+    m_nlc_last_hit = saved;
+    m_nlc_hit_weapon = saved_weapon;
+    return std::clamp(1.f - post / power, 0.f, 1.f);
+}
+
 float CActorCondition::nlc_bullet_outfit(float hit_power, s16 element, float AP, CCustomOutfit* outfit)
 {
     const SNlcActorDamage& nlc = nlc_actor_damage();

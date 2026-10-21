@@ -1061,6 +1061,21 @@ static int l_part_max_health(lua_State* L)
     CActorBodyHealth* b = body();
     return b ? ret_num(L, b->PartMaxHealth(arg_part(L, 1))) : 0;
 }
+// part_armor(part [, power, ap]): share of a bullet the outfit absorbs on the part (reference AK 5.45 FMJ:
+// power 0.9, ap 0.2), -1 without a bullet-model outfit (inventory hover, design 35)
+static int l_part_armor(lua_State* L)
+{
+    static LPCSTR bones[body_part::count] = {"", "bip01_head", "bip01_spine1", "bip01_l_upperarm", "bip01_r_upperarm", "bip01_l_thigh", "bip01_r_thigh"};
+    CActor* A = Actor();
+    const u8 part = arg_part(L, 1);
+    if (!A || part <= body_part::all || part >= body_part::count)
+        return ret_num(L, -1.f);
+    IKinematics* K = smart_cast<IKinematics*>(A->Visual());
+    const u16 bone = K ? K->LL_BoneID(bones[part]) : BI_NONE;
+    const float power = lua_isnumber(L, 2) ? float(lua_tonumber(L, 2)) : 0.9f;
+    const float ap = lua_isnumber(L, 3) ? float(lua_tonumber(L, 3)) : 0.2f;
+    return ret_num(L, A->conditions().nlc_bullet_absorb(bone, power, ap));
+}
 static int l_change_part_health(lua_State* L)
 {
     if (CActorBodyHealth* b = body())
@@ -1201,6 +1216,7 @@ void script_register(lua_State* L)
         {"set_enabled", l_set_enabled},
         {"part_health", l_part_health},
         {"part_max_health", l_part_max_health},
+        {"part_armor", l_part_armor},
         {"change_part_health", l_change_part_health},
         {"heal_part", l_heal_part},
         {"green", l_green},

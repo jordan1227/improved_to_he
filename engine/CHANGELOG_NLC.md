@@ -5,6 +5,13 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.126 (2026-10-21)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `436E05E1BE5C921A5A9FE1F6E7550A31C27E48D337042B6F06945BE67E6D3A02` (archived with its PDB in `nlc_tools/builds/20261021_143919_436e05e1`).
+- **Status:** runtime pending. Includes commit 8b47d725 (`stalker_animation_torso.cpp`), first built here.
+- `CActorCondition::nlc_bullet_absorb` + Lua `body_health.part_armor(part [, power, ap])`: share of a reference bullet (AK 5.45 FMJ) the outfit absorbs on a part, for the inventory hover (`docs/damage_model/DESIGN_recovery_and_body_status.md` 35).
+
 ## nlc-3.589.125 (2026-10-21)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

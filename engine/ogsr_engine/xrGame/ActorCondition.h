@@ -73,6 +73,9 @@ public:
         bool guarded{};
     };
     const SNlcLastHit& nlc_last_hit() const { return m_nlc_last_hit; }
+    // NLC: share of a bullet (power, ap) the worn outfit absorbs on a bone, -1 without the bullet model
+    // (inventory hover, DESIGN_recovery_and_body_status.md 35); no wear, the last-hit record is kept
+    float nlc_bullet_absorb(u16 bone, float power, float ap);
     // NLC: head protection of the worn mask (A6, set by vergas_masks): coverage 0..1 and armour
     void nlc_set_head_cover(float cov, float armour)
     {
