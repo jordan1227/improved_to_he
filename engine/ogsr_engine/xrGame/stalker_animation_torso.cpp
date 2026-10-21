@@ -188,19 +188,34 @@ MotionID CStalkerAnimationManager::missile_animation(u32 slot, const EBodyState&
 
     const xr_vector<CAniVector>& animation = m_data_storage->m_part_animations.A[body_state].m_torso.A[slot].A;
 
+    // NLC: a visual without torso motions for this missile slot leaves these sets empty, and indexing them
+    // crashed in CStalkerAnimationPair::select_animation (null array, c0000005). Fall back to the unarmed torso.
+    u32 set_id = 6, index = 0;
+    bool random = false;
     switch (m_missile->GetState())
     {
-    case CMissile::eShowing: return (torso().select(animation[0].A));
-    case CMissile::eHiding: return (torso().select(animation[3].A));
-    case CMissile::eThrowStart: return (animation[1].A[0]);
-    case CMissile::eReady: return (animation[1].A[1]);
-    case CMissile::eThrow: return (animation[1].A[2]);
-    case CMissile::eThrowEnd: return (animation[1].A[2]);
-    case CMissile::eBore: return (animation[1].A[2]);
+    case CMissile::eShowing: set_id = 0, random = true; break;
+    case CMissile::eHiding: set_id = 3, random = true; break;
+    case CMissile::eThrowStart: set_id = 1, index = 0; break;
+    case CMissile::eReady: set_id = 1, index = 1; break;
+    case CMissile::eThrow:
+    case CMissile::eThrowEnd:
+    case CMissile::eBore: set_id = 1, index = 2; break;
     case CMissile::eIdle:
     case CMissile::eHidden:
-    default: return (torso().select(animation[6].A));
+    default: set_id = 6, random = true; break;
     }
+
+    const ANIM_VECTOR* array = set_id < animation.size() ? &animation[set_id].A : nullptr;
+    if (array && (random ? !array->empty() : index < array->size()))
+        return (random ? torso().select(*array) : (*array)[index]);
+
+    static u32 reports = 0;
+    if (reports++ < 16)
+        Msg("!![missile_animation] %s: no torso motion for missile %s (state %d, body_state %d, slot %u, set %u, index %u), using unarmed animation", object().cName().c_str(),
+            m_missile->cNameSect().c_str(), (int)m_missile->GetState(), (int)body_state, slot, set_id, index);
+
+    return (no_object_animation(body_state));
 }
 
 MotionID CStalkerAnimationManager::assign_torso_animation()
