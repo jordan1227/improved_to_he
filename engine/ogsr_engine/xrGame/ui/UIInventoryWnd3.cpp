@@ -40,15 +40,26 @@ void CUIInventoryWnd::EatItem(PIItem itm, u8 body_part)
 #include "../Antirad.h"
 #include "../ActorCondition.h"
 #include "../nlc_body_health.h"
+#include "UIBodyHealthWnd.h" // NLC: part bars preview
 #include "UIListBoxItem.h"
 
-// NLC: A.R.E.A. part rows: "use on head (70%) {0.12} [20%]", colored by the part state
+// NLC: part rows: "use on the torso: 42% -> 76%, bleeding", colored by the part state
+// (DESIGN_recovery_and_body_status.md 31: the predicted health of the part, white + temporary)
 void CUIInventoryWnd::AddBodyPartUseItems(bool& b_show)
 {
     const CActorBodyHealth& B = Actor()->conditions().body();
     LPCSTR sect = CurrentIItem()->object().cNameSect().c_str();
     const u8 mask = B.ItemHealMask(sect);
     const bool only_damaged = READ_IF_EXISTS(pSettings, r_bool, sect, "show_when_damaged", false);
+
+    // NLC: total health the item gives (vergas_medical_elastic.get_total_heal, percent; 0 = not a treatment)
+    float total_heal = 0.f;
+    if (mask & body_part::heal_health)
+    {
+        luabind::functor<float> fl;
+        if (ai().script_engine().functor<float>("vergas_medical_elastic.get_total_heal", fl))
+            total_heal = fl(sect);
+    }
 
     for (u8 p = body_part::head; p < body_part::count; ++p)
     {
@@ -67,18 +78,24 @@ void CUIInventoryWnd::AddBodyPartUseItems(bool& b_show)
         string32 tmp;
         if (mask & body_part::heal_health)
         {
-            xr_sprintf(tmp, hp < 99.5f ? " (%.0f%%)" : " (*)", hp);
+            // HealPart: the chosen part takes up to 6 x the total heal (the total is the average of six parts)
+            const float now = B.PartTotal(p) * 100.f;
+            const float after = std::min(B.PartMaxHealth(p) * 100.f, now + total_heal * 6.f);
+            if (after - now >= 0.5f)
+                xr_sprintf(tmp, ": %.0f%% -> %.0f%%", now, after);
+            else
+                xr_sprintf(tmp, ": %.0f%%", now);
             xr_strcat(txt, tmp);
         }
-        if (mask & body_part::heal_bleeding)
+        if ((mask & body_part::heal_bleeding) && bleed > 0.f)
         {
-            xr_sprintf(tmp, bleed > 0.f ? " {%.2f}" : " {*}", bleed);
-            xr_strcat(txt, tmp);
+            xr_strcat(txt, ", ");
+            xr_strcat(txt, CStringTable().translate("st_use_bleeding").c_str());
         }
-        if (mask & body_part::heal_fracture)
+        if ((mask & body_part::heal_fracture) && frac > 0.f)
         {
-            xr_sprintf(tmp, frac > 0.f ? " [%.0f%%]" : " [*]", frac);
-            xr_strcat(txt, tmp);
+            xr_strcat(txt, ", ");
+            xr_strcat(txt, CStringTable().translate("st_use_fracture").c_str());
         }
 
         u32 color = 0xFF00FF00;
@@ -100,6 +117,37 @@ void CUIInventoryWnd::AddBodyPartUseItems(bool& b_show)
         b_show = true;
     }
 }
+// NLC: the hovered "use on part" / "use" row of a body item shows its predicted effect on the part bars
+void CUIInventoryWnd::UpdateBodyPreview()
+{
+    if (!m_pUIBodyHealth)
+        return;
+    LPCSTR sect = nullptr;
+    u8 part = body_part::none;
+    if (UIPropertiesBox.IsShown() && CurrentIItem() && Actor())
+    {
+        if (CUIListBoxItem* row = UIPropertiesBox.GetHoveredItem())
+        {
+            const CActorBodyHealth& B = Actor()->conditions().body();
+            if (row->GetTAG() == INVENTORY_EAT_BODY_PART)
+            {
+                sect = CurrentIItem()->object().cNameSect().c_str();
+                part = u8((__int64)row->GetData());
+            }
+            else if (row->GetTAG() == INVENTORY_EAT_ACTION && row->GetData())
+            {
+                LPCSTR s = ((PIItem)row->GetData())->object().cNameSect().c_str();
+                if (B.IsBodyItem(s))
+                {
+                    sect = s;
+                    part = B.ResolveUsePart(s, body_part::automatic);
+                }
+            }
+        }
+    }
+    m_pUIBodyHealth->SetPreview(sect, part);
+}
+
 void CUIInventoryWnd::ActivatePropertiesBox()
 {
     // Флаг-признак для невлючения пункта контекстного меню: Dreess Outfit, если костюм уже надет

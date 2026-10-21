@@ -330,18 +330,26 @@ bool CUIInventoryWnd::OnMouse(float x, float y, EUIMessages mouse_action)
     return true; // always returns true, because ::StopAnyMove() == true;
 }
 
-void CUIInventoryWnd::Draw() { CUIWindow::Draw(); }
+void CUIInventoryWnd::Draw()
+{
+    CUIWindow::Draw();
+    if (m_pUIBodyHealth)
+        m_pUIBodyHealth->DrawHint(); // NLC: body part hover text above everything
+}
 
 void CUIInventoryWnd::Update()
 {
     if (m_b_need_reinit)
         InitInventory();
+    UpdateBodyPreview(); // NLC
 
     CEntityAlive* pEntityAlive = smart_cast<CEntityAlive*>(Level().CurrentEntity());
 
     if (pEntityAlive)
     {
         float v = pEntityAlive->conditions().GetHealth() * 100.0f;
+        if (CActor* A = smart_cast<CActor*>(pEntityAlive)) // NLC: display health
+            v = A->conditions().body().DisplayHealth(A->conditions().GetHealth()) * 100.0f;
         UIProgressBarHealth.SetProgressPos(v);
 
         v = pEntityAlive->conditions().GetPsyHealth() * 100.0f;

@@ -1,0 +1,166 @@
+-- sivol_body_text.script: hover lines of the inventory body window.
+-- docs/damage_model/DESIGN_recovery_and_body_status.md 14.3, 18.
+--
+-- The engine window (UIBodyHealthWnd, nlc-3.589.112+) calls part_text(part) when the cursor moves
+-- onto a part and once a second while it stays; part is the engine body_part index (1 head, 2 body,
+-- 3 left arm, 4 right arm, 5 left leg, 6 right leg). Lines: st_body_hint_* in st_body_health.xml.
+-- Main line: the injury of the part's zone (head: concussion), else the health band of the part
+-- (white health; with body health off only "fine"); then at most one extra line: bleeding, else
+-- green ("the artifact holds it"). With body health on, a first line names the part and its health
+-- ("Left leg: 64%") and a row for its temporary (green) health. part 0 = the armoured figure left of the
+-- skeleton (engine nlc-3.589.114+): total, temporary health and pain, then how injuries, temporary health and
+-- pain work (design 29, 30). Colour codes (%c[a,r,g,b]): health by band, injuries amber / red, bleeding red,
+-- temporary health green. item_rows(section): the injury / body block of item descriptions (ui_inv_descr).
+
+local KIND = { [1] = "head", [2] = "body", [3] = "arm", [4] = "arm", [5] = "leg", [6] = "leg" }
+local NAME = { [1] = "head", [2] = "body", [3] = "left_arm", [4] = "right_arm", [5] = "left_leg", [6] = "right_leg" }
+local BLEED_MIN = 0.05 -- bleeding of the part worth a line
+local GREEN_MIN = 0.02 -- green health of the part worth a line
+local C_TEXT  = "%c[255,215,215,215]"
+local C_DIM   = "%c[255,160,160,160]"
+local C_GOOD  = "%c[255,130,215,130]"
+local C_WARN  = "%c[255,255,190,80]"
+local C_BAD   = "%c[255,255,85,60]"
+local C_GREEN = "%c[255,90,230,110]"
+local BAND_COLOUR = { fine = C_TEXT, sore = C_TEXT, bad = C_WARN, wrecked = C_BAD }
+
+local function tr(key)
+	return game.translate_string("st_body_hint_" .. key)
+end
+
+local function band(h)
+	if h >= 0.9 then return "fine" end
+	if h >= 0.6 then return "sore" end
+	if h >= 0.3 then return "bad" end
+	return "wrecked"
+end
+
+local function injury_of(kind)
+	if not (sivol_actor_crit and sivol_actor_crit.active() and game_options.AdditionalMobHits ~= false) then return 0 end
+	if kind == "arm" or kind == "leg" or kind == "head" then
+		return sivol_actor_crit.injury_level(kind)
+	end
+	return 0
+end
+
+local function health_colour(h)
+	if h >= 0.6 then return C_GOOD end
+	if h >= 0.3 then return C_WARN end
+	return C_BAD
+end
+
+local function pct(v)
+	return math.max(0, math.floor(v * 100 + 0.5)) -- parts can sit at -0.01 (engine PART_MIN_HEALTH)
+end
+
+local function pain_colour(p)
+	if p < 0.3 then return C_TEXT end
+	if p < 0.7 then return C_WARN end
+	return C_BAD
+end
+
+-- the armoured figure: total health, temporary health and pain, then the rules
+local function figure_text()
+	local h = db.actor.health
+	local text = C_TEXT .. tr("name_total") .. ": " .. health_colour(h) .. pct(h) .. "%"
+	if body_health and body_health.enabled() then
+		-- one line: the per-limb rows carry the temporary health of each part
+		local g = body_health.green and pct(body_health.green("all")) or 0
+		if g > 0 then text = text .. C_DIM .. " (" .. tr("name_temp_of") .. " " .. C_GREEN .. g .. "%" .. C_DIM .. ")" end
+		local p = body_health.pain() / math.max(body_health.pain_max(), 0.001)
+		text = text .. "\\n" .. C_TEXT .. tr("name_pain") .. ": " .. pain_colour(p) .. pct(p) .. "%"
+	end
+	text = text .. "\\n"
+	for _, k in ipairs({ "explainer_light", "explainer_fracture", "explainer_temp", "explainer_pain" }) do
+		text = text .. "\\n" .. C_DIM .. tr(k)
+	end
+	return text
+end
+
+-- PDA "Training" articles of the body systems (encyclopedia_tutorial.xml, info_known_objects.xml), once each:
+-- injury, temp_health, pain, adrenaline
+function unlock_article(name)
+	local info = "encyclopedy_tutorial_nlc_" .. name
+	if db.actor and not has_alife_info(info) then db.actor:give_info_portion(info) end
+end
+
+function part_text(part)
+	part = tonumber(part)
+	if part == 0 then
+		if not db.actor or not db.actor:alive() then return "" end
+		return figure_text()
+	end
+	local kind = KIND[part]
+	if not kind or not db.actor or not db.actor:alive() then return "" end
+	local body_on = body_health ~= nil and body_health.enabled()
+	local name = NAME[part]
+
+	local inj = injury_of(kind)
+	local state = (inj > 0 and kind ~= "head" and sivol_actor_crit.injury_state) and sivol_actor_crit.injury_state(kind) or nil
+	local text
+	if state == "splinted" then
+		local h = math.max(1, math.ceil(sivol_actor_crit.splint_hours_left(kind)))
+		text = C_WARN .. tr(kind .. "_splinted") .. C_DIM .. " (" .. string.format(tr("splint_left"), h) .. ")"
+	elseif inj > 0 then
+		local severe = inj >= 2 and kind ~= "head"
+		text = (severe and C_BAD or C_WARN) .. (kind == "head" and tr("head_concussion") or tr(kind .. (inj >= 2 and "_severe" or "_light")))
+	elseif body_on then
+		local b = band(body_health.part_health(name))
+		text = BAND_COLOUR[b] .. tr(kind .. "_" .. b)
+	else
+		text = C_TEXT .. tr(kind .. "_fine")
+	end
+
+	if body_on and body_health.bleeding(name) > BLEED_MIN then
+		text = text .. "\\n" .. C_BAD .. tr("extra_bleeding")
+	end
+
+	if body_on then
+		local h = body_health.part_health(name)
+		local white = pct(h)
+		local green = body_health.green and pct(body_health.green(name)) or 0
+		local head = C_TEXT .. tr("name_" .. name) .. ": " .. health_colour(h) .. white .. "%"
+		if green > 0 then head = head .. "\\n" .. C_TEXT .. tr("name_temp") .. ": " .. C_GREEN .. "+" .. green .. "%" end
+		text = head .. "\\n" .. text
+	end
+
+	return text
+end
+
+-------------------------------------------------------------------------------
+-- item descriptions (ui_inv_descr.script): rows { icon, label, value } of what the item does to injuries,
+-- temporary health and pain; empty with both systems off. Values come from the configs / owners.
+-------------------------------------------------------------------------------
+local function ini_float(section, key)
+	local ini = system_ini()
+	if ini:section_exist(section) and ini:line_exist(section, key) then return ini:r_float(section, key) end
+	return 0
+end
+
+function item_rows(section)
+	local rows = {}
+	local crit_on = sivol_actor_crit and sivol_actor_crit.active() and game_options.AdditionalMobHits ~= false
+	local body_on = body_health ~= nil and body_health.enabled()
+	if crit_on and sivol_actor_crit.item_cure then
+		local c = sivol_actor_crit.item_cure(section)
+		local key = c == "field" and (section == "survival_kit" and "item_cure_field_kit" or "item_cure_field")
+			or c == "light" and "item_cure_light" or c == "army" and "item_cure_army" or c == 2 and "item_cure_all" or nil
+		if key then table.insert(rows, { "health", tr("item_injuries"), tr(key) }) end
+	end
+	if body_on then
+		local eg = ini_float(section, "eat_green")
+		if eg > 0 then
+			table.insert(rows, { "health", tr("name_temp"), "%c[green]+" .. pct(eg) .. "% " .. tr("item_on_limb") })
+		end
+		local gc = ini_float(section, "green_convert")
+		if gc > 0 then
+			table.insert(rows, { "health", tr("item_fixes_temp"), "%c[green]" .. pct(gc) .. "%" })
+		end
+		local relief = he_body_health and he_body_health.pain_relief and he_body_health.pain_relief(section)
+		if relief and relief > 0 then
+			local strong = relief >= 0.5 * math.max(body_health.pain_max(), 0.001)
+			table.insert(rows, { "telepatic", tr("name_pain"), tr(strong and "item_pain_strong" or "item_pain_weak") })
+		end
+	end
+	return rows
+end

@@ -96,6 +96,48 @@ local function radiation_ring_available()
 	return false
 end
 
+-- NLC debug (docs/damage_model/DESIGN_recovery_and_body_status.md 20, 22), console:
+-- g_loadstring ogsr_shaders_control.watch_debug(1): paint every watch mesh (mesh map)
+-- g_loadstring ogsr_shaders_control.watch_debug(2): body figure always shown, its rect outlined (placement)
+-- g_loadstring ogsr_shaders_control.watch_debug(0): off
+function watch_debug(on)
+	on = tonumber(on) or 0
+	shader_set_custom_param("m_he_watch_debug", on == 1 and 1 or 0, on == 2 and 1 or 0, 0, 0)
+end
+
+-- page-2 body figure rect in the clock's UV (he_watch_common.h): x, y, w, h. The clock is 0..1 (1.83 : 1 wide), the
+-- health bar below it 1.159..1.355; the mask is square, so w = h / 1.83. Clock only: 0.227, 0, 0.546, 1
+local body_rect = { 0.13, 0.0, 0.74, 1.355 }
+-- console placement while watch_debug(2): g_loadstring ogsr_shaders_control.watch_body_rect(0.13, 0, 0.74, 1.355)
+function watch_body_rect(x, y, w, h)
+	body_rect = { tonumber(x) or body_rect[1], tonumber(y) or body_rect[2], tonumber(w) or body_rect[3], tonumber(h) or body_rect[4] }
+	log2("[ogsr_shaders_control] watch body rect %.3f %.3f %.3f %.3f", body_rect[1], body_rect[2], body_rect[3], body_rect[4])
+end
+
+local BODY_PARTS = { "head", "body", "left_arm", "right_arm", "left_leg", "right_leg" }
+
+-- NLC page-2 body figure and adrenaline meter (he_watch_common.h). mode 0 = page 2 as before (both systems off),
+-- 1 = injury system only (all parts show the total health), 2 = body health (white and green per part)
+local function watch_body(psy)
+	local crit_on = sivol_actor_crit ~= nil and sivol_actor_crit.active() and game_options.AdditionalMobHits ~= false
+	local body_on = body_health ~= nil and body_health.enabled()
+	local mode = body_on and 2 or (crit_on and 1 or 0)
+	local w, g = {}, {}
+	local total = db.actor.health
+	for i, n in ipairs(BODY_PARTS) do
+		w[i] = body_on and body_health.part_health(n) or total
+		g[i] = (body_on and body_health.green) and body_health.green(n) or 0
+	end
+	shader_set_custom_param("m_he_watch_body", w[1], w[2], w[3], w[4])
+	shader_set_custom_param("m_he_watch_body2", w[5], w[6], mode, 1 - psy)
+	shader_set_custom_param("m_he_watch_green", g[1], g[2], g[3], g[4])
+	shader_set_custom_param("m_he_watch_green2", g[5], g[6], 0, 0)
+	local fill, st = 1, 0
+	if crit_on and sivol_adrenaline then fill, st = sivol_adrenaline.meter() end
+	shader_set_custom_param("m_he_watch_adrenaline", fill, st, crit_on and 1 or 0, 0)
+	shader_set_custom_param("m_he_watch_body_rect", body_rect[1], body_rect[2], body_rect[3], body_rect[4])
+end
+
 local function watch_update()
 	ogse_signals.get_mgr():reschedule(200)
 	if not (db.actor and db.actor:alive()) then return end
@@ -139,6 +181,7 @@ local function watch_update()
 		inj_head = sivol_actor_crit.injury_level("head")
 	end
 	shader_set_custom_param("m_he_watch_injury", inj_arm, inj_leg, inj_head, 0)
+	watch_body(psy)
 
 	-- x = sleepiness, y = bleeding, z = hydration (1 - thirst), w = satiety
 	local slp = sleep_manager.get_sleepiness(108) / 250

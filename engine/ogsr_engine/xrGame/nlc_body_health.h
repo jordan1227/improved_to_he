@@ -63,9 +63,36 @@ public:
 
     u8 PartByBone(u16 bone);
 
+    // white (permanent) health: everything that reads limb function uses it
     float PartHealth(u8 part) const;
     float PartMaxHealth(u8 part) const;
     void ChangePartHealth(u8 part, float value);
+    // NLC: a heal worth `value` of total health, aimed at a part: the part takes up to 6 x value, the rest
+    // spreads over the other parts, so the total gains value wherever it is aimed (part all: every part + value)
+    void HealPart(u8 part, float value);
+    // NLC: white / green of every part after using `section` on `part` (all = whole body), without side
+    // effects: instant keys, the engine boost and total_heal (the treatment's total, a fraction of total
+    // health, as HealPart gets it). For the part bars preview (DESIGN_recovery_and_body_status.md 32)
+    void Predict(LPCSTR section, u8 part, float total_heal, float* white, float* green) const;
+
+    // NLC green health (docs/damage_model/DESIGN_recovery_and_body_status.md 14): artifact / outfit
+    // regeneration adds green to every part; green counts for survival (total health, death), is lost
+    // first on hits and turns white slowly (faster with stronger regen) or at once with a medkit.
+    float PartGreen(u8 part) const;
+    float PartTotal(u8 part) const; // white + green
+    // NLC: health for the HUD / watch bars: the total, or the head / torso when lower (those parts kill,
+    // so the average must not hide a dying torso). Display only (DESIGN_recovery_and_body_status.md 31)
+    float DisplayHealth(float total) const;
+    void AddGreen(float value);
+    void SetGreenRate(float rate) { m_green_rate = rate; } // current regen per game second
+    void ConvertGreen(u8 part, float fraction);
+    void AddGreenPart(u8 part, float value); // green on one part (all: every part), item key eat_green
+
+    // injury state of sivol_actor_crit.script, pushed from Lua for the inventory window (not saved)
+    void SetInjurySystem(bool on) { m_injury_system = on; }
+    bool InjurySystem() const { return m_injury_system; }
+    void SetInjury(u8 zone, u8 level);
+    u8 Injury(u8 part) const; // level of the part's zone: arms / legs 0..2 (3 = splinted), head 1 = concussion
 
     float Fracture(u8 part) const;
     void ChangeFracture(u8 part, float value);
@@ -109,6 +136,8 @@ private:
     };
 
     void Clamp();
+    void Damage(u8 part, float amount, bool guard); // green first, then white
+    void UpdateGreen(float dt);
     void UpdatePain(float dt);
     void UpdateBoosts(float dt);
     void AddBoost(u8 type, u8 part, float value, float time);
@@ -119,6 +148,12 @@ private:
     bool m_user_enabled{true};
 
     float m_health[body_part::count]{};
+    float m_green[body_part::count]{};
+    float m_green_rate{};
+    float m_green_base{0.05f}; // white per game hour turned from green
+    float m_green_factor{0.15f}; // + this x the regen per game hour
+    bool m_injury_system{};
+    u8 m_injury[3]{}; // arm, leg, head
     float m_fracture[body_part::count]{};
     float m_pain{};
     float m_last_total{1.f};

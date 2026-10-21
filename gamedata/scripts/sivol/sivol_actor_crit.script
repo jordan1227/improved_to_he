@@ -53,12 +53,12 @@ function zone_name(bone_id) return zone_of(bone_id) end
 -- anatomy, and its size is computed as for a hit-scale-1.0 limb hit (old class factor k).
 -- Weights head / torso / arm / leg. Melee only (wound / strike).
 -------------------------------------------------------------------------------
--- head, torso, arm, leg, k
+-- head, torso, arm, leg, k[, injury factor: small fast biters charge injuries less, damage unchanged (design 26)]
 local function mutant_profile(obj)
 	local clid = obj:clsid()
 	local name = obj:name()
 	if clid == CLID_TUSHKANO or string.find(name, "buzz", 1, true) then
-		return 0, 0, 0, 100, 1.0
+		return 0, 0, 0, 100, 1.0, 0.4
 	elseif clid == CLID_BLOODSUCKER then
 		return 25, 40, 35, 0, 0.73
 	elseif clid == CLID_SNORK then
@@ -66,11 +66,11 @@ local function mutant_profile(obj)
 	elseif clid == CLID_CHIMERA then
 		return 20, 40, 30, 10, 0.84
 	elseif clid == CLID_CAT then
-		return 5, 35, 20, 40, 0.84
+		return 5, 35, 20, 40, 0.84, 0.6
 	elseif clid == CLID_PSEUDODOG or clid == CLID_PSY_DOG or clid == CLID_PSY_DOG_PHANTOM then
 		return 10, 30, 0, 60, 0.84
 	elseif clid == CLID_DOG then
-		return 10, 30, 0, 60, 1.0
+		return 10, 30, 0, 60, 1.0, 0.5
 	elseif clid == CLID_CONTROLLER then
 		return 10, 50, 40, 0, 1.0
 	elseif clid == CLID_BOAR or clid == CLID_FLESH then
@@ -79,14 +79,36 @@ local function mutant_profile(obj)
 	return nil
 end
 
-local pending_mutant = nil -- { id, zone, k, time } of the melee hit being processed
+local pending_mutant = nil -- { id, zone, k, time, heavy } of the melee hit being processed
+
+-- strongest hit_power of a monster section's attack_params (anim = time, hit_power, ...), cached.
+-- A mutant hit is heavy at HEAVY_SHARE of it (a boar's charge, not its bites): only heavy hits and
+-- bullets / explosions can make an injury severe by charge (DESIGN_recovery_and_body_status.md 32)
+local HEAVY_SHARE = 0.75
+local strongest_cache = {}
+local function strongest_attack(sect)
+	local v = strongest_cache[sect]
+	if v then return v end
+	v = 0
+	local ini = system_ini()
+	local ap = ini:section_exist(sect) and ini:line_exist(sect, "attack_params") and ini:r_string(sect, "attack_params")
+	if ap and ini:section_exist(ap) then
+		for i = 0, ini:line_count(ap) - 1 do
+			local _, _, val = ini:r_line(ap, i, "", "")
+			local p = val and tonumber(string.match(val, "^%s*[^,]+,%s*([%d%.]+)"))
+			if p and p > v then v = p end
+		end
+	end
+	strongest_cache[sect] = v
+	return v
+end
 
 -- called from vergas_masks.actor_hit_target before its old bone remap (which still runs)
 function note_mutant_hit(hd, obj)
 	pending_mutant = nil
 	if not MUTANT_ZONES or not obj or not db.actor then return end
 	if hd.hit_type ~= hit.wound and hd.hit_type ~= hit.strike then return end
-	local head, torso, arm, leg, k = mutant_profile(obj)
+	local head, torso, arm, leg, k, inj = mutant_profile(obj)
 	if not head then return end
 	local r = math.random() * (head + torso + arm + leg)
 	local zone
@@ -94,7 +116,10 @@ function note_mutant_hit(hd, obj)
 	elseif r < head + torso then zone = "chest"
 	elseif r < head + torso + arm then zone = "arm"
 	else zone = "leg" end
-	pending_mutant = { id = obj:id(), zone = zone, k = k, time = time_global() }
+	-- hd.power is the hit before belt artifacts (entity_alive_before_hit), as in attack_params
+	local top = strongest_attack(obj:section())
+	local heavy = top <= 0 or (tonumber(hd.power) or 0) >= HEAVY_SHARE * top
+	pending_mutant = { id = obj:id(), zone = zone, k = k, inj = inj or 1.0, time = time_global(), heavy = heavy }
 end
 
 -- what a hit of this raw power does to a hit-scale-1.0 limb: outfit protection once in the
@@ -103,6 +128,8 @@ local function clamp(v, a, b) if v < a then return a elseif v > b then return b 
 
 local function mutant_limb_damage(raw, htype)
 	local base = 0.6 + 0.4 * (tonumber(level.get_game_difficulty()) or 3)
+	-- rupture factor of params.actor_immunities_add (master x0.91), so damage and injury charge stay in step
+	if htype == hit.wound and params and params.wound_k then base = base * params.wound_k() end
 	local armor = db.actor:get_current_outfit()
 	local outfit = armor and armor:get_outfit()
 	if not outfit then
@@ -152,34 +179,63 @@ end
 -------------------------------------------------------------------------------
 -- injuries (C2, design 18.2-18.4): per-zone charge from the damage after armour, no roll.
 -- A hit adds its dealt damage to the zone charge when dealt >= MIN_HIT; the charge decays.
--- Light injury at T_LIGHT, severe at T_SEVERE. Injuries stay until the limb heals (part
--- health >= CURE_HEALTH, and the injury is at least CURE_MIN_MIN game minutes old) or an army
--- medkit lowers them one level / a scientific medkit cures them; levels and times are saved.
+-- Light injury at T_LIGHT, severe at T_SEVERE. Cure ladder (DESIGN_recovery_and_body_status.md 3):
+-- by time (limb health >= CURE_LIMB and CURE_MIN_MIN game minutes since the last change: light
+-- clears), medkits (plain clears light, army splints severe / clears light, scientific all), splint /
+-- survival kit treat one zone; a severe injury becomes "splinted" (design 32) and heals by time. Levels and times are saved.
+-- With body health on a severe arm/leg is also an engine fracture (F1, 3.2): the engine no longer
+-- rolls fractures (actor.ltx fracture_threshold 0.999); the fracture comes and goes with the level.
 -------------------------------------------------------------------------------
 local MIN_HIT, T_LIGHT, T_SEVERE = 0.06, 0.15, 0.40 -- retune 2026-10-20 (was 0.30 / 0.70)
 local ONE_HIT_SEVERE = 0.35 -- a single counted hit this strong is severe at once
-local DECAY_PER_S = 0.01
-local CURE_HEALTH = 0.95
-local LEG_SPEED   = { 0.88, 0.70 }
+local DECAY_PER_S = 0.003        -- design 26 (was 0.01), and only DECAY_GRACE_MS after the zone's last counted hit
+local DECAY_GRACE_MS = 30000
+local MIN_PART = 0.02            -- hits from MIN_PART to MIN_HIT count at half weight (was all or nothing)
+local CURE_LIMB   = 0.75 -- limb health (both limbs of the zone; total health with body health off) needed to heal by time
+local LEG_SPEED      = { 0.88, 0.70 } -- body health off
+local LEG_SPEED_BODY = { 0.95, 0.85 } -- body health on: the skeleton already slows by leg health (LegsSpeedK)
 local ARM_RELOAD  = { 0.85, 0.75 } -- reload speed (engine factor "injury"), light / severe
 local ARM_DRAW    = { 0.85, 0.70 } -- draw / holster speed
 local ARM_RECOIL  = { 1.15, 1.35 } -- recoil multiplier (sivol_fuzz_recoil.script)
 -- belt wear (sivol_belt.script, design 19): x the damage that got through the armour
 local BELT_WEAR, BELT_WEAR_MUTANT, BELT_WEAR_BLAST = 0.5, 0.25, 0.15
 local BLAST_LIMB = 0.25 -- an explosion also charges arm and leg injuries with this share of its damage
-local CURE_MIN_MIN = { 30, 180 }   -- game minutes since the injury last worsened before it can heal by itself
-local MEDKIT_CURE = { medkit_army = 1, medkit_scientic = 2 } -- levels removed; the plain medkit removes none
+local CURE_MIN_MIN = { 30 }        -- game minutes since the last level change: a light injury clears (limb >= CURE_LIMB)
+-- splinted state (DESIGN_recovery_and_body_status.md 32): a splint, survival kit or army medkit sets a severe
+-- injury; it heals after SPLINT_MIN game minutes (sleep counts double). Untreated, a severe injury sets by itself
+-- after SEVERE_MIN. Sleep no longer eases a severe injury.
+local SEVERE_MIN = 2880
+local SPLINT_MIN = 1440
+local LEG_SPEED_SPLINT = 0.92
+local SPLINT_SPRINT = 0.75          -- sprint factor with a splinted leg (params.refresh_sprint_koef)
+local SPLINT_RELOAD, SPLINT_DRAW, SPLINT_RECOIL = 0.92, 0.92, 1.10
+local MEDKIT_CURE = { medkit_army = 1, medkit_scientic = 2 } -- light ones cleared + this many splints (prefix; _razgr included; design 33)
+local PLAIN_MEDKIT = "medkit"      -- exact section: clears light injuries only
+local FIELD_CURE = { improvised_splint = true, survival_kit = true } -- one zone: light clears, severe is splinted (per portion)
+local FRACTURE_SET = 0.25 / 1.5    -- fracture power of a severe limb (x actor.ltx fracture_coef 1.5 = 0.25: limb max health 0.80)
+local FRACTURE_SPLINT = 0.10       -- stored fracture of a splinted limb (limb max health 0.92, less pain)
+-- body_part enum of the engine (nlc_body_health.h): 3/4 arms, 5/6 legs
+local PART_ZONE = { [3] = "arm", [4] = "arm", [5] = "leg", [6] = "leg" }
 local HEAD_MIN_DEALT, PING_ABSORBED, PING_RAW = 0.10, 0.5, 0.4
 local CAM_ID, CAM_SAME_MS, CAM_ANY_MS = 100, 1500, 400
 local SAVE = { arm = "nlc_vars.injury_arm", leg = "nlc_vars.injury_leg" }
 local SAVE_T = { arm = "nlc_vars.injury_arm_t", leg = "nlc_vars.injury_leg_t" } -- game minute of the last worsening
+local SAVE_S = { arm = "nlc_vars.injury_arm_s", leg = "nlc_vars.injury_leg_s" } -- game minute a splinted injury heals
 local PARTS = { arm = { "left_arm", "right_arm" }, leg = { "left_leg", "right_leg" } }
 
 local charge = { arm = 0, leg = 0 }
 local level_of = { arm = 0, leg = 0 }
 local since_of = { arm = 0, leg = 0 } -- game minute of the last worsening
+local splint_end = { arm = 0, leg = 0 } -- game minute the splinted injury heals; 0 = not splinted
+local heavy_of = { arm = false, leg = false } -- the zone's charge holds a heavy hit (bullet, explosion, heavy mutant blow)
+
+local function splinted(zone) return level_of[zone] == 2 and splint_end[zone] > 0 end
+-- order of states for the think lines: 0 none, 1 light, 1.5 splinted, 2 severe
+local function stage(zone) return splinted(zone) and 1.5 or level_of[zone] end
 local last_decay_t = 0
+local last_count_t = { arm = 0, leg = 0 } -- time_global of the zone's last counted hit
 local last_cam_name, next_cam_same_t, next_cam_any_t = nil, 0, 0
+local cam_slot = 0 -- the hit cameras alternate between CAM_ID and CAM_ID + 1
 local concussion_end, concussion_vol = 0, nil
 local next_cure_t = 0
 local snd = nil
@@ -210,44 +266,74 @@ local function camera(info)
 		end
 	end
 	if cam == last_cam_name and now < next_cam_same_t then return end
-	level.add_cam_effector(cam, CAM_ID, false, "")
+	-- a new effector with the id of a running one replaces it and the view snaps back (user test 2026-10-20);
+	-- two ids let the previous kick finish while the next one starts
+	cam_slot = 1 - cam_slot
+	level.add_cam_effector(cam, CAM_ID + cam_slot, false, "")
 	last_cam_name, next_cam_same_t, next_cam_any_t = cam, now + CAM_SAME_MS, now + CAM_ANY_MS
 end
 
--- apply the effects of the current levels (also after a load)
+local function body_on()
+	return body_health ~= nil and body_health.enabled()
+end
+
+-- inventory body window (engine nlc-3.589.112+, DESIGN_recovery_and_body_status.md 14.2 E3/E4):
+-- whether the injury system runs, and the levels (head: 1 while a concussion runs). Not saved by
+-- the engine, so it is pushed on every change, every second and after a load.
+local function push_injuries()
+	if not (body_health and body_health.set_injury) then return end
+	body_health.set_injury_system(ENABLED and game_options.AdditionalMobHits ~= false)
+	body_health.set_injury("arm", splinted("arm") and 3 or level_of.arm) -- 3 = splinted (engine nlc-3.589.117+)
+	body_health.set_injury("leg", splinted("leg") and 3 or level_of.leg)
+	body_health.set_injury("head", concussion_end > time_global() and 1 or 0)
+end
+
+-- apply the effects of the current levels (also after a load and when the body health option changes)
+local applied_body = nil
 local function apply_levels()
 	if not db.actor then return end
+	applied_body = body_on()
 	local leg = level_of.leg
+	local leg_s = splinted("leg")
 	sivol.remove_move_penalty("crit_legs")
-	if leg > 0 then
-		sivol.add_move_penalty("crit_legs", LEG_SPEED[leg])
+	if leg_s then
+		sivol.add_move_penalty("crit_legs", LEG_SPEED_SPLINT)
+	elseif leg > 0 then
+		sivol.add_move_penalty("crit_legs", (applied_body and LEG_SPEED_BODY or LEG_SPEED)[leg])
 	end
 	-- crippled: no sprint (named block of the mod's sprint API; db.actor.cant_sprint is not an engine property)
-	if leg >= 2 and db.actor:alive() then
+	-- adrenaline (sivol_adrenaline.script) lifts the block during its rush; the limp stays. A splinted leg
+	-- sprints, slower (sprint_k through params.refresh_sprint_koef)
+	if leg >= 2 and not leg_s and db.actor:alive() and not (sivol_adrenaline and sivol_adrenaline.lifts_sprint_block()) then
 		sivol.add_sprint_block("crit_legs")
 	else
 		sivol.remove_sprint_block("crit_legs")
 	end
+	if params and params.refresh_sprint_koef then params.refresh_sprint_koef() end
 	local arm = level_of.arm
+	local arm_s = splinted("arm")
 	if arm > 0 then
-		set_value("nlc_vars.add_wobble", arm) -- consumer: params/wpn_params.script (1 = x1.25, 2 = x1.5)
+		set_value("nlc_vars.add_wobble", arm_s and 3 or arm) -- consumer: params/wpn_params.script (1 = x1.25, 2 = x1.5, 3 = splinted x1.1)
 	else
 		remove_value("nlc_vars.add_wobble")
 	end
+	local reload = arm_s and SPLINT_RELOAD or ARM_RELOAD[arm] or 1.0
+	local draw = arm_s and SPLINT_DRAW or ARM_DRAW[arm] or 1.0
 	-- named reload / draw factors (engine nlc-3.589.106+ / .107+), multiplied with other factors such as an artifact bonus
 	if level.nlc_set_reload_speed_factor then
-		level.nlc_set_reload_speed_factor("injury", ARM_RELOAD[arm] or 1.0)
+		level.nlc_set_reload_speed_factor("injury", reload)
 		if level.nlc_set_draw_speed_factor then
-			level.nlc_set_draw_speed_factor("injury", ARM_DRAW[arm] or 1.0)
+			level.nlc_set_draw_speed_factor("injury", draw)
 		end
 	elseif level.nlc_set_reload_speed_k then -- engine nlc-3.589.102-.105
-		level.nlc_set_reload_speed_k(ARM_RELOAD[arm] or 1.0)
+		level.nlc_set_reload_speed_k(reload)
 	end
+	push_injuries()
 end
 
 -- "Thinking out loud" lines (config/text/*/script_strings.xml, nlc_injury_*), a few variants each
-local THINK_COUNT = { light = 3, severe = 3, eased = 1, healed = 3, ping = 2, hit = 2 }
-local THINK_COLOUR = { light = "red", severe = "red", eased = "yellow", healed = "green", ping = "yellow", hit = "red" }
+local THINK_COUNT = { light = 3, severe = 3, eased = 1, healed = 3, ping = 2, hit = 2, splinted = 1 }
+local THINK_COLOUR = { light = "red", severe = "red", eased = "yellow", healed = "green", ping = "yellow", hit = "red", splinted = "yellow" }
 
 local function think(zone, event)
 	if not THINKING or not db.actor or not db.actor:alive() then return end
@@ -256,9 +342,9 @@ local function think(zone, event)
 end
 
 -- level-change lines wait THINK_DELAY_MS (not during the medkit animation); a newer change replaces
--- the waiting line, and nothing is said when the level is back where it was when the wait began
+-- the waiting line, and nothing is said when the state is back where it was when the wait began
 local THINK_DELAY_MS = 5000
-local pending_think = {} -- zone -> { event, t, from }
+local pending_think = {} -- zone -> { event, t, from } (from: stage() when the wait began)
 
 local function queue_think(zone, event, old)
 	local p = pending_think[zone]
@@ -269,7 +355,7 @@ local function flush_think(now)
 	for z, p in pairs(pending_think) do
 		if now >= p.t then
 			pending_think[z] = nil
-			if level_of[z] ~= p.from then think(z, p.event) end
+			if stage(z) ~= p.from then think(z, p.event) end
 		end
 	end
 end
@@ -278,42 +364,129 @@ local function game_min()
 	return game.get_game_time():diffSec(misc.base_time()) / 60
 end
 
-local function set_level(zone, lv)
+-- F1 (design 3.2): a severe arm/leg is a fracture on one limb of the zone (the hit one, else the
+-- weaker one); easing or curing the level clears the zone's fractures (also old engine-rolled ones)
+local function set_fracture(zone, on, part)
+	if not body_on() then return end
+	local p = PARTS[zone]
+	if on == "splint" then
+		for _, n in ipairs(p) do
+			local f = body_health.fracture(n)
+			if f > FRACTURE_SPLINT then body_health.change_fracture(n, f - FRACTURE_SPLINT) end
+		end
+	elseif on then
+		part = part or (body_health.part_health(p[1]) <= body_health.part_health(p[2]) and p[1] or p[2])
+		if body_health.fracture(part) <= 0 then
+			body_health.change_fracture(part, -FRACTURE_SET) -- a negative value adds a fracture
+		end
+	else
+		for _, n in ipairs(p) do
+			local f = body_health.fracture(n)
+			if f > 0 then body_health.change_fracture(n, f) end
+		end
+	end
+end
+
+-- part: the hit limb ("left_leg"...) when known, for the fracture of a severe level
+local function clear_splint(zone)
+	splint_end[zone] = 0
+	remove_value(SAVE_S[zone])
+end
+
+local function set_level(zone, lv, part)
 	lv = clamp(lv, 0, 2)
 	if lv == level_of[zone] then return end
 	local old = level_of[zone]
+	local old_stage = stage(zone)
 	local worse = lv > old
+	clear_splint(zone)
 	level_of[zone] = lv
-	if worse then
+	-- the time cure counts from the last change, so an eased injury (severe -> light) needs its own time
+	if lv > 0 then
 		since_of[zone] = game_min()
 		set_value(SAVE_T[zone], since_of[zone])
-	elseif lv == 0 then
+	else
 		remove_value(SAVE_T[zone])
 	end
+	if lv == 2 then
+		set_fracture(zone, true, part)
+	elseif old == 2 then
+		set_fracture(zone, false)
+	end
+	if old > 0 and lv == 0 then set_value("nlc_vars.injury_cured_once", true) end -- sivol_body_text: explainer off
 	if worse then
-		queue_think(zone, lv == 2 and "severe" or "light", old)
+		sivol_body_text.unlock_article("injury")
+		queue_think(zone, lv == 2 and "severe" or "light", old_stage)
 	elseif lv == 0 then
-		queue_think(zone, "healed", old)
+		queue_think(zone, "healed", old_stage)
 	else
-		queue_think(zone, "eased", old)
+		queue_think(zone, "eased", old_stage)
 	end
 	if lv > 0 then set_value(SAVE[zone], lv) else remove_value(SAVE[zone]) end
-	if lv == 0 then charge[zone] = 0 end
+	if lv == 0 then charge[zone], heavy_of[zone] = 0, false end
 	apply_levels()
 	if worse then play_pain() end
 	if DEBUG then log2("[sivol_actor_crit] %s injury level %d", zone, lv) end
 end
 
-local function add_charge(zone, dealt)
-	if dealt < MIN_HIT then return end
+-- severe -> splinted (splint, survival kit, army medkit, or untreated for SEVERE_MIN); self: no splint was used
+local function set_splint(zone, self)
+	if level_of[zone] ~= 2 or splint_end[zone] > 0 then return end
+	local old_stage = stage(zone)
+	splint_end[zone] = game_min() + SPLINT_MIN
+	set_value(SAVE_S[zone], splint_end[zone])
+	set_fracture(zone, "splint")
+	queue_think(zone, self and "eased" or "splinted", old_stage)
+	apply_levels()
+	if DEBUG then log2("[sivol_actor_crit] %s injury splinted until game minute %d", zone, splint_end[zone]) end
+end
+
+-- a severe hit on a splinted limb breaks it again
+local function rebreak(zone, part)
+	local old_stage = stage(zone)
+	clear_splint(zone)
+	since_of[zone] = game_min()
+	set_value(SAVE_T[zone], since_of[zone])
+	set_fracture(zone, false)
+	set_fracture(zone, true, part)
+	queue_think(zone, "severe", old_stage)
+	apply_levels()
+	play_pain()
+end
+
+-- heavy: a bullet / explosion, or a heavy mutant blow; without one in the charge, bites stop at light
+local function add_charge(zone, dealt, part, heavy)
+	if dealt < MIN_HIT then
+		if dealt < MIN_PART then return end
+		dealt = dealt * 0.5
+	end
+	last_count_t[zone] = time_global()
+	if heavy ~= false then heavy_of[zone] = true end
 	charge[zone] = charge[zone] + dealt
-	local lv = (charge[zone] >= T_SEVERE or dealt >= ONE_HIT_SEVERE) and 2 or (charge[zone] >= T_LIGHT and 1 or 0)
-	if lv > level_of[zone] then set_level(zone, lv) end
+	if not heavy_of[zone] then charge[zone] = math.min(charge[zone], T_SEVERE) end -- the next heavy hit breaks
+	local severe = dealt >= ONE_HIT_SEVERE or (charge[zone] >= T_SEVERE and heavy_of[zone])
+	local lv = severe and 2 or (charge[zone] >= T_LIGHT and 1 or 0)
+	if lv == 2 and splinted(zone) then
+		rebreak(zone, part)
+	elseif lv > level_of[zone] then
+		set_level(zone, lv, part)
+	end
+end
+
+-- the limb of a bullet hit ("left_arm"...), nil when the bone has no side
+local function limb_of(zone, bone_id)
+	if zone ~= "arm" and zone ~= "leg" then return nil end
+	local ok, name = pcall(db.actor.get_bone_name, db.actor, bone_id)
+	if not ok or type(name) ~= "string" then return nil end
+	if string.find(name, "_l_", 1, true) then return "left_" .. zone end
+	if string.find(name, "_r_", 1, true) then return "right_" .. zone end
+	return nil
 end
 
 local function end_concussion()
 	if concussion_vol then level.set_snd_volume(concussion_vol) end
 	concussion_vol, concussion_end = nil, 0
+	push_injuries()
 end
 
 local next_head_think_t = 0
@@ -328,6 +501,7 @@ local function concussion(dealt, absorbed, mutant)
 		level.set_snd_volume(concussion_vol * 0.25)
 	end
 	concussion_end = math.max(concussion_end, time_global() + secs * 1000)
+	push_injuries()
 	level.add_pp_effector("amk_shoot.ppe", 2011, false)
 	if absorbed < 0.5 then
 		level.add_pp_effector("black.ppe", 99, false)
@@ -356,16 +530,19 @@ local function torso_impact(info)
 	end
 end
 
--- the injury is old enough, and the actor (total health) and, with body health on, the limb
--- (both arms / both legs) are healed
+-- health of the zone: both arms / both legs with body health on, else the total health
+local function limb_health(zone)
+	if body_on() then
+		local p = PARTS[zone]
+		return (body_health.part_health(p[1]) + body_health.part_health(p[2])) * 0.5
+	end
+	return db.actor.health
+end
+
+-- time cure of a light injury: it has lasted long enough and the limb is healed enough
 local function healed(zone)
 	if game_min() - since_of[zone] < (CURE_MIN_MIN[level_of[zone]] or 0) then return false end
-	if db.actor.health < CURE_HEALTH then return false end
-	if body_health and body_health.enabled() then
-		local p = PARTS[zone]
-		return (body_health.part_health(p[1]) + body_health.part_health(p[2])) * 0.5 >= CURE_HEALTH
-	end
-	return true
+	return limb_health(zone) >= CURE_LIMB
 end
 
 local function update_injuries()
@@ -378,19 +555,31 @@ local function update_injuries()
 	last_decay_t = now
 	if dt > 0 and dt < 5 then
 		for z, c in pairs(charge) do
-			if c > 0 then charge[z] = math.max(0, c - DECAY_PER_S * dt) end
+			if c > 0 and now - last_count_t[z] > DECAY_GRACE_MS then
+				charge[z] = math.max(0, c - DECAY_PER_S * dt)
+				if charge[z] <= 0 then heavy_of[z] = false end
+			end
 		end
 	end
 	if concussion_end > 0 and now >= concussion_end then end_concussion() end
 	flush_think(now)
 	if now < next_cure_t then return end
 	next_cure_t = now + 1000
+	if applied_body ~= body_on() then apply_levels() end -- body health option switched
+	push_injuries()
+	local m = game_min()
 	for z, lv in pairs(level_of) do
-		if lv > 0 and healed(z) then set_level(z, 0) end
+		if splinted(z) then
+			if m >= splint_end[z] then set_level(z, 0) end
+		elseif lv == 2 then
+			if m - since_of[z] >= SEVERE_MIN then set_splint(z, true) end
+		elseif lv == 1 and healed(z) then
+			set_level(z, 0)
+		end
 	end
 end
 
--- an army medkit lowers every injury one level, a scientific one (also _razgr) cures them; the plain medkit does not
+-- an army medkit splints every severe injury and clears light ones, a scientific one (also _razgr) cures them
 local function medkit_cure(section)
 	for prefix, n in pairs(MEDKIT_CURE) do
 		if string.find(section, prefix, 1, true) == 1 then return n end
@@ -398,12 +587,77 @@ local function medkit_cure(section)
 	return 0
 end
 
-local function on_actor_before_use(item, sobj)
+-- what an item does to injuries, for its description (sivol_body_text.item_rows):
+-- "field" (one zone: light clears, severe splinted), "army" / 2 (light ones cleared + 1 / 2 splints), "light" (clears light ones), nil
+function item_cure(section)
+	if FIELD_CURE[section] then return "field" end
+	local n = medkit_cure(section)
+	if n == 1 then return "army" end
+	if n > 0 then return n end
+	if section == PLAIN_MEDKIT then return "light" end
+	return nil
+end
+
+-- zone of a splint / survival kit: the arm or leg it was used on, else (or when that zone has nothing
+-- to treat) the worse injury, legs first; a splinted zone needs nothing more
+local function field_zone()
+	local function open(z) return level_of[z] > 0 and not splinted(z) end
+	local z = PART_ZONE[tonumber(body_health and body_health.use_part() or 0) or 0]
+	if z and open(z) then return z end
+	for _, lv in ipairs({ 2, 1 }) do
+		for _, zz in ipairs({ "leg", "arm" }) do
+			if open(zz) and level_of[zz] == lv then return zz end
+		end
+	end
+	return nil
+end
+
+local function field_cure(zone)
+	if level_of[zone] == 1 then
+		set_level(zone, 0)
+	elseif level_of[zone] == 2 then
+		set_splint(zone)
+	end
+end
+
+-- "on_use" (engine eUseObject) runs only for a use that went through: a use refused in
+-- on_actor_before_use (disable_use) cures nothing. The chosen part is still readable here.
+local function on_use(item)
 	if not item then return end
-	local n = medkit_cure(item:section())
-	if n == 0 then return end
-	for z, lv in pairs(level_of) do
-		if lv > 0 then set_level(z, lv - n) end
+	local sect = item:section()
+	if FIELD_CURE[sect] then
+		local z = field_zone()
+		if z then field_cure(z) end
+		return
+	end
+	local n = medkit_cure(sect)
+	if n > 0 then
+		-- splints first (the chosen limb, else the worst), then the light injuries left
+		for _ = 1, n do
+			local z = field_zone()
+			if z and level_of[z] == 2 then set_splint(z) end
+		end
+		for z, lv in pairs(level_of) do
+			if lv == 1 then set_level(z, 0) end
+		end
+	elseif sect == PLAIN_MEDKIT then
+		for z, lv in pairs(level_of) do
+			if lv == 1 then set_level(z, 0) end
+		end
+	end
+end
+
+-- a real sleep turns all green health white (design 14.3) and counts double for a splinted injury
+-- (design 32); light ones then heal by time (sleep restores health). Severe ones need a splint.
+local function on_sleep_finished(hours, was_magic)
+	if was_magic or not db.actor or not db.actor:alive() then return end
+	if body_on() and body_health.convert_green then body_health.convert_green("all", 1) end
+	local h = tonumber(hours) or 0
+	for z in pairs(level_of) do
+		if splinted(z) and h > 0 then
+			splint_end[z] = splint_end[z] - h * 60
+			set_value(SAVE_S[z], splint_end[z])
+		end
 	end
 end
 
@@ -429,10 +683,17 @@ local function on_actor_hit(obj, amount, local_dir, who, bone_index)
 	-- mutant melee: injury zone by anatomy, size as a limb hit (the damage bone is the old remap)
 	local pm = pending_mutant
 	pending_mutant = nil
+	local limb = nil -- the hit limb for a severe level's fracture; mutant zones are anatomical, no side
+	local inj_k = 1.0 -- per-class injury factor of a mutant (mutant_profile), charge only
+	local heavy = true -- bullets, explosions, NPC melee: the charge alone can make an injury severe
 	if pm and who and pm.id == who:id() and time_global() - pm.time < 100 then
 		info.zone = pm.zone
 		info.dealt = mutant_limb_damage(raw, htype) * pm.k
 		dealt = info.dealt
+		inj_k = pm.inj
+		heavy = pm.heavy
+	else
+		limb = limb_of(info.zone, info.bone)
 	end
 
 	-- hook for the hit-fx remake (sounds); the camera stays here
@@ -467,7 +728,7 @@ local function on_actor_hit(obj, amount, local_dir, who, bone_index)
 		end
 	end
 	if z == "arm" or z == "leg" then
-		add_charge(z, dealt)
+		add_charge(z, dealt * inj_k, limb, heavy)
 	elseif z == "head" then
 		if dealt >= HEAD_MIN_DEALT or (absorbed >= PING_ABSORBED and raw >= PING_RAW) then
 			concussion(dealt, absorbed, info.mutant)
@@ -482,8 +743,10 @@ function debug_injury(zone, lv)
 	lv = tonumber(lv) or 0
 	if not db.actor then return end
 	if zone == "arm" or zone == "leg" then
-		set_level(zone, lv)
-		if lv > 0 then charge[zone] = lv == 2 and T_SEVERE or T_LIGHT end
+		-- 3 = severe, then splinted
+		set_level(zone, math.min(lv, 2))
+		if lv > 0 then charge[zone] = lv >= 2 and T_SEVERE or T_LIGHT end
+		if lv >= 3 then set_splint(zone) end
 	elseif zone == "head" then
 		if lv > 0 then concussion(0.3, 0, false) else end_concussion() end
 	else
@@ -493,14 +756,33 @@ function debug_injury(zone, lv)
 	log2("[sivol_actor_crit] debug_injury %s %d -> arm %d leg %d head %d", zone, lv, injury_level("arm"), injury_level("leg"), injury_level("head"))
 end
 
--- state API (watch icon): "arm" / "leg" 0..2, "head" 1 while a concussion runs
+-- state API (watch icon): "arm" / "leg" 0..2 (splinted counts as 1), "head" 1 while a concussion runs
 function injury_level(zone)
 	if zone == "head" then return concussion_end > time_global() and 1 or 0 end
+	if (zone == "arm" or zone == "leg") and splinted(zone) then return 1 end
 	return level_of[zone] or 0
+end
+-- "none" / "light" / "severe" / "splinted" (arm, leg; head: "light" while a concussion runs)
+function injury_state(zone)
+	if zone == "head" then return concussion_end > time_global() and "light" or "none" end
+	if not level_of[zone] then return "none" end
+	if splinted(zone) then return "splinted" end
+	return ({ [0] = "none", [1] = "light", [2] = "severe" })[level_of[zone]]
+end
+-- game hours until a splinted injury heals (0 when not splinted)
+function splint_hours_left(zone)
+	if not splinted(zone) then return 0 end
+	return math.max(0, (splint_end[zone] - game_min()) / 60)
+end
+-- sprint factor of a splinted leg (params.refresh_sprint_koef)
+function sprint_k()
+	return splinted("leg") and SPLINT_SPRINT or 1
 end
 function injury_charge(zone) return charge[zone] or 0 end
 -- recoil multiplier of the arm injury (sivol_fuzz_recoil.script)
-function recoil_k() return ARM_RECOIL[level_of.arm] or 1.0 end
+function recoil_k() return splinted("arm") and SPLINT_RECOIL or ARM_RECOIL[level_of.arm] or 1.0 end
+-- re-apply the level effects (sivol_adrenaline.script at the start and end of a rush)
+function refresh() apply_levels() end
 
 local function on_update()
 	update_injuries()
@@ -517,6 +799,9 @@ local function on_spawn()
 	-- saves from before the cure timer have no time: count the injury as old
 	since_of.arm = tonumber(get_value(SAVE_T.arm, 0)) or 0
 	since_of.leg = tonumber(get_value(SAVE_T.leg, 0)) or 0
+	splint_end.arm = level_of.arm == 2 and tonumber(get_value(SAVE_S.arm, 0)) or 0
+	splint_end.leg = level_of.leg == 2 and tonumber(get_value(SAVE_S.leg, 0)) or 0
+	heavy_of.arm, heavy_of.leg = false, false
 	last_decay_t = time_global()
 	apply_levels()
 	last_cov, last_arm = -1, -1
@@ -530,5 +815,6 @@ function attach(sm)
 	sm:subscribe({ signal = "on_actor_hit", fun = on_actor_hit })
 	sm:subscribe({ signal = "on_update",    fun = on_update })
 	sm:subscribe({ signal = "on_spawn",     fun = on_spawn })
-	sm:subscribe({ signal = "on_actor_before_use", fun = on_actor_before_use })
+	sm:subscribe({ signal = "on_use",       fun = on_use })
+	sm:subscribe({ signal = "on_sleep_finished", fun = on_sleep_finished })
 end

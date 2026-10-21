@@ -5,6 +5,63 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.118 (2026-10-21)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `93A96D97721DBE01CD5EB9F290C53BF901A08DCB2E803BE11B882EE550F96977` (archived with its PDB in `nlc_tools/builds/20261021_100321_93a96d97`).
+- **Status:** runtime pending. Recovery pass 34 (`docs/damage_model/DESIGN_recovery_and_body_status.md` 34).
+- `CActorBodyHealth::AddGreen`: artifact regeneration fills the most damaged part first (level-filling), same total gain.
+
+## nlc-3.589.117 (2026-10-21)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `CA5AF5E0F3D2F9EB197D6FAB6693672E41E7309FA73D6DCC360BB85148175282` (archived with its PDB in `nlc_tools/builds/20261021_092932_ca5af5e0`).
+- **Status:** runtime pending. Recovery pass 32 (`docs/damage_model/DESIGN_recovery_and_body_status.md` 32).
+- Inventory body window: optional `part_bars` (per-part bars: permanent, temporary, preview gain, number); the preview follows a hovered use row (`CUIPropertiesBox::GetHoveredItem`, `CUIInventoryWnd::UpdateBodyPreview`) or a body item dragged over a part.
+- `CActorBodyHealth::Predict` (side-effect-free item prediction; `HealPart` and it share `spread_heal`).
+- `body_health.set_injury` accepts level 3 (splinted), tinted blue in the window.
+
+## nlc-3.589.116 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `46E0D3FBB9B7FE856EB8B3FCF9E7809C6216D5D93D30B8DC75A137D139A22C69` (archived with its PDB in `nlc_tools/builds/20261020_145047_46e0d3fb`).
+- **Status:** runtime pending. Recovery pass 31 (`docs/damage_model/DESIGN_recovery_and_body_status.md` 31).
+- `CActorBodyHealth::DisplayHealth`: with body health on, the HUD bar, the watch (`m_actor_params.x`) and the inventory health bar show min(total, head, torso) (white + temporary). Display only.
+- "Use on part" rows: "Use on the torso: 42% -> 76%" (part white + temporary now and after the treatment total), bleeding / fracture as words (`st_use_bleeding`, `st_use_fracture`) instead of `{..}` / `[..]`.
+
+## nlc-3.589.115 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `687D8780CCE1384843E66E511D10334C174AA38FB2634ABEE8A508CDF92FB7F3` (archived with its PDB in `nlc_tools/builds/20261020_141921_687d8780`).
+- **Status:** runtime pending. Recovery pass 30 (`docs/damage_model/DESIGN_recovery_and_body_status.md` 30).
+- Item key `eat_green` (`CActorBodyHealth::AddGreenPart`): temporary health on the used part (no part and no bleeding: the most damaged one).
+- Inventory body window: optional `pain_bar` / `pain_icon` children (pain / pain_max); `hint_text_inset` narrows only the hint text (default 10).
+- "Use on part" rows show the treatment total (`vergas_medical_elastic.get_total_heal`).
+
+## nlc-3.589.114 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `7D863196A34E930EA90427D117FAE9A57D61C714776B59515B69E884DEDF37D0` (archived with its PDB in `nlc_tools/builds/20261020_134403_7d863196`).
+- **Status:** runtime pending. Recovery pass test 4 (`docs/damage_model/DESIGN_recovery_and_body_status.md` 29).
+- Inventory body window: hovering the armoured figure (`figure_rect`, default 712,176,90,320) asks `sivol_body_text.part_text(0)`; the green layer is tinted bright green (alpha 0.35 + 0.65 x share); `CUIMapHint::SetBottomPadding` (10) so coloured multi-line hints do not clip.
+
+## nlc-3.589.113 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `4554F477434A98E3116D9F39AE5E6DF7E466126D6B296C16370C535C08973851` (archived with its PDB in `nlc_tools/builds/20261020_132426_4554f477`).
+- **Status:** runtime pending. Recovery pass test 3 (`docs/damage_model/DESIGN_recovery_and_body_status.md` 28).
+- `CActorBodyHealth::HealPart` (Lua `body_health.heal_part`): a heal worth a share of total health aimed at a part; the part takes up to 6x, the rest spreads, so the total gains the full value (medkits with body health used to raise it by 1/6).
+- `CUIMapHint::SetHintWidth`; the inventory body hint is 270 wide (`hint_width` on `body_health`).
+
+## nlc-3.589.112 (2026-10-20)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A5C66509CC23317319F95DE44DCBC2548D2D45597B9551CA0BFFF27244C55CCA` (archived with its PDB in `nlc_tools/builds/20261020_114854_a5c66509`).
+- **Status:** runtime pending. Recovery pass (`docs/damage_model/DESIGN_recovery_and_body_status.md` 14).
+- Body health green HP: `CActorBodyHealth` keeps green health per part; artifact / outfit regeneration (`CActor::UpdateArtefactsOnBelt`) adds green instead of health when body health is on; green counts for total health and death, hits and other losses take it first, it turns white at `green_convert_base` + `green_convert_factor` x regen per game hour (`[actor_body_health]`), and item key `green_convert` turns a share of every part's green white at once. `PartHealth` stays white, so leg speed, stamina cap and limb checks read white. Save version 2 (old saves: green 0).
+- Lua `body_health.green`, `total`, `convert_green`, `set_injury`, `set_injury_system`.
+- Inventory body window: shown with body health or the sivol injury system; green layer, injury tint on the fracture layer (light amber, severe red), multi-line hover text from `sivol_body_text.part_text` drawn above the inventory; the item use menu shows white + green.
+
 ## nlc-3.589.111 (2026-10-20)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

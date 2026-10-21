@@ -31,7 +31,7 @@ u8 by_name(LPCSTR n)
 using namespace body_part;
 
 static constexpr u32 BODY_SAVE_MAGIC = 0x48424C4E; // "NLBH"
-static constexpr u8 BODY_SAVE_VERSION = 1;
+static constexpr u8 BODY_SAVE_VERSION = 2; // NLC: 2 = green health per part
 static constexpr float PART_MIN_HEALTH = -0.01f;
 static constexpr float FRACTURE_HEALTH_CAP = 0.9f;
 
@@ -110,6 +110,8 @@ void CActorBodyHealth::Load(LPCSTR condition_section)
     m_legs_run_k = READ_IF_EXISTS(pSettings, r_float, sect, "legs_run_k", 0.5f);
     m_legs_sprint_k = READ_IF_EXISTS(pSettings, r_float, sect, "legs_sprint_k", 0.5f);
     m_legs_min_speed = READ_IF_EXISTS(pSettings, r_float, sect, "legs_min_speed", 0.1f);
+    m_green_base = READ_IF_EXISTS(pSettings, r_float, sect, "green_convert_base", 0.05f);
+    m_green_factor = READ_IF_EXISTS(pSettings, r_float, sect, "green_convert_factor", 0.15f);
     if (fis_zero(m_blood_parts_coef))
         m_blood_parts_coef = 1.f;
     if (m_fracture_threshold > 0.999f)
@@ -142,8 +144,10 @@ void CActorBodyHealth::Reinit()
     for (u8 i = 0; i < count; ++i)
     {
         m_health[i] = 1.f;
+        m_green[i] = 0.f;
         m_fracture[i] = 0.f;
     }
+    m_green_rate = 0.f;
     m_pain = 0.f;
     m_boosts.clear();
     m_use_part = automatic;
@@ -160,6 +164,7 @@ void CActorBodyHealth::save(NET_Packet& P)
     {
         P.w_float(m_health[i]);
         P.w_float(m_fracture[i]);
+        P.w_float(m_green[i]);
     }
     P.w_float(m_pain);
     P.w_u16(u16(m_boosts.size()));
@@ -178,6 +183,7 @@ void CActorBodyHealth::load(IReader& P)
     for (u8 i = 0; i < count; ++i)
     {
         m_health[i] = total;
+        m_green[i] = 0.f;
         m_fracture[i] = 0.f;
     }
     m_pain = 0.f;
@@ -199,6 +205,8 @@ void CActorBodyHealth::load(IReader& P)
     {
         m_health[i] = P.r_float();
         m_fracture[i] = P.r_float();
+        if (version >= 2)
+            m_green[i] = P.r_float();
     }
     m_pain = P.r_float();
     const u16 n = P.r_u16();
@@ -211,7 +219,6 @@ void CActorBodyHealth::load(IReader& P)
         b.time = P.r_float();
         m_boosts.push_back(b);
     }
-    (void)version;
     Clamp();
     m_rad_deficit = std::max(0.f, std::min(PartHealth(all), m_owner->GetMaxHealth()) - total);
 }
@@ -281,6 +288,276 @@ float CActorBodyHealth::PartHealth(u8 part) const
     return part < count ? m_health[part] : 0.f;
 }
 
+// HealPart's spread on plain arrays (also used by Predict): the part takes up to the budget, the rest goes
+// evenly over the other parts with room
+static void spread_heal(float* w, const float* g, const float* mx, u8 part, float budget)
+{
+    using namespace body_part;
+    auto room = [&](u8 i) { return std::max(0.f, mx[i] - w[i] - g[i]); };
+    if (part > all && part < count)
+    {
+        const float v = std::min(budget, room(part));
+        w[part] += v;
+        budget -= v;
+    }
+    // the rest (or an untargeted heal) evenly over the parts with room, a few passes for parts that fill up
+    for (int pass = 0; pass < 6 && budget > 1e-6f; ++pass)
+    {
+        u8 open = 0;
+        for (u8 i = head; i < count; ++i)
+            if (i != part && room(i) > 1e-6f)
+                ++open;
+        if (!open)
+            break;
+        const float share = budget / open;
+        for (u8 i = head; i < count; ++i)
+        {
+            if (i == part)
+                continue;
+            const float v = std::min(share, room(i));
+            w[i] += v;
+            budget -= v;
+        }
+    }
+}
+
+void CActorBodyHealth::HealPart(u8 part, float value)
+{
+    if (value <= 0.f)
+        return;
+    if (m_rad_deficit > 0.f)
+    {
+        const float paid = std::min(m_rad_deficit, value);
+        m_rad_deficit -= paid;
+        value -= paid;
+    }
+    float mx[count]{};
+    for (u8 i = head; i < count; ++i)
+        mx[i] = PartMaxHealth(i);
+    spread_heal(m_health, m_green, mx, part, value * 6.f); // in part units: the total is the average of six parts
+    Clamp();
+}
+
+void CActorBodyHealth::Predict(LPCSTR section, u8 part, float total_heal, float* white, float* green) const
+{
+    if (part >= count)
+        part = all;
+    float w[count]{}, g[count]{}, mx[count]{};
+    for (u8 i = head; i < count; ++i)
+    {
+        w[i] = m_health[i];
+        g[i] = m_green[i];
+        mx[i] = PartMaxHealth(i);
+    }
+    float deficit = m_rad_deficit;
+    auto clamp_all = [&] {
+        for (u8 i = head; i < count; ++i)
+        {
+            clamp(w[i], PART_MIN_HEALTH, mx[i]);
+            clamp(g[i], 0.f, std::max(0.f, mx[i] - w[i]));
+        }
+    };
+    // ChangePartHealth
+    auto change = [&](u8 p, float v) {
+        if (v > 0.f && deficit > 0.f)
+        {
+            const float paid = std::min(deficit, v / 6.f);
+            deficit -= paid;
+            v -= paid * 6.f;
+        }
+        for (u8 i = head; i < count; ++i)
+            if (p == all)
+                w[i] += v / 6.f;
+            else if (p == i)
+                w[i] += v;
+        clamp_all();
+    };
+
+    if (section && pSettings->section_exist(section))
+    {
+        float eat_health = READ_IF_EXISTS(pSettings, r_float, section, "eat_health", 0.f);
+        if (part != all)
+        {
+            static LPCSTR part_keys[count] = {"", "eat_headhealth", "eat_bodyhealth", "eat_lhhealth", "eat_rhhealth", "eat_llhealth", "eat_rlhealth"};
+            eat_health = READ_IF_EXISTS(pSettings, r_float, section, part_keys[part], eat_health);
+        }
+        if (!fis_zero(eat_health))
+            change(part, eat_health);
+
+        const float eat_green = READ_IF_EXISTS(pSettings, r_float, section, "eat_green", 0.f);
+        if (eat_green > 0.f)
+        {
+            u8 gp = part;
+            if (gp == all)
+            {
+                float worst = 0.f;
+                for (u8 i = head; i < count; ++i)
+                    if (mx[i] - w[i] - g[i] > worst)
+                    {
+                        worst = mx[i] - w[i] - g[i];
+                        gp = i;
+                    }
+            }
+            if (gp != all)
+                g[gp] += eat_green;
+            clamp_all();
+        }
+
+        const float conv = READ_IF_EXISTS(pSettings, r_float, section, "green_convert", 0.f);
+        if (conv > 0.f)
+        {
+            for (u8 i = head; i < count; ++i)
+            {
+                const float v = g[i] * std::min(conv, 1.f);
+                g[i] -= v;
+                w[i] += v;
+            }
+            clamp_all();
+        }
+
+        float time = READ_IF_EXISTS(pSettings, r_float, section, "boost_time", 0.f);
+        const float restore = READ_IF_EXISTS(pSettings, r_float, section, "boost_health_restore", 0.f);
+        if (time > 0.f && !fis_zero(restore))
+        {
+            if (!READ_IF_EXISTS(pSettings, r_bool, section, "real_time_boost", false))
+                time *= Level().GetGameTimeFactor();
+            change(part, restore * time);
+        }
+    }
+
+    float v = total_heal;
+    if (v > 0.f)
+    {
+        const float paid = std::min(deficit, v);
+        deficit -= paid;
+        v -= paid;
+        spread_heal(w, g, mx, part, v * 6.f);
+        clamp_all();
+    }
+    for (u8 i = head; i < count; ++i)
+    {
+        white[i] = w[i];
+        green[i] = g[i];
+    }
+}
+
+float CActorBodyHealth::PartGreen(u8 part) const
+{
+    if (part == all)
+    {
+        float s = 0.f;
+        for (u8 i = head; i < count; ++i)
+            s += m_green[i];
+        return s / 6.f;
+    }
+    return part < count ? m_green[part] : 0.f;
+}
+
+float CActorBodyHealth::PartTotal(u8 part) const { return PartHealth(part) + PartGreen(part); }
+
+float CActorBodyHealth::DisplayHealth(float total) const
+{
+    if (!Enabled())
+        return total;
+    return std::min(total, std::min(PartTotal(head), PartTotal(torso)));
+}
+
+// a rise of the total health worth `value` (6 x value in part units), the most damaged part first (design 34):
+// each step fills the part with the most room up to the next one, so regeneration lands where it matters;
+// the radiation deficit is paid first
+void CActorBodyHealth::AddGreen(float value)
+{
+    if (value <= 0.f)
+        return;
+    if (m_rad_deficit > 0.f)
+    {
+        const float paid = std::min(m_rad_deficit, value);
+        m_rad_deficit -= paid;
+        value -= paid;
+    }
+    float budget = value * 6.f;
+    auto room = [&](u8 i) { return std::max(0.f, PartMaxHealth(i) - m_health[i] - m_green[i]); };
+    for (int pass = 0; pass < 8 && budget > 1e-7f; ++pass)
+    {
+        // the parts with the most room share the step that brings them down to the next largest room
+        float top = 0.f, next = 0.f;
+        for (u8 i = head; i < count; ++i)
+            top = std::max(top, room(i));
+        if (top <= 1e-7f)
+            break;
+        u8 n = 0;
+        for (u8 i = head; i < count; ++i)
+        {
+            const float r = room(i);
+            if (r >= top - 1e-6f)
+                ++n;
+            else
+                next = std::max(next, r);
+        }
+        const float step = std::min(budget / n, top - next);
+        for (u8 i = head; i < count; ++i)
+            if (room(i) >= top - 1e-6f)
+                m_green[i] += step;
+        budget -= step * n;
+    }
+    Clamp();
+}
+
+void CActorBodyHealth::AddGreenPart(u8 part, float value)
+{
+    if (value <= 0.f)
+        return;
+    for (u8 i = head; i < count; ++i)
+        if (part == all || part == i)
+            m_green[i] += value;
+    Clamp(); // caps green at the part's room (max - white)
+}
+
+void CActorBodyHealth::ConvertGreen(u8 part, float fraction)
+{
+    clamp(fraction, 0.f, 1.f);
+    for (u8 i = head; i < count; ++i)
+    {
+        if (part != all && part != i)
+            continue;
+        const float v = m_green[i] * fraction;
+        m_green[i] -= v;
+        m_health[i] += v;
+    }
+    Clamp();
+}
+
+// green turns white at (base + factor x regen per game hour) per game hour; dt is in game seconds
+void CActorBodyHealth::UpdateGreen(float dt)
+{
+    const float step = (m_green_base + m_green_factor * m_green_rate * 3600.f) / 3600.f * dt;
+    if (step <= 0.f)
+        return;
+    for (u8 i = head; i < count; ++i)
+    {
+        const float v = std::min(m_green[i], step);
+        m_green[i] -= v;
+        m_health[i] += v;
+    }
+}
+
+void CActorBodyHealth::SetInjury(u8 zone, u8 level)
+{
+    if (zone < 3)
+        m_injury[zone] = level;
+}
+
+u8 CActorBodyHealth::Injury(u8 part) const
+{
+    if (part == left_arm || part == right_arm)
+        return m_injury[0];
+    if (part == left_leg || part == right_leg)
+        return m_injury[1];
+    if (part == head)
+        return m_injury[2];
+    return 0;
+}
+
 void CActorBodyHealth::ChangePartHealth(u8 part, float value)
 {
     if (value > 0.f && m_rad_deficit > 0.f)
@@ -302,7 +579,10 @@ void CActorBodyHealth::ChangePartHealth(u8 part, float value)
 void CActorBodyHealth::Clamp()
 {
     for (u8 i = head; i < count; ++i)
+    {
         clamp(m_health[i], PART_MIN_HEALTH, PartMaxHealth(i));
+        clamp(m_green[i], 0.f, std::max(0.f, PartMaxHealth(i) - m_health[i]));
+    }
     clamp(m_pain, 0.f, m_pain_max);
 }
 
@@ -415,10 +695,10 @@ void CActorBodyHealth::OnHit(SHit* hit, float lost)
     if (part == none)
     {
         for (u8 i = head; i < count; ++i)
-            m_health[i] = guard ? Guard(i, m_health[i], m_health[i] - lost * m_spread_hit_k) : m_health[i] - lost * m_spread_hit_k;
+            Damage(i, lost * m_spread_hit_k, guard);
     }
     else
-        m_health[part] = guard ? Guard(part, m_health[part], m_health[part] - lost * m_hit_k[part]) : m_health[part] - lost * m_hit_k[part];
+        Damage(part, lost * m_hit_k[part], guard);
 
     ChangePain(lost * (wound ? m_wound_pain_k : strike ? m_strike_pain_k : m_other_pain_k));
 
@@ -429,6 +709,17 @@ void CActorBodyHealth::OnHit(SHit* hit, float lost)
             AddFracture(part, lost);
     }
     Clamp();
+}
+
+// the one-shot guard works on white + green; the damage takes green first
+void CActorBodyHealth::Damage(u8 part, float amount, bool guard)
+{
+    const float before = m_health[part] + m_green[part];
+    const float after = guard ? Guard(part, before, before - amount) : before - amount;
+    const float d = before - after;
+    const float g = std::min(m_green[part], std::max(0.f, d));
+    m_green[part] -= g;
+    m_health[part] -= d - g;
 }
 
 float CActorBodyHealth::Guard(u8 part, float before, float after)
@@ -525,11 +816,19 @@ void CActorBodyHealth::Update(float dt)
         diff = std::max(0.f, diff - m_pain * m_pain_coef * dt);
         m_rad_deficit = std::max(0.f, m_rad_deficit - diff);
     }
-    if (!fis_zero(diff))
+    if (diff > 0.f)
         for (u8 i = head; i < count; ++i)
             m_health[i] += diff;
+    else if (diff < 0.f) // bleeding, hunger...: green first, as hits
+        for (u8 i = head; i < count; ++i)
+        {
+            const float g = std::min(m_green[i], -diff);
+            m_green[i] -= g;
+            m_health[i] += diff + g;
+        }
 
     UpdateBoosts(dt);
+    UpdateGreen(dt);
 
     if (m_fracture_incarnation_v > 0.f)
         for (u8 i = head; i < count; ++i)
@@ -541,10 +840,10 @@ void CActorBodyHealth::Update(float dt)
 
     bool dead = false;
     for (u8 i = head; i < count; ++i)
-        if (m_health[i] <= m_death_threshold[i])
+        if (m_health[i] + m_green[i] <= m_death_threshold[i])
             dead = true;
 
-    const float avg = PartHealth(all);
+    const float avg = PartTotal(all);
     const float top = std::min(avg, m_owner->GetMaxHealth());
     m_rad_deficit = std::min(m_rad_deficit, std::max(0.f, top));
     if (dead || avg <= 0.f || top - m_rad_deficit <= 0.f)
@@ -662,6 +961,29 @@ void CActorBodyHealth::UseItem(LPCSTR section, u8 part)
     if (!fis_zero(eat_health))
         ChangePartHealth(part, eat_health);
 
+    // NLC: a patch (bandage) holds the part together as green health (DESIGN_recovery_and_body_status.md 30)
+    const float eat_green = READ_IF_EXISTS(pSettings, r_float, section, "eat_green", 0.f);
+    if (eat_green > 0.f)
+    {
+        // no part chosen and nothing bleeding: the most damaged part, never every part at once
+        u8 gp = part;
+        if (gp == all)
+        {
+            float worst = 0.f;
+            for (u8 i = head; i < count; ++i)
+            {
+                const float room = PartMaxHealth(i) - m_health[i] - m_green[i];
+                if (room > worst)
+                {
+                    worst = room;
+                    gp = i;
+                }
+            }
+        }
+        if (gp != all)
+            AddGreenPart(gp, eat_green);
+    }
+
     const float wounds = READ_IF_EXISTS(pSettings, r_float, section, "wounds_heal_perc", 0.f);
     if (wounds > 0.f)
         ChangeBleeding(part, wounds);
@@ -669,6 +991,11 @@ void CActorBodyHealth::UseItem(LPCSTR section, u8 part)
     const float fracture = READ_IF_EXISTS(pSettings, r_float, section, "fracture_heal_perc", 0.f);
     if (fracture > 0.f)
         ChangeFracture(part, fracture);
+
+    // NLC: a medkit turns this share of the green health of every part white
+    const float green = READ_IF_EXISTS(pSettings, r_float, section, "green_convert", 0.f);
+    if (green > 0.f)
+        ConvertGreen(all, green);
 
     const float pain = READ_IF_EXISTS(pSettings, r_float, section, "eat_pain", 0.f);
     if (!fis_zero(pain))
@@ -738,6 +1065,47 @@ static int l_change_part_health(lua_State* L)
 {
     if (CActorBodyHealth* b = body())
         b->ChangePartHealth(arg_part(L, 1), float(lua_tonumber(L, 2)));
+    return 0;
+}
+// heal_part(part or "all", value): a heal worth value of total health, aimed at the part (HealPart)
+static int l_heal_part(lua_State* L)
+{
+    if (CActorBodyHealth* b = body())
+        b->HealPart(arg_part(L, 1), float(lua_tonumber(L, 2)));
+    return 0;
+}
+static int l_green(lua_State* L)
+{
+    CActorBodyHealth* b = body();
+    return b ? ret_num(L, b->PartGreen(arg_part(L, 1))) : 0;
+}
+static int l_total(lua_State* L)
+{
+    CActorBodyHealth* b = body();
+    return b ? ret_num(L, b->PartTotal(arg_part(L, 1))) : 0;
+}
+// convert_green(part or "all", fraction 0..1, default 1)
+static int l_convert_green(lua_State* L)
+{
+    if (CActorBodyHealth* b = body())
+        b->ConvertGreen(arg_part(L, 1), lua_isnumber(L, 2) ? float(lua_tonumber(L, 2)) : 1.f);
+    return 0;
+}
+// set_injury("arm" | "leg" | "head", level): sivol_actor_crit injuries for the inventory window
+static int l_set_injury(lua_State* L)
+{
+    if (CActorBodyHealth* b = body())
+    {
+        LPCSTR z = lua_tostring(L, 1);
+        const u8 zone = !z ? 3 : !xr_strcmp(z, "arm") ? 0 : !xr_strcmp(z, "leg") ? 1 : !xr_strcmp(z, "head") ? 2 : 3;
+        b->SetInjury(zone, u8(std::clamp(int(lua_tointeger(L, 2)), 0, 3))); // 3 = splinted
+    }
+    return 0;
+}
+static int l_set_injury_system(lua_State* L)
+{
+    if (CActorBodyHealth* b = body())
+        b->SetInjurySystem(lua_toboolean(L, 1) != 0);
     return 0;
 }
 static int l_fracture(lua_State* L)
@@ -834,6 +1202,12 @@ void script_register(lua_State* L)
         {"part_health", l_part_health},
         {"part_max_health", l_part_max_health},
         {"change_part_health", l_change_part_health},
+        {"heal_part", l_heal_part},
+        {"green", l_green},
+        {"total", l_total},
+        {"convert_green", l_convert_green},
+        {"set_injury", l_set_injury},
+        {"set_injury_system", l_set_injury_system},
         {"fracture", l_fracture},
         {"change_fracture", l_change_fracture},
         {"bleeding", l_bleeding},

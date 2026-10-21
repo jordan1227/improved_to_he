@@ -1,0 +1,283 @@
+-- sivol_adrenaline.script: adrenaline rush after a bad hit, then a crash once the fight is over.
+-- docs/damage_model/DESIGN_recovery_and_body_status.md 16, 19.
+--
+-- ready -> rush (RUSH_S) -> crash_wait (until quiet) -> crash (CRASH_S) -> cooldown (COOLDOWN_S) -> ready,
+-- real time. Trigger: a mutant or NPC hit (wound, strike, fire_wound, explosion) that leaves health below
+-- LOW_HEALTH, or health loss >= WINDOW_LOSS from such hits within WINDOW_S. Rush: pain held (body health),
+-- no faint, stamina, the severe-leg sprint block lifted (limp stays), hand tremor; arm penalties stay.
+-- Crash after QUIET_S without a counted hit or an own shot: stamina drain, tremor, half the held pain back.
+-- The cooldown survives save/load; a rush or crash at save time loads as a full cooldown.
+-- Active with the injury system (sivol_actor_crit and game_options.AdditionalMobHits).
+
+local RUSH_S, CRASH_S, COOLDOWN_S = 30, 30, 300
+local WINDOW_S, WINDOW_LOSS, LOW_HEALTH = 6, 0.20, 0.30
+local ARM_MS = 1500 -- a health drop counts this long after a counted hit (the body updates the total later)
+local QUIET_S = 60
+local STAMINA_BOOST, STAMINA_RUSH_PER_S, STAMINA_CRASH_PER_S = 0.3, 0.01, 0.01
+local TREMOR_RUSH, TREMOR_CRASH = 1.15, 1.10
+local PAIN_RETURN = 0.5
+local HEART_MS = 700
+local PP_ID = 2031
+local PP_NAME = "contrast.ppe" -- looped, its strength scaled by set_pp_effector_factor
+-- strength at its peak (1 = the .ppe as authored): game_options.AdrenalineFxStrength (game.options), off with
+-- the menu option AdrenalineFx; console: g_loadstring sivol_adrenaline.fx(0.6) (saved), fx(0) = off
+local PP_DEFAULT = 0.6
+local PP_IN_MS, PP_OUT_MS = 1500, 4000
+-- the engine removes a post-process effector whose factor reaches ~0 (PostprocessAnimator.cpp:214), so the
+-- fade never goes below this (test 4: starting at 0 deleted the effect on its first frame)
+local PP_FLOOR = 0.01
+local SAVE_CD = "nlc_vars.adrenaline_cd" -- cooldown seconds left at save time
+local SEEN = "nlc_vars.adrenaline_seen" -- the one think line was said
+local DEBUG = false
+
+local COUNTED = {}
+local state = "ready"
+local t_end = 0           -- end of rush / crash / cooldown (time_global ms)
+local crash_left = 0      -- crash ms left (the crash pauses while not quiet)
+local last_activity = 0   -- last counted hit or own shot
+local armed_until = 0     -- health drops count until then
+local losses = {}         -- { t, loss } inside WINDOW_S
+local last_health = nil
+local last_parts = {}      -- body health: part health at the previous update
+-- body health on: a single counted hit taking PART_LOSS from one part, or the head / torso below VITAL_LOW,
+-- also triggers (the total is the average of six parts, so a torso blow barely moves it; design 28)
+local PART_LOSS, VITAL_LOW = 0.35, 0.35
+local PARTS = { "head", "body", "left_arm", "right_arm", "left_leg", "right_leg" }
+local last_t = 0
+local pain_hold, pain_debt = 0, 0
+local next_heart = 0
+
+local function log(fmt, ...)
+	if DEBUG then log2("[sivol_adrenaline] " .. fmt, ...) end
+end
+
+local function enabled()
+	return sivol_actor_crit ~= nil and sivol_actor_crit.active() and game_options.AdditionalMobHits ~= false
+end
+
+local function body_on()
+	return body_health ~= nil and body_health.enabled()
+end
+
+-- no counted hit and no own shot for QUIET_S: the fight is over
+local function quiet(now)
+	return now - last_activity >= QUIET_S * 1000
+end
+
+-------------------------------------------------------------------------------
+-- exports
+-------------------------------------------------------------------------------
+function active() return state == "rush" end
+function blocks_faint() return state == "rush" end
+function lifts_sprint_block() return state == "rush" end
+
+-- weapon sway multiplier (params/wpn_params.script, read live)
+function wobble_k()
+	if state == "rush" then return TREMOR_RUSH end
+	if state == "crash" and quiet(time_global()) then return TREMOR_CRASH end
+	return 1
+end
+
+-- watch meter: x = fill 0..1, y = 0 ready / 1 rush / 2 crash (incl. waiting) / 3 cooldown
+function meter()
+	local now = time_global()
+	if state == "rush" then return math.max(0, (t_end - now) / (RUSH_S * 1000)), 1 end
+	if state == "crash_wait" or state == "crash" then return 0, 2 end
+	if state == "cooldown" then return 1 - math.max(0, (t_end - now) / (COOLDOWN_S * 1000)), 3 end
+	return 1, 0
+end
+
+-------------------------------------------------------------------------------
+-- states
+-------------------------------------------------------------------------------
+local function pp_stop()
+	level.remove_pp_effector(PP_ID)
+end
+
+local function set_state(s, now)
+	log("%s -> %s", state, s)
+	local was_rush = state == "rush"
+	if was_rush and s ~= "rush" then pp_stop() end
+	state = s
+	if s == "rush" then
+		t_end = now + RUSH_S * 1000
+	elseif s == "crash" then
+		crash_left = CRASH_S * 1000
+	elseif s == "cooldown" then
+		t_end = now + COOLDOWN_S * 1000
+	end
+	if was_rush ~= (s == "rush") and sivol_actor_crit and sivol_actor_crit.refresh then
+		sivol_actor_crit.refresh() -- sprint block
+	end
+end
+
+local function pp_strength()
+	if game_options.AdrenalineFx == false then return 0 end
+	return math.max(0, math.min(1, tonumber(game_options.AdrenalineFxStrength) or PP_DEFAULT))
+end
+
+local function start_rush(now)
+	set_state("rush", now)
+	losses = {}
+	pain_hold = body_on() and body_health.pain() or 0
+	pain_debt = 0
+	db.actor.power = STAMINA_BOOST -- the power setter is a delta
+	if pp_strength() > 0 then level.add_pp_effector(PP_NAME, PP_ID, true) end
+	level.set_pp_effector_factor(PP_ID, PP_FLOOR)
+	next_heart = 0
+	sivol_body_text.unlock_article("adrenaline")
+	if not get_value(SEEN) then
+		set_value(SEEN, true)
+		sak.send_tip_local(game.translate_string("nlc_adrenaline_rush_1"), game.translate_string("thinking_out_loud"), 0, 8, "g_g", "sak", "yellow")
+	end
+end
+
+local function update_rush(now, dt)
+	-- screen effect: fades in over PP_IN_MS, out over the last PP_OUT_MS of the rush
+	local elapsed, left = RUSH_S * 1000 - (t_end - now), t_end - now
+	if pp_strength() > 0 then
+		level.set_pp_effector_factor(PP_ID, math.max(PP_FLOOR, pp_strength() * math.min(1, elapsed / PP_IN_MS, left / PP_OUT_MS)))
+	end
+	if body_on() then
+		local p = body_health.pain()
+		if p > pain_hold then
+			pain_debt = pain_debt + (p - pain_hold)
+			body_health.change_pain(pain_hold - p)
+		end
+	end
+	db.actor.power = STAMINA_RUSH_PER_S * dt
+	if now >= next_heart then
+		next_heart = now + HEART_MS
+		vergas_lib.s_play("actor\\heartbeat_1_" .. math.random(4), 1.0)
+	end
+	if now >= t_end then set_state("crash_wait", now) end
+end
+
+local function update_crash(now, dt)
+	if not quiet(now) then return end -- paused while the fight goes on
+	crash_left = crash_left - dt * 1000
+	db.actor.power = -STAMINA_CRASH_PER_S * dt
+	if body_on() and pain_debt > 0 then
+		body_health.change_pain(pain_debt * PAIN_RETURN * dt / CRASH_S)
+	end
+	if crash_left <= 0 then set_state("cooldown", now) end
+end
+
+-------------------------------------------------------------------------------
+-- signals
+-------------------------------------------------------------------------------
+local function on_hit_resolved(info)
+	if not info or not db.actor or not db.actor:alive() or not enabled() then return end
+	if not COUNTED[info.type] then return end
+	local who = info.who
+	if not who or who:id() == db.actor:id() then return end
+	if not (info.mutant or who:is_stalker()) then return end
+	local now = time_global()
+	last_activity = now
+	armed_until = now + ARM_MS
+end
+
+local function on_weapon_fire()
+	last_activity = time_global()
+end
+
+local function on_update()
+	ogse_signals.get_mgr():reschedule(100)
+	if not db.actor then return end
+	local now = time_global()
+	local dt = last_t > 0 and math.min(1, (now - last_t) / 1000) or 0
+	last_t = now
+	local h = db.actor.health
+	if not db.actor:alive() or h <= 0 then
+		last_health = nil
+		return
+	end
+
+	if state == "ready" and enabled() and last_health and now <= armed_until then
+		local drop = last_health - h
+		if drop > 0 then table.insert(losses, { t = now, loss = drop }) end
+		local sum = 0
+		for i = #losses, 1, -1 do
+			if now - losses[i].t > WINDOW_S * 1000 then table.remove(losses, i) else sum = sum + losses[i].loss end
+		end
+		local part_hit = false
+		if body_on() then
+			for _, n in ipairs(PARTS) do
+				local ph = body_health.part_health(n)
+				if last_parts[n] and last_parts[n] - ph >= PART_LOSS then part_hit = true end
+				if (n == "head" or n == "body") and ph < VITAL_LOW then part_hit = true end
+			end
+		end
+		if sum >= WINDOW_LOSS or h < LOW_HEALTH or part_hit then
+			log("trigger: loss %.2f in %d s, health %.2f", sum, WINDOW_S, h)
+			start_rush(now)
+		end
+	end
+	last_health = h
+	if body_on() then
+		for _, n in ipairs(PARTS) do last_parts[n] = body_health.part_health(n) end
+	end
+
+	if state == "rush" then
+		update_rush(now, dt)
+	elseif state == "crash_wait" then
+		if quiet(now) then set_state("crash", now) end
+	elseif state == "crash" then
+		update_crash(now, dt)
+	elseif state == "cooldown" and now >= t_end then
+		set_state("ready", now)
+	end
+end
+
+local function on_before_save()
+	local now = time_global()
+	local left = 0
+	if state == "cooldown" then
+		left = math.max(0, (t_end - now) / 1000)
+	elseif state ~= "ready" then
+		left = COOLDOWN_S
+	end
+	if left > 0 then set_value(SAVE_CD, left) else remove_value(SAVE_CD) end
+end
+
+local function on_spawn()
+	local now = time_global()
+	pp_stop()
+	state, losses, last_health, last_t, armed_until = "ready", {}, nil, 0, 0
+	last_parts = {}
+	pain_hold, pain_debt, crash_left = 0, 0, 0
+	last_activity = now
+	local left = tonumber(get_value(SAVE_CD, 0)) or 0
+	if left > 0 then
+		state, t_end = "cooldown", now + left * 1000
+	end
+end
+
+-- console: g_loadstring sivol_adrenaline.fx(0.6): screen effect strength 0..1, saved to game.options (0 = off)
+function fx(v)
+	v = tonumber(v) or PP_DEFAULT
+	game_options.AdrenalineFxStrength = math.max(0, math.min(1, v))
+	game_options.AdrenalineFx = v > 0
+	game_options.save_game_options()
+	if state == "rush" then
+		if v > 0 then level.add_pp_effector(PP_NAME, PP_ID, true) else level.remove_pp_effector(PP_ID) end
+	end
+	log2("[sivol_adrenaline] screen effect strength %.2f", game_options.AdrenalineFxStrength)
+end
+
+-- console test: g_loadstring sivol_adrenaline.test() starts a rush now (ignores the cooldown)
+function test()
+	if db.actor and db.actor:alive() then start_rush(time_global()) end
+end
+
+function attach(sm)
+	COUNTED[hit.wound] = true
+	COUNTED[hit.strike] = true
+	COUNTED[hit.fire_wound] = true
+	COUNTED[hit.explosion] = true
+	sm:subscribe({ signal = "on_actor_hit_resolved", fun = on_hit_resolved })
+	sm:subscribe({ signal = "on_actor_weapon_fire", fun = on_weapon_fire })
+	sm:subscribe({ signal = "on_update", fun = on_update })
+	sm:subscribe({ signal = "on_before_save_game", fun = on_before_save })
+	sm:subscribe({ signal = "on_spawn", fun = on_spawn })
+end

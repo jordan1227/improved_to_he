@@ -32,6 +32,33 @@ float3 he_watch_psy_outline(float3 original, float2 uv)
     return lerp(background, tinted, fill);
 }
 
+// NLC: with the injury system the same frame is the adrenaline meter (sivol_adrenaline.script):
+// ready = drawn as is, rush = amber, drains over the rush; crash = dim red pulse; cooldown = grey, refills
+float3 he_watch_adrenaline_outline(float3 original, float2 uv)
+{
+    float2 pixel = uv * 1024.0;
+    if (pixel.x < 203.0 || pixel.x > 886.0 || pixel.y < 467.0 || pixel.y > 577.0)
+        return original;
+    int st = int(m_he_watch_adrenaline.y + 0.5);
+    if (st == 0)
+        return original;
+    float3 background = watchBgColor();
+    float fill = saturate(m_he_watch_adrenaline.x);
+    float3 c = float3(0.45, 0.50, 0.45); // cooldown
+    if (st == 1)
+        c = float3(1.0, 0.72, 0.20);
+    else if (st == 2)
+    {
+        c = float3(0.85, 0.16, 0.08) * lerp(0.35, 1.0, he_watch_alarm_pulse());
+        fill = 1.0;
+    }
+    float progress = saturate((pixel.x - 205.0) / 679.0);
+    float shown = 1.0 - smoothstep(fill - 0.5 / 679.0, fill + 0.5 / 679.0, progress);
+    float coverage = saturate((max(original.r, max(original.g, original.b)) - 0.10) / 0.45);
+    float3 tinted = lerp(background, c, coverage);
+    return lerp(background, tinted, shown);
+}
+
 struct 	v2p
 {
  	float2 	tc0: 		TEXCOORD0;	// base
@@ -43,6 +70,7 @@ struct 	v2p
 
 float4 main(v2p I) : SV_Target
 {
+	if (m_he_watch_debug.x > 0.5) return he_watch_debug_map(I.tc0, float3(0.6, 0.6, 0.6)); // NLC mesh map (he_watch_common.h)
 	// NLC: rain drops on the watch face ( ssfx_hud_drops_1.y: rain intensity with cover, none under a roof )
 	float drop_col = 0;
 	if (ssfx_hud_drops_1.y > 0)
@@ -60,7 +88,23 @@ float4 main(v2p I) : SV_Target
 
 	float4	t_base 	= s_base.Sample( smp_base, coords );
 
-	t_base.rgb = he_watch_psy_outline(t_base.rgb, coords);
+	t_base.rgb = m_he_watch_adrenaline.z > 0.5 ? he_watch_adrenaline_outline(t_base.rgb, coords) : he_watch_psy_outline(t_base.rgb, coords);
+
+	// NLC page 2 with the body figure (he_watch_common.h): the inner face of this mesh maps affinely to the clock UV
+	// (OGF fit, error 0); the bezel pieces reuse the UV patch u 0.378..0.461, v 0.470..0.553 and are left alone.
+	// The meter / psy frame around the health bar is hidden on page 2 (it would cross the figure).
+	if (he_watch_page2_k() > 0.0)
+	{
+		bool bezel = coords.x > 0.378 && coords.x < 0.461 && coords.y > 0.470 && coords.y < 0.553;
+		if (!bezel)
+		{
+			float2 px = coords * 1024.0;
+			if (px.x >= 203.0 && px.x <= 886.0 && px.y >= 467.0 && px.y <= 577.0)
+				t_base.rgb = lerp(t_base.rgb, he_watch_page2_bg, he_watch_page2_k());
+			float2 cuv = float2(1.5754 * coords.x + 0.0017 * coords.y - 0.2887, -0.0031 * coords.x + 2.8875 * coords.y - 0.2151);
+			t_base.rgb = he_watch_page2(t_base.rgb, cuv, true);
+		}
+	}
 
 	float brightness = 1.f;
 	brightness *= calc_glitch_brightness_watch_ui(brightness);

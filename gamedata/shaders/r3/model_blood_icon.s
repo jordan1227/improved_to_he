@@ -12,5 +12,8 @@ function normal   (shader, t_base, t_second, t_detail)
 	shader:dx10texture	("s_base",	t_base)
 	shader:dx10texture("s_he_psy", "act\\watch\\icon_thirst2")
 	shader:dx10texture("s_he_injury", "act\\watch\\icon_injury") -- NLC: limb injury figure
+	shader:dx10texture("s_he_rad", "shaders\\watch\\he_radiation_digits") -- NLC: page 2 (he_watch_common.h)
+	shader:dx10texture("s_he_body", "act\\watch\\icon_body")
 	shader:dx10sampler	("smp_base")
+	shader:dx10sampler	("smp_nofilter")
 end

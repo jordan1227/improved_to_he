@@ -44,6 +44,7 @@
 #include "xrmessages.h"
 #include "string_table.h"
 #include "usablescriptobject.h"
+#include "nlc_body_health.h" // NLC: green health from artifact regeneration
 #include "ExtendedGeom.h"
 #include "alife_registry_wrappers.h"
 #include "../Include/xrRender/Kinematics.h"
@@ -904,7 +905,8 @@ void CActor::UpdateCL()
             outfit_cond = m_sh_mask_condition < 0.f ? outfit->GetCondition() : m_sh_mask_condition;
         if (auto wpn = inventory().ActiveItem())
             wpn_cond = wpn->GetCondition();
-        shader_exports.set_actor_params(Fvector{this->conditions().GetHealth(), outfit_cond, wpn_cond});
+        // NLC: display health (the head / torso when lower than the total)
+        shader_exports.set_actor_params(Fvector{conditions().body().DisplayHealth(conditions().GetHealth()), outfit_cond, wpn_cond});
     }
 
     // Обновление позиции актора для коллизии с травой/кустами
@@ -1594,7 +1596,14 @@ void CActor::UpdateArtefactsOnBelt()
     if (!fis_zero(effects.BleedingRestoreSpeed))
         conditions().ChangeBleeding(effects.BleedingRestoreSpeed * f_update_time);
 
-    if (!fis_zero(effects.HealthRestoreSpeed))
+    // NLC: with body health on, artifact / outfit regeneration is green health
+    // (docs/damage_model/DESIGN_recovery_and_body_status.md 14.2 E2); harmful (negative) regen stays direct
+    CActorBodyHealth& body = conditions().body();
+    const bool green = body.Enabled() && effects.HealthRestoreSpeed > 0.f;
+    body.SetGreenRate(green ? effects.HealthRestoreSpeed : 0.f);
+    if (green)
+        body.AddGreen(effects.HealthRestoreSpeed * f_update_time);
+    else if (!fis_zero(effects.HealthRestoreSpeed))
         conditions().ChangeHealth(effects.HealthRestoreSpeed * f_update_time);
 
     if (!fis_zero(effects.PowerRestoreSpeed))

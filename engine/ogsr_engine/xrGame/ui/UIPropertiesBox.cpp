@@ -4,6 +4,7 @@
 #include "../level.h"
 #include "UIListBoxItem.h"
 #include "UIXmlInit.h"
+#include "UICursor.h" // NLC: GetHoveredItem
 
 #define OFFSET_X (5)
 #define OFFSET_Y (5)
@@ -142,6 +143,24 @@ void CUIPropertiesBox::AutoUpdateSize()
 }
 
 CUIListBoxItem* CUIPropertiesBox::GetClickedItem() { return m_UIListWnd.GetSelectedItem(); }
+
+CUIListBoxItem* CUIPropertiesBox::GetHoveredItem()
+{
+    if (!IsShown())
+        return nullptr;
+    const Fvector2 c = GetUICursor()->GetCursorPosition();
+    for (u32 i = 0, n = m_UIListWnd.GetSize(); i < n; ++i)
+    {
+        CUIListBoxItem* it = m_UIListWnd.GetItemByIDX(i);
+        if (!it || !it->IsShown())
+            continue;
+        Frect r;
+        it->GetAbsoluteRect(r);
+        if (r.in(c.x, c.y))
+            return it;
+    }
+    return nullptr;
+}
 void CUIPropertiesBox::Update() { inherited::Update(); }
 void CUIPropertiesBox::Draw() { inherited::Draw(); }
 

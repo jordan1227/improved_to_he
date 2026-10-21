@@ -141,6 +141,7 @@ protected:
     CUIOutfitInfo UIOutfitInfo;
     CUIBodyHealthWnd* m_pUIBodyHealth{}; // NLC
     void AddBodyPartUseItems(bool& b_show); // NLC
+    void UpdateBodyPreview(); // NLC: hovered use row -> part bars preview
     CUIItemInfo UIItemInfo;
 
     CInventory* m_pInv;

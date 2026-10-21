@@ -31,6 +31,7 @@
 #include "UIPdaMsgListItem.h"
 #include "../alife_registry_wrappers.h"
 #include "../actorcondition.h"
+#include "../nlc_body_health.h" // NLC: display health
 
 #include "../string_table.h"
 #include "clsid_game.h"
@@ -432,7 +433,7 @@ void CUIMainIngameWnd::Update()
     }
 
     // health&armor
-    UIHealthBar.SetProgressPos(m_pActor->GetfHealth() * 100.0f);
+    UIHealthBar.SetProgressPos(m_pActor->conditions().body().DisplayHealth(m_pActor->GetfHealth()) * 100.0f); // NLC
     UIMotionIcon.SetPower(m_pActor->conditions().GetPower() * 100.0f);
 
     UIZoneMap->UpdateRadar(Device.vCameraPosition);

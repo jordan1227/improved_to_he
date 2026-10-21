@@ -1,7 +1,14 @@
 -- [HE-PORT]
 
 local UPDATE_MS = 1000
-local PSY_FLOOR = 0.3
+-- pain (DESIGN_recovery_and_body_status.md 32): no psy health loss (its screen effect starts below 95%).
+-- From PAIN_MID of the max stamina recovers PAIN_REGEN_CUT slower and the hands shake (pain_wobble_k);
+-- from PAIN_HIGH more shake and a groan now and then; at the max the faint below.
+local PAIN_MID, PAIN_HIGH = 0.3, 0.7
+local PAIN_REGEN_CUT = 0.25
+local PAIN_WOBBLE = { 1.10, 1.25 }
+local GROAN_MIN_MS, GROAN_MAX_MS = 20000, 40000
+local last_power, next_groan, groan_snd = nil, 0, nil
 local FAINT_SCALE = 20
 local FAINT_MS = 150
 local FAINT_COOLDOWN_MS = 300000
@@ -14,8 +21,35 @@ local PAIN_BOOSTS = {
 	morphine = { 0.015, 320 },
 }
 local pain_boosts = {}
-local TRADE_ITEMS = { improvised_splint = true, survival_kit = true, morphine = true }
+-- items of the body systems taken from traders while body health is off; "field" ones stay with the
+-- injury system on (sivol_actor_crit cures with them)
+local TRADE_ITEMS = { improvised_splint = "field", survival_kit = "field", morphine = true }
 local last_update
+
+-- pain relief of an item for its description: total relief (rate x seconds), nil if none
+function pain_relief(sect)
+	local b = PAIN_BOOSTS[sect]
+	return b and b[1] * b[2] or nil
+end
+
+local function pain_share()
+	return body_health.pain() / math.max(body_health.pain_max(), 0.001)
+end
+
+-- weapon sway factor of pain (params/wpn_params.script live_wobble_k)
+function pain_wobble_k()
+	if not (body_health and body_health.enabled()) then return 1 end
+	local p = pain_share()
+	if p >= PAIN_HIGH then return PAIN_WOBBLE[2] end
+	if p >= PAIN_MID then return PAIN_WOBBLE[1] end
+	return 1
+end
+
+local function groan()
+	if groan_snd and groan_snd:playing() then return end
+	groan_snd = xr_sound.get_safe_sound_object("actor\\pain_" .. math.random(8))
+	groan_snd:play_at_pos(db.actor, vector(), 0, sound_object.s2d)
+end
 
 function item_used(sect)
 	local b = PAIN_BOOSTS[sect]
@@ -62,14 +96,15 @@ local function faint()
 	sleep_manager.main(FAINT_SCALE)
 end
 
-local function strip_traders()
+local function strip_traders(keep_field)
 	if db.actor:is_talking() then return end
 	for id, tt in pairs(trade_manager) do
 		local npc = type(id) == "number" and type(tt) == "table" and level.object_by_id(id)
 		if npc then
 			local ids = {}
 			npc:iterate_inventory(function(_, item)
-				if TRADE_ITEMS[item:section()] then
+				local kind = TRADE_ITEMS[item:section()]
+				if kind and not (keep_field and kind == "field") then
 					ids[#ids + 1] = item:id()
 				end
 			end, npc)
@@ -88,7 +123,8 @@ function on_update()
 	if not db.actor or not db.actor:alive() or not body_health then return end
 	body_health.set_enabled(game_options.BodyHealth ~= false)
 	if not body_health.enabled() then
-		strip_traders()
+		strip_traders(sivol_actor_crit and sivol_actor_crit.active() and game_options.AdditionalMobHits ~= false)
+		last_power = nil
 		return
 	end
 	if #pain_boosts > 0 then
@@ -96,13 +132,25 @@ function on_update()
 	end
 
 	local pain = body_health.pain()
-	local psy = db.actor.psy_health
-	if psy > 1 - pain and psy > PSY_FLOOR then
-		db.actor.psy_health = math.max(psy * (1 - pain), PSY_FLOOR) - psy
+	-- PDA articles (sivol_body_text.unlock_article): first temporary health, first real pain
+	if body_health.green and body_health.green("all") >= 0.01 then sivol_body_text.unlock_article("temp_health") end
+	if pain >= 0.2 * body_health.pain_max() then sivol_body_text.unlock_article("pain") end
+	local p = pain_share()
+	local power = db.actor.power
+	local rush = sivol_adrenaline and sivol_adrenaline.blocks_faint()
+	if last_power and p >= PAIN_MID and power > last_power and not rush and not sleep_manager.is_sleep_active() then
+		db.actor.power = -(power - last_power) * PAIN_REGEN_CUT -- the power setter is a delta
+		power = db.actor.power
+	end
+	last_power = power
+	if p >= PAIN_HIGH and now >= next_groan and not rush then
+		next_groan = now + math.random(GROAN_MIN_MS, GROAN_MAX_MS)
+		groan()
 	end
 
 	if pain >= body_health.pain_max() and time_global() > faint_ready
-		and not sleep_manager.is_sleep_active() and not db.actor:is_talking() then
+		and not sleep_manager.is_sleep_active() and not db.actor:is_talking()
+		and not (sivol_adrenaline and sivol_adrenaline.blocks_faint()) then -- NLC: no faint during an adrenaline rush
 		faint()
 	end
 end

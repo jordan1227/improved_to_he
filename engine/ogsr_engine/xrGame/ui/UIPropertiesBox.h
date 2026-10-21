@@ -34,6 +34,7 @@ public:
     virtual void Draw();
 
     CUIListBoxItem* GetClickedItem();
+    CUIListBoxItem* GetHoveredItem(); // NLC: the row under the cursor, nullptr if none
 
     void AutoUpdateSize();
 
