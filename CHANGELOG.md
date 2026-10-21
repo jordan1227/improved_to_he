@@ -1,6 +1,267 @@
-<!-- nlc-changelog-head: 8a2c8a719a9ade1de77deb234718f664b88b7fe2 -->
+<!-- nlc-changelog-head: 3d08314ef08764fb2d80a5d5389aeab570c0b399 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 3d08314ef08764fb2d80a5d5389aeab570c0b399 -->
+## 21.10.26 11:15 МСК - Add body-health recovery and injury systems
+
+Commit: [3d08314](https://github.com/jordan1227/improved_to_he/commit/3d08314ef08764fb2d80a5d5389aeab570c0b399)
+
+### Description
+
+Add per-part temporary health, treatment previews, injury and splint progression, pain effects, and adrenaline rushes. Extend inventory and watch displays with body status, and update the engine to nlc-3.589.118.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/actor.ltx
+- M gamedata/config/gameplay/encyclopedia_tutorial.xml
+- M gamedata/config/gameplay/info_known_objects.xml
+- M gamedata/config/misc/items.ltx
+- M gamedata/config/misc/shop_barman/barman_supl.ltx
+- M gamedata/config/misc/shop_barman/barman_trade.ltx
+- M gamedata/config/system.ltx
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/eng/st_body_health.xml
+- M gamedata/config/text/eng/string_table_tutorial.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/config/text/rus/st_body_health.xml
+- M gamedata/config/text/rus/string_table_tutorial.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/inventory_new.xml
+- M gamedata/config/ui/inventory_new_16.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/figure.script
+- M gamedata/scripts/he_body_health.script
+- M gamedata/scripts/kotovod/game_options.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/ogsr_shaders_control.script
+- M gamedata/scripts/params/params.script
+- M gamedata/scripts/params/wpn_params.script
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+- A gamedata/scripts/sivol/sivol_adrenaline.script
+- A gamedata/scripts/sivol/sivol_body_text.script
+- M gamedata/scripts/sivol/sivol_hit_log.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/vergas/vergas_medical_elastic.script
+- M gamedata/shaders/r3/he_watch_common.h
+- M gamedata/shaders/r3/model_blood_icon.ps
+- M gamedata/shaders/r3/model_blood_icon.s
+- M gamedata/shaders/r3/model_clock.ps
+- M gamedata/shaders/r3/model_clock.s
+- M gamedata/shaders/r3/model_compass_icon.ps
+- M gamedata/shaders/r3/model_health_icon.ps
+- M gamedata/shaders/r3/model_healthbar.ps
+- A gamedata/shaders/r3/model_healthbar.s
+- M gamedata/shaders/r3/model_power_icon.ps
+- A gamedata/shaders/r3/model_power_icon.s
+- M gamedata/shaders/r3/model_powerbar.ps
+- M gamedata/shaders/r3/model_satiety_icon.ps
+- A gamedata/shaders/r3/model_satiety_icon.s
+- M gamedata/shaders/r3/model_thirst_icon.ps
+- A gamedata/shaders/r3/model_thirst_icon.s
+- M gamedata/shaders/r3/models_watch_ui.ps
+- M gamedata/shaders/r3/models_watch_ui.s
+- A gamedata/textures/act/watch/icon_body.dds
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.h
+- M engine/ogsr_engine/xrGame/ui/UIBodyHealthWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIBodyHealthWnd.h
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd.h
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd3.cpp
+- M engine/ogsr_engine/xrGame/ui/UIMainIngameWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIPropertiesBox.cpp
+- M engine/ogsr_engine/xrGame/ui/UIPropertiesBox.h
+- M engine/ogsr_engine/xrGame/ui/map_hint.cpp
+- M engine/ogsr_engine/xrGame/ui/map_hint.h
+
+<!-- nlc-changelog-commit: eb9004fafd96a963e465caed77d31d519e57c5b4 -->
+## 20.10.26 20:26 МСК - Иконка ГГ зависит от костюма
+
+Commit: [eb9004f](https://github.com/jordan1227/improved_to_he/commit/eb9004fafd96a963e465caed77d31d519e57c5b4)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/kotovod/game_options.script
+- A gamedata/scripts/kotovod/he_actor_icon.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_dolg.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_dolg_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_exo_dolg.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_exo_killer.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_exo_monolit.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_exo_stalker.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_exo_svoboda.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_guardian.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_hero_nebo_2.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_hero_nebo_3a.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_killer.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_killer_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_monolit.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_monolit_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_novice.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_novice_bandit.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_novice_bandit_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_novice_white_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_plash_black.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_plash_black_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_plash_brown.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_plash_brown_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_scien_dolg.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_scien_green.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_scien_killer.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_scien_monolit.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_scien_red.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_scien_stalker.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_scien_svoboda.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_soldier.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_soldier_black.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_soldier_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_soldier_green.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_stalker.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_stalker_bandit_exoskeleton.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_stalker_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_stalker_prizrak.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_svoboda.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_svoboda_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_svoboda_strazh.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_svoboda_strazh_gas.dds
+- A gamedata/textures/ui/actor_icons/ui_npc_u_actor_without.dds
+
+<!-- nlc-changelog-commit: 87132cb1631413e6404605e025c2eb9f3190944a -->
+## 20.10.26 16:45 МСК - Клык в телепорт
+
+Commit: [87132cb](https://github.com/jordan1227/improved_to_he/commit/87132cb1631413e6404605e025c2eb9f3190944a)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/agr/klyk.ltx
+
+<!-- nlc-changelog-commit: 23d649d119c7a5668a49d8d3b2e236f34c4520cb -->
+## 20.10.26 15:47 МСК - Проводник
+
+Commit: [23d649d](https://github.com/jordan1227/improved_to_he/commit/23d649d119c7a5668a49d8d3b2e236f34c4520cb)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+
+<!-- nlc-changelog-commit: 54ee371fd32383a42ae435d062839de38374d1df -->
+## 20.10.26 11:06 МСК - манифест
+
+Commit: [54ee371](https://github.com/jordan1227/improved_to_he/commit/54ee371fd32383a42ae435d062839de38374d1df)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 2fe4b817d5025b93367603f54a0004bf9e81beb3 -->
+## 20.10.26 10:36 МСК - Add NPC staggers and reinforced belt mechanics
+
+Commit: [2fe4b81](https://github.com/jordan1227/improved_to_he/commit/2fe4b817d5025b93367603f54a0004bf9e81beb3)
+
+### Description
+
+Update the engine to nlc-3.589.111 with blunt-impact damage, queued NPC staggers, and broader critical-hit animation support. Add artifact belt wear, breakage, repair, and reinforcement, with related configuration, dialogue, and localization.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/damages.ltx
+- M gamedata/config/creatures/m_stalker.ltx
+- M gamedata/config/creatures/m_stalker_zombied.ltx
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/config/misc/sak_quest_items.ltx
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/weapons/weapons.ltx
+- M gamedata/scripts/alpet/nlc_container.script
+- M gamedata/scripts/arts/arc_arts.script
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/engine_callbacks.script
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/kotovod/spawner.script
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+- A gamedata/scripts/sivol/sivol_belt.script
+- M gamedata/scripts/sivol/sivol_hit_fx.script
+- A gamedata/textures/ui/ui_icon_equipment_16.dds
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.h
+- M engine/ogsr_engine/xrGame/BoneProtections.cpp
+- M engine/ogsr_engine/xrGame/BoneProtections.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.cpp
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker_fire.cpp
+- M engine/ogsr_engine/xrGame/nlc_npc_damage.h
+- M engine/ogsr_engine/xrGame/stalker_animation_global.cpp
+- M engine/ogsr_engine/xrGame/stalker_movement_manager.h
+- M engine/ogsr_engine/xrGame/stalker_movement_manager_inline.h
+
+<!-- nlc-changelog-commit: 88ff68f0f1da37426ae9d0327b67cd7409f62b22 -->
+## 20.10.26 07:39 МСК - Манифест
+
+Commit: [88ff68f](https://github.com/jordan1227/improved_to_he/commit/88ff68f0f1da37426ae9d0327b67cd7409f62b22)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 8a2c8a719a9ade1de77deb234718f664b88b7fe2 -->
 ## 20.10.26 07:38 МСК - Retune heavy armor damage and update engine
