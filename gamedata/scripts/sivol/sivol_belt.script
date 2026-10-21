@@ -111,10 +111,11 @@ function can_reinforce_vergas()
 end
 
 -- an artifact capsule (exact section; have_items_count matches substrings, e.g. quest he_yan_af_capsule)
-function capsule()
+-- skip: optional { [id] = true } of objects already picked for the same payment
+function capsule( skip )
 	local found
 	db.actor:iterate_inventory( function( _, obj )
-		if not found and obj:section() == "af_capsule" then found = obj end
+		if not found and obj:section() == "af_capsule" and not ( skip and skip[ obj:id() ] ) then found = obj end
 	end, db.actor )
 	return found
 end
@@ -136,14 +137,14 @@ local function tier_of( sect, list )
 	return nil
 end
 
-local function find_art( tier, dyn5d )
+local function find_art( tier, dyn5d, skip )
 	local list = kotovod.tbl_arts and kotovod.tbl_arts[ "lvl" .. tier ]
 	if not list then return nil end
 	local cond, best, best_dyn = pay_cond()
 	db.actor:iterate_inventory( function( _, obj )
 		local dyn = tier_of( obj:section(), list )
 		if dyn and obj:condition() >= cond and not ( he_gluzov_art and he_gluzov_art.is_locked_id( obj:id() ) )
-			and not db.actor:is_on_belt( obj ) and ( not dyn5d or dyn == 5 ) then
+			and not db.actor:is_on_belt( obj ) and ( not dyn5d or dyn == 5 ) and not ( skip and skip[ obj:id() ] ) then
 			if not best or dyn < best_dyn or ( dyn == best_dyn and obj:condition() < best:condition() ) then
 				best, best_dyn = obj, dyn
 			end
@@ -161,11 +162,11 @@ end
 
 -- payment kinds: "t1".."t3" (tier), "t1x".."t3x" (tier, dyn5d), "dummy", "capsule",
 -- "mod" (modificat .75 / mezo .8 / hyper .85 / absolute .9 / af_dummy_buliz .8, Docent's old rule)
-local function pay_find( kind )
+local function pay_find( kind, skip )
 	local t, x = string.match( kind, "^t(%d)(x?)$" )
-	if t then return find_art( tonumber( t ), x == "x" ) end
-	if kind == "dummy" then return find_art( 4, false ) end
-	if kind == "capsule" then return capsule() end
+	if t then return find_art( tonumber( t ), x == "x", skip ) end
+	if kind == "dummy" then return find_art( 4, false, skip ) end
+	if kind == "capsule" then return capsule( skip ) end
 	return nil
 end
 
@@ -199,14 +200,40 @@ local UPGRADE_PAY = {
 	[4] = { { "mod" }, { "t3x", "capsule" } },
 }
 
+-- a payment can name one kind twice (an upgrade of a reinforced belt adds the reinforcement of the new
+-- size, e.g. t2 + t2), so every kind gets its own object. dyn5d kinds pick first, so a plain kind of the
+-- same tier does not take the only dyn5d copy. "mod" never shares objects with the other kinds.
+local function plan( kinds )
+	if not kinds then return nil end
+	local order = {}
+	for _, k in ipairs( kinds ) do
+		if string.find( k, "x$" ) then table.insert( order, 1, k ) else table.insert( order, k ) end
+	end
+	local skip, picks = {}, {}
+	for _, k in ipairs( order ) do
+		if k == "mod" then
+			if not have( k ) then return nil end
+			table.insert( picks, { kind = k } )
+		else
+			local obj = pay_find( k, skip )
+			if not obj then return nil end
+			skip[ obj:id() ] = true
+			table.insert( picks, { kind = k, obj = obj } )
+		end
+	end
+	return picks
+end
+
 local function have_all( kinds )
-	if not kinds then return false end
-	for _, k in ipairs( kinds ) do if not have( k ) then return false end end
-	return true
+	return plan( kinds ) ~= nil
 end
 
 local function give_all( kinds )
-	for _, k in ipairs( kinds ) do give( k ) end
+	local picks = plan( kinds )
+	if not picks then return end
+	for _, p in ipairs( picks ) do
+		if p.obj then give_obj( p.obj ) else give( p.kind ) end
+	end
 end
 
 function pay_have( n ) return have_all( REINFORCE_PAY[ tonumber( n ) ] ) end
@@ -217,22 +244,61 @@ function can_upgrade_any()
 	return false
 end
 
-function can_upgrade( n, option )
-	local opt = UPGRADE_PAY[ tonumber( n ) ]
-	return has_size( n ) and opt ~= nil and have_all( opt[ tonumber( option ) ] )
+-- reinforced belt of size n (the upgrade takes it before a plain one of the same size)
+function has_reinforced( n ) return find( tonumber( n ), true ) ~= nil end
+function no_reinforced( n ) return not has_reinforced( n ) end
+
+-- keep = true: the reinforcement goes to the new size, paid at that size (REINFORCE_PAY[ n + 1 ])
+local function upgrade_kinds( n, option, keep )
+	local opt = UPGRADE_PAY[ n ] and UPGRADE_PAY[ n ][ option ]
+	if not opt then return nil end
+	if not keep then return opt end
+	local kinds = {}
+	for _, k in ipairs( opt ) do table.insert( kinds, k ) end
+	for _, k in ipairs( REINFORCE_PAY[ n + 1 ] ) do table.insert( kinds, k ) end
+	return kinds
 end
 
--- belt of size n -> n+1, keeps the reinforcement (new belt, full condition)
+local function do_upgrade( n, kinds, belt, reinforced )
+	give_all( kinds )
+	sak_inventory.release_actor_items( belt:section(), 1, true ) -- exact: plain names are substrings of _r
+	sak.create_items( section( n + 1, reinforced ), 1 )
+	schedule.add( "sivol_belt_slots", "sivol_belt.refresh()", 300 )
+end
+
+-- a reinforced belt keeps its reinforcement and pays the surcharge; a plain belt pays the option only
+function can_upgrade( n, option )
+	n, option = tonumber( n ), tonumber( option )
+	if has_reinforced( n ) then return have_all( upgrade_kinds( n, option, true ) ) end
+	return has_plain( n ) and have_all( upgrade_kinds( n, option, false ) )
+end
+
+-- belt of size n -> n+1 (new belt, full condition)
 function upgrade( n, option )
 	n, option = tonumber( n ), tonumber( option )
 	if not can_upgrade( n, option ) then
 		log2( "[sivol_belt] upgrade %d option %d: belt or payment missing", n, option )
 		return
 	end
-	give_all( UPGRADE_PAY[ n ][ option ] )
-	take_size( n )
-	give_size( n + 1 )
-	schedule.add( "sivol_belt_slots", "sivol_belt.refresh()", 300 )
+	local belt = find( n, true )
+	local keep = belt ~= nil
+	belt = belt or find( n, false )
+	do_upgrade( n, upgrade_kinds( n, option, keep ), belt, keep )
+end
+
+-- the actor owns a reinforced belt but takes a plain upgrade without the surcharge
+function can_upgrade_plain( n, option )
+	n, option = tonumber( n ), tonumber( option )
+	return has_reinforced( n ) and have_all( upgrade_kinds( n, option, false ) )
+end
+
+function upgrade_plain( n, option )
+	n, option = tonumber( n ), tonumber( option )
+	if not can_upgrade_plain( n, option ) then
+		log2( "[sivol_belt] upgrade_plain %d option %d: belt or payment missing", n, option )
+		return
+	end
+	do_upgrade( n, upgrade_kinds( n, option, false ), find( n, false ) or find( n, true ), false )
 end
 
 function can_pay_plain( n ) return has_plain( n ) and pay_have( n ) end
