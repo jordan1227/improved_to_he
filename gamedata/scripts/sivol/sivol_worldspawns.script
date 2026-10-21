@@ -178,3 +178,253 @@ function on_game_load()
     -- Existing saves have no eligibility infoportion and receive no Cordon loot.
     run_plan()
 end
+
+-- Kishka (k01_darkscape) gas station, ported from NLC HE.
+-- After the X-18 documents reach the Barman, bandits who fled the Dark Valley raid hold
+-- the gas station and the boiler house. They killed Gnus, who hid his loot in the boiler
+-- pipe; his note and the post leader's report lead to the rucksack on the pipe.
+-- Until the actor comes close or hits one of them, they take no damage from anyone else,
+-- and offline A-life skips them and the bodies (he_quest_target_lock) until both notes
+-- are read. They are forced hostile to the actor; bandit sympathy is 0 in
+-- game_relations.ltx, so killing them does not move Dark Valley goodwill.
+local KISHKA_LEVEL   = "k01_darkscape"
+local KISHKA_GATE    = "bar_darklab_document_done"
+local KISHKA_SPAWNED = "kishka_post_x18_bandits_spawned"
+local KISHKA_ENGAGED = "kishka_post_x18_engaged"
+local KISHKA_STASH   = "kishka_boiler_stash_spawned"
+local KISHKA_NOTE1   = "kishka_note1_taken"
+local KISHKA_NOTE2   = "kishka_note2_taken"
+local KISHKA_DONE    = "kishka_notes_concluded"
+local KISHKA_KEY     = "sivol_worldspawns.kishka_v1"
+local KISHKA_KEEPOUT = 150  -- no spawn while the actor is this close to either site
+local KISHKA_ENGAGE  = 60   -- other attackers can hurt them once the actor is this close
+local KISHKA_TICK_MS = 2000
+local KISHKA_STASH_LOST_Y = -1.5 -- boiler floor is about 0.5
+
+-- Stand points are spawn_map actor captures and match the walk paths in waypoints.ltx.
+local kishka_npcs = {
+    -- The report's author broods by the fire; Kleshch, who pushed for the killing, guards the entrance.
+    { section = "kishka_post_x18_leader",  pos = {425.977, -1.549, -357.391}, lv = 948110, gv = 4153, note = "kishka_boiler_note2" },
+    { section = "kishka_post_x18_kleshch", pos = {420.387, -2.068, -362.766}, lv = 938584, gv = 4153 },
+    { section = "kishka_post_x18_rear",    pos = {432.754, -2.067, -345.104}, lv = 958281, gv = 4152 },
+    { section = "kishka_post_x18_ogryzok", pos = {104.817,  0.502, -301.478}, lv = 517925, gv = 4064, note = "kishka_boiler_note" },
+}
+-- Dragged out of the camp and dumped in the open (spawn_map actor capture, +0.3 m).
+local kishka_corpse = { section = "kishka_post_x18_gnus_corpse", pos = {429.131, -1.41, -369.218}, lv = 952666, gv = 4153 }
+-- High on the boiler pipe: the player jumps up or shoots the rucksack down.
+local kishka_stash = { pos = {109.0522, 6.24333, -299.6221}, lv = 517928, gv = 4064 }
+-- Ledge right under the stash (player can jump to it), used if the rucksack falls through.
+local kishka_stash_fallback = { pos = {109.530, 1.879, -299.699}, lv = 518766, gv = 4064 }
+local kishka_stash_items = { "af_electra_moonlight_new", "medkit", "medkit", "vodka" }
+local kishka_sites = { {425.977, -1.549, -357.391}, {104.817, 0.502, -301.478} }
+
+local kishka_next_tick = 0
+local kishka_bad_vertex_logged = false
+
+local function kishka_v(p)
+    return vector():set(p[1], p[2], p[3])
+end
+
+-- { ids = { [tostring(id)] = section }, names = { [name] = section }, stash = id }
+local function kishka_data()
+    return get_value(KISHKA_KEY)
+end
+
+local function kishka_vertex_ok(p)
+    local gg = game_graph()
+    if not gg:valid_vertex_id(p.gv) then return false end
+    return alife():level_name(gg:vertex(p.gv):level_id()) == KISHKA_LEVEL
+end
+
+local function kishka_create_corpse(c)
+    -- Dead on creation, no story id. death_droped stays unset, so on its first online update
+    -- xr_motivator runs death_manager's create_release_item and the body ends up with the
+    -- same trimmed loot as any bandit killed in the field.
+    local obj = alife():create(c.section, kishka_v(c.pos), c.lv, c.gv)
+    local pk = get_netpk(obj)
+    local data = pk:get()
+    data.health = 0
+    data.upd.health = 0
+    pk:set(data)
+    return obj
+end
+
+local function kishka_try_spawn()
+    if has_alife_info(KISHKA_SPAWNED) or not has_alife_info(KISHKA_GATE) then return end
+    if level.name() == KISHKA_LEVEL then
+        local apos = db.actor:position()
+        for _, s in ipairs(kishka_sites) do
+            if apos:distance_to(kishka_v(s)) < KISHKA_KEEPOUT then return end
+        end
+    end
+    local points = { kishka_corpse }
+    for _, n in ipairs(kishka_npcs) do points[#points + 1] = n end
+    for _, p in ipairs(points) do
+        if not kishka_vertex_ok(p) then
+            if not kishka_bad_vertex_logged then
+                kishka_bad_vertex_logged = true
+                log2("[sivol_worldspawns] Kishka spawn skipped: game vertex %d of %s is not on %s",
+                    p.gv, p.section, KISHKA_LEVEL)
+            end
+            return
+        end
+    end
+
+    db.actor:give_info_portion(KISHKA_SPAWNED)
+    local sim = alife()
+    local data = { ids = {}, names = {} }
+    for _, n in ipairs(kishka_npcs) do
+        local obj = sim:create(n.section, kishka_v(n.pos), n.lv, n.gv)
+        data.ids[tostring(obj.id)] = n.section
+        data.names[obj:name()] = n.section
+        if n.note then misc.spawn_to(n.note, obj) end
+    end
+    local corpse = kishka_create_corpse(kishka_corpse)
+    data.ids[tostring(corpse.id)] = kishka_corpse.section
+    data.names[corpse:name()] = kishka_corpse.section
+    set_value(KISHKA_KEY, data)
+    if diagnostics then
+        log2("[sivol_worldspawns] Kishka bandits spawned, actor on %s", level.name())
+    end
+end
+
+local function kishka_engage(reason)
+    if has_alife_info(KISHKA_ENGAGED) then return end
+    db.actor:give_info_portion(KISHKA_ENGAGED)
+    if diagnostics then log2("[sivol_worldspawns] Kishka engaged: %s", reason) end
+end
+
+-- Online bandits: forced hostility and the engage distance.
+local function kishka_update_online(data)
+    local apos = db.actor:position()
+    local engaged = has_alife_info(KISHKA_ENGAGED)
+    for sid, section in pairs(data.ids) do
+        if section ~= kishka_corpse.section then
+            local obj = level.object_by_id(tonumber(sid))
+            if obj and obj:alive() then
+                if obj:relation(db.actor) ~= game_object.enemy then
+                    obj:set_relation(game_object.enemy, db.actor)
+                end
+                if not engaged and obj:position():distance_to(apos) < KISHKA_ENGAGE then
+                    kishka_engage("actor within " .. KISHKA_ENGAGE .. " m of " .. obj:name())
+                    engaged = true
+                end
+            end
+        end
+    end
+end
+
+local function kishka_spawn_stash_at(p)
+    local obj = amk.spawn_item("rucksack", kishka_v(p.pos), p.gv, p.lv)
+    if not obj then return nil end
+    kotovod.add_box_protection(obj:name())
+    for _, section in ipairs(kishka_stash_items) do misc.spawn_to(section, obj) end
+    sak.off_on(obj)
+    return obj
+end
+
+-- Safety net: a rucksack shot off the pipe that ends up below the boiler floor is
+-- re-created with its current contents on the ledge under the pipe.
+local function kishka_check_stash(data)
+    if not data.stash then return end
+    local sim = alife()
+    local se = sim:object(data.stash)
+    if not se or se.parent_id ~= BAD_OBJ_ID then
+        data.stash = nil -- picked up or gone
+        set_value(KISHKA_KEY, data)
+        return
+    end
+    local obj = level.object_by_id(data.stash)
+    if not obj then return end
+    local y = obj:position().y
+    if y >= KISHKA_STASH_LOST_Y then return end
+
+    local inside, ids = {}, {}
+    for id, o in sim:objects() do
+        if o.parent_id == data.stash then
+            table.insert(inside, o:section_name())
+            table.insert(ids, id)
+        end
+    end
+    for _, id in ipairs(ids) do misc.release_obj(id) end
+    misc.release_obj(data.stash)
+    local p = kishka_stash_fallback
+    local box = amk.spawn_item("rucksack", kishka_v(p.pos), p.gv, p.lv)
+    kotovod.add_box_protection(box:name())
+    for _, section in ipairs(inside) do misc.spawn_to(section, box) end
+    data.stash = box.id
+    set_value(KISHKA_KEY, data)
+    log2("[sivol_worldspawns] Kishka stash fell below the boiler floor (y=%.2f), moved to the ledge with %d items",
+        y, #inside)
+end
+
+local function kishka_tick()
+    local t = time_global()
+    if t < kishka_next_tick then return end
+    kishka_next_tick = t + KISHKA_TICK_MS
+    if not (db.actor and sak.game_began) then return end
+    kishka_try_spawn()
+    if level.name() ~= KISHKA_LEVEL then return end
+    local data = kishka_data()
+    if not data then return end
+    kishka_update_online(data)
+    kishka_check_stash(data)
+end
+
+local function kishka_on_npc_before_hit(obj, hit_data)
+    if hit_data.ignore_hit or has_alife_info(KISHKA_ENGAGED) then return end
+    local data = kishka_data()
+    if not (data and data.ids[tostring(obj:id())]) then return end
+    local who = hit_data.who or (hit_data.who_id and level.object_by_id(hit_data.who_id))
+    if who and db.actor and who:id() == db.actor:id() then
+        if (hit_data.power or 0) > 0 then kishka_engage("actor hit " .. obj:name()) end
+        return
+    end
+    hit_data.ignore_hit = true
+end
+
+-- he_quest_target_lock: offline A-life must not kill, move or loot them while the story is open.
+function kishka_is_locked_id(id)
+    if not id or has_alife_info(KISHKA_DONE) then return false end
+    local data = kishka_data()
+    return data ~= nil and data.ids[tostring(id)] ~= nil
+end
+
+function kishka_is_locked_name(name)
+    if not name or has_alife_info(KISHKA_DONE) then return false end
+    local data = kishka_data()
+    return data ~= nil and data.names[name] ~= nil
+end
+
+local function kishka_conclude()
+    if has_alife_info(KISHKA_DONE) then return end
+    db.actor:give_info_portion(KISHKA_DONE)
+    sak.send_tip(game.translate_string("kishka_notes_conclude_tip"),
+        game.translate_string("thinking_out_loud"), 5, 15, "g_g", "sak", "yellow")
+end
+
+-- actor_take_item: 1 = Gnus's own note, 2 = the leader's report.
+function kishka_note_taken(which)
+    local info = which == 1 and KISHKA_NOTE1 or KISHKA_NOTE2
+    if has_alife_info(info) then return end
+    db.actor:give_info_portion(info)
+    if not has_alife_info(KISHKA_STASH) then
+        db.actor:give_info_portion(KISHKA_STASH)
+        local box = kishka_spawn_stash_at(kishka_stash)
+        local data = kishka_data()
+        if box and data then
+            data.stash = box.id
+            set_value(KISHKA_KEY, data)
+        end
+    end
+    sak.send_tip(game.translate_string(which == 1 and "kishka_note1_tip" or "kishka_note2_tip"),
+        game.translate_string("thinking_out_loud"), 5, 15, "g_g", "sak", "yellow")
+    if has_alife_info(KISHKA_NOTE1) and has_alife_info(KISHKA_NOTE2) then
+        kishka_conclude()
+    end
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_update", fun = kishka_tick })
+    sm:subscribe({ signal = "on_npc_before_hit", fun = kishka_on_npc_before_hit })
+end
