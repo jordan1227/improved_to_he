@@ -1,6 +1,488 @@
-<!-- nlc-changelog-head: 3d08314ef08764fb2d80a5d5389aeab570c0b399 -->
+<!-- nlc-changelog-head: a3513856adb483b71eeaf8778c2c36a79bab375b -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: a3513856adb483b71eeaf8778c2c36a79bab375b -->
+## 22.10.26 21:23 МСК - Add engine-driven gunplay and weapon handling
+
+Commit: [a351385](https://github.com/jordan1227/improved_to_he/commit/a3513856adb483b71eeaf8778c2c36a79bab375b)
+
+### Description
+
+Introduce HUD motion springs, inertia, clips, landing feedback, and shot punch in the engine, with Lua tuning and per-weapon handling integration. Update recoil and ADS sway behavior, add a per-weapon mouse sensitivity option, and show weapon handling in inventory.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/text/eng/ui_st_inventory.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_inventory.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/params/wpn_params.script
+- M gamedata/scripts/sivol/sivol_fuzz_recoil.script
+- M gamedata/scripts/sivol/sivol_fuzz_recoil_profiles.script
+- M gamedata/scripts/sivol/sivol_weapon.script
+- M gamedata/scripts/sivol/sivol_weapon_aim_speed.script
+- M gamedata/scripts/sivol/sivol_weapon_inertia.script
+- M gamedata/scripts/sivol/sivol_weapon_inertia_configs.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/COMMON_AI/script_engine_export.cpp
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorInput.cpp
+- M engine/ogsr_engine/xrGame/Actor_Flags.h
+- M engine/ogsr_engine/xrGame/Actor_Movement.cpp
+- M engine/ogsr_engine/xrGame/EffectorZoomInertion.cpp
+- M engine/ogsr_engine/xrGame/HudItem.cpp
+- M engine/ogsr_engine/xrGame/HudItem.h
+- M engine/ogsr_engine/xrGame/Level.cpp
+- M engine/ogsr_engine/xrGame/console_commands.cpp
+- M engine/ogsr_engine/xrGame/derived_client_classes.cpp
+- A engine/ogsr_engine/xrGame/nlc_gunplay.cpp
+- A engine/ogsr_engine/xrGame/nlc_gunplay.h
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+
+<!-- nlc-changelog-commit: b92a87ffe8232cd2d0a65eb138a5ba733402e3d7 -->
+## 22.10.26 15:47 МСК - Манифест
+
+Commit: [b92a87f](https://github.com/jordan1227/improved_to_he/commit/b92a87ffe8232cd2d0a65eb138a5ba733402e3d7)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: defc2fb198fd26fff52164a43fd2121066a563bd -->
+## 22.10.26 15:42 МСК - Экзачи Add exoskeleton servo and armor systems
+
+Commit: [defc2fb](https://github.com/jordan1227/improved_to_he/commit/defc2fb198fd26fff52164a43fd2121066a563bd)
+
+### Description
+
+Track servo wear separately from suit condition, tie sprinting and combat assist to servo health and charge, and add armor plates plus repair and upgrade flows. Includes engine support, vise and inventory UI, related dialogue, convoy case content, and damage-balance adjustments.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- A gamedata/anims/itemuse_anm_effects/plate_cam.anm
+- M gamedata/config/creatures/actor.ltx
+- M gamedata/config/creatures/damages.ltx
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/dialogs_bar.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/misc/all_outfits_nlc.ltx
+- M gamedata/config/misc/he_omf_override.ltx
+- M gamedata/config/misc/items/anim_items/anm_other.ltx
+- M gamedata/config/scripts/agr/agro_tiski_repair.ltx
+- M gamedata/config/scripts/bar/bar_tiski_repair.ltx
+- M gamedata/config/scripts/bunk/x12_tiski_repair.ltx
+- M gamedata/config/scripts/dsc/dsc_tiski_repair.ltx
+- M gamedata/config/scripts/esc/esc_tiski_repair.ltx
+- M gamedata/config/scripts/lim/lim_tiski_repair.ltx
+- M gamedata/config/scripts/mar/mar__tiski_repair.ltx
+- M gamedata/config/scripts/mil/mil_tiski_repair_01.ltx
+- M gamedata/config/scripts/mil/mil_tiski_repair_02.ltx
+- M gamedata/config/scripts/mil/mil_tiski_repair_03.ltx
+- M gamedata/config/scripts/mil/mil_tiski_repair_05.ltx
+- M gamedata/config/scripts/rad/rad_tiski_repair.ltx
+- M gamedata/config/scripts/stan2/st2_tiski_repair.ltx
+- M gamedata/config/scripts/val/val_tiski_repair.ltx
+- M gamedata/config/scripts/yan/yan_tiski_repair.ltx
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/eng/string_table_outfit.xml
+- M gamedata/config/text/eng/ui_st_inventory.xml
+- M gamedata/config/text/rus/stable_dialogs_bar.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/string_table_outfit.xml
+- M gamedata/config/text/rus/ui_st_inventory.xml
+- A gamedata/config/ui/ui_sivol_exo.xml
+- A gamedata/config/ui/ui_sivol_exo_16.xml
+- A gamedata/config/ui/ui_sivol_vise.xml
+- A gamedata/meshes/anomaly_weapons/hud_animation/plate_hud_anim.omf
+- A gamedata/meshes/anomaly_weapons/hud_hands_animation/hud_hand_plate_anim.omf
+- A gamedata/meshes/dynamics/weapons/wpn_plate/Plate_hud.ogf
+- A gamedata/meshes/dynamics/weapons/wpn_plate/Plate_p_hud.ogf
+- M gamedata/scripts/binders/bind_upg_outfit.script
+- M gamedata/scripts/dsh_remkit.script
+- M gamedata/scripts/he_exo_charge.script
+- M gamedata/scripts/he_exo_wear.script
+- M gamedata/scripts/kotovod.script
+- A gamedata/scripts/kotovod/ui_repair.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/params/params.script
+- M gamedata/scripts/params/wpn_params.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/scripts/sak/sak_repair_dialog.script
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+- A gamedata/scripts/sivol/sivol_exo.script
+- A gamedata/scripts/sivol/sivol_vise.script
+- M gamedata/scripts/sivol/sivol_weapon.script
+- M gamedata/scripts/ui/ui_inv_add.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+- A gamedata/sounds/item_plate_use/plate_sound.ogg
+- A gamedata/textures/plate_d/Plate_d.dds
+- A gamedata/textures/plate_p/Plate_p.dds
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor.cpp
+- M engine/ogsr_engine/xrGame/Actor.h
+- M engine/ogsr_engine/xrGame/Actor_Movement.cpp
+- M engine/ogsr_engine/xrGame/inventory_item.h
+- M engine/ogsr_engine/xrGame/script_game_object.h
+- M engine/ogsr_engine/xrGame/script_game_object_inventory_owner.cpp
+- M engine/ogsr_engine/xrGame/script_game_object_script3.cpp
+- M engine/ogsr_engine/xrGame/ui/UIItemInfo.cpp
+- M engine/ogsr_engine/xrGame/ui/UIItemInfo.h
+
+<!-- nlc-changelog-commit: a27dd945f043adc8251348643baa84b20a0dec58 -->
+## 22.10.26 11:49 МСК - манифест
+
+Commit: [a27dd94](https://github.com/jordan1227/improved_to_he/commit/a27dd945f043adc8251348643baa84b20a0dec58)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 267d728fed7bb7737e5d8831d24529f35da7c57a -->
+## 22.10.26 11:49 МСК - Refine body-health recovery and injury feedback
+
+Commit: [267d728](https://github.com/jordan1227/improved_to_he/commit/267d728fed7bb7737e5d8831d24529f35da7c57a)
+
+### Description
+
+Adjust leg movement and stamina penalties, prevent excess green health from being wasted, and make inventory body-part bars configurable. Replace injury chat messages with article tips and an arm-injury shock response; update the engine build to nlc-3.589.129.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/actor.ltx
+- M gamedata/config/text/eng/string_table_tutorial.xml
+- M gamedata/config/text/rus/string_table_tutorial.xml
+- M gamedata/scripts/he_body_health.script
+- M gamedata/scripts/kotovod/game_options.script
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+- M gamedata/scripts/sivol/sivol_body_text.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.h
+- M engine/ogsr_engine/xrGame/ui/UIBodyHealthWnd.cpp
+
+<!-- nlc-changelog-commit: 300e885fb8892f6e623ccfa820f55390f503ff9b -->
+## 22.10.26 11:30 МСК - манифест
+
+Commit: [300e885](https://github.com/jordan1227/improved_to_he/commit/300e885fb8892f6e623ccfa820f55390f503ff9b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: fd3acc0caedff317955ad31a60860fdfa120e502 -->
+## 22.10.26 11:28 МСК - Add Pulse anomaly and shader master switch
+
+Commit: [fd3acc0](https://github.com/jordan1227/improved_to_he/commit/fd3acc0caedff317955ad31a60860fdfa120e502)
+
+### Description
+
+Introduce scripted Pulse strikes with temporary EMP scars, electronic outages, NPC flee behavior, and engine-managed flash lights. Add a saved Shaders-tab switch to disable SSFX effects and update the engine build to nlc-3.589.128.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- A gamedata/particles/anomaly2/generator/generator_accum_thunderbolt_fast.pg
+- A gamedata/particles/anomaly2/generator/generator_accum_thunderbolt_slow.pg
+- M gamedata/scripts/ai_additions/rx_bandage.script
+- M gamedata/scripts/ai_additions/rx_facer.script
+- M gamedata/scripts/ai_additions/rx_ff.script
+- M gamedata/scripts/ai_additions/rx_gl.script
+- M gamedata/scripts/ai_additions/rx_kill_wounded.script
+- M gamedata/scripts/ai_additions/rx_reload.script
+- M gamedata/scripts/modules.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sivol/sivol_critical_malfunction.script
+- M gamedata/scripts/sivol/sivol_emp_config.script
+- A gamedata/scripts/sivol/sivol_pulse_anomaly.script
+- A gamedata/scripts/sivol/sivol_pulse_npc.script
+- M gamedata/scripts/sivol/sivol_stealth_suspicion.script
+- M gamedata/scripts/ui/ui_mm_opt_shaders.script
+- M gamedata/scripts/watcher_act.script
+- M gamedata/scripts/xr/xr_companion.script
+- M gamedata/scripts/xr/xr_logic.script
+- M gamedata/scripts/xr/xr_motivator.script
+- M gamedata/scripts/xrs/xrs_battle_ai.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/COMMON_AI/script_engine_export.cpp
+- M engine/ogsr_engine/Layers/xrRender/DetailManager_Decompress.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/ssfx_features.h
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Level.cpp
+- A engine/ogsr_engine/xrGame/nlc_flash_light.cpp
+- A engine/ogsr_engine/xrGame/nlc_flash_light.h
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+- M engine/ogsr_engine/xr_3da/Environment.h
+- M engine/ogsr_engine/xr_3da/Environment_misc.cpp
+
+<!-- nlc-changelog-commit: 428d4e7f38a673aafaee4117dfc0fab7856a3acb -->
+## 22.10.26 08:56 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [428d4e7](https://github.com/jordan1227/improved_to_he/commit/428d4e7f38a673aafaee4117dfc0fab7856a3acb)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/character_desc_sak.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/gameplay/info_sak_way.xml
+- M gamedata/config/gameplay/storyline_info_sak_way.xml
+- D gamedata/config/scripts/agr_und/agr_sak_teleport_0001.ltx
+- D gamedata/config/scripts/agr_und/agr_sak_teleport_0002.ltx
+- D gamedata/config/scripts/agr_und/agr_sak_teleport_0003.ltx
+- M gamedata/config/scripts/gar/gar_stalker_binoc.ltx
+- M gamedata/config/text/eng/sak_strings.xml
+- M gamedata/config/text/eng/sak_strings_six.xml
+- M gamedata/config/text/eng/sak_strings_six2.xml
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/sak_strings.xml
+- M gamedata/config/text/rus/sak_strings_six.xml
+- M gamedata/config/text/rus/sak_strings_six2.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/scripts/arts/arc_arts.script
+- M gamedata/scripts/common/_g.script
+- M gamedata/scripts/death_manager.script
+- A gamedata/scripts/he_apostol.script
+- A gamedata/scripts/he_exo_wear.script
+- A gamedata/scripts/he_request_article.script
+- M gamedata/scripts/kotovod/garbage_arts.script
+- M gamedata/scripts/kotovod/ui_arc_container_menu.script
+- M gamedata/scripts/mike.script
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/olr/olr_protected.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l01_escape.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/l01_escape.sections
+- M manifest.txt
+
+<!-- nlc-changelog-commit: e0ba2fecdbeabb37d1136e3d898d29fd7d4f5db9 -->
+## 22.10.26 08:55 МСК - Add global SSFX effects toggle
+
+Commit: [e0ba2fe](https://github.com/jordan1227/improved_to_he/commit/e0ba2fecdbeabb37d1136e3d898d29fd7d4f5db9)
+
+### Description
+
+Add a Shaders-tab option to disable all SSFX effects while preserving their individual settings. Clarify AO behavior and update the English and Russian UI descriptions.
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+
+<!-- nlc-changelog-commit: e303a702685bd82a85f8d21823d49151f0b1204c -->
+## 21.10.26 18:36 МСК - Долговяз пояс развилка если улучшен Add reinforced belt upgrade paths
+
+Commit: [e303a70](https://github.com/jordan1227/improved_to_he/commit/e303a702685bd82a85f8d21823d49151f0b1204c)
+
+### Description
+
+Let Dolgovyaz keep belt reinforcement for an added payment or choose a plain upgrade. Ensure multi-item payments use distinct inventory items, and add the related dialogue strings plus a sealed-case tip.
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/scripts/sivol/sivol_belt.script
+
+<!-- nlc-changelog-commit: 9736c968903675bc496ac5ba48824ecffa540734 -->
+## 21.10.26 16:00 МСК - манифест
+
+Commit: [9736c96](https://github.com/jordan1227/improved_to_he/commit/9736c968903675bc496ac5ba48824ecffa540734)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 51b87a6f0f944d53f6b27d70c3fd261d788a7722 -->
+## 21.10.26 15:59 МСК - Show limb protection and fracture health caps
+
+Commit: [51b87a6](https://github.com/jordan1227/improved_to_he/commit/51b87a6f0f944d53f6b27d70c3fd261d788a7722)
+
+### Description
+
+Add injury hover details for fracture health caps and worn-suit bullet and claw protection. Expose outfit bullet absorption to Lua and tune the severe injury threshold for bullet hits.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/text/eng/st_body_health.xml
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/st_body_health.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+- M gamedata/scripts/sivol/sivol_body_text.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.h
+- M engine/ogsr_engine/xrGame/nlc_body_health.cpp
+
+<!-- nlc-changelog-commit: 6ca891ed0b45e15abb99a5b0216c62d68d2e7a96 -->
+## 21.10.26 14:55 МСК - Add Kishka post-X18 bandit encounter
+
+Commit: [6ca891e](https://github.com/jordan1227/improved_to_he/commit/6ca891ed0b45e15abb99a5b0216c62d68d2e7a96)
+
+### Description
+
+Spawn a hostile bandit group and Gnus's corpse at the Darkscape gas station after the X-18 documents reach the Barman. Add note-driven story progression, a boiler-house stash, and protections that keep the encounter intact until both notes are read.
+
+### Game files changed
+
+- M gamedata/config/creatures/spawn_sections.ltx
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/gameplay/npc_profile_nlc30_spawn.xml
+- M gamedata/config/misc/sak_quest_items.ltx
+- A gamedata/config/scripts/dsc/kishka_post_x18_kleshch.ltx
+- A gamedata/config/scripts/dsc/kishka_post_x18_leader.ltx
+- A gamedata/config/scripts/dsc/kishka_post_x18_ogryzok.ltx
+- A gamedata/config/scripts/dsc/kishka_post_x18_rear.ltx
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/eng/stable_bio_name.xml
+- M gamedata/config/text/eng/string_table_items.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/config/text/rus/stable_bio_name.xml
+- M gamedata/config/text/rus/string_table_items.xml
+- M gamedata/config/waypoints.ltx
+- M gamedata/scripts/actor_take_item.script
+- M gamedata/scripts/he_quest_target_lock.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sak/sak_off_corpses.script
+- M gamedata/scripts/sivol/sivol_worldspawns.script
+
+<!-- nlc-changelog-commit: 418d56275fe88a1be15a3a5dedf304d5312153f9 -->
+## 21.10.26 13:07 МСК - Add visible-body puppet legs to actor shadows
+
+Commit: [418d562](https://github.com/jordan1227/improved_to_he/commit/418d56275fe88a1be15a3a5dedf304d5312153f9)
+
+### Description
+
+Render the visible-body puppet's legs in the shadow pass, aligned to the actor's pelvis and clipped above the hips. Add shadow tuning commands, first-person IK handling, and tighter puppet turn/placement limits. Update the engine build to nlc-3.589.125.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/system.ltx
+- M gamedata/scripts/sivol/sivol_visible_body.script
+- M gamedata/shaders/r3/models_selflight_det_3.s
+- A gamedata/shaders/r3/shadow_direct_model_legs.vs
+- A gamedata/shaders/r3/shadow_legs.ps
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_build.cpp
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/HUDManager.cpp
+- M engine/ogsr_engine/xrGame/HUDManager.h
+- M engine/ogsr_engine/xrGame/IKLimbsController.cpp
+- M engine/ogsr_engine/xrGame/console_commands.cpp
+- M engine/ogsr_engine/xr_3da/CustomHUD.h
+
+<!-- nlc-changelog-commit: 9d120d98f34318bf2f806f70fc99d3c440b50e33 -->
+## 21.10.26 11:18 МСК - Манифест
+
+Commit: [9d120d9](https://github.com/jordan1227/improved_to_he/commit/9d120d98f34318bf2f806f70fc99d3c440b50e33)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 3d08314ef08764fb2d80a5d5389aeab570c0b399 -->
 ## 21.10.26 11:15 МСК - Add body-health recovery and injury systems
