@@ -341,6 +341,7 @@ void CActor::Load(LPCSTR section)
     m_fCrouchFactor = pSettings->r_float(section, "crouch_coef");
     m_fClimbFactor = pSettings->r_float(section, "climb_coef");
     m_fSprintFactor = pSettings->r_float(section, "sprint_koef");
+    m_nlc_speed_mult_once = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_speed_mult_once", false); // NLC
 
     m_fWalk_StrafeFactor = READ_IF_EXISTS(pSettings, r_float, section, "walk_strafe_coef", 1.0f);
     m_fRun_StrafeFactor = READ_IF_EXISTS(pSettings, r_float, section, "run_strafe_coef", 1.0f);

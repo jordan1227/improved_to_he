@@ -48,4 +48,16 @@ public:
 
     Fvector2 UIItemImageSize;
     CUIStatic* UIItemImage;
+
+private:
+    // NLC: optional extra bars under the condition bar (CInventoryItem::m_nlc_ui_bar: exo servos /
+    // charge); while they are shown the description list moves down by m_nlc_desc_shift and loses
+    // m_nlc_desc_cut at the bottom ([nlc_bars] desc_shift / desc_cut in the xml)
+    CUIStatic* UINlcCap[2]{};
+    CUIProgressBar* UINlcBar[2]{};
+    float m_nlc_desc_shift{};
+    float m_nlc_desc_cut{};
+    Fvector2 m_nlc_desc_pos{};
+    float m_nlc_desc_h{};
+    void UpdateNlcBars(CInventoryItem* item);
 };

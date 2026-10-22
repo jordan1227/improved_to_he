@@ -300,6 +300,7 @@ class_<CScriptGameObject> script_register_game_object2(class_<CScriptGameObject>
         .def("set_additional_max_weight", &CScriptGameObject::SetAdditionalMaxWeight)
         .def("get_additional_max_walk_weight", &CScriptGameObject::GetAdditionalMaxWalkWeight)
         .def("set_additional_max_walk_weight", &CScriptGameObject::SetAdditionalMaxWalkWeight)
+        .def("set_nlc_item_bars", &CScriptGameObject::SetNlcItemBars)
         .def("get_total_weight", &CScriptGameObject::GetTotalWeight)
         .def("weight", &CScriptGameObject::Weight)
         /*************************************************** added by Ray Twitty (aka Shadows) END ***************************************************/

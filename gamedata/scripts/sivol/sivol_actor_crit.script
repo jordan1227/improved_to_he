@@ -291,22 +291,30 @@ local function push_injuries()
 end
 
 -- apply the effects of the current levels (also after a load and when the body health option changes)
+-- a charged exo with live servos braces injured limbs (sivol_exo.limb_assist, DESIGN_exo_rebalance.md):
+-- the injury penalties lose BRACE_K of their effect, a severe leg can sprint and a splint does not slow it
+local BRACE_K = 0.5
+function braced() return sivol_exo ~= nil and sivol_exo.limb_assist() end
+function brace(k) return 1 + (k - 1) * (1 - BRACE_K) end
+
 local applied_body = nil
 local function apply_levels()
 	if not db.actor then return end
 	applied_body = body_on()
 	local leg = level_of.leg
 	local leg_s = splinted("leg")
+	local exo = braced()
 	sivol.remove_move_penalty("crit_legs")
 	if leg_s then
-		sivol.add_move_penalty("crit_legs", LEG_SPEED_SPLINT)
+		sivol.add_move_penalty("crit_legs", exo and brace(LEG_SPEED_SPLINT) or LEG_SPEED_SPLINT)
 	elseif leg > 0 then
-		sivol.add_move_penalty("crit_legs", (applied_body and LEG_SPEED_BODY or LEG_SPEED)[leg])
+		local k = (applied_body and LEG_SPEED_BODY or LEG_SPEED)[leg]
+		sivol.add_move_penalty("crit_legs", exo and brace(k) or k)
 	end
 	-- crippled: no sprint (named block of the mod's sprint API; db.actor.cant_sprint is not an engine property)
 	-- adrenaline (sivol_adrenaline.script) lifts the block during its rush; the limp stays. A splinted leg
-	-- sprints, slower (sprint_k through params.refresh_sprint_koef)
-	if leg >= 2 and not leg_s and db.actor:alive() and not (sivol_adrenaline and sivol_adrenaline.lifts_sprint_block()) then
+	-- sprints, slower (sprint_k through params.refresh_sprint_koef). An exo brace lifts the block too.
+	if leg >= 2 and not leg_s and not exo and db.actor:alive() and not (sivol_adrenaline and sivol_adrenaline.lifts_sprint_block()) then
 		sivol.add_sprint_block("crit_legs")
 	else
 		sivol.remove_sprint_block("crit_legs")
@@ -792,11 +800,14 @@ function splint_hours_left(zone)
 end
 -- sprint factor of a splinted leg (params.refresh_sprint_koef)
 function sprint_k()
-	return splinted("leg") and SPLINT_SPRINT or 1
+	return splinted("leg") and not braced() and SPLINT_SPRINT or 1
 end
 function injury_charge(zone) return charge[zone] or 0 end
--- recoil multiplier of the arm injury (sivol_fuzz_recoil.script)
-function recoil_k() return splinted("arm") and SPLINT_RECOIL or ARM_RECOIL[level_of.arm] or 1.0 end
+-- recoil multiplier of the arm injury (sivol_fuzz_recoil.script); an exo brace halves it
+function recoil_k()
+	local k = splinted("arm") and SPLINT_RECOIL or ARM_RECOIL[level_of.arm] or 1.0
+	return braced() and brace(k) or k
+end
 -- re-apply the level effects (sivol_adrenaline.script at the start and end of a rush)
 function refresh() apply_levels() end
 

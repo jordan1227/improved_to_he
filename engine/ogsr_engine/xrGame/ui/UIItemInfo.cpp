@@ -112,7 +112,34 @@ void CUIItemInfo::Init(LPCSTR xml_name)
 
         m_desc_info.bShowDescrText = !!uiXml.ReadAttribInt("descr_list", 0, "only_text_info", 1);
         xml_init.InitFont(uiXml, "descr_list:font", 0, m_desc_info.uDescClr, m_desc_info.pDescFont);
+        m_nlc_desc_pos = UIDesc->GetWndPos();
+        m_nlc_desc_h = UIDesc->GetHeight();
     }
+
+    // NLC: exo servo / charge bars, only in the xml files that define them
+    static constexpr LPCSTR nlc_caps[2] = {"nlc_bar1_static", "nlc_bar2_static"};
+    static constexpr LPCSTR nlc_bars[2] = {"nlc_bar1_progress", "nlc_bar2_progress"};
+    for (int i = 0; i < 2; ++i)
+    {
+        if (uiXml.NavigateToNode(nlc_caps[i], 0))
+        {
+            UINlcCap[i] = xr_new<CUIStatic>();
+            AttachChild(UINlcCap[i]);
+            UINlcCap[i]->SetAutoDelete(true);
+            xml_init.InitStatic(uiXml, nlc_caps[i], 0, UINlcCap[i]);
+            UINlcCap[i]->Show(false);
+        }
+        if (uiXml.NavigateToNode(nlc_bars[i], 0))
+        {
+            UINlcBar[i] = xr_new<CUIProgressBar>();
+            AttachChild(UINlcBar[i]);
+            UINlcBar[i]->SetAutoDelete(true);
+            xml_init.InitProgressBar(uiXml, nlc_bars[i], 0, UINlcBar[i]);
+            UINlcBar[i]->Show(false);
+        }
+    }
+    m_nlc_desc_shift = uiXml.ReadAttribFlt("nlc_bars", 0, "desc_shift", 0.f); // moves the list down
+    m_nlc_desc_cut = uiXml.ReadAttribFlt("nlc_bars", 0, "desc_cut", 0.f); // shortens it from the bottom
 
     if (uiXml.NavigateToNode("image_static", 0))
     {
@@ -192,6 +219,7 @@ void CUIItemInfo::InitItem(CInventoryItem* pInvItem)
         }
         UIDesc->ScrollToBegin();
     }
+    UpdateNlcBars(pInvItem); // after the description: its script callback pushes the values
     if (UIItemImage)
     {
         // Загружаем картинку
@@ -206,6 +234,32 @@ void CUIItemInfo::InitItem(CInventoryItem* pInvItem)
         UIItemImage->GetUIStaticItem().SetRect(v_r);
         UIItemImage->SetWidth(_min(v_r.width(), UIItemImageSize.x));
         UIItemImage->SetHeight(_min(v_r.height(), UIItemImageSize.y));
+    }
+}
+
+void CUIItemInfo::UpdateNlcBars(CInventoryItem* item)
+{
+    bool any = false;
+    for (int i = 0; i < 2; ++i)
+    {
+        const float v = item->m_nlc_ui_bar[i];
+        const bool show = v >= 0.f && UINlcBar[i];
+        any = any || show;
+        if (UINlcBar[i])
+        {
+            UINlcBar[i]->Show(show);
+            if (show)
+                UINlcBar[i]->SetProgressPos(std::clamp(v, 0.f, 1.f) * 100.0f + 1.0f - EPS);
+        }
+        if (UINlcCap[i])
+            UINlcCap[i]->Show(show);
+    }
+    if (UIDesc && (m_nlc_desc_shift > 0.f || m_nlc_desc_cut > 0.f))
+    {
+        const float shift = any ? m_nlc_desc_shift : 0.f;
+        const float cut = any ? m_nlc_desc_cut : 0.f;
+        UIDesc->SetWndPos(Fvector2{m_nlc_desc_pos.x, m_nlc_desc_pos.y + shift});
+        UIDesc->SetHeight(m_nlc_desc_h - shift - cut);
     }
 }
 

@@ -1,0 +1,564 @@
+-- sivol: exo servo integrity, armour plates and servo assist (docs/damage_model/DESIGN_exo_rebalance.md)
+-- Per-item state lives in the server object's spawn ini, like he_exo_charge:
+--   [exo_servo] w    = servo integrity x SERVO_SCALE (missing record: the suit's condition)
+--   [exo_plate] tier = 0..PLATE_MAX armour plate layers (Dolgovyazyi, permanent)
+-- Suit condition keeps protection and lab access. Servo integrity drives the carry bonus
+-- (bind_upg_outfit), the sprint factor (params.refresh_sprint_koef) and, with a charge, the assist:
+-- weapon sway (wpn_params), recoil (sivol_weapon) and braced injured limbs (sivol_actor_crit).
+
+local SERVO_SECT, SERVO_KEY, SERVO_SCALE = "exo_servo", "w", 100000
+local PLATE_SECT, PLATE_KEY, PLATE_MAX = "exo_plate", "tier", 2
+local PLATE_PROT = 0.075         -- fire_wound and explosion protection per plate layer
+local PLATE_WEIGHT = 3.0         -- kg per plate layer
+local DEF_SPRINT_K = 0.85        -- exo sprint factor when the section has no nlc_sprint_k
+local SPRINT_MIN = 0.2           -- below this servo integrity the exo cannot sprint
+local ASSIST_MIN = 0.5           -- servo integrity needed to brace injured limbs
+local SWAY_K, RECOIL_K = 0.25, 0.12 -- weapon sway / recoil reduction at full assist
+local SERVO_COST_PER_10 = 2500   -- servo repair: rubles per 10% of missing servo (x margin, difficulty)
+local SERVO_TIME = { 60, 240 }   -- servo repair game minutes: base + per full rebuild
+local SERVO_GRACE = 0.9          -- servos at or above this count as fully working (servo_k)
+local CARRY_FRAME = 0.5          -- share of the carry bonus the frame keeps with dead servos
+local KIT_STEP, KIT_CAP, KIT_MIN = 0.08, 0.95, 0.5 -- self-repair: per outfit kit, up to, from
+local LESSON_INFO = "dolgovazyi_servo_lesson_done"
+local CHARGE_FULL_MIN = 7 * 1440 -- charge bar full scale: Dolgovyazyi's longest charge
+local REFRESH_MS = 10000
+
+-- cached state of the worn exo (read by per-frame consumers)
+local cur = { id = false, assist = 0, sprint_k = 1, braced = false }
+local next_refresh = 0
+
+function is_exo(obj)
+	return he_exo_charge.is_exo(obj)
+end
+
+function sprint_factor(sect)
+	return get_float(sect, "nlc_sprint_k", DEF_SPRINT_K)
+end
+
+-- an exo with working servos; the broken exo has nlc_sprint_k = 0
+function can_charge(obj)
+	return is_exo(obj) and sprint_factor(obj:section()) > 0
+end
+
+local function read_u32(sobj, sect, key)
+	local ini = sobj and sobj:spawn_ini()
+	return ini and ini:section_exist(sect) and get_u32(sect, key, 0, ini) or nil
+end
+
+local function write_u32(sobj, sect, key, v)
+	local ini = sobj and sobj:spawn_ini()
+	if not ini then return end
+	ini.readonly = false
+	ini:w_u32(sect, key, v)
+	sobj:save_spawn_ini()
+end
+
+function servo(obj)
+	local w = read_u32(server_obj(obj:id()), SERVO_SECT, SERVO_KEY)
+	if w then return w / SERVO_SCALE end
+	return obj:condition()
+end
+
+function set_servo(obj, v)
+	v = math.max(0, math.min(1, v))
+	write_u32(server_obj(obj:id()), SERVO_SECT, SERVO_KEY, math.floor(v * SERVO_SCALE + 0.5))
+end
+
+-- the first time the actor holds an exo, its servo starts at the suit's condition and is tracked apart
+function ensure_servo(obj)
+	local sobj = server_obj(obj:id())
+	if sobj and not read_u32(sobj, SERVO_SECT, SERVO_KEY) then set_servo(obj, obj:condition()) end
+end
+
+-- effective servo state 0..1: no effect down to SERVO_GRACE, then linear to 0
+function servo_k(s)
+	return math.min(1, s / SERVO_GRACE)
+end
+
+-- bind_upg_outfit: carry bonus share; the frame keeps CARRY_FRAME of it with dead servos
+function carry_k(obj)
+	return CARRY_FRAME + (1 - CARRY_FRAME) * servo_k(servo(obj))
+end
+
+local function sprint_k_of(obj)
+	local f = sprint_factor(obj:section())
+	return f > 0 and f * (0.85 + 0.15 * servo_k(servo(obj))) or 1
+end
+
+function can_sprint(obj)
+	return can_charge(obj) and servo(obj) >= SPRINT_MIN
+end
+
+-- he_exo_wear: sprinting and jumping wear the servos
+function add_wear(obj, amount)
+	if amount <= 0 or not can_charge(obj) then return end
+	local before = servo(obj)
+	set_servo(obj, before - amount)
+	if before >= SPRINT_MIN and servo(obj) < SPRINT_MIN then he_exo_charge.apply(obj) end
+	refresh()
+end
+
+local function worn_exo()
+	local o = db.actor and db.actor:item_in_slot(6)
+	if o and is_exo(o) then return o end
+end
+
+-- servo assist 0..1: a charged exo with live servos
+local function assist_of(obj)
+	if not (obj and can_charge(obj) and he_exo_charge.is_charged(obj)) then return 0 end
+	return servo_k(servo(obj))
+end
+
+function refresh()
+	if not db.actor then return end
+	next_refresh = time_global() + REFRESH_MS
+	local o = worn_exo()
+	local a, k, braced = 0, 1, false
+	if o then
+		a = assist_of(o)
+		k = sprint_k_of(o)
+		braced = a > 0 and servo(o) >= ASSIST_MIN -- the thresholds use the raw servo state
+	end
+	local k_changed, b_changed = k ~= cur.sprint_k, braced ~= cur.braced
+	cur.id, cur.assist, cur.sprint_k, cur.braced = o and o:id() or false, a, k, braced
+	if k_changed and params and params.refresh_sprint_koef then params.refresh_sprint_koef() end
+	if b_changed and sivol_actor_crit and sivol_actor_crit.refresh then sivol_actor_crit.refresh() end
+end
+
+function sprint_k() return cur.sprint_k end
+function limb_assist() return cur.braced end
+function sway_k() return 1 - SWAY_K * cur.assist end
+function recoil_k() return 1 - RECOIL_K * cur.assist end
+
+-- plates --------------------------------------------------------------------------------------------
+
+function plate_tier(obj)
+	return read_u32(server_obj(obj:id()), PLATE_SECT, PLATE_KEY) or 0
+end
+
+-- bind_upg_outfit.update_outfit, before sivol.outfit_stats.recompute: plate protection and weight
+function apply_plates(obj)
+	local t = is_exo(obj) and plate_tier(obj) or 0
+	local id = obj:id()
+	if sivol and sivol.outfit_stats then
+		if t > 0 then
+			local add = { mode = "add", value = PLATE_PROT * t }
+			sivol.outfit_stats.set("exo_plate", id, { fire_wound_protection = add, explosion_protection = add })
+		else
+			sivol.outfit_stats.clear("exo_plate", id)
+		end
+	end
+	if t > 0 then params.set_inv_weight(id, get_float(obj:section(), "inv_weight", 0) + PLATE_WEIGHT * t) end
+end
+
+local function find_dummy()
+	for i = 0, db.actor:object_count() - 1 do
+		local o = db.actor:object(i)
+		local s = o and o:section()
+		-- the Black Mark is a parasite that only sits in the dummy family; it is never traded
+		if s and string.find(s, "af_dummy", 1, true) == 1 and not string.find(s, "_fake", 1, true)
+			and not string.find(s, "af_dummy_black_tip", 1, true) then return o end
+	end
+end
+
+-- Dolgovyazyi plate dialog (dialogs_bar.xml dolgovazyi_exo_plate)
+function plate_dialog()
+	local o = worn_exo()
+	return o ~= nil and can_charge(o) and plate_tier(o) < PLATE_MAX
+end
+
+function plate_offer(tier)
+	tier = tonumber(tier)
+	local o = worn_exo()
+	if not (o and can_charge(o) and plate_tier(o) == tier - 1) then return false end
+	if tier == 1 then return nlc_capsules.have_actor("capsule", 2) end
+	return nlc_capsules.have_actor("capsule", 1) and find_dummy() ~= nil
+end
+
+function plate_no_offer()
+	return not (plate_offer(1) or plate_offer(2))
+end
+
+function plate_install(tier)
+	tier = tonumber(tier)
+	local o = worn_exo()
+	if not (o and plate_offer(tier)) then return end
+	nlc_capsules.take_actor("capsule")
+	if tier == 1 then
+		nlc_capsules.take_actor("capsule")
+	else
+		local d = find_dummy()
+		local s = d:section()
+		misc.release_obj(d)
+		sak.relocate_item("out", s, 1)
+	end
+	write_u32(server_obj(o:id()), PLATE_SECT, PLATE_KEY, tier)
+	bind_upg_outfit.update_outfit(o, bind_upg_outfit.is_upgraded(o))
+	play_plate_anim(tier) -- starts once the dialog has closed
+end
+
+-- Dolgovyazyi one-time explainer (dolgovazyi_exo_lore): the actor wears or carries an exo
+function has_exo()
+	if worn_exo() then return true end
+	for i = 0, db.actor:object_count() - 1 do
+		if is_exo(db.actor:object(i)) then return true end
+	end
+	return false
+end
+
+-- servo repair (kotovod.dolgovyaziy_repair_items) ----------------------------------------------------
+
+function servo_repair(obj, margin)
+	if not can_charge(obj) then return 0, 0 end
+	local missing = 1 - servo(obj)
+	if missing < 0.005 then return 0, 0 end
+	local diff = ({ [0] = 0.7, 0.8, 0.9, 1 })[level.get_game_difficulty()] or 1
+	local cost = math.max(500, math.ceil(SERVO_COST_PER_10 * missing * 10 * (margin or 1) * diff))
+	return cost, math.ceil(SERVO_TIME[1] + SERVO_TIME[2] * missing)
+end
+
+-- technician handoffs (release + respawn) ------------------------------------------------------------
+-- capture before the item is released, restore on the respawned server object. Flat fields: the
+-- result is stored with set_value.
+
+function capture(obj, with_mask)
+	local sobj = server_obj(obj:id())
+	local st = {}
+	if not sobj then return st end
+	if is_exo(obj) then
+		st.charge = he_exo_charge.get_end_time(sobj)
+		st.servo = read_u32(sobj, SERVO_SECT, SERVO_KEY) or math.floor(obj:condition() * SERVO_SCALE + 0.5)
+		st.plate = read_u32(sobj, PLATE_SECT, PLATE_KEY)
+	end
+	local ini = with_mask and sobj:spawn_ini()
+	if ini and ini:section_exist("mask") then
+		st.m1 = get_string("mask", "t1", nil, ini)
+		st.m2 = get_string("mask", "t2", nil, ini)
+		st.m3 = get_string("mask", "t3", nil, ini)
+		st.m4 = get_u32("mask", "t4", 100, ini)
+	end
+	return st
+end
+
+-- the handoff repaired the servos
+function mark_servo_repaired(st)
+	if st and st.servo then st.servo = SERVO_SCALE end
+end
+
+function restore(sobj, st)
+	local ini = sobj and st and sobj:spawn_ini()
+	if not ini then return end
+	ini.readonly = false
+	if st.servo then ini:w_u32(SERVO_SECT, SERVO_KEY, st.servo) end
+	if st.plate then ini:w_u32(PLATE_SECT, PLATE_KEY, st.plate) end
+	if st.m4 then
+		if st.m1 then ini:w_string("mask", "t1", st.m1) end
+		if st.m2 then ini:w_string("mask", "t2", st.m2) end
+		if st.m3 then ini:w_string("mask", "t3", st.m3) end
+		ini:w_u32("mask", "t4", st.m4)
+	end
+	sobj:save_spawn_ini()
+	if st.charge and st.charge > 0 then he_exo_charge.set_end_time(sobj, st.charge) end
+end
+
+-- inventory description lines (ui_inv_descr.get_add_out_desc) -----------------------------------------
+
+function desc_lines(item)
+	if not is_exo(item) then return "" end
+	local txt = ""
+	if can_charge(item) then
+		local s = servo(item)
+		local left = he_exo_charge.minutes_left(item)
+		txt = txt .. "\\n%c[255,255,140,0]" .. string.format(game.translate_string("ui_inv_exo_servo"), math.floor(s * 100 + 0.5))
+		txt = txt .. "\\n%c[255,255,140,0]" .. string.format(game.translate_string("ui_inv_exo_sprint"), math.floor((1 - sprint_k_of(item)) * 100 + 0.5))
+		if left > 0 then
+			txt = txt .. "\\n%c[255,255,140,0]" .. string.format(game.translate_string("ui_inv_exo_charge"), math.ceil(left / 60))
+		else
+			txt = txt .. "\\n%c[255,255,140,0]" .. game.translate_string("ui_inv_exo_charge_empty")
+		end
+	end
+	local t = plate_tier(item)
+	if t > 0 then
+		txt = txt .. "\\n%c[255,255,140,0]" .. string.format(game.translate_string("ui_inv_exo_plate"), t, PLATE_MAX)
+	end
+	return txt
+end
+
+-- self-repair (dsh_remkit.inv_drag_drop) -------------------------------------------------------------
+-- After Dolgovyazyi's lesson an outfit repair kit tunes worn servos in the field (with a repair box):
+-- +KIT_STEP up to KIT_CAP, only from KIT_MIN. The kit goes to the more worn part: armour the old way
+-- while it is field-repairable and more worn than the servos.
+
+function lesson_known() return has_alife_info(LESSON_INFO) end
+
+-- Dolgovyazyi lesson dialog (dolgovazyi_servo_lesson): a regular customer who has an exo
+function lesson_offer()
+	return not lesson_known() and kotovod.dolgovazyi_exo_charges("regular") and has_exo()
+end
+
+-- lesson payments: a bearer cheque or an emerald dummy artifact (servos); a ruby dummy artifact or an exo
+-- to strip (armour). Artifacts are found in the actor's inventory by section, fakes never match.
+local GREEN_ARTS = { "af_dummy_green_medusa", "af_dummy_green_vyvert", "af_dummy_green_blood" }
+local RED_ARTS = { "af_red_dummy_spring", "af_red_dummy_battery", "af_red_dummy_pellicle" }
+local ARMOUR_GATE = 20          -- vise repairs (repair_exp) + servo tunings again (they count double)
+local PAY_EXO_COND = 0.6
+
+local function find_art(list)
+	for _, sect in ipairs(list) do
+		local o = db.actor:object(sect)
+		if o then return o end
+	end
+end
+
+local function take(o)
+	local sect = o:section()
+	misc.release_obj(o)
+	sak.relocate_item("out", sect, 1)
+end
+
+-- the lesson takes a while: the same fade and time skip as the armour lesson (sak_dialog), no flag
+function lesson_fade()
+	level.disable_input()
+	level.add_pp_effector("teleport.ppe", 1111, true)
+	level.set_time_factor(10000)
+	schedule.add("sivol_exo_lesson_fade", "sivol_exo.lesson_fade_end()", 3000)
+end
+function lesson_fade_end()
+	level.remove_pp_effector(1111)
+	level.enable_input()
+	level.set_time_factor(system_ini():r_float("alife", "time_factor"))
+end
+
+function lesson_have_green() return find_art(GREEN_ARTS) ~= nil end
+function lesson_pay_green()
+	local o = find_art(GREEN_ARTS)
+	if o then take(o) end
+end
+
+function servo_tunes() return get_value("exo_servo_tunes", 0) or 0 end
+
+-- armour lesson (dolgovazyi_exo_armor_lesson) ------------------------------------------------------
+function armor_lesson_known() return get_value("exo_self_rep", false) == true end
+function armor_lesson_offer() return lesson_known() and not armor_lesson_known() and has_exo() end
+function armor_gate() return (actor_stats.get_points("repair_exp") or 0) + servo_tunes() >= ARMOUR_GATE end
+function armor_gate_no() return not armor_gate() end
+
+function armor_have_red() return find_art(RED_ARTS) ~= nil end
+function armor_pay_red()
+	local o = find_art(RED_ARTS)
+	if o then take(o) end
+end
+
+-- an exo to strip: in the backpack (never the worn one), working servos, condition PAY_EXO_COND or more;
+-- the most worn one that qualifies goes first
+local function pay_exo()
+	local worn = db.actor:item_in_slot(6)
+	local best
+	for i = 0, db.actor:object_count() - 1 do
+		local o = db.actor:object(i)
+		if o and can_charge(o) and not (worn and worn:id() == o:id()) and o:condition() >= PAY_EXO_COND
+			and not string.find(o:section(), "outfit_m1", 1, true) then
+			if not best or o:condition() < best:condition() then best = o end
+		end
+	end
+	return best
+end
+function armor_have_exo() return pay_exo() ~= nil end
+function armor_exo_plated() local o = pay_exo() return o ~= nil and plate_tier(o) > 0 end
+function armor_exo_plain() local o = pay_exo() return o ~= nil and plate_tier(o) == 0 end
+function armor_pay_exo()
+	local o = pay_exo()
+	if o then take(o) end
+end
+
+-- true: the kit goes to the servos, "low": servos too worn for a kit, nil: the armour path decides
+-- dsh_remkit drag path: same rules as the vise (a chooser opens when the armour qualifies too)
+function kit_target(obj)
+	return vise_servo(obj)
+end
+
+-- sak.repair_on (the vise, the usual self-repair): true = tune the servos, "low" = too worn, nil = no
+function vise_servo(obj)
+	if not (obj and lesson_known() and can_charge(obj)) then return nil end
+	local s = servo(obj)
+	if s >= KIT_CAP then return nil end
+	if s < KIT_MIN then return "low" end
+	return true
+end
+
+function kit_tune(obj, step)
+	set_servo(obj, math.min(KIT_CAP, servo(obj) + (step or KIT_STEP)))
+	set_value("exo_servo_tunes", servo_tunes() + 1) -- the armour lesson gate counts them double
+	he_exo_charge.apply(obj)
+	bind_upg_outfit.update_outfit(obj, bind_upg_outfit.is_upgraded(obj))
+	refresh()
+end
+
+-- inventory bars under the outfit slot (ui_inv_add.InvWnd, ui_sivol_exo.xml) ------------------------
+-- The engine item-panel bars (set_nlc_item_bars, nlc-3.589.130) stay unused: they took space from the
+-- description list.
+
+local inv_bars = nil
+
+function inv_bars_attach(parent)
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_sivol_exo.xml")
+	inv_bars = { servo = xml:InitProgressBar("exo_servo_bar", parent), charge = xml:InitProgressBar("exo_charge_bar", parent),
+		mark = xml:InitStatic("exo_plate_mark", parent) }
+	inv_bars_update()
+end
+
+function inv_bars_detach()
+	inv_bars = nil
+end
+
+function inv_bars_update()
+	if not inv_bars then return end
+	local o = worn_exo()
+	local show = o ~= nil and can_charge(o)
+	inv_bars.servo:Show(show)
+	inv_bars.charge:Show(show)
+	if not show then
+		inv_bars.mark:Show(false)
+		return
+	end
+	if o:id() ~= cur.bar_id or time_global() >= (cur.bar_next or 0) then
+		cur.bar_id, cur.bar_next = o:id(), time_global() + 1000
+		cur.bar_servo = servo(o)
+		cur.bar_charge = math.min(1, he_exo_charge.minutes_left(o) / CHARGE_FULL_MIN)
+		local t = plate_tier(o) -- plate layers as a small Roman numeral next to the bars
+		inv_bars.mark:SetText(t >= 2 and "II" or t == 1 and "I" or "")
+		inv_bars.mark:Show(t > 0)
+	end
+	inv_bars.servo:SetProgressPos(cur.bar_servo * 100)
+	inv_bars.charge:SetProgressPos(cur.bar_charge * 100)
+end
+
+-- plate fitting animation ("Animation of ballistic plates" addon; HUD sections anim_exo_plate_1/2 in
+-- anm_other.ltx). Same HUD ownership as the match strike (sivol_match_ignition.script); it starts once the
+-- dialog has closed and the hands are free. Cosmetic: the plate is already fitted when it plays.
+
+local PLATE_CAM_ID, PLATE_WATCHDOG_MS = 9667, 20000
+local plate_anim = nil
+
+local function plate_anim_finish(reason)
+	local st = plate_anim
+	if not st then return end
+	plate_anim = nil
+	if st.session then hud_animation_session.cancel(st.session, reason) end
+	if st.motion_started then pcall(function() game.stop_hud_motion() end) end
+	if st.camera_started then pcall(function() level.remove_cam_effector(PLATE_CAM_ID) end) end
+	if st.owner then
+		if db.actor and db.actor:alive() then slot_keeper.release(st.owner) else slot_keeper.reset() end
+		hud_animation_owner.cancel(st.owner, reason)
+		hud_animation_owner.release(st.owner, reason)
+	end
+end
+
+function play_plate_anim(tier)
+	if plate_anim or not db.actor then return false end
+	local owner = hud_animation_owner.reserve("exo plate")
+	if not owner then return false end
+	local st = { owner = owner, sect = "anim_exo_plate_" .. (tonumber(tier) == 2 and 2 or 1), phase = "waiting" }
+	plate_anim = st
+	local ok, err = pcall(function()
+		if not hud_animation_owner.activate(owner, "exo plate") then error("HUD owner activation failed") end
+		st.session = hud_animation_session.new("exo plate", function(reason) plate_anim_finish(reason) end)
+		hud_animation_session.after(st.session, PLATE_WATCHDOG_MS, function() plate_anim_finish("watchdog") end)
+	end)
+	if not ok then
+		log2("[sivol_exo] plate animation failed: %s", tostring(err))
+		plate_anim_finish("begin error")
+		return false
+	end
+	return true
+end
+
+local function plate_anim_update()
+	local st = plate_anim
+	if not st then return end
+	if not (db.actor and db.actor:alive() and hud_animation_owner.valid(st.owner)) then
+		plate_anim_finish("actor or owner unavailable")
+		return
+	end
+	if st.phase == "waiting" then
+		if level.main_input_receiver() then return end -- the dialog is still open
+		if not (hud_animation_owner.acquire_input(st.owner) and (slot_keeper.remember(st.owner) or true)
+			and slot_keeper.hold(st.owner) and hud_animation_owner.acquire_weapon(st.owner)) then
+			plate_anim_finish("acquire failed")
+			return
+		end
+		db.actor:activate_slot(255)
+		st.phase = "stowing"
+	elseif st.phase == "stowing" then
+		if db.actor:active_item() then return end
+		local duration = game.play_hud_motion(2, st.sect, "anm_show", false, 1)
+		st.motion_started = true
+		st.due = time_global() + (tonumber(duration) or 3000) + 200
+		level.add_cam_effector("itemuse_anm_effects\\plate_cam.anm", PLATE_CAM_ID, false, "")
+		st.camera_started = true
+		local snd = sound_object("item_plate_use\\plate_sound")
+		snd:play_at_pos(db.actor, vector(), 0, sound_object.s2d)
+		st.phase = "playing"
+	elseif st.phase == "playing" and time_global() >= st.due then
+		plate_anim_finish("complete")
+		return
+	end
+	if st.phase ~= "waiting" and plate_anim == st and not hud_animation_owner.acquire_input(st.owner) then
+		plate_anim_finish("input ownership lost")
+	end
+end
+
+-- console tests ---------------------------------------------------------------------------------------
+-- fl sivol_exo.test_lesson()     regular customer (7 charges) + a bearer cheque: the lesson dialog shows
+-- fl sivol_exo.test_servo(0.6)   worn exo servos to 60%
+-- fl sivol_exo.test_plate_anim(2) plays the plate fitting animation (1 or 2)
+-- fl sivol_exo.test_plates(0)    worn exo plate tier 0..2
+
+function test_lesson()
+	if (get_value("dolgovazyi_exo_charges", 0) or 0) < 7 then set_value("dolgovazyi_exo_charges", 7) end
+	sak.create_items("bearer_cheque", 1)
+	db.actor:disable_info_portion(LESSON_INFO)
+end
+
+-- fl sivol_exo.test_armor_lesson()  servo lesson known, armour gate met, a ruby artifact: the armour lesson shows
+-- fl sivol_exo.test_armor_lesson(true)  the same without the artifact (pay with a backpack exo)
+function test_armor_lesson(keep_items)
+	if not lesson_known() then db.actor:give_info_portion(LESSON_INFO) end
+	if armor_gate_no() then set_value("exo_servo_tunes", ARMOUR_GATE) end
+	set_value("exo_self_rep", false)
+	if not keep_items then sak.create_items("af_red_dummy_spring", 1) end
+end
+
+function test_servo(v)
+	local o = worn_exo()
+	if not o then return end
+	set_servo(o, tonumber(v) or 1)
+	he_exo_charge.apply(o)
+	bind_upg_outfit.update_outfit(o, bind_upg_outfit.is_upgraded(o))
+	refresh()
+end
+
+function test_plate_anim(tier) play_plate_anim(tier) end
+
+function test_plates(t)
+	local o = worn_exo()
+	if not o then return end
+	write_u32(server_obj(o:id()), PLATE_SECT, PLATE_KEY, math.max(0, math.min(PLATE_MAX, tonumber(t) or 0)))
+	bind_upg_outfit.update_outfit(o, bind_upg_outfit.is_upgraded(o))
+end
+
+local function on_update()
+	plate_anim_update()
+	local now = time_global()
+	local o = db.actor and db.actor:item_in_slot(6)
+	local id = o and o:id() or false
+	if id ~= cur.id or now >= next_refresh then refresh() end
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = on_update })
+	sm:subscribe({ signal = "on_before_save_game", fun = function() plate_anim_finish("save") end })
+	sm:subscribe({ signal = "on_load_before_all", fun = function() plate_anim_finish("load") end })
+	sm:subscribe({ signal = "level_changer_action", fun = function() plate_anim_finish("level change") end })
+end

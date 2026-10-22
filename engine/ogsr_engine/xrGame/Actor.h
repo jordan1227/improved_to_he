@@ -477,6 +477,10 @@ protected:
 
     float m_fWalk_StrafeFactor;
     float m_fRun_StrafeFactor;
+    // NLC: [actor] nlc_speed_mult_once - apply m_fMovementSpeedMultiplier once per movement; the
+    // original code multiplies it into the run, sprint, crouch, climb and strafe factors separately
+    // (sprint got it squared, sprint-strafe cubed, plain forward walk not at all)
+    bool m_nlc_speed_mult_once{};
 
 public:
     float m_fMovementSpeedMultiplier;

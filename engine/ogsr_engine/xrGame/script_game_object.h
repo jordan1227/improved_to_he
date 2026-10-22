@@ -676,6 +676,7 @@ public:
     void SetAdditionalMaxWeight(float add_max_weight);
     float GetAdditionalMaxWalkWeight() const;
     void SetAdditionalMaxWalkWeight(float add_max_walk_weight);
+    void SetNlcItemBars(float a, float b); // NLC: item-panel bars (CInventoryItem::m_nlc_ui_bar)
     float GetTotalWeight() const;
     float Weight() const;
     /*************************************************** added by Ray Twitty (aka Shadows) END ***************************************************/

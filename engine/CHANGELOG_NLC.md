@@ -5,6 +5,15 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.130 (2026-10-22)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `BC368BD93C9D42A7022EFD0C0E9F5F7ED15F8239BDD1CC7B44F19679B9E832FB` (archived with its PDB in `nlc_tools/builds/20261022_130757_bc368bd9`).
+- **Status:** runtime pending. Exo rebalance pass 2 (`docs/damage_model/DESIGN_exo_rebalance.md` 7).
+- `[actor] nlc_speed_mult_once` (actor.ltx sets it true): `m_fMovementSpeedMultiplier` applied once per movement in `CActor::g_cl_CheckControls` instead of per run/sprint/crouch/climb/strafe factor (sprint had it squared, sprint-strafe cubed, plain walk not at all). Off = original behaviour.
+- Item panel (`CUIItemInfo`): two optional bars from the xml nodes `nlc_bar1/2_static`, `nlc_bar1/2_progress`, `nlc_bars desc_cut/desc_shift`; values per item `CInventoryItem::m_nlc_ui_bar` set by Lua `obj:set_nlc_item_bars(a, b)` (< 0 hides, not saved; `sivol_exo.desc_lines` pushes exo servos / charge).
+- Required game data: `creatures/actor.ltx`, `ui/inventory_item*.xml`, `ui/trade_item*.xml`, `ui/carbody_item*.xml`, `sivol/sivol_exo.script` (checks `set_nlc_item_bars` before use).
+
 ## nlc-3.589.129 (2026-10-22)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

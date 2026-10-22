@@ -164,6 +164,10 @@ public:
     float GetCondition() const { return m_fCondition; }
     virtual float GetConditionToShow() const { return GetCondition(); }
 
+    // NLC: extra item-panel bars 0..1 (exo servos / charge, sivol_exo.script), < 0 = hidden; Lua
+    // set_nlc_item_bars, not saved (the script pushes them while building the description)
+    float m_nlc_ui_bar[2]{-1.f, -1.f};
+
     void ChangeCondition(float fDeltaCondition);
 
     virtual void SetCondition(float fNewCondition)

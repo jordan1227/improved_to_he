@@ -2004,7 +2004,10 @@ function artmod(nearest_anomaly, af, item1, item2, item3, item4, info_artmod, it
 				local obj = g_sim:object(s.afd)
 
 				if obj and obj.parent_id == BAD_OBJ_ID then
-					misc.release_obj(s.afd, "sak.script:833")
+					-- sivol: the convoy catalyst spends a charge instead of being consumed
+					if not sivol_worldspawns.convoy_catalyst_spend(s.afd) then
+						misc.release_obj(s.afd, "sak.script:833")
+					end
 
 					if rand_goods and rand_goods < 5 then
 						rand_goods = rand_goods + 1
@@ -3930,9 +3933,62 @@ function return_mask()
 	restore_weap()
 end
 
-local rep_armor
+-- sivol: vise candidates (rifle, pistol, armour, exo servos), one kit per part (sivol_vise.script)
+vise_tips = { ui_vise_r_worn = "st_repair_box_1", ui_vise_r_cant = "st_repair_box_3",
+	ui_vise_r_cloak = "st_repair_box_5", ui_vise_r_kits = "st_repair_box_7", ui_vise_r_servo_low = "inv_dd_rep_servo_low" }
 
-function repair_on()
+function vise_kits()
+	local ids = sak_inventory.eatable["repair_boxoutfit"]
+	local r_box = ids and ids[1] and server_obj(ids[1])
+	if not r_box then return 0, 0 end
+	local data = get_netpk(r_box,1):get()
+	local rem = vergas_lib.str_explode(",",data.custom_data,true)
+	return tonumber(rem[1]) or 0, tonumber(rem[2]) or 0
+end
+
+function vise_rows()
+	local repiout, repiweap = vise_kits()
+	local exp = get_repair_coeff() / 100 * 1.5
+	local rows = {}
+	local function cond_reason(c)
+		if c >= 0.985 then return "ui_vise_r_fine" elseif c < 0.75 then return "ui_vise_r_worn" end
+	end
+	for slot = 1, 2 do
+		local o = db.actor:item_in_slot(slot)
+		if o then
+			local c = o:condition()
+			local reason = not is_repairable_item(o:section()) and "ui_vise_r_cant" or cond_reason(c)
+				or (repiweap == 0 and "ui_vise_r_kits") or nil
+			table.insert(rows, { kind = "w" .. slot, slot = slot, sect = o:section(), pct = c, ok = reason == nil,
+				reason = reason, base = weapon_def_rep * 1.5, exp = exp })
+		end
+	end
+	local armor = db.actor:item_in_slot(6)
+	if armor then
+		local sec, c = armor:section(), armor:condition()
+		local reason
+		if strpos(sec,"bandit_veteran_",1,true) or strpos(sec,"bandit_master_",1,true) then reason = "ui_vise_r_cloak"
+		elseif not is_repairable_item(sec) then reason = "ui_vise_r_cant"
+		else reason = cond_reason(c) or (repiout == 0 and "ui_vise_r_kits") or nil end
+		table.insert(rows, { kind = "armor", slot = 6, sect = sec, pct = c, ok = reason == nil, reason = reason,
+			base = armor_def_rep * 1.5, exp = exp })
+		if sivol_exo.can_charge(armor) and sivol_exo.lesson_known() then
+			local s = sivol_exo.servo(armor)
+			local v = sivol_exo.vise_servo(armor)
+			local reason = v == "low" and "ui_vise_r_servo_low"
+				or v == nil and "ui_vise_r_fine" or (repiout == 0 and "ui_vise_r_kits") or nil
+			table.insert(rows, { kind = "servo", slot = 6, sect = sec, name = game.translate_string("ui_inv_exo_servo_cap"),
+				pct = s, ok = reason == nil, reason = reason, base = armor_def_rep * 1.5, exp = exp })
+		end
+	end
+	return rows
+end
+
+local rep_armor
+local rep_servo_id -- sivol: the vise job is the exo's servos (repair_on -> repair_tiski_do)
+
+function repair_on(choice)
+	if type(choice) ~= "string" then choice = nil end -- sivol: the vise logic passes (actor, object)
 	local tiski = nil
 	for a,i in pairs(db.storage) do
 		local objg = client_obj(a)
@@ -3946,36 +4002,44 @@ function repair_on()
 	end
 	
 	if tiski~=nil then
-		local slot_to_repair = -1
-		local slot_1 = db.actor:item_in_slot(1)
-		local slot_2 = db.actor:item_in_slot(2)
+		-- sivol: one kit repairs one part; with several candidates the choice window (sivol_vise.script)
+		-- opens and calls back here with the picked row (vise_rows)
 		local armor = db.actor:item_in_slot(6)
-		
-		if slot_1 and check_repairable_cond(slot_1:condition(),true) then
-			slot_to_repair = 1
-		elseif slot_2 and check_repairable_cond(slot_2:condition(),true) then
-			slot_to_repair = 2
-		elseif armor and check_repairable_cond(armor:condition(),true) then
-			slot_to_repair = 6
-		end
-		
-		if slot_to_repair == -1 then
-			if (slot_1 and slot_1:condition() < 0.75) or (slot_2 and slot_2:condition() < 0.75) or (armor and armor:condition() < 0.75) then
-				sak.send_tip_local(game.translate_string("st_repair_box_1"),game.translate_string("thinking_out_loud"),1,7,"g_g","pda_news","red")
-			else
-				sak.send_tip_local(game.translate_string("st_repair_box_2"),game.translate_string("thinking_out_loud"),1,7,"g_g","pda_news","red")
+		local rows = vise_rows()
+		rep_servo_id = nil
+		local pick
+		if choice then
+			for _, r in ipairs(rows) do
+				if r.kind == choice and r.ok then pick = r end
 			end
+			if not pick then return end
+		else
+			local valid = {}
+			for _, r in ipairs(rows) do
+				if r.ok then table.insert(valid, r) end
+			end
+			if #valid > 1 then
+				local kits_out, kits_weap = vise_kits()
+				sivol_vise.open(rows, function(kind) sak.repair_on(kind) end, sivol_vise.kits_text(kits_out, kits_weap))
+				return
+			end
+			pick = valid[1]
+		end
+		if not pick then
+			-- nothing to do: the first row's reason as the usual thought
+			local reason = "st_repair_box_2"
+			for _, r in ipairs(rows) do
+				if r.reason and r.reason ~= "ui_vise_r_fine" then reason = vise_tips[r.reason] or r.reason break end
+			end
+			sak.send_tip_local(game.translate_string(reason),game.translate_string("thinking_out_loud"),1,7,"g_g","pda_news","red")
 			return
 		end
-		
+		local slot_to_repair = pick.slot
+		if pick.kind == "servo" then rep_servo_id = armor:id() end
+
 		local slot_obj = db.actor:item_in_slot(slot_to_repair)
 		local slot_id = slot_obj:id()
 		local slot_sec = slot_obj:section()
-		
-		if slot_obj and not is_repairable_item(slot_sec) then
-			sak.send_tip_local(game.translate_string("st_repair_box_3"),game.translate_string("thinking_out_loud"),1,7,"g_g","pda_news","red")
-			return
-		end
 		
 		local r_box_id = sak_inventory.eatable["repair_boxoutfit"][1]
 		local r_box = server_obj(r_box_id)
@@ -4045,8 +4109,14 @@ function repair_tiski_do(slot,slot_obj_id,r_box_id,repiout,repiweap)
 		else
 			local rep_point = slot_obj:condition() + ( (coeff + armor_def_rep ) * 1.5 )
 			if rep_point > 1 then rep_point = 1 end
-			amk_mod.repair_armor(rep_point)
-			sak.send_tip_local(game.translate_string("st_repair_box_6"),game.translate_string("thinking_out_loud"),1,7,"g_g","pda_news","green")
+			if rep_servo_id == slot_obj_id then
+				sivol_exo.kit_tune(slot_obj, (coeff + armor_def_rep) * 1.5) -- sivol: servos, not armour
+				rep_servo_id = nil
+				sak.send_tip_local(game.translate_string("st_repair_box_servo"),game.translate_string("thinking_out_loud"),1,7,"g_g","pda_news","green")
+			else
+				amk_mod.repair_armor(rep_point)
+				sak.send_tip_local(game.translate_string("st_repair_box_6"),game.translate_string("thinking_out_loud"),1,7,"g_g","pda_news","green")
+			end
 			repiout = repiout - 1
 			actor_stats.add_points("repair_exp", "st_repair_armor", 1, 1)
 			vergas_masks.set_mask_on_off_flag(true)
@@ -9271,7 +9341,10 @@ function hazards_handle()
 						h.type=hit.shock
 						h.power=0.1*(1+(100/((v3f(13.5,40.2,-230.7):distance_to(act_pos))+10)))
 						h.impulse=0.0
-						actor:hit(h)
+						-- sivol: the convoy case ward on the belt can take the discharge
+						if not sivol_worldspawns.convoy_on_tesla_discharge(act_pos) then
+							actor:hit(h)
+						end
 					end	
 				end
 			end

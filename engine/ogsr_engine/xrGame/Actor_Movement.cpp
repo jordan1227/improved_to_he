@@ -376,29 +376,33 @@ void CActor::g_cl_CheckControls(u32 mstate_wf, Fvector& vControlAccel, float& Ju
             float scale = vControlAccel.magnitude();
             if (scale > EPS)
             {
+                // NLC: with nlc_speed_mult_once the multiplier is applied once below, not per factor
+                const float M = m_nlc_speed_mult_once ? 1.f : m_fMovementSpeedMultiplier;
                 scale = m_fWalkAccel / (scale * load_speed_k);
                 if (bAccelerated)
                     if (mstate_real & mcBack)
-                        scale *= m_fRunBackFactor * m_fMovementSpeedMultiplier;
+                        scale *= m_fRunBackFactor * M;
                     else
-                        scale *= m_fRunFactor * m_fMovementSpeedMultiplier;
+                        scale *= m_fRunFactor * M;
                 else if (mstate_real & mcBack)
-                    scale *= m_fWalkBackFactor * m_fMovementSpeedMultiplier;
+                    scale *= m_fWalkBackFactor * M;
 
                 if (mstate_real & mcCrouch)
-                    scale *= m_fCrouchFactor * m_fMovementSpeedMultiplier;
+                    scale *= m_fCrouchFactor * M;
                 if (mstate_real & mcClimb)
-                    scale *= m_fClimbFactor * m_fMovementSpeedMultiplier;
+                    scale *= m_fClimbFactor * M;
                 if (mstate_real & mcSprint)
-                    scale *= m_fSprintFactor * m_fMovementSpeedMultiplier;
+                    scale *= m_fSprintFactor * M;
 
                 if (mstate_real & (mcLStrafe | mcRStrafe) && !(mstate_real & mcCrouch))
                 {
                     if (bAccelerated)
-                        scale *= m_fRun_StrafeFactor * m_fMovementSpeedMultiplier;
+                        scale *= m_fRun_StrafeFactor * M;
                     else
                         scale *= m_fWalk_StrafeFactor;
                 }
+                if (m_nlc_speed_mult_once)
+                    scale *= m_fMovementSpeedMultiplier;
 
                 scale *= conditions().body().LegsSpeedK(!!bAccelerated, !!(mstate_real & mcSprint)); // NLC: legs health
 

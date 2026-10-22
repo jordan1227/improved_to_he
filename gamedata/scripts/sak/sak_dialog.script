@@ -2921,13 +2921,28 @@ function upgrade_outfit_precond()
 		return not str_in_tab (sec, {"bandit_veteran_", "bandit_master_", "_q_"})
 	end
 end
-function upgrade_ok_precond()
-	return get_value("upgrade_info")~=nil
+-- sivol: Demyan (marsh, coating) and Dolgovyazyi (bar, exo charge) keep their suits apart; with one
+-- shared "upgrade_info" a second handoff overwrote the stored suit. Saves made before the split may
+-- still hold a charging exo in the old slot.
+local function upgrade_key(where)
+	return where == "bar" and "upgrade_info_bar" or "upgrade_info"
 end
-function upgrade_not_ok_precond()
-	return not upgrade_ok_precond()
+local function upgrade_get(where)
+	local key = upgrade_key(where)
+	local tab = get_value(key)
+	if tab == nil and key ~= "upgrade_info" then
+		local old = get_value("upgrade_info")
+		if old and old[1] and string.find(old[1], "exo", 1, true) then return old, "upgrade_info" end
+	end
+	return tab, key
 end
-function give_upgrade_outfit()
+function upgrade_ok_precond(where)
+	return (upgrade_get(where)) ~= nil
+end
+function upgrade_not_ok_precond(where)
+	return not upgrade_ok_precond(where)
+end
+function give_upgrade_outfit(where)
 	local item_in_slot_6 = actor_active_item(6)
 	local sec = item_in_slot_6:section()
 	local cond, dec = math.modf(item_in_slot_6:condition() * 100)
@@ -2939,13 +2954,14 @@ function give_upgrade_outfit()
 	local sobj = server_obj(item_in_slot_6:id())
 	local cd = sobj and sobj.custom_data or ""
 
-	local tab = {sec,cond,cd,lua_random(4320, 5760)}
-	set_value("upgrade_info", tab)
+	-- sivol: [5] = per-item spawn ini state (mask, exo charge / servos / plates) for the respawn
+	local tab = {sec,cond,cd,lua_random(4320, 5760),sivol_exo.capture(item_in_slot_6, true)}
+	set_value(upgrade_key(where), tab)
 	misc.release_obj(item_in_slot_6)
     sak.relocate_item("out", sec)
 end
-function return_upgrade_outfit()
-	local tab = get_value("upgrade_info")
+function return_upgrade_outfit(where)
+	local tab, key = upgrade_get(where)
 	if tab == nil then return end
 	local sec = tab[1]
 	local outfit = misc.spawn_to(sec,db.actor)
@@ -2962,9 +2978,12 @@ function return_upgrade_outfit()
 	if sobj and tab[3] ~= "" then
 		sobj.custom_data = tab[3]
 	end
-	bind_upg_outfit.set_end_time(sobj, timers.Get_Game_Minutes() + tab[4])
+	sivol_exo.restore(sobj, tab[5]) -- sivol: before charge_returned, which sets the new charge
+	if not string.find(sec, "exo", 1, true) then
+		bind_upg_outfit.set_end_time(sobj, timers.Get_Game_Minutes() + tab[4])
+	end
 	he_exo_charge.charge_returned(outfit.id) -- [HE-PORT]
-	remove_value("upgrade_info")
+	remove_value(key)
 end
 function add_voron_find_item_1_done()
 	sak.create_items("grenade_f1",5)

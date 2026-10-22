@@ -1,0 +1,117 @@
+-- sivol: repair choice window for the vise (sak.repair_on) and the kit drag path (dsh_remkit).
+-- One kit repairs one part; with several candidates the player picks it here. Layout follows
+-- kotovod/ui_sharper.script (same frame, buttons and icon helpers), xml: ui_sivol_vise.xml.
+--
+-- rows: up to 4 { kind, sect (icon / name), name (optional text), pct (0..1), ok, reason (string id),
+--                 base, exp (gain fractions, optional), kit (section, for the cost line) }
+-- on_pick(kind) is called after the window has closed.
+
+local clr_green  = { 255, 1,   255, 1   }
+local clr_red    = { 255, 180,  35, 50  }
+local clr_orange = { 255, 238, 153, 26  }
+local clr_gray   = { 255, 160, 160, 160 }
+local COL_X = { 242, 375, 508, 641 }
+
+local function tr(id, ...)
+	local s = game.translate_string(id)
+	if select("#", ...) > 0 then return string.format(s, ...) end
+	return s
+end
+
+class "CUIVise"(CUIScriptWnd)
+
+function CUIVise:__init(rows, on_pick, kits_text) super()
+	self.rows, self.on_pick = rows, on_pick
+	self:InitControls(kits_text)
+end
+
+function CUIVise:__finalize() end
+
+local kScreen = math.min((1024 / 768) / (device().width / device().height), 1) -- widescreen narrows icons
+
+-- a template node moved into a column, keeping its y
+local function at(xml, node, parent, x, label)
+	local w = label and xml:InitLabel(node, parent) or xml:InitStatic(node, parent)
+	w:SetWndPos(x + w:GetWndPos().x, w:GetWndPos().y)
+	return w
+end
+
+function CUIVise:InitControls(kits_text)
+	self:Init(0, 0, 1024, 768)
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_sivol_vise.xml")
+	xml:InitStatic("main_dialog:dialog", self)
+	xml:InitLabel("cap_line", self)
+	xml:InitStatic("cap_text", self):SetText(tr("ui_vise_cap"))
+	xml:InitStatic("info_text", self):SetText(tr("ui_vise_info") .. (kits_text and ("\\n" .. kits_text) or ""))
+
+	for i, row in ipairs(self.rows) do
+		if i > 4 then break end
+		local x = COL_X[i]
+		local name = row.name or get_inv_name(row.sect)
+		at(xml, "col_name", self, x):SetText(name)
+		at(xml, "col_line", self, x, true)
+		at(xml, "col_pct", self, x):SetText(string.format("%d%%", math.floor(row.pct * 100 + 0.5)))
+		-- icon in the 111 x 120 box under the name, aspect kept (narrowed by kScreen on widescreen)
+		local ip = ui_sharper.give_icon_params(row.sect)
+		local k = math.min(105 / (ip.width * kScreen), 110 / ip.height, 1.2)
+		local w, h = ip.width * k * kScreen, ip.height * k
+		local pict = ui_sharper.make_static("pict" .. i, self, false, x + (111 - w) / 2, 342 + (120 - h) / 2, w, h)
+		pict:InitTexture(ip.icon_group == 0 and "ui\\ui_icon_equipment" or ("ui\\ui_icon_equipment_" .. ip.icon_group))
+		pict:SetOriginalRect(ip.x, ip.y, ip.width, ip.height)
+		pict:SetStretchTexture(true)
+		-- gain and cost, or why not
+		local line
+		if row.ok then
+			line = (row.base and (tr("ui_vise_gain", row.base * 100, (row.exp or 0) * 100) .. "\\n") or "") .. tr("ui_vise_cost")
+		else
+			line = tr(row.reason or "ui_vise_r_fine")
+		end
+		local gain = at(xml, "col_gain", self, x - 5)
+		gain:SetText(line)
+		gain:SetTextColor(unpack(row.ok and clr_green or clr_red))
+
+		local btn = xml:Init3tButton("btn_pick", self)
+		btn:SetWndPos(x, 583)
+		btn:Enable(row.ok == true)
+		self:Register(btn, "btn_pick" .. i)
+		self:AddCallback("btn_pick" .. i, ui_events.BUTTON_CLICKED, function() self:Pick(i) end, self)
+	end
+	self:Register(xml:Init3tButton("btn_cancel", self), "btn_cancel")
+	self:AddCallback("btn_cancel", ui_events.BUTTON_CLICKED, self.OnBtnCancel, self)
+end
+
+function CUIVise:Close()
+	self:GetHolder():start_stop_menu(self, true)
+	self:ClearCallbacks()
+end
+
+function CUIVise:Pick(i)
+	local row, cb = self.rows[i], self.on_pick
+	self:Close()
+	if row and row.ok and cb then cb(row.kind) end
+end
+
+function CUIVise:OnBtnCancel()
+	self:Close()
+end
+
+function CUIVise:OnKeyboard(dik, keyboard_action)
+	CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if keyboard_action == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
+		self:OnBtnCancel()
+	end
+	return true
+end
+
+function open(rows, on_pick, kits_text)
+	if has_alife_info("ui_inventory") and level.main_input_receiver() then
+		level.start_stop_menu(level.main_input_receiver(), true)
+	end
+	level.start_stop_menu(CUIVise(rows, on_pick, kits_text), true)
+end
+
+-- the kit counts line of the window
+function kits_text(repiout, repiweap)
+	return tr("ui_vise_kits", repiout or 0, repiweap or 0)
+end

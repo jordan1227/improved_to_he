@@ -1172,6 +1172,19 @@ void CScriptGameObject::SetAdditionalMaxWalkWeight(float add_max_walk_weight)
     outfit->m_additional_weight = add_max_walk_weight;
 }
 
+// NLC: item-panel bars (exo servos / charge); < 0 hides a bar
+void CScriptGameObject::SetNlcItemBars(float a, float b)
+{
+    CInventoryItem* item = smart_cast<CInventoryItem*>(&object());
+    if (!item)
+    {
+        ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError, "CInventoryItem : cannot access class member set_nlc_item_bars!");
+        return;
+    }
+    item->m_nlc_ui_bar[0] = a;
+    item->m_nlc_ui_bar[1] = b;
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 // получить суммарный вес инвентаря
 float CScriptGameObject::GetTotalWeight() const
