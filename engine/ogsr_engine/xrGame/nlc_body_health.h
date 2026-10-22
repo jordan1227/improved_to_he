@@ -116,8 +116,13 @@ public:
 
     float PartDamage(u8 part, u8 heal_mask) const;
 
-    // movement speed multiplier from the legs health (A.R.E.A. area_health_system)
+    // movement speed multiplier from the legs health: none above legs_full, linear to the full penalty at
+    // legs_zero, applied once (DESIGN_recovery_and_body_status.md 36)
     float LegsSpeedK(bool run, bool sprint) const;
+
+    // NLC: inventory part bars always shown (script switch, default: only on hover / drag / row preview)
+    bool PartBarsAlways() const { return m_bars_always; }
+    void SetPartBarsAlways(bool on) { m_bars_always = on; }
 
 private:
     struct SBoost
@@ -182,11 +187,14 @@ private:
     float m_fracture_move_pain_k{};
     float m_blood_parts_coef{1.f};
     float m_bleed_speed_k{1.f};
-    float m_legs_min_power{0.4f};
-    float m_legs_walk_k{0.5f};
-    float m_legs_run_k{0.5f};
+    float m_legs_min_power{0.6f}; // stamina cap floor
+    float m_legs_power_add{0.35f}; // stamina cap = max(min_power, legs + this)
+    float m_legs_full{0.75f}; // no slowdown above
+    float m_legs_zero{0.25f}; // full slowdown at and below
+    float m_legs_walk_k{0.35f}; // walk and run
     float m_legs_sprint_k{0.5f};
     float m_legs_min_speed{0.1f};
+    bool m_bars_always{};
 
     // one-shot guard: a part above m_guard_above when a hit window opens cannot be taken below its
     // floor by the hits of that window (m_guard_window_ms, so the pellets of one shot count as one)

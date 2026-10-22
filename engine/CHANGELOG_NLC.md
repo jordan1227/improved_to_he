@@ -5,6 +5,15 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.129 (2026-10-22)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `3FE52DDB1E306BF896AD81EA68387E1131D9C30C3FD5B3F6A88488D0B14C66B0` (archived with its PDB in `nlc_tools/builds/20261022_104158_3fe52ddb`).
+- **Status:** runtime pending. Recovery pass 36 (`docs/damage_model/DESIGN_recovery_and_body_status.md` 36).
+- `LegsSpeedK`: no slowdown above `legs_full`, linear to `legs_zero`, applied once (walk/run `legs_walk_k`, sprint `legs_sprint_k`); stamina cap max(`legs_min_power`, legs + `legs_power_add`).
+- `AddGreen`: regeneration a topped-off part cannot take turns its green white (overflow); passive conversion keys set to 0.
+- Inventory part bars only while the cursor is over the body window or the figure, an item is dragged or a use row hovered; Lua `body_health.set_part_bars_always(bool)`.
+
 ## nlc-3.589.128 (2026-10-22)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

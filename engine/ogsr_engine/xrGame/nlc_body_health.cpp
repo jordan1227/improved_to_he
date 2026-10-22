@@ -105,9 +105,11 @@ void CActorBodyHealth::Load(LPCSTR condition_section)
     m_fracture_move_pain_k = READ_IF_EXISTS(pSettings, r_float, sect, "fracture_move_pain_k", 0.0001f);
     m_blood_parts_coef = READ_IF_EXISTS(pSettings, r_float, sect, "blood_parts_coef", 1.f);
     m_bleed_speed_k = READ_IF_EXISTS(pSettings, r_float, sect, "bleed_speed_k", 1.f);
-    m_legs_min_power = READ_IF_EXISTS(pSettings, r_float, sect, "legs_min_power", 0.4f);
-    m_legs_walk_k = READ_IF_EXISTS(pSettings, r_float, sect, "legs_walk_k", 0.5f);
-    m_legs_run_k = READ_IF_EXISTS(pSettings, r_float, sect, "legs_run_k", 0.5f);
+    m_legs_min_power = READ_IF_EXISTS(pSettings, r_float, sect, "legs_min_power", 0.6f);
+    m_legs_power_add = READ_IF_EXISTS(pSettings, r_float, sect, "legs_power_add", 0.35f);
+    m_legs_full = READ_IF_EXISTS(pSettings, r_float, sect, "legs_full", 0.75f);
+    m_legs_zero = READ_IF_EXISTS(pSettings, r_float, sect, "legs_zero", 0.25f);
+    m_legs_walk_k = READ_IF_EXISTS(pSettings, r_float, sect, "legs_walk_k", 0.35f);
     m_legs_sprint_k = READ_IF_EXISTS(pSettings, r_float, sect, "legs_sprint_k", 0.5f);
     m_legs_min_speed = READ_IF_EXISTS(pSettings, r_float, sect, "legs_min_speed", 0.1f);
     m_green_base = READ_IF_EXISTS(pSettings, r_float, sect, "green_convert_base", 0.05f);
@@ -500,6 +502,27 @@ void CActorBodyHealth::AddGreen(float value)
                 m_green[i] += step;
         budget -= step * n;
     }
+    // NLC: the overflow (every part topped off) turns green white, evenly over the parts that hold green
+    // (design 36): artifacts heal for good only once the limb is full
+    for (int pass = 0; pass < 6 && budget > 1e-7f; ++pass)
+    {
+        u8 n = 0;
+        for (u8 i = head; i < count; ++i)
+            if (m_green[i] > 1e-7f && room(i) <= 1e-6f)
+                ++n;
+        if (!n)
+            break;
+        const float share = budget / n;
+        for (u8 i = head; i < count; ++i)
+        {
+            if (m_green[i] <= 1e-7f || room(i) > 1e-6f)
+                continue;
+            const float v = std::min(share, m_green[i]);
+            m_green[i] -= v;
+            m_health[i] += v;
+            budget -= v;
+        }
+    }
     Clamp();
 }
 
@@ -853,7 +876,7 @@ void CActorBodyHealth::Update(float dt)
     m_last_total = total;
 
     const float legs = (m_health[left_leg] + m_health[right_leg]) * 0.5f;
-    const float cap = m_owner->GetMaxPower() * std::max(m_legs_min_power, std::min(1.f, legs));
+    const float cap = m_owner->GetMaxPower() * std::max(m_legs_min_power, std::min(1.f, legs + m_legs_power_add));
     if (m_owner->m_fPower > cap)
         m_owner->m_fPower = cap;
 }
@@ -862,12 +885,10 @@ float CActorBodyHealth::LegsSpeedK(bool run, bool sprint) const
 {
     if (!Enabled())
         return 1.f;
-    const float lost = 1.f - std::clamp((m_health[left_leg] + m_health[right_leg]) * 0.5f, 0.f, 1.f);
-    float k = 1.f - lost * m_legs_walk_k;
-    if (run)
-        k *= 1.f - lost * m_legs_run_k;
-    if (sprint)
-        k *= 1.f - lost * m_legs_sprint_k;
+    const float legs = (m_health[left_leg] + m_health[right_leg]) * 0.5f;
+    const float span = std::max(m_legs_full - m_legs_zero, 0.01f);
+    const float pen = std::clamp((m_legs_full - legs) / span, 0.f, 1.f);
+    const float k = 1.f - pen * (sprint ? m_legs_sprint_k : m_legs_walk_k);
     return std::max(k, m_legs_min_speed);
 }
 
@@ -1076,6 +1097,13 @@ static int l_part_armor(lua_State* L)
     const float ap = lua_isnumber(L, 3) ? float(lua_tonumber(L, 3)) : 0.2f;
     return ret_num(L, A->conditions().nlc_bullet_absorb(bone, power, ap));
 }
+// set_part_bars_always(bool): inventory part bars always shown (default off: hover, drag, row preview)
+static int l_set_part_bars_always(lua_State* L)
+{
+    if (CActorBodyHealth* b = body())
+        b->SetPartBarsAlways(lua_toboolean(L, 1) != 0);
+    return 0;
+}
 static int l_change_part_health(lua_State* L)
 {
     if (CActorBodyHealth* b = body())
@@ -1217,6 +1245,7 @@ void script_register(lua_State* L)
         {"part_health", l_part_health},
         {"part_max_health", l_part_max_health},
         {"part_armor", l_part_armor},
+        {"set_part_bars_always", l_set_part_bars_always},
         {"change_part_health", l_change_part_health},
         {"heal_part", l_heal_part},
         {"green", l_green},

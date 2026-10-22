@@ -267,7 +267,17 @@ void CUIBodyHealthWnd::Update()
         P.layer[layer_fracture].SetColor((a << 24) | tint);
     }
 
-    UpdateBars(B, body_on, hover);
+    // NLC: part bars at rest only with the script switch; else while the cursor is over the window or the
+    // armoured figure, an item is dragged or a use row is hovered (design 36)
+    bool bars = B.PartBarsAlways() || dragging || m_preview_section.size() || FigureUnderCursor();
+    if (!bars)
+    {
+        Frect abs;
+        GetAbsoluteRect(abs);
+        const Fvector2 c = GetUICursor()->GetCursorPosition();
+        bars = abs.in(c.x, c.y);
+    }
+    UpdateBars(B, body_on && bars, hover);
     UpdateHint(hover != none ? hover : (!dragging && FigureUnderCursor() ? HINT_FIGURE : u8(none)), dragging);
 }
 
