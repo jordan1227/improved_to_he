@@ -5,6 +5,28 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.128 (2026-10-22)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `AFAF56BDEEDFC496EC5A271261176650FC9F9F692124E1E6FC9D49ACE74F9BC2` (archived with its PDB in `nlc_tools/builds/20261022_100103_afaf56bd`).
+- **Status:** runtime pending.
+
+### NLC
+
+- `nlc_flash_light`: light cap 8 -> 16 for overlapping Pulse strikes (Tesla near/far channels and clusters). Required game data: none.
+
+## nlc-3.589.127 (2026-10-22)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `CE0424C46CF515D1AA86458AC5BB5C4417857674454A517DBAB3B1759CBBC634` (archived with its PDB in `nlc_tools/builds/20261022_074354_ce0424c4`).
+- **Status:** runtime pending.
+
+### NLC
+
+- `xrGame/nlc_flash_light.cpp`: Lua `flash_light.spawn(x, y, z, range, r, g, b, attack_ms, hold_ms, fade_ms [, flicker, shadow, volumetric])` / `stop(id)` / `count()`. Short-lived point lights owned by the engine (max 8), envelope updated in `CLevel::OnFrame`, all cleared in `CLevel::~CLevel`, not saved. Used by the Pulse anomaly (`sivol_pulse_anomaly.script`, `docs/PULSE_ANOMALY_DESIGN.md`).
+- Also first built here: the Shaders tab master switch `ssfx_effects_off` (pending source from another session: `xrRender_console.cpp`, `ssfx_features.h`, `DetailManager_Decompress.cpp`, `xr_3da/Environment.h`, `Environment_misc.cpp`). Its menu row is in `gamedata/scripts/ui/ui_mm_opt_shaders.script`.
+- Required game data: none (scripts check for `flash_light` before use).
+
 ## nlc-3.589.126 (2026-10-21)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

@@ -1,0 +1,1036 @@
+-- sivol_pulse_anomaly.script
+-- Pulse: an electro-psy discharge that charges in the sky and strikes the
+-- ground (concept from Anomaly's bind_anomaly_field.script, rewritten for
+-- this build). Frequent on Generators, rare on the other northern levels.
+-- Each strike leaves a temporary EMP scar (strong core + weak halo) in
+-- sivol_emp_sources, so PDA/NVD/torch/watch react through pda_noise, and the
+-- discharge itself can knock electronics out (sivol_critical_malfunction).
+-- Design record: docs/PULSE_ANOMALY_DESIGN.md
+--
+-- Strength profile s (0.4..1.3) = location base x weather factor. Every
+-- radius/power below is a {weakest, strongest} pair interpolated over s.
+--
+-- Console tests (g_loadstring or fl):
+--   sivol_pulse_anomaly.debug_strike_close   -- ~5 m from the actor
+--   sivol_pulse_anomaly.debug_strike_near    -- ~15 m
+--   sivol_pulse_anomaly.debug_strike_mid     -- ~40 m
+--   sivol_pulse_anomaly.debug_strike_far     -- ~90 m
+--   sivol_pulse_anomaly.debug_strike_random  -- normal placement roll
+--   sivol_pulse_anomaly.debug_strike_art     -- ~25 m, forces the artifact roll
+--   sivol_pulse_anomaly.debug_strike(dist, angle_deg, force_art, s)
+--   sivol_pulse_anomaly.debug_profile        -- current s and what it scales to
+--   sivol_pulse_anomaly.debug_status
+--   sivol_pulse_anomaly.debug_clear_zones
+
+-- ======================= SWITCHES =======================
+local ENABLED            = true
+local NPC_DAMAGE_ENABLED = true   -- false: only the actor is hit
+local LOG                = true   -- lifecycle logs only (strikes, zones, outages, artifacts)
+local ROLL_LOG           = true   -- one line per 30 s chance roll on an active level (frequency tuning)
+
+-- ======================= LOCATIONS =======================
+-- base: strength base; mean: mean real seconds between strikes at weather freq 1;
+-- min_gap: real seconds; close/mid: placement band shares (outer = rest);
+-- scar_game_s: scar lifetime override; info: level only active with this info;
+-- anomaly_clearance: overrides ANOMALY_CLEARANCE (0 = strikes may land on anomalies).
+-- channels: independent strike channels, each with its own roll and gap (otherwise the
+-- level itself is the one channel). Channel fields: mean, min_gap, roll_s (roll period),
+-- bands {{min, max, share}, ...}, s_mult, scar_game_s, ambient (far-strike look: no
+-- sparks, wide unshadowed lights, thunder), cluster (chance of 1-2 follow-up strikes),
+-- near_chance + near_bands (an ambient roll that lands close and plays as a normal strike).
+-- Levels absent here (all underground levels included) never get pulses.
+local TESLA_NEAR_BANDS = { { 5, 20, 0.35 }, { 20, 60, 0.65 } }
+local LEVELS = {
+    generators        = { base = 1.00, anomaly_clearance = 0, channels = {
+        near = { mean = 75, min_gap = 40, bands = TESLA_NEAR_BANDS, scar_game_s = 180 },
+        far  = { mean = 25, min_gap = 10, roll_s = 5, bands = { { 100, 250, 1 } }, s_mult = 1.15,
+                 scar_game_s = 60, ambient = true, cluster = 0.25,
+                 near_chance = 0.10, near_bands = TESLA_NEAR_BANDS },
+    } },
+    l12_stancia_new   = { base = 0.85, mean = 1800, min_gap = 480 },
+    l12_stancia_2_new = { base = 0.85, mean = 1800, min_gap = 480 },
+    aver              = { base = 0.80, mean = 2700, min_gap = 600 },
+    l11_pripyat       = { base = 0.75, mean = 1800, min_gap = 480 },
+    l10_radar         = { base = 0.70, mean = 2700, min_gap = 600 },
+    deadcity          = { base = 0.70, mean = 2700, min_gap = 600 },
+    limansk           = { base = 0.65, mean = 2700, min_gap = 600 },
+    red_forest        = { base = 0.55, mean = 2700, min_gap = 600 },
+    l07_military      = { base = 0.45, mean = 3600, min_gap = 900, close = 0.25, info = "deactivate_radar_fall" },
+    l08_yantar        = { base = 0.45, mean = 3600, min_gap = 900, close = 0.25, info = "deactivate_radar_fall" },
+}
+-- While mike.timer_tesla_free holds "tesla_free" (3 game hours), the Tesla is calmed.
+local GENERATORS_CALM = { base = 0.80, mean = 1800, min_gap = 480 }
+local DEFAULT_CLOSE, DEFAULT_MID = 0.35, 0.55
+local DEBUG_BASE = 0.80          -- debug strikes on unlisted levels
+
+local ROLL_INTERVAL    = 30000   -- ms between chance rolls (channel roll_s overrides)
+local MAX_STRIKES      = 4       -- strikes in progress at once, all channels
+local CLUSTER_COUNT    = { 1, 2 }      -- follow-up strikes of a cluster
+local CLUSTER_DELAY    = { 1500, 3000 } -- ms between cluster strikes
+local CLUSTER_DIST     = { 20, 40 }     -- m from the previous strike
+local FIRST_ROLL_DELAY = 60000   -- ms after a load/level change before the first roll
+local EMISSION_QUIET   = 600000  -- ms without pulses after an emission ends
+
+-- ======================= WEATHER =======================
+-- Class from level.get_weather() ("default_np_thunder", ...); rain adds up to
+-- RAIN_EXTRA strength by level.rain_factor(). freq multiplies the roll chance.
+local WEATHER = {
+    storm    = { strength = 1.30, freq = 2.0 },
+    rain     = { strength = 1.10, freq = 1.5 },
+    overcast = { strength = 1.00, freq = 1.0 },
+    fog      = { strength = 0.95, freq = 0.9 },
+    clear    = { strength = 0.80, freq = 0.6 },
+}
+local RAIN_EXTRA = 0.10
+
+local S_MIN, S_MAX = 0.4, 1.3
+local SCALE = {
+    shock_r      = { 14, 22 },     -- m
+    shock_max    = { 1.2, 2.2 },   -- strong Galantine is 2.0
+    psy_r        = { 6, 10 },
+    psy_max      = { 0.15, 0.30 },
+    burst_r      = { 40, 60 },     -- discharge electronics outage radius
+    core_r       = { 10, 18 },     -- scar core (critical-eligible)
+    halo_r       = { 25, 40 },     -- scar halo (interference only)
+    epi_psy_r    = { 1, 3 },       -- scar psy at the epicentre
+    epi_psy_tick = { 0.03, 0.06 }, -- psy power per ZONE_TICK
+}
+
+-- ======================= PLACEMENT =======================
+local BANDS = { close = { 5, 20 }, mid = { 20, 80 }, outer = { 80, 100 } }
+local PLACE_ATTEMPTS  = 10
+local SNAP_MAX_OFFSET = 6     -- m: reject vertices snapped further than this from the candidate
+local MAX_HEIGHT_DIFF = 40    -- m between actor and strike ground
+local SKY_HEIGHT      = 55    -- m above the strike ground
+local CAMP_RADIUS     = 25    -- m: no strike next to stationary stalkers
+local ANOMALY_CLEARANCE = 6   -- m: no strike centred on an existing anomaly zone
+local STATIONARY_SCHEMES = { kamp = true, sleeper = true, camper = true, animpoint = true }
+
+-- ======================= TIMELINE =======================
+-- The particle groups' own timelines fix the delays; k scales them per variant.
+local CHARGE_VARIANTS = {
+    { max_s = 0.70, k = 1.30, particle = "anomaly2\\generator\\generator_accum_thunderbolt_slow" },
+    { max_s = 1.05, k = 1.00, particle = "anomaly2\\generator\\generator_accum_thunderbolt" },
+    { max_s = 99,   k = 0.74, particle = "anomaly2\\generator\\generator_accum_thunderbolt_fast" },
+}
+local SOUND_DELAY      = 5500
+local DISCHARGE_DELAY  = 11500
+local STRIKE_LIFETIME  = 15000
+local SND_CHARGE       = "anomaly\\emi_blowout"
+local SND_DISCHARGE    = "anomaly\\electra_blast1"
+local GROUND_PARTICLES = { "anomaly2\\electra2_blast", "anomaly2\\emi_entrance_big_00" }
+local GROUND_PARTICLE_STRONG = "anomaly2\\emi_damage_big_smoke"   -- added when s > 1.0
+
+-- ======================= DAMAGE =======================
+-- power = MAX * (cos(pi * d / R) + 1) / 2, zero at R. Outfit protection,
+-- belt artifacts and actor immunities apply in the engine hit path.
+local COVER_MULT = 0.1      -- under a roof or inside a hideout
+local ROOF_RANGE = 10       -- m: static geometry this close overhead is a roof (sivol_rain rule)
+local NPC_IMMUNE_SECTIONS = { "electro" }
+
+-- ======================= DISCHARGE OUTAGE =======================
+-- chance = 1 inside half the radius, 0.5 at the edge, times (1 - artifact shield)
+local BURST_COOLDOWN = 90000   -- ms after the outage recovers before another burst outage
+
+-- ======================= WORLD LIGHT =======================
+-- Engine flash_light (nlc-3.589.127+); skipped silently on older exes.
+local LIGHT_ENABLED   = true
+local DISCHARGE_LIGHT = { height = 8, range = { 40, 70 }, color = { 1.4, 1.5, 1.8 },
+    attack = 40, hold = 120, fade = 650, flicker = 0.5, shadow = true }
+-- Charge glow: from the charge sound to the discharge, 30 m above the ground so it reaches it.
+local CHARGE_LIGHT    = { height = 30, range = { 45, 65 }, color = { 0.35, 0.42, 0.65 },
+    attack = 1500, fade = 300, flicker = 0.6, shadow = false }
+-- Charge sparks: brief brighter flashes through the whole charge, closer together and
+-- brighter as it builds (interval and brightness interpolate over charge progress).
+local CHARGE_SPARK    = { start_ms = 1000, height = { 20, 45 }, offset = 6, range = { 40, 60 },
+    color = { 0.9, 1.0, 1.4 }, bright = { 0.35, 1.0 }, interval = { 1400, 300 },
+    attack = 20, hold = { 60, 160 }, fade = { 200, 350 }, flicker = 0.3, shadow = false }
+-- Ambient (far) strikes: no sparks, wider and brighter unshadowed lights so they read
+-- across the level; shadows at 100-250 m would cost the most and show the least.
+local AMBIENT_GLOW    = { height = 35, range = { 70, 90 }, color = { 0.4, 0.48, 0.75 },
+    attack = 1200, fade = 300, flicker = 0.6, shadow = false }
+local AMBIENT_FLASH   = { height = 10, range = { 90, 120 }, color = { 1.6, 1.7, 2.0 },
+    attack = 40, hold = 160, fade = 800, flicker = 0.5, shadow = false }
+-- distant thunder on ambient discharges (the charge sound barely carries 100+ m)
+local AMBIENT_THUNDER = { "anomaly\\stancia_thunder", "nature\\thunder-0", "nature\\thunder-1",
+    "nature\\thunder-2", "nature\\thunder-3" }
+
+-- ======================= ACTOR FX =======================
+local PP_ID       = 98340
+local CAM_ID      = 98341
+local PP_FLASH    = "electra.ppe"
+local FLASH_RANGE = 60
+local SHAKE_TIERS = {
+    { dist = 20, anim = "camera_effects\\earthquake_60.anm" },
+    { dist = 40, anim = "camera_effects\\earthquake_40.anm" },
+    { dist = 60, anim = "camera_effects\\earthquake_20.anm" },
+}
+
+-- ======================= DETECTOR WARNING =======================
+-- Only the charge is detected, never the scar.
+local DETECTOR_SLOTS      = { 8, 13, 14, 15, 16 }
+local DETECTOR_ZONE_CLASS = "zone_mosquito_bald"
+local DETECTOR_RANGE      = 40
+local BEEP_INTERVAL_START = 900
+local BEEP_INTERVAL_END   = 120
+
+-- ======================= SCAR FX =======================
+local IDLE_PARTICLE   = "anomaly2\\emi_idle_00"
+local IDLE_SOUND      = "anomaly\\emi_idle"
+local IDLE_FX_RANGE   = 80
+local IDLE_FX_MIN_LIFE = 0     -- game s: scars shorter than this get no idle FX (0 = all)
+local ZONE_TICK       = 1000
+
+-- ======================= ARTIFACT =======================
+local ART_CHANCE   = 0.005
+local ART_SECTIONS = {
+    { "af_electra_sparkler",  70 },
+    { "af_electra_flash",     25 },
+    { "af_electra_moonlight",  5 },
+}
+local ART_DAY_KEY  = "sivol_pulse_art_day"   -- one pulse artifact per game day
+
+local ZONES_KEY   = "sivol_pulse_zones"
+local NEXT_ID_KEY = "sivol_pulse_next_id"
+
+-- ======================= STATE =======================
+local initialized       = false
+local strikes           = {}    -- strikes in progress (all channels), oldest first
+local pending           = {}    -- cluster follow-ups: { at, origin, s, chan, wc }
+local zones             = {}    -- [key] = { l, x, y, z, s, e, p } plus runtime tiers/fx
+local next_roll         = {}    -- [channel name] = time_global
+local last_strike       = {}    -- [channel name] = time_global
+local load_time         = 0
+local strike_seq        = 0     -- unique strike id (two channels can start in the same frame)
+local last_emission     = 0
+local burst_block_until = 0
+local next_zone_tick    = 0
+local detector_cache    = {}    -- [section] = sound path or false
+
+local function plog(fmt, ...)
+    if LOG then log2("[sivol_pulse] " .. fmt, ...) end
+end
+
+local function game_s()
+    return (db.oGameStartTime and timers and timers.Get_Game_Seconds) and timers.Get_Game_Seconds() or 0
+end
+
+local function clamp(v, lo, hi)
+    return math.min(math.max(v, lo), hi)
+end
+
+local function scaled(name, s)
+    local r = SCALE[name]
+    return r[1] + (r[2] - r[1]) * (clamp(s, S_MIN, S_MAX) - S_MIN) / (S_MAX - S_MIN)
+end
+
+local function falloff(d, r)
+    if d >= r then return 0 end
+    return (math.cos(math.pi * d / r) + 1) * 0.5
+end
+
+local function is_emission_active()
+    if db.blowout_active == true then return true end
+    local value = get_value("blowout", 0)
+    if type(value) == "boolean" then return value end
+    return (tonumber(value) or 0) ~= 0
+end
+
+-- ======================= PROFILE =======================
+local function level_cfg()
+    local name = level.name()
+    if name == "generators" and has_alife_info("tesla_free") then return GENERATORS_CALM end
+    local cfg = LEVELS[name]
+    if cfg and cfg.info and not has_alife_info(cfg.info) then return nil end
+    return cfg
+end
+
+-- the level's strike channels; a level without channels is its own single channel
+local function channels_of(cfg)
+    if not cfg then return {} end
+    if cfg.channels then return cfg.channels end
+    cfg._single = cfg._single or { main = cfg }
+    return cfg._single
+end
+
+local function weather_class()
+    local w = string.lower(tostring(level.get_weather() or ""))
+    if string.find(w, "thunder", 1, true) then return "storm" end
+    if string.find(w, "rain", 1, true) then return "rain" end
+    if string.find(w, "fog", 1, true) then return "fog" end
+    if string.find(w, "clear", 1, true) then return "clear" end
+    return "overcast"
+end
+
+local function strength(base)
+    local wc = weather_class()
+    local ws = WEATHER[wc].strength
+    if wc == "rain" or wc == "storm" then
+        ws = ws + RAIN_EXTRA * clamp(tonumber(level.rain_factor()) or 0, 0, 1)
+    end
+    return clamp(base * ws, S_MIN, S_MAX), wc
+end
+
+local function charge_variant(s)
+    for _, v in ipairs(CHARGE_VARIANTS) do
+        if s <= v.max_s then return v end
+    end
+    return CHARGE_VARIANTS[#CHARGE_VARIANTS]
+end
+
+-- ======================= PERSISTENCE =======================
+local function persist()
+    local saved = {}
+    for key, z in pairs(zones) do
+        saved[key] = { l = z.l, x = z.x, y = z.y, z = z.z, s = z.s, e = z.e, p = z.p }
+    end
+    set_value(ZONES_KEY, saved)
+end
+
+-- ======================= COVER =======================
+local function roofed(pos, ignore_obj)
+    local from = vector():set(pos.x, pos.y + 1.6, pos.z)
+    local rq = level.ray_query(from, vector():set(0, 1, 0), ROOF_RANGE, rq_target.rqtStatic, ignore_obj)
+    return rq and rq.result and rq.range and rq.range <= ROOF_RANGE or false
+end
+
+local function in_hideout(pos)
+    return amk_anoms and amk_anoms.check_coordinates and not amk_anoms.check_coordinates(pos) or false
+end
+
+local function cover_mult(obj)
+    local pos = obj:position()
+    if in_hideout(pos) or roofed(pos, obj) then return COVER_MULT end
+    return 1
+end
+
+-- ======================= HITS =======================
+local function send_hit(obj, htype, power, draftsman, bone)
+    if power <= 0.001 then return end
+    local h = hit()
+    h.type = htype
+    h.power = power
+    h.impulse = 0
+    h.direction = vector():set(0, -1, 0)
+    h.draftsman = draftsman
+    if bone then h:bone(bone) end
+    obj:hit(h)
+end
+
+local function npc_skipped(obj)
+    local sec = obj:section()
+    for _, sub in ipairs(NPC_IMMUNE_SECTIONS) do
+        if string.find(sec, sub, 1, true) then return true end
+    end
+    local se = alife():object(obj:id())
+    return se ~= nil and se.m_story_id ~= nil and se.m_story_id ~= NONE_SID
+end
+
+-- Living stalkers/monsters within radius, collected first: hitting inside the
+-- iterator could destroy objects mid-walk.
+local function victims_near(pos, radius, stalkers_only)
+    local list = {}
+    local actor_id = db.actor:id()
+    level.iterate_nearest(pos, radius, function(obj)
+        if obj and obj:id() ~= actor_id and obj:alive()
+            and (IsStalker(obj) or (not stalkers_only and IsMonster(obj)))
+        then
+            list[#list + 1] = obj
+        end
+        return false
+    end)
+    return list
+end
+
+-- ======================= SCAR ZONES =======================
+local function zone_fx_stop(z)
+    if z.pfx and z.pfx:playing() then z.pfx:stop() end
+    if z.snd and z.snd:playing() then z.snd:stop() end
+end
+
+local function register_zone(key, z)
+    local cfg = sivol_emp_config.PULSE_EMP
+    local p = z.p or DEBUG_BASE
+    z.pos = vector():set(z.x, z.y, z.z)
+    z.core = { radius = scaled("core_r", p), max_limit = cfg.core_max_limit, critical = true }
+    z.halo = { radius = scaled("halo_r", p), max_limit = cfg.halo_max_limit, critical = false }
+    z.epi_r = scaled("epi_psy_r", p)
+    z.epi_tick = scaled("epi_psy_tick", p)
+    z.fx_ok = (z.e - z.s) >= IDLE_FX_MIN_LIFE
+    sivol_emp_sources.register(key .. "_c", z.pos, true, z.core, "pulse")
+    sivol_emp_sources.register(key .. "_h", z.pos, true, z.halo, "pulse")
+end
+
+local function remove_zone(key, reason)
+    local z = zones[key]
+    if not z then return end
+    zone_fx_stop(z)
+    sivol_emp_sources.unregister(key .. "_c")
+    sivol_emp_sources.unregister(key .. "_h")
+    zones[key] = nil
+    plog("scar %s removed (%s)", key, reason)
+end
+
+local function add_zone(pos, p, life_s)
+    local id = tonumber(get_value(NEXT_ID_KEY, 1)) or 1
+    set_value(NEXT_ID_KEY, id + 1)
+    local key = "pulse_" .. id
+    local now_g = game_s()
+    local z = { l = level.name(), x = pos.x, y = pos.y, z = pos.z, s = now_g, e = now_g + life_s, p = p }
+    zones[key] = z
+    register_zone(key, z)
+    persist()
+    plog("scar %s at %.1f,%.1f,%.1f s=%.2f core=%.1f halo=%.1f for %d game s", key, z.x, z.y, z.z, p,
+        z.core.radius, z.halo.radius, life_s)
+end
+
+local function update_zone_fx(z, apos)
+    if not z.fx_ok then return end
+    local d = apos:distance_to(z.pos)
+    if d <= IDLE_FX_RANGE then
+        if IDLE_PARTICLE then
+            z.pfx = z.pfx or particles_object(IDLE_PARTICLE)
+            if not z.pfx:playing() then z.pfx:play_at_pos(z.pos) end
+        end
+        if IDLE_SOUND then
+            z.snd = z.snd or sound_object(IDLE_SOUND)
+            if not z.snd:playing() then
+                z.snd:play_at_pos(db.actor, z.pos, 0, sound_object.s3d + sound_object.looped)
+            end
+        end
+    elseif d > IDLE_FX_RANGE + 10 then
+        zone_fx_stop(z)
+    end
+end
+
+local function epicentre_psy(z, mult)
+    local power = z.epi_tick * mult
+    local actor = db.actor
+    if actor:alive() and actor:position():distance_to(z.pos) <= z.epi_r then
+        send_hit(actor, hit.telepatic, power, actor)
+    end
+    if NPC_DAMAGE_ENABLED then
+        for _, npc in ipairs(victims_near(z.pos, z.epi_r, true)) do
+            if not npc_skipped(npc) then send_hit(npc, hit.telepatic, power, npc, "bip01_spine") end
+        end
+    end
+end
+
+local function update_zones()
+    local now_g = game_s()
+    local cfg = sivol_emp_config.PULSE_EMP
+    local apos = db.actor:position()
+    local changed = false
+    for key, z in pairs(zones) do
+        if now_g >= z.e then
+            remove_zone(key, "expired")
+            changed = true
+        elseif z.core then
+            local frac = clamp((now_g - z.s) / math.max(z.e - z.s, 1), 0, 1)
+            local mult = 1 + (cfg.end_mult - 1) * frac
+            z.core.max_limit = cfg.core_max_limit * mult
+            z.halo.max_limit = cfg.halo_max_limit * mult
+            epicentre_psy(z, mult)
+            update_zone_fx(z, apos)
+        end
+    end
+    if changed then persist() end
+end
+
+local function load_zones()
+    local saved = get_value(ZONES_KEY, {})
+    if type(saved) ~= "table" then saved = {} end
+    local now_g = game_s()
+    local lname = level.name()
+    zones = {}
+    for key, z in pairs(saved) do
+        if type(z) == "table" and z.e and now_g < z.e then
+            zones[key] = { l = z.l, x = z.x, y = z.y, z = z.z, s = z.s, e = z.e, p = z.p }
+            if z.l == lname then
+                register_zone(key, zones[key])
+                plog("scar %s restored, %d game s left", key, z.e - now_g)
+            end
+        end
+    end
+    persist()
+end
+
+-- ======================= DETECTOR =======================
+local function detector_sound(section)
+    local cached = detector_cache[section]
+    if cached ~= nil then return cached end
+    local ini = system_ini()
+    local found = false
+    for i = 1, 12 do
+        local key = "zone_class_" .. i
+        if ini:line_exist(section, key) and ini:r_string(section, key) == DETECTOR_ZONE_CLASS then
+            local snd_key = "zone_sound_" .. i .. "_"
+            if ini:line_exist(section, snd_key) then
+                local path = ini:r_string(section, snd_key)
+                if path and path ~= "" and path ~= "$no_sound" then found = path end
+            end
+            break
+        end
+    end
+    detector_cache[section] = found
+    return found
+end
+
+local function equipped_detector_sound()
+    local actor = db.actor
+    for _, slot in ipairs(DETECTOR_SLOTS) do
+        local item = actor:item_in_slot(slot)
+        if item then
+            local snd = detector_sound(item:section())
+            if snd then return snd end
+        end
+    end
+    return nil
+end
+
+local function devices_dead()
+    return sivol_critical_malfunction and sivol_critical_malfunction.is_active
+        and sivol_critical_malfunction.is_active() or false
+end
+
+local function update_detector(st, now, el)
+    if not st.det_snd or el >= st.discharge_ms or now < st.next_beep then return end
+    local frac = el / st.discharge_ms
+    st.next_beep = now + BEEP_INTERVAL_START + (BEEP_INTERVAL_END - BEEP_INTERVAL_START) * frac
+    if devices_dead() then return end
+    local d = db.actor:position():distance_to(st.ground)
+    if d > DETECTOR_RANGE then return end
+    local vol = 0.4 + 0.6 * math.max(0, 1 - d / DETECTOR_RANGE)
+    xr_sound.get_safe_sound_object(st.det_snd):play_no_feedback(db.actor, sound_object.s2d, 0, vector(), vol)
+end
+
+-- ======================= DISCHARGE EFFECTS =======================
+local function hit_actor(st)
+    local actor = db.actor
+    local d = actor:position():distance_to(st.ground)
+    if not actor:alive() or (d >= st.shock_r and d >= st.psy_r) then return d end
+    local k = cover_mult(actor)
+    local shock = st.shock_max * falloff(d, st.shock_r) * k
+    local psy = st.psy_max * falloff(d, st.psy_r) * k
+    send_hit(actor, hit.shock, shock, actor)
+    send_hit(actor, hit.telepatic, psy, actor)
+    plog("actor hit d=%.1f cover=%.2f shock=%.3f psy=%.3f", d, k, shock, psy)
+    return d
+end
+
+local function hit_npcs(st)
+    local count = 0
+    for _, obj in ipairs(victims_near(st.ground, st.shock_r, false)) do
+        if obj:alive() and not npc_skipped(obj) then
+            local d = obj:position():distance_to(st.ground)
+            local k = cover_mult(obj)
+            local stalker = IsStalker(obj)
+            send_hit(obj, hit.shock, st.shock_max * falloff(d, st.shock_r) * k, obj, stalker and "bip01_spine" or nil)
+            if stalker then
+                send_hit(obj, hit.telepatic, st.psy_max * falloff(d, st.psy_r) * k, obj, "bip01_spine")
+            end
+            st.hit_ids[obj:id()] = true
+            count = count + 1
+        end
+    end
+    if count > 0 then plog("hit %d npc/monsters", count) end
+end
+
+local function burst_outage(st, d)
+    if d > st.burst_r or not (sivol_critical_malfunction and sivol_critical_malfunction.trigger_outage) then return end
+    local now = time_global()
+    if now < burst_block_until then
+        plog("burst outage on cooldown (%.0f s left)", (burst_block_until - now) / 1000)
+        return
+    end
+    local half = st.burst_r * 0.5
+    local base = d <= half and 1 or 1 - 0.5 * (d - half) / half
+    local shield = sivol_pda and sivol_pda.get_artifact_shield and sivol_pda.get_artifact_shield() or 0
+    local chance = base * (1 - shield)
+    if math.random() >= chance then
+        plog("burst outage resisted d=%.1f chance=%.2f shield=%.2f", d, chance, shield)
+        return
+    end
+    local severity = math.max(0.2, 1 - d / st.burst_r)
+    local until_t = sivol_critical_malfunction.trigger_outage("pulse_burst", severity)
+    if until_t then
+        burst_block_until = until_t + BURST_COOLDOWN
+        plog("burst outage d=%.1f severity=%.2f for %.1f s", d, severity, (until_t - now) / 1000)
+    end
+end
+
+local function roll_artifact(st)
+    if not st.force_art then
+        if ART_CHANCE <= 0 or math.random() >= ART_CHANCE then return end
+        local day = timers.Get_Game_Days()
+        if get_value(ART_DAY_KEY, -1) == day then return end
+        set_value(ART_DAY_KEY, day)
+    end
+    local total = 0
+    for _, e in ipairs(ART_SECTIONS) do total = total + e[2] end
+    local r = math.random() * total
+    local section = ART_SECTIONS[1][1]
+    for _, e in ipairs(ART_SECTIONS) do
+        r = r - e[2]
+        if r <= 0 then section = e[1] break end
+    end
+    local pos = vector():set(st.ground.x, st.ground.y + 0.3, st.ground.z)
+    local sobj = amk_anoms.spawn_art(section, pos, const.best_game_vertex(pos), st.lvid)
+    plog("artifact %s spawned id=%s", section, sobj and tostring(sobj.id) or "nil")
+end
+
+local function flash(cfg, pos, s, hold)
+    if not (LIGHT_ENABLED and flash_light and flash_light.spawn) then return nil end
+    local k = (clamp(s, S_MIN, S_MAX) - S_MIN) / (S_MAX - S_MIN)
+    local range = cfg.range[1] + (cfg.range[2] - cfg.range[1]) * k
+    local c = cfg.color
+    return flash_light.spawn(pos.x, pos.y, pos.z, range, c[1], c[2], c[3],
+        cfg.attack, hold or cfg.hold, cfg.fade, cfg.flicker, cfg.shadow, false)
+end
+
+local function charge_spark(st, now, el)
+    if not (LIGHT_ENABLED and flash_light and flash_light.spawn) then return end
+    local c = CHARGE_SPARK
+    if el < c.start_ms or el >= st.discharge_ms or now < (st.next_spark or 0) then return end
+    local p = clamp((el - c.start_ms) / math.max(st.discharge_ms - c.start_ms, 1), 0, 1)
+    st.next_spark = now + c.interval[1] + (c.interval[2] - c.interval[1]) * p
+    local b = c.bright[1] + (c.bright[2] - c.bright[1]) * p
+    local k = (clamp(st.s, S_MIN, S_MAX) - S_MIN) / (S_MAX - S_MIN)
+    local range = c.range[1] + (c.range[2] - c.range[1]) * k
+    local x = st.ground.x + (math.random() * 2 - 1) * c.offset
+    local z = st.ground.z + (math.random() * 2 - 1) * c.offset
+    local y = st.ground.y + c.height[1] + math.random() * (c.height[2] - c.height[1])
+    flash_light.spawn(x, y, z, range, c.color[1] * b, c.color[2] * b, c.color[3] * b,
+        c.attack, c.hold[1] + math.random() * (c.hold[2] - c.hold[1]),
+        c.fade[1] + math.random() * (c.fade[2] - c.fade[1]), c.flicker, c.shadow, false)
+end
+
+local function actor_fx(d)
+    if d > FLASH_RANGE then return end
+    local f = math.max(0.15, 1 - d / FLASH_RANGE)
+    level.remove_pp_effector(PP_ID)
+    level.add_pp_effector(PP_FLASH, PP_ID, false)
+    level.set_pp_effector_factor(PP_ID, f)
+    for _, tier in ipairs(SHAKE_TIERS) do
+        if d <= tier.dist then
+            level.remove_cam_effector(CAM_ID)
+            level.add_cam_effector(tier.anim, CAM_ID, false, "")
+            break
+        end
+    end
+end
+
+-- ======================= PLACEMENT =======================
+local function near_camp(pos)
+    local found = false
+    level.iterate_nearest(pos, CAMP_RADIUS, function(obj)
+        if obj and IsStalker(obj) and obj:id() ~= db.actor:id() and obj:alive() then
+            local st = db.storage[obj:id()]
+            if st and STATIONARY_SCHEMES[st.active_scheme] then
+                found = true
+                return true
+            end
+        end
+        return false
+    end)
+    return found
+end
+
+-- an anomaly zone centred this close: the strike would land in or on top of it
+local function near_anomaly(pos, clearance)
+    if clearance <= 0 then return false end
+    local found = false
+    level.iterate_nearest(pos, clearance, function(obj)
+        if obj and IsAnomaly(obj) and obj:position():distance_to(pos) <= clearance then
+            found = true
+            return true
+        end
+        return false
+    end)
+    return found
+end
+
+-- The strike centre and a ring at the core radius must lie outside the
+-- amk_anoms no-spawn spheres and hideouts, so the strong core never reaches a base.
+-- Returns nil when clear, otherwise the rejection reason (placement diagnostics).
+local function point_blocked(g, core_r, clearance)
+    if in_hideout(g) then return "hideout" end
+    if roofed(g, nil) then return "roof" end
+    for i = 0, 7 do
+        local a = i * math.pi / 4
+        if in_hideout(vector():set(g.x + math.cos(a) * core_r, g.y, g.z + math.sin(a) * core_r)) then
+            return "ring"
+        end
+    end
+    if near_anomaly(g, clearance) then return "anomaly" end
+    if near_camp(g) then return "camp" end
+    return nil
+end
+
+-- a {min, max} distance band: the channel's bands list, or the close/mid shares
+local function pick_band(chan, bands)
+    bands = bands or chan.bands
+    if bands then
+        local r = math.random()
+        for _, b in ipairs(bands) do
+            r = r - b[3]
+            if r <= 0 then return b end
+        end
+        return bands[#bands]
+    end
+    local close = chan.close or DEFAULT_CLOSE
+    local mid = chan.mid or DEFAULT_MID
+    local r = math.random()
+    if r < close then return BANDS.close end
+    if r < close + mid then return BANDS.mid end
+    return BANDS.outer
+end
+
+-- opts: origin (default the actor), dist (fixed), angle_deg, band ({min, max}),
+-- bands (list to roll from), clearance (anomaly clearance)
+local function pick_point(chan, s, opts)
+    opts = opts or {}
+    local origin = opts.origin or db.actor:position()
+    local core_r = scaled("core_r", s)
+    local clearance = opts.clearance or ANOMALY_CLEARANCE
+    local angle_deg = opts.angle_deg
+    local why = {}
+    for _ = 1, PLACE_ATTEMPTS do
+        local d = opts.dist
+        if not d then
+            local band = opts.band or pick_band(chan, opts.bands)
+            d = band[1] + math.random() * (band[2] - band[1])
+        end
+        local a = math.rad(angle_deg or math.random(0, 359))
+        local apos = origin
+        local cand = vector():set(apos.x + math.cos(a) * d, apos.y, apos.z + math.sin(a) * d)
+        local lvid = level.vertex_id(cand)
+        local reason = "no_vertex"
+        if lvid and lvid < 4294967295 then
+            local g = level.vertex_position(lvid)
+            local dx, dz = g.x - cand.x, g.z - cand.z
+            if math.sqrt(dx * dx + dz * dz) > SNAP_MAX_OFFSET then
+                reason = "snap"
+            elseif math.abs(g.y - apos.y) > MAX_HEIGHT_DIFF then
+                reason = "height"
+            else
+                reason = point_blocked(g, core_r, clearance)
+                if not reason then return g, lvid end
+            end
+        end
+        why[reason] = (why[reason] or 0) + 1
+        angle_deg = nil -- a forced bearing that failed falls back to random ones
+    end
+    local parts = {}
+    for reason, n in pairs(why) do parts[#parts + 1] = reason .. "=" .. n end
+    plog("no strike point in %d attempts (%s)", PLACE_ATTEMPTS, table.concat(parts, " "))
+    return nil, nil
+end
+
+-- ======================= STRIKE =======================
+-- chan: channel table (scar_game_s, ambient); name: channel name for logs
+local function start_strike(chan, name, s, wc, ground, lvid, force_art, ambient)
+    local now = time_global()
+    local variant = charge_variant(s)
+    local sky = vector():set(ground.x, ground.y + SKY_HEIGHT, ground.z)
+    local pfx = particles_object(variant.particle)
+    pfx:play_at_pos(sky)
+    local d = db.actor:position():distance_to(ground)
+    strike_seq = strike_seq + 1
+    local st = {
+        id = strike_seq, t0 = now, ground = ground, sky = sky, lvid = lvid, pfx = pfx, fx = {}, hit_ids = {},
+        s = s, force_art = force_art, chan = name, ambient = ambient,
+        scar_game_s = chan.scar_game_s or sivol_emp_config.PULSE_EMP.duration_game_s,
+        sound_ms = SOUND_DELAY * variant.k,
+        discharge_ms = DISCHARGE_DELAY * variant.k,
+        life_ms = STRIKE_LIFETIME * variant.k,
+        shock_r = scaled("shock_r", s), shock_max = scaled("shock_max", s),
+        psy_r = scaled("psy_r", s), psy_max = scaled("psy_max", s),
+        burst_r = scaled("burst_r", s),
+        det_snd = d <= DETECTOR_RANGE and equipped_detector_sound() or nil,
+        next_beep = now + 500,
+    }
+    strikes[#strikes + 1] = st
+    last_strike[name] = now
+    plog("strike [%s%s] at %.1f,%.1f,%.1f d=%.1f s=%.2f weather=%s charge=%.1fs detector=%s",
+        name, ambient and ", ambient" or "", ground.x, ground.y, ground.z, d, s, tostring(wc),
+        st.discharge_ms / 1000, tostring(st.det_snd))
+    return st
+end
+
+local function discharge(st)
+    local names = { unpack(GROUND_PARTICLES) }
+    if st.s > 1.0 then names[#names + 1] = GROUND_PARTICLE_STRONG end
+    for _, name in ipairs(names) do
+        local p = particles_object(name)
+        p:play_at_pos(st.ground)
+        st.fx[#st.fx + 1] = p
+    end
+    xr_sound.get_safe_sound_object(SND_DISCHARGE):play_no_feedback(db.actor, sound_object.s3d, 0, st.ground, 1.0)
+    if st.ambient then
+        local thunder = AMBIENT_THUNDER[math.random(#AMBIENT_THUNDER)]
+        xr_sound.get_safe_sound_object(thunder):play_no_feedback(db.actor, sound_object.s3d, 0, st.ground, 1.0)
+    end
+    if st.charge_light and flash_light and flash_light.stop then flash_light.stop(st.charge_light) end
+    local fcfg = st.ambient and AMBIENT_FLASH or DISCHARGE_LIGHT
+    flash(fcfg, vector():set(st.ground.x, st.ground.y + fcfg.height, st.ground.z), st.s)
+    add_zone(st.ground, st.s, st.scar_game_s)
+    local d = hit_actor(st)
+    burst_outage(st, d)
+    actor_fx(d)
+    if NPC_DAMAGE_ENABLED then hit_npcs(st) end
+    roll_artifact(st)
+end
+
+-- returns false once the strike is over
+local function update_strike(st, now)
+    local el = now - st.t0
+    update_detector(st, now, el)
+    if not st.sound_done and el >= st.sound_ms then
+        st.sound_done = true
+        xr_sound.get_safe_sound_object(SND_CHARGE):play_no_feedback(db.actor, sound_object.s3d, 0, st.sky, 1.0)
+        local gcfg = st.ambient and AMBIENT_GLOW or CHARGE_LIGHT
+        local hold = math.max(0, st.discharge_ms - st.sound_ms - gcfg.attack)
+        local glow_pos = vector():set(st.ground.x, st.ground.y + gcfg.height, st.ground.z)
+        st.charge_light = flash(gcfg, glow_pos, st.s, hold)
+    end
+    if not st.ambient then charge_spark(st, now, el) end
+    if not st.discharged and el >= st.discharge_ms then
+        st.discharged = true
+        discharge(st)
+    end
+    if el >= st.life_ms then
+        if st.pfx:playing() then st.pfx:stop() end
+        return false
+    end
+    return true
+end
+
+local function update_strikes(now)
+    local i = 1
+    while i <= #strikes do
+        if update_strike(strikes[i], now) then
+            i = i + 1
+        else
+            table.remove(strikes, i)
+        end
+    end
+end
+
+local function queue_cluster(chan, name, st, wc)
+    local n = math.random(CLUSTER_COUNT[1], CLUSTER_COUNT[2])
+    local at = time_global()
+    for _ = 1, n do
+        at = at + CLUSTER_DELAY[1] + math.random() * (CLUSTER_DELAY[2] - CLUSTER_DELAY[1])
+        pending[#pending + 1] = { at = at, origin = st.ground, s = st.s, chan = chan, name = name, wc = wc }
+    end
+    plog("cluster of %d more after the [%s] strike", n, name)
+end
+
+local function update_pending(now)
+    local i = 1
+    while i <= #pending do
+        local p = pending[i]
+        if now >= p.at then
+            table.remove(pending, i)
+            if #strikes < MAX_STRIKES then
+                local cfg = level_cfg()
+                local ground, lvid = pick_point(p.chan, p.s, { origin = p.origin, band = CLUSTER_DIST,
+                    clearance = cfg and cfg.anomaly_clearance })
+                if ground then start_strike(p.chan, p.name, p.s, p.wc, ground, lvid, false, true) end
+            end
+        else
+            i = i + 1
+        end
+    end
+end
+
+local function try_roll(cfg, name, chan, now)
+    if not db.actor:alive() or #strikes >= MAX_STRIKES then return end
+    if now - (last_strike[name] or 0) < (chan.min_gap or cfg.min_gap) * 1000 then return end
+    local s, wc = strength(cfg.base)
+    s = clamp(s * (chan.s_mult or 1), S_MIN, S_MAX)
+    local roll_s = chan.roll_s or ROLL_INTERVAL / 1000
+    local p = roll_s / (chan.mean or cfg.mean) * WEATHER[wc].freq
+    local hit_roll = math.random() < p
+    -- fast channels log hits only
+    if ROLL_LOG and (hit_roll or roll_s >= 30) then
+        plog("roll %s %s p=%.3f s=%.2f weather=%s", name, hit_roll and "HIT" or "miss", p, s, wc)
+    end
+    if not hit_roll then return end
+    local ambient = chan.ambient or false
+    local opts = { clearance = cfg.anomaly_clearance }
+    local strike_chan = chan
+    if ambient and chan.near_chance and math.random() < chan.near_chance then
+        -- a "far" roll that lands close and plays as a normal strike, near-channel scar included
+        ambient = false
+        opts.bands = chan.near_bands
+        strike_chan = cfg.channels and cfg.channels.near or chan
+    end
+    local ground, lvid = pick_point(chan, s, opts)
+    if not ground then return end
+    local st = start_strike(strike_chan, name, s, wc, ground, lvid, false, ambient)
+    if ambient and chan.cluster and math.random() < chan.cluster then
+        queue_cluster(chan, name, st, wc)
+    end
+end
+
+local function roll_channels(now)
+    if is_emission_active() then
+        last_emission = now
+        return
+    end
+    if last_emission > 0 and now - last_emission < EMISSION_QUIET then return end
+    local cfg = level_cfg()
+    if not cfg then return end
+    for name, chan in pairs(channels_of(cfg)) do
+        if now >= (next_roll[name] or (load_time + FIRST_ROLL_DELAY)) then
+            next_roll[name] = now + (chan.roll_s and chan.roll_s * 1000 or ROLL_INTERVAL)
+            try_roll(cfg, name, chan, now)
+        end
+    end
+end
+
+-- Strikes in progress for sivol_pulse_npc (read only): each has id (unique), ground,
+-- shock_r, t0, discharge_ms, discharged, hit_ids.
+function get_strikes()
+    return strikes
+end
+
+-- oldest strike in progress (kept for older callers)
+function get_strike()
+    return strikes[1]
+end
+
+-- true when roof or hideout cover would cut the discharge damage
+function is_covered(obj)
+    return cover_mult(obj) < 1
+end
+
+-- ======================= SIGNALS =======================
+local function on_first_update()
+    load_zones()
+    local now = time_global()
+    load_time = now
+    next_roll, last_strike = {}, {}
+    initialized = true
+    local cfg = level_cfg()
+    if cfg then
+        for name, chan in pairs(channels_of(cfg)) do
+            last_strike[name] = now
+            plog("level %s channel %s: base=%.2f mean=%ds min_gap=%ds%s%s", level.name(), name, cfg.base,
+                chan.mean or cfg.mean, chan.min_gap or cfg.min_gap, chan.ambient and " ambient" or "",
+                cfg == GENERATORS_CALM and " (calmed: tesla_free)" or "")
+        end
+    end
+end
+
+local function on_update()
+    if not initialized or not db.actor then return end
+    local now = time_global()
+    if #pending > 0 then update_pending(now) end
+    if #strikes > 0 then update_strikes(now) end
+    if now >= next_zone_tick then
+        next_zone_tick = now + ZONE_TICK
+        update_zones()
+    end
+    if ENABLED then roll_channels(now) end
+end
+
+local function on_save()
+    if initialized then persist() end
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_first_update", fun = on_first_update })
+    sm:subscribe({ signal = "on_update", fun = on_update })
+    sm:subscribe({ signal = "on_save", fun = on_save })
+end
+
+-- ======================= DEBUG =======================
+-- Debug strikes work on any level and ignore chance, gaps and emissions.
+local function debug_cfg()
+    return level_cfg() or LEVELS[level.name()] or { base = DEBUG_BASE }
+end
+
+function debug_strike(dist, angle_deg, force_art, s_override)
+    if not (initialized and db.actor) then return end
+    if #strikes >= MAX_STRIKES then
+        plog("debug: %d strikes already in progress", #strikes)
+        return
+    end
+    local cfg = debug_cfg()
+    local s, wc = strength(cfg.base)
+    if tonumber(s_override) then s = clamp(tonumber(s_override), S_MIN, S_MAX) end
+    local chans = channels_of(cfg)
+    local chan = chans.near or chans.main or { base = cfg.base }
+    local ground, lvid = pick_point(chan, s, { dist = tonumber(dist), angle_deg = tonumber(angle_deg),
+        clearance = cfg.anomaly_clearance })
+    if not ground then
+        plog("debug: no valid ground point at d=%s", tostring(dist))
+        return
+    end
+    start_strike(chan, "debug", s, wc, ground, lvid, force_art and true or false, false)
+end
+
+-- a far ambient strike, always followed by a cluster
+function debug_strike_ambient()
+    if not (initialized and db.actor) or #strikes >= MAX_STRIKES then return end
+    local cfg = debug_cfg()
+    local s, wc = strength(cfg.base)
+    s = clamp(s * 1.15, S_MIN, S_MAX)
+    local chans = channels_of(cfg)
+    local chan = chans.far or { bands = { { 100, 250, 1 } }, scar_game_s = 60 }
+    local ground, lvid = pick_point(chan, s, { bands = chan.bands, clearance = cfg.anomaly_clearance })
+    if not ground then
+        plog("debug: no valid ambient point")
+        return
+    end
+    local st = start_strike(chan, "debug_far", s, wc, ground, lvid, false, true)
+    queue_cluster(chan, "debug_far", st, wc)
+end
+
+function debug_strike_close()  debug_strike(5) end
+function debug_strike_near()   debug_strike(15) end
+function debug_strike_mid()    debug_strike(40) end
+function debug_strike_far()    debug_strike(90) end
+function debug_strike_art()    debug_strike(25, nil, true) end
+function debug_strike_random() debug_strike() end
+
+function debug_profile()
+    local cfg = level_cfg()
+    local s, wc = strength((cfg or { base = DEBUG_BASE }).base)
+    log2("[sivol_pulse] level=%s active=%s%s weather=%s (%s) rain=%.2f s=%.2f charge=%.1fs",
+        level.name(), tostring(cfg ~= nil), cfg == GENERATORS_CALM and " (calmed: tesla_free)" or "",
+        wc, tostring(level.get_weather()),
+        tonumber(level.rain_factor()) or 0, s, DISCHARGE_DELAY * charge_variant(s).k / 1000)
+    log2("[sivol_pulse] shock %.1fm/%.2f psy %.1fm/%.2f burst %.1fm core %.1fm halo %.1fm epi_psy %.1fm/%.3f",
+        scaled("shock_r", s), scaled("shock_max", s), scaled("psy_r", s), scaled("psy_max", s),
+        scaled("burst_r", s), scaled("core_r", s), scaled("halo_r", s), scaled("epi_psy_r", s), scaled("epi_psy_tick", s))
+end
+
+function debug_status()
+    local now = time_global()
+    local now_g = game_s()
+    local cfg = level_cfg()
+    log2("[sivol_pulse] level=%s active=%s strikes=%d pending=%d burst_block=%.0fs lights=%s",
+        level.name(), tostring(cfg ~= nil), #strikes, #pending, math.max(0, burst_block_until - now) / 1000,
+        flash_light and flash_light.count and tostring(flash_light.count()) or "n/a")
+    for name, chan in pairs(channels_of(cfg)) do
+        log2("[sivol_pulse] channel %s next_roll_in=%.0fs since_last=%.0fs", name,
+            ((next_roll[name] or (load_time + FIRST_ROLL_DELAY)) - now) / 1000, (now - (last_strike[name] or 0)) / 1000)
+    end
+    for _, st in ipairs(strikes) do
+        log2("[sivol_pulse] strike [%s%s] d=%.1f s=%.2f %s", st.chan, st.ambient and ", ambient" or "",
+            db.actor:position():distance_to(st.ground), st.s, st.discharged and "discharged" or "charging")
+    end
+    for key, z in pairs(zones) do
+        log2("[sivol_pulse] scar %s level=%s s=%.2f left=%d game s core=%s", key, tostring(z.l), z.p or 0,
+            z.e - now_g, z.core and string.format("%.1fm/%.2f", z.core.radius, z.core.max_limit) or "offline")
+    end
+end
+
+function debug_clear_zones()
+    for key in pairs(zones) do remove_zone(key, "debug") end
+    persist()
+end

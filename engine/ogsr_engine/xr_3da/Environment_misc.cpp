@@ -14,6 +14,7 @@
 
 ENGINE_API float ps_r_sunshafts_intensity = 0.0f;
 ENGINE_API float ps_ssfx_sunshafts = 1.0f; // NLC .85: automatic sun shafts at low sun ( 0 = weather values only )
+ENGINE_API BOOL ps_ssfx_effects_off{}; // NLC: master switch, every Shaders tab effect off ( saved; full effect after a game restart )
 ENGINE_API float puddles_drying = 0.2f;
 ENGINE_API float puddles_wetting = 4.f;
 ENGINE_API BOOL bLevelEnvModExport{};
@@ -687,7 +688,7 @@ void CEnvDescriptorMixer::lerp(CEnvironment* env, CEnvDescriptor& A, CEnvDescrip
     // NLC .85: most NLC weathers have sun_shafts_intensity 0. A bright sun gets a floor of shafts, strongest when low
     // ( morning / evening ), weaker high up; none for a dim sun ( overcast, night ). Larger weather
     // values win. Skipped while the debug override r_sunshafts_intensity is set.
-    if (ps_r_sunshafts_intensity <= 0.f && ps_ssfx_sunshafts > 0.f)
+    if (ps_r_sunshafts_intensity <= 0.f && ps_ssfx_sunshafts > 0.f && !ps_ssfx_effects_off)
     {
         const auto smoothstep = [](float e0, float e1, float x) { const float t = std::clamp((x - e0) / (e1 - e0), 0.f, 1.f); return t * t * (3.f - 2.f * t); };
         const float elev = -sun_dir.y; // 0 = horizon, 1 = zenith

@@ -417,3 +417,4 @@ ENGINE_API extern Flags32 psEnvFlags;
 ENGINE_API extern float psVisDistance;
 extern ENGINE_API float ps_r_sunshafts_intensity;
 extern ENGINE_API float ps_ssfx_sunshafts;
+extern ENGINE_API BOOL ps_ssfx_effects_off; // NLC: Shaders tab master switch

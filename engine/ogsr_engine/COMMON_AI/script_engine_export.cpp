@@ -47,10 +47,16 @@ namespace nlc_body_health // NLC: body parts health (xrGame/nlc_body_health.cpp)
 void script_register(lua_State* L);
 }
 
+namespace nlc_flash_light // NLC: scripted flash lights (xrGame/nlc_flash_light.cpp)
+{
+void script_register(lua_State* L);
+}
+
 void export_classes(lua_State* L)
 {
     Register<script_type_list>::_Register(L);
     fl_hook::script_register(L);
     nlc_stealth::script_register(L); // NLC
     nlc_body_health::script_register(L); // NLC
+    nlc_flash_light::script_register(L); // NLC
 }

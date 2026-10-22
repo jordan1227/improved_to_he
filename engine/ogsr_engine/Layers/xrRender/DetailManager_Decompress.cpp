@@ -178,7 +178,8 @@ void CDetailManager::cache_Decompress(Slot* S)
 
             // Slope Limit
             const float DotP = terrain_normal.dotproduct(dir);
-            if (DotP > -(1.0f - rng.randF(ps_ssfx_terrain_grass_slope * 0.8f, ps_ssfx_terrain_grass_slope)))
+            const float grass_slope = ps_ssfx_effects_off ? 1.0f : ps_ssfx_terrain_grass_slope; // NLC: master switch = grass everywhere
+            if (DotP > -(1.0f - rng.randF(grass_slope * 0.8f, grass_slope)))
                 continue;
 
             if (y < D.vis.box.min.y)

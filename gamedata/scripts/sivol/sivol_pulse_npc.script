@@ -1,0 +1,304 @@
+-- sivol_pulse_npc.script
+-- Stalkers run from a charging Pulse strike (sivol_pulse_anomaly.script), the
+-- way they hide from an emission: an evaluator + action in the motivation
+-- planner (blowout_scheme pattern). While the property is true it overrides
+-- alife, combat and danger; it ends a few seconds after the discharge.
+-- Design record: docs/PULSE_ANOMALY_DESIGN.md
+-- Hooks: modules.script (load_scheme), xr_logic.enable_generic_schemes (set_scheme,
+-- before the schemes whose actions reference evid), xr_motivator.addCommonPrecondition,
+-- and next to the blowout gates in rx_*, xrs_battle_ai, watcher_act, xr_companion,
+-- sivol_stealth_suspicion.
+--   g_loadstring sivol_pulse_npc.enabled = false
+
+enabled = true
+log_events = true
+
+evid = 18975
+actid = 18975
+
+local FLEE_MARGIN   = 6        -- m beyond the strike's shock radius
+local FLEE_EXTRA    = { 2, 6 } -- m added to the flee distance
+local MIN_LEAD_MS   = 1500     -- no new reaction this close to the discharge
+local CHECK_MS      = 500      -- eligibility re-check while not engaged
+local KICK_MS       = 2000     -- destination refresh while fleeing
+-- seconds after the charge starts before the NPC reacts
+local REACT_DELAY = {
+    novice      = { 4.0, 6.0 },
+    experienced = { 2.0, 4.0 },
+    veteran     = { 0.5, 2.0 },
+    master      = { 0.5, 1.5 },
+}
+-- seconds of post-discharge reaction
+local POST_TIME = {
+    novice      = { 3.0, 4.0 },
+    experienced = { 2.0, 3.5 },
+    veteran     = { 1.5, 2.5 },
+    master      = { 1.0, 2.0 },
+}
+-- flee state (run = weapon strapped, a panicked run) and post-discharge state
+local FLEE_STATE = { novice = "run", experienced = "sprint", veteran = "sprint", master = "sprint" }
+local POST_STATE = { novice = "hide_no_wpn", experienced = "hide_na", veteran = "guard", master = "guard" }
+local EXEMPT_COMMUNITIES = { zombied = true, monolith = true, trader = true }
+
+-- one alarm shout and one after-remark per strike, so a group does not answer in chorus.
+-- Script themes only: the engine alarms say "grenade!" / "enemy!", wrong for a sky discharge.
+local ALARM_CHANCE = { military = 0.8, dolg = 0.8, bandit = 0.5, default = 0.6 }
+local ALARM_THEMES = {
+    novice      = { "help", "story_reac_fear" },
+    experienced = { "story_reac_fear" },
+    veteran     = { "story_reac_fear", false },
+    master      = { "story_reac_fear", false },
+}
+local AFTER_CHANCE = 0.35
+local AFTER_THEMES = {
+    novice      = { "help", "story_reac_fear" },
+    experienced = { "weather_bad" },
+    veteran     = { "story_reac_laughter", false },
+    master      = { "story_reac_laughter", false },
+}
+local HIT_THEME = "wounded_psy"  -- a survivor the discharge actually hit
+
+local voiced = {}  -- [strike id] = { alarm = true, after = true }
+
+local function plog(fmt, ...)
+    if log_events then log2("[sivol_pulse_npc] " .. fmt, ...) end
+end
+
+local function rand_range(t)
+    return t[1] + math.random() * (t[2] - t[1])
+end
+
+local function rank_of(npc)
+    local r = ranks.get_obj_rank_name(npc)
+    return REACT_DELAY[r] and r or "experienced"
+end
+
+local function voice_slot(id, kind)
+    -- ids only grow: drop the old ones, keep the strikes that can still be running
+    for k in pairs(voiced) do
+        if k < id - 8 then voiced[k] = nil end
+    end
+    voiced[id] = voiced[id] or {}
+    if voiced[id][kind] then return false end
+    voiced[id][kind] = true
+    return true
+end
+
+local function play_theme(npc, theme)
+    if theme and xr_sound and xr_sound.set_sound_play then xr_sound.set_sound_play(npc, theme) end
+end
+
+-- ---------------------------------------------------------------------------
+-- evaluator
+-- ---------------------------------------------------------------------------
+class "evaluator_pulse" (property_evaluator)
+
+function evaluator_pulse:__init(name, st) super(nil, name)
+    self.st = st
+end
+
+-- can this NPC react to the strike at all (checked until engaged)
+local function eligible(npc, strike)
+    if EXEMPT_COMMUNITIES[npc:character_community()] or npc:is_talking() then return false end
+    if npc:position():distance_to(strike.ground) > strike.shock_r + FLEE_MARGIN then return false end
+    return not sivol_pulse_anomaly.is_covered(npc)
+end
+
+-- the nearest charging strike this NPC has not reacted to yet and stands close enough to
+local function threat(npc, st, list)
+    local pos = npc:position()
+    local best, best_d = nil, nil
+    for _, s in ipairs(list) do
+        if not s.discharged and not (st.done and st.done[s.id]) then
+            local d = pos:distance_to(s.ground)
+            if d <= s.shock_r + FLEE_MARGIN and (not best_d or d < best_d) then best, best_d = s, d end
+        end
+    end
+    return best
+end
+
+function evaluator_pulse:evaluate()
+    local st = self.st
+    if not enabled or not (sivol_pulse_anomaly and sivol_pulse_anomaly.get_strikes) then return false end
+    local list = sivol_pulse_anomaly.get_strikes()
+    if #list == 0 then
+        st.engaged, st.done = nil, nil
+        return false
+    end
+    local npc = self.object
+    local now = time_global()
+    if not self.meet_ordered then
+        -- meet ("stop when the actor looks at me") binds after this scheme and does not use
+        -- addCommonPrecondition, so it is ordered here once its action exists (as sivol_stealth_suspicion)
+        local s = db.storage[npc:id()]
+        if s and s.meet and s.meet.meet_manager then
+            self.meet_ordered = true
+            local mgr = npc:motivation_action_manager()
+            if not pcall(function() mgr:action(xr_actions_id.stohe_meet_base + 1):add_precondition(world_property(evid, false)) end) then
+                plog("%s: no meet action to order after the pulse flee", npc:name())
+            end
+        end
+    end
+    if not self.wounded_eva then
+        self.wounded_eva = npc:motivation_action_manager():evaluator(xr_evaluators_id.sidor_wounded_base + 0)
+    end
+    if st.engaged then
+        -- the flee action needs "not wounded"; a wounded NPC keeping this true would leave no plan.
+        -- A dialog the actor opened anyway (use key) ends the flee too.
+        if not st.strike or now >= st.until_t or self.wounded_eva:evaluate() or npc:is_talking() then
+            st.engaged = nil
+            return false
+        end
+        return true
+    end
+    local strike = threat(npc, st, list)
+    if not strike then return false end
+    if st.sid ~= strike.id then
+        -- a new strike: roll this NPC's reaction once
+        local rank = rank_of(npc)
+        st.sid, st.next_check = strike.id, 0
+        st.rank = rank
+        st.react_at = strike.t0 + rand_range(REACT_DELAY[rank]) * 1000
+        st.until_t = strike.t0 + strike.discharge_ms + rand_range(POST_TIME[rank]) * 1000
+    end
+    if now < st.react_at or now < st.next_check then return false end
+    if strike.t0 + strike.discharge_ms - now < MIN_LEAD_MS then return false end
+    st.next_check = now + CHECK_MS
+    if self.wounded_eva:evaluate() or not eligible(npc, strike) then return false end
+    st.engaged = true
+    st.done = st.done or {}
+    st.done[strike.id] = true
+    st.strike = strike
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- action
+-- ---------------------------------------------------------------------------
+class "action_pulse_flee" (action_base)
+
+function action_pulse_flee:__init(name, st) super(nil, name)
+    self.st = st
+end
+
+-- a vertex away from the epicentre, trying the straight line first, then turning
+local function flee_vertex(npc, strike)
+    local pos = npc:position()
+    local dx, dz = pos.x - strike.ground.x, pos.z - strike.ground.z
+    local d = math.sqrt(dx * dx + dz * dz)
+    if d < 0.5 then
+        local a = math.random() * 2 * math.pi
+        dx, dz, d = math.cos(a), math.sin(a), 1
+    end
+    local want = strike.shock_r + FLEE_MARGIN - d + rand_range(FLEE_EXTRA)
+    local base = math.atan2(dz, dx)
+    local best, best_dist = nil, -1
+    for _, turn in ipairs({ 0, 0.6, -0.6, 1.2, -1.2 }) do
+        local a = base + turn
+        local lvid = level.vertex_in_direction(npc:level_vertex_id(), vector():set(math.cos(a), 0, math.sin(a)), want)
+        local dist = level.vertex_position(lvid):distance_to(strike.ground)
+        if dist > best_dist then best, best_dist = lvid, dist end
+        if dist >= strike.shock_r + FLEE_MARGIN then break end
+    end
+    return best
+end
+
+-- The planner can leave and re-enter this action within one strike (another action
+-- took over for a moment), so initialize() resumes from the stored strike.
+function action_pulse_flee:initialize()
+    action_base.initialize(self)
+    local st, npc = self.st, self.object
+    local strike = st.strike
+    self.post = false
+    self.kick = 0
+    if not strike then
+        plog("%s: flee action entered without a strike", npc:name())
+        return
+    end
+    if time_global() >= strike.t0 + strike.discharge_ms then
+        plog("%s re-enters after the discharge", npc:name())
+        return -- execute() goes straight to the post reaction
+    end
+    npc:set_path_type(game_object.level_path)
+    npc:set_detail_path_type(move.line)
+    npc:set_desired_position()
+    npc:set_desired_direction()
+    self.lvid = flee_vertex(npc, strike)
+    utils.send_to_nearest_accessible_vertex(npc, self.lvid)
+    state_mgr.set_state(npc, FLEE_STATE[st.rank] or "sprint")
+    self.kick = time_global() + KICK_MS
+
+    if voice_slot(strike.id, "alarm") then
+        local comm = npc:character_community()
+        if math.random() < (ALARM_CHANCE[comm] or ALARM_CHANCE.default) then
+            local themes = ALARM_THEMES[st.rank] or ALARM_THEMES.experienced
+            play_theme(npc, themes[math.random(#themes)])
+        end
+    end
+    plog("%s flees (rank %s, %.1f m from the epicentre)", npc:name(), st.rank, npc:position():distance_to(strike.ground))
+end
+
+function action_pulse_flee:execute()
+    action_base.execute(self)
+    local st, npc = self.st, self.object
+    local strike = st.strike
+    local now = time_global()
+    if not strike then return end
+    if not self.post and now >= strike.t0 + strike.discharge_ms then
+        self.post = true
+        state_mgr.set_state(npc, POST_STATE[st.rank] or "guard", nil, nil, { look_position = strike.ground })
+        if npc:alive() and voice_slot(strike.id, "after") and math.random() < AFTER_CHANCE then
+            if strike.hit_ids and strike.hit_ids[npc:id()] then
+                play_theme(npc, HIT_THEME)
+            else
+                local themes = AFTER_THEMES[st.rank] or AFTER_THEMES.experienced
+                play_theme(npc, themes[math.random(#themes)])
+            end
+        end
+        return
+    end
+    if not self.post and self.lvid and now >= self.kick then
+        self.kick = now + KICK_MS
+        if npc:position():distance_to(level.vertex_position(self.lvid)) < 1.5 then
+            -- arrived but still inside: push further out
+            if npc:position():distance_to(strike.ground) < strike.shock_r + FLEE_MARGIN then
+                self.lvid = flee_vertex(npc, strike)
+            end
+        end
+        utils.send_to_nearest_accessible_vertex(npc, self.lvid)
+    end
+end
+
+-- st.strike is kept: the evaluator replaces it on the next engagement
+function action_pulse_flee:finalize()
+    action_base.finalize(self)
+end
+
+-- ---------------------------------------------------------------------------
+-- scheme plumbing
+-- ---------------------------------------------------------------------------
+function add_to_binder(npc, ini, scheme, section, st)
+    local manager = npc:motivation_action_manager()
+    manager:add_evaluator(evid, evaluator_pulse("pulse_flee", st))
+
+    local action = action_pulse_flee("action_pulse_flee", st)
+    action:add_precondition(world_property(stalker_ids.property_alive, true))
+    action:add_precondition(world_property(xr_evaluators_id.sidor_wounded_base + 0, false))
+    action:add_precondition(world_property(evid, true))
+    action:add_effect(world_property(evid, false))
+    manager:add_action(actid, action)
+
+    -- like a grenade: overrides the world, combat and danger
+    manager:action(xr_actions_id.alife):add_precondition(world_property(evid, false))
+    manager:action(stalker_ids.action_combat_planner):add_precondition(world_property(evid, false))
+    manager:action(stalker_ids.action_danger_planner):add_precondition(world_property(evid, false))
+end
+
+function set_scheme(npc, ini, scheme, section)
+    xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
+end
+
+-- scheme actions wait while the NPC is fleeing a strike
+function addCommonPrecondition(action)
+    action:add_precondition(world_property(evid, false))
+end

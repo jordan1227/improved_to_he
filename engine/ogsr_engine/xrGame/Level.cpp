@@ -58,6 +58,7 @@
 
 #include "embedded_editor/embedded_editor_main.h"
 #include "nlc_stealth.h"
+#include "nlc_flash_light.h"
 #include "..\xr_3da\xr_ioc_cmd.h"
 
 CPHWorld* ph_world = 0;
@@ -132,6 +133,7 @@ CLevel::CLevel()
 
 CLevel::~CLevel()
 {
+    nlc_flash_light::clear(); // NLC: scripted flash lights
     xr_delete(g_player_hud);
     //	g_pGameLevel		= NULL;
     Msg("- Destroying level");
@@ -421,6 +423,7 @@ void CLevel::OnFrame()
     m_ph_commander->update();
     m_ph_commander_scripts->update();
     nlc_stealth::on_frame(); // NLC: bolt contacts queued by the physics thread, handled here on the main thread (Lua, AI memory)
+    nlc_flash_light::on_frame(); // NLC: scripted flash light envelopes
 
     //просчитать полет пуль
     Device.Statistic->BulletManager.Begin();

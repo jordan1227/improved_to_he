@@ -52,6 +52,15 @@ inline const ssfx_feature_state& ssfx_features()
         s.mblur_objects = !!ps_ssfx_mblur_objects;
         s.ssr = ps_ssfx_ssr_enable && ps_r2_ls_flags_ext.test(R2FLAGEXT_SSLR); // the SSR pass itself is r_sslr_enable
 
+        // NLC: master switch ( ssfx_effects_off ): every pass and shader feature compiled out, the settings themselves kept
+        if (ps_ssfx_effects_off)
+        {
+            s.ao = s.il = s.sss = s.sss_lights = false;
+            s.water = s.glass = s.ssr = s.foliage = s.flora_variation = false;
+            s.gusts = s.fog_sun = s.cloud_shadows = s.step_ripples = s.spec_aa = s.mblur_objects = s.ground_mist = s.rain_beams = false;
+            Msg("* [SSFX] ssfx_effects_off: all Shaders tab effects are off this session");
+        }
+
         Msg("* [SSFX] session state: AO %d ( %d ), IL %d ( %d ), SSS %d ( %d ), light SSS %d ( %d ), water %d ( %d / %d ), glass %d, SSR %d, foliage %d, gusts %d, sun fog %d, cloud shadows %d, step ripples %d, spec AA %d, object blur %d, flora variation %d, ground mist %d, rain beams %d", s.ao,
             s.ao_samples, s.il, s.il_samples, s.sss, s.sss_dir_samples, s.sss_lights, s.sss_omni_samples, s.water, s.water_quality, s.water_parallax,
             s.glass, s.ssr, s.foliage, s.gusts, s.fog_sun, s.cloud_shadows, s.step_ripples, s.spec_aa, s.mblur_objects, s.flora_variation, s.ground_mist, s.rain_beams);

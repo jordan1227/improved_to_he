@@ -758,6 +758,21 @@ public:
     CCC_SsfxCompare(LPCSTR N, BOOL* V) : CCC_Bool(N, V) { SetCanSave(false); }
 };
 
+// NLC: master switch for every Shaders tab effect, saved in user.ltx. On: ssfx_compare is set at once ( passes skipped,
+// uniforms neutral, no restart ); from the next game start ssfx_features() also compiles every pass out ( no cost ).
+// The individual settings are kept, so switching it off restores the player's own values.
+class CCC_SsfxEffectsOff final : public CCC_Bool
+{
+public:
+    CCC_SsfxEffectsOff(LPCSTR N, BOOL* V) : CCC_Bool(N, V) {}
+
+    void Execute(LPCSTR args) override
+    {
+        CCC_Bool::Execute(args);
+        ps_ssfx_compare = *value;
+    }
+};
+
 void xrRender_initconsole()
 {
     if (!FS.path_exist(fsgame::game_weathers))
@@ -1079,6 +1094,7 @@ void xrRender_initconsole()
     CMD4(CCC_Integer, "ssfx_sss_lights", &ps_ssfx_sss_lights, 0, 1);
     CMD4(CCC_Float, "ssfx_sss_length", &ps_ssfx_sss_length, 0.f, 2.f); // 0 = no contact shadows
     CMD2(CCC_SsfxCompare, "ssfx_compare", &ps_ssfx_compare); // session only, never saved
+    CMD2(CCC_SsfxEffectsOff, "ssfx_effects_off", &ps_ssfx_effects_off); // NLC: master switch, saved
 
     // NLC: SSS 23 Build B. Switches and quality are a per-session snapshot ( game restart ), resolutions need vid_restart.
     CMD2(CCC_Bool, "ssfx_water_enable", &ps_ssfx_water_enable);
