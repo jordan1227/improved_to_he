@@ -5,6 +5,43 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.134 (2026-10-22)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0105414CD7C1E03B64C9D535104DB48631F691C4E82EB6A6D37F40EA2345913E` (archived with its PDB in `nlc_tools/builds/20261022_201715_0105414c`).
+- **Status:** runtime pending. Fixes for .133 (`docs/GUNPLAY_FEEL_DESIGN.md` 7d).
+- `nlc_gunplay` clip player: a clip slot frees at the end of its clip (one-shot `CObjectAnimator` keeps `bPlay` set), a full pool reuses the clip nearest its end, and the pool resets on `CLevel` construction too. Fixes crouch clips stopping after a few uses.
+- ADS pose spring `2.6 / ADS time` (was 4). Lua `nlc_gunplay.set_param(name, value)` for `ads_omega_k`, `pda_share`, `pda_turn_share`, `pda_use_share`, `missile_share`, `fx_omega`, `fx_zeta`, `fx_aim_k`.
+- Required game data: `sivol/sivol_weapon_inertia.script` (sets the params; optional).
+
+## nlc-3.589.133 (2026-10-22)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `C4ACE6444B92300707F1CCA7A4ABDE5D314D46B20C6AD3CCBF4B3BF7BF365550` (archived with its PDB in `nlc_tools/builds/20261022_195706_c4ace644`).
+- **Status:** runtime pending. Gunplay batch 3 (`docs/GUNPLAY_FEEL_DESIGN.md` 7c).
+- `nlc_gunplay`: HUD clip player (8 stacking additive `.anm` clips, mirror, ADS share), engine-played crouch clips on stance changes, shared HUD impulse spring, live motion modifiers. Lua `hud_clip`, `hud_impulse`, `set_motion_mod`, `set_crouch_clips`; cleared in `CLevel::~CLevel`.
+- `CHudItem`: rotational lag pivots near the stock (`hud_rot_inertia_pivot_z`, `hud_rot_inertia_shift`); PDA (fades while the 3D PDA is zoomed) and grenades get the motion layers; ADS pose (`hud_ads_damping`) and near-wall pose on springs; clip speed per item (`hud_clip_speed_k`). The batch-2 spring crouch kick is removed (`crouch_kick_hud_offset_*` unused).
+- Required game data: `sivol/sivol_weapon_inertia.script`, `sivol/sivol_weapon_aim_speed.script`, `sivol/sivol_fuzz_recoil*.script`, `params/wpn_params.script`.
+
+## nlc-3.589.132 (2026-10-22)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F9791723ACA4E3B6290DEAD410B8A24FB920357739E4CD245744E79E39AAAC28` (archived with its PDB in `nlc_tools/builds/20261022_192530_f9791723`).
+- **Status:** runtime pending. Gunplay batch 2 (`docs/GUNPLAY_FEEL_DESIGN.md` 7b).
+- `CHudItem`: strafe, lookout, stance and walk offsets use springs (`NlcBlend`, stiffness from the authored transition time, scaled by `hud_motion_freq`); crouch kick on stance changes (`crouch_kick_hud_offset_pos/rot`, `hud_crouch_kick_k`) and look-up dip (`lookup_hud_offset_pos/rot`, `hud_lookup_k`), both writable from Lua. Default `hud_motion_freq` 9.35 (was 11).
+- `CEffectorZoomInertion`: a script-owned sway (`switch_zoom_osc(true)`) stays applied on frames with a large camera move.
+- Required game data: `sivol/sivol_weapon_inertia.script` (crouch/lean/look-up .anm removed), `sivol/sivol_weapon_aim_speed.script`, `sivol/sivol_fuzz_recoil.script`.
+
+## nlc-3.589.131 (2026-10-22)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `121D6903C37681D5B2FF294024EA26397F0EAB641E59FD7FBFB3106BA643DBBB` (archived with its PDB in `nlc_tools/builds/20261022_183734_121d6903`).
+- **Status:** runtime pending. Gunplay feel pass (`docs/GUNPLAY_FEEL_DESIGN.md`).
+- `xrGame/nlc_gunplay.cpp`: damped springs for HUD motion, actor landing events (every ground contact after a fall, with contact speed), mouse-look rate, and an aim-neutral shot punch effector (camera roll + FOV, `eCENlcShotPunch`). Lua `nlc_gunplay.shot_punch(roll_deg, fov_deg)`, `count, speed, time_ms = nlc_gunplay.land()`.
+- `CHudItem`: jump/fall/landing offsets driven by a spring (`hud_motion_freq`, `hud_motion_damping`, `hud_landing_k`, `landing_spring[_aim]_hud_offset_pos/rot`) with a landing kick scaled by contact speed; `hud_motion_freq = 0` restores the old lerps. New rotational inertia (`hud_rot_inertia_k/freq/aim_k/roll`, from mouse turns only) and movement inertia (`hud_move_inertia_k/freq/aim_k`, from velocity changes). All readable from the item section and writable from Lua on `CWeapon`, plus `hud_inertion_tendto_speed[_aim]` / `hud_inertion_origin_offset[_aim]` for the native translation inertia.
+- `g_weapon_look_factor` (default off, Gameplay menu): the per-weapon mouse slowdown (`control_inertion_factor` / `scope_inertion_factor`) applies only when on; off = one true mouse sensitivity.
+- Required game data: `sivol/sivol_fuzz_recoil*.script`, `sivol/sivol_weapon*.script`, `params/wpn_params.script`, `ui/ui_inv_descr.script`, `ui/ui_mm_opt_*.script`, `ui/ui_mm_opt.xml`, `text/*/ui_st_mm.xml`, `text/*/ui_st_inventory.xml` (scripts check for `nlc_gunplay` and the new fields before use).
+
 ## nlc-3.589.130 (2026-10-22)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

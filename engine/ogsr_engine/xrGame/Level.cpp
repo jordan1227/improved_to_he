@@ -59,6 +59,7 @@
 #include "embedded_editor/embedded_editor_main.h"
 #include "nlc_stealth.h"
 #include "nlc_flash_light.h"
+#include "nlc_gunplay.h"
 #include "..\xr_3da\xr_ioc_cmd.h"
 
 CPHWorld* ph_world = 0;
@@ -74,6 +75,7 @@ CLevel::CLevel()
       DemoCS(MUTEX_PROFILE_ID(DemoCS))
 #endif // PROFILE_CRITICAL_SECTIONS
 {
+    nlc_gunplay::clear(); // NLC: drop HUD clips and springs from a previous session
     lua_gc(ai().script_engine().lua(), LUA_GCSTOP, 0);
     lua_gc(ai().script_engine().lua(), LUA_GCSETSTEPMUL, 5);
 
@@ -134,6 +136,7 @@ CLevel::CLevel()
 CLevel::~CLevel()
 {
     nlc_flash_light::clear(); // NLC: scripted flash lights
+    nlc_gunplay::clear(); // NLC: HUD clips and springs
     xr_delete(g_player_hud);
     //	g_pGameLevel		= NULL;
     Msg("- Destroying level");

@@ -30,6 +30,7 @@ enum
     AF_THROW_DEBUG = 1 << 25,
     AF_WEAPON_BOBBING = 1 << 26,
     AF_WEAPON_BOBBING_ADS_ONLY = 1 << 27, // NLC: g_weapon_bobbing_ads_only
+    AF_WEAPON_LOOK_FACTOR = 1 << 28, // NLC: g_weapon_look_factor, per-weapon mouse sensitivity slowdown
 };
 
 //enum

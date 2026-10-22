@@ -1773,6 +1773,7 @@ void CCC_RegisterCommands()
     CMD3(CCC_Mask, "g_lock_reload", &psActorFlags, AF_LOCK_RELOAD);
     CMD3(CCC_Mask, "g_weapon_bobbing", &psActorFlags, AF_WEAPON_BOBBING);
     CMD3(CCC_Mask, "g_weapon_bobbing_ads_only", &psActorFlags, AF_WEAPON_BOBBING_ADS_ONLY); // NLC
+    CMD3(CCC_Mask, "g_weapon_look_factor", &psActorFlags, AF_WEAPON_LOOK_FACTOR); // NLC: per-weapon mouse sensitivity (control_inertion_factor); off = true sensitivity
     CMD1(CCC_WeaponBobbingMode, "g_weapon_bobbing_mode"); // NLC
 
     CMD4(CCC_Integer, "g_cop_death_anim", &g_bCopDeathAnim, 0, 1);

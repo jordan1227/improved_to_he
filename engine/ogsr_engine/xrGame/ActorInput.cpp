@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "fl_hook.h"
+#include "nlc_gunplay.h"
 #include <dinput.h>
 #include "Actor.h"
 #include "Torch.h"
@@ -401,11 +402,13 @@ void CActor::IR_OnMouseMove(int dx, int dy)
     {
         float d = float(dx) * scale;
         cam_Active()->Move((d < 0) ? kLEFT : kRIGHT, _abs(d));
+        nlc_gunplay::add_look_input(_abs(d), 0.f); // NLC: HUD rotational inertia follows the player's own turning
     }
     if (dy)
     {
         float d = ((psMouseInvert.test(1)) ? -1 : 1) * float(dy) * scale * 3.f / 4.f;
         cam_Active()->Move((d > 0) ? kUP : kDOWN, _abs(d));
+        nlc_gunplay::add_look_input(0.f, _abs(d)); // NLC
     }
 }
 
@@ -655,7 +658,9 @@ float CActor::GetLookFactor()
 
     PIItem pItem = inventory().ActiveItem();
 
-    if (pItem)
+    // NLC: per-weapon look slowdown (control_inertion_factor / scope_inertion_factor) only with
+    // g_weapon_look_factor on; off keeps one true mouse sensitivity for every weapon.
+    if (pItem && psActorFlags.test(AF_WEAPON_LOOK_FACTOR))
         factor *= pItem->GetControlInertionFactor();
 
     VERIFY(!fis_zero(factor));

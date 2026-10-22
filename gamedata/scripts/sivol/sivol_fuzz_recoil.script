@@ -56,6 +56,7 @@ local PITCH_IMMEDIATE_SHARE = 0.40
 local PITCH_VELOCITY_DECAY_RATE = 14.0
 local RECOVERY_REPORT_EPSILON = 0.00005
 local HANDLING_RECOVERY_RATE = 1.65
+local SPRING_RECOVERY_OMEGA_K = 1.58
 local MOUSE_TRACK_MAX_DELTA = 0.35
 -- Share of the player's downward mouse input that pays off outstanding recoil
 -- climb instead of moving the aim base (0 = old behaviour, 1 = full credit).
@@ -139,6 +140,9 @@ local state = {
     handling = 0,
     last_shot_ms = nil,
     camera_return_scale = 1.0,
+    stance_recovery_k = 1.0,
+    recovery_pitch_velocity = 0,
+    look_rate = 0,
     direction_guard_hits = 0,
     anm_shots = 0,
     anm_disabled = false,
@@ -208,6 +212,20 @@ local function critically_damped_step(position, velocity, frequency, dt)
     local next_position = (position + coupled * dt) * decay
     local next_velocity = (velocity - frequency * coupled * dt) * decay
     return next_position, next_velocity
+end
+
+-- General damped spring toward zero (zeta < 1 overshoots slightly), sub-stepped
+-- semi-implicit Euler so it stays stable across FPS dips.
+local function damped_step(position, velocity, frequency, zeta, dt)
+    if frequency <= 0 or dt <= 0 then return position, velocity end
+    if zeta >= 0.999 then return critically_damped_step(position, velocity, frequency, dt) end
+    local steps = math.max(1, math.min(16, math.ceil(dt * frequency / 0.25)))
+    local h = dt / steps
+    for _ = 1, steps do
+        velocity = velocity + (-2.0 * zeta * frequency * velocity - frequency * frequency * position) * h
+        position = position + velocity * h
+    end
+    return position, velocity
 end
 
 local function clamp_hud_spring_axis(direct, spring, velocity, limit)
@@ -285,6 +303,7 @@ local function publish_state()
     M.burst_continuity = state.burst_continuity
     M.recoil_heat = state.recoil_heat
     M.pitch_velocity = state.pitch_velocity
+    M.look_rate = state.look_rate
     M.hud_spring_pitch = state.hud_spring_pitch
     M.hud_spring_yaw = state.hud_spring_yaw
 end
@@ -317,6 +336,9 @@ local function reset_dynamics(keep_applied)
     state.handling = 0
     state.last_shot_ms = nil
     state.camera_return_scale = 1.0
+    state.stance_recovery_k = 1.0
+    state.recovery_pitch_velocity = 0
+    state.look_rate = 0
     state.direction_guard_hits = 0
     state.anm_shots = 0
     state.last_ammo = nil
@@ -936,7 +958,7 @@ end
 -- Hold breath is a transient ADS state, so keep it outside the persistent
 -- health/stance/equipment context. Sample it only when a real shot is being
 -- built; the strength getter already advances at most once per clock tick.
-local function get_hold_breath_recoil(profile, aiming)
+local function get_hold_breath_recoil(profile, aiming, burst_shot)
     if not aiming or not sivol_weapon
         or type(sivol_weapon.is_manual_hold_breath_active) ~= "function"
         or type(sivol_weapon.get_manual_hold_breath_strength) ~= "function" then
@@ -958,7 +980,12 @@ local function get_hold_breath_recoil(profile, aiming)
     local full_hold_k = clamp(
         tonumber(global.hold_breath_recoil_k) or 1.0,
         0.50, 1.0)
-    local recoil_k = 1.0 - (1.0 - full_hold_k) * strength
+    -- Full benefit on the aimed opening shots, none once automatic fire runs on.
+    local full_shots = tonumber(global.hold_breath_full_shots) or 2
+    local fade_shot = math.max(full_shots + 1, tonumber(global.hold_breath_fade_shot) or 4)
+    local shot = tonumber(burst_shot) or 1
+    local shot_w = clamp((fade_shot - shot) / (fade_shot - full_shots), 0, 1)
+    local recoil_k = 1.0 - (1.0 - full_hold_k) * strength * shot_w
     return recoil_k, true, strength
 end
 
@@ -1125,13 +1152,27 @@ local function recover_recoil(dt)
 
     state.camera_return_scale = get_camera_return_scale()
     local camera_recovery_rate = profile.recovery_rate * state.camera_return_scale
-    state.recoil_pitch = exp_step(state.recoil_pitch, 0, camera_recovery_rate, dt)
+        * (state.stance_recovery_k or 1.0)
+    -- Isolated shots and burst openings return on a critically damped spring:
+    -- the climb eases off the peak, then settles without the long exponential
+    -- tail. Sustained fire (from shot 3, while continuity holds) keeps the
+    -- exponential return so burst climb balance is unchanged. The spring
+    -- frequency matches the exponential 5% settle time (4.74 / 3).
+    local exp_pitch = exp_step(state.recoil_pitch, 0, camera_recovery_rate, dt)
+    local spring_pitch, spring_velocity = critically_damped_step(
+        state.recoil_pitch, state.recovery_pitch_velocity,
+        profile.recovery_rate * (state.stance_recovery_k or 1.0) * SPRING_RECOVERY_OMEGA_K, dt)
+    local sustained = clamp((state.burst_shots - 1) / 2, 0, 1)
+    local spring_w = 1.0 - clamp(state.burst_continuity, 0, 1) * sustained
+    state.recoil_pitch = exp_pitch + (spring_pitch - exp_pitch) * spring_w
+    state.recovery_pitch_velocity = spring_velocity * spring_w
     -- Script-owned camera pitch uses negative values for upward recoil. Never
     -- allow its tail/recovery channel to cross through neutral and push the
     -- view below the player's pre-shot aim point.
     if state.recoil_pitch > 0 then
         state.recoil_pitch = 0
         state.pitch_velocity = math.min(0, state.pitch_velocity)
+        state.recovery_pitch_velocity = 0
         state.return_guard_hits = state.return_guard_hits + 1
     end
     state.recoil_yaw = exp_step(state.recoil_yaw, 0, camera_recovery_rate * 1.18, dt)
@@ -1147,12 +1188,14 @@ local function recover_recoil(dt)
     local spring_frequency = clamp(
         global.hud_spring_frequency or HUD_SPRING_FREQUENCY, 8.0, 30.0)
     if HUD_SPRING_ENABLED then
-        state.hud_spring_pitch, state.hud_spring_pitch_velocity = critically_damped_step(
+        -- A little bounce: the viewmodel overshoots slightly before settling.
+        local spring_zeta = clamp(global.hud_spring_damping or 1.0, 0.3, 1.0)
+        state.hud_spring_pitch, state.hud_spring_pitch_velocity = damped_step(
             state.hud_spring_pitch, state.hud_spring_pitch_velocity,
-            spring_frequency, dt)
-        state.hud_spring_yaw, state.hud_spring_yaw_velocity = critically_damped_step(
+            spring_frequency, spring_zeta, dt)
+        state.hud_spring_yaw, state.hud_spring_yaw_velocity = damped_step(
             state.hud_spring_yaw, state.hud_spring_yaw_velocity,
-            spring_frequency, dt)
+            spring_frequency, spring_zeta, dt)
         local pitch_clamped, yaw_clamped
         state.hud_spring_pitch, state.hud_spring_pitch_velocity, pitch_clamped =
             clamp_hud_spring_axis(
@@ -1372,6 +1415,12 @@ local function on_update_impl(delta)
 
     local update_now = now_ms()
     local dt = get_dt(delta)
+    -- Player mouse angular speed (rad/s) with the recoil contribution already
+    -- removed; wpn_params uses it for ADS turn sway.
+    local look_speed = math.sqrt(state.measured_mouse_pitch * state.measured_mouse_pitch
+        + state.measured_mouse_yaw * state.measured_mouse_yaw) / math.max(dt, 0.001)
+    state.look_rate = exp_step(state.look_rate, look_speed,
+        look_speed > state.look_rate and 14.0 or 6.0, dt)
     recover_recoil(dt)
     if state.burst_shots > 0 then update_burst_peaks() end
     if state.last_shot_ms and update_now >= state.last_shot_ms
@@ -1411,6 +1460,21 @@ local function on_update(delta)
     end
 end
 
+-- Any locomotion state of the native actor (walk, run, crouch/creep moving,
+-- sprint). get_actor_obj() exposes these predicates; db.actor does not.
+local MOVING_PREDICATES = { "is_actor_normal", "is_actor_walking", "is_actor_running",
+    "is_actor_sprinting", "is_actor_crouching", "is_actor_creeping" }
+local function is_actor_moving()
+    if type(get_actor_obj) ~= "function" then return false end
+    local ok_actor, native_actor = pcall(get_actor_obj)
+    if not ok_actor or not native_actor then return false end
+    for _, name in ipairs(MOVING_PREDICATES) do
+        local ok, moving = pcall(function() return native_actor[name](native_actor) end)
+        if ok and moving then return true end
+    end
+    return false
+end
+
 -- True outside single fire (queue_size 2 = burst, -1 = auto). Unreadable
 -- values count as single fire, so burst-only personality stages stay off.
 local function is_burst_fire_mode()
@@ -1419,6 +1483,20 @@ local function is_burst_fire_mode()
     local ok, queue = pcall(function() return weapon.queue_size end)
     queue = ok and tonumber(queue) or nil
     return queue ~= nil and queue ~= 1
+end
+
+-- Aim-neutral camera punch (engine nlc_gunplay, nlc-3.589.131+): roll and a
+-- brief FOV narrowing. Neither changes the camera direction, so the point of
+-- aim and recovery are unaffected. Older engines lack it and skip silently.
+local function play_shot_punch(global, personality, aiming, vertical_deg)
+    if not nlc_gunplay or type(nlc_gunplay.shot_punch) ~= "function" then return end
+    local roll = tonumber(global.punch_roll_deg) or 0
+    local fov = tonumber(global.punch_fov_deg) or 0
+    if roll == 0 and fov == 0 then return end
+    local impulse_k = clamp(math.abs(tonumber(vertical_deg) or 0) / 2.0, 0.35, 1.8)
+    local k = impulse_k * (personality.shove or 1.0)
+        * (aiming and (tonumber(global.punch_ads_k) or 1.0) or 1.0)
+    pcall(nlc_gunplay.shot_punch, roll * k * state.yaw_sign, fov * k)
 end
 
 local function add_shot_impulse()
@@ -1453,7 +1531,7 @@ local function add_shot_impulse()
 
     local aiming = get_aiming()
     local hold_breath_k, hold_breath_active, hold_breath_strength =
-        get_hold_breath_recoil(profile, aiming)
+        get_hold_breath_recoil(profile, aiming, state.burst_shots)
     local hip_multiplier = personality.hip_multiplier or class.hip_multiplier
     local aim_multiplier = aiming and class.ads_multiplier or hip_multiplier
     local actor_power = get_actor_power(current_actor())
@@ -1495,8 +1573,27 @@ local function add_shot_impulse()
     local handling_multiplier = 1.0 - class.handling_strength * state.handling
     handling_multiplier = clamp(handling_multiplier, 0.52, 1.0)
     local fatigue_multiplier = 1.0 + state.fatigue * 0.42
+    -- One floor for every player-side stabilizer, hold breath included.
+    local stabilization_k = clamp(context_k * hold_breath_k,
+        tonumber(global.stabilization_floor) or 0.70, 1.50)
+    local moving_k = 1.0
+    if aiming and is_actor_moving() then
+        moving_k = tonumber(global.moving_ads_recoil_k) or 1.0
+    end
+    local unsettle_k = 1.0
+    if sivol_weapon and type(sivol_weapon.get_unsettle_k) == "function" then
+        local ok_unsettle, value = pcall(sivol_weapon.get_unsettle_k)
+        if ok_unsettle and valid_number(value) then
+            unsettle_k = 1.0 + (math.max(1.0, tonumber(value)) - 1.0)
+                * (tonumber(global.unsettle_recoil_share) or 0.5)
+        end
+    end
+    state.stance_recovery_k = stance_state == "creep" and (tonumber(global.creep_recovery_k) or 1.0)
+        or stance_state == "crouch" and (tonumber(global.crouch_recovery_k) or 1.0)
+        or 1.0
     local total_multiplier = aim_multiplier * actor_multiplier
-        * handling_multiplier * fatigue_multiplier * context_k * hold_breath_k
+        * handling_multiplier * fatigue_multiplier * stabilization_k
+        * moving_k * unsettle_k
     local suppressor_recoil_k = profile.suppressor_recoil_k or 1.0
     local profile_adapter = get_profile_adapter()
     if not profile_adapter
@@ -1615,6 +1712,7 @@ local function add_shot_impulse()
     state.hud_roll = clamp(raw_hud_roll, -HUD_MAX_ROLL, HUD_MAX_ROLL)
 
     local camera_pitch_before = state.recoil_pitch
+    state.recovery_pitch_velocity = 0 -- a new kick interrupts the return
     state.pitch_velocity = state.pitch_velocity
         + pitch_tail * PITCH_VELOCITY_DECAY_RATE
     local raw_camera_pitch = camera_pitch_before + pitch_immediate
@@ -1688,6 +1786,7 @@ local function add_shot_impulse()
         state.capability_state = "camera_only"
     end
     play_anm_recoil()
+    play_shot_punch(global, personality, aiming, vertical_deg)
     M.aiming = aiming
 end
 

@@ -52,6 +52,11 @@ namespace nlc_flash_light // NLC: scripted flash lights (xrGame/nlc_flash_light.
 void script_register(lua_State* L);
 }
 
+namespace nlc_gunplay // NLC: gunplay feel, shot punch, landing events (xrGame/nlc_gunplay.cpp)
+{
+void script_register(lua_State* L);
+}
+
 void export_classes(lua_State* L)
 {
     Register<script_type_list>::_Register(L);
@@ -59,4 +64,5 @@ void export_classes(lua_State* L)
     nlc_stealth::script_register(L); // NLC
     nlc_body_health::script_register(L); // NLC
     nlc_flash_light::script_register(L); // NLC
+    nlc_gunplay::script_register(L); // NLC
 }

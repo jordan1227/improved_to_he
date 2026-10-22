@@ -4,31 +4,28 @@
     Ported subset of "Weapon Inertia Expanded" (Anomaly addon) for NLC OGSR HE.
 
     Implements only:
-      - crouch/stance-change kick (replaces wpn_params.stance_bump_y)
       - stamina-scaled breathing sway (hip-fire/idle hud hand additive anim)
-      - look-up lowers the gun slightly (shares the crouch lerp/anim, like the source addon)
       - hit-flinch additive anim
 
+    Moved to the engine on 2026-10-22 (nlc-3.589.132/.133, docs/GUNPLAY_FEEL_DESIGN.md):
+    the crouch kick clips are played by the engine on stance changes (set up
+    here, so they stack); held crouch pose, look-up dip and lean sway are
+    CHudItem springs, scaled by weapon handling in sivol_weapon_aim_speed.
+    This script also feeds the live HUD motion modifiers and plays the hit
+    flinch through the engine clip player (directional, damage-scaled). The per-weapon c/u/l/r
+    table in sivol_weapon_inertia_configs.script is no longer read.
+
     Deliberately NOT ported: MCM (none in this engine -- see constants below
-    instead), noise, jump/land (NLC already has these),
-    device/detector lean, crawl.
+    instead), noise, jump/land (engine springs), device/detector lean, crawl.
 
     Hook mechanisms used (confirmed working in-game):
       - Periodic logic: ogse_signals "on_update" subscription (unthrottled).
       - Hit flinch: "on_actor_before_hit" subscription.
       - Aim state: polls wpn_params.get_zie_obj() (same check scope_wobble
         already relies on) to prevent ADS desyncs.
-      - Crouch kick: "on_key" / "on_key_up" subscriptions. Firing the kick
-        on keypress bypasses the engine's movement state machine, which was
-        instantly overwriting the kick when triggered from a per-frame
-        on_update stance poll instead.
 
-    Non-weapon items (PDA/torch/binoculars/detector, etc.): only the
-    continuous crouch-hold sway + look-up dip are disabled for these
-    (active_is_weapon gate in update_stance). Crouch kick, breathing sway,
-    and hit-flinch intentionally stay active regardless of held item --
-    that's a deliberate choice, not an oversight, so PDA stays fully usable
-    while crouched without losing the other feedback.
+    Breathing and hit-flinch stay active regardless of held item, so the PDA
+    keeps the same feedback.
 
     Setup: add "sivol_weapon_inertia" to ogse_signals_addons_list.addons.
 ]]
@@ -39,46 +36,56 @@ sivol_weapon_inertia = sivol_weapon_inertia or {}
 -- Tuning constants (no MCM in this engine -- edit these directly)
 -- ============================================================
 
-local CROUCH_KICK_SPEED  = 1.05   -- playback speed for the one-shot crouch start/end kick
-local CROUCH_KICK_POWER  = 2.35   -- blend weight for the one-shot crouch start/end kick
-
-local CROUCH_HOLD_POWER  = 0.45  -- how pronounced the *held* crouch sway is (separate from the kick)
-
-local LEAN_L_POWER       = 1.0   -- source addon's default left-lean sway strength
-local LEAN_R_POWER       = 1.0   -- source addon's default right-lean sway strength
-
 local BREATH_SPEED_MIN   = 0.5
 local BREATH_SPEED_MAX   = 1.4
 local BREATH_POWER_MIN   = 0.15
 local BREATH_POWER_MAX   = 0.55
 
-local LOOKUP_ENABLED     = true
-local LOOKUP_TRIGGER_AT  = 0.6   -- pitch (radians) at which lowering starts
-local LOOKUP_MAX_PITCH   = 1.5   -- looking straight up
-local LOOKUP_POWER       = 0.5   -- how far the gun dips at max look-up
-
 local HIT_ANM_ENABLED    = true
 
--- Native CActor::get_body_state() flags, confirmed in params.script.
--- Use flag tests rather than equality: a lookout state can coexist with
--- movement-state bits while the player is walking or running.
-local BODY_STATE_L_LOOKOUT = 8192
-local BODY_STATE_R_LOOKOUT = 16384
+-- Engine-played crouch clips (nlc-3.589.133+, nlc_gunplay.set_crouch_clips). The
+-- engine detects every stance change and plays these additively, so crouch spam
+-- stacks; handling scales power and speed per weapon. Tune here, no rebuild.
+local CROUCH_CLIP_DOWN   = "liz\\liz_hands_crouch_start_additive.anm"
+local CROUCH_CLIP_UP     = "liz\\liz_hands_crouch_end_additive.anm"
+local CROUCH_CLIP_POWER  = 2.35  -- the old script kick power
+local CROUCH_CLIP_SPEED  = 1.05
+local CROUCH_CLIP_AIM_K  = 0.90  -- share kept while aiming
+
+-- Directional hit flinch: hits from the side push the gun away from the hit,
+-- stronger hits flinch more. Flip HIT_MIRROR_SIGN if the push reads the wrong way.
+local HIT_MIRROR_SIGN    = 1
+local HIT_POWER_MIN      = 0.6
+local HIT_POWER_MAX      = 1.6
+local HIT_POWER_PER_HIT  = 1.5
+local HIT_AIM_K          = 0.6
+
+-- Engine gunplay tunables (nlc_gunplay.set_param, nlc-3.589.134+). Values are
+-- the engine defaults; change them here, no rebuild needed.
+local GUNPLAY_PARAMS = {
+    ads_omega_k    = 2.6,   -- ADS pose spring: omega = k / ADS time (4 felt too fast)
+    pda_share      = 0.6,   -- PDA share of the motion layers (crouch clips included)
+    pda_turn_share = 0.35,  -- PDA share of the turn lag
+    pda_use_share  = 0.2,   -- multiplier while the 3D PDA is zoomed for the cursor
+    missile_share  = 0.7,   -- grenades and bolts
+    fx_omega       = 16.0,  -- shared impulse spring (nlc_gunplay.hud_impulse)
+    fx_zeta        = 0.5,
+    fx_aim_k       = 0.5,   -- impulse share while aiming
+}
+
+-- Live HUD motion modifiers (nlc_gunplay.set_motion_mod): tired arms lag more,
+-- servos stiffen, arm injuries loosen, adrenaline makes the gun twitchier.
+local MOD_INTERVAL_MS    = 100
+local MOD_TIRED_FREQ     = 0.18  -- spring speed lost at zero stamina
+local MOD_TIRED_AMP      = 0.35  -- inertia gained at zero stamina
 
 -- Lerp convergence rates (1/seconds) -- how fast each sway/blend chases its
 -- target, independent of framerate. Higher = snappier. These replace the
 -- old hardcoded new_lerp() power args and the is_aiming 0.9, which were only
 -- "correct" by accident when dt came from game-time (see changelog note).
-local CROUCH_LERP_RATE          = 14.0
 local BREATHING_SPEED_LERP_RATE = 8.0
 local BREATHING_POWER_LERP_RATE = 8.0
 local AIM_LERP_RATE             = 18.0   -- replaces the old hardcoded 0.9
-
--- ============================================================
--- Per-weapon multiplier table (see sivol_weapon_inertia_configs.script)
--- ============================================================
-
-sivol_weapon_inertia.wpn_all_configs = sivol_weapon_inertia.wpn_all_configs or {}
 
 -- ============================================================
 -- Lerp helpers (simple exponential blend, ported from the addon)
@@ -107,12 +114,9 @@ end
 -- ============================================================
 
 local is_initialized  = false
+local last_mod_time   = 0
 local is_aiming        = false
-local last_wpn_section = "init"
-local wpn_config       = { l = 1, r = 1, c = 1, u = 1 }
-local look_up_factor   = 0
 local last_update_time = 0
-local active_is_weapon = false -- true only when the active item is an actual firearm (get_weapon() ~= nil); excludes PDA/torch/binoculars/detector/etc. Used ONLY to gate the continuous lean/crouch/look-up sway below -- kick, breathing, and hit-flinch intentionally stay universal.
 
 local hit_anims = {
     "liz\\liz_hands_hit1_additive.anm",
@@ -133,48 +137,61 @@ register_hit_type("strike")
 register_hit_type("explosion")
 register_hit_type("wound2")
 
--- Safely build a table of crouch keybinds.
--- NLC has distinct binds for hold (kCROUCH) and toggle (kCROUCH_TOGGLE).
-local crouch_binds = {}
-if key_bindings then
-    if key_bindings.kCROUCH then crouch_binds[key_bindings.kCROUCH] = "hold" end
-    if key_bindings.kCROUCH_TOGGLE then crouch_binds[key_bindings.kCROUCH_TOGGLE] = "toggle" end
+local function engine_gunplay(name)
+    return nlc_gunplay and type(nlc_gunplay[name]) == "function"
 end
 
--- Tracked independently of the engine's actual is_actor_crouch()/is_actor_creep()
--- flags for the toggle bind. Spamming the toggle key faster than those flags
--- settle was causing every other press to read stale state and re-fire the
--- same-direction kick (which then silently no-ops as a same-clip repeat).
--- Self-tracking guarantees strict alternation regardless of engine timing.
-local toggle_crouched_state = false
-
 local function initialize()
-    new_lerp("lean_l",           0, 0, CROUCH_LERP_RATE)
-    new_lerp("lean_r",           0, 0, CROUCH_LERP_RATE)
-    new_lerp("crouch",          0, 0, CROUCH_LERP_RATE)
     new_lerp("breathing_speed", 0, 0, BREATHING_SPEED_LERP_RATE)
     new_lerp("breathing_power", 0, 0, BREATHING_POWER_LERP_RATE)
+    if engine_gunplay("set_param") then
+        for name, value in pairs(GUNPLAY_PARAMS) do
+            nlc_gunplay.set_param(name, value)
+        end
+    end
+    if engine_gunplay("set_crouch_clips") then
+        nlc_gunplay.set_crouch_clips(CROUCH_CLIP_DOWN, CROUCH_CLIP_UP,
+            CROUCH_CLIP_POWER, CROUCH_CLIP_SPEED, CROUCH_CLIP_AIM_K)
+    end
     is_initialized = true
+end
+
+local function update_motion_mod(actor)
+    if not engine_gunplay("set_motion_mod") then return end
+    local now = time_global()
+    if now - last_mod_time < MOD_INTERVAL_MS then return end
+    last_mod_time = now
+
+    local tired = 1 - math.max(0, math.min(1, actor.power or 1))
+    local freq_k = 1 - MOD_TIRED_FREQ * tired
+    local amp_k = 1 + MOD_TIRED_AMP * tired
+
+    local outfit = actor:item_in_slot(6)
+    if outfit and string.find(outfit:section(), "exo", 1, true)
+        and sivol_exo and type(sivol_exo.sway_k) == "function" then
+        local sway = sivol_exo.sway_k() -- below 1 while the servos assist
+        amp_k = amp_k * sway
+        freq_k = freq_k * (1 + (1 - sway) * 0.5)
+    end
+
+    local injury = get_value and get_value("nlc_vars.add_wobble")
+    if injury == true or injury == 1 then
+        amp_k, freq_k = amp_k * 1.15, freq_k * 0.92
+    elseif injury == 2 then
+        amp_k, freq_k = amp_k * 1.30, freq_k * 0.85
+    elseif injury == 3 then
+        amp_k = amp_k * 1.05
+    end
+
+    if sivol_adrenaline and type(sivol_adrenaline.wobble_k) == "function" then
+        freq_k = freq_k * math.sqrt(math.max(0.5, sivol_adrenaline.wobble_k()))
+    end
+    nlc_gunplay.set_motion_mod(freq_k, amp_k)
 end
 
 -- ============================================================
 -- Per-tick state updates
 -- ============================================================
-
-local function update_weapon_info(actor)
-    local wpn = actor and actor:active_item()
-    active_is_weapon = (wpn ~= nil) and (wpn:get_weapon() ~= nil)
-    local sec = wpn and wpn:section()
-    if sec ~= last_wpn_section then
-        last_wpn_section = sec
-        wpn_config = { l = 1, r = 1, c = 1, u = 1 }
-        if sec and sivol_weapon_inertia.wpn_all_configs[sec] then
-            for k, v in pairs(sivol_weapon_inertia.wpn_all_configs[sec]) do
-                wpn_config[k] = v
-            end
-        end
-    end
-end
 
 local function update_stamina_info(actor)
     if not actor then return end
@@ -183,54 +200,12 @@ local function update_stamina_info(actor)
     set_lerp("breathing_power", BREATH_POWER_MIN + (BREATH_POWER_MAX - BREATH_POWER_MIN) * fatigue)
 end
 
-local function update_look_up_factor()
-    local pitch = device().cam_dir:getP() -- -1.5 down, 0 forward, 1.5 up
-    local t = (pitch - LOOKUP_TRIGGER_AT) / (LOOKUP_MAX_PITCH - LOOKUP_TRIGGER_AT)
-    t = math.max(0, math.min(1, t))
-    look_up_factor = t * LOOKUP_POWER
-end
-
 -- Bulletproof aim-state check: polls the scope effector directly, same
 -- mechanism scope_wobble already relies on for ADS detection.
 local function update_aiming()
     is_aiming = false
     if wpn_params and type(wpn_params.get_zie_obj) == "function" then
         is_aiming = (wpn_params.get_zie_obj() ~= nil)
-    end
-end
-
-local function update_stance(aobj)
-    local current_stance = 0
-    local body_state = aobj and aobj:get_body_state() or 0
-    if aobj and aobj:is_actor_creep() then current_stance = 2
-    elseif aobj and aobj:is_actor_crouch() then current_stance = 1 end
-
-    -- Continuous lean, crouch sway, and look-up dip are disabled while
-    -- aiming or when the active item isn't an actual weapon (PDA/torch/
-    -- binoculars/detector, etc.) to prevent displacement on non-weapon
-    -- items. Lean takes precedence over crouch/look-up, matching the source
-    -- addon's block_crouch behavior. This is the ONLY place active_is_weapon
-    -- gates anything -- kick/breathing/hit-flinch stay universal by design.
-    if is_aiming or not active_is_weapon then
-        set_lerp("lean_l", 0)
-        set_lerp("lean_r", 0)
-        set_lerp("crouch", 0)
-    elseif bit_and(body_state, BODY_STATE_L_LOOKOUT) ~= 0 then
-        set_lerp("lean_l", LEAN_L_POWER * (wpn_config.l or 1))
-        set_lerp("lean_r", 0)
-        set_lerp("crouch", 0)
-    elseif bit_and(body_state, BODY_STATE_R_LOOKOUT) ~= 0 then
-        set_lerp("lean_l", 0)
-        set_lerp("lean_r", LEAN_R_POWER * (wpn_config.r or 1))
-        set_lerp("crouch", 0)
-    elseif current_stance > 0 then
-        set_lerp("lean_l", 0)
-        set_lerp("lean_r", 0)
-        set_lerp("crouch", CROUCH_HOLD_POWER * (wpn_config.c or 1))
-    else
-        set_lerp("lean_l", 0)
-        set_lerp("lean_r", 0)
-        set_lerp("crouch", LOOKUP_ENABLED and (look_up_factor * (wpn_config.u or 1)) or 0)
     end
 end
 
@@ -248,13 +223,9 @@ local function on_actor_update()
     local dt = (last_update_time == 0) and 0.016 or (now - last_update_time)
     last_update_time = now
 
-    local aobj = get_actor_obj()
-
-    update_weapon_info(actor)
     update_stamina_info(actor)
-    update_look_up_factor()
     update_aiming()
-    update_stance(aobj)
+    update_motion_mod(actor)
 
 	for _, lp in pairs(lerps) do
 		local rate = is_aiming and AIM_LERP_RATE or lp.power
@@ -263,9 +234,6 @@ local function on_actor_update()
 	end
 
     game.play_hud_anm("liz\\liz_hands_breathing_additive.anm", 2, lerps["breathing_speed"].from, lerps["breathing_power"].from, true, true)
-    game.play_hud_anm("liz\\liz_hands_crouch_additive.anm", 2, 1, lerps["crouch"].from, true, true)
-    game.play_hud_anm("liz\\liz_hands_lean_l_additive.anm", 2, 1, lerps["lean_l"].from, true, true)
-    game.play_hud_anm("liz\\liz_hands_lean_r_additive.anm", 2, 1, lerps["lean_r"].from, true, true)
 end
 
 -- ============================================================
@@ -277,47 +245,20 @@ local function on_actor_before_hit(obj, hd)
     if not hd or hd.ignore_hit then return end
     if sivol_psy_phantoms and sivol_psy_phantoms.is_phantom and sivol_psy_phantoms.is_phantom(hd.who_id) then return end
     if not valid_hit_types[hd.hit_type] then return end
-    if is_aiming then return end
     local anm = hit_anims[math.random(1, #hit_anims)]
-    game.play_hud_anm(anm, 2, 1, 1, false, true)
-end
-
--- ============================================================
--- Crouch kick (via "on_key" / "on_key_up")
--- Mirrors the original Anomaly addon's keypress hook, bypassing the
--- movement state machine that was eating the one-shot anims when they
--- were triggered from a per-frame stance poll instead.
--- Intentionally NOT gated by active_is_weapon -- fires for PDA too.
--- ============================================================
-
-local function on_key(key, bind)
-    local mode = crouch_binds[bind]
-    if not mode then return end
-
-    if mode == "hold" then
-        -- Hold mode: pressing the key always enters crouch
-        game.play_hud_anm("liz\\liz_hands_crouch_start_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
-    else
-        -- Toggle mode: flip OUR tracked state rather than querying
-        -- is_actor_crouch()/is_actor_creep() live -- see toggle_crouched_state
-        -- comment above for why.
-        toggle_crouched_state = not toggle_crouched_state
-        if toggle_crouched_state then
-            game.play_hud_anm("liz\\liz_hands_crouch_start_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
-        else
-            game.play_hud_anm("liz\\liz_hands_crouch_end_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
-        end
+    if not engine_gunplay("hud_clip") then
+        if is_aiming then return end
+        game.play_hud_anm(anm, 2, 1, 1, false, true)
+        return
     end
-end
-
-local function on_key_up(key, bind)
-    local mode = crouch_binds[bind]
-    if not mode then return end
-
-    -- Only play the end kick on release if we're in Hold mode
-    if mode == "hold" then
-        game.play_hud_anm("liz\\liz_hands_crouch_end_additive.anm", 2, CROUCH_KICK_SPEED, CROUCH_KICK_POWER, false, true)
-    end
+    -- Side of the hit relative to the view: positive = travelling to the right.
+    local side = 0
+    local ok, dot = pcall(function() return hd.direction:dotproduct(device().cam_right) end)
+    if ok and type(dot) == "number" then side = dot end
+    local mirror = (side >= 0 and 1 or -1) * HIT_MIRROR_SIGN
+    local power = math.max(HIT_POWER_MIN, math.min(HIT_POWER_MAX,
+        HIT_POWER_MIN + (tonumber(hd.power) or 0) * HIT_POWER_PER_HIT))
+    nlc_gunplay.hud_clip(anm, power, 1, mirror, HIT_AIM_K)
 end
 
 -- ============================================================
@@ -327,8 +268,6 @@ end
 function attach(sm)
     sm:subscribe({ signal = "on_update", fun = on_actor_update })
     sm:subscribe({ signal = "on_actor_before_hit", fun = on_actor_before_hit })
-    sm:subscribe({ signal = "on_key", fun = on_key })
-    sm:subscribe({ signal = "on_key_up", fun = on_key_up })
 end
 
 sivol_weapon_inertia.attach = attach

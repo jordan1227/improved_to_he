@@ -39,11 +39,63 @@ local SECTION_AIM_TIMES = {
     wpn_aks47_he = 0.235,
 }
 local LAUNCHER_AIM_PENALTY = 0.05
+-- Handling shifts ADS time inside its class: h 1 -> x0.88, h 0.55 -> x0.99,
+-- h 0 -> x1.12 (docs/GUNPLAY_FEEL_DESIGN.md 5). Optics and launchers keep their
+-- own multipliers; their mass also lowers handling slightly.
+local HANDLING_AIM_TIME_BASE = 1.12
+local HANDLING_AIM_TIME_SLOPE = 0.24
 
 -- These weapons present a built-in sight in their HUD model despite declaring
 -- scope_status = 0. Section IDs are technical and may not name the actual gun.
 local INTEGRATED_OPTIC_OVERRIDES = {
     wpn_beretta93 = { scope = "integrated_collimator", class = "red_dot", zoom = 75 },
+}
+
+-- Weapon handling (docs/GUNPLAY_FEEL_DESIGN.md 5): one 0..1 value per item from
+-- live mass (addons included), role and a few layout exceptions. It drives the
+-- engine HUD springs and inertia fields below (nlc-3.589.131+); fields an older
+-- engine lacks are skipped. Authored values are cached and restored with
+-- zoom_rotate_time.
+local HANDLING_REFERENCE_KG = 4.2
+local HANDLING_EXPONENT = 1.4
+local HANDLING_CLASS_K = {
+    pistol = 0.80, smg = 0.95, rifle = 1.00, automatic_rifle = 1.00,
+    shotgun = 1.05, sniper = 1.15, bolt_action = 1.15, lmg = 1.15, special = 1.20,
+}
+-- Bullpups and short or folded weapons carry their mass closer to the body.
+local HANDLING_SECTION_K = {
+    wpn_fn2000 = 0.85, wpn_groza = 0.85, wpn_groza_nimble = 0.85,
+    wpn_ak74u = 0.90, wpn_aks47 = 0.92, wpn_val = 0.92, wpn_val_nimble = 0.92,
+    wpn_pkm = 1.10, wpn_pkp = 1.10,
+}
+-- field = function(h, ctx) where h = 1 is nimble and 0 is unwieldy; ctx has
+-- weapon_class and muzzle_kg (suppressor + under-barrel launcher mass).
+local HANDLING_FIELDS = {
+    -- x0.85 after the 2026-10-22 test: returns 15% slower (landing peak unchanged).
+    { "hud_motion_freq", function(h) return (6.0 + 10.0 * h) * 0.85 end },
+    { "hud_landing_k", function(h) return 0.85 + 0.45 * (1 - h) end },
+    -- muzzle attachments add lag beyond their share of the total mass
+    { "hud_rot_inertia_k", function(h, ctx) return (0.010 + 0.016 * (1 - h)) * (1 + 0.30 * ctx.muzzle_kg) end },
+    -- lag pivot: near the shoulder for long guns (stock stays planted), at the
+    -- gun itself for pistols held at arm's length (metres ahead of the eye)
+    { "hud_rot_inertia_pivot_z", function(h, ctx)
+        return ctx.weapon_class == "pistol" and 0.35 or (0.16 + 0.06 * (1 - h)) end },
+    { "hud_rot_inertia_shift", function(h) return 0.12 + 0.08 * (1 - h) end },
+    { "hud_clip_speed_k", function(h) return 0.90 + 0.20 * h end },
+    { "hud_ads_damping", function(h) return 0.80 - 0.10 * (1 - h) end },
+    { "hud_rot_inertia_freq", function(h) return 8.0 + 7.0 * h end },
+    { "hud_move_inertia_k", function(h) return 0.006 + 0.010 * (1 - h) end },
+    { "hud_move_inertia_freq", function(h) return 7.0 + 5.0 * h end },
+    -- crouch kick and look-up dip (engine, nlc-3.589.132+); same spread as the
+    -- old per-class .anm powers (pistol 0.70/0.60 .. machine gun 1.35/1.20).
+    { "hud_crouch_kick_k", function(h) return 0.70 + 0.70 * (1 - h) end },
+    { "hud_lookup_k", function(h) return 0.60 + 0.65 * (1 - h) end },
+    -- native translation inertia (engine halves both): hip lags more on heavy
+    -- weapons, ADS follows back to centre faster than the old fixed 10.
+    { "hud_inertion_tendto_speed", function(h) return 3.0 + 4.0 * h end },
+    { "hud_inertion_origin_offset", function(h) return 0.030 + 0.025 * (1 - h) end },
+    { "hud_inertion_tendto_speed_aim", function(h) return 8.0 + 16.0 * h end },
+    { "hud_inertion_origin_offset_aim", function(h) return 0.020 * (0.8 + 0.4 * (1 - h)) end },
 }
 
 local state = {
@@ -55,6 +107,7 @@ local state = {
     original = nil,
     applied = false,
     disabled = false,
+    handling_original = nil,
 }
 
 M.enabled = ENABLED
@@ -99,7 +152,19 @@ local function clear_public_state()
     M.applied_time = nil
 end
 
+local function restore_handling()
+    if not state.handling_original or not state.weapon then
+        state.handling_original = nil
+        return
+    end
+    for field, value in pairs(state.handling_original) do
+        pcall(function() state.weapon[field] = value end)
+    end
+    state.handling_original = nil
+end
+
 local function restore_current(reason)
+    restore_handling()
     if not state.applied then return true end
     local ok = state.weapon and state.original
         and write_zoom_time(state.weapon, state.original)
@@ -259,7 +324,12 @@ local function build_weapon_aim_profile(item, weapon, section, flags)
     local scope_multiplier = sight_class
         and SCOPE_TIME_MULTIPLIERS[sight_class] or 1.0
     local launcher = has_launcher(item, section, flags)
-    local target = base_target * scope_multiplier
+    local handling_k = 1.0
+    local handling = M.get_handling_profile and M.get_handling_profile(item, section)
+    if handling then
+        handling_k = HANDLING_AIM_TIME_BASE - HANDLING_AIM_TIME_SLOPE * handling.handling
+    end
+    local target = base_target * handling_k * scope_multiplier
         + (launcher and LAUNCHER_AIM_PENALTY or 0)
     return {
         weapon_class = weapon_class,
@@ -271,6 +341,7 @@ local function build_weapon_aim_profile(item, weapon, section, flags)
         base_target = base_target,
         scope_multiplier = scope_multiplier,
         launcher = launcher,
+        handling_k = handling_k,
         target = target,
         baseline = BASELINE_AIM_TIME,
         speed_percent = (BASELINE_AIM_TIME / target - 1.0) * 100,
@@ -290,6 +361,80 @@ function M.get_weapon_scope_profile(item, weapon, section)
     local profile = M.get_weapon_aim_profile(item, weapon, section)
     if not profile or not profile.scope or not profile.zoom then return nil end
     return profile
+end
+
+local function resolve_handling_base(section)
+    if HANDLING_SECTION_K[section] then return section end
+    for _, key in ipairs({ "scope_respawn", "silencer_respawn", "grenade_launcher_respawn" }) do
+        local base = section_string(section, key)
+        if base and HANDLING_SECTION_K[base] then return base end
+    end
+    return section
+end
+
+-- Shared by the runtime writer and the inventory "Handling" index.
+-- without_addons = true describes the bare weapon (the UI base value).
+function M.get_handling_profile(item, section, without_addons)
+    if not item then return nil end
+    section = section or item:section()
+    local mass = 3.0
+    if sivol_weapon and type(sivol_weapon.get_weapon_mass_stats) == "function" then
+        local ok, stats = pcall(sivol_weapon.get_weapon_mass_stats, item, section)
+        if ok and type(stats) == "table" and tonumber(stats.mass) and tonumber(stats.mass) > 0 then
+            mass = tonumber(stats.mass)
+            if without_addons then
+                mass = math.max(0.1, mass - (tonumber(stats.addon_mass) or 0))
+            end
+        end
+    end
+    local weapon_class = get_weapon_class(section)
+    local effective = mass * (HANDLING_CLASS_K[weapon_class] or 1.0)
+        * (HANDLING_SECTION_K[resolve_handling_base(section)] or 1.0)
+    local h = 1.0 / (1.0 + math.pow(math.max(effective, 0.1) / HANDLING_REFERENCE_KG, HANDLING_EXPONENT))
+    return {
+        handling = h,
+        score = math.max(1, math.min(99, math.floor(h * 100 + 0.5))),
+        mass = mass,
+        effective_mass = effective,
+        weapon_class = weapon_class,
+    }
+end
+
+-- Mass of fitted suppressor and grenade-launcher addons (kg).
+local function muzzle_addon_mass(item, section)
+    if not sivol_weapon or type(sivol_weapon.get_weapon_mass_stats) ~= "function" then return 0 end
+    local ok, stats = pcall(sivol_weapon.get_weapon_mass_stats, item, section)
+    if not ok or type(stats) ~= "table" or type(stats.addon_sections) ~= "string" then return 0 end
+    local kg = 0
+    for addon in string.gmatch(stats.addon_sections, "[^,]+") do
+        local class_name = section_string(addon, "class") or ""
+        if string.find(class_name, "SILENC", 1, true) or string.find(class_name, "GLAUNC", 1, true) then
+            local ok_w, w = pcall(sys_ini.r_float, sys_ini, addon, "inv_weight")
+            kg = kg + (ok_w and tonumber(w) or 0)
+        end
+    end
+    return kg
+end
+
+local function apply_handling(item, weapon, section)
+    local profile = M.get_handling_profile(item, section)
+    if not profile then return end
+    local ctx = { weapon_class = profile.weapon_class, muzzle_kg = muzzle_addon_mass(item, section) }
+    local original = {}
+    for _, entry in ipairs(HANDLING_FIELDS) do
+        local field, value_of = entry[1], entry[2]
+        local ok_read, current = pcall(function() return weapon[field] end)
+        if ok_read and type(current) == "number" then
+            local value = value_of(profile.handling, ctx)
+            if pcall(function() weapon[field] = value end) then
+                original[field] = current
+            end
+        end
+    end
+    state.handling_original = original
+    M.handling = profile.handling
+    aim_log("[sivol_aim_speed][handling] section=%s mass=%.2f effective=%.2f handling=%.3f muzzle_kg=%.2f",
+        tostring(section), profile.mass, profile.effective_mass, profile.handling, ctx.muzzle_kg)
 end
 
 local function make_signature(item, section, flags, scope, mode)
@@ -323,6 +468,8 @@ local function prepare(item, item_id)
     state.weapon = weapon
     state.section = section
     state.signature = signature
+
+    apply_handling(item, weapon, section)
 
     local aim_profile = build_weapon_aim_profile(
         item, weapon, section, flags)

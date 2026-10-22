@@ -15,6 +15,7 @@
 #include "string_table.h"
 #include "actorcondition.h"
 #include "nlc_body_health.h"
+#include "nlc_gunplay.h"
 #include "game_cl_base.h"
 #include "WeaponMagazined.h"
 #include "CharacterPhysicsSupport.h"
@@ -93,6 +94,8 @@ void CActor::g_cl_ValidateMState(float dt, u32 mstate_wf)
             }
 
             // CActor_on_land
+            if (this == g_actor)
+                nlc_gunplay::on_actor_land(character_physics_support()->movement()->GetContactSpeed()); // NLC: HUD landing kick
 
             this->callback(GameObject::eOnActorLand)(this->lua_game_object(), character_physics_support()->movement()->GetContactSpeed());
         }

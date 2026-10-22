@@ -148,7 +148,9 @@ BOOL CEffectorZoomInertion::ProcessCam(SCamEffectorInfo& info)
 
     m_vOldCameraDir = info.d;
 
-    if (!camera_moved)
+    // NLC: a script-owned sway (wpn_params) stays applied when the camera jumps; dropping it for one frame
+    // (recoil kicks exceed camera_move_epsilon) made the sight pop off and back after every shot.
+    if (!camera_moved || external_zoom_osc)
         info.d.add(m_vCurrentPoint);
 
     m_dwTimePassed += Device.dwTimeDelta;

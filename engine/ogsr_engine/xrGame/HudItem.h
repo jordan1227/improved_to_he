@@ -272,6 +272,27 @@ public:
     void CorrectDirFromWorldToHud(Fvector& dir);
     float GetLastHudFov() const { return m_nearwall_last_hud_fov; }
 
+    // NLC: gunplay feel (nlc_gunplay.h, docs/GUNPLAY_FEEL_DESIGN.md). Read from the item section on Load;
+    // Lua may overwrite them per item (sivol_weapon_aim_speed derives them from weapon handling).
+    float m_nlc_motion_freq{}; // hud_motion_freq: jump/fall/landing spring, rad/s; 0 = original lerps
+    float m_nlc_motion_damping{}; // hud_motion_damping
+    float m_nlc_landing_k{}; // hud_landing_k: landing kick scale (1 = authored peak at a 5.5 m/s landing)
+    float m_nlc_rot_inertia_k{}; // hud_rot_inertia_k: seconds of rotational lag behind mouse turns; 0 = off
+    float m_nlc_rot_inertia_freq{}; // hud_rot_inertia_freq
+    float m_nlc_rot_inertia_aim_k{}; // hud_rot_inertia_aim_k: share kept while aiming
+    float m_nlc_rot_inertia_roll{}; // hud_rot_inertia_roll: roll per unit of yaw lag (sign = direction)
+    float m_nlc_move_inertia_k{}; // hud_move_inertia_k: metres of lag per m/s of velocity change; 0 = off
+    float m_nlc_move_inertia_freq{}; // hud_move_inertia_freq
+    float m_nlc_move_inertia_aim_k{}; // hud_move_inertia_aim_k
+    float m_nlc_crouch_kick_k{}; // hud_crouch_kick_k: power of the engine-played crouch clips (nlc_gunplay.set_crouch_clips); 0 = off
+    float m_nlc_clip_speed_k{}; // hud_clip_speed_k: playback speed of those clips for this item
+    float m_nlc_rot_inertia_pivot_z{}; // hud_rot_inertia_pivot_z: metres ahead of the eye the lag pivots around (stock stays planted)
+    float m_nlc_rot_inertia_shift{}; // hud_rot_inertia_shift: share of the muzzle swing the whole rig follows
+    float m_nlc_ads_damping{}; // hud_ads_damping: settle into the sights (lower = more overshoot)
+    float m_nlc_lookup_k{}; // hud_lookup_k: dip when looking up (replaces the script look-up .anm); 0 = off
+    float NlcGetInertion(int i) const;
+    void NlcSetInertion(int i, float v);
+
 protected:
     enum CollisionWeaponType : size_t
     {
@@ -346,6 +367,26 @@ private:
     } inertion_data{}; //--#SM+#--
     Fvector inert_st_last_dir{};
     void UpdateInertion(Fmatrix& trans);
+
+    // NLC: gunplay feel state
+    Fvector m_nlc_landing_shape[2][2]{}; // [pos/rot][hip/aim]: peak displacement of a reference landing
+    Fvector m_nlc_spring_state[8]{}; // jump pos x/v, jump rot x/v, rot inertia x/v, move inertia x/v
+    Fvector m_nlc_vel_filtered{};
+    u32 m_nlc_land_seen{};
+    u32 m_nlc_last_update{};
+    u32 m_nlc_last_frame{u32(-1)};
+    Fvector m_nlc_jump_out[2]{}, m_nlc_inertia_out[2]{};
+    Fvector m_nlc_prev_hp{};
+    Fvector m_nlc_blk_v[4][2]{}; // spring velocities of the strafe, lookout, stance and walk offsets
+    Fvector m_nlc_ads_v[2]{}, m_nlc_wall_v[2]{}; // spring velocities of the ADS pose and the near-wall pose
+    float m_nlc_pda_fade{1.f};
+    bool m_nlc_step_now{};
+    float NlcItemK(bool rotation) const; // PDA / grenade share of the motion layers
+    Fvector m_nlc_lookup_offset[2]{}; // lookup_hud_offset_pos/rot: pose when looking straight up
+    float NlcBlockOmega(float transition_time) const;
+    void NlcBlend(int block, Fvector* cur, const Fvector& tp, const Fvector& tr, float step_lerp, float transition_time, bool step);
+    void NlcUpdateJumpSpring(u32 moving_state, u8 idx, bool step, Fvector& summary_offset, Fvector& summary_rotate);
+    void NlcUpdateInertia(const class CActor* actor, bool aiming, bool step, Fvector& summary_offset, Fvector& summary_rotate);
     float GetInertionFactor() const { return 1.f; } //--#SM+#--
     float GetInertionPowerFactor() const { return 0.5f; } //--#SM+#--
     bool HudInertionEnabled() const { return m_huditem_flags.test(fl_inertion_enable); }

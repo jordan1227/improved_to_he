@@ -109,6 +109,11 @@ local wobble_last_render_dir = nil
 local WOBBLE_SHOT_HOLD_MS = 100
 local WOBBLE_SHOT_RESUME_RATE = 8.0
 local WOBBLE_DIRECTION_EPSILON = 0.0000001
+local TURN_SWAY_FULL_RATE = 2.5 -- rad/s of mouse turning for the full turn-sway factor
+local TURN_SWAY_MAX_K = 0.45
+-- A reflex sight is bought for fast pickup: less turn sway and unsettle.
+local RED_DOT_SETTLE_K = 0.75
+local turn_sway_k = 1.0
 local wobble_output_y = 0
 local wobble_previous_output_y = 0
 local wobble_vertical_velocity = 0
@@ -330,12 +335,15 @@ function scope_wobble()
     -- OGSR's native crouch/creep booleans should map onto these the same
     -- way HE's crouch==1/2 did, but worth a quick in-game feel-check
     -- since it's still a balance value, not just an API swap.
+    -- Settling caps: standing 10, crouch 14, creep 20. Before 2026-10-22 crouch
+    -- was 20 (+0.07/tick) and creep 40 (+0.25/tick): creep reached 8x less sway
+    -- than standing within 3 s of ADS (docs/GUNPLAY_FEEL_DESIGN.md 3).
     if current_stance == 1 and sleepiness < 170 then
-        wpn_params.zoom_time = wpn_params.zoom_time + 0.07
-        div_limit            = 20
+        wpn_params.zoom_time = wpn_params.zoom_time + 0.05
+        div_limit            = 14
     elseif current_stance == 2 and sleepiness < 170 then
-        wpn_params.zoom_time = wpn_params.zoom_time + 0.25
-        div_limit            = 40
+        wpn_params.zoom_time = wpn_params.zoom_time + 0.12
+        div_limit            = 20
     else
         wpn_params.zoom_time = wpn_params.zoom_time + 0.01
     end
@@ -370,6 +378,19 @@ function scope_wobble()
         * manual_hold_k
         * (sivol_weapon and sivol_weapon.get_manual_hold_breath_timeout_wobble_k
             and sivol_weapon.get_manual_hold_breath_timeout_wobble_k() or 1.0)
+    -- Fast ADS turns unsettle the sight, heavier weapons more (mouse rate from
+    -- sivol_fuzz_recoil with recoil removed). Landing/sprint exit add a short window.
+    local look_rate = sivol_fuzz_recoil and tonumber(sivol_fuzz_recoil.look_rate) or 0
+    local turn_target = 1.0 + math.min(1.0, look_rate / TURN_SWAY_FULL_RATE) * TURN_SWAY_MAX_K
+        * math.max(0.6, math.min(1.2, 0.6 + 0.4 * (wpn_params.current_weight_sens or 0.5)))
+    turn_sway_k = exp_lerp(turn_sway_k, turn_target, turn_target > turn_sway_k and 6.0 or 2.5, dt)
+    local unsettle_k = sivol_weapon and sivol_weapon.get_unsettle_k and sivol_weapon.get_unsettle_k() or 1.0
+    if sivol_weapon_aim_speed and sivol_weapon_aim_speed.active_class == "red_dot" then
+        target_radius = target_radius * (1 + (turn_sway_k - 1) * RED_DOT_SETTLE_K)
+            * (1 + (unsettle_k - 1) * RED_DOT_SETTLE_K)
+    else
+        target_radius = target_radius * turn_sway_k * unsettle_k
+    end
     local radius_rate = target_radius > smoothed_wobble_radius and 8.0 or 12.0
     smoothed_wobble_radius = exp_lerp(smoothed_wobble_radius, target_radius, radius_rate, dt)
     local effective_radius = smoothed_wobble_radius

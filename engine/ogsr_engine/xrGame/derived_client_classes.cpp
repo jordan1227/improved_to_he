@@ -355,6 +355,16 @@ LPCSTR get_grenade_launcher_name(CWeapon* I) { return I->m_sGrenadeLauncherName.
 
 void set_grenade_launcher_name(CWeapon* item, LPCSTR text) { item->m_sGrenadeLauncherName = text; }
 
+// NLC: HUD inertia fields of the item (docs/GUNPLAY_FEEL_DESIGN.md)
+float get_hud_inertion_tendto(CWeapon* w) { return w->NlcGetInertion(0); }
+void set_hud_inertion_tendto(CWeapon* w, float v) { w->NlcSetInertion(0, v); }
+float get_hud_inertion_tendto_aim(CWeapon* w) { return w->NlcGetInertion(1); }
+void set_hud_inertion_tendto_aim(CWeapon* w, float v) { w->NlcSetInertion(1, v); }
+float get_hud_inertion_offset(CWeapon* w) { return w->NlcGetInertion(2); }
+void set_hud_inertion_offset(CWeapon* w, float v) { w->NlcSetInertion(2, v); }
+float get_hud_inertion_offset_aim(CWeapon* w) { return w->NlcGetInertion(3); }
+void set_hud_inertion_offset_aim(CWeapon* w, float v) { w->NlcSetInertion(3, v); }
+
 void CWeaponScript::script_register(lua_State* L)
 {
 #ifdef NLC_EXTENSIONS
@@ -426,6 +436,27 @@ void CWeaponScript::script_register(lua_State* L)
                   .def_readonly("zoom_mode", &CWeapon::m_bZoomMode)
 
                   .def_readwrite("scope_inertion_factor", &CWeapon::m_fScopeInertionFactor)
+                  // NLC: gunplay feel springs and HUD inertia (docs/GUNPLAY_FEEL_DESIGN.md)
+                  .def_readwrite("hud_motion_freq", &CWeapon::m_nlc_motion_freq)
+                  .def_readwrite("hud_motion_damping", &CWeapon::m_nlc_motion_damping)
+                  .def_readwrite("hud_landing_k", &CWeapon::m_nlc_landing_k)
+                  .def_readwrite("hud_rot_inertia_k", &CWeapon::m_nlc_rot_inertia_k)
+                  .def_readwrite("hud_rot_inertia_freq", &CWeapon::m_nlc_rot_inertia_freq)
+                  .def_readwrite("hud_rot_inertia_aim_k", &CWeapon::m_nlc_rot_inertia_aim_k)
+                  .def_readwrite("hud_rot_inertia_roll", &CWeapon::m_nlc_rot_inertia_roll)
+                  .def_readwrite("hud_move_inertia_k", &CWeapon::m_nlc_move_inertia_k)
+                  .def_readwrite("hud_move_inertia_freq", &CWeapon::m_nlc_move_inertia_freq)
+                  .def_readwrite("hud_move_inertia_aim_k", &CWeapon::m_nlc_move_inertia_aim_k)
+                  .def_readwrite("hud_crouch_kick_k", &CWeapon::m_nlc_crouch_kick_k)
+                  .def_readwrite("hud_lookup_k", &CWeapon::m_nlc_lookup_k)
+                  .def_readwrite("hud_clip_speed_k", &CWeapon::m_nlc_clip_speed_k)
+                  .def_readwrite("hud_rot_inertia_pivot_z", &CWeapon::m_nlc_rot_inertia_pivot_z)
+                  .def_readwrite("hud_rot_inertia_shift", &CWeapon::m_nlc_rot_inertia_shift)
+                  .def_readwrite("hud_ads_damping", &CWeapon::m_nlc_ads_damping)
+                  .property("hud_inertion_tendto_speed", &get_hud_inertion_tendto, &set_hud_inertion_tendto)
+                  .property("hud_inertion_tendto_speed_aim", &get_hud_inertion_tendto_aim, &set_hud_inertion_tendto_aim)
+                  .property("hud_inertion_origin_offset", &get_hud_inertion_offset, &set_hud_inertion_offset)
+                  .property("hud_inertion_origin_offset_aim", &get_hud_inertion_offset_aim, &set_hud_inertion_offset_aim)
 
                   .def("is_3dss_enabled", &CWeapon::Is3dssEnabled)
 

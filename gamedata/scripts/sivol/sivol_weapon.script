@@ -337,6 +337,8 @@ end
 -- Runtime mass-driven weapon handling. CWeapon.inv_weight is the live inventory
 -- mass exposed by the engine; it is deliberately preferred over static ini reads.
 local MASS_MIN_KG = 0.25
+-- Share of the long-term mastery bonus applied to recoil (docs/GUNPLAY_FEEL_DESIGN.md 3).
+local MASTERY_RECOIL_BONUS_SHARE = 0.60
 local MASS_MAX_KG = 12.0
 local MASS_STAT_OVERRIDES = {
     -- Binoculars retain their established special handling. Knives are excluded
@@ -564,10 +566,10 @@ function sivol_weapon.get_recoil_context(actor, weapon_section)
         end)
         if ok_creep and ok_crouch then
             if is_creep then
-                stance_k = 0.84
+                stance_k = 0.90 -- 0.84 before docs/GUNPLAY_FEEL_DESIGN.md 3; recovery pays the rest
                 stance_state = "creep"
             elseif is_crouch then
-                stance_k = 0.92
+                stance_k = 0.95 -- 0.92 before; see creep
                 stance_state = "crouch"
             else
                 stance_state = "standing"
@@ -601,6 +603,11 @@ function sivol_weapon.get_recoil_context(actor, weapon_section)
             sivol_weapon.get_mastery_k, weapon_section)
         if ok_mastery and tonumber(resolved_mastery) then
             mastery_k = clamp(tonumber(resolved_mastery), 0.50, 1.60)
+            -- Recoil keeps only part of the long-term mastery bonus (wobble keeps
+            -- all of it); the early-day penalty stays whole.
+            if mastery_k < 1.0 then
+                mastery_k = 1.0 - (1.0 - mastery_k) * MASTERY_RECOIL_BONUS_SHARE
+            end
         end
     end
     local total = clamp(
@@ -853,6 +860,63 @@ function sivol_weapon.get_weight_sens(sec, item)
     return sivol_weapon.get_weapon_mass_stats(item, sec).weight_sens
 end
 
+-- Brief unsettled window after a landing or after leaving a sprint
+-- (docs/GUNPLAY_FEEL_DESIGN.md 6). Wobble takes the full factor; scripted
+-- recoil takes a share of it. Landings come from the engine (nlc_gunplay).
+local UNSETTLE_LAND_MS = 550
+local UNSETTLE_LAND_MAX_K = 0.60
+local UNSETTLE_SPRINT_MS = 450
+local UNSETTLE_SPRINT_K = 0.35
+local unsettle_land_seen = nil
+local unsettle_land_until = 0
+local unsettle_land_k = 0
+local unsettle_sprint_until = 0
+local unsettle_was_sprinting = false
+
+local function update_unsettle()
+    local now = time_global()
+    if nlc_gunplay and type(nlc_gunplay.land) == "function" then
+        local ok, count, speed, at = pcall(nlc_gunplay.land)
+        if ok and count then
+            if unsettle_land_seen == nil then
+                unsettle_land_seen = count
+            elseif count ~= unsettle_land_seen then
+                unsettle_land_seen = count
+                if now - (tonumber(at) or 0) < 400 then
+                    local k = clamp(((tonumber(speed) or 0) - 2.0) / 6.0, 0, 1) * UNSETTLE_LAND_MAX_K
+                    if k > 0.01 then
+                        if now >= unsettle_land_until then unsettle_land_k = 0 end
+                        unsettle_land_k = math.max(unsettle_land_k, k)
+                        unsettle_land_until = now + UNSETTLE_LAND_MS
+                    end
+                end
+            end
+        end
+    end
+    local sprinting = false
+    local aobj = type(get_actor_obj) == "function" and get_actor_obj() or nil
+    if aobj then
+        local ok, value = pcall(function() return aobj:is_actor_sprinting() end)
+        sprinting = ok and value == true
+    end
+    if unsettle_was_sprinting and not sprinting then
+        unsettle_sprint_until = now + UNSETTLE_SPRINT_MS
+    end
+    unsettle_was_sprinting = sprinting
+end
+
+function sivol_weapon.get_unsettle_k()
+    local now = time_global()
+    local k = 1.0
+    if now < unsettle_land_until then
+        k = math.max(k, 1.0 + unsettle_land_k * (unsettle_land_until - now) / UNSETTLE_LAND_MS)
+    end
+    if now < unsettle_sprint_until then
+        k = math.max(k, 1.0 + UNSETTLE_SPRINT_K * (unsettle_sprint_until - now) / UNSETTLE_SPRINT_MS)
+    end
+    return k
+end
+
 function update_ads_fatigue()
     ogse_signals.get_mgr():reschedule(100)
     local actor = db.actor
@@ -860,6 +924,7 @@ function update_ads_fatigue()
 
     update_artifact_wobble_k()
     update_manual_hold_breath()
+    update_unsettle()
     if is_zoom_aiming() then
         local wpn = actor:active_item()
         local sec = wpn and wpn:section()

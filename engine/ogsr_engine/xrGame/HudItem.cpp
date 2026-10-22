@@ -5,6 +5,7 @@
 
 #include "stdafx.h"
 #include "fl_hook.h"
+#include "nlc_gunplay.h"
 #include "HudItem.h"
 #include "player_hud.h"
 #include "../xr_3da/gamemtllib.h"
@@ -16,6 +17,9 @@
 #include "../xr_3da/x_ray.h"
 #include "../../xr_3da/igame_persistent.h"
 #include "Pda.h"
+#include "Actor.h"
+#include "CharacterPhysicsSupport.h"
+#include "PHMovementControl.h"
 
 ENGINE_API extern float psHUD_FOV_def;
 
@@ -153,6 +157,30 @@ void CHudItem::Load(LPCSTR section)
 
     m_landing_offset[0][1] = READ_IF_EXISTS(pSettings, r_fvector3, section, "landing_aim_hud_offset_pos", (Fvector{0.f, -0.1f, 0.02f}));
     m_landing_offset[1][1] = READ_IF_EXISTS(pSettings, r_fvector3, section, "landing_aim_hud_offset_rot", (Fvector{0.f, -2.5f, 5.f}));
+
+    // NLC: gunplay feel springs (nlc_gunplay.h, docs/GUNPLAY_FEEL_DESIGN.md). hud_motion_freq = 0 restores the lerps above.
+    m_nlc_motion_freq = READ_IF_EXISTS(pSettings, r_float, section, "hud_motion_freq", 9.35f); // 11 x 0.85 after the 2026-10-22 test
+    m_nlc_motion_damping = READ_IF_EXISTS(pSettings, r_float, section, "hud_motion_damping", 0.8f);
+    m_nlc_landing_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_landing_k", 1.f);
+    m_nlc_landing_shape[0][0] = READ_IF_EXISTS(pSettings, r_fvector3, section, "landing_spring_hud_offset_pos", (Fvector{0.f, -0.045f, 0.008f}));
+    m_nlc_landing_shape[1][0] = READ_IF_EXISTS(pSettings, r_fvector3, section, "landing_spring_hud_offset_rot", (Fvector{0.f, -1.6f, 2.5f}));
+    m_nlc_landing_shape[0][1] = READ_IF_EXISTS(pSettings, r_fvector3, section, "landing_spring_aim_hud_offset_pos", (Fvector{0.f, -0.012f, 0.004f}));
+    m_nlc_landing_shape[1][1] = READ_IF_EXISTS(pSettings, r_fvector3, section, "landing_spring_aim_hud_offset_rot", (Fvector{0.f, -0.6f, 0.8f}));
+    m_nlc_rot_inertia_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_rot_inertia_k", 0.016f);
+    m_nlc_rot_inertia_freq = READ_IF_EXISTS(pSettings, r_float, section, "hud_rot_inertia_freq", 11.f);
+    m_nlc_rot_inertia_aim_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_rot_inertia_aim_k", 0.2f);
+    m_nlc_rot_inertia_roll = READ_IF_EXISTS(pSettings, r_float, section, "hud_rot_inertia_roll", 0.5f);
+    m_nlc_move_inertia_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_move_inertia_k", 0.010f);
+    m_nlc_move_inertia_freq = READ_IF_EXISTS(pSettings, r_float, section, "hud_move_inertia_freq", 9.f);
+    m_nlc_move_inertia_aim_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_move_inertia_aim_k", 0.35f);
+    m_nlc_crouch_kick_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_crouch_kick_k", 1.f);
+    m_nlc_clip_speed_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_clip_speed_k", 1.f);
+    m_nlc_rot_inertia_pivot_z = READ_IF_EXISTS(pSettings, r_float, section, "hud_rot_inertia_pivot_z", 0.22f);
+    m_nlc_rot_inertia_shift = READ_IF_EXISTS(pSettings, r_float, section, "hud_rot_inertia_shift", 0.15f);
+    m_nlc_ads_damping = READ_IF_EXISTS(pSettings, r_float, section, "hud_ads_damping", 0.74f);
+    m_nlc_lookup_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_lookup_k", 1.f);
+    m_nlc_lookup_offset[0] = READ_IF_EXISTS(pSettings, r_fvector3, section, "lookup_hud_offset_pos", (Fvector{0.f, -0.035f, -0.01f}));
+    m_nlc_lookup_offset[1] = READ_IF_EXISTS(pSettings, r_fvector3, section, "lookup_hud_offset_rot", (Fvector{0.f, 0.f, 0.f}));
     ////////////////////////////////////////////
     ////////////////////////////////////////////
     m_move_offset[0] = READ_IF_EXISTS(pSettings, r_fvector3, section, "stay_hud_offset_pos", (Fvector{0.f, -0.03f, 0.f}));
@@ -796,11 +824,24 @@ void CHudItem::UpdateCollision(Fmatrix& trans)
     //curr_offs.mul(wpn && !wpn->LoweredActive);
     //curr_rot.mul(wpn && !wpn->LoweredActive);
 
-    if (!curr_offs.similar(m_nearwall_last_pos, EPS))
-        m_nearwall_last_pos.lerp(m_nearwall_last_pos, curr_offs, fStepPerUpd);
+    if (m_nlc_motion_freq > EPS) // NLC: near-wall pose on a spring
+    {
+        if (m_nlc_step_now)
+        {
+            float omega = 2.2f / _max(m_nearwall_hud_offset_speed, 0.03f) * nlc_gunplay::motion_freq_k();
+            clamp(omega, 3.f, 30.f);
+            nlc_gunplay::spring_step(m_nearwall_last_pos, m_nlc_wall_v[0], curr_offs, omega, m_nlc_motion_damping, Device.fTimeDelta);
+            nlc_gunplay::spring_step(m_nearwall_last_rot, m_nlc_wall_v[1], curr_rot, omega, m_nlc_motion_damping, Device.fTimeDelta);
+        }
+    }
+    else
+    {
+        if (!curr_offs.similar(m_nearwall_last_pos, EPS))
+            m_nearwall_last_pos.lerp(m_nearwall_last_pos, curr_offs, fStepPerUpd);
 
-    if (!curr_rot.similar(m_nearwall_last_rot, EPS))
-        m_nearwall_last_rot.lerp(m_nearwall_last_rot, curr_rot, fStepPerUpd);
+        if (!curr_rot.similar(m_nearwall_last_rot, EPS))
+            m_nearwall_last_rot.lerp(m_nearwall_last_rot, curr_rot, fStepPerUpd);
+    }
 
     Fmatrix hud_rotation;
     hud_rotation.identity();
@@ -891,6 +932,40 @@ void CHudItem::UpdateHudAdditional(Fmatrix& trans, const bool need_update_collis
 
     UpdateInertion(trans);
 
+    // NLC: gunplay springs advance once per frame even if the HUD transform is rebuilt twice
+    const bool nlc_step = m_nlc_last_frame != Device.dwFrame;
+    if (nlc_step)
+    {
+        if (Device.dwTimeGlobal - m_nlc_last_update > 300) // item was not on screen: start from rest
+        {
+            for (Fvector& v : m_nlc_spring_state)
+                v.set(0.f, 0.f, 0.f);
+            for (auto& pair : m_nlc_blk_v)
+                for (Fvector& v : pair)
+                    v.set(0.f, 0.f, 0.f);
+            for (int i = 0; i < 2; ++i)
+            {
+                m_nlc_ads_v[i].set(0.f, 0.f, 0.f);
+                m_nlc_wall_v[i].set(0.f, 0.f, 0.f);
+            }
+            m_nlc_jump_out[0].set(0.f, 0.f, 0.f);
+            m_nlc_jump_out[1].set(0.f, 0.f, 0.f);
+            m_nlc_inertia_out[0].set(0.f, 0.f, 0.f);
+            m_nlc_inertia_out[1].set(0.f, 0.f, 0.f);
+            m_nlc_land_seen = nlc_gunplay::land_count();
+            m_nlc_vel_filtered.set(0.f, 0.f, 0.f);
+            Device.vCameraDirection.getHP(m_nlc_prev_hp.x, m_nlc_prev_hp.y);
+        }
+        m_nlc_last_frame = Device.dwFrame;
+        m_nlc_last_update = Device.dwTimeGlobal;
+
+        // 3D PDA in use (zoomed for the cursor): fade its motion layers so they do not fight the clicks
+        auto* pda = smart_cast<CPda*>(this);
+        const float pda_target = (pda && pda->IsZoomed()) ? nlc_gunplay::param(nlc_gunplay::ePdaUseShare) : 1.f;
+        m_nlc_pda_fade += (pda_target - m_nlc_pda_fade) * (1.f - expf(-8.f * Device.fTimeDelta));
+    }
+    m_nlc_step_now = nlc_step;
+
     Fvector summary_offset{}, summary_rotate{};
 
     attachable_hud_item* hi = HudItemData();
@@ -911,11 +986,24 @@ void CHudItem::UpdateHudAdditional(Fmatrix& trans, const bool need_update_collis
 
         clamp(m_fZoomRotationFactor, 0.f, 1.f);
 
-        if (!zr_offs.similar(current_difference[0], EPS))
-            current_difference[0].lerp(current_difference[0], zr_offs, factor * 2.f);
+        if (m_nlc_motion_freq > EPS) // NLC: settle into the sights on a spring (small overshoot), stiffness from the ADS time
+        {
+            if (nlc_step)
+            {
+                float omega = nlc_gunplay::param(nlc_gunplay::eAdsOmegaK) / _max(m_fZoomRotateTime, 0.05f) * nlc_gunplay::motion_freq_k();
+                clamp(omega, 4.f, 40.f);
+                nlc_gunplay::spring_step(current_difference[0], m_nlc_ads_v[0], zr_offs, omega, m_nlc_ads_damping, Device.fTimeDelta);
+                nlc_gunplay::spring_step(current_difference[1], m_nlc_ads_v[1], zr_rot, omega, m_nlc_ads_damping, Device.fTimeDelta);
+            }
+        }
+        else
+        {
+            if (!zr_offs.similar(current_difference[0], EPS))
+                current_difference[0].lerp(current_difference[0], zr_offs, factor * 2.f);
 
-        if (!zr_rot.similar(current_difference[1], EPS))
-            current_difference[1].lerp(current_difference[1], zr_rot, factor * 2.f);
+            if (!zr_rot.similar(current_difference[1], EPS))
+                current_difference[1].lerp(current_difference[1], zr_rot, factor * 2.f);
+        }
 
         summary_offset.add(current_difference[0]);
     }
@@ -957,11 +1045,7 @@ void CHudItem::UpdateHudAdditional(Fmatrix& trans, const bool need_update_collis
 
             current_moving_rot.mul(-PI / 180.f); // Преобразуем углы в радианы
 
-            if (!current_moving_offs.similar(current_strafe[0], EPS))
-                current_strafe[0].lerp(current_strafe[0], current_moving_offs, fStepPerUpd);
-
-            if (!current_moving_rot.similar(current_strafe[1], EPS))
-                current_strafe[1].lerp(current_strafe[1], current_moving_rot, fStepPerUpd);
+            NlcBlend(0, current_strafe, current_moving_offs, current_moving_rot, fStepPerUpd, fStrafeMaxTime, nlc_step); // NLC: spring, or the original lerp
 
             summary_offset.add(current_strafe[0]);
             summary_rotate.add(current_strafe[1]);
@@ -971,7 +1055,9 @@ void CHudItem::UpdateHudAdditional(Fmatrix& trans, const bool need_update_collis
     //=============== Эффекты прыжка ===============//
     {
         const bool bEnabled = m_jump_offset[2][idx].x;
-        if (bEnabled)
+        if (bEnabled && m_nlc_motion_freq > EPS) // NLC: spring with a landing kick instead of the lerps
+            NlcUpdateJumpSpring(iMovingState, idx, nlc_step, summary_offset, summary_rotate);
+        else if (bEnabled)
         {
             float fJumpMaxTime = m_jump_offset[2][idx].y; // Макс. время в секундах, за которое произойдет смещение худа при прыжке
 
@@ -1058,11 +1144,7 @@ void CHudItem::UpdateHudAdditional(Fmatrix& trans, const bool need_update_collis
             current_lookout_rot.mul(koef);
             current_lookout_rot.mul(-PI / 180.f); // Преобразуем углы в радианы
 
-            if (!current_lookout_offs.similar(current_lookout[0], EPS))
-                current_lookout[0].lerp(current_lookout[0], current_lookout_offs, fStepPerUpd);
-
-            if (!current_lookout_rot.similar(current_lookout[1], EPS))
-                current_lookout[1].lerp(current_lookout[1], current_lookout_rot, fStepPerUpd);
+            NlcBlend(1, current_lookout, current_lookout_offs, current_lookout_rot, fStepPerUpd, fLookoutMaxTime, nlc_step); // NLC: spring, or the original lerp
 
             summary_offset.add(current_lookout[0]);
             summary_rotate.add(current_lookout[1]);
@@ -1110,11 +1192,27 @@ void CHudItem::UpdateHudAdditional(Fmatrix& trans, const bool need_update_collis
             current_move_rot.mul(!pda && !missile);
             current_move_rot.mul(-PI / 180.f); // Преобразуем углы в радианы
 
-            if (!current_move_offs.similar(current_move[0], EPS))
-                current_move[0].lerp(current_move[0], current_move_offs, fStepPerUpd);
+            // NLC: crouch clips on stance changes (all hand items) and the look-up dip (weapons only),
+            // formerly script .anm files (sivol_weapon_inertia)
+            if (m_nlc_motion_freq > EPS)
+                nlc_gunplay::on_stance((iMovingState & mcCrouch) ? ((iMovingState & mcAccel) ? 2 : 1) : 0, m_nlc_crouch_kick_k, m_nlc_clip_speed_k);
+            if (m_nlc_motion_freq > EPS && !pda && !missile)
+            {
+                if (!IsZoomed() && m_nlc_lookup_k > EPS)
+                {
+                    float look_h, look_p;
+                    Device.vCameraDirection.getHP(look_h, look_p);
+                    float t = (look_p - 0.6f) / 0.9f;
+                    clamp(t, 0.f, 1.f);
+                    t *= m_nlc_lookup_k;
+                    current_move_offs.mad(m_nlc_lookup_offset[0], t);
+                    Fvector lr{m_nlc_lookup_offset[1]};
+                    lr.mul(t * -PI / 180.f);
+                    current_move_rot.add(lr);
+                }
+            }
 
-            if (!current_move_rot.similar(current_move[1], EPS))
-                current_move[1].lerp(current_move[1], current_move_rot, fStepPerUpd);
+            NlcBlend(2, current_move, current_move_offs, current_move_rot, fStepPerUpd, fMoveMaxTime, nlc_step); // NLC: spring, or the original lerp
 
             summary_offset.add(current_move[0]);
             summary_rotate.add(current_move[1]);
@@ -1167,15 +1265,22 @@ void CHudItem::UpdateHudAdditional(Fmatrix& trans, const bool need_update_collis
             current_walk_rot.mul(!pda && !missile);
             current_walk_rot.mul(-PI / 180.f); // Преобразуем углы в радианы
 
-            if (!current_walk_offs.similar(current_walk[0], EPS))
-                current_walk[0].lerp(current_walk[0], current_walk_offs, fStepPerUpd);
-
-            if (!current_walk_rot.similar(current_walk[1], EPS))
-                current_walk[1].lerp(current_walk[1], current_walk_rot, fStepPerUpd);
+            NlcBlend(3, current_walk, current_walk_offs, current_walk_rot, fStepPerUpd, fWalkMaxTime, nlc_step); // NLC: spring, or the original lerp
 
             summary_offset.add(current_walk[0]);
             summary_rotate.add(current_walk[1]);
         }
+    }
+
+    if (m_nlc_rot_inertia_k > EPS || m_nlc_move_inertia_k > EPS) // NLC: rotational and movement inertia
+        NlcUpdateInertia(pActor, b_aiming, nlc_step, summary_offset, summary_rotate);
+    if (m_nlc_motion_freq > EPS) // NLC: shared impulse spring (Lua nlc_gunplay.hud_impulse)
+    {
+        Fvector fx_pos, fx_rot;
+        nlc_gunplay::fx_sample(fx_pos, fx_rot);
+        const float k = NlcItemK(false) * (b_aiming ? nlc_gunplay::param(nlc_gunplay::eFxAimK) : 1.f);
+        summary_offset.mad(fx_pos, k);
+        summary_rotate.mad(fx_rot, k);
     }
 
     //================ Применение эффектов ===============//
@@ -1211,7 +1316,201 @@ void CHudItem::UpdateHudAdditional(Fmatrix& trans, const bool need_update_collis
     }
     //====================================================//
 
+    // NLC: authored HUD clips (crouch, hit flinch) and the shared impulse spring, scaled for PDA / grenades
+    if (m_nlc_motion_freq > EPS)
+    {
+        Fmatrix clip;
+        if (nlc_gunplay::clip_xform(b_aiming, NlcItemK(false), clip))
+            trans.mulB_43(clip);
+    }
+
     UpdateCollision(trans);
+}
+
+// NLC: gunplay feel (docs/GUNPLAY_FEEL_DESIGN.md)
+// The authored transition time keeps its meaning (a shorter time is a stiffer spring); handling scales it through
+// hud_motion_freq relative to the 9.35 default.
+float CHudItem::NlcBlockOmega(float transition_time) const
+{
+    float omega = 2.2f / _max(transition_time, 0.03f) * (m_nlc_motion_freq / 9.35f) * nlc_gunplay::motion_freq_k();
+    clamp(omega, 3.f, 30.f);
+    return omega;
+}
+
+void CHudItem::NlcBlend(int block, Fvector* cur, const Fvector& tp, const Fvector& tr, float step_lerp, float transition_time, bool step)
+{
+    if (m_nlc_motion_freq <= EPS)
+    {
+        if (!tp.similar(cur[0], EPS))
+            cur[0].lerp(cur[0], tp, step_lerp);
+        if (!tr.similar(cur[1], EPS))
+            cur[1].lerp(cur[1], tr, step_lerp);
+        return;
+    }
+    if (!step)
+        return;
+    const float omega = NlcBlockOmega(transition_time);
+    nlc_gunplay::spring_step(cur[0], m_nlc_blk_v[block][0], tp, omega, m_nlc_motion_damping, Device.fTimeDelta);
+    nlc_gunplay::spring_step(cur[1], m_nlc_blk_v[block][1], tr, omega, m_nlc_motion_damping, Device.fTimeDelta);
+}
+
+// PDA: pda_share (pda_turn_share of the turn lag), times pda_use_share while the 3D PDA is in use;
+// grenades and bolts missile_share (nlc_gunplay params).
+float CHudItem::NlcItemK(bool rotation) const
+{
+    if (smart_cast<CPda*>(const_cast<CHudItem*>(this)))
+        return nlc_gunplay::param(rotation ? nlc_gunplay::ePdaTurnShare : nlc_gunplay::ePdaShare) * m_nlc_pda_fade;
+    if (smart_cast<CMissile*>(const_cast<CHudItem*>(this)))
+        return nlc_gunplay::param(nlc_gunplay::eMissileShare);
+    return 1.f;
+}
+
+float CHudItem::NlcGetInertion(int i) const
+{
+    switch (i)
+    {
+    case 0: return inertion_data.m_tendto_speed;
+    case 1: return inertion_data.m_tendto_speed_aim;
+    case 2: return inertion_data.m_origin_offset;
+    default: return inertion_data.m_origin_offset_aim;
+    }
+}
+
+void CHudItem::NlcSetInertion(int i, float v)
+{
+    if (!_valid(v))
+        return;
+    switch (i)
+    {
+    case 0: inertion_data.m_tendto_speed = v; break;
+    case 1: inertion_data.m_tendto_speed_aim = v; break;
+    case 2: inertion_data.m_origin_offset = v; break;
+    default: inertion_data.m_origin_offset_aim = v; break;
+    }
+}
+
+// Jump/fall poses are approached by a spring (slower while airborne), every ground contact after a fall adds a
+// velocity kick scaled by contact speed, and the return to rest uses the full spring speed.
+void CHudItem::NlcUpdateJumpSpring(u32 moving_state, u8 idx, bool step, Fvector& summary_offset, Fvector& summary_rotate)
+{
+    if (step)
+    {
+        const float dt = Device.fTimeDelta;
+        Fvector tp{}, tr{};
+        if (moving_state & mcJump)
+        {
+            tp.set(m_jump_offset[0][idx]);
+            tr.set(m_jump_offset[1][idx]);
+        }
+        else if (moving_state & mcFall)
+        {
+            tp.set(m_fall_offset[0][idx]);
+            tr.set(m_fall_offset[1][idx]);
+        }
+        tr.mul(-PI / 180.f);
+
+        const u32 lc = nlc_gunplay::land_count();
+        if (lc != m_nlc_land_seen)
+        {
+            m_nlc_land_seen = lc;
+            if (Device.dwTimeGlobal - nlc_gunplay::land_time() < 250)
+            {
+                float s = (nlc_gunplay::land_speed() - 1.5f) / 4.f; // 1 at 5.5 m/s
+                clamp(s, 0.f, 1.6f);
+                s *= m_nlc_landing_k;
+                if (s > EPS)
+                {
+                    // a critically damped spring kicked with v0 peaks near v0 / (omega * e)
+                    const float g = s * m_nlc_motion_freq * 2.7182818f;
+                    Fvector kr{m_nlc_landing_shape[1][idx]};
+                    kr.mul(-PI / 180.f);
+                    m_nlc_spring_state[1].mad(m_nlc_landing_shape[0][idx], g);
+                    m_nlc_spring_state[3].mad(kr, g);
+                }
+            }
+        }
+
+        const float freq = m_nlc_motion_freq * nlc_gunplay::motion_freq_k();
+        const float omega = (moving_state & (mcJump | mcFall)) ? freq * 0.55f : freq;
+        nlc_gunplay::spring_step(m_nlc_spring_state[0], m_nlc_spring_state[1], tp, omega, m_nlc_motion_damping, dt);
+        nlc_gunplay::spring_step(m_nlc_spring_state[2], m_nlc_spring_state[3], tr, omega, m_nlc_motion_damping, dt);
+        m_nlc_jump_out[0] = m_nlc_spring_state[0];
+        m_nlc_jump_out[1] = m_nlc_spring_state[2];
+    }
+    summary_offset.add(m_nlc_jump_out[0]);
+    summary_rotate.add(m_nlc_jump_out[1]);
+}
+
+// The model lags behind the player's own mouse turns (heading/pitch, plus roll from heading) and behind velocity
+// changes. Camera motion the player did not make (scripted recoil, psy pulls, sway) is capped out by the mouse rate.
+void CHudItem::NlcUpdateInertia(const CActor* actor, bool aiming, bool step, Fvector& summary_offset, Fvector& summary_rotate)
+{
+    if (step)
+    {
+        const float dt = _max(Device.fTimeDelta, 0.0005f);
+        const float amp = nlc_gunplay::motion_amp_k();
+        const float freq_k = nlc_gunplay::motion_freq_k();
+
+        float h, p;
+        Device.vCameraDirection.getHP(h, p);
+        float yaw_rate = angle_difference_signed(h, m_nlc_prev_hp.x) / dt;
+        float pitch_rate = angle_difference_signed(p, m_nlc_prev_hp.y) / dt;
+        m_nlc_prev_hp.set(h, p, 0.f);
+
+        float mouse_yaw, mouse_pitch;
+        nlc_gunplay::look_rate(mouse_yaw, mouse_pitch);
+        clamp(yaw_rate, -mouse_yaw, mouse_yaw);
+        clamp(pitch_rate, -mouse_pitch, mouse_pitch);
+
+        constexpr float MAX_ROT = 6.f * (PI / 180.f);
+        const float lag = m_nlc_rot_inertia_k * (aiming ? m_nlc_rot_inertia_aim_k : 1.f) * NlcItemK(true) * amp;
+        Fvector rt{yaw_rate * lag, pitch_rate * lag, 0.f};
+        clamp(rt.x, -MAX_ROT, MAX_ROT);
+        clamp(rt.y, -MAX_ROT, MAX_ROT);
+        rt.z = rt.x * m_nlc_rot_inertia_roll;
+        nlc_gunplay::spring_step(m_nlc_spring_state[4], m_nlc_spring_state[5], rt, m_nlc_rot_inertia_freq * freq_k, 0.75f, dt);
+
+        Fvector mt{};
+        if (actor && m_nlc_move_inertia_k > EPS)
+        {
+            auto* support = const_cast<CActor*>(actor)->character_physics_support();
+            Fvector vel = (support && support->movement()) ? support->movement()->GetVelocity() : Fvector{};
+            vel.y = 0.f; // vertical motion belongs to the jump/landing spring
+            m_nlc_vel_filtered.lerp(m_nlc_vel_filtered, vel, 1.f - expf(-dt / 0.22f));
+            Fvector dv{};
+            dv.sub(vel, m_nlc_vel_filtered); // only a change of velocity drives the lag
+            Fvector fwd{Device.vCameraDirection.x, 0.f, Device.vCameraDirection.z};
+            fwd.normalize_safe();
+            Fvector right{fwd.z, 0.f, -fwd.x};
+            const float k = m_nlc_move_inertia_k * (aiming ? m_nlc_move_inertia_aim_k : 1.f) * NlcItemK(false) * amp;
+            mt.set(-dv.dotproduct(right) * k, 0.f, -dv.dotproduct(fwd) * k * 0.6f);
+            clamp(mt.x, -0.04f, 0.04f);
+            clamp(mt.z, -0.03f, 0.03f);
+        }
+        nlc_gunplay::spring_step(m_nlc_spring_state[6], m_nlc_spring_state[7], mt, m_nlc_move_inertia_freq * freq_k, 0.62f, dt);
+
+        // Rotate the lag around a point near the stock instead of the eye, so the stock stays planted and the
+        // muzzle swings; the whole rig then follows a share of the muzzle swing.
+        const Fvector& r = m_nlc_spring_state[4];
+        Fmatrix R;
+        R.setHPB(-r.x, -r.y, -r.z);
+        const Fvector pivot{0.f, 0.f, m_nlc_rot_inertia_pivot_z};
+        Fvector moved;
+        R.transform_dir(moved, pivot);
+        Fvector pivot_fix{};
+        pivot_fix.sub(pivot, moved);
+        const Fvector fwd{0.f, 0.f, 1.f};
+        Fvector fwd_moved;
+        R.transform_dir(fwd_moved, fwd);
+        Fvector follow{};
+        follow.sub(fwd_moved, fwd);
+        follow.mul(m_nlc_rot_inertia_shift * 0.5f); // half a metre of reach per radian of swing
+        m_nlc_inertia_out[0].add(m_nlc_spring_state[6], pivot_fix);
+        m_nlc_inertia_out[0].add(follow);
+        m_nlc_inertia_out[1] = m_nlc_spring_state[4];
+    }
+    summary_offset.add(m_nlc_inertia_out[0]);
+    summary_rotate.add(m_nlc_inertia_out[1]);
 }
 
 float CHudItem::GetHudFov()
