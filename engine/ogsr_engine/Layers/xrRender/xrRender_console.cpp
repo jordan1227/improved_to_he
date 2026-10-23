@@ -45,6 +45,7 @@ constexpr xr_token pp_aa_mode_token[] = {
 };
 
 u32 ps_r_dlss_preset = NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
+u32 ps_r_3dss_dlss_preset = NVSDK_NGX_DLSS_Hint_Render_Preset_K; // NLC: DLSS model for the 3D scope lens crop
 constexpr xr_token dlss_mode_token[]{
     {"st_opt_dlss_default", NVSDK_NGX_DLSS_Hint_Render_Preset_Default}, // default behavior, may or may not change after OTA
     {"st_opt_dlss_f", NVSDK_NGX_DLSS_Hint_Render_Preset_F}, // CNN
@@ -76,6 +77,8 @@ constexpr xr_token fsr3_quality_token[]{
 };
 
 float ps_r_dlss_3dss_scale_factor{1.0f};
+float ps_r_3dss_sharpen{0.3f}; // NLC: CAS sharpening of the 3D scope lens image
+int ps_r_3dss_crop_debug{}; // NLC: 1 = log the scope crop per ADS, 2 = also force no crop
 
 u32 ps_r_sunshafts_mode = SS_SS_OGSE;
 constexpr xr_token sunshafts_mode_token[]{{"st_opt_off", SS_OFF},
@@ -966,9 +969,12 @@ void xrRender_initconsole()
     CMD3(CCC_DlssQuality, "r_aa_dlss_quality", &ps_r_dlss_quality, dlss_quality_token);
     CMD3(CCC_Token, "r_aa_fsr3_quality", &ps_r_fsr3_quality, fsr3_quality_token);
     CMD3(CCC_DlssRenderPreset, "r_aa_dlss_preset", &ps_r_dlss_preset, dlss_mode_token);
+    CMD3(CCC_DlssRenderPreset, "r_3dss_dlss_preset", &ps_r_3dss_dlss_preset, dlss_mode_token); // NLC: scope lens DLSS model
     CMD1(CCC_DlssDllVersion, "r_aa_dlss_version");
 
-    CMD4(CCC_Float, "r_3dss_scale_factor", &ps_r_dlss_3dss_scale_factor, 1.f, 2.5f);
+    CMD4(CCC_Float, "r_3dss_sharpen", &ps_r_3dss_sharpen, 0.f, 1.f); // NLC
+    CMD4(CCC_Integer, "r_3dss_crop_debug", &ps_r_3dss_crop_debug, 0, 2); // NLC
+    CMD4(CCC_Float, "r_3dss_scale_factor", &ps_r_dlss_3dss_scale_factor, 1.f, 2.f); // NLC: 2.5 -> 2.0 (memory and DLSS ratio)
 
     CMD4(CCC_Integer, "r__no_scale_on_fade", &ps_no_scale_on_fade, 0, 1); // Alundaio
 

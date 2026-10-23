@@ -33,6 +33,7 @@ void CRenderTarget::ProcessTAA(CBackend& cmd_list)
 #include <..\NVIDIA_DLSS\DLSS\include\nvsdk_ngx.h>
 #include <..\NVIDIA_DLSS\DLSS\include\nvsdk_ngx_helpers.h>
 #include <winver.h>
+#include <chrono>
 
 #ifdef _DEBUG
 #if _ITERATOR_DEBUG_LEVEL == 0
@@ -79,13 +80,25 @@ static void QueryLoadedDlssDllVersion()
     if (g_dlss_dll_file_version.valid)
         return;
 
-    const HMODULE mod = GetModuleHandleW(L"nvngx_dlss.dll");
-    if (!mod)
-        return;
-
+    // NLC: NGX loads nvngx_dlss.dll only when a feature exists; with TAA it is not loaded, so read the file next
+    // to the exe instead (the version stayed "unknown" and the preset check logged on every menu query).
     wchar_t path[MAX_PATH]{};
-    if (!GetModuleFileNameW(mod, path, MAX_PATH))
-        return;
+    if (const HMODULE mod = GetModuleHandleW(L"nvngx_dlss.dll"))
+    {
+        if (!GetModuleFileNameW(mod, path, MAX_PATH))
+            return;
+    }
+    else
+    {
+        if (!GetModuleFileNameW(nullptr, path, MAX_PATH))
+            return;
+        wchar_t* slash = wcsrchr(path, L'\\');
+        if (!slash)
+            return;
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"nvngx_dlss.dll");
+        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES)
+            return;
+    }
 
     DWORD dummy{};
     const DWORD size = GetFileVersionInfoSizeW(path, &dummy);
@@ -159,6 +172,11 @@ static class NGXWrapper
     NVSDK_NGX_Parameter* NgxParameters{};
     NVSDK_NGX_Handle* Handle{};
     bool DLSSCreated{}, DLSSInited{};
+
+    // NLC: DLSS features that upscale the 3D scope lens source image (docs/SCOPE_PIP_DESIGN.md 12, 16).
+    NVSDK_NGX_Handle* ScopeHandle[2]{};
+    ID3D11Resource* ScopeOutputRT{};
+    NVSDK_NGX_Dimensions scope_renderSize{};
     ID3D11Resource* OutputRT{};
     NVSDK_NGX_Dimensions saved_renderSize{};
     bool resetHistory{true};
@@ -251,11 +269,13 @@ public:
             mask |= 1u << NVSDK_NGX_DLSS_Hint_Render_Preset_M;
         }
 
+        const bool changed = availablePresetMask != mask;
         availablePresetMask = mask;
         if (g_dlss_dll_file_version.valid)
             availablePresetsResolved = true;
 
-        Msg("--[DLSS] available presets for DLL [%s]: Default/F/J/K%s", ps_r_dlss_dll_version[0] ? ps_r_dlss_dll_version : "unknown",
+        if (changed) // NLC: log once per change, not on every menu query
+            Msg("--[DLSS] available presets for DLL [%s]: Default/F/J/K%s", ps_r_dlss_dll_version[0] ? ps_r_dlss_dll_version : "unknown",
             DlssDllVersionAtLeast(310, 5, 0) ? "/L/M" : "");
 
         if (!IsPresetAvailable(ps_r_dlss_preset))
@@ -364,9 +384,125 @@ public:
         return true;
     }
 
+    // NLC: scope features (docs/SCOPE_PIP_DESIGN.md 16). Output is the scope render target at display size; the lens crop
+    // is a centre sub-rectangle of the render-size inputs. [0] Performance: sub-rectangle out/2 .. out (dynamic crop up to
+    // 2x); [1] Ultra Performance: exactly out/3 (fixed 3x crop). Both are created once and chosen per frame by the crop.
+    u32 scope_w{}, scope_h{}, scope_render_w{}, scope_render_h{}, scope_preset{~0u};
+    u32 scope_min_w[2]{}, scope_min_h[2]{}, scope_max_w[2]{}, scope_max_h[2]{}; // sub-rectangle range per feature
+    bool ScopeCreated() const { return ScopeHandle[0] || ScopeHandle[1]; }
+    bool ScopeFeature(const int i) const { return ScopeHandle[i] != nullptr; }
+
+    bool CreateScope(const NVSDK_NGX_Dimensions& renderSize, ref_rt& out_rt, const u32 preset)
+    {
+        DestroyScopeFeature();
+        scope_w = out_rt->dwWidth;
+        scope_h = out_rt->dwHeight;
+        scope_render_w = renderSize.Width;
+        scope_render_h = renderSize.Height;
+        scope_preset = preset;
+        if (!Initialize(20082024151405ull) || !NgxParameters)
+            return false;
+
+        constexpr NVSDK_NGX_PerfQuality_Value qualities[2]{NVSDK_NGX_PerfQuality_Value_MaxPerf, NVSDK_NGX_PerfQuality_Value_UltraPerformance};
+        for (int i = 0; i < 2; i++)
+        {
+            DlssResolutionInfo info{};
+            if (!QueryOptimalSettings(scope_w, scope_h, qualities[i], info))
+                continue;
+            // The input textures are render-size; the feature's own input is the largest sub-rectangle it accepts.
+            const u32 in_w = _min(renderSize.Width, info.maxRenderWidth), in_h = _min(renderSize.Height, info.maxRenderHeight);
+            if (in_w < info.minRenderWidth || in_h < info.minRenderHeight)
+            {
+                Msg("--[DLSS scope] quality [%d] skipped: range [%ux%u]-[%ux%u] is above render [%ux%u]", qualities[i], info.minRenderWidth,
+                    info.minRenderHeight, info.maxRenderWidth, info.maxRenderHeight, renderSize.Width, renderSize.Height);
+                continue;
+            }
+
+            NVSDK_NGX_Parameter_SetUI(NgxParameters, GetDlssPresetParameterName(qualities[i]), preset);
+
+            NVSDK_NGX_DLSS_Create_Params createParams{};
+            createParams.Feature.InWidth = in_w;
+            createParams.Feature.InHeight = in_h;
+            createParams.Feature.InTargetWidth = scope_w;
+            createParams.Feature.InTargetHeight = scope_h;
+            createParams.Feature.InPerfQualityValue = qualities[i];
+            createParams.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
+
+            const NVSDK_NGX_Result result = NGX_D3D11_CREATE_DLSS_EXT(HW.get_context(CHW::IMM_CTX_ID), &ScopeHandle[i], NgxParameters, &createParams);
+            if (result != NVSDK_NGX_Result_Success)
+            {
+                Msg("!![DLSS scope] NGX_D3D11_CREATE_DLSS_EXT failed for quality [%d]. result: [%d]", qualities[i], result);
+                ScopeHandle[i] = nullptr;
+                continue;
+            }
+            scope_min_w[i] = _max(info.minRenderWidth, 2u);
+            scope_min_h[i] = _max(info.minRenderHeight, 2u);
+            scope_max_w[i] = in_w;
+            scope_max_h[i] = in_h;
+            Msg("--[DLSS scope] created [%d]: render [%ux%u], sub-rectangle [%ux%u]-[%ux%u] -> scope [%ux%u], quality [%d], preset [%u]", i,
+                renderSize.Width, renderSize.Height, scope_min_w[i], scope_min_h[i], in_w, in_h, scope_w, scope_h, qualities[i], preset);
+        }
+        if (!ScopeCreated())
+        {
+            Msg("!![DLSS scope] no DLSS mode accepts render [%ux%u] -> scope [%ux%u]; using FSR3 for the 3D scope", renderSize.Width, renderSize.Height,
+                scope_w, scope_h);
+            return false;
+        }
+
+        ScopeOutputRT = out_rt->pSurface;
+        scope_renderSize = renderSize;
+        return true;
+    }
+
+    // crop: centre sub-rectangle of the render-size inputs that is upscaled to the whole scope target
+    bool DrawScope(const int feature, const bool reset, const NVSDK_NGX_Dimensions& crop)
+    {
+        if (!ScopeHandle[feature])
+            return false;
+
+        const NVSDK_NGX_Coordinates base{(scope_renderSize.Width - crop.Width) / 2, (scope_renderSize.Height - crop.Height) / 2};
+
+        NVSDK_NGX_D3D11_DLSS_Eval_Params eval{};
+        eval.Feature.pInColor = RImplementation.Target->rt_Generic_0->pSurface;
+        eval.Feature.pInOutput = ScopeOutputRT;
+        eval.pInDepth = RImplementation.Target->rt_zbuffer->pSurface;
+        eval.pInMotionVectors = RImplementation.Target->rt_Velocity->pSurface;
+        eval.InRenderSubrectDimensions = crop;
+        eval.InColorSubrectBase = base;
+        eval.InDepthSubrectBase = base;
+        eval.InMVSubrectBase = base;
+        eval.InJitterOffsetX = ps_r_taa_jitter_full.x;
+        eval.InJitterOffsetY = ps_r_taa_jitter_full.y;
+        eval.InMVScaleX = -static_cast<float>(scope_renderSize.Width) * 0.5f;
+        eval.InMVScaleY = static_cast<float>(scope_renderSize.Height) * 0.5f;
+        eval.InReset = reset ? 1 : 0;
+
+        const NVSDK_NGX_Result result = NGX_D3D11_EVALUATE_DLSS_EXT(HW.get_context(CHW::IMM_CTX_ID), ScopeHandle[feature], NgxParameters, &eval);
+        if (result != NVSDK_NGX_Result_Success)
+        {
+            Msg("! [DLSS scope] evaluate failed. feature [%d], result: [%d]", feature, result);
+            return false;
+        }
+        return true;
+    }
+
+    void DestroyScopeFeature()
+    {
+        for (auto& h : ScopeHandle)
+        {
+            if (h)
+            {
+                NVSDK_NGX_D3D11_ReleaseFeature(h);
+                h = nullptr;
+            }
+        }
+        ScopeOutputRT = nullptr;
+    }
+
     void Destroy()
     {
         DestroyFeature();
+        DestroyScopeFeature();
 
         if (NgxParameters)
         {
@@ -503,10 +639,13 @@ void CRenderTarget::ConfigureTemporalRenderSize()
 static float saved_3dss_scale_factor{};
 bool CRenderTarget::reset_3dss_rendertarget(const bool need_reset)
 {
-    if (!need_reset && saved_3dss_scale_factor == ps_r_dlss_3dss_scale_factor)
+    // NLC: with TAA/DLSS the scope DLSS output stays at display size (the crop sets the lens resolution, a bigger output
+    // would forbid the crop); the scale factor only applies to the FSR3 whole-frame upscale.
+    const float factor = (ps_r_pp_aa_mode == DLSS || ps_r_pp_aa_mode == TAA) ? 1.f : ps_r_dlss_3dss_scale_factor;
+    if (!need_reset && saved_3dss_scale_factor == factor && rt_Generic_combine_scope)
         return false;
 
-    saved_3dss_scale_factor = ps_r_dlss_3dss_scale_factor;
+    saved_3dss_scale_factor = factor;
 
     u32 saved_w{}, saved_h{};
     bool empty_rt = !rt_Generic_combine_scope;
@@ -518,7 +657,7 @@ bool CRenderTarget::reset_3dss_rendertarget(const bool need_reset)
     }
 
     u32 w{}, h{};
-    for (float i{ps_r_dlss_3dss_scale_factor}; i >= 1.f; i -= 0.1f)
+    for (float i{factor}; i >= 1.f; i -= 0.1f)
     {
         w = static_cast<u32>(std::ceil(static_cast<float>(Device.dwWidth) * i));
         h = static_cast<u32>(std::ceil(static_cast<float>(Device.dwHeight) * i));
@@ -971,16 +1110,128 @@ bool CRenderTarget::PhaseAA(CBackend& cmd_list)
 
 //*****************************************************************************************************
 
-bool CRenderTarget::Phase3DSSUpscale(CBackend& cmd_list)
+extern u32 g_3dss_lens_mode; // xrGame Weapon.cpp: 0 full screen, 1 lens, 2 hybrid
+
+bool CRenderTarget::Phase3DSSUpscale(CBackend& cmd_list, const bool lens_drawn)
 {
-    if (ps_r_dlss_3dss_scale_factor <= 1.f)
+    // NLC: s3ds_param_7.x tells the lens shader how much of the frame the scope target holds (1 = whole frame).
+    static const shared_str used_key{"s3ds_param_7"};
+    shader_exports.set_custom_params(used_key.c_str(), Fvector4{1.f, ps_r_3dss_sharpen, 0.f, 0.f}); // y: lens sharpening
+    const bool dlss_capable = ps_r_pp_aa_mode == DLSS || ps_r_pp_aa_mode == TAA;
+    if (ps_r_dlss_3dss_scale_factor <= 1.f && !dlss_capable) // the DLSS crop pays off even at factor 1
         return false;
 
     // Проверки на сглаживание для того, что для апскейлинга нам нужен taa джиттер
     if (ps_r_pp_aa_mode != DLSS && ps_r_pp_aa_mode != FSR3 && ps_r_pp_aa_mode != TAA)
         return false;
 
+    // NLC: upscale the scope source only while the lens magnifies it (lens/hybrid modes). In full-screen zoom the lens
+    // samples the frame at 1:1, so the extra pass cost frame time for almost no gain.
+    // NLC (pass 5/6): s3ds_param_6.z = a lens-mode 3D scope is in hands (Actor.cpp): create the scope DLSS features then
+    // ("warm", called every frame from the combine phase), not in the first ADS frame (~85-120 ms spike).
+    bool warm{};
+    {
+        static const shared_str lens_key{"s3ds_param_5"}, held_key{"s3ds_param_6"};
+        const Fvector4& lens = shader_exports.get_custom_params(lens_key);
+        if (!lens_drawn || lens.z < 0.5f || lens.x < 1.05f)
+        {
+            // pass 8: any frame while lens/hybrid mode is on (not only with a scope in hands): the first creation also
+            // loads NGX (~2 s with TAA), so it belongs to the first frames after loading, once per launch.
+            warm = dlss_capable && (g_3dss_lens_mode != 0 || shader_exports.get_custom_params(held_key).z > 0.5f) && !NGXWrapper.ScopeCreated();
+            if (!warm)
+                return false;
+        }
+    }
+
     bool need_reset = reset_3dss_rendertarget();
+
+    // NLC: with DLSS or TAA as the AA mode, upscale the lens image with a second DLSS feature (docs/SCOPE_PIP_DESIGN.md 12).
+    // Created once per resolution/preset/scale, never per zoom; a configuration DLSS rejects falls back to FSR3.
+    if (ps_r_pp_aa_mode == DLSS || ps_r_pp_aa_mode == TAA)
+    {
+        static u32 failed_w{}, failed_h{}, failed_render_w{}, failed_preset{~0u};
+        static u32 last_frame{};
+        const NVSDK_NGX_Dimensions renderSize{GetRenderWidth(), GetRenderHeight()};
+        const u32 sw = rt_Generic_combine_scope->dwWidth, sh = rt_Generic_combine_scope->dwHeight;
+        const bool failed_config = failed_w == sw && failed_h == sh && failed_render_w == renderSize.Width && failed_preset == ps_r_3dss_dlss_preset;
+        if (!failed_config)
+        {
+            const bool recreate = need_reset || !NGXWrapper.ScopeCreated() || NGXWrapper.scope_w != sw || NGXWrapper.scope_h != sh ||
+                NGXWrapper.scope_render_w != renderSize.Width || NGXWrapper.scope_render_h != renderSize.Height ||
+                NGXWrapper.scope_preset != ps_r_3dss_dlss_preset;
+            bool ready = true;
+            const auto t0 = std::chrono::steady_clock::now();
+            if (recreate && !NGXWrapper.CreateScope(renderSize, rt_Generic_combine_scope, ps_r_3dss_dlss_preset))
+            {
+                failed_w = sw;
+                failed_h = sh;
+                failed_render_w = renderSize.Width;
+                failed_preset = ps_r_3dss_dlss_preset;
+                ready = false;
+            }
+            if (recreate)
+                Msg("--[DLSS scope] features %s in [%.1f] ms (%s)", ready ? "ready" : "failed", std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count(),
+                    warm ? "warm-up" : "first lens frame");
+            if (warm)
+                return false;
+            if (ready)
+            {
+                // Crop magnification requested by the weapon (s3ds_param_6.x: lens magnification at the scope's widest
+                // zoom). Each feature reaches the crops its sub-rectangle range allows; a crop above the request would cut
+                // the lens edge, so pick the feature that gets closest to the request from below.
+                static const shared_str crop_key{"s3ds_param_6"};
+                float req = _max(shader_exports.get_custom_params(crop_key).x, 1.f);
+                if (ps_r_3dss_crop_debug >= 2)
+                    req = 1.f; // debug: no crop at all
+                int feature = -1;
+                float used_mag{};
+                NVSDK_NGX_Dimensions crop{};
+                for (int i = 0; i < 2; i++)
+                {
+                    if (!NGXWrapper.ScopeFeature(i))
+                        continue;
+                    const float lo = _max(float(renderSize.Width) / float(NGXWrapper.scope_max_w[i]), float(renderSize.Height) / float(NGXWrapper.scope_max_h[i]));
+                    const float hi = _min(float(renderSize.Width) / float(NGXWrapper.scope_min_w[i]), float(renderSize.Height) / float(NGXWrapper.scope_min_h[i]));
+                    if (lo > req + 0.01f)
+                        continue;
+                    const float m = _max(_min(req, hi), lo);
+                    NVSDK_NGX_Dimensions c{u32(float(renderSize.Width) / m) & ~1u, u32(float(renderSize.Height) / m) & ~1u};
+                    c.Width = std::clamp(c.Width, NGXWrapper.scope_min_w[i], NGXWrapper.scope_max_w[i]);
+                    c.Height = std::clamp(c.Height, NGXWrapper.scope_min_h[i], NGXWrapper.scope_max_h[i]);
+                    const float mag = float(renderSize.Width) / float(c.Width);
+                    if (feature < 0 || mag > used_mag + 0.01f)
+                    {
+                        feature = i;
+                        used_mag = mag;
+                        crop = c;
+                    }
+                }
+
+                if (feature >= 0)
+                {
+                    // History restarts when the lens was not drawn on the previous frame (ADS entry, weapon switch)
+                    // or when the crop or the feature changed (new scope, new weapon).
+                    static u32 last_crop_w{};
+                    static int last_feature{-1};
+                    const bool reset = recreate || Device.dwFrame != last_frame + 1 || crop.Width != last_crop_w || feature != last_feature;
+                    if (ps_r_3dss_crop_debug >= 1 && reset)
+                        Msg("--[DLSS scope] ADS: request [%.2f], feature [%d], crop [%ux%u] of [%ux%u] = [%.2f]x -> scope [%ux%u]", req, feature, crop.Width,
+                            crop.Height, renderSize.Width, renderSize.Height, used_mag, sw, sh);
+                    last_frame = Device.dwFrame;
+                    last_crop_w = crop.Width;
+                    last_feature = feature;
+                    if (NGXWrapper.DrawScope(feature, reset, crop))
+                    {
+                        shader_exports.set_custom_params(used_key.c_str(), Fvector4{used_mag, ps_r_3dss_sharpen, 0.f, 0.f});
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (warm || ps_r_dlss_3dss_scale_factor <= 1.f) // FSR3 (whole frame) only helps with extra resolution
+        return false;
     if (!need_reset)
         need_reset = (Fsr3WrapperScope.saved_w != rt_Generic_combine_scope->dwWidth || Fsr3WrapperScope.saved_h != rt_Generic_combine_scope->dwHeight);
 

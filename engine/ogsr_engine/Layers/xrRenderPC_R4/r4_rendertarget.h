@@ -392,7 +392,7 @@ private:
     ref_rt rt_smaa_blendtex;
 
     bool PhaseAA(CBackend& cmd_list);
-    bool Phase3DSSUpscale(CBackend& cmd_list);
+    bool Phase3DSSUpscale(CBackend& cmd_list, const bool lens_drawn); // NLC: !lens_drawn = only warm up the scope DLSS features
 
     void ProcessSMAA(CBackend& cmd_list);
     void ProcessTAA(CBackend& cmd_list);

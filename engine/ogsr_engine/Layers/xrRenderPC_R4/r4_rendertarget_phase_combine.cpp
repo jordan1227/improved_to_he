@@ -208,7 +208,7 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
     if (need_heatvision)
         phase_heatvision(cmd_list);
 
-    const bool upscaled_3dss = (need_3dss && Phase3DSSUpscale(cmd_list));
+    const bool upscaled_3dss = Phase3DSSUpscale(cmd_list, need_3dss); // NLC: also called without the lens to warm up DLSS
 
     bool temporalOutput{false};
     if (ps_r_pp_aa_mode) // должно быть перед 3DSS
@@ -268,10 +268,10 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
     if (!need_heatvision)
         phase_lut(cmd_list);
 
-/*
-    if (scope_fake_radius > 0.f)
+    // NLC: crookr's 2D scope lens (eye box, edge blur, chromatic edge); Lua sets fake_scope_radius only while a 2D
+    // texture scope is zoomed (ogsr_shaders_control.script) and clears it otherwise.
+    if (scope_fake_radius > 0.f && !need_3dss && !need_heatvision)
         phase_fakescope(cmd_list); // crookr
-*/
 
 #pragma todo("Simp: эффект шлема багует в прицеле, надо бы придумать решение получше")
     extern bool Is3dssZoomed;

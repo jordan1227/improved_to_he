@@ -314,7 +314,8 @@ CRenderTarget::CRenderTarget()
     }
 
     reset_3dss_rendertarget(true);
-    InitDLSS();
+    if (ps_r_pp_aa_mode == DLSS) // NLC: no DLSS feature (and VRAM) with other AA modes; ProcessDLSS creates it lazily
+        InitDLSS();
     InitFSR();
 
     // OCCLUSION

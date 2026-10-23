@@ -398,6 +398,15 @@ void CActor::IR_OnMouseMove(int dx, int dy)
 
     CCameraBase* C = cameras[cam_active];
     float scale = (C->f_fov / g_fov) * psMouseSens * psMouseSensScale / 50.f / LookFactor;
+
+    // NLC: in the 3D scope lens mode the camera FOV covers only part of the magnification; slow the mouse by the
+    // lens part too, so aiming through the lens feels like the full-screen zoom (g_3dss_lens_sens 0..1).
+    if (auto* lens_wpn = smart_cast<CWeapon*>(inventory().ActiveItem()); lens_wpn && lens_wpn->IsZoomed() && lens_wpn->LensModeActive())
+    {
+        extern float g_3dss_lens_sens;
+        const float lens = 1.f + (_max(lens_wpn->LensMag(), 1.f) - 1.f) * lens_wpn->GetZRotatingFactor();
+        scale /= powf(lens, g_3dss_lens_sens);
+    }
     if (dx)
     {
         float d = float(dx) * scale;

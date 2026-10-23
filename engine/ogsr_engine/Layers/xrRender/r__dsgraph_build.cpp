@@ -85,10 +85,26 @@ float r_ssaHZBvsTEX;
 // Aproximate, adjusted by fov, distance from camera to position (For right work when looking though binoculars and scopes)
 namespace
 {
+// NLC: while the 3D scope lens magnifies the frame (camera FOV unzoomed), raise LOD as if the camera were zoomed by
+// part of the lens magnification (s3ds_param_5.w, set by Actor.cpp). Read once per frame; 1 when the lens is off.
+IC float LensLodK()
+{
+    static u32 frame{u32(-1)};
+    static float k{1.f};
+    if (frame != Device.dwFrame)
+    {
+        static const shared_str key{"s3ds_param_5"};
+        const float v = shader_exports.get_custom_params(key).w;
+        k = (v > 1.f && v < 16.f) ? v : 1.f;
+        frame = Device.dwFrame;
+    }
+    return k;
+}
+
 IC float GetDistFromCamera(const Fvector& from_position)
 {
     const float distance = Device.vCameraPosition.distance_to(from_position);
-    const float fov_K = BASE_FOV / Device.fFOV;
+    const float fov_K = BASE_FOV / Device.fFOV * LensLodK();
     const float adjusted_distane = distance / fov_K;
 
     return adjusted_distane;

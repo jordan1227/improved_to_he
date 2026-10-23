@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "fl_hook.h"
+#include "nlc_gunplay.h"
 #include "Actor_Flags.h"
 #include "hudmanager.h"
 #ifdef DEBUG
@@ -782,6 +783,9 @@ float CActor::currentFOV()
 }
 
 bool Is3dssZoomed{};
+static bool s_was_3dss_zoomed{}; // NLC: lens open edge
+static bool s_lens_exit{}; // NLC: lens image held over the ADS lowering (close blink played)
+static bool s_lens_ppe_pending{}; // NLC: entry blink waits for the end of the fade-in
 
 void CActor::UpdateCL()
 {
@@ -818,6 +822,7 @@ void CActor::UpdateCL()
         psHUD_Flags.set(HUD_DRAW_RT, true);
     }
 
+    s_was_3dss_zoomed = Is3dssZoomed;
     Is3dssZoomed = false;
     m_bZoomAimingMode = false;
 
@@ -833,7 +838,24 @@ void CActor::UpdateCL()
 
             m_bZoomAimingMode = true;
 
-            Is3dssZoomed = !pWeapon->IsRotatingToZoom() && pWeapon->Is3dssEnabled();
+            // NLC: the lens image takes over from the glass halfway through the raise (g_3dss_lens_open); the lens
+            // shader already fades the image, reticle and exit pupil in with the raise, so there is no pop at the end.
+            extern float g_3dss_lens_open;
+            Is3dssZoomed = pWeapon->GetZRotatingFactor() >= g_3dss_lens_open && pWeapon->Is3dssEnabled();
+            if (Is3dssZoomed && !s_was_3dss_zoomed)
+                s_lens_ppe_pending = true; // NLC: lens-only PPE (deimos-style blink) once the lens image is up
+            s_lens_exit = false;
+        }
+        else if (s_was_3dss_zoomed)
+        {
+            // NLC (pass 4/5): on ADS release keep the lens image while the lowering raise is above g_3dss_lens_close;
+            // it unzooms (g_3dss_lens_exit_unzoom) and/or darkens (g_3dss_lens_exit_dark) on the way, optional blink.
+            extern float g_3dss_lens_close;
+            Is3dssZoomed = pWeapon->GetZRotatingFactor() >= g_3dss_lens_close && pWeapon->Is3dssEnabled();
+            if (Is3dssZoomed && !s_lens_exit)
+                nlc_gunplay::on_lens_close();
+            s_lens_exit = Is3dssZoomed;
+            s_lens_ppe_pending = false;
         }
 
         if (Level().CurrentEntity() && this->ID() == Level().CurrentEntity()->ID())
@@ -850,6 +872,71 @@ void CActor::UpdateCL()
             // Обновляем информацию об оружии в шейдерах
 #pragma todo("Simp: подумать над тем что передавать в y и w")
             shader_exports.set_hud_params(Fvector4{pWeapon->GetZRotatingFactor(), pWeapon->CurrentZoomFactor(), pWeapon->GetLastHudFov(), pWeapon->CurrentZoomFactor()});
+
+            // NLC: lens magnification for 3dss_reticle.ps and the render LOD bias (docs/SCOPE_PIP_DESIGN.md):
+            // x lens magnification, y zoom part, z 1 while the lens mode is active, w LOD distance factor.
+            extern float g_3dss_lens_lod;
+            static const shared_str lens_key{"s3ds_param_5"};
+            pWeapon->UpdateLensSmoothing(Device.fTimeDelta);
+            {
+                // NLC (pass 5, docs/SCOPE_PIP_DESIGN.md 17): entry = lens brightness black -> image over g_3dss_lens_fade_in
+                // of the raise after the switch, then the blink; exit = from the release down to g_3dss_lens_close the
+                // held magnification eases to 1x (g_3dss_lens_exit_unzoom) and the image darkens (g_3dss_lens_exit_dark).
+                extern float g_3dss_lens_open, g_3dss_lens_close, g_3dss_lens_fade_in, g_3dss_lens_exit_unzoom, g_3dss_lens_exit_dark;
+                const float rf = pWeapon->GetZRotatingFactor();
+                float fade = 1.f, exit_k = 1.f; // exit_k: 1 at the release .. 0 at the hand-back to the glass
+                if (s_lens_exit)
+                {
+                    exit_k = 1.f - g_3dss_lens_close < EPS ? 0.f : clampr((rf - g_3dss_lens_close) / (1.f - g_3dss_lens_close), 0.f, 1.f);
+                    exit_k = exit_k * exit_k * (3.f - 2.f * exit_k);
+                    fade = 1.f - g_3dss_lens_exit_dark * (1.f - exit_k);
+                }
+                else if (Is3dssZoomed && g_3dss_lens_fade_in > EPS && g_3dss_lens_open < 1.f - EPS)
+                {
+                    // pass 6: fade_in is the share of the raise left after the switch, so the ramp always completes
+                    fade = clampr((rf - g_3dss_lens_open) / (g_3dss_lens_fade_in * (1.f - g_3dss_lens_open)), 0.f, 1.f);
+                    fade = fade * fade * (3.f - 2.f * fade);
+                }
+                if (s_lens_ppe_pending && fade > 0.999f)
+                {
+                    s_lens_ppe_pending = false;
+                    nlc_gunplay::on_lens_open();
+                }
+
+                // Over the exit the lens keeps its last magnification (the weapon drops it at the release, which was
+                // the exit pop). While it unzooms, the crop drops to 1 once (one DLSS history reset) so the shrinking
+                // magnification never needs more of the frame than the scope target holds.
+                static float s_exit_crop{1.f};
+                static Fvector4 s_exit_lens{1.f, 0.f, 0.f, 1.f};
+                const bool lens_in_hands = pWeapon->LensModeActive();
+                float crop = pWeapon->IsZoomed() && lens_in_hands ? pWeapon->LensCropMag() : 1.f;
+                if (s_lens_exit)
+                    crop = g_3dss_lens_exit_unzoom > EPS ? 1.f : s_exit_crop;
+                else
+                    s_exit_crop = crop;
+                shader_exports.set_custom_params("s3ds_param_6", Fvector4{crop, fade, lens_in_hands ? 1.f : 0.f, 0.f});
+                nlc_gunplay::lens_ppe_update();
+
+                if (s_lens_exit)
+                {
+                    Fvector4 l = s_exit_lens;
+                    const float keep = 1.f - g_3dss_lens_exit_unzoom * (1.f - exit_k);
+                    l.x = 1.f + (s_exit_lens.x - 1.f) * keep;
+                    l.w = 1.f + (s_exit_lens.w - 1.f) * keep;
+                    shader_exports.set_custom_params(lens_key.c_str(), l);
+                }
+                else if (pWeapon->IsZoomed() && lens_in_hands)
+                {
+                    const float lod_k = Is3dssZoomed ? powf(_max(pWeapon->LensMag(), 1.f), g_3dss_lens_lod) : 1.f;
+                    s_exit_lens.set(pWeapon->LensMag(), pWeapon->LensZoomPart(), 1.f, lod_k);
+                    shader_exports.set_custom_params(lens_key.c_str(), s_exit_lens);
+                }
+                else
+                {
+                    s_exit_lens.set(1.f, 0.f, 0.f, 1.f);
+                    shader_exports.set_custom_params(lens_key.c_str(), s_exit_lens);
+                }
+            }
         }
     }
     else
@@ -861,6 +948,8 @@ void CActor::UpdateCL()
 
             // Очищаем информацию об оружии в шейдерах
             shader_exports.set_hud_params({});
+            shader_exports.set_custom_params("s3ds_param_5", Fvector4{1.f, 0.f, 0.f, 1.f}); // NLC: lens mode off
+            shader_exports.set_custom_params("s3ds_param_6", Fvector4{1.f, 1.f, 0.f, 0.f});
         }
     }
 

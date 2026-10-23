@@ -25,6 +25,13 @@ void look_rate(float& yaw_rate, float& pitch_rate);
 
 void shot_punch(float roll_rad, float fov_deg);
 
+// Lens-only .ppe for the 3D scope lens (s3ds_param_8/9); on_lens_open plays [nlc_scope] lens_open_ppe, on_lens_close
+// [nlc_scope] lens_close_ppe. speed <= 0 = g_3dss_lens_ppe_speed.
+void lens_ppe_play(LPCSTR name, float speed = 0.f, float strength = -1.f); // strength < 0 = g_3dss_lens_ppe
+void on_lens_open();
+void on_lens_close();
+void lens_ppe_update(); // Actor.cpp, every frame while a weapon is held
+
 // HUD clip player: authored additive .anm clips evaluated by the engine, summed so repeats stack.
 void clip_play(LPCSTR name, float power, float speed, float mirror, float aim_k);
 bool clip_xform(bool aiming, float item_k, Fmatrix& out); // false = no clip active

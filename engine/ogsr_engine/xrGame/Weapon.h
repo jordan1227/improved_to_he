@@ -264,7 +264,24 @@ protected:
 
     float m_fScopeInertionFactor;
 
+    // NLC: lens magnification for 3D scopes (docs/SCOPE_PIP_DESIGN.md). The engine keeps the zoom the scope
+    // shows (m_fLensTarget, same units as m_fZoomFactor) and splits it into a camera zoom and a lens zoom.
+    float m_f3dssLensShare{-1.f}; // 3d_lens_camera_share: share of the magnification done by the camera; < 0 = auto
+    float m_fLensTarget{}; // full-screen-equivalent zoom factor the scope shows
+    float m_fLensCam{}; // camera zoom factor actually used
+    float m_fLensMag{1.f}; // magnification the lens shader adds on top of the camera
+    float m_fLensMagShown{1.f}; // m_fLensMag eased over ~0.1 s (zoom steps and hybrid share changes)
+    float m_fLensCropMag{1.f}; // lens magnification at the scope's widest zoom: the upscaler crop for this ADS
+
 public:
+    bool LensModeActive() const;
+    void ComputeLensSplit(float target_factor, float& cam_factor, float& lens_mag) const;
+    void UpdateLensSplit(float target_factor);
+    float LensMag() const { return m_fLensMagShown; }
+    float LensCropMag() const { return m_fLensCropMag; }
+    void UpdateLensSmoothing(float dt);
+    float LensZoomPart();
+
     IC bool IsZoomEnabled() const { return m_bZoomEnabled; }
     void GetZoomData(float scope_factor, float& delta, float& min_zoom_factor);
     virtual void ZoomChange(bool inc);

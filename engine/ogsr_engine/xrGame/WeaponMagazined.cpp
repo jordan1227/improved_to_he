@@ -1425,6 +1425,7 @@ void CWeaponMagazined::InitZoomParams(LPCSTR section, bool useTexture)
     m_fZoomHudFov = READ_IF_EXISTS(pSettings, r_float, section, "scope_zoom_hud_fov", 0.0f);
     m_f3dssHudFov = READ_IF_EXISTS(pSettings, r_float, section, "scope_lense_hud_fov", 0.0f);
     m_3dss_gen_zoom_enable = READ_IF_EXISTS(pSettings, r_bool, section, "3dss_gen_zoom_enable", false);
+    m_f3dssLensShare = READ_IF_EXISTS(pSettings, r_float, section, "3d_lens_camera_share", -1.f); // NLC
 
     if (m_UIScope)
         xr_delete(m_UIScope);
@@ -1503,6 +1504,7 @@ void CWeaponMagazined::InitAddons()
             m_fZoomHudFov = READ_IF_EXISTS(pSettings, r_float, cNameSect().c_str(), "scope_zoom_hud_fov", m_fZoomHudFov);
             m_f3dssHudFov = READ_IF_EXISTS(pSettings, r_float, cNameSect().c_str(), "scope_lense_hud_fov", m_f3dssHudFov);
             m_3dss_gen_zoom_enable = READ_IF_EXISTS(pSettings, r_bool, cNameSect().c_str(), "3dss_gen_zoom_enable", m_3dss_gen_zoom_enable);
+            m_f3dssLensShare = READ_IF_EXISTS(pSettings, r_float, cNameSect().c_str(), "3d_lens_camera_share", m_f3dssLensShare); // NLC
         }
         else if (m_eScopeStatus == ALife::eAddonPermanent)
         {

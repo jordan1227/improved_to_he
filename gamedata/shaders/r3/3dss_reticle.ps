@@ -53,6 +53,14 @@ uniform float4 s3ds_param_1;
 uniform float4 s3ds_param_2;
 uniform float4 s3ds_param_3;
 uniform float4 s3ds_param_4;
+// NLC lens mode (Actor.cpp, docs/SCOPE_PIP_DESIGN.md): x lens magnification, y zoom part, z 1 = active, w LOD factor
+uniform float4 s3ds_param_5;
+// NLC (docs/SCOPE_PIP_DESIGN.md 15, 16): 6 = (crop request, lens brightness), 7 = (frame share held by the upscaled scope
+// target: 1 = whole frame), 8 = lens PPE (base colour, gray), 9 = lens PPE (add colour, blur)
+uniform float4 s3ds_param_6;
+uniform float4 s3ds_param_7;
+uniform float4 s3ds_param_8;
+uniform float4 s3ds_param_9;
 uniform float4 mark_number;
 uniform float4 mark_color;
 // uniform float4 shader_param_8;
@@ -91,6 +99,13 @@ float4 sample_shadow(float2 tc, float shadow_width)
 {
     float a = smoothstep(0.5 - shadow_width, 0.5, distance(tc, float2(0.5, 0.5)));
     return float4(0, 0, 0, a);
+}
+
+float4 sample_zoom_switch_shadow_shift(float2 tc, float shift)
+{
+    float a = smoothstep(1 - 0.1, 1, distance(tc, float2(0.5 + shift * 3, 0.5)));
+    float b = smoothstep(1 - 0.4, 1, distance(tc, float2(-2.5 + shift * 3, 0.5)));
+    return float4(0, 0, 0, a * b);
 }
 
 float4 sample_zoom_switch_shadow(float2 tc, float min_zoom, float max_zoom)
@@ -379,6 +394,18 @@ float4 main(vf I) : SV_Target
         IMAGE_SIZE = 1 + (IMAGE_SIZE - 1) * zoom_part;
     }
 
+    // NLC lens mode: the camera keeps (part of) the base FOV and the lens draws the rest of the scope's real
+    // magnification as a linear screen-space zoom about the aim point; zoom state comes from the engine.
+    const bool LENS_MODE = s3ds_param_5.z > 0.5;
+    if (LENS_MODE)
+    {
+        IMAGE_SIZE = max(s3ds_param_5.x, 1.0);
+        // No eye-position image shift: across a lens this close to the eye it outgrows 1 / IMAGE_SIZE from about
+        // 3x and flips the image. A real scope's image does not move with the eye either; the exit-pupil shadow does.
+        IMAGE_PROJECT = 0;
+        zoom_part = saturate(s3ds_param_5.y);
+    }
+
     if (!SETTING(SETTINGS, ST_CHROMATISM))
     {
         CHROMA_POWER = 0;
@@ -390,10 +417,73 @@ float4 main(vf I) : SV_Target
     float2 reticle_lens_tc = project(I.tc0, V_tangent.xy, RETICLE_PROJECT, RETICLE_SIZE) + fisheye(I.tc0, V_tangent.xy) / current_zoom;
     float2 reticle_tc =
         project(I.tc0, V_tangent.xy, RETICLE_PROJECT, RETICLE_SIZE * (FFP || RETICLE_TYPE == RT_GIPERON ? current_zoom : 1)) + fisheye(I.tc0, V_tangent.xy) / current_zoom;
-    float4 mark_texture = float4(0, 0, 0, 0);
-    if (reticle_tc.x >= 0 && reticle_tc.x <= 1 && reticle_tc.y >= 0 && reticle_tc.y <= 1)
+
+    float2 reticle_tc_lens = reticle_tc;
+    // NLC: the reticle marks where bullets go (the camera axis), like the red dot, instead of the lens axis that
+    // HUD recoil and inertia tilt. Locally linear map around the screen centre from this fragment's derivatives,
+    // plus a small capped share of the original lens parallax so the reticle is not glued to the screen.
+    // pass 8: mark_number.y = 1 (ltx 3d_reticle_lock = 0) keeps the original lens-attached reticle for textures that
+    // pack a vignette and rings with the marks (SV-98), which the scale split cannot separate cleanly.
+    const bool RETICLE_UNLOCKED = mark_number.y > 0.5;
+    if (!RETICLE_UNLOCKED)
     {
-        mark_texture = s_base.Sample(smp_base, clamp(reticle_tc, 0, 1));
+        const float RETICLE_PARALLAX_SHARE = 0.1;
+        const float RETICLE_PARALLAX_CAP = 0.03;
+        reticle_tc_lens = reticle_tc;
+        float2 px = I.hpos.xy - screen_res.xy * 0.5;
+        float2 locked = 0.5 + ddx(reticle_tc) * px.x + ddy(reticle_tc) * px.y;
+        float2 drift = (reticle_tc - locked) * RETICLE_PARALLAX_SHARE;
+        float drift_len = length(drift);
+        if (drift_len > RETICLE_PARALLAX_CAP)
+            drift *= RETICLE_PARALLAX_CAP / drift_len;
+        reticle_tc = locked + drift;
+    }
+
+    // NLC (pass 4): edge weight of a reticle texture position, 0 on the outermost texel ring .. 1 from 1.5 texels in,
+    // so a partly transparent texture edge never draws its square as a 1 px outline across the clear lens image.
+    float2 reticle_dim;
+    float reticle_mips;
+    s_base.GetDimensions(0, reticle_dim.x, reticle_dim.y, reticle_mips);
+    // NLC (pass 5): plain RGBA reticles are split by scale. The large-scale part (ring, vignette, dirty-glass disc:
+    // everything a coarse mip, ~16 texels across, still shows) is drawn lens-attached so its parts always line up;
+    // the fine marks (lines, numbers, posts: alpha peaks over the coarse mean) are drawn only at the locked position
+    // and only inside the lens-attached ring. Textures without mips put everything lens-attached (no doubling).
+    float coarse_mip = min(max(log2(max(reticle_dim.x, reticle_dim.y) / 16.0), 0.0), reticle_mips - 1.0);
+    float4 mark_texture = float4(0, 0, 0, 0);
+    if (RETICLE_TYPE != RT_NONE || RETICLE_UNLOCKED)
+    {
+        if (reticle_tc.x >= 0 && reticle_tc.x <= 1 && reticle_tc.y >= 0 && reticle_tc.y <= 1)
+        {
+            mark_texture = s_base.Sample(smp_base, clamp(reticle_tc, 0, 1));
+            float2 edge_px = min(reticle_tc, 1.0 - reticle_tc) * reticle_dim;
+            mark_texture *= saturate((min(edge_px.x, edge_px.y) - 0.5) / 1.5);
+        }
+    }
+    else
+    {
+        float ring_lens = 1.0; // opacity of the lens-attached large-scale layer (outside the texture: 1 = closed)
+        if (reticle_tc_lens.x >= 0 && reticle_tc_lens.x <= 1 && reticle_tc_lens.y >= 0 && reticle_tc_lens.y <= 1)
+        {
+            float4 full = s_base.Sample(smp_base, clamp(reticle_tc_lens, 0, 1));
+            float4 coarse = s_base.SampleLevel(smp_base, clamp(reticle_tc_lens, 0, 1), coarse_mip);
+            float fine = coarse_mip > 0.5 ? saturate((full.a - coarse.a) * 4.0) : 0.0;
+            // dark texels on the square's edge count as opaque, so the layer's own square never shows as a line
+            float2 edge_px = min(reticle_tc_lens, 1.0 - reticle_tc_lens) * reticle_dim;
+            float edge = saturate((min(edge_px.x, edge_px.y) - 0.5) / 1.5);
+            float dark = saturate(1.0 - max(full.r, max(full.g, full.b)) * 4.0);
+            float a = lerp(dark > 0.5 ? 1.0 : 0.0, full.a, edge) * (1.0 - fine);
+            mark_texture = float4(full.rgb, a);
+            ring_lens = saturate(coarse.a * 1.25) * dark;
+        }
+        if (coarse_mip > 0.5 && reticle_tc.x >= 0 && reticle_tc.x <= 1 && reticle_tc.y >= 0 && reticle_tc.y <= 1)
+        {
+            float4 full = s_base.Sample(smp_base, clamp(reticle_tc, 0, 1));
+            float4 coarse = s_base.SampleLevel(smp_base, clamp(reticle_tc, 0, 1), coarse_mip);
+            float fine = saturate((full.a - coarse.a) * 4.0);
+            float2 edge_px = min(reticle_tc, 1.0 - reticle_tc) * reticle_dim;
+            float edge = saturate((min(edge_px.x, edge_px.y) - 0.5) / 1.5);
+            mark_texture = rgba_blend(mark_texture, float4(full.rgb, full.a * fine * edge * (1.0 - ring_lens)));
+        }
     }
 
     float4 giperon_sfp;
@@ -453,7 +543,8 @@ float4 main(vf I) : SV_Target
     float4 zoom_switch_shadow = float4(0, 0, 0, 0);
     if (RETICLE_TYPE == RT_SPECTER)
     {
-        zoom_switch_shadow = sample_zoom_switch_shadow(reticle_lens_tc, MIN_ZOOM_FOV, MAX_ZOOM_FOV);
+        zoom_switch_shadow = LENS_MODE ? sample_zoom_switch_shadow_shift(reticle_lens_tc, smoothstep(0, 1, zoom_part))
+                                       : sample_zoom_switch_shadow(reticle_lens_tc, MIN_ZOOM_FOV, MAX_ZOOM_FOV);
     }
 
     // Sight bound
@@ -469,12 +560,29 @@ float4 main(vf I) : SV_Target
     }
 
     // Parallax shadow
-    float2 exit_pupil_tc = project(I.tc0, V_tangent.xy, -EYE_RELIEF, EXIT_PUPIL * (SETTING(SETTINGS, ST_SEE_THROUGH) ? 1 : m_hud_params.x));
+    // NLC (pass 6): in lens mode the lens image is also shown during the raise/lowering (g_3dss_lens_open/close), where
+    // the HUD-raise-driven pupil shrink and transition shadow drew a second, off-centre disc. There the pupil is
+    // treated as fully raised, and its eye offset is capped like the locked reticle drift.
+    float pupil_raise = LENS_MODE ? 1.0 : m_hud_params.x;
+    float2 pupil_tangent = V_tangent.xy;
+    if (LENS_MODE)
+    {
+        const float PUPIL_OFFSET_CAP = 0.05; // lens tc
+        float off = length(pupil_tangent * EYE_RELIEF);
+        if (off > PUPIL_OFFSET_CAP)
+            pupil_tangent *= PUPIL_OFFSET_CAP / off;
+    }
+    float2 exit_pupil_tc = project(I.tc0, pupil_tangent, -EYE_RELIEF,
+        EXIT_PUPIL * (SETTING(SETTINGS, ST_SEE_THROUGH) ? 1 : lerp(0.5, 1.0, pupil_raise))); // NLC: no black iris at the switch
     float4 shadow_texture = sample_shadow(exit_pupil_tc, SHADOW_WIDTH + 0.02 * (current_zoom - 1));
     if (!SETTING(SETTINGS, ST_PARALLAX_SHADOW))
     {
-        shadow_texture *= 1 - m_hud_params.x;
+        shadow_texture *= 1 - pupil_raise;
     }
+    // NLC (pass 7): plain RGBA reticles in lens mode take the scope's edge from the texture's own ring only; the
+    // separately sized exit-pupil circle drew a second, offset disc (SV-98 crescent).
+    if (LENS_MODE && RETICLE_TYPE == RT_NONE)
+        shadow_texture = float4(0, 0, 0, 0);
 
     // LED-illuminated inside walls
     float4 inside = s_inside.Sample(smp_base, clamp((reticle_lens_tc - 0.5) * 0.62 + 0.5, 0, 1));
@@ -526,7 +634,24 @@ float4 main(vf I) : SV_Target
     else
     {
         bool blur = SETTING(SETTINGS, ST_NVG_BLUR) /*&& floor(shader_param_8.x) != 0*/ || m_hud_params.x == 0;
-        back = back_image_sample(I.tc0, scope_tc, ogse_c_screen.x, CHROMA_POWER, blur, SETTING(SETTINGS, ST_CHROMATISM));
+        // NLC: the upscaled scope target may hold only the centre 1 / s3ds_param_7.x of the frame (crop upscaling)
+        float2 prev_tc = (scope_tc - 0.5) * max(s3ds_param_7.x, 1.0) + 0.5;
+        back = back_image_sample(I.tc0, prev_tc, ogse_c_screen.x, CHROMA_POWER, blur, SETTING(SETTINGS, ST_CHROMATISM));
+        // NLC (pass 7): contrast-adaptive sharpening of the magnified lens image (r_3dss_sharpen -> s3ds_param_7.y)
+        if (LENS_MODE && !blur && s3ds_param_7.y > 0.001)
+        {
+            float2 px = screen_res.zw;
+            float3 n = s_prev_frame.Sample(smp_base, prev_tc + float2(0, -px.y)).rgb;
+            float3 s = s_prev_frame.Sample(smp_base, prev_tc + float2(0, px.y)).rgb;
+            float3 w = s_prev_frame.Sample(smp_base, prev_tc + float2(-px.x, 0)).rgb;
+            float3 e = s_prev_frame.Sample(smp_base, prev_tc + float2(px.x, 0)).rgb;
+            float3 mn = min(back, min(min(n, s), min(w, e))), mx = max(back, max(max(n, s), max(w, e)));
+            float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 0.0001)));
+            float3 wgt = -amp * lerp(0.125, 0.2, saturate(s3ds_param_7.y));
+            back = saturate((back + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt));
+        }
+        if (s3ds_param_9.w > 0.001)
+            back = lerp(back, blur_sample(prev_tc).rgb, saturate(s3ds_param_9.w));
         back *= LENS_COLOR;
     }
 
@@ -615,5 +740,11 @@ float4 main(vf I) : SV_Target
     final_scope += specular;
     final_scope = lerp(final_scope, final_scope_3.rgb, final_scope_3.a);
 
-    return float4(final_scope, 1);
+    // NLC: lens-only post-process (engine nlc_gunplay lens PPE, e.g. the deimos blink when the lens switches on)
+    final_scope = final_scope * s3ds_param_8.rgb * 2.0 + s3ds_param_9.rgb;
+    final_scope = lerp(final_scope, dot(final_scope, float3(0.299, 0.587, 0.114)).xxx, saturate(s3ds_param_8.w));
+
+    // NLC (pass 4): the lens image stays opaque (no glass or scope internals behind it) and its brightness follows the
+    // raise: black -> image after the switch, image -> black on the lowering (s3ds_param_6.y, Actor.cpp).
+    return float4(final_scope * saturate(s3ds_param_6.y), 1);
 }

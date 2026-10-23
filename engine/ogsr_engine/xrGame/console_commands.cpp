@@ -1586,6 +1586,21 @@ private:
     }
 };
 
+// NLC: 3D scope lens mode (docs/SCOPE_PIP_DESIGN.md)
+extern u32 g_3dss_lens_mode;
+extern float g_3dss_lens_sens;
+extern float g_3dss_lens_lod;
+extern float g_3dss_lens_open;
+extern float g_3dss_lens_ppe;
+extern float g_3dss_lens_ppe_speed;
+extern float g_3dss_lens_ppe_delay;
+extern float g_3dss_lens_close;
+extern float g_3dss_lens_fade_in;
+extern float g_3dss_lens_exit_unzoom;
+extern float g_3dss_lens_exit_dark;
+extern float g_3dss_lens_close_ppe;
+constexpr xr_token lens_mode_token[]{{"st_opt_3dss_lens_screen", 0}, {"st_opt_3dss_lens_lens", 1}, {"st_opt_3dss_lens_hybrid", 2}, {}};
+
 void CCC_RegisterCommands()
 {
     fl_hook::register_console_commands();
@@ -1775,6 +1790,18 @@ void CCC_RegisterCommands()
     CMD3(CCC_Mask, "g_weapon_bobbing_ads_only", &psActorFlags, AF_WEAPON_BOBBING_ADS_ONLY); // NLC
     CMD3(CCC_Mask, "g_weapon_look_factor", &psActorFlags, AF_WEAPON_LOOK_FACTOR); // NLC: per-weapon mouse sensitivity (control_inertion_factor); off = true sensitivity
     CMD1(CCC_WeaponBobbingMode, "g_weapon_bobbing_mode"); // NLC
+    CMD3(CCC_Token, "g_3dss_lens_mode", &g_3dss_lens_mode, lens_mode_token); // NLC: 3D scopes: full screen / lens / hybrid
+    CMD4(CCC_Float, "g_3dss_lens_sens", &g_3dss_lens_sens, 0.f, 1.f); // NLC: mouse speed matched to the lens magnification
+    CMD4(CCC_Float, "g_3dss_lens_lod", &g_3dss_lens_lod, 0.f, 1.f); // NLC: render LOD bias while looking through the lens
+    CMD4(CCC_Float, "g_3dss_lens_open", &g_3dss_lens_open, 0.f, 1.f); // NLC: ADS raise share at which the lens image appears
+    CMD4(CCC_Float, "g_3dss_lens_ppe", &g_3dss_lens_ppe, 0.f, 2.f); // NLC: strength of the lens-only blink (.ppe) on lens open
+    CMD4(CCC_Float, "g_3dss_lens_close_ppe", &g_3dss_lens_close_ppe, 0.f, 2.f); // NLC: strength of the blink on the exit
+    CMD4(CCC_Float, "g_3dss_lens_close", &g_3dss_lens_close, 0.f, 1.f); // NLC: ADS lowering share at which the glass returns
+    CMD4(CCC_Float, "g_3dss_lens_fade_in", &g_3dss_lens_fade_in, 0.f, 1.f); // NLC: raise share of the lens fade from black
+    CMD4(CCC_Float, "g_3dss_lens_exit_unzoom", &g_3dss_lens_exit_unzoom, 0.f, 1.f); // NLC: lens unzoom over the exit
+    CMD4(CCC_Float, "g_3dss_lens_exit_dark", &g_3dss_lens_exit_dark, 0.f, 1.f); // NLC: lens darkening over the exit
+    CMD4(CCC_Float, "g_3dss_lens_ppe_speed", &g_3dss_lens_ppe_speed, 0.25f, 8.f); // NLC: playback speed of that blink
+    CMD4(CCC_Float, "g_3dss_lens_ppe_delay", &g_3dss_lens_ppe_delay, 0.f, 1.f); // NLC: delay of that blink after the switch
 
     CMD4(CCC_Integer, "g_cop_death_anim", &g_bCopDeathAnim, 0, 1);
 

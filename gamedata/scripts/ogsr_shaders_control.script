@@ -40,41 +40,55 @@ local function on_dots_update()
 		-- стволы разные и один и тот же прицел на разных будет смотреться по-другому.
 		-- Надо настраивать для каждого.
 		-- scope_control(scope_name, scope_status)
-		scope_control(section, scope_status)
+		scope_control(section, scope_status, scope_name)
 	end
 
 	-- mark_control(wpn, true)
 end
 
-function scope_control(scope_name, scope_status)
+-- NLC: 3d_* keys come from the weapon section first, then from the fitted scope section, then the defaults
+-- (docs/SCOPE_PIP_DESIGN.md 1.4). Before, only the weapon section was read.
+local function scope_section_of(section, scope_section)
+	return function(key)
+		if section and sys_ini:section_exist(section) and sys_ini:line_exist(section, key) then return section end
+		if scope_section and scope_section ~= section and sys_ini:section_exist(scope_section)
+			and sys_ini:line_exist(scope_section, key) then return scope_section end
+		return section
+	end
+end
+
+function scope_control(scope_name, scope_status, scope_section)
 	if scope_status < 1 and not scope_name then return end
+	local from = scope_section_of(scope_name, scope_section)
 
-	local reticle_size = get_float(scope_name, "3d_reticle_size", 4)
-	local eye_relief = get_float(scope_name, "3d_eye_relief", 4)
-	local exit_pupil = get_float(scope_name, "3d_exit_pupil", 0.3)
-	local ffp = get_float(scope_name, "3d_ffp", 0)
+	local reticle_size = get_float(from("3d_reticle_size"), "3d_reticle_size", 4)
+	local eye_relief = get_float(from("3d_eye_relief"), "3d_eye_relief", 4)
+	local exit_pupil = get_float(from("3d_exit_pupil"), "3d_exit_pupil", 0.3)
+	local ffp = get_float(from("3d_ffp"), "3d_ffp", 0)
 
-	local scope_zoom_factor = get_float(scope_name, "scope_zoom_factor", 1.5)
-	local min_zoom = get_float(scope_name, "3d_min_zoom", 0)
-	local zoom_factor = get_float(scope_name, "3d_zoom_factor", 1)
+	local scope_zoom_factor = get_float(from("scope_zoom_factor"), "scope_zoom_factor", 1.5)
+	local min_zoom = get_float(from("3d_min_zoom"), "3d_min_zoom", 0)
+	local zoom_factor = get_float(from("3d_zoom_factor"), "3d_zoom_factor", 1)
 
-	local image_type = get_float(scope_name, "3d_image_type", 0)
-	local reticle_type = get_float(scope_name, "3d_reticle_type", 0)
-	local dirt_intensity = get_float(scope_name, "3d_dirt_intensity", 0)
-	local chroma_power = get_float(scope_name, "3d_chroma_power", 0.02)
+	local image_type = get_float(from("3d_image_type"), "3d_image_type", 0)
+	local reticle_type = get_float(from("3d_reticle_type"), "3d_reticle_type", 0)
+	local dirt_intensity = get_float(from("3d_dirt_intensity"), "3d_dirt_intensity", 0)
+	local chroma_power = get_float(from("3d_chroma_power"), "3d_chroma_power", 0.02)
 
-	local lens_color = get_vector(scope_name, "3d_lens_color", vector():set(1, 1, 1))
-	local nvg_blur = get_float(scope_name, "3d_nvg_blur", 0)
+	local lens_color = get_vector(from("3d_lens_color"), "3d_lens_color", vector():set(1, 1, 1))
+	local nvg_blur = get_float(from("3d_nvg_blur"), "3d_nvg_blur", 0)
 
-	local mark_number = get_float(scope_name, "mark_number", 0)
-	local mark_color = get_vector(scope_name, "mark_color", vector():set(0, 0, 0))
+	local mark_number = get_float(from("mark_number"), "mark_number", 0)
+	local mark_color = get_vector(from("mark_color"), "mark_color", vector():set(0, 0, 0))
 
 	shader_set_custom_param("s3ds_param_1", reticle_size, eye_relief, exit_pupil, ffp)
 	shader_set_custom_param("s3ds_param_2", 0, scope_zoom_factor, min_zoom, zoom_factor)
 	shader_set_custom_param("s3ds_param_3", image_type, reticle_type, dirt_intensity, chroma_power)
 	shader_set_custom_param("s3ds_param_4", lens_color.x, lens_color.y, lens_color.z, nvg_blur)
 
-	shader_set_custom_param("mark_number", mark_number, 0, 0, 0)
+	-- NLC: 3d_reticle_lock = 0 keeps the reticle lens-attached (mark_number.y = 1, see 3dss_reticle.ps)
+	local reticle_lock = get_float(from("3d_reticle_lock"), "3d_reticle_lock", 1)
+	shader_set_custom_param("mark_number", mark_number, reticle_lock < 0.5 and 1 or 0, 0, 0)
 	shader_set_custom_param("mark_color", mark_color.x, mark_color.y, mark_color.z)
 end
 
@@ -225,8 +239,59 @@ local function on_key(key, bind)
 	end
 end
 
+-- NLC: 2D texture scopes get crookr's screen lens pass (engine phase_fakescope: eye box that trails fast
+-- camera motion, dimmed and blurred surroundings, chromatic edge; docs/SCOPE_PIP_DESIGN.md 5).
+-- fake_scope_radius is non-zero only while a 2D-texture scope is zoomed. Radius per weapon or scope section
+-- (fake_scope_radius key) or the default; the console command tunes it live until the next zoom.
+local FAKESCOPE_DEFAULT_RADIUS = 0.37
+fakescope_enabled = true
+local fakescope_radius_set = -1
+local fakescope_params_set = false
+
+local function set_fakescope_radius(radius)
+	if math.abs(radius - fakescope_radius_set) < 0.0001 then return end
+	fakescope_radius_set = radius
+	get_console():execute(string.format("fake_scope_radius %.4f", radius))
+end
+
+-- Live tuning: fl ogsr_shaders_control.fakescope_radius(0.4) applies to every 2D scope this session (also logged);
+-- fl ogsr_shaders_control.fakescope_radius() returns to the configured values. While zoomed, the console command
+-- fake_scope_radius also works directly until the next zoom.
+local fakescope_radius_override = nil
+function fakescope_radius(radius)
+	radius = tonumber(radius)
+	fakescope_radius_override = radius and radius > 0 and radius or nil
+	fakescope_radius_set = -1
+	log2("[fakescope] radius override = %s", tostring(fakescope_radius_override))
+end
+
+local function update_fakescope()
+	local radius = 0
+	local actor = db.actor
+	local item = fakescope_enabled and actor and actor:alive() and actor:active_item()
+	local wpn = item and item:get_weapon()
+	if wpn and wpn.zoom_mode and wpn:UseScopeTexture() then
+		local section = item:section()
+		radius = get_float(section, "fake_scope_radius", 0)
+		local scope = wpn.scope_name
+		if radius <= 0 and scope and scope ~= "" and sys_ini:section_exist(scope) then
+			radius = get_float(scope, "fake_scope_radius", 0)
+		end
+		if radius <= 0 then radius = FAKESCOPE_DEFAULT_RADIUS end
+		if fakescope_radius_override then radius = fakescope_radius_override end
+		if not fakescope_params_set then
+			-- power 1 = no zoom on top of the camera's; no blur inside; blurred, dimmed surroundings
+			get_console():execute("fake_scope_power 1")
+			get_console():execute("fake_scope_params_1 0,0.6,0.85,0")
+			fakescope_params_set = true
+		end
+	end
+	set_fakescope_radius(radius)
+end
+
 function attach(sm)
 	sm:subscribe({signal = "on_update", fun = watch_update})
 	sm:subscribe({signal = "on_update", fun = on_dots_update})
+	sm:subscribe({signal = "on_update", fun = update_fakescope})
 	-- sm:subscribe({signal = "on_key", fun = on_key})
 end

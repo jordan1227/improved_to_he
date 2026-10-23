@@ -77,6 +77,11 @@ void InitSettings()
     shader_exports.set_custom_params("s3ds_param_2", {});
     shader_exports.set_custom_params("s3ds_param_3", {});
     shader_exports.set_custom_params("s3ds_param_4", {});
+    shader_exports.set_custom_params("s3ds_param_5", Fvector4{1.f, 0.f, 0.f, 1.f}); // NLC: lens magnification (Actor.cpp)
+    shader_exports.set_custom_params("s3ds_param_6", Fvector4{1.f, 1.f, 0.f, 0.f}); // NLC: crop request, lens fade (Actor.cpp)
+    shader_exports.set_custom_params("s3ds_param_7", Fvector4{1.f, 0.f, 0.f, 0.f}); // NLC: crop used by the upscaler (renderer)
+    shader_exports.set_custom_params("s3ds_param_8", Fvector4{.5f, .5f, .5f, 0.f}); // NLC: lens PPE base colour, gray
+    shader_exports.set_custom_params("s3ds_param_9", Fvector4{0.f, 0.f, 0.f, 0.f}); // NLC: lens PPE add colour, blur
     //
 
     if (pSettings->section_exist("shader_params_export"))

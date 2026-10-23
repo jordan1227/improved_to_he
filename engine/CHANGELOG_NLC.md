@@ -5,6 +5,93 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.145 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A47C74E99BC5A6118D057924227B0EBC539633AFBE3B0C1789463775775C027D` (archived with its PDB in `nlc_tools/builds/20261023_130146_a47c74e9`).
+- **Status:** runtime pending. Scope pass 8 (`docs/SCOPE_PIP_DESIGN.md` 20); .144 and the data-only `3d_reticle_lock` accepted.
+- Scope DLSS warm-up on any frame while lens/hybrid mode is on (first NGX load ~2 s with TAA, once per launch).
+- `g_3dss_lens_fade_in` default 0.5 (user's value). New ltx key `3d_reticle_lock` (SV-98 = 0).
+
+## nlc-3.589.144 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `4AED5A9F5C879C8F2C3E2CA47A2229756DDC93467DDC61227433D6D3F075E726` (archived with its PDB in `nlc_tools/builds/20261023_122356_4aed5a9f`).
+- **Status:** runtime pending. Scope pass 7 (`docs/SCOPE_PIP_DESIGN.md` 19).
+- Shader: RGBA reticles in lens mode drop the exit-pupil circle (one edge circle) and keep the dark ring opaque (no halo).
+- Lens CAS sharpening, `r_3dss_sharpen` (0.3, 0..1) via `s3ds_param_7.y`.
+
+## nlc-3.589.143 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `71751D830BB3FDF28AC773D44134FD5527CDBF91C20E60952FB9539DDFECF5A9` (archived with its PDB in `nlc_tools/builds/20261023_121148_71751d83`).
+- **Status:** runtime pending. Scope pass 6 (`docs/SCOPE_PIP_DESIGN.md` 18).
+- `g_3dss_lens_fade_in` is now the share of the raise left after the switch (the ramp always completes; the dark lens).
+- Scope DLSS warm-up runs every frame from the combine phase (it never ran in .142).
+- Defaults from the user's tuning: lens_open 0.95, fade_in 0, ppe 0.5, ppe_speed 4 (range up to 8), close_ppe 0.1.
+- Shader: lens mode keeps the exit pupil fully raised (no transition disc) and caps its eye offset.
+
+## nlc-3.589.142 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A3599F66CDFC6D79C986345B89DE4EB18329CE71562D8AD9814AEA0ED2196B30` (archived with its PDB in `nlc_tools/builds/20261023_114707_a3599f66`).
+- **Status:** runtime pending. Scope pass 5 (`docs/SCOPE_PIP_DESIGN.md` 17).
+- Lens entry/exit cvars: `g_3dss_lens_open` (0.9), `g_3dss_lens_close` (0.1), `g_3dss_lens_fade_in`, `g_3dss_lens_exit_unzoom`, `g_3dss_lens_exit_dark`, `g_3dss_lens_close_ppe`; `g_3dss_lens_ppe` up to 2; entry blink after the fade-in.
+- Exit unzooms the held magnification to 1x (crop dropped to 1 once).
+- Scope DLSS features created when a lens scope is in hands (timing logged); failed-config check uses the scope preset.
+- Shader: RGBA reticles split by scale (ring/vignette/dirt disc lens-attached, fine marks locked inside the ring).
+
+## nlc-3.589.141 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `25CA8B6028D0B202045910457CDAD7B622565D61C32923CF825F76654D3444F2` (archived with its PDB in `nlc_tools/builds/20261023_112447_25ca8b60`).
+- **Status:** runtime pending. Scope pass 4b (`docs/SCOPE_PIP_DESIGN.md` 16).
+- Lens exit keeps its last magnification and crop while darkening from the release (the exit pop).
+- Shader: RGBA reticles split into a lens-attached vignette (coarse mip) and locked fine marks (no doubled marks).
+
+## nlc-3.589.140 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `B2B630B31B54ABD3E04A45F209445318CFECDCDA8E151BC0182BE4440D4F9A92` (archived with its PDB in `nlc_tools/builds/20261023_110715_b2b630b3`).
+- **Status:** runtime pending. Scope pass 4 (`docs/SCOPE_PIP_DESIGN.md` 16).
+- Scope DLSS: display-size output on TAA/DLSS, two features (Performance dynamic crop up to 2x, Ultra Performance fixed 3x), lens model default K; `r_3dss_scale_factor` is FSR3-only; new `r_3dss_crop_debug`.
+- Lens PPE on its own clock: `g_3dss_lens_ppe_speed` (1.5), `g_3dss_lens_ppe_delay`; close blink at 2x on ADS exit.
+- Lens entry/exit: no glass underlay, brightness ramp black -> image and back; reticle texture edge fade.
+
+## nlc-3.589.139 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `045CA8B8281D216FECCD66D3AA2C07E1FEF74F974670DD070A3CB69EA81FC677` (archived with its PDB in `nlc_tools/builds/20261023_102929_045ca8b8`).
+- **Status:** runtime pending. Scope pass 3 (`docs/SCOPE_PIP_DESIGN.md` 15).
+- Crop upscaling: the scope DLSS feature (Ultra Performance range, dynamic sub-rectangle) upscales only the centre `1 / crop` of the frame that the lens shows (`CWeapon::LensCropMag`, widest zoom of the scope); output = display x `r_3dss_scale_factor` (works from 1). `s3ds_param_6/7` carry the request and the crop used.
+- `r_3dss_dlss_preset` (default F): DLSS model of the scope feature, independent of `r_aa_dlss_preset`.
+- Lens fade-in: glass and image drawn together while the image fades in over 0.3 of the raise.
+- Lens-only post-process: `nlc_gunplay.lens_ppe(name)`; on lens open plays `[nlc_scope] lens_open_ppe` (default `deimos_short.ppe`) with strength `g_3dss_lens_ppe`; colour/gray/blur reach `3dss_reticle.ps` via `s3ds_param_8/9`.
+- Main DLSS feature created only when DLSS is the AA mode; DLSS DLL version read from the file next to the exe, preset list logged only on change.
+- Required game data: `shaders/r3/3dss_reticle.ps`, menu row `r_3dss_dlss_preset` (`ui/ui_mm_opt.xml`, `ui_mm_opt_video_adv.script`, `ui_mm_opt_main.script`, `text/*/ui_st_mm.xml`).
+
+## nlc-3.589.138 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `7680A89F2F74C834186EA26766FC8785A650B51E0741FF220365D66857869AF2` (archived with its PDB in `nlc_tools/builds/20261023_094411_7680a89f`).
+- **Status:** runtime pending. Scope pass fixes after the first test of `.137` (`docs/SCOPE_PIP_DESIGN.md` 14).
+- Hybrid camera/lens share continuous (log scale, 2x all lens -> 8x all camera); lens magnification and camera zoom eased over ~0.1 s (`CWeapon::UpdateLensSmoothing`).
+- Lens image replaces the glass from mid-raise (`g_3dss_lens_open`, default 0.5; was the end of the raise).
+- Scope source upscaling only while the lens magnifies (no cost in full-screen zoom); DLSS scope feature also with TAA.
+- Required game data: `shaders/r3/3dss_reticle.ps` (lens flip fix, reticle edge clamp), menu rows moved to Advanced graphics (`ui/ui_mm_opt*.script`, `ui/ui_mm_opt.xml`, `text/*/ui_st_mm.xml`), `scripts/ogsr_shaders_control.script` (radius helper).
+
+## nlc-3.589.137 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `AFF8F60E357AFB40E5A02A93F8DF310AA827274B49551E4CBDCF0D3747348730` (archived with its PDB in `nlc_tools/builds/20261023_091228_aff8f60e`).
+- **Status:** runtime pending. 3D scope lens mode and scope upscaling (`docs/SCOPE_PIP_DESIGN.md` 13).
+- `g_3dss_lens_mode` (full screen / lens / hybrid, default full screen): `CWeapon` splits the scope's zoom into a camera zoom and a lens magnification (`ComputeLensSplit`); wheel zoom steps the scope's zoom in lens modes; `3d_lens_camera_share` per weapon/scope. `s3ds_param_5` (lens magnification, zoom part, active, LOD factor) pushed by `CActor` for `3dss_reticle.ps`.
+- `g_3dss_lens_sens` (0..1, default 1): mouse slowed by the lens magnification. `g_3dss_lens_lod` (default 0.5): render LOD/culling distance bias while looking through the lens.
+- Scope source upscaling: second DLSS feature when DLSS is the AA mode (FSR3 fallback); `r_3dss_scale_factor` capped at 2.0.
+- crookr fakescope pass re-enabled for 2D texture scopes (`fake_scope_radius` > 0, set by `ogsr_shaders_control.script`).
+- Shot-punch FOV scaled by camera FOV / `g_fov`.
+- Required game data: `shaders/r3/3dss_reticle.ps`, `scripts/ogsr_shaders_control.script`, `ui/ui_mm_opt.xml`, `ui/ui_mm_opt_gameplay.script`, `ui/ui_mm_opt_main.script`, `text/*/ui_st_mm.xml`.
+
 ## nlc-3.589.136 (2026-10-23)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

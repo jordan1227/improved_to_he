@@ -5,6 +5,7 @@
 #include "CameraEffector.h"
 #include "../xr_3da/Effector.h"
 #include "../xr_3da/ObjectAnimator.h"
+#include "PostprocessAnimator.h"
 
 // Lua:
 //   nlc_gunplay.shot_punch(roll_deg, fov_deg)  -- aim-neutral camera kick; roll is signed, fov < 0 narrows
@@ -17,6 +18,13 @@
 // Neither changes the camera direction, so the point of aim and bullets are unaffected.
 
 #define eCENlcShotPunch ((ECamEffectorType)(cefNext + 31))
+
+extern float g_fov; // Actor.cpp
+extern float g_3dss_lens_ppe; // Weapon.cpp
+extern float g_3dss_lens_ppe_speed; // Weapon.cpp
+extern float g_3dss_lens_ppe_delay; // Weapon.cpp
+extern float g_3dss_lens_close_ppe; // Weapon.cpp
+extern int ps_r_3dss_crop_debug; // xrRender_console.cpp
 
 namespace nlc_gunplay
 {
@@ -151,7 +159,9 @@ void shot_punch(float roll_rad, float fov_deg)
     if (!eff)
         return;
     eff->roll_v += roll_rad * PUNCH_ROLL_OMEGA * E_CONST;
-    eff->fov_v += fov_deg * PUNCH_FOV_OMEGA * E_CONST;
+    // The FOV punch is relative to the current camera FOV: a narrow full-screen scope zoom must not punch harder.
+    const float fov_k = g_fov > 1.f ? clampr(Device.fFOV / g_fov, 0.05f, 1.f) : 1.f;
+    eff->fov_v += fov_deg * fov_k * PUNCH_FOV_OMEGA * E_CONST;
 }
 
 // ---------------------------------------------------------------------------
@@ -403,8 +413,96 @@ bool set_param(LPCSTR name, float value)
 }
 float motion_amp_k() { return s_amp_k; }
 
+// ---------------------------------------------------------------------------
+// Lens-only post-process (docs/SCOPE_PIP_DESIGN.md 15): a .ppe evaluated without a camera manager. Its base/add
+// colour, gray and blur drive the 3D scope lens shader (s3ds_param_8/9), so e.g. the deimos blink covers only the
+// lens. Played automatically when the lens image takes over from the glass (and, faster, when it hands back), or from
+// Lua for experiments. Evaluated on its own clock (pass 4): speed and delay scale the authored timeline.
+// ---------------------------------------------------------------------------
+namespace
+{
+class CLensPPE : public CPostprocessAnimator
+{
+public:
+    CLensPPE() : CPostprocessAnimator(0, false) {}
+    // t: position on the authored timeline (seconds)
+    BOOL ProcessAt(SPPInfo& info, const float t)
+    {
+        m_start_time = Device.fTimeGlobal - t;
+        return Process(info);
+    }
+};
+CLensPPE* s_lens_ppe{};
+float s_lens_ppe_start{}, s_lens_ppe_speed{1.f}, s_lens_ppe_k{1.f};
+} // namespace
+
+void lens_ppe_play(LPCSTR name, float speed, float strength)
+{
+    xr_delete(s_lens_ppe);
+    if (!name || !name[0])
+        return;
+    string_path path;
+    if (!FS.exist(path, "$level$", name) && !FS.exist(path, "$game_anims$", name))
+    {
+        Msg("! [nlc_gunplay] lens ppe [%s] not found", name);
+        return;
+    }
+    s_lens_ppe = xr_new<CLensPPE>();
+    s_lens_ppe->Load(name);
+    s_lens_ppe_start = Device.fTimeGlobal + _max(g_3dss_lens_ppe_delay, 0.f);
+    s_lens_ppe_speed = speed > 0.f ? speed : _max(g_3dss_lens_ppe_speed, 0.05f);
+    s_lens_ppe_k = strength >= 0.f ? strength : g_3dss_lens_ppe;
+    if (ps_r_3dss_crop_debug >= 1)
+        Msg("--[nlc_gunplay] lens ppe [%s]: length [%.2f] s, speed [%.2f], strength [%.2f]", name, s_lens_ppe->GetLength(), s_lens_ppe_speed,
+            s_lens_ppe_k);
+}
+
+void on_lens_open()
+{
+    if (g_3dss_lens_ppe <= 0.f)
+        return;
+    static const shared_str name{READ_IF_EXISTS(pSettings, r_string, "nlc_scope", "lens_open_ppe", "deimos_short.ppe")};
+    static const float speed_k{READ_IF_EXISTS(pSettings, r_float, "nlc_scope", "lens_open_ppe_speed", 1.f)};
+    lens_ppe_play(name.c_str(), _max(g_3dss_lens_ppe_speed, 0.05f) * speed_k);
+}
+
+void on_lens_close()
+{
+    if (g_3dss_lens_close_ppe <= 0.f)
+        return;
+    static const shared_str name{READ_IF_EXISTS(pSettings, r_string, "nlc_scope", "lens_close_ppe", "deimos_short.ppe")};
+    static const float speed_k{READ_IF_EXISTS(pSettings, r_float, "nlc_scope", "lens_close_ppe_speed", 2.f)};
+    lens_ppe_play(name.c_str(), _max(g_3dss_lens_ppe_speed, 0.05f) * speed_k, g_3dss_lens_close_ppe);
+    s_lens_ppe_start = Device.fTimeGlobal; // the exit is short: no delay
+}
+
+void lens_ppe_update()
+{
+    Fvector4 base{.5f, .5f, .5f, 0.f}, add{0.f, 0.f, 0.f, 0.f};
+    if (s_lens_ppe)
+    {
+        SPPInfo info;
+        const float t = (Device.fTimeGlobal - s_lens_ppe_start) * s_lens_ppe_speed;
+        const bool alive = t <= s_lens_ppe->GetLength() + 0.05f;
+        if (t < 0.f)
+            ; // delay: identity until the timeline starts
+        else if (alive && s_lens_ppe->ProcessAt(info, t))
+        {
+            const float k = clampr(s_lens_ppe_k, 0.f, 2.f); // strength: 0 identity, 1 as authored, 2 exaggerated
+            base.set(_max(.5f + (info.color_base.r - .5f) * k, 0.f), _max(.5f + (info.color_base.g - .5f) * k, 0.f), _max(.5f + (info.color_base.b - .5f) * k, 0.f),
+                     _min(info.gray * k, 1.f));
+            add.set(info.color_add.r * k, info.color_add.g * k, info.color_add.b * k, info.blur * k);
+        }
+        else
+            xr_delete(s_lens_ppe);
+    }
+    shader_exports.set_custom_params("s3ds_param_8", base);
+    shader_exports.set_custom_params("s3ds_param_9", add);
+}
+
 void clear()
 {
+    xr_delete(s_lens_ppe);
     for (Clip& c : s_clips)
     {
         xr_delete(c.anm);
@@ -468,6 +566,12 @@ int l_shot_punch(lua_State* L)
     return 0;
 }
 
+int l_lens_ppe(lua_State* L)
+{
+    lens_ppe_play(luaL_optstring(L, 1, ""), float(luaL_optnumber(L, 2, 0.0)));
+    return 0;
+}
+
 int l_land(lua_State* L)
 {
     lua_pushnumber(L, lua_Number(s_land_count));
@@ -482,6 +586,7 @@ void script_register(lua_State* L)
     static const luaL_Reg funcs[] = {
         {"shot_punch", l_shot_punch},
         {"land", l_land},
+        {"lens_ppe", l_lens_ppe},
         {"hud_clip", l_hud_clip},
         {"hud_impulse", l_hud_impulse},
         {"set_motion_mod", l_set_motion_mod},

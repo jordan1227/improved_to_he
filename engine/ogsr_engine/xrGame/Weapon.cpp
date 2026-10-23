@@ -1290,7 +1290,22 @@ void CWeapon::ZoomChange(bool inc)
 {
     bool wasChanged = false;
 
-    if (Is3dssEnabled() && !m_3dss_gen_zoom_enable)
+    if (LensModeActive()) // NLC: lens mode steps the zoom the scope shows, then splits it between camera and lens
+    {
+        float delta, min_zoom_factor;
+        GetZoomData(m_fScopeZoomFactor, delta, min_zoom_factor);
+
+        const float currentTarget = m_fLensTarget > 0.f ? m_fLensTarget : m_fScopeZoomFactor;
+        float target = currentTarget - delta * (inc ? 1 : -1);
+        clamp(target, m_fScopeZoomFactor, min_zoom_factor);
+
+        wasChanged = !fsimilar(currentTarget, target);
+        UpdateLensSplit(target); // camera and lens ease toward the new split (UpdateLensSmoothing)
+
+        if (H_Parent() && !IsRotatingToZoom())
+            m_fRTZoomFactor = target; // store current
+    }
+    else if (Is3dssEnabled() && !m_3dss_gen_zoom_enable)
     {
 // Simp: переменную кратность в новых прицелах сделал на скриптах, мб в будущем верну в двиг, но пока так.
         return;
@@ -1683,10 +1698,101 @@ bool CWeapon::Activate(bool now)
 
 void CWeapon::InitAddons() {}
 
+// NLC: lens mode (docs/SCOPE_PIP_DESIGN.md). g_3dss_lens_mode: 0 full-screen zoom (original), 1 lens, 2 hybrid.
+// Only for NLC's 3D scope sections (3dss_gen_zoom_enable marks them) and the classic zoom-factor system.
+u32 g_3dss_lens_mode{};
+float g_3dss_lens_sens{1.f}; // 1 = mouse speed matched to the lens magnification
+float g_3dss_lens_lod{0.5f}; // render LOD bias exponent of the lens magnification while looking through the lens
+float g_3dss_lens_ppe{0.5f}; // strength of the lens-open .ppe inside the lens (0 = off)
+float g_3dss_lens_ppe_speed{4.f}; // playback speed of the lens .ppe (the authored deimos blink is long)
+float g_3dss_lens_ppe_delay{}; // seconds between the lens switch and the lens .ppe
+float g_3dss_lens_open{0.95f}; // ADS raise progress at which the 3D scope lens image replaces the glass (was 1.0)
+float g_3dss_lens_close{0.1f}; // ADS lowering progress at which the glass returns
+float g_3dss_lens_fade_in{0.5f}; // share of the raise left after the switch used for the lens black -> image ramp
+float g_3dss_lens_exit_unzoom{1.f}; // share of the lens magnification eased to 1x over the exit
+float g_3dss_lens_exit_dark{}; // how dark the lens gets at the exit hand-back
+float g_3dss_lens_close_ppe{0.1f}; // strength of the exit blink (.ppe), 0 = off
+
+bool CWeapon::LensModeActive() const
+{
+    return g_3dss_lens_mode != 0 && m_3dss_gen_zoom_enable && !is_alt_aim_enabled && !IsGrenadeMode() && Is3dssEnabled() &&
+        !Core.Features.test(xrCore::Feature::ogse_wpn_zoom_system);
+}
+
+// Splits the scope's zoom (target_factor, same units as m_fZoomFactor: FOV / 0.75) into a camera zoom and the lens
+// magnification. Lens mode leaves the camera at the base FOV; hybrid lets the camera take M^share (share 0 at 2x
+// rising to 1 at 8x).
+void CWeapon::ComputeLensSplit(float target_factor, float& cam_factor, float& lens_mag) const
+{
+    if (target_factor <= 0.f)
+        target_factor = m_fScopeZoomFactor;
+
+    const float base_fov = g_fov;
+    float target_fov = target_factor * 0.75f;
+    clamp(target_fov, 1.f, base_fov);
+    const float base_t = tanf(deg2rad(base_fov) * 0.5f);
+    const float total = base_t / tanf(deg2rad(target_fov) * 0.5f);
+
+    // Continuous on a log scale so variable zoom never jumps between camera and lens: 2x and below all lens,
+    // 8x and above all camera (screen-space magnification gets soft there).
+    float share = 0.f;
+    if (g_3dss_lens_mode == 2)
+    {
+        if (m_f3dssLensShare >= 0.f)
+            share = m_f3dssLensShare;
+        else
+            share = logf(_max(total, 1.f) / 2.f) / logf(4.f);
+    }
+    clamp(share, 0.f, 1.f);
+
+    const float cam_mag = powf(total, share);
+    const float cam_fov = rad2deg(2.f * atanf(base_t / cam_mag));
+    cam_factor = cam_fov / 0.75f;
+    lens_mag = total / cam_mag;
+}
+
+void CWeapon::UpdateLensSplit(float target_factor)
+{
+    m_fLensTarget = target_factor > 0.f ? target_factor : m_fScopeZoomFactor;
+    ComputeLensSplit(m_fLensTarget, m_fLensCam, m_fLensMag);
+}
+
+// Eases the camera zoom and the lens magnification toward the split (Actor.cpp, every frame while zoomed).
+void CWeapon::UpdateLensSmoothing(float dt)
+{
+    if (!IsZoomed() || !LensModeActive())
+    {
+        m_fLensMagShown = m_fLensMag;
+        return;
+    }
+    const float k = 1.f - expf(-14.f * _max(dt, 0.f));
+    m_fLensMagShown += (m_fLensMag - m_fLensMagShown) * k;
+    m_fZoomFactor += (m_fLensCam - m_fZoomFactor) * k;
+}
+
+// 0 at the strongest zoom, 1 at the widest (matches the lens shader's zoom_part).
+float CWeapon::LensZoomPart()
+{
+    if (!m_bScopeDynamicZoom)
+        return 0.f;
+    float delta, min_zoom_factor;
+    GetZoomData(m_fScopeZoomFactor, delta, min_zoom_factor);
+    if (fsimilar(min_zoom_factor, m_fScopeZoomFactor))
+        return 0.f;
+    const float t = m_fLensTarget > 0.f ? m_fLensTarget : m_fScopeZoomFactor;
+    return clampr((t - m_fScopeZoomFactor) / (min_zoom_factor - m_fScopeZoomFactor), 0.f, 1.f);
+}
+
 float CWeapon::CurrentZoomFactor()
 {
     if (is_alt_aim_enabled)
         return m_fIronSightZoomFactor;
+    if (LensModeActive())
+    {
+        float cam_factor, lens_mag; // no side effects: called every frame for the shader HUD params
+        ComputeLensSplit(m_fScopeZoomFactor, cam_factor, lens_mag);
+        return cam_factor;
+    }
     if (Is3dssEnabled() && !m_3dss_gen_zoom_enable)
         return Core.Features.test(xrCore::Feature::ogse_wpn_zoom_system) ? 1.0f : m_fIronSightZoomFactor; // no change to main fov zoom when use second vp
     else if (IsScopeAttached())
@@ -1700,7 +1806,24 @@ void CWeapon::OnZoomIn()
     m_bZoomMode = true;
 
     // если в режиме ПГ - не будем давать включать динамический зум
-    if (m_bScopeDynamicZoom && !IsGrenadeMode() && !(Is3dssEnabled() && !m_3dss_gen_zoom_enable) && !is_alt_aim_enabled)
+    if (LensModeActive()) // NLC: the stored zoom is what the scope shows; the camera takes its share of it
+    {
+        UpdateLensSplit(m_bScopeDynamicZoom ? m_fRTZoomFactor : m_fScopeZoomFactor);
+        m_fZoomFactor = m_fLensCam;
+        m_fLensMagShown = m_fLensMag;
+
+        // The upscaler crop must hold the lens view at every zoom step: use the widest zoom of the range.
+        float widest = m_fScopeZoomFactor;
+        if (m_bScopeDynamicZoom)
+        {
+            float delta;
+            GetZoomData(m_fScopeZoomFactor, delta, widest);
+        }
+        float cam_unused;
+        ComputeLensSplit(widest, cam_unused, m_fLensCropMag);
+        m_fLensCropMag = _min(m_fLensCropMag, m_fLensMag);
+    }
+    else if (m_bScopeDynamicZoom && !IsGrenadeMode() && !(Is3dssEnabled() && !m_3dss_gen_zoom_enable) && !is_alt_aim_enabled)
         m_fZoomFactor = m_fRTZoomFactor;
     else
         m_fZoomFactor = CurrentZoomFactor();
