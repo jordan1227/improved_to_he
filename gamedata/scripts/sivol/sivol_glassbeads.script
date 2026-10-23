@@ -1,0 +1,372 @@
+-- sivol_glassbeads.script: Electric Beads (af_glassbeads) charge and electric ward.
+--
+-- An electric discharge charges the beads: a timed movement-speed bonus that
+-- params.move_speed_set adds through get_speed_bonus(). A Tesla-type ambient
+-- discharge gives a short pulse; an anomaly (Electra, Pulse, electro-chimera)
+-- gives a long charge scaled by its strength. Once per WARD_RECHARGE the beads
+-- cancel one electric hit of at least WARD_MIN_POWER; a cancelled hit still
+-- charges them.
+--
+-- Sources are whitelisted. Zone hits are recognised in on_before_hit by their
+-- zone object. Scripted discharges report through on_scripted_discharge before
+-- their actor:hit, because that hit packet is processed later and carries the
+-- actor as draftsman, so it cannot be told apart from fake or boundary shocks.
+sivol_glassbeads = sivol_glassbeads or {}
+local M = sivol_glassbeads
+
+-- mult scales the section's add_move_speed; hold is full strength, fade the
+-- linear ramp down after it (ms of gameplay time)
+local PROFILES = {
+    ambient = { mult = 1.00, hold = 3000,  fade = 4000  },
+    weak    = { mult = 0.67, hold = 45000, fade = 15000 },
+    average = { mult = 1.00, hold = 60000, fade = 15000 },
+    strong  = { mult = 1.33, hold = 75000, fade = 15000 },
+}
+-- raw hit power bands for scripted anomaly discharges (Pulse, electro-chimera);
+-- Electra zones are classified by their section instead
+local BAND_WEAK = 0.2
+local BAND_AVERAGE = 0.8
+local BAND_STRONG = 1.6
+
+local WARD_RECHARGE = 60000
+local WARD_MIN_POWER = 0.2
+local WARD_SOUND = "zwuk_short\\kolo_block"
+
+local STATE_WARD_REMAINING = "sivol_glassbeads.ward_remaining"
+
+local SCAN_INTERVAL = 200
+local UPDATE_INTERVAL = 100
+local APPLY_STEP = 0.005
+local DIAGNOSTICS_ENABLED = true
+
+local HIT_SHOCK = hit and hit.shock or 1
+
+local candidates = {}
+local scan_dirty = true
+local last_scan = 0
+local last_update = nil
+local state_loaded = false
+
+local ward_remaining = 0
+-- channel -> { profile = name, remaining = ms }; ambient and anomaly charges
+-- run side by side so a Tesla pulse never cuts a long Electra charge short
+local charges = {}
+local current_bonus = 0
+local last_applied_bonus = nil
+
+local function clamp(value, low, high)
+    return math.max(low, math.min(high, value))
+end
+
+local function dlog(fmt, ...)
+    if DIAGNOSTICS_ENABLED then log2("[sivol_glassbeads] " .. fmt, ...) end
+end
+
+function M.is_supported_section(section)
+    return section == "af_glassbeads"
+        or (section and string.match(section, "^af_glassbeads_dyn[1-5]d$") ~= nil)
+end
+
+local function belt_is_powered()
+    if not (sak and sak_inventory and sak.arts_operate
+        and sak.get_accum and sak_inventory.belt_items) then
+        return false
+    end
+    return sak.get_accum() ~= nil and sak.arts_operate == true
+end
+
+local function invalidate_candidates()
+    scan_dirty = true
+    last_scan = 0
+end
+
+local function scan_candidates(now)
+    if not scan_dirty and now - last_scan < SCAN_INTERVAL then return end
+
+    candidates = {}
+    last_scan = now
+    scan_dirty = false
+    if not (sak_inventory and sak_inventory.belt_items) then return end
+
+    for section, ids in pairs(sak_inventory.belt_items) do
+        if M.is_supported_section(section) and type(ids) == "table" then
+            for _, artifact_id in ipairs(ids) do
+                table.insert(candidates, { section = section, id = artifact_id })
+            end
+        end
+    end
+end
+
+-- strongest live beads on a powered belt: { id, section, speed }
+local function select_current(now)
+    if not belt_is_powered() then return nil end
+
+    scan_candidates(now)
+    local selected = nil
+    for _, candidate in ipairs(candidates) do
+        local artifact = client_obj(candidate.id)
+        if artifact and artifact:section() == candidate.section and artifact:condition() > 0 then
+            local base = get_float(candidate.section, "add_move_speed", 0)
+            local speed = base * get_effective_strength(artifact, base > 0, "add_move_speed")
+            if not selected or speed > selected.speed then
+                selected = { id = candidate.id, section = candidate.section, speed = speed }
+            end
+        end
+    end
+    return selected
+end
+
+local function fade_factor(charge)
+    local p = PROFILES[charge.profile]
+    if charge.remaining <= 0 then return 0 end
+    if charge.remaining >= p.fade then return 1 end
+    return charge.remaining / p.fade
+end
+
+local function charge_value(charge)
+    return PROFILES[charge.profile].mult * fade_factor(charge)
+end
+
+local function add_charge(profile, power, source)
+    local channel = profile == "ambient" and "ambient" or "anomaly"
+    local p = PROFILES[profile]
+    local current = charges[channel]
+    -- a weaker discharge never replaces a stronger charge that is still running
+    if current and charge_value(current) > p.mult then
+        dlog("charge %s from %s power=%.3f kept stronger %s (%.0f ms left)",
+            profile, source, power, current.profile, current.remaining)
+        return
+    end
+    charges[channel] = { profile = profile, remaining = p.hold + p.fade }
+    dlog("charge %s from %s power=%.3f for %d ms", profile, source, power, p.hold + p.fade)
+end
+
+local function try_ward(power, source)
+    if ward_remaining > 0 or power < WARD_MIN_POWER then return false end
+
+    ward_remaining = WARD_RECHARGE
+    local snd = xr_sound.get_safe_sound_object(WARD_SOUND)
+    if snd then
+        snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+    end
+    dlog("ward cancelled %s hit power=%.3f, recharge %d ms", source, power, WARD_RECHARGE)
+    return true
+end
+
+-- shared path: returns true when the ward cancelled the hit
+local function discharge(profile, power, source)
+    -- a hazard can fire before this module's first update after a load
+    if not state_loaded then M.load_state() end
+    local selection = select_current(time_global())
+    if not selection then return false end
+    local warded = try_ward(power, source)
+    add_charge(profile, power, source)
+    return warded
+end
+
+local function band_profile(power)
+    if power >= BAND_STRONG then return "strong" end
+    if power >= BAND_AVERAGE then return "average" end
+    if power >= BAND_WEAK then return "weak" end
+    return nil
+end
+
+-- Electra zone that dealt the hit: "weak" / "average" / "strong", else nil
+local function electra_zone_profile(who_id)
+    if not who_id or who_id == db.actor:id() then return nil end
+    local zone = level.object_by_id(who_id)
+    if not zone or not zone:is_anomaly() then return nil end
+
+    local sec = zone:section() or ""
+    if not (zone:clsid() == clsid.zone_electra_s
+        or string.find(sec, "galantine", 1, true)
+        or (string.find(sec, "zone_", 1, true) and string.find(sec, "electr", 1, true))) then
+        return nil
+    end
+    if string.find(sec, "_weak", 1, true) then return "weak" end
+    if string.find(sec, "_strong", 1, true) then return "strong" end
+    return "average"
+end
+
+-- bind_stalker before-hit, after kolobok and before on_actor_before_hit, so a
+-- cancelled Electra hit never reaches sivol_hit_shock (no device outage)
+function M.on_before_hit(hit_data)
+    if not hit_data or hit_data.ignore_hit or hit_data.hit_type ~= HIT_SHOCK then return false end
+    local power = tonumber(hit_data.power) or 0
+    if power <= 0 then return false end
+
+    local profile = electra_zone_profile(hit_data.who_id)
+    if not profile then return false end
+
+    if discharge(profile, power, "electra") then
+        hit_data.ignore_hit = true
+        return true
+    end
+    return false
+end
+
+-- Scripted electric discharge, called before its actor:hit. kind "ambient" is a
+-- Tesla-type field discharge (any power charges it); "anomaly" is graded by
+-- power. Returns true when the ward cancelled the hit: the caller skips it.
+function M.on_scripted_discharge(power, kind, source)
+    power = tonumber(power) or 0
+    if power <= 0 or not db.actor then return false end
+
+    local profile = kind == "ambient" and "ambient" or band_profile(power)
+    if not profile then return false end
+    return discharge(profile, power, source or kind)
+end
+
+function M.get_speed_bonus()
+    return current_bonus
+end
+
+-- inventory preview: lowest and highest charged speed for a section's speed value
+function M.get_preview(speed)
+    return speed * PROFILES.weak.mult, speed * PROFILES.strong.mult
+end
+
+local function gameplay_clock_active()
+    if level.main_input_receiver() then return false end
+    if device():is_paused() then return false end
+    return true
+end
+
+local function apply_bonus(bonus)
+    current_bonus = bonus
+    if last_applied_bonus ~= nil and math.abs(bonus - last_applied_bonus) < APPLY_STEP
+        and not (bonus == 0 and last_applied_bonus ~= 0) then
+        return
+    end
+    last_applied_bonus = bonus
+    params.refresh_move_speed()
+end
+
+function M.on_update()
+    ogse_signals.get_mgr():reschedule(UPDATE_INTERVAL)
+
+    local now = time_global()
+    if not db.actor then
+        last_update = nil
+        return
+    end
+    if not state_loaded then M.load_state() end
+
+    local elapsed = 0
+    if gameplay_clock_active() then
+        if last_update and now >= last_update then
+            elapsed = math.min(1000, now - last_update)
+        end
+        last_update = now
+    else
+        last_update = nil
+    end
+
+    if elapsed > 0 then
+        if ward_remaining > 0 then
+            ward_remaining = math.max(0, ward_remaining - elapsed)
+            if ward_remaining == 0 then dlog("ward ready") end
+        end
+        for channel, charge in pairs(charges) do
+            charge.remaining = charge.remaining - elapsed
+            if charge.remaining <= 0 then
+                charges[channel] = nil
+                dlog("%s charge ended", channel)
+            end
+        end
+    end
+
+    local bonus = 0
+    local selection = select_current(now)
+    if selection then
+        local strongest = 0
+        for _, charge in pairs(charges) do
+            strongest = math.max(strongest, charge_value(charge))
+        end
+        bonus = selection.speed * strongest
+    end
+    apply_bonus(bonus)
+end
+
+function M.load_state()
+    ward_remaining = math.max(0, tonumber(get_value(STATE_WARD_REMAINING, 0)) or 0)
+    state_loaded = true
+end
+
+local function save_state()
+    if not state_loaded then return end
+    set_value(STATE_WARD_REMAINING, math.max(0, ward_remaining))
+end
+
+-- charges are not saved: a load or level change starts uncharged
+local function reset_runtime()
+    last_update = nil
+    charges = {}
+    current_bonus = 0
+    last_applied_bonus = nil
+    invalidate_candidates()
+end
+
+function M.on_game_loaded()
+    M.load_state()
+    reset_runtime()
+end
+
+function M.on_spawn()
+    reset_runtime()
+end
+
+function M.on_before_save_game()
+    save_state()
+end
+
+function M.on_level_changer_action()
+    save_state()
+    reset_runtime()
+end
+
+function M.on_stop_modules()
+    save_state()
+end
+
+-- console helpers: fl sivol_glassbeads.debug_state() / debug_charge("strong") / debug_ward_reset()
+function M.debug_state()
+    local selection = select_current(time_global())
+    log2("[sivol_glassbeads] beads=%s speed=%.3f bonus=%.4f ward_remaining=%.0f powered=%s",
+        selection and selection.section or "none", selection and selection.speed or 0,
+        current_bonus, ward_remaining, tostring(belt_is_powered()))
+    for channel, charge in pairs(charges) do
+        log2("[sivol_glassbeads]   %s: %s remaining=%.0f value=%.3f", channel, charge.profile,
+            charge.remaining, charge_value(charge))
+    end
+end
+
+function M.debug_charge(profile)
+    profile = PROFILES[profile] and profile or "average"
+    add_charge(profile, 0, "debug")
+    M.debug_state()
+end
+
+function M.debug_ward_reset()
+    ward_remaining = 0
+    M.debug_state()
+end
+
+function M.set_diagnostics(enabled)
+    DIAGNOSTICS_ENABLED = enabled == true
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_update", fun = M.on_update })
+    sm:subscribe({ signal = "on_before_save_game", fun = M.on_before_save_game })
+    sm:subscribe({ signal = "on_game_loaded", fun = M.on_game_loaded })
+    sm:subscribe({ signal = "level_changer_action", fun = M.on_level_changer_action })
+    sm:subscribe({ signal = "on_spawn", fun = M.on_spawn })
+    sm:subscribe({ signal = "on_item_to_belt", fun = invalidate_candidates })
+    sm:subscribe({ signal = "on_item_to_ruck", fun = invalidate_candidates })
+    sm:subscribe({ signal = "on_item_to_slot", fun = invalidate_candidates })
+    sm:subscribe({ signal = "on_drop_after_all", fun = invalidate_candidates })
+    sm:subscribe({ signal = "on_stop_modules", fun = M.on_stop_modules })
+end
+
+M.attach = attach
