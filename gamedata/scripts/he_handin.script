@@ -1,0 +1,386 @@
+local session = nil
+
+local place_rank = {
+  [ "ruck"   ] = 0,
+  [ "hidden" ] = 1,
+  [ "slot"   ] = 2,
+  [ "belt"   ] = 3,
+}
+
+local table_titles = {
+  [ "lvl1"  ] = "ui_he_handin_any_lvl1",
+  [ "lvl2"  ] = "ui_he_handin_any_lvl2",
+  [ "lvl3"  ] = "ui_he_handin_any_lvl3",
+  [ "lvl4"  ] = "ui_he_handin_any_dummy",
+  [ "lvl7"  ] = "ui_he_handin_any_mod",
+  [ "lvl8"  ] = "ui_he_handin_any_mezo",
+  [ "lvl9"  ] = "ui_he_handin_any_hyper",
+  [ "lvl10" ] = "ui_he_handin_any_absolut",
+}
+
+
+function attach( sm )
+  sm:subscribe( { signal = "on_update", fun = this.on_update } )
+end
+
+
+function active()
+  return db.actor ~= nil and db.actor:alive() and db.actor:is_talking()
+end
+
+
+function place_of( obj )
+  local actor  = db.actor
+  local parent = obj:parent()
+  if not ( parent and parent:id() == actor:id() ) then return "hidden" end
+  if actor:is_on_belt( obj ) then return "belt" end
+  if actor:is_in_slot( obj ) then return "slot" end
+  return "ruck"
+end
+
+
+function item_value( sect, cond )
+  return get_float( sect, "cost", 0 ) * cond
+end
+
+
+function row_key( sect, cond )
+  return sect .. ":" .. string.format( "%.0f", cond )
+end
+
+
+local function less( a, b )
+  if a.rank  ~= b.rank  then return a.rank  < b.rank  end
+  if a.value ~= b.value then return a.value < b.value end
+  return a.id < b.id
+end
+
+
+local function shadow_items()
+  return get_shadow_inv():get_content( true )
+end
+
+
+local function ruck_items()
+  local recs = {}
+  for sect, ids in pairs( sak_inventory.rucksack ) do
+    for _, id in ipairs( ids ) do
+      local obj = level.object_by_id( id )
+      if obj then
+        table.insert( recs, { [ "sect" ] = sect, [ "id" ] = id, [ "obj" ] = obj } )
+      end
+    end
+  end
+  return { [ "ipairs" ] = function() return ipairs( recs ) end }
+end
+
+
+local sources = {
+  [ "shadow" ] = shadow_items,
+  [ "ruck"   ] = ruck_items,
+}
+
+
+function collect( items, match, strict )
+  local list = {}
+  for _, rec in items:ipairs() do
+    local ok, base, tag = match( rec )
+    if ok and not he_gluzov_art.is_locked_id( rec.id ) then
+      local obj = rec.obj
+      if obj and obj:is_artefact() then
+        local cond  = obj:condition()
+        local place = place_of( obj )
+        table.insert( list, {
+          [ "id"        ] = rec.id,
+          [ "obj"       ] = obj,
+          [ "section"   ] = rec.sect,
+          [ "base"      ] = base,
+          [ "tag"       ] = tag,
+          [ "condition" ] = cond,
+          [ "place"     ] = place,
+          [ "rank"      ] = place_rank[ place ] or 0,
+          [ "value"     ] = item_value( rec.sect, cond ),
+        } )
+      elseif strict then
+        return nil
+      end
+    end
+  end
+  table.sort( list, less )
+  return list
+end
+
+
+local function get_group( key, match, source, title )
+  if not session then session = { groups = {} } end
+  for _, g in ipairs( session.groups ) do
+    if g.key == key then return g end
+  end
+  local g = {
+    [ "key"    ] = key,
+    [ "match"  ] = match,
+    [ "source" ] = source,
+    [ "title"  ] = title,
+    [ "need"   ] = 0,
+    [ "given"  ] = {},
+  }
+  table.insert( session.groups, g )
+  return g
+end
+
+
+local function ambiguous( list, group, count )
+  if table.getn( list ) <= count then return false end
+  local first
+  local function differs( sect, cond )
+    local k = row_key( sect, cond )
+    first = first or k
+    return k ~= first
+  end
+  for _, e in ipairs( group.given ) do
+    if differs( e.section, e.condition ) then return true end
+  end
+  for _, c in ipairs( list ) do
+    if differs( c.section, tonumber( string.format( "%.2f", c.condition * 100 ) ) ) then return true end
+  end
+  return false
+end
+
+
+local function take( list, group, count, news )
+  local real, real_sect = 0, nil
+  for _, c in ipairs( list ) do
+    if real >= count then break end
+    table.insert( group.given, {
+      [ "section"   ] = c.section,
+      [ "base"      ] = c.base,
+      [ "condition" ] = tonumber( string.format( "%.2f", c.condition * 100 ) ),
+      [ "game_type" ] = "artefact",
+      [ "count"     ] = 1,
+      [ "info"      ] = he_magic_box.get_item_info( c.obj ),
+      [ "place"     ] = c.place,
+      [ "value"     ] = c.value,
+    } )
+    misc.release_obj( c.id, "he_handin" )
+    if news then sak.relocate_item( "out", c.tag or c.section, 1 ) end
+    real = real + 1
+    real_sect = real_sect or c.base
+  end
+  group.need = group.need + real
+  return real, real_sect
+end
+
+
+function release( items, section, count, exact, flt )
+  local match = function( rec )
+    return sak_inventory.release_match( rec, section, exact, flt )
+  end
+  local list = collect( items, match, true )
+  if not ( list and list[ 1 ] ) then return false, 0, nil end
+  local group = get_group( "sect|" .. section .. "|" .. tostring( exact ), match, "shadow", nil )
+  if ambiguous( list, group, count ) then group.quiet = true end
+  local real, real_sect = take( list, group, count, false )
+  return true, real, real_sect, group.quiet
+end
+
+
+local function table_title( tbl )
+  for k, v in pairs( kotovod.tbl_arts ) do
+    if v == tbl and table_titles[ k ] then
+      return game.translate_string( table_titles[ k ] )
+    end
+  end
+  return game.translate_string( "ui_he_handin_any_art" )
+end
+
+
+function release_table( tbl, count, dyn_flag, dyn, cond, capsule )
+  local match = function( rec )
+    local sect = rec.sect
+    for a = 1, table.getn( tbl ) do
+      local want = tbl[ a ]
+      if string.find( sect, want, 1, true ) then
+        local ok
+        if dyn_flag == true then
+          local n = tonumber( string.match( sect, "_dyn(%d)d" ) ) or 0
+          ok = ( not string.find( sect, "_dyn6d", 1, true ) ) and n >= ( dyn or 0 )
+        elseif dyn_flag == false then
+          ok = not ( capsule == true and string.find( sect, "_capsule", 1, true ) )
+        else
+          ok = false
+        end
+        if ok and rec.obj and rec.obj:condition() >= cond then
+          return true, want, want
+        end
+      end
+    end
+    return false
+  end
+  local list = collect( ruck_items(), match, true )
+  if not ( list and list[ 1 ] ) then return false end
+  local key = "tbl|" .. tostring( tbl ) .. "|" .. tostring( dyn_flag ) .. "|" .. tostring( dyn )
+    .. "|" .. tostring( cond ) .. "|" .. tostring( capsule )
+  local group = get_group( key, match, "ruck", table_title( tbl ) )
+  if ambiguous( list, group, count ) then group.quiet = true end
+  take( list, group, count, not group.quiet )
+  return true
+end
+
+
+local function build_view( s )
+  sak_inventory.inventory_control()
+  local view, ambiguous = {}, false
+  for _, g in ipairs( s.groups ) do
+    if g.quiet then
+      local rows, keys, nkeys = {}, {}, 0
+      local function add_key( k )
+        if not keys[ k ] then
+          keys[ k ] = true
+          nkeys = nkeys + 1
+        end
+      end
+      for _, e in ipairs( g.given ) do
+        table.insert( rows, {
+          [ "given"     ] = true,
+          [ "on"        ] = true,
+          [ "data"      ] = e,
+          [ "section"   ] = e.section,
+          [ "condition" ] = e.condition,
+          [ "info"      ] = e.info,
+          [ "place"     ] = e.place,
+          [ "value"     ] = e.value,
+        } )
+        add_key( row_key( e.section, e.condition ) )
+      end
+      local cands = collect( sources[ g.source ](), g.match, false ) or {}
+      for _, c in ipairs( cands ) do
+        local cond = tonumber( string.format( "%.2f", c.condition * 100 ) )
+        table.insert( rows, {
+          [ "given"     ] = false,
+          [ "on"        ] = false,
+          [ "id"        ] = c.id,
+          [ "section"   ] = c.section,
+          [ "condition" ] = cond,
+          [ "info"      ] = he_magic_box.get_item_info( c.obj ),
+          [ "place"     ] = c.place,
+          [ "value"     ] = c.value,
+        } )
+        add_key( row_key( c.section, cond ) )
+      end
+      if cands[ 1 ] and nkeys > 1 then ambiguous = true end
+      local title = g.title
+      if not title then
+        local base = ( g.given[ 1 ] and g.given[ 1 ].base ) or g.given[ 1 ].section
+        title = he_magic_box.make_item_name( base )
+      end
+      table.insert( view, {
+        [ "title" ] = title,
+        [ "need"  ] = g.need,
+        [ "rows"  ] = rows,
+        [ "group" ] = g,
+      } )
+    end
+  end
+  if not ambiguous then return nil end
+  return view
+end
+
+
+local function announce( sections )
+  local order, counts = {}, {}
+  for _, sect in ipairs( sections ) do
+    if not counts[ sect ] then
+      counts[ sect ] = 0
+      table.insert( order, sect )
+    end
+    counts[ sect ] = counts[ sect ] + 1
+  end
+  for _, sect in ipairs( order ) do
+    sak.relocate_item( "out", sect, counts[ sect ] )
+  end
+end
+
+
+local function announce_given( s )
+  for _, g in ipairs( s.groups ) do
+    if g.quiet then
+      local sections = {}
+      for _, e in ipairs( g.given ) do table.insert( sections, e.section ) end
+      announce( sections )
+    end
+  end
+end
+
+
+function on_update()
+  local s = session
+  if not s or s.window then return end
+  if not ( db.actor and db.actor:alive() ) then
+    session = nil
+    return
+  end
+  if not db.actor:is_talking() and level.main_input_receiver() then return end
+  local view = build_view( s )
+  if view and ui_he_handin.show( view ) then
+    s.window = true
+    return
+  end
+  session = nil
+  announce_given( s )
+end
+
+
+function finish( view, applied )
+  session = nil
+  for _, v in ipairs( view ) do
+    local sections = {}
+    for _, r in ipairs( v.rows ) do
+      if ( applied and r.on ) or ( not applied and r.given ) then
+        table.insert( sections, r.section )
+      end
+    end
+    announce( sections )
+  end
+end
+
+
+local function owned_by_actor( obj )
+  local parent = obj:parent()
+  if not parent then return false end
+  if parent:id() == db.actor:id() then return true end
+  local inv = get_shadow_inv()
+  return inv ~= nil and inv.storage ~= nil and parent:id() == inv.storage:id()
+end
+
+
+function apply( view )
+  for _, g in ipairs( view ) do
+    for _, r in ipairs( g.rows ) do
+      if r.on and not r.given then
+        local obj = level.object_by_id( r.id )
+        if not ( obj and owned_by_actor( obj ) ) then return false end
+      end
+    end
+  end
+  local changed = false
+  for _, g in ipairs( view ) do
+    for _, r in ipairs( g.rows ) do
+      if r.given and not r.on then
+        local e = r.data
+        he_magic_box.create_actor_item( {
+          [ "section"   ] = e.section,
+          [ "condition" ] = e.condition,
+          [ "game_type" ] = e.game_type,
+          [ "count"     ] = 1,
+          [ "info"      ] = e.info,
+        }, db.actor )
+        changed = true
+      elseif r.on and not r.given then
+        misc.release_obj( r.id, "he_handin.apply" )
+        changed = true
+      end
+    end
+  end
+  if changed then sak_inventory.need_update_inventory() end
+  return true
+end

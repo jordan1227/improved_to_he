@@ -184,6 +184,17 @@ function dyn_art_base(section) -- получение базовой секции артефакта
 	return section 
 end
 
+function release_match(rec, section, exact, flt)
+	if exact then
+		return rec.sect == section, nil
+	end
+	local sect = dyn_art_base(rec.sect)
+	if strposx(sect, section) and flt(sect) then
+		return true, sect
+	end
+	return false, nil
+end
+
 function release_actor_items(section, count, exact_sec, new_flag) -- уничтожение у игрока предметов в диалоге, скрытых или в инвентаре  
 	local items = get_shadow_inv():get_content(true) -- сначала идут объекты из рюкзака, потом из инвентаря
  
@@ -220,42 +231,40 @@ function release_actor_items(section, count, exact_sec, new_flag) -- уничтожение
 	end
 	
 	local real_sect
-	for i, rec in items:ipairs() do
-		local go_on = false
-		local sect = ""
-		if exact then 
-			sect = rec.sect
-			if sect == section then
-				go_on = true
-			end
-		else
-			sect = dyn_art_base(rec.sect)
-			if strposx(sect, section) and flt(sect) then
+	local handled, quiet = false, false
+	if he_handin.active() then
+		handled, real, real_sect, quiet = he_handin.release(items, section, count, exact, flt)
+	end
+	if not handled then
+		for i, rec in items:ipairs() do
+			local go_on, sect = release_match(rec, section, exact, flt)
+			if sect then
 				real_sect = sect
-				go_on = true
 			end
-		end
-		if go_on and he_gluzov_art.is_locked_id(rec.id) then
-			go_on = false
-		end
-		if go_on then
-			local amount =  nlc_container.amount_in_batch(rec.obj)
-			local need_release = count - real
-			if need_release < amount then            
-				nlc_container.amount_in_batch(rec.obj, amount - need_release) -- вычитание из пачки уничтожаемого количества
-				amount = need_release                          
-			else 
-				misc.release_obj(rec.id, "sak_inventory.release_actor_items")
-			end   
-			real = real + amount  
-			wprintf(" dialog-release~C0A %-27s~C07 has planned amount = %d ", rec.obj:name(), amount)
-			if real >= count then break end
-		else
-		-- wprintf(" unaccepted~C0A %s~C07", sect)
+			if go_on and he_gluzov_art.is_locked_id(rec.id) then
+				go_on = false
+			end
+			if go_on then
+				local amount =  nlc_container.amount_in_batch(rec.obj)
+				local need_release = count - real
+				if need_release < amount then            
+					nlc_container.amount_in_batch(rec.obj, amount - need_release) -- вычитание из пачки уничтожаемого количества
+					amount = need_release                          
+				else 
+					misc.release_obj(rec.id, "sak_inventory.release_actor_items")
+				end   
+				real = real + amount  
+				wprintf(" dialog-release~C0A %-27s~C07 has planned amount = %d ", rec.obj:name(), amount)
+				if real >= count then break end
+			else
+			-- wprintf(" unaccepted~C0A %s~C07", sect)
+			end
 		end
 	end
 	if real > 0 then
-		sak.relocate_item("out", real_sect or section, real, true) -- real is ammo amount also!   
+		if not quiet then
+			sak.relocate_item("out", real_sect or section, real, true) -- real is ammo amount also!   
+		end
 		sak_inventory.need_update_inventory()
 	else
 		wprintf("~C0C #ERROR:~C07 was released~C0D %d~C07 x ~C0A %s~C07 from~C0D %d~C07 required ", real, section, count)
