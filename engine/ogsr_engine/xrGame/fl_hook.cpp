@@ -958,6 +958,7 @@ static void cmd_hudrc(LPCSTR a)
 static CHudItem* knife_combo_owner{};
 static u32 knife_combo_last_ms{};
 static u32 knife_combo_index{};
+static u32 knife_combo_last_duration{};
 static u32 knife_combo_logged{};
 static CHudItem* knife_return_owner{};
 static u32 knife_return_start_ms{};
@@ -1059,7 +1060,12 @@ u32 knife_play_motion(CHudItem* self, LPCSTR key, bool mix_in, u32 state, bool r
     static constexpr LPCSTR primary_keys[4] = {"anm_attack", "anm_attack_svariant1", "anm_attack_svariant2", "anm_attack_svariant3"};
     static constexpr LPCSTR secondary_keys[4] = {"anm_attack2", "anm_attack2_svariant1", "anm_attack2_svariant2", "anm_attack2_svariant3"};
     const u32 now = Device.dwTimeGlobal;
-    const u32 next = (knife_combo_owner == self && now - knife_combo_last_ms <= 1000u) ? (knife_combo_index + 1u) % 4u : 0u;
+    // NLC: with wpn_knife_m1_hud/knife_combo_window_ms the window counts from the end of the previous clip
+    // (a buffered attack starts there); without it, 1000 ms from the previous start as before
+    const bool window_from_end = knife_combo_has_key("knife_combo_window_ms");
+    const bool in_window = window_from_end ? now <= knife_combo_last_ms + knife_combo_last_duration + pSettings->r_u32("wpn_knife_m1_hud", "knife_combo_window_ms")
+                                           : now - knife_combo_last_ms <= 1000u;
+    const u32 next = (knife_combo_owner == self && in_window) ? (knife_combo_index + 1u) % 4u : 0u;
     LPCSTR chosen = (primary ? primary_keys : secondary_keys)[next];
     if (next != 0u && !knife_combo_has_key(chosen))
         chosen = key;
@@ -1070,6 +1076,7 @@ u32 knife_play_motion(CHudItem* self, LPCSTR key, bool mix_in, u32 state, bool r
     {
         knife_combo_owner = self;
         knife_combo_last_ms = now;
+        knife_combo_last_duration = duration;
         knife_combo_index = chosen == key ? 0u : next;
         knife_return_owner = primary && knife_combo_index < 3u ? self : nullptr;
         knife_return_start_ms = now;

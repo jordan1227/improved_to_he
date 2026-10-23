@@ -401,6 +401,8 @@ script_rq_result PerformRayQuery(Fvector start, Fvector dir, float range, collid
 }*/
 
 void nlc_visible_body_set(bool active, u16 id); // NLC: HUDManager.cpp
+int nlc_knife_strike_kind(u16 weapon_id); // NLC: WeaponKnife.cpp
+float nlc_knife_strike_k(u16 weapon_id); // NLC: WeaponKnife.cpp
 #include "player_hud.h" // NLC: actor weapon handling speed factors
 
 float GetTargetDist() { return ((CHUDManager*)g_hud)->GetTarget()->GetDist(); }
@@ -1171,6 +1173,8 @@ void CLevel::script_register(lua_State* L)
             def("advance_game_time", &AdvanceGameTime),
 
             def("nlc_visible_body_active", [](bool active, u16 id) { nlc_visible_body_set(active, id); }), // NLC: HUDManager.cpp
+            // NLC: the last strike of a knife within 1.5 s: kind 0 none / 1 slash / 2 stab, graze factor k (WeaponKnife.cpp)
+            def("nlc_knife_strike_kind", [](u16 id) { return nlc_knife_strike_kind(id); }), def("nlc_knife_strike_k", [](u16 id) { return nlc_knife_strike_k(id); }),
             // NLC: actor weapon handling speed, product of named factors per kind ("injury", later an artifact bonus); total clamped 0.3..2
             def("nlc_set_reload_speed_factor", [](LPCSTR name, float k) { nlc_set_hud_speed_factor(NLC_SPEED_RELOAD, name, k); }),
             def("nlc_get_reload_speed_factor", [](LPCSTR name) { return nlc_get_hud_speed_factor(NLC_SPEED_RELOAD, name); }),

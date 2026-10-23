@@ -1,0 +1,156 @@
+-- sivol_backstab: a strong (stab) knife strike on an unaware target from behind
+-- deals multiplied damage.
+--
+-- The engine records each actor knife strike (WeaponKnife.cpp): kind 1 slash /
+-- 2 stab and the graze factor k. level.nlc_knife_strike_kind / _k return the
+-- last strike of a knife within 1.5 s; the hit arrives a frame or two later.
+-- Only a clean stab (k = 1, not a graze of the strike volume) qualifies, and
+-- only on body bones: the head already takes its own multiplier.
+--
+-- Runs in on_npc_before_hit / on_monster_before_hit, before rank immunity and
+-- armour, so the multiplier scales the raw knife hit. sivol_hit_log and other
+-- readers listed after this module in ogse_signals_addons_list see the boosted
+-- power.
+
+local cfg = {
+	enabled = true,
+	rear_deg = 60,           -- half-angle of the rear arc (60 = 120 degrees behind the target)
+	stalker_k = 3.0,
+	monster_k = 2.0,
+	-- section substrings that never take a backstab (big or armoured mutants)
+	excluded = { "gigant", "chimera" },
+	-- bones that never take it (substring of the bone name)
+	exact_only_bones = { "head", "jaw", "eye", "neck" },
+	-- false: the camp alert of sivol_stealth_alert does not matter for stalkers
+	require_calm_camp = true,
+	diagnostics = true,      -- first lines always; true logs every qualifying stab
+}
+
+local logged = 0
+local missing_api_logged = false
+
+local function diag(format, ...)
+	if cfg.diagnostics or logged < 12 then
+		logged = logged + 1
+		log2("[backstab] " .. format, ...)
+	end
+end
+
+local function api_ready()
+	if level.nlc_knife_strike_kind and level.nlc_knife_strike_k then
+		return true
+	end
+	if not missing_api_logged then
+		missing_api_logged = true
+		log2("[backstab] disabled: the engine has no level.nlc_knife_strike_kind (needs nlc-3.589.136+)")
+	end
+	return false
+end
+
+local function contains_any(s, list)
+	for _, token in ipairs(list) do
+		if string.find(s, token, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+-- the actor is inside the target's rear arc (ground plane)
+local function actor_behind(obj, actor)
+	local face = obj:direction()
+	local fl = math.sqrt(face.x * face.x + face.z * face.z)
+	local p, a = obj:position(), actor:position()
+	local dx, dz = a.x - p.x, a.z - p.z
+	local dl = math.sqrt(dx * dx + dz * dz)
+	if fl < 0.0001 or dl < 0.0001 then
+		return false
+	end
+	local cosa = (face.x * dx + face.z * dz) / (fl * dl)
+	return cosa <= -math.cos(math.rad(cfg.rear_deg))
+end
+
+local function stalker_unaware(npc, actor)
+	if npc:see(actor) then
+		return false, "sees actor"
+	end
+	local enemy = npc:best_enemy()
+	if enemy and enemy:id() == actor:id() then
+		return false, "actor is its enemy"
+	end
+	if cfg.require_calm_camp and sivol_stealth_alert and sivol_stealth_alert.level_of(npc) ~= "none" then
+		return false, "camp alert"
+	end
+	return true
+end
+
+local function monster_unaware(obj, actor)
+	if obj:see(actor) then
+		return false, "sees actor"
+	end
+	local enemy = obj:get_enemy()
+	if enemy and enemy:id() == actor:id() then
+		return false, "actor is its enemy"
+	end
+	return true
+end
+
+local function on_before_hit(obj, hd, is_stalker)
+	if not cfg.enabled or not obj or not hd or hd.ignore_hit or hd.hit_type ~= hit.wound then
+		return
+	end
+	local actor = db.actor
+	if not actor or hd.who_id ~= actor:id() or not obj:alive() or not api_ready() then
+		return
+	end
+	if level.nlc_knife_strike_kind(hd.weapon_id) ~= 2 then
+		return
+	end
+	local name = tostring(obj:name())
+	local k = level.nlc_knife_strike_k(hd.weapon_id)
+	if k < 0.999 then
+		diag("no: %s graze k=%.2f", name, k)
+		return
+	end
+	if contains_any(obj:section(), cfg.excluded) then
+		diag("no: %s excluded section %s", name, obj:section())
+		return
+	end
+	local bone = hd.bone_id
+	local bone_name = (bone and bone < 65535) and (obj:get_bone_name(bone) or "") or ""
+	if contains_any(bone_name, cfg.exact_only_bones) then
+		diag("no: %s head bone %s", name, bone_name)
+		return
+	end
+	if not actor_behind(obj, actor) then
+		diag("no: %s not from behind", name)
+		return
+	end
+	local unaware, why
+	if is_stalker then
+		unaware, why = stalker_unaware(obj, actor)
+	else
+		unaware, why = monster_unaware(obj, actor)
+	end
+	if not unaware then
+		diag("no: %s %s", name, why)
+		return
+	end
+	local mult = is_stalker and cfg.stalker_k or cfg.monster_k
+	local before = hd.power
+	hd.power = hd.power * mult
+	diag("YES: %s bone=%s power %.3f -> %.3f (x%.1f)", name, bone_name, before, hd.power, mult)
+end
+
+local function on_npc_before_hit(npc, hd)
+	on_before_hit(npc, hd, true)
+end
+
+local function on_monster_before_hit(obj, hd)
+	on_before_hit(obj, hd, false)
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_npc_before_hit", fun = on_npc_before_hit })
+	sm:subscribe({ signal = "on_monster_before_hit", fun = on_monster_before_hit })
+end

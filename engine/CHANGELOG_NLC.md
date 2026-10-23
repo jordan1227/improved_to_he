@@ -5,6 +5,17 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.136 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `78F1869EBA8E8380436E4D51A4CAD127A670CE671332467D41BA06CD7D54E1E5` (archived with its PDB in `nlc_tools/builds/20261023_083103_78f1869e`).
+- **Status:** runtime pending. Knife strike volume and attack buffering.
+- `CWeaponKnife`: the actor's strike is resolved before its bullet: the exact crosshair ray wins on a living creature; otherwise sample rays walk the HUD key's blade line (`strike_<hud key> = travel_deg, along_deg, across_deg [, offset]`, `-1` = stab ellipse) from its entry end, the first living creature wins at its sample nearest the line, graze samples skip `knife_exact_only_bones` and scale the hit (`knife_graze_min`, `knife_graze_full_band`). The bullet follows the chosen ray and stops 5 cm past the contact (one target per strike). Downward strikes reach further (`knife_low_reach_start/_max`). Optional `snd_hit`. `[knife_strike]` log.
+- `CWeaponKnife`: attack presses in the last `knife_buffer_ms` of a swing are buffered and start the next attack at the clip end (`knife_buffer_ttl_ms`); `[knife_buffer]` log. The strong-attack key no longer switches state while the knife is busy.
+- `fl_hook` M1 combo: with `wpn_knife_m1_hud/knife_combo_window_ms` the window counts from the previous clip end.
+- Lua `level.nlc_knife_strike_kind(weapon_id)` (0/1 slash/2 stab) and `level.nlc_knife_strike_k(weapon_id)`: last strike of a knife within 1.5 s.
+- Required game data: `weapons/w_knife.ltx`, `sivol/sivol_backstab.script` (+ `ogse_signals_addons_list.script`).
+
 ## nlc-3.589.135 (2026-10-23)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

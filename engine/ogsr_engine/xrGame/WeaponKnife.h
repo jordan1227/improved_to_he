@@ -39,6 +39,53 @@ protected:
     float fWallmarkSize;
     u16 knife_material_idx;
 
+    // NLC: blade-line strike volume, low reach and attack buffering (actor only; all keys optional)
+    struct NlcStrikeProfile
+    {
+        bool point{}; // stab: an ellipse around the crosshair, no direction
+        float travel{}; // deg on screen the blade travels (0 right, 90 up, 180 left, 270 down)
+        float along{}; // deg half-length along the blade line (point: horizontal radius)
+        float across{}; // deg half-width across it (point: vertical radius)
+        float offset{}; // deg shift of the line across itself
+    };
+    struct NlcStrikeResult
+    {
+        Fvector pos, dir;
+        float range{};
+        float k{1.f};
+        bool creature{};
+        const char* how{"miss"};
+        u16 target{u16(-1)};
+        s16 bone{-1};
+        float t{}; // normalised graze offset, 0 on the line
+    };
+    bool m_nlc_volume{};
+    float m_nlc_r0{};
+    float m_nlc_graze_min{1.f};
+    float m_nlc_full_band{};
+    float m_nlc_low_reach_start{0.5f};
+    float m_nlc_low_reach_max{};
+    xr_vector<shared_str> m_nlc_exact_only_bones;
+    bool m_nlc_strike_debug{};
+    HUD_SOUND m_nlc_snd_hit;
+    bool m_nlc_has_snd_hit{};
+    u32 m_nlc_buffer_ms{};
+    u32 m_nlc_buffer_ttl_ms{600};
+    u32 m_nlc_buffered{}; // 0, eFire or eFire2
+    u32 m_nlc_buffered_at{};
+    bool m_nlc_chain_pending{}; // a buffered attack was started and its state switch is not processed yet
+
+public:
+    u32 m_nlc_last_strike_kind{}; // 1 slash, 2 stab
+    float m_nlc_last_strike_k{1.f};
+    u32 m_nlc_last_strike_time{};
+
+protected:
+    bool NlcStrikeProfileFor(u32 state, NlcStrikeProfile& p) const;
+    void NlcResolveStrike(u32 state, const Fvector& pos, const Fvector& dir, NlcStrikeResult& res);
+    bool NlcBufferPress(u32 state);
+    bool NlcConsumeBuffer();
+
 protected:
     ALife::EHitType m_eHitType_1;
     // float				fHitPower_1;

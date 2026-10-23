@@ -297,8 +297,10 @@ local function track_knock(target_id, start_pos, health)
 	end)
 end
 
-local function apply_kick(target, press_dist)
+-- scale < 1: a second sector target (power, impulse, push and damage scaled)
+local function apply_kick(target, press_dist, how, scale)
 	local c = cfg()
+	local k = scale or 1
 	local kind = target_kind(target)
 	local profile, layers = resolve_profile(target, kind)
 	if profile.enabled == false then
@@ -307,6 +309,9 @@ local function apply_kick(target, press_dist)
 	end
 
 	local mass, power, impulse, m_eff, dv = compute_numbers(profile, target, kind)
+	power = power * k
+	impulse = impulse * k
+	local damage_frac = profile.damage_frac and profile.damage_frac * k
 
 	-- Velocity push for living characters (engine nlc_push, the burer's push).
 	-- Without the binding the profile's own hit_type/knock_speed impulse is used.
@@ -334,7 +339,7 @@ local function apply_kick(target, press_dist)
 	-- A kick that would take the last of a damage_frac target's health is a kill:
 	-- it goes through the killing-hit path (kill credit, fatal ragdoll impulse).
 	local lethal = alive and profile.kill == true
-	if alive and not lethal and profile.damage_frac and not profile.non_lethal and target.health <= profile.damage_frac then
+	if alive and not lethal and damage_frac and not profile.non_lethal and target.health <= damage_frac then
 		lethal = true
 	end
 
@@ -343,9 +348,9 @@ local function apply_kick(target, press_dist)
 		power = profile.kill_power or 5.0
 		-- a push profile has no impulse of its own; the ragdoll needs one
 		if profile.kill_impulse then
-			impulse = profile.kill_impulse
+			impulse = profile.kill_impulse * k
 		elseif push then
-			impulse = (profile.knock_speed or 6) * (ph_mass(target) or 5)
+			impulse = (profile.knock_speed or 6) * (ph_mass(target) or 5) * k
 		end
 	end
 
@@ -353,8 +358,8 @@ local function apply_kick(target, press_dist)
 
 	if lethal then
 		verify_kill(id, dir, impulse, hit_type)
-	elseif profile.damage_frac and alive then
-		damage = profile.damage_frac
+	elseif damage_frac and alive then
+		damage = damage_frac
 		if profile.non_lethal then
 			damage = math.min(damage, math.max(target.health - 0.01, 0))
 		end
@@ -363,14 +368,14 @@ local function apply_kick(target, press_dist)
 		end
 	end
 	if push and not lethal then
-		start_push(id, dir, profile.push_speed, profile.push_up or 0, profile.push_hold_ms or 0)
+		start_push(id, dir, profile.push_speed * k, (profile.push_up or 0) * k, profile.push_hold_ms or 0)
 	end
 	if (push or profile.knock_speed) and alive and c.diagnostics then
 		track_knock(id, start_pos, health)
 	end
 
-	diag("impact %s section=%s kind=%s profile=%s mass=%.1f m_eff=%s dv=%s power=%.4f impulse=%.1f type=%d bone=%s dmg=%.2f kill=%s dist=%s",
-		tostring(target:name()), tostring(target:section()), kind, layers, mass,
+	diag("impact[%s x%.2f] %s section=%s kind=%s profile=%s mass=%.1f m_eff=%s dv=%s power=%.4f impulse=%.1f type=%d bone=%s dmg=%.2f kill=%s dist=%s",
+		tostring(how), k, tostring(target:name()), tostring(target:section()), kind, layers, mass,
 		m_eff and string.format("%.1f", m_eff) or "-", dv and string.format("%.1fm/s", dv) or "-", power, impulse, hit_type,
 		bone ~= "" and bone or "-", damage, tostring(lethal), tostring(press_dist))
 end
@@ -413,6 +418,104 @@ local function resolve_target(pend)
 		return current() or pressed()
 	end
 	return pressed() or current()
+end
+
+-- ============================================================
+-- Foot sector: what is in front of the leg, independent of camera pitch
+-- ============================================================
+
+-- Static geometry between the knee and the target; shoot-through faces
+-- (foliage) are stepped over.
+local function static_blocked(from, to)
+	local d = vector():sub(to, from)
+	local dist = d:magnitude()
+	if dist < 0.05 then
+		return false
+	end
+	d:div(dist)
+	local start = vector():set(from)
+	for _ = 1, 4 do
+		local rq = level.ray_query(start, d, dist, rq_target.rqtStatic, db.actor)
+		if not rq or not rq.result or rq.range >= dist then
+			return false
+		end
+		if not (rq.mtl and rq.mtl.fShootFactor >= 0.99) then
+			return true
+		end
+		start:mad(d, rq.range + 0.02)
+		dist = dist - rq.range - 0.02
+		if dist <= 0 then
+			return false
+		end
+	end
+	return true
+end
+
+-- 1 living creature, 2 dead creature, 3 loose physics object; nil = not kickable here
+local function sector_class(obj)
+	if obj:is_stalker() or obj:is_monster() then
+		return obj:alive() and 1 or 2
+	end
+	if obj:parent() == nil and obj:get_physics_shell() ~= nil then
+		return 3
+	end
+	return nil
+end
+
+-- Kickable objects in the foot sector, best first (class, then angle).
+local function sector_targets(exclude_id)
+	local c = cfg()
+	local actor = db.actor
+	local apos = actor:position()
+	local face = actor:direction()
+	local fl = math.sqrt(face.x * face.x + face.z * face.z)
+	if fl < 0.0001 then
+		return {}
+	end
+	local fx, fz = face.x / fl, face.z / fl
+	local reach = c.max_range + c.range_slack
+	local cos_max = math.cos(math.rad(c.sector_deg))
+	local knee = vector():set(apos.x, apos.y + 0.5, apos.z)
+	local found = {}
+	level.iterate_nearest(apos, reach + 1.0, function(obj)
+		local id = obj:id()
+		if id == actor:id() or id == exclude_id then
+			return false
+		end
+		local class = sector_class(obj)
+		if not class then
+			return false
+		end
+		local bottom = obj:position().y
+		local ctr = obj:center()
+		local top = math.max(ctr.y * 2 - bottom, bottom + 0.3)
+		if bottom > apos.y + c.sector_max_h or top < apos.y + c.sector_min_h then
+			return false
+		end
+		local dx, dz = ctr.x - apos.x, ctr.z - apos.z
+		local dist = math.sqrt(dx * dx + dz * dz)
+		if dist > reach then
+			return false
+		end
+		local cosa = dist > 0.0001 and (dx * fx + dz * fz) / dist or 1
+		if cosa < cos_max and not (dist < 0.4 and cosa > 0) then
+			return false
+		end
+		local aim_y = math.min(math.max(ctr.y, apos.y + 0.3), apos.y + c.sector_max_h)
+		if static_blocked(knee, vector():set(ctr.x, aim_y, ctr.z)) then
+			diag("sector skip %s: static between", tostring(obj:name()))
+			return false
+		end
+		found[#found + 1] = { obj = obj, class = class, cosa = cosa }
+		return false
+	end)
+	table.sort(found, function(a, b)
+		if a.class ~= b.class then
+			return a.class < b.class
+		end
+		return a.cosa > b.cosa
+	end)
+	return found
 end
 
 local function on_key(key, bind)
@@ -501,9 +604,21 @@ local function on_update()
 		elseif c.cancel_on_blocked_state and vb and vb.kick_blocked and vb.kick_blocked() then
 			diag("impact cancelled: blocked movement state")
 		else
+			local dist = string.format("%.2f", pend.press_dist)
 			local target = resolve_target(pend)
+			local picks = c.sector_enabled and sector_targets(target and target:id()) or {}
+			local how = "crosshair"
+			if not target and picks[1] then
+				target = picks[1].obj
+				how = "sector"
+				table.remove(picks, 1)
+			end
 			if target then
-				apply_kick(target, string.format("%.2f", pend.press_dist))
+				apply_kick(target, dist, how)
+				local second = picks[1]
+				if c.sector_second and second and level.object_by_id(second.obj:id()) then
+					apply_kick(second.obj, dist, "sector2", c.second_target_k)
+				end
 			else
 				diag("impact missed: nothing in range")
 			end
