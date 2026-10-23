@@ -1,0 +1,469 @@
+local active_wnd = false
+local inv_open_snd  = sound_object( "interface\\inv_open"  )
+local inv_close_snd = sound_object( "interface\\inv_close" )
+
+local FILL_TEX = "ui_mg_progress_efficiency_full"
+local kScreen = math.min( ( 1024 / 768 ) / ( device().width / device().height ), 1 )
+
+local COLOR_OK   = { 140, 200, 90 }
+local COLOR_BAD  = { 200, 120, 60 }
+local COLOR_NAME = { 216, 186, 140 }
+local COLOR_TEXT = { 240, 217, 182 }
+
+local place_text = {
+  [ "ruck"   ] = "ui_he_handin_place_ruck",
+  [ "belt"   ] = "ui_he_handin_place_belt",
+  [ "slot"   ] = "ui_he_handin_place_slot",
+  [ "hidden" ] = "ui_he_handin_place_hidden",
+  [ "container" ] = "ui_he_handin_place_container",
+}
+
+
+function show( view )
+  if active_wnd then return false end
+  db.actor:hide_weapon()
+  inv_open_snd:play( db.actor, 0, sound_object.s2d )
+  active_wnd = he_handin_ui( view )
+  level.start_stop_menu( active_wnd, true )
+  return true
+end
+
+
+-------------------------------------------------------------------------------
+
+local function set_color( st, c )
+  st:SetTextColor( 255, c[ 1 ], c[ 2 ], c[ 3 ] )
+end
+
+
+local function make_fill( parent, x, y, w, h, color )
+  local tex, rect = get_texture_info( FILL_TEX )
+  local st = CUIStatic()
+  parent:AttachChild( st )
+  st:Init( x, y, w, h )
+  st:InitTexture( tex )
+  st:SetOriginalRect( rect.x1 + 13.25, rect.y1, 0.5, rect.y2 )
+  st:SetStretchTexture( true )
+  st:SetColor( color )
+  return st
+end
+
+
+local function set_item_icon( sect, s, x, y, sw, sh, corner )
+  local icon = CIconParams( sect )
+  icon:set_shader( s )
+  local rect = icon:original_rect()
+  local tw = rect.x2 - rect.x1
+  local th = rect.y2 - rect.y1
+  if tw <= 0 or th <= 0 then return end
+  local k = math.min( sw / ( tw * kScreen ), sh / th, 1 )
+  local w, h = tw * k * kScreen, th * k
+  s:SetWidth ( w )
+  s:SetHeight( h )
+  if corner then
+    s:SetWndPos( x + ( sw - w ) / 2, y + ( sh - h ) / 2 )
+  else
+    s:SetWndPos( x + sw / 2, y + sh / 2 )
+  end
+end
+
+
+local function item_title( sect )
+  local name = he_magic_box.make_item_name( sect )
+  local dyn  = string.match( sect, "_dyn(%d)d" )
+  if dyn and not string.find( sect, "_capsule", 1, true ) then
+    name = name .. " " .. ui_inv_descr.get_dyn_color( sect ) .. "[" .. dyn .. "]%c[default]"
+  end
+  return name
+end
+
+
+local function cond_color( cond )
+  if cond < 50 then return COLOR_BAD end
+  return COLOR_OK
+end
+
+
+local function money( value )
+  return string.format( game.translate_string( "ui_he_handin_money" ), math.floor( value + 0.5 ) )
+end
+
+
+-------------------------------------------------------------------------------
+
+class "handin_row" ( CUIListItemEx )
+
+function handin_row:__init( xml, row ) super()
+  self.row = row
+  xml:InitWindow( "row", 0, self )
+  local w, h = self:GetWidth(), self:GetHeight()
+  self.bg_on    = make_fill( self, 0, 0, w, h, GetARGB( 40, 238, 153, 26 ) )
+  self.bg_focus = make_fill( self, 0, 0, w, h, GetARGB( 18, 255, 255, 255 ) )
+  self.box      = make_fill( self, 8, 21, 14, 14, GetARGB( 255, 150, 132, 100 ) )
+  self.box_in   = make_fill( self, 9, 22, 12, 12, GetARGB( 255, 20, 18, 14 ) )
+  self.box_on   = make_fill( self, 11, 24, 8, 8, GetARGB( 255, 238, 153, 26 ) )
+
+  self.icon = xml:InitStatic( "row_icon", self )
+  local pos = self.icon:GetWndPos()
+  set_item_icon( row.section, self.icon, pos.x, pos.y, self.icon:GetWidth(), self.icon:GetHeight(), true )
+
+  self.name = xml:InitStatic( "row_name", self )
+  self.name:SetText( item_title( row.section ) )
+
+  self.place = xml:InitStatic( "row_place", self )
+  self.place:SetText( game.translate_string( place_text[ row.place ] or place_text.ruck ) )
+
+  self.cond = xml:InitStatic( "row_cond", self )
+  self.cond:SetText( string.format( "%.0f%%", row.condition ) )
+  set_color( self.cond, cond_color( row.condition ) )
+
+  self.cost = xml:InitStatic( "row_cost", self )
+  self.cost:SetText( money( row.value ) )
+
+  self.tag = xml:InitStatic( "row_tag", self )
+  self.tag:Show( row.given )
+
+  self:refresh( false )
+end
+
+
+function handin_row:refresh( focused )
+  self.bg_on:Show( self.row.on )
+  self.box_on:Show( self.row.on )
+  self.bg_focus:Show( focused and not self.row.on )
+  if self.row.on or focused then
+    set_color( self.name, COLOR_NAME )
+  else
+    set_color( self.name, COLOR_TEXT )
+  end
+end
+
+
+-------------------------------------------------------------------------------
+
+class "handin_group" ( CUIListItemEx )
+
+function handin_group:__init( xml, group ) super()
+  self.group = group
+  xml:InitWindow( "grp", 0, self )
+  self.bg     = xml:InitStatic( "grp_bg", self )
+  self.bg_sel = xml:InitStatic( "grp_bg_sel", self )
+  self.name   = xml:InitStatic( "grp_name", self )
+  self.name:SetText( group.title )
+  self.count  = xml:InitStatic( "grp_count", self )
+  self:refresh( false )
+end
+
+
+function handin_group:refresh( selected )
+  self.bg:Show( not selected )
+  self.bg_sel:Show( selected )
+  local n = table.getn( self.group.picked )
+  self.count:SetText( string.format( "%d/%d", n, self.group.need ) )
+  if n == self.group.need then
+    set_color( self.count, COLOR_OK )
+  else
+    set_color( self.count, COLOR_BAD )
+  end
+end
+
+
+-------------------------------------------------------------------------------
+
+class "he_handin_ui" ( CUIScriptWnd )
+
+function he_handin_ui:__init( view ) super()
+  self.view      = view
+  self.cur       = 1
+  self.row_items = {}
+  self.grp_items = {}
+  self:reset_picks()
+  self:InitControls()
+  self:InitCallBacks()
+  self:FillGroups()
+  self:FillRows()
+end
+
+
+function he_handin_ui:__finalize() end
+
+
+function he_handin_ui:InitControls()
+  self:Init( 0, 0, 1024, 768 )
+  local xml = CScriptXmlInit()
+  xml:ParseFile( "ui_he_handin.xml" )
+  self.xml = xml
+
+  xml:InitWindow( "main_dialog", 0, self )
+  self.dialog = xml:InitStatic( "main_dialog:dialog", self )
+
+  xml:InitStatic( "main_dialog:title", self.dialog )
+  self.group_name  = xml:InitStatic( "main_dialog:group_name",  self.dialog )
+  self.group_count = xml:InitStatic( "main_dialog:group_count", self.dialog )
+
+  self.rows_list = xml:InitList( "main_dialog:rows_list", self.dialog )
+  self.rows_list:ShowSelectedItem( false )
+  self:Register( self.rows_list, "rows_list" )
+
+  xml:InitStatic( "main_dialog:label_need", self.dialog )
+  self.groups_list = xml:InitList( "main_dialog:groups_list", self.dialog )
+  self.groups_list:ShowSelectedItem( false )
+  self:Register( self.groups_list, "groups_list" )
+
+  self.item_icon   = xml:InitStatic( "main_dialog:item_icon", self.dialog )
+  local icon_pos   = self.item_icon:GetWndPos()
+  self.item_icon_x = icon_pos.x
+  self.item_icon_y = icon_pos.y
+  self.item_icon_w = self.item_icon:GetWidth()
+  self.item_icon_h = self.item_icon:GetHeight()
+  self.item_icon:Show( false )
+
+  self.item_name = xml:InitStatic( "main_dialog:item_name", self.dialog )
+  self.cond_label  = xml:InitStatic( "main_dialog:cond_label",  self.dialog )
+  self.cond_value  = xml:InitStatic( "main_dialog:cond_value",  self.dialog )
+  self.cost_label  = xml:InitStatic( "main_dialog:cost_label",  self.dialog )
+  self.cost_value  = xml:InitStatic( "main_dialog:cost_value",  self.dialog )
+  self.place_label = xml:InitStatic( "main_dialog:place_label", self.dialog )
+  self.place_value = xml:InitStatic( "main_dialog:place_value", self.dialog )
+  self:show_info_labels( false )
+
+  self.descr_scroll = xml:InitScrollView( "main_dialog:descr_scroll", self.dialog )
+
+  self.btn_default = xml:Init3tButton( "main_dialog:btn_default", self.dialog )
+  self:Register( self.btn_default, "btn_default" )
+
+  self.label_total = xml:InitStatic( "main_dialog:label_total", self.dialog )
+
+  self.btn_done = xml:Init3tButton( "main_dialog:btn_done", self.dialog )
+  self:Register( self.btn_done, "btn_done" )
+end
+
+
+function he_handin_ui:InitCallBacks()
+  self:AddCallback( "rows_list",   ui_events.LIST_ITEM_CLICKED, self.OnRowClicked,   self )
+  self:AddCallback( "groups_list", ui_events.LIST_ITEM_CLICKED, self.OnGroupClicked, self )
+  self:AddCallback( "btn_default", ui_events.BUTTON_CLICKED,    self.OnDefault,      self )
+  self:AddCallback( "btn_done",    ui_events.BUTTON_CLICKED,    self.OnDone,         self )
+end
+
+
+function he_handin_ui:OnKeyboard( dik, keyboard_action )
+  CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
+  if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+    if dik == DIK_keys.DIK_ESCAPE then
+      self:on_quit( false )
+    elseif dik == DIK_keys.DIK_RETURN then
+      self:OnDone()
+    end
+  end
+  return true
+end
+
+
+-------------------------------------------------------------------------------
+
+function he_handin_ui:reset_picks()
+  for _, g in ipairs( self.view ) do
+    g.picked = {}
+    for _, r in ipairs( g.rows ) do
+      r.on = r.given
+      if r.on then table.insert( g.picked, r ) end
+    end
+  end
+end
+
+
+function he_handin_ui:is_ready()
+  for _, g in ipairs( self.view ) do
+    if table.getn( g.picked ) ~= g.need then return false end
+  end
+  return true
+end
+
+
+function he_handin_ui:FillGroups()
+  self.groups_list:RemoveAll()
+  self.grp_items = {}
+  for i, g in ipairs( self.view ) do
+    local item = handin_group( self.xml, g )
+    item.index = i
+    table.insert( self.grp_items, item )
+    self.groups_list:AddItem( item )
+  end
+  self:refresh_groups()
+end
+
+
+function he_handin_ui:FillRows()
+  self.rows_list:RemoveAll()
+  self.row_items = {}
+  self.focused = nil
+  local g = self.view[ self.cur ]
+  for _, r in ipairs( g.rows ) do
+    local item = handin_row( self.xml, r )
+    table.insert( self.row_items, item )
+    self.rows_list:AddItem( item )
+  end
+  self.group_name:SetText( g.title )
+  if self.row_items[ 1 ] then self:focus( 1 ) end
+  self:refresh_counts()
+end
+
+
+function he_handin_ui:refresh_groups()
+  for i, item in ipairs( self.grp_items ) do
+    item:refresh( i == self.cur )
+  end
+end
+
+
+function he_handin_ui:refresh_rows()
+  for i, item in ipairs( self.row_items ) do
+    item:refresh( i == self.focused )
+  end
+end
+
+
+function he_handin_ui:refresh_counts()
+  local g = self.view[ self.cur ]
+  local n = table.getn( g.picked )
+  self.group_count:SetText(
+    string.format( game.translate_string( "ui_he_handin_group_count" ), n, g.need )
+  )
+  if n == g.need then
+    set_color( self.group_count, COLOR_OK )
+  else
+    set_color( self.group_count, COLOR_BAD )
+  end
+  local total, need = 0, 0
+  for _, gr in ipairs( self.view ) do
+    total = total + table.getn( gr.picked )
+    need  = need + gr.need
+  end
+  self.label_total:SetText(
+    string.format( game.translate_string( "ui_he_handin_total" ), total, need )
+  )
+  if total == need then
+    set_color( self.label_total, COLOR_OK )
+  else
+    set_color( self.label_total, COLOR_BAD )
+  end
+  self.btn_done:Enable( self:is_ready() )
+  self:refresh_groups()
+end
+
+
+-------------------------------------------------------------------------------
+
+function he_handin_ui:show_info_labels( show )
+  self.cond_label:Show( show )
+  self.cost_label:Show( show )
+  self.place_label:Show( show )
+end
+
+
+function he_handin_ui:focus( idx )
+  self.focused = idx
+  local r = self.row_items[ idx ].row
+  set_item_icon(
+    r.section, self.item_icon,
+    self.item_icon_x, self.item_icon_y, self.item_icon_w, self.item_icon_h
+  )
+  self.item_icon:Show( true )
+  self.item_name:SetText( item_title( r.section ) )
+  self:show_info_labels( true )
+  self.cond_value:SetText( string.format( "%.0f%%", r.condition ) )
+  set_color( self.cond_value, cond_color( r.condition ) )
+  self.cost_value:SetText( money( r.value ) )
+  self.place_value:SetText( game.translate_string( place_text[ r.place ] or place_text.ruck ) )
+
+  self.descr_scroll:Clear()
+  local descr = self.xml:InitStatic( "main_dialog:descr_text", self.descr_scroll )
+  descr:SetText( self:get_description( r ) )
+  descr:AdjustHeightToText()
+  self:refresh_rows()
+end
+
+
+function he_handin_ui:get_description( r )
+  local sect = r.section
+  local text = dsh.strip_quotes( game.translate_string( get_string( sect, "description", "" ) ) )
+  if r.condition > 0 then
+    local af_text = ui_arc_container_menu.get_art_info_text( sect, r.condition / 100, r.info )
+    if af_text then
+      text = af_text .. "\\n%c[default]" .. text
+    end
+  end
+  return text
+end
+
+
+-------------------------------------------------------------------------------
+
+function he_handin_ui:selected_item( list, items )
+  if list:GetSize() <= 0 then return nil end
+  local idx = list:GetSelectedItem()
+  if idx < 0 then return nil end
+  return items[ idx + 1 ], idx + 1
+end
+
+
+function he_handin_ui:OnRowClicked()
+  local item, idx = self:selected_item( self.rows_list, self.row_items )
+  if not item then return end
+  local g = self.view[ self.cur ]
+  local r = item.row
+  if r.on then
+    r.on = false
+    for i, p in ipairs( g.picked ) do
+      if p == r then
+        table.remove( g.picked, i )
+        break
+      end
+    end
+  else
+    if table.getn( g.picked ) >= g.need then
+      local first = table.remove( g.picked, 1 )
+      if first then first.on = false end
+    end
+    r.on = true
+    table.insert( g.picked, r )
+  end
+  self:focus( idx )
+  self:refresh_counts()
+end
+
+
+function he_handin_ui:OnGroupClicked()
+  local item = self:selected_item( self.groups_list, self.grp_items )
+  if not item or item.index == self.cur then return end
+  self.cur = item.index
+  self:FillRows()
+end
+
+
+function he_handin_ui:OnDefault()
+  self:reset_picks()
+  self:refresh_rows()
+  self:refresh_counts()
+end
+
+
+function he_handin_ui:OnDone()
+  if not self:is_ready() then return end
+  self:on_quit( he_handin.apply( self.view ) )
+end
+
+
+function he_handin_ui:on_quit( applied )
+  self.rows_list:RemoveAll()
+  self.groups_list:RemoveAll()
+  self.row_items = {}
+  self.grp_items = {}
+  self:GetHolder():start_stop_menu( self, true )
+  self:ClearCallbacks()
+  active_wnd = false
+  db.actor:restore_weapon()
+  inv_close_snd:play( db.actor, 0, sound_object.s2d )
+  he_handin.finish( self.view, applied )
+end
