@@ -173,6 +173,14 @@ local function load()
 			c.born[fam] = true
 		end
 	end)
+	read_section(ini, "deny", function(comm, val)
+		local c = comms[comm]
+		if not c then return end
+		c.deny = {}
+		for _, v in ipairs(list(val)) do
+			c.deny[norm_vis(v)] = true
+		end
+	end)
 	read_section(ini, "profiles", function(p) profiles[p] = true end)
 	read_section(ini, "exclude", function(p) excluded[p] = true end)
 end
@@ -228,9 +236,17 @@ local function worn_score(se, cur)
 	return outfits[cur].score
 end
 
-local function pick_visual(sect, avoid)
+local function pick_visual(sect, avoid, c)
 	local pool = outfits[sect] and outfits[sect].pool
 	if not pool then return nil end
+	if c and c.deny then
+		local ok = {}
+		for _, v in ipairs(pool) do
+			if not c.deny[v] then table.insert(ok, v) end
+		end
+		if #ok == 0 then return nil end
+		pool = ok
+	end
 	local v = pool[math.random(#pool)]
 	if v == avoid and #pool > 1 then
 		v = pool[math.random(#pool)]
@@ -242,7 +258,7 @@ local function wants(se, sect, cond)
 	local c, cur = eligible(se)
 	if not c then return false end
 	local o = outfits[sect]
-	if not (o and o.pool and c.allow[o.family]) then return false end
+	if not (o and o.pool and c.allow[o.family] and pick_visual(sect, nil, c)) then return false end
 	return o.score * cond_k(cond) > worn_score(se, cur) * cfg.better_ratio
 end
 
@@ -269,12 +285,12 @@ local function dress_variety(se)
 	local cands = {}
 	for _, sect in ipairs(variety) do
 		local o = outfits[sect]
-		if c.foreign[o.family] and o.score >= base * cfg.tier_low and o.score <= base * cfg.tier_high then
+		if c.foreign[o.family] and o.score >= base * cfg.tier_low and o.score <= base * cfg.tier_high and pick_visual(sect, nil, c) then
 			table.insert(cands, sect)
 		end
 	end
 	if #cands == 0 then return end
-	local v = pick_visual(cands[math.random(#cands)])
+	local v = pick_visual(cands[math.random(#cands)], nil, c)
 	if se.online then
 		pending[se.id] = { v = v }
 	else
@@ -289,17 +305,18 @@ local function unstick(se)
 	local c = comms[string.lower(se:community() or "")]
 	local cur = unique[nv]
 	local fits = function(fam) return not c or c.allow[fam] or (c.born and c.born[fam]) end
+	local denied = c and c.deny and c.deny[nv]
 	if not cur then
 		cur = vis_outfit[nv]
-		if not (cur and c) or fits(outfits[cur].family) then return end
+		if not (cur and c) or (fits(outfits[cur].family) and not denied) then return end
 	end
 	local rec = read_rec(se)
-	if rec and rec.o and outfits[rec.o] and not fits(outfits[rec.o].family) then
+	if rec and rec.o and outfits[rec.o] and (not fits(outfits[rec.o].family) or (outfits[rec.o].pool and not pick_visual(rec.o, nil, c))) then
 		write_rec(se, nil)
 		rec = nil
 	end
 	local sect = rec and rec.o and outfits[rec.o] and outfits[rec.o].pool and rec.o or cur
-	local v = fits(outfits[sect].family) and pick_visual(sect) or nil
+	local v = fits(outfits[sect].family) and pick_visual(sect, nil, c) or nil
 	if not v then
 		local fam = outfits[cur].family
 		local score = outfits[cur].score
@@ -316,8 +333,9 @@ local function unstick(se)
 			end
 		end
 		if #cands == 0 then return end
-		v = pick_visual(cands[math.random(#cands)])
+		v = pick_visual(cands[math.random(#cands)], nil, c)
 	end
+	if not v then return end
 	if not level.object_by_id(se.id) then
 		se.visual_name = v
 	elseif se:alive() and not pending[se.id] then
@@ -363,7 +381,7 @@ local function take_from_corpse(se, cs)
 	local o, cond, real = corpse_outfit(cs)
 	if not (o and wants(se, o, cond)) then return nil end
 	write_rec(cs, { x = "1" })
-	return { o = o, c = cond, real = real, v = pick_visual(o, norm_vis(se.visual_name)), loud = true }
+	return { o = o, c = cond, real = real, v = pick_visual(o, norm_vis(se.visual_name), eligible(se)), loud = true }
 end
 
 function held(id)
@@ -384,8 +402,8 @@ function on_death_drop(npc, se)
 	if not (rec and rec.o) or rec.x then return false end
 	load()
 	write_rec(se, { x = "1" })
-	if not system_ini():section_exist(rec.o) then return false end
 	if death_manager.he_corpse_outfit_banned(npc, rec.o) then return true end
+	if not system_ini():section_exist(rec.o) then return false end
 	local cond = (tonumber(rec.c) or 1) * (cfg.drop_cond_min + math.random() * (cfg.drop_cond_max - cfg.drop_cond_min))
 	local it = alife():create(rec.o, npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc:id())
 	if it then
@@ -432,7 +450,7 @@ function wear_offline(se, it)
 	local ii = it:get_inventory_item()
 	local cond = ii and ii.item_condition or 1
 	if not wants(se, sect, cond) then return false end
-	apply(se, { o = sect, c = cond, real = true, v = pick_visual(sect, norm_vis(se.visual_name)) })
+	apply(se, { o = sect, c = cond, real = true, v = pick_visual(sect, norm_vis(se.visual_name), eligible(se)) })
 	return true
 end
 
@@ -525,7 +543,7 @@ function on_npc_tick(npc)
 	local best, best_s
 	npc:iterate_inventory(function(_, item)
 		local o = item:is_outfit() and outfits[item:section()]
-		if o and o.pool and c.allow[o.family] then
+		if o and o.pool and c.allow[o.family] and pick_visual(item:section(), nil, c) then
 			local s = o.score * cond_k(item:condition())
 			if s > need and (best_s == nil or s > best_s) then
 				best, best_s = item, s
@@ -533,7 +551,7 @@ function on_npc_tick(npc)
 		end
 	end, nil)
 	if best then
-		pending[id] = { item = best:id(), o = best:section(), c = best:condition(), v = pick_visual(best:section(), norm_vis(se.visual_name)), loud = true }
+		pending[id] = { item = best:id(), o = best:section(), c = best:condition(), v = pick_visual(best:section(), norm_vis(se.visual_name), c), loud = true }
 	end
 end
 
