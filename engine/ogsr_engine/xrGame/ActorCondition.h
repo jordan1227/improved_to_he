@@ -179,6 +179,7 @@ protected:
     float m_fOverweightJumpK;
     float m_fAccelK;
     float m_fSprintK;
+    float m_fWalkRegenK; // NLC: share of stand_power regen kept while walking (not accelerated)
     float g_up_speed_k;
 
     bool m_bJumpRequirePower;

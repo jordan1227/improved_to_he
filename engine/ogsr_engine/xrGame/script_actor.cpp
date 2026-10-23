@@ -118,6 +118,7 @@ void CScriptActor::script_register(lua_State* L)
                .def_readwrite("overweight_jump_k", &CActorCondition::m_fOverweightJumpK)
                .def_readwrite("accel_k", &CActorCondition::m_fAccelK)
                .def_readwrite("sprint_k", &CActorCondition::m_fSprintK)
+               .def_readwrite("walk_regen_k", &CActorCondition::m_fWalkRegenK) // NLC
                .def_readwrite("max_walk_weight", &CActorCondition::m_MaxWalkWeight)
 
                //.def_readwrite("health_hit_part",			&CActorCondition::m_fHealthHitPart)

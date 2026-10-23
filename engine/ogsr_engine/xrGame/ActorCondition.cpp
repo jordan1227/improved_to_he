@@ -37,6 +37,7 @@ CActorCondition::CActorCondition(CActor* object) : inherited(object)
     m_fOverweightJumpK = 0.f;
     m_fAccelK = 0.f;
     m_fSprintK = 0.f;
+    m_fWalkRegenK = 0.f;
     m_fAlcohol = 0.f;
     m_fSatiety = 1.0f;
     m_fThirst = 1.0f;
@@ -85,6 +86,7 @@ void CActorCondition::LoadCondition(LPCSTR entity_section)
     m_fOverweightJumpK = pSettings->r_float(section, "overweight_jump_k");
     m_fAccelK = pSettings->r_float(section, "accel_k");
     m_fSprintK = pSettings->r_float(section, "sprint_k");
+    m_fWalkRegenK = READ_IF_EXISTS(pSettings, r_float, section, "walk_regen_k", 0.f); // NLC
     g_up_speed_k = READ_IF_EXISTS(pSettings, r_float, section, "up_speed_k", 1.3f);
 
     m_bJumpRequirePower = READ_IF_EXISTS(pSettings, r_bool, section, "jump_require_power", false);
@@ -650,6 +652,13 @@ void CActorCondition::ConditionWalk(float weight, bool accel, bool sprint)
         power += up * g_up_speed_k * m_fJumpWeightPower * weight * (weight > 1.f ? m_fOverweightJumpK : 1.f);
 
     m_fPower -= HitPowerEffect(power);
+
+    // NLC: a plain walk keeps part of the standing regen (stand_power < 0 restores).
+    // Not while climbing, airborne, landing or overweight. Like ConditionStand,
+    // the regen bypasses the outfit power loss.
+    const u32 mstate = object().mstate_real;
+    if (!accel && m_fWalkRegenK > 0.f && weight <= 1.f && !(mstate & (mcClimb | mcJump | mcFall | mcLanding | mcLanding2)))
+        m_fPower -= m_fStandPower * m_fWalkRegenK * m_fDeltaTime;
 }
 
 void CActorCondition::ConditionStand(float weight)

@@ -917,10 +917,21 @@ function sivol_weapon.get_unsettle_k()
     return k
 end
 
+-- ADS drain per game second (0.0135 = the old 0.00675 per 100 ms tick at
+-- time_factor 5). Scaled by elapsed time so it stays in step with the engine
+-- stamina, which runs on game time (stand_power / walk_regen_k).
+local ADS_DRAIN_PER_GAME_S = 0.0135
+local ADS_DRAIN_MAX_DT = 0.5 -- s; caps the first tick after a load or pause
+local last_ads_tick = nil
+
 function update_ads_fatigue()
     ogse_signals.get_mgr():reschedule(100)
     local actor = db.actor
     if not actor then return end
+
+    local now = time_global()
+    local dt = last_ads_tick and math.min(math.max(now - last_ads_tick, 0) / 1000, ADS_DRAIN_MAX_DT) or 0
+    last_ads_tick = now
 
     update_artifact_wobble_k()
     update_manual_hold_breath()
@@ -942,8 +953,11 @@ function update_ads_fatigue()
 
             -- Keep the established ADS drain unchanged, then add the manual
             -- stabilization cost in the same actor.power update form.
+            -- walking_drain_k applies only while moving (artifact hook, 1.0 by default).
             local effects = get_artifact_weapon_effects()
-            local normal_drain = 0.00675 * weight_sens * stance_drain_k * effects.ads_drain_k
+            local moving_k = (aobj and aobj:is_actor_moving()) and effects.walking_drain_k or 1.0
+            local normal_drain = ADS_DRAIN_PER_GAME_S * dt * level.get_time_factor()
+                * weight_sens * stance_drain_k * effects.ads_drain_k * moving_k
             local manual_drain = normal_drain * MANUAL_HOLD_BREATH_DRAIN_K
                 * manual_hold_strength * effects.manual_drain_k
             actor.power = -(normal_drain + manual_drain)

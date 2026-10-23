@@ -5,6 +5,14 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.135 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `FFC92F56B1EF58A8CCA1FB677C009F72AE580969ADF9942D6BE6D23504024E04` (archived with its PDB in `nlc_tools/builds/20261023_064526_ffc92f56`).
+- **Status:** runtime accepted 2026-10-23 (tests 1-9). Walking stamina regen.
+- `CActorCondition::ConditionWalk`: a plain walk (not accelerated, not climbing/airborne/landing, not overweight) keeps `walk_regen_k` of the `stand_power` regen, bypassing outfit power loss like `ConditionStand`. `walk_regen_k` (`actor_condition`, default 0) is Lua read/write on the actor condition.
+- Required game data: `creatures/actor.ltx` (`walk_regen_k = 0.5`), `sivol/sivol_weapon.script` (ADS drain scaled by game time).
+
 ## nlc-3.589.134 (2026-10-22)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
