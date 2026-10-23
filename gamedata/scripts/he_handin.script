@@ -1,10 +1,11 @@
 local session = nil
 
 local place_rank = {
-  [ "ruck"   ] = 0,
-  [ "hidden" ] = 1,
-  [ "slot"   ] = 2,
-  [ "belt"   ] = 3,
+  [ "ruck"      ] = 0,
+  [ "hidden"    ] = 1,
+  [ "slot"      ] = 2,
+  [ "belt"      ] = 3,
+  [ "container" ] = 4,
 }
 
 local table_titles = {
@@ -56,6 +57,45 @@ local function less( a, b )
 end
 
 
+local function read_box( id )
+  local box = level.object_by_id( id )
+  if not box then return nil end
+  local pk    = get_netpk( box )
+  local data  = pk:get()
+  local sect  = box:section()
+  local slots = get_u32( sect, "container_slots" ) or 8
+  return arc_radiation.decode_custom_data( data.custom_data, sect, slots ), pk, data, sect, slots
+end
+
+
+local function box_with_actor( id )
+  local box = level.object_by_id( id )
+  local parent = box and box:parent()
+  return parent ~= nil and parent:id() == db.actor:id()
+end
+
+
+local function container_recs()
+  local recs = {}
+  for _, box_id in ipairs( kotovod.get_containers_id() ) do
+    local arts = read_box( box_id )
+    for slot, art in ipairs( arts or {} ) do
+      if art.section then
+        table.insert( recs, {
+          [ "sect"      ] = art.section,
+          [ "id"        ] = 1000000000 + box_id * 100 + slot,
+          [ "cond"      ] = art.condition or 1,
+          [ "container" ] = box_id,
+          [ "slot"      ] = slot,
+          [ "custom"    ] = art.custom_data,
+        } )
+      end
+    end
+  end
+  return recs
+end
+
+
 local function shadow_items()
   return get_shadow_inv():get_content( true )
 end
@@ -81,33 +121,65 @@ local sources = {
 }
 
 
+local function add_candidate( list, rec, base, tag )
+  local entry = {
+    [ "id"        ] = rec.id,
+    [ "section"   ] = rec.sect,
+    [ "base"      ] = base,
+    [ "tag"       ] = tag,
+    [ "condition" ] = rec.cond,
+    [ "value"     ] = item_value( rec.sect, rec.cond ),
+  }
+  if rec.container then
+    entry.container = rec.container
+    entry.slot      = rec.slot
+    entry.info      = rec.custom or ""
+    entry.place     = "container"
+  else
+    entry.obj   = rec.obj
+    entry.info  = he_magic_box.get_item_info( rec.obj )
+    entry.place = place_of( rec.obj )
+  end
+  entry.rank = place_rank[ entry.place ] or 0
+  table.insert( list, entry )
+end
+
+
 function collect( items, match, strict )
   local list = {}
   for _, rec in items:ipairs() do
-    local ok, base, tag = match( rec )
-    if ok and not he_gluzov_art.is_locked_id( rec.id ) then
-      local obj = rec.obj
-      if obj and obj:is_artefact() then
-        local cond  = obj:condition()
-        local place = place_of( obj )
-        table.insert( list, {
-          [ "id"        ] = rec.id,
-          [ "obj"       ] = obj,
-          [ "section"   ] = rec.sect,
-          [ "base"      ] = base,
-          [ "tag"       ] = tag,
-          [ "condition" ] = cond,
-          [ "place"     ] = place,
-          [ "rank"      ] = place_rank[ place ] or 0,
-          [ "value"     ] = item_value( rec.sect, cond ),
-        } )
-      elseif strict then
-        return nil
+    if rec.obj then
+      rec.cond = rec.obj:condition()
+      local ok, base, tag = match( rec )
+      if ok and not he_gluzov_art.is_locked_id( rec.id ) then
+        if rec.obj:is_artefact() then
+          add_candidate( list, rec, base, tag )
+        elseif strict then
+          return nil
+        end
       end
     end
   end
+  for _, rec in ipairs( container_recs() ) do
+    local ok, base, tag = match( rec )
+    if ok then add_candidate( list, rec, base, tag ) end
+  end
   table.sort( list, less )
   return list
+end
+
+
+function container_count( section, flt, exact )
+  if not active() then return 0 end
+  local n = 0
+  for _, rec in ipairs( container_recs() ) do
+    local hit
+    if exact then hit = rec.sect == section else hit = strposx( rec.sect, section ) end
+    if hit and ( not flt or flt( rec.sect ) ) then
+      n = n + 1
+    end
+  end
+  return n
 end
 
 
@@ -147,24 +219,36 @@ local function ambiguous( list, group, count )
 end
 
 
+local function remove_candidate( c, ctx )
+  if c.container then
+    return ui_arc_container_menu.put_out_art( c.container, c.slot )
+  end
+  misc.release_obj( c.id, ctx )
+  return true
+end
+
+
 local function take( list, group, count, news )
   local real, real_sect = 0, nil
   for _, c in ipairs( list ) do
     if real >= count then break end
-    table.insert( group.given, {
-      [ "section"   ] = c.section,
-      [ "base"      ] = c.base,
-      [ "condition" ] = tonumber( string.format( "%.2f", c.condition * 100 ) ),
-      [ "game_type" ] = "artefact",
-      [ "count"     ] = 1,
-      [ "info"      ] = he_magic_box.get_item_info( c.obj ),
-      [ "place"     ] = c.place,
-      [ "value"     ] = c.value,
-    } )
-    misc.release_obj( c.id, "he_handin" )
-    if news then sak.relocate_item( "out", c.tag or c.section, 1 ) end
-    real = real + 1
-    real_sect = real_sect or c.base
+    if remove_candidate( c, "he_handin" ) then
+      table.insert( group.given, {
+        [ "section"   ] = c.section,
+        [ "base"      ] = c.base,
+        [ "condition" ] = tonumber( string.format( "%.2f", c.condition * 100 ) ),
+        [ "game_type" ] = "artefact",
+        [ "count"     ] = 1,
+        [ "info"      ] = c.info,
+        [ "place"     ] = c.place,
+        [ "value"     ] = c.value,
+        [ "container" ] = c.container,
+        [ "slot"      ] = c.slot,
+      } )
+      if news then sak.relocate_item( "out", c.tag or c.section, 1 ) end
+      real = real + 1
+      real_sect = real_sect or c.base
+    end
   end
   group.need = group.need + real
   return real, real_sect
@@ -194,8 +278,8 @@ local function table_title( tbl )
 end
 
 
-function release_table( tbl, count, dyn_flag, dyn, cond, capsule )
-  local match = function( rec )
+local function table_matcher( tbl, dyn_flag, dyn, cond, capsule )
+  return function( rec )
     local sect = rec.sect
     for a = 1, table.getn( tbl ) do
       local want = tbl[ a ]
@@ -209,13 +293,24 @@ function release_table( tbl, count, dyn_flag, dyn, cond, capsule )
         else
           ok = false
         end
-        if ok and rec.obj and rec.obj:condition() >= cond then
+        if ok and rec.cond >= cond then
           return true, want, want
         end
       end
     end
     return false
   end
+end
+
+
+function table_have( tbl, count, dyn_flag, dyn, cond, capsule )
+  local list = collect( ruck_items(), table_matcher( tbl, dyn_flag, dyn, cond, capsule ), true )
+  return list ~= nil and table.getn( list ) >= count
+end
+
+
+function release_table( tbl, count, dyn_flag, dyn, cond, capsule )
+  local match = table_matcher( tbl, dyn_flag, dyn, cond, capsule )
   local list = collect( ruck_items(), match, true )
   if not ( list and list[ 1 ] ) then return false end
   local key = "tbl|" .. tostring( tbl ) .. "|" .. tostring( dyn_flag ) .. "|" .. tostring( dyn )
@@ -259,9 +354,11 @@ local function build_view( s )
           [ "given"     ] = false,
           [ "on"        ] = false,
           [ "id"        ] = c.id,
+          [ "container" ] = c.container,
+          [ "slot"      ] = c.slot,
           [ "section"   ] = c.section,
           [ "condition" ] = cond,
-          [ "info"      ] = he_magic_box.get_item_info( c.obj ),
+          [ "info"      ] = c.info,
           [ "place"     ] = c.place,
           [ "value"     ] = c.value,
         } )
@@ -353,30 +450,57 @@ local function owned_by_actor( obj )
 end
 
 
+local function candidate_present( r )
+  if r.container then
+    if not box_with_actor( r.container ) then return false end
+    local arts = read_box( r.container )
+    local art = arts and arts[ r.slot ]
+    return art ~= nil and art.section == r.section
+  end
+  local obj = level.object_by_id( r.id )
+  return obj ~= nil and owned_by_actor( obj )
+end
+
+
+local function put_back( e )
+  if e.container and box_with_actor( e.container ) then
+    local arts, pk, data, sect, slots = read_box( e.container )
+    if arts and arts[ e.slot ] and not arts[ e.slot ].section then
+      arts[ e.slot ] = {
+        [ "section"     ] = e.section,
+        [ "condition"   ] = e.condition / 100,
+        [ "custom_data" ] = ( e.info ~= "" and e.info ) or nil,
+      }
+      data.custom_data = arc_radiation.encode_custom_data( arts, sect, slots )
+      pk:set( data )
+      ui_arc_container_menu.arc_recalc_container( e.container )
+      return
+    end
+  end
+  he_magic_box.create_actor_item( {
+    [ "section"   ] = e.section,
+    [ "condition" ] = e.condition,
+    [ "game_type" ] = e.game_type,
+    [ "count"     ] = 1,
+    [ "info"      ] = e.info,
+  }, db.actor )
+end
+
+
 function apply( view )
   for _, g in ipairs( view ) do
     for _, r in ipairs( g.rows ) do
-      if r.on and not r.given then
-        local obj = level.object_by_id( r.id )
-        if not ( obj and owned_by_actor( obj ) ) then return false end
-      end
+      if r.on and not r.given and not candidate_present( r ) then return false end
     end
   end
   local changed = false
   for _, g in ipairs( view ) do
     for _, r in ipairs( g.rows ) do
       if r.given and not r.on then
-        local e = r.data
-        he_magic_box.create_actor_item( {
-          [ "section"   ] = e.section,
-          [ "condition" ] = e.condition,
-          [ "game_type" ] = e.game_type,
-          [ "count"     ] = 1,
-          [ "info"      ] = e.info,
-        }, db.actor )
+        put_back( r.data )
         changed = true
       elseif r.on and not r.given then
-        misc.release_obj( r.id, "he_handin.apply" )
+        remove_candidate( r, "he_handin.apply" )
         changed = true
       end
     end
