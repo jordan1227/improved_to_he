@@ -77,7 +77,13 @@ void CExplosive::LightCreate()
 
 void CExplosive::LightDestroy() { m_pLight.destroy(); }
 
-CExplosive::~CExplosive(void) { sndExplode.destroy(); }
+CExplosive::~CExplosive(void)
+{
+    sndExplode.destroy();
+    for (auto& v : m_nlc_snd_layers)
+        for (ref_sound& s : v)
+            s.destroy();
+}
 
 void CExplosive::Load(LPCSTR section) { Load(pSettings, section); }
 
@@ -116,6 +122,42 @@ void CExplosive::Load(CInifile* ini, LPCSTR section)
 
     LPCSTR snd_name = ini->r_string(section, "snd_explode");
     sndExplode.create(snd_name, st_Effect, m_eSoundExplode);
+
+    // NLC: optional distance layers (docs/AUDIO_DESIGN.md 13.2 item 9): comma lists of sounds, one picked at random when the
+    // listener is at least *_dist away; the main sound still plays (AI hearing unchanged). A missing file is logged and skipped
+    // (a release build would play silence for it).
+    {
+        constexpr LPCSTR keys[2] = {"snd_explode_distant", "snd_explode_far"};
+        constexpr LPCSTR dist_keys[2] = {"snd_explode_distant_dist", "snd_explode_far_dist"};
+        constexpr float dist_def[2] = {100.f, 250.f};
+        for (int k = 0; k < 2; ++k)
+        {
+            for (ref_sound& s : m_nlc_snd_layers[k])
+                s.destroy();
+            m_nlc_snd_layers[k].clear();
+            m_nlc_layer_dist[k] = ini->line_exist(section, dist_keys[k]) ? ini->r_float(section, dist_keys[k]) : dist_def[k];
+            if (!ini->line_exist(section, keys[k]))
+                continue;
+            LPCSTR v = ini->r_string(section, keys[k]);
+            if (!v)
+                continue;
+            string_path name, file, fn;
+            for (int i = 0, n = _GetItemCount(v); i < n; ++i)
+            {
+                _GetItem(v, i, name);
+                _Trim(name);
+                if (!name[0])
+                    continue;
+                strconcat(sizeof(file), file, name, ".ogg");
+                if (!FS.exist(fn, "$game_sounds$", file))
+                {
+                    Msg("! [explode] [%s] %s: sound [%s] not found, skipped", section, keys[k], name);
+                    continue;
+                }
+                m_nlc_snd_layers[k].emplace_back().create(name, st_Effect, SOUND_TYPE_WORLD_OBJECT_EXPLODING);
+            }
+        }
+    }
 
     m_fExplodeDurationMax = ini->r_float(section, "explode_duration");
 
@@ -343,6 +385,18 @@ void CExplosive::Explode()
         who = Level().Objects.net_Find(Initiator());
     }
     Sound->play_at_pos(sndExplode, who, pos, false);
+
+    // NLC: distance layer for a far listener; no game object, so no extra AI event (the main sound carries it)
+    {
+        const float ld = Device.vCameraPosition.distance_to(pos);
+        const int layer = (ld >= m_nlc_layer_dist[1] && !m_nlc_snd_layers[1].empty()) ? 1 : ((ld >= m_nlc_layer_dist[0] && !m_nlc_snd_layers[0].empty()) ? 0 : -1);
+        if (layer >= 0)
+        {
+            auto& v = m_nlc_snd_layers[layer];
+            Fvector p = pos;
+            Sound->play_no_feedback(v[Random.randI(v.size())], nullptr, 0, 0.f, &p);
+        }
+    }
 
     //показываем эффекты
 

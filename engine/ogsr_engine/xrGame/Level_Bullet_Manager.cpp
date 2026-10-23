@@ -234,6 +234,22 @@ bool CBulletManager::CalcBullet(collide::rq_results& rq_storage, xr_vector<ISpat
     if (nlc_stealth::g_near_miss_range > 0.f && g_actor && bullet->parent_id == g_actor->ID())
         nlc_stealth::bullet_near_miss(bullet->pos, cur_dir, std::min(range, 60.f));
 
+    // NLC: near-miss whine (docs/AUDIO_DESIGN.md 13.2 item 10): a bullet not fired by the actor whines at the point of its
+    // step closest to the camera when that passes within snd_bullet_whine_dist (before, only bullets that reached the actor's
+    // own collision sphere did); no game object, so no AI event
+    if (psSoundBulletWhineDist > 0.f && g_actor && bullet->parent_id != g_actor->ID() && !bullet->m_whine_snd._feedback())
+    {
+        const Fvector& cam = Device.vCameraPosition;
+        Fvector to;
+        to.sub(cam, bullet->pos);
+        const float t = clampr(to.dotproduct(cur_dir), 0.f, range);
+        Fvector pt;
+        pt.mad(bullet->pos, cur_dir, t);
+        const float d = pt.distance_to(cam);
+        if (d < psSoundBulletWhineDist && d > 0.3f && bullet->fly_dist + t > 5.f)
+            PlayWhineSound(bullet, nullptr, pt);
+    }
+
     bullet->flags.skipped_frame = (Device.dwFrame >= bullet->frame_num);
 
     if (!bullet->flags.ricochet_was)

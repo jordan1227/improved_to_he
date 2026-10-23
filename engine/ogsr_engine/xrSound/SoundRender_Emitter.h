@@ -63,6 +63,30 @@ public:
     u32 marker;
     void i_stop();
 
+    // NLC (docs/AUDIO_DESIGN.md): occlusion targets/smoothed HF, source enclosure, start delay, ambient channel
+    float nlc_occ_gain_t{1.f};
+    float nlc_occ_hf_t{1.f};
+    float nlc_occ_hf{1.f};
+    float nlc_occ_db{};
+    float nlc_occ_next{};
+    float nlc_src_enc{};
+    u8 nlc_occ_path{};
+    bool nlc_env_ambient{};
+    bool nlc_pos_set{};
+    bool nlc_delay_checked{};
+    bool nlc_delayed{};
+    bool nlc_loud{};
+    bool nlc_src_done{};
+    bool nlc_no_occl{};
+    bool nlc_occ_pending{};
+    bool nlc_lf_exempt{}; // not affected by the listener filter (gas mask): breathing, own body sounds, UI, music
+    void nlc_occ_refresh(bool immediate, float audible = 1.f);
+    void nlc_occ_compute(bool immediate);
+    bool nlc_occ_in_filter() const;
+    void nlc_occ_follow(float dt);
+    float nlc_listener_dist() const;
+    bool nlc_log_match();
+
     void set_cursor(u32 p);
     u32 get_cursor(bool b_absolute) const;
     void move_cursor(int offset);
@@ -102,7 +126,7 @@ public:
 
     float priority();
     float att();
-    void start(ref_sound* _owner, BOOL _loop, float delay);
+    void start(ref_sound* _owner, BOOL _loop, float delay, u32 flags = 0);
     void cancel(); // manager forces out of rendering
     void update(float dt);
     BOOL update_culling(float dt);

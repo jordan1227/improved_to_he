@@ -38,6 +38,7 @@ CActorCondition::CActorCondition(CActor* object) : inherited(object)
     m_fAccelK = 0.f;
     m_fSprintK = 0.f;
     m_fWalkRegenK = 0.f;
+    m_SprintKeepHitMask = 0;
     m_fAlcohol = 0.f;
     m_fSatiety = 1.0f;
     m_fThirst = 1.0f;
@@ -882,6 +883,8 @@ void CActorCondition::UpdateTutorialThresholds()
 
 bool CActorCondition::DisableSprint(SHit* pHDS)
 {
+    if (m_SprintKeepHitMask & (1u << u32(pHDS->hit_type)))
+        return false;
     return (pHDS->hit_type != ALife::eHitTypeTelepatic) && (pHDS->hit_type != ALife::eHitTypeChemicalBurn) && (pHDS->hit_type != ALife::eHitTypeBurn) &&
         (pHDS->hit_type != ALife::eHitTypeRadiation);
 }

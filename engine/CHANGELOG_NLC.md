@@ -5,6 +5,59 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.149 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A240D7660DB9893B0ED2F04FFD089327A239D9E1E1CED799240A69CB6149FE40` (archived with its PDB in `nlc_tools/builds/20261023_211634_a240d766`).
+- **Status:** runtime pending. Audio batch 3 (`docs/AUDIO_DESIGN.md` 15-16).
+- **Required game data:** `scripts/sivol/sivol_mask_audio.script` + its entry in `ogse_signals_addons_list.script`; `misc/snd_occlusion.ltx` (`hrtf_2d_gain`).
+- With HRTF on, 2D sounds bypass it as direct stereo (`AL_DIRECT_CHANNELS_SOFT`, mono duplicated, level `hrtf_2d_gain`); `snd_hrtf_2d on` keeps them in HRTF.
+- `snd_hrtf_set N`: HRTF data set by index (`ALC_HRTF_ID_SOFT`; one device reset at start for a non-default set); sets and the one in use are logged.
+- Listener filter for scripts: `level.nlc_set_listener_filter(gain, hf, fade_sec)`, `level.nlc_set_listener_filter_exempt(parts)`; direct, room and echo paths of non-exempt sounds; reset on level unload. Used by `sivol_mask_audio` for gas masks and helmets.
+
+## nlc-3.589.148 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F47BAF0F3E217B4E9F9E242256635563A8495AD27266A5AE6D23120AF9A78B4E` (archived with its PDB in `nlc_tools/builds/20261023_205354_f47baf0f`; first test build `109F259E` replaced, same version).
+- **Status:** runtime pending. Audio batch 2 after a 4-agent review (`docs/AUDIO_DESIGN.md` 13-14).
+- **Required game data:** `misc/snd_occlusion.ltx` (new keys), `ogg_comments_overrides.ltx`, `weapons/w_grenades.ltx`, `weapons/weapons.ltx` (explosion layers), `scripts/sivol/sivol_shell_sounds.script` (`on_npc_shot`).
+- Occlusion moved from the voice gain to the direct-path filter gain: shots behind buildings keep their reverb/echo share and are no longer culled at the cap. Loud sounds soft-capped (18/0.25/24 dB), terrain-only paths 22 dB, general cap 30 dB; capped dB become HF loss.
+- Ray budget per 60 fps frame scaled by frame time (`snd_occ_rays` 160); due sounds served by priority; loud starts always get leak rays; no refresh below the cull level; raw occlusion and source-enclosure caches.
+- World-ambient sounds are occluded in mode 1 (exceptions: `no_occlude`); level statics no longer occluded twice.
+- Reverb: tunnels keep their long axis, first reflections from the nearest walls, darker big rooms, near-dry outdoor preset, echo depth 0.5, unchanged commits skipped, probe at most 30 Hz.
+- No room send for 2D sounds without an object (rain, music, UI); rain keeps a floor indoors and is dulled.
+- `snd_hrtf on` requests stereo-HRTF output (surround endpoints); surround modes named in the log.
+- `CExplosive`: optional `snd_explode_distant` / `snd_explode_far` layers by listener distance.
+- Near-miss whine for non-actor bullets passing within `snd_bullet_whine_dist` (4.5 m).
+- NPC shell casings: `CWeaponMagazined::OnShot` calls `sivol_shell_sounds.on_npc_shot` (NPCs within 30 m, ground point + material).
+- After the first test: `snd_stats` crash fixed (`statistic()` under the sound lock); reverb decay from a room size (geometric mean of the trimmed and cube-mean probe distances; a tunnel read 3 m and decayed in 0.6 s); the Sound menu HRTF list triggers `snd_restart`.
+- Fixes: 2D flag set at emitter start (no distance delay on 2D sounds), geometry setters under the sound lock (unload race), timer-jump resets, EFX ids cleared on release, coplanar face pairing, no AI pulses while a delayed sound is paused, `snd_occ_log` case-insensitive, ltx empty-value guard.
+
+## nlc-3.589.147 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `C8CEF90B5AB3D8A457E9661C192F9AD2724129D0A27D9218FEF1136DC5C84A2A` (archived with its PDB in `nlc_tools/builds/20261023_194625_c8cef90b`; first test build `717C8933` replaced, same version).
+- **Status:** runtime pending. Audio redesign phases 1, 2, 3a, 4, 5 (`docs/AUDIO_DESIGN.md`).
+- **Required game data:** `gamedata/config/misc/snd_occlusion.ltx` (built-in defaults and a log warning without it).
+- **Occlusion** (`snd_occ_mode 1`, default): per-material, thickness-based dB loss along the listener-sound ray (all CFORM hits, entry/exit faces paired), up to 5 leak paths around the occluder (least lossy wins), per-voice EFX low-pass for muffling, 4-15 Hz refresh within a ray budget (`snd_occ_rays` 96), attack/release smoothing. `snd_occ_strength`, `snd_occ_log <name part>`, `snd_occ_reload`; `snd_stats_info_name` shows `[-dB hf]`. `snd_occ_mode 0` = old single ray.
+- Static level sounds were occluded twice (`level_sounds.cpp`); fixed in mode 1.
+- **Reverb** (`snd_reverb_mode 1`, needs `snd_efx on`): listener room probe (24 rays + sky, 3 per update) drives an EAX reverb (enclosure, mean distance, material absorption), blended with authored `snd_env` zones (`snd_reverb_zone_weight` 0.5); outdoor echo slot on send 1 for shots and explosions in the open (`snd_outdoor_echo`); room send reduced when listener and source enclosure differ. Commit throttled to 20 Hz; `snd_efx off` now detaches the effects. `snd_reverb_gain`, `snd_reverb_log`.
+- **Air absorption:** `snd_air_absorption` dB per 100 m (3) on the direct low-pass.
+- **Speed-of-sound delay** for 3D one-shot sounds beyond `snd_delay_min_dist` (35 m) at `snd_speed` (343); AI events stay on time (`snd_delay`).
+- **Weather ambience** (`sm_EnvAmbient`, `CGamePersistent`) ducked and dulled by the listener's enclosure (`snd_amb_indoor_gain` 0.3) instead of ray occlusion.
+- **OpenAL context:** 2 aux sends, HRTF from `snd_hrtf` (0 off, 1 on, 2 auto; applies on `snd_restart`), logged at start.
+- `snd_dist_model 1`: engine distance curve with a fade to zero over the last 20% of `max_dist` (default 0 = OpenAL inverse clamped).
+- Fix after the first test: the room probe and occlusion smoothing clamp the timer delta (a bad first delta after a load made every reverb value NaN, so no reverb at all); NaN-safe EFX clamps and a reset with a log line.
+- Diagnostics: `snd_audio_report` (device, HRTF, reverb, probe, every rendering voice), `[snd_delay]` lines and `snd_occ_log *` for all sounds; HRTF status, output mode and available HRTF sets logged at start.
+- `snd_occ_mode` is on/off and `snd_hrtf` takes `off / on / auto` (Sound menu controls).
+
+## nlc-3.589.146 (2026-10-23)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `261943263873E129BE06A8888ADB2D9B33519AC50D67F6FA1D8002296DC98DF8` (archived with its PDB in `nlc_tools/builds/20261023_183809_26194326`).
+- **Status:** runtime pending.
+- DLSS preset lists no longer initialise NGX (opening Options cost ~2 s under TAA); availability comes from the DLL file version.
+
 ## nlc-3.589.145 (2026-10-23)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

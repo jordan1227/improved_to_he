@@ -242,7 +242,7 @@ void CGamePersistent::WeathersUpdate()
                         pos.z = _sin(angle);
                         pos.normalize().mul(ch.get_rnd_sound_dist()).add(Device.vCameraPosition);
                         pos.y += 10.f;
-                        snd.play_at_pos(0, pos);
+                        snd.play_at_pos(0, pos, sm_EnvAmbient); // NLC: ducked indoors by the room probe
 
 #ifdef DEBUG
                         if (!snd._handle() && strstr(Core.Params, "-nosound"))
@@ -293,7 +293,7 @@ void CGamePersistent::WeathersUpdate()
                         pos.add(Device.vCameraPosition, eff->offset);
                         ambient_particles->play_at_pos(pos);
                         if (eff->sound._handle())
-                            eff->sound.play_at_pos(0, pos);
+                            eff->sound.play_at_pos(0, pos, sm_EnvAmbient); // NLC: ducked indoors by the room probe
 
                         Environment().wind_blast_strength_start_value = Environment().wind_strength_factor;
                         Environment().wind_blast_strength_stop_value = eff->wind_blast_strength;
@@ -411,7 +411,7 @@ void CGamePersistent::WeathersUpdate()
                         pos.z = _sin(angle);
                         pos.normalize().mul(env_amb->get_rnd_sound_dist()).add(Device.vCameraPosition);
                         pos.y += 10.f;
-                        snd->play_at_pos(0, pos);
+                        snd->play_at_pos(0, pos, sm_EnvAmbient); // NLC: ducked indoors by the room probe
                     }
                 }
 
@@ -429,7 +429,7 @@ void CGamePersistent::WeathersUpdate()
                         pos.add(Device.vCameraPosition, eff->offset);
                         ambient_particles->play_at_pos(pos);
                         if (eff->sound._handle())
-                            eff->sound.play_at_pos(0, pos);
+                            eff->sound.play_at_pos(0, pos, sm_EnvAmbient); // NLC: ducked indoors by the room probe
                     }
                 }
                 else if (!ambient_particles && Device.dwTimeGlobal > ambient_effect_next_time)

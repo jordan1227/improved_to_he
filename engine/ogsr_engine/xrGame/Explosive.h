@@ -144,6 +144,9 @@ protected:
     //звуки
     ref_sound sndExplode;
     ESoundTypes m_eSoundExplode;
+    // NLC: distance layers heard instead of nothing past the main sound's range (snd_explode_distant / snd_explode_far)
+    xr_vector<ref_sound> m_nlc_snd_layers[2];
+    float m_nlc_layer_dist[2]{};
 
     //размер отметки на стенах
     float fWallmarkSize;

@@ -94,7 +94,7 @@ void CUIOptionsItem::SaveValue()
         )
         m_optionsManager.DoVidRestart();
 
-    if (m_entry == "snd_efx" || m_entry == "snd_device")
+    if (m_entry == "snd_efx" || m_entry == "snd_device" || m_entry == "snd_hrtf") // NLC: HRTF applies on a device reset
         m_optionsManager.DoSndRestart();
 
     if (m_dep == sdVidRestart)

@@ -16,6 +16,7 @@ void CSoundRender_Emitter::set_position(const Fvector& pos)
         p_source.position.set(0, 0, 0);
 
     bMoved = TRUE;
+    nlc_pos_set = true;
 }
 // Перемотка звука на заданную секунду [rewind snd to target time] --#SM+#--
 void CSoundRender_Emitter::set_time(float t)

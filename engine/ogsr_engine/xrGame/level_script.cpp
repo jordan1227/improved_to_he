@@ -1180,6 +1180,9 @@ void CLevel::script_register(lua_State* L)
             def("nlc_get_reload_speed_factor", [](LPCSTR name) { return nlc_get_hud_speed_factor(NLC_SPEED_RELOAD, name); }),
             def("nlc_get_reload_speed_k", [] { return nlc_hud_speed_k(NLC_SPEED_RELOAD); }),
             def("nlc_set_draw_speed_factor", [](LPCSTR name, float k) { nlc_set_hud_speed_factor(NLC_SPEED_DRAW, name, k); }), // show / hide
+            // NLC audio listener filter (gas mask, sivol_mask_audio.script; docs/AUDIO_DESIGN.md 16)
+            def("nlc_set_listener_filter", [](float gain, float hf, float fade_sec) { ::Sound->nlc_set_listener_filter(gain, hf, fade_sec); }),
+            def("nlc_set_listener_filter_exempt", [](LPCSTR parts) { ::Sound->nlc_set_listener_filter_exempt(parts); }),
             def("nlc_get_draw_speed_factor", [](LPCSTR name) { return nlc_get_hud_speed_factor(NLC_SPEED_DRAW, name); }),
             def("nlc_get_draw_speed_k", [] { return nlc_hud_speed_k(NLC_SPEED_DRAW); }),
             def("nlc_set_reload_speed_k", [](float k) { nlc_set_hud_speed_factor(NLC_SPEED_RELOAD, "injury", k); }), // .102 name, = "injury" factor

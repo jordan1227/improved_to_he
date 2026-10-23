@@ -62,9 +62,13 @@ extern XRSOUND_API float SoundRenderGetOcculution(Fvector& P, float R, Fvector* 
 
 void SStaticSound::Update(u32 game_time, u32 global_time)
 {
-    Fvector occ[3];
-    float occluder_volume = SoundRenderGetOcculution(m_Position, .2f, occ);
-    float vol = m_Volume * occluder_volume;
+    // NLC: the emitter occludes level sounds itself; multiplying here as well occluded them twice (docs/AUDIO_DESIGN.md 1.2)
+    float vol = m_Volume;
+    if (psSoundOccMode != 1)
+    {
+        Fvector occ[3];
+        vol *= SoundRenderGetOcculution(m_Position, .2f, occ);
+    }
 
     if (ShouldPlay(static_cast<int>(game_time), m_ActiveTime))
     {

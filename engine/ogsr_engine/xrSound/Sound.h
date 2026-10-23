@@ -28,6 +28,80 @@ XRSOUND_API extern float psSoundTimeFactor; //--#SM+#--
 
 XRSOUND_API extern BOOL snd_enable_float_pcm;
 
+// NLC audio (docs/AUDIO_DESIGN.md)
+XRSOUND_API extern BOOL psSoundOccMode; // 0 legacy single ray, 1 thickness/material/leak model
+XRSOUND_API extern float psSoundOccStrength; // dB loss multiplier
+XRSOUND_API extern int psSoundOccRays; // ray budget per sound update
+XRSOUND_API extern string64 psSoundOccLog; // substring of a sound name: log its occlusion paths
+XRSOUND_API extern int psSoundReverbMode; // 0 snd_env zones only, 1 room probe + zones
+XRSOUND_API extern float psSoundReverbZoneWeight;
+XRSOUND_API extern float psSoundReverbGain;
+XRSOUND_API extern float psSoundOutdoorEcho;
+XRSOUND_API extern BOOL psSoundReverbLog;
+XRSOUND_API extern float psSoundAirAbsorption; // dB per 100 m of high-frequency loss
+XRSOUND_API extern BOOL psSoundDelay; // speed-of-sound delay for distant sounds
+XRSOUND_API extern float psSoundDelayMinDist;
+XRSOUND_API extern float psSoundSpeed;
+XRSOUND_API extern float psSoundAmbIndoorGain; // ambient channel gain when fully enclosed
+XRSOUND_API extern u32 psSoundHrtf; // 0 off, 1 on, 2 auto (applied on snd_restart)
+XRSOUND_API extern float psSoundBulletWhineDist;
+XRSOUND_API extern BOOL psSoundHrtf2D; // 2D sounds through HRTF too (off: they bypass it as direct stereo)
+XRSOUND_API extern int psSoundHrtfSet; // HRTF data set index (0 = OpenAL Soft default; applied on snd_restart) // near-miss whine of non-actor bullets within this distance of the camera (0 = off)
+XRSOUND_API extern int psSoundDistModel; // 0 OpenAL inverse clamped, 1 engine curve with a fade to max_dist
+
+// NLC: sound occlusion / room absorption of one game material (misc\snd_occlusion.ltx)
+struct SSndOccMtl
+{
+    float surface_db{6.f}; // loss per crossed surface
+    float db_per_m{20.f}; // loss per metre of material
+    float hf_keep{0.45f}; // high-frequency share kept per crossing
+    float hf_ref_m{0.3f}; // each hf_ref_m of thickness costs one more hf_keep
+    float default_thick{0.2f}; // used when the entry/exit faces do not pair up
+    float absorb{0.1f}; // room probe absorption (reverb decay)
+    bool skip{}; // ignored by occlusion and the room probe
+    bool terrain{}; // ground: a path through terrain only is capped at terrain_cap (hills)
+};
+
+struct SSndOccConfig
+{
+    xr_vector<SSndOccMtl> mtl; // by game material index (CDB::TRI::material)
+    SSndOccMtl def;
+    // occlusion
+    float strength{1.f};
+    float max_db{40.f};
+    float min_thick{0.05f};
+    float max_thick{3.f};
+    float leak_db{3.f};
+    float leak_hf{0.7f};
+    float leak_side{1.2f};
+    float leak_up{1.5f};
+    float leak_max_dist{60.f};
+    float attack{0.15f}; // smoothing toward clearer, s
+    float release{0.35f}; // smoothing toward muffled, s
+    float loud_cap{18.f}; // shots / explosions: soft cap of the loss...
+    float loud_slope{0.25f}; // ...dB above it count this much...
+    float loud_max{24.f}; // ...up to this ceiling; the rest becomes extra HF loss
+    float terrain_cap{22.f}; // a path through terrain only (a hill) loses at most this
+    float cap_hf_div{40.f}; // capped-away dB turn into HF loss: hf x 10^(-dB / cap_hf_div)
+    xr_vector<xr_string> no_occlude; // sound name parts never occluded (sounds typed world_ambient were exempt before)
+    // room probe / reverb
+    float probe_len{60.f};
+    float enc_near{10.f}; // a probe hit nearer than this counts as fully enclosing
+    float enc_far{40.f}; // ... and farther than this not at all
+    float roof_open_k{0.4f}; // enclosure multiplier without a roof
+    float decay_k{0.03f};
+    float decay_min{0.3f};
+    float decay_max{4.5f};
+    float room_gain{0.32f};
+    float outdoor_gain{0.3f}; // open-air tail level (custom near-dry preset)
+    float send_mismatch{0.35f}; // room send when listener and source enclosure differ fully
+    float echo_gain{0.5f};
+    float rain_indoor{0.3f}; // rain volume floor when fully enclosed (before, rain went silent under any roof)
+    float hrtf_2d_gain{0.71f}; // level of a mono 2D sound sent past HRTF as direct stereo (both ears get the full signal)
+    // ambience
+    float amb_indoor_hf{0.4f};
+};
+
 // Flags
 enum
 {
@@ -55,6 +129,7 @@ enum
 {
     sm_Looped = (1ul << 0ul), //!< Looped
     sm_2D = (1ul << 1ul), //!< 2D mode
+    sm_EnvAmbient = (1ul << 2ul), //!< NLC: weather ambient channel (ducked by listener enclosure, no ray occlusion)
     sm_forcedword = u32(-1),
 };
 enum esound_type
@@ -253,6 +328,8 @@ public:
         esound_type type;
         int game_type;
         CObject* game_object;
+        float occ_db; // NLC
+        float occ_hf;
         struct
         {
             u32 _3D : 1;
@@ -304,6 +381,14 @@ public:
     virtual void set_geometry_env(IReader* I) = 0;
     virtual void set_geometry_som(IReader* I) = 0;
     virtual void set_geometry_occ(CDB::MODEL* M) = 0;
+    virtual void set_occlusion_config(const SSndOccConfig& cfg) = 0; // NLC
+    virtual void nlc_report() = 0; // NLC: snd_audio_report
+    virtual float nlc_listener_enclosure() const = 0; // NLC: 0 open air .. 1 enclosed (room probe)
+    virtual float nlc_rain_indoor() const = 0; // NLC: rain volume floor when fully enclosed (snd_occlusion.ltx)
+    // NLC listener filter (gas mask etc., script-driven): gain and kept high frequencies for every sound whose name matches
+    // none of the exempt parts (comma list), faded over fade_sec; 1, 1 = off. Reset on level unload.
+    virtual void nlc_set_listener_filter(float gain, float hf, float fade_sec) = 0;
+    virtual void nlc_set_listener_filter_exempt(LPCSTR parts) = 0;
     virtual void set_handler(sound_event* E) = 0;
 
     virtual void update(const Fvector& P, const Fvector& D, const Fvector& N) = 0;

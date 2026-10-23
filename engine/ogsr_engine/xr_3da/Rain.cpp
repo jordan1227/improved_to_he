@@ -166,7 +166,7 @@ void CEffect_Rain::OnFrame()
             snd_Ambient.stop();
             return;
         }
-        snd_Ambient.play(nullptr, sm_Looped | sm_2D);
+        snd_Ambient.play(nullptr, sm_Looped | sm_2D | sm_EnvAmbient); // NLC: dulled indoors by the room probe
         if (snd_Ambient._feedback()) //Simp: в редких случаях такое случается
             snd_Ambient.set_position({});
         snd_Ambient.set_range(source_offset, source_offset * 2.f);
@@ -185,7 +185,12 @@ void CEffect_Rain::OnFrame()
     // ambient sound
     if (snd_Ambient._feedback())
     {
-        snd_Ambient.set_volume(_max(0.1f, factor) * hemi_factor);
+        // NLC: the hemi (sky light) factor alone muted rain under any roof; indoors it keeps a floor by the listener's
+        // enclosure and the sound engine dulls it (docs/AUDIO_DESIGN.md 13.2 item 7)
+        float hemi_k = hemi_factor;
+        if (psSoundOccMode)
+            hemi_k = _max(hemi_k, ::Sound->nlc_rain_indoor() * ::Sound->nlc_listener_enclosure());
+        snd_Ambient.set_volume(_max(0.1f, factor) * hemi_k);
     }
 }
 

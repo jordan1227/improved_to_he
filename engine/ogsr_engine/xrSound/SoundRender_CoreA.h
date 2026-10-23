@@ -69,6 +69,7 @@ protected:
     void release_context();
 
     bool reopen_device(const char* deviceName) const;
+    void nlc_query_device();
 
 public:
     CSoundRender_CoreA();

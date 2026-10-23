@@ -4,9 +4,23 @@
 #include "SoundRender_Emitter.h"
 #include "SoundRender_Source.h"
 
-void CSoundRender_Emitter::start(ref_sound* _owner, BOOL _loop, float delay)
+void CSoundRender_Emitter::start(ref_sound* _owner, BOOL _loop, float delay, u32 flags)
 {
     starting_delay = delay;
+
+    nlc_env_ambient = !!(flags & sm_EnvAmbient);
+    nlc_no_occl = false;
+    nlc_occ_pending = false;
+    nlc_pos_set = false;
+    nlc_delay_checked = false;
+    nlc_delayed = false;
+    nlc_occ_gain_t = nlc_occ_hf_t = nlc_occ_hf = 1.f;
+    nlc_occ_db = 0.f;
+    nlc_occ_next = 0.f;
+    nlc_occ_path = 0;
+    nlc_src_enc = 0.f;
+    nlc_src_done = false;
+    nlc_loud = false;
 
     VERIFY(_owner);
     owner_data = _owner->_p;
@@ -19,6 +33,13 @@ void CSoundRender_Emitter::start(ref_sound* _owner, BOOL _loop, float delay)
     p_source.volume = 1.f; // 1.f
     p_source.freq = 1.f;
     p_source.max_ai_distance = source()->m_fMaxAIDist; // 300.f;
+
+    // NLC: 2D before the emitter is visible to the sound task (the caller's switch_to_2D came after set_position, so a
+    // 2D play_at_pos could be taken for a distant 3D sound and get a speed-of-sound delay)
+    if ((flags & sm_2D) || source()->channels_num() == 2)
+        switch_to_2D();
+    // not affected by the listener filter (gas mask): music and the script's exempt names (breathing, own body sounds, UI)
+    nlc_lf_exempt = owner_data->s_type == st_Music || SoundRender->nlc_lf_exempt(source()->fname.c_str());
 
     if (fis_zero(delay, EPS_L))
     {

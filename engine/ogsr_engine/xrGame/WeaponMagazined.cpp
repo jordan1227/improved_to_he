@@ -28,6 +28,9 @@
 #include <regex>
 #include "../xr_3da/x_ray.h"
 #include "player_hud.h"
+#include "ai_space.h"
+#include "script_engine.h"
+#include "../xr_3da/GameMtlLib.h"
 
 CUIXml* g_wpnScopeXml = NULL;
 
@@ -964,6 +967,28 @@ int CWeaponMagazined::nlc_puppet_shot(u16 owner_id, float disp_k, float hit_k, f
     return 0;
 }
 
+// NLC: NPC casing sounds (docs/AUDIO_DESIGN.md 13.2, sivol_shell_sounds.on_npc_shot): the ground point under the ejection
+// port and its material go to the script, which picks the sound and the landing delay. Only within 30 m of the camera.
+static void nlc_npc_shell_shot(CWeaponMagazined* wpn, CObject* npc, const Fvector& port)
+{
+    if (npc->Position().distance_to_sqr(Device.vCameraPosition) > 30.f * 30.f)
+        return;
+    collide::rq_result rq;
+    const Fvector down{0.f, -1.f, 0.f};
+    if (!Level().ObjectSpace.RayPick(port, down, 3.f, collide::rqtStatic, rq, nullptr) || rq.element < 0)
+        return;
+    const CDB::TRI* T = Level().ObjectSpace.GetStaticTris() + rq.element;
+    const SGameMtl* mtl = GMLib.GetMaterialByIdx(T->material);
+    CGameObject* npc_go = smart_cast<CGameObject*>(npc);
+    if (!npc_go || !mtl)
+        return;
+    Fvector ground;
+    ground.mad(port, down, rq.range);
+    luabind::functor<void> f;
+    if (ai().script_engine().functor("sivol_shell_sounds.on_npc_shot", f))
+        f(npc_go->lua_game_object(), wpn->lua_game_object(), ground, mtl->m_Name.c_str());
+}
+
 void CWeaponMagazined::OnShot()
 {
     // Если актор бежит - останавливаем его
@@ -977,6 +1002,8 @@ void CWeaponMagazined::OnShot()
         nlc_stealth::on_actor_shot(IsSilencerAttached(), cNameSect().c_str());
     else if (H_Parent() && !IsSilencerAttached()) // NLC: NPC muzzle flash for npc_light_k
         nlc_stealth::on_npc_shot(H_Parent());
+    if (H_Parent() && !ParentIsActor())
+        nlc_npc_shell_shot(this, H_Parent(), get_LastSP());
 
     if (!m_sndBreech.sounds.empty())
     {

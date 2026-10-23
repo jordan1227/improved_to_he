@@ -460,6 +460,13 @@ void CStats::OnRender()
                     DU->DrawSphere(Fidentity, item.params.position, item.params.max_distance, 0x4000FF00, 0xFF008000, true, true);
 
                 xr_string out_txt = g_stats_flags.is(st_sound_info_name) ? item.name.c_str() : "";
+                if (g_stats_flags.is(st_sound_info_name) && psSoundOccMode == 1)
+                {
+                    // NLC: occlusion loss and kept high-frequency share (docs/AUDIO_DESIGN.md 2.5)
+                    string64 occ;
+                    xr_sprintf(occ, " [-%.1fdB hf%.2f]", item.occ_db, item.occ_hf);
+                    out_txt += occ;
+                }
 
                 if (item.game_object)
                 {

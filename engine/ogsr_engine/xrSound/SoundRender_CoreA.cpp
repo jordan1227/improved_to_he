@@ -5,6 +5,107 @@
 
 #include <efx.h>
 
+// NLC: context attributes - 2 auxiliary sends (room + outdoor echo), HRTF from snd_hrtf (docs/AUDIO_DESIGN.md 3.2, 6)
+static ALCint s_nlc_hrtf_count = 0; // HRTF sets the device offered at the last query (ALC_HRTF_ID_SOFT is an index into them)
+
+static const ALCint* nlc_context_attribs()
+{
+    static ALCint attribs[10];
+    int i = 0;
+    attribs[i++] = ALC_MAX_AUXILIARY_SENDS;
+    attribs[i++] = 2;
+    attribs[i++] = ALC_HRTF_SOFT;
+    attribs[i++] = psSoundHrtf == 0 ? ALC_FALSE : (psSoundHrtf == 1 ? ALC_TRUE : ALC_DONT_CARE_SOFT);
+    if (psSoundHrtf == 1)
+    {
+        // HRTF needs stereo output; an endpoint that reports surround (Realtek headphones as 7.1) gave
+        // "unsupported output format"
+        attribs[i++] = ALC_OUTPUT_MODE_SOFT;
+        attribs[i++] = ALC_STEREO_HRTF_SOFT;
+    }
+    if (psSoundHrtf != 0 && psSoundHrtfSet > 0 && psSoundHrtfSet < s_nlc_hrtf_count)
+    {
+        attribs[i++] = ALC_HRTF_ID_SOFT;
+        attribs[i++] = psSoundHrtfSet;
+    }
+    attribs[i++] = 0;
+    return attribs;
+}
+
+void CSoundRender_CoreA::nlc_query_device()
+{
+    ALCint sends = 1;
+    alcGetIntegerv(pDevice, ALC_MAX_AUXILIARY_SENDS, 1, &sends);
+    efx_sends = sends > 0 ? sends : 1;
+
+    ALCint hrtf = 0, status = 0, num_hrtf = 0, out_mode = 0;
+    alcGetIntegerv(pDevice, ALC_HRTF_SOFT, 1, &hrtf);
+    alcGetIntegerv(pDevice, ALC_HRTF_STATUS_SOFT, 1, &status);
+    alcGetIntegerv(pDevice, ALC_NUM_HRTF_SPECIFIERS_SOFT, 1, &num_hrtf);
+    alcGetIntegerv(pDevice, ALC_OUTPUT_MODE_SOFT, 1, &out_mode);
+    alcGetError(pDevice);
+
+    LPCSTR status_name = "?";
+    switch (status)
+    {
+    case ALC_HRTF_DISABLED_SOFT: status_name = "disabled (auto: no headphones reported)"; break;
+    case ALC_HRTF_ENABLED_SOFT: status_name = "enabled"; break;
+    case ALC_HRTF_DENIED_SOFT: status_name = "denied by alsoft config"; break;
+    case ALC_HRTF_REQUIRED_SOFT: status_name = "required by alsoft config"; break;
+    case ALC_HRTF_HEADPHONES_DETECTED_SOFT: status_name = "enabled (headphones detected)"; break;
+    case ALC_HRTF_UNSUPPORTED_FORMAT_SOFT: status_name = "unsupported output format"; break;
+    }
+    LPCSTR mode_name = "?";
+    switch (out_mode)
+    {
+    case ALC_MONO_SOFT: mode_name = "mono"; break;
+    case ALC_STEREO_SOFT: mode_name = "stereo"; break;
+    case ALC_STEREO_BASIC_SOFT: mode_name = "stereo basic"; break;
+    case ALC_STEREO_UHJ_SOFT: mode_name = "stereo UHJ"; break;
+    case ALC_STEREO_HRTF_SOFT: mode_name = "stereo HRTF"; break;
+    case 0x1503: mode_name = "quad"; break;
+    case ALC_SURROUND_5_1_SOFT: mode_name = "5.1"; break;
+    case 0x1505: mode_name = "6.1"; break;
+    case 0x1506: mode_name = "7.1"; break;
+    case ALC_ANY_SOFT: mode_name = "any"; break;
+    }
+    const char* dev_name = alcGetString(pDevice, ALC_ALL_DEVICES_SPECIFIER);
+    alcGetError(pDevice);
+    Msg("[OpenAL] device [%s], output %s (0x%X), aux sends: %d", dev_name ? dev_name : "?", mode_name, out_mode, efx_sends);
+    Msg("[OpenAL] HRTF: %s, status: %s, snd_hrtf %s, %d HRTF set(s) available", hrtf ? "on" : "off", status_name,
+        psSoundHrtf == 0 ? "off" : (psSoundHrtf == 1 ? "on" : "auto"), num_hrtf);
+    nlc_hrtf_on = hrtf != 0;
+
+    // snd_hrtf_set: the set count is known only once the device is open, so a non-default set needs one device reset
+    const bool had_count = s_nlc_hrtf_count == num_hrtf;
+    s_nlc_hrtf_count = num_hrtf;
+    if (psSoundHrtfSet >= num_hrtf && psSoundHrtfSet > 0)
+        Msg("! [OpenAL] snd_hrtf_set %d: only %d set(s) available, the default is used", psSoundHrtfSet, num_hrtf);
+    if (!had_count && hrtf && psSoundHrtf != 0 && psSoundHrtfSet > 0 && psSoundHrtfSet < num_hrtf)
+    {
+        const auto reset = reinterpret_cast<LPALCRESETDEVICESOFT>(alcGetProcAddress(pDevice, "alcResetDeviceSOFT"));
+        if (reset && reset(pDevice, nlc_context_attribs()))
+        {
+            Msg("[OpenAL] HRTF set %d requested, device reset", psSoundHrtfSet);
+            nlc_query_device();
+            return;
+        }
+        alcGetError(pDevice);
+    }
+    if (num_hrtf > 0 && alcIsExtensionPresent(pDevice, "ALC_SOFT_HRTF"))
+    {
+        const auto get_stringi = reinterpret_cast<LPALCGETSTRINGISOFT>(alcGetProcAddress(pDevice, "alcGetStringiSOFT"));
+        for (ALCint i = 0; get_stringi && i < num_hrtf; ++i)
+            Msg("[OpenAL]   HRTF %d: %s", i, get_stringi(pDevice, ALC_HRTF_SPECIFIER_SOFT, i));
+        if (hrtf)
+        {
+            const ALCchar* cur = alcGetString(pDevice, ALC_HRTF_SPECIFIER_SOFT);
+            alcGetError(pDevice);
+            Msg("[OpenAL]   in use: %s (snd_hrtf_set %d)", cur ? cur : "?", psSoundHrtfSet);
+        }
+    }
+}
+
 CSoundRender_CoreA::CSoundRender_CoreA()
 {
     pDevice = nullptr;
@@ -65,7 +166,7 @@ bool CSoundRender_CoreA::reopen_device(const char* deviceName) const
 
         const alcReopenDeviceSOFT_t alcReopenDeviceSOFT = reinterpret_cast<alcReopenDeviceSOFT_t>(alcGetProcAddress(pDevice, "alcReopenDeviceSOFT"));
 
-        if (alcReopenDeviceSOFT(pDevice, deviceName, nullptr))
+        if (alcReopenDeviceSOFT(pDevice, deviceName, nlc_context_attribs()))
         {
             return true;
         }
@@ -107,6 +208,7 @@ void CSoundRender_CoreA::_restart()
 
             release_efx_objects();
 
+            nlc_query_device();
             init_device_properties(is_al_soft);
 
             for (u32 it = 0; it < s_targets.size(); it++)
@@ -154,7 +256,7 @@ bool CSoundRender_CoreA::init_context(const ALDeviceDesc& deviceDesc)
     //alcGetString(pDevice, ALC_DEVICE_SPECIFIER);
 
     // Create context
-    pContext = alcCreateContext(pDevice, nullptr);
+    pContext = alcCreateContext(pDevice, deviceDesc.is_al_soft ? nlc_context_attribs() : nullptr);
     if (!pContext)
     {
         FATAL("SOUND: OpenAL: Failed to create context. Error: [%s]", (LPCSTR)alGetString(alGetError()));
@@ -292,7 +394,9 @@ void CSoundRender_CoreA::_initialize(int stage)
     }
 
     const bool is_al_soft = deviceDesc.is_al_soft;
-    
+
+    if (is_al_soft)
+        nlc_query_device();
     init_device_properties(is_al_soft);
 
     inherited::_initialize(stage);

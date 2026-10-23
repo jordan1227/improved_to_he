@@ -7,8 +7,11 @@
 #include "feel_sound.h"
 #include "x_ray.h"
 #include "GameFont.h"
+#include "GameMtlLib.h"
 
 using namespace collide;
+
+void nlc_snd_occlusion_load();
 
 extern BOOL g_bLoaded;
 
@@ -214,6 +217,151 @@ void CObjectSpace::Load()
 
     Sound->set_geometry_occ(&Static);
     Sound->set_handler(_sound_event);
+    nlc_snd_occlusion_load();
+}
+
+// NLC: sound occlusion and room-absorption table by game material (misc\snd_occlusion.ltx, docs/AUDIO_DESIGN.md 2.2),
+// handed to xrSound at level load and by snd_occ_reload
+static void nlc_parse_occ_mtl(LPCSTR v, SSndOccMtl& m, LPCSTR name)
+{
+    if (!v || !*v)
+    {
+        Msg("! [snd_occ] misc\\snd_occlusion.ltx: [%s] has no value, defaults kept", name);
+        return;
+    }
+    if (strstr(v, "skip"))
+    {
+        m.skip = true;
+        return;
+    }
+    float f[6] = {m.surface_db, m.db_per_m, m.hf_keep, m.hf_ref_m, m.default_thick, m.absorb};
+    string256 buf;
+    xr_strcpy(buf, v);
+    for (char* c = buf; *c; ++c) // tolerate spaces around the commas
+        if (*c == ',')
+            *c = ' ';
+    const int n = sscanf(buf, "%f %f %f %f %f %f", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5]);
+    if (n < 6)
+        Msg("! [snd_occ] misc\\snd_occlusion.ltx: [%s] = [%s]: %d of 6 values read, the rest kept", name, v, n < 0 ? 0 : n);
+    m.surface_db = _max(f[0], 0.f);
+    m.db_per_m = _max(f[1], 0.f);
+    m.hf_keep = clampr(f[2], 0.01f, 1.f);
+    m.hf_ref_m = _max(f[3], 0.01f);
+    m.default_thick = clampr(f[4], 0.f, 5.f);
+    m.absorb = clampr(f[5], 0.f, 1.f);
+    m.skip = false;
+}
+
+void nlc_snd_occlusion_load()
+{
+    if (!Sound)
+        return;
+
+    SSndOccConfig cfg;
+    SSndOccMtl passable{1.f, 2.f, 0.85f, 1.f, 0.5f, 0.6f};
+    xr_vector<xr_string> terrain_names;
+
+    string_path fn;
+    CInifile* ini = nullptr;
+    constexpr LPCSTR S = "snd_occlusion";
+    constexpr LPCSTR SM = "snd_occlusion_materials";
+    constexpr LPCSTR SR = "snd_reverb";
+    if (FS.exist(fn, "$game_config$", "misc\\snd_occlusion.ltx"))
+        ini = xr_new<CInifile>(fn);
+    else
+        Msg("! [snd_occ] misc\\snd_occlusion.ltx missing, using built-in defaults");
+
+    if (ini)
+    {
+        auto rf = [&](LPCSTR sect, LPCSTR key, float& v) {
+            if (ini->line_exist(sect, key))
+                v = ini->r_float(sect, key);
+        };
+        rf(S, "strength", cfg.strength);
+        rf(S, "max_db", cfg.max_db);
+        rf(S, "min_thick", cfg.min_thick);
+        rf(S, "max_thick", cfg.max_thick);
+        rf(S, "leak_db", cfg.leak_db);
+        rf(S, "leak_hf", cfg.leak_hf);
+        rf(S, "leak_side", cfg.leak_side);
+        rf(S, "leak_up", cfg.leak_up);
+        rf(S, "leak_max_dist", cfg.leak_max_dist);
+        rf(S, "attack", cfg.attack);
+        rf(S, "release", cfg.release);
+        rf(S, "loud_cap", cfg.loud_cap);
+        rf(S, "loud_slope", cfg.loud_slope);
+        rf(S, "loud_max", cfg.loud_max);
+        rf(S, "terrain_cap", cfg.terrain_cap);
+        rf(S, "cap_hf_div", cfg.cap_hf_div);
+        if (ini->line_exist(S, "default"))
+            nlc_parse_occ_mtl(ini->r_string(S, "default"), cfg.def, "default");
+        if (ini->line_exist(S, "passable"))
+            nlc_parse_occ_mtl(ini->r_string(S, "passable"), passable, "passable");
+        auto read_list = [&](LPCSTR key, xr_vector<xr_string>& out) {
+            if (!ini->line_exist(S, key))
+                return;
+            LPCSTR v = ini->r_string(S, key);
+            if (!v)
+                return;
+            string256 item;
+            for (int i = 0, n = _GetItemCount(v); i < n; ++i)
+            {
+                _GetItem(v, i, item);
+                _Trim(item);
+                if (item[0])
+                    out.emplace_back(item);
+            }
+        };
+        read_list("terrain", terrain_names);
+        read_list("no_occlude", cfg.no_occlude);
+
+        rf(SR, "probe_len", cfg.probe_len);
+        rf(SR, "enc_near", cfg.enc_near);
+        rf(SR, "enc_far", cfg.enc_far);
+        rf(SR, "roof_open_k", cfg.roof_open_k);
+        rf(SR, "decay_k", cfg.decay_k);
+        rf(SR, "decay_min", cfg.decay_min);
+        rf(SR, "decay_max", cfg.decay_max);
+        rf(SR, "room_gain", cfg.room_gain);
+        rf(SR, "outdoor_gain", cfg.outdoor_gain);
+        rf(SR, "send_mismatch", cfg.send_mismatch);
+        rf(SR, "echo_gain", cfg.echo_gain);
+        rf(SR, "amb_indoor_hf", cfg.amb_indoor_hf);
+        rf(SR, "rain_indoor", cfg.rain_indoor);
+        rf(SR, "hrtf_2d_gain", cfg.hrtf_2d_gain);
+    }
+
+    u32 listed = 0;
+    cfg.mtl.resize(GMLib.CountMaterial());
+    u32 idx = 0;
+    for (GameMtlIt it = GMLib.FirstMaterial(); it != GMLib.LastMaterial(); ++it, ++idx)
+    {
+        const SGameMtl* M = *it;
+        SSndOccMtl& m = cfg.mtl[idx];
+        m = M->Flags.is(SGameMtl::flPassable) ? passable : cfg.def;
+        if (M->Flags.is(SGameMtl::flLiquid))
+            m.skip = true;
+        if (ini && ini->line_exist(SM, M->m_Name.c_str()))
+        {
+            nlc_parse_occ_mtl(ini->r_string(SM, M->m_Name.c_str()), m, M->m_Name.c_str());
+            ++listed;
+        }
+        for (const xr_string& t : terrain_names)
+            if (!xr_strcmp(t.c_str(), M->m_Name.c_str()))
+                m.terrain = true;
+    }
+
+    if (ini && ini->section_exist(SM))
+    {
+        for (const auto& item : ini->r_section(SM).Data)
+            if (GMLib.GetMaterialIt(item.first.c_str()) == GMLib.LastMaterial())
+                Msg("! [snd_occ] misc\\snd_occlusion.ltx: unknown material [%s]", item.first.c_str());
+    }
+    xr_delete(ini);
+
+    Msg("* [snd_occ] %u game materials, %u listed in misc\\snd_occlusion.ltx, %u terrain, %u no_occlude", cfg.mtl.size(), listed, terrain_names.size(),
+        cfg.no_occlude.size());
+    Sound->set_occlusion_config(cfg);
 }
 //----------------------------------------------------------------------
 

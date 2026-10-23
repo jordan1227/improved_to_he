@@ -16,6 +16,16 @@ class CSoundRender_TargetA : public CSoundRender_Target
 
     ALuint buf_block{};
 
+    // NLC: low-pass filters for the direct path, the room send and the echo send (docs/AUDIO_DESIGN.md 2.4, 3.2)
+    ALuint nlc_filter[3]{};
+    bool nlc_filters_ok{};
+    bool nlc_filters_tried{};
+    float nlc_cache[6]{-1.f, -1.f, -1.f, -1.f, -1.f, -1.f}; // direct hf, room gain, room hf, echo gain, slot state, direct gain
+    void nlc_filters_create();
+    void nlc_filters_destroy();
+    void nlc_fill_efx(CSoundRender_Core* core);
+    bool nlc_direct{}; // 2D voice sent past HRTF as direct stereo (mono duplicated to both channels)
+
 private:
     void fill_block(ALuint BufferID);
 

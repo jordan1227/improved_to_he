@@ -250,9 +250,8 @@ public:
         if (!HW.pDevice)
             return;
 
-        if (!Initialize(20082024151405ull) || !NgxParameters)
-            return;
-
+        // NLC: the preset list only depends on the DLL file version, so no NGX init here: with TAA the first init
+        // costs ~2 s, and the options menu queries this for every preset of both DLSS lists.
         QueryLoadedDlssDllVersion();
         if (availablePresetsResolved)
             return;

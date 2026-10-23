@@ -1,0 +1,88 @@
+-- Hearing through a gas mask / helmet: the engine listener filter (docs/AUDIO_DESIGN.md 16) muffles every outside sound
+-- while the actor's mask is on (vergas_masks). Breathing, heartbeat and other own-body sounds are heard inside the mask
+-- and stay unfiltered (cfg.exempt). Needs engine nlc-3.589.149+ (level.nlc_set_listener_filter).
+
+-- Tunables (edit here; a game restart reloads the script)
+-- gain: overall level of outside sounds (1 = unchanged, 0.8 = about -2 dB, 0.5 = -6 dB)
+-- hf:   share of high frequencies kept (1 = unchanged, 0.5 = clearly muffled, 0.25 = heavily muffled)
+local cfg = {
+	enabled = true,
+	fade_on = 0.5,  -- s, filter fades in when the mask goes on (about the equip animation)
+	fade_off = 0.3, -- s, fades out when it comes off
+	poll_ms = 200,  -- how often the mask state is read
+
+	-- by mask type (the outfit's mask from vergas list_masks, first 7 characters)
+	types = {
+		hud_gas = { gain = 0.80, hf = 0.50 }, -- rubber full-face gas mask: straps and rubber over and around the ears
+		hud_mer = { gain = 0.82, hf = 0.55 }, -- mercenary mask, a lighter build
+		hud_mil = { gain = 0.75, hf = 0.42 }, -- military helmet with mask
+		hud_exo = { gain = 0.70, hf = 0.38 }, -- exoskeleton helmet, ears covered
+		hud_sci = { gain = 0.62, hf = 0.30 }, -- sealed SEVA-type hood, the most closed
+	},
+	default = { gain = 0.80, hf = 0.50 },    -- a mask type not listed above
+	respirator = { gain = 0.95, hf = 0.85 }, -- half-face respirator outfits: the ears stay free
+	-- per outfit section, wins over the type, e.g. ["scientific_outfit"] = { gain = 0.6, hf = 0.28 },
+	outfits = {
+	},
+
+	-- sound name parts never filtered (comma separated): heard inside the mask or not through the ears.
+	-- Matched anywhere in the name, so keep them specific: a bare "actor\" also caught the actor's footsteps
+	-- (materialctor\step\...).
+	exempt = [[actor\gas_mask, actor\scient_mask, actor\exo_mask, actor\without_mask, actor\breath, actor\heartbeat, actor\pain, actor\headgear_hud, interface\]],
+}
+
+local last_gain, last_hf = 1, 1
+local exempt_sent = false
+local test_gain, test_hf -- console override (test())
+
+local function engine_ok()
+	return level and level.nlc_set_listener_filter ~= nil
+end
+
+local function send_exempt()
+	if exempt_sent or not engine_ok() then return end
+	level.nlc_set_listener_filter_exempt(cfg.exempt)
+	exempt_sent = true
+end
+
+-- gain, hf the actor should hear with now
+local function target()
+	if test_gain then return test_gain, test_hf end
+	if not cfg.enabled or not db.actor or not db.actor:alive() then return 1, 1 end
+	if not (vergas_masks and vergas_masks.get_flag_mask and vergas_masks.get_flag_mask()) then return 1, 1 end
+	local outfit = db.actor:item_in_slot(6)
+	if not outfit then return 1, 1 end
+	local sec = outfit:section()
+	local t = cfg.outfits[sec]
+	if not t and vergas_masks.is_respirator_outfit(sec) then t = cfg.respirator end
+	if not t then
+		local ms = vergas_masks.get_mask_config(sec)
+		if type(ms) ~= "string" or ms == "?" then return 1, 1 end -- this outfit has no mask
+		t = cfg.types[string.sub(ms, 1, 7)] or cfg.default
+	end
+	return t.gain or 1, t.hf or 1
+end
+
+local function on_update()
+	ogse_signals.get_mgr():reschedule(cfg.poll_ms)
+	if not engine_ok() then return end
+	send_exempt()
+	local gain, hf = target()
+	if gain ~= last_gain or hf ~= last_hf then
+		-- fading toward a stronger filter = the mask going on
+		local fade = (gain < last_gain or hf < last_hf) and cfg.fade_on or cfg.fade_off
+		level.nlc_set_listener_filter(gain, hf, fade)
+		last_gain, last_hf = gain, hf
+	end
+end
+
+-- console test: fl sivol_mask_audio.test(0.6, 0.3) ; fl sivol_mask_audio.test() turns it back to the mask state
+function test(gain, hf)
+	test_gain = gain
+	test_hf = gain and (hf or 1) or nil
+end
+
+function attach(sm)
+	send_exempt()
+	sm:subscribe({ signal = "on_update", fun = on_update })
+end

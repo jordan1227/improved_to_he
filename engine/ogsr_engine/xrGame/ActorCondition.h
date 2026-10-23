@@ -180,6 +180,7 @@ protected:
     float m_fAccelK;
     float m_fSprintK;
     float m_fWalkRegenK; // NLC: share of stand_power regen kept while walking (not accelerated)
+    u32 m_SprintKeepHitMask; // NLC: hit types (bit 1 << ALife::EHitType) that do not break a sprint; set by scripts (sivol_glassbeads)
     float g_up_speed_k;
 
     bool m_bJumpRequirePower;

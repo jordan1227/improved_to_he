@@ -26,11 +26,33 @@ int psSoundCacheSizeMB = 32;
 
 BOOL snd_enable_float_pcm{TRUE};
 
+// NLC audio (docs/AUDIO_DESIGN.md)
+BOOL psSoundOccMode = TRUE;
+float psSoundOccStrength = 1.f;
+int psSoundOccRays = 160;
+string64 psSoundOccLog{};
+int psSoundReverbMode = 1;
+float psSoundReverbZoneWeight = 0.5f;
+float psSoundReverbGain = 1.f;
+float psSoundOutdoorEcho = 1.f;
+BOOL psSoundReverbLog{};
+float psSoundAirAbsorption = 3.f;
+BOOL psSoundDelay{TRUE};
+float psSoundDelayMinDist = 35.f;
+float psSoundSpeed = 343.f;
+float psSoundAmbIndoorGain = 0.3f;
+u32 psSoundHrtf = 2;
+int psSoundDistModel = 0;
+float psSoundBulletWhineDist = 4.5f;
+BOOL psSoundHrtf2D{};
+int psSoundHrtfSet = 0;
+
 CSoundRender_Core* SoundRender = 0;
 CSound_manager_interface* Sound = 0;
 
 //////////////////////////////////////////////////
 #include <efx.h>
+#include "SoundRender_EFX.h"
 #define LOAD_PROC(x, type) ((x) = (type)alGetProcAddress(#x))
 static LPALEFFECTF alEffectf;
 static LPALEFFECTI alEffecti;
@@ -70,13 +92,25 @@ CSoundRender_Core::CSoundRender_Core()
     slot = 0;
 }
 
-void CSoundRender_Core::release_efx_objects() const
+void CSoundRender_Core::release_efx_objects()
 {
     if (alIsEffect(effect))
         alDeleteEffects(1, &effect);
 
     if (alIsAuxiliaryEffectSlot(slot))
         alDeleteAuxiliaryEffectSlots(1, &slot);
+
+    if (effect_echo && alIsEffect(effect_echo))
+        alDeleteEffects(1, &effect_echo);
+
+    if (slot_echo && alIsAuxiliaryEffectSlot(slot_echo))
+        alDeleteAuxiliaryEffectSlots(1, &slot_echo);
+
+    // NLC: no stale ids after a release (snd_audio_report, efx_attach_slots)
+    effect_echo = 0;
+    slot_echo = 0;
+    efx_slots_attached = false;
+    efx_last_valid = false;
 }
 
 CSoundRender_Core::~CSoundRender_Core()
@@ -219,10 +253,58 @@ void CSoundRender_Core::_restart()
 
 void CSoundRender_Core::set_handler(sound_event* E) { Handler = E; }
 
-void CSoundRender_Core::set_geometry_occ(CDB::MODEL* M) { geom_MODEL = M; }
+void CSoundRender_Core::set_geometry_occ(CDB::MODEL* M)
+{
+    // NLC: under the update lock - the sound task ray-casts geom_MODEL (level unload freed it mid-query)
+    std::scoped_lock m{m_bLocked};
+    geom_MODEL = M;
+    nlc_cache_clear();
+    if (!M)
+    {
+        // level unload: no listener filter (gas mask) left over for the main menu
+        std::scoped_lock l{nlc_lf_lock};
+        nlc_lf_gain = nlc_lf_hf = nlc_lf_gain_t = nlc_lf_hf_t = 1.f;
+    }
+}
+
+// NLC listener filter (docs/AUDIO_DESIGN.md 16): set from scripts (sivol_mask_audio), read by the sound task
+void CSoundRender_Core::nlc_set_listener_filter(float gain, float hf, float fade_sec)
+{
+    std::scoped_lock l{nlc_lf_lock};
+    nlc_lf_gain_t = _valid(gain) ? clampr(gain, 0.f, 1.f) : 1.f;
+    nlc_lf_hf_t = _valid(hf) ? clampr(hf, 0.01f, 1.f) : 1.f;
+    nlc_lf_rate = (_valid(fade_sec) && fade_sec > 0.01f) ? 1.f / fade_sec : 100.f;
+}
+
+void CSoundRender_Core::nlc_set_listener_filter_exempt(LPCSTR parts)
+{
+    std::scoped_lock l{nlc_lf_lock};
+    nlc_lf_exempt_parts.clear();
+    if (!parts || !*parts)
+        return;
+    string256 item;
+    for (int i = 0, n = _GetItemCount(parts); i < n; ++i)
+    {
+        _GetItem(parts, i, item);
+        _Trim(item);
+        _strlwr(item);
+        if (item[0])
+            nlc_lf_exempt_parts.emplace_back(item);
+    }
+}
+
+bool CSoundRender_Core::nlc_lf_exempt(LPCSTR name) const
+{
+    std::scoped_lock l{const_cast<std::mutex&>(nlc_lf_lock)};
+    for (const xr_string& s : nlc_lf_exempt_parts)
+        if (strstr(name, s.c_str()))
+            return true;
+    return false;
+}
 
 void CSoundRender_Core::set_geometry_som(IReader* I)
 {
+    std::scoped_lock m{m_bLocked}; // NLC: see set_geometry_occ
     xr_delete(geom_SOM);
     if (0 == I)
         return;
@@ -265,6 +347,7 @@ void CSoundRender_Core::set_geometry_som(IReader* I)
 
 void CSoundRender_Core::set_geometry_env(IReader* I)
 {
+    std::scoped_lock m{m_bLocked}; // NLC: see set_geometry_occ
     xr_delete(geom_ENV);
     s_environment_ids.clear();
 
@@ -368,7 +451,7 @@ void CSoundRender_Core::play(ref_sound& S, CObject* O, u32 flags, float delay)
     if (S._feedback())
         ((CSoundRender_Emitter*)S._feedback())->rewind();
     else
-        i_play(&S, flags & sm_Looped, delay);
+        i_play(&S, flags & sm_Looped, delay, flags);
 
     if (flags & sm_2D || S._handle()->channels_num() == 2)
         S._feedback()->switch_to_2D();
@@ -388,7 +471,7 @@ void CSoundRender_Core::play_no_feedback(ref_sound& S, CObject* O, u32 flags, fl
     S._p->fn_attached[0] = orig->fn_attached[0];
     S._p->fn_attached[1] = orig->fn_attached[1];
 
-    i_play(&S, flags & sm_Looped, delay);
+    i_play(&S, flags & sm_Looped, delay, flags);
 
     if (flags & sm_2D || S._handle()->channels_num() == 2)
         S._feedback()->switch_to_2D();
@@ -412,7 +495,7 @@ void CSoundRender_Core::play_at_pos(ref_sound& S, CObject* O, const Fvector& pos
     if (S._feedback())
         ((CSoundRender_Emitter*)S._feedback())->rewind();
     else
-        i_play(&S, flags & sm_Looped, delay);
+        i_play(&S, flags & sm_Looped, delay, flags);
 
     S._feedback()->set_position(pos);
 
@@ -545,26 +628,31 @@ void CSoundRender_Core::InitAlEFXAPI()
     LOAD_PROC(alGenAuxiliaryEffectSlots, LPALGENAUXILIARYEFFECTSLOTS);
     LOAD_PROC(alIsAuxiliaryEffectSlot, LPALISAUXILIARYEFFECTSLOT);
     LOAD_PROC(alEffectf, LPALEFFECTF);
+
+    sndefx::GenFilters = (LPALGENFILTERS)alGetProcAddress("alGenFilters");
+    sndefx::DeleteFilters = (LPALDELETEFILTERS)alGetProcAddress("alDeleteFilters");
+    sndefx::IsFilter = (LPALISFILTER)alGetProcAddress("alIsFilter");
+    sndefx::Filteri = (LPALFILTERI)alGetProcAddress("alFilteri");
+    sndefx::Filterf = (LPALFILTERF)alGetProcAddress("alFilterf");
+    Msg("[OpenAL] EFX filters: %s", sndefx::filters_ok() ? "present" : "absent");
 }
 
 bool CSoundRender_Core::EFXTestSupport()
 {
+    efx_slots_attached = false;
+    effect_echo = 0;
+    slot_echo = 0;
+
+    alGetError();
     alGenEffects(1, &effect);
 
-    alEffecti(effect, AL_EFFECT_TYPE, AL_EFFECT_REVERB);
-    alEffectf(effect, AL_REVERB_DENSITY, efx_reverb.flDensity);
-    alEffectf(effect, AL_REVERB_DIFFUSION, efx_reverb.flDiffusion);
-    alEffectf(effect, AL_REVERB_GAIN, efx_reverb.flGain);
-    alEffectf(effect, AL_REVERB_GAINHF, efx_reverb.flGainHF);
-    alEffectf(effect, AL_REVERB_DECAY_TIME, efx_reverb.flDecayTime);
-    alEffectf(effect, AL_REVERB_DECAY_HFRATIO, efx_reverb.flDecayHFRatio);
-    alEffectf(effect, AL_REVERB_REFLECTIONS_GAIN, efx_reverb.flReflectionsGain);
-    alEffectf(effect, AL_REVERB_REFLECTIONS_DELAY, efx_reverb.flReflectionsDelay);
-    alEffectf(effect, AL_REVERB_LATE_REVERB_GAIN, efx_reverb.flLateReverbGain);
-    alEffectf(effect, AL_REVERB_LATE_REVERB_DELAY, efx_reverb.flLateReverbDelay);
-    alEffectf(effect, AL_REVERB_AIR_ABSORPTION_GAINHF, efx_reverb.flAirAbsorptionGainHF);
-    alEffectf(effect, AL_REVERB_ROOM_ROLLOFF_FACTOR, efx_reverb.flRoomRolloffFactor);
-    alEffecti(effect, AL_REVERB_DECAY_HFLIMIT, efx_reverb.iDecayHFLimit);
+    // NLC: EAX reverb (echo, LF, modulation) when the device has it, else standard reverb
+    alEffecti(effect, AL_EFFECT_TYPE, AL_EFFECT_EAXREVERB);
+    efx_eax = alGetError() == AL_NO_ERROR;
+    if (!efx_eax)
+        alEffecti(effect, AL_EFFECT_TYPE, AL_EFFECT_REVERB);
+
+    efx_apply(effect, efx_reverb);
 
     /* Check if an error occured, and clean up if so. */
     ALenum err = alGetError();
@@ -580,32 +668,135 @@ bool CSoundRender_Core::EFXTestSupport()
     err = alGetError();
     ASSERT_FMT_DBG(err == AL_NO_ERROR, "!![%s] OpenAL EFX error: [%s]", __FUNCTION__, alGetString(err));
 
+    // NLC: outdoor echo slot on the second send (loud sounds only, AUDIO_DESIGN 3.2)
+    if (efx_sends >= 2 && efx_eax)
+    {
+        alGenEffects(1, &effect_echo);
+        alEffecti(effect_echo, AL_EFFECT_TYPE, AL_EFFECT_EAXREVERB);
+        EFXEAXREVERBPROPERTIES echo = EFX_REVERB_PRESET_MOUNTAINS;
+        echo.flEchoDepth = 0.5f; // less flutter than the preset's 1.0
+        efx_apply(effect_echo, echo);
+        alGenAuxiliaryEffectSlots(1, &slot_echo);
+        err = alGetError();
+        if (err != AL_NO_ERROR)
+        {
+            Msg("! [%s] OpenAL echo slot error: %s, echo disabled", __FUNCTION__, alGetString(err));
+            if (effect_echo && alIsEffect(effect_echo))
+                alDeleteEffects(1, &effect_echo);
+            if (slot_echo && alIsAuxiliaryEffectSlot(slot_echo))
+                alDeleteAuxiliaryEffectSlots(1, &slot_echo);
+            effect_echo = 0;
+            slot_echo = 0;
+        }
+    }
+
+    Msg("[OpenAL] EFX reverb: %s, sends: %d, echo slot: %s", efx_eax ? "EAX reverb" : "standard reverb", efx_sends, slot_echo ? "yes" : "no");
+
     return true;
 }
 
 inline static float mB_to_gain(float mb) { return powf(10.0f, mb / 2000.0f); }
 
-void CSoundRender_Core::i_efx_listener_set(CSound_environment* _E)
+// NLC: legacy senvironment preset (EAX units) to EFX properties; same mapping as the old i_efx_listener_set
+void CSoundRender_Core::env_to_efx(const CSoundRender_Environment& E, EFXEAXREVERBPROPERTIES& P) const
 {
-    const auto E = static_cast<CSoundRender_Environment*>(_E);
+    P = EFX_REVERB_PRESET_GENERIC;
 
     // http://openal.org/pipermail/openal/2014-March/000083.html
-    float density = powf(E->EnvironmentSize, 3.0f) / 16.0f;
+    float density = powf(E.EnvironmentSize, 3.0f) / 16.0f;
     if (density > 1.0f)
         density = 1.0f;
 
-    alEffectf(effect, AL_REVERB_DENSITY, density);
-    alEffectf(effect, AL_REVERB_DIFFUSION, E->EnvironmentDiffusion);
-    alEffectf(effect, AL_REVERB_GAIN, mB_to_gain(E->Room));
-    alEffectf(effect, AL_REVERB_GAINHF, mB_to_gain(E->RoomHF));
-    alEffectf(effect, AL_REVERB_DECAY_TIME, E->DecayTime);
-    alEffectf(effect, AL_REVERB_DECAY_HFRATIO, E->DecayHFRatio);
-    alEffectf(effect, AL_REVERB_REFLECTIONS_GAIN, mB_to_gain(E->Reflections));
-    alEffectf(effect, AL_REVERB_REFLECTIONS_DELAY, E->ReflectionsDelay);
-    alEffectf(effect, AL_REVERB_LATE_REVERB_DELAY, E->ReverbDelay);
-    alEffectf(effect, AL_REVERB_LATE_REVERB_GAIN, mB_to_gain(E->Reverb));
-    alEffectf(effect, AL_REVERB_AIR_ABSORPTION_GAINHF, mB_to_gain(E->AirAbsorptionHF));
-    alEffectf(effect, AL_REVERB_ROOM_ROLLOFF_FACTOR, E->RoomRolloffFactor);
+    P.flDensity = density;
+    P.flDiffusion = E.EnvironmentDiffusion;
+    P.flGain = mB_to_gain(E.Room);
+    P.flGainHF = mB_to_gain(E.RoomHF);
+    P.flDecayTime = E.DecayTime;
+    P.flDecayHFRatio = E.DecayHFRatio;
+    P.flReflectionsGain = mB_to_gain(E.Reflections);
+    P.flReflectionsDelay = E.ReflectionsDelay;
+    P.flLateReverbDelay = E.ReverbDelay;
+    P.flLateReverbGain = mB_to_gain(E.Reverb);
+    P.flAirAbsorptionGainHF = mB_to_gain(E.AirAbsorptionHF);
+    P.flRoomRolloffFactor = E.RoomRolloffFactor;
+}
+
+// NLC: room reverb from the listener probe (enclosure, mean free distance, absorption), AUDIO_DESIGN 3.1
+void CSoundRender_Core::nlc_room_props(EFXEAXREVERBPROPERTIES& P) const
+{
+    const SSndOccConfig& C = nlc_cfg;
+    const float L = _max(nlc_mean_dist, 1.f);
+    const float a = _max(nlc_absorb, 0.03f);
+    const float E = nlc_enc;
+
+    P = EFX_REVERB_PRESET_GENERIC;
+    P.flDensity = clampr(L / 20.f, 0.25f, 1.f);
+    P.flDiffusion = 1.f;
+    P.flGain = C.room_gain * E;
+    P.flGainHF = clampr(0.9f - a * 1.2f, 0.35f, 0.95f);
+    P.flDecayTime = clampr(C.decay_k * _max(nlc_room_size, 1.f) / a, C.decay_min, C.decay_max);
+    // air takes the highs of long tails too: big rooms decay darker
+    P.flDecayHFRatio = clampr(0.95f - a * 1.5f - 0.01f * L, 0.3f, 1.f);
+    P.flReflectionsGain = clampr(1.5f / L, 0.08f, 1.2f) * E;
+    // first reflections come from the nearest walls, not the mean distance (a hall gave a 0.1 s slapback)
+    P.flReflectionsDelay = clampr(2.f * _max(nlc_near_dist, 0.5f) / 343.f, 0.003f, 0.05f);
+    P.flLateReverbGain = (0.5f + 0.75f * E) * E;
+    P.flLateReverbDelay = clampr(L / 343.f, 0.01f, 0.08f);
+}
+
+// NaN-safe: a NaN parameter makes OpenAL reject the whole effect update
+static float efx_clamp(float v, float lo, float hi) { return !(v >= lo) ? lo : (v > hi ? hi : v); }
+
+void CSoundRender_Core::efx_apply(ALuint fx, const EFXEAXREVERBPROPERTIES& P) const
+{
+    if (efx_eax)
+    {
+        alEffectf(fx, AL_EAXREVERB_DENSITY, efx_clamp(P.flDensity, AL_EAXREVERB_MIN_DENSITY, AL_EAXREVERB_MAX_DENSITY));
+        alEffectf(fx, AL_EAXREVERB_DIFFUSION, efx_clamp(P.flDiffusion, AL_EAXREVERB_MIN_DIFFUSION, AL_EAXREVERB_MAX_DIFFUSION));
+        alEffectf(fx, AL_EAXREVERB_GAIN, efx_clamp(P.flGain, AL_EAXREVERB_MIN_GAIN, AL_EAXREVERB_MAX_GAIN));
+        alEffectf(fx, AL_EAXREVERB_GAINHF, efx_clamp(P.flGainHF, AL_EAXREVERB_MIN_GAINHF, AL_EAXREVERB_MAX_GAINHF));
+        alEffectf(fx, AL_EAXREVERB_GAINLF, efx_clamp(P.flGainLF, AL_EAXREVERB_MIN_GAINLF, AL_EAXREVERB_MAX_GAINLF));
+        alEffectf(fx, AL_EAXREVERB_DECAY_TIME, efx_clamp(P.flDecayTime, AL_EAXREVERB_MIN_DECAY_TIME, AL_EAXREVERB_MAX_DECAY_TIME));
+        alEffectf(fx, AL_EAXREVERB_DECAY_HFRATIO, efx_clamp(P.flDecayHFRatio, AL_EAXREVERB_MIN_DECAY_HFRATIO, AL_EAXREVERB_MAX_DECAY_HFRATIO));
+        alEffectf(fx, AL_EAXREVERB_DECAY_LFRATIO, efx_clamp(P.flDecayLFRatio, AL_EAXREVERB_MIN_DECAY_LFRATIO, AL_EAXREVERB_MAX_DECAY_LFRATIO));
+        alEffectf(fx, AL_EAXREVERB_REFLECTIONS_GAIN, efx_clamp(P.flReflectionsGain, AL_EAXREVERB_MIN_REFLECTIONS_GAIN, AL_EAXREVERB_MAX_REFLECTIONS_GAIN));
+        alEffectf(fx, AL_EAXREVERB_REFLECTIONS_DELAY, efx_clamp(P.flReflectionsDelay, AL_EAXREVERB_MIN_REFLECTIONS_DELAY, AL_EAXREVERB_MAX_REFLECTIONS_DELAY));
+        alEffectf(fx, AL_EAXREVERB_LATE_REVERB_GAIN, efx_clamp(P.flLateReverbGain, AL_EAXREVERB_MIN_LATE_REVERB_GAIN, AL_EAXREVERB_MAX_LATE_REVERB_GAIN));
+        alEffectf(fx, AL_EAXREVERB_LATE_REVERB_DELAY, efx_clamp(P.flLateReverbDelay, AL_EAXREVERB_MIN_LATE_REVERB_DELAY, AL_EAXREVERB_MAX_LATE_REVERB_DELAY));
+        alEffectf(fx, AL_EAXREVERB_ECHO_TIME, efx_clamp(P.flEchoTime, AL_EAXREVERB_MIN_ECHO_TIME, AL_EAXREVERB_MAX_ECHO_TIME));
+        alEffectf(fx, AL_EAXREVERB_ECHO_DEPTH, efx_clamp(P.flEchoDepth, AL_EAXREVERB_MIN_ECHO_DEPTH, AL_EAXREVERB_MAX_ECHO_DEPTH));
+        alEffectf(fx, AL_EAXREVERB_MODULATION_TIME, efx_clamp(P.flModulationTime, AL_EAXREVERB_MIN_MODULATION_TIME, AL_EAXREVERB_MAX_MODULATION_TIME));
+        alEffectf(fx, AL_EAXREVERB_MODULATION_DEPTH, efx_clamp(P.flModulationDepth, AL_EAXREVERB_MIN_MODULATION_DEPTH, AL_EAXREVERB_MAX_MODULATION_DEPTH));
+        alEffectf(fx, AL_EAXREVERB_AIR_ABSORPTION_GAINHF,
+                  efx_clamp(P.flAirAbsorptionGainHF, AL_EAXREVERB_MIN_AIR_ABSORPTION_GAINHF, AL_EAXREVERB_MAX_AIR_ABSORPTION_GAINHF));
+        alEffectf(fx, AL_EAXREVERB_HFREFERENCE, efx_clamp(P.flHFReference, AL_EAXREVERB_MIN_HFREFERENCE, AL_EAXREVERB_MAX_HFREFERENCE));
+        alEffectf(fx, AL_EAXREVERB_LFREFERENCE, efx_clamp(P.flLFReference, AL_EAXREVERB_MIN_LFREFERENCE, AL_EAXREVERB_MAX_LFREFERENCE));
+        alEffectf(fx, AL_EAXREVERB_ROOM_ROLLOFF_FACTOR, efx_clamp(P.flRoomRolloffFactor, AL_EAXREVERB_MIN_ROOM_ROLLOFF_FACTOR, AL_EAXREVERB_MAX_ROOM_ROLLOFF_FACTOR));
+        alEffecti(fx, AL_EAXREVERB_DECAY_HFLIMIT, P.iDecayHFLimit ? AL_TRUE : AL_FALSE);
+    }
+    else
+    {
+        alEffectf(fx, AL_REVERB_DENSITY, efx_clamp(P.flDensity, AL_REVERB_MIN_DENSITY, AL_REVERB_MAX_DENSITY));
+        alEffectf(fx, AL_REVERB_DIFFUSION, efx_clamp(P.flDiffusion, AL_REVERB_MIN_DIFFUSION, AL_REVERB_MAX_DIFFUSION));
+        alEffectf(fx, AL_REVERB_GAIN, efx_clamp(P.flGain, AL_REVERB_MIN_GAIN, AL_REVERB_MAX_GAIN));
+        alEffectf(fx, AL_REVERB_GAINHF, efx_clamp(P.flGainHF, AL_REVERB_MIN_GAINHF, AL_REVERB_MAX_GAINHF));
+        alEffectf(fx, AL_REVERB_DECAY_TIME, efx_clamp(P.flDecayTime, AL_REVERB_MIN_DECAY_TIME, AL_REVERB_MAX_DECAY_TIME));
+        alEffectf(fx, AL_REVERB_DECAY_HFRATIO, efx_clamp(P.flDecayHFRatio, AL_REVERB_MIN_DECAY_HFRATIO, AL_REVERB_MAX_DECAY_HFRATIO));
+        alEffectf(fx, AL_REVERB_REFLECTIONS_GAIN, efx_clamp(P.flReflectionsGain, AL_REVERB_MIN_REFLECTIONS_GAIN, AL_REVERB_MAX_REFLECTIONS_GAIN));
+        alEffectf(fx, AL_REVERB_REFLECTIONS_DELAY, efx_clamp(P.flReflectionsDelay, AL_REVERB_MIN_REFLECTIONS_DELAY, AL_REVERB_MAX_REFLECTIONS_DELAY));
+        alEffectf(fx, AL_REVERB_LATE_REVERB_GAIN, efx_clamp(P.flLateReverbGain, AL_REVERB_MIN_LATE_REVERB_GAIN, AL_REVERB_MAX_LATE_REVERB_GAIN));
+        alEffectf(fx, AL_REVERB_LATE_REVERB_DELAY, efx_clamp(P.flLateReverbDelay, AL_REVERB_MIN_LATE_REVERB_DELAY, AL_REVERB_MAX_LATE_REVERB_DELAY));
+        alEffectf(fx, AL_REVERB_AIR_ABSORPTION_GAINHF, efx_clamp(P.flAirAbsorptionGainHF, AL_REVERB_MIN_AIR_ABSORPTION_GAINHF, AL_REVERB_MAX_AIR_ABSORPTION_GAINHF));
+        alEffectf(fx, AL_REVERB_ROOM_ROLLOFF_FACTOR, efx_clamp(P.flRoomRolloffFactor, AL_REVERB_MIN_ROOM_ROLLOFF_FACTOR, AL_REVERB_MAX_ROOM_ROLLOFF_FACTOR));
+        alEffecti(fx, AL_REVERB_DECAY_HFLIMIT, P.iDecayHFLimit ? AL_TRUE : AL_FALSE);
+    }
+}
+
+void CSoundRender_Core::i_efx_listener_set(CSound_environment* _E)
+{
+    EFXEAXREVERBPROPERTIES P;
+    env_to_efx(*static_cast<CSoundRender_Environment*>(_E), P);
+    efx_apply(effect, P);
 }
 
 bool CSoundRender_Core::i_efx_commit_setting()
@@ -624,6 +815,28 @@ bool CSoundRender_Core::i_efx_commit_setting()
     }
 
     return true;
+}
+
+// NLC: snd_efx on/off attaches/detaches both effects (before, turning it off kept the last reverb in the slot)
+void CSoundRender_Core::efx_attach_slots(bool attach)
+{
+    if (attach == efx_slots_attached)
+        return;
+    efx_slots_attached = attach;
+    alAuxiliaryEffectSloti(slot, AL_EFFECTSLOT_EFFECT, attach ? effect : AL_EFFECT_NULL);
+    if (slot_echo)
+        alAuxiliaryEffectSloti(slot_echo, AL_EFFECTSLOT_EFFECT, attach ? effect_echo : AL_EFFECT_NULL);
+    efx_next_commit = 0.f;
+}
+
+bool CSoundRender_Core::nlc_filters_active() const { return bEFX && sndefx::filters_ok(); }
+
+void CSoundRender_Core::set_occlusion_config(const SSndOccConfig& cfg)
+{
+    std::scoped_lock m{m_bLocked};
+    nlc_cfg = cfg;
+    nlc_cache_clear();
+    Msg("* [snd_occ] config: %u materials, strength %.2f, leak %.1f dB", cfg.mtl.size(), cfg.strength, cfg.leak_db);
 }
 //////////////////////////////////////////////////
 

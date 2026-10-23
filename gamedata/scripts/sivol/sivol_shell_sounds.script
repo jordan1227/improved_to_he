@@ -1,8 +1,24 @@
 -- Ejected bullet-casing impact sounds. Ported from Anomaly's "Bullet Shell Sounds"
 -- addon and adapted for NLC HE's ogse_signals dispatch and fl_step_material() hook.
+-- NLC: NPC casings (engine hook CWeaponMagazined::OnShot -> on_npc_shot, docs/AUDIO_DESIGN.md 13.2),
+-- tunable timing below; the actor's casings land 20% sooner than before (about 0.8 s instead of 1.0 s).
 
-local is_enabled = true
-local volume = 0.8
+-- Tunables (edit here; a game restart reloads the script)
+local cfg = {
+	enabled = true,
+	volume = 0.8,               -- actor casings (2D)
+	land_time_ms = 800,         -- shot to first casing impact (was 1000)
+	land_jitter_ms = 80,        -- random extra delay per casing (was 100)
+	double_barrel_delay_ms = 140, -- extra delay of break-action casings after the reload starts (was 175)
+	gap_scale = 0.8,            -- scales SHELL_SOUND_GAP_TIME (time between casings of one reload)
+
+	npc_enabled = true,
+	npc_volume = 0.7,
+	npc_land_time_ms = 650,     -- NPC casings start lower (hip height) and land sooner
+	npc_min_dist = 1.0,         -- full volume within this distance
+	npc_max_dist = 20.0,        -- inaudible past this distance (the engine hook also stops at 30 m)
+	npc_max_active = 24,        -- cap on NPC casing sounds in flight (big fights)
+}
 
 local SHELL_TYPE_PISTOL = "pistol"
 local SHELL_TYPE_RIFLE = "rifle"
@@ -68,14 +84,13 @@ local WEAPON_DOUBLE_BARREL = {
 	wpn_toz34_m1 = true,
 }
 
+-- Time between the casings of one reload, ms (before cfg.gap_scale).
 local SHELL_SOUND_GAP_TIME = {
 	wpn_bm16 = 200,
 	wpn_bm16_full = 200,
 	wpn_toz34 = 600,
 	wpn_toz34_m1 = 600,
 }
-
-local DOUBLE_BARREL_SOUND_DELAY = 175
 
 local WEAPON_SECTION_POSTFIXES = {
 	"_1p78", "_ekp", "_okp", "_pso", "_rakurs", "_ac10632",
@@ -86,6 +101,7 @@ local WEAPON_SECTION_POSTFIXES = {
 local SHELL_SOUND_TYPE = {
 	water = SHELL_SOUND_TYPE_WATER,
 	bush = SHELL_SOUND_TYPE_LEAVES,
+	bush_sux = SHELL_SOUND_TYPE_LEAVES,
 	grass = SHELL_SOUND_TYPE_GENERIC,
 	metal = SHELL_SOUND_TYPE_METAL,
 	metal_plate = SHELL_SOUND_TYPE_METAL,
@@ -108,7 +124,10 @@ local SHELL_SOUND_TYPE = {
 	actor = SHELL_SOUND_TYPE_GENERIC,
 }
 
+-- Actor casings waiting for their landing time: { name, time, object }
 local shell_sound_list = {}
+-- NPC casings in flight (kept referenced so the sound is not collected before it plays)
+local npc_sounds = {}
 
 local function normalize_material_name(material)
 	if type(material) ~= "string" then return nil end
@@ -117,11 +136,13 @@ local function normalize_material_name(material)
 	return name ~= "" and name or nil
 end
 
+local function surface_of(material)
+	return SHELL_SOUND_TYPE[normalize_material_name(material)] or SHELL_SOUND_TYPE_GENERIC
+end
+
 local function get_surface_sound_type()
 	if type(fl_step_material) ~= "function" then return SHELL_SOUND_TYPE_GENERIC end
-	local material = fl_step_material()
-	local material_name = normalize_material_name(material)
-	return SHELL_SOUND_TYPE[material_name] or SHELL_SOUND_TYPE_GENERIC
+	return surface_of(fl_step_material())
 end
 
 local function get_weapon_class(section)
@@ -136,6 +157,17 @@ local function get_weapon_class(section)
 	end
 end
 
+local function base_section(section)
+	if WEAPON_CLASS[section] then return section end
+	for i = 1, #WEAPON_SECTION_POSTFIXES do
+		local postfix = WEAPON_SECTION_POSTFIXES[i]
+		if string.sub(section, -#postfix) == postfix then
+			return string.sub(section, 1, #section - #postfix)
+		end
+	end
+	return section
+end
+
 local function get_sound_name(shell_type, surface_type)
 	if surface_type == SHELL_SOUND_TYPE_WATER or surface_type == SHELL_SOUND_TYPE_LEAVES then
 		return "bullet_shells\\generic_" .. surface_type .. "_" .. math.random(1, 8)
@@ -143,54 +175,92 @@ local function get_sound_name(shell_type, surface_type)
 	return "bullet_shells\\" .. shell_type .. "_" .. surface_type .. "_" .. math.random(1, 8)
 end
 
+-- landing time of casing number index (1-based) of one shot or reload
 local function get_sound_time(weapon_name, index)
-	local sound_gap_time = SHELL_SOUND_GAP_TIME[weapon_name] or 100
-	local sound_time = 1000 - sound_gap_time
-	return time_global() + sound_time + (sound_gap_time * index) + math.random(0, 100)
+	local gap = (SHELL_SOUND_GAP_TIME[weapon_name] or 100) * cfg.gap_scale
+	return time_global() + cfg.land_time_ms + gap * (index - 1) + math.random(0, cfg.land_jitter_ms)
 end
 
 local function queue_shell_sound(weapon_name, shell_type, ammo_in_magazine, is_reload)
-	if is_reload and not WEAPON_DOUBLE_BARREL[weapon_name] then return end
-	if not is_reload and WEAPON_DOUBLE_BARREL[weapon_name] then return end
+	local double = WEAPON_DOUBLE_BARREL[weapon_name]
+	if is_reload and not double then return end
+	if not is_reload and double then return end
 
-	local count = WEAPON_DOUBLE_BARREL[weapon_name] and (2 - ammo_in_magazine) or 1
+	local count = double and (2 - ammo_in_magazine) or 1
 	if count < 1 then return end
 	local surface_type = get_surface_sound_type()
 	for i = 1, count do
 		shell_sound_list[#shell_sound_list + 1] = {
 			object = nil,
 			name = get_sound_name(shell_type, surface_type),
-			time = get_sound_time(weapon_name, i) + (WEAPON_DOUBLE_BARREL[weapon_name] and DOUBLE_BARREL_SOUND_DELAY or 0),
+			time = get_sound_time(weapon_name, i) + (double and cfg.double_barrel_delay_ms or 0),
 		}
 	end
 end
 
 local function on_actor_weapon_fire(wpn)
-	if not is_enabled or not wpn then return end
-	local weapon_name = wpn:section()
-	local shell_type = get_weapon_class(weapon_name)
+	if not cfg.enabled or not wpn then return end
+	local section = wpn:section()
+	local shell_type = get_weapon_class(section)
 	if not shell_type then return end
-	queue_shell_sound(weapon_name, shell_type, wpn:get_ammo_in_magazine(), false)
+	queue_shell_sound(base_section(section), shell_type, wpn:get_ammo_in_magazine(), false)
 end
 
 local function on_actor_weapon_reload(wpn)
-	if not is_enabled or not wpn then return end
-	local weapon_name = wpn:section()
-	local shell_type = get_weapon_class(weapon_name)
+	if not cfg.enabled or not wpn then return end
+	local section = wpn:section()
+	local shell_type = get_weapon_class(section)
 	if not shell_type then return end
-	queue_shell_sound(weapon_name, shell_type, wpn:get_ammo_in_magazine(), true)
+	queue_shell_sound(base_section(section), shell_type, wpn:get_ammo_in_magazine(), true)
+end
+
+-- Engine hook (CWeaponMagazined::OnShot, NPCs within 30 m of the camera): ground point under the ejection port and its
+-- material. Break-action shotguns drop their casings on reload, which NPCs do not report, so they stay silent.
+function on_npc_shot(npc, wpn, pos, material)
+	if not (cfg.enabled and cfg.npc_enabled and npc and wpn and pos) then return end
+	if #npc_sounds >= cfg.npc_max_active then return end
+	local section = wpn:section()
+	local shell_type = get_weapon_class(section)
+	if not shell_type or WEAPON_DOUBLE_BARREL[base_section(section)] then return end
+	local snd = sound_object(get_sound_name(shell_type, surface_of(material)))
+	local delay = (cfg.npc_land_time_ms + math.random(0, cfg.land_jitter_ms)) / 1000
+	snd:play_at_pos(npc, pos, delay, sound_object.s3d)
+	snd.volume = cfg.npc_volume
+	snd.min_distance = cfg.npc_min_dist
+	snd.max_distance = cfg.npc_max_dist
+	npc_sounds[#npc_sounds + 1] = { object = snd, until_time = time_global() + delay * 1000 + 100 }
 end
 
 local function on_update()
+	local now = time_global()
+	-- compact in place: removed entries leave no holes (#list on a table with holes is unreliable)
+	local n = 0
 	for i = 1, #shell_sound_list do
-		local shell_sound = shell_sound_list[i]
-		if shell_sound and time_global() > shell_sound.time then
-			if not shell_sound.object then
-				shell_sound.object = sound_object(shell_sound.name)
-				shell_sound.object:play(db.actor, 0, sound_object.s2d)
-				shell_sound.object.volume = volume
+		local s = shell_sound_list[i]
+		shell_sound_list[i] = nil
+		local keep = true
+		if now > s.time then
+			if not s.object then
+				s.object = sound_object(s.name)
+				s.object:play(db.actor, 0, sound_object.s2d)
+				s.object.volume = cfg.volume
+			elseif not s.object:playing() then
+				keep = false
 			end
-			if not shell_sound.object:playing() then shell_sound_list[i] = nil end
+		end
+		if keep then
+			n = n + 1
+			shell_sound_list[n] = s
+		end
+	end
+
+	n = 0
+	for i = 1, #npc_sounds do
+		local s = npc_sounds[i]
+		npc_sounds[i] = nil
+		if now < s.until_time or s.object:playing() then
+			n = n + 1
+			npc_sounds[n] = s
 		end
 	end
 end

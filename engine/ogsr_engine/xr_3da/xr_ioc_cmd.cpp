@@ -383,6 +383,40 @@ public:
     virtual void Execute(LPCSTR args) { Sound->_restart(); }
 };
 
+// NLC audio (docs/AUDIO_DESIGN.md): re-read misc\snd_occlusion.ltx; snd_occ_log with no argument switches the log off
+extern void nlc_snd_occlusion_load();
+class CCC_SndOccReload : public IConsole_Command
+{
+public:
+    CCC_SndOccReload(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; bCanSave = FALSE; };
+    virtual void Execute(LPCSTR args) { nlc_snd_occlusion_load(); }
+};
+
+class CCC_SndAudioReport : public IConsole_Command
+{
+public:
+    CCC_SndAudioReport(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; bCanSave = FALSE; };
+    virtual void Execute(LPCSTR args) { Sound->nlc_report(); }
+};
+
+constexpr xr_token snd_hrtf_token[] = {{"off", 0}, {"on", 1}, {"auto", 2}, {nullptr, 0}};
+
+class CCC_SndOccLog : public CCC_String
+{
+public:
+    CCC_SndOccLog(LPCSTR N, LPSTR V, int _size) : CCC_String(N, V, _size) { bEmptyArgsHandled = TRUE; bCanSave = FALSE; };
+    virtual void Execute(LPCSTR args)
+    {
+        if (!args || !args[0] || !xr_strcmp(args, "off"))
+            value[0] = 0;
+        else
+        {
+            CCC_String::Execute(args);
+            _strlwr(value); // sound names are stored lower-case
+        }
+    }
+};
+
 constexpr xr_token FpsLockToken[] = {
     {"nofpslock", 0},
     {"fpslock60", 60},
@@ -582,6 +616,29 @@ void CCC_Register()
     //CMD4(CCC_Float, "snd_occ_hf", &psSoundOcclusionHf, 0.f, 1.f);
     //CMD4(CCC_Float, "snd_occ_mtl", &psSoundOcclusionMtl, 0.f, 1.f);
     CMD2(CCC_Bool, "snd_enable_float_pcm", &snd_enable_float_pcm);
+
+    // NLC audio (docs/AUDIO_DESIGN.md)
+    CMD2(CCC_Bool, "snd_occ_mode", &psSoundOccMode);
+    CMD4(CCC_Float, "snd_occ_strength", &psSoundOccStrength, 0.f, 2.f);
+    CMD4(CCC_Integer, "snd_occ_rays", &psSoundOccRays, 16, 512);
+    CMD3(CCC_SndOccLog, "snd_occ_log", psSoundOccLog, sizeof(psSoundOccLog));
+    CMD1(CCC_SndOccReload, "snd_occ_reload");
+    CMD4(CCC_Integer, "snd_reverb_mode", &psSoundReverbMode, 0, 1);
+    CMD4(CCC_Float, "snd_reverb_zone_weight", &psSoundReverbZoneWeight, 0.f, 1.f);
+    CMD4(CCC_Float, "snd_reverb_gain", &psSoundReverbGain, 0.f, 2.f);
+    CMD4(CCC_Float, "snd_outdoor_echo", &psSoundOutdoorEcho, 0.f, 2.f);
+    CMD2(CCC_Bool, "snd_reverb_log", &psSoundReverbLog);
+    CMD4(CCC_Float, "snd_air_absorption", &psSoundAirAbsorption, 0.f, 10.f);
+    CMD2(CCC_Bool, "snd_delay", &psSoundDelay);
+    CMD4(CCC_Float, "snd_delay_min_dist", &psSoundDelayMinDist, 5.f, 300.f);
+    CMD4(CCC_Float, "snd_speed", &psSoundSpeed, 100.f, 1000.f);
+    CMD4(CCC_Float, "snd_amb_indoor_gain", &psSoundAmbIndoorGain, 0.f, 1.f);
+    CMD3(CCC_Token, "snd_hrtf", &psSoundHrtf, snd_hrtf_token);
+    CMD1(CCC_SndAudioReport, "snd_audio_report");
+    CMD4(CCC_Integer, "snd_dist_model", &psSoundDistModel, 0, 1);
+    CMD4(CCC_Float, "snd_bullet_whine_dist", &psSoundBulletWhineDist, 0.f, 10.f);
+    CMD2(CCC_Bool, "snd_hrtf_2d", &psSoundHrtf2D);
+    CMD4(CCC_Integer, "snd_hrtf_set", &psSoundHrtfSet, 0, 63);
 
 #ifdef DEBUG
     CMD1(CCC_DumpOpenFiles, "dump_open_files");
