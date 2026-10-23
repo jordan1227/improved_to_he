@@ -5,6 +5,16 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.150 (2026-10-24)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `6223D9A9B5DA199049E33D25FD122771CA399AB381A9204CAD3AD2AB36C78332` (archived with its PDB in `nlc_tools/builds/20261024_003319_6223d9a9`).
+- **Status:** runtime pending. SSS 23 quality batch after a 3-agent review (ghosting, reprojection, upsampling).
+- **Required game data:** `shaders/r3/ssfx_glass.ps` (reads `s_position`) and `shaders/r3/ssfx_sss_lights.ps` (decodes the new lamp flag); the rest of the batch is shader-only (`ssfx_sss*`, `ssfx_il*`, `ssfx_ssr*`, `ssfx_water_ssr.ps`, `ssfx_ao*`, `ssfx_volumetric_combine.ps`, `ssfx_fog_scattering_blur.ps`, `ssfx_upsample.h`, `combine_1.ps`).
+- Lamp contact shadows: `ssfx_lights_data.w` gets +4 when the slot's light moves faster than ~0.3 m/s (frame-rate independent), so carried torches keep little shadow history.
+- SSS 23 glass binds `$user$position`: refraction no longer pulls in objects standing in front of the glass.
+- The OGSR SSR targets (`rt_ssr1/2`, two full-size RGBA8) are created only without the SSS 23 SSR; the OGSR fallback pass is skipped when they do not exist ("Hide new effects" in rain shows no SSR).
+
 ## nlc-3.589.149 (2026-10-23)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

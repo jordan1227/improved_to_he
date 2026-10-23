@@ -54,6 +54,7 @@ function element_3(shader, t_base, t_second, t_detail)
 		:zb(false, false)
 		:blend(true, blend.one, blend.invsrcalpha) -- NLC .84: blended into the scene ( premultiplied ), no copy
 	shader:dx10texture("ssr_image", "$user$ssfx_ssr")
+	shader:dx10texture("s_position", "$user$position") -- NLC: depth-aware upsample
 	shader:dx10sampler("smp_nofilter")
 	shader:dx10sampler("smp_rtlinear")
 end

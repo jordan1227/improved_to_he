@@ -24,7 +24,8 @@ float4 main(p_screen I) : SV_Target
     float2 mv = ssfx_motion_uv(tc);
 
     // Current frame
-    float sss = SSFX_ScreenSpaceShadows_Sun(P, tc, HudMask);
+    float occ_motion;
+    float sss = SSFX_ScreenSpaceShadows_Sun(P, tc, HudMask, occ_motion);
 
     // Reprojection
     float2 prev_tc = tc - mv;
@@ -34,6 +35,10 @@ float4 main(p_screen I) : SV_Target
     float vel = length(mv) * 30.0f * HudMask; // HUD only
 
     float docc = ssfx_disocclusion(P.z, prev_tc) * (1.0f + 10.0f * HudMask);
+    // NLC: a depth change above ~2% is another surface ( feet on the ground ): drop the history. Not on flora,
+    // whose depth flickers in the wind; looser far away, where grazing ground changes depth a lot per pixel
+    if (abs(gbd.mtl - MAT_FLORA) > 0.04f)
+        docc = max(docc, saturate((docc - (0.02f + P.z * 0.002f)) * 20.0f));
 
     float4 prev = sss_image.Sample(smp_rtlinear, prev_tc + ssfx_history_noise(tc, 0.5f * saturate(1.0f - length(mv) * 10.0f)));
 
@@ -41,10 +46,16 @@ float4 main(p_screen I) : SV_Target
 
     // 0 = current frame ~ 1 = previous frame
     float2 weight;
-    weight.x = saturate(0.95f - (outoffsrc + docc + vel)); // Shadow
+    // NLC: 0.85 ( was 0.95, ~20 frames ): TAA / DLAA accumulate again later, this only has to denoise the trace.
+    // A shadow cast by a moving object this frame ( occ_motion ) does not blend into old frames either
+    weight.x = saturate(0.85f - (max(outoffsrc, occ_motion) + docc + vel)); // Shadow
     weight.y = saturate(0.60f - (outoffsrc + docc)); // Disocclusion mask
 
     float2 result = lerp(float2(sss, docc), prev.rg, weight);
 
-    return float4(result, 1.0f, max(ssfx_offscreen(prev_tc), lerp(saturate(vel_history), prev.a, 0.95f)));
+    // NLC: alpha also marks shadows cast by moving objects ( occ_motion ), at full strength at once and then fading
+    // ( x0.85 per frame ), so the next frames drop the history where the shadow was and the blur softens the result.
+    // The object's own motion ( vel_history ) still builds up gradually, as before, so moving bodies keep some history.
+    // .b = this frame's raw trace: ssfx_sss_blur.ps clamps the accumulated shadow to its 3x3 range ( overwritten there )
+    return float4(result, sss, max(ssfx_offscreen(prev_tc), max(occ_motion, lerp(saturate(vel_history), prev.a, 0.85f))));
 }

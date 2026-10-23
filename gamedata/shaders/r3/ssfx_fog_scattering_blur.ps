@@ -21,6 +21,13 @@ float4 main(p_screen I) : SV_Target
     float2 pixel_size = 1 / blur_setup.xy;
     float radius = 0.25f * ssfx_fog_ign(I.tc0 * blur_setup.xy) * 6.28f;
 
+    // NLC: when the source is much larger than the target ( first pass: full-size scene into 1/4 ), each tap averages a
+    // 2x2 group of bilinear fetches ( ~4x4 source pixels ), so single bright pixels no longer pop in and out
+    float2 src_size;
+    s_image.GetDimensions(src_size.x, src_size.y);
+    bool prefilter = src_size.x > blur_setup.x * 1.5f;
+    float2 sub = 0.25f * pixel_size;
+
     float3 blur = 0;
     float2 offset = float2(radius, radius);
     float r = 0.9f;
@@ -29,7 +36,17 @@ float4 main(p_screen I) : SV_Target
     {
         r += 1.0f / r;
         offset = mul(offset, ssfx_fog_rotation);
-        blur += min(s_image.SampleLevel(smp_rtlinear, I.tc0 + (offset * (r - 1.0f) * pixel_size), 0).rgb, 16.0f);
+        float2 tap = I.tc0 + (offset * (r - 1.0f) * pixel_size);
+        [branch] if (prefilter)
+        {
+            float3 s = min(s_image.SampleLevel(smp_rtlinear, tap + float2(-sub.x, -sub.y), 0).rgb, 16.0f);
+            s += min(s_image.SampleLevel(smp_rtlinear, tap + float2(sub.x, -sub.y), 0).rgb, 16.0f);
+            s += min(s_image.SampleLevel(smp_rtlinear, tap + float2(-sub.x, sub.y), 0).rgb, 16.0f);
+            s += min(s_image.SampleLevel(smp_rtlinear, tap + float2(sub.x, sub.y), 0).rgb, 16.0f);
+            blur += s * 0.25f;
+        }
+        else
+            blur += min(s_image.SampleLevel(smp_rtlinear, tap, 0).rgb, 16.0f);
     }
 
     return float4(blur / 12, 1.0f);

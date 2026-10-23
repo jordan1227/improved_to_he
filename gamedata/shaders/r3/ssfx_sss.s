@@ -26,6 +26,7 @@ function element_1(shader, t_base, t_second, t_detail)
 		:fog(false)
 		:zb(false, false)
 	shader:dx10texture("sss_image", "$user$ssfx_sss_a")
+	shader:dx10texture("s_position", "$user$position") -- NLC: depth-aware blur
 	shader:dx10sampler("smp_nofilter")
 end
 
@@ -35,6 +36,7 @@ function element_2(shader, t_base, t_second, t_detail)
 		:fog(false)
 		:zb(false, false)
 	shader:dx10texture("sss_image", "$user$ssfx_sss_b")
+	shader:dx10texture("s_position", "$user$position") -- NLC: depth-aware blur
 	shader:dx10sampler("smp_nofilter")
 end
 

@@ -93,6 +93,7 @@ void CBlender_Model_EbB::Compile(CBlender_Compile& C)
             {
                 C.r_dx10Texture("s_accumulator", "$user$accum");
                 C.r_dx10Texture("s_screen", "$user$generic_temp");
+                C.r_dx10Texture("s_position", "$user$position"); // NLC: refraction only from behind the glass
                 C.r_dx10Texture("s_glass", "fx\\ssfx_glass_normal");
                 C.r_dx10Sampler("smp_nofilter");
             }

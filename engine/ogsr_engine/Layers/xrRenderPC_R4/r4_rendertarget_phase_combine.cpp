@@ -101,7 +101,8 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
     HW.get_context(cmd_list.context_id)->CopyResource(rt_Generic_0_temp->pSurface, rt_Generic_0->pSurface);
 
     // NLC: SSS 23 SSR when on ( reprojection, gloss blur ), otherwise the OGSR pass
-    if (!phase_ssfx_ssr(cmd_list) && ps_r2_ls_flags_ext.test(R2FLAGEXT_SSLR) && !fis_zero(g_pGamePersistent->Environment().wetness_factor))
+    // .150: rt_ssr1 exists only without the SSS 23 SSR, so "Hide new effects" in rain shows no SSR instead of this pass
+    if (!phase_ssfx_ssr(cmd_list) && rt_ssr1 && ps_r2_ls_flags_ext.test(R2FLAGEXT_SSLR) && !fis_zero(g_pGamePersistent->Environment().wetness_factor))
     {
         PIX_EVENT(PHASE_SSR_BLUR);
 

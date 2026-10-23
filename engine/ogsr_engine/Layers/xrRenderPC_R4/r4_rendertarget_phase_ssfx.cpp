@@ -32,6 +32,7 @@ const Fcolor ssfx_clear_zero{0.f, 0.f, 0.f, 0.f};
 constexpr u32 ssfx_light_slots = 8;
 light* ssfx_light_slot[ssfx_light_slots]{}; // compared only, never dereferenced unless found in this frame's package
 u32 ssfx_light_uid[ssfx_light_slots]{}; // .85: light::ssfx_uid of the slot ( pointer + uid identify the light )
+Fvector ssfx_light_last_pos[ssfx_light_slots]{}; // NLC .150: world position of the slot's light last frame ( moving torches )
 } // namespace
 
 float ssfx_sss_slot(const light* L)
@@ -329,11 +330,17 @@ void CRenderTarget::phase_ssfx_sss_lights(CBackend& cmd_list, light_Package& LP)
         *free_slot = c.L;
     }
 
-    // Light data for the shader ( view space position, w: fade 0 = full ~ 1 = off, +2 = new light in this slot )
+    // Light data for the shader ( view space position, w: fade 0 = full ~ 1 = off, +2 = new light in this slot,
+    // +4 = NLC .150: the slot's light moves ( > 0.3 m/s ): its shadows keep little history )
     Fvector4 data[ssfx_light_slots]{};
     for (u32 s = 0; s < ssfx_light_slots; ++s)
     {
         const bool fresh = ssfx_light_slot[s] != next_slot[s] || (next_slot[s] && next_slot[s]->ssfx_uid != ssfx_light_uid[s]);
+        // moved: faster than ~0.3 m/s ( a carried torch ), frame-rate independent; at least 2 mm to ignore jitter
+        const float move_eps = std::max(0.3f * Device.fTimeDelta, 0.002f);
+        const bool moved = !fresh && next_slot[s] && next_slot[s]->position.distance_to_sqr(ssfx_light_last_pos[s]) > move_eps * move_eps;
+        if (next_slot[s])
+            ssfx_light_last_pos[s] = next_slot[s]->position;
         ssfx_light_slot[s] = next_slot[s];
         ssfx_light_uid[s] = next_slot[s] ? next_slot[s]->ssfx_uid : 0;
         light* L = next_slot[s];
@@ -351,7 +358,7 @@ void CRenderTarget::phase_ssfx_sss_lights(CBackend& cmd_list, light_Package& LP)
 
         const float dist = cam.distance_to(L->position);
         const float fade = clampr((dist - L->range * 1.5f) / (L->range * 0.5f), 0.f, 1.f);
-        data[s].set(pos.x, pos.y, pos.z, fresh ? fade + 2.f : fade);
+        data[s].set(pos.x, pos.y, pos.z, fresh ? fade + 2.f : (moved ? fade + 4.f : fade));
     }
 
     const Fvector4 setup{ps_ssfx_sss_length, ps_ssfx_sss_length, 0.f, 0.f};

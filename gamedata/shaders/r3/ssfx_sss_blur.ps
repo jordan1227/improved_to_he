@@ -19,13 +19,35 @@ float4 main(p_screen I) : SV_Target
 
     float4 base_image = sss_image.SampleLevel(smp_nofilter, tc, 0);
 
+    // NLC: pass 1 only ( channel 0 ): clamp the accumulated shadow to the 3x3 range of this frame's raw trace ( .b from
+    // ssfx_sss.ps ). Where a moving shadow has left, every neighbour is lit and the old shadow is dropped at once;
+    // noisy or static areas span the full range and keep their accumulation. Pass 2 copies .rg, so it is the history.
+    if (channel == 0)
+    {
+        float lo = 1.0f, hi = 0.0f;
+        [unroll] for (int y = -1; y <= 1; y++)
+        {
+            [unroll] for (int x = -1; x <= 1; x++)
+            {
+                float raw = sss_image.SampleLevel(smp_nofilter, tc + float2(x, y) * render_res.zw, 0).b;
+                lo = min(lo, raw);
+                hi = max(hi, raw);
+            }
+        }
+        base_image.r = clamp(base_image.r, lo, hi);
+    }
+
     float mask = base_image.g + base_image.a;
 
     // Stable pixels keep the sharp result
     if (mask <= 0.1f)
         return float4(base_image.rg, base_image[channel], base_image.a);
 
-    float blur = 0;
+    // NLC: depth-aware taps, so a moving NPC's shadow does not bleed across its silhouette onto the ground behind it
+    float z0 = s_position.SampleLevel(smp_nofilter, tc, 0).z;
+
+    float blur = base_image[channel];
+    float wsum = 1.0f;
     float2 offset = mask.xx;
     float r = 0.9f;
 
@@ -35,9 +57,13 @@ float4 main(p_screen I) : SV_Target
         r += 1.0f / r;
         offset = mul(offset, ssfx_sss_rotation);
 
-        blur += sss_image.SampleLevel(smp_nofilter, tc + offset * (r - 1.0f) * render_res.zw, 0)[channel];
+        float2 tap = tc + offset * (r - 1.0f) * render_res.zw;
+        float z = s_position.SampleLevel(smp_nofilter, tap, 0).z;
+        float w = exp2(-abs(1.0f - z / max(z0, 0.0001f)) * 32.0f);
+        blur += sss_image.SampleLevel(smp_nofilter, tap, 0)[channel] * w;
+        wsum += w;
     }
-    blur /= 8;
+    blur /= wsum;
 
     return float4(base_image.rg, blur, base_image.a);
 }

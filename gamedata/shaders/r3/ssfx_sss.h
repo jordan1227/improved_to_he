@@ -21,8 +21,20 @@ uniform float4 ssfx_sss; // Sun length, light length, -, -
 #define SSFX_SSS_OMNI_QUALITY 4
 #endif
 
-float SSFX_ScreenSpaceShadows_Sun(float3 P, float2 tc, float HudMask)
+// NLC: object motion of the occluder that casts this shadow ( 0 = static / camera only, 1 = clearly moving NPC or mutant ).
+// The temporal pass keeps it in history alpha: where a moving object's shadow was, old frames are not trusted, so the
+// shadow does not trail behind it ( the ground there keeps its depth, the disocclusion test cannot see it ).
+float SSFX_sss_occluder_motion(float2 occ_uv)
 {
+    float3 occ_P = gbuffer_load_position(occ_uv, occ_uv * render_res.xy);
+    // in render pixels, so the gate does not depend on resolution: ~0.3 px of own motion = static, ~0.8 px = moving
+    return saturate((length((ssfx_motion_uv(occ_uv) - ssfx_camera_motion_uv(occ_P)) * render_res.xy) - 0.3f) * 2.0f);
+}
+
+float SSFX_ScreenSpaceShadows_Sun(float3 P, float2 tc, float HudMask, out float occ_motion)
+{
+    occ_motion = 0;
+
     if (ssfx_sss.x <= 0.0f) // ssfx_sss_length 0 = off
         return 1;
 
@@ -67,7 +79,11 @@ float SSFX_ScreenSpaceShadows_Sun(float3 P, float2 tc, float HudMask)
             diff *= depth_ray.y >= 1.0f;
 
         if (diff > ray_detail && diff < ray_thick)
+        {
+            if (!IsHUD) // the HUD moves with the camera on purpose
+                occ_motion = SSFX_sss_occluder_motion(sss_ray.r_pos);
             return saturate(1.0f - G_SSS_INTENSITY);
+        }
 
         sss_ray.r_pos += sss_ray.r_step * (1.0f + noise);
     }
@@ -75,8 +91,10 @@ float SSFX_ScreenSpaceShadows_Sun(float3 P, float2 tc, float HudMask)
     return 1;
 }
 
-float SSFX_ScreenSpaceShadows_Light(float3 P, float mtl, float2 tc, float3 LightPos, float HudMask)
+float SSFX_ScreenSpaceShadows_Light(float3 P, float mtl, float2 tc, float3 LightPos, float HudMask, out float occ_motion)
 {
+    occ_motion = 0;
+
     if (ssfx_sss.y <= 0.0f)
         return 1;
 
@@ -119,7 +137,11 @@ float SSFX_ScreenSpaceShadows_Light(float3 P, float mtl, float2 tc, float3 Light
             diff *= depth_ray.y >= 1.0f;
 
         if (diff > ray_detail && diff < ray_thick)
+        {
+            if (!IsHUD) // NLC: shadow of a moving NPC or mutant ( see SSFX_sss_occluder_motion )
+                occ_motion = SSFX_sss_occluder_motion(sss_ray.r_pos);
             return 1.0f - saturate(G_SSS_INTENSITY - smoothstep(SSFX_SSS_OMNI_QUALITY * 0.5f, SSFX_SSS_OMNI_QUALITY + 1, i));
+        }
 
         sss_ray.r_pos += sss_ray.r_step * (1.0f + noise);
     }

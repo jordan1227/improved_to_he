@@ -21,11 +21,14 @@ float4 main(p_screen I) : SV_Target
     float z0 = ssfx_vol_depth(s_position.SampleLevel(smp_nofilter, I.tc0, 0).z);
 
     // 4x4 low-res texels around the pixel
-    float2 base = (floor(I.tc0 * low_size - 0.5f) - 1.0f + 0.5f) * low_texel;
+    float2 f = I.tc0 * low_size - 0.5f;
+    float2 base_idx = floor(f) - 1.0f;
+    float2 base = (base_idx + 0.5f) * low_texel;
 
     float3 color = 0;
     float3 box = 0;
     float weight = 0;
+    float box_weight = 0;
 
     [unroll] for (int y = 0; y < 4; y++)
     {
@@ -36,17 +39,23 @@ float4 main(p_screen I) : SV_Target
             float3 v = s_vol_sun.SampleLevel(smp_nofilter, uv, 0).rgb;
             float z = ssfx_vol_depth(s_position.SampleLevel(smp_nofilter, uv, 0).z);
 
+            // NLC: tent weight ( radius 2 texels ) from the pixel's sub-texel position: neighbouring full-resolution
+            // pixels inside one low-res texel no longer get identical taps ( beam edges stair-stepped in blocks )
+            float2 d = abs(base_idx + float2(x, y) - f);
+            float tent = max(0.0f, 1.0f - d.x * 0.5f) * max(0.0f, 1.0f - d.y * 0.5f);
+
             // Relative depth difference: same surface ~1, across an edge ~0
-            float w = exp2(-abs(1.0f - z / z0) * 16.0f);
+            float w = exp2(-abs(1.0f - z / z0) * 16.0f) * tent;
 
             color += v * w;
-            box += v;
+            box += v * tent;
             weight += w;
+            box_weight += tent;
         }
     }
 
     // No tap on the pixel's surface ( thin objects ): plain filter
-    color = weight > 0.05f ? color / weight : box * 0.0625f;
+    color = weight > 0.05f ? color / weight : box / max(box_weight, 0.0001f);
 
     return float4(color, 0);
 }

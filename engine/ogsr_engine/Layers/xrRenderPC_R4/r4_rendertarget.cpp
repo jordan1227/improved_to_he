@@ -3,6 +3,7 @@
 #include "../xrRender/resourcemanager.h"
 #include "../xrRender/dxRenderDeviceRender.h"
 #include "../xrRenderDX10/dx10BufferUtils.h"
+#include "ssfx_features.h" // NLC .150: OGSR SSR targets only without the SSS 23 SSR
 
 void CRenderTarget::u_setrt(CBackend& cmd_list, const ref_rt& _1, const ref_rt& _2, const ref_rt& _3, const ref_rt& _4, ID3DDepthStencilView* zb)
 {
@@ -273,8 +274,12 @@ CRenderTarget::CRenderTarget()
         rt_heat.create(r2_RT_heat, w, h, DXGI_FORMAT_R8G8B8A8_UNORM);
         rt_mask_drops_blur.create(r2_RT_mask_drops_blur, displayW, displayH, DXGI_FORMAT_R8G8B8A8_UNORM); // Create RT, full resolution
 
-        rt_ssr1.create(r2_RT_ssr1, w, h, DXGI_FORMAT_R8G8B8A8_UNORM); // Generic RT
-        rt_ssr2.create(r2_RT_ssr2, w, h, DXGI_FORMAT_R8G8B8A8_UNORM); // Temp RT 8B
+        // NLC .150: the OGSR SSR targets only when the SSS 23 SSR does not replace that pass ( two full-size RGBA8 )
+        if (!ssfx_ssr_enabled())
+        {
+            rt_ssr1.create(r2_RT_ssr1, w, h, DXGI_FORMAT_R8G8B8A8_UNORM); // Generic RT
+            rt_ssr2.create(r2_RT_ssr2, w, h, DXGI_FORMAT_R8G8B8A8_UNORM); // Temp RT 8B
+        }
 
         ssfx_create_targets(w, h); // NLC: SSS 23 temporal passes ( only the enabled ones )
 

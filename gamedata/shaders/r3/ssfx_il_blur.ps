@@ -23,7 +23,13 @@ float4 main(p_screen I) : SV_Target
     float2 buffer_pixel_size = 1.0f / blur_setup.zw;
     float2 offset = blur_setup.yy;
 
-    float4 blur = 0; // NLC: alpha = flashlight bounce
+    // NLC: depth-aware taps ( relative depth, as ssfx_upsample ): at the IL resolution an NPC's bounce light no longer
+    // spreads onto the background around it, which the depth-aware upsample in combine_1 could not undo.
+    // The centre gets a small weight so a pixel whose taps are all on other surfaces keeps its own value.
+    float z0 = s_position.SampleLevel(smp_nofilter, tc, 0).z;
+
+    float4 blur = ao_image.SampleLevel(smp_rtlinear, tc, 0) * 0.25f; // NLC: alpha = flashlight bounce
+    float wsum = 0.25f;
     float r = 2.0f;
 
     [unroll(G_IL_BLUR_SAMPLES)]
@@ -32,9 +38,13 @@ float4 main(p_screen I) : SV_Target
         r += 1.0f / r;
         offset = mul(offset, ssfx_il_rotation);
 
-        blur += ao_image.SampleLevel(smp_rtlinear, saturate(tc + offset * (r - 1.0f) * buffer_pixel_size), 0);
+        float2 tap = saturate(tc + offset * (r - 1.0f) * buffer_pixel_size);
+        float z = s_position.SampleLevel(smp_nofilter, tap, 0).z;
+        float w = exp2(-abs(1.0f - z / max(z0, 0.0001f)) * 16.0f);
+        blur += ao_image.SampleLevel(smp_rtlinear, tap, 0) * w;
+        wsum += w;
     }
-    blur /= G_IL_BLUR_SAMPLES;
+    blur /= wsum;
 
     return blur;
 }

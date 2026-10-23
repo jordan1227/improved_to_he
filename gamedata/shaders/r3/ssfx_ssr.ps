@@ -18,7 +18,7 @@ Texture2D s_ssfx_ssr_history; // $user$ssfx_ssr_hist
 uniform float4 ssfx_ssr_setup; // x: strength ( 1 wet, ssfx_ssr_dry otherwise ), y: blur
 
 // SSFX_ScreenSpaceReflections ( screenspace_reflections.h, SSS 18 ) with the hit depth as output
-void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, inout float4 color, out float hit_depth)
+void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, inout float4 color, out float hit_depth, out float2 hit_tc)
 {
     bool m_terrain = abs(P.w - 0.95f) <= 0.02f;
     bool m_flora = abs(P.w - MAT_FLORA) <= 0.04f;
@@ -43,6 +43,7 @@ void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, inout float4 col
     float3 reflection = 0;
     float2 uvcoor = 0;
     hit_depth = 0;
+    hit_tc = 0;
 
 #ifdef G_SSR_CHEAP_SKYBOX
     reflection = SSFX_calc_env(v2reflect) * ssfx_ssr_2.y * !ssfx_is_underground.x;
@@ -55,6 +56,7 @@ void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, inout float4 col
         float3 refl_ray = SSFX_get_image(hit_uv.xy, 0);
         uvcoor = hit_uv.xy;
         hit_depth = hit_uv.z;
+        hit_tc = hit_uv.xy;
 
         float refl_fog = 1.0 - saturate((length(float3(inVec.x, inVec.y, hit_uv.z)) * fog_params.w + fog_params.x));
         float HitFade = saturate(hit_uv.y * refl_fog * refl_fog * G_SSR_VERTICAL_SCREENFADE);
@@ -100,11 +102,25 @@ float4 main(p_screen I) : SV_Target
 
     float4 ssr_result = 0;
     float hit_depth = 0;
-    ssfx_ssr_shade(tc, float4(P, mtl), N, gloss, ssr_result, hit_depth);
+    float2 hit_tc = 0;
+    ssfx_ssr_shade(tc, float4(P, mtl), N, gloss, ssr_result, hit_depth, hit_tc);
 
-    // Reflected point along the pixel ray ( sky: far away )
-    float3 Hit_Pv = hit_depth > SKY_EPS ? float3(hit_depth * (pix * pos_decompression_params.zw - pos_decompression_params.xy), hit_depth)
-                                        : P * (100000.0f / max(P.z, 0.0001f)); // NLC: along the pixel ray
+    // NLC: the reflected image lies behind the mirror at ray length |P| + |H - P| along this pixel's ray ( was the
+    // hit's own depth on this ray: hits nearer than the surface reprojected in front of it and smeared when strafing ).
+    // Sky: far away along the pixel ray.
+    float object_motion = 0;
+    float3 Hit_Pv = P * (100000.0f / max(P.z, 0.0001f));
+    if (hit_depth > SKY_EPS)
+    {
+        // depth at the hit pixel itself: for "behind" hits SSFX_ssr_fast_ray returns the depth of its last step
+        float hz = max(s_position.SampleLevel(smp_nofilter, hit_tc, 0).z, SKY_EPS);
+        float3 Hit_P = float3(hz * (hit_tc * screen_res.xy * pos_decompression_params.zw - pos_decompression_params.xy), hz);
+        Hit_Pv = normalize(P) * (length(P) + length(Hit_P - P));
+
+        // NLC: reflected object moves on its own ( NPC, mutant ), as in ssfx_water_ssr.ps; HUD hits never kept
+        float2 hit_motion = ssfx_motion_uv(hit_tc) - ssfx_camera_motion_uv(Hit_P);
+        object_motion = max(saturate(length(hit_motion * screen_res.xy) * 0.25f), ssfx_hud_mask(hit_tc));
+    }
     float2 prev_tc = tc - ssfx_camera_motion_uv(Hit_Pv);
 
     // The surface itself moved or was hidden last frame
@@ -112,7 +128,7 @@ float4 main(p_screen I) : SV_Target
     float hud = ssfx_hud_mask(tc);
     float sky_weight = hit_depth <= SKY_EPS ? 0.2f : 0.0f;
 
-    float weight = saturate(0.8f - (ssfx_offscreen(prev_tc) + docc + sky_weight + hud));
+    float weight = saturate(0.8f - (ssfx_offscreen(prev_tc) + docc + sky_weight + hud + object_motion));
 
     float3 prev = s_ssfx_ssr_history.SampleLevel(smp_rtlinear, prev_tc, 0).rgb;
 

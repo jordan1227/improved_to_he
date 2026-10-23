@@ -31,17 +31,23 @@ float4 main(p_screen I) : SV_Target
 
     float4 sss;
     float4 fresh; // 1 = this slot changed light this frame: ignore its history
+    float4 moving; // NLC .150: the light moved ( engine +4 ) or a moving object casts the shadow: little history
     [unroll]
     for (int x = 0; x < 4; x++)
     {
         float w = ssfx_lights_data[x].w;
-        fresh[x] = w > 1.5f ? 1.0f : 0.0f;
+        float light_moved = w > 3.5f ? 1.0f : 0.0f;
+        fresh[x] = (w > 1.5f && w < 3.5f) ? 1.0f : 0.0f;
+        float fade = w - 2.0f * fresh[x] - 4.0f * light_moved;
 
+        float occ_motion = 0;
         // NLC .84: empty or fully faded slots ( w = 1 ) skip the trace
-        [branch] if (w - 2.0f * fresh[x] < 0.999f)
-            sss[x] = saturate(SSFX_ScreenSpaceShadows_Light(P, gbd.mtl, tc, ssfx_lights_data[x].xyz, HudMask) + (w - 2.0f * fresh[x]));
+        [branch] if (fade < 0.999f)
+            sss[x] = saturate(SSFX_ScreenSpaceShadows_Light(P, gbd.mtl, tc, ssfx_lights_data[x].xyz, HudMask, occ_motion) + fade);
         else
             sss[x] = 1.0f;
+
+        moving[x] = max(light_moved, occ_motion);
     }
 
     // Reprojection ( no camera motion term: lights move with the world )
@@ -54,7 +60,10 @@ float4 main(p_screen I) : SV_Target
 
     float4 prev = sss_image.Sample(smp_rtlinear, prev_tc + ssfx_history_noise(tc, 0.25f));
 
-    float4 weight = saturate(0.97f - (outoffsrc + docc + vel)) * (1.0f - fresh);
+    // NLC .150: history 0.85 ( was 0.97, ~30 frames ), as the sun pass: TAA / DLAA accumulate again later. No spare
+    // channel keeps a "moving shadow was here" flag ( all four hold lights ), so only this frame's motion cuts the
+    // history ( x0.3 ); the trail where a moving shadow has left fades with the base weight, ~6 frames
+    float4 weight = saturate(0.85f - (outoffsrc + docc + vel)) * (1.0f - fresh) * (1.0f - 0.7f * moving);
 
     return lerp(sss, prev, weight);
 }
