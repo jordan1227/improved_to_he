@@ -1,52 +1,81 @@
--- sivol: the wear goes to the servo integrity, not the suit condition (sivol_exo.script);
--- halved from 0.0002 together with the exo sprint factor
-local WEAR_PER_SEC = 0.0001
-local SLOW_K = 0.65
+-- Exo upkeep while worn (sivol: DESIGN_exo_rebalance.md). Servo wear goes to sivol_exo (not the suit
+-- condition); the battery drains faster on the move and slower standing still (he_exo_charge.shift).
+-- Sampled 4 times a second; the results are kept in memory and written about every 10 s, on save and
+-- when the worn exo changes.
+local POLL_MS = 250
+local MAX_DT = 1000
+local FLUSH_MS = 10000
+local WEAR_SPRINT = 0.0001   -- servo wear per second sprinting or jumping
+local WEAR_MOVE = 0.00002    -- walking / normal running
+local SLOW_K = 0.65          -- lighter, better-built servos wear slower
 local slow = {
 	svoboda_exoskeleton = true,
 	svoboda_yellow_exo_outfit_m1 = true,
 	monolit_exoskeleton = true,
 }
-local APPLY_AT = 0.001 -- a spawn ini write per flush
-local MAX_DT = 1000
+-- battery drain against plain time: still / moving / sprinting or jumping
+local DRAIN_STILL, DRAIN_MOVE, DRAIN_SPRINT = 0.5, 1, 2
 local JUMP_FLAG = 128
+local MOVE_FLAGS = 15        -- forward, back, strafe left / right
 
-local last_t
-local pending = 0
+local last_t, next_flush = nil, 0
+local wear_pending, charge_pending = 0, 0 -- servo fraction; extra battery game minutes (+ drains, - saves)
+local pending_id = nil
 
 local function wearing_exo()
-	local outfit = db.actor:item_in_slot(6)
+	local outfit = db.actor and db.actor:item_in_slot(6)
 	if outfit and he_exo_charge.is_exo(outfit) then return outfit end
 end
 
-local function straining()
+-- 2 sprinting / jumping, 1 moving, 0 still
+local function activity()
 	local aobj = get_actor_obj()
-	if not aobj then return false end
-	if aobj:is_actor_sprinting() then return true end
-	return bit_and(aobj:get_body_state(), JUMP_FLAG) ~= 0
+	if not aobj then return 0 end
+	local st = aobj:get_body_state()
+	if aobj:is_actor_sprinting() or bit_and(st, JUMP_FLAG) ~= 0 then return 2 end
+	return bit_and(st, MOVE_FLAGS) ~= 0 and 1 or 0
 end
 
 local function flush(outfit)
-	if pending > 0 and outfit then
-		sivol_exo.add_wear(outfit, pending)
+	if outfit then
+		if wear_pending > 0 then sivol_exo.add_wear(outfit, wear_pending) end
+		local whole = charge_pending >= 0 and math.floor(charge_pending) or math.ceil(charge_pending)
+		if whole ~= 0 then
+			he_exo_charge.shift(outfit, whole)
+			charge_pending = charge_pending - whole
+		end
 	end
-	pending = 0
+	wear_pending = 0
 end
 
 function on_update()
 	local t = time_global()
+	if last_t and t - last_t < POLL_MS then return end
 	local dt = last_t and t - last_t or 0
 	last_t = t
 	if dt <= 0 or dt > MAX_DT then return end
 	local outfit = wearing_exo()
-	if not outfit then
-		pending = 0
-		return
+	local id = outfit and outfit:id()
+	if id ~= pending_id then
+		wear_pending, charge_pending, pending_id = 0, 0, id
 	end
-	if not straining() then return end
+	if not outfit then return end
+	local a = activity()
 	local k = slow[outfit:section()] and SLOW_K or 1
-	pending = pending + WEAR_PER_SEC * k * dt / 1000
-	if pending >= APPLY_AT then flush(outfit) end
+	if a == 2 then
+		wear_pending = wear_pending + WEAR_SPRINT * k * dt / 1000
+	elseif a == 1 then
+		wear_pending = wear_pending + WEAR_MOVE * k * dt / 1000
+	end
+	if he_exo_charge.is_charged(outfit) then
+		local game_min = dt / 1000 * level.get_time_factor() / 60
+		local rate = a == 2 and DRAIN_SPRINT or a == 1 and DRAIN_MOVE or DRAIN_STILL
+		charge_pending = charge_pending + (rate - 1) * game_min
+	end
+	if t >= next_flush then
+		next_flush = t + FLUSH_MS
+		flush(outfit)
+	end
 end
 
 local function reset_clock()

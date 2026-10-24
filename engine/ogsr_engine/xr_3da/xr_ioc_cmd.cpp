@@ -636,7 +636,8 @@ void CCC_Register()
     CMD3(CCC_Token, "snd_hrtf", &psSoundHrtf, snd_hrtf_token);
     CMD1(CCC_SndAudioReport, "snd_audio_report");
     CMD4(CCC_Integer, "snd_dist_model", &psSoundDistModel, 0, 1);
-    CMD4(CCC_Float, "snd_bullet_whine_dist", &psSoundBulletWhineDist, 0.f, 10.f);
+    CMD4(CCC_Float, "snd_bullet_whine_dist", &psSoundBulletWhineDist, 0.f, 15.f);
+    CMD4(CCC_Float, "snd_bullet_whine_vol", &psSoundBulletWhineVol, 0.f, 4.f);
     CMD2(CCC_Bool, "snd_hrtf_2d", &psSoundHrtf2D);
     CMD4(CCC_Integer, "snd_hrtf_set", &psSoundHrtfSet, 0, 63);
 

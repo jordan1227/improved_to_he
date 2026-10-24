@@ -189,6 +189,7 @@ public:
     void nlc_queue(CSoundRender_Emitter* E, float key) { nlc_due.push_back({E, key}); }
     void nlc_unqueue(CSoundRender_Emitter* E);
     bool nlc_no_occlude(LPCSTR name) const;
+    bool nlc_spatial_stereo(LPCSTR name) const;
 
     // NLC room probe (section 3.1): smoothed listener enclosure 0..1, mean free distance, absorption
     float nlc_enc{};

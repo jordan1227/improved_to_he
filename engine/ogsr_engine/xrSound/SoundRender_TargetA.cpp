@@ -191,6 +191,8 @@ void CSoundRender_TargetA::start(CSoundRender_Emitter* E)
     // output channels instead of through the head model, which rendered them as a coloured "inside the head" image
     nlc_direct = E->b2D && SoundRender->nlc_hrtf_on && !psSoundHrtf2D;
     alSourcei(pSource, AL_DIRECT_CHANNELS_SOFT, nlc_direct ? AL_TRUE : AL_FALSE);
+    // stereo files kept 3D: OpenAL Soft downmixes and positions them (AUTO spatializes mono only)
+    alSourcei(pSource, AL_SOURCE_SPATIALIZE_SOFT, E->nlc_spatial_stereo ? AL_TRUE : AL_AUTO_SOFT);
     alGetError();
 }
 

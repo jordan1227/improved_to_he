@@ -1,5 +1,8 @@
 -- [HE-PORT]
 local SECT, KEY = "exo_charge", "t"
+-- sivol: the battery only drains while the exo is worn. Worn: t = game minute the charge runs out;
+-- taken off (backpack, stash, trader, technician): t = 0 and r = minutes left (sivol_exo pauses/resumes)
+local KEY_R = "r"
 
 function is_exo( obj )
 	return obj ~= nil and obj:is_outfit() and strpos( obj:section(), "exo", 1, true ) ~= nil
@@ -19,11 +22,66 @@ function set_end_time( sobj, time )
 	end
 end
 
+function sobj_minutes_left( sobj )
+	local ini = sobj and sobj:spawn_ini()
+	if not ( ini and ini:section_exist( SECT ) ) then return 0 end
+	local t = get_u32( SECT, KEY, 0, ini )
+	if t > 0 then
+		local left = t - timers.Get_Game_Minutes()
+		return left > 0 and left or 0
+	end
+	return get_u32( SECT, KEY_R, 0, ini )
+end
+
 function minutes_left( obj )
+	return sobj_minutes_left( obj and obj:get_alife_object() )
+end
+
+-- running = drains from now on; otherwise kept as paused minutes
+function set_left( sobj, minutes, running )
+	local ini = sobj and sobj:spawn_ini()
+	if not ini then return end
+	minutes = math.max( 0, math.floor( minutes ) )
+	ini.readonly = false
+	ini:w_u32( SECT, KEY, running and minutes > 0 and timers.Get_Game_Minutes() + minutes or 0 )
+	ini:w_u32( SECT, KEY_R, running and 0 or minutes )
+	sobj:save_spawn_ini()
+end
+
+local function is_worn_id( id )
+	local o = db.actor and db.actor:item_in_slot( 6 )
+	return o ~= nil and o:id() == id
+end
+
+-- the exo was taken off / put on (sivol_exo.on_update)
+function pause( obj )
 	local sobj = obj and obj:get_alife_object()
-	if not sobj then return 0 end
-	local left = get_end_time( sobj ) - timers.Get_Game_Minutes()
-	return left > 0 and left or 0
+	local ini = sobj and sobj:spawn_ini()
+	if ini and ini:section_exist( SECT ) and get_u32( SECT, KEY, 0, ini ) > 0 then
+		set_left( sobj, sobj_minutes_left( sobj ), false )
+	end
+end
+
+function resume( obj )
+	local sobj = obj and obj:get_alife_object()
+	local ini = sobj and sobj:spawn_ini()
+	if ini and ini:section_exist( SECT ) and get_u32( SECT, KEY, 0, ini ) == 0 then
+		local left = get_u32( SECT, KEY_R, 0, ini )
+		if left > 0 then set_left( sobj, left, true ) end
+	end
+end
+
+-- he_exo_wear: shift a running charge by game minutes (+ drains faster, - lasts longer)
+function shift( obj, minutes )
+	local sobj = obj and obj:get_alife_object()
+	local ini = sobj and sobj:spawn_ini()
+	if not ( ini and ini:section_exist( SECT ) ) then return end
+	local t = get_u32( SECT, KEY, 0, ini )
+	if t == 0 then return end
+	local now = timers.Get_Game_Minutes()
+	ini.readonly = false
+	ini:w_u32( SECT, KEY, math.max( now, t - minutes ) )
+	sobj:save_spawn_ini()
 end
 
 function is_charged( obj )
@@ -33,7 +91,7 @@ end
 function charge_id( id, hours )
 	local sobj = server_obj( id )
 	if not sobj then return end
-	set_end_time( sobj, timers.Get_Game_Minutes() + hours * 60 )
+	set_left( sobj, hours * 60, is_worn_id( id ) )
 end
 
 function charge( obj, hours )

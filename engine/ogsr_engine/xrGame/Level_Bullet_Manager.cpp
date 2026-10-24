@@ -237,7 +237,7 @@ bool CBulletManager::CalcBullet(collide::rq_results& rq_storage, xr_vector<ISpat
     // NLC: near-miss whine (docs/AUDIO_DESIGN.md 13.2 item 10): a bullet not fired by the actor whines at the point of its
     // step closest to the camera when that passes within snd_bullet_whine_dist (before, only bullets that reached the actor's
     // own collision sphere did); no game object, so no AI event
-    if (psSoundBulletWhineDist > 0.f && g_actor && bullet->parent_id != g_actor->ID() && !bullet->m_whine_snd._feedback())
+    if (psSoundBulletWhineDist > 0.f && g_actor && bullet->parent_id != g_actor->ID() && !bullet->m_whine_snd._p) // one whine per bullet
     {
         const Fvector& cam = Device.vCameraPosition;
         Fvector to;
@@ -246,8 +246,16 @@ bool CBulletManager::CalcBullet(collide::rq_results& rq_storage, xr_vector<ISpat
         Fvector pt;
         pt.mad(bullet->pos, cur_dir, t);
         const float d = pt.distance_to(cam);
-        if (d < psSoundBulletWhineDist && d > 0.3f && bullet->fly_dist + t > 5.f)
-            PlayWhineSound(bullet, nullptr, pt);
+        if (d < psSoundBulletWhineDist && d > 0.3f && bullet->fly_dist + t > 5.f && !m_WhineSounds.empty() &&
+            bullet->hit_type == ALife::eHitTypeFireWound)
+        {
+            // own copy per bullet (the templates are shared: one playing whine made every other bullet skip its own)
+            bullet->m_whine_snd.clone(m_WhineSounds[Random.randI(0, m_WhineSounds.size())], st_Effect, sg_SourceType);
+            float vol = psSoundBulletWhineVol;
+            Sound->play_no_feedback(bullet->m_whine_snd, nullptr, 0, 0.f, &pt, &vol);
+            if (psSoundOccLog[0] && (psSoundOccLog[0] == '*' || strstr("whine", psSoundOccLog)))
+                Msg("[snd_whine] near miss d=%.1f at %.1f,%.1f,%.1f", d, pt.x, pt.y, pt.z);
+        }
     }
 
     bullet->flags.skipped_frame = (Device.dwFrame >= bullet->frame_num);

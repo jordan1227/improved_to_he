@@ -14,6 +14,9 @@ of the tag in this repository.
 - Lamp contact shadows: `ssfx_lights_data.w` gets +4 when the slot's light moves faster than ~0.3 m/s (frame-rate independent), so carried torches keep little shadow history.
 - SSS 23 glass binds `$user$position`: refraction no longer pulls in objects standing in front of the glass.
 - The OGSR SSR targets (`rt_ssr1/2`, two full-size RGBA8) are created only without the SSS 23 SSR; the OGSR fallback pass is skipped when they do not exist ("Hide new effects" in rain shows no SSR).
+- **Rebuild 2026-10-24 (same version string), exe SHA-256** `C1A568F89A92C8236CD17E59A93851D9B4ABDEA8703A1A330AF747F54ED1BFF0` (PDB `nlc_tools/builds/20261024_145627_c1a568f8`): .150 plus audio fixes:
+- Stereo files listed in `snd_occlusion.ltx` `spatial_stereo` (default `bullet_shells\`) stay 3D via `AL_SOURCE_SPATIALIZE_SOFT` instead of forced 2D (NPC casings played at the listener).
+- Near-miss whine: own sound copy per bullet (the shared templates let one playing whine block all others), `snd_bullet_whine_vol` 1.5, `snd_bullet_whine_dist` 6, `[snd_whine]` lines with `snd_occ_log whine`.
 
 ## nlc-3.589.149 (2026-10-23)
 

@@ -45,6 +45,7 @@ XRSOUND_API extern float psSoundSpeed;
 XRSOUND_API extern float psSoundAmbIndoorGain; // ambient channel gain when fully enclosed
 XRSOUND_API extern u32 psSoundHrtf; // 0 off, 1 on, 2 auto (applied on snd_restart)
 XRSOUND_API extern float psSoundBulletWhineDist;
+XRSOUND_API extern float psSoundBulletWhineVol; // level of the near-miss whine
 XRSOUND_API extern BOOL psSoundHrtf2D; // 2D sounds through HRTF too (off: they bypass it as direct stereo)
 XRSOUND_API extern int psSoundHrtfSet; // HRTF data set index (0 = OpenAL Soft default; applied on snd_restart) // near-miss whine of non-actor bullets within this distance of the camera (0 = off)
 XRSOUND_API extern int psSoundDistModel; // 0 OpenAL inverse clamped, 1 engine curve with a fade to max_dist
@@ -83,6 +84,7 @@ struct SSndOccConfig
     float loud_max{24.f}; // ...up to this ceiling; the rest becomes extra HF loss
     float terrain_cap{22.f}; // a path through terrain only (a hill) loses at most this
     float cap_hf_div{40.f}; // capped-away dB turn into HF loss: hf x 10^(-dB / cap_hf_div)
+    xr_vector<xr_string> spatial_stereo; // stereo sound name parts kept 3D (OpenAL downmixes and positions them) instead of forced 2D
     xr_vector<xr_string> no_occlude; // sound name parts never occluded (sounds typed world_ambient were exempt before)
     // room probe / reverb
     float probe_len{60.f};

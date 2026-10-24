@@ -9,6 +9,7 @@
 local SERVO_SECT, SERVO_KEY, SERVO_SCALE = "exo_servo", "w", 100000
 local PLATE_SECT, PLATE_KEY, PLATE_MAX = "exo_plate", "tier", 2
 local PLATE_PROT = 0.075         -- fire_wound and explosion protection per plate layer
+local PLATE_WOUND = 0.025         -- rupture (melee / claws) protection per plate layer
 local PLATE_WEIGHT = 3.0         -- kg per plate layer
 local DEF_SPRINT_K = 0.85        -- exo sprint factor when the section has no nlc_sprint_k
 local SPRINT_MIN = 0.2           -- below this servo integrity the exo cannot sprint
@@ -26,6 +27,7 @@ local REFRESH_MS = 10000
 -- cached state of the worn exo (read by per-frame consumers)
 local cur = { id = false, assist = 0, sprint_k = 1, braced = false }
 local next_refresh = 0
+local paused_after_load = false
 
 function is_exo(obj)
 	return he_exo_charge.is_exo(obj)
@@ -143,7 +145,8 @@ function apply_plates(obj)
 	if sivol and sivol.outfit_stats then
 		if t > 0 then
 			local add = { mode = "add", value = PLATE_PROT * t }
-			sivol.outfit_stats.set("exo_plate", id, { fire_wound_protection = add, explosion_protection = add })
+			sivol.outfit_stats.set("exo_plate", id, { fire_wound_protection = add, explosion_protection = add,
+				wound_protection = { mode = "add", value = PLATE_WOUND * t } })
 		else
 			sivol.outfit_stats.clear("exo_plate", id)
 		end
@@ -226,7 +229,7 @@ function capture(obj, with_mask)
 	local st = {}
 	if not sobj then return st end
 	if is_exo(obj) then
-		st.charge = he_exo_charge.get_end_time(sobj)
+		st.charge = he_exo_charge.sobj_minutes_left(sobj) -- minutes left; restored paused
 		st.servo = read_u32(sobj, SERVO_SECT, SERVO_KEY) or math.floor(obj:condition() * SERVO_SCALE + 0.5)
 		st.plate = read_u32(sobj, PLATE_SECT, PLATE_KEY)
 	end
@@ -258,7 +261,7 @@ function restore(sobj, st)
 		ini:w_u32("mask", "t4", st.m4)
 	end
 	sobj:save_spawn_ini()
-	if st.charge and st.charge > 0 then he_exo_charge.set_end_time(sobj, st.charge) end
+	if st.charge and st.charge > 0 then he_exo_charge.set_left(sobj, st.charge, false) end
 end
 
 -- inventory description lines (ui_inv_descr.get_add_out_desc) -----------------------------------------
@@ -553,6 +556,19 @@ local function on_update()
 	local now = time_global()
 	local o = db.actor and db.actor:item_in_slot(6)
 	local id = o and o:id() or false
+	if id ~= cur.id then
+		-- the battery drains only while worn (he_exo_charge.pause / resume)
+		local old = cur.id and level.object_by_id(cur.id)
+		if old and is_exo(old) then he_exo_charge.pause(old) end
+		if o and is_exo(o) then he_exo_charge.resume(o) end
+		if not paused_after_load and db.actor then
+			paused_after_load = true -- exos carried in the backpack from an older save
+			for i = 0, db.actor:object_count() - 1 do
+				local x = db.actor:object(i)
+				if x and is_exo(x) and not (o and x:id() == o:id()) then he_exo_charge.pause(x) end
+			end
+		end
+	end
 	if id ~= cur.id or now >= next_refresh then refresh() end
 end
 

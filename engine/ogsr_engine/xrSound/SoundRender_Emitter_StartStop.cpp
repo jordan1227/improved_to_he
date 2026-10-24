@@ -36,7 +36,9 @@ void CSoundRender_Emitter::start(ref_sound* _owner, BOOL _loop, float delay, u32
 
     // NLC: 2D before the emitter is visible to the sound task (the caller's switch_to_2D came after set_position, so a
     // 2D play_at_pos could be taken for a distant 3D sound and get a speed-of-sound delay)
-    if ((flags & sm_2D) || source()->channels_num() == 2)
+    // NLC: stereo files listed in snd_occlusion.ltx spatial_stereo stay 3D (shell casings: all stereo, played at an NPC)
+    nlc_spatial_stereo = !(flags & sm_2D) && source()->channels_num() == 2 && SoundRender->nlc_spatial_stereo(source()->fname.c_str());
+    if ((flags & sm_2D) || (source()->channels_num() == 2 && !nlc_spatial_stereo))
         switch_to_2D();
     // not affected by the listener filter (gas mask): music and the script's exempt names (breathing, own body sounds, UI)
     nlc_lf_exempt = owner_data->s_type == st_Music || SoundRender->nlc_lf_exempt(source()->fname.c_str());

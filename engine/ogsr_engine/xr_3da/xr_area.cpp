@@ -314,6 +314,7 @@ void nlc_snd_occlusion_load()
         };
         read_list("terrain", terrain_names);
         read_list("no_occlude", cfg.no_occlude);
+        read_list("spatial_stereo", cfg.spatial_stereo);
 
         rf(SR, "probe_len", cfg.probe_len);
         rf(SR, "enc_near", cfg.enc_near);

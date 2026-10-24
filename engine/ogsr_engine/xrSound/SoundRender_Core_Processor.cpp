@@ -524,6 +524,14 @@ void CSoundRender_Core::nlc_cache_clear()
     nlc_cache_model = geom_MODEL;
 }
 
+bool CSoundRender_Core::nlc_spatial_stereo(LPCSTR name) const
+{
+    for (const xr_string& s : nlc_cfg.spatial_stereo)
+        if (!s.empty() && strstr(name, s.c_str()))
+            return true;
+    return false;
+}
+
 bool CSoundRender_Core::nlc_no_occlude(LPCSTR name) const
 {
     for (const xr_string& s : nlc_cfg.no_occlude)
