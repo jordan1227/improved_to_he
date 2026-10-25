@@ -1,6 +1,101 @@
-<!-- nlc-changelog-head: 36ff40f5ed606caa114787b33c4ad05bb95882d6 -->
+<!-- nlc-changelog-head: c05c7d2699eb32afe3979aeca3e98c8217a65f05 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: c05c7d2699eb32afe3979aeca3e98c8217a65f05 -->
+## 26.10.26 00:33 МСК - Restore Yurik's timed rescue storyline
+
+Commit: [c05c7d2](https://github.com/jordan1227/improved_to_he/commit/c05c7d2699eb32afe3979aeca3e98c8217a65f05)
+
+### Description
+
+Add the Wolf hint and backpack-artifact route, Yurik's hostage and post-rescue dialogue, and outcome-specific follow-up. Extend the debt timer to 12 hours; if it expires, transfer the debt to the player and unlock a repayment path.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/doc_dialogs_new.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/config/scripts/gar/gar_dm_novice.ltx
+- M gamedata/config/text/eng/doc_dialogs.xml
+- M gamedata/config/text/eng/sak_strings_six.xml
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/doc_dialogs.xml
+- M gamedata/config/text/rus/sak_strings_six.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/config/waypoints.ltx
+- M gamedata/scripts/doc.script
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- A gamedata/scripts/sivol/sivol_gar_hostage.script
+- M gamedata/scripts/xr/xr_effects.script
+- M gamedata/scripts/xr/xr_motivator.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.h
+- M engine/ogsr_engine/xrGame/relation_registry_actions.cpp
+- M engine/ogsr_engine/xrGame/script_game_object.h
+- M engine/ogsr_engine/xrGame/script_game_object_inventory_owner.cpp
+- M engine/ogsr_engine/xrGame/script_game_object_script2.cpp
+
+<!-- nlc-changelog-commit: ac4aa8832894114d43efcca52c5dcdc48f2f9e34 -->
+## 25.10.26 20:39 МСК - манифест
+
+Commit: [ac4aa88](https://github.com/jordan1227/improved_to_he/commit/ac4aa8832894114d43efcca52c5dcdc48f2f9e34)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: a8f92fcecbcd49c94aa21ef4133dc61ff53f3a87 -->
+## 25.10.26 20:38 МСК - Add exoskeleton-assisted kick mechanics
+
+Commit: [a8f92fc](https://github.com/jordan1227/improved_to_he/commit/a8f92fcecbcd49c94aa21ef4133dc61ff53f3a87)
+
+### Description
+
+Scale kick strength, swing speed, and stamina cost with exoskeleton servo assist, with configurable target profiles and optional servo wear. Add baseline creature kicks, exclude friends and actor-leg puppets from impacts, and expand kick diagnostics.
+
+### Game files changed
+
+- M gamedata/scripts/sivol/sivol_exo.script
+- M gamedata/scripts/sivol/sivol_kick.script
+- M gamedata/scripts/sivol/sivol_kick_configs.script
+- M gamedata/scripts/sivol/sivol_visible_body.script
+
+<!-- nlc-changelog-commit: ecf745181e0cef68a30d5b4241e9ecc5ba4000d6 -->
+## 25.10.26 19:54 МСК - манифест
+
+Commit: [ecf7451](https://github.com/jordan1227/improved_to_he/commit/ecf745181e0cef68a30d5b4241e9ecc5ba4000d6)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 36ff40f5ed606caa114787b33c4ad05bb95882d6 -->
 ## 25.10.26 19:52 МСК - Tune NPC combat and actor damage systems
