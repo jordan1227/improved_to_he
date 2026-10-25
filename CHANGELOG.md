@@ -1,6 +1,889 @@
-<!-- nlc-changelog-head: a3513856adb483b71eeaf8778c2c36a79bab375b -->
+<!-- nlc-changelog-head: 36ff40f5ed606caa114787b33c4ad05bb95882d6 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 36ff40f5ed606caa114787b33c4ad05bb95882d6 -->
+## 25.10.26 19:52 МСК - Tune NPC combat and actor damage systems
+
+Commit: [36ff40f](https://github.com/jordan1227/improved_to_he/commit/36ff40f5ed606caa114787b33c4ad05bb95882d6)
+
+### Description
+
+Update the engine to nlc-3.589.156 with per-bone bullet pool and bleeding scales, unscaled injury tracking, and a god-mode damage simulation. Refine NPC detection, aiming, spread, and hit logging, and remove the shadow leg mode that interfered with hit detection.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/damages.ltx
+- M gamedata/config/creatures/m_stalker.ltx
+- M gamedata/config/creatures/m_stalker_antisniper.ltx
+- M gamedata/config/creatures/m_stalker_sniper.ltx
+- M gamedata/config/creatures/m_stalker_zombied.ltx
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+- M gamedata/scripts/sivol/sivol_hit_log.script
+- M gamedata/scripts/xrs/xrs_battle_ai.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.h
+- M engine/ogsr_engine/xrGame/HUDManager.cpp
+- M engine/ogsr_engine/xrGame/IKLimbsController.cpp
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.cpp
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.h
+- M engine/ogsr_engine/xrGame/console_commands.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.h
+- M engine/ogsr_engine/xrGame/nlc_npc_damage.h
+- M engine/ogsr_engine/xrGame/script_game_object.h
+- M engine/ogsr_engine/xrGame/script_game_object4.cpp
+- M engine/ogsr_engine/xrGame/script_game_object_script3.cpp
+- M engine/ogsr_engine/xrGame/sight_action.cpp
+
+<!-- nlc-changelog-commit: 9e6edd8ad6a905fc7026d62b96a3eefb7f9ef095 -->
+## 25.10.26 15:05 МСК - манифест
+
+Commit: [9e6edd8](https://github.com/jordan1227/improved_to_he/commit/9e6edd8ad6a905fc7026d62b96a3eefb7f9ef095)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 86f6532a6f73cfc04fd125ce8203ad12de72ef77 -->
+## 25.10.26 15:04 МСК - Add PDA tools and Kishka convoy quest
+
+Commit: [86f6532](https://github.com/jordan1227/improved_to_he/commit/86f6532a6f73cfc04fd125ce8203ad12de72ef77)
+
+### Description
+
+Add PDA barter records, personal notes, map-marker options, and transmutation monitoring, with engine support for text input and script-built tabs. Expand the Kishka convoy storyline with its mercenary crew, branching outcomes, and related items, dialogue, and localization.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/spawn_sections.ltx
+- M gamedata/config/external.ltx
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/dialogs_bar.xml
+- M gamedata/config/gameplay/dialogs_he_pda_access.xml
+- M gamedata/config/gameplay/dialogs_yantar.xml
+- A gamedata/config/gameplay/encyclopedia_barter.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/gameplay/info_sak_way.xml
+- M gamedata/config/gameplay/npc_profile_nlc30_spawn.xml
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/config/gameplay/storyline_info_doc.xml
+- M gamedata/config/gameplay/storyline_info_sak_way.xml
+- M gamedata/config/gameplay/storyline_info_to_diary.xml
+- A gamedata/config/misc/pda_barter_books.ltx
+- M gamedata/config/misc/sak_quest_items.ltx
+- M gamedata/config/misc/treasure_manager.ltx
+- M gamedata/config/system.ltx
+- M gamedata/config/text/eng/sak_strings_trade.xml
+- M gamedata/config/text/eng/script_strings.xml
+- A gamedata/config/text/eng/st_pda_he.xml
+- M gamedata/config/text/eng/stable_bio_name.xml
+- M gamedata/config/text/eng/stable_dialogs_bar.xml
+- M gamedata/config/text/eng/stable_dialogs_yantar.xml
+- M gamedata/config/text/eng/string_table_enc_zone.xml
+- M gamedata/config/text/eng/string_table_items.xml
+- M gamedata/config/text/rus/sak_strings_trade.xml
+- M gamedata/config/text/rus/script_strings.xml
+- A gamedata/config/text/rus/st_pda_he.xml
+- M gamedata/config/text/rus/stable_bio_name.xml
+- M gamedata/config/text/rus/stable_dialogs_bar.xml
+- M gamedata/config/text/rus/stable_dialogs_yantar.xml
+- M gamedata/config/text/rus/string_table_enc_zone.xml
+- M gamedata/config/text/rus/string_table_items.xml
+- M gamedata/config/ui/pda.xml
+- M gamedata/config/ui/pda_spot.xml
+- A gamedata/config/ui/ui_pda_notes.xml
+- M gamedata/config/waypoints.ltx
+- M gamedata/scripts/actor_take_item.script
+- M gamedata/scripts/amk/amk_mod.script
+- M gamedata/scripts/arts/arc_arts.script
+- M gamedata/scripts/binders/bind_greedy.script
+- M gamedata/scripts/death_manager.script
+- M gamedata/scripts/engine_callbacks.script
+- M gamedata/scripts/he_pda_access.script
+- A gamedata/scripts/he_pda_barter.script
+- A gamedata/scripts/he_pda_cook.script
+- M gamedata/scripts/he_quest_target_lock.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_off_corpses.script
+- M gamedata/scripts/se/se_respawn.script
+- D gamedata/scripts/sivol/sivol_barter_text.script
+- M gamedata/scripts/sivol/sivol_stealth_cfg.script
+- M gamedata/scripts/sivol/sivol_visible_body.script
+- M gamedata/scripts/sivol/sivol_worldspawns.script
+- M gamedata/scripts/ui/ui_barter.script
+- A gamedata/scripts/ui/ui_pda_notes.script
+- A gamedata/sounds/device/pda/pda_news.ogg
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/COMMON_AI/script_engine_export.h
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Level_input.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/ui/UICustomEdit.cpp
+- M engine/ogsr_engine/xrGame/ui/UICustomEdit.h
+- M engine/ogsr_engine/xrGame/ui/UIMapWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIMapWnd.h
+- M engine/ogsr_engine/xrGame/ui/UIMessages.h
+- A engine/ogsr_engine/xrGame/ui/UIMultiLineEdit.cpp
+- A engine/ogsr_engine/xrGame/ui/UIMultiLineEdit.h
+- M engine/ogsr_engine/xrGame/ui/UIPdaAux.h
+- M engine/ogsr_engine/xrGame/ui/UIPdaSpot.cpp
+- M engine/ogsr_engine/xrGame/ui/UIPdaSpot.h
+- M engine/ogsr_engine/xrGame/ui/UIPdaWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIPdaWnd.h
+- M engine/ogsr_engine/xrGame/ui/UIWindow.cpp
+- M engine/ogsr_engine/xrGame/ui/UIWindow.h
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+
+<!-- nlc-changelog-commit: d5b9bf6885c13d969c6db9b5e7dc277872e9bbeb -->
+## 25.10.26 10:21 МСК - Add gas mask audio toggle and revise defaults
+
+Commit: [d5b9bf6](https://github.com/jordan1227/improved_to_he/commit/d5b9bf6885c13d969c6db9b5e7dc277872e9bbeb)
+
+### Description
+
+Add a sound-menu option to disable gas-mask muffling, default EFX on and HRTF off, and include the changes in engine build nlc-3.589.151.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/rspec_default.ltx
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_sound.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrSound/Sound.h
+- M engine/ogsr_engine/xrSound/SoundRender_Core.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Core_Processor.cpp
+- M engine/ogsr_engine/xr_3da/xr_ioc_cmd.cpp
+
+<!-- nlc-changelog-commit: c8541a6926f75397261053faa619d66a5fdf929e -->
+## 24.10.26 16:57 МСК - манифест
+
+Commit: [c8541a6](https://github.com/jordan1227/improved_to_he/commit/c8541a6926f75397261053faa619d66a5fdf929e)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 6ca7ba91c967caaceab23a7ce7e9595983f11dcd -->
+## 24.10.26 16:56 МСК - Фикс + изменения экзы. Фиксы звуков - пули пролетающие рядом и гильзы у НПСImprove audio and fix gameplay edge cases
+
+Commit: [6ca7ba9](https://github.com/jordan1227/improved_to_he/commit/6ca7ba91c967caaceab23a7ce7e9595983f11dcd)
+
+### Description
+
+Keep configured stereo casing sounds spatialized and improve near-miss whines. Pause exosuit battery drain when unequipped, honor forced NPC night vision, and safely skip removed treasure entries during save loading. Include the rebuilt engine and refreshed manifest.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/misc/all_outfits_nlc.ltx
+- M gamedata/config/misc/snd_occlusion.ltx
+- A gamedata/config/scripts/dsc/convoy_crew_biryuk.ltx
+- A gamedata/config/scripts/dsc/convoy_crew_guard1.ltx
+- A gamedata/config/scripts/dsc/convoy_crew_guard2.ltx
+- A gamedata/config/scripts/dsc/convoy_crew_guard3.ltx
+- A gamedata/config/scripts/dsc/convoy_crew_sentry.ltx
+- A gamedata/config/scripts/dsc/convoy_crew_sniper.ltx
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+- M gamedata/scripts/he_exo_charge.script
+- M gamedata/scripts/he_exo_wear.script
+- M gamedata/scripts/sivol/sivol_exo.script
+- M gamedata/scripts/sivol/sivol_stealth_nvd.script
+- M gamedata/scripts/treasure_manager.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrGame/Level_Bullet_Manager.cpp
+- M engine/ogsr_engine/xrSound/Sound.h
+- M engine/ogsr_engine/xrSound/SoundRender_Core.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Core.h
+- M engine/ogsr_engine/xrSound/SoundRender_Core_Processor.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter.h
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter_StartStop.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_TargetA.cpp
+- M engine/ogsr_engine/xr_3da/xr_area.cpp
+- M engine/ogsr_engine/xr_3da/xr_ioc_cmd.cpp
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 3cfe19b6bf0cd3568a538b16082aaa850d07bb20 -->
+## 24.10.26 16:09 МСК - Часы в разделе документов в быстром доступе
+
+Commit: [3cfe19b](https://github.com/jordan1227/improved_to_he/commit/3cfe19b6bf0cd3568a538b16082aaa850d07bb20)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/vergas/inv_buttons_use.script
+
+<!-- nlc-changelog-commit: 443f1c4cd685a12eebf6fb49ad2e410fea877935 -->
+## 24.10.26 01:59 МСК - манифест
+
+Commit: [443f1c4](https://github.com/jordan1227/improved_to_he/commit/443f1c4cd685a12eebf6fb49ad2e410fea877935)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 84feeb5ff19ded36df1012128972446bb23354c6 -->
+## 24.10.26 01:58 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [84feeb5](https://github.com/jordan1227/improved_to_he/commit/84feeb5ff19ded36df1012128972446bb23354c6)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/string_table_he_magic_box.xml
+- M gamedata/config/text/rus/string_table_he_magic_box.xml
+- A gamedata/config/ui/ui_he_handin.xml
+- A gamedata/scripts/he_handin.script
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_inventory.script
+- A gamedata/scripts/ui/ui_he_handin.script
+- M gamedata/scripts/ui/ui_he_magic_box.script
+- M gamedata/scripts/vergas/razgruzka.script
+- M bin_x64/xrEngine.exe
+- M gamedata/shaders/r3/combine_1.ps
+- M gamedata/shaders/r3/ssfx_ao.ps
+- M gamedata/shaders/r3/ssfx_ao_blur.ps
+- M gamedata/shaders/r3/ssfx_fog_scattering_blur.ps
+- M gamedata/shaders/r3/ssfx_glass.ps
+- M gamedata/shaders/r3/ssfx_il.ps
+- M gamedata/shaders/r3/ssfx_il.s
+- M gamedata/shaders/r3/ssfx_il_blur.ps
+- M gamedata/shaders/r3/ssfx_ssr.ps
+- M gamedata/shaders/r3/ssfx_ssr.s
+- M gamedata/shaders/r3/ssfx_ssr_combine.ps
+- M gamedata/shaders/r3/ssfx_sss.h
+- M gamedata/shaders/r3/ssfx_sss.ps
+- M gamedata/shaders/r3/ssfx_sss.s
+- M gamedata/shaders/r3/ssfx_sss_blur.ps
+- M gamedata/shaders/r3/ssfx_sss_lights.ps
+- A gamedata/shaders/r3/ssfx_upsample.h
+- M gamedata/shaders/r3/ssfx_volumetric_combine.ps
+- M gamedata/shaders/r3/ssfx_water_ssr.ps
+
+### Other repository files changed
+
+- M manifest.txt
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Layers/xrRender/Blender_Model_EbB.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_combine.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_ssfx.cpp
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+
+<!-- nlc-changelog-commit: 063bb5095a8ca073474ea5355161ebcf528082ce -->
+## 24.10.26 01:58 МСК - Improve SSS 23 temporal rendering quality
+
+Commit: [063bb50](https://github.com/jordan1227/improved_to_he/commit/063bb5095a8ca073474ea5355161ebcf528082ce)
+
+### Description
+
+Reduce ghosting and depth-edge artifacts across SSS, AO, IL, and SSR with motion-aware history, depth-aware filtering, and corrected reflection reprojection. Also fix glass refraction and OGSR SSR fallback behavior, and bump the engine to nlc-3.589.150.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/shaders/r3/combine_1.ps
+- M gamedata/shaders/r3/ssfx_ao.ps
+- M gamedata/shaders/r3/ssfx_ao_blur.ps
+- M gamedata/shaders/r3/ssfx_fog_scattering_blur.ps
+- M gamedata/shaders/r3/ssfx_glass.ps
+- M gamedata/shaders/r3/ssfx_il.ps
+- M gamedata/shaders/r3/ssfx_il.s
+- M gamedata/shaders/r3/ssfx_il_blur.ps
+- M gamedata/shaders/r3/ssfx_ssr.ps
+- M gamedata/shaders/r3/ssfx_ssr.s
+- M gamedata/shaders/r3/ssfx_ssr_combine.ps
+- M gamedata/shaders/r3/ssfx_sss.h
+- M gamedata/shaders/r3/ssfx_sss.ps
+- M gamedata/shaders/r3/ssfx_sss.s
+- M gamedata/shaders/r3/ssfx_sss_blur.ps
+- M gamedata/shaders/r3/ssfx_sss_lights.ps
+- A gamedata/shaders/r3/ssfx_upsample.h
+- M gamedata/shaders/r3/ssfx_volumetric_combine.ps
+- M gamedata/shaders/r3/ssfx_water_ssr.ps
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Layers/xrRender/Blender_Model_EbB.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_combine.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_ssfx.cpp
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+
+<!-- nlc-changelog-commit: 244a55de89d3f94322a078cab47e5aff39700fc2 -->
+## 23.10.26 23:06 МСК - манифест
+
+Commit: [244a55d](https://github.com/jordan1227/improved_to_he/commit/244a55de89d3f94322a078cab47e5aff39700fc2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: a313e4aa2920bacdeefefff40df2b852b6ad7dab -->
+## 23.10.26 22:35 МСК - Вылет в платных нычках
+
+Commit: [a313e4a](https://github.com/jordan1227/improved_to_he/commit/a313e4aa2920bacdeefefff40df2b852b6ad7dab)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/ui/ui_he_magic_box.script
+
+<!-- nlc-changelog-commit: 70101acbc66a5d4ecdbbfdf20c3e7b512d45db32 -->
+## 23.10.26 22:28 МСК - Починил резонатор
+
+Commit: [70101ac](https://github.com/jordan1227/improved_to_he/commit/70101acbc66a5d4ecdbbfdf20c3e7b512d45db32)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/items/anim_items/anm_af_resonator.ltx
+
+<!-- nlc-changelog-commit: ef3c8c29d6ddfe0298a4cbfc82033b24d2511570 -->
+## 23.10.26 22:35 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [ef3c8c2](https://github.com/jordan1227/improved_to_he/commit/ef3c8c29d6ddfe0298a4cbfc82033b24d2511570)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/config/misc/quest_items.ltx
+- M gamedata/config/text/eng/string_table_items.xml
+- M gamedata/config/text/rus/string_table_items.xml
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/olr/olr_smart_index.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M bin_x64/xrEngine.exe
+- A gamedata/config/misc/snd_occlusion.ltx
+- M gamedata/config/ogg_comments_overrides.ltx
+- M gamedata/config/text/eng/string_table_enc_zone.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/string_table_enc_zone.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/config/weapons/w_grenades.ltx
+- M gamedata/config/weapons/weapons.ltx
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sivol/sivol_glassbeads.script
+- A gamedata/scripts/sivol/sivol_mask_audio.script
+- M gamedata/scripts/sivol/sivol_paper.script
+- M gamedata/scripts/sivol/sivol_shell_sounds.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_sound.script
+
+### Other repository files changed
+
+- M manifest.txt
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Layers/xrRender/RenderTargetPhaseAA.cpp
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.h
+- M engine/ogsr_engine/xrGame/Explosive.cpp
+- M engine/ogsr_engine/xrGame/Explosive.h
+- M engine/ogsr_engine/xrGame/GamePersistent.cpp
+- M engine/ogsr_engine/xrGame/Level_Bullet_Manager.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/level_sounds.cpp
+- M engine/ogsr_engine/xrGame/script_actor.cpp
+- M engine/ogsr_engine/xrGame/ui/UIOptionsItem.cpp
+- M engine/ogsr_engine/xrSound/Sound.h
+- M engine/ogsr_engine/xrSound/SoundRender_Core.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Core.h
+- M engine/ogsr_engine/xrSound/SoundRender_CoreA.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_CoreA.h
+- M engine/ogsr_engine/xrSound/SoundRender_Core_Processor.cpp
+- A engine/ogsr_engine/xrSound/SoundRender_EFX.h
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter.h
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter_FSM.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter_StartStop.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_TargetA.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_TargetA.h
+- M engine/ogsr_engine/xrSound/xrSound.vcxproj
+- M engine/ogsr_engine/xrSound/xrSound.vcxproj.filters
+- M engine/ogsr_engine/xr_3da/Rain.cpp
+- M engine/ogsr_engine/xr_3da/Stats.cpp
+- M engine/ogsr_engine/xr_3da/xr_area.cpp
+- M engine/ogsr_engine/xr_3da/xr_ioc_cmd.cpp
+
+<!-- nlc-changelog-commit: 5165ad881e2303dfbcad0c8325cda4a6f786bdd0 -->
+## 23.10.26 22:35 МСК - Звуки Add spatial audio and occlusion systems
+
+Commit: [5165ad8](https://github.com/jordan1227/improved_to_he/commit/5165ad881e2303dfbcad0c8325cda4a6f786bdd0)
+
+### Description
+
+Add material-based sound occlusion, room reverb, outdoor echo, HRTF controls, and distance-based sound behavior. Wire the new audio options and configuration into the game, add mask muffling and NPC casing sounds, and update the engine build to nlc-3.589.149.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- A gamedata/config/misc/snd_occlusion.ltx
+- M gamedata/config/ogg_comments_overrides.ltx
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/config/weapons/w_grenades.ltx
+- M gamedata/config/weapons/weapons.ltx
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- A gamedata/scripts/sivol/sivol_mask_audio.script
+- M gamedata/scripts/sivol/sivol_paper.script
+- M gamedata/scripts/sivol/sivol_shell_sounds.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_sound.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Layers/xrRender/RenderTargetPhaseAA.cpp
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.h
+- M engine/ogsr_engine/xrGame/Explosive.cpp
+- M engine/ogsr_engine/xrGame/Explosive.h
+- M engine/ogsr_engine/xrGame/GamePersistent.cpp
+- M engine/ogsr_engine/xrGame/Level_Bullet_Manager.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/level_sounds.cpp
+- M engine/ogsr_engine/xrGame/script_actor.cpp
+- M engine/ogsr_engine/xrGame/ui/UIOptionsItem.cpp
+- M engine/ogsr_engine/xrSound/Sound.h
+- M engine/ogsr_engine/xrSound/SoundRender_Core.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Core.h
+- M engine/ogsr_engine/xrSound/SoundRender_CoreA.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_CoreA.h
+- M engine/ogsr_engine/xrSound/SoundRender_Core_Processor.cpp
+- A engine/ogsr_engine/xrSound/SoundRender_EFX.h
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter.h
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter_FSM.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter_StartStop.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_TargetA.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_TargetA.h
+- M engine/ogsr_engine/xrSound/xrSound.vcxproj
+- M engine/ogsr_engine/xrSound/xrSound.vcxproj.filters
+- M engine/ogsr_engine/xr_3da/Rain.cpp
+- M engine/ogsr_engine/xr_3da/Stats.cpp
+- M engine/ogsr_engine/xr_3da/xr_area.cpp
+- M engine/ogsr_engine/xr_3da/xr_ioc_cmd.cpp
+
+<!-- nlc-changelog-commit: 9d5f9c8fe78f1a3f89d5d9561bb4e73c2099312c -->
+## 23.10.26 17:24 МСК - Tune Electric Beads artifact behavior
+
+Commit: [9d5f9c8](https://github.com/jordan1227/improved_to_he/commit/9d5f9c8fe78f1a3f89d5d9561bb4e73c2099312c)
+
+### Description
+
+Increase charged speed bonuses, add the optional sprint-preservation hook, and enable inventory help for Electric Beads. Revise English and Russian descriptions to present unverified effects as rumors.
+
+### Game files changed
+
+- M gamedata/config/text/eng/string_table_enc_zone.xml
+- M gamedata/config/text/rus/string_table_enc_zone.xml
+- M gamedata/scripts/sivol/sivol_glassbeads.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+
+<!-- nlc-changelog-commit: edc48890aa216e077d4716cdbd7a1784cedda80e -->
+## 23.10.26 16:00 МСК - манифест
+
+Commit: [edc4889](https://github.com/jordan1227/improved_to_he/commit/edc48890aa216e077d4716cdbd7a1784cedda80e)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 1c0278aaa750ce9178f58c965c5d9923a3537c3d -->
+## 23.10.26 16:00 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [1c0278a](https://github.com/jordan1227/improved_to_he/commit/1c0278aaa750ce9178f58c965c5d9923a3537c3d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/he_npc_wardrobe.ltx
+- M gamedata/config/scripts/bar/bar_bar_guard.ltx
+- M gamedata/config/waypoints.ltx
+- M gamedata/scripts/he_npc_wardrobe.script
+- M gamedata/scripts/xr/xr_conditions.script
+- M gamedata/config/gameplay/dialogs_trading.xml
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/config/weapons/w_binoc.ltx
+- M gamedata/scripts/sak/sak_repair_dialog.script
+- M gamedata/scripts/sivol/sivol_weapon_aim_speed.script
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: a75a9bd03bf5073e1e626fce66399fd08dbb5f83 -->
+## 23.10.26 15:59 МСК - Бинокль фикс и долговяз
+
+Commit: [a75a9bd](https://github.com/jordan1227/improved_to_he/commit/a75a9bd03bf5073e1e626fce66399fd08dbb5f83)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_trading.xml
+- M gamedata/config/gameplay/sak_dalogs_bar_yan.xml
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/config/weapons/w_binoc.ltx
+- M gamedata/scripts/sak/sak_repair_dialog.script
+- M gamedata/scripts/sivol/sivol_weapon_aim_speed.script
+
+<!-- nlc-changelog-commit: 8dc2f534bb0d3baedd36ada2a0bc300262d5f07a -->
+## 23.10.26 14:25 МСК - манифест
+
+Commit: [8dc2f53](https://github.com/jordan1227/improved_to_he/commit/8dc2f534bb0d3baedd36ada2a0bc300262d5f07a)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 8043b2ef454ad8d63ff35b455fc022419bb23793 -->
+## 23.10.26 14:10 МСК - манифест
+
+Commit: [8043b2e](https://github.com/jordan1227/improved_to_he/commit/8043b2ef454ad8d63ff35b455fc022419bb23793)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 944c187e58267e24c62a87a8c3c92fe255985f3e -->
+## 23.10.26 14:09 МСК - бусы доп
+
+Commit: [944c187](https://github.com/jordan1227/improved_to_he/commit/944c187e58267e24c62a87a8c3c92fe255985f3e)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/artefacts_unique.ltx
+- M gamedata/scripts/arts/arc_arts.script
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: f1aaa4287b3c4ad0ebb7cc54ba9f0cb274ed4fff -->
+## 23.10.26 14:07 МСК - PiP Add lens-based 3D scope rendering
+
+Commit: [f1aaa42](https://github.com/jordan1227/improved_to_he/commit/f1aaa4287b3c4ad0ebb7cc54ba9f0cb274ed4fff)
+
+### Description
+
+Add full-screen, lens, and hybrid magnification modes for 3D scopes, with lens-aware zoom, reticle and shader effects, and lens-only post-processing. Add DLSS crop upscaling and scope controls to the graphics settings.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/config/weapons/w_sv98.ltx
+- M gamedata/scripts/ogsr_shaders_control.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_video_adv.script
+- M gamedata/shaders/r3/3dss_reticle.ps
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Layers/xrRender/RenderTargetPhaseAA.cpp
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_build.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_combine.cpp
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor.cpp
+- M engine/ogsr_engine/xrGame/ActorInput.cpp
+- M engine/ogsr_engine/xrGame/Weapon.cpp
+- M engine/ogsr_engine/xrGame/Weapon.h
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/console_commands.cpp
+- M engine/ogsr_engine/xrGame/nlc_gunplay.cpp
+- M engine/ogsr_engine/xrGame/nlc_gunplay.h
+- M engine/ogsr_engine/xr_3da/x_ray.cpp
+
+<!-- nlc-changelog-commit: b42ea78bb556914c719eba9f4c56518d13872576 -->
+## 23.10.26 10:01 МСК - БусыAdd Electric Beads charge and shock ward
+
+Commit: [b42ea78](https://github.com/jordan1227/improved_to_he/commit/b42ea78bb556914c719eba9f4c56518d13872576)
+
+### Description
+
+Add discharge-triggered movement boosts and a rechargeable electric-hit ward for powered-belt Electric Beads. Integrate with Electra, Pulse, and scripted discharges, and document the effects in artifact descriptions.
+
+### Game files changed
+
+- M gamedata/config/text/eng/string_table_enc_zone.xml
+- M gamedata/config/text/eng/ui_st_inventory.xml
+- M gamedata/config/text/rus/string_table_enc_zone.xml
+- M gamedata/config/text/rus/ui_st_inventory.xml
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/params/params.script
+- A gamedata/scripts/sivol/sivol_glassbeads.script
+- M gamedata/scripts/sivol/sivol_pulse_anomaly.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+
+<!-- nlc-changelog-commit: 4d969b731bc7498a6b07efbf48480336647dd749 -->
+## 23.10.26 09:49 МСК - Add knife strike volumes and kick sectors
+
+Commit: [4d969b7](https://github.com/jordan1227/improved_to_he/commit/4d969b731bc7498a6b07efbf48480336647dd749)
+
+### Description
+
+Add sampled knife strike volumes, buffered attacks, combo timing, and rear-arc backstab damage. Extend kicks to find targets in a forward foot sector and optionally scale a second hit. Bump the engine build to nlc-3.589.136.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/m_bloodsucker.ltx
+- M gamedata/config/weapons/w_knife.ltx
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+- A gamedata/scripts/sivol/sivol_backstab.script
+- M gamedata/scripts/sivol/sivol_kick.script
+- M gamedata/scripts/sivol/sivol_kick_configs.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/WeaponKnife.cpp
+- M engine/ogsr_engine/xrGame/WeaponKnife.h
+- M engine/ogsr_engine/xrGame/fl_hook.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+
+<!-- nlc-changelog-commit: d76cb5a161a9ff534aa44d4bd1256740db4aef97 -->
+## 23.10.26 08:38 МСК - Update sak.script
+
+Commit: [d76cb5a](https://github.com/jordan1227/improved_to_he/commit/d76cb5a161a9ff534aa44d4bd1256740db4aef97)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 495c0fc92b3730c43069772452d68c00fe791c44 -->
+## 23.10.26 08:37 МСК - Add walking stamina regen and tune feedback
+
+Commit: [495c0fc](https://github.com/jordan1227/improved_to_he/commit/495c0fc92b3730c43069772452d68c00fe791c44)
+
+### Description
+
+Bump the engine to nlc-3.589.135 with configurable stamina regeneration during plain walking, and scale ADS fatigue by game time. Gate injury-related thought tips behind the shared setting, clarify its descriptions, adjust inventory bar draw order, and add optional PDA sound replacements.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/actor.ltx
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+- M gamedata/scripts/sivol/sivol_adrenaline.script
+- M gamedata/scripts/sivol/sivol_belt.script
+- M gamedata/scripts/sivol/sivol_weapon.script
+- M gamedata/scripts/ui/ui_inv_add.script
+- A gamedata/sounds/device/pda/pda_thoughts.ogg
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.h
+- M engine/ogsr_engine/xrGame/script_actor.cpp
+- A Опционально/звуки/pda_vibrate_quiet_thoughts/README.md
+- A Опционально/звуки/pda_vibrate_quiet_thoughts/gamedata/sounds/device/pda/pda_news.ogg
+- A Опционально/звуки/pda_vibrate_quiet_thoughts/gamedata/sounds/device/pda/pda_thoughts.ogg
+
+<!-- nlc-changelog-commit: 7aceb950030e935ed09ad9e37e270c7ea5910db5 -->
+## 22.10.26 22:54 МСК - sak_document3
+
+Commit: [7aceb95](https://github.com/jordan1227/improved_to_he/commit/7aceb950030e935ed09ad9e37e270c7ea5910db5)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/sak_quest_items.ltx
+- M gamedata/config/text/eng/string_table_items.xml
+- M gamedata/config/text/rus/string_table_items.xml
+
+<!-- nlc-changelog-commit: c99d8e9dc993a73fdacc033adaad01559a7a63d9 -->
+## 22.10.26 22:48 МСК - Заглушка
+
+Commit: [c99d8e9](https://github.com/jordan1227/improved_to_he/commit/c99d8e9dc993a73fdacc033adaad01559a7a63d9)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 104ab802c5bee523c97b90b21f0829044b8927ed -->
+## 22.10.26 21:25 МСК - манифест
+
+Commit: [104ab80](https://github.com/jordan1227/improved_to_he/commit/104ab802c5bee523c97b90b21f0829044b8927ed)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: a3513856adb483b71eeaf8778c2c36a79bab375b -->
 ## 22.10.26 21:23 МСК - Add engine-driven gunplay and weapon handling
