@@ -13,7 +13,6 @@
 #include "weapon.h"
 #include "ui/UIMessagesWindow.h"
 #include "game_cl_single.h"
-#include "../Include/xrRender/Kinematics.h" // NLC: actor leg bones follow the visible body (shadow)
 
 CFontManager::CFontManager()
 {
@@ -265,185 +264,19 @@ void CHUDManager::Render_MAIN(u32 context_id)
     // Render_Actor_FirstPersonBody(context_id);
 }
 
-// NLC: the actor model's shadow (g_actor_shadow) is the only one cast and the model has another animation set than the
-// legs the player sees. While the visible-body puppet (sivol_visible_body; the script reports it through
-// level.nlc_visible_body_active(active, id)) is shown and g_actor_shadow_legs_from_body is 1:
-//   - the actor model's thighs are collapsed into the hip joints (its IK is off in first person, CIKLimbsController),
-//   - the puppet is added to the shadow pass itself (the scene traversal skips it, SMAP_Skip), moved so that its pelvis
-//     stands under the actor model's pelvis (x/z), and clipped above its own pelvis by the shadow pixel shader
-//     (shadow_direct_model_legs.vs / shadow_legs.ps, models_selflight_det_3.s elements 2 and 3): the puppet is a full body
-//     (torso, head, backpack) that only the camera hides in the main view.
-// The result is the actor's torso/arms/weapon on the legs the player sees. Tuning, live:
-//   g_actor_shadow_legs_cut  clip height above the puppet's pelvis joint (m)
-//   g_actor_shadow_legs_dy   vertical offset of the puppet legs (m)
-//   g_actor_shadow_legs_fwd  offset along the puppet's heading (m)
-// g_actor_shadow_debug 1 logs the pelvis/feet heights once a second ([nlc_shadow]).
-static bool g_nlc_visible_body_active = false;
-static u16 g_nlc_visible_body_id = u16(-1);
+// NLC: while the visible-body puppet (sivol_visible_body; the script reports it through level.nlc_visible_body_active(active, id))
+// is shown, it stays out of the shadow-pass scene traversal: its shader has shadow elements, and the actor model's own shadow
+// (Render_Actor_Shadow) already covers the body. The legs-from-body mode that collapsed the actor's thigh bones for that shadow
+// was removed in nlc-3.589.154: the hit collision reads the same bone matrices, so NPC rounds landed on the calves
+// (docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md 2.1-2.2).
 static const IRenderable* g_nlc_puppet_renderable = nullptr; // only compared, never dereferenced
-int g_nlc_shadow_legs_from_body = 1;
-int g_nlc_shadow_debug = 0;
-float g_nlc_shadow_legs_cut = 0.2f; // tuned in game 2026-10-21
-float g_nlc_shadow_legs_dy = 0.1f;
-float g_nlc_shadow_legs_fwd = 0.f;
-
-namespace
-{
-LPCSTR const g_nlc_hip_bone_names[] = {"bip01_l_thigh", "bip01_r_thigh"};
-u16 g_nlc_hip_bone_ids[2] = {BI_NONE, BI_NONE};
-IKinematics* g_nlc_leg_actor_kin = nullptr; // the actor skeleton the callbacks are installed on
-int g_nlc_leg_callbacks_skipped = 0; // hip bones that already had another system's callback
-
-void nlc_hip_bone_callback(CBoneInstance* B)
-{
-    if (!g_nlc_visible_body_active || !g_nlc_shadow_legs_from_body)
-        return;
-    // keep the joint position, shrink the axes: skinning collapses the leg onto the hip
-    constexpr float k = 1.e-4f;
-    B->mTransform.i.mul(k);
-    B->mTransform.j.mul(k);
-    B->mTransform.k.mul(k);
-}
-
-void nlc_leg_bones_uninstall()
-{
-    if (!g_nlc_leg_actor_kin)
-        return;
-    // the kinematics may be gone (visual swap): only touch it while the actor still has it
-    CActor* a = Actor();
-    IKinematics* now = a ? PKinematics(a->Visual()) : nullptr;
-    if (now == g_nlc_leg_actor_kin)
-    {
-        for (u16 id : g_nlc_hip_bone_ids)
-        {
-            if (id == BI_NONE)
-                continue;
-            CBoneInstance& bi = now->LL_GetBoneInstance(id);
-            if (bi.callback() == nlc_hip_bone_callback)
-                bi.reset_callback();
-        }
-        now->CalculateBones_Invalidate();
-    }
-    g_nlc_leg_actor_kin = nullptr;
-    g_nlc_hip_bone_ids[0] = g_nlc_hip_bone_ids[1] = BI_NONE;
-}
-
-void nlc_leg_bones_install(CActor* a)
-{
-    IKinematics* k = PKinematics(a->Visual());
-    if (!k)
-        return;
-    if (k == g_nlc_leg_actor_kin)
-        return;
-    nlc_leg_bones_uninstall(); // another skeleton (outfit visual swap)
-    g_nlc_leg_callbacks_skipped = 0;
-    for (int i = 0; i < 2; ++i)
-    {
-        g_nlc_hip_bone_ids[i] = k->LL_BoneID(g_nlc_hip_bone_names[i]);
-        if (g_nlc_hip_bone_ids[i] == BI_NONE)
-            continue;
-        CBoneInstance& bi = k->LL_GetBoneInstance(g_nlc_hip_bone_ids[i]);
-        if (bi.callback()) // never replace another system's callback
-        {
-            ++g_nlc_leg_callbacks_skipped;
-            g_nlc_hip_bone_ids[i] = BI_NONE;
-            continue;
-        }
-        bi.set_callback(bctCustom, nlc_hip_bone_callback, nullptr, FALSE);
-    }
-    g_nlc_leg_actor_kin = k;
-    k->CalculateBones_Invalidate();
-}
-
-// world position of a bone origin (xform: the object's world matrix)
-bool nlc_bone_world(IKinematics* k, LPCSTR name, const Fmatrix& xform, Fvector& out)
-{
-    const u16 id = k ? k->LL_BoneID(name) : BI_NONE;
-    if (id == BI_NONE)
-        return false;
-    out = k->LL_GetTransform(id).c;
-    xform.transform_tiny(out);
-    return true;
-}
-
-// g_actor_shadow_debug: pelvis and feet heights, once a second
-void nlc_shadow_debug(CActor* a, CObject* puppet, const Fmatrix& xform)
-{
-    static u32 next = 0;
-    if (Device.dwTimeGlobal < next)
-        return;
-    next = Device.dwTimeGlobal + 1000;
-    IKinematics* pk = PKinematics(puppet->Visual());
-    IKinematics* ak = PKinematics(a->Visual());
-    Fvector pp{-999.f, -999.f, -999.f}, ap{-999.f, -999.f, -999.f}, fl{-999.f, -999.f, -999.f}, fr{-999.f, -999.f, -999.f};
-    nlc_bone_world(pk, "bip01_pelvis", xform, pp);
-    nlc_bone_world(ak, "bip01_pelvis", a->XFORM(), ap);
-    nlc_bone_world(pk, "bip01_l_foot", xform, fl);
-    nlc_bone_world(pk, "bip01_r_foot", xform, fr);
-    const float feet = a->XFORM().c.y;
-    Msg("[nlc_shadow] callbacks_skipped=%d pelvis_y puppet=%.3f actor=%.3f | pelvis_xz_gap=%.3f | foot_l=%.3f foot_r=%.3f (heights above the actor's feet) cut=%.3f dy=%.3f fwd=%.3f",
-        g_nlc_leg_callbacks_skipped, pp.y - feet, ap.y - feet, _sqrt(_sqr(pp.x - ap.x) + _sqr(pp.z - ap.z)), fl.y - feet, fr.y - feet, g_nlc_shadow_legs_cut, g_nlc_shadow_legs_dy,
-        g_nlc_shadow_legs_fwd);
-}
-
-// The puppet goes into the shadow pass with its own pose, hips under the actor model's hips; the shadow pixel shader clips it
-// above its own pelvis (m_nlc_vb_shadow.x = clip height in the puppet's model space).
-void nlc_render_puppet_shadow(u32 context_id, CActor* a)
-{
-    CObject* puppet = g_pGameLevel ? g_pGameLevel->Objects.net_Find(g_nlc_visible_body_id) : nullptr;
-    if (!puppet || !puppet->Visual())
-        return;
-    IKinematics* pk = PKinematics(puppet->Visual());
-    if (pk)
-        pk->CalculateBones(TRUE); // the shadow phase does not calculate bones itself; same-ms calls return at once
-
-    Fmatrix xform = puppet->XFORM();
-    float cut = 1.f;
-    Fvector puppet_pelvis;
-    if (nlc_bone_world(pk, "bip01_pelvis", xform, puppet_pelvis))
-    {
-        cut = pk->LL_GetTransform(pk->LL_BoneID("bip01_pelvis")).c.y + g_nlc_shadow_legs_cut; // model space of the puppet
-        Fvector actor_pelvis;
-        if (nlc_bone_world(PKinematics(a->Visual()), "bip01_pelvis", a->XFORM(), actor_pelvis))
-        {
-            xform.c.x += actor_pelvis.x - puppet_pelvis.x;
-            xform.c.z += actor_pelvis.z - puppet_pelvis.z;        }
-        else
-        {
-            xform.c.x = a->XFORM().c.x;
-            xform.c.z = a->XFORM().c.z;
-        }
-    }
-    else
-    {
-        xform.c.x = a->XFORM().c.x;
-        xform.c.z = a->XFORM().c.z;
-    }
-    xform.c.x += xform.k.x * g_nlc_shadow_legs_fwd;
-    xform.c.z += xform.k.z * g_nlc_shadow_legs_fwd;
-    xform.c.y += g_nlc_shadow_legs_dy;
-
-    shader_exports.set_custom_params("m_nlc_vb_shadow", Fvector4{cut, 0.f, 0.f, 0.f});
-    if (g_nlc_shadow_debug)
-        nlc_shadow_debug(a, puppet, xform);
-    ::Render->add_Visual(context_id, puppet->H_Root(), puppet->Visual(), xform);
-}
-} // namespace
 
 void nlc_visible_body_set(bool active, u16 id)
 {
-    g_nlc_visible_body_active = active;
-    g_nlc_visible_body_id = id;
     CObject* puppet = (active && g_pGameLevel) ? g_pGameLevel->Objects.net_Find(id) : nullptr;
     g_nlc_puppet_renderable = puppet ? static_cast<IRenderable*>(puppet) : nullptr;
-    if (active)
-        (void)shader_exports.get_custom_params("m_nlc_vb_shadow"); // creates the key before any render thread reads it (never overwrites)
-    if (!active || !g_nlc_shadow_legs_from_body)
-        nlc_leg_bones_uninstall();
 }
 
-// NLC: while the puppet is shown it is not part of the shadow-pass scene traversal: its shader now has shadow elements, and the
-// traversal would add it at its true place (a second pair of legs). Render_Actor_Shadow adds it itself, per g_actor_shadow_legs_from_body.
 bool CHUDManager::SMAP_Skip(const IRenderable* renderable) { return renderable && renderable == g_nlc_puppet_renderable; }
 
 void CHUDManager::Render_Actor_Shadow(u32 context_id) // added by KD
@@ -480,11 +313,7 @@ void CHUDManager::Render_Actor_Shadow(u32 context_id) // added by KD
         return;
 
     std::scoped_lock slock(render_lock);
-    if (g_nlc_visible_body_active && g_nlc_shadow_legs_from_body)
-        nlc_leg_bones_install(A); // NLC: cheap when already installed on this skeleton
     O->renderable_Render(context_id, O->H_Root());
-    if (g_nlc_visible_body_active && g_nlc_shadow_legs_from_body)
-        nlc_render_puppet_shadow(context_id, A); // NLC: the puppet's legs replace the collapsed actor legs
 }
 
 /*

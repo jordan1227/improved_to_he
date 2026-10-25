@@ -5,6 +5,33 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.156 (2026-10-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F0E04E4C5E6EF25BAC468A44CA71EFE4E0FE9FF92AAA57C6378F8F207B188AD1` (archived with its PDB in `nlc_tools/builds/20261025_173751_f0e04e4c`).
+- **Status:** runtime pending. `docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md` 10i.
+- **Required game data:** `config/creatures/damages.ltx` (`[nlc_actor_bullet_bones]`).
+- Actor bullet hits by bone: `[nlc_actor_bullet_bones]` `bone = pool_scale, wound_scale`. `pool_scale` replaces the arm / leg part scale with body-part health off (also in the god-mode dry hit); `wound_scale` sets the bullet wound's bleeding in every mode. Mutant hits keep `[actor_damage]`.
+
+## nlc-3.589.155 (2026-10-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `2A9FEF8CA1490C5913D547887C3ACF73C2E84618107FBF294F96D878D560E5D1` (archived with its PDB in `nlc_tools/builds/20261025_163921_2a9fef8c`).
+- **Status:** runtime pending. `docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md` 10g.
+- **Required game data:** `config/creatures/damages.ltx` (`bullet_arm_pool_scale`, `bullet_leg_pool_scale`), `config/creatures/m_stalker_zombied.ltx` (`nlc_aim_chest`), `scripts/sivol/sivol_actor_crit.script`, `scripts/sivol/sivol_hit_log.script`, `scripts/xrs/xrs_battle_ai.script`.
+- Single health pool (body-part health off): bullet hits on arm / leg bones (clavicles excluded) cost `bullet_arm_pool_scale` / `bullet_leg_pool_scale` of the health loss, also in the god-mode dry hit and sim. `nlc_last_hit_injury` keeps the unscaled loss for the injury system. Body-part health on, mutant hits and bleeding unchanged.
+- Stalker key `nlc_aim_chest`: in the engine combat sight, aim at a living actor's / stalker's `bip01_spine1` from the eye instead of centre-to-centre (which fired ~0.7 m high, onto the head).
+
+## nlc-3.589.154 (2026-10-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `056FEFA02580CE379B0D5CD49477ABB91302B05980B0F7C77B4190B5A17D1C3F` (archived with its PDB in `nlc_tools/builds/20261025_153051_056fefa0`).
+- **Status:** runtime pending. NPC accuracy and leg hits (`docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md` 10c-10d).
+- **Required game data:** `scripts/xrs/xrs_battle_ai.script`, `scripts/sivol/sivol_hit_log.script` (new `nlc_sim_*` exports), `config/creatures/m_stalker.ltx`, `m_stalker_zombied.ltx`, `m_stalker_sniper.ltx`, `m_stalker_antisniper.ltx`.
+- Removed the visible-body legs-from-body shadow mode: it collapsed the actor's thigh bones, and the hit collision reads the same matrices, so NPC rounds landed on the calves. Commands `g_actor_shadow_legs_from_body`, `g_actor_shadow_legs_cut/_dy/_fwd`, `g_actor_shadow_debug` are gone (old `user.ltx` lines log `Unknown command`). `SMAP_Skip` for the puppet stays.
+- Body health: root-bone strikes keep the leg-weighted roll only for falls/collisions (no initiator or the actor itself); other root-bone strikes hit the torso. `CActorBodyHealth::DeathCause()`.
+- God mode: dry hits feed a sim copy of the body health (time-to-kill estimate). Lua: `nlc_sim_part`, `nlc_sim_start`, `nlc_sim_hits`, `nlc_sim_dead_ms`, `nlc_sim_dead_hits`, `nlc_sim_dead_part`, `nlc_sim_reset`.
+
 ## nlc-3.589.153 (2026-10-25)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

@@ -14,6 +14,8 @@
 #include "stalker_movement_manager.h"
 #include "inventory.h"
 #include "ai/monsters/basemonster/base_monster.h" // NLC mutant aim
+#include "actor.h" // NLC: nlc_aim_chest
+#include "../Include/xrRender/Kinematics.h" // NLC: nlc_aim_chest
 
 //#define SIGHT_TEST
 
@@ -147,8 +149,23 @@ void CSightAction::execute_object()
         if (const CBaseMonster* monster = smart_cast<const CBaseMonster*>(m_object_to_look); monster && monster->g_Alive())
             look_pos = m_object->nlc_mut_aim_point(monster, look_pos);
 
+    // NLC: nlc_aim_chest shooters (zombified stalkers) aim at the chest bone of a living actor / stalker, and from the eye
+    // (aim object null below): the centre-to-centre aim of SetFirePointLookAngles fires ~0.7 m high, onto the head
+    // (docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md 10g)
+    const CGameObject* aim_object = m_object_to_look;
+    if (m_torso_look && m_object->nlc_aim_chest() && entity_alive && entity_alive->g_Alive() &&
+        (smart_cast<const CActor*>(m_object_to_look) || smart_cast<const CAI_Stalker*>(m_object_to_look)))
+        if (IKinematics* k = smart_cast<IKinematics*>(m_object_to_look->Visual()))
+            if (const u16 id = k->LL_BoneID("bip01_spine1"); id != BI_NONE)
+            {
+                Fmatrix m;
+                m.mul_43(m_object_to_look->XFORM(), k->LL_GetBoneInstance(id).mTransform);
+                look_pos = m.c;
+                aim_object = nullptr;
+            }
+
     if (m_torso_look)
-        object().sight().SetFirePointLookAngles(look_pos, object().movement().m_head.target.yaw, object().movement().m_head.target.pitch, m_object_to_look);
+        object().sight().SetFirePointLookAngles(look_pos, object().movement().m_head.target.yaw, object().movement().m_head.target.pitch, aim_object);
     else
         object().sight().SetPointLookAngles(look_pos, object().movement().m_head.target.yaw, object().movement().m_head.target.pitch, m_object_to_look);
 

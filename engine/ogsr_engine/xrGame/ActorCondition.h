@@ -67,6 +67,7 @@ public:
         float raw{};
         float post{};
         float dealt{};
+        float injury{}; // NLC: health loss before the single-pool limb scale (crit injury charge)
         float k_eff{1.f};
         float armour{};
         bool bullet_model{};
@@ -87,7 +88,30 @@ public:
     // NLC: god mode: fill the last-hit record without changing anything (hit_scale from the damage table)
     void nlc_dry_hit(SHit* pHDS, float hit_scale);
 
+    // NLC: god-mode time-to-kill estimate (docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md 10c). The dry hits go
+    // to a copy of the body health (the single pool when body health is off); a run starts at the first dry hit after
+    // nlc_sim_idle_ms without one, or after nlc_sim_reset(). Hits only: bleeding and regeneration are not applied.
+    struct SNlcSim
+    {
+        u32 start{};
+        u32 last{};
+        u32 hits{};
+        s32 dead_ms{-1}; // ms from the run start to the first death, -1 alive
+        u32 dead_hits{};
+        u8 dead_part{0xFE}; // body_part of the death (all = average / pool), none while alive
+        float pool{};
+    };
+    const SNlcSim& nlc_sim() const { return m_nlc_sim; }
+    float nlc_sim_part(u8 part) const; // white + green of the sim body (all = average)
+    void nlc_sim_reset() { m_nlc_sim_pending_reset = true; }
+
 private:
+    float nlc_pool_limb_scale(SHit* pHDS); // NLC: design A, single pool only
+    bool nlc_bullet_bone(SHit* pHDS, Fvector2& v); // NLC: [nlc_actor_bullet_bones] line of the hit bone (bullets only)
+    void nlc_sim_hit(SHit* pHDS, float dealt);
+    CActorBodyHealth* m_nlc_sim_body{}; // NLC
+    SNlcSim m_nlc_sim; // NLC
+    bool m_nlc_sim_pending_reset{true}; // NLC
     SNlcLastHit m_nlc_last_hit; // NLC
     float m_nlc_head_cov{}; // NLC
     float m_nlc_head_armour{}; // NLC

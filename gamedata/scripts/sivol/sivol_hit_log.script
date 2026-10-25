@@ -18,6 +18,7 @@
 local ENABLED = false
 local FREEZE = false
 local NPC_ENABLED = false -- [SIVOL TEST] NPC damage-model pass, set false after testing
+local NPC_VS_NPC = false -- [SIVOL TEST] with NPC_ENABLED: also stalker shots on stalkers ("npc_vs_npc" lines)
 local ACTOR_ENABLED = true -- [SIVOL TEST] actor damage-model pass, set false after testing
 local ACTOR_SUMMARY_MS = 5000
 local FREEZE_RADIUS = 40
@@ -115,25 +116,34 @@ local function npc_flush(obj, rec)
     table.sort(parts)
     local health = obj and obj.health or -1
     local lost = rec.health - health
-    log2("[sivol_hit_log] npc %s (%s, %s %d) visual=%s prot=%s | %s [%s] ap=%.2f | hits=%d | bones: %s | raw_power=%.3f | health %.3f -> %.3f | lost/raw=%.3f",
-        rec.name, rec.community, rec.rank_name, rec.rank, rec.visual, rec.prot, rec.weapon, rec.ammo, rec.ap, rec.hits,
-        table.concat(parts, ", "), rec.power, rec.health, health, rec.power > 0 and lost / rec.power or 0)
+    -- NPC-vs-NPC lines name the shooter ("npc_vs_npc"); the player's shots keep the "npc" prefix
+    local by = rec.shooter and string.format(" | by %s (%s %s) dist=%.1f", rec.shooter, rec.shooter_comm, rec.shooter_rank, rec.dist) or ""
+    log2("[sivol_hit_log] %s %s (%s, %s %d) visual=%s prot=%s | %s [%s] ap=%.2f | hits=%d | bones: %s | raw_power=%.3f | health %.3f -> %.3f | lost/raw=%.3f%s",
+        rec.shooter and "npc_vs_npc" or "npc", rec.name, rec.community, rec.rank_name, rec.rank, rec.visual, rec.prot, rec.weapon, rec.ammo, rec.ap, rec.hits,
+        table.concat(parts, ", "), rec.power, rec.health, health, rec.power > 0 and lost / rec.power or 0, by)
 end
 
 local function on_npc_before_hit(obj, hit_data)
     if not obj or not hit_data or hit_data.ignore_hit then return end
-    if not db.actor or hit_data.who_id ~= db.actor:id() then return end
-    if hit_data.hit_type ~= hit.fire_wound then return end
+    if not db.actor or hit_data.hit_type ~= hit.fire_wound then return end
+    local by_actor = hit_data.who_id == db.actor:id()
+    local shooter = not by_actor and NPC_VS_NPC and hit_data.who_id and level.object_by_id(hit_data.who_id)
+    if not by_actor and not (shooter and shooter:is_stalker()) then return end
     local id = obj:id()
     local now = time_global()
     local rec = npc_pending[id]
-    if rec and now - rec.first > GROUP_MS then
+    if rec and (now - rec.first > GROUP_MS or rec.shooter_id ~= hit_data.who_id) then
         npc_flush(obj, rec)
         rec = nil
     end
     if not rec then
         local wpn = hit_data.weapon_id and level.object_by_id(hit_data.weapon_id)
         rec = {
+            shooter_id = hit_data.who_id,
+            shooter = shooter and shooter:name() or nil,
+            shooter_comm = shooter and shooter:character_community() or nil,
+            shooter_rank = shooter and (ranks.get_obj_rank_name(shooter) or "?") or nil,
+            dist = shooter and shooter:position():distance_to(obj:position()) or 0,
             first = now,
             name = obj:name(),
             community = obj:character_community(),
@@ -256,6 +266,47 @@ local function part_health_str()
     return s
 end
 
+-- god mode: time-to-kill estimate from the engine's sim body (nlc-3.589.154+; docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md 10c).
+-- A run starts at the first damaging hit after 8 s without one (engine) or after sim_reset(); hits only, no bleeding.
+local sim = { start = -1, by = {}, reported = false }
+
+local function god_mode()
+    return db.actor and db.actor:alive() and get_console():get_bool("g_god")
+end
+
+local function has_sim(a)
+    return a.nlc_sim_start ~= nil
+end
+
+function sim_reset()
+    if db.actor and has_sim(db.actor) then db.actor:nlc_sim_reset() end
+    sim = { start = -1, by = {}, reported = false }
+    log2("[sivol_hit_log] sim reset: the next damaging hit starts a new run")
+end
+
+local function sim_str(a)
+    return string.format("sim head %.2f body %.2f arms %.2f/%.2f legs %.2f/%.2f avg %.2f",
+        a:nlc_sim_part("head"), a:nlc_sim_part("body"), a:nlc_sim_part("left_arm"), a:nlc_sim_part("right_arm"),
+        a:nlc_sim_part("left_leg"), a:nlc_sim_part("right_leg"), a:nlc_sim_part("all"))
+end
+
+local function sim_on_hit(a, name)
+    local start = a:nlc_sim_start()
+    if start ~= sim.start then
+        sim = { start = start, by = {}, reported = false }
+    end
+    sim.by[name] = (sim.by[name] or 0) + 1
+    local dead_ms = a:nlc_sim_dead_ms()
+    if dead_ms >= 0 and not sim.reported then
+        sim.reported = true
+        local by = {}
+        for n, c in pairs(sim.by) do by[#by + 1] = string.format("%s %d", n, c) end
+        table.sort(by)
+        log2("[sivol_hit_log] actor SIM DEATH after %.1f s, %d hits, part=%s | by: %s",
+            dead_ms / 1000, a:nlc_sim_dead_hits(), a:nlc_sim_dead_part(), table.concat(by, ", "))
+    end
+end
+
 local function on_actor_before_hit(obj, hit_data)
     if not hit_data or hit_data.ignore_hit then return end
     local who = hit_data.who_id and level.object_by_id(hit_data.who_id)
@@ -276,12 +327,21 @@ local function flush_engagement(id, e)
     local zones = {}
     for z, n in pairs(e.zones) do zones[#zones + 1] = string.format("%s %d", z, n) end
     table.sort(zones)
+    -- rounds: magazine count kept by xrs_battle_ai while it fires at the actor; shooters outside that path
+    -- (zombies, scripted fire) have none
     local fired = rounds_fired(id) - (fired_flushed[id] or 0)
     fired_flushed[id] = rounds_fired(id)
-    log2("[sivol_hit_log] actor engagement %s (%s %s) %s: hits=%d of %d rounds (%s) in %.1f s | %s | dealt=%.3f | guarded=%d%s%s",
-        e.name, e.community, e.rank, e.weapon, e.hits, fired, fired > 0 and string.format("%.0f%%", 100 * e.hits / fired) or "?",
-        (e.last - e.first) / 1000, table.concat(zones, ", "), e.dealt, e.guarded,
-        db.actor and db.actor:alive() and get_console():get_bool("g_god") and " | god mode (record only)" or "",
+    local rounds = fired > 0 and string.format("%d rounds (%.0f%%)", fired, 100 * e.hits / fired) or "n/a rounds"
+    local ttk = ""
+    if e.sim_start and db.actor and has_sim(db.actor) and e.sim_start == db.actor:nlc_sim_start() then
+        local dead_ms = db.actor:nlc_sim_dead_ms()
+        ttk = dead_ms >= 0 and string.format(" | sim ttk=%.1f s (%d hits, %s)", dead_ms / 1000, db.actor:nlc_sim_dead_hits(), db.actor:nlc_sim_dead_part())
+            or string.format(" | sim survived avg=%.2f", db.actor:nlc_sim_part("all"))
+    end
+    log2("[sivol_hit_log] actor engagement %s (%s %s) %s: hits=%d of %s in %.1f s | %s | dealt=%.3f | guarded=%d%s%s%s",
+        e.name, e.community, e.rank, e.weapon, e.hits, rounds,
+        (e.last - e.first) / 1000, table.concat(zones, ", "), e.dealt, e.guarded, ttk,
+        god_mode() and " | god mode (record only)" or "",
         db.actor and not db.actor:alive() and " | actor dead" or "")
 end
 
@@ -291,12 +351,16 @@ local function on_actor_hit(obj, amount, local_dir, who, bone_index)
     actor_pending = nil
     local a = db.actor
     local raw, post, dealt = a:nlc_last_hit_raw(), a:nlc_last_hit_post(), a:nlc_last_hit_dealt()
+    local injury = a.nlc_last_hit_injury and a:nlc_last_hit_injury() or dealt -- before the single-pool limb scale
     local htype = a:nlc_last_hit_type()
     local bone = bone_name(a, a:nlc_last_hit_bone())
-    log2("[sivol_hit_log] actor hit by %s (%s %s) %s [%s] ap=%.2f dist=%.1f | type=%d bone=%s | raw=%.3f post=%.3f dealt=%.3f absorbed=%.2f K=%.3f A=%.3f model=%s guard=%s head_cov=%.2f | %s",
+    local god = god_mode() and has_sim(a) and dealt > 0
+    log2("[sivol_hit_log] actor hit by %s (%s %s) %s [%s] ap=%.2f dist=%.1f | type=%d bone=%s | raw=%.3f post=%.3f dealt=%.3f injury=%.3f absorbed=%.2f K=%.3f A=%.3f model=%s guard=%s head_cov=%.2f | %s%s",
         p.name or "?", p.community or "?", p.rank or "?", p.weapon or "?", p.ammo or "?", p.ap or 0, p.dist or -1,
-        htype, bone, raw, post, dealt, raw > 0 and 1 - post / raw or 0, a:nlc_last_hit_k(), a:nlc_last_hit_armour(),
-        tostring(a:nlc_last_hit_bullet_model()), tostring(a:nlc_last_hit_guarded()), a:nlc_head_cover(), part_health_str())
+        htype, bone, raw, post, dealt, injury, raw > 0 and 1 - post / raw or 0, a:nlc_last_hit_k(), a:nlc_last_hit_armour(),
+        tostring(a:nlc_last_hit_bullet_model()), tostring(a:nlc_last_hit_guarded()), a:nlc_head_cover(), part_health_str(),
+        god and " | " .. sim_str(a) or "")
+    if god then sim_on_hit(a, p.name or "?") end
     local id = who and who:id()
     if not id then return end
     local now = time_global()
@@ -308,6 +372,7 @@ local function on_actor_hit(obj, amount, local_dir, who, bone_index)
     end
     e.last = now
     e.hits = e.hits + 1
+    if god then e.sim_start = a:nlc_sim_start() end
     e.dealt = e.dealt + math.max(0, dealt)
     if a:nlc_last_hit_guarded() then e.guarded = e.guarded + 1 end
     local z = sivol_actor_crit and sivol_actor_crit.zone_name and sivol_actor_crit.zone_name(a:nlc_last_hit_bone()) or bone

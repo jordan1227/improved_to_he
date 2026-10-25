@@ -60,6 +60,8 @@ public:
     bool GuardWould(u8 part, float before, float after) const; // no state change (god-mode record)
     void OnRadiation(float health_lost);
     void Update(float dt);
+    // the part whose death threshold is reached, `all` for the average (or the radiation deficit), none = alive
+    u8 DeathCause() const;
 
     u8 PartByBone(u16 bone);
 

@@ -247,6 +247,7 @@ void CAI_Stalker::reload(LPCSTR section)
     m_disp_stand_stand_zoom = pSettings->r_float(section, "disp_stand_stand_zoom");
     m_disp_stand_crouch_zoom = pSettings->r_float(section, "disp_stand_crouch_zoom");
     m_nlc_psy_disp_k = READ_IF_EXISTS(pSettings, r_float, section, "nlc_psy_dispersion_k", 0.f); // NLC
+    m_nlc_aim_chest = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_aim_chest", false); // NLC: sight_action.cpp
     // NLC: head-hit concussion, off while nlc_concussion_time is 0
     m_nlc_concussion_min_absorb = READ_IF_EXISTS(pSettings, r_float, section, "nlc_concussion_min_absorb", 0.5f);
     m_nlc_concussion_time = READ_IF_EXISTS(pSettings, r_u32, section, "nlc_concussion_time", 0);

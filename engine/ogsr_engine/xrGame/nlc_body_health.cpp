@@ -696,8 +696,13 @@ void CActorBodyHealth::OnHit(SHit* hit, float lost)
     const bool strike = hit->hit_type == ALife::eHitTypeStrike || hit->hit_type == ALife::eHitTypePhysicStrike;
     const bool wound = hit->hit_type == ALife::eHitTypeWound || hit->hit_type == ALife::eHitTypeFireWound || hit->hit_type == ALife::eHitTypeExplosion;
 
+    // falls and collisions name the actor itself as the initiator (Actor.cpp gcontact); other strikes on the root bone
+    // (boneless melee, thrown objects) go to the torso
+    const bool self_strike = !hit->who || hit->whoID == m_owner->object().ID();
     u8 part;
-    if (hit->boneID == 0 && strike)
+    if (hit->boneID == 0 && strike && !self_strike)
+        part = torso;
+    else if (hit->boneID == 0 && strike)
     {
         const int r = ::Random.randI(1, 11);
         if (r == 1)
@@ -818,6 +823,17 @@ void CActorBodyHealth::UpdatePain(float dt)
     ChangePain(-m_pain_v * dt);
 }
 
+u8 CActorBodyHealth::DeathCause() const
+{
+    for (u8 i = head; i < count; ++i)
+        if (m_health[i] + m_green[i] <= m_death_threshold[i])
+            return i;
+    const float avg = PartTotal(all);
+    if (avg <= 0.f || std::min(avg, m_owner->GetMaxHealth()) - m_rad_deficit <= 0.f)
+        return all;
+    return none;
+}
+
 void CActorBodyHealth::Update(float dt)
 {
     if (!Enabled())
@@ -861,15 +877,10 @@ void CActorBodyHealth::Update(float dt)
     UpdatePain(dt);
     Clamp();
 
-    bool dead = false;
-    for (u8 i = head; i < count; ++i)
-        if (m_health[i] + m_green[i] <= m_death_threshold[i])
-            dead = true;
-
     const float avg = PartTotal(all);
     const float top = std::min(avg, m_owner->GetMaxHealth());
     m_rad_deficit = std::min(m_rad_deficit, std::max(0.f, top));
-    if (dead || avg <= 0.f || top - m_rad_deficit <= 0.f)
+    if (DeathCause() != none)
         total = 0.f;
     else
         total = top - m_rad_deficit;

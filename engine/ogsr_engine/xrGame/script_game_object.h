@@ -646,6 +646,7 @@ public:
     float nlc_last_hit_raw();
     float nlc_last_hit_post();
     float nlc_last_hit_dealt();
+    float nlc_last_hit_injury(); // NLC: dealt before the single-pool limb scale
     float nlc_last_hit_k();
     float nlc_last_hit_armour();
     int nlc_last_hit_bone();
@@ -655,6 +656,14 @@ public:
     bool nlc_last_hit_bullet_model();
     void nlc_set_head_cover(float cov, float armour);
     float nlc_head_cover();
+    // NLC: god-mode time-to-kill estimate (ActorCondition.h SNlcSim)
+    float nlc_sim_part(LPCSTR part);
+    u32 nlc_sim_start();
+    u32 nlc_sim_hits();
+    int nlc_sim_dead_ms();
+    u32 nlc_sim_dead_hits();
+    LPCSTR nlc_sim_dead_part();
+    void nlc_sim_reset();
     // NLC: stalker aim against mutants (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6 D)
     float nlc_mut_get(LPCSTR key);
     u32 nlc_mut_rounds(int band);

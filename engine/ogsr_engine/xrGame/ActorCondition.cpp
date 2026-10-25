@@ -20,6 +20,7 @@
 #include "CustomOutfit.h" // NLC
 #include "BoneProtections.h" // NLC
 #include "nlc_npc_damage.h" // NLC
+#include "../Include/xrRender/Kinematics.h" // NLC: clavicle test (nlc_pool_limb_scale)
 
 #define MAX_SATIETY 1.0f
 #define START_SATIETY 0.5f
@@ -70,6 +71,7 @@ CActorCondition::~CActorCondition(void)
 {
     xr_delete(monsters_feel_touch);
     xr_delete(m_body); // NLC
+    xr_delete(m_nlc_sim_body); // NLC
 }
 
 void CActorCondition::LoadCondition(LPCSTR entity_section)
@@ -457,23 +459,40 @@ CWound* CActorCondition::ConditionHit(SHit* pHDS)
     if (pHDS->hit_type == ALife::eHitTypeFireWound && nlc.enabled && nlc.bullet_head_scale >= 0.f && pHDS->boneID != BI_NONE &&
         m_body->PartByBone(u16(pHDS->boneID)) == body_part::head)
         m_fHitBoneScale = nlc.bullet_head_scale;
+    // NLC: bullets bleed by bone (wound_scale of [nlc_actor_bullet_bones], every body-health mode); mutant wounds keep
+    // [actor_damage] (10i)
+    if (Fvector2 v; nlc_bullet_bone(pHDS, v) && v.y >= 0.f)
+        m_fWoundBoneScale = v.y;
 
     // NLC: health lost by a hit goes to the body part, the total is their average
     const float delta_before = m_fDeltaHealth;
     CWound* wound = inherited::ConditionHit(pHDS);
     const float lost = delta_before - m_fDeltaHealth;
     m_nlc_last_hit.dealt = lost;
+    m_nlc_last_hit.injury = lost;
     if (m_body->Enabled())
     {
         m_fDeltaHealth = delta_before;
         m_body->OnHit(pHDS, lost);
     }
-    else if (lost > 0.f && m_body->GuardHitType(u32(pHDS->hit_type)))
+    else
     {
-        // NLC: one-shot guard on the single health pool (body health option off)
-        const float before = GetHealth() + delta_before;
-        const float after = m_body->Guard(body_part::all, before, before - lost);
-        m_fDeltaHealth = delta_before - (before - after);
+        // NLC: single pool: bullet limb hits cost less health (design A); the injury value stays unscaled
+        float pool_lost = lost;
+        const float k = nlc_pool_limb_scale(pHDS);
+        if (lost > 0.f && k != 1.f)
+        {
+            pool_lost = lost * k;
+            m_fDeltaHealth = delta_before - pool_lost;
+            m_nlc_last_hit.dealt = pool_lost;
+        }
+        if (pool_lost > 0.f && m_body->GuardHitType(u32(pHDS->hit_type)))
+        {
+            // NLC: one-shot guard on the single health pool (body health option off)
+            const float before = GetHealth() + delta_before;
+            const float after = m_body->Guard(body_part::all, before, before - pool_lost);
+            m_fDeltaHealth = delta_before - (before - after);
+        }
     }
 
     if (nlc.log && pHDS->hit_type == ALife::eHitTypeFireWound)
@@ -543,6 +562,9 @@ void CActorCondition::nlc_dry_hit(SHit* pHDS, float hit_scale)
         dealt = post * m_HitTypeK[t] * m_fHealthHitPart[t] * hit_scale;
     else if (t == ALife::eHitTypeShock || t == ALife::eHitTypeStrike || t == ALife::eHitTypeExplosion || t == ALife::eHitTypePhysicStrike)
         dealt = post * m_HitTypeK[t] * m_fHealthHitPart[t];
+    m_nlc_last_hit.injury = dealt;
+    if (!m_body->Enabled())
+        dealt *= nlc_pool_limb_scale(pHDS); // same as ConditionHit (design A)
     m_nlc_last_hit.dealt = dealt;
 
     // would the one-shot guard have caught it (against the current part health)
@@ -555,11 +577,109 @@ void CActorCondition::nlc_dry_hit(SHit* pHDS, float hit_scale)
             m_nlc_last_hit.guarded = m_body->GuardWould(part, before, before - dealt);
         }
     }
+    nlc_sim_hit(pHDS, dealt);
 
     if (nlc.log && t == ALife::eHitTypeFireWound)
         Msg("* [nlc_actor_damage] (god) bone=%d raw=%.3f post=%.3f K=%.3f A=%.3f dealt=%.3f model=%d guard=%d head_cov=%.2f", pHDS->boneID, m_nlc_last_hit.raw,
             m_nlc_last_hit.post, m_nlc_last_hit.k_eff, m_nlc_last_hit.armour, m_nlc_last_hit.dealt, m_nlc_last_hit.bullet_model, m_nlc_last_hit.guarded,
             m_nlc_head_cov);
+}
+
+// NLC: per-bone bullet table [nlc_actor_bullet_bones] "bone = pool_scale, wound_scale" (docs/damage_model/
+// DESIGN_npc_accuracy_and_leg_hits.md 10i); false when the bone has no line. Bullets only: mutant hits never read it.
+static constexpr LPCSTR nlc_bullet_bones_sect = "nlc_actor_bullet_bones";
+
+bool CActorCondition::nlc_bullet_bone(SHit* pHDS, Fvector2& v)
+{
+    if (pHDS->hit_type != ALife::eHitTypeFireWound || !nlc_actor_damage().enabled || pHDS->boneID == BI_NONE ||
+        !pSettings->section_exist(nlc_bullet_bones_sect))
+        return false;
+    IKinematics* kin = smart_cast<IKinematics*>(object().Visual());
+    if (!kin || pHDS->boneID >= kin->LL_BoneCount())
+        return false;
+    LPCSTR bone = kin->LL_BoneName(u16(pHDS->boneID));
+    if (!pSettings->line_exist(nlc_bullet_bones_sect, bone))
+        return false;
+    v = pSettings->r_fvector2(nlc_bullet_bones_sect, bone);
+    return true;
+}
+
+// NLC: single-pool bullet limb scale (design A, docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md 10g): the bone's
+// pool_scale from [nlc_actor_bullet_bones], else the arm / leg part scale; clavicles stay 1 (the injury system counts them
+// as chest); 1 for everything else
+float CActorCondition::nlc_pool_limb_scale(SHit* pHDS)
+{
+    const SNlcActorDamage& nlc = nlc_actor_damage();
+    if (pHDS->hit_type != ALife::eHitTypeFireWound || !nlc.enabled || pHDS->boneID == BI_NONE)
+        return 1.f;
+    if (Fvector2 v; nlc_bullet_bone(pHDS, v))
+        return std::max(v.x, 0.f);
+    const u8 part = m_body->PartByBone(u16(pHDS->boneID));
+    float k = 1.f;
+    if (part == body_part::left_arm || part == body_part::right_arm)
+        k = nlc.bullet_arm_pool_scale;
+    else if (part == body_part::left_leg || part == body_part::right_leg)
+        k = nlc.bullet_leg_pool_scale;
+    if (k == 1.f)
+        return 1.f;
+    if (IKinematics* kin = smart_cast<IKinematics*>(object().Visual()))
+        if (pHDS->boneID < kin->LL_BoneCount() && strstr(kin->LL_BoneName(u16(pHDS->boneID)), "clavicle"))
+            return 1.f;
+    return k;
+}
+
+// NLC: god-mode time-to-kill estimate (ActorCondition.h SNlcSim); 8 s without a damaging hit ends a run
+static constexpr u32 nlc_sim_idle_ms = 8000;
+
+void CActorCondition::nlc_sim_hit(SHit* pHDS, float dealt)
+{
+    if (dealt <= 0.f)
+        return;
+    const u32 now = Device.dwTimeGlobal;
+    if (!m_nlc_sim_body || m_nlc_sim_pending_reset || now - m_nlc_sim.last > nlc_sim_idle_ms)
+    {
+        if (m_nlc_sim_body)
+            *m_nlc_sim_body = *m_body;
+        else
+            m_nlc_sim_body = xr_new<CActorBodyHealth>(*m_body);
+        m_nlc_sim = SNlcSim{};
+        m_nlc_sim.start = now;
+        m_nlc_sim.pool = GetHealth();
+        m_nlc_sim_pending_reset = false;
+    }
+    m_nlc_sim.last = now;
+    ++m_nlc_sim.hits;
+    if (m_nlc_sim.dead_ms >= 0)
+        return; // the state stays as it was at the death
+
+    u8 cause = body_part::none;
+    if (m_body->Enabled())
+    {
+        m_nlc_sim_body->OnHit(pHDS, dealt); // the copy's guard may set m_nlc_last_hit.guarded, as a real hit would
+        cause = m_nlc_sim_body->DeathCause();
+    }
+    else
+    {
+        const float before = m_nlc_sim.pool;
+        m_nlc_sim.pool = m_body->GuardHitType(u32(pHDS->hit_type)) ? m_nlc_sim_body->Guard(body_part::all, before, before - dealt) : before - dealt;
+        if (m_nlc_sim.pool <= 0.f)
+            cause = body_part::all;
+    }
+    if (cause != body_part::none)
+    {
+        m_nlc_sim.dead_ms = s32(now - m_nlc_sim.start);
+        m_nlc_sim.dead_hits = m_nlc_sim.hits;
+        m_nlc_sim.dead_part = cause;
+    }
+}
+
+float CActorCondition::nlc_sim_part(u8 part) const
+{
+    if (!m_nlc_sim_body)
+        return -1.f;
+    if (!m_body->Enabled())
+        return m_nlc_sim.pool;
+    return m_nlc_sim_body->PartTotal(part);
 }
 
 float CActorCondition::nlc_bullet_absorb(u16 bone, float power, float ap)

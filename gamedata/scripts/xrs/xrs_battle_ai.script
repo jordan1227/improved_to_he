@@ -153,16 +153,57 @@ local headshot_prob = {
 -- Off = the HE-PORT behaviour (always the head or neck, no extra spread).
 local nlc_actor_aim    = true
 local nlc_actor_spread = true
--- chance to pick the head instead of the chest when a new aim bone is chosen
-local nlc_actor_headshot_prob = {
-  [ "novice"      ] = 0.05,
-  [ "experienced" ] = 0.10,
-  [ "veteran"     ] = 0.15,
-  [ "master"      ] = 0.25,
+-- aim point shares when a new aim bone is chosen (docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md 10b):
+-- head, pelvis, the rest chest (spine1 or spine2); the pelvis aim gives belly, thigh and the odd calf hits
+local nlc_actor_aim_weights = {
+  [ "novice"      ] = { head = 0.05, pelvis = 0.20 },
+  [ "experienced" ] = { head = 0.08, pelvis = 0.15 },
+  [ "veteran"     ] = { head = 0.12, pelvis = 0.10 },
+  [ "master"      ] = { head = 0.18, pelvis = 0.05 },
 }
 local nlc_actor_torso_bones = { "bip01_spine2", "bip01_spine1" }
 local nlc_actor_aim_repick  = 3000 -- ms an aim bone is kept
-local nlc_actor_peek_check  = 300  -- ms between peek rays (chest hidden, head visible -> head)
+local nlc_actor_head_hold   = 1000 -- ms a head aim is kept; a head hit on the player repicks at once (no headshot bursts, 10h)
+local nlc_actor_pelvis_lift = 0.1  -- m above the pelvis bone (hip joint) for pelvis aims: belly, not thighs (10e)
+local nlc_actor_vis_check   = 300  -- ms between visible-bone rays (the aim bone hidden -> the first visible one)
+-- tried in this order when the aim bone is hidden behind cover; none visible = keep the aim bone (fire at the cover)
+local nlc_actor_vis_bones = {
+  "bip01_spine1", "bip01_spine2", "bip01_pelvis", "bip01_head",
+  "bip01_l_thigh", "bip01_r_thigh", "bip01_l_calf", "bip01_r_calf",
+}
+-- NPC targets get the actor spread term too (D3, D4; human targets only, monsters keep their own cones)
+local nlc_npc_spread = true
+-- human NPC targets get the actor aim table and visible-bone rule too (10f)
+local nlc_npc_aim = true
+local nlc_aim_bones_ok = {} -- [visual name] = the visual has every bone the aim table and visible-bone rule use
+function nlc_has_aim_bones( obj )
+  local vis = obj:get_visual_name()
+  local ok = nlc_aim_bones_ok[ vis ]
+  if ok == nil then
+    ok = true
+    for _, b in ipairs( nlc_actor_vis_bones ) do
+      if obj:get_bone_id( b ) == 65535 then ok = false break end
+    end
+    nlc_aim_bones_ok[ vis ] = ok
+  end
+  return ok
+end
+-- NLC: time of the last head hit on the player by each shooter (on_actor_hit): its head aim repicks at once
+local nlc_head_hit_t = {}
+local nlc_actor_head_ids = nil
+function nlc_on_actor_hit( obj, amount, local_dir, who, bone_index )
+  if not who or not db.actor then return end
+  if not nlc_actor_head_ids then
+    nlc_actor_head_ids = {}
+    for _, b in ipairs( { "bip01_head", "bip01_neck", "jaw_1", "eye_left", "eye_right", "eyelid_1" } ) do
+      local id = db.actor:get_bone_id( b )
+      if id ~= 65535 then nlc_actor_head_ids[ id ] = true end
+    end
+  end
+  if nlc_actor_head_ids[ bone_index ] then
+    nlc_head_hit_t[ who:id() ] = time_global()
+  end
+end
 -- extra spread in degrees, added to the weapon cone (stalker_disp_base)
 local nlc_actor_spread_deg = { -- test 1 (2026-10-19): halved, the first values were far too wide
   [ "novice"      ] = 0.30,
@@ -210,6 +251,7 @@ function attach( sm )
   sm:subscribe({ signal = "on_spawn",     fun = this.on_spawn     })
   sm:subscribe({ signal = "on_update",    fun = this.on_update    })
   sm:subscribe({ signal = "on_wounded",   fun = this.on_wounded   })
+  sm:subscribe({ signal = "on_actor_hit", fun = this.nlc_on_actor_hit })
 end
 
 
@@ -231,27 +273,6 @@ local time_to_aim = {
   [ "master"      ] = {
     shotgun = 100, sniper = 200, other = 100, rpg = 1000,
   },
-}
-
---- отклонение прицела
-local deviation_table = {
-  [ "novice"      ] = 0.10,
-  [ "experienced" ] = 0.10,
-  [ "veteran"     ] = 0.10,
-  [ "master"      ] = 0.10,
-}
-
---- коэффициент отклонения по коммунити
-local community_deviation_coeff = {
-  [ "lastday"       ] =  0.8,
-  [ "monolith"      ] =  0.8,
-  [ "trader"        ] =  0.8,
-  [ "killer"        ] =  0.8,
-  [ "military"      ] =  0.8,
-  [ "sniper"        ] =  0.8,
-  [ "vermaht"       ] =  0.8,
-  [ "stalker"       ] =  0.8,
-  [ "zombied"       ] = 15,
 }
 
 --- группировки с улучшенной координацией (имеют радиосвязь, соотв. об
@@ -2750,8 +2771,8 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
     if nlc_actor_spread and enemy:is_actor() then
       self:nlc_add_actor_spread( npc_rank )
       self:nlc_track_actor_fire( weapon, npc_pos, npc_dir, be_pos, distance, npc_rank )
-    elseif distance > 0 and st and st.use_deviation then
-      self:add_deviation( be_pos, weapon, distance, enemy )
+    elseif nlc_npc_spread and enemy:is_stalker() then
+      self:nlc_add_npc_spread( npc_rank )
     else
       npc:stalker_disp_base( 0 )
     end
@@ -2877,43 +2898,6 @@ function action_altcombat:set_weapons_idle( wpn )
 end
 
 
-function action_altcombat:add_deviation( position, weapon, distance, enemy )
-  local npc        = self.object
-  local npc_rank   = get_obj_rank_name( npc )
-  local npc_comm   = npc:character_community()
-  local deviations = deviation_table[ npc_rank ]
-  local dev_coeff  = community_deviation_coeff[ npc_comm ]
-    or community_deviation_coeff.stalker
-  local max = 0
-  if deviations then
-    max = deviations * dev_coeff
-    if enemy:is_actor() then
-      local k = 1 -- [HE-PORT]
-      if k > 0 then
-        max = max * k
-      else
-        max = 0
-      end
-      self.firing_actor = true
-      if self.start_firing_actor and npc:see( enemy ) then
-        local time = time_global() - self.start_firing_actor
-        local k    = 1 - ( time / firing_actor_disp_time )
-        if k > 0 then
-          local min_max = firing_actor_disp_max - firing_actor_disp_min
-          max = max * ( firing_actor_disp_min + min_max * k )
-        else
-          max = max * firing_actor_disp_min
-        end
-      else
-        self.start_firing_actor = time_global()
-        max = max * firing_actor_disp_max
-      end
-    end
-  end
-  npc:stalker_disp_base( distance, max )
-end
-
-
 -- NLC: is the ray from the NPC's eyes to the actor's bone blocked before it reaches the actor
 local function nlc_ray_blocked( npc, from_pos, to_pos, actor )
   local dx = to_pos.x - from_pos.x
@@ -2928,14 +2912,20 @@ local function nlc_ray_blocked( npc, from_pos, to_pos, actor )
   return rq.range ~= nil and rq.range < distance - 0.3
 end
 
-function nlc_peek_head( npc, actor, torso_bone )
+-- NLC: visible-bone rule (docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md 10b, S5): the aim bone hidden behind
+-- cover -> the first visible bone of nlc_actor_vis_bones (chest, pelvis, head, legs); false = keep the aim bone
+-- (visible, or nothing visible: fire at the cover)
+function nlc_visible_bone( npc, actor, bone )
   local eye = npc:bone_position( "bip01_head" )
-  if nlc_ray_blocked( npc, eye, actor:bone_position( "bip01_head" ), actor ) then
+  if not nlc_ray_blocked( npc, eye, actor:bone_position( bone ), actor ) then
     return false
   end
-  -- any hidden torso bone counts (leaning out of cover shows the head and a shoulder at most)
-  return nlc_ray_blocked( npc, eye, actor:bone_position( "bip01_spine2" ), actor )
-    or nlc_ray_blocked( npc, eye, actor:bone_position( "bip01_spine1" ), actor )
+  for _, b in ipairs( nlc_actor_vis_bones ) do
+    if b ~= bone and not nlc_ray_blocked( npc, eye, actor:bone_position( b ), actor ) then
+      return b
+    end
+  end
+  return false
 end
 
 -- NLC: rank spread against the player (X2), with the DSH first-second ramp (x1.2 -> x1.0)
@@ -2956,6 +2946,15 @@ function action_altcombat:nlc_add_actor_spread( npc_rank )
   end
   self.firing_actor = true
   npc:stalker_disp_base( math.rad( deg * comm * k ) )
+end
+
+-- NLC: the same rank x community spread against human NPC targets (D3, D4), without the first-second ramp
+-- (docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md 5.2)
+function action_altcombat:nlc_add_npc_spread( npc_rank )
+  local npc  = self.object
+  local deg  = nlc_actor_spread_deg[ npc_rank or get_obj_rank_name( npc ) ] or 0.4
+  local comm = nlc_actor_spread_community[ npc:character_community() ] or 1
+  npc:stalker_disp_base( math.rad( deg * comm ) )
 end
 
 -- NLC: rounds fired at the player and aim diagnostics (test switch nlc_actor_aim_log)
@@ -2984,19 +2983,20 @@ function action_altcombat:nlc_track_actor_fire( weapon, npc_pos, npc_dir, aim_po
   end
   local st = self.combat_sight
   local eye = npc:bone_position( "bip01_head" )
-  local rays = string.format( "head %s spine2 %s spine1 %s",
+  local rays = string.format( "head %s spine2 %s spine1 %s pelvis %s",
     nlc_ray_blocked( npc, eye, db.actor:bone_position( "bip01_head" ), db.actor ) and "blocked" or "clear",
     nlc_ray_blocked( npc, eye, db.actor:bone_position( "bip01_spine2" ), db.actor ) and "blocked" or "clear",
-    nlc_ray_blocked( npc, eye, db.actor:bone_position( "bip01_spine1" ), db.actor ) and "blocked" or "clear" )
+    nlc_ray_blocked( npc, eye, db.actor:bone_position( "bip01_spine1" ), db.actor ) and "blocked" or "clear",
+    nlc_ray_blocked( npc, eye, db.actor:bone_position( "bip01_pelvis" ), db.actor ) and "blocked" or "clear" )
   -- NLC peek diagnostic (6g): the first-person camera sits ahead of / above the head bone, so the player can see
   -- over cover while every hit bone is hidden; log the ray to the camera and the camera offset from the head bone
   local cam  = device().cam_pos
   local head = db.actor:bone_position( "bip01_head" )
   local cam_info = string.format( "cam %s, head-cam %.2f m (up %.2f)",
     nlc_ray_blocked( npc, eye, cam, db.actor ) and "blocked" or "clear", head:distance_to( cam ), cam.y - head.y )
-  log2( "[xrs_aim] %s %s dist=%.1f bone=%s peek=%s (%s; %s) spread=%.2f deg aim_err=%.2f deg (%.2f m) fired=%d seen=%s",
-    npc:name(), tostring( npc_rank ), distance, tostring( st and st.bone ), tostring( st and st.peek_head ), rays, cam_info,
-    math.deg( npc:stalker_disp_base() ), err, math.tan( math.rad( err ) ) * distance, s.fired, tostring( npc:see( db.actor ) ) )
+  log2( "[xrs_aim] %s %s dist=%.1f bone=%s aim=%s (%s; %s) spread=%.2f deg aim_err=%.2f deg (%.2f m) fired=%d seen=%s src=%s aim_h=%.2f org_h=%.2f",
+    npc:name(), tostring( npc_rank ), distance, tostring( st and st.bone ), tostring( st and st.aim_bone ), rays, cam_info,
+    math.deg( npc:stalker_disp_base() ), err, math.tan( math.rad( err ) ) * distance, s.fired, tostring( npc:see( db.actor ) ), tostring( st and st.look_src ), aim_pos.y - db.actor:position().y, npc_pos.y - db.actor:position().y )
 end
 
 function action_altcombat:set_combat_sight( enemy, weapon )
@@ -3017,7 +3017,6 @@ function action_altcombat:set_combat_sight( enemy, weapon )
       enemy_id  = false,
       look_pos  = false,
       time      = false,
-      use_deviation = false,
       weapon_id = false,
     }
     self.combat_sight = st
@@ -3028,63 +3027,74 @@ function action_altcombat:set_combat_sight( enemy, weapon )
     st.bone
     and st.enemy_id == enemy:id() and st.weapon_id == weapon:id()
     and st.time > time_global()
+    and not ( st.bone == "bip01_head" and ( nlc_head_hit_t[ npc:id() ] or 0 ) > ( st.picked or 0 ) )
   then
     bone = st.bone
   else
-    local use_deviation = false
     local keep_ms = 10000
-    if enemy:is_actor() then
-      if nlc_actor_aim then
-        -- NLC: chest, the head by rank chance (X1)
-        local prob = nlc_actor_headshot_prob[ get_obj_rank_name( npc ) ] or 0.1
-        if math.random() < prob then
-          bone = "bip01_head"
-        else
-          bone = nlc_actor_torso_bones[ math.random( table.getn( nlc_actor_torso_bones ) ) ]
-        end
-        keep_ms = nlc_actor_aim_repick
+    -- NLC: human NPC targets get the same aim table (10f): before, they had no aim bone and the engine's own aim point
+    -- (high, many neck/head kills); a visual without the standard bones keeps that engine aim
+    local aim_table = nlc_actor_aim and ( enemy:is_actor() or ( nlc_npc_aim and enemy:is_stalker() and nlc_has_aim_bones( enemy ) ) )
+    if aim_table then
+      -- NLC: chest first, head and pelvis by rank shares (10b)
+      local w = nlc_actor_aim_weights[ get_obj_rank_name( npc ) ] or nlc_actor_aim_weights.experienced
+      local r = math.random()
+      if r < w.head then
+        bone = "bip01_head"
+      elseif r < w.head + w.pelvis then
+        bone = "bip01_pelvis"
       else
-        local bones = { "bip01_head", "bip01_neck" }
-        bone = bones[ math.random( table.getn( bones ) ) ]
+        bone = nlc_actor_torso_bones[ math.random( table.getn( nlc_actor_torso_bones ) ) ]
       end
+      keep_ms = bone == "bip01_head" and nlc_actor_head_hold or nlc_actor_aim_repick
+    elseif enemy:is_actor() then
+      local bones = { "bip01_head", "bip01_neck" }
+      bone = bones[ math.random( table.getn( bones ) ) ]
     end
     st.bone      = bone
     st.enemy_id  = enemy:id()
     st.time      = time_global() + keep_ms
-    st.use_deviation = use_deviation
+    st.picked    = time_global()
     st.weapon_id = weapon:id()
   end
 
-  -- NLC: peek rule (X1): the chest is hidden behind cover but the head is visible -> aim the head
-  if bone and nlc_actor_aim and enemy:is_actor() and bone ~= "bip01_head" then
+  -- NLC: visible-bone rule (S5): the aim bone hidden behind cover -> the first visible bone, legs included
+  -- (the actor and human NPC targets; the HE-PORT head/neck aim has nlc_actor_aim off)
+  if bone and nlc_actor_aim then
     local now = time_global()
-    if not st.peek_time or st.peek_time < now then
-      st.peek_time = now + nlc_actor_peek_check
-      st.peek_head = nlc_peek_head( npc, enemy, bone )
+    if not st.vis_time or st.vis_time < now or st.vis_for ~= bone then
+      st.vis_time = now + nlc_actor_vis_check
+      st.vis_for  = bone
+      st.vis_bone = nlc_visible_bone( npc, enemy, bone )
     end
-    if st.peek_head then
-      bone = "bip01_head"
+    if st.vis_bone then
+      bone = st.vis_bone
     end
   end
+  st.aim_bone = bone
 
-  local look_pos
+  local look_pos; st.look_src = "none"
   if bone then
     local bone_id = enemy:get_bone_id( bone )
     ASSERT(
       bone_id ~= 65535,
       "[%s]: %s: unknown bone %s", script_name(), enemy:name(), bone
     )
-    look_pos = enemy:bone_position( bone )
+    look_pos = enemy:bone_position( bone ); st.look_src = "bone"
+    if bone == "bip01_pelvis" then
+      -- NLC: the pelvis bone origin is the hip joint; aim at the belly above it (10e)
+      look_pos = vector():set( look_pos.x, look_pos.y + nlc_actor_pelvis_lift, look_pos.z )
+    end
   end
 
   if
     ( not npc:see( enemy ) )
     and npc:memory_position( enemy ):magnitude() ~= 0
   then
-    look_pos = npc:memory_position( enemy )
+    look_pos = npc:memory_position( enemy ); st.look_src = "memory"
     local t = get_target_info( npc, enemy:id() )
     if t and t.vispoint then
-      look_pos = t.vispoint
+      look_pos = t.vispoint; st.look_src = "vispoint"
     end
   end
 

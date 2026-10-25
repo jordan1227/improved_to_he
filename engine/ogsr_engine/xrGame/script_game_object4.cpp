@@ -972,6 +972,7 @@ static SBoneProtections* nlc_bone_protection(CGameObject& obj)
 
 // NLC: actor last hit and mask head cover (docs/damage_model/DESIGN_actor_damage_model.md A2, A6)
 #include "ActorCondition.h"
+#include "nlc_body_health.h" // NLC: body_part names for nlc_sim_*
 
 static CActorCondition* nlc_actor_condition(CGameObject& obj)
 {
@@ -993,6 +994,11 @@ float CScriptGameObject::nlc_last_hit_dealt()
 {
     CActorCondition* c = nlc_actor_condition(object());
     return c ? c->nlc_last_hit().dealt : -1.f;
+}
+float CScriptGameObject::nlc_last_hit_injury()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_last_hit().injury : -1.f;
 }
 float CScriptGameObject::nlc_last_hit_k()
 {
@@ -1038,6 +1044,44 @@ float CScriptGameObject::nlc_head_cover()
 {
     CActorCondition* c = nlc_actor_condition(object());
     return c ? c->nlc_head_cover() : -1.f;
+}
+
+// NLC: god-mode time-to-kill estimate, read by sivol_hit_log.script (docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md 10c)
+float CScriptGameObject::nlc_sim_part(LPCSTR part)
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    const u8 p = body_part::by_name(part);
+    return c && p != body_part::none ? c->nlc_sim_part(p) : -1.f;
+}
+u32 CScriptGameObject::nlc_sim_start()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_sim().start : 0;
+}
+u32 CScriptGameObject::nlc_sim_hits()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_sim().hits : 0;
+}
+int CScriptGameObject::nlc_sim_dead_ms()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_sim().dead_ms : -1;
+}
+u32 CScriptGameObject::nlc_sim_dead_hits()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? c->nlc_sim().dead_hits : 0;
+}
+LPCSTR CScriptGameObject::nlc_sim_dead_part()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    return c ? body_part::name(c->nlc_sim().dead_part) : "none";
+}
+void CScriptGameObject::nlc_sim_reset()
+{
+    if (CActorCondition* c = nlc_actor_condition(object()))
+        c->nlc_sim_reset();
 }
 
 // NLC: stalker aim against mutants, read by sivol_mut_aim_log.script (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6 D).

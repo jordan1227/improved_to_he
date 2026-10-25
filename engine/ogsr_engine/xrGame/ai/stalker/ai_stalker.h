@@ -177,6 +177,7 @@ public:
     const CBaseMonster* nlc_mut_fire_target(int* kind = nullptr) const;
     int nlc_mut_sight_type() const; // current sight type, -1 without an action
     Fvector nlc_mut_aim_point(const CBaseMonster* monster, const Fvector& look_pos); // A2, from CSightAction
+    bool nlc_aim_chest() const { return m_nlc_aim_chest; } // NLC: nlc_aim_chest, from CSightAction
     float nlc_mut_lag_ms(const CBaseMonster* monster);
     void nlc_mut_on_shot(CWeapon* weapon);
     void nlc_mut_on_hit(const CBaseMonster* monster);
@@ -204,6 +205,9 @@ private:
     float m_disp_stand_stand_zoom;
     float m_disp_stand_crouch_zoom;
     float m_nlc_psy_disp_k{}; // NLC: nlc_psy_dispersion_k, dispersion x (1 + k * (1 - psy health))
+    // NLC: nlc_aim_chest (zombified stalkers): in the engine's own combat, aim at a living actor's / stalker's chest bone
+    // from the eye instead of its centre from our centre (that aim lands ~0.7 m high, on the head; sight_action.cpp)
+    bool m_nlc_aim_chest{};
     float nlc_weapon_accuracy_base() const;
     bool m_fast_can_kill_entity;
 

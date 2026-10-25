@@ -62,6 +62,11 @@ struct SNlcActorDamage
     float ap_koeff_bypass{0.5f};
     float bullet_head_scale{-1.f}; // < 0: keep the damage-table hit scale
     float blunt_head{}; // blunt-impact minimum on the head, x the worn mask's coverage (section 21)
+    // single health pool only (body-part health off): bullet health loss on arm / leg bones (clavicles stay torso);
+    // injuries, bleeding, mutant hits and body-part health keep the unscaled value
+    // (docs/damage_model/DESIGN_npc_accuracy_and_leg_hits.md 10g, design A). 1 = off
+    float bullet_arm_pool_scale{1.f};
+    float bullet_leg_pool_scale{1.f};
     bool log{};
 };
 
@@ -78,12 +83,14 @@ inline const SNlcActorDamage& nlc_actor_damage()
             r.ap_koeff_bypass = READ_IF_EXISTS(pSettings, r_float, sect, "ap_koeff_bypass", r.ap_koeff_bypass);
             r.bullet_head_scale = READ_IF_EXISTS(pSettings, r_float, sect, "bullet_head_scale", r.bullet_head_scale);
             r.blunt_head = READ_IF_EXISTS(pSettings, r_float, sect, "blunt_head", r.blunt_head);
+            r.bullet_arm_pool_scale = READ_IF_EXISTS(pSettings, r_float, sect, "bullet_arm_pool_scale", r.bullet_arm_pool_scale);
+            r.bullet_leg_pool_scale = READ_IF_EXISTS(pSettings, r_float, sect, "bullet_leg_pool_scale", r.bullet_leg_pool_scale);
             r.log = READ_IF_EXISTS(pSettings, r_bool, sect, "log", r.log);
         }
         if (r.cond_full < EPS_L)
             r.cond_full = 1.f;
-        Msg("* [nlc_actor_damage] enabled=%d fw_protection_exp=%.2f cond_full=%.2f ap_koeff_bypass=%.2f bullet_head_scale=%.2f blunt_head=%.3f log=%d", r.enabled,
-            r.fw_protection_exp, r.cond_full, r.ap_koeff_bypass, r.bullet_head_scale, r.blunt_head, r.log);
+        Msg("* [nlc_actor_damage] enabled=%d fw_protection_exp=%.2f cond_full=%.2f ap_koeff_bypass=%.2f bullet_head_scale=%.2f blunt_head=%.3f arm_pool=%.2f leg_pool=%.2f log=%d",
+            r.enabled, r.fw_protection_exp, r.cond_full, r.ap_koeff_bypass, r.bullet_head_scale, r.blunt_head, r.bullet_arm_pool_scale, r.bullet_leg_pool_scale, r.log);
         return r;
     }();
     return s;
