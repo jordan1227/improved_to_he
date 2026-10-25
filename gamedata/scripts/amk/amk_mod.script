@@ -846,7 +846,10 @@ function check_af_transform(af, anom_id, anom_sect)
 	local cooking_state = get_value("cooking_state", {})
 	local anom_key = tostring(anom_id)
 
-	if strpos(af_sect, "af_unknown", 1, true) then
+	-- sivol: the convoy case formation registers like an af_unknown while it has charge left.
+	local convoy_catalyst = sivol_worldspawns.convoy_is_catalyst(af_sect)
+	if convoy_catalyst and not sivol_worldspawns.convoy_catalyst_ready(af) then return end
+	if strpos(af_sect, "af_unknown", 1, true) or convoy_catalyst then
 		local weight = system_ini():r_float(af_sect, "inv_weight")
 		local weight_bonus = math.max( 0.2, weight * 0.1 )
 		cooking_state[anom_key] = {
@@ -914,7 +917,10 @@ function check_af_transform(af, anom_id, anom_sect)
 						local unknown_obj = g_sim:object(state.unknown_id)
 						if unknown_obj and unknown_obj.parent_id == BAD_OBJ_ID then
 							final_condition = math.min(1.0, final_condition + state.weight_bonus)
-							misc.release_obj(state.unknown_id, 'sak.script:unknown_transform')
+							-- sivol: the convoy catalyst spends a charge instead of being consumed
+							if not sivol_worldspawns.convoy_catalyst_spend(state.unknown_id) then
+								misc.release_obj(state.unknown_id, 'sak.script:unknown_transform')
+							end
 							cooking_state[anom_key] = nil
 							set_value("cooking_state", cooking_state)
 							
@@ -967,9 +973,12 @@ function af_start_transform_timer(af, pos, delay_d, delay_h, delay_m, condition,
 	local gtime = misc.game_time_minutes()
 	set_value("p_" .. gtime .. "_af", t)
 	timers.start_timer("af_trans_" .. gtime, delay_d, delay_h, delay_m, "amk_mod.af_transform_end(\"p_" .. gtime .. "_af\")")
+	he_pda_cook.on_start(gtime, pos,
+		(tonumber(delay_d) or 0) * 1440 + (tonumber(delay_h) or 0) * 60 + (tonumber(delay_m) or 0))
 end
 
 function af_transform_end(params_string)
+	he_pda_cook.on_end(params_string)
 	local prms = get_value(params_string, {})
 	local sect = prms.section
 	if not sect then
@@ -1000,7 +1009,7 @@ function af_transform_end(params_string)
 	end
 
 	local s
-	local upgr = get_value("pda_upgr_cook")
+	local upgr = he_pda_access.cook_monitor_active()
 	if upgr then
 		s = string.format("[%s]: %s%%c[255,255,0,0]%s", game.translate_string(se_obj.level_name), game.translate_string("trans_finished_title_upgr"), from_sect)
 		level.map_add_object_spot_ser(se_obj.id, "artefact_location", from_sect)

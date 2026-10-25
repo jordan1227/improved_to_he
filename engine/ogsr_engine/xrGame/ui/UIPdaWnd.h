@@ -57,6 +57,7 @@ public:
     CUIActorInfoWnd* UIActorInfo;
     CUIStalkersRankingWnd* UIStalkersRanking;
     CUIEventsWnd* UIEventsWnd;
+    CUIWindow* UINotesWnd{}; // NLC: host of the script-built Notes tab
     virtual void Reset();
 
 public:
@@ -76,6 +77,8 @@ public:
     virtual bool OnKeyboard(int dik, EUIMessages keyboard_action) override;
 
     void SetActiveSubdialog(EPdaTabs section);
+    void UpdateScriptTabs(); // NLC
+    void NotifyNotesTab(bool shown); // NLC
     virtual bool StopAnyMove();
 
     void PdaContentsChanged(pda_section::part type, bool = true, bool = false);

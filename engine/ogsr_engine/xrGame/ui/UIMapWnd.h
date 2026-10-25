@@ -104,7 +104,7 @@ public:
     CUIPropertiesBox* m_UIPropertiesBox;
     CUIPdaSpot* m_UserSpotWnd;
     CMapLocation* m_cur_location;
-    void ShowSettingsWindow(u16 id, Fvector position, shared_str levelName);
+    void ShowSettingsWindow(u16 id, Fvector position, shared_str levelName, shared_str spotType);
 
     Frect ActiveMapRect()
     {

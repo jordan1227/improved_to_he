@@ -311,6 +311,8 @@ CUIDialogWnd* main_input_receiver() { return HUD().GetUI()->MainInputReceiver();
 #include "UIGameSP.h"
 #include "HUDManager.h"
 #include "HUDTarget.h"
+#include "ui/UIPdaWnd.h" // NLC
+#include "ui/UIMapWnd.h" // NLC
 #include "InventoryBox.h"
 
 CUIWindow* GetInventoryWindow()
@@ -350,6 +352,36 @@ CUIWindow* GetPdaWindow()
     if (!pGameSP)
         return nullptr;
     return (CUIWindow*)pGameSP->PdaMenu;
+}
+
+// NLC: PDA notes support. Switch the open PDA to a tab (EPdaTabs index).
+void nlc_pda_set_tab(int tab)
+{
+    CUIGameSP* pGameSP = smart_cast<CUIGameSP*>(HUD().GetUI()->UIGame());
+    if (pGameSP && pGameSP->PdaMenu && tab >= 0 && tab <= eptNotes)
+        pGameSP->PdaMenu->SetActiveSubdialog(EPdaTabs(tab));
+}
+
+// NLC: switch the open PDA to the map and centre it on a level position.
+void nlc_pda_show_on_map(LPCSTR level_name, Fvector pos)
+{
+    CUIGameSP* pGameSP = smart_cast<CUIGameSP*>(HUD().GetUI()->UIGame());
+    if (!pGameSP || !pGameSP->PdaMenu || !level_name)
+        return;
+    pGameSP->PdaMenu->SetActiveSubdialog(eptMap);
+    pGameSP->PdaMenu->UIMapWnd->SetTargetMap(shared_str(level_name), Fvector2{pos.x, pos.z}, true);
+}
+
+// NLC: user markers with positions: funct(level_name, hint, type, id, position)
+void map_iterate_user_spots(const luabind::functor<void>& funct)
+{
+    for (auto& it : Level().MapManager().Locations())
+    {
+        CMapLocation* location = it.location;
+        if (!location || !location->IsUserDefined())
+            continue;
+        funct(location->LevelName().c_str(), location->GetHint(), location->GetType(), location->ObjectID(), location->GetLastPosition());
+    }
 }
 CUIWindow* GetCarBodyWindow()
 {
@@ -1192,6 +1224,9 @@ void CLevel::script_register(lua_State* L)
             def("send_event_mouse_wheel", &send_event_mouse_wheel),
 
             def("iterate_nearest", &iterate_nearest), def("iterate_level_objects", &iterate_level_objects), def("map_iterate_spots", &map_iterate_spots),
+            def("map_iterate_user_spots", &map_iterate_user_spots), // NLC
+            def("nlc_pda_set_tab", &nlc_pda_set_tab), // NLC
+            def("nlc_pda_show_on_map", &nlc_pda_show_on_map), // NLC
 
             def("change_level", &change_level), def("set_cam_inert", &set_cam_inert), def("set_monster_relation", &set_monster_relation), def("patrol_path_add", &patrol_path_add),
             def("patrol_path_remove", &patrol_path_remove), def("valid_vertex_id", &valid_vertex_id), def("vertex_count", &vertex_count), def("disable_vertex", &disable_vertex),

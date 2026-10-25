@@ -1,0 +1,514 @@
+-- PDA Notes tab. The engine hosts an empty window "pda_tab_notes" (EPdaTabs::eptNotes)
+-- and calls is_available / on_show / on_hide; the map's user-marker menu calls open_for_spot.
+-- Available with the route annotation module or the upgraded PDA (he_pda_access.has_notes).
+-- Notes are edited in place and saved on every change.
+local KEY = "he_pda_notes_v1"
+local MAX_NOTES = 100
+local MAX_BODY = 3000
+local MAX_TITLE = 48
+local XML_FILE = "ui_pda_notes.xml"
+
+-- Icons double as marker types for linked map markers (map_spots.xml).
+local ICONS = {
+    { tex = "ui_icons_newPDA_perssign_h", spot = "yellow_flag_location" },
+    { tex = "ui_icons_mapPDA_mark_t", spot = "red_location" },
+    { tex = "ui_icons_mapPDA_persBig_h", spot = "green_location" },
+    { tex = "ui_icons_mapPDA_persBig_e", spot = "blue_location" },
+    { tex = "ui_icons_mapPDA_habar", spot = "habar_location" },
+    { tex = "ui_mapQuest_artefact", spot = "artefact_location" },
+    { tex = "ui_mapQuest_monster_find", spot = "monster_part_location" },
+}
+
+local ui -- the live tab UI while shown
+local pending_open -- note id to select on the next on_show
+
+local function tr(id) return game.translate_string(id) end
+
+-------------------------------------------------------------------------------
+-- Storage
+-------------------------------------------------------------------------------
+local function data()
+    local d = get_value(KEY)
+    if type(d) ~= "table" then d = { schema = 1, next_id = 1, notes = {} } end
+    return d
+end
+local function save(d) set_value(KEY, d) end
+
+local function find(d, id)
+    for i, n in ipairs(d.notes) do
+        if n.id == id then return n, i end
+    end
+end
+
+local function stamp()
+    return {
+        day = timers.Get_Game_Days() or 0,
+        h = level.get_time_hours(),
+        m = level.get_time_minutes(),
+        gm = misc.game_time_minutes(),
+    }
+end
+
+local function stamp_text(s)
+    if not s then return "" end
+    return string.format(tr("pda_notes_stamp"), s.day or 0, s.h or 0, s.m or 0)
+end
+
+-- Pinned first, then by last edit (newest first) or by level name, as chosen in d.sort.
+local function sorted(d)
+    local list = {}
+    for _, n in ipairs(d.notes) do table.insert(list, n) end
+    local by_level = d.sort == "level"
+    table.sort(list, function(a, b)
+        if (a.pin and 1 or 0) ~= (b.pin and 1 or 0) then return a.pin == true end
+        if by_level then
+            local la, lb = tr(a.lvl or ""), tr(b.lvl or "")
+            if la ~= lb then return la < lb end
+        end
+        return (a.edited or 0) > (b.edited or 0)
+    end)
+    return list
+end
+
+local function actor_place()
+    local p = db.actor:position()
+    return level.name(), { x = p.x, y = p.y, z = p.z },
+        game_graph():vertex(db.actor:game_vertex_id()):level_id()
+end
+
+local function new_note(d, title)
+    if #d.notes >= MAX_NOTES then return end
+    local lvl, pos, lvid = actor_place()
+    local n = {
+        id = d.next_id, title = title or "", body = "", icon = 1, pin = false,
+        created = stamp(), edited = misc.game_time_minutes(),
+        lvl = lvl, pos = pos, lvid = lvid,
+    }
+    d.next_id = d.next_id + 1
+    table.insert(d.notes, n)
+    save(d)
+    return n
+end
+
+-- Linked marker helpers ------------------------------------------------------
+local function spot_exists(n)
+    return n.spot and level.map_has_object_spot(n.spot.id, n.spot.type) ~= 0
+end
+
+local function user_spot_count()
+    local c = 0
+    level.map_iterate_user_spots(function() c = c + 1 end)
+    return c
+end
+
+local function marker_cap()
+    local ini = system_ini()
+    return ini:line_exist("user_spots", "max_count") and ini:r_u32("user_spots", "max_count") or 0
+end
+
+local function sync_spot(n)
+    if not spot_exists(n) then return end
+    local want = ICONS[n.icon] and ICONS[n.icon].spot or ICONS[1].spot
+    if want ~= n.spot.type then
+        -- another icon means another marker type: re-create it in place
+        level.map_remove_object_spot(n.spot.id, n.spot.type)
+        local id = n.lvid and level.map_add_user_spot(n.lvid, vector():set(n.pos.x, n.pos.y, n.pos.z), want, n.title)
+        if id then
+            level.map_change_spot_ser(id, want, true)
+            n.spot = { id = id, type = want }
+        else
+            n.spot = nil
+        end
+    else
+        level.map_change_spot_hint(n.spot.id, n.spot.type, n.title)
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Engine entry points
+-------------------------------------------------------------------------------
+function is_available()
+    return db.actor ~= nil and he_pda_access.custom_marker_eligible()
+end
+
+-- Map marker menu: open the note linked to this marker, or create one for it.
+function open_for_spot(spot_id, spot_type)
+    local d = data()
+    for _, n in ipairs(d.notes) do
+        if n.spot and n.spot.id == spot_id and n.spot.type == spot_type then
+            pending_open = n.id
+            return
+        end
+    end
+    local info
+    level.map_iterate_user_spots(function(lvl, hint, typ, id, pos)
+        if id == spot_id and typ == spot_type then info = { lvl = lvl, hint = hint, pos = pos } end
+    end)
+    local n = new_note(d, info and string.sub(info.hint or "", 1, MAX_TITLE) or "")
+    if not n then return end
+    if info then
+        n.lvl = info.lvl
+        n.pos = { x = info.pos.x, y = info.pos.y, z = info.pos.z }
+        n.lvid = nil -- the marker already exists; a level id is only needed to re-create it
+        for i, ic in ipairs(ICONS) do
+            if ic.spot == spot_type then n.icon = i end
+        end
+    end
+    n.spot = { id = spot_id, type = spot_type }
+    save(d)
+    pending_open = n.id
+end
+
+function on_show()
+    if ui then ui:Close() end
+    local pda = level.get_pda_wnd()
+    local host = pda and pda:FindChild("pda_tab_notes")
+    if not host then return end
+    ui = PDANotes(host)
+    ui:Select(pending_open)
+    pending_open = nil
+end
+
+function on_hide()
+    if ui then
+        ui:Close()
+        ui = nil
+    end
+end
+
+-------------------------------------------------------------------------------
+-- UI
+-------------------------------------------------------------------------------
+class "note_item" (CUIListItemEx)
+function note_item:__init(n) super()
+    self:SetWndRect(0, 0, 262, 22)
+    self.icon = CUIStatic()
+    self.icon:SetAutoDelete(true)
+    self:AttachChild(self.icon)
+    self.icon:SetWndRect(2, 2, 18, 18)
+    self.icon:SetStretchTexture(true)
+    self.name = CUIStatic()
+    self.name:SetAutoDelete(true)
+    self:AttachChild(self.name)
+    self.name:SetFont(GetFontLetterica16Russian())
+    -- location: grey, right-aligned on the same line, always fully shown
+    self.place = CUIStatic()
+    self.place:SetAutoDelete(true)
+    self:AttachChild(self.place)
+    self.place:SetWndRect(26, 0, 234, 22)
+    self.place:SetFont(GetFontLetterica16Russian())
+    self.place:SetTextAlign(1)
+    self.note_id = n.id
+    self:Refresh(n)
+end
+function note_item:Refresh(n)
+    self.icon:InitTexture((ICONS[n.icon] or ICONS[1]).tex)
+    local font = GetFontLetterica16Russian()
+    local place = n.lvl and tr(n.lvl) or ""
+    self.place:SetText(place)
+    self.place:SetTextColor(255, 140, 140, 140)
+    -- the title gets what the location leaves, cut with "..." when needed
+    local avail = 234 - (place ~= "" and font:SizeOf(place) + 10 or 0)
+    local title = (n.pin and "* " or "") .. (n.title ~= "" and n.title or tr("pda_notes_untitled"))
+    if font:SizeOf(title) > avail then
+        while string.len(title) > 1 and font:SizeOf(title .. "...") > avail do
+            title = string.sub(title, 1, -2)
+        end
+        title = title .. "..."
+    end
+    self.name:SetWndRect(26, 0, math.max(20, avail), 22)
+    self.name:SetText(title)
+    self.name:SetTextColor(255, 230, 230, 230)
+end
+
+class "PDANotes" (CUIScriptWnd)
+function PDANotes:__init(host) super()
+    self.host = host
+    self:Init(0, 0, 761, 525)
+    self.xml = CScriptXmlInit()
+    self.xml:ParseFile(XML_FILE)
+    self:InitControls()
+    self:FillList()
+end
+
+function PDANotes:InitControls()
+    local xml = self.xml
+    self.root = CUIStatic()
+    self.root:Init(0, 0, 761, 525)
+    self.host:AttachChild(self.root)
+
+    xml:InitFrame("list_frame", self.root)
+    xml:InitFrameLine("list_header", self.root)
+    self.list_title = xml:InitStatic("list_title", self.root)
+    self.list_title:SetText(tr("pda_notes_header"))
+    self.list = xml:InitList("list", self.root)
+    self.list:ShowSelectedItem(true)
+    self:Register(self.list, "notes_list")
+    self.count = xml:InitStatic("count", self.root)
+    self:Register(xml:InitButton("btn_new", self.root), "btn_new")
+    self:Register(xml:InitButton("btn_here", self.root), "btn_here")
+    self.btn_sort = xml:InitButton("btn_sort", self.root)
+    self:Register(self.btn_sort, "btn_sort")
+    self:AddCallback("btn_sort", ui_events.BUTTON_CLICKED, self.OnSort, self)
+
+    xml:InitFrame("edit_frame", self.root)
+    xml:InitFrameLine("edit_header", self.root)
+    self.caption = xml:InitStatic("edit_caption", self.root)
+    self.caption:SetText(tr("pda_notes_editor"))
+    self.title_label = xml:InitStatic("title_label", self.root)
+    self.title = xml:InitEditBox("title_edit", self.root)
+    self:Register(self.title, "title_edit")
+
+    local ix = xml:InitStatic("icons", self.root) -- position holder
+    local x0, y0 = ix:GetWndPos().x, ix:GetWndPos().y
+    ix:Show(false)
+    self.icon_btns = {}
+    for i, ic in ipairs(ICONS) do
+        local b = CUIButton()
+        b:SetAutoDelete(true)
+        b:Init(x0 + (i - 1) * 30, y0, 24, 24)
+        b:InitTexture(ic.tex)
+        b:SetStretchTexture(true)
+        self.root:AttachChild(b)
+        self:Register(b, "icon_" .. i)
+        self:AddCallback("icon_" .. i, ui_events.BUTTON_CLICKED, function() self:SetIcon(i) end)
+        self.icon_btns[i] = b
+    end
+
+    self.body_frame = xml:InitFrame("body_frame", self.root)
+    local holder = xml:InitStatic("body", self.root)
+    local r = holder:GetWndPos()
+    local w, h = holder:GetWidth(), holder:GetHeight()
+    holder:Show(false)
+    self.body = CUIMultiLineEdit()
+    self.body:SetAutoDelete(true)
+    self.body:Init(r.x, r.y, w, h)
+    self.body:SetFont(GetFontLetterica16Russian())
+    self.body:SetTextColor(GetARGB(255, 240, 217, 182))
+    self.body:SetMaxCharCount(MAX_BODY)
+    self.root:AttachChild(self.body)
+    self:Register(self.body, "body_edit")
+
+    self.info = xml:InitStatic("info", self.root)
+    self.btn_pin = xml:InitButton("btn_pin", self.root)
+    self:Register(self.btn_pin, "btn_pin")
+    self.btn_map = xml:InitButton("btn_map", self.root)
+    self:Register(self.btn_map, "btn_map")
+    self.btn_mark = xml:InitButton("btn_mark", self.root)
+    self:Register(self.btn_mark, "btn_mark")
+    self.btn_delete = xml:InitButton("btn_delete", self.root)
+    self:Register(self.btn_delete, "btn_delete")
+    self.empty = xml:InitStatic("empty", self.root)
+
+    self:AddCallback("notes_list", ui_events.LIST_ITEM_CLICKED, self.OnListClick, self)
+    self:AddCallback("btn_new", ui_events.BUTTON_CLICKED, self.OnNew, self)
+    self:AddCallback("btn_here", ui_events.BUTTON_CLICKED, self.OnMarkHere, self)
+    self:AddCallback("title_edit", ui_events.EDIT_TEXT_CHANGED, self.OnTitleChanged, self)
+    self:AddCallback("body_edit", ui_events.EDIT_TEXT_CHANGED, self.OnBodyChanged, self)
+    self:AddCallback("btn_pin", ui_events.BUTTON_CLICKED, self.OnPin, self)
+    self:AddCallback("btn_map", ui_events.BUTTON_CLICKED, self.OnShowMap, self)
+    self:AddCallback("btn_mark", ui_events.BUTTON_CLICKED, self.OnMark, self)
+    self:AddCallback("btn_delete", ui_events.BUTTON_CLICKED, self.OnDelete, self)
+end
+
+function PDANotes:Close()
+    if self.body then self.body:CaptureFocus(false) end
+    self:ClearCallbacks()
+    if self.root then
+        self.host:DetachChild(self.root)
+        self.root = nil
+    end
+end
+
+function PDANotes:FillList()
+    local d = data()
+    self.list:RemoveAll()
+    self.items = {}
+    self.order = sorted(d)
+    for _, n in ipairs(self.order) do
+        local it = note_item(n)
+        self.list:AddItem(it)
+        self.items[n.id] = it
+    end
+    self.count:SetText(string.format(tr("pda_notes_count"), #d.notes, MAX_NOTES))
+    self.btn_sort:SetText(tr(d.sort == "level" and "pda_notes_sort_level" or "pda_notes_sort_date"))
+end
+
+function PDANotes:OnSort()
+    local d = data()
+    d.sort = d.sort == "level" and "date" or "level"
+    save(d)
+    self:FillList()
+    self:Select(self.cur)
+end
+
+function PDANotes:Current()
+    if not self.cur then return end
+    local d = data()
+    local n = find(d, self.cur)
+    return n, d
+end
+
+function PDANotes:Select(id)
+    local d = data()
+    if not id or not find(d, id) then
+        id = self.order[1] and self.order[1].id
+    end
+    self.cur = id
+    self.confirm_delete = false
+    local n = id and find(d, id)
+    local has = n ~= nil
+    for _, w in ipairs({ self.title, self.body, self.body_frame, self.info, self.title_label,
+        self.btn_pin, self.btn_map, self.btn_mark, self.btn_delete }) do
+        w:Show(has)
+    end
+    for _, b in ipairs(self.icon_btns) do b:Show(has) end
+    self.empty:Show(not has)
+    if not has then return end
+    self.title:SetText(n.title or "")
+    self.body:SetText(n.body or "")
+    self:UpdateDetails(n)
+    for i, o in ipairs(self.order) do
+        if o.id == id then self.list:SetSelectedItem(i - 1) end
+    end
+end
+
+function PDANotes:UpdateDetails(n)
+    for i, b in ipairs(self.icon_btns) do
+        b:SetColor(i == n.icon and GetARGB(255, 255, 255, 255) or GetARGB(90, 255, 255, 255))
+    end
+    local t = tr("pda_notes_created") .. ": " .. stamp_text(n.created)
+    if n.lvl then t = t .. ", " .. tr(n.lvl) end
+    if spot_exists(n) then t = t .. "\\n" .. tr("pda_notes_linked") end
+    self.info:SetText(t)
+    self.btn_pin:SetText(tr(n.pin and "pda_notes_btn_unpin" or "pda_notes_btn_pin"))
+    self.btn_mark:SetText(tr(spot_exists(n) and "pda_notes_btn_unmark" or "pda_notes_btn_mark"))
+    self.btn_delete:SetText(tr(self.confirm_delete and "pda_notes_btn_confirm" or "pda_notes_btn_delete"))
+end
+
+function PDANotes:Touch(n, d)
+    n.edited = misc.game_time_minutes()
+    save(d)
+    local it = self.items and self.items[n.id]
+    if it then it:Refresh(n) end
+end
+
+function PDANotes:OnListClick()
+    local idx = self.list:GetSelectedItem()
+    local n = self.order[idx + 1]
+    if n then self:Select(n.id) end
+end
+
+function PDANotes:OnNew()
+    local d = data()
+    local n = new_note(d, "")
+    if not n then
+        self.count:SetText(string.format(tr("pda_notes_full"), MAX_NOTES))
+        return
+    end
+    self:FillList()
+    self:Select(n.id)
+end
+
+-- New note at the actor's position with a linked marker.
+function PDANotes:OnMarkHere()
+    local d = data()
+    local title = string.format(tr("pda_notes_here_title"), tr(level.name()))
+    local n = new_note(d, string.sub(title, 1, MAX_TITLE))
+    if not n then
+        self.count:SetText(string.format(tr("pda_notes_full"), MAX_NOTES))
+        return
+    end
+    self:CreateSpot(n, d)
+    self:FillList()
+    self:Select(n.id)
+end
+
+function PDANotes:CreateSpot(n, d)
+    local cap = marker_cap()
+    if cap > 0 and user_spot_count() >= cap then
+        self.info:SetText(tr("pda_notes_marker_cap"))
+        return
+    end
+    if not n.lvid or not n.pos then
+        local lvl, pos, lvid = actor_place()
+        n.lvl, n.pos, n.lvid = lvl, pos, lvid
+    end
+    local typ = (ICONS[n.icon] or ICONS[1]).spot
+    local title = n.title ~= "" and n.title or tr("pda_notes_untitled")
+    local id = level.map_add_user_spot(n.lvid, vector():set(n.pos.x, n.pos.y, n.pos.z), typ, title)
+    if id then
+        level.map_change_spot_ser(id, typ, true)
+        n.spot = { id = id, type = typ }
+    end
+    save(d)
+end
+
+function PDANotes:OnTitleChanged()
+    local n, d = self:Current()
+    if not n then return end
+    n.title = string.sub(self.title:GetText() or "", 1, MAX_TITLE)
+    sync_spot(n)
+    self:Touch(n, d)
+end
+
+function PDANotes:OnBodyChanged()
+    local n, d = self:Current()
+    if not n then return end
+    n.body = self.body:GetText() or ""
+    self:Touch(n, d)
+end
+
+function PDANotes:SetIcon(i)
+    local n, d = self:Current()
+    if not n then return end
+    n.icon = i
+    sync_spot(n)
+    self:Touch(n, d)
+    self:UpdateDetails(n)
+end
+
+function PDANotes:OnPin()
+    local n, d = self:Current()
+    if not n then return end
+    n.pin = not n.pin
+    self:Touch(n, d)
+    self:FillList()
+    self:Select(n.id)
+end
+
+function PDANotes:OnShowMap()
+    local n = self:Current()
+    if not n or not n.lvl or not n.pos then return end
+    level.nlc_pda_show_on_map(n.lvl, vector():set(n.pos.x, n.pos.y, n.pos.z))
+end
+
+function PDANotes:OnMark()
+    local n, d = self:Current()
+    if not n then return end
+    if spot_exists(n) then
+        level.map_remove_object_spot(n.spot.id, n.spot.type)
+        n.spot = nil
+        save(d)
+    else
+        n.spot = nil
+        self:CreateSpot(n, d)
+    end
+    self:UpdateDetails(n)
+end
+
+-- Two clicks delete; a linked marker stays on the map.
+function PDANotes:OnDelete()
+    local n, d = self:Current()
+    if not n then return end
+    if not self.confirm_delete then
+        self.confirm_delete = true
+        self:UpdateDetails(n)
+        return
+    end
+    local _, idx = find(d, n.id)
+    table.remove(d.notes, idx)
+    save(d)
+    self:FillList()
+    self:Select(nil)
+end

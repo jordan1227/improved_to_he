@@ -67,6 +67,7 @@ public:
     //сообщение посылается дочерним окном родительскому
     void SetMouseCapture(CUIWindow* pChildWindow, bool capture_status);
     CUIWindow* GetMouseCapturer();
+    CUIWindow* GetKeyboardCapturer() const { return m_pKeyboardCapturer; } // NLC
 
     //окошко, которому пересылаются сообщения,
     //если NULL, то шлем на GetParent()

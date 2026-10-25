@@ -21,6 +21,10 @@
 #include "UIPropertiesBox.h"
 #include "UIListBoxItem.h"
 #include "UIPdaSpot.h"
+#include "UIPdaWnd.h"
+#include "../UIGameSP.h"
+#include "../ai_space.h"
+#include "../script_engine.h"
 #include "map_spot.h"
 
 #include <dinput.h> //remove me !!!
@@ -513,8 +517,18 @@ void CUIMapWnd::SendMessage(CUIWindow* pWnd, s16 msg, void* pData)
         {
         // Click on the button 'change spot name'
         case MAP_CHANGE_SPOT_HINT_ACT: {
-            ShowSettingsWindow(m_cur_location->ObjectID(), m_cur_location->GetLastPosition(), m_cur_location->LevelName());
+            ShowSettingsWindow(m_cur_location->ObjectID(), m_cur_location->GetLastPosition(), m_cur_location->LevelName(), m_cur_location->GetType());
             m_cur_location = nullptr;
+            break;
+        }
+        // NLC: open (or create) the PDA note linked to this marker
+        case MAP_SPOT_NOTE_ACT: {
+            luabind::functor<void> fn;
+            if (ai().script_engine().functor("ui_pda_notes.open_for_spot", fn))
+                fn(m_cur_location->ObjectID(), m_cur_location->GetType());
+            m_cur_location = nullptr;
+            if (auto* ui_game_sp = smart_cast<CUIGameSP*>(HUD().GetUI()->UIGame()))
+                ui_game_sp->PdaMenu->SetActiveSubdialog(eptNotes);
             break;
         }
         // Click on the button 'remove spot'
@@ -741,9 +755,9 @@ bool CUIMapWnd::ConvertCursorPosToMap(Fvector* return_position, CUICustomMap* cu
     return true;
 }
 
-void CUIMapWnd::ShowSettingsWindow(u16 id, Fvector pos, shared_str levelName)
+void CUIMapWnd::ShowSettingsWindow(u16 id, Fvector pos, shared_str levelName, shared_str spotType)
 {
-    m_UserSpotWnd->Init(id, levelName.c_str(), pos, false);
+    m_UserSpotWnd->Init(id, levelName.c_str(), pos, false, spotType.c_str());
     m_UserSpotWnd->Show();
 }
 
@@ -796,6 +810,7 @@ void CUIMapWnd::ActivatePropertiesBox(CUIWindow* w)
     {
         m_UIPropertiesBox->AddItem("st_pda_change_spot_hint", w, MAP_CHANGE_SPOT_HINT_ACT);
         m_UIPropertiesBox->AddItem("st_pda_delete_spot", w, MAP_REMOVE_SPOT_ACT);
+        m_UIPropertiesBox->AddItem("st_pda_spot_note", w, MAP_SPOT_NOTE_ACT); // NLC
     }
 
     if (m_UIPropertiesBox->GetItemsCount() > 0)

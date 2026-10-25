@@ -1,0 +1,86 @@
+-- Transmutation monitoring module (Docent's PDA module; built into the upgraded PDA).
+-- C1 result tip + spot stays in amk_mod.af_transform_end / bind_greedy.
+-- C2: start notice and a temporary map mark; C3: running cooks in the reminders;
+-- C5: one hedged reading of the anomaly when a multi-part recipe starts.
+local KEY = "he_pda_cook_v1"
+local SPOT = "find_item_location"
+local VARIANTS = 5
+
+local function active()
+    return db.actor ~= nil and he_pda_access.cook_monitor_active()
+end
+
+local function notice(text)
+    db.actor:give_game_news(text, "ui\\ui_iconsTotal", Frect():set(0, 0, 83, 47), 0, 7000)
+end
+
+function hours_text(minutes)
+    minutes = math.max(0, math.floor(minutes or 0))
+    if minutes < 60 then return game.translate_string("he_pda_cook_hours_lt1") end
+    return string.format(game.translate_string("he_pda_cook_hours"), math.floor(minutes / 60 + 0.5))
+end
+
+-- amk_mod.af_start_transform_timer: gtime is the key of "p_<gtime>_af".
+function on_start(gtime, pos, delay_minutes)
+    if not active() then return end
+    local cooks = get_value(KEY, {})
+    local now = misc.game_time_minutes()
+    local rec = { lvl = level.name(), ready = now + delay_minutes }
+    local lvid = game_graph():vertex(db.actor:game_vertex_id()):level_id()
+    local p = vector():set(pos.x, pos.y, pos.z)
+    rec.spot = level.map_add_user_spot(lvid, p, SPOT,
+        string.format(game.translate_string("he_pda_cook_spot"), hours_text(delay_minutes)))
+    if rec.spot then level.map_change_spot_ser(rec.spot, SPOT, true) end
+    cooks[tostring(gtime)] = rec
+    set_value(KEY, cooks)
+    notice(string.format(game.translate_string("he_pda_cook_started"),
+        game.translate_string(rec.lvl), hours_text(delay_minutes)))
+    log2("[he_pda_cook] start key=%s level=%s minutes=%s spot=%s", tostring(gtime), rec.lvl,
+        tostring(delay_minutes), tostring(rec.spot))
+end
+
+-- amk_mod.af_transform_end, before the result is announced.
+function on_end(params_string)
+    local gtime = string.match(params_string or "", "^p_(%d+)_af$")
+    if not gtime then return end
+    local cooks = get_value(KEY, {})
+    local rec = cooks[gtime]
+    if not rec then return end
+    if rec.spot and level.map_has_object_spot(rec.spot, SPOT) ~= 0 then
+        level.map_remove_object_spot(rec.spot, SPOT)
+    end
+    cooks[gtime] = nil
+    set_value(KEY, cooks)
+end
+
+-- Reminder lines for engine_callbacks.on_set_article_text ("reminders_main_text").
+function reminder_lines()
+    local out = {}
+    if not active() then return out end
+    local now = misc.game_time_minutes()
+    for _, rec in pairs(get_value(KEY, {})) do
+        table.insert(out, { ready = rec.ready, text = string.format(
+            game.translate_string("he_pda_cook_reminder_line"),
+            game.translate_string(rec.lvl), hours_text(rec.ready - now)) })
+    end
+    table.sort(out, function(a, b) return a.ready < b.ready end)
+    for i, r in ipairs(out) do out[i] = r.text end
+    return out
+end
+
+-- sak.artmod: the first component of a recipe settled in the anomaly.
+-- The reading names a two-class window: "calm" (weak-average) or "lively"
+-- (average-strong). Average anomalies read either way, fixed per anomaly.
+function on_recipe_started(anomaly_id, anom_sect)
+    if not active() then return end
+    local power = string.match(anom_sect or "", "(%a+)$")
+    local seed = tonumber(anomaly_id) or 0
+    local window
+    if power == "weak" then window = "a"
+    elseif power == "strong" or power == "ice" then window = "b"
+    elseif power == "average" then window = (seed % 2 == 0) and "a" or "b"
+    else return end
+    local variant = math.floor(seed / 2) % VARIANTS + 1
+    notice(game.translate_string("he_pda_cook_read_" .. window .. variant))
+    log2("[he_pda_cook] reading anomaly=%s power=%s window=%s", tostring(anomaly_id), tostring(power), window)
+end

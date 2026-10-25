@@ -133,4 +133,6 @@ enum EUIMessages : s16
     INVENTORY_HANDLE_BATT_GPS,
 
     INVENTORY_EAT_BODY_PART, // NLC
+
+    MAP_SPOT_NOTE_ACT, // NLC: user marker -> PDA notes
 };

@@ -35,6 +35,8 @@
 #include "player_hud.h"
 #include "../../xr_3da/XR_IOConsole.h"
 #include "inventory.h"
+#include "../ai_space.h"
+#include "../script_engine.h"
 
 #define PDA_XML "pda.xml"
 u32 g_pda_info_state = 0;
@@ -67,6 +69,7 @@ CUIPdaWnd::~CUIPdaWnd()
     delete_data(UIActorInfo);
     delete_data(UIStalkersRanking);
     delete_data(UIEventsWnd);
+    delete_data(UINotesWnd); // NLC
     delete_data(m_updatedSectionImage);
     delete_data(m_oldSectionImage);
 }
@@ -134,6 +137,11 @@ void CUIPdaWnd::Init()
 
     UIEventsWnd = xr_new<CUIEventsWnd>();
     UIEventsWnd->Init();
+
+    // NLC: empty host for the script-built Notes tab (ui_pda_notes.script)
+    UINotesWnd = xr_new<CUIWindow>();
+    xml_init.InitWindow(uiXml, "script_tab_area", 0, UINotesWnd);
+    UINotesWnd->SetWindowName("pda_tab_notes");
     // Tab control
     UITabControl = xr_new<CUITabControl>();
     UITabControl->SetAutoDelete(true);
@@ -149,7 +157,44 @@ void CUIPdaWnd::Init()
 
     m_pActiveSection = eptNoActiveTab;
 
+    // NLC: the vanilla Contacts tab is unused; hide it instead of a zero-width button.
+    if (TABS_VECTOR* btns = UITabControl->GetButtonsVector(); btns->size() > eptContacts)
+    {
+        (*btns)[eptContacts]->Show(false);
+        (*btns)[eptContacts]->Enable(false);
+    }
+
     RearrangeTabButtons(UITabControl, m_sign_places_main);
+}
+
+// NLC: show the Notes tab button only while the script says it is usable.
+void CUIPdaWnd::UpdateScriptTabs()
+{
+    TABS_VECTOR* btns = UITabControl->GetButtonsVector();
+    if (btns->size() <= eptNotes)
+        return;
+
+    bool available = false;
+    luabind::functor<bool> fn;
+    if (ai().script_engine().functor("ui_pda_notes.is_available", fn))
+        available = fn();
+
+    CUITabButton* btn = (*btns)[eptNotes];
+    if (btn->IsShown() != available)
+    {
+        btn->Show(available);
+        btn->Enable(available);
+        RearrangeTabButtons(UITabControl, m_sign_places_main);
+    }
+    if (!available && m_pActiveSection == eptNotes)
+        SetActiveSubdialog(eptMap);
+}
+
+void CUIPdaWnd::NotifyNotesTab(bool shown)
+{
+    luabind::functor<void> fn;
+    if (ai().script_engine().functor(shown ? "ui_pda_notes.on_show" : "ui_pda_notes.on_hide", fn))
+        fn();
 }
 
 void CUIPdaWnd::SendMessage(CUIWindow* pWnd, s16 msg, void* pData)
@@ -310,11 +355,16 @@ void CUIPdaWnd::Show()
 
     InventoryUtilities::SendInfoToActor("ui_pda");
 
+    UpdateScriptTabs(); // NLC
+
     inherited::Show();
 }
 
 void CUIPdaWnd::Hide()
 {
+    if (m_pActiveSection == eptNotes)
+        NotifyNotesTab(false); // NLC: lets the script save the open note
+
     inherited::Hide();
 
     InventoryUtilities::SendInfoToActor("ui_pda_hide");
@@ -351,12 +401,17 @@ void CUIPdaWnd::SetActiveSubdialog(EPdaTabs section)
 
     if (m_pActiveDialog)
     {
+        if (m_pActiveSection == eptNotes)
+            NotifyNotesTab(false); // NLC
         UIMainPdaFrame->DetachChild(m_pActiveDialog);
         m_pActiveDialog->Show(false);
     }
 
     switch (section)
     {
+    case eptNotes: // NLC
+        m_pActiveDialog = UINotesWnd;
+        break;
     case eptDiary:
         m_pActiveDialog = smart_cast<CUIWindow*>(UIDiaryWnd);
         InventoryUtilities::SendInfoToActor("ui_pda_events");
@@ -399,6 +454,9 @@ void CUIPdaWnd::SetActiveSubdialog(EPdaTabs section)
         UITabControl->SetNewActiveTab(section);
 
     m_pActiveSection = section;
+
+    if (section == eptNotes)
+        NotifyNotesTab(true); // NLC
 }
 
 void CUIPdaWnd::Draw()
@@ -491,12 +549,13 @@ void CUIPdaWnd::DrawUpdatedSections()
     else
         draw_sign(m_oldSectionImage, pos);
 
-    pos = m_sign_places_main[eptContacts];
-    pos.add(tab_pos);
-    if (g_pda_info_state & pda_section::contacts)
-        draw_sign(m_updatedSectionImage, pos);
-    else
+    // NLC: Contacts is hidden; Notes draws the plain sign while its button is shown.
+    if (TABS_VECTOR* btns = UITabControl->GetButtonsVector(); btns->size() > eptNotes && (*btns)[eptNotes]->IsShown())
+    {
+        pos = m_sign_places_main[eptNotes];
+        pos.add(tab_pos);
         draw_sign(m_oldSectionImage, pos);
+    }
 
     pos = m_sign_places_main[eptRanking];
     pos.add(tab_pos);
@@ -547,6 +606,17 @@ void RearrangeTabButtons(CUITabControl* pTab, xr_vector<Fvector2>& vec_sign_plac
     vec_sign_places.clear();
     vec_sign_places.resize(btn_vec->size());
 
+    // NLC: drop separators from a previous layout, so it can be redone when a tab appears.
+    {
+        xr_vector<CUIWindow*> old_seps;
+        for (CUIWindow* w : pTab->GetChildWndList())
+            if (w->WindowName() == "pda_tab_separator")
+                old_seps.push_back(w);
+        for (CUIWindow* w : old_seps)
+            pTab->DetachChild(w);
+    }
+    bool first_shown = true;
+
     Fvector2 pos;
     pos.set((*it)->GetWndPos());
     Fvector2 sign_sz;
@@ -557,10 +627,16 @@ void RearrangeTabButtons(CUITabControl* pTab, xr_vector<Fvector2>& vec_sign_plac
 
     for (; it != it_e; ++it, ++idx)
     {
-        if (idx != 0)
+        if (!(*it)->IsShown()) // NLC: hidden tabs take no space
+        {
+            vec_sign_places[idx].set(pos);
+            continue;
+        }
+        if (!first_shown)
         {
             st = xr_new<CUIStatic>();
             st->SetAutoDelete(true);
+            st->SetWindowName("pda_tab_separator");
             pTab->AttachChild(st);
             st->SetFont((*it)->GetFont());
             st->SetTextColor(color_rgba(90, 90, 90, 255));
@@ -580,6 +656,7 @@ void RearrangeTabButtons(CUITabControl* pTab, xr_vector<Fvector2>& vec_sign_plac
         (*it)->AdjustWidthToText();
         btn_text_len = (*it)->GetWndSize().x;
         pos.x += btn_text_len + 3.0f;
+        first_shown = false;
     }
 }
 bool CUIPdaWnd::OnKeyboard(int dik, EUIMessages keyboard_action)

@@ -17,6 +17,7 @@ enum EPdaTabs
     eptRanking,
     eptActorStatistic,
     eptEncyclopedia,
+    eptNotes, // NLC: script-built Notes tab (ui_pda_notes.script)
     eptNoActiveTab = u16(-1)
 };
 

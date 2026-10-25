@@ -424,7 +424,1236 @@ function kishka_note_taken(which)
     end
 end
 
+-- Kishka convoy case: box 2113 (dsc_inventory_box_14) in the signals van by the railway bridge,
+-- X-18 evacuation cargo left behind when the road was cut. Before the Radar coma the case is
+-- sealed and only the transfer act lying next to it can be taken. Once the actor wakes from
+-- the coma (war_zone_sleeps set, magic sleep over) the samples have become a formation and the
+-- case opens. Saves already past the coma get the change on their first load.
+-- The box left the random stash pool (dsc_secret_0013 removed from treasure_manager.ltx).
+local CONVOY_LEVEL       = "k01_darkscape"
+local CONVOY_BOX_SID     = 2113
+local CONVOY_BOX_NAME    = "dsc_inventory_box_14"
+local CONVOY_DOC_INFO    = "convoy_doc_placed"
+local CONVOY_CHANGED     = "convoy_case_changed"
+local CONVOY_FORMATION   = "af_convoy_formation"
+local CONVOY_KEY         = "sivol_worldspawns.convoy_v1" -- { formation = id }
+local CONVOY_TICK_MS     = 2000
+local CONVOY_DOC_KEEPOUT = 40 -- the act is not placed in front of the actor
+-- spawn_map actor capture next to the box, raised 0.3 m.
+local convoy_doc = { section = "kishka_convoy_act", pos = {387.866, -0.501, 363.689}, lv = 878433, gv = 4133 }
+
+local convoy_next_tick = 0
+
+local function convoy_coma_over()
+    return has_alife_info("war_zone_sleeps") and not sleep_manager.magic_sleep
+end
+
+-- ph_idle re-applies nonscript_usable from its storage on every scheme reset and rewrites the
+-- tip while the box is usable, so the seal goes into that storage too. Neither the engine flag
+-- nor the storage is saved; this runs every frame on the level.
+local function convoy_apply_seal(obj, sealed)
+    local st = db.storage[obj:id()]
+    local idle = st and st.ph_idle
+    if idle then idle.nonscript_usable = not sealed end
+    if obj:get_nonscript_usable() == sealed then
+        obj:set_nonscript_usable(not sealed)
+        obj:set_tip_text(sealed and "convoy_case_sealed_tip" or "look_inside")
+    end
+end
+
+-- Using a box drops it from the protection list (bind_physic_object use_callback), so the
+-- protection is restored while the case is sealed or the formation is still inside.
+local function convoy_box_protected()
+    for _, name in ipairs(get_value("nlc_vars.unstealable_boxes", {})) do
+        if name == CONVOY_BOX_NAME then return true end
+    end
+    return false
+end
+
+local function convoy_formation_in_box(box)
+    local data = get_value(CONVOY_KEY)
+    local f = data and alife():object(data.formation)
+    return f ~= nil and f.parent_id == box.id
+end
+
+local function convoy_place_doc()
+    if has_alife_info(CONVOY_DOC_INFO) then return end
+    if level.name() == CONVOY_LEVEL
+        and db.actor:position():distance_to(kishka_v(convoy_doc.pos)) < CONVOY_DOC_KEEPOUT then
+        return
+    end
+    if not amk.spawn_item(convoy_doc.section, kishka_v(convoy_doc.pos), convoy_doc.gv, convoy_doc.lv) then
+        log2("[sivol_worldspawns] convoy case: could not place %s", convoy_doc.section)
+        return
+    end
+    db.actor:give_info_portion(CONVOY_DOC_INFO)
+end
+
+local function convoy_change(box)
+    local obj = misc.spawn_to(CONVOY_FORMATION, box)
+    if not obj then
+        log2("[sivol_worldspawns] convoy case: could not place %s in %s", CONVOY_FORMATION, CONVOY_BOX_NAME)
+        return
+    end
+    db.actor:give_info_portion(CONVOY_CHANGED)
+    set_value(CONVOY_KEY, { formation = obj.id })
+    if diagnostics then
+        log2("[sivol_worldspawns] convoy case changed, formation id=%s, actor on %s", tostring(obj.id), level.name())
+    end
+end
+
+-- Phase 2: Sakharov and Zub, the reusable catalyst, saturation at the Tesla core, the ward.
+-- Charge is the item condition, kept between CONVOY_CHARGE_MIN and 1. arc_arts does not wear
+-- these items down (convoy_is_charge_item), so only the code below changes their condition.
+local CONVOY_ACT             = "kishka_convoy_act"
+local CONVOY_CATALYST        = "af_convoy_catalyst"
+local CONVOY_WARD            = "af_convoy_ward"
+local CONVOY_STUDY_DONE      = "convoy_study_done"
+local CONVOY_SATURATED       = "convoy_saturated"
+local CONVOY_CHARGE_MIN      = 0.01
+local CONVOY_CATALYST_STEP   = 0.33       -- 3 cooks from a full charge
+local CONVOY_WARD_STEP       = 0.99 / 40  -- 40 absorbed discharges
+local CONVOY_RECHARGE_MIN    = 1440       -- game minutes for a full recharge
+local CONVOY_STUDY_MIN       = 1440
+local CONVOY_ZUB_MIN         = 1440
+local CONVOY_STUDY_PRICE     = 30000
+local CONVOY_ZUB_FEE         = 5000 -- or a level-1 artefact (kotovod.gg_any_aart_*); Sakharov takes a level-2 one
+local CONVOY_ZUB_PRICE       = 1500
+local CONVOY_YANTAR          = "l08_yantar"
+-- who field-tests the sample during the study, first one alive at Yantar
+local convoy_testers = {
+    { sid = 9528, info = "convoy_tester_kruglov" }, -- yan_ecolog_kruglov
+    { sid = 905,  info = "convoy_tester_semenov" }, -- yantar_semenov
+}
+local CONVOY_TESLA_LEVEL     = "generators"
+local CONVOY_TESLA_CORE      = {13.5, 40.2, -230.7} -- the point hazards_handle scales the shock from
+local CONVOY_SATURATE_RADIUS = 50
+local CONVOY_SATURATE_HITS   = 5
+local convoy_catalyst_sections = { af_convoy_formation = true, af_convoy_catalyst = true }
+local convoy_saturate_hits = 0
+local convoy_last_minutes = nil
+
+function convoy_is_catalyst(section)
+    return convoy_catalyst_sections[section] == true
+end
+
+function convoy_is_charge_item(section)
+    return convoy_catalyst_sections[section] == true or section == CONVOY_WARD
+end
+
+-- amk_mod.check_af_transform: a drained catalyst is not registered for cooking.
+function convoy_catalyst_ready(af)
+    return af:condition() - CONVOY_CATALYST_STEP >= CONVOY_CHARGE_MIN - 0.001
+end
+
+-- amk_mod and sak.artmod call this where they would release the registered af_unknown.
+-- Returns true when it was the catalyst: one charge is spent and the sample stays on the ground.
+function convoy_catalyst_spend(id)
+    local se = alife():object(id)
+    if not (se and convoy_is_catalyst(se:section_name())) then return false end
+    local cond = params.get_condition(id, 1)
+    params.upd_condition(id, math.max(CONVOY_CHARGE_MIN, cond - CONVOY_CATALYST_STEP))
+    return true
+end
+
+-- Dialogue helpers (dialogs_yantar.xml, dialogs_bar.xml).
+function convoy_has_act()
+    return db.actor:object(CONVOY_ACT) ~= nil
+end
+
+function convoy_show_act()
+    sak.relocate_item("out", CONVOY_ACT, 1)
+end
+
+function convoy_return_act()
+    sak.relocate_item("in", CONVOY_ACT, 1)
+end
+
+function convoy_has_formation()
+    return db.actor:object(CONVOY_FORMATION) ~= nil
+end
+
+local function convoy_alive_at_yantar(sid)
+    local se = alife():story_object(sid)
+    if not (se and se:alive()) then return false end
+    local gg = game_graph()
+    local gv = se.m_game_vertex_id
+    return gg:valid_vertex_id(gv) and alife():level_name(gg:vertex(gv):level_id()) == CONVOY_YANTAR
+end
+
+-- Sakharov keeps the raw formation for a day and returns it as the studied catalyst
+-- with the same charge. The field test is credited to Kruglov or Semenov if one of them is
+-- alive at Yantar; otherwise to "one of ours" (dialog phrase gated on neither info).
+function convoy_study_begin()
+    local item = db.actor:object(CONVOY_FORMATION)
+    if not item then return end
+    local data = get_value(CONVOY_KEY) or {}
+    data.study_condition = item:condition()
+    set_value(CONVOY_KEY, data)
+    sak.relocate_item("out", CONVOY_FORMATION, 1)
+    misc.release_obj(item:id())
+    sak_dialog.start_time("convoy_study")
+    for _, t in ipairs(convoy_testers) do
+        if convoy_alive_at_yantar(t.sid) then
+            db.actor:give_info_portion(t.info)
+            break
+        end
+    end
+end
+
+function convoy_study_ready()
+    return sak_dialog.is_ready_time("convoy_study", CONVOY_STUDY_MIN)
+end
+
+function convoy_study_return()
+    local actor = db.actor
+    local data = get_value(CONVOY_KEY) or {}
+    local se = alife():create(CONVOY_CATALYST, actor:position(), actor:level_vertex_id(),
+        actor:game_vertex_id(), actor:id())
+    if se then params.upd_condition(se.id, data.study_condition or 1) end
+    sak.relocate_item("in", CONVOY_CATALYST, 1)
+end
+
+function convoy_study_sell()
+    sak_dialog.relocate_money(CONVOY_STUDY_PRICE, "in")
+end
+
+function convoy_can_pay_zub()
+    return db.actor:money() >= CONVOY_ZUB_FEE
+end
+
+function convoy_pay_zub()
+    sak_dialog.relocate_money(CONVOY_ZUB_FEE, "out")
+end
+
+-- Paid with money (convoy_pay_zub) or a level-1 artefact (kotovod.gg_any_aart_give) first.
+function convoy_zub_ask_begin()
+    sak_dialog.start_time("convoy_zub_ask")
+end
+
+function convoy_zub_ready()
+    return sak_dialog.is_ready_time("convoy_zub_ask", CONVOY_ZUB_MIN)
+end
+
+function convoy_zub_buy()
+    local item = db.actor:object(CONVOY_ACT)
+    if item then misc.release_obj(item:id()) end
+    sak_dialog.relocate_money(CONVOY_ZUB_PRICE, "in")
+end
+
+local function convoy_belt_item(section)
+    local actor = db.actor
+    for i = 0, actor:belt_count() - 1 do
+        local item = actor:item_on_belt(i)
+        if item and item:section() == section then return item end
+    end
+    return nil
+end
+
+-- sak.hazards_handle, Generators branch: called for each discharge that would hit the actor.
+-- Near the core a studied catalyst in the inventory saturates into the ward after a few
+-- discharges. Returns true when the ward on the belt took the discharge.
+function convoy_on_tesla_discharge(act_pos)
+    local actor = db.actor
+    if has_alife_info(CONVOY_STUDY_DONE) then
+        local catalyst = actor:object(CONVOY_CATALYST)
+        if catalyst and act_pos:distance_to(kishka_v(CONVOY_TESLA_CORE)) < CONVOY_SATURATE_RADIUS then
+            convoy_saturate_hits = convoy_saturate_hits + 1
+            if convoy_saturate_hits >= CONVOY_SATURATE_HITS then
+                convoy_saturate_hits = 0
+                misc.release_obj(catalyst:id())
+                sak.create_items(CONVOY_WARD, 1)
+                actor:give_info_portion(CONVOY_SATURATED)
+                sak.send_tip(game.translate_string("convoy_saturated_tip"),
+                    game.translate_string("thinking_out_loud"), 5, 15, "g_g", "sak", "yellow")
+            end
+        end
+    end
+    local ward = convoy_belt_item(CONVOY_WARD)
+    if not ward then return false end
+    local cond = ward:condition()
+    if cond - CONVOY_WARD_STEP < CONVOY_CHARGE_MIN - 0.001 then return false end
+    params.upd_condition(ward:id(), cond - CONVOY_WARD_STEP)
+    return true
+end
+
+local function convoy_recharge(item, minutes)
+    if not item then return end
+    local cond = item:condition()
+    if cond < 1 then
+        params.upd_condition(item:id(), math.min(1, cond + minutes / CONVOY_RECHARGE_MIN))
+    end
+end
+
+-- The catalyst recharges in the actor's inventory at the Generators; the ward bleeds off its
+-- charge anywhere else. Game minutes since the last tick, capped at one full recharge.
+local function convoy_recharge_tick()
+    local now = timers.Get_Game_Minutes()
+    local last = convoy_last_minutes
+    convoy_last_minutes = now
+    if not last or now <= last then return end
+    local minutes = math.min(now - last, CONVOY_RECHARGE_MIN)
+    local actor = db.actor
+    if level.name() == CONVOY_TESLA_LEVEL then
+        convoy_recharge(actor:object(CONVOY_FORMATION), minutes)
+        convoy_recharge(actor:object(CONVOY_CATALYST), minutes)
+    else
+        convoy_recharge(actor:object(CONVOY_WARD), minutes)
+    end
+end
+
+-- Phase 3: the merc crew at the van (docs/CONVOY_QUEST.md). Spawned once the case has changed,
+-- i.e. when the actor wakes from the coma or on the first load of a save already past it.
+-- Offline timeline in game minutes from that point: the crew opens the case after a delay that
+-- depends on what Zub sold them, takes the formation (and the act, if it still lies by the van)
+-- when it is still there, and leaves Kishka no earlier than 2 days after the actor's first lead
+-- and no later than 7 days. Neutral until the actor hits one of them or is seen taking the
+-- formation; Biryuk talks only to an actor with the weapon holstered (meet use_wpn = false).
+-- Phase 3/4 constants live in one table: the chunk is at the 200-local limit.
+local CV = {}
+CV.CREW_KEY = "sivol_worldspawns.convoy_crew_v1"
+CV.CREW_SPAWNED = "convoy_crew_spawned"
+CV.CREW_LEAD = "convoy_crew_lead"         -- journal: strangers in Kishka
+CV.CREW_HAS = "convoy_crew_has"
+CV.CREW_EMPTY = "convoy_crew_found_empty"
+CV.CREW_HOSTILE = "convoy_crew_hostile"
+CV.CREW_NAME_KNOWN = "convoy_crew_knows_name"   -- the actor admitted it to Biryuk
+CV.CREW_ULTIMATUM = "convoy_ultimatum"         -- journal: bring it to Vakhtang
+CV.CREW_BIRYUK_DEAD = "convoy_biryuk_dead"
+CV.CREW_GONE = "convoy_crew_gone"         -- stage 1 over, nobody at the van
+CV.CREW_NORTH = "convoy_crew_north"        -- left with the formation (phase 4 takes over)
+CV.CREW_LEFT_EMPTY = "convoy_crew_left_empty"   -- journal: they left with nothing
+CV.CREW_RECOVERED = "convoy_cargo_recovered"   -- the actor took the formation off the crew
+CV.CREW_BODY_FREE = "convoy_crew_body_free"    -- sak_off_corpses may clean Biryuk's body
+CV.CREW_HANDED = "convoy_handed_over"
+CV.CREW_SOLD = "convoy_sold_vakhtang"
+CV.CREW_SAID_LOST = "convoy_said_lost"
+CV.CREW_REFUSED = "convoy_refused"           -- refused or missed the deadline (phase 4 ambush)
+CV.CREW_DAY = 1440
+CV.CREW_KEEPOUT = 150  -- no spawn or departure while the actor is this close to the van
+CV.CREW_OPEN_KEEPOUT = 40   -- the case is not emptied in front of the actor
+CV.CREW_LEAD_DIST = 150  -- seeing the crew counts as the first lead
+CV.CREW_SHIELD = 80   -- others cannot hurt the crew while the actor is farther than this
+CV.CREW_STAY_MIN = 720  -- they stay at least half a day after opening the case
+CV.CREW_DEADLINE = 7 * CV.CREW_DAY
+CV.CREW_PAY = 15000 -- Biryuk's price, paid directly or through Vakhtang
+CV.CREW_VAKHTANG_PAY = 35000 -- Vakhtang outbids the crew
+CV.CREW_QUIET_PAY = 30000 -- Vakhtang's quiet offer when nobody knows the actor had it
+CV.CREW_OPEN_BOUGHT = { 6 * 60, 20 * 60 }  -- day 1: Zub sold them the act
+CV.CREW_OPEN_ASKED = { 26 * 60, 66 * 60 } -- day 2-3: they know someone asked Zub about it
+CV.CREW_OPEN_NONE = { 50 * 60, 90 * 60 } -- day 3-4: every convoy vehicle gets searched
+CV.CREW_VAN = {386.655, -0.792, 364.299}
+-- Posts are spawn_map actor captures and match the paths in waypoints.ltx.
+local convoy_crew = {
+    { role = "biryuk", section = "convoy_crew_biryuk", pos = {384.195, -2.412, 364.521}, lv = 871940, gv = 4133 },
+    { role = "guard1", section = "convoy_crew_guard1", pos = {400.722, -0.561, 361.114}, lv = 900733, gv = 4133 },
+    { role = "guard2", section = "convoy_crew_guard2", pos = {390.484, -2.333, 364.999}, lv = 883541, gv = 4135 },
+    { role = "guard3", section = "convoy_crew_guard3", pos = {375.677, -1.260, 355.267}, lv = 855445, gv = 4133 },
+    { role = "sniper", section = "convoy_crew_sniper", pos = {427.015,  7.219, 372.199}, lv = 950184, gv = 4135 },
+    { role = "sentry", section = "convoy_crew_sentry", pos = {388.585, -2.102, 349.370}, lv = 879706, gv = 4133, item = "convoy_sentry_pda" },
+}
+local convoy_cargo = { CONVOY_FORMATION, CONVOY_CATALYST, CONVOY_WARD }
+local crew_bad_vertex_logged = false
+local north_member -- phase 4, defined below: is this id one of the crew at a later stage?
+
+-- { wake, open_at, opened, lead_at, deadline, biryuk = id, ids = { [tostring(id)] = role }, names = { [name] = role } }
+local function crew_data()
+    return get_value(CV.CREW_KEY)
+end
+
+local function crew_now()
+    return timers.Get_Game_Minutes()
+end
+
+local function crew_give(info)
+    if not has_alife_info(info) then db.actor:give_info_portion(info) end
+end
+
+local function crew_actor_near(p, dist)
+    return level.name() == CONVOY_LEVEL and db.actor:position():distance_to(kishka_v(p)) < dist
+end
+
+local function crew_alive(id)
+    local se = id and alife():object(id)
+    return se ~= nil and se:alive()
+end
+
+local function crew_knows_name()
+    return has_alife_info("convoy_zub_asked") or has_alife_info("convoy_zub_bought") or has_alife_info(CV.CREW_NAME_KNOWN)
+end
+
+local function crew_pda(text_id, delay)
+    sak.send_tip(game.translate_string(text_id), game.translate_string("convoy_biryuk_name"),
+        delay or 0, 20, "killer", "sak", "gray", false)
+end
+
+local function crew_try_spawn()
+    if has_alife_info(CV.CREW_SPAWNED) or not has_alife_info(CONVOY_CHANGED) then return end
+    if crew_actor_near(CV.CREW_VAN, CV.CREW_KEEPOUT) then return end
+    for _, n in ipairs(convoy_crew) do
+        if not kishka_vertex_ok(n) then
+            if not crew_bad_vertex_logged then
+                crew_bad_vertex_logged = true
+                log2("[sivol_worldspawns] convoy crew spawn skipped: game vertex %d of %s is not on %s",
+                    n.gv, n.section, CONVOY_LEVEL)
+            end
+            return
+        end
+    end
+
+    db.actor:give_info_portion(CV.CREW_SPAWNED)
+    local r = has_alife_info("convoy_zub_bought") and CV.CREW_OPEN_BOUGHT
+        or has_alife_info("convoy_zub_asked") and CV.CREW_OPEN_ASKED or CV.CREW_OPEN_NONE
+    local sim, now = alife(), crew_now()
+    local data = { wake = now, open_at = now + math.random(r[1], r[2]), ids = {}, names = {} }
+    for _, n in ipairs(convoy_crew) do
+        local obj = sim:create(n.section, kishka_v(n.pos), n.lv, n.gv)
+        data.ids[tostring(obj.id)] = n.role
+        data.names[obj:name()] = n.role
+        if n.role == "biryuk" then data.biryuk = obj.id end
+        if n.item then misc.spawn_to(n.item, obj) end
+    end
+    set_value(CV.CREW_KEY, data)
+    if diagnostics then
+        log2("[sivol_worldspawns] convoy crew spawned, case opens in %d game min, actor on %s",
+            data.open_at - now, level.name())
+    end
+end
+
+local function crew_lead(data)
+    if has_alife_info(CV.CREW_LEAD) or has_alife_info(CV.CREW_GONE) then return end
+    data.lead_at = crew_now()
+    set_value(CV.CREW_KEY, data)
+    db.actor:give_info_portion(CV.CREW_LEAD)
+end
+
+local function crew_turn_hostile(reason)
+    if has_alife_info(CV.CREW_HOSTILE) then return end
+    db.actor:give_info_portion(CV.CREW_HOSTILE)
+    if diagnostics then log2("[sivol_worldspawns] convoy crew hostile: %s", reason) end
+end
+
+local function crew_ultimatum(data)
+    if has_alife_info(CV.CREW_ULTIMATUM) then return end
+    data.deadline = crew_now() + CV.CREW_DEADLINE
+    set_value(CV.CREW_KEY, data)
+    db.actor:give_info_portion(CV.CREW_ULTIMATUM)
+end
+
+local function crew_ultimatum_open()
+    return has_alife_info(CV.CREW_ULTIMATUM) and not (has_alife_info(CV.CREW_HANDED) or has_alife_info(CV.CREW_SOLD)
+        or has_alife_info(CV.CREW_SAID_LOST) or has_alife_info(CV.CREW_REFUSED) or has_alife_info(CV.CREW_BIRYUK_DEAD))
+end
+
+-- The act still lying where it was placed, if the actor never took it.
+local function crew_lying_act()
+    local gg = game_graph()
+    local spot = kishka_v(convoy_doc.pos)
+    for id, o in alife():objects() do
+        if o:section_name() == CONVOY_ACT and o.parent_id == BAD_OBJ_ID
+            and gg:valid_vertex_id(o.m_game_vertex_id)
+            and alife():level_name(gg:vertex(o.m_game_vertex_id):level_id()) == CONVOY_LEVEL
+            and o.position:distance_to(spot) < 5 then
+            return id
+        end
+    end
+    return nil
+end
+
+local function crew_open_case(data, box)
+    data.opened = true
+    set_value(CV.CREW_KEY, data)
+    if not crew_alive(data.biryuk) then return end -- leaderless, they only wait to leave
+    if convoy_formation_in_box(box) then
+        local cv = get_value(CONVOY_KEY)
+        local biryuk = alife():object(data.biryuk)
+        misc.release_obj(cv.formation)
+        local f = misc.spawn_to(CONVOY_FORMATION, biryuk)
+        cv.formation = f and f.id
+        set_value(CONVOY_KEY, cv)
+        local act = crew_lying_act()
+        if act then
+            misc.release_obj(act)
+            misc.spawn_to(CONVOY_ACT, biryuk)
+        end
+        db.actor:give_info_portion(CV.CREW_HAS)
+    else
+        db.actor:give_info_portion(CV.CREW_EMPTY)
+        if crew_knows_name() then
+            crew_ultimatum(data)
+            crew_pda("convoy_ultimatum_pda")
+        end
+    end
+    if diagnostics then
+        log2("[sivol_worldspawns] convoy crew opened the case: %s", has_alife_info(CV.CREW_HAS) and "took it" or "empty")
+    end
+end
+
+local function crew_leave_at(data)
+    local cap = data.wake + 7 * CV.CREW_DAY
+    if not data.lead_at then return cap end
+    return math.min(cap, math.max(data.open_at + CV.CREW_STAY_MIN, data.lead_at + 2 * CV.CREW_DAY))
+end
+
+-- The survivors leave Kishka with what they carry; bodies stay where they fell.
+local function crew_leave(data)
+    local sim = alife()
+    local leaving = {}
+    data.survivors = {}
+    for sid, role in pairs(data.ids) do
+        local id = tonumber(sid)
+        if crew_alive(id) then
+            leaving[id] = true
+            data.survivors[#data.survivors + 1] = role
+        end
+    end
+    set_value(CV.CREW_KEY, data)
+    local carried = {}
+    for id, o in sim:objects() do
+        if leaving[o.parent_id] then carried[#carried + 1] = id end
+    end
+    for _, id in ipairs(carried) do misc.release_obj(id) end
+    for id in pairs(leaving) do misc.release_obj(id) end
+
+    if has_alife_info(CV.CREW_HAS) and leaving[data.biryuk] then
+        db.actor:give_info_portion(CV.CREW_NORTH)
+    elseif has_alife_info(CV.CREW_EMPTY) and not has_alife_info(CV.CREW_ULTIMATUM) then
+        db.actor:give_info_portion(CV.CREW_LEFT_EMPTY)
+    end
+    if not (has_alife_info(CV.CREW_HAS) and not leaving[data.biryuk] and not has_alife_info(CV.CREW_RECOVERED)) then
+        crew_give(CV.CREW_BODY_FREE)
+    end
+    db.actor:give_info_portion(CV.CREW_GONE)
+    if diagnostics then log2("[sivol_worldspawns] convoy crew left Kishka") end
+end
+
+-- Attitude = personal goodwill + reputation + rank + community terms (relation_registry_inline.h),
+-- so set_relation(neutral), which only zeroes the personal part, leaves mercs hostile to an actor
+-- the killer community dislikes. Neutral is attitude -150..499 (game_relations.ltx); the personal
+-- goodwill is set so the total lands on CV.CREW_NEUTRAL_ATTITUDE.
+CV.CREW_NEUTRAL_ATTITUDE = 100
+local function crew_update_online(data, hostile)
+    local actor = db.actor
+    local enemy = hostile or has_alife_info(CV.CREW_HOSTILE)
+    for sid in pairs(data.ids) do
+        local obj = level.object_by_id(tonumber(sid))
+        if obj and obj:alive() then
+            if enemy then
+                if obj:relation(actor) ~= game_object.enemy then obj:set_relation(game_object.enemy, actor) end
+            else
+                local att = obj:general_goodwill(actor)
+                if att < -150 or att >= 500 then
+                    obj:set_goodwill(obj:goodwill(actor) + CV.CREW_NEUTRAL_ATTITUDE - att, actor)
+                end
+            end
+        end
+    end
+end
+
+-- Watch: how the crew reacts to the actor while they are neutral. A weapon out within
+-- CV.WATCH_DIST of a member who sees the actor earns two warnings CV.WATCH_WARN_MS apart, then a fight;
+-- CV.WATCH_CALM_MS holstered resets the count. Standing at the guarded spot (the case, the rig, the
+-- courier) for CV.WATCH_GUARD_MS starts a fight too. The first close approach gets a "stop" and a
+-- hint to talk to Biryuk. Lines are the NPC's own voice theme plus a PDA line with the text.
+-- The state lives for the session and resets when the actor is away from the crew.
+CV.WATCH_DIST = 35
+CV.WATCH_HELLO = 20
+CV.WATCH_AWAY = 90
+CV.WATCH_FIGHT_MS = 15000 -- no warnings while the crew fights something, and this long after
+CV.WATCH_TOUCH = 8    -- a pickup this close to a crew member is noticed even unseen
+CV.WATCH_WARN_MS = 8000
+CV.WATCH_CALM_MS = 30000
+CV.WATCH_GUARD_MS = 6000
+local watch = { level = 0, t = 0, armed_t = 0 }
+
+local function watch_reset()
+    watch.level, watch.t, watch.armed_t, watch.hello, watch.guard_t = 0, 0, 0, nil, nil
+end
+
+local function watch_say(obj, theme, text_id, colour)
+    if not obj then return end
+    if theme then xr_sound.set_sound_play(obj, theme) end
+    if text_id then
+        sak.send_tip(game.translate_string(text_id), obj:character_name(), 0, 8, "killer", "sak", colour or "gray", false)
+    end
+end
+
+-- nearest living member who sees the actor, or (near) any member within reach
+local function watch_spotter(group, reach)
+    local apos = db.actor:position()
+    local best, bd
+    for sid in pairs(group.ids) do
+        local obj = level.object_by_id(tonumber(sid))
+        if obj and obj:alive() then
+            local d = obj:position():distance_to(apos)
+            if (obj:see(db.actor) or (reach and d < reach)) and (not bd or d < bd) then best, bd = obj, d end
+        end
+    end
+    return best, bd
+end
+
+local function crew_watch(group, centre, guard, guard_r)
+    if has_alife_info(CV.CREW_HOSTILE) then return end
+    local apos = db.actor:position()
+    if apos:distance_to(centre) > CV.WATCH_AWAY then watch_reset() return end
+    if db.actor:is_talking() then return end
+    local now = time_global()
+    -- a weapon out while the crew fights mutants or others next to the actor is not a threat
+    for sid in pairs(group.ids) do
+        local obj = level.object_by_id(tonumber(sid))
+        if obj and obj:alive() and obj:best_enemy() then watch.fight_t = now break end
+    end
+    if watch.fight_t and now - watch.fight_t < CV.WATCH_FIGHT_MS then
+        watch.level, watch.guard_t = 0, nil
+        return
+    end
+    local spotter, dist = watch_spotter(group)
+    if not spotter then return end
+    if guard and apos:distance_to(guard) < guard_r then
+        if not watch.guard_t then
+            watch.guard_t = now
+            watch_say(spotter, "threat_back", "convoy_watch_back")
+        elseif now - watch.guard_t > CV.WATCH_GUARD_MS then
+            crew_turn_hostile("actor stayed at the guarded spot")
+            watch_say(spotter, nil, "convoy_crew_seen_tip", "red")
+            return
+        end
+    else
+        watch.guard_t = nil
+    end
+    if isWeapon(db.actor:active_item()) then
+        if dist < CV.WATCH_DIST then
+            watch.armed_t = now
+            if now - watch.t >= CV.WATCH_WARN_MS then
+                watch.level, watch.t = watch.level + 1, now
+                if watch.level >= 3 then
+                    crew_turn_hostile("actor kept the weapon out")
+                    watch_say(spotter, nil, "convoy_crew_seen_tip", "red")
+                else
+                    watch_say(spotter, "threat_weap", "convoy_watch_weapon" .. watch.level)
+                end
+            end
+        end
+    else
+        if watch.level > 0 and now - watch.armed_t > CV.WATCH_CALM_MS then watch.level = 0 end
+        if not watch.hello and dist < CV.WATCH_HELLO then
+            watch.hello = true
+            watch_say(spotter, "threat_stop", "convoy_watch_hello")
+        end
+    end
+end
+
+-- A pickup at the van while the crew is searching it, seen or close enough to be heard.
+local function crew_pickup_noticed(what)
+    if not sak.game_began or has_alife_info(CV.CREW_HOSTILE) or has_alife_info(CV.CREW_GONE) then return end
+    local data = crew_data()
+    if not data or data.opened or level.name() ~= CONVOY_LEVEL then return end
+    local spotter = watch_spotter(data, CV.WATCH_TOUCH)
+    if spotter then
+        crew_turn_hostile(spotter:name() .. " noticed the actor take " .. what)
+        watch_say(spotter, nil, "convoy_crew_seen_tip", "red")
+    end
+end
+
+local function crew_tick(box)
+    crew_try_spawn()
+    local data = crew_data()
+    if not data then return end
+    local now = crew_now()
+    if not has_alife_info(CV.CREW_BIRYUK_DEAD) and not crew_alive(data.biryuk) and not has_alife_info(CV.CREW_GONE) then
+        db.actor:give_info_portion(CV.CREW_BIRYUK_DEAD)
+    end
+    if not has_alife_info(CV.CREW_GONE) then
+        if level.name() == CONVOY_LEVEL then
+            crew_update_online(data)
+            if crew_actor_near(CV.CREW_VAN, CV.CREW_LEAD_DIST) then crew_lead(data) end
+            crew_watch(data, kishka_v(CV.CREW_VAN), not data.opened and kishka_v(CV.CREW_VAN) or nil, 4)
+        end
+        if not data.opened and now >= data.open_at and not crew_actor_near(CV.CREW_VAN, CV.CREW_OPEN_KEEPOUT) then
+            crew_open_case(data, box)
+        end
+        if data.opened and now >= crew_leave_at(data) and not crew_actor_near(CV.CREW_VAN, CV.CREW_KEEPOUT) then
+            crew_leave(data)
+        end
+    end
+    if crew_ultimatum_open() and data.deadline and now >= data.deadline then
+        db.actor:give_info_portion(CV.CREW_REFUSED)
+        crew_pda("convoy_deadline_pda")
+    end
+end
+
+local function crew_on_npc_before_hit(obj, hit_data)
+    if hit_data.ignore_hit then return end
+    local data = crew_data()
+    local at_van = data and data.ids[tostring(obj:id())] and not has_alife_info(CV.CREW_GONE)
+    if not (at_van or north_member(obj:id())) then return end
+    local who = hit_data.who or (hit_data.who_id and level.object_by_id(hit_data.who_id))
+    if who and db.actor and who:id() == db.actor:id() then
+        if (hit_data.power or 0) > 0 then crew_turn_hostile("actor hit " .. obj:name()) end
+        return
+    end
+    if db.actor and obj:position():distance_to(db.actor:position()) > CV.CREW_SHIELD then
+        hit_data.ignore_hit = true
+    end
+end
+
+-- he_quest_target_lock: offline A-life leaves the crew alone while they are at the van, and
+-- Biryuk's body while it still carries the formation.
+local function crew_locked(role, id)
+    if not role then return false end
+    if not has_alife_info(CV.CREW_GONE) then return true end
+    return role == "biryuk" and has_alife_info(CV.CREW_HAS) and not has_alife_info(CV.CREW_RECOVERED)
+        and not has_alife_info(CV.CREW_BODY_FREE) and (id == nil or not crew_alive(id))
+end
+
+function convoy_is_locked_id(id)
+    local data = id and crew_data()
+    return data ~= nil and (crew_locked(data.ids[tostring(id)], id) or north_member(id))
+end
+
+function convoy_is_locked_name(name)
+    local data = name and crew_data()
+    return data ~= nil and (crew_locked(data.names[name]) or north_member(nil, name))
+end
+
+-- actor_take_item: the formation. Taken off the crew it ends their claim; taken from the case
+-- under their eyes it starts a fight.
+function convoy_formation_taken()
+    if not sak.game_began then return end -- inventory re-takes on load
+    local data = crew_data()
+    if not data or has_alife_info(CV.CREW_GONE) and not has_alife_info(CV.CREW_HAS) then return end
+    if has_alife_info(CV.CREW_HAS) then
+        crew_give(CV.CREW_RECOVERED)
+        crew_give(CV.CREW_BODY_FREE)
+        return
+    end
+    crew_pickup_noticed("the formation")
+end
+
+-- actor_take_item: the act, picked up by the van under the crew's noses.
+function convoy_act_taken()
+    crew_pickup_noticed("the act")
+end
+
+-- actor_take_item: the sentry's PDA names the next stop (phase 4).
+function convoy_sentry_pda_taken()
+    if has_alife_info("convoy_sentry_pda_read") then return end
+    db.actor:give_info_portion("convoy_sentry_pda_read")
+    sak.send_tip(game.translate_string("convoy_sentry_pda_tip"),
+        game.translate_string("thinking_out_loud"), 5, 15, "g_g", "sak", "yellow")
+end
+
+-- Dialogs (dialogs_bar.xml): Zub's rumour, Biryuk at the van, Vakhtang.
+function convoy_crew_lead()
+    local data = crew_data()
+    if data then crew_lead(data) end
+end
+
+function convoy_zub_rumour_ready()
+    return has_alife_info(CV.CREW_SPAWNED) and not has_alife_info(CV.CREW_GONE)
+end
+
+-- Biryuk's greeting (start dialog convoy_biryuk_hello): exactly one kind matches.
+local function biryuk_mood()
+    if has_alife_info("convoy_biryuk_pester1") then return "annoyed" end
+    if crew_ultimatum_open() then return "ultimatum" end
+    if has_alife_info(CV.CREW_EMPTY) and not has_alife_info(CV.CREW_HANDED) then return "empty" end
+    if has_alife_info(CV.CREW_HAS) or has_alife_info(CV.CREW_HANDED) then return "has" end
+    return "search"
+end
+
+function convoy_biryuk_greet(kind)
+    return biryuk_mood() == kind
+end
+
+-- Pestering: after the first talk Biryuk only gets shorter, the third time it is a fight.
+function convoy_biryuk_can_pester()
+    return has_alife_info("convoy_biryuk_talked") and not has_alife_info(CV.CREW_HOSTILE) and not crew_ultimatum_open()
+end
+
+function convoy_biryuk_warn(actor, npc)
+    if npc and npc:id() ~= db.actor:id() then xr_sound.set_sound_play(npc, "threat_back") end
+end
+
+function convoy_biryuk_provoked()
+    crew_turn_hostile("pestered Biryuk")
+end
+
+function convoy_biryuk_admit()
+    local data = crew_data()
+    if not data then return end
+    crew_give(CV.CREW_NAME_KNOWN)
+    crew_ultimatum(data)
+end
+
+function convoy_has_cargo()
+    for _, section in ipairs(convoy_cargo) do
+        if db.actor:object(section) then return true end
+    end
+    return false
+end
+
+local function convoy_take_cargo()
+    for _, section in ipairs(convoy_cargo) do
+        local item = db.actor:object(section)
+        if item then
+            sak.relocate_item("out", section, 1)
+            misc.release_obj(item:id())
+            return
+        end
+    end
+end
+
+-- Directly to Biryuk at the van.
+function convoy_hand_to_biryuk()
+    convoy_take_cargo()
+    sak_dialog.relocate_money(CV.CREW_PAY, "in")
+end
+
+-- Through Vakhtang: the crew is paid and leaves, Vakhtang remembers the actor kept their word.
+function convoy_hand_over()
+    convoy_take_cargo()
+    sak_dialog.relocate_money(CV.CREW_PAY, "in")
+    crew_give("price_vahtang_2")
+    crew_pda("convoy_handed_pda", 30)
+end
+
+function convoy_sell_vakhtang()
+    convoy_take_cargo()
+    sak_dialog.relocate_money(CV.CREW_VAKHTANG_PAY, "in")
+    crew_pda("convoy_outbid_pda", 30)
+end
+
+function convoy_sell_vakhtang_quiet()
+    convoy_take_cargo()
+    sak_dialog.relocate_money(CV.CREW_QUIET_PAY, "in")
+end
+
+function convoy_ultimatum_open()
+    return crew_ultimatum_open()
+end
+
+-- Phase 4: the north (docs/CONVOY_QUEST.md). Crew that left Kishka with the formation set up
+-- camp at the Generators for 5-7 days; the formation saturates into the ward after a day and,
+-- while the crew still holds it, nobody inside the camp radius gets the Tesla discharges
+-- (sak.hazards_handle). Then they hand it to the buyer's courier in the Limansk burer building
+-- within 2-3 days and the cargo leaves the Zone. If the actor refused the ultimatum or let it run
+-- out, the crew instead waits in that building once: the burers there are cleared, two burer
+-- bodies are left as decoys and the lim_burers1 respawner is paused until the ambush is over.
+-- Later stages are new objects spawned at the destination with logic generated here; the
+-- paths are in waypoints.ltx.
+CV.NORTH_KEY = "sivol_worldspawns.convoy_north_v1" -- { stage, ids, names, biryuk, cargo, until_at, saturate_at, saturated, props }
+CV.AMBUSH_KEY = "sivol_worldspawns.convoy_ambush_v1" -- { ids, names }
+CV.NORTH_TESLA = "convoy_north_tesla"
+CV.NORTH_LIMANSK = "convoy_north_limansk"
+CV.NORTH_LOST = "convoy_lost"        -- journal: the cargo left the Zone
+CV.AMBUSH_SET = "convoy_ambush_set"
+CV.AMBUSH_DONE = "convoy_ambush_done"
+CV.LIM_LEVEL = "limansk"
+CV.LIM_RESPAWNER = "lim_burers1"
+CV.NORTH_KEEPOUT = 150
+CV.SHELTER_RADIUS = 25
+CV.LIM_CLEAR_RADIUS = 45
+CV.TESLA_DAYS = { 5, 7 }
+CV.LIM_DAYS = { 2, 3 }
+CV.TESLA_SHELTER = {77.025, 31.274, -506.583}
+CV.LIM_BUILDING = {6.0, 14.0, 186.0}
+local north_sections = {
+    biryuk = "convoy_crew_biryuk", guard1 = "convoy_crew_guard1", guard2 = "convoy_crew_guard2",
+    guard3 = "convoy_crew_guard3", sniper = "convoy_crew_sniper", sentry = "convoy_crew_sentry",
+    courier = "convoy_courier",
+}
+-- spawn_map actor captures; paths <path>_walk / <path>_look in waypoints.ltx
+local tesla_lead  = { path = "convoy_tesla_camp", pos = {76.503, 31.359, -507.744}, lv = 425244, gv = 3118 }
+local tesla_posts = {
+    { path = "convoy_tesla_post1", pos = {76.285, 32.455, -513.971}, lv = 425235, gv = 3118 },
+    { path = "convoy_tesla_post2", pos = {73.681, 32.324, -501.039}, lv = 421979, gv = 3118 },
+    { path = "convoy_tesla_post3", pos = {84.669, 30.481, -506.942}, lv = 434934, gv = 3118 },
+    { path = "convoy_tesla_post4", pos = {74.241, 31.917, -510.601}, lv = 422783, gv = 3118 },
+}
+local lim_lead    = { path = "convoy_lim_crew1", pos = {20.244, 13.699, 182.835}, lv = 37215, gv = 3010 }
+local lim_sniper  = { path = "convoy_lim_crew3", pos = {1.609, 17.094, 198.481}, lv = 25581, gv = 3010 }
+local lim_posts   = {
+    { path = "convoy_lim_crew2", pos = {-1.451, 13.702, 189.566}, lv = 23988, gv = 3010 },
+    { path = "convoy_lim_crew5", pos = {13.389, 13.703, 188.551}, lv = 33281, gv = 3010 },
+    { path = "convoy_lim_crew4", pos = {-7.992, 12.973, 190.862}, lv = 21155, gv = 3010 },
+}
+local lim_courier = { path = "convoy_lim_courier", pos = {9.149, 17.063, 180.037}, lv = 30371, gv = 3010 }
+local lim_bodies  = {
+    { pos = {5.976, 15.283, 187.980}, lv = 28582, gv = 3010 },
+    { pos = {12.658, 13.569, 179.521}, lv = 32796, gv = 3010 },
+}
+-- Camp clutter around the shelter, dropped from just above the ground (dynamic physics).
+local tesla_props = {
+    { vis = "physics\\box\\box_wood_01.ogf",   pos = {79.2, 31.9, -505.0} },
+    { vis = "physics\\box\\box_metall_01.ogf", pos = {80.5, 31.6, -509.5} },
+    { vis = "physics\\box\\box_1a.ogf",        pos = {78.4, 32.0, -509.6} },
+    { vis = "physics\\box\\box_1b.ogf",        pos = {82.6, 31.4, -505.8} },
+    { vis = "physics\\decor\\bag_01.ogf",      pos = {75.6, 32.1, -505.4} },
+}
+
+local function north_logic(role, path, ambush)
+    local meet = "meet@convoy_crew"
+    if ambush or role == "sniper" then meet = "no_meet"
+    elseif role == "biryuk" then meet = "meet@convoy_biryuk" end
+    local s = "[smart_terrains]\nnone = true\n[logic]\nactive = walker\n[walker]\npath_walk = " .. path ..
+        "_walk\npath_look = " .. path .. "_look\nmeet = " .. meet .. "\ndanger = danger_condition\n"
+    if meet == "meet@convoy_biryuk" then
+        s = s .. "[meet@convoy_biryuk]\nmeet_state = 5|wait|25|guard\nmeet_state_wpn = 30|threat@threat_weap\n" ..
+            "init_meet = talk_hello\nvictim = 25|actor\nvictim_wpn = 30|actor\nuse = {-convoy_crew_hostile} true, false\n" ..
+            "use_wpn = false\nsyndata = backoff@threat_weap\nprecond = visibility\nabuse = false\n"
+    elseif meet == "meet@convoy_crew" then
+        s = s .. "[meet@convoy_crew]\nmeet_state = 20|threat\nmeet_state_wpn = 30|threat@threat_weap\nvictim = 20|actor\n" ..
+            "victim_wpn = 30|actor\nuse = false\n" ..
+            "use_wpn = false\nsyndata = backoff@threat_weap\nprecond = visibility\nabuse = false\n"
+    end
+    if role == "sniper" then s = s .. "[stealth]\nnvd = true\n" end
+    return s .. "[danger_condition]\nignore_types = corpse\nignore_distance_corpse = 0\nignore_distance = 100\n"
+end
+
+local function north_create(section, p, custom)
+    local se = alife():create(section, kishka_v(p.pos), p.lv, p.gv)
+    if custom then
+        local pk = get_netpk(se)
+        local d = pk:get()
+        d.custom_data = custom
+        pk:set(d)
+    end
+    return se
+end
+
+-- Biryuk takes the lead post, the sniper his own post where there is one, the rest fill the others.
+local function north_spawn_group(roles, lead, sniper, posts, ambush)
+    local group = { ids = {}, names = {} }
+    local i = 1
+    for _, role in ipairs(roles) do
+        local p
+        if role == "biryuk" then p = lead
+        elseif role == "sniper" and sniper then p = sniper
+        else p = posts[i]; i = i + 1 end
+        if p and north_sections[role] then
+            local se = north_create(north_sections[role], p, north_logic(role, p.path, ambush))
+            group.ids[tostring(se.id)] = role
+            group.names[se:name()] = role
+            if role == "biryuk" then group.biryuk = se.id end
+        end
+    end
+    return group
+end
+
+-- Living members, Biryuk first.
+local function north_survivors(group)
+    local roles = {}
+    for sid, role in pairs(group.ids) do
+        if role ~= "courier" and crew_alive(tonumber(sid)) then roles[#roles + 1] = role end
+    end
+    table.sort(roles, function(a, b)
+        local ra, rb = a == "biryuk" and 0 or 1, b == "biryuk" and 0 or 1
+        return ra < rb or (ra == rb and a < b)
+    end)
+    return roles
+end
+
+local function north_release(group)
+    local sim = alife()
+    local alive = {}
+    for sid in pairs(group.ids) do
+        local id = tonumber(sid)
+        if crew_alive(id) then alive[id] = true end
+    end
+    local carried = {}
+    for id, o in sim:objects() do
+        if alive[o.parent_id] then carried[#carried + 1] = id end
+    end
+    for _, id in ipairs(carried) do misc.release_obj(id) end
+    for id in pairs(alive) do misc.release_obj(id) end
+    for _, id in ipairs(group.props or {}) do
+        if sim:object(id) then misc.release_obj(id) end
+    end
+    group.props = nil
+end
+
+-- The cargo is still in a crew member's inventory, alive or dead.
+local function north_cargo_held(data)
+    local c = data.cargo and alife():object(data.cargo)
+    return c ~= nil and data.ids[tostring(c.parent_id)] ~= nil
+end
+
+local function north_give_cargo(data, section)
+    local b = data.biryuk and alife():object(data.biryuk)
+    local se = b and misc.spawn_to(section, b)
+    data.cargo = se and se.id
+end
+
+local function north_actor_near(level_name, p)
+    return level.name() == level_name and db.actor:position():distance_to(kishka_v(p)) < CV.NORTH_KEEPOUT
+end
+
+local function north_spawn_props(data)
+    data.props = {}
+    for _, p in ipairs(tesla_props) do
+        local se = alife():create("physic_object", kishka_v(p.pos), tesla_lead.lv, tesla_lead.gv)
+        local pk = get_netpk(se, 1)
+        local d = pk:get()
+        d.visual_name = p.vis
+        d.physic_type = 3
+        d.mass = 10
+        pk:set(d)
+        data.props[#data.props + 1] = se.id
+    end
+end
+
+local function north_start_tesla(data)
+    local roles = (crew_data() or {}).survivors or { "biryuk" }
+    local group = north_spawn_group(roles, tesla_lead, nil, tesla_posts, false)
+    data.ids, data.names, data.biryuk = group.ids, group.names, group.biryuk
+    north_give_cargo(data, CONVOY_FORMATION)
+    north_spawn_props(data)
+    local now = crew_now()
+    data.stage = "tesla"
+    data.saturate_at = now + CV.CREW_DAY
+    data.until_at = now + math.random(CV.TESLA_DAYS[1] * CV.CREW_DAY, CV.TESLA_DAYS[2] * CV.CREW_DAY)
+    set_value(CV.NORTH_KEY, data)
+    crew_give(CV.NORTH_TESLA)
+    if diagnostics then log2("[sivol_worldspawns] convoy camp at the Generators, %d crew", #roles) end
+end
+
+local function north_saturate(data)
+    data.saturated = true
+    local c = data.cargo and alife():object(data.cargo)
+    if c and c:section_name() == CONVOY_FORMATION and data.ids[tostring(c.parent_id)] then
+        local holder = alife():object(c.parent_id)
+        misc.release_obj(c.id)
+        local se = misc.spawn_to(CONVOY_WARD, holder)
+        data.cargo = se and se.id
+    end
+    set_value(CV.NORTH_KEY, data)
+end
+
+local function north_start_limansk(data, roles)
+    local group = north_spawn_group(roles, lim_lead, lim_sniper, lim_posts, false)
+    local courier = north_create(north_sections.courier, lim_courier, north_logic("courier", lim_courier.path, false))
+    group.ids[tostring(courier.id)] = "courier"
+    group.names[courier:name()] = "courier"
+    data.ids, data.names, data.biryuk = group.ids, group.names, group.biryuk
+    north_give_cargo(data, CONVOY_WARD)
+    data.stage = "limansk"
+    data.until_at = crew_now() + math.random(CV.LIM_DAYS[1] * CV.CREW_DAY, CV.LIM_DAYS[2] * CV.CREW_DAY)
+    set_value(CV.NORTH_KEY, data)
+    crew_give(CV.NORTH_LIMANSK)
+    if diagnostics then log2("[sivol_worldspawns] convoy handoff in Limansk, %d crew", #roles) end
+end
+
+local function north_tick(now)
+    local data = get_value(CV.NORTH_KEY) or {}
+    if not data.stage then
+        if has_alife_info(CV.CREW_NORTH) and not north_actor_near(CONVOY_TESLA_LEVEL, CV.TESLA_SHELTER) then
+            north_start_tesla(data)
+        end
+        return
+    end
+    if data.stage == "over" then return end
+    local lvl = data.stage == "limansk" and CV.LIM_LEVEL or CONVOY_TESLA_LEVEL
+    if level.name() == lvl then
+        crew_update_online(data)
+        if data.stage == "tesla" then
+            crew_watch(data, kishka_v(CV.TESLA_SHELTER), kishka_v(CV.TESLA_SHELTER), 4)
+        elseif data.stage == "limansk" then
+            crew_watch(data, kishka_v(CV.LIM_BUILDING), kishka_v(lim_courier.pos), 3)
+        end
+    end
+
+    if data.stage == "tesla" then
+        if not data.saturated and now >= data.saturate_at then north_saturate(data) end
+        if now >= data.until_at and not north_actor_near(CONVOY_TESLA_LEVEL, CV.TESLA_SHELTER) then
+            local onward = crew_alive(data.biryuk) and north_cargo_held(data)
+                and alife():object(data.cargo).parent_id == data.biryuk
+            local roles = north_survivors(data)
+            north_release(data)
+            if onward then data.stage = "to_limansk"; data.roles = roles else data.stage = "over" end
+            set_value(CV.NORTH_KEY, data)
+        end
+    elseif data.stage == "to_limansk" then
+        if not north_actor_near(CV.LIM_LEVEL, CV.LIM_BUILDING) then north_start_limansk(data, data.roles) end
+    elseif data.stage == "limansk" then
+        if now >= data.until_at and not north_actor_near(CV.LIM_LEVEL, CV.LIM_BUILDING) then
+            local lost = crew_alive(data.biryuk) and north_cargo_held(data)
+            north_release(data)
+            data.stage = "over"
+            set_value(CV.NORTH_KEY, data)
+            if lost then crew_give(CV.NORTH_LOST) end
+            if diagnostics then log2("[sivol_worldspawns] convoy handoff over, cargo %s", lost and "lost" or "not delivered") end
+        end
+    end
+end
+
+-- Burers in and around the building go, two bodies stay as decoys.
+local function ambush_clear_burers()
+    local sim, gg = alife(), game_graph()
+    local centre = kishka_v(CV.LIM_BUILDING)
+    local gone = {}
+    for id, o in sim:objects() do
+        if string.find(o:section_name(), "burer", 1, true) and o.parent_id == BAD_OBJ_ID
+            and gg:valid_vertex_id(o.m_game_vertex_id)
+            and sim:level_name(gg:vertex(o.m_game_vertex_id):level_id()) == CV.LIM_LEVEL
+            and o.position:distance_to(centre) < CV.LIM_CLEAR_RADIUS then
+            gone[#gone + 1] = id
+        end
+    end
+    for _, id in ipairs(gone) do misc.release_obj(id) end
+    for _, b in ipairs(lim_bodies) do
+        local se = sim:create("burer_normal", kishka_v(b.pos), b.lv, b.gv)
+        local pk = get_netpk(se)
+        local d = pk:get()
+        d.health = 0
+        if d.upd then d.upd.health = 0 end
+        pk:set(d)
+    end
+    return #gone
+end
+
+local function ambush_tick()
+    if not has_alife_info(CV.AMBUSH_SET) then
+        if has_alife_info(CV.CREW_REFUSED) and has_alife_info(CV.CREW_GONE) and level.name() ~= CV.LIM_LEVEL then
+            local roles = (crew_data() or {}).survivors or { "biryuk" }
+            local cleared = ambush_clear_burers()
+            set_value(CV.AMBUSH_KEY, north_spawn_group(roles, lim_lead, lim_sniper, lim_posts, true))
+            db.actor:give_info_portion(CV.AMBUSH_SET)
+            if diagnostics then log2("[sivol_worldspawns] convoy ambush set in Limansk, %d crew, %d burers cleared", #roles, cleared) end
+        end
+        return
+    end
+    if has_alife_info(CV.AMBUSH_DONE) then return end
+    local data = get_value(CV.AMBUSH_KEY)
+    if not data then return end
+    if level.name() == CV.LIM_LEVEL then crew_update_online(data, true) end
+    for sid in pairs(data.ids) do
+        if crew_alive(tonumber(sid)) then return end
+    end
+    db.actor:give_info_portion(CV.AMBUSH_DONE)
+    sak.send_tip(game.translate_string("convoy_ambush_done_tip"),
+        game.translate_string("thinking_out_loud"), 5, 15, "g_g", "sak", "yellow")
+end
+
+north_member = function(id, name)
+    local key = id and tostring(id)
+    local n = get_value(CV.NORTH_KEY)
+    if n and n.ids and (n.stage == "tesla" or n.stage == "limansk")
+        and ((key and n.ids[key]) or (name and n.names[name])) then
+        return true
+    end
+    local a = get_value(CV.AMBUSH_KEY)
+    return a ~= nil and not has_alife_info(CV.AMBUSH_DONE) and ((key and a.ids[key]) or (name and a.names[name])) ~= nil
+end
+
+-- sak.hazards_handle, Generators: no discharge inside the camp while the crew holds the formation.
+function convoy_tesla_sheltered(act_pos)
+    local data = get_value(CV.NORTH_KEY)
+    if not (data and data.stage == "tesla") then return false end
+    return act_pos:distance_to(kishka_v(CV.TESLA_SHELTER)) < CV.SHELTER_RADIUS and north_cargo_held(data)
+end
+
+-- se_respawn:create: lim_burers1 stays empty while the ambush waits in the building.
+function convoy_respawner_paused(amk_name)
+    return amk_name == CV.LIM_RESPAWNER and has_alife_info(CV.AMBUSH_SET) and not has_alife_info(CV.AMBUSH_DONE)
+end
+
+-- Console helpers for testing, e.g. "fl sivol_worldspawns.convoy_debug_status()". Stage changes still
+-- wait until the actor is 150 m away from the place in question.
+function convoy_debug_status()
+    local c, n = crew_data() or {}, get_value(CV.NORTH_KEY) or {}
+    local now = crew_now()
+    local function rel(t) return t and string.format("%+d min", t - now) or "-" end
+    local infos = {}
+    for _, i in ipairs({ CONVOY_CHANGED, CV.CREW_SPAWNED, CV.CREW_LEAD, CV.CREW_HAS, CV.CREW_EMPTY, CV.CREW_HOSTILE, CV.CREW_ULTIMATUM,
+        CV.CREW_GONE, CV.CREW_NORTH, CV.CREW_LEFT_EMPTY, CV.CREW_RECOVERED, CV.CREW_HANDED, CV.CREW_SOLD, CV.CREW_SAID_LOST, CV.CREW_REFUSED,
+        CV.NORTH_TESLA, CV.NORTH_LIMANSK, CV.NORTH_LOST, CV.AMBUSH_SET, CV.AMBUSH_DONE }) do
+        if has_alife_info(i) then infos[#infos + 1] = i end
+    end
+    local leave = c.wake and crew_leave_at(c)
+    local text = string.format("open %s, leave %s, deadline %s | north %s, saturate %s, next %s | %s",
+        c.opened and "done" or rel(c.open_at), rel(leave), rel(c.deadline), tostring(n.stage),
+        n.saturated and "done" or rel(n.saturate_at), rel(n.until_at), table.concat(infos, " "))
+    log2("[sivol_worldspawns] convoy status: %s", text)
+    sak.send_tip_local(text, "convoy", 0, 20, "default", "sak", "gray")
+end
+
+-- Skips the Radar coma: the case changes now (as on waking), the crew spawns on the next tick
+-- once the actor is 150 m from the van. Also places the act if it was never placed.
+function convoy_debug_wake()
+    local box = alife():story_object(CONVOY_BOX_SID)
+    if box and not has_alife_info(CONVOY_CHANGED) then convoy_change(box) end
+    log2("[sivol_worldspawns] convoy debug wake: changed=%s", tostring(has_alife_info(CONVOY_CHANGED)))
+end
+
+-- Gives one info, e.g. "convoy_zub_asked" or "convoy_zub_bought", to fake an earlier choice.
+function convoy_debug_info(info)
+    if info then db.actor:give_info_portion(info) end
+end
+
+function convoy_debug_open()
+    local c = crew_data()
+    if c then c.open_at = crew_now(); set_value(CV.CREW_KEY, c) end
+end
+
+function convoy_debug_leave()
+    local c = crew_data()
+    if not c then return end
+    local now = crew_now()
+    c.open_at = math.min(c.open_at, now)
+    c.wake = now - 7 * CV.CREW_DAY
+    set_value(CV.CREW_KEY, c)
+end
+
+function convoy_debug_deadline()
+    local c = crew_data()
+    if c and c.deadline then c.deadline = crew_now(); set_value(CV.CREW_KEY, c) end
+end
+
+function convoy_debug_saturate()
+    local n = get_value(CV.NORTH_KEY)
+    if n and n.saturate_at then n.saturate_at = crew_now(); set_value(CV.NORTH_KEY, n) end
+end
+
+-- Ends the current north stage (the Tesla camp or the Limansk handoff).
+function convoy_debug_next()
+    local n = get_value(CV.NORTH_KEY)
+    if n and n.until_at then n.until_at = crew_now(); set_value(CV.NORTH_KEY, n) end
+end
+
+local function convoy_tick()
+    if not (db.actor and sak.game_began) then return end
+    convoy_recharge_tick()
+    convoy_place_doc()
+    local box = alife():story_object(CONVOY_BOX_SID)
+    if not box then return end
+    if not has_alife_info(CONVOY_CHANGED) and convoy_coma_over() then
+        convoy_change(box)
+    end
+    crew_tick(box)
+    north_tick(crew_now())
+    ambush_tick()
+    if (not has_alife_info(CONVOY_CHANGED) or convoy_formation_in_box(box)) and not convoy_box_protected() then
+        kotovod.add_box_protection(CONVOY_BOX_NAME)
+    end
+end
+
+local function convoy_on_update()
+    if not db.actor then return end
+    if level.name() == CONVOY_LEVEL then
+        local box = alife():story_object(CONVOY_BOX_SID)
+        local obj = box and level.object_by_id(box.id)
+        if obj then convoy_apply_seal(obj, not has_alife_info(CONVOY_CHANGED)) end
+    end
+    local t = time_global()
+    if t < convoy_next_tick then return end
+    convoy_next_tick = t + CONVOY_TICK_MS
+    convoy_tick()
+end
+
 function attach(sm)
     sm:subscribe({ signal = "on_update", fun = kishka_tick })
+    sm:subscribe({ signal = "on_update", fun = convoy_on_update })
     sm:subscribe({ signal = "on_npc_before_hit", fun = kishka_on_npc_before_hit })
+    sm:subscribe({ signal = "on_npc_before_hit", fun = crew_on_npc_before_hit })
 end

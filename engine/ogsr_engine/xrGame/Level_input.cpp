@@ -37,6 +37,20 @@ extern void restore_actor();
 #endif
 
 #include "embedded_editor/embedded_editor_main.h"
+#include "ui/UICustomEdit.h" // NLC
+#include "ui/UIMultiLineEdit.h" // NLC
+
+// NLC: true while a text field inside this UI owns the keyboard
+static bool nlc_ui_text_input_active(CUIWindow* w)
+{
+    while (w && w->GetKeyboardCapturer())
+        w = w->GetKeyboardCapturer();
+    if (auto* e = smart_cast<CUICustomEdit*>(w))
+        return e->IsInputFocused();
+    if (auto* m = smart_cast<CUIMultiLineEdit*>(w))
+        return m->HasFocus();
+    return false;
+}
 
 bool g_bDisableAllInput = false;
 
@@ -213,6 +227,16 @@ void CLevel::IR_OnKeyboardPress(int key)
     }
 
     const bool b_ui_exist = (Has_HUD() && HUD().GetUI());
+
+    // NLC: typing wins over game binds (e.g. Backspace bound to pause); Esc keeps its meaning
+    if (b_ui_exist && key != DIK_ESCAPE && _curr != kQUIT)
+    {
+        if (CUIDialogWnd* ir = HUD().GetUI()->MainInputReceiver(); ir && nlc_ui_text_input_active(ir))
+        {
+            ir->IR_OnKeyboardPress(key);
+            return;
+        }
+    }
 
     switch (_curr)
     {

@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "../../xr_3da/xr_input.h"
 #include "UICustomEdit.h"
+#include "UIMultiLineEdit.h"
 #include "../../xr_3da/LightAnimLibrary.h"
 
 CUICustomEdit::CUICustomEdit()
@@ -162,7 +163,8 @@ bool CUICustomEdit::KeyPressed(int dik)
         bChanged = true;
         break;
     default:
-        const u16 out_me = pInput->DikToChar(dik, m_lines.GetFont()->IsMultibyte());
+        // NLC: single-byte fonts are CP1251; ToAscii would use the system code page (Cyrillic -> '?')
+        const u16 out_me = m_lines.GetFont()->IsMultibyte() ? pInput->DikToChar(dik, true) : nlc_dik_to_cp1251(dik);
         if (out_me)
         {
             if (!m_bNumbersOnly || (out_me >= '0' && out_me <= '9') || (m_bFloatNumbers && out_me == '.' && !strchr(m_lines.GetText(), '.')))

@@ -1,0 +1,577 @@
+-- PDA barter book: one Journal article per barter trader (group enc_barter).
+-- Article text is built on every view through engine_callbacks.on_set_article_text.
+-- Books are described in misc\pda_barter_books.ltx. A book unlocks when its
+-- dialogue info is known (trader explained his terms) or on the first visit.
+-- A visit records the stock seen when the barter window opens, with exact prices.
+local BOOKS_LTX = "misc\\pda_barter_books.ltx"
+local STATE_KEY = "he_pda_barter_v1"
+local TEXT_PREFIX = "pda_barter_text_"
+
+local books, order, by_ui
+local session -- {book = id, npc = id}
+
+local function tr(id) return game.translate_string(id) end
+local function state() return get_value(STATE_KEY, {}) end
+local function save(st) set_value(STATE_KEY, st) end
+
+local function split(s)
+    local t = {}
+    for v in string.gmatch(s or "", "[^,%s]+") do table.insert(t, v) end
+    return t
+end
+
+local function norm_path(p) return string.lower(string.gsub(p or "", "/", "\\")) end
+
+local function load_books()
+    if books then return end
+    books, order, by_ui = {}, {}, {}
+    local ini = ini_file(BOOKS_LTX)
+    local n = ini:line_count("books")
+    for i = 0, n - 1 do
+        local _, id = ini:r_line("books", i, "", "")
+        local function s(key, def)
+            return ini:line_exist(id, key) and ini:r_string(id, key) or def
+        end
+        local cfgs = {}
+        for _, c in ipairs(split(s("cfg", ""))) do cfgs[norm_path(c)] = true end
+        local b = {
+            id = id,
+            kind = s("kind", "tradein"),
+            cfgs = cfgs,
+            first_cfg = split(s("cfg", ""))[1],
+            suffix = s("suffix", ""),
+            buy_key = s("buy_key", "buy_condition"),
+            level = s("level", nil),
+            ui_name = s("ui_name", nil),
+            text = s("text", nil),
+            note = s("note", nil),
+            unlock = split(s("unlock_info", "")),
+            article = "pda_barter_" .. id,
+        }
+        books[id] = b
+        table.insert(order, id)
+        if b.ui_name then by_ui[b.ui_name] = id end
+    end
+end
+
+-- Minimal condlist reader for [trader] values: "{+a -b} sect1, sect2".
+-- Only actor info conditions are used in these configs.
+local function pick_section(str)
+    for token in string.gmatch(str or "", "[^,]+") do
+        local cond = string.match(token, "{([^}]*)}")
+        local sect = string.match(string.gsub(token, "{[^}]*}", ""), "([%w_%.]+)")
+        local ok = true
+        if cond then
+            for sign, info in string.gmatch(cond, "([%+%-])([%w_]+)") do
+                local has = has_alife_info(info)
+                if (sign == "+" and not has) or (sign == "-" and has) then ok = false end
+            end
+        end
+        if ok and sect then return sect end
+    end
+end
+
+local function book_ini(b)
+    return b.first_cfg and dsh.cached_ini_file(b.first_cfg)
+end
+
+local function visited(b) return state()[b.id] ~= nil end
+
+local function unlocked(b)
+    if visited(b) then return true end
+    for _, info in ipairs(b.unlock) do
+        if has_alife_info(info) then return true end
+    end
+    return false
+end
+
+-- The old "Barter" group in the Journal (enc_price) is replaced by this book.
+local OLD_ARTICLES = {
+    "price_sidor", "price_kanistra_esc", "price_kanistra_bar", "price_artm_esc", "price_barman",
+    "price_petrenko", "price_scraga", "price_ara", "price_red_forest_lesnik", "price_jila",
+    "price_kuznezov", "price_sherstuk", "price_sultan", "price_stepanych_plash", "voron_collection_article",
+}
+
+local MOVE_KEY = "he_pda_barter_journal"
+
+function sync()
+    if not db.actor then return end
+    load_books()
+    if not get_value(MOVE_KEY) then
+        for _, id in ipairs(order) do
+            local a = books[id].article
+            if has_article(a) then disable_article(a) end
+        end
+        set_value(MOVE_KEY, true)
+    end
+    for _, a in ipairs(OLD_ARTICLES) do
+        if has_article(a) then disable_article(a) end
+    end
+    for _, id in ipairs(order) do
+        local b = books[id]
+        if unlocked(b) and not has_article(b.article) then
+            give_article(b.article)
+            log2("[he_pda_barter] article granted book=%s", id)
+        end
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Visits
+-------------------------------------------------------------------------------
+local function visit_stamp()
+    return {
+        day = timers.Get_Game_Days() or 0,
+        h = level.get_time_hours(),
+        m = level.get_time_minutes(),
+        gm = misc.game_time_minutes(),
+        level = level.name(),
+    }
+end
+
+local function slot_ids(npc)
+    local ids = {}
+    for i = 0, 15 do
+        local it = npc:item_in_slot(i)
+        if it then ids[it:id()] = true end
+    end
+    return ids
+end
+
+local function snapshot_stock(npc)
+    local stock, index = {}, {}
+    local in_slot = slot_ids(npc)
+    npc:iterate_inventory(function(_, item)
+        if in_slot[item:id()] then return end
+        if item:get_inventory_item_flags():test(global_flags.FIHiddenForInventory) then return end
+        local price = npc:calculate_item_price(item, false)
+        if not price or price <= 0 or price >= 4294967295 then return end
+        local sect = item:section()
+        local rec = index[sect]
+        if not rec then
+            rec = { s = sect, n = 0, lo = price, hi = price }
+            index[sect] = rec
+            table.insert(stock, rec)
+        end
+        rec.n = rec.n + 1
+        if price < rec.lo then rec.lo = price end
+        if price > rec.hi then rec.hi = price end
+    end, npc)
+    return stock
+end
+
+local function record_visit(id, npc, credit_key)
+    local st = state()
+    local rec = st[id] or {}
+    rec.seen = visit_stamp()
+    rec.credit_key = credit_key or rec.credit_key
+    if npc then
+        rec.stock = snapshot_stock(npc)
+        -- trade_manager restocks the trader at tt.resuply_time; remember when
+        local tt = trade_manager[npc:id()]
+        rec.restock = nil
+        if tt and tt.resuply_time then
+            rec.restock = misc.game_time_minutes() + tt.resuply_time:diffSec(game.get_game_time()) / 60
+        end
+    end
+    st[id] = rec
+    save(st)
+    log2("[he_pda_barter] visit book=%s npc=%s items=%s", id, npc and npc:name() or "-",
+        tostring(rec.stock and #rec.stock))
+end
+
+local function match_trade_book(npc)
+    local tt = trade_manager[npc:id()]
+    local cfg = tt and norm_path(tt.cfg_ltx)
+    local key = get_value("tradein_npc")
+    local suffix
+    if key then
+        suffix = string.sub(key, string.len(npc:name()) + 1)
+    end
+    if cfg then
+        for _, id in ipairs(order) do
+            local b = books[id]
+            if b.cfgs[cfg] then
+                if b.kind == "tradein" and key and suffix == b.suffix then return id, key end
+                -- Petrenko-style barter in the normal trade window
+                if b.kind == "trade" and not key then return id end
+            end
+        end
+    end
+    if key or get_value("nlc_vars.trade_me_re") ~= nil then
+        log2("[he_pda_barter] no book npc=%s cfg=%s key=%s held=%s", npc:name(), tostring(cfg),
+            tostring(key), tostring(get_value("nlc_vars.trade_me_re") ~= nil))
+    end
+end
+
+function on_trade_open()
+    session = nil
+    if not db.actor then return end
+    load_books()
+    local npc = level:get_second_talker()
+    if not npc then return end
+    local id, key = match_trade_book(npc)
+    if not id then return end
+    session = { book = id, npc = npc:id() }
+    record_visit(id, npc, key)
+    sync()
+end
+
+-- Actor bought an item: it is no longer in the trader's stock.
+function on_trade(item, sell_buy)
+    if not session or sell_buy or type(item) ~= "userdata" then return end
+    local st = state()
+    local rec = st[session.book]
+    if not rec or not rec.stock then return end
+    local sect = item:section()
+    for i, r in ipairs(rec.stock) do
+        if r.s == sect then
+            r.n = r.n - 1
+            if r.n <= 0 then table.remove(rec.stock, i) end
+            save(st)
+            return
+        end
+    end
+end
+
+function on_trade_hide() session = nil end
+
+-- ui_barter.screen(name) entry (Sultan, Doctor, addons, generator men).
+function on_ui_barter(name)
+    load_books()
+    local id = by_ui[name]
+    if not id then return end
+    local st = state()
+    st[id] = st[id] or {}
+    st[id].seen = visit_stamp()
+    save(st)
+    sync()
+end
+
+-------------------------------------------------------------------------------
+-- Text
+-------------------------------------------------------------------------------
+local GRAY = "%c[255,160,160,160]"
+local DEF = "%c[default]"
+
+local function fmt_price(v)
+    v = tonumber(v) or 0
+    if v >= 1000 then
+        local k = math.floor(v / 500 + 0.5) / 2
+        local s = string.format("%.1f", k)
+        s = string.gsub(s, "%.0$", "")
+        s = string.gsub(s, "%.", tr("pda_barter_decimal"))
+        return s .. " " .. tr("pda_barter_thousand")
+    elseif v >= 100 then
+        return tostring(math.floor(v / 10 + 0.5) * 10)
+    end
+    return tostring(math.floor(v + 0.5))
+end
+
+local function fmt_range(lo, hi)
+    local a, b = fmt_price(lo), fmt_price(hi)
+    if a == b then return a end
+    return a .. " - " .. b
+end
+
+local function item_name(sect)
+    return tr(amk.get_inv_name(sect))
+end
+
+-- Payout classes for artifacts; everything else is a "currency" item.
+local CLASSES = { "lvl1", "lvl2", "lvl3", "lvl4", "lvl7", "lvl8", "lvl9", "lvl10", "lvl11", "lvl13" }
+local class_of
+local function classify(base)
+    if not class_of then
+        class_of = {}
+        for _, c in ipairs(CLASSES) do
+            for _, s in ipairs(kotovod.tbl_arts[c] or {}) do
+                class_of[s] = class_of[s] or c
+            end
+        end
+    end
+    return class_of[base]
+end
+
+-- Section the trader uses for a [trader] key (buy or sell side), or nil.
+local function trader_section(b, key)
+    local ini = book_ini(b)
+    if not ini or not ini:section_exist("trader") or not ini:line_exist("trader", key) then return end
+    local sect = pick_section(ini:r_string("trader", key))
+    if sect and ini:section_exist(sect) then return ini, sect end
+end
+
+-- Lines of a trade section: key = item section, k = first factor.
+local function section_items(ini, sect)
+    local sys = system_ini()
+    local out = {}
+    for i = 0, ini:line_count(sect) - 1 do
+        local _, key, value = ini:r_line(sect, i, "", "")
+        if key and key ~= "" and not string.find(key, "/", 1, true) and sys:section_exist(key) then
+            local k = tonumber(string.match(value or "", "^%s*([%d%.]+)"))
+            local cost = sys:line_exist(key, "cost") and sys:r_float(key, "cost") or 0
+            if k and k > 0 then table.insert(out, { s = key, price = cost * k }) end
+        end
+    end
+    return out
+end
+
+-- Display name; a few items get a plain short name ([names] in the books ltx).
+local name_override
+local function short_name(sect)
+    if not name_override then
+        name_override = {}
+        local ini = ini_file(BOOKS_LTX)
+        if ini:section_exist("names") then
+            for i = 0, ini:line_count("names") - 1 do
+                local _, k, v = ini:r_line("names", i, "", "")
+                name_override[k] = v
+            end
+        end
+    end
+    return tr(name_override[sect] or amk.get_inv_name(sect))
+end
+
+-- Goods categories for the lists ([categories] in the books ltx overrides).
+local CATS = { "weapons", "addons", "ammo", "med", "food", "gear", "arts", "misc" }
+local cat_override
+local function category(sect)
+    if not cat_override then
+        cat_override = {}
+        local ini = ini_file(BOOKS_LTX)
+        if ini:section_exist("categories") then
+            for i = 0, ini:line_count("categories") - 1 do
+                local _, k, v = ini:r_line("categories", i, "", "")
+                cat_override[k] = v
+            end
+        end
+    end
+    if cat_override[sect] then return cat_override[sect] end
+    local function has(prefix) return string.sub(sect, 1, string.len(prefix)) == prefix end
+    if has("wpn_addon_") then return "addons" end
+    if has("wpn_") then return "weapons" end
+    if has("ammo_") or has("grenade_") then return "ammo" end
+    if has("af_") then return "arts" end
+    local sys = system_ini()
+    local function num(key) return sys:line_exist(sect, key) and tonumber(sys:r_string(sect, key)) or 0 end
+    if num("eat_health") > 0 or num("eat_radiation") < 0 or num("wounds_heal_perc") > 0
+        or string.find(sect, "medkit", 1, true) or string.find(sect, "bandage", 1, true)
+        or string.find(sect, "antirad", 1, true) then
+        return "med"
+    end
+    if num("eat_satiety") ~= 0 or num("eat_alcohol") > 0 then return "food" end
+    if string.find(sect, "outfit", 1, true) or string.find(sect, "exoskeleton", 1, true)
+        or string.find(sect, "helm", 1, true) or string.find(sect, "detector", 1, true)
+        or string.find(sect, "rucksack", 1, true) then
+        return "gear"
+    end
+    return "misc"
+end
+
+-- What the trader takes: artifacts by tier with rough prices (degenerate ones only
+-- lower the range), mutant parts as one line, other goods by name.
+local function pays_lines(b)
+    local ini, sect = trader_section(b, b.buy_key)
+    if not ini then return {} end
+    local cls, other, seen, parts = {}, {}, {}, false
+    for _, it in ipairs(section_items(ini, sect)) do
+        local base = string.match(it.s, "^(.-)_dyn%dd$") or it.s
+        local c = classify(base) or (string.sub(it.s, 1, 3) == "af_" and "other" or nil)
+        if c and it.price > 0 then
+            local r = cls[c]
+            if not r then cls[c] = { lo = it.price, hi = it.price }
+            else
+                if it.price < r.lo then r.lo = it.price end
+                if it.price > r.hi then r.hi = it.price end
+            end
+        elseif string.sub(it.s, 1, 7) == "mutant_" then
+            parts = true
+        elseif not c then
+            local cat = category(it.s)
+            if not seen[it.s] then
+                seen[it.s] = true
+                other[cat] = other[cat] or {}
+                table.insert(other[cat], short_name(it.s))
+            end
+        end
+    end
+    local lines = {}
+    for _, c in ipairs(CLASSES) do
+        local r = cls[c]
+        if r then table.insert(lines, tr("pda_barter_cls_" .. c)) end
+    end
+    if cls.other then table.insert(lines, tr("pda_barter_cls_other")) end
+    if parts then table.insert(lines, tr("pda_barter_mutant_parts")) end
+    for _, cat in ipairs(CATS) do
+        local names = other[cat]
+        if names and #names > 3 then
+            table.insert(lines, tr("pda_barter_cat_" .. cat))
+        elseif names then
+            for _, n in ipairs(names) do table.insert(lines, n) end
+        end
+    end
+    return lines
+end
+
+-- Before the first visit: what the trader is restocked with now (his supplies,
+-- quest conditions applied) that this barter lets him sell. Returns item sections:
+-- normally stocked, and the ones with a supply chance below 1.
+local function usual_lines(b)
+    local ini, supl = trader_section(b, "buy_supplies")
+    if not ini then return {}, {} end
+    local sell_key = b.buy_key == "buy_condition" and "sell_condition" or string.gsub(b.buy_key, "_buy$", "_sell")
+    local _, sell = trader_section(b, sell_key)
+    local allowed
+    if sell then
+        for _, it in ipairs(section_items(ini, sell)) do
+            allowed = allowed or {}
+            allowed[it.s] = true
+        end
+    end
+    local normal, sometimes, seen = {}, {}, {}
+    for i = 0, ini:line_count(supl) - 1 do
+        local _, key, value = ini:r_line(supl, i, "", "")
+        if key and key ~= "" and not seen[key] and system_ini():section_exist(key) and (not allowed or allowed[key]) then
+            seen[key] = true
+            local prob = tonumber(string.match(value or "", ",%s*([%d%.]+)")) or 1
+            table.insert(prob < 1 and sometimes or normal, key)
+        end
+    end
+    return normal, sometimes
+end
+
+-- Lines grouped under category headings, in CATS order.
+local function grouped(items, line_of)
+    local by = {}
+    for _, it in ipairs(items) do
+        local c = category(type(it) == "table" and it.s or it)
+        by[c] = by[c] or {}
+        table.insert(by[c], line_of(it))
+    end
+    local t = ""
+    for _, c in ipairs(CATS) do
+        if by[c] then
+            t = t .. " \\n" .. GRAY .. tr("pda_barter_cat_" .. c) .. ":\\n" .. DEF
+            for _, l in ipairs(by[c]) do t = t .. "- " .. l .. "\\n" end
+        end
+    end
+    return t
+end
+
+local function ui_name(s)
+    if string.find(s or "", "^lvl") then return ui_barter.tbl_translate_price[s] or s end
+    return short_name(s)
+end
+
+-- ui_barter offers grouped by what the trader asks for: "For modificates:" ...
+local function ui_offer_groups(b)
+    local groups, order_ = {}, {}
+    for _, v in ipairs(ui_barter.make_list_by_trader(b.ui_name) or {}) do
+        if v[1] and v[1] ~= "" then
+            local key = tostring(v[3]) .. "|" .. tostring(v[4] or 1)
+            if not groups[key] then
+                local title = tr("pda_barter_for_" .. tostring(v[3]))
+                if title == "pda_barter_for_" .. tostring(v[3]) then
+                    title = string.format(tr("pda_barter_for_item"), ui_name(v[3]))
+                end
+                if (v[4] or 1) > 1 then title = title .. " x" .. v[4] end
+                groups[key] = { title = title, lines = {} }
+                table.insert(order_, key)
+            end
+            local count = (v[2] or 1) > 1 and (" x" .. v[2]) or ""
+            table.insert(groups[key].lines, ui_name(v[1]) .. count)
+        end
+    end
+    local out = {}
+    for _, k in ipairs(order_) do table.insert(out, groups[k]) end
+    return out
+end
+
+local function header(rec)
+    local t = ""
+    if rec and rec.seen then
+        local s = rec.seen
+        local ago = math.floor((misc.game_time_minutes() - (s.gm or 0)) / 1440)
+        t = t .. GRAY .. string.format(tr("pda_barter_seen_fmt"), s.day or 0, s.h or 0, s.m or 0)
+        if ago >= 1 then t = t .. " " .. string.format(tr("pda_barter_days_ago"), ago) end
+        if rec.restock and misc.game_time_minutes() >= rec.restock then
+            t = t .. " " .. tr("pda_barter_restocked")
+        end
+        t = t .. "\\n"
+    end
+    if rec and rec.credit_key then
+        local credit = get_value("barter_money", {})[rec.credit_key]
+        if credit and credit > 0 then
+            t = t .. GRAY .. tr("pda_barter_credit") .. ": " .. tostring(credit) .. "\\n"
+        end
+    end
+    return t
+end
+
+-- Title on its own line, then "- item" lines. The line break stays inside the grey
+-- part: a colour switch right before "\n" can swallow the break.
+local function block(title, lines, cap)
+    local t = " \\n" .. GRAY .. title .. ":\\n" .. DEF
+    if #lines == 0 then return t .. tr("pda_barter_nothing") .. "\\n" end
+    for i, l in ipairs(lines) do
+        if cap and i > cap then
+            return t .. string.format(tr("pda_barter_and_more"), #lines - cap) .. "\\n"
+        end
+        t = t .. "- " .. l .. "\\n"
+    end
+    return t
+end
+
+-- Goods first, terms last; minimal.
+function article_text(id)
+    load_books()
+    local b = books[id]
+    if not b then return "" end
+    if b.kind == "static" then return tr(b.text or "") end
+    local rec = state()[id]
+    local t = header(rec)
+    if b.kind == "ui_barter" then
+        local groups = ui_offer_groups(b)
+        if #groups == 0 then return t .. block(tr("pda_barter_offers"), {}) end
+        for _, g in ipairs(groups) do t = t .. block(g.title, g.lines) end
+        return t
+    end
+    if rec and rec.stock then
+        if #rec.stock == 0 then t = t .. "\\n" .. tr("pda_barter_nothing") .. "\\n" end
+        t = t .. grouped(rec.stock, function(r)
+            local count = r.n > 1 and (" x" .. r.n) or ""
+            return short_name(r.s) .. count .. " - " .. fmt_range(r.lo, r.hi)
+        end)
+    else
+        local normal, sometimes = usual_lines(b)
+        t = t .. " \\n" .. GRAY .. tr("pda_barter_usual") .. ":\\n" .. DEF
+        t = t .. grouped(normal, function(sect) return short_name(sect) end)
+        if #sometimes > 0 then
+            local names = {}
+            for _, sect in ipairs(sometimes) do table.insert(names, short_name(sect)) end
+            t = t .. " \\n" .. GRAY .. tr("pda_barter_sometimes") .. ": " .. DEF .. table.concat(names, ", ") .. "\\n"
+        end
+    end
+    local pays = pays_lines(b)
+    if #pays > 0 then t = t .. block(tr("pda_barter_pays"), pays) end
+    if b.note then t = t .. " \\n" .. GRAY .. tr(b.note) .. "\\n" .. DEF end
+    return t
+end
+
+-- engine_callbacks.on_set_article_text delegate; nil for other articles.
+function article_text_for(txt)
+    if string.sub(txt, 1, string.len(TEXT_PREFIX)) ~= TEXT_PREFIX then return end
+    return article_text(string.sub(txt, string.len(TEXT_PREFIX) + 1))
+end
+
+function on_info(npc, info_id)
+    if type(info_id) == "string" and string.sub(info_id, 1, 6) == "price_" then sync() end
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_trade_open", fun = this.on_trade_open })
+    sm:subscribe({ signal = "on_trade", fun = this.on_trade })
+    sm:subscribe({ signal = "on_trade_hide", fun = this.on_trade_hide })
+    sm:subscribe({ signal = "on_pda_open", fun = this.sync })
+    sm:subscribe({ signal = "on_info_2", fun = this.on_info })
+end

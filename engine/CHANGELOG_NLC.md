@@ -5,6 +5,27 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.153 (2026-10-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `DA16A6D5A3747407678A1B8F255237DAC752FB69B6B214A32FC06357B3D98049` (archived with its PDB in `nlc_tools/builds/20261025_114622_da16a6d5`).
+- **Status:** runtime pending.
+- Text input with single-byte (CP1251) fonts reads the key as Unicode and converts it to CP1251 (`nlc_dik_to_cp1251`); `ToAscii` used the system code page, so Cyrillic became `?` on non-Russian Windows locales. Applies to `CUICustomEdit` and `CUIMultiLineEdit`.
+- While a text field in the active UI owns the keyboard, keys go to the UI before game binds (e.g. Backspace bound to pause); Esc keeps its meaning.
+- `CUIWindow::GetKeyboardCapturer()`, `CUICustomEdit::IsInputFocused()`.
+
+## nlc-3.589.152 (2026-10-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `765B2B54DD624DA6573D6895D5463B6BFDD9871FBE0B3A623EAA93E5EB66F504` (archived with its PDB in `nlc_tools/builds/20261025_103301_765b2b54`).
+- **Status:** runtime pending. PDA notes tab, marker icons, hidden Contacts tab (`docs/PDA_BARTER_NOTES_DESIGN.md`).
+- **Required game data:** `ui/pda.xml` (Notes button, `script_tab_area`), `ui/pda_spot.xml` (icons, time button, counter), `ui/ui_pda_notes.xml`, `scripts/ui/ui_pda_notes.script`, `external.ltx` (`[user_spots] max_count`), `text/*/st_pda_he.xml` + `system.ltx`.
+- PDA: the unused Contacts tab is hidden (no gap or icon); new tab `eptNotes` (7) hosts a script-built window `pda_tab_notes`; `ui_pda_notes.is_available/on_show/on_hide` are called by the engine.
+- New script control `CUIMultiLineEdit` (line breaks, word wrap, arrows/Home/End, Ctrl+V, Ctrl+Enter/Esc to finish).
+- Map marker dialog: icon choice (spot types from `pda_spot.xml`), optional game date/time in the hint, marker counter and cap; editing a marker keeps its type; right-click "Note" calls `ui_pda_notes.open_for_spot`.
+- Lua: `level.map_iterate_user_spots`, `level.nlc_pda_set_tab`, `level.nlc_pda_show_on_map`.
+- `CUIWindow::DoDetachChild` clears the keyboard capturer when the focused child is detached.
+
 ## nlc-3.589.151 (2026-10-24)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

@@ -28,6 +28,7 @@ public:
     virtual void Draw();
 
     void CaptureFocus(bool bCapture) { m_bInputFocus = bCapture; }
+    bool IsInputFocused() const { return m_bInputFocus; } // NLC
     virtual void SetText(const char* str);
     virtual const char* GetText();
     void SetMaxCharCount(u32 cnt) { m_max_symb_count = cnt; }

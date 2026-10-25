@@ -268,6 +268,10 @@ void CUIWindow::DoDetachChild(CUIWindow* pChild, bool from_destructor)
     if (GetMouseCapturer() == pChild)
         SetMouseCapture(pChild, false);
 
+    // NLC: a detached (possibly deleted) child must not keep the keyboard focus
+    if (m_pKeyboardCapturer == pChild)
+        m_pKeyboardCapturer = NULL;
+
     pChild->SetParent(NULL);
 
     if (from_destructor && pChild->IsAutoDelete())
