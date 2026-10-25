@@ -48,8 +48,8 @@ void CSoundRender_Core::update(const Fvector& P, const Fvector& D, const Fvector
         std::scoped_lock l{nlc_lf_lock};
         const float step = clampr(dt_sec, 0.f, 0.5f) * nlc_lf_rate;
         auto move = [step](float& c, float t) { c = c < t ? _min(c + step, t) : _max(c - step, t); };
-        move(nlc_lf_gain, nlc_lf_gain_t);
-        move(nlc_lf_hf, nlc_lf_hf_t);
+        move(nlc_lf_gain, psSoundMaskFilter ? nlc_lf_gain_t : 1.f);
+        move(nlc_lf_hf, psSoundMaskFilter ? nlc_lf_hf_t : 1.f);
     }
     if (psSoundOccMode == 1)
         nlc_probe_update(dt_sec);

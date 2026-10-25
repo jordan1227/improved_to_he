@@ -5,6 +5,15 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.151 (2026-10-24)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `ADB3A1A33506E3C8A1473EF5154E0EFFC36D8272294C93EE860C1B48854539B2` (archived with its PDB in `nlc_tools/builds/20261024_183710_adb3a1a3`).
+- **Status:** runtime pending. Audio defaults; .150 audio fixes (casings, whine) accepted in game.
+- **Required game data:** `ui_mm_opt.xml`, `ui_mm_opt_main.script`, `ui_mm_opt_sound.script`, `text/*/ui_st_mm.xml`, `rspec_default.ltx` (menu checkbox, defaults button).
+- Defaults: `snd_efx` on (was off), `snd_hrtf` off (was auto). Existing `user.ltx` values are kept.
+- `snd_mask_filter` (default on): off makes the gas-mask listener filter fade to neutral and ignore the script target. Sound menu checkbox "Gas mask muffling".
+
 ## nlc-3.589.150 (2026-10-24)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

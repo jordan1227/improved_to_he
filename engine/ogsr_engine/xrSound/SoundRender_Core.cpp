@@ -12,7 +12,7 @@
 
 BOOL bSenvironmentXrExport{};
 int psSoundTargets = 256; // 512; //--#SM+#-- //32;
-Flags32 psSoundFlags = {/*ss_Hardware*/};
+Flags32 psSoundFlags = {/*ss_Hardware |*/ ss_EAX}; // NLC: reverb (snd_efx) on by default
 float psSoundOcclusionScale = 0.5f;
 float psSoundLinearFadeFactor = 0.4f; //--#SM+#--
 float psSoundCull = 0.01f;
@@ -41,12 +41,13 @@ BOOL psSoundDelay{TRUE};
 float psSoundDelayMinDist = 35.f;
 float psSoundSpeed = 343.f;
 float psSoundAmbIndoorGain = 0.3f;
-u32 psSoundHrtf = 2;
+u32 psSoundHrtf = 0; // off by default (auto misdetects some headsets)
 int psSoundDistModel = 0;
 float psSoundBulletWhineDist = 6.f;
 float psSoundBulletWhineVol = 1.5f;
 BOOL psSoundHrtf2D{};
 int psSoundHrtfSet = 0;
+BOOL psSoundMaskFilter{TRUE};
 
 CSoundRender_Core* SoundRender = 0;
 CSound_manager_interface* Sound = 0;

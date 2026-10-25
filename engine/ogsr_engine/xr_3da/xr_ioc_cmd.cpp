@@ -640,6 +640,7 @@ void CCC_Register()
     CMD4(CCC_Float, "snd_bullet_whine_vol", &psSoundBulletWhineVol, 0.f, 4.f);
     CMD2(CCC_Bool, "snd_hrtf_2d", &psSoundHrtf2D);
     CMD4(CCC_Integer, "snd_hrtf_set", &psSoundHrtfSet, 0, 63);
+    CMD2(CCC_Bool, "snd_mask_filter", &psSoundMaskFilter);
 
 #ifdef DEBUG
     CMD1(CCC_DumpOpenFiles, "dump_open_files");

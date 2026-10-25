@@ -47,6 +47,7 @@ XRSOUND_API extern u32 psSoundHrtf; // 0 off, 1 on, 2 auto (applied on snd_resta
 XRSOUND_API extern float psSoundBulletWhineDist;
 XRSOUND_API extern float psSoundBulletWhineVol; // level of the near-miss whine
 XRSOUND_API extern BOOL psSoundHrtf2D; // 2D sounds through HRTF too (off: they bypass it as direct stereo)
+XRSOUND_API extern BOOL psSoundMaskFilter; // gas-mask listener filter (off: the script target is ignored)
 XRSOUND_API extern int psSoundHrtfSet; // HRTF data set index (0 = OpenAL Soft default; applied on snd_restart) // near-miss whine of non-actor bullets within this distance of the camera (0 = off)
 XRSOUND_API extern int psSoundDistModel; // 0 OpenAL inverse clamped, 1 engine curve with a fade to max_dist
 
