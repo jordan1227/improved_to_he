@@ -340,6 +340,9 @@ public:
     void SetMoney(u32 money);
 
     void SetRelation(ALife::ERelationType relation, CScriptGameObject* pWhoToSet);
+    // NLC: stalker quest exemption from actor attack / kill reputation and goodwill (CAI_Stalker::m_nlc_relation_exempt)
+    bool nlc_relation_exempt() const;
+    void nlc_relation_exempt(bool exempt);
 
     int GetAttitude(CScriptGameObject* pToWho);
 

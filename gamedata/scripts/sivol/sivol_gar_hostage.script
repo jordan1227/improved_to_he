@@ -1,0 +1,172 @@
+-- [sivol] Orekh's gang holding Yurik on Garbage (docs/YURIK_QUEST_DESIGN.md 8, docs/QUEST_DESIGN.md 6).
+-- 1) While they hold the kid, the actor attacking or killing them costs no reputation or goodwill
+--    (engine nlc_relation_exempt, nlc-3.589.157). Once a fight starts in that window the exemption is
+--    latched until all three are dead, so killing Orekh first does not end it for the other two.
+-- 2) Standoff flavor: holding one of them under the crosshair makes them warn the actor, and after
+--    HOSTILE_AFTER ms they turn on the actor.
+
+local GANG_SIDS      = { 101, 102, 103 }
+local UPDATE_MS      = 250
+local STANDOFF_DIST  = 30       -- m, beyond that they do not notice the aim
+local LOST_GRACE_MS  = 1500     -- crosshair may slip off this long without resetting the standoff
+local WARN1_AFTER    = 1500
+local WARN2_AFTER    = 6000
+local HOSTILE_AFTER  = 10000
+
+local next_update = 0
+local api_checked, has_api = false, false
+local aim = { id = nil, start = 0, last_seen = 0, warned = 0 }
+
+local function gang_alive()
+	for i = 1, #GANG_SIDS do
+		local obj = level_object_by_sid( GANG_SIDS[ i ] )
+		if obj and obj:alive() then return true end
+	end
+	return false
+end
+
+-- they hold the kid: not yet released by the deal, or the debt timer is running
+local function holding_hostage()
+	if has_alife_info( "gar_dm_novice_dead" ) or has_alife_info( "gar_dm_novice_rescued" ) then return false end
+	return ( not has_alife_info( "gar_dm_bandits_change_st" ) ) or has_alife_info( "gar_dm_bandits_yurik_timer" )
+end
+
+local function exempt_wanted()
+	return holding_hostage() or has_alife_info( "gar_dm_bandits_hostile" )
+end
+
+local function is_gang( obj )
+	local sid = obj and obj:story_id()
+	return sid == 101 or sid == 102 or sid == 103
+end
+
+local function apply_exemption( obj, want )
+	if not api_checked then
+		api_checked = true
+		has_api = obj.nlc_relation_exempt ~= nil
+		if not has_api then
+			log2( "ERROR (sivol_gar_hostage): engine has no nlc_relation_exempt (needs nlc-3.589.157); gang kills keep the normal penalties" )
+		end
+	end
+	if has_api and obj:nlc_relation_exempt() ~= want then
+		obj:nlc_relation_exempt( want )
+	end
+end
+
+local function turn_hostile()
+	if has_alife_info( "gar_dm_bandits_hostile" ) then return end
+	db.actor:give_info_portion( "gar_dm_bandits_hostile" )
+	for i = 1, #GANG_SIDS do
+		local obj = level_object_by_sid( GANG_SIDS[ i ] )
+		if obj and obj:alive() then
+			apply_exemption( obj, true )
+			obj:set_relation( game_object.enemy, db.actor )
+		end
+	end
+end
+
+local function update_standoff( now )
+	local t = level.get_target_obj()
+	local npc = nil
+	if t and is_gang( t ) and t:alive() and isWeapon( db.actor:active_item() )
+		and t:position():distance_to( db.actor:position() ) <= STANDOFF_DIST and t:see( db.actor )
+	then
+		npc = t
+	end
+	if npc then
+		if aim.id ~= npc:id() or now - aim.last_seen > LOST_GRACE_MS then
+			aim.id, aim.start, aim.warned = npc:id(), now, 0
+		end
+		aim.last_seen = now
+		local held = now - aim.start
+		if held >= HOSTILE_AFTER then
+			turn_hostile()
+		elseif held >= WARN2_AFTER and aim.warned < 2 then
+			aim.warned = 2
+			xr_sound.set_sound_play( npc, "gar_dm_bandit_backoff2" )
+		elseif held >= WARN1_AFTER and aim.warned < 1 then
+			aim.warned = 1
+			xr_sound.set_sound_play( npc, "gar_dm_bandit_backoff1" )
+		end
+	elseif aim.id and now - aim.last_seen > LOST_GRACE_MS then
+		aim.id = nil
+	end
+end
+
+-- all three dead while the kid lives after a fight the actor started while they held him: he is free
+-- (gulag release + rescued, so he waits at the fire for thanks). The hostile latch keeps this off after a paid rescue
+-- (Orekh's death runs kotovod.gar_oreh_dead, which disables "rescued").
+local function check_freed_by_force()
+	if not has_alife_info( "gar_dm_bandits_hostile" ) then return end
+	if has_alife_info( "gar_dm_novice_dead" ) or has_alife_info( "gar_dm_novice_rescued" ) then return end
+	if not ( has_alife_info( "gar_dm_bandit1_dead" ) and has_alife_info( "gar_dm_bandit2_dead" )
+		and has_alife_info( "gar_dm_bandit3_dead" ) ) then return end
+	local yurik = level_object_by_sid( 104 )
+	if not ( yurik and yurik:alive() ) then return end
+	db.actor:give_info_portion( "gar_dm_novice_freed_by_force" )
+	db.actor:give_info_portion( "gar_dm_novice_rescued" )
+	if not has_alife_info( "gar_dm_bandits_change_st" ) then
+		db.actor:give_info_portion( "gar_dm_bandits_change_st" )
+	end
+end
+
+-- refusal / timer end schedule Yurik's execution with schedule.add, which is not saved; gar_dm_novice_kill_pending is.
+-- If it is still set KILL_PENDING_MS after we first see it (also after a reload or level change), carry out the kill.
+local KILL_PENDING_MS = 17000
+local kill_pending_seen = nil
+local function check_kill_pending( now )
+	if not has_alife_info( "gar_dm_novice_kill_pending" ) then kill_pending_seen = nil return end
+	if has_alife_info( "gar_dm_novice_dead" ) then
+		db.actor:disable_info_portion( "gar_dm_novice_kill_pending" )
+		kill_pending_seen = nil
+		return
+	end
+	if not kill_pending_seen then kill_pending_seen = now return end
+	if now - kill_pending_seen >= KILL_PENDING_MS then
+		kill_pending_seen = nil
+		db.actor:disable_info_portion( "gar_dm_novice_kill_pending" )
+		doc.kill_gar_dm()
+	end
+end
+
+local function on_update()
+	local now = time_global()
+	if now < next_update then return end
+	next_update = now + UPDATE_MS
+	if not db.actor then return end
+	check_kill_pending( now )
+	if level.name() ~= "l02_garbage" then return end
+	if not gang_alive() then
+		check_freed_by_force()
+		return
+	end
+
+	local want = exempt_wanted()
+	for i = 1, #GANG_SIDS do
+		local obj = level_object_by_sid( GANG_SIDS[ i ] )
+		if obj and obj:alive() then apply_exemption( obj, want ) end
+	end
+	if holding_hostage() and not has_alife_info( "gar_dm_bandits_hostile" ) then
+		update_standoff( now )
+	end
+end
+
+-- the actor attacked them while they hold the kid: all three turn on the actor (their custom logic after the deal has no
+-- hit/combat handler, and the exempt hit no longer drops goodwill, so nothing else would make them fight back) and the
+-- exemption is latched for the rest of the fight
+local function on_npc_before_hit( npc, hit_data )
+	if not ( npc and is_gang( npc ) and holding_hostage() ) then return end
+	if hit_data and db.actor and hit_data.who_id == db.actor:id() then
+		turn_hostile()
+	end
+end
+
+local function on_npc_spawn( npc )
+	if npc and is_gang( npc ) and npc:alive() then apply_exemption( npc, exempt_wanted() ) end
+end
+
+function attach( sm )
+	sm:subscribe( { signal = "on_update",         fun = on_update } )
+	sm:subscribe( { signal = "on_npc_before_hit", fun = on_npc_before_hit } )
+	sm:subscribe( { signal = "on_npc_spawn",      fun = on_npc_spawn } )
+end

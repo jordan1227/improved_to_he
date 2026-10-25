@@ -286,5 +286,8 @@ class_<CScriptGameObject> script_register_game_object1(class_<CScriptGameObject>
         .def("debug_planner", &CScriptGameObject::debug_planner)
 #endif // DEBUG
         .def("invulnerable", (bool(CScriptGameObject::*)() const) & CScriptGameObject::invulnerable)
-        .def("invulnerable", (void(CScriptGameObject::*)(bool)) & CScriptGameObject::invulnerable);
+        .def("invulnerable", (void(CScriptGameObject::*)(bool)) & CScriptGameObject::invulnerable)
+        // NLC: quest exemption from actor attack / kill reputation and goodwill
+        .def("nlc_relation_exempt", (bool(CScriptGameObject::*)() const) & CScriptGameObject::nlc_relation_exempt)
+        .def("nlc_relation_exempt", (void(CScriptGameObject::*)(bool)) & CScriptGameObject::nlc_relation_exempt);
 }

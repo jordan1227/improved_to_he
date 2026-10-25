@@ -127,6 +127,9 @@ void RELATION_REGISTRY::Action(CEntityAlive* from, CEntityAlive* to, ERelationAc
             }
         }
 
+        if (stalker && actor && stalker->nlc_relation_exempt()) // NLC: quest exemption, no attack reputation / goodwill
+            break;
+
         if (stalker)
         {
             bool bDangerScheme = false;
@@ -220,7 +223,15 @@ void RELATION_REGISTRY::Action(CEntityAlive* from, CEntityAlive* to, ERelationAc
             break;
             };
 
-            CHARACTER_GOODWILL community_goodwill =
+            // NLC: quest exemption, the kill changes no reputation or goodwill (rank points still count)
+            const bool nlc_exempt = actor && stalker->nlc_relation_exempt();
+            if (nlc_exempt)
+            {
+                delta_goodwill = 0;
+                delta_reputation = 0;
+            }
+
+            CHARACTER_GOODWILL community_goodwill = nlc_exempt ? 0 :
                 (CHARACTER_GOODWILL)(CHARACTER_COMMUNITY::sympathy(stalker->Community()) * (float)(delta_goodwill + community_member_kill_goodwill));
             //сталкер при нападении на членов своей же группировки отношения не меняют
             //(считается, что такое нападение всегда случайно)

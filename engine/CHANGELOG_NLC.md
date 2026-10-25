@@ -5,6 +5,13 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.157 (2026-10-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `7B4278DA52E677D5F7160C9998EE07CE1C5C50B59F91F91083EEFCB9E6EF167F` (archived with its PDB in `nlc_tools/builds/20261025_211930_7b4278da`).
+- **Status:** runtime pending. `docs/YURIK_QUEST_DESIGN.md` 8a.
+- **Required game data:** `scripts/sivol/sivol_gar_hostage.script` (registered in `scripts/ogse/ogse_signals_addons_list.script`), `config/gameplay/info_portions_nlc30.xml` (`gar_dm_bandits_hostile`).
+- Quest relation exemption: `CAI_Stalker::m_nlc_relation_exempt` (not saved), script `npc:nlc_relation_exempt()` / `npc:nlc_relation_exempt(bool)`. In `RELATION_REGISTRY::Action` an actor ATTACK on an exempt stalker changes no reputation or goodwill, and a KILL zeroes reputation, squad and community goodwill (rank points kept).
 ## nlc-3.589.156 (2026-10-25)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

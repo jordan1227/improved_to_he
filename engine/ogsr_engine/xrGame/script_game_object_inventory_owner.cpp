@@ -594,6 +594,29 @@ void CScriptGameObject::SetRelation(ALife::ERelationType relation, CScriptGameOb
     RELATION_REGISTRY().SetRelationType(pInventoryOwner, pOthersInventoryOwner, relation);
 }
 
+// NLC: quest exemption from actor attack / kill reputation and goodwill
+bool CScriptGameObject::nlc_relation_exempt() const
+{
+    const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(&object());
+    if (!stalker)
+    {
+        ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError, "nlc_relation_exempt available only for stalkers");
+        return false;
+    }
+    return stalker->nlc_relation_exempt();
+}
+
+void CScriptGameObject::nlc_relation_exempt(bool exempt)
+{
+    CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(&object());
+    if (!stalker)
+    {
+        ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError, "nlc_relation_exempt available only for stalkers");
+        return;
+    }
+    stalker->nlc_relation_exempt(exempt);
+}
+
 //////////////////////////////////////////////////////////////////////////
 
 int CScriptGameObject::GetAttitude(CScriptGameObject* pToWho)

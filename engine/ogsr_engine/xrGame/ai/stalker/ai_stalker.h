@@ -93,6 +93,8 @@ private:
 
 public:
     SBoneProtections* bone_hit_protection() const { return m_boneHitProtection; } // NLC: script export
+    bool nlc_relation_exempt() const { return m_nlc_relation_exempt; } // NLC: quest exemption (relation_registry_actions.cpp)
+    void nlc_relation_exempt(bool exempt) { m_nlc_relation_exempt = exempt; }
 
 private:
     // NLC: head-hit concussion (docs/damage_model/DESIGN_npc_damage_model.md 14, E4). A surviving bullet hit on a
@@ -208,6 +210,9 @@ private:
     // NLC: nlc_aim_chest (zombified stalkers): in the engine's own combat, aim at a living actor's / stalker's chest bone
     // from the eye instead of its centre from our centre (that aim lands ~0.7 m high, on the head; sight_action.cpp)
     bool m_nlc_aim_chest{};
+    // NLC: quest exemption, set by script (not saved): the actor attacking or killing this stalker changes no
+    // reputation or goodwill (relation_registry_actions.cpp ATTACK / KILL; docs/YURIK_QUEST_DESIGN.md 8)
+    bool m_nlc_relation_exempt{};
     float nlc_weapon_accuracy_base() const;
     bool m_fast_can_kill_entity;
 
