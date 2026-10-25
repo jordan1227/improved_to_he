@@ -67,27 +67,25 @@ local function apply_layer(profile, layer, state)
 	end
 end
 
--- Returns the merged profile table and a short description of the layers used.
-local function resolve_profile(target, kind)
-	local configs = sivol_kick_configs
-	local state = nil
+local function kind_state(kind)
 	if string.find(kind, "_alive", 1, true) then
-		state = "alive"
+		return "alive"
 	elseif string.find(kind, "_dead", 1, true) then
-		state = "dead"
+		return "dead"
 	end
+	return nil
+end
 
-	local profile = {}
-	local used = { "base" }
-	merge(profile, configs.base)
-	if configs.kinds and configs.kinds[kind] then
-		apply_layer(profile, configs.kinds[kind], state)
+-- One layer chain (kinds -> prefixes -> sections of root) merged onto profile.
+local function apply_chain(profile, root, target, kind, state, used)
+	if root.kinds and root.kinds[kind] then
+		apply_layer(profile, root.kinds[kind], state)
 		used[#used + 1] = kind
 	end
 
 	local section = target:section()
-	if configs.prefixes then
-		for _, entry in ipairs(configs.prefixes) do
+	if root.prefixes then
+		for _, entry in ipairs(root.prefixes) do
 			local prefix = entry[1]
 			if string.sub(section, 1, string.len(prefix)) == prefix then
 				apply_layer(profile, entry[2], state)
@@ -95,11 +93,62 @@ local function resolve_profile(target, kind)
 			end
 		end
 	end
-	if configs.sections and configs.sections[section] then
-		apply_layer(profile, configs.sections[section], state)
+	if root.sections and root.sections[section] then
+		apply_layer(profile, root.sections[section], state)
 		used[#used + 1] = section
 	end
+end
+
+-- Returns the merged profile table and a short description of the layers used.
+local function resolve_profile(target, kind)
+	local configs = sivol_kick_configs
+	local profile = {}
+	local used = { "base" }
+	merge(profile, configs.base)
+	apply_chain(profile, configs, target, kind, kind_state(kind), used)
 	return profile, table.concat(used, ">")
+end
+
+-- Fields an exo overlay may add to a profile that lacks them (blended from 0).
+local EXO_ZERO = { push_speed = 0, push_up = 0, push_hold_ms = 0, damage_frac = 0 }
+
+-- Exo overlay (sivol_kick_configs.exo) on a resolved profile: numbers blend with the servo-assist
+-- strength kk, everything else applies from kk >= 0.5. Returns the layers used, or nil.
+local function apply_exo(profile, target, kind, kk)
+	local root = sivol_kick_configs.exo
+	if not root or kk <= 0 then
+		return nil
+	end
+	local overlay, used = {}, {}
+	apply_chain(overlay, root, target, kind, kind_state(kind), used)
+	if #used == 0 then
+		return nil
+	end
+	for key, v in pairs(overlay) do
+		if type(v) == "number" then
+			local b = profile[key]
+			if b == nil then
+				b = EXO_ZERO[key]
+			end
+			if b ~= nil then
+				profile[key] = b + (v - b) * kk
+			elseif kk >= 0.5 then
+				profile[key] = v
+			end
+		elseif kk >= 0.5 then
+			profile[key] = v
+		end
+	end
+	return "exo[" .. table.concat(used, ">") .. "]"
+end
+
+-- Servo-assisted kick strength 0..1 (0 without a charged exo with live servos).
+local function exo_k(fresh)
+	local exo = sivol_exo
+	if exo and exo.kick_k then
+		return exo.kick_k(fresh)
+	end
+	return 0
 end
 
 -- ============================================================
@@ -286,23 +335,45 @@ local function start_push(target_id, dir, speed, up, hold_ms)
 	end
 end
 
+-- Logs what physics did 700 ms later: the net displacement and the peak (a knocked-back monster
+-- that runs straight back at the actor has a small net but a large peak).
 local function track_knock(target_id, start_pos, health)
+	local peak = 0
+	add_followup(0, 700, function()
+		local target = level.object_by_id(target_id)
+		if target then
+			peak = math.max(peak, target:position():distance_to(start_pos))
+		end
+		return false
+	end)
 	add_followup(700, 0, function()
 		local target = level.object_by_id(target_id)
 		if target then
-			diag("knock result %s moved=%.2fm health %.3f -> %.3f alive=%s", tostring(target:name()),
-				target:position():distance_to(start_pos), health, target.health, tostring(target:alive()))
+			diag("knock result %s moved=%.2fm peak=%.2fm health %.3f -> %.3f alive=%s", tostring(target:name()),
+				target:position():distance_to(start_pos), peak, health, target.health, tostring(target:alive()))
 		end
 		return true
 	end)
 end
 
 -- scale < 1: a second sector target (power, impulse, push and damage scaled)
-local function apply_kick(target, press_dist, how, scale)
+-- kk: exo kick strength 0..1 captured at the key press
+local function apply_kick(target, press_dist, how, scale, kk)
 	local c = cfg()
 	local k = scale or 1
 	local kind = target_kind(target)
 	local profile, layers = resolve_profile(target, kind)
+	kk = kk or 0
+	-- friends get neither the exo punch nor the baseline shove and damage: the old light hit only
+	if kind == "human_alive" and target:relation(db.actor) == game_object.friend then
+		kk = 0
+		profile.push_speed = nil
+		profile.damage_frac = nil
+	end
+	if kk > 0 then
+		local used = apply_exo(profile, target, kind, kk)
+		layers = layers .. (used and (">" .. used) or "") .. string.format(" k=%.2f", kk)
+	end
 	if profile.enabled == false then
 		diag("impact %s kind=%s profile=%s DISABLED", tostring(target:name()), kind, layers)
 		return
@@ -453,6 +524,10 @@ end
 
 -- 1 living creature, 2 dead creature, 3 loose physics object; nil = not kickable here
 local function sector_class(obj)
+	-- the visible-body puppet (actor_legs_*) is a monster object but never a target
+	if string.sub(obj:section(), 1, 11) == "actor_legs_" then
+		return nil
+	end
 	if obj:is_stalker() or obj:is_monster() then
 		return obj:alive() and 1 or 2
 	end
@@ -545,18 +620,23 @@ local function on_key(key, bind)
 	end
 
 	-- A missing body puppet (option off / hidden) must not disable the kick.
+	-- Exo: the swing plays faster; the impact time and cooldown follow it.
+	local kk = exo_k(true)
+	local exo = sivol_kick_configs.exo
+	local speed = 1 + (exo and exo.swing_speed or 0) * kk
+
 	local duration, reason
 	if vb and vb.try_kick then
-		duration, reason = vb.try_kick()
+		duration, reason = vb.try_kick(speed)
 		if not duration and reason ~= "no_body" then
 			return
 		end
 	end
 
-	next_kick_at = now + math.max(c.cooldown_ms, duration or 0)
+	next_kick_at = now + math.max(c.cooldown_ms / speed, duration or 0)
 
 	if c.stamina_cost and c.stamina_cost > 0 then
-		actor.power = -c.stamina_cost
+		actor.power = -c.stamina_cost * (1 - (1 - (exo and exo.stamina_k or 1)) * kk)
 	end
 	level.add_cam_effector(c.camera_anm, c.camera_id, false, "")
 	play_swing_sound()
@@ -564,12 +644,13 @@ local function on_key(key, bind)
 	local target = level.get_target_obj()
 	local press_dist = target and level.get_target_dist() or -1
 	pending = {
-		at = now + c.hit_delay_ms,
+		at = now + c.hit_delay_ms / speed,
 		target_id = (target and press_dist <= c.max_range + c.range_slack) and target:id() or nil,
 		press_dist = press_dist,
+		kk = kk,
 	}
-	diag("swing anim=%s duration_ms=%s press_target=%s dist=%.2f", tostring(duration ~= nil), tostring(duration),
-		target and tostring(target:name()) or "<none>", press_dist)
+	diag("swing anim=%s duration_ms=%s press_target=%s dist=%.2f exo_k=%.2f speed=%.2f", tostring(duration ~= nil),
+		tostring(duration), target and tostring(target:name()) or "<none>", press_dist, kk, speed)
 end
 
 local function run_followups(now)
@@ -614,10 +695,13 @@ local function on_update()
 				table.remove(picks, 1)
 			end
 			if target then
-				apply_kick(target, dist, how)
+				apply_kick(target, dist, how, nil, pend.kk)
+				if (pend.kk or 0) > 0 and sivol_exo and sivol_exo.kick_wear then
+					sivol_exo.kick_wear() -- once per connected kick
+				end
 				local second = picks[1]
 				if c.sector_second and second and level.object_by_id(second.obj:id()) then
-					apply_kick(second.obj, dist, "sector2", c.second_target_k)
+					apply_kick(second.obj, dist, "sector2", c.second_target_k, pend.kk)
 				end
 			else
 				diag("impact missed: nothing in range")
