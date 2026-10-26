@@ -1736,47 +1736,53 @@ LightParts actor_light_parts(const CCustomMonster* observer, bool stalker_observ
 
     // dynamic lamps: computed for the actor at most every lamp_period_ms, shared by all observers
     if (p_lamp_k > 0.f)
-    {
-        static u32 next = 0;
-        static float lamp = 0.f;
-        const u32 now = Device.dwTimeGlobal;
-        if (now >= next || now + 60000 < next)
-        {
-            next = now + u32(p_lamp_period_ms);
-            lamp = 0.f;
-            Fvector center;
-            a->Center(center);
-            for (CHangingLamp* l : s_lamps)
-            {
-                Fvector pos, dir;
-                float range, bright, cos_half;
-                if (!l || !l->nlc_light(pos, dir, range, bright, cos_half))
-                    continue;
-                Fvector to;
-                to.sub(center, pos);
-                const float d = to.magnitude();
-                if (d >= range || d < EPS_L)
-                    continue;
-                to.div(d);
-                float k = bright * _sqr(1.f - d / range);
-                if (cos_half > -1.f)
-                {
-                    const float c = dir.dotproduct(to);
-                    if (c <= cos_half)
-                        continue;
-                    k *= std::clamp((c - cos_half) / (1.f - cos_half) * 3.f, 0.f, 1.f); // soft cone edge
-                }
-                if (k <= lamp)
-                    continue;
-                collide::rq_result rq;
-                if (Level().ObjectSpace.RayPick(pos, to, d, collide::rqtStatic, rq, nullptr) && rq.range < d - 0.3f)
-                    continue; // blocked
-                lamp = k;
-            }
-        }
-        parts.lamp = p_lamp_k * lamp;
-    }
+        parts.lamp = p_lamp_k * actor_lamp_light();
     return parts;
+}
+
+float actor_lamp_light()
+{
+    static u32 next = 0;
+    static float lamp = 0.f;
+    CActor* a = Actor();
+    if (!a)
+        return 0.f;
+    const u32 now = Device.dwTimeGlobal;
+    if (now >= next || now + 60000 < next)
+    {
+        next = now + u32(p_lamp_period_ms);
+        lamp = 0.f;
+        Fvector center;
+        a->Center(center);
+        for (CHangingLamp* l : s_lamps)
+        {
+            Fvector pos, dir;
+            float range, bright, cos_half;
+            if (!l || !l->nlc_light(pos, dir, range, bright, cos_half))
+                continue;
+            Fvector to;
+            to.sub(center, pos);
+            const float d = to.magnitude();
+            if (d >= range || d < EPS_L)
+                continue;
+            to.div(d);
+            float k = bright * _sqr(1.f - d / range);
+            if (cos_half > -1.f)
+            {
+                const float c = dir.dotproduct(to);
+                if (c <= cos_half)
+                    continue;
+                k *= std::clamp((c - cos_half) / (1.f - cos_half) * 3.f, 0.f, 1.f); // soft cone edge
+            }
+            if (k <= lamp)
+                continue;
+            collide::rq_result rq;
+            if (Level().ObjectSpace.RayPick(pos, to, d, collide::rqtStatic, rq, nullptr) && rq.range < d - 0.3f)
+                continue; // blocked
+            lamp = k;
+        }
+    }
+    return lamp;
 }
 
 float sky_light(const CGameObject* object, float* visibility, float* brightness)
@@ -2270,8 +2276,9 @@ int lua_actor_surface(lua_State* L)
     return 3;
 }
 
-// light at the actor: ROS luminocity (lamps, sun, sky as the renderer samples them), sky term (visibility x sky
-// brightness), sky visibility 0..1; the NVD auto-brightness reads it (nvd_params.script)
+// light at the actor: ROS luminocity (ambient, sky, sun, baked level lights as the renderer samples them), sky
+// term (visibility x sky brightness), sky visibility 0..1, hanging lamps (actor_lamp_light, not in the ROS);
+// the NVD auto-brightness reads it (nvd_params.script)
 int lua_actor_light(lua_State* L)
 {
     CActor* a = Actor();
@@ -2285,7 +2292,8 @@ int lua_actor_light(lua_State* L)
     lua_pushnumber(L, a->ROS()->get_luminocity());
     lua_pushnumber(L, sky);
     lua_pushnumber(L, vis);
-    return 3;
+    lua_pushnumber(L, actor_lamp_light());
+    return 4;
 }
 
 // environment light: total (ambient + sky + sun, max components), ambient, sky (hemi), sun

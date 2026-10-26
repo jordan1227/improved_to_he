@@ -68,6 +68,10 @@ struct LightParts
 };
 LightParts actor_light_parts(const CCustomMonster* observer, bool stalker_observer, float lum_raw);
 
+// brightest unblocked hanging lamp at the actor (max colour x (1 - d / range)^2, spot cone), without lamp_k;
+// cached for lamp_period_ms. The engine luminosity (ROS) does not include dynamic lights.
+float actor_lamp_light();
+
 // multiplicative rate factor for the actor as target: observer rank (stalkers) x actor stance x outfit and rain (stalkers)
 float actor_rate_factor(const CCustomMonster* observer, float* rank_k = nullptr, float* stance_k = nullptr, float* outfit_k = nullptr, float* rain_k = nullptr);
 

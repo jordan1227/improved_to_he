@@ -59,7 +59,8 @@ void CSpaceRestrictionShape::fill_shape(const CCF_Shape::shape_def& shape)
         Fvector points[8] = {Fvector().set(-.5f, -.5f, -.5f), Fvector().set(-.5f, -.5f, +.5f), Fvector().set(-.5f, +.5f, -.5f), Fvector().set(-.5f, +.5f, +.5f),
                              Fvector().set(+.5f, -.5f, -.5f), Fvector().set(+.5f, -.5f, +.5f), Fvector().set(+.5f, +.5f, -.5f), Fvector().set(+.5f, +.5f, +.5f)};
         start = Fvector().set(flt_max, flt_max, flt_max);
-        dest = Fvector().set(flt_min, flt_min, flt_min);
+        // NLC: was flt_min (smallest positive), which stretched the scan box to the origin for shapes at negative coordinates
+        dest = Fvector().set(-flt_max, -flt_max, -flt_max);
         Fmatrix Q;
         Q.mul_43(m_restrictor->XFORM(), shape.data.box);
         Fvector temp;

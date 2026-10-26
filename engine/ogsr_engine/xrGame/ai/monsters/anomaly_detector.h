@@ -37,6 +37,8 @@ private:
     using ANOMALY_INFO_VEC_IT = ANOMALY_INFO_VEC::iterator;
     ANOMALY_INFO_VEC m_storage;
 
+    bool patrol_survives(CCustomZone* zone) const;
+
 public:
     CAnomalyDetector(CCustomMonster* monster);
     virtual ~CAnomalyDetector();

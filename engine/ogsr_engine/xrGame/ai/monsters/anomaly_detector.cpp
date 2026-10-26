@@ -5,6 +5,8 @@
 #include "../../level.h"
 #include "../../space_restriction_manager.h"
 #include "../../movement_manager.h"
+#include "../../patrol_path_manager.h"
+#include "patrol_path.h"
 #include "ai_monster_utils.h"
 #include "basemonster/base_monster.h"
 
@@ -125,6 +127,15 @@ void CAnomalyDetector::on_contact(CObject* obj)
         info.ignored = true;
         info.time_registered = time();
     }
+    else if (!patrol_survives(custom_zone))
+    {
+        // NLC: avoiding this zone would leave the active patrol path without an accessible vertex - remember it as ignored
+        info.ignored = true;
+        info.time_registered = time();
+        if (CBaseMonster::nlc_evade_debug())
+            Msg("~ [evade] [%s]: anomaly [%s] noticed, ignored (blocks every vertex of patrol path [%s])", m_object->cName().c_str(), obj->cName().c_str(),
+                m_object->movement().patrol().path_name().c_str());
+    }
     else
     {
         info.ignored = false;
@@ -133,6 +144,30 @@ void CAnomalyDetector::on_contact(CObject* obj)
             Msg("~ [evade] [%s]: anomaly [%s] noticed, avoided", m_object->cName().c_str(), obj->cName().c_str());
     }
     m_storage.emplace_back(std::move(info));
+}
+
+// NLC: true unless the object has a patrol path assigned and every vertex is already inaccessible or inside the zone.
+// The path type is not checked: monsters keep the scheme's path while attacking and return to it afterwards.
+// A fully blocked patrol path used to be fatal in CPatrolPathManager::select_point (X-18 snork, x18_snork_walk_1).
+bool CAnomalyDetector::patrol_survives(CCustomZone* zone) const
+{
+    CMovementManager& movement = m_object->movement();
+    const CPatrolPath* path = movement.patrol().get_path();
+    if (!path || path->vertices().empty())
+        return true;
+
+    for (const auto& it : path->vertices())
+    {
+        const Fvector& position = it.second->data().position();
+        if (!movement.restrictions().accessible(position))
+            continue;
+
+        Fsphere sphere;
+        sphere.set(position, EPS_L);
+        if (!zone->inside(sphere))
+            return true;
+    }
+    return false;
 }
 
 void CAnomalyDetector::activate(bool force)

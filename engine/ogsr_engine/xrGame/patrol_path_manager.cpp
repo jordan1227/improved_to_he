@@ -21,6 +21,8 @@
 
 #if 1 // def DEBUG
 #include "space_restriction_manager.h"
+#include "space_restrictor.h"
+#include "level.h"
 
 static void show_restrictions(LPCSTR restrictions)
 {
@@ -46,6 +48,40 @@ bool show_restrictions(CRestrictedObject* object)
     return (false);
 }
 #endif
+
+// NLC: diagnostic for a patrol path with no accessible vertex - names which accessibility sub-test rejects each vertex
+static void nlc_dump_inaccessible_patrol(const CPatrolPath* path, shared_str path_name, CGameObject* game_object, CRestrictedObject* object)
+{
+    Msg("! [patrol] no accessible vertex in patrol path [%s] for object [%s] at [%f,%f,%f], patrol suspended until restrictions change", path_name.c_str(),
+        game_object->cName().c_str(), VPUSH(game_object->Position()));
+    show_restrictions(object);
+
+    string256 temp;
+    LPCSTR in_restrictions = *object->in_restrictions() ? *object->in_restrictions() : "";
+    for (const auto& it : path->vertices())
+    {
+        const Fvector& position = it.second->data().position();
+        Fsphere sphere;
+        sphere.set(position, EPS_L);
+        Msg("! [patrol]   vertex [%s] pos [%f,%f,%f] lvid [%u] valid_vertex_position [%d]", it.second->data().name().c_str(), VPUSH(position), it.second->data().level_vertex_id(),
+            ai().level_graph().valid_vertex_position(position) ? 1 : 0);
+        for (int i = 0, n = _GetItemCount(in_restrictions); i < n; ++i)
+        {
+            _GetItem(in_restrictions, i, temp);
+            CObject* restrictor_object = Level().Objects.FindObjectByName(temp);
+            CSpaceRestrictor* restrictor = restrictor_object ? smart_cast<CSpaceRestrictor*>(restrictor_object) : nullptr;
+            if (!restrictor)
+            {
+                Msg("! [patrol]     in [%s]: restrictor object not found", temp);
+                continue;
+            }
+            Fvector center;
+            restrictor->Center(center);
+            Msg("! [patrol]     in [%s] id [%u] center [%f,%f,%f] radius [%f] dist [%f] inside [%d]", temp, restrictor->ID(), VPUSH(center), restrictor->Radius(),
+                center.distance_to(position), restrictor->inside(sphere) ? 1 : 0);
+        }
+    }
+}
 
 CPatrolPathManager::~CPatrolPathManager() {}
 
@@ -86,6 +122,9 @@ struct CAccessabilityEvaluator
 void CPatrolPathManager::select_point(const Fvector& position, u32& dest_vertex_id)
 {
     VERIFY(m_path && !m_path->vertices().empty());
+    // NLC: m_failed marks a patrol with no accessible vertex; retried every update until restrictions change
+    const bool was_failed = m_failed;
+    m_failed = false;
     const CPatrolPath::CVertex* vertex = 0;
     if (!actual() || !m_path->vertex(m_curr_point_index))
     {
@@ -126,7 +165,8 @@ void CPatrolPathManager::select_point(const Fvector& position, u32& dest_vertex_
                 }
             }
 
-            if (!vertex)
+            // NLC: the next vertex may sit inside a restriction added since (anomaly detector); fall back to the nearest accessible one
+            if (!vertex || !accessible(vertex))
                 vertex = m_path->point(position, CAccessabilityEvaluator(this));
 
             VERIFY3(accessible(vertex) || show_restrictions(m_object), *m_path_name, *m_game_object->cName());
@@ -134,7 +174,14 @@ void CPatrolPathManager::select_point(const Fvector& position, u32& dest_vertex_
         }
         default: NODEFAULT;
         }
-        R_ASSERT2(vertex || show_restrictions(m_object), make_string("any vertex in patrol path [%s] in inaccessible for object [%s]", *m_path_name, *m_game_object->cName()));
+        // NLC: all vertices inaccessible is a transient state (dynamic anomaly restrictions expire), not a fatal error
+        if (!vertex)
+        {
+            if (!was_failed)
+                nlc_dump_inaccessible_patrol(m_path, m_path_name, m_game_object, m_object);
+            m_failed = true;
+            return;
+        }
         R_ASSERT2(ai().level_graph().valid_vertex_id(vertex->data().level_vertex_id()),
                   make_string("patrol path[%s], point on path [%s],object [%s]", *m_path_name, *vertex->data().name(), *m_game_object->cName()));
 

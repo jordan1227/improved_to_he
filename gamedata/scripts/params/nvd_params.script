@@ -19,6 +19,10 @@
 --   nvd_abc             automatic brightness control strength 0..1 (0 = none, Gen 1 tubes)
 --   nvd_abc_ref         light at the actor (nlc_stealth_actor_light) above which the gain is reduced
 --   nvd_abc_min         lowest exposure factor the control may reach
+--   nvd_starve_light    light at the actor below which the tube is starved (more grain, sparks)
+--   nvd_sparkle         fraction of pixels per frame that flash white when fully starved
+--                       (converted to r_pnv_scintillation for the current gain; the preset's
+--                       r_pnv_scintillation is not used)
 -- FUTURE: when NVD becomes standalone equipment, keep any EMP resistance on that item here.
 
 local update_nvd
@@ -51,8 +55,10 @@ local MODE_GLIDE_RATE   = 5.0    -- 1/s: how fast exposure follows a mode change
 local ABC_RATE_DOWN     = 3.5    -- 1/s: the control dims quickly when light appears
 local ABC_RATE_UP       = 0.9    -- 1/s: and recovers gain slowly when it goes dark
 local ABC_TICK          = 100    -- ms between light samples
+local LAMP_K            = 1      -- weight of hanging lamps (max colour x distance falloff) in the light sample
 local WRITE_TICK        = 50     -- ms between console writes when nothing ramps
 local CMD_EPSILON       = 0.004
+local SCINT_EPSILON     = 0.000005 -- sparkle fractions are 0.00005..0.002, far below CMD_EPSILON
 local DEBUG             = false  -- fl nvd_params.set_debug(true): light, exposure and gain once a second
 
 -- console bounds (xrRender_console.cpp); CCC_Float silently rejects anything outside them
@@ -114,9 +120,9 @@ function set_debug(v)
     DEBUG = v and true or false
 end
 
-local function set_cmd(key, value)
+local function set_cmd(key, value, eps)
     local last = last_cmd[key]
-    if last and math.abs(value - last) <= CMD_EPSILON then return end
+    if last and math.abs(value - last) <= (eps or CMD_EPSILON) then return end
     cmd(key, value)
     last_cmd[key] = value
 end
@@ -133,6 +139,7 @@ end
 
 -- ===== presets =====
 local preset_cache = {}
+local tune_overrides = {}        -- fl nvd_params.tune(field, value): live preset tuning, not saved
 
 local function read_preset(sect)
     local p = preset_cache[sect]
@@ -144,7 +151,6 @@ local function read_preset(sect)
     p.offset = math.clamp(get_float(sect, "r_pnv_gain_offset", 1), OFFSET_MIN, OFFSET_MAX)
     p.gain = math.clamp(get_float(sect, "r_pnv_gain_current", 1), GAIN_MIN, GAIN_MAX)
     p.noise = get_float(sect, "r_pnv_noise", 0.05)
-    p.scint = get_float(sect, "r_pnv_scintillation", 0.995)
     p.glitch = get_float(sect, "r_pnv_glitch", 0)
     p.floor = get_float(sect, "nvd_ambient_floor", 0.02)
     p.power = get_float(sect, "nvd_power", 1)
@@ -152,6 +158,9 @@ local function read_preset(sect)
     p.abc = math.clamp(get_float(sect, "nvd_abc", 0), 0, 1)
     p.abc_ref = math.max(0.001, get_float(sect, "nvd_abc_ref", 0.15))
     p.abc_min = math.clamp(get_float(sect, "nvd_abc_min", 0.08), 0.01, 1)
+    p.starve_light = math.max(0, get_float(sect, "nvd_starve_light", 0))
+    p.sparkle = math.clamp(get_float(sect, "nvd_sparkle", 0), 0, 1)
+    for k, v in pairs(tune_overrides) do p[k] = v end
     preset_cache[sect] = p
     return p
 end
@@ -174,6 +183,16 @@ local function apply_preset(sect)
     rise_rate = 3000 / p.rise_ms
     forget_cmds()
     if flag and not outage then level.set_min_lumscale_amb(p.floor) end
+end
+
+-- Console tuning: fl nvd_params.tune("abc_ref", 0.03) sets a numeric preset field
+-- (abc, abc_ref, abc_min, starve_light, sparkle, noise, floor) on every device until the
+-- game restarts; tune("abc_ref") removes the override.
+function tune(field, value)
+    tune_overrides[field] = tonumber(value)
+    preset_cache = {}
+    if preset_sect then apply_preset(preset_sect) end
+    log2("[nvd] tune %s = %s", tostring(field), tostring(value))
 end
 
 -- ===== power =====
@@ -365,8 +384,9 @@ end
 -- ===== automatic brightness control =====
 local function sample_light()
     if type(nlc_stealth_actor_light) == "function" then
-        local lum, sky = nlc_stealth_actor_light()
-        return math.max(tonumber(lum) or 0, tonumber(sky) or 0)
+        -- the engine luminosity has no dynamic lights; hanging lamps come separately (nlc-3.589.159)
+        local lum, sky, _, lamp = nlc_stealth_actor_light()
+        return math.max(tonumber(lum) or 0, tonumber(sky) or 0) + (tonumber(lamp) or 0) * LAMP_K
     end
     if type(nlc_stealth_env_light) == "function" then
         return tonumber(nlc_stealth_env_light()) or 0
@@ -471,13 +491,18 @@ update_nvd = function(force)
     gain = math.clamp(gain * fade - emp_gain_drop, GAIN_MIN, GAIN_MAX)
     offset = math.clamp(offset, OFFSET_MIN, OFFSET_MAX)
 
-    -- a starved tube (full gain, little light) shows more noise and sparkle
+    -- a starved tube (almost no light) shows more noise and sparkle; squared so it only rises
+    -- near real darkness
     local starved = 0
-    if p.abc > 0 then
-        starved = math.clamp(1 - abc_light / (p.abc_ref * 0.5), 0, 1)
+    if p.starve_light > 0 then
+        starved = math.clamp((p.starve_light - abc_light) / p.starve_light, 0, 1)
+        starved = starved * starved
     end
     local noise = math.clamp(p.noise * (1 + 0.6 * starved) + emp_noise, 0, 1)
-    local scint = math.clamp(p.scint - (1 - p.scint) * 0.8 * starved - emp_scint_drop, 0, 1)
+    -- the shader whitens a pixel when jitter > scint - (1 - scint) * (gain - 1), so a wanted
+    -- fraction f of white pixels is scint = 1 - f / gain
+    local sparkle = p.sparkle * starved
+    local scint = math.clamp(1 - sparkle / gain - emp_scint_drop, 0, 1)
     local glitch = math.clamp(p.glitch + emp_glitch, 0, GLITCH_MAX_CMD)
 
     if not force and not ramping and fade_until == 0 and now - last_write < WRITE_TICK then return end
@@ -485,13 +510,22 @@ update_nvd = function(force)
     set_cmd("r_pnv_gain_offset", offset)
     set_cmd("r_pnv_gain_current", gain)
     set_cmd("r_pnv_noise", noise)
-    set_cmd("r_pnv_scintillation", scint)
+    set_cmd("r_pnv_scintillation", scint, SCINT_EPSILON)
     set_cmd("r_pnv_glitch", glitch)
 
     if DEBUG and now - last_debug >= 1000 then
         last_debug = now
-        log_nvd("mode=%s sect=%s light=%.3f abc=%.2f offset=%.2f gain=%.2f noise=%.3f scint=%.4f emp=%.2f",
-            nvd_mode, tostring(preset_sect), abc_light, abc_k, offset, gain, noise, scint, nvd_smooth)
+        log_nvd("mode=%s sect=%s light=%.4f abc=%.2f offset=%.2f gain=%.2f starved=%.2f spark=%.5f noise=%.3f scint=%.5f emp=%.2f",
+            nvd_mode, tostring(preset_sect), abc_light, abc_k, offset, gain, starved, sparkle, noise, scint, nvd_smooth)
+        -- light parts: actor ROS luminocity (ambient + hemi + sun + lamps), sky term, sky visibility,
+        -- and the environment after level modifiers (env_mod)
+        local lum, sky, vis, lamp = 0, 0, 0, 0
+        if type(nlc_stealth_actor_light) == "function" then lum, sky, vis, lamp = nlc_stealth_actor_light() end
+        local env, amb, hemi, sun = 0, 0, 0, 0
+        if type(nlc_stealth_env_light) == "function" then env, amb, hemi, sun = nlc_stealth_env_light() end
+        log_nvd("parts lum=%.4f sky=%.4f vis=%.3f lamp=%.4f env_amb=%.4f env_hemi=%.4f env_sun=%.4f weather=%s",
+            tonumber(lum) or 0, tonumber(sky) or 0, tonumber(vis) or 0, tonumber(lamp) or 0, tonumber(amb) or 0,
+            tonumber(hemi) or 0, tonumber(sun) or 0, tostring(level.get_weather()))
     end
 end
 

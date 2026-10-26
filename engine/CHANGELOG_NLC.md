@@ -5,6 +5,15 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.159 (2026-10-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E49E4B49918CE98E565743980F53A06CCA6172D9C07E9EBCE8E70496E5A67399` (archived with its PDB in `nlc_tools/builds/20261026_135318_e49e4b49`).
+- **Status:** runtime pending. `docs/NVD_DESIGN.md` 17.4-17.5.
+- **Required game data:** `scripts/params/nvd_params.script` (reads the 4th value; older scripts ignore it).
+- Lua `nlc_stealth_actor_light()` returns a 4th value: the brightest unblocked hanging lamp at the actor (`nlc_stealth::actor_lamp_light()`, max colour x (1 - d / range)^2, spot cone, static ray test, cached `lamp_period_ms`). The engine luminosity (`CROS_impl`) only collects the baked `build.lights` hemi lights, never dynamic lamps. The stealth lamp part now calls the same function (behaviour unchanged).
+- X-18 snork patrol crash: `CAnomalyDetector` ignores an anomaly whose avoidance would leave every vertex of the monster's patrol path inaccessible (`patrol_survives`); `CPatrolPathManager::select_point` falls back to the nearest accessible vertex when the next one became inaccessible, and a path with no accessible vertex now logs a `[patrol]` diagnostic and suspends the patrol instead of the fatal `R_ASSERT2` (`x18_snork_walk_1`). `space_restriction_shape.cpp` adjusted alongside.
+
 ## nlc-3.589.158 (2026-10-26)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
