@@ -21,6 +21,7 @@
 #include "actorEffector.h"
 #include "CustomOutfit.h"
 #include "HUDTarget.h"
+#include "../xr_3da/x_ray.h" // NLC: IS_OGSR_GA
 
 static const float TIME_2_HIDE = 5.f;
 static const float TORCH_INERTION_CLAMP = PI_DIV_6;
@@ -112,6 +113,27 @@ void CTorch::Load(LPCSTR section)
 void CTorch::SwitchNightVision()
 {
     SwitchNightVision(!m_bNightVisionOn);
+}
+
+// NLC
+CInventoryItem* nlc_night_vision_item(CActor* actor)
+{
+    if (!actor)
+        return nullptr;
+    if (auto item = actor->inventory().ItemFromSlot(NIGHT_VISION_SLOT))
+        return item;
+    return IS_OGSR_GA ? nullptr : actor->inventory().ItemFromSlot(TORCH_SLOT);
+}
+
+// NLC
+void nlc_night_vision_contact(CActor* actor)
+{
+    if (!actor)
+        return;
+    if (auto torch = smart_cast<CTorch*>(actor->inventory().ItemFromSlot(TORCH_SLOT)))
+        torch->SwitchNightVision(); // fires eBeforeSwitchNVD itself
+    else
+        actor->callback(GameObject::eBeforeSwitchNVD)(true);
 }
 
 void CTorch::SwitchNightVision(bool vision_on)

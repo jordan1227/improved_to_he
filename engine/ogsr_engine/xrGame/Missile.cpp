@@ -213,8 +213,7 @@ void CMissile::DeviceUpdate()
         }
         else if (NightVisionSwitch)
         {
-            if (auto pActorTorch = smart_cast<CTorch*>(pA->inventory().ItemFromSlot(TORCH_SLOT)))
-                pActorTorch->SwitchNightVision();
+            nlc_night_vision_contact(pA); // NLC: also without a torch in TORCH_SLOT
             NightVisionSwitch = false;
         }
     }
@@ -690,7 +689,7 @@ bool CMissile::Action(s32 cmd, u32 flags)
     case kTORCH:
     case kTORCH_MODE: {
         auto pActorTorch = smart_cast<CActor*>(H_Parent())->inventory().ItemFromSlot(TORCH_SLOT);
-        if ((flags & CMD_START) && pActorTorch && GetState() == eIdle)
+        if ((flags & CMD_START) && pActorTorch && NlcDeviceSwitchReady()) // NLC: also from the sprint transitions
         {
             if (auto torch = smart_cast<CTorch*>(pActorTorch))
                 torch->switch_mode = cmd == kTORCH_MODE;
@@ -701,8 +700,8 @@ bool CMissile::Action(s32 cmd, u32 flags)
     }
     break;
     case kNIGHT_VISION: {
-        auto pActorNv = smart_cast<CActor*>(H_Parent())->inventory().ItemFromSlot(IS_OGSR_GA ? NIGHT_VISION_SLOT : TORCH_SLOT);
-        if ((flags & CMD_START) && pActorNv && GetState() == eIdle && g_actor && g_actor->can_switch_nv)
+        auto pActorNv = nlc_night_vision_item(smart_cast<CActor*>(H_Parent())); // NLC: the NVD slot
+        if ((flags & CMD_START) && pActorNv && NlcDeviceSwitchReady() && g_actor && g_actor->can_switch_nv)
         {
             NightVisionSwitch = true;
             SwitchState(eDeviceSwitch);

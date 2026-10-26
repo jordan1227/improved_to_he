@@ -5,6 +5,16 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.158 (2026-10-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `7EE84CC90C4E5CAB86933AA2661C0051BB921D48B91B82998A0830EFCB2FAEFD` (archived with its PDB in `nlc_tools/builds/20261026_015239_7ee84cc9`).
+- **Status:** runtime pending. `docs/NVD_DESIGN.md` 13.
+- **Required game data:** `scripts/params/nvd_params.script`, `scripts/kotovod/nlc_torch.script`, `scripts/binders/bind_stalker.script`, `scripts/sak/sak.script`, `scripts/sivol/sivol_actor_crit.script`, `config/misc/items.ltx` (NVD presets), `config/text/eng|rus/string_table_enc_equipment.xml`.
+- Head devices from sprint: weapons, knives and missiles accept kTORCH / kTORCH_MODE / kNIGHT_VISION in `eSprintStart` / `eSprintEnd` as well as `eIdle` (`CHudItem::NlcDeviceSwitchReady`).
+- Night vision on held items: kNIGHT_VISION looks for the device in `NIGHT_VISION_SLOT` (slot 11, falls back to the torch slot), and the device motion's contact point fires `on_before_switch_nv` directly when no torch is in `TORCH_SLOT` (`nlc_night_vision_item`, `nlc_night_vision_contact` in `Torch.cpp`). The script still gates each press with `can_switch_nv`.
+- Lua `nlc_stealth_actor_light()`: ROS luminocity at the actor, sky term, sky visibility (NVD automatic brightness).
+
 ## nlc-3.589.157 (2026-10-26)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

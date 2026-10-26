@@ -2270,6 +2270,24 @@ int lua_actor_surface(lua_State* L)
     return 3;
 }
 
+// light at the actor: ROS luminocity (lamps, sun, sky as the renderer samples them), sky term (visibility x sky
+// brightness), sky visibility 0..1; the NVD auto-brightness reads it (nvd_params.script)
+int lua_actor_light(lua_State* L)
+{
+    CActor* a = Actor();
+    if (!a)
+    {
+        lua_pushnumber(L, 0);
+        return 1;
+    }
+    float vis = 0.f;
+    const float sky = sky_light(a, &vis, nullptr);
+    lua_pushnumber(L, a->ROS()->get_luminocity());
+    lua_pushnumber(L, sky);
+    lua_pushnumber(L, vis);
+    return 3;
+}
+
 // environment light: total (ambient + sky + sun, max components), ambient, sky (hemi), sun
 int lua_env_light(lua_State* L)
 {
@@ -2348,6 +2366,7 @@ void script_register(lua_State* L)
     lua_register(L, "nlc_stealth_set_nvd", lua_set_nvd);
     lua_register(L, "nlc_stealth_eye_glow", lua_eye_glow);
     lua_register(L, "nlc_stealth_env_light", lua_env_light);
+    lua_register(L, "nlc_stealth_actor_light", lua_actor_light);
     lua_register(L, "nlc_stealth_actor_surface", lua_actor_surface);
     lua_register(L, "nlc_stealth_ray", lua_ray);
 }

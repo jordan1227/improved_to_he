@@ -212,6 +212,34 @@ function torch_log( fmt, ... )
     if TORCH_DEBUG_LOG then log2( "[nlc_torch] " .. fmt, ... ) end
 end
 
+-- A held item starts a head-device motion (headlamp, NVD) from idle and from the sprint
+-- transitions (engine CHudItem::NlcDeviceSwitchReady, nlc-3.589.158).
+function device_state_ready( state )
+    return state == global_flags.eIdle or state == global_flags.eSprintStart or state == global_flags.eSprintEnd
+end
+
+-- The empty-hand sprint cycle (sivol_sprint_hands) is a cosmetic script motion: it gives way.
+function yield_sprint_hands()
+    if sivol_sprint_hands and sivol_sprint_hands.is_active and sivol_sprint_hands.is_active() then
+        sivol_sprint_hands.stop_for_hud_use()
+    end
+end
+
+-- Shared admission for the head devices (this module and nvd_params): one motion at a time.
+function is_busy()
+    return torch_busy or torch_pending ~= nil
+end
+
+function held_item_ready( wpn )
+    return not is_busy() and device_state_ready( item_hud_state( wpn ) ) and game.hud_motion_allowed()
+end
+
+function lua_anim_ready()
+    if is_busy() or time_global() - torch_last_sway < TORCH_SWAY_GAP or torch_input_blocked( true ) then return false end
+    yield_sprint_hands()
+    return game.hud_motion_allowed()
+end
+
 -- Mirrors the key dispatcher's input gate (bind_stalker.script is_input_blocked).
 function torch_input_blocked( lua_owned )
     if level.main_input_receiver() or device():is_paused() or not db.actor:alive() then return true end
@@ -383,7 +411,7 @@ function on_key_press( key, bind )
     if wpn then
         -- Same acceptance rule as the engine: the device animation only starts from idle.
         -- A left-hand script animation (the watch) or a busy weapon also refuses the torch.
-        if torch_busy or item_hud_state( wpn ) ~= global_flags.eIdle or not game.hud_motion_allowed() then
+        if not held_item_ready( wpn ) then
             torch_log( "press ignored, held item busy" )
             return
         end
@@ -397,7 +425,7 @@ function on_key_press( key, bind )
         return
     end
 
-    if torch_busy or time_global() - torch_last_sway < TORCH_SWAY_GAP or torch_input_blocked( true ) or not game.hud_motion_allowed() then return end
+    if not lua_anim_ready() then return end
     local id = begin_torch_press( false, key )
     play_torch_anim( function()
         if torch_pending and torch_pending.id == id then commit_torch_action( "timer" ) end
@@ -472,7 +500,7 @@ function torch_pending_tick( now )
     if state == global_flags.eDeviceSwitch then
         pending.seen = true
     elseif now - pending.t >= TORCH_PENDING_GRACE then
-        if pending.seen and state == global_flags.eIdle then
+        if pending.seen and device_state_ready( state ) then
             commit_torch_action( "anim-end" )   -- the animation ended before its lock_time_end_<motion> contact point
         else
             torch_log( "press %s dropped, rejected or interrupted", tostring( pending.id ) )

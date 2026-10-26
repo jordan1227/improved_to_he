@@ -1,7 +1,27 @@
 -- nvd_params.script
--- FUTURE: when NVD becomes standalone equipment, keep any EMP resistance on
--- that equipped item here instead of inheriting it from outfit/device state.
-local update_nvd_glitch  -- forward declaration, so attach() below can see it
+-- Night vision device (slot 11): on/off, two gain modes, presets, automatic brightness
+-- control, EMP instability and the hand animation. Design: docs/NVD_DESIGN.md.
+--
+-- Controls (same as the flashlight's alt mode): a short press switches the device on/off
+-- in its remembered mode; holding the key (TORCH_HOLD_MS) switches the mode (low/high gain).
+-- While the device is off, a hold only changes the remembered mode.
+--
+-- Animation: empty hands use nlc_torch's script motion (anim_headlamp, contact at
+-- TORCH_TOUCH_FRACTION); a held weapon/knife/bolt plays its own anm_headlamp_on through the
+-- engine (can_switch_nv is raised for that press only) and reports the contact point through
+-- on_before_switch_nv. Both paths share nlc_torch's busy flag and camera sway gap.
+--
+-- Presets: the item's night_vision_device is the low-gain section, night_vision_device_high
+-- the high-gain one. Script-only keys in a preset:
+--   nvd_ambient_floor   level.set_min_lumscale_amb while on (how much the tube lifts total darkness)
+--   nvd_power           battery draw weight (sak.discharge_accum: 1 = one artifact)
+--   nvd_rise_ms         power-up time of the tube
+--   nvd_abc             automatic brightness control strength 0..1 (0 = none, Gen 1 tubes)
+--   nvd_abc_ref         light at the actor (nlc_stealth_actor_light) above which the gain is reduced
+--   nvd_abc_min         lowest exposure factor the control may reach
+-- FUTURE: when NVD becomes standalone equipment, keep any EMP resistance on that item here.
+
+local update_nvd
 local on_emp_malfunction
 
 function attach(sm)
@@ -9,263 +29,272 @@ function attach(sm)
     sm:subscribe({signal = "on_item_to_ruck", fun = this.on_drop})
     sm:subscribe({signal = "on_drop_before_all", fun = this.on_drop})
     sm:subscribe({signal = "on_before_switch_nv", fun = this.on_before_switch_nv})
+    sm:subscribe({signal = "on_key", fun = this.on_key_press})
     sm:subscribe({signal = "on_spawn", fun = this.on_spawn})
     sm:subscribe({signal = "on_first_update", fun = this.on_first_update})
     sm:subscribe({signal = "on_save", fun = this.on_save})
-    sm:subscribe({signal = "on_update", fun = update_nvd_glitch})
-    sm:subscribe({signal = "on_emp_malfunction", fun = on_emp_malfunction})
+    sm:subscribe({signal = "on_update", fun = function() update_nvd() end})
+    sm:subscribe({signal = "on_emp_malfunction", fun = function(...) on_emp_malfunction(...) end})
 end
 
 local snd_on = sound_object("weapons\\nv_start")
 local snd_off = sound_object("weapons\\nv_off")
+local snd_click = sound_object("device\\light_on")
+
+-- ===== tuning =====
+local NVD_SLOT          = 11     -- [HE-PORT]
+local HOLD_MS           = 300    -- key held this long at the contact point = mode switch (nlc_torch TORCH_HOLD_MS)
+local PENDING_TIMEOUT   = 3000   -- ms after which an unconsumed press is dropped
+local PENDING_GRACE     = 150    -- ms before a held-item motion that left eDeviceSwitch counts as finished or rejected
+local FADE_OUT_MS       = 160    -- user switch-off: the picture fades before the tube goes dark (phosphor afterglow)
+local MODE_GLIDE_RATE   = 5.0    -- 1/s: how fast exposure follows a mode change
+local ABC_RATE_DOWN     = 3.5    -- 1/s: the control dims quickly when light appears
+local ABC_RATE_UP       = 0.9    -- 1/s: and recovers gain slowly when it goes dark
+local ABC_TICK          = 100    -- ms between light samples
+local WRITE_TICK        = 50     -- ms between console writes when nothing ramps
+local CMD_EPSILON       = 0.004
+local DEBUG             = false  -- fl nvd_params.set_debug(true): light, exposure and gain once a second
+
+-- console bounds (xrRender_console.cpp); CCC_Float silently rejects anything outside them
+local GAIN_MIN, GAIN_MAX     = 0.1, 3.0
+local OFFSET_MIN, OFFSET_MAX = 0.5, 3.0
+local GLITCH_MAX_CMD         = 0.9
 
 -- https://github.com/OGSR/OGSR_GA_Resources/blob/main/gamedata/scripts/ogse_night_vision.script
-local r_pnv_gain_current_base = 0
-local r_pnv_gain_current_mod  = 0
-
-local beef_nv = {
-    r_pnv_mode = 0,             -- 1, 2, 3
-    r_pnv_num_tubes = 2,        -- число трубок 1, 1.1, 1.2, 2, 4
-    r_pnv_gain_offset = 2.0,    -- усиление (сила) ПНВ (основа(
-    r_pnv_gain_current = 1,     -- усиление (сила) ПНВ
-    r_pnv_radius = 0.5,         -- размер (радиус) ПНВ
-    r_pnv_glitch = 0.006,       -- тряска
-    r_pnv_noise = 0.3,          -- шум
-    r_pnv_scanlines = 1,        -- эффект crt
-    r_pnv_scintillation = 0.99, -- МЕРЦАНИЯ
-    r_pnv_alfa_vignete = 0,     -- режим рамки 0 - blur, 1 - black, 2 - image overlay
-    r_pnv_size_vignet = 0.04,   -- размер виньетки
-    r_pnv_washout_thresh  = 0.7, -- засвет источников света
+-- Static preset keys written once per preset (r_pnv_mode is owned by on/off, never by a preset).
+local static_keys = {
+    r_pnv_num_tubes = 2,         -- 1 centred, 1.1 left, 1.2 right, 2, 4
+    r_pnv_radius = 0.5,          -- tube radius
+    r_pnv_scanlines = 0.175,     -- CRT pass blend (image intensifier tubes have no scan lines)
+    r_pnv_alfa_vignete = 1,      -- outside the tubes: 0 blur, 1 black, 2/3 clear image
+    r_pnv_size_vignet = 0.04,    -- soft edge of the tube
+    r_pnv_washout_thresh = 0.7,  -- light level that blooms
+    r_pnv_position = 100,        -- vertical tube position (100 = centred)
+}
+local v4_keys = {
+    heat_fade_distance = vector4():set(13, 20, 0, 0),
+    heat_vision_blurring = vector4():set(1, 1.5, 1.1, 0),
+    heat_vision_steps = vector4():set(0.3, 0.2, 0.5, 0),
 }
 
-local beef_nv_v4 = {
-    heat_fade_distance = vector4():set(13.000000, 20.000000, 0.000000, 0.000000), -- FADE_DISTANCE_START 13.00, FADE_DISTANCE_END 20.00
-    heat_vision_blurring = vector4():set(1.000000, 1.500000, 1.100000, 0.000000), -- int samples = lerp(heat_vision_blurring.x, heat_vision_blurring.y, smoothstep(0.0, heat_vision_blurring.z, depth));
-    heat_vision_steps = vector4():set(0.300000, 0.200000, 0.500000, 0.000000),    -- хз что это такое
-}
+-- ===== state =====
+local flag = false               -- device on (saved as nightvision_en)
+local nvd_mode = "low"           -- "low" / "high" (saved as nvd_mode)
+local eff_low, eff_high, obj_id  -- preset sections of the device in the slot
+local preset                     -- table of the applied preset
+local preset_sect                -- its section
+local outage = false             -- forced dark (EMP dropout, critical malfunction) while flag stays on
+local fade_until = 0             -- user switch-off in progress
+local current_level_is_aver = false
 
-local eff, obj_id, flag
+local cur_offset, cur_gain = OFFSET_MIN, GAIN_MIN   -- glide values (preset targets plus power-up ramp)
+local rise_rate = 3                                  -- 1/s, from nvd_rise_ms
+local rising = false                                 -- power-up in progress (rise_rate instead of MODE_GLIDE_RATE)
+local abc_k = 1                                      -- smoothed exposure factor
+local abc_light = 0
+local last_abc_tick, last_write, last_tick, last_debug = 0, 0, 0, 0
+local last_cmd = {}
 
-local NVD_SMOOTH_IN  = 5.0
-local NVD_SMOOTH_OUT = 2.5
-local nvd_smooth = 0
-local nvd_last_time = 0
+local nvd_smooth = 0             -- EMP instability, 0..1
 local nvd_dropout_until = 0
 local nvd_critical_forced_off = false
-local current_level_is_aver = false
-local last_nvd_visual_update = 0
 local next_nvd_visual_spike = 0
 local nvd_visual_spike_until = 0
+local emp_glitch, emp_noise, emp_gain_drop, emp_scint_drop = 0, 0, 0, 0
 
--- max-intensity targets to lerp toward; base values come from the currently
--- equipped device's own ltx section (already read once in apply_pnv/on_slot)
-local base_pnv_glitch, base_pnv_noise, base_pnv_scintillation
+local pending                    -- key press waiting for its contact point
+local press_id = 0
+local engine_nv_raised = false
 
-local last_glitch_val, last_noise_val, last_gain_val, last_scintillation_val
-local NVD_CMD_EPSILON = 0.005
-
-local function snapshot_nvd_base(nv_sect)
-    base_pnv_glitch = get_float(nv_sect, "r_pnv_glitch", beef_nv.r_pnv_glitch)
-    base_pnv_noise  = get_float(nv_sect, "r_pnv_noise",  beef_nv.r_pnv_noise)
-    base_pnv_scintillation = get_float(nv_sect, "r_pnv_scintillation", beef_nv.r_pnv_scintillation)
+local function log_nvd(fmt, ...)
+    if DEBUG then log2("[nvd] " .. fmt, ...) end
 end
 
-on_emp_malfunction = function(kind)
-    if not (flag and eff) then return end
-    if kind == "shutdown" then
-        off_pnv(true)  -- full shutdown, mirrors torch's set_off_mode — manual switch-on required
-    else
-        local cfg = sivol_emp_config.TORCH_MALFUNCTION
-        nvd_dropout_until = time_global() + math.random(cfg.dropout_min, cfg.dropout_max)
+function set_debug(v)
+    DEBUG = v and true or false
+end
+
+local function set_cmd(key, value)
+    local last = last_cmd[key]
+    if last and math.abs(value - last) <= CMD_EPSILON then return end
+    cmd(key, value)
+    last_cmd[key] = value
+end
+
+local function forget_cmds()
+    last_cmd = {}
+end
+
+local function set_engine_nv(v)
+    local aobj = get_actor_obj()
+    if aobj then aobj.can_switch_nv = v end
+    engine_nv_raised = v
+end
+
+-- ===== presets =====
+local preset_cache = {}
+
+local function read_preset(sect)
+    local p = preset_cache[sect]
+    if p then return p end
+    p = { sect = sect, static = {}, v4 = {} }
+    for k, v in pairs(static_keys) do p.static[k] = get_float(sect, k, v) end
+    for k, v in pairs(v4_keys) do p.v4[k] = get_vector4(sect, k, v) end
+    p.color = get_vector(sect, "pnv_color")
+    p.offset = math.clamp(get_float(sect, "r_pnv_gain_offset", 1), OFFSET_MIN, OFFSET_MAX)
+    p.gain = math.clamp(get_float(sect, "r_pnv_gain_current", 1), GAIN_MIN, GAIN_MAX)
+    p.noise = get_float(sect, "r_pnv_noise", 0.05)
+    p.scint = get_float(sect, "r_pnv_scintillation", 0.995)
+    p.glitch = get_float(sect, "r_pnv_glitch", 0)
+    p.floor = get_float(sect, "nvd_ambient_floor", 0.02)
+    p.power = get_float(sect, "nvd_power", 1)
+    p.rise_ms = math.max(50, get_float(sect, "nvd_rise_ms", 400))
+    p.abc = math.clamp(get_float(sect, "nvd_abc", 0), 0, 1)
+    p.abc_ref = math.max(0.001, get_float(sect, "nvd_abc_ref", 0.15))
+    p.abc_min = math.clamp(get_float(sect, "nvd_abc_min", 0.08), 0.01, 1)
+    preset_cache[sect] = p
+    return p
+end
+
+local function wanted_section()
+    if nvd_mode == "high" and eff_high then return eff_high end
+    return eff_low
+end
+
+-- Writes the static part of the preset; the dynamic part (exposure, gain, noise, sparkle,
+-- glitch) is written by update_nvd.
+local function apply_preset(sect)
+    local p = read_preset(sect)
+    preset, preset_sect = p, sect
+    if p.color then
+        cmd("pnv_color " .. string.format("%f,%f,%f", p.color.x, p.color.y, p.color.z))
+    end
+    for k, v in pairs(p.static) do cmd(k, v) end
+    for k, v in pairs(p.v4) do cmd(k, string.format("%f,%f,%f,%f", v.x, v.y, v.z, v.w)) end
+    rise_rate = 3000 / p.rise_ms
+    forget_cmds()
+    if flag and not outage then level.set_min_lumscale_amb(p.floor) end
+end
+
+-- ===== power =====
+function check_accum()
+    local obj = sak.get_accum()
+    return obj and obj:condition() > 0.071 and obj
+end
+
+local function set_dark(dark)
+    -- the tube's picture and the ambient floor always go together (D3)
+    if dark then
         cmd("r_pnv_mode 0")
-    end
-end
-
-update_nvd_glitch = function()
-    if not (flag and eff) then return end
-
-    local now = time_global()
-
-    -- Critical malfunction: force the actual NVD mode off without clearing
-    -- `flag`; this is an outage that auto-recovers, unlike a lesser shutdown.
-    if sivol_critical_malfunction and sivol_critical_malfunction.is_device_active("nvd") then
-        if not nvd_critical_forced_off then
-            cmd("r_pnv_mode 0")
-            nvd_critical_forced_off = true
-        end
-        if last_glitch_val ~= 0 then
-            cmd("r_pnv_glitch", 0)
-            last_glitch_val = 0
-        end
-        if last_noise_val ~= 0 then
-            cmd("r_pnv_noise", 0)
-            last_noise_val = 0
-        end
-        return
-    elseif nvd_critical_forced_off then
-        nvd_critical_forced_off = false
-        if check_accum() then
-            cmd("r_pnv_mode 1")
-        else
-            off_pnv(false)
-            return
-        end
-    end
-
-    -- NVD dropout recovery/gate
-    -- Skip the normal glitch/noise update while forced off,
-    -- then restore NVD mode immediately when the dropout expires.
-    if nvd_dropout_until > 0 then
-        if now >= nvd_dropout_until then
-            nvd_dropout_until = 0
-            cmd("r_pnv_mode 1")
-        else
-            return
-        end
-    end
-
-    local dt = (now - nvd_last_time) / 1000
-    nvd_last_time = now
-    if dt > 1 or dt < 0 then dt = 0 end
-
-    local electra_glitch = (sivol_pda and sivol_pda.get_glitch_intensity
-        and sivol_pda.get_glitch_intensity()) or 0
-    local shield = (sivol_pda and sivol_pda.get_artifact_shield
-        and sivol_pda.get_artifact_shield()) or 0
-
-    local aver_glitch = 0
-    if current_level_is_aver then
-        aver_glitch = sivol_emp_config.NVD_AVER_GLITCH_BASE * (1 - shield)
-    end
-
-    local target = math.max(electra_glitch, aver_glitch)
-
-    local rate = (target > nvd_smooth) and NVD_SMOOTH_IN or NVD_SMOOTH_OUT
-    local k = math.min(1, dt * rate)
-    nvd_smooth = nvd_smooth + (target - nvd_smooth) * k
-    if nvd_smooth < 0.001 then nvd_smooth = 0 end
-    if nvd_smooth > 1 then nvd_smooth = 1 end
-
-    if not base_pnv_glitch then return end
-
-    local visual_cfg = sivol_emp_config.NVD_EMP_VISUAL
-    if nvd_smooth > 0.15 then
-        if now >= next_nvd_visual_spike then
-            nvd_visual_spike_until = now + math.random(
-                visual_cfg.spike_duration_min, visual_cfg.spike_duration_max
-            )
-            next_nvd_visual_spike = now + math.random(
-                visual_cfg.spike_interval_min, visual_cfg.spike_interval_max
-            )
-        end
+        level.set_min_lumscale_amb(0.001)
     else
-        next_nvd_visual_spike = 0
-        nvd_visual_spike_until = 0
-    end
-
-    if now - last_nvd_visual_update < visual_cfg.update_interval then return end
-    last_nvd_visual_update = now
-
-    local spike = now < nvd_visual_spike_until and 1 or 0
-    local phase = 0.5 + 0.5 * math.sin(now * 0.018)
-    local instability = nvd_smooth * nvd_smooth
-
-    local glitch_val = base_pnv_glitch
-        + (sivol_emp_config.NVD_GLITCH_MAX - base_pnv_glitch) * nvd_smooth
-        + spike * 0.12 * nvd_smooth
-    local noise_val = base_pnv_noise
-        + (sivol_emp_config.NVD_NOISE_MAX - base_pnv_noise) * nvd_smooth
-        + spike * 0.18 * nvd_smooth
-    glitch_val = math.min(1, glitch_val)
-    noise_val = math.min(1, noise_val)
-
-    local gain_drop = instability * (
-        visual_cfg.gain_drop_max * (0.55 + 0.45 * phase)
-        + spike * visual_cfg.gain_wobble
-    )
-    local gain_val = math.clamp(
-        r_pnv_gain_current_base + r_pnv_gain_current_mod - gain_drop, 0.1, 3.0
-    )
-    local scintillation_val = math.clamp(
-        base_pnv_scintillation
-            - instability * visual_cfg.scintillation_drop_max * (0.6 + 0.4 * phase)
-            - spike * 0.12 * nvd_smooth,
-        0, 1
-    )
-
-    local settled = nvd_smooth == 0 -- [HE-PORT]
-    if not last_glitch_val or math.abs(glitch_val - last_glitch_val) > NVD_CMD_EPSILON
-        or (settled and glitch_val ~= last_glitch_val) then
-        cmd("r_pnv_glitch", glitch_val)
-        last_glitch_val = glitch_val
-    end
-    if not last_noise_val or math.abs(noise_val - last_noise_val) > NVD_CMD_EPSILON
-        or (settled and noise_val ~= last_noise_val) then
-        cmd("r_pnv_noise", noise_val)
-        last_noise_val = noise_val
-    end
-    if not last_gain_val or math.abs(gain_val - last_gain_val) > NVD_CMD_EPSILON
-        or (settled and gain_val ~= last_gain_val) then
-        cmd("r_pnv_gain_current", gain_val)
-        last_gain_val = gain_val
-    end
-    if not last_scintillation_val
-        or math.abs(scintillation_val - last_scintillation_val) > NVD_CMD_EPSILON
-        or (settled and scintillation_val ~= last_scintillation_val) then
-        cmd("r_pnv_scintillation", scintillation_val)
-        last_scintillation_val = scintillation_val
+        cmd("r_pnv_mode 1")
+        level.set_min_lumscale_amb(preset and preset.floor or 0.02)
     end
 end
 
-local function apply_pnv_mode()
-    -- 0.10000, 3.00000
-    local gain = math.clamp(r_pnv_gain_current_base + r_pnv_gain_current_mod, 0.1, 3.0)
-    cmd("r_pnv_gain_current", gain)
-    last_gain_val = gain
+local function reset_runtime()
+    nvd_smooth = 0
+    nvd_dropout_until = 0
+    nvd_critical_forced_off = false
+    next_nvd_visual_spike = 0
+    nvd_visual_spike_until = 0
+    emp_glitch, emp_noise, emp_gain_drop, emp_scint_drop = 0, 0, 0, 0
+    outage = false
+    fade_until = 0
+    forget_cmds()
 end
 
-local function apply_pnv(nv_sect)
-    local color = get_vector(nv_sect, "pnv_color")
-    cmd("pnv_color " .. string.format("%f,%f,%f", color.x, color.y, color.z))
-
-    for k, v in pairs(beef_nv) do
-        local v1 = get_float(nv_sect, k, v)
-        cmd(k, v1)
+function on_pnv(snd)
+    if not eff_low then return end
+    local sect = wanted_section()
+    if sect ~= preset_sect then apply_preset(sect) end
+    reset_runtime()
+    flag = true
+    -- the tube starts dark and rises (nvd_rise_ms)
+    cur_offset, cur_gain = OFFSET_MIN, GAIN_MIN
+    rising = true
+    abc_k = 1
+    last_abc_tick = 0
+    last_tick = time_global()
+    set_dark(false)
+    update_nvd(true)
+    if snd then
+        snd_on:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
     end
-
-    for k, v in pairs(beef_nv_v4) do
-        local v = get_vector4(nv_sect, k, v)
-        local v1 = string.format("%f,%f,%f,%f", v.x, v.y, v.z, v.w)
-        cmd(k, v1)
-    end
-
-    r_pnv_gain_current_base = get_float(nv_sect, "r_pnv_gain_current", beef_nv.r_pnv_gain_current)
-    apply_pnv_mode()
 end
 
-local NVD_SLOT = 11 -- [HE-PORT]
+function off_pnv(snd)
+    flag = false
+    reset_runtime()
+    set_dark(true)
+    if snd then
+        snd_off:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+    end
+end
 
+-- user switch-off: the gain falls for FADE_OUT_MS, then the tube goes dark
+local function fade_off()
+    if not flag then return end
+    snd_off:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+    fade_until = time_global() + FADE_OUT_MS
+end
+
+function disable_NVD()
+    if flag then off_pnv(false) end
+end
+
+function get_NVD_powered()
+    return flag
+end
+
+-- battery draw weight for sak.discharge_accum (0 when off)
+function get_power_draw()
+    if not flag then return 0 end
+    return preset and preset.power or 1
+end
+
+function get_mode()
+    return nvd_mode
+end
+
+-- ===== mode =====
+local function set_mode(mode, announce)
+    nvd_mode = mode
+    set_value("nvd_mode", mode)
+    if flag then
+        local sect = wanted_section()
+        if sect ~= preset_sect then apply_preset(sect) end -- exposure glides to the new targets
+    end
+    if announce then
+        snd_click:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 0.6)
+    end
+end
+
+-- ===== slot =====
 local function slot_device() -- [HE-PORT]
     local obj = db.actor and db.actor:item_in_slot(NVD_SLOT)
     if not obj then return end
-    return get_string(obj:section(), "night_vision_device"), obj
+    local sect = obj:section()
+    local low = get_string(sect, "night_vision_device")
+    if not low then return end
+    return low, get_string(sect, "night_vision_device_high"), obj
 end
 
 function refresh() -- [HE-PORT]
-    local eff_sect, obj = slot_device()
-    if eff_sect then
-        if eff_sect ~= eff then
-            apply_pnv(eff_sect)
-            snapshot_nvd_base(eff_sect)
-        end
-        eff, obj_id = eff_sect, obj:id()
-    elseif eff then
-        eff, obj_id = nil, nil
-        off_pnv(flag)
+    local low, high, obj = slot_device()
+    if low then
+        local changed = low ~= eff_low or high ~= eff_high
+        eff_low, eff_high, obj_id = low, high, obj:id()
+        -- D1: a different device keeps the picture on, with its own preset
+        if changed and flag then apply_preset(wanted_section()) end
+    elseif eff_low then
+        eff_low, eff_high, obj_id = nil, nil, nil
+        if flag then off_pnv(true) end
     end
 end
 
-function on_slot() -- [HE-PORT]
+function on_slot()
     refresh()
 end
 
@@ -278,91 +307,323 @@ function on_drop(obj)
             if flag and not check_accum() then off_pnv(false) end
         end)
     end
-    if obj:id() == obj_id then
-        eff, obj_id = nil, nil
-        off_pnv(flag)
+    if obj and obj:id() == obj_id then
+        eff_low, eff_high, obj_id = nil, nil, nil
+        if flag then off_pnv(true) end
     end
 end
 
-function play_pnv_anim()
-    level.only_allow_movekeys(true)
-    level.set_actor_allow_ladder(false)
-
-    local torch_anm_sec = "switch_torch"
-    local anim = "anm_show"
-    local detector = db.actor:item_in_slot(8)
-    if detector and get_actor_obj():IsDetectorActive() then
-        torch_anm_sec = get_string(detector:section(), "hud")
-        anim = "anm_headlamp_on"
+-- ===== EMP =====
+on_emp_malfunction = function(kind)
+    if not (flag and eff_low) then return end
+    if kind == "shutdown" then
+        off_pnv(true)  -- full shutdown, mirrors torch's set_off_mode: manual switch-on required
+    else
+        local cfg = sivol_emp_config.TORCH_MALFUNCTION
+        nvd_dropout_until = time_global() + math.random(cfg.dropout_min, cfg.dropout_max)
+        outage = true
+        set_dark(true)
     end
-
-    local duration = game.play_hud_motion(db.actor:active_item() and 1 or 2, torch_anm_sec, anim, false, 1)
-    level.add_cam_effector("camera_effects\\headlamp_cam.anm", 7539, false, "", 0, false)
-
-    dsh.timeout(duration + 10, function()
-        level.only_allow_movekeys(false)
-        level.set_actor_allow_ladder(true)
-    end)
-
-    return duration
 end
 
-function on_before_switch_nv()
-    if not eff or not (check_accum() and vergas_masks.get_flag_mask() == true) then return end
-    if not used_items.can_use_gadget() or db.actor:is_talking() or level.main_input_receiver() then return end
+-- EMP instability (Electra, Aver): fills emp_* offsets on top of the preset.
+local function update_emp(now, dt)
+    local electra_glitch = (sivol_pda and sivol_pda.get_glitch_intensity
+        and sivol_pda.get_glitch_intensity()) or 0
+    local shield = (sivol_pda and sivol_pda.get_artifact_shield
+        and sivol_pda.get_artifact_shield()) or 0
+    local aver_glitch = 0
+    if current_level_is_aver then
+        aver_glitch = sivol_emp_config.NVD_AVER_GLITCH_BASE * (1 - shield)
+    end
+    local target = math.max(electra_glitch, aver_glitch)
+    local rate = (target > nvd_smooth) and 5.0 or 2.5
+    nvd_smooth = nvd_smooth + (target - nvd_smooth) * math.min(1, dt * rate)
+    if nvd_smooth < 0.001 then nvd_smooth = 0 end
+    if nvd_smooth > 1 then nvd_smooth = 1 end
 
-    local duration = play_pnv_anim()
-
-    dsh.timeout(duration * 0.5, function()
-        if flag then
-            off_pnv(true)
-        else
-            on_pnv(true)
+    local visual_cfg = sivol_emp_config.NVD_EMP_VISUAL
+    if nvd_smooth > 0.15 then
+        if now >= next_nvd_visual_spike then
+            nvd_visual_spike_until = now + math.random(visual_cfg.spike_duration_min, visual_cfg.spike_duration_max)
+            next_nvd_visual_spike = now + math.random(visual_cfg.spike_interval_min, visual_cfg.spike_interval_max)
         end
+    else
+        next_nvd_visual_spike = 0
+        nvd_visual_spike_until = 0
+    end
+
+    local spike = now < nvd_visual_spike_until and 1 or 0
+    local phase = 0.5 + 0.5 * math.sin(now * 0.018)
+    local instability = nvd_smooth * nvd_smooth
+    emp_glitch = (sivol_emp_config.NVD_GLITCH_MAX - (preset and preset.glitch or 0)) * nvd_smooth + spike * 0.12 * nvd_smooth
+    emp_noise = (sivol_emp_config.NVD_NOISE_MAX - (preset and preset.noise or 0)) * nvd_smooth + spike * 0.18 * nvd_smooth
+    emp_gain_drop = instability * (visual_cfg.gain_drop_max * (0.55 + 0.45 * phase) + spike * visual_cfg.gain_wobble)
+    emp_scint_drop = instability * visual_cfg.scintillation_drop_max * (0.6 + 0.4 * phase) + spike * 0.12 * nvd_smooth
+end
+
+-- ===== automatic brightness control =====
+local function sample_light()
+    if type(nlc_stealth_actor_light) == "function" then
+        local lum, sky = nlc_stealth_actor_light()
+        return math.max(tonumber(lum) or 0, tonumber(sky) or 0)
+    end
+    if type(nlc_stealth_env_light) == "function" then
+        return tonumber(nlc_stealth_env_light()) or 0
+    end
+    return 0
+end
+
+local function update_abc(now, dt)
+    local p = preset
+    if not p or p.abc <= 0 then
+        abc_k = 1
+        return
+    end
+    if now - last_abc_tick >= ABC_TICK then
+        last_abc_tick = now
+        abc_light = sample_light()
+    end
+    -- exposure that keeps the output level: full gain in the dark, less as light rises
+    local e = math.clamp(p.abc_ref / math.max(abc_light, 0.001), p.abc_min, 1)
+    local target = 1 - p.abc * (1 - e)
+    local rate = (target < abc_k) and ABC_RATE_DOWN or ABC_RATE_UP
+    abc_k = abc_k + (target - abc_k) * math.min(1, dt * rate)
+end
+
+-- ===== per-frame writer =====
+update_nvd = function(force)
+    local now = time_global()
+    pending_tick(now)
+    if not (flag and eff_low and preset) then return end
+
+    -- the mask animation passes the hand over the face: the device goes off and stays off
+    if hud_animation_owner and hud_animation_owner.current and hud_animation_owner.owner then
+        local cur = hud_animation_owner.current()
+        if cur and hud_animation_owner.owner(cur) == "mask" then
+            off_pnv(true)
+            return
+        end
+    end
+
+    if fade_until > 0 and now >= fade_until then
+        off_pnv(false)
+        return
+    end
+
+    -- critical malfunction: dark without clearing flag; recovers on its own
+    if sivol_critical_malfunction and sivol_critical_malfunction.is_device_active("nvd") then
+        if not nvd_critical_forced_off then
+            nvd_critical_forced_off = true
+            outage = true
+            set_dark(true)
+        end
+        return
+    elseif nvd_critical_forced_off then
+        nvd_critical_forced_off = false
+        if not check_accum() then
+            off_pnv(false)
+            return
+        end
+        outage = nvd_dropout_until > 0
+        if not outage then
+            cur_offset, cur_gain, rising = OFFSET_MIN, GAIN_MIN, true -- comes back like a power-up
+            forget_cmds()
+            set_dark(false)
+        end
+    end
+
+    -- EMP dropout: dark until it expires, then a fresh power-up
+    if nvd_dropout_until > 0 then
+        if now >= nvd_dropout_until then
+            nvd_dropout_until = 0
+            outage = false
+            cur_offset, cur_gain, rising = OFFSET_MIN, GAIN_MIN, true
+            forget_cmds()
+            set_dark(false)
+        else
+            return
+        end
+    end
+
+    local dt = (now - last_tick) / 1000
+    last_tick = now
+    if dt > 1 or dt < 0 then dt = 0 end
+
+    update_emp(now, dt)
+    update_abc(now, dt)
+
+    local p = preset
+    local glide = math.min(1, dt * (rising and rise_rate or MODE_GLIDE_RATE))
+    if force then glide = 0 end
+    cur_offset = cur_offset + (p.offset - cur_offset) * glide
+    cur_gain = cur_gain + (p.gain - cur_gain) * glide
+    local ramping = math.abs(cur_gain - p.gain) > 0.01 or math.abs(cur_offset - p.offset) > 0.01
+    if not ramping then rising = false end
+
+    local fade = 1
+    if fade_until > 0 then fade = math.max(0, (fade_until - now) / FADE_OUT_MS) end
+
+    -- ABC lowers linear exposure first, then the output gain
+    local exposure = cur_offset * abc_k
+    local offset = math.max(OFFSET_MIN, exposure)
+    local gain = cur_gain * (exposure / offset)
+    gain = math.clamp(gain * fade - emp_gain_drop, GAIN_MIN, GAIN_MAX)
+    offset = math.clamp(offset, OFFSET_MIN, OFFSET_MAX)
+
+    -- a starved tube (full gain, little light) shows more noise and sparkle
+    local starved = 0
+    if p.abc > 0 then
+        starved = math.clamp(1 - abc_light / (p.abc_ref * 0.5), 0, 1)
+    end
+    local noise = math.clamp(p.noise * (1 + 0.6 * starved) + emp_noise, 0, 1)
+    local scint = math.clamp(p.scint - (1 - p.scint) * 0.8 * starved - emp_scint_drop, 0, 1)
+    local glitch = math.clamp(p.glitch + emp_glitch, 0, GLITCH_MAX_CMD)
+
+    if not force and not ramping and fade_until == 0 and now - last_write < WRITE_TICK then return end
+    last_write = now
+    set_cmd("r_pnv_gain_offset", offset)
+    set_cmd("r_pnv_gain_current", gain)
+    set_cmd("r_pnv_noise", noise)
+    set_cmd("r_pnv_scintillation", scint)
+    set_cmd("r_pnv_glitch", glitch)
+
+    if DEBUG and now - last_debug >= 1000 then
+        last_debug = now
+        log_nvd("mode=%s sect=%s light=%.3f abc=%.2f offset=%.2f gain=%.2f noise=%.3f scint=%.4f emp=%.2f",
+            nvd_mode, tostring(preset_sect), abc_light, abc_k, offset, gain, noise, scint, nvd_smooth)
+    end
+end
+
+-- ===== key press, animation and contact =====
+local function press_allowed()
+    if not db.actor:alive() or level.main_input_receiver() or device():is_paused() then return false end
+    if db.actor:is_talking() or not used_items.can_use_gadget() then return false end
+    if vergas_masks.is_animating() then return false end
+    if hud_animation_owner and hud_animation_owner.busy and hud_animation_owner.busy() then return false end
+    if not eff_low then return false end
+    if not flag and not check_accum() then return false end
+    return true
+end
+
+local function begin_press(engine_owned, key)
+    press_id = press_id + 1
+    pending = { id = press_id, t = time_global(), engine = engine_owned, intent = "toggle", seen = false, key = key }
+    log_nvd("press id=%s engine=%s", tostring(press_id), tostring(engine_owned))
+    return press_id
+end
+
+local function sample_hold(p, now)
+    if p.intent == "mode" or not p.key then return end
+    if now - p.t >= HOLD_MS and key_state(p.key) ~= 0 then
+        p.intent = "mode"
+    end
+end
+
+local function drop_press(why)
+    log_nvd("press %s dropped: %s", tostring(pending and pending.id), why)
+    pending = nil
+    if engine_nv_raised then set_engine_nv(false) end
+end
+
+-- The hand reached the device: switch, change the mode or refuse (no power), consume the press.
+local function commit(why)
+    local p = pending
+    pending = nil
+    if engine_nv_raised then set_engine_nv(false) end
+    if p then sample_hold(p, time_global()) end
+    local intent = p and p.intent or "toggle"
+    log_nvd("commit %s intent=%s", why, intent)
+    if not (db.actor:alive() and eff_low) then return end
+
+    if intent == "mode" then
+        set_mode(nvd_mode == "high" and "low" or "high", true)
+    elseif flag then
+        fade_off()
+    elseif check_accum() then
+        on_pnv(true)
+    else
+        snd_click:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 0.6) -- dead battery: only the switch clicks
+    end
+end
+
+function pending_tick(now)
+    local p = pending
+    if not p then return end
+    if now - p.t > PENDING_TIMEOUT then
+        drop_press("timeout")
+        return
+    end
+    sample_hold(p, now)
+    if not p.engine then return end -- empty hands: the scheduled timer commits
+
+    local state = nlc_torch.item_hud_state(db.actor:active_item())
+    if state == global_flags.eDeviceSwitch then
+        p.seen = true
+        if engine_nv_raised then set_engine_nv(false) end
+    elseif now - p.t >= PENDING_GRACE then
+        if p.seen and nlc_torch.device_state_ready(state) then
+            commit("anim-end") -- the motion ended before its lock_time_end_<motion> contact point
+        else
+            drop_press("rejected or interrupted")
+        end
+    end
+end
+
+function on_key_press(key, bind)
+    if bind ~= key_bindings.kNIGHT_VISION then return end
+    if pending or not press_allowed() then return end
+
+    local wpn = db.actor:active_item()
+    if wpn then
+        -- the engine plays the item's anm_headlamp_on and reports the contact through on_before_switch_nv
+        if not nlc_torch.held_item_ready(wpn) then return end
+        local aobj = get_actor_obj()
+        if aobj and aobj:is_zoom_aiming_mode() then return end -- the engine refuses while aiming
+        begin_press(true, key)
+        set_engine_nv(true) -- read by the engine's key handler right after this callback
+        nlc_torch.play_torch_cam_sway()
+        if nlc_torch.torch_left_overlay(wpn) then
+            nlc_torch.play_torch_left_overlay()
+        end
+        return
+    end
+
+    if not nlc_torch.lua_anim_ready() then return end
+    local id = begin_press(false, key)
+    nlc_torch.play_torch_anim(function()
+        if pending and pending.id == id then commit("timer") end
     end)
 end
 
-function on_pnv(snd)
-    if not eff then return end
-    flag = true
-    last_nvd_visual_update = 0
-    cmd("r_pnv_mode 1")
-    level.set_min_lumscale_amb(0.02)
-    if snd then
-        snd_on:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
-    end
+-- engine contact point of a held item's device motion (nlc_night_vision_contact)
+function on_before_switch_nv()
+    local p = pending
+    if not (p and p.engine) then return end
+    if nlc_torch.item_hud_state(db.actor:active_item()) ~= global_flags.eDeviceSwitch then return end
+    commit("contact")
 end
 
-function off_pnv(snd)
-    flag = false
-    nvd_smooth = 0
-    nvd_dropout_until = 0
-    nvd_critical_forced_off = false
-    next_nvd_visual_spike = 0
-    nvd_visual_spike_until = 0
-    last_nvd_visual_update = 0
-    last_glitch_val, last_noise_val = nil, nil
-    last_gain_val, last_scintillation_val = nil, nil
-    cmd("r_pnv_mode 0")
-    level.set_min_lumscale_amb(0.001)
-    if snd then
-        snd_off:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
-    end
-end
-
+-- ===== lifecycle =====
 function on_spawn()
-    local aobj = get_actor_obj()
-    if aobj then aobj.can_switch_nv = false end
+    set_engine_nv(false)
+    pending = nil
     flag = get_value("nightvision_en", false)
-    current_level_is_aver = level.name() == 'aver'
-    -- if flag and level.name() ~= 'aver' then on_pnv() end
+    nvd_mode = get_value("nvd_mode", "low")
+    current_level_is_aver = level.name() == "aver"
 end
 
 function on_first_update()
     refresh() -- [HE-PORT]
-    if not flag then return end
-    if eff then
-        if not current_level_is_aver then on_pnv() end
+    preset, preset_sect = nil, nil
+    if eff_low then apply_preset(wanted_section()) end
+    if not flag then
+        off_pnv(false)
+        return
+    end
+    -- D2: on Aver the device is not restored on load; it is really off, so the first press switches it on
+    if eff_low and not current_level_is_aver and check_accum() then
+        on_pnv(false)
     else
         off_pnv(false)
     end
@@ -370,19 +631,5 @@ end
 
 function on_save()
     set_value("nightvision_en", flag)
-end
-
-function check_accum()
-    local obj = sak.get_accum()
-    return obj and obj:condition() > 0.071 and obj
-end
-
-function disable_NVD()
-    if flag then
-        off_pnv()
-    end
-end
-
-function get_NVD_powered()
-    return flag
+    set_value("nvd_mode", nvd_mode)
 end

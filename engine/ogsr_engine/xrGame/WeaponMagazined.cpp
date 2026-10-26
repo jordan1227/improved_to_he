@@ -660,8 +660,7 @@ void CWeaponMagazined::DeviceUpdate()
         }
         else if (NightVisionSwitch)
         {
-            if (auto pActorTorch = smart_cast<CTorch*>(pA->inventory().ItemFromSlot(TORCH_SLOT)))
-                pActorTorch->SwitchNightVision();
+            nlc_night_vision_contact(pA); // NLC: also without a torch in TORCH_SLOT
             NightVisionSwitch = false;
         }
     }
@@ -1278,7 +1277,7 @@ bool CWeaponMagazined::Action(s32 cmd, u32 flags)
     case kTORCH:
     case kTORCH_MODE: {
         auto pActorTorch = smart_cast<CActor*>(H_Parent())->inventory().ItemFromSlot(TORCH_SLOT);
-        if ((flags & CMD_START) && pActorTorch && GetState() == eIdle)
+        if ((flags & CMD_START) && pActorTorch && NlcDeviceSwitchReady()) // NLC: also from the sprint transitions
         {
             if (auto torch = smart_cast<CTorch*>(pActorTorch))
                 torch->switch_mode = cmd == kTORCH_MODE;
@@ -1290,8 +1289,8 @@ bool CWeaponMagazined::Action(s32 cmd, u32 flags)
     break;
     case kNIGHT_VISION: {
         auto pActor = smart_cast<CActor*>(H_Parent());
-        auto pActorNv = pActor->inventory().ItemFromSlot(IS_OGSR_GA ? NIGHT_VISION_SLOT : TORCH_SLOT);
-        if ((flags & CMD_START) && pActorNv && GetState() == eIdle && !pActor->IsZoomAimingMode() && g_actor && g_actor->can_switch_nv)
+        auto pActorNv = nlc_night_vision_item(pActor); // NLC: the NVD slot
+        if ((flags & CMD_START) && pActorNv && NlcDeviceSwitchReady() && !pActor->IsZoomAimingMode() && g_actor && g_actor->can_switch_nv)
         {
             NightVisionSwitch = true;
             DeviceSwitch();

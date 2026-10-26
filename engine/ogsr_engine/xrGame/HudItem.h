@@ -152,6 +152,12 @@ public:
     virtual void PlayAnimIdleMovingCrouch();
     virtual void PlayAnimIdleMovingCrouchSlow();
     virtual void PlayAnimDeviceSwitch(){};
+    // NLC: head devices (headlamp, NVD) may also switch from the sprint transitions, not only from idle
+    bool NlcDeviceSwitchReady() const
+    {
+        const u32 state = GetState();
+        return state == eIdle || state == eSprintStart || state == eSprintEnd;
+    }
 
     virtual bool NeedBlendAnm();
 

@@ -113,3 +113,10 @@ public:
 add_to_type_list(CTorch)
 #undef script_type_list
 #define script_type_list save_type_list(CTorch)
+
+class CActor;
+class CInventoryItem;
+// NLC: the NVD is a script device in NIGHT_VISION_SLOT (older setups keep it on the torch).
+CInventoryItem* nlc_night_vision_item(CActor* actor);
+// NLC: a held item's device motion reached its contact point: tell the script (on_before_switch_nv).
+void nlc_night_vision_contact(CActor* actor);
