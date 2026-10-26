@@ -18,6 +18,7 @@ function attach(sm)
 	-- sm:subscribe({signal = "on_update", fun = this.add_time_dirt_phase})
 end
 
+local menu_mask_tex -- visor texture of the worn mask, for the menu copy (set_mask)
 local wnd_mask_osnova = nil
 local wnd_mask
 local mask_old = "?"
@@ -223,7 +224,7 @@ function init_mask()
         -- wprintf(' initalizing mask blur from:\n~C0A %s ~C07', debug.traceback(2, ' '))  
 		for i = 1,4 do
 			get_hud():AddCustomStatic("hud_blur"..i)
-			blurs[i]= get_hud():GetCustomStatic("hud_blur"..i):wnd()
+			blurs[i]= blur_mirror(get_hud():GetCustomStatic("hud_blur"..i):wnd(), i)
 			--blurs[i]:SetWidth(0)
 		end
        set_blurs(false)
@@ -282,6 +283,7 @@ end
 
 function set_mask(mask)
 	if wnd_mask then wnd_mask:InitTexture("verg\\masks\\"..mask) end
+	menu_mask_tex = "verg\\masks\\"..mask
 	-- texman.swap_mask(mask)
 	mask_old = mask
 	-- texman.swap_mask(mask)
@@ -994,6 +996,7 @@ end
 
 function update_zoom()
 	ogse_signals.get_mgr():reschedule(53)
+	sync_menu_visor()
 	if mask_on_off then
 		local act = get_actor_obj()
 		if act and act:is_zoom_aiming_mode() then
@@ -1037,22 +1040,123 @@ function update_zoom()
 	end
 end
 --]=]
+local menu_blur_tex = { "amk\\breath1", "amk\\breath2", "amk\\breath5", "amk\\breath3" } -- hud_blur1-4 (ui_custom_msgs.xml)
+local menu_mask_applied -- mask texture last set on the menu copy
+local menu_prepared = false
+local menu_open = false
+
 function mask_zoom_stretchy(param)
-	if param then
-		local wpn = db.actor:active_item()
-		if not wpn then return end
-		if  wpn:is_binoculars() then
-			wnd_mask:Init(-512,-384-192,2048,1536+384)
-		elseif 	wpn:is_weapon_magazined() then
-			wnd_mask:Init(-512,-32,1536,800)
-		end
-		flag_blurs = false
-		flag_zoom = true
-	else
-		wnd_mask:Init(0,0,1024,768)
-		flag_blurs = true
-		flag_zoom = false
+	-- ADS no longer rescales or shifts the visor: the old rect was asymmetric, like squinting one eye.
+	flag_zoom = param
+end
+
+-- The HUD visor (mask and breath fog) is a HUD custom static, which the engine skips while a menu hides the
+-- indicators. Menus get copies instead, as children of the active menu window (level.main_input_receiver), so
+-- they follow any menu: inventory, PDA, talk, car body and the section pickers. The copies are owned by that
+-- window (autodelete), so Lua keeps no reference to them. A menu may not start at the screen corner, so each
+-- copy is shifted by the menu's origin.
+local function menu_host()
+	if level.game_indicators_shown() then return nil end
+	return level.main_input_receiver()
+end
+
+local function menu_child(host, name)
+	local c = host:FindChild(name)
+	return c and c:GetCUIStatic() or nil
+end
+
+local function menu_copies_on(host)
+	local mask = menu_child(host, "vergas_mask_menu")
+	if mask then return mask end
+	for i = 1, 4 do -- fog first: the mask is attached last, so it is drawn under the fog
+		local c = CUIStatic()
+		c:SetWindowName("vergas_blur_menu" .. i)
+		c:SetAutoDelete(true)
+		c:SetStretchTexture(true)
+		c:Init(0, 0, 0, 0) -- empty until set_blurs sizes it
+		c:SetOriginalRect(0, 0, 1024, 768) -- as the XML static hud_blur<i>
+		c:InitTexture(menu_blur_tex[i])
+		c:Show(true)
+		host:AttachChild(c, true)
 	end
+	mask = CUIStatic()
+	mask:SetWindowName("vergas_mask_menu")
+	mask:SetAutoDelete(true)
+	mask:SetStretchTexture(true)
+	mask:Init(0, 0, 1024, 768)
+	mask:SetOriginalRect(0, 0, 1920, 1456) -- as the HUD mask in init_mask
+	if menu_mask_tex then mask:InitTexture(menu_mask_tex) end
+	mask:Show(false)
+	host:AttachChild(mask, true) -- bottom: the visor sits under the menu panels
+	return mask
+end
+
+-- The persistent menus get their copies once, before their first open, so that open does not blink.
+local function menu_prepare()
+	for _, get_host in ipairs({ level.get_inventory_wnd, level.get_pda_wnd, level.get_talk_wnd, level.get_car_body_wnd }) do
+		local h = get_host()
+		if h then menu_copies_on(h) end
+	end
+	menu_prepared = level.get_inventory_wnd() ~= nil
+end
+
+-- opening: true when called by the start_stop_menu wrapper, so the copies are ready before the next frame.
+function sync_menu_visor(opening)
+	if not menu_prepared then menu_prepare() end
+	local host = menu_host()
+	if not host then
+		menu_open = false
+		return
+	end
+	local mask = menu_copies_on(host)
+	if not mask then return end
+	if opening or not menu_open then
+		-- A new menu: its fog copy may still hold the width of the last time it was open, so set it now.
+		menu_open = true
+		menu_mask_applied = nil
+		if db.actor then update_blurs() end
+	end
+	local p = host:GetWndPos()
+	mask:SetWndRect(-p.x, -p.y, 1024, 768)
+	if menu_mask_tex and menu_mask_tex ~= menu_mask_applied then
+		mask:InitTexture(menu_mask_tex)
+		menu_mask_applied = menu_mask_tex
+	end
+	mask:Show(wnd_mask ~= nil and wnd_mask:IsShown() and db.actor ~= nil and db.actor:alive())
+end
+
+-- A menu opened by script (start_stop_menu) gets its copies at once, before the next frame is drawn.
+-- Left to the 53 ms tick, a new section window would show the visor only after a few frames: a blink.
+if level.start_stop_menu and not visor_start_stop_hooked then
+	visor_start_stop_hooked = true
+	local start_stop_menu = level.start_stop_menu
+	level.start_stop_menu = function(wnd, flag)
+		start_stop_menu(wnd, flag)
+		sync_menu_visor(true)
+	end
+end
+
+-- The calls set_blurs makes on hud_blur<i> are repeated on its copy in the active menu, shifted by the menu origin.
+function blur_mirror(main, i)
+	local function on_copy(fn)
+		local host = menu_host()
+		local c = host and menu_child(host, "vergas_blur_menu" .. i)
+		if c then fn(c, host:GetWndPos()) end
+	end
+	return {
+		SetWidth = function(_, w)
+			main:SetWidth(w)
+			on_copy(function(c) c:SetWidth(w) end)
+		end,
+		SetColor = function(_, col)
+			main:SetColor(col)
+			on_copy(function(c) c:SetColor(col) end)
+		end,
+		SetWndRect = function(_, x, y, w, h)
+			main:SetWndRect(x, y, w, h)
+			on_copy(function(c, p) c:SetWndRect(x - p.x, y - p.y, w, h) end)
+		end,
+	}
 end
 
 local function manual_hold_breath_active()
@@ -1137,13 +1241,9 @@ function set_blurs(enabled)
 	end
 end
 
-local con_fov = get_console():get_float("fov") or 67.5
 function set_zoom_stretchy_rect()
-	local zoom = con_fov/device().fov
-	zoom = (zoom-1)*1.5+1
-	if zoom<1.001 then
-		zoom = 1.001
-	end
+	-- No FOV zoom: the visor stays on the screen while aiming (it used to drift with the ADS FOV).
+	local zoom = 1
 	local stretchy = 0.75/(math.floor(device().aspect_ratio*1000)/1000)
 	if stretchy<1 then 
 		stretchy = 1 
