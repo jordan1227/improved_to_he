@@ -1,0 +1,154 @@
+local OWNED   = "he_yurik_volk.owned"
+local BLOCKED = "he_yurik_volk.blocked"
+local NO_PARENT = 65535
+
+local owned = nil
+
+
+local function quest_settled()
+  return has_alife_info( "gar_dm_novice_help_start" )
+    or has_alife_info( "gar_dm_novice_rescued" )
+    or has_alife_info( "gar_dm_novice_dead" )
+    or ( has_alife_info( "gar_dm_bandits_change_st" ) and not has_alife_info( "gar_dm_bandits_yurik_timer" ) )
+end
+
+
+function is_art( sect )
+  if not sect or string.sub( sect, 1, 3 ) ~= "af_" then return false end
+  if string.find( sect, "af_full_akkum", 1, true ) == 1 then return false end
+  if not system_ini():section_exist( sect ) then return false end
+  return get_string( sect, "class", "" ) == "ARTEFACT"
+end
+
+
+function is_container( sect )
+  return sect ~= nil and string.find( sect, "arc_art_box_", 1, true ) == 1
+end
+
+
+local function load_owned()
+  if not owned then
+    owned = {}
+    for _, id in ipairs( get_value( OWNED ) or {} ) do owned[ id ] = true end
+  end
+  return owned
+end
+
+
+local function store_owned()
+  local list = {}
+  for id in pairs( owned or {} ) do table.insert( list, id ) end
+  if #list > 0 then set_value( OWNED, list ) else remove_value( OWNED ) end
+end
+
+
+local function on_take( obj )
+  if not obj then return end
+  if quest_settled() then
+    if owned == nil and get_value( OWNED ) == nil then return end
+    owned = {}
+    remove_value( OWNED )
+    return
+  end
+  local sect = obj:section()
+  if not ( is_art( sect ) or is_container( sect ) ) then return end
+  local list = load_owned()
+  if list[ obj:id() ] then return end
+  local sim = alife()
+  for id in pairs( list ) do
+    local sobj = sim and sim:object( id )
+    if not sobj then
+      list[ id ] = nil
+    else
+      local s = sobj:section_name()
+      if not ( is_art( s ) or is_container( s ) ) then list[ id ] = nil end
+    end
+  end
+  list[ obj:id() ] = true
+  store_owned()
+end
+
+
+local function container_has_art( custom_data, sect )
+  if not custom_data or custom_data == "" then return false end
+  local ok, arts = pcall( arc_radiation.decode_custom_data, custom_data, sect )
+  if not ok or type( arts ) ~= "table" then return false end
+  for _, art in ipairs( arts ) do
+    if art.section then return true end
+  end
+  return false
+end
+
+
+local function holder_kind( sim, sobj, actor_id )
+  local pid = sobj.parent_id
+  local guard = 0
+  while pid and pid ~= NO_PARENT and guard < 8 do
+    if pid == actor_id then return "actor" end
+    local parent = sim:object( pid )
+    if not parent then return "world" end
+    if IsStalker( parent ) or IsMonster( parent ) then
+      if parent:alive() then return "npc" end
+      return "world"
+    end
+    pid = parent.parent_id
+    guard = guard + 1
+  end
+  return "world"
+end
+
+
+local function virtual_has_art( id )
+  if not he_magic_box.is_virtual( id ) then return false end
+  local sections = get_value( he_magic_box.var_name( id, "sections" ) ) or {}
+  local infos    = get_value( he_magic_box.var_name( id, "infos" ) ) or {}
+  for i, sect in ipairs( sections ) do
+    if is_art( sect ) then return true end
+    if is_container( sect ) and container_has_art( infos[ i ], sect ) then return true end
+  end
+  return false
+end
+
+
+function arts_anywhere()
+  local sim = alife()
+  if not ( sim and db.actor ) then return false end
+  local actor_id = db.actor:id()
+  local list = load_owned()
+  for id, sobj in sim:objects() do
+    local sect = sobj:section_name()
+    local art  = is_art( sect )
+    local cont = not art and is_container( sect )
+    if art or cont then
+      local kind = holder_kind( sim, sobj, actor_id )
+      if kind == "actor" or ( kind == "world" and list[ id ] ) then
+        if art then return true end
+        if container_has_art( sobj.custom_data, sect ) then return true end
+      end
+    elseif ( sect == "rucksack" or he_magic_box.is_paid_box( sobj:name() ) ) and virtual_has_art( id ) then
+      return true
+    end
+  end
+  return false
+end
+
+
+function deal_struck()
+  if arts_anywhere() then set_value( BLOCKED, true ) end
+end
+
+
+function volk_hint_allowed()
+  if get_value( BLOCKED ) then return false end
+  return not arts_anywhere()
+end
+
+
+function volk_hint_denied()
+  return not volk_hint_allowed()
+end
+
+
+function attach( sm )
+  sm:subscribe( { signal = "on_take", fun = on_take } )
+end
