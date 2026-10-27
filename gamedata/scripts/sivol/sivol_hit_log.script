@@ -392,7 +392,97 @@ local function on_actor_update()
     end
 end
 
+-- Zone trace (debug, off until "fl sivol_hit_log.zone_trace(true)"): logs when the actor enters or
+-- leaves any anomaly/radiation zone on this level, by shape test (works under g_god, unlike hit
+-- lines). Points tested: feet, chest, head. "fl sivol_hit_log.zones_here()" lists zones near the actor.
+local ZONE_TRACE_MS = 300
+local ZONE_TRACE_RANGE = 40
+local ZONE_HEIGHTS = { { "feet", 0.1 }, { "chest", 1.0 }, { "head", 1.7 } }
+local zone_trace_on = false
+local zone_ids = nil      -- ids of zone objects on the actor's level
+local zone_level = nil
+local zone_inside = {}    -- [id] = { at = "feet,head", rad = actor radiation on entry }
+local next_zone_check = 0
+
+local function collect_zones()
+    zone_ids = {}
+    zone_inside = {}
+    zone_level = level.name()
+    local gg = game_graph()
+    local my_level = gg:vertex(db.actor:game_vertex_id()):level_id()
+    for id, sobj in alife():objects() do
+        local sec = sobj:section_name()
+        if sobj.parent_id == 65535 and string.find(sec, "zone", 1, true)
+            and gg:vertex(sobj.m_game_vertex_id):level_id() == my_level then
+            zone_ids[#zone_ids + 1] = id
+        end
+    end
+    log2("[sivol_hit_log] zone trace: %d zone objects on %s", #zone_ids, level.name())
+end
+
+local function zone_hits(obj, pos)
+    local at = {}
+    for _, h in ipairs(ZONE_HEIGHTS) do
+        if obj:inside(vector():set(pos.x, pos.y + h[2], pos.z)) then at[#at + 1] = h[1] end
+    end
+    return #at > 0 and table.concat(at, ",") or nil
+end
+
+local function zone_desc(obj, pos)
+    local c = obj:position()
+    return string.format("%s [%s] id=%d center=%.2f,%.2f,%.2f dist=%.1f",
+        obj:name(), obj:section(), obj:id(), c.x, c.y, c.z, c:distance_to(pos))
+end
+
+local function on_zone_trace_update()
+    if not zone_trace_on or not db.actor then return end
+    local now = time_global()
+    if now < next_zone_check then return end
+    next_zone_check = now + ZONE_TRACE_MS
+    if not zone_ids or zone_level ~= level.name() then collect_zones() end
+    local pos = db.actor:position()
+    for _, id in ipairs(zone_ids) do
+        local obj = level.object_by_id(id)
+        local at = obj and obj:position():distance_to(pos) < ZONE_TRACE_RANGE and zone_hits(obj, pos)
+        local st = zone_inside[id]
+        if at and not st then
+            zone_inside[id] = { at = at, rad = db.actor.radiation }
+            log2("[sivol_hit_log] zone ENTER %s | at=%s | actor pos=%.2f,%.2f,%.2f",
+                zone_desc(obj, pos), at, pos.x, pos.y, pos.z)
+        elseif at and st and at ~= st.at then
+            st.at = at
+            log2("[sivol_hit_log] zone inside %s | at=%s", zone_desc(obj, pos), at)
+        elseif not at and st then
+            zone_inside[id] = nil
+            log2("[sivol_hit_log] zone LEAVE %s | radiation %+.3f while inside | actor pos=%.2f,%.2f,%.2f",
+                obj and zone_desc(obj, pos) or ("id=" .. id), db.actor.radiation - st.rad, pos.x, pos.y, pos.z)
+        end
+    end
+end
+
+function zone_trace(on)
+    zone_trace_on = on ~= false
+    zone_ids = nil
+    zone_inside = {}
+    log2("[sivol_hit_log] zone trace %s", zone_trace_on and "ON" or "OFF")
+end
+
+function zones_here(range)
+    if not db.actor then return end
+    range = tonumber(range) or 15
+    if not zone_ids or zone_level ~= level.name() then collect_zones() end
+    local pos = db.actor:position()
+    log2("[sivol_hit_log] zones within %.0f m of %.2f,%.2f,%.2f:", range, pos.x, pos.y, pos.z)
+    for _, id in ipairs(zone_ids) do
+        local obj = level.object_by_id(id)
+        if obj and obj:position():distance_to(pos) <= range then
+            log2("[sivol_hit_log]   %s | inside=%s", zone_desc(obj, pos), zone_hits(obj, pos) or "no")
+        end
+    end
+end
+
 function attach(sm)
+    sm:subscribe({ signal = "on_update", fun = on_zone_trace_update })
     if ACTOR_ENABLED then
         sm:subscribe({ signal = "on_actor_before_hit", fun = on_actor_before_hit })
         sm:subscribe({ signal = "on_actor_hit", fun = on_actor_hit })
