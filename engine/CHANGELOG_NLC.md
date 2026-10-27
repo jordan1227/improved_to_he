@@ -5,6 +5,19 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.161 (2026-10-27)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `C9E9637917C74D308B80D07D76F55F78A8E7E697B5C33C15A3542935E7A5A0E6` (archived with its PDB in `nlc_tools/builds/20261027_191810_c9e96379`).
+- **Status:** runtime pending. Built on top of `nlc-3.589.160` (commit `5a5d5134`, player_hud script animation crash fix).
+- **Required game data:** `scripts/sivol/sivol_psy_vision.script` (calls the new functions only when they exist, so older engines stay safe).
+- Psy hearing: `level.nlc_set_listener_psy(gain, hf, wet, warble, warble_hz, fade_sec)` and `level.nlc_set_listener_psy_exempt(parts)`. A second listener stage after the gas-mask filter, with its own exempt list: gain and kept highs on the direct, room and echo paths, a send into a new chorus slot on a third auxiliary send (the context now asks for 3 sends; without a third the chorus is skipped and logged), and a pitch warble on every non-exempt source. Reset on level unload; `snd_audio_report` prints it. The exempt-list parser is shared with the listener filter.
+- Psy hand shake: `level.nlc_set_psy_hand_shake(k)` (`CActor::NlcPsyHandShake`, 0..2). The controller aura's HUD hand shake (`CWeaponBobbing`, `PsyAuraAffect`) now also runs for a script-set share; with both, the larger one wins.
+
+## nlc-3.589.160 (2026-10-26)
+
+- player_hud: no script animation part (`script_anim_part == u8(-1)`) returns early (crash fix, commit `5a5d5134`). The exe of this build is not archived in `nlc_tools/builds`.
+
 ## nlc-3.589.159 (2026-10-26)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

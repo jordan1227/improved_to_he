@@ -5,7 +5,7 @@
 
 #include <efx.h>
 
-// NLC: context attributes - 2 auxiliary sends (room + outdoor echo), HRTF from snd_hrtf (docs/AUDIO_DESIGN.md 3.2, 6)
+// NLC: context attributes - 3 auxiliary sends (room, outdoor echo, psy hearing), HRTF from snd_hrtf (docs/AUDIO_DESIGN.md 3.2, 6)
 static ALCint s_nlc_hrtf_count = 0; // HRTF sets the device offered at the last query (ALC_HRTF_ID_SOFT is an index into them)
 
 static const ALCint* nlc_context_attribs()
@@ -13,7 +13,7 @@ static const ALCint* nlc_context_attribs()
     static ALCint attribs[10];
     int i = 0;
     attribs[i++] = ALC_MAX_AUXILIARY_SENDS;
-    attribs[i++] = 2;
+    attribs[i++] = 3; // NLC: room, outdoor echo, psy hearing chorus
     attribs[i++] = ALC_HRTF_SOFT;
     attribs[i++] = psSoundHrtf == 0 ? ALC_FALSE : (psSoundHrtf == 1 ? ALC_TRUE : ALC_DONT_CARE_SOFT);
     if (psSoundHrtf == 1)

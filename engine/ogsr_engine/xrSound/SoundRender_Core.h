@@ -166,6 +166,7 @@ public:
     int efx_sends{1}; // auxiliary sends per source granted by the device
     ALuint efx_slot_room() const { return slot; }
     ALuint efx_slot_echo() const { return slot_echo; }
+    ALuint efx_slot_psy() const { return slot_psy; } // NLC: psy hearing chorus on the third send (0: none)
     bool efx_reverb_on() const { return efx_slots_attached; }
 
     // NLC occlusion (docs/AUDIO_DESIGN.md section 2)
@@ -182,6 +183,11 @@ public:
     virtual void nlc_set_listener_filter_exempt(LPCSTR parts);
     bool nlc_lf_exempt(LPCSTR name) const;
     float nlc_lf_gain{1.f}, nlc_lf_hf{1.f}; // current listener filter (smoothed)
+    virtual void nlc_set_listener_psy(float gain, float hf, float wet, float warble, float warble_hz, float fade_sec);
+    virtual void nlc_set_listener_psy_exempt(LPCSTR parts);
+    bool nlc_psy_exempt(LPCSTR name) const;
+    float nlc_psy_gain{1.f}, nlc_psy_hf{1.f}, nlc_psy_wet{}; // current psy hearing (smoothed)
+    float nlc_psy_pitch{1.f}; // pitch multiplier from the psy warble this update
     bool nlc_hrtf_on{}; // the device renders through HRTF (2D sounds bypass it, see TargetA)
     bool nlc_filters_active() const;
 
@@ -237,7 +243,11 @@ protected:
     float nlc_probe_accum{};
     float nlc_lf_gain_t{1.f}, nlc_lf_hf_t{1.f}, nlc_lf_rate{4.f};
     xr_vector<xr_string> nlc_lf_exempt_parts;
-    std::mutex nlc_lf_lock;
+    std::mutex nlc_lf_lock; // also guards the psy hearing values below
+    float nlc_psy_gain_t{1.f}, nlc_psy_hf_t{1.f}, nlc_psy_wet_t{}, nlc_psy_warble{}, nlc_psy_warble_t{}, nlc_psy_hz{0.3f};
+    float nlc_psy_rate{4.f}, nlc_psy_phase{};
+    xr_vector<xr_string> nlc_psy_exempt_parts;
+    ALuint effect_psy{}, slot_psy{};
     bool nlc_probe_ray(const Fvector& P, const Fvector& dir, float range, float& dist, float& absorb);
     void nlc_probe_update(float dt);
     static constexpr u32 nlc_probe_dirs = 25; // 24 around + sky

@@ -1,0 +1,1006 @@
+-- sivol_psy_vision.script (NLC 2026-10-27)
+-- Single owner of the actor's psy perception: low psy health, the controller/poltergeist psy aura, the Radar-style
+-- psy zones (sr_psy_antenna) and one-shot psy bursts all drive one shader (shaders/r3/nlc_psy_vision.h, called
+-- from combine_2_naa.ps), the psy hearing stage of the sound engine and the shooting penalties.
+--
+-- Stages by psy health (all boundaries are settings):
+--   A  start_psy .. tunnel_start_psy  the distant world breathes and swims (near objects stay readable), faint
+--                                     colour fringes at the edges
+--   B  tunnel_start_psy .. stage_c_psy  plus the edge tunnel; episodes from stage_b_psy every episode_max..episode_min
+--                                     s: focus loss (full-screen double vision), snap (vertigo), aim pull, blink
+--   C  stage_c_psy .. floor_psy       constant full-screen double vision, the tunnel closes to radius_min, episodes up
+--                                     to 2.5x as often and sometimes two at once
+-- Everything pulses on a heartbeat whose rate rises with psy stress, fatigue and wounds; a tired, wounded actor also
+-- gets stronger episodes and a stronger swimming world. Aiming down sights makes the centre wobble (focus penalty).
+-- Shooting: ADS sway (wpn_params.script reads get_aim_wobble_k), a camera tremor and the HUD hand shake
+-- (engine, level.nlc_set_psy_hand_shake). Hearing (engine, level.nlc_set_listener_psy): the world muffles, swims
+-- (chorus send) and warbles in pitch; whispers (psy_voices_1_l/_r) grow louder as psy falls.
+--
+-- Replaces: [effector_psy_health] snd_shock.ppe (engine, ActorCondition.cpp) and [postprocess_psi_aura]
+-- radiation.ppe (engine, monster_aura.cpp). Both sections lost their pp_eff_name, so the engine adds nothing;
+-- legacy mode (cfg.enabled = false, or a route_* = false) replays the old PPEs from here.
+--
+-- Console (settings are live and not saved; edit DEFAULTS below to keep a value):
+--   fl sivol_psy_vision.show()                     print settings and the live inputs
+--   fl sivol_psy_vision.set("ghost", 0.6)          change one setting (names: see DEFAULTS)
+--   fl sivol_psy_vision.reset()                    back to DEFAULTS
+--   fl sivol_psy_vision.legacy(true)               old full-screen PPEs instead of the shader (false = shader)
+--   fl sivol_psy_vision.test_psy(0.5)              set actor psy health
+--   fl sivol_psy_vision.test_field(0.7)            force the external psy field (-1 = off)
+--   fl sivol_psy_vision.test_shock(1)              fire a shock pulse
+--   fl sivol_psy_vision.test_burst(0.7)            fire a burst (what controllers send)
+--   fl sivol_psy_vision.test_slam(1)               fire the pseudodog burst with its camera slam (argument = mask_k)
+--   fl sivol_psy_vision.test_episode("focus")      "focus", "snap", "pull", "blink" or "blood" (blood sight)
+--   fl sivol_psy_vision.test_artifact(1, true)     pretend a full psy artifact is on the belt (and clear now); -1 = real belt
+--   fl sivol_psy_vision.set("camera_writes", false) / set("chorus", false)   A/B toggles for troubleshooting
+--   fl sivol_psy_vision.log_inputs(true)           log inputs once per second, plus every burst and episode
+
+local DEFAULTS = {
+	enabled = true, -- false: legacy PPEs for everything
+	route_aura = true, -- controller/poltergeist psy aura -> shader (false: radiation.ppe)
+	route_antenna = true, -- sr_psy_antenna zones -> shader (false: their own PPEs; applies to zones entered after the change)
+	route_bursts = true, -- one-shot psy bursts (controller swap, pseudodog attack and ADS shove) -> burst pulse
+	aim_effects = true, -- ADS sway, tremor, hand shake, aim pulls, camera slam (gameplay; independent of `enabled`)
+	audio = true, -- psy hearing (engine) and whispers
+	voices_affected = true, -- NPC speech and radio are muffled/warbled too (false: exempt, only the world changes)
+
+	start_psy = 0.99, -- psy health where stage A (breathing world) starts
+	tunnel_start_psy = 0.99, -- the edge tunnel starts here (a light edge is visible by 0.95)
+	full_psy = 0.45, -- psy health at full tunnel strength
+	curve = 0.45, -- < 1: noticeable early, saturates toward full_psy
+	stage_b_psy = 0.90, -- episodes start below this
+	stage_c_psy = 0.35, -- constant double vision starts below this
+	floor_psy = 0.12, -- stage C at full strength
+	aura_weight = 0.6, -- strength share of a full psy aura
+	antenna_weight = 0.8, -- strength share of a full psy zone
+	rise_rate = 4.0, -- strength smoothing, per second
+	fall_rate = 1.5,
+
+	world_breath = 1.0, -- distant-world swim at full (0 = off)
+	world_curve = 0.6,
+	world_near = 5, -- metres: closer stays readable
+	world_far = 40, -- metres: full swim from here (and the sky)
+	fringe = 1.0, -- edge colour fringes at full
+
+	radius_full = 0.17, -- tunnel radius at full strength (screen-height units from the centre)
+	radius_zero = 0.55, -- tunnel radius where the tunnel starts (the corners are ~0.87 on 16:9)
+	radius_min = 0.06, -- tunnel radius at full stage C
+	feather = 0.32, -- width of the soft tunnel edge
+	breathe = 0.03, -- slow radius pulse
+	edge_gain = 3.5, -- edge effects reach full strength at tunnel strength 1 / edge_gain
+	ripple = 0.042, -- edge warp amplitude
+	flow = 1.0, -- ripple speed
+	blur = 0.008, -- edge defocus radius
+	darken = 0.65, -- edge darkening at full strength
+	ghost = 0.65, -- outward double image weight
+	ghost_dist = 0.045, -- outward double image offset (screen-height units)
+	hud_warp = 1.0, -- share of the warp on hands/weapon (0 = none, 1 = same as the world)
+	tint_r = 0.85, tint_g = 0.80, tint_b = 1.0, -- edge tint
+	desaturate = 0.5,
+	mask_wobble = 10, -- 2D gas-mask visor sway at full strength (UI units of 1024x768; 0 = off)
+
+	duality_max = 1.0, -- full-screen double vision at full stage C
+	duality_dist = 0.06, -- its offset (screen-height units)
+	duality_spin = 0.35, -- its turning speed (rad/s)
+
+	beat = 1.0, -- heartbeat pulse strength on the visuals (0 = off)
+	bpm_rest = 65, -- heart rate with full psy, stamina and health
+	bpm_psy = 55, -- added at full psy stress
+	bpm_tired = 25, -- added at zero stamina
+	bpm_wounded = 25, -- added at zero health
+	body_k = 0.4, -- each of fatigue and wounds adds up to this share to episode strength and the world swim
+
+	focus = 1.0, -- centre wobble while aiming down sights (0 = off)
+	focus_start = 0.90, -- psy health where it begins
+
+	episode_min = 4, -- seconds between episodes deep in stage B (stage C divides it by up to 2.5)
+	episode_max = 16, -- seconds between episodes at the start of stage B
+	w_focus = 1.0, w_snap = 1.0, w_pull = 1.0, w_blink = 0.7, -- episode weights (0 = never)
+	focus_duration = 2.1, -- seconds (each episode length varies by about +-15%)
+	snap_duration = 1.8,
+	snap_depth = 0.12, -- tunnel radius lost in a snap (the snap itself is a zoom/smear vertigo)
+	blink_duration = 2.6,
+	-- blood sight: a long episode where the world turns black and white and only red (blood) keeps its colour.
+	-- Shader colour key, so other deep reds (rust-red paint, red barrels) stay coloured too.
+	w_blood = 0.45, -- episode weight (only below blood_psy)
+	blood_psy = 0.65,
+	blood_duration = 11, -- seconds (+-15%), 1.5 s in and 2 s out at 11 s
+	blood_hue = 0.05, -- hue tolerance around pure red (0..0.5; 0.05 = about +-18 degrees)
+	blood_contrast = 1.25, -- contrast of the grey world
+	blood_boost = 1.3, -- saturation of the kept reds
+	recover_duration = 1.4, -- grey, dim view after a blink
+	pull_h = 0.10, -- aim pull yaw at episode strength 1 (radians; random side)
+	pull_p = 0.05, -- aim pull pitch
+	pull_ms = 350, -- aim pull duration
+
+	aim_start = 0.90, -- psy health where aim effects begin
+	aim_full = 0.15, -- psy health at full aim effects
+	aim_curve = 0.6, -- < 1: aim effects are felt early (about 20% at psy 0.85)
+	aim_wobble = 2.0, -- extra ADS sway at full (2.0 = 3x the normal sway)
+	-- shaking (camera tremor + HUD hand shake): from shake_start in smooth spells that cover shake_duty_start of the
+	-- time there and all of it from shake_duty_full_psy down; between spells a quiet shake_base level
+	shake_start = 0.90, -- psy health where shaking begins
+	shake_full = 0.15,
+	shake_curve = 1.3, -- > 1: gentle at first, strong at low psy
+	shake_base = 0.2, -- share of the full shake between spells
+	shake_duty_start = 0.6, -- share of the time spent in spells at shake_start
+	shake_duty_full_psy = 0.40, -- constant shaking from here down
+	spell_min = 3, spell_max = 6, -- spell length (s)
+	tremor = 0.005, -- camera tremor amplitude at full (radians; 0 = off)
+	tremor_speed = 0.6, -- 1 = the original 5-14 Hz tremor
+	hand_shake = 0.7, -- HUD hand shake at full, share of the controller aura shake (engine; its speed is fixed; 0 = off)
+	aim_pull = 1.0, -- aim pull episode strength multiplier (0 = off)
+
+	shock_threshold = 0.015, -- psy health lost within one update that counts as a hit
+	shock_gain = 10.0, -- shock per unit of psy lost in that hit
+	shock_duration = 1.8, -- seconds from the hit to the end of the pulse
+	shock_attack = 0.12, -- share of the duration spent fading in
+	shock_r = 0.55, shock_g = 0.72, shock_b = 1.15, -- cold colour of the pulse
+	shock_tint = 0.6, -- strength of that colour at the pulse peak
+	cold_global = 0.15, -- share of the cold colour that also reaches the clear centre
+
+	-- Callers scale burst power by the psy mask coefficient (sivol.get_mask_psy_k: 1 bare .. 0.5 science suits).
+	burst_duration = 3.0, -- a burst closes the tunnel this long, as if psy were much lower
+	burst_tunnel = 1.0, -- tunnel strength a full burst forces
+	burst_duality = 0.9, -- full-screen double vision a full burst adds (first 1.2 s)
+	burst_cold = 0.35, -- extra cold share in the centre during a burst
+	burst_shock_duration = 2.6, -- the cold pulse of a burst lasts longer than a hit pulse
+	burst_blink = 0.35, -- blink a full burst adds
+
+	slam_pitch = 0.24, -- pseudodog slam: camera down (radians) at mask_k 1
+	slam_yaw = 0.07, -- random side component
+	slam_attack = 0.18, -- seconds to the bottom
+	slam_total = 4.0, -- seconds until the camera is back, at mask_k 1 (scaled by 0.6 + 0.4 * mask_k)
+	slam_burst = 1.0, -- burst power at mask_k 1 (times mask_k)
+	slam_blink = 0.85, -- blink at the bottom of the slam (times mask_k)
+	slam_veil = 4.25, -- seconds of dim, grey, closed vision after the slam (times 0.6 + 0.4 * mask_k)
+
+	-- psy-restoring artifacts on the belt (psy_health_restore_speed > 0, times condition) calm the effects and now and
+	-- then clear them for a while; art_ref is the restore speed counted as a full artifact
+	art_ref = 0.0006,
+	art_calm = 0.35, -- effects lost at a full artifact (more artifacts: up to 1.5x)
+	art_clear_chance = 0.5, -- chance per art_clear_every s at a full artifact
+	art_clear_every = 25,
+	art_clear_min = 6, art_clear_max = 9, -- clearing length (s), from a weak to a full artifact: 2 s in, hold, 2 s out
+	art_clear_depth = 0.9, -- effects lost at the height of a clearing
+
+	-- A/B toggles for troubleshooting (all on by default)
+	camera_writes = true, -- tremor, slam and aim pulls move the camera
+	chorus = true, -- the hearing chorus send (psy hearing still muffles and warbles without it)
+
+	-- hearing
+	hear_start = 0.90, -- psy health where hearing starts to change
+	hear_gain = 0.35, -- world volume lost at full
+	hear_hf = 0.70, -- highs lost at full
+	hear_wet = 0.55, -- chorus send at full
+	hear_warble = 0.035, -- pitch swing at full (0.035 = +-3.5%)
+	hear_curve = 0.6, -- < 1: hearing changes early
+	voices_volume = 0.9, -- whispers at full
+	voices_start = 0.80, -- psy health where whispers begin
+}
+
+local LEGACY_PSY_PP_ID = 3771
+local LEGACY_AURA_PP_ID = 3772
+local AURA_SCAN_MS = 250
+local AUDIO_MS = 50
+local EPISODE_KINDS = { "focus", "snap", "pull", "blink", "blood" }
+local ART_SCAN_MS = 1000
+local VOICE_L = "characters_voice\\scenario\\yantar\\psy_voices_1_l"
+local VOICE_R = "characters_voice\\scenario\\yantar\\psy_voices_1_r"
+-- heard inside the head, never touched by psy hearing; voices_affected = false adds speech and radio
+local PSY_EXEMPT = [[actor\breath, actor\heartbeat, actor\pain, actor\gas_mask, actor\scient_mask, actor\exo_mask, actor\without_mask, interface\, scenario\yantar\psy_voices]]
+local PSY_EXEMPT_VOICES = [[, characters_voice\, device\pda, radio\]]
+
+local cfg = {}
+local strength, crisis, aim_v, focus_v = 0, 0, 0, 0 -- smoothed tunnel strength, stage C factor, aim, ADS focus
+local vis_strength = 0 -- strength sent to the shader (with bursts), for the visor sway
+local shock, shock_phase = 0, 0 -- current pulse envelope 0..1 and progress 0..1
+local shock_peak, shock_from, shock_t = 0, 0, nil -- shock_t = seconds since the hit, nil when idle
+local shock_dur -- duration of the running pulse (nil: cfg.shock_duration)
+local envs = {} -- name -> { t, dur, attack, hold, peak } for episodes and bursts
+local env_vals = {} -- name -> current value
+local next_episode_at
+local beat_phase, beat_index, beat_v, bpm = 0, 0, 0, 65
+local tremor_amp, cam_h, cam_p = 0, 0, 0 -- camera offsets written so far (tremor + slam), relative to the user's aim
+local shake_v, next_spell_at = 0, nil -- current shake level 0..1 (spells included)
+local art_k, art_next_scan, art_next_roll, calm = 0, 0, 0, 1 -- artifact strength, effect multiplier
+local art_override -- test_artifact()
+local cur_psy = 1
+local snap_roll = 1 -- lean side of the running snap
+local slam -- { t, dur, attack, dh, dp }
+local hand_shake_sent = -1
+local audio_next, audio_sent, exempt_sent = 0, nil, nil
+local voice_l, voice_r, voices_on, voice_vol = nil, nil, false, 0
+local last_psy
+local last_time
+local field_override = -1
+local aura_value, antenna_value = 0, 0
+local aura_next_scan = 0
+local psy_monsters = {} -- id -> aura params (online monsters with a psy aura PPE)
+local aura_params_cache = {}
+local params_dirty = true
+local legacy_psy_on, legacy_aura_on = false, false
+local debug_on, debug_next = false, 0
+
+local function reset_cfg()
+	for k, v in pairs(DEFAULTS) do cfg[k] = v end
+	params_dirty = true
+	exempt_sent = nil
+end
+reset_cfg()
+
+local function clamp(v, lo, hi)
+	return math.max(lo, math.min(hi, v))
+end
+
+local function exp_step(current, target, rate, dt)
+	return current + (target - current) * (1 - math.exp(-rate * dt))
+end
+
+local function smoothstep(e0, e1, x)
+	local t = clamp((x - e0) / math.max(e1 - e0, 0.0001), 0, 1)
+	return t * t * (3 - 2 * t)
+end
+
+-- 0 at psy `from`, 1 at psy `to` (from > to), smooth.
+local function fall(psy, from, to)
+	local t = clamp((from - psy) / math.max(from - to, 0.0001), 0, 1)
+	return t * t * (3 - 2 * t)
+end
+
+-- 0 at psy `from`, 1 at psy `to`, shaped by an exponent (< 1 rises early).
+local function ramp(psy, from, to, curve)
+	return clamp((from - psy) / math.max(from - to, 0.0001), 0, 1) ^ (curve or 1)
+end
+
+local function vlog(fmt, ...)
+	if debug_on then log2("[psy_vision] " .. fmt, ...) end
+end
+
+-- A new hit restarts the pulse from the current envelope, so stacked hits never drop to zero first.
+local function trigger_shock(power, duration)
+	power = clamp(power or 1, 0, 1)
+	if power <= 0 then return end
+	shock_from = shock
+	shock_peak = math.max(shock, power)
+	shock_t = 0
+	shock_dur = duration
+end
+
+-- Envelope: smooth fade-in over shock_attack, then a smoothstep release that ends with zero slope.
+local function update_shock(dt)
+	if not shock_t then
+		shock, shock_phase = 0, 0
+		return
+	end
+	shock_t = shock_t + dt
+	local p = shock_t / math.max(shock_dur or cfg.shock_duration, 0.1)
+	if p >= 1 then
+		shock_t, shock, shock_phase = nil, 0, 0
+		return
+	end
+	local a = clamp(cfg.shock_attack, 0.01, 0.9)
+	if p < a then
+		shock = shock_from + (shock_peak - shock_from) * smoothstep(0, a, p)
+	else
+		shock = shock_peak * (1 - smoothstep(a, 1, p))
+	end
+	shock_phase = p
+end
+
+-- Generic smooth envelope for episodes and bursts: fade in over `attack`, hold the peak for `hold` (shares of the
+-- duration), then a smooth release. A restart keeps the higher peak.
+local function start_env(name, dur, attack, peak, hold)
+	local e = envs[name]
+	peak = math.max(peak, e and (env_vals[name] or 0) or 0)
+	attack = clamp(attack, 0.01, 0.9)
+	envs[name] = { t = 0, dur = math.max(dur, 0.05), attack = attack, hold = clamp(hold or 0, 0, 0.95 - attack), peak = peak }
+end
+
+local function update_envs(dt)
+	for name, e in pairs(envs) do
+		e.t = e.t + dt
+		local p = e.t / e.dur
+		local release = e.attack + e.hold
+		local v
+		if p >= 1 then
+			envs[name], env_vals[name] = nil, nil
+			if name == "blink" then
+				start_env("recover", cfg.recover_duration, 0.05, e.peak * 0.8, 0.2)
+			end
+		else
+			if p < e.attack then
+				v = e.peak * smoothstep(0, e.attack, p)
+			elseif p < release then
+				v = e.peak
+			else
+				v = e.peak * (1 - smoothstep(release, 1, p))
+			end
+			env_vals[name] = v
+		end
+	end
+end
+
+local function ev(name) return env_vals[name] or 0 end
+local function vary(base) return base * (0.85 + 0.3 * math.random()) end
+local function random_side() return math.random() < 0.5 and -1 or 1 end
+
+local function shader_on() return cfg.enabled end
+function route_aura() return cfg.enabled and cfg.route_aura end
+function route_antenna() return cfg.enabled and cfg.route_antenna end
+function route_bursts() return cfg.enabled and cfg.route_bursts end
+
+-- monster_aura.cpp reads <name>_pp_effector_name etc. with the "psy" prefix
+local function aura_params(section)
+	local p = aura_params_cache[section]
+	if p == nil then
+		p = false
+		local ini = system_ini()
+		if ini:section_exist(section) and ini:line_exist(section, "psy_pp_effector_name") then
+			local function f(key, def)
+				return ini:line_exist(section, key) and ini:r_float(section, key) or def
+			end
+			p = {
+				linear = f("psy_linear_factor", 0),
+				quadratic = f("psy_quadratic_factor", 0),
+				max_power = f("psy_max_power", 0),
+				max_distance = f("psy_max_distance", 0),
+				highest_at = f("psy_pp_highest_at", 1),
+			}
+			if p.highest_at == 0 then p.highest_at = 1 end
+		end
+		aura_params_cache[section] = p
+	end
+	return p
+end
+
+-- Same as monster_aura::get_post_process_factor (calculate() / highest_at, clamped); the engine's quadratic term is
+-- quadratic / distance * distance, i.e. just quadratic.
+local function aura_factor(p, distance)
+	if distance > p.max_distance then return 0 end
+	local power
+	if distance < 0.0001 then
+		power = (p.linear > 0.0001 or p.quadratic > 0.0001) and p.max_power or 0
+	else
+		power = math.min(p.linear / distance + p.quadratic, p.max_power)
+	end
+	return clamp(power / p.highest_at, 0, 1)
+end
+
+local function scan_aura(actor)
+	local best = 0
+	local apos = actor:position()
+	for id, p in pairs(psy_monsters) do
+		local obj = level.object_by_id(id)
+		if not obj then
+			psy_monsters[id] = nil
+		elseif obj:alive() then
+			best = math.max(best, aura_factor(p, obj:position():distance_to(apos)))
+		end
+	end
+	return best
+end
+
+local function antenna_field()
+	local pa = sr_psy_antenna and sr_psy_antenna.psy_antenna
+	if not pa or not pa.postprocess then return 0 end
+	local sum = 0
+	for _, pp in pairs(pa.postprocess) do
+		if pp.routed then sum = sum + (pp.intensity or 0) end
+	end
+	return clamp(sum, 0, 1)
+end
+
+local function set_legacy_pp(on, was_on, ppe, id, factor)
+	if on then
+		if not was_on then level.add_pp_effector(ppe, id, true) end
+		level.set_pp_effector_factor(id, clamp(factor, 0.0001, 1))
+	elseif was_on then
+		level.remove_pp_effector(id)
+	end
+	return on
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- heartbeat: one rhythm for the visual pulses and the episode timing
+
+local function update_heartbeat(dt, actor, stress)
+	local power = clamp(tonumber(actor.power) or 1, 0, 1)
+	local health = clamp(tonumber(actor.health) or 1, 0, 1)
+	bpm = clamp(cfg.bpm_rest + cfg.bpm_psy * stress + cfg.bpm_tired * (1 - power) + cfg.bpm_wounded * (1 - health), 40, 180)
+	beat_phase = beat_phase + dt * bpm / 60
+	local new_beat = math.floor(beat_phase) ~= beat_index
+	beat_index = math.floor(beat_phase)
+	local ph = beat_phase - beat_index
+	-- lub-dub
+	local pulse = math.exp(-(ph / 0.06) ^ 2) + 0.6 * math.exp(-((ph - 0.28) / 0.06) ^ 2) + math.exp(-((ph - 1) / 0.06) ^ 2)
+	beat_v = clamp(pulse, 0, 1) * clamp(stress * 1.3, 0, 1) * cfg.beat
+	-- tired and wounded: up to 1 + 2 * body_k
+	local body = 1 + cfg.body_k * (1 - power) + cfg.body_k * (1 - health)
+	return new_beat, body
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- episodes
+
+-- Aim pull: the same camera shove the psy monsters use (sivol_weapon.start_psy_divert). The size never drops below
+-- 70% of the configured one, and the side is random.
+local function aim_pull(k)
+	if not cfg.aim_effects or not cfg.camera_writes or cfg.aim_pull <= 0 then return end
+	if not (sivol_weapon and sivol_weapon.start_psy_divert) then return end
+	local dh = random_side() * (0.7 + 0.3 * math.random()) * cfg.pull_h * k * cfg.aim_pull
+	local dp = random_side() * (0.4 + 0.6 * math.random()) * cfg.pull_p * k * cfg.aim_pull
+	sivol_weapon.start_psy_divert(dh, dp, cfg.pull_ms)
+	vlog("aim pull dh=%.3f dp=%.3f", dh, dp)
+end
+
+local function start_episode(kind, k)
+	k = clamp(k or 1, 0, 2)
+	if kind == "focus" then
+		start_env("focus", vary(cfg.focus_duration), 0.15, clamp(0.6 * k, 0, 1), 0.35)
+	elseif kind == "snap" then
+		start_env("snap", vary(cfg.snap_duration), 0.08, clamp(0.7 + 0.3 * k, 0, 1.3), 0.35)
+		snap_roll = random_side()
+		trigger_shock(0.35 * k)
+	elseif kind == "blink" then
+		-- one smooth close and open, held shut for a moment
+		start_env("blink", vary(cfg.blink_duration), 0.25, clamp(0.85 + 0.25 * k, 0, 1), 0.35)
+	elseif kind == "pull" then
+		aim_pull(k)
+		trigger_shock(0.3 * k)
+	elseif kind == "blood" then
+		local dur = vary(cfg.blood_duration)
+		start_env("blood", dur, 1.5 / dur, 1, math.max(0, 1 - 3.5 / dur))
+	else
+		return
+	end
+	vlog("episode %s k=%.2f", kind, k)
+end
+
+-- blood sight only below blood_psy and never twice at once
+local function episode_weight(kind)
+	if kind == "blood" and (cur_psy >= cfg.blood_psy or envs.blood) then return 0 end
+	return math.max(0, cfg["w_" .. kind] or 0)
+end
+
+local function pick_episode()
+	local total = 0
+	for _, kind in ipairs(EPISODE_KINDS) do total = total + episode_weight(kind) end
+	if total <= 0 then return nil end
+	local roll = math.random() * total
+	for _, kind in ipairs(EPISODE_KINDS) do
+		roll = roll - episode_weight(kind)
+		if roll <= 0 and episode_weight(kind) > 0 then return kind end
+	end
+	return nil
+end
+
+local function schedule_episode(now, b, c)
+	local gap = cfg.episode_max + (cfg.episode_min - cfg.episode_max) * b
+	gap = gap / (1 + 1.5 * c) * (0.6 + 0.8 * math.random())
+	next_episode_at = now + math.max(gap, 1) * 1000
+end
+
+-- Episodes wait for the next heartbeat once due, so they land on the pulse.
+local function update_episodes(now, psy, c, new_beat, body)
+	if psy >= cfg.stage_b_psy then
+		next_episode_at = nil
+		return
+	end
+	local b = fall(psy, cfg.stage_b_psy, cfg.stage_c_psy)
+	if not next_episode_at then
+		schedule_episode(now, b, c)
+	elseif now >= next_episode_at and ev("clear") > 0.5 then
+		schedule_episode(now, b, c) -- an artifact clearing holds the episodes off
+	elseif now >= next_episode_at and (new_beat or now >= next_episode_at + 1500) then
+		local k = (0.7 + 0.5 * b + 0.6 * c) * body
+		start_episode(pick_episode(), k)
+		if math.random() < c * 0.7 then start_episode(pick_episode(), k * 0.8) end
+		schedule_episode(now, b, c)
+	end
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- aim: ADS sway factor, camera tremor and slam, HUD hand shake
+
+-- wpn_params.script multiplies the ADS wobble radius by this.
+function get_aim_wobble_k()
+	if not cfg.aim_effects then return 1 end
+	return 1 + cfg.aim_wobble * clamp(aim_v + ev("focus") * 0.5, 0, 1.5) * calm
+end
+
+local function is_aiming(actor)
+	if type(actor.is_zoom_aiming_mode) == "function" and actor:is_zoom_aiming_mode() then return true end
+	return wpn_params and type(wpn_params.get_zie_obj) == "function" and wpn_params.get_zie_obj() ~= nil
+end
+
+-- Pseudodog slam: fast down to the bottom, then an eased return. Its offset is zero at both ends.
+local function slam_offset(dt)
+	if not slam then return 0, 0 end
+	slam.t = slam.t + dt
+	if slam.t >= slam.dur then
+		slam = nil
+		return 0, 0
+	end
+	local k
+	if slam.t < slam.attack then
+		local x = slam.t / slam.attack
+		k = x * (2 - x) -- out quad: violent start
+	else
+		k = 1 - smoothstep(0, 1, (slam.t - slam.attack) / (slam.dur - slam.attack))
+	end
+	return slam.dh * k, slam.dp * k
+end
+
+-- Shaking comes in smooth spells covering `duty` of the time: shake_duty_start at shake_start, all of it from
+-- shake_duty_full_psy down. Between spells a quiet shake_base level. Returns the shake level 0..1.
+local function update_shake(now, dt, psy)
+	local s = cfg.aim_effects and ramp(psy, cfg.shake_start, cfg.shake_full, cfg.shake_curve) or 0
+	local duty = cfg.shake_duty_start + (1 - cfg.shake_duty_start) * ramp(psy, cfg.shake_start, cfg.shake_duty_full_psy, 1)
+	local spell
+	if s <= 0 then
+		next_spell_at = nil
+		spell = 0
+	elseif duty >= 0.98 then
+		spell = 1 -- constant
+	else
+		if not next_spell_at then next_spell_at = now + 1000 * math.random() end
+		if now >= next_spell_at and not envs.spell then
+			local len = cfg.spell_min + (cfg.spell_max - cfg.spell_min) * math.random()
+			start_env("spell", len, 0.2, 1, 0.5)
+			-- the gap keeps the duty: off-time = on-time x (1 - duty) / duty, the fades count as half on
+			next_spell_at = now + len * 1000 + len * (1 - duty) / duty * (0.6 + 0.8 * math.random()) * 1000
+			vlog("shake spell s=%.2f duty=%.2f len=%.1f", s, duty, len)
+		end
+		spell = ev("spell")
+	end
+	local target = s * (cfg.shake_base + (1 - cfg.shake_base) * spell) * calm
+	shake_v = exp_step(shake_v, target, target > shake_v and 3 or 2, dt)
+	return shake_v
+end
+
+-- Tremor and slam write only the change of their summed offset, so the camera never drifts from the user's aim.
+local function update_camera(dt)
+	local target = (cfg.aim_effects and cfg.camera_writes) and cfg.tremor * clamp(shake_v + ev("snap") * 0.3, 0, 1.3) or 0
+	tremor_amp = exp_step(tremor_amp, target, 3, dt)
+	if level.main_input_receiver() then return end -- menus: hold still, continue on return
+	local t = time_global() * 0.001 * cfg.tremor_speed
+	local h, p = 0, 0
+	if tremor_amp > 0.00001 then
+		h = tremor_amp * (math.sin(t * 6.1) * 0.5 + math.sin(t * 9.7 + 1.3) * 0.3 + math.sin(t * 14.3 + 0.4) * 0.2)
+		p = tremor_amp * 0.8 * (math.sin(t * 5.3 + 2.1) * 0.5 + math.sin(t * 8.9 + 0.7) * 0.3 + math.sin(t * 13.1 + 2.9) * 0.2)
+	end
+	local sh, sp = slam_offset(dt)
+	h, p = h + sh, p + sp
+	if h == cam_h and p == cam_p then return end
+	if coord_params and coord_params.camera_angles then
+		local ch, cp = coord_params.camera_angles()
+		coord_params.camera_angles(ch + h - cam_h, cp + p - cam_p)
+	end
+	cam_h, cam_p = h, p
+end
+
+local function update_hand_shake(k)
+	if not (level.nlc_set_psy_hand_shake) then return end
+	if math.abs(k - hand_shake_sent) < 0.02 and not (k == 0 and hand_shake_sent ~= 0) then return end
+	level.nlc_set_psy_hand_shake(k)
+	hand_shake_sent = k
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- hearing: engine psy stage and the whisper bed
+
+local function send_exempt()
+	if exempt_sent == cfg.voices_affected or not level.nlc_set_listener_psy_exempt then return end
+	level.nlc_set_listener_psy_exempt(PSY_EXEMPT .. (cfg.voices_affected and "" or PSY_EXEMPT_VOICES))
+	exempt_sent = cfg.voices_affected
+end
+
+local function set_hearing(gain, hf, wet, warble, hz, fade)
+	if not level.nlc_set_listener_psy then return end
+	local key = string.format("%.3f %.3f %.3f %.4f %.2f", gain, hf, wet, warble, hz)
+	if key == audio_sent then return end
+	level.nlc_set_listener_psy(gain, hf, wet, warble, hz, fade)
+	audio_sent = key
+end
+
+local function stop_voices()
+	if voice_l then voice_l:stop() end
+	if voice_r then voice_r:stop() end
+	voices_on, voice_vol = false, 0
+end
+
+local function update_voices(actor, target, dt)
+	voice_vol = exp_step(voice_vol, target, target > voice_vol and 1.5 or 0.8, dt)
+	if voice_vol < 0.01 then
+		if voices_on then stop_voices() end
+		return
+	end
+	if not voices_on then
+		voice_l = voice_l or sound_object(VOICE_L)
+		voice_r = voice_r or sound_object(VOICE_R)
+		voice_l:play_at_pos(actor, vector():set(-1, 0, 1), 0, sound_object.s2d + sound_object.looped)
+		voice_r:play_at_pos(actor, vector():set(1, 0, 1), 0, sound_object.s2d + sound_object.looped)
+		voices_on = true
+	end
+	voice_l.volume = voice_vol
+	voice_r.volume = voice_vol
+end
+
+local function update_audio(now, dt, actor, psy)
+	if now < audio_next then return end
+	local adt = audio_next > 0 and math.min((now - audio_next + AUDIO_MS) * 0.001, 0.25) or dt
+	audio_next = now + AUDIO_MS
+	if not (cfg.audio and shader_on()) then
+		set_hearing(1, 1, 0, 0, 0.3, 0.3)
+		if voices_on then stop_voices() end
+		return
+	end
+	send_exempt()
+	local h = clamp(ramp(psy, cfg.hear_start, cfg.floor_psy, cfg.hear_curve) + crisis * 0.3, 0, 1) * calm
+	local blink, burst_v = ev("blink"), ev("burst")
+	local gain = (1 - cfg.hear_gain * h) * (1 - 0.6 * blink) * (1 - 0.4 * burst_v)
+	local hf = (1 - cfg.hear_hf * h) * (1 - 0.8 * blink) * (1 - 0.6 * burst_v)
+	local wet = cfg.chorus and clamp((cfg.hear_wet * h + 0.4 * burst_v + 0.3 * ev("focus")) * calm, 0, 1) or 0
+	local warble = cfg.hear_warble * h + 0.02 * burst_v + 0.01 * ev("snap")
+	set_hearing(gain, hf, wet, warble, bpm / 60 * 0.25, 0.12)
+
+	-- whispers: louder as psy falls, swell with episodes and bursts; Radar zones play the same voices, so duck there
+	local v = ramp(psy, cfg.voices_start, cfg.floor_psy, 0.9)
+	v = v + 0.3 * (ev("focus") + ev("snap") + ev("blink")) + 0.5 * burst_v
+	v = clamp(v, 0, 1) * cfg.voices_volume * (1 - antenna_value) * calm
+	update_voices(actor, v, adt)
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- psy-restoring artifacts: calm the effects, now and then clear them for a while
+
+local function belt_psy_restore(actor)
+	local ini = system_ini()
+	local sum = 0
+	for i = 0, actor:belt_count() - 1 do
+		local item = actor:item_on_belt(i)
+		if item then
+			local sec = item:section()
+			if ini:section_exist(sec) and ini:line_exist(sec, "psy_health_restore_speed") then
+				local v = tonumber(ini:r_float(sec, "psy_health_restore_speed")) or 0
+				if v > 0 then sum = sum + v * clamp(item:condition(), 0, 1) end
+			end
+		end
+	end
+	return sum
+end
+
+local function update_artifacts(now, actor, psy)
+	if now >= art_next_scan then
+		art_next_scan = now + ART_SCAN_MS
+		art_k = art_override or clamp(belt_psy_restore(actor) / math.max(cfg.art_ref, 0.000001), 0, 1.5)
+	end
+	if art_k > 0 and psy < cfg.start_psy and now >= art_next_roll then
+		art_next_roll = now + cfg.art_clear_every * (0.7 + 0.6 * math.random()) * 1000
+		if not envs.clear and math.random() < cfg.art_clear_chance * art_k then
+			local dur = cfg.art_clear_min + (cfg.art_clear_max - cfg.art_clear_min) * math.min(art_k, 1)
+			start_env("clear", dur, 2 / dur, 1, math.max(0, 1 - 4 / dur))
+			vlog("artifact clearing art_k=%.2f dur=%.1f", art_k, dur)
+		end
+	end
+	calm = (1 - cfg.art_calm * art_k) * (1 - cfg.art_clear_depth * ev("clear"))
+	calm = clamp(calm, 0, 1)
+end
+
+---------------------------------------------------------------------------------------------------------------------
+
+local function push_params()
+	shader_set_custom_param("m_nlc_psy_vision_3", cfg.ripple, cfg.flow, cfg.blur, cfg.darken)
+	shader_set_custom_param("m_nlc_psy_vision_4", cfg.tint_r, cfg.tint_g, cfg.tint_b, cfg.desaturate)
+	shader_set_custom_param("m_nlc_psy_vision_6", cfg.shock_r, cfg.shock_g, cfg.shock_b, cfg.shock_tint)
+	params_dirty = false
+end
+
+local function zero_shader()
+	shader_set_custom_param("m_nlc_psy_vision", 0, 0, 0, 0)
+	shader_set_custom_param("m_nlc_psy_vision_5", 0, 0, 0, 0)
+	shader_set_custom_param("m_nlc_psy_vision_8", 0, 0, 0, 0)
+	shader_set_custom_param("m_nlc_psy_vision_9", 0, 0, cfg.world_near, cfg.world_far)
+	shader_set_custom_param("m_nlc_psy_vision_10", 0, 0, 0, 0)
+end
+
+local function clear_all()
+	zero_shader()
+	if db.actor then
+		legacy_psy_on = set_legacy_pp(false, legacy_psy_on, "snd_shock.ppe", LEGACY_PSY_PP_ID, 0)
+		legacy_aura_on = set_legacy_pp(false, legacy_aura_on, "radiation.ppe", LEGACY_AURA_PP_ID, 0)
+	end
+	set_hearing(1, 1, 0, 0, 0.3, 0.3)
+	stop_voices()
+	update_hand_shake(0)
+	strength, crisis, aim_v, focus_v, vis_strength = 0, 0, 0, 0, 0
+	shock, shock_phase, shock_t = 0, 0, nil
+	envs, env_vals = {}, {}
+	next_episode_at = nil
+	slam = nil
+	shake_v, next_spell_at = 0, nil
+	tremor_amp, cam_h, cam_p = 0, 0, 0 -- the camera keeps the last tiny offset; no write while dead/loading
+	last_psy, last_time = nil, nil
+	audio_next = 0
+end
+
+local function on_update()
+	local actor = db.actor
+	if not (actor and actor:alive()) then
+		if strength > 0 or crisis > 0 or shock > 0 or next(envs) or voices_on or legacy_psy_on or legacy_aura_on then clear_all() end
+		return
+	end
+
+	local now = time_global()
+	local dt = last_time and clamp((now - last_time) * 0.001, 0, 0.25) or 0
+	last_time = now
+
+	local psy = clamp(tonumber(actor.psy_health) or 1, 0, 1)
+	if last_psy and last_psy - psy > cfg.shock_threshold and shader_on() then
+		trigger_shock(shock + (last_psy - psy) * cfg.shock_gain)
+	end
+	last_psy = psy
+
+	if now >= aura_next_scan then
+		aura_next_scan = now + AURA_SCAN_MS
+		aura_value = scan_aura(actor)
+		antenna_value = antenna_field()
+	end
+	cur_psy = psy
+	update_artifacts(now, actor, psy)
+
+	-- Aim effects are gameplay and run in legacy mode too.
+	local aim_target = ramp(psy, cfg.aim_start, cfg.aim_full, cfg.aim_curve)
+	aim_v = exp_step(aim_v, aim_target, aim_target > aim_v and cfg.rise_rate or cfg.fall_rate, dt)
+	update_envs(dt)
+	update_shake(now, dt, psy)
+	update_camera(dt)
+	update_hand_shake(cfg.aim_effects and cfg.hand_shake * shake_v or 0)
+
+	-- Legacy PPEs (the engine no longer adds them; same factors as before).
+	legacy_psy_on = set_legacy_pp(not shader_on() and psy < 0.95, legacy_psy_on, "snd_shock.ppe", LEGACY_PSY_PP_ID, 1 - psy)
+	legacy_aura_on = set_legacy_pp(not route_aura() and aura_value > 0.01, legacy_aura_on, "radiation.ppe", LEGACY_AURA_PP_ID, aura_value)
+
+	if not shader_on() then
+		if strength > 0 or crisis > 0 or shock_t then
+			strength, crisis, vis_strength, shock, shock_phase, shock_t = 0, 0, 0, 0, 0, nil
+			zero_shader()
+		end
+		update_audio(now, dt, actor, psy)
+		return
+	end
+
+	local s_psy = ramp(psy, cfg.tunnel_start_psy, cfg.full_psy, cfg.curve)
+	local field
+	if field_override >= 0 then
+		field = field_override
+	else
+		field = math.max(route_aura() and aura_value * cfg.aura_weight or 0, antenna_value * cfg.antenna_weight)
+	end
+	local target = 1 - (1 - s_psy) * (1 - clamp(field, 0, 1))
+	strength = exp_step(strength, target, target > strength and cfg.rise_rate or cfg.fall_rate, dt)
+	if strength < 0.001 and target == 0 then strength = 0 end
+
+	local c_target = fall(psy, cfg.stage_c_psy, cfg.floor_psy)
+	crisis = exp_step(crisis, c_target, c_target > crisis and cfg.rise_rate or cfg.fall_rate, dt)
+	if crisis < 0.001 and c_target == 0 then crisis = 0 end
+
+	local stress = clamp(math.max(ramp(psy, cfg.start_psy, cfg.floor_psy, 0.8), strength * 0.7, crisis), 0, 1)
+	local new_beat, body = update_heartbeat(dt, actor, stress)
+
+	update_shock(dt)
+	update_episodes(now, psy, crisis, new_beat, body)
+
+	local focus_target = (cfg.focus > 0 and is_aiming(actor)) and ramp(psy, cfg.focus_start, cfg.aim_full, 0.7) * cfg.focus or 0
+	focus_v = exp_step(focus_v, focus_target, focus_target > focus_v and 3 or 5, dt)
+
+	local burst_v = ev("burst")
+	vis_strength = math.max(strength, burst_v * cfg.burst_tunnel)
+	local radius = cfg.radius_zero + (cfg.radius_full - cfg.radius_zero) * vis_strength
+	radius = radius + (cfg.radius_min - radius) * crisis
+	radius = math.max(radius - ev("snap") * cfg.snap_depth - beat_v * 0.03 * vis_strength, 0.05)
+	local duality = clamp(crisis * cfg.duality_max + ev("focus") + ev("burst_dual") * cfg.burst_duality, 0, 1)
+	local blink = ev("blink")
+	local world = clamp(ramp(psy, cfg.start_psy, cfg.floor_psy, cfg.world_curve) * cfg.world_breath * body + burst_v * 0.5, 0, 2)
+	local fringe = clamp(ramp(psy, cfg.start_psy, 0.7, 0.7) * cfg.fringe, 0, 1)
+
+	-- psy-restoring artifacts: everything eases toward calm (the tunnel opens back toward radius_zero)
+	local c = calm
+	radius = cfg.radius_zero + (radius - cfg.radius_zero) * c
+
+	if params_dirty then push_params() end
+	shader_set_custom_param("m_nlc_psy_vision", vis_strength * c, shock * c, cfg.hud_warp, cfg.ghost)
+	shader_set_custom_param("m_nlc_psy_vision_2", radius, snap_roll, cfg.feather, cfg.breathe)
+	shader_set_custom_param("m_nlc_psy_vision_5", cfg.ghost_dist, shock_phase, duality * c, blink * c)
+	shader_set_custom_param("m_nlc_psy_vision_7", cfg.duality_dist, cfg.duality_spin, cfg.edge_gain,
+		cfg.cold_global + burst_v * cfg.burst_cold)
+	shader_set_custom_param("m_nlc_psy_vision_8", ev("snap") * c, focus_v * c, math.max(ev("recover"), ev("veil")) * c, beat_v * c)
+	shader_set_custom_param("m_nlc_psy_vision_9", world * c, fringe * c, cfg.world_near, cfg.world_far)
+	shader_set_custom_param("m_nlc_psy_vision_10", ev("blood") * c, cfg.blood_hue, cfg.blood_contrast, cfg.blood_boost)
+
+	update_audio(now, dt, actor, psy)
+
+	if debug_on and now >= debug_next then
+		debug_next = now + 1000
+		log2("[psy_vision] psy=%.3f s_psy=%.3f field=%.3f strength=%.3f crisis=%.3f radius=%.3f duality=%.3f world=%.2f focus=%.2f aim=%.3f shake=%.2f bpm=%.0f shock=%.3f burst=%.3f voices=%.2f blood=%.2f art=%.2f calm=%.2f",
+			psy, s_psy, field, vis_strength, crisis, radius, duality, world, focus_v, aim_v, shake_v, bpm, shock, burst_v, voice_vol, ev("blood"), art_k, calm)
+	end
+end
+
+-- One-shot psy burst from scripts (controller swap, pseudodog attack and ADS shove). Routed: the tunnel closes as
+-- if psy were much lower for burst_duration, a short full-screen double vision, a cold pulse; legacy: the PPE the
+-- caller used before. Works at full psy health. opts.slam = mask_k adds the pseudodog camera slam (down, then back;
+-- strength and length scale with mask_k) and returns true, so the caller skips its own camera shove.
+function burst(power, legacy_ppe, legacy_id, opts)
+	power = clamp(power or 1, 0, 1)
+	local dur_k = 1
+	local slammed = false
+	if opts and opts.slam and cfg.aim_effects and cfg.camera_writes then
+		local mk = clamp(tonumber(opts.slam) or 1, 0, 1.5)
+		dur_k = 0.6 + 0.4 * mk
+		slam = {
+			t = 0,
+			dur = cfg.slam_total * dur_k,
+			attack = cfg.slam_attack,
+			dh = random_side() * (0.3 + 0.7 * math.random()) * cfg.slam_yaw * mk,
+			dp = cfg.slam_pitch * mk, -- CCameraBase.pitch: positive looks down
+		}
+		slammed = true
+	end
+	if route_bursts() then
+		trigger_shock(power, cfg.burst_shock_duration * dur_k)
+		if slammed then
+			-- the slam blacks the view out at the bottom, then a dim grey veil with the tunnel closed for slam_veil s
+			local mk = clamp(tonumber(opts.slam) or 1, 0, 1.5)
+			local veil = cfg.slam_veil * dur_k
+			start_env("burst", veil, 0.04, power, 0.5)
+			start_env("burst_dual", veil * 0.6, 0.1, power, 0.4)
+			start_env("blink", 1.2, 0.12, clamp(cfg.slam_blink * mk, 0, 1), 0.3)
+			start_env("veil", veil, 0.05, clamp(0.8 * mk, 0, 1), 0.5)
+		else
+			start_env("burst", cfg.burst_duration * dur_k, 0.08, power, 0.35)
+			start_env("burst_dual", 1.2 * dur_k, 0.15, power, 0.3)
+			if cfg.burst_blink > 0 then start_env("blink", 0.9, 0.25, power * cfg.burst_blink, 0.3) end
+		end
+		vlog("burst power=%.2f dur_k=%.2f slam=%s (legacy %s)", power, dur_k, tostring(slammed), tostring(legacy_ppe))
+	elseif legacy_ppe then
+		level.add_pp_effector(legacy_ppe, legacy_id, false)
+	end
+	return slammed
+end
+
+-- The 2D gas-mask visor (vergas_masks.script) is a UI static drawn after the screen shader, so it cannot ripple
+-- with the edges. vergas_masks.update_psy_wobble moves it by this offset instead: dx, dy and an overscan ox, oy
+-- (UI units of the 1024x768 visor rect) that always exceeds the offset, so no screen edge is uncovered.
+function mask_wobble()
+	if not shader_on() then return 0, 0, 0, 0 end
+	local amp = cfg.mask_wobble * clamp(vis_strength + shock * 0.8 + crisis * 0.5 + beat_v * 0.3, 0, 2) * calm
+	if amp < 0.05 then return 0, 0, 0, 0 end
+	local t = time_global() * 0.001
+	local dx = amp * (math.sin(t * 1.3) * 0.7 + math.sin(t * 2.9 + 1.0) * 0.3)
+	local dy = amp * 0.6 * (math.sin(t * 1.1 + 2.0) * 0.7 + math.sin(t * 2.3) * 0.3)
+	local ox = amp * (1.25 + 0.25 * math.sin(t * 1.7))
+	return dx, dy, ox, ox * 0.75
+end
+
+local function on_monster_spawn(obj)
+	if not obj then return end
+	local p = aura_params(obj:section())
+	if p then psy_monsters[obj:id()] = p end
+end
+
+local function on_monster_net_destroy(obj)
+	if obj then psy_monsters[obj:id()] = nil end
+end
+
+local function on_first_update()
+	params_dirty = true
+	exempt_sent = nil
+	audio_sent = nil
+	hand_shake_sent = -1
+	clear_all()
+end
+
+local function on_stop_modules()
+	clear_all()
+	psy_monsters = {}
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = on_update })
+	sm:subscribe({ signal = "on_first_update", fun = on_first_update })
+	sm:subscribe({ signal = "on_monster_spawn", fun = on_monster_spawn })
+	sm:subscribe({ signal = "on_monster_net_destroy", fun = on_monster_net_destroy })
+	sm:subscribe({ signal = "on_stop_modules", fun = on_stop_modules })
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- console helpers
+
+function show()
+	local keys = {}
+	for k in pairs(DEFAULTS) do table.insert(keys, k) end
+	table.sort(keys)
+	for _, k in ipairs(keys) do
+		local mark = cfg[k] ~= DEFAULTS[k] and " *" or ""
+		log2("[psy_vision] %s = %s%s", k, tostring(cfg[k]), mark)
+	end
+	local n = 0
+	for _ in pairs(psy_monsters) do n = n + 1 end
+	log2("[psy_vision] live: psy=%.3f aura=%.3f antenna=%.3f field_override=%.2f strength=%.3f crisis=%.3f aim=%.3f bpm=%.0f shock=%.3f psy_monsters=%d engine_audio=%s hand_shake=%s",
+		db.actor and db.actor.psy_health or -1, aura_value, antenna_value, field_override, vis_strength, crisis, aim_v, bpm, shock, n,
+		tostring(level.nlc_set_listener_psy ~= nil), tostring(level.nlc_set_psy_hand_shake ~= nil))
+end
+
+function set(key, value)
+	if DEFAULTS[key] == nil then
+		log2("[psy_vision] unknown setting '%s'", tostring(key))
+		return
+	end
+	if type(DEFAULTS[key]) == "boolean" then
+		value = value == true or value == 1 or value == "true"
+	else
+		value = tonumber(value) or DEFAULTS[key]
+	end
+	cfg[key] = value
+	params_dirty = true
+	log2("[psy_vision] %s = %s", key, tostring(value))
+end
+
+function reset()
+	reset_cfg()
+	field_override = -1
+	log2("[psy_vision] settings reset")
+end
+
+function legacy(on)
+	set("enabled", not (on == true or on == 1))
+end
+
+function test_psy(target)
+	if not db.actor then return end
+	target = clamp(tonumber(target) or 1, 0.01, 1)
+	db.actor.psy_health = target - db.actor.psy_health -- the property adds a delta (applied on the next condition update)
+	log2("[psy_vision] psy health -> %.2f", target)
+end
+
+function test_field(v)
+	field_override = tonumber(v) or -1
+	log2("[psy_vision] field override = %.2f", field_override)
+end
+
+function test_shock(v)
+	trigger_shock(tonumber(v) or 1)
+end
+
+function test_burst(v)
+	burst(tonumber(v) or 1)
+end
+
+-- what the pseudodog's big psy attack sends, for a given mask coefficient
+function test_slam(mask_k)
+	local mk = tonumber(mask_k) or 1
+	burst(cfg.slam_burst * mk, nil, nil, { slam = mk })
+end
+
+function test_episode(kind, k)
+	start_episode(kind or "focus", tonumber(k) or 1)
+end
+
+-- pretend the belt holds this much psy restoration (1 = one full artifact, -1 = back to the real belt);
+-- test_artifact(1, true) also starts a clearing right away
+function test_artifact(k, clear_now)
+	k = tonumber(k) or -1
+	art_override = k >= 0 and clamp(k, 0, 1.5) or nil
+	art_next_scan = 0
+	if clear_now and art_override then
+		local dur = cfg.art_clear_min + (cfg.art_clear_max - cfg.art_clear_min) * math.min(art_override, 1)
+		start_env("clear", dur, 2 / dur, 1, math.max(0, 1 - 4 / dur))
+	end
+	log2("[psy_vision] artifact override = %s", tostring(art_override))
+end
+
+function log_inputs(on)
+	debug_on = on == true or on == 1
+end

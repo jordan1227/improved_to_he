@@ -65,7 +65,7 @@ void CSoundRender_TargetA::nlc_filters_create()
     if (!sndefx::filters_ok())
         return;
     alGetError();
-    sndefx::GenFilters(3, nlc_filter);
+    sndefx::GenFilters(4, nlc_filter);
     for (ALuint f : nlc_filter)
         sndefx::Filteri(f, AL_FILTER_TYPE, AL_FILTER_LOWPASS);
     const ALenum err = alGetError();
@@ -129,6 +129,18 @@ void CSoundRender_TargetA::nlc_fill_efx(CSoundRender_Core* core)
         room_hf *= core->nlc_lf_hf;
         echo_gain *= core->nlc_lf_gain;
     }
+    float psy_send = 0.f;
+    if (!E->nlc_psy_exempt)
+    {
+        // psy hearing (sivol_psy_vision): muffles the same paths; the chorus send follows the direct path's occlusion
+        direct_gain *= core->nlc_psy_gain;
+        direct_hf *= core->nlc_psy_hf;
+        room_gain *= core->nlc_psy_gain;
+        room_hf *= core->nlc_psy_hf;
+        echo_gain *= core->nlc_psy_gain;
+        psy_send = core->nlc_psy_wet * occ_send * core->nlc_psy_gain;
+    }
+    clamp(psy_send, 0.f, 1.f);
     clamp(direct_gain, 0.f, 1.f);
     clamp(direct_hf, 0.01f, 1.f);
     clamp(room_hf, 0.01f, 1.f);
@@ -158,6 +170,13 @@ void CSoundRender_TargetA::nlc_fill_efx(CSoundRender_Core* core)
         sndefx::Filterf(nlc_filter[2], AL_LOWPASS_GAIN, echo_gain);
         sndefx::Filterf(nlc_filter[2], AL_LOWPASS_GAINHF, 1.f);
         alSource3i(pSource, AL_AUXILIARY_SEND_FILTER, core->efx_slot_echo(), 1, nlc_filter[2]);
+    }
+    if (core->efx_sends >= 3 && core->efx_slot_psy() && _abs(psy_send - nlc_cache[6]) > 0.01f)
+    {
+        nlc_cache[6] = psy_send;
+        sndefx::Filterf(nlc_filter[3], AL_LOWPASS_GAIN, psy_send);
+        sndefx::Filterf(nlc_filter[3], AL_LOWPASS_GAINHF, 1.f);
+        alSource3i(pSource, AL_AUXILIARY_SEND_FILTER, core->efx_slot_psy(), 2, nlc_filter[3]);
     }
     nlc_cache[4] = slots;
 }
@@ -366,6 +385,8 @@ void CSoundRender_TargetA::fill_parameters(CSoundRender_Core* core)
 
     VERIFY2(m_pEmitter, SE->source()->file_name());
     float _pitch = m_pEmitter->p_source.freq * psSoundTimeFactor; //--#SM+#-- Correct sound "speed" by time factor
+    if (!m_pEmitter->nlc_psy_exempt)
+        _pitch *= core->nlc_psy_pitch; // NLC: psy hearing warble (1 when off)
     clamp(_pitch, EPS_L, 100.f); //--#SM+#-- Increase sound frequancy (speed) limit
     if (!fsimilar(_pitch, cache_pitch))
     {
@@ -383,6 +404,8 @@ void CSoundRender_TargetA::fill_parameters(CSoundRender_Core* core)
         alSource3i(pSource, AL_AUXILIARY_SEND_FILTER, core->efx_slot_room(), 0, AL_FILTER_NULL);
         if (core->efx_sends >= 2)
             alSource3i(pSource, AL_AUXILIARY_SEND_FILTER, AL_EFFECTSLOT_NULL, 1, AL_FILTER_NULL);
+        if (core->efx_sends >= 3)
+            alSource3i(pSource, AL_AUXILIARY_SEND_FILTER, AL_EFFECTSLOT_NULL, 2, AL_FILTER_NULL);
         for (float& c : nlc_cache)
             c = -1.f;
     }

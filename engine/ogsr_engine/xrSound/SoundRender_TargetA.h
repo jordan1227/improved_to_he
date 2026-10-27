@@ -17,10 +17,10 @@ class CSoundRender_TargetA : public CSoundRender_Target
     ALuint buf_block{};
 
     // NLC: low-pass filters for the direct path, the room send and the echo send (docs/AUDIO_DESIGN.md 2.4, 3.2)
-    ALuint nlc_filter[3]{};
+    ALuint nlc_filter[4]{}; // direct, room send, echo send, psy send
     bool nlc_filters_ok{};
     bool nlc_filters_tried{};
-    float nlc_cache[6]{-1.f, -1.f, -1.f, -1.f, -1.f, -1.f}; // direct hf, room gain, room hf, echo gain, slot state, direct gain
+    float nlc_cache[7]{-1.f, -1.f, -1.f, -1.f, -1.f, -1.f, -1.f}; // direct hf, room gain, room hf, echo gain, slot state, direct gain, psy send
     void nlc_filters_create();
     void nlc_filters_destroy();
     void nlc_fill_efx(CSoundRender_Core* core);

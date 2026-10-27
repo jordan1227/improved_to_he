@@ -392,6 +392,11 @@ public:
     // none of the exempt parts (comma list), faded over fade_sec; 1, 1 = off. Reset on level unload.
     virtual void nlc_set_listener_filter(float gain, float hf, float fade_sec) = 0;
     virtual void nlc_set_listener_filter_exempt(LPCSTR parts) = 0;
+    // NLC psy hearing (sivol_psy_vision.script), a second stage after the listener filter with its own exempt list:
+    // gain / kept highs, wet = send level into the psy effect slot (chorus), warble = pitch swing (0.02 = +-2%) at
+    // warble_hz; all faded over fade_sec. 1, 1, 0, 0 = off. Reset on level unload.
+    virtual void nlc_set_listener_psy(float gain, float hf, float wet, float warble, float warble_hz, float fade_sec) = 0;
+    virtual void nlc_set_listener_psy_exempt(LPCSTR parts) = 0;
     virtual void set_handler(sound_event* E) = 0;
 
     virtual void update(const Fvector& P, const Fvector& D, const Fvector& N) = 0;

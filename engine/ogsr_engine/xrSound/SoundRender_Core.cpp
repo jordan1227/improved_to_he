@@ -108,9 +108,17 @@ void CSoundRender_Core::release_efx_objects()
     if (slot_echo && alIsAuxiliaryEffectSlot(slot_echo))
         alDeleteAuxiliaryEffectSlots(1, &slot_echo);
 
+    if (effect_psy && alIsEffect(effect_psy))
+        alDeleteEffects(1, &effect_psy);
+
+    if (slot_psy && alIsAuxiliaryEffectSlot(slot_psy))
+        alDeleteAuxiliaryEffectSlots(1, &slot_psy);
+
     // NLC: no stale ids after a release (snd_audio_report, efx_attach_slots)
     effect_echo = 0;
     slot_echo = 0;
+    effect_psy = 0;
+    slot_psy = 0;
     efx_slots_attached = false;
     efx_last_valid = false;
 }
@@ -263,10 +271,61 @@ void CSoundRender_Core::set_geometry_occ(CDB::MODEL* M)
     nlc_cache_clear();
     if (!M)
     {
-        // level unload: no listener filter (gas mask) left over for the main menu
+        // level unload: no listener filter (gas mask) or psy hearing left over for the main menu
         std::scoped_lock l{nlc_lf_lock};
         nlc_lf_gain = nlc_lf_hf = nlc_lf_gain_t = nlc_lf_hf_t = 1.f;
+        nlc_psy_gain = nlc_psy_hf = nlc_psy_gain_t = nlc_psy_hf_t = nlc_psy_pitch = 1.f;
+        nlc_psy_wet = nlc_psy_wet_t = nlc_psy_warble = nlc_psy_warble_t = 0.f;
     }
+}
+
+// comma list -> lowercase parts (listener filter and psy hearing exempt lists)
+static void nlc_parse_parts(LPCSTR parts, xr_vector<xr_string>& out)
+{
+    out.clear();
+    if (!parts || !*parts)
+        return;
+    string256 item;
+    for (int i = 0, n = _GetItemCount(parts); i < n; ++i)
+    {
+        _GetItem(parts, i, item);
+        _Trim(item);
+        _strlwr(item);
+        if (item[0])
+            out.emplace_back(item);
+    }
+}
+
+static bool nlc_name_matches(LPCSTR name, const xr_vector<xr_string>& parts)
+{
+    for (const xr_string& s : parts)
+        if (strstr(name, s.c_str()))
+            return true;
+    return false;
+}
+
+// NLC psy hearing: set from sivol_psy_vision.script, read by the sound task (smoothed in update, applied in TargetA)
+void CSoundRender_Core::nlc_set_listener_psy(float gain, float hf, float wet, float warble, float warble_hz, float fade_sec)
+{
+    std::scoped_lock l{nlc_lf_lock};
+    nlc_psy_gain_t = _valid(gain) ? clampr(gain, 0.f, 1.f) : 1.f;
+    nlc_psy_hf_t = _valid(hf) ? clampr(hf, 0.01f, 1.f) : 1.f;
+    nlc_psy_wet_t = _valid(wet) ? clampr(wet, 0.f, 1.f) : 0.f;
+    nlc_psy_warble_t = _valid(warble) ? clampr(warble, 0.f, 0.15f) : 0.f;
+    nlc_psy_hz = _valid(warble_hz) ? clampr(warble_hz, 0.01f, 10.f) : 0.3f;
+    nlc_psy_rate = (_valid(fade_sec) && fade_sec > 0.01f) ? 1.f / fade_sec : 100.f;
+}
+
+void CSoundRender_Core::nlc_set_listener_psy_exempt(LPCSTR parts)
+{
+    std::scoped_lock l{nlc_lf_lock};
+    nlc_parse_parts(parts, nlc_psy_exempt_parts);
+}
+
+bool CSoundRender_Core::nlc_psy_exempt(LPCSTR name) const
+{
+    std::scoped_lock l{const_cast<std::mutex&>(nlc_lf_lock)};
+    return nlc_name_matches(name, nlc_psy_exempt_parts);
 }
 
 // NLC listener filter (docs/AUDIO_DESIGN.md 16): set from scripts (sivol_mask_audio), read by the sound task
@@ -281,27 +340,13 @@ void CSoundRender_Core::nlc_set_listener_filter(float gain, float hf, float fade
 void CSoundRender_Core::nlc_set_listener_filter_exempt(LPCSTR parts)
 {
     std::scoped_lock l{nlc_lf_lock};
-    nlc_lf_exempt_parts.clear();
-    if (!parts || !*parts)
-        return;
-    string256 item;
-    for (int i = 0, n = _GetItemCount(parts); i < n; ++i)
-    {
-        _GetItem(parts, i, item);
-        _Trim(item);
-        _strlwr(item);
-        if (item[0])
-            nlc_lf_exempt_parts.emplace_back(item);
-    }
+    nlc_parse_parts(parts, nlc_lf_exempt_parts);
 }
 
 bool CSoundRender_Core::nlc_lf_exempt(LPCSTR name) const
 {
     std::scoped_lock l{const_cast<std::mutex&>(nlc_lf_lock)};
-    for (const xr_string& s : nlc_lf_exempt_parts)
-        if (strstr(name, s.c_str()))
-            return true;
-    return false;
+    return nlc_name_matches(name, nlc_lf_exempt_parts);
 }
 
 void CSoundRender_Core::set_geometry_som(IReader* I)
@@ -692,7 +737,38 @@ bool CSoundRender_Core::EFXTestSupport()
         }
     }
 
-    Msg("[OpenAL] EFX reverb: %s, sends: %d, echo slot: %s", efx_eax ? "EAX reverb" : "standard reverb", efx_sends, slot_echo ? "yes" : "no");
+    // NLC: psy hearing chorus on the third send (sivol_psy_vision.script). Slow, deep and wide: voices and the world
+    // swim and smear rather than ring. Without a third send psy hearing keeps its filter and pitch warble only.
+    effect_psy = 0;
+    slot_psy = 0;
+    if (efx_sends >= 3)
+    {
+        alGetError();
+        alGenEffects(1, &effect_psy);
+        alEffecti(effect_psy, AL_EFFECT_TYPE, AL_EFFECT_CHORUS);
+        alEffecti(effect_psy, AL_CHORUS_WAVEFORM, AL_CHORUS_WAVEFORM_SINUSOID);
+        alEffectf(effect_psy, AL_CHORUS_RATE, 0.35f);
+        alEffectf(effect_psy, AL_CHORUS_DEPTH, 1.0f);
+        alEffectf(effect_psy, AL_CHORUS_FEEDBACK, 0.45f);
+        alEffectf(effect_psy, AL_CHORUS_DELAY, 0.016f);
+        alGenAuxiliaryEffectSlots(1, &slot_psy);
+        if (alGetError() == AL_NO_ERROR)
+            alAuxiliaryEffectSloti(slot_psy, AL_EFFECTSLOT_EFFECT, effect_psy);
+        err = alGetError();
+        if (err != AL_NO_ERROR)
+        {
+            Msg("! [%s] OpenAL psy chorus slot error: %s, psy hearing without chorus", __FUNCTION__, alGetString(err));
+            if (effect_psy && alIsEffect(effect_psy))
+                alDeleteEffects(1, &effect_psy);
+            if (slot_psy && alIsAuxiliaryEffectSlot(slot_psy))
+                alDeleteAuxiliaryEffectSlots(1, &slot_psy);
+            effect_psy = 0;
+            slot_psy = 0;
+        }
+    }
+
+    Msg("[OpenAL] EFX reverb: %s, sends: %d, echo slot: %s, psy slot: %s", efx_eax ? "EAX reverb" : "standard reverb", efx_sends,
+        slot_echo ? "yes" : "no", slot_psy ? "yes" : "no");
 
     return true;
 }

@@ -80,6 +80,7 @@ public:
     bool nlc_no_occl{};
     bool nlc_occ_pending{};
     bool nlc_lf_exempt{}; // not affected by the listener filter (gas mask): breathing, own body sounds, UI, music
+    bool nlc_psy_exempt{}; // not affected by psy hearing (filter, chorus send, pitch warble): its own exempt list, music
     bool nlc_spatial_stereo{}; // stereo file kept 3D (AL_SOURCE_SPATIALIZE_SOFT) instead of forced 2D
     void nlc_occ_refresh(bool immediate, float audible = 1.f);
     void nlc_occ_compute(bool immediate);

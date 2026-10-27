@@ -354,7 +354,7 @@ void CHudItem::UpdateCL()
     // (disabled while bobbing is allowed, see AnmIdleMovingAllowed) keep playing when not aiming.
     const bool bobbing_ads_ok = !psActorFlags.test(AF_WEAPON_BOBBING_ADS_ONLY) || (g_actor && g_actor->IsZoomAimingMode());
     const bool bobbing_was_allowed = HudBobbingAllowed();
-    AllowHudBobbing((psActorFlags.test(AF_WEAPON_BOBBING) && allow_bobbing && bobbing_ads_ok) || (g_actor && g_actor->PsyAuraAffect));
+    AllowHudBobbing((psActorFlags.test(AF_WEAPON_BOBBING) && allow_bobbing && bobbing_ads_ok) || (g_actor && g_actor->NlcPsyShakeActive()));
 
     // NLC: leaving ADS picks the idle animation (OnZoomOut) while bobbing is still allowed, so a moving actor
     // got plain idle and nothing re-selected it until the movement changed. Re-select once bobbing stops.
@@ -1578,7 +1578,9 @@ void CHudItem::CWeaponBobbing::Update(Fmatrix& m, Fmatrix& m2)
     CheckState();
 
     // mmccxvii: Тряска рук при воздействии контролера
-    const bool ControllerCondition = Actor()->PsyAuraAffect;
+    const bool ControllerCondition = Actor()->NlcPsyShakeActive();
+    // NLC: the aura shakes at full amplitude; low psy health (sivol_psy_vision) at its own share, the larger one wins
+    const float controller_k = Actor()->PsyAuraAffect ? _max(1.f, Actor()->NlcPsyHandShake) : Actor()->NlcPsyHandShake;
 
     if ((dwMState & ACTOR_DEFS::mcAnyMove) || ControllerCondition)
 
@@ -1617,7 +1619,7 @@ void CHudItem::CWeaponBobbing::Update(Fmatrix& m, Fmatrix& m2)
         // mmccxvii: Тряска рук при воздействии контролера
         if (ControllerCondition)
         {
-            A = m_fAmplitudeController * k;
+            A = m_fAmplitudeController * k * controller_k;
             ST = m_fSpeedRun * 10 * fTime * k;
         }
         else if (isActorAccelerated(dwMState, m_bZoomMode))
@@ -1737,4 +1739,4 @@ void CHudItem::OnAnimationEnd(u32 state)
     }
 }
 
-bool CHudItem::AnmIdleMovingAllowed() const { return !HudBobbingAllowed() || Actor()->PsyAuraAffect; }
+bool CHudItem::AnmIdleMovingAllowed() const { return !HudBobbingAllowed() || Actor()->NlcPsyShakeActive(); }

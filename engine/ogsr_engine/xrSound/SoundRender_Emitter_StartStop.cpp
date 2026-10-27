@@ -42,6 +42,7 @@ void CSoundRender_Emitter::start(ref_sound* _owner, BOOL _loop, float delay, u32
         switch_to_2D();
     // not affected by the listener filter (gas mask): music and the script's exempt names (breathing, own body sounds, UI)
     nlc_lf_exempt = owner_data->s_type == st_Music || SoundRender->nlc_lf_exempt(source()->fname.c_str());
+    nlc_psy_exempt = owner_data->s_type == st_Music || SoundRender->nlc_psy_exempt(source()->fname.c_str());
 
     if (fis_zero(delay, EPS_L))
     {

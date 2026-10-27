@@ -1215,6 +1215,14 @@ void CLevel::script_register(lua_State* L)
             // NLC audio listener filter (gas mask, sivol_mask_audio.script; docs/AUDIO_DESIGN.md 16)
             def("nlc_set_listener_filter", [](float gain, float hf, float fade_sec) { ::Sound->nlc_set_listener_filter(gain, hf, fade_sec); }),
             def("nlc_set_listener_filter_exempt", [](LPCSTR parts) { ::Sound->nlc_set_listener_filter_exempt(parts); }),
+            // NLC psy hearing and hand shake (sivol_psy_vision.script)
+            def("nlc_set_listener_psy",
+                [](float gain, float hf, float wet, float warble, float warble_hz, float fade_sec) { ::Sound->nlc_set_listener_psy(gain, hf, wet, warble, warble_hz, fade_sec); }),
+            def("nlc_set_listener_psy_exempt", [](LPCSTR parts) { ::Sound->nlc_set_listener_psy_exempt(parts); }),
+            def("nlc_set_psy_hand_shake", [](float k) {
+                if (CActor* A = Actor())
+                    A->NlcPsyHandShake = _valid(k) ? clampr(k, 0.f, 2.f) : 0.f;
+            }),
             def("nlc_get_draw_speed_factor", [](LPCSTR name) { return nlc_get_hud_speed_factor(NLC_SPEED_DRAW, name); }),
             def("nlc_get_draw_speed_k", [] { return nlc_hud_speed_k(NLC_SPEED_DRAW); }),
             def("nlc_set_reload_speed_k", [](float k) { nlc_set_hud_speed_factor(NLC_SPEED_RELOAD, "injury", k); }), // .102 name, = "injury" factor

@@ -50,6 +50,16 @@ void CSoundRender_Core::update(const Fvector& P, const Fvector& D, const Fvector
         auto move = [step](float& c, float t) { c = c < t ? _min(c + step, t) : _max(c - step, t); };
         move(nlc_lf_gain, psSoundMaskFilter ? nlc_lf_gain_t : 1.f);
         move(nlc_lf_hf, psSoundMaskFilter ? nlc_lf_hf_t : 1.f);
+
+        // NLC psy hearing: same linear fade; the warble is a slow sine on every non-exempt source's pitch
+        const float psy_step = clampr(dt_sec, 0.f, 0.5f) * nlc_psy_rate;
+        auto move_psy = [psy_step](float& c, float t) { c = c < t ? _min(c + psy_step, t) : _max(c - psy_step, t); };
+        move_psy(nlc_psy_gain, nlc_psy_gain_t);
+        move_psy(nlc_psy_hf, nlc_psy_hf_t);
+        move_psy(nlc_psy_wet, nlc_psy_wet_t);
+        move_psy(nlc_psy_warble, nlc_psy_warble_t);
+        nlc_psy_phase = fmodf(nlc_psy_phase + clampr(dt_sec, 0.f, 0.5f) * nlc_psy_hz * PI_MUL_2, PI_MUL_2);
+        nlc_psy_pitch = 1.f + nlc_psy_warble * _sin(nlc_psy_phase);
     }
     if (psSoundOccMode == 1)
         nlc_probe_update(dt_sec);
@@ -915,5 +925,7 @@ void CSoundRender_Core::nlc_report()
     }
     Msg("[snd_report] listener filter: gain %.2f hf %.2f (target %.2f / %.2f), %u exempt parts; HRTF %s, 2D sounds %s", nlc_lf_gain, nlc_lf_hf,
         nlc_lf_gain_t, nlc_lf_hf_t, nlc_lf_exempt_parts.size(), nlc_hrtf_on ? "on" : "off", psSoundHrtf2D ? "through HRTF" : "bypass HRTF");
+    Msg("[snd_report] psy hearing: gain %.2f hf %.2f wet %.2f warble %.3f @ %.2f Hz, %u exempt parts, chorus slot %s", nlc_psy_gain, nlc_psy_hf,
+        nlc_psy_wet, nlc_psy_warble, nlc_psy_hz, nlc_psy_exempt_parts.size(), slot_psy ? "yes" : "no");
     Msg("[snd_report] %u voices rendering, %u emitters", rendered, s_emitters.size());
 }
