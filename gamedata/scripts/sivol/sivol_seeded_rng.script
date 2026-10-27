@@ -1,0 +1,94 @@
+-- sivol_seeded_rng.script
+-- Reload-stable random streams. lua_random/math.random are reseeded on every
+-- load (_g.script math.randomseed(os.time()), and the Lua state is rebuilt per
+-- load), so any roll made after a reload is fresh and can be savescummed.
+-- A stream here is rebuilt from a text key plus the campaign UID, so the same
+-- event always rolls the same values. The key must name the event (who, which
+-- reward, which counter) and must not hold anything that changes on reload
+-- (game time of the roll, kill order, time_global).
+-- Same hash + LCG as amk_anoms (art_hash_text / art_rng_next).
+-- Design record: docs/LOOT_RNG_DESIGN.md section 2.
+--
+-- Console tests (fl):
+--   sivol_seeded_rng.debug_key("loot|123|Name|section")  -- first values of a stream
+--   sivol_seeded_rng.debug_uid()
+
+-- true: every stream returns plain math.random values again (the old,
+-- savescummable behaviour), for A/B checks or a quick rollback. Default false.
+local LEGACY_RANDOM = false
+
+local UID_KEY = "he_stor_uid" -- created by he_stor.sync_uid on first update
+
+local function hash_text(text)
+	local hash = 2166131
+	for i = 1, string.len(text or "") do
+		hash = (hash * 65599 + string.byte(text, i)) % 2147483647
+	end
+	return hash
+end
+
+-- Same format as he_stor.sync_uid, so he_stor treats it as its own UID.
+local function campaign_uid()
+	local uid = get_value(UID_KEY)
+	if uid == nil then
+		uid = string.format("%d%d", math.random(100000, 999999), math.random(100000, 999999))
+		set_value(UID_KEY, uid)
+		log2("[sivol_seeded_rng] campaign uid was missing, created %s", uid)
+	end
+	return tostring(uid)
+end
+
+class "stream"
+function stream:__init(key)
+	self.key = tostring(key)
+	self.state = (hash_text(campaign_uid() .. "|" .. self.key) % 4294967295) + 1
+	-- Spread nearby seeds before the first value.
+	self:next()
+	self:next()
+end
+
+-- Float in [0, 1).
+function stream:next()
+	if LEGACY_RANDOM then return math.random() end
+	self.state = (self.state * 1664525 + 1013904223) % 4294967296
+	return self.state / 4294967296
+end
+
+-- Inclusive integer in [a, b]; uniform, args truncated like lua_random's randI.
+function stream:int(a, b)
+	a, b = math.floor(tonumber(a)), math.floor(tonumber(b))
+	if a > b then a, b = b, a end
+	return a + math.floor(self:next() * (b - a + 1))
+end
+
+-- Same call shapes as lua_random: () float, (n) 1..n, (a, b) a..b.
+function stream:random(a, b)
+	if a == nil then return self:next() end
+	if b == nil then
+		local n = math.floor(tonumber(a))
+		if n < 1 then return 1 end
+		return self:int(1, n)
+	end
+	return self:int(a, b)
+end
+
+function stream:chance(p)
+	return self:next() < p
+end
+
+function new(key)
+	return stream(key)
+end
+
+function debug_key(key, count)
+	local s = stream(key)
+	local out = {}
+	for i = 1, count or 8 do
+		table.insert(out, string.format("%.4f", s:next()))
+	end
+	log2("[sivol_seeded_rng] key=%s uid=%s values=%s", s.key, campaign_uid(), table.concat(out, " "))
+end
+
+function debug_uid()
+	log2("[sivol_seeded_rng] uid=%s legacy=%s", tostring(get_value(UID_KEY)), tostring(LEGACY_RANDOM))
+end

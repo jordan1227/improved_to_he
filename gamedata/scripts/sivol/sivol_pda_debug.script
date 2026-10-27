@@ -1,0 +1,138 @@
+-- sivol: PDA test helpers (docs/PDA_FACTION_TEXT_DESIGN.md 14). Console only:
+--   fl sivol_pda_debug.spawn("monolith", "master", 3)   -- working PDAs for a community/tier
+--   fl sivol_pda_debug.sim(2000)                          -- stash odds, all communities
+--   fl sivol_pda_debug.sim(2000, "military")              -- one community
+--   fl sivol_pda_debug.sim(2000, "borzyi")                -- a [pda_profile_<name>]
+--   fl sivol_pda_debug.seen()                             -- no-repeat pool state
+--   fl sivol_pda_debug.reset_seen()
+-- sim() reserves nothing and changes no save state; results go to the log.
+
+local COMMS = { "stalker", "bandit", "dolg", "freedom", "ecolog", "killer", "military", "monolith" }
+local TIERS = { "novice", "experienced", "veteran", "master" }
+local TIER_W = { 15, 45, 25, 15 }
+
+local function pick(names, w)
+	local sum = 0
+	for i = 1, #names do sum = sum + (w[i] or 1) end
+	local r = lua_random() * sum
+	for i = 1, #names do
+		r = r - (w[i] or 1)
+		if r <= 0 then return names[i] end
+	end
+	return names[#names]
+end
+
+local function tip(text)
+	log2("[pda_debug] %s", text)
+	sak.send_tip(text, "PDA debug", 0, 10, "g_g", "sak", "yellow")
+end
+
+-- status: 1 working (default), 2 discharged, 3 broken
+function spawn(comm, tier, n, status)
+	n = n or 1
+	for i = 1, n do
+		mike.add_device_pda_npc(status or 1, nil, nil, "dbg:" .. tostring(comm) .. ":" .. tostring(tier or "experienced"))
+	end
+	tip(string.format("spawned %d PDA (%s, %s)", n, tostring(comm), tostring(tier)))
+end
+
+local function add(t, k) t[k] = (t[k] or 0) + 1 end
+
+local function sorted_keys(t)
+	local keys = {}
+	for k in pairs(t) do table.insert(keys, k) end
+	table.sort(keys, function(a, b) return t[a] > t[b] end)
+	return keys
+end
+
+function sim(n, what)
+	n = n or 1000
+	local tm = treasure_manager.get_treasure_manager()
+	local single = nil
+	local profile = nil
+	for _, c in ipairs(COMMS) do
+		if c == what then single = c end
+	end
+	if what and not single then profile = what end
+
+	local st = {}
+	local levels, picks, tiers_rolled = {}, {}, {}
+	local total_hit, total_stash, total_fb = 0, 0, 0
+	local old_log = treasure_manager.pda_log
+	treasure_manager.pda_log = false
+	for i = 1, n do
+		local comm, rank
+		if profile then
+			comm, rank = vergas_pda.roll_profile(profile)
+		else
+			comm = single or COMMS[lua_random(#COMMS)]
+			local _, r = vergas_pda.roll_profile("dbg:" .. comm .. ":" .. pick(TIERS, TIER_W))
+			rank = r
+		end
+		local owner = treasure_manager.rank_name(rank or 0)
+		local s = st[comm] or { n = 0, hit = 0, stash = 0, fb = 0, owner = {}, tier = {} }
+		st[comm] = s
+		s.n = s.n + 1
+		add(s.owner, owner)
+		if lua_random() < vergas_pda.stash_chance(rank or 0) then
+			s.hit = s.hit + 1
+			total_hit = total_hit + 1
+			local shron = tm:use(nil, comm, rank or 0, nil)
+			local last = treasure_manager.pda_last or {}
+			add(s.tier, tostring(last.tier) .. (last.tier ~= owner and "*" or ""))
+			add(tiers_rolled, owner .. ">" .. tostring(last.tier))
+			if shron and shron ~= 0 then
+				s.stash = s.stash + 1
+				total_stash = total_stash + 1
+				add(picks, shron)
+				add(levels, comm .. ":" .. (string.match(shron, "^(%w+)_") or "?"))
+				if last.fallback then
+					s.fb = s.fb + 1
+					total_fb = total_fb + 1
+				end
+			end
+		end
+	end
+	treasure_manager.pda_log = old_log
+
+	log2("[pda_debug] ===== sim n=%d what=%s =====", n, tostring(what))
+	for _, c in ipairs(COMMS) do
+		local s = st[c]
+		if s then
+			local ow, tr = {}, {}
+			for _, t in ipairs(TIERS) do table.insert(ow, t .. "=" .. (s.owner[t] or 0)) end
+			for _, k in ipairs(sorted_keys(s.tier)) do table.insert(tr, k .. "=" .. s.tier[k]) end
+			log2("[pda_debug] %-9s n=%5d chance_hit=%5.1f%% stash=%5.1f%% (of hits %5.1f%%) fallback=%d | owners %s | tiers %s",
+				c, s.n, 100 * s.hit / s.n, 100 * s.stash / s.n, s.hit > 0 and 100 * s.stash / s.hit or 0, s.fb,
+				table.concat(ow, " "), table.concat(tr, " "))
+		end
+	end
+	local lv = {}
+	for _, k in ipairs(sorted_keys(levels)) do table.insert(lv, k .. "=" .. levels[k]) end
+	log2("[pda_debug] levels: %s", table.concat(lv, " "))
+	local tp, distinct = {}, 0
+	for _, k in ipairs(sorted_keys(picks)) do
+		distinct = distinct + 1
+		if distinct <= 15 then table.insert(tp, k .. "=" .. picks[k]) end
+	end
+	log2("[pda_debug] distinct stashes=%d top: %s", distinct, table.concat(tp, " "))
+	log2("[pda_debug] (* = tier spread roll; nothing reserved, so free stashes repeat)")
+	tip(string.format("sim %d: chance hit %d, stash %d, Monolith fallback %d, distinct %d - see log", n, total_hit, total_stash, total_fb, distinct))
+end
+
+function seen()
+	local t = get_value("vergas_pda.seen", {})
+	local parts = {}
+	for _, c in ipairs(COMMS) do
+		local k = 0
+		for _ in pairs(t[c] or {}) do k = k + 1 end
+		local q = vergas_lib.set_pr_from_config("list_quantity", c .. "_quantity")
+		table.insert(parts, string.format("%s %d/%d", c, k, q + 1))
+	end
+	tip("seen: " .. table.concat(parts, ", "))
+end
+
+function reset_seen()
+	set_value("vergas_pda.seen", {})
+	tip("seen list cleared")
+end

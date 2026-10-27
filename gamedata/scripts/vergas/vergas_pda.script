@@ -5,6 +5,70 @@ Vergas
 ]]--
 
 local tbl_spwn_pda = {}
+
+-- sivol: reload-stable PDA content (docs/LOOT_RNG_DESIGN.md 3.2-3.3). While
+-- set_pda_info fills one entry, pda_rng is that PDA's stream and every rnd()
+-- in this module draws from it; otherwise rnd() is lua_random.
+local PDA_STASH_CHANCE = 0.35 -- one stash roll; broken PDAs (status 3) never get a stash
+local SEEDS_KEY = "vergas_pda.seeds"     -- [pda id] = stream key
+local PENDING_KEY = "vergas_pda.pending" -- tbl_spwn_pda entries not yet filled
+local pda_rng = nil
+local pending_restored = false
+
+local function rnd(a, b)
+	if pda_rng then return pda_rng:random(a, b) end
+	return lua_random(a, b)
+end
+
+-- Same as rnd(), for helpers outside this module (vergas_scrambling).
+function random(a, b)
+	return rnd(a, b)
+end
+
+function set_pda_seed(pda_id, key)
+	local seeds = get_value(SEEDS_KEY, {})
+	seeds[tostring(pda_id)] = key
+	set_value(SEEDS_KEY, seeds)
+end
+
+local function take_pda_seed(pda_id)
+	local seeds = get_value(SEEDS_KEY, {})
+	local key = seeds[tostring(pda_id)]
+	if key ~= nil then
+		seeds[tostring(pda_id)] = nil
+		set_value(SEEDS_KEY, seeds)
+	end
+	return key
+end
+
+-- Runs fn with rnd() drawing from stream (for callers outside set_pda_info).
+function with_rng(stream, fn)
+	local prev = pda_rng
+	pda_rng = stream
+	fn()
+	pda_rng = prev
+end
+
+local function save_pending()
+	local list = {}
+	for _, e in ipairs(tbl_spwn_pda) do
+		if e ~= 0 then table.insert(list, e) end
+	end
+	set_value(PENDING_KEY, list)
+end
+
+-- A save made between a PDA drop and the next update_2 would lose the entry.
+local function restore_pending()
+	if pending_restored then return end
+	pending_restored = true
+	for _, e in ipairs(get_value(PENDING_KEY, {})) do
+		local found = false
+		for _, cur in ipairs(tbl_spwn_pda) do
+			if cur == e then found = true break end
+		end
+		if not found then table.insert(tbl_spwn_pda, e) end
+	end
+end
 local tbl_info = {}
 local number_record
 local tbl_sn = {} 	--таблица служебных номеров  ПДА
@@ -17,6 +81,7 @@ function set_pda_info()
     local i, j, npc, pda, s_n, name_1, name_2, name
     local grup_n, grup_s, rang_s, rang_n, login, pass, msg, info_string, shron
 
+    restore_pending()
     if #tbl_spwn_pda ~= 0 then
         for i = 1, #tbl_spwn_pda do
             if tbl_spwn_pda[ i ] ~= 0 then
@@ -26,6 +91,8 @@ function set_pda_info()
                 end
                 -- tbl_inf[1] = npc_id, tbl_inf[2] = pda_id, tbl_inf[3] = status, tbl_inf[4] = forced_msg
                 local forced_msg = tbl_inf[ 4 ]
+                if forced_msg == "" then forced_msg = nil end
+                local profile    = tbl_inf[ 7 ] or ""
                 local only_flag  = tbl_inf[ 6 ] == "only"
 
                 -- нпс ищем через client_obj (нужен живой объект для ранга и группировки)
@@ -33,15 +100,20 @@ function set_pda_info()
                 
                 -- пда ищем через alife (работает и для объектов в ящиках)
                 local sobj_pda = alife():object( tbl_inf[ 2 ] )
-                if sobj_pda ~= nil then
-                    pda = sobj_pda
+                -- sivol: reset per entry, so a missing PDA never reuses the previous entry's object
+                pda = sobj_pda
+                if sobj_pda == nil then
+                    tbl_spwn_pda[ i ] = 0
+                    take_pda_seed( tbl_inf[ 2 ] )
                 end
 
                 if pda ~= nil then
                     tbl_spwn_pda[ i ] = 0
+                    local seed_key = take_pda_seed( tbl_inf[ 2 ] )
+                    pda_rng = seed_key and sivol_seeded_rng.new( seed_key ) or nil
                     
                     -- генерируем имя владельца
-                    local m, n = amk_names_lists.get_strings()
+                    local m, n = translate( "anl.fnames_" .. rnd( 177 ) ), translate( "anl.snames_" .. rnd( 816 ) ) -- sivol: was amk_names_lists.get_strings()
                     name_1 = vergas_lib.register_change( m, 1 )
                     name_2 = vergas_lib.register_change( n, 1 )
                     name = m.." "..n
@@ -49,35 +121,61 @@ function set_pda_info()
                         name_2 = name_1
                     end
 
-                    -- определяем группировку и ранг
-                    if npc ~= nil then
-                        -- берём с живого нпс
-                        grup_s = npc:character_community()
-                        if grup_s ~= "bandit" and grup_s ~= "stalker" and grup_s ~= "dolg" and grup_s ~= "freedom" then
+                    -- sivol: community and owner rank (docs/PDA_FACTION_TEXT_DESIGN.md 9.4, 10.3).
+                    -- owner_real: grup_s is the corpse's own community, so the stash may use the npc.
+                    -- rank_real: owner rank for the stash pick, stash chance and message filter.
+                    local owner_real = false
+                    local rank_real = nil
+                    if npc ~= nil and npc:id() == db.actor:id() then
+                        -- traded or reward PDA
+                        if profile ~= "" then
+                            grup_s, rank_real = roll_profile( profile )
+                        else
                             grup_s = set_community_str()
                         end
-                        if grup_s == "bandit" then
-                            local k = lua_random( 1, 10 )
-                            if k >= 8 then
-                                grup_s = set_community_str()
-                            end
+                        rang_s = nil
+                    elseif npc ~= nil and IsStalker( npc ) then
+                        grup_s = npc:character_community()
+                        if not PDA_COMMUNITIES[ grup_s ] then
+                            grup_s = set_community_str()
+                        elseif grup_s == "bandit" and rnd( 1, 10 ) >= 8 then
+                            grup_s = set_community_str()
+                        else
+                            owner_real = true
                         end
                         rang_s = npc:character_rank()
+                        rank_real = rang_s
                     else
-                        -- нпс нет (ящик) - рандомим
+                        -- no owner (box) - random
                         grup_s = set_community_str()
                         rang_s = nil
                     end
 
-                    rang_n = lua_random( 150, 1500 )
+                    -- sivol: a corpse's own PDA carries its name; looted, remapped and traded
+                    -- PDAs keep the random owner. Password parts keep only letters/digits.
+                    if owner_real then
+                        local real = npc:character_name()
+                        local a, b = set_2_names( real or "" )
+                        a = string.gsub( vergas_lib.register_change( a, 1 ), "[^%w\168\184\192-\255]", "" )
+                        b = string.gsub( vergas_lib.register_change( b, 1 ), "[^%w\168\184\192-\255]", "" )
+                        if string.len( a ) > 0 then
+                            name = real
+                            name_1 = a
+                            name_2 = string.len( b ) > 0 and b or a
+                        end
+                    end
+
+                    rang_n = rnd( 150, 1500 )
                     grup_n = set_community( grup_s )
                     
                     -- если нет реального ранга от нпс - используем числовой rang_n
                     local s_n_rang = rang_s or tostring( rang_n )
                     s_n = set_s_n( grup_n, s_n_rang, npc, tbl_inf[ 3 ] )
                     
-                    pass  = set_pass_section( name_1, name_2, rang_n )
-                    login = set_pass_login( pass, rang_n )
+                    -- sivol: password words and scrambling follow the owner rank (capped: scrambling has no case at 2000+)
+                    local pass_rank = math.max( 0, math.min( tonumber( rank_real or rang_n ) or rang_n, 1999 ) )
+                    pass  = set_pass_section( name_1, name_2, pass_rank, grup_n )
+                    login = set_pass_login( pass, pass_rank )
 
                     if forced_msg then
                         shron = 0
@@ -111,7 +209,7 @@ function set_pda_info()
                         shron = #shron_list > 0 and table.concat( shron_list, "," ) or "0"
 
                         if not only_flag then
-                            local std_msg = set_msg( grup_s, 0, rang_n )
+                            local std_msg = set_msg( grup_s, 0, rang_n, treasure_manager.rank_name( rank_real or rang_n ) )
                             if std_msg and std_msg ~= "" then
                                 for part in string.gmatch( std_msg, "([^,]+)" ) do
                                     table.insert( msg_parts, part )
@@ -122,26 +220,23 @@ function set_pda_info()
 					else
 						-- forced_msg не передан - рандомим тайник с низкой вероятностью
 						-- 35% шанс получить тайник, в остальных случаях shron = 0
-						if lua_random() < 0.35 then
-							if npc ~= nil then
-								if npc:character_name() == "Меченный" then
-									shron = treasure_manager.get_treasure_manager():use( nil, grup_s, rang_n )
-								else
-									shron = treasure_manager.get_treasure_manager():use( npc )
-								end
+						if tonumber( tbl_inf[ 3 ] ) ~= 3 and rnd() < stash_chance( rank_real or rang_n ) then
+							-- sivol: stash community follows the text community (docs/PDA_FACTION_TEXT_DESIGN.md 9.4)
+							if owner_real then
+								shron = treasure_manager.get_treasure_manager():use( npc, nil, nil, pda_rng )
 							else
-								shron = treasure_manager.get_treasure_manager():use( nil, grup_s, rang_n )
+								shron = treasure_manager.get_treasure_manager():use( nil, grup_s, rank_real or rang_n, pda_rng )
 							end
 							-- резервируем только здесь, когда тайник реально записывается в PDA
 							if shron and shron ~= 0 then
-								local reserved = treasure_manager.get_treasure_manager():reserve_treasure( shron )
+								local reserved = treasure_manager.get_treasure_manager():reserve_treasure( shron, nil, pda_rng )
 								shron = reserved or 0
 							end
 						else
 							shron = 0
 						end
 						if not shron then shron = 0 end
-						msg = set_msg( grup_s, shron, rang_n )
+						msg = set_msg( grup_s, shron, rang_n, treasure_manager.rank_name( rank_real or rang_n ) )
 					end
 
                     info_string = login.."|"..pass.."|"..name.."|"..s_n.."|"..msg.."|"..shron.."|0"
@@ -173,6 +268,8 @@ function set_pda_info()
         if flag then
             tbl_spwn_pda = {}
         end
+        pda_rng = nil
+        save_pending()
     end
 end
 
@@ -184,7 +281,45 @@ function get_or_create_steklo(sn, kind)
     return tbl_steklo[key]
 end
 
-function set_msg( grup, shron, rang_n )
+-- sivol: message pool (docs/PDA_FACTION_TEXT_DESIGN.md 7.1, 7.3, 10.2). Ids 000..n;
+-- [list_msg_rank] keeps ids tagged for the owner tier (all ids when fewer than 3 remain);
+-- ids shown in earlier PDAs are skipped until fewer than 5 unseen remain, then the
+-- faction's list starts over.
+local SEEN_KEY = "vergas_pda.seen"
+
+local function build_msg_pool( grup, tier )
+    local ltx = system_ini()
+    local n = vergas_lib.set_pr_from_config( "list_quantity", grup.."_quantity" )
+    local all, ranked = {}, {}
+    for i = 0, n do
+        local id = string.format( "%03d", i )
+        table.insert( all, id )
+        local key = grup.."_"..id
+        if tier == nil or not ltx:line_exist( "list_msg_rank", key ) then
+            table.insert( ranked, id )
+        else
+            local tags = ","..string.gsub( ltx:r_string( "list_msg_rank", key ), "%s", "" )..","
+            if string.find( tags, ","..tier..",", 1, true ) then
+                table.insert( ranked, id )
+            end
+        end
+    end
+    local pool = ( #ranked >= 3 ) and ranked or all
+    local seen = get_value( SEEN_KEY, {} )
+    local shown = seen[ grup ] or {}
+    local unseen = {}
+    for _, id in ipairs( pool ) do
+        -- "m" prefix keeps the saved keys strings
+        if not shown[ "m"..id ] then table.insert( unseen, id ) end
+    end
+    if #unseen < 5 then
+        shown = {}
+        unseen = pool
+    end
+    return unseen, seen, shown
+end
+
+function set_msg( grup, shron, rang_n, tier )
 
     local rank_config = {
         { min = 0,    max = 299,  tbl = nil,                  			chance = 0    },
@@ -194,17 +329,17 @@ function set_msg( grup, shron, rang_n )
         { min = 1200, max = 9999, tbl = kotovod.modifications_level,  	chance = 0.05 },
     }
 
-    local n = vergas_lib.set_pr_from_config( "list_quantity", grup.."_quantity" )
-    local pool = {}
-    for i = 1, n do pool[i] = i end
-
+    local pool, seen, shown = build_msg_pool( grup, tier )
     local tbl_msg = {}
-    for i = 1, lua_random( 2, 5 ) do
-        local k = lua_random( 1, #pool )
-        table.insert( tbl_msg, tostring( pool[k] ) )
-        pool[k] = 0
-        pool = press_table( pool )
+    for i = 1, rnd( 2, 5 ) do
+        if #pool == 0 then break end
+        local k = rnd( 1, #pool )
+        table.insert( tbl_msg, pool[k] )
+        shown[ "m"..pool[k] ] = true
+        table.remove( pool, k )
     end
+    seen[ grup ] = shown
+    set_value( SEEN_KEY, seen )
 
     -- схрон
     if shron ~= 0 then
@@ -224,8 +359,8 @@ function set_msg( grup, shron, rang_n )
     if rang_n then
         for _, cfg in ipairs( rank_config ) do
             if rang_n >= cfg.min and rang_n <= cfg.max then
-                if cfg.tbl and #cfg.tbl > 0 and dsh.get_next_random( "vergas_pda.rec_chance" ) < cfg.chance then
-                    local info_id = cfg.tbl[ dsh.get_next_random( "generate_rec", 1, #cfg.tbl ) ]
+                if cfg.tbl and #cfg.tbl > 0 and rnd() < cfg.chance then
+                    local info_id = cfg.tbl[ rnd( 1, #cfg.tbl ) ]
                     table.insert( tbl_msg, "enc_" .. string.sub( info_id, 6 ) .. "_desc" )
                 end
                 break
@@ -236,7 +371,7 @@ function set_msg( grup, shron, rang_n )
     -- перемешиваем
     local shuffled = {}
     while #tbl_msg > 0 do
-        local k = lua_random( 1, #tbl_msg )
+        local k = rnd( 1, #tbl_msg )
         table.insert( shuffled, tbl_msg[k] )
         table.remove( tbl_msg, k )
     end
@@ -279,17 +414,17 @@ function insert_levels_msg(tbl, grup)
 		else
 			n = vergas_lib.set_pr_from_config("list_multilevel", grup.."_"..tbl[i])
 			if n ~= 0 then
-				if lua_random() > 0.6 then
+				-- sivol: whole thread, or a tail of it that ends on the last line, so a
+				-- reply never shows without what it answers (PDA_FACTION_TEXT_DESIGN.md 7.4)
+				if rnd() < 0.6 then
 					table.insert(tbl_tmp, tbl[i])
 					for j = 1, n do
 						table.insert(tbl_tmp, tbl[i].."_"..tostring(j))
 					end
 				else
-					local nn = lua_random(1, n+1)
-					if nn == n+1 then
-						table.insert(tbl_tmp, tbl[i])
-					else
-						table.insert(tbl_tmp, tbl[i].."_"..tostring(nn))
+					local s = rnd(1, math.max(1, n - 1))
+					for j = s, n do
+						table.insert(tbl_tmp, tbl[i].."_"..tostring(j))
 					end
 				end
 			else
@@ -352,9 +487,86 @@ function set_community(grup)
 	return grup_n
 end
 
+-- sivol: communities with their own PDA text (docs/PDA_FACTION_TEXT_DESIGN.md 9.4).
+-- Others (zombied, green, ...) carry a looted stalker/bandit/Duty/Freedom PDA.
+PDA_COMMUNITIES = {
+	stalker = true, bandit = true, dolg = true, freedom = true,
+	ecolog = true, killer = true, military = true, monolith = true,
+}
+
+local PROFILE_COMMUNITIES = { "stalker", "bandit", "dolg", "freedom", "ecolog", "killer", "military", "monolith" }
+local PROFILE_TIERS = { "novice", "experienced", "veteran", "master" }
+local PROFILE_TIER_RANK = { novice = { 150, 299 }, experienced = { 300, 599 }, veteran = { 600, 899 }, master = { 900, 1500 } }
+
+local function pick_weighted( names, weights )
+	local sum = 0
+	for i = 1, #names do sum = sum + ( weights[ i ] or 0 ) end
+	if sum <= 0 then return nil end
+	local r = rnd() * sum
+	for i = 1, #names do
+		local w = weights[ i ] or 0
+		r = r - w
+		if r <= 0 and w > 0 then return names[ i ] end
+	end
+	for i = #names, 1, -1 do
+		if ( weights[ i ] or 0 ) > 0 then return names[ i ] end
+	end
+end
+
+local function read_weights( ltx, sec, key )
+	local w = {}
+	for s in string.gmatch( ltx:r_string( sec, key ), "[%d%.]+" ) do
+		table.insert( w, tonumber( s ) or 0 )
+	end
+	return w
+end
+
+-- Traded PDA owner from [pda_profile_<name>] (docs/PDA_FACTION_TEXT_DESIGN.md 10.3):
+-- community weights by name, then rank_<community> or rank (novice, experienced,
+-- veteran, master). Returns community and a numeric rank.
+function roll_profile( profile )
+	-- debug profile "dbg:<community>:<tier>" (sivol_pda_debug.spawn)
+	local dc, dt = string.match( profile, "^dbg:(%w+):(%w+)$" )
+	if dc then
+		local b = PROFILE_TIER_RANK[ dt ] or PROFILE_TIER_RANK.experienced
+		return dc, rnd( b[ 1 ], b[ 2 ] )
+	end
+	local sec = "pda_profile_" .. profile
+	local ltx = system_ini()
+	if not ltx:section_exist( sec ) then
+		return set_community_str(), nil
+	end
+	local w = {}
+	for i, c in ipairs( PROFILE_COMMUNITIES ) do
+		w[ i ] = ltx:line_exist( sec, c ) and ltx:r_float( sec, c ) or 0
+	end
+	local grup = pick_weighted( PROFILE_COMMUNITIES, w ) or set_community_str()
+	local key = ltx:line_exist( sec, "rank_" .. grup ) and ( "rank_" .. grup ) or "rank"
+	if not ltx:line_exist( sec, key ) then
+		return grup, nil
+	end
+	local tier = pick_weighted( PROFILE_TIERS, read_weights( ltx, sec, key ) )
+	local band = tier and PROFILE_TIER_RANK[ tier ]
+	if not band then
+		return grup, nil
+	end
+	return grup, rnd( band[ 1 ], band[ 2 ] )
+end
+
+-- Stash chance by owner rank from [pda_stash_chance] (docs/PDA_FACTION_TEXT_DESIGN.md 10.4).
+function stash_chance( rank )
+	local tier = treasure_manager.rank_name( rank )
+	local ltx = system_ini()
+	if tier and ltx:line_exist( "pda_stash_chance", tier ) then
+		return ltx:r_float( "pda_stash_chance", tier )
+	end
+	return PDA_STASH_CHANCE
+end
+
 function set_community_str()
+
 	local grup
-	local com_n = lua_random( 1, 4 )
+	local com_n = rnd( 1, 4 )
 	if com_n == 1 then
 		grup = "stalker"
 	elseif com_n == 2 then
@@ -373,7 +585,7 @@ function set_s_n( grup_n, rang_s, npc, statuc )
     
     --две рандомные цифры
     for i = 1, 2 do
-        local a = lua_random( 1, 10 )
+        local a = rnd( 1, 10 )
         if a == 10 then
             a = 0
         end
@@ -393,7 +605,7 @@ function set_s_n( grup_n, rang_s, npc, statuc )
             s_n = s_n .. a
         end
     else
-        local a = tostring( lua_random( 1000, 9999 ) )
+        local a = tostring( rnd( 1000, 9999 ) )
         s_n = s_n .. a
     end
     
@@ -432,7 +644,7 @@ end
 --[[ --old 
 function set_pass_section( name_1, name_2, rang_n )
 	local pas
-	local n = lua_random( 1, 4 )	
+	local n = rnd( 1, 4 )	
 	if n == 1 then
 		pas = name_1
 	elseif n == 2 then
@@ -440,7 +652,7 @@ function set_pass_section( name_1, name_2, rang_n )
 	elseif n == 3 then
 		pas = set_pass_rang( rang_n )
 	elseif n == 4 then
-		pas = set_pass_grup( "0" .. tostring( lua_random( 1, 9 ) ) )
+		pas = set_pass_grup( "0" .. tostring( rnd( 1, 9 ) ) )
 	end
 	return pas
 end
@@ -454,273 +666,382 @@ end
 function set_pass_rang( rang_n )
 	local tbl
 	local pass
-	
+
 	if rang_n < 300 then -- novichok
-        tbl = {
-            { rang = "новичёк"  	},
-            { rang = "отмычка"  	},
-            { rang = "первачок" 	},
-            { rang = "нуб"      	},
-            { rang = "зелень"   	},
-            { rang = "дух"      	},
-            { rang = "лошара"   	},
-            { rang = "чайник"   	},
-			{ rang = "желторотик"	},
-			{ rang = "малёк"		},
-			{ rang = "простофиля"	},
-			{ rang = "балбес"		},
-			{ rang = "лопух"		},
-        }
+		tbl = {
+			{ rang = "новичок" },
+			{ rang = "отмычка" },
+			{ rang = "нуб" },
+			{ rang = "зелень" },
+			{ rang = "дух" },
+			{ rang = "лошара" },
+			{ rang = "чайник" },
+			{ rang = "малёк" },
+			{ rang = "балбес" },
+			{ rang = "лопух" },
+			{ rang = "салага" },
+			{ rang = "сопляк" },
+			{ rang = "щегол" },
+			{ rang = "шкет" },
+			{ rang = "рекрут" },
+			{ rang = "ученик" },
+			{ rang = "салабон" },
+			{ rang = "мазила" },
+			{ rang = "тюфяк" },
+		}
 	elseif rang_n < 600 then -- stalker
-        tbl = {
-            { rang = "сталкер"     	},
-            { rang = "опытный"     	},
-            { rang = "знаток"      	},
-            { rang = "бывалый"     	},
-            { rang = "черпак"      	},
-            { rang = "смекалистый" 	},
-            { rang = "хитрец" 		},
-            { rang = "ловкач" 		},
-            { rang = "продвинутый" 	},
-            { rang = "смышленый" 	},
-            { rang = "догадливый" 	},
-        }
+		tbl = {
+			{ rang = "сталкер" },
+			{ rang = "опытный" },
+			{ rang = "знаток" },
+			{ rang = "бывалый" },
+			{ rang = "черпак" },
+			{ rang = "хитрец" },
+			{ rang = "ловкач" },
+			{ rang = "смышленый" },
+			{ rang = "первачок" },
+			{ rang = "умелец" },
+			{ rang = "тёртый" },
+			{ rang = "ходок" },
+			{ rang = "следопыт" },
+			{ rang = "добытчик" },
+			{ rang = "рейдер" },
+			{ rang = "вояка" },
+			{ rang = "проворный" },
+			{ rang = "зубастый" },
+			{ rang = "сметливый" },
+		}
 	elseif rang_n < 900 then --veteran
-        tbl = {
-            { rang = "ветеран"   	},
-            { rang = "проводник" 	},
-            { rang = "умелец"    	},
-            { rang = "матёрый"   	},
-            { rang = "дед"       	},
-            { rang = "старшой"   	},
-            { rang = "находчивый"   },
-            { rang = "дока"    		},
-            { rang = "пройдоха"    	},
-            { rang = "прошаренный"  },
-            { rang = "тёртый" 		},
-            { rang = "хваткий" 		},
-        }
-	elseif rang_n < 2000 then --master
-        tbl = {
-            { rang = "мастер"       },
-            { rang = "профессионал" },
-            { rang = "снайпер"      },
-            { rang = "кумир"        },
-            { rang = "абсолют"      },
-            { rang = "элита"        },
-            { rang = "специалист"   },
-            { rang = "профи"        },
-            { rang = "прожженный"   },
-            { rang = "битый"   		},
-            { rang = "обстрелянный" },
-            { rang = "легенда" 		},
-            { rang = "гуру" 		},
-            { rang = "виртуоз" 		},
-        }
-	end 
-	
-	pass = tbl[ lua_random( 1, #tbl ) ].rang	
+		tbl = {
+			{ rang = "ветеран" },
+			{ rang = "проводник" },
+			{ rang = "матёрый" },
+			{ rang = "старшой" },
+			{ rang = "находчивый" },
+			{ rang = "пройдоха" },
+			{ rang = "прошаренный" },
+			{ rang = "хваткий" },
+			{ rang = "смекалистый" },
+			{ rang = "продвинутый" },
+			{ rang = "догадливый" },
+			{ rang = "снайпер" },
+			{ rang = "абсолют" },
+			{ rang = "легенда" },
+			{ rang = "виртуоз" },
+			{ rang = "наставник" },
+			{ rang = "волчара" },
+			{ rang = "стреляный" },
+			{ rang = "испытанный" },
+			{ rang = "живучий" },
+			{ rang = "закаленный" },
+			{ rang = "неубиваемый" },
+		}
+	else --master
+		tbl = {
+			{ rang = "профессионал" },
+			{ rang = "специалист" },
+			{ rang = "прожженный" },
+			{ rang = "обстрелянный" },
+			{ rang = "непобедимый" },
+			{ rang = "неуловимый" },
+			{ rang = "несокрушимый" },
+			{ rang = "неприкасаемый" },
+			{ rang = "легендарный" },
+			{ rang = "бесстрашный" },
+			{ rang = "безупречный" },
+			{ rang = "незаменимый" },
+			{ rang = "неустрашимый" },
+		}
+	end
+
+	pass = tbl[ rnd( 1, #tbl ) ].rang
 	return pass
 end
 
-function set_pass_grup( grup_n )
+-- grup_n: faction code 01..09; rang_n: owner rank (optional). Veteran/master
+-- (rang_n >= 600) pick from words of 6+ letters when at least 3 exist.
+function set_pass_grup( grup_n, rang_n )
 	local tbl
 	local pass
-	
+
 	if grup_n == "01" then
-        tbl = {
-            { grup = "одиночка"    	},
-            { grup = "сталкер"     	},
-            { grup = "свободный"   	},
-            { grup = "нейтральный" 	},
-            { grup = "бродяга"     	},
-            { grup = "мытарь"      	},
-            { grup = "казак"       	},
-            { grup = "хабарщик"   	},
-            { grup = "скиталец"   	},
-            { grup = "искатель"   	},
-            { grup = "ходок"   		},
-            { grup = "везунчик"   	},
-            { grup = "непоседа"   	},
-            { grup = "неприкаянный" },
-            { grup = "авантюрист" 	},
-        }
+		tbl = {
+			{ grup = "одиночка" },
+			{ grup = "сталкер" },
+			{ grup = "свободный" },
+			{ grup = "нейтральный" },
+			{ grup = "бродяга" },
+			{ grup = "мытарь" },
+			{ grup = "казак" },
+			{ grup = "хабарщик" },
+			{ grup = "скиталец" },
+			{ grup = "искатель" },
+			{ grup = "ходок" },
+			{ grup = "везунчик" },
+			{ grup = "непоседа" },
+			{ grup = "неприкаянный" },
+			{ grup = "авантюрист" },
+			{ grup = "странник" },
+			{ grup = "отшельник" },
+			{ grup = "вольный" },
+			{ grup = "хабар" },
+			{ grup = "костер" },
+			{ grup = "ночлег" },
+			{ grup = "обходчик" },
+		}
 	elseif grup_n == "02" then
-        tbl = {
-            { grup = "военный"    	},
-            { grup = "армия"      	},
-            { grup = "федерал"    	},
-            { grup = "дембель"    	},
-            { grup = "дедушка"    	},
-            { grup = "черпак"     	},
-            { grup = "патруль"    	},
-            { grup = "оцепление"  	},
-            { grup = "часовой"    	},
-            { grup = "боец"       	},
-            { grup = "партизан"   	},
-            { grup = "служивый"   	},
-            { grup = "ополченец"  	},
-            { grup = "дневальный" 	},
-            { grup = "срочник" 		},
-            { grup = "караул" 		},
-            { grup = "шифровальщик" },
-        }
+		tbl = {
+			{ grup = "военный" },
+			{ grup = "армия" },
+			{ grup = "федерал" },
+			{ grup = "дембель" },
+			{ grup = "дедушка" },
+			{ grup = "черпак" },
+			{ grup = "патруль" },
+			{ grup = "оцепление" },
+			{ grup = "часовой" },
+			{ grup = "боец" },
+			{ grup = "партизан" },
+			{ grup = "служивый" },
+			{ grup = "ополченец" },
+			{ grup = "дневальный" },
+			{ grup = "срочник" },
+			{ grup = "караул" },
+			{ grup = "шифровальщик" },
+			{ grup = "сержант" },
+			{ grup = "лейтенант" },
+			{ grup = "капитан" },
+			{ grup = "прапорщик" },
+			{ grup = "казарма" },
+			{ grup = "блокпост" },
+			{ grup = "комендант" },
+			{ grup = "спецназ" },
+		}
 	elseif grup_n == "03" then
-        tbl = {
-            { grup = "бандит"      	},
-            { grup = "братва"      	},
-            { grup = "вор"         	},
-            { grup = "бабки"       	},
-            { grup = "лаве"        	},
-            { grup = "урка"        	},
-            { grup = "общак"       	},
-            { grup = "босяк"       	},
-            { grup = "мужик"       	},
-            { grup = "шнырь"      	},
-            { grup = "баклан"      	},
-            { grup = "медвежатник" 	},
-            { grup = "щипач"       	},
-            { grup = "полуцвет"    	},
-            { grup = "фармазон"    	},
-            { grup = "блатной"     	},
-            { grup = "беспредел"   	},
-            { grup = "кореш"       	},
-            { grup = "хозяйский"   	},
-            { grup = "бугор"   		},
-            { grup = "барыга"   	},
-            { grup = "торчок"   	},
-            { grup = "чушпан"   	},
-            { grup = "катала"   	},
-            { grup = "мокрушник"   	},
-            { grup = "шестёрка"   	},
-        }
+		tbl = {
+			{ grup = "бандит" },
+			{ grup = "братва" },
+			{ grup = "вор" },
+			{ grup = "бабки" },
+			{ grup = "лаве" },
+			{ grup = "урка" },
+			{ grup = "общак" },
+			{ grup = "босяк" },
+			{ grup = "мужик" },
+			{ grup = "шнырь" },
+			{ grup = "баклан" },
+			{ grup = "медвежатник" },
+			{ grup = "щипач" },
+			{ grup = "полуцвет" },
+			{ grup = "фармазон" },
+			{ grup = "блатной" },
+			{ grup = "беспредел" },
+			{ grup = "кореш" },
+			{ grup = "хозяйский" },
+			{ grup = "бугор" },
+			{ grup = "барыга" },
+			{ grup = "торчок" },
+			{ grup = "чушпан" },
+			{ grup = "катала" },
+			{ grup = "мокрушник" },
+			{ grup = "шестёрка" },
+			{ grup = "пахан" },
+			{ grup = "авторитет" },
+			{ grup = "налетчик" },
+			{ grup = "отморозок" },
+			{ grup = "вымогатель" },
+			{ grup = "рэкет" },
+			{ grup = "кидала" },
+			{ grup = "сходка" },
+		}
 	elseif grup_n == "04" then
-        tbl = {
-            { grup = "долг"       	},
-            { grup = "чистильщик" 	},
-            { grup = "молчун"     	},
-            { grup = "суровый"    	},
-            { grup = "сила"       	},
-            { grup = "точный"     	},
-            { grup = "верный"     	},
-            { grup = "квад"       	},
-            { grup = "прапор"     	},
-            { grup = "мусор"      	},
-            { grup = "страж"      	},
-            { grup = "дежурный"   	},
-            { grup = "мент"       	},
-            { grup = "стойкий"     	},
-            { grup = "ответственный"},
-            { grup = "принцип" 		},
-            { grup = "непоколебимый"},
-            { grup = "сторож"     	},
-            { grup = "охранитель"   },
-            { grup = "непреклонный" },
-        }
+		tbl = {
+			{ grup = "долг" },
+			{ grup = "чистильщик" },
+			{ grup = "молчун" },
+			{ grup = "суровый" },
+			{ grup = "сила" },
+			{ grup = "точный" },
+			{ grup = "верный" },
+			{ grup = "квад" },
+			{ grup = "прапор" },
+			{ grup = "мусор" },
+			{ grup = "страж" },
+			{ grup = "дежурный" },
+			{ grup = "мент" },
+			{ grup = "стойкий" },
+			{ grup = "ответственный" },
+			{ grup = "принцип" },
+			{ grup = "непоколебимый" },
+			{ grup = "сторож" },
+			{ grup = "охранитель" },
+			{ grup = "непреклонный" },
+			{ grup = "устав" },
+			{ grup = "присяга" },
+			{ grup = "дисциплина" },
+			{ grup = "порядок" },
+			{ grup = "дозор" },
+			{ grup = "рубеж" },
+			{ grup = "командир" },
+			{ grup = "генерал" },
+		}
 	elseif grup_n == "05" then
-        tbl = {
-            { grup = "свобода"    	},
-            { grup = "воля"       	},
-            { grup = "лёгкий"     	},
-            { grup = "резкий"     	},
-            { grup = "анархия"    	},
-            { grup = "косяк"      	},
-            { grup = "хиппи"      	},
-            { grup = "обкуренный" 	},
-            { grup = "меломан"    	},
-            { grup = "анаша"      	},
-            { grup = "бабник"     	},
-            { grup = "пыхарь"     	},
-            { grup = "кумарик"    	},
-            { grup = "беззаботный" 	},
-            { grup = "раздолбай" 	},
-            { grup = "бунтарь" 		},
-            { grup = "весёлый" 		},
-            { grup = "беспечный" 	},
-            { grup = "шебутной" 	},
-            { grup = "лихач" 		},
-            { grup = "разгильдяй" 	},
-        }
+		tbl = {
+			{ grup = "свобода" },
+			{ grup = "воля" },
+			{ grup = "лёгкий" },
+			{ grup = "резкий" },
+			{ grup = "анархия" },
+			{ grup = "косяк" },
+			{ grup = "хиппи" },
+			{ grup = "обкуренный" },
+			{ grup = "меломан" },
+			{ grup = "анаша" },
+			{ grup = "бабник" },
+			{ grup = "пыхарь" },
+			{ grup = "кумарик" },
+			{ grup = "беззаботный" },
+			{ grup = "раздолбай" },
+			{ grup = "бунтарь" },
+			{ grup = "весёлый" },
+			{ grup = "беспечный" },
+			{ grup = "шебутной" },
+			{ grup = "лихач" },
+			{ grup = "разгильдяй" },
+			{ grup = "гитара" },
+			{ grup = "вольница" },
+			{ grup = "травка" },
+			{ grup = "пофигист" },
+			{ grup = "гуляка" },
+			{ grup = "тусовка" },
+			{ grup = "музыка" },
+			{ grup = "оторва" },
+		}
 	elseif grup_n == "06" then
-        tbl = {
-            { grup = "монолит"      },
-            { grup = "вера"         },
-            { grup = "правоверный"  },
-            { grup = "святой"       },
-            { grup = "секта"        },
-            { grup = "святоша"      },
-            { grup = "иезуит"       },
-            { grup = "язычник"      },
-            { grup = "приближенный" },
-            { grup = "инквизитор"   },
-            { grup = "апостол"      },
-            { grup = "праведник"    },
-            { grup = "фанатик"      },
-            { grup = "избранный"    },
-            { grup = "сектант"      },
-            { grup = "праведник"    },
-        }
+		tbl = {
+			{ grup = "монолит" },
+			{ grup = "вера" },
+			{ grup = "правоверный" },
+			{ grup = "святой" },
+			{ grup = "секта" },
+			{ grup = "святоша" },
+			{ grup = "иезуит" },
+			{ grup = "язычник" },
+			{ grup = "приближенный" },
+			{ grup = "инквизитор" },
+			{ grup = "апостол" },
+			{ grup = "праведник" },
+			{ grup = "фанатик" },
+			{ grup = "избранный" },
+			{ grup = "сектант" },
+			{ grup = "желание" },
+			{ grup = "послушник" },
+			{ grup = "паства" },
+			{ grup = "молитва" },
+			{ grup = "алтарь" },
+			{ grup = "искупление" },
+			{ grup = "покаяние" },
+			{ grup = "проповедник" },
+		}
 	elseif grup_n == "07" then
-        tbl = {
-            { grup = "наёмник"      },
-            { grup = "киллер"       },
-            { grup = "убийца"       },
-            { grup = "аннигилятор"  },
-            { grup = "тень"         },
-            { grup = "маньяк"       },
-            { grup = "ниндзя"       },
-            { grup = "головорез"    },
-            { grup = "нагибатор"    },
-            { grup = "диверсант" 	},
-            { grup = "хладнокровный"},
-            { grup = "меткий" 		},
-            { grup = "беспощадный" 	},
-            { grup = "стервятник" 	},
-        }
+		tbl = {
+			{ grup = "наёмник" },
+			{ grup = "киллер" },
+			{ grup = "убийца" },
+			{ grup = "аннигилятор" },
+			{ grup = "тень" },
+			{ grup = "маньяк" },
+			{ grup = "ниндзя" },
+			{ grup = "головорез" },
+			{ grup = "нагибатор" },
+			{ grup = "диверсант" },
+			{ grup = "хладнокровный" },
+			{ grup = "меткий" },
+			{ grup = "беспощадный" },
+			{ grup = "стервятник" },
+			{ grup = "контракт" },
+			{ grup = "заказ" },
+			{ grup = "ликвидатор" },
+			{ grup = "душегуб" },
+			{ grup = "палач" },
+			{ grup = "заказчик" },
+			{ grup = "исполнитель" },
+			{ grup = "гонорар" },
+		}
 	elseif grup_n == "08" then
-        tbl = {
-            { grup = "учёный"       },
-            { grup = "эколог"       },
-            { grup = "флора"        },
-            { grup = "фауна"        },
-            { grup = "исследователь"},
-            { grup = "мозголом"     },
-            { grup = "яйцеголовый"  },
-            { grup = "широколобый"  },
-            { grup = "эксперимент"  },
-            { grup = "пробирка"     },
-            { grup = "очкарик"      },
-            { grup = "теоретик"     },
-            { grup = "практик"      },
-            { grup = "интеллектуал" },
-            { grup = "светило"      },
-            { grup = "грамотей"     },
-            { grup = "всезнайка"    },
-            { grup = "эксперт"      },
-        }
+		tbl = {
+			{ grup = "учёный" },
+			{ grup = "эколог" },
+			{ grup = "флора" },
+			{ grup = "фауна" },
+			{ grup = "исследователь" },
+			{ grup = "мозголом" },
+			{ grup = "яйцеголовый" },
+			{ grup = "широколобый" },
+			{ grup = "эксперимент" },
+			{ grup = "пробирка" },
+			{ grup = "очкарик" },
+			{ grup = "теоретик" },
+			{ grup = "практик" },
+			{ grup = "интеллектуал" },
+			{ grup = "светило" },
+			{ grup = "грамотей" },
+			{ grup = "всезнайка" },
+			{ grup = "эксперт" },
+			{ grup = "колба" },
+			{ grup = "микроскоп" },
+			{ grup = "формула" },
+			{ grup = "гипотеза" },
+			{ grup = "лаборант" },
+			{ grup = "аспирант" },
+			{ grup = "диссертация" },
+			{ grup = "реактив" },
+			{ grup = "профессор" },
+		}
 	elseif grup_n == "09" then
-        tbl = {
-            { grup = "охотник"      },
-            { grup = "хантер"       },
-            { grup = "антикровосос" },
-            { grup = "разведчик"    },
-            { grup = "следопыт"     },
-            { grup = "егерь"        },
-            { grup = "стрелок"      },
-            { grup = "ковбой"       },
-            { grup = "добытчик"     },
-            { grup = "ловчий"       },
-            { grup = "браконьер"    },
-            { grup = "лесник"       },
-        }
-	end	
-	
-	pass = tbl[ lua_random( 1, #tbl ) ].grup	
+		tbl = {
+			{ grup = "охотник" },
+			{ grup = "хантер" },
+			{ grup = "антикровосос" },
+			{ grup = "разведчик" },
+			{ grup = "следопыт" },
+			{ grup = "егерь" },
+			{ grup = "стрелок" },
+			{ grup = "ковбой" },
+			{ grup = "добытчик" },
+			{ grup = "ловчий" },
+			{ grup = "браконьер" },
+			{ grup = "лесник" },
+			{ grup = "засада" },
+			{ grup = "капкан" },
+			{ grup = "берлога" },
+			{ grup = "загонщик" },
+			{ grup = "приманка" },
+			{ grup = "следы" },
+			{ grup = "добыча" },
+			{ grup = "траппер" },
+		}
+	end
+
+	if rang_n and rang_n >= 600 and tbl then
+		local long = {}
+		for _, v in ipairs( tbl ) do
+			if string.len( v.grup ) >= 6 then
+				table.insert( long, v )
+			end
+		end
+		if #long >= 3 then
+			tbl = long
+		end
+	end
+
+	pass = tbl[ rnd( 1, #tbl ) ].grup
 	return pass
 end
 
-function set_status_pda()
-	local n = lua_random( 1, 10 )
+-- roll: optional 1..10 value from a reload-stable stream (death_manager).
+function set_status_pda( roll )
+	local n = roll or rnd( 1, 10 )
 	
 	if n < 6 then
 		return 1		--пда рабочий
@@ -731,15 +1052,18 @@ function set_status_pda()
 	end
 end
 
-function add_tbl_pda( npc, pda, status, messages, only )
+-- profile: optional [pda_profile_<name>] for traded PDAs (field 7)
+function add_tbl_pda( npc, pda, status, messages, only, profile )
+    -- npc|pda|status|messages||only|profile
     local entry = tostring(npc).."|"..tostring(pda).."|"..tostring(status)
-    if messages then
-        entry = entry.."|"..messages
-    end
-    if only then
-        entry = entry.."||only"
+    if messages or only or profile then
+        entry = entry.."|"..( messages or "" ).."||"..( only and "only" or "" )
+        if profile then
+            entry = entry.."|"..profile
+        end
     end
     table.insert( tbl_spwn_pda, entry )
+    save_pending()
 end
 
 function get_pda_packet( obj_id )
@@ -1182,10 +1506,10 @@ end
 function set_left_pda()
 	local i
 	local s_n = ""
-	s_n = tostring(lua_random(10, 99))	
-	s_n = s_n..tostring(lua_random(1000, 9999))
-	s_n = s_n..tostring(lua_random(10, 99))
-	s_n = s_n..tostring(lua_random(1000, 9999))
+	s_n = tostring(rnd(10, 99))	
+	s_n = s_n..tostring(rnd(1000, 9999))
+	s_n = s_n..tostring(rnd(10, 99))
+	s_n = s_n..tostring(rnd(1000, 9999))
 	s_n = s_n.."3"
 	local msg = "0|0|0|"..s_n.."|0|0|0"
 	return msg
@@ -1194,10 +1518,10 @@ end
 
 function set_left_pda()
     local s_n = ""
-    s_n = tostring( lua_random( 10, 99 ) )
-    s_n = s_n .. tostring( lua_random( 1000, 9999 ) )
-    s_n = s_n .. tostring( lua_random( 10, 99 ) )
-    s_n = s_n .. tostring( lua_random( 1000, 9999 ) )
+    s_n = tostring( rnd( 10, 99 ) )
+    s_n = s_n .. tostring( rnd( 1000, 9999 ) )
+    s_n = s_n .. tostring( rnd( 10, 99 ) )
+    s_n = s_n .. tostring( rnd( 1000, 9999 ) )
     s_n = s_n .. "30"  -- 13й статус + 14й флаг прочтения
     local msg = "0|0|0|" .. s_n .. "|0|0|0"
     return msg
@@ -1232,7 +1556,7 @@ function set_steklo()
 	local tbl_tmp = {}
 	
 	for i = 1,8 do
-		local m = lua_random(1,n)
+		local m = rnd(1,n)
 		table.insert(tbl_tmp,string.sub(str,m,m))
 		str = string.sub(str,1,m-1)..string.sub(str,m+1,string.len(str))
 		n = n-1
@@ -1296,12 +1620,13 @@ end
 
 -- New added by kotovod
 
-function set_pass_section( name_1, name_2, rang_n )
+-- sivol: grup_n = the PDA's own faction code (password words then hint at the owner)
+function set_pass_section( name_1, name_2, rang_n, grup_n )
     local pas
     
 	if game_options.BalanceValue then
 		-- На легкой оставим логины
-        local n = lua_random( 1, 4 )    
+        local n = rnd( 1, 4 )    
         if n == 1 then
             pas = name_1
         elseif n == 2 then
@@ -1309,15 +1634,15 @@ function set_pass_section( name_1, name_2, rang_n )
         elseif n == 3 then
             pas = set_pass_rang( rang_n )
         elseif n == 4 then
-            pas = set_pass_grup( "0" .. tostring( lua_random( 1, 9 ) ) )
+            pas = set_pass_grup( grup_n or ( "0" .. tostring( rnd( 1, 9 ) ) ), rang_n )
         end
     else
 		-- На сложной генерируем
-        local n = lua_random( 1, 2 )    
+        local n = rnd( 1, 2 )    
         if n == 1 then
             pas = set_pass_rang( rang_n )
         else
-            pas = set_pass_grup( "0" .. tostring( lua_random( 1, 9 ) ) )
+            pas = set_pass_grup( grup_n or ( "0" .. tostring( rnd( 1, 9 ) ) ), rang_n )
         end
     end
     
@@ -1344,7 +1669,7 @@ function generate_anagram( word )
     end
     local result = ""
     while #chars > 0 do
-        local index = lua_random( 1, #chars )
+        local index = rnd( 1, #chars )
         result = result .. chars[ index ]
         table.remove( chars, index )
     end
@@ -1430,7 +1755,7 @@ function process_lvl_messages( messages )
         }
         local tbl = tables[ lvl ]
         if tbl and #tbl > 0 then
-            local info = tbl[ lua_random( 1, #tbl ) ]
+            local info = tbl[ rnd( 1, #tbl ) ]
             return "enc_" .. string.sub( info, 6 ) .. "_desc"
         end
         return ""
@@ -1528,7 +1853,7 @@ function generate_anagram( word )
         end
         
         -- Перевернем часть с вероятностью 50%
-        if lua_random() > 0.5 then
+        if rnd() > 0.5 then
             local reversed = {}
             for j = #part, 1, -1 do
                 table.insert( reversed, part[ j ] )
@@ -1538,14 +1863,14 @@ function generate_anagram( word )
         
         -- Добавим перемешанную часть к результату
         while #part > 0 do
-            local index = lua_random( 1, #part )
+            local index = rnd( 1, #part )
             result = result .. part[ index ]
             table.remove( part, index )
         end
     end
     
     -- Добавим дополнительное перемешивание
-    if lua_random() > 0.5 then
+    if rnd() > 0.5 then
         result = string.reverse( result )
     end
     

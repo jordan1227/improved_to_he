@@ -1,0 +1,315 @@
+-- sivol_trade_ammo.script
+-- Ammo offered by generic stalkers (trade_logic\trade_generic_stl_*.ltx).
+-- Design record: docs/LOOT_RNG_DESIGN.md 4.2-4.4 (later rounds in section 7).
+--   * Only some stalkers sell ammo at all: a seeded per-NPC "seller" flag.
+--   * A seller shows one box per covered section, cut down to a small lot;
+--     all other boxes of that section stay hidden. Pistol FMJ is offered only
+--     in the caliber of the stalker's own pistol.
+--   * The lot size is reload-stable and changes once per game day. Once the
+--     actor buys a lot, that NPC offers no lot of the section until the next
+--     day. Kit rounds are never destroyed: an unsold lot box gets its count
+--     back when the trade window closes.
+--   * Protected NPCs (one-time reward deals) keep Old HE prices through
+--     trade_generic_stl_exp_legacy.ltx and skip all of the above.
+-- Prices come from the sell factors in the trade_logic files.
+--
+-- Hooks: engine_callbacks.actor_on_item_before_show_in_trade -> item_visible,
+-- trade_manager.on_trade_hide -> on_trade_hide, xr_logic trade init ->
+-- protected_trade_ini.
+--
+-- Console tests (fl):
+--   sivol_trade_ammo.debug_npc()   -- seller flag, profile and lots of the current talker
+
+local ENABLED = true
+
+local LEGACY_TRADE_INI = "misc\\trade_logic\\trade_generic_stl_exp_legacy.ltx"
+local SOLD_KEY = "sivol_trade_ammo.sold" -- [npc id|section] = game day the lot was bought
+
+-- Keyed by npc:name() or profile_name(). The list of other candidates is
+-- reviewed by the user before it is extended (docs/LOOT_RNG_DESIGN.md 4.3).
+PROTECTED = {
+	esc_shustryi = true,
+	ivan = true,     -- Ivan Nebov
+	prut2 = true,    -- Prut (Bar); profile bar_prut, sells his 9x19 pbp kit
+	bar_prut = true,
+	-- Round 11: every scan candidate (docs/LOOT_RNG_DESIGN.md 10.2) except the
+	-- named traders with their own trade/barter (Dan, Clear Sky leader, Hermit,
+	-- Valley bandit trader, Junkman, Lesnik, part exchanger, Petrenko, Ivantsov).
+	agr_kirpich = true, agr_krot = true, agr_ratcatcher = true, aver_klyk = true, klyk = true,
+	bar_docent = true, bar_lisaped = true, bar_stalker_general_default3 = true, dsc_diler = true,
+	esc_fanat = true, esc_fox = true, esc_green_respawn_2 = true, esc_green_respawn_4 = true,
+	esc_provodnik = true, esc_sid_guard = true, esc_sid_guard_sub = true, esc_vagon_wounded = true,
+	esc_wolf = true, gar_bandit_dm = true, gar_bandit_dm_3 = true, gar_bandit_leader = true,
+	gar_seriy = true, gar_stalker_flame_quest = true, lim_mih_guard = true, lost_mikhas = true,
+	mar_boryan = true, mil_killer_unknown = true, mil_minigamer = true, mil_ryaboi = true,
+	muller = true, rad_killer_unknown = true, red_freedom_glavn = true, rygyi = true, sanek = true,
+	serafim = true, shersh = true, sim_bandit_master_fraer = true, sim_Svoboda_specnaz_leshii = true,
+	sim_svoboda_specnaz_prut = true, stalker_sultana_default1 = true, stepanych = true,
+	val_bandit_borov = true, val_bandit_krisyk = true, val_vlad = true, vorobey = true,
+}
+
+-- Merc rounds are an NPC-only leftover; for selling they count as the regular
+-- round of the caliber. Converted when the actor starts talking to a seller.
+local MERC_REGULAR = {
+	["ammo_5.45x39_merc"] = "ammo_5.45x39_fmj",
+	["ammo_5.56x45_merc"] = "ammo_5.56x45_ss190",
+}
+
+-- Faction generic files (one file for every rank). The rank bucket comes from
+-- npc:rank() with xr_logic's loner thresholds. Military and ecologist files
+-- are left out: they do not sell ammo to stalkers.
+local FACTION_FILES = { dlg = true, frd = true, bnd = true, grn = true }
+
+local BUCKET_ORDER = { nov = 1, exp = 2, vet = 3, mas = 4 }
+
+-- Lowest bucket that sells a section (the loner files enforce the same list).
+local MIN_BUCKET = {
+	["ammo_9x18_fmj"]      = "nov",
+	["ammo_9x19_fmj"]      = "nov",
+	["ammo_12x70_buck"]    = "nov",
+	["ammo_5.45x39_fmj"]   = "exp",
+	["ammo_12x76_dart"]    = "exp",
+	["ammo_5.56x45_ss190"] = "vet",
+	["ammo_12x76_zhekan"]  = "vet",
+	["ammo_7.62x39_fmj"]   = "mas",
+}
+
+local SELLER_CHANCE = { nov = 0.075, exp = 0.10, vet = 0.125, mas = 0.15 }
+
+local CLASS = {
+	["ammo_5.45x39_fmj"]   = "rifle",
+	["ammo_5.56x45_ss190"] = "rifle",
+	["ammo_7.62x39_fmj"]   = "rifle",
+	["ammo_12x70_buck"]    = "shotgun",
+	["ammo_12x76_dart"]    = "shotgun",
+	["ammo_12x76_zhekan"]  = "shotgun",
+	["ammo_9x18_fmj"]      = "pistol",
+	["ammo_9x19_fmj"]      = "pistol",
+}
+
+-- Lot size {min, max} by class and trade profile. nil = never offered (the
+-- sell list does not enable it either).
+-- Round 9: every range x1.25 (rounded) from the round-6 values.
+local LOT = {
+	rifle   = { exp = { 4, 10 },  vet = { 8, 15 },  mas = { 13, 19 } },
+	shotgun = { nov = { 1, 4 },   exp = { 1, 4 },   vet = { 3, 5 },  mas = { 4, 6 } },
+	pistol  = { nov = { 13, 20 }, exp = { 18, 25 }, vet = { 23, 31 }, mas = { 30, 38 } },
+}
+
+local lots = {} -- [npc id] = { [section] = { id = box id, orig = rounds, lot = rounds } }, this trade window only
+local sold_cache = nil -- SOLD_KEY table, read once per trade window
+
+local function is_protected(npc)
+	return PROTECTED[npc:name()] == true or PROTECTED[npc:profile_name() or ""] == true
+end
+
+local function rank_bucket(npc)
+	local rank = npc:rank() or 0
+	if rank < 300 then return "nov" elseif rank < 600 then return "exp" elseif rank < 900 then return "vet" end
+	return "mas"
+end
+
+-- "nov" / "exp" / "vet" / "mas" for generic loner and faction files, nil otherwise.
+local function trade_profile(npc)
+	local tt = trade_manager.get_cfg(npc) -- per-NPC data is local to trade_manager
+	if type(tt) ~= "table" or tt.buy_supplies or type(tt.cfg_ltx) ~= "string" then return nil end
+	local loner = string.match(tt.cfg_ltx, "trade_generic_stl_(%a+)%.ltx$")
+	if loner then return loner end
+	local faction = string.match(tt.cfg_ltx, "trade_generic_(%a+)%.ltx$")
+	if faction and FACTION_FILES[faction] then return rank_bucket(npc) end
+	return nil
+end
+
+local force_seller = false -- debug_force_seller(true): every generic loner sells (testing only, not saved)
+
+local function is_seller(npc, prof)
+	if force_seller then return true end
+	local chance = SELLER_CHANCE[prof]
+	if not chance then return false end
+	return sivol_seeded_rng.new("seller|" .. npc:id() .. "|" .. tostring(npc:character_name())):chance(chance)
+end
+
+-- Pistol ammo is offered only if one of his guns fires it. NLC slot 1 can hold
+-- compact rifles (AK-74U, Groza), so both weapon slots are checked.
+local function own_gun_fires(npc, section)
+	local ini = system_ini()
+	for slot = 1, 2 do
+		local wpn = npc:item_in_slot(slot)
+		local sect = wpn and wpn:section()
+		if sect and ini:line_exist(sect, "ammo_class") then
+			for name in string.gmatch(ini:r_string(sect, "ammo_class"), "([%w%._%-]+)") do
+				if name == section then return true end
+			end
+		end
+	end
+	return false
+end
+
+local function rank_allows(prof, section)
+	local need = MIN_BUCKET[section]
+	return need ~= nil and BUCKET_ORDER[prof] ~= nil and BUCKET_ORDER[prof] >= BUCKET_ORDER[need]
+end
+
+local function game_day()
+	return timers.Get_Game_Days() or 0
+end
+
+-- true / false = show / hide this NPC-side item; nil = no opinion.
+-- can_trade is the engine's own verdict (CUITradeWnd::FillList); boxes the
+-- NPC cannot sell anyway are left alone, so they are never cut.
+function item_visible(obj, b_our, can_trade)
+	if not ENABLED or b_our or can_trade == false or not obj or not obj:is_ammo() then return nil end
+	local section = obj:section()
+	local cls = CLASS[section]
+	if not cls then return nil end
+	local npc = obj:parent()
+	if not (npc and npc:is_stalker()) or is_protected(npc) then return nil end
+	local prof = trade_profile(npc)
+	if not prof then return nil end
+	if trade_manager.is_sold_item(obj:id()) then return nil end -- the actor's own sale, can be bought back
+	local range = LOT[cls][prof]
+	if not range or not rank_allows(prof, section) or not is_seller(npc, prof) then return false end
+	if cls == "pistol" and not own_gun_fires(npc, section) then return false end
+
+	local npc_id = npc:id()
+	local day = game_day()
+	sold_cache = sold_cache or get_value(SOLD_KEY, {})
+	if sold_cache[npc_id .. "|" .. section] == day then return false end
+
+	local t = lots[npc_id]
+	if not t then
+		t = {}
+		lots[npc_id] = t
+	end
+	local lot = t[section]
+	if lot then return lot.id == obj:id() end
+
+	local have = obj:get_current_ammo()
+	if have < 1 then return false end
+	local n = sivol_seeded_rng.new("lot|" .. npc_id .. "|" .. section .. "|" .. day):int(range[1], range[2])
+	if n > have then n = have end
+	t[section] = { id = obj:id(), orig = have, lot = n }
+	obj:set_ammo_box_curr(n)
+	return true
+end
+
+function on_trade_hide()
+	local actor_id = db.actor and db.actor:id()
+	local day = game_day()
+	local sold = nil
+	for npc_id, t in pairs(lots) do
+		for section, lot in pairs(t) do
+			local o = client_obj(lot.id)
+			local p = o and o:parent()
+			if p and p:id() == npc_id then
+				o:set_ammo_box_curr(lot.orig)
+			elseif p and p:id() == actor_id then
+				sold = sold or get_value(SOLD_KEY, {})
+				sold[npc_id .. "|" .. section] = day
+				-- the actor bought only the lot; the rest of the box stays with the NPC
+				local npc = client_obj(npc_id)
+				local rest = lot.orig - lot.lot
+				if npc and rest > 0 then
+					misc.spawn_obj(section, npc:position(), npc_id, rest)
+				end
+			end
+		end
+	end
+	if sold then
+		for k, d in pairs(sold) do
+			if d ~= day then sold[k] = nil end -- only today's purchases matter
+		end
+		set_value(SOLD_KEY, sold)
+	end
+	lots = {}
+	sold_cache = nil
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_talk_open", fun = this.on_talk_open })
+end
+
+-- Swap merc boxes of sellers and protected NPCs for regular boxes with the
+-- same rounds, so they can show up when the trade window opens.
+function on_talk_open()
+	if not ENABLED then return end
+	local npc = level:get_second_talker()
+	if not (npc and npc:is_stalker() and npc:alive()) then return end
+	local ok = is_protected(npc)
+	if not ok then
+		local prof = trade_profile(npc)
+		ok = prof ~= nil and is_seller(npc, prof)
+	end
+	if not ok then return end
+	local swaps = {}
+	npc:iterate_inventory(function(_, item)
+		local regular = MERC_REGULAR[item:section()]
+		if regular then table.insert(swaps, { id = item:id(), sect = regular, n = item:get_current_ammo() }) end
+	end, npc)
+	for _, s in ipairs(swaps) do
+		if s.n > 0 then misc.spawn_obj(s.sect, npc:position(), npc:id(), s.n) end
+		misc.release_obj(s.id)
+	end
+	if #swaps > 0 then
+		log2("[sivol_trade_ammo] %s: %d merc box(es) converted to regular", npc:name(), #swaps)
+	end
+end
+
+-- Called from xr_logic before trade_manager.trade_init.
+function protected_trade_ini(npc, trade_ini)
+	if ENABLED and is_protected(npc) and type(trade_ini) == "string"
+		and string.find(trade_ini, "trade_logic\\trade_generic_", 1, true)
+	then
+		return LEGACY_TRADE_INI
+	end
+	return trade_ini
+end
+
+function debug_npc()
+	local npc = level.get_second_talker and level:get_second_talker()
+	if not npc then
+		log2("[sivol_trade_ammo] no talker")
+		return
+	end
+	local prof = trade_profile(npc)
+	local tt = trade_manager.get_cfg(npc)
+	log2("[sivol_trade_ammo] %s profile=%s cfg=%s protected=%s seller=%s day=%s",
+		npc:name(), tostring(prof), tostring(type(tt) == "table" and tt.cfg_ltx),
+		tostring(is_protected(npc)), tostring(prof and is_seller(npc, prof)), tostring(game_day()))
+	-- what this NPC carries that the lot rules cover, and whether a lot is possible
+	npc:iterate_inventory(function(_, item)
+		if item:is_ammo() then
+			local s = item:section()
+			local cls = CLASS[s]
+			local range = cls and prof and LOT[cls][prof]
+			local note = not cls and "not covered (only FMJ is sold)"
+				or not prof and "trade file sells no ammo"
+				or (not range or not rank_allows(prof, s)) and "not sold at this rank"
+				or (cls == "pistol" and not own_gun_fires(npc, s)) and "none of his guns fires it"
+				or "lot candidate"
+			log2("[sivol_trade_ammo]   %s x%s (%s)", s, tostring(item:get_current_ammo()), note)
+		end
+	end, npc)
+	local w1, w2 = npc:item_in_slot(1), npc:item_in_slot(2)
+	log2("[sivol_trade_ammo]   slot1=%s slot2=%s rank=%s", w1 and w1:section() or "none", w2 and w2:section() or "none", tostring(npc:rank()))
+end
+
+-- Kit changes in character_desc only reach NPCs spawned after them; this tops
+-- up the current talker on an existing save, e.g. ("ammo_5.45x39_ap", 2).
+function debug_give_ammo(section, boxes)
+	local npc = level:get_second_talker()
+	if not npc then
+		log2("[sivol_trade_ammo] no talker")
+		return
+	end
+	local size = system_ini():r_u32(section, "box_size")
+	for i = 1, boxes or 1 do
+		misc.spawn_obj(section, npc:position(), npc:id(), size)
+	end
+	log2("[sivol_trade_ammo] gave %s x%s boxes to %s", section, tostring(boxes or 1), npc:name())
+end
+
+function debug_force_seller(on)
+	force_seller = on ~= false
+	log2("[sivol_trade_ammo] force_seller=%s", tostring(force_seller))
+end

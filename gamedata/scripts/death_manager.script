@@ -5,6 +5,24 @@ local count_by_level = {}
 local ammo_sections = {}
 local death_ini = ini_file("misc\\death_generic.ltx")
 
+-- Reload-stable loot rolls (docs/LOOT_RNG_DESIGN.md section 3). While
+-- create_release_item runs, loot_key names the corpse, and every roll gets its
+-- own stream from loot_key plus a tag (item id or section), so the result
+-- does not depend on roll or inventory order. Outside that call roll() falls
+-- back to lua_random.
+local loot_key = nil
+
+local function loot_stream(tag)
+	if loot_key == nil then return nil end
+	return sivol_seeded_rng.new(loot_key .. "|" .. tag)
+end
+
+local function roll(tag, a, b)
+	local s = loot_stream(tag)
+	if s then return s:random(a, b) end
+	return lua_random(a, b)
+end
+
 -- Merc ammunition is an NPC-only lethality resource. Corpses expose ordinary
 -- compatible AP ammunition so the NPC balance multiplier cannot leak into the
 -- player economy. Diagnostics are intentionally opt-in and bounded by deaths.
@@ -209,11 +227,11 @@ local function he_drop_single_ammo(npc)
 		misc.spawn_obj(ammo, npc:position(), npc:id(), 1)
 	end
 	for _, e in ipairs(he_npc_kill_extras) do
-		if math.random() < e[2] then
+		if roll("extra|" .. e[1]) < e[2] then
 			local sobj = misc.spawn_obj(e[1], npc:position(), npc:id())
 			if sobj and e[3] then
 				local iitem = sobj:get_inventory_item()
-				if iitem then iitem.item_condition = lua_random(e[3], e[4])/100 end
+				if iitem then iitem.item_condition = roll("extra_cond|" .. e[1], e[3], e[4])/100 end
 			end
 		end
 	end
@@ -410,7 +428,7 @@ local function he_strip_gl(npc)
 		if item and not done[item:id()] and isWeapon(item) and rx_utils.get_addon_status(item,"gl") == 2 then
 			done[item:id()] = true
 			local flags = item:get_addon_flags()
-			if bit_and(flags,2) == 2 and math.random() >= 0.1 then
+			if bit_and(flags,2) == 2 and roll("gl|" .. item:id()) >= 0.1 then
 				item:set_addon_flags(flags-2)
 			end
 		end
@@ -425,7 +443,7 @@ local function he_strip_gl(npc)
 	end
 	npc:iterate_inventory(function(_,item)
 		local id = item:id()
-		if he_gl_ammo[item:section()] and g_sim:object(id) and math.random() >= 0.1 then
+		if he_gl_ammo[item:section()] and g_sim:object(id) and roll("gl_ammo|" .. id) >= 0.1 then
 			misc.release_obj(id)
 		end
 	end, npc)
@@ -453,10 +471,22 @@ local function he_strip_banned_outfits(npc)
 	end, npc)
 end
 
+-- Stream identity of a corpse: server id, generated name and spawn section.
+-- No game time or kill order, so a reload before the kill gives the same loot.
+local function corpse_loot_key(npc)
+	return "loot|" .. tostring(npc:id()) .. "|" .. tostring(npc:character_name()) .. "|" .. tostring(npc:section())
+end
+
 function drop_manager:create_release_item()
 	if (self.npc==nil) then
 		return
 	end
+	loot_key = corpse_loot_key(self.npc)
+	self:create_release_item_rolls()
+	loot_key = nil
+end
+
+function drop_manager:create_release_item_rolls()
 	he_strip_banned_outfits(self.npc) -- [HE-PORT]
 	local nname=self.npc:name()
 	if (nname=="esc_exit_bandit_1") or (nname=="esc_exit_bandit_2") or (nname=="esc_stalker_corpse") then
@@ -490,7 +520,7 @@ function drop_manager:create_release_item()
 	self.npc:iterate_inventory(keep_item, self.npc)
 	check_weap_slots(self.npc)
 	he_strip_gl(self.npc) -- [HE-PORT]
-	local he_worn = he_npc_wardrobe.on_death_drop(self.npc, se_obj) -- [HE-PORT]
+	local he_worn = he_npc_wardrobe.on_death_drop(self.npc, se_obj, loot_stream("worn_cond")) -- [HE-PORT]
 	local ini = self.npc:spawn_ini()
 	if ini and ini:section_exist("dont_spawn_loot") then
 		return
@@ -504,7 +534,7 @@ function drop_manager:create_release_item()
 	if spawn_items then
 		for k,v in pairs(spawn_items) do
 			if check_item_dependence(self.npc, k)==true then
-				local number = math.ceil(lua_random(count_by_level[k].min, count_by_level[k].max))
+				local number = math.ceil(roll("count|" .. k, count_by_level[k].min, count_by_level[k].max))
 				if number > 0 and v > 0 then
 					create_items(self.npc, k, number, v)
 				end
@@ -530,7 +560,7 @@ function drop_manager:create_release_item()
 			if sect~=nil then
 				otf = create_items(self.npc, sect, 1, 150)
 				if otf then he_npc_wardrobe.mark_stripped(se_obj) end -- [HE-PORT]
-				local cond=(lua_random(30,45))/100
+				local cond=(roll("outfit_cond", 30, 45))/100
                 if otf then
 					otf = server_obj(otf.id)
 					if otf then
@@ -612,7 +642,7 @@ function keep_item(npc, item)
 	if isWeapon(item) then
 		item:unload_magazine()
 		item:set_ammo_elapsed(0)
-		item:set_condition(lua_random(10,45)/100)
+		item:set_condition(roll("wpn_cond|" .. item_id, 10, 45)/100)
 		return true
 	end
 	
@@ -621,13 +651,13 @@ function keep_item(npc, item)
 	end
 
 	if isArt(item) then
-		item:set_condition(lua_random(45,70)/100)
+		item:set_condition(roll("art_cond|" .. item_id, 45, 70)/100)
 		return true
 	end
 	
 	if string.find(section,"kolbasa") or section=="bread" or string.find(section,"^mutant_") then
 		if npc:name() ~= "dsc_part_exchanger" then
-			item:set_condition(lua_random(30,85)/100)
+			item:set_condition(roll("food_cond|" .. item_id, 30, 85)/100)
 		else
 			misc.release_obj(item_id)
 		end
@@ -644,14 +674,14 @@ function check_weap_slots(npc)
 		if item_in_slot~=nil then
 			item_in_slot:unload_magazine()
 			item_in_slot:set_ammo_elapsed(0)
-			item_in_slot:set_condition(lua_random(10,45)/100)
+			item_in_slot:set_condition(roll("wpn_cond|" .. item_in_slot:id(), 10, 45)/100)
 		end
 	end
 	item_in_slot = npc:active_item()
 	if item_in_slot~=nil then
 		item_in_slot:unload_magazine()
 		item_in_slot:set_ammo_elapsed(0)
-		item_in_slot:set_condition(lua_random(10,45)/100)
+		item_in_slot:set_condition(roll("wpn_cond|" .. item_in_slot:id(), 10, 45)/100)
 	end
 end
 
@@ -664,12 +694,15 @@ function create_items(npc, section, number, rnd)
 	else
 		for i=1,number do
 			if section == "device_pda_npc" then
-				local r = dsh.get_next_random("pda_drop_chance", 1, 1000)
+				local r = roll("pda_drop", 1, 1000)
 				if r > rnd then return end
 				if npc:story_id() and npc:story_id()==NONE_CL_SID or npc:story_id()==NONE_SID then
 					local obj=g_sim:create(section,npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
 					if obj then
-						local status_pda = vergas_pda.set_status_pda() or 3
+						local status_pda = vergas_pda.set_status_pda(roll("pda_status", 1, 10)) or 3
+						if loot_key then
+							vergas_pda.set_pda_seed(obj.id, loot_key .. "|pda_content")
+						end
 						vergas_pda.add_tbl_pda(
 							npc:id(), obj.id, status_pda
 						)
@@ -678,18 +711,21 @@ function create_items(npc, section, number, rnd)
 				end
 				return
 			end
-			if lua_random(1000) <=  rnd then
-				if string.find(section,"af_",1,true) then 
-					local b=lua_random(1,4)
-					section=section.."_dyn"..b.."d"
+			if roll(section .. "|" .. i, 1000) <=  rnd then
+				-- sivol: per-iteration copy; the old code appended _dynNd to section
+				-- itself, so a second artifact built af_x_dynNd_dynMd
+				local sect = section
+				if string.find(sect,"af_",1,true) then
+					local b=roll(section .. "|" .. i .. "|dyn", 1, 4)
+					sect=sect.."_dyn"..b.."d"
 				end
-				if not strpos(section,"^af_") then
-					return g_sim:create(section,npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
+				if not strpos(sect,"^af_") then
+					return g_sim:create(sect,npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
 				else
 					if npc:story_id() and npc:story_id()==NONE_CL_SID or npc:story_id()==NONE_SID then
-						local item = g_sim:create(section,npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
+						local item = g_sim:create(sect,npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
 						if item then
-							params.post_cond_check(item.id, lua_random(45,70) / 100)
+							params.post_cond_check(item.id, roll(section .. "|" .. i .. "|cond", 45, 70) / 100)
 						end
 					end
 				end

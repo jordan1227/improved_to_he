@@ -1,5 +1,8 @@
 local treasure_manager = nil
 local n_rank
+-- sivol: stash chance for PDAs found inside stashes; the PDA-drop chance lives in
+-- vergas_pda (docs/LOOT_RNG_DESIGN.md 3.2).
+local STASH_PDA_STASH_CHANCE = 0.35
 
 -- Same tokenization as se_respawn.parse_names, plus "@" so that capsule descriptors
 -- ("capsule@af_soul@5") stay in one piece.
@@ -129,7 +132,8 @@ function CTreasure:offline_give_treasure(npc)
 	return false
 end
 
-function CTreasure:find_similar(k)
+-- rng: optional sivol_seeded_rng stream (docs/LOOT_RNG_DESIGN.md 6).
+function CTreasure:find_similar(k, rng)
     local orig = self.treasure_info[k]
     if not orig then return nil end
     local avail = {}
@@ -149,8 +153,9 @@ function CTreasure:find_similar(k)
         end
     end
     if tr_sum == 0 then return nil end
-    local tr_w = lua_random(tr_sum)
-    for _, v in pairs(avail) do
+    table.sort(avail, function(a, b) return a.k < b.k end)
+    local tr_w = rng and rng:random(tr_sum) or lua_random(tr_sum)
+    for _, v in ipairs(avail) do
         tr_w = tr_w - v.prob
         if tr_w <= 0 then return v.k end
     end
@@ -158,7 +163,7 @@ function CTreasure:find_similar(k)
 end
 
 -- Флаг форс, для передачи прямого тайника
-function CTreasure:reserve_treasure(k, force)
+function CTreasure:reserve_treasure(k, force, rng)
     if not self.treasure_info[k] then return nil end
     local target = k
     if self.treasure_info[k].treasure_given then
@@ -166,7 +171,7 @@ function CTreasure:reserve_treasure(k, force)
         if force then
            --log2( "reserve_treasure: '%s' already given, forced reuse", k )
         else
-            target = self:find_similar(k)
+            target = self:find_similar(k, rng)
             if not target then
                 --log2( "reserve_treasure: '%s' already given, no similar found", k )
                 return nil
@@ -187,54 +192,140 @@ function CTreasure:reserve_treasure(k, force)
     return target
 end
 
-function CTreasure:use(npc,community,rang_n)
-    local shron
-    local comm
-    if npc~=nil then
-        if self:offline_give_treasure(npc) then
-            shron = 0
-            return shron
-        end
-        comm = npc:character_community()
-        n_rank = npc:character_rank()
-    else
-        n_rank = rang_n or 0
-        comm = community
-    end
-    local avail = {}
-    local tr_sum = 0
-    for k,v in pairs(self.treasure_info) do
-        if v.done==false and v.active==false and v.treasure_given==false and v.community[comm]==true then
-            -- исключаем тайники с sak_no_need из рандомной выдачи через ПДА
-            if not string.find(v.condlist_raw, "sak_no_need", 1, true) then
-                local treasure_prob = xr_logic.pick_section_from_condlist(db.actor, npc, v.condlist)
-                if treasure_prob=="" or treasure_prob==nil then
-                    treasure_prob = 5
-                end
-                if tonumber(treasure_prob) >= 0 and v.active==false then
-                    if tonumber(treasure_prob)==100 then
-                        shron = k
-                    else
-                        table.insert(avail, {k = k, prob = treasure_prob})
-                        tr_sum = tr_sum + treasure_prob
-                    end
-                end
-            end
-        end
-    end
-    if tr_sum==0 or lua_random() < 0.65 then
-        shron = 0
-        return shron
-    end
-    local tr_w = lua_random(tr_sum)
-    for k,v in pairs(avail) do
-        tr_w = tr_w - v.prob
-        if tr_w <= 0 then
-            shron = v.k
-            break
-        end
-    end
-    return shron
+-- rng: optional sivol_seeded_rng stream. The caller rolls the stash chance;
+-- use() only picks among the available stashes (docs/LOOT_RNG_DESIGN.md 3.2).
+-- sivol: PDA stash pick (docs/PDA_FACTION_TEXT_DESIGN.md 7.0, 11.1, 12.2).
+-- A condlist with no clause for the evaluated rank now excludes the stash, as in
+-- CTreasure:dialog; the old default weight 5 let rookies roll master stashes.
+local PDA_TIERS = { "novice", "experienced", "veteran", "master" }
+-- debug: [pda_stash] log line on/off, last pick details (sivol_pda_debug)
+pda_log = true
+pda_last = nil
+local PDA_TIER_RANK = { novice = 150, experienced = 450, veteran = 750, master = 1050 }
+
+-- Stand-in for npc_rank: ranks.get_obj_rank_name reads character_rank() and clsid().
+local function rank_proxy(rank)
+	return {
+		character_rank = function() return rank end,
+		clsid = function() return CLID_STALKER end,
+	}
+end
+
+function rank_name(rank)
+	return ranks.get_obj_rank_name(rank_proxy(tonumber(rank) or 0))
+end
+
+local function rnd_n(rng, n)
+	if rng then return rng:random(n) end
+	return lua_random(n)
+end
+
+-- Target tier from [pda_stash_tier_spread] in vergas_pda.ltx (novice, experienced, veteran, master).
+local function roll_tier(owner, rng)
+	local ltx = system_ini()
+	if not ltx:line_exist("pda_stash_tier_spread", owner) then return owner end
+	local w, sum, i = {}, 0, 0
+	for s in string.gmatch(ltx:r_string("pda_stash_tier_spread", owner), "[%d%.]+") do
+		i = i + 1
+		w[i] = tonumber(s) or 0
+		sum = sum + w[i]
+	end
+	if sum <= 0 then return owner end
+	local r = rnd_n(rng, 1000) * sum / 1000
+	for j = 1, #PDA_TIERS do
+		r = r - (w[j] or 0)
+		if r <= 0 and (w[j] or 0) > 0 then return PDA_TIERS[j] end
+	end
+	return owner
+end
+
+local monolith_levels = nil
+local function get_monolith_levels()
+	if monolith_levels == nil then
+		monolith_levels = {}
+		local ltx = system_ini()
+		if ltx:line_exist("pda_monolith_stash_levels", "levels") then
+			for s in string.gmatch(ltx:r_string("pda_monolith_stash_levels", "levels"), "[%w]+") do
+				monolith_levels[s] = true
+			end
+		end
+	end
+	return monolith_levels
+end
+
+-- Weighted pick among free stashes of comm, weights read for tier; 0 if none.
+function CTreasure:pda_pick(comm, tier, levels, rng)
+	local proxy = rank_proxy(PDA_TIER_RANK[tier] or 0)
+	local avail, forced = {}, {}
+	local tr_sum = 0
+	for k,v in pairs(self.treasure_info) do
+		if v.done==false and v.active==false and v.treasure_given==false and v.community[comm]==true
+			and not string.find(v.condlist_raw, "sak_no_need", 1, true)
+			and (levels == nil or levels[string.match(k, "^(%w+)_") or ""]) then
+			local prob
+			if v.condlist_raw == "" then
+				prob = 5
+			else
+				prob = tonumber(xr_logic.pick_section_from_condlist(db.actor, proxy, v.condlist))
+			end
+			if prob == 100 then
+				table.insert(forced, k)
+			elseif prob and prob > 0 then
+				table.insert(avail, {k = k, prob = prob})
+				tr_sum = tr_sum + prob
+			end
+		end
+	end
+	-- a probability-100 stash always wins
+	if #forced > 0 then
+		table.sort(forced)
+		return forced[1]
+	end
+	if tr_sum == 0 then return 0 end
+	table.sort(avail, function(a, b) return a.k < b.k end)
+	local tr_w = rnd_n(rng, 1000) * tr_sum / 1000
+	for _, v in ipairs(avail) do
+		tr_w = tr_w - v.prob
+		if tr_w <= 0 then return v.k end
+	end
+	return avail[#avail].k
+end
+
+function CTreasure:use(npc,community,rang_n,rng)
+	local comm, rank
+	if npc~=nil then
+		if self:offline_give_treasure(npc) then
+			return 0
+		end
+		comm = npc:character_community()
+		rank = npc:character_rank()
+	else
+		comm = community
+		rank = rang_n or 0
+	end
+	local owner = rank_name(rank)
+	local levels = (comm == "monolith") and get_monolith_levels() or nil
+	local tier = roll_tier(owner, rng)
+	local shron = self:pda_pick(comm, tier, levels, rng)
+	if shron == 0 and tier ~= owner then
+		shron = self:pda_pick(comm, owner, levels, rng)
+	end
+	local fallback = false
+	if shron == 0 and comm == "monolith" then
+		fallback = true
+		-- 11.1: no Monolith stash, take a high-tier stalker one (shown as a note
+		-- the brothers took off a stalker's body)
+		local t = (tier == "master") and "master" or "veteran"
+		shron = self:pda_pick("stalker", t, levels, rng)
+		if shron == 0 then
+			shron = self:pda_pick("stalker", (t == "master") and "veteran" or "master", levels, rng)
+		end
+	end
+	pda_last = { comm = comm, owner = owner, tier = tier, pick = shron, fallback = fallback }
+	if pda_log then
+		log2("[pda_stash] comm=%s rank=%s owner=%s tier=%s pick=%s", tostring(comm), tostring(rank), tostring(owner), tostring(tier), tostring(shron))
+	end
+	return shron
 end
 
 function CTreasure:check()
@@ -357,6 +448,7 @@ function CTreasure:give_treasure( k, show, text_only )
 				if vv.section == "device_pda_npc" then
 					pda_idx = pda_idx + 1
 					local pda_str = pda_list[ pda_idx ] or ""
+					local pda_key = "trpda|" .. tostring( k ) .. "|" .. tostring( pda_idx ) -- sivol: reload-stable
 					schedule.add("treasure_pda_spawn_" .. obj_sp.id, function()
 						local status_pda, messages
 						local only = false
@@ -375,12 +467,15 @@ function CTreasure:give_treasure( k, show, text_only )
 								)
 							end
 						end
-						status_pda = status_pda or vergas_pda.set_status_pda()
-						if not messages and status_pda ~= 3 then
+						local trng = sivol_seeded_rng.new( pda_key )
+						vergas_pda.set_pda_seed( obj_sp.id, pda_key .. "|content" )
+						status_pda = status_pda or vergas_pda.set_status_pda( trng:int( 1, 10 ) )
+						if not messages and status_pda ~= 3 and trng:chance( STASH_PDA_STASH_CHANCE ) then
 							--log2( "give_treasure pda_%d: no messages, calling use()", obj_sp.id )
-							local grup_s = vergas_pda.set_community_str()
-							local rang_n = lua_random( 150, 1200 )
-							local shron  = self:use( nil, grup_s, rang_n )
+							local grup_s
+							vergas_pda.with_rng( trng, function() grup_s = vergas_pda.set_community_str() end )
+							local rang_n = trng:int( 150, 1200 )
+							local shron  = self:use( nil, grup_s, rang_n, trng )
 							if shron and shron ~= 0 then messages = tostring( shron ) end
 						end
 						vergas_pda.add_tbl_pda( obj.id, obj_sp.id, status_pda, messages, only )
@@ -512,6 +607,8 @@ function clear_treasure_manager()
 end
 
 function CTreasure:dialog(npc)
+	-- sivol: reload-stable pick per NPC (docs/LOOT_RNG_DESIGN.md 6)
+	local rng = sivol_seeded_rng.new("trdialog|" .. tostring(npc:id()) .. "|" .. tostring(npc:character_name()))
 	local avail = {}
 	local tr_sum = 0
 	for k,v in pairs(self.treasure_info) do
@@ -536,8 +633,9 @@ function CTreasure:dialog(npc)
 	if tr_sum==0 then
 		return
 	end
-	local tr_w = lua_random(tr_sum)
-	for k,v in pairs(avail) do
+	table.sort(avail, function(a, b) return a.k < b.k end)
+	local tr_w = rng:random(tr_sum)
+	for k,v in ipairs(avail) do
 		tr_w = tr_w - v.prob
 		if tr_w <= 0 then
 			self:give_treasure(v.k)
