@@ -489,9 +489,40 @@ function spawn_item_in_inv( sect, who )
 end
 
 
-function spawn_weapon_in_inv( sect, info_str, who )
-  local sobj = spawn_item_in_inv( sect, who )
-  if not sobj then return nil end
+local pending_weapon
+
+local function apply_weapon_state( sobj, p )
+  if p.params then
+    local pk = get_netpk( sobj, 1 )
+    if pk and pk:isOk() then
+      local data = pk:get()
+      data.addon_flags  = p.flags
+      data.ammo_type    = p.a1t
+      data.ammo_elapsed = p.a1n
+      if data.ammo_elapsed_2 ~= nil then
+        data.ammo_type_2    = p.a2t
+        data.ammo_elapsed_2 = p.a2n
+      end
+      pk:set( data )
+    end
+  end
+  if p.condition then
+    local iitem = sobj:get_inventory_item()
+    if iitem then iitem.item_condition = p.condition end
+  end
+end
+
+function on_weapon_before_register( sobj )
+  local p = pending_weapon
+  if not p then return end
+  if p.section ~= sobj:section_name() or p.parent ~= sobj.parent_id then return end
+  pending_weapon = nil
+  apply_weapon_state( sobj, p )
+end
+
+function spawn_weapon_in_inv( sect, info_str, who, condition )
+  local _, _, _, parent = holder_info( who )
+  local p = { section = sect, parent = parent, condition = condition }
   if info_str and info_str ~= "" then
     local a1t, a1n, a2t, a2n, scope, gl, silencer =
       parse_weapon_info_str( info_str )
@@ -501,19 +532,15 @@ function spawn_weapon_in_inv( sect, info_str, who )
     if scope    then flags = flags + 1 end
     if gl       then flags = flags + 2 end
     if silencer then flags = flags + 4 end
-    local pk = get_netpk( sobj, 1 )
-    if pk and pk:isOk() then
-      local data = pk:get()
-      data.addon_flags  = flags
-      data.ammo_type    = a1t
-      data.ammo_elapsed = a1n
-      if data.ammo_elapsed_2 ~= nil then
-        data.ammo_type_2    = a2t
-        data.ammo_elapsed_2 = a2n
-      end
-      pk:set( data )
-    end
+    p.params = true
+    p.flags, p.a1t, p.a1n, p.a2t, p.a2n = flags, a1t, a1n, a2t, a2n
   end
+  pending_weapon = p
+  local ok, sobj = pcall( spawn_item_in_inv, sect, who )
+  local missed = pending_weapon ~= nil
+  pending_weapon = nil
+  if not ok or not sobj then return nil end
+  if missed then apply_weapon_state( sobj, p ) end
   return sobj
 end
 
@@ -550,13 +577,13 @@ function create_actor_item( item, who, info_override )
     end
   else
     if item.game_type == "weapon" then
-      sobj = spawn_weapon_in_inv( item.section, item.info, who )
+      sobj = spawn_weapon_in_inv( item.section, item.info, who, item.condition < 100 and item.condition / 100 or nil )
     else
       sobj = spawn_item_in_inv( item.section, who )
     end
     local item_info = info_override
     if item_info == nil then item_info = item.info end
-    if sobj and item_info and item_info ~= "" then
+    if sobj and item.game_type ~= "weapon" and item_info and item_info ~= "" then
       local restored = false
       if sivol_unknown_arts and type(sivol_unknown_arts.restore_server) == "function" then
         restored = sivol_unknown_arts.restore_server(sobj, item_info)
