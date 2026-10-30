@@ -5,6 +5,15 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.163 (2026-10-30)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `88E5DC7088EF37DABAB2F50C5C1FAE75788DCD5020BE5750CCD7C1C0E75EBFB8` (archived with its PDB in `nlc_tools/builds/20261030_162011_88e5dc70`).
+- **Status:** runtime pending. Built on top of `nlc-3.589.162`; `docs/PDA_UPGRADE_DESIGN.md` 12.8 is the record.
+- `CUIMapWnd::Update` re-applies the "centre on me" toolbar button from `nlc_map_spot_type_hidden("actor_location")` while the map is open (it was set only in `Show`).
+- **Required game data:** `scripts/he_pda_3d.script`, `he_pda_model.script`, `he_pda_layers.script`, `he_pda_cracker.script`, `he_camp_map.script`, `scripts/ui/ui_pda_notes.script`.
+- Same caveat as `nlc-3.589.162`: the exe still contains the other session's uncommitted psy hand-shake edits if they remain in the working tree.
+
 ## nlc-3.589.162 (2026-10-27)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

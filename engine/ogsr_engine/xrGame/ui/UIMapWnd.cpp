@@ -613,6 +613,16 @@ void CUIMapWnd::Update()
     if (m_GlobalMap)
         m_GlobalMap->SetClipRect(ActiveMapRect());
     inherited::Update();
+    // NLC: the "centre on me" button follows the layer toggle / PDA tier while the map stays open
+    if (m_ToolBar[eActor] && IsShown())
+    {
+        const bool nlc_actor_hidden = nlc_map_spot_type_hidden("actor_location");
+        if (m_ToolBar[eActor]->IsShown() == nlc_actor_hidden)
+        {
+            m_ToolBar[eActor]->Show(!nlc_actor_hidden);
+            m_ToolBar[eActor]->Enable(!nlc_actor_hidden);
+        }
+    }
     m_ActionPlanner->update();
 }
 

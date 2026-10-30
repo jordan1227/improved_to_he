@@ -16,6 +16,7 @@ local held_slot = nil
 local HAND_PDA_SECTION = "device_pda_hack"
 local hand_pda_id = nil
 local displaced_pda_id = nil
+local restoring = false
 
 -- The player's own PDA, base or upgraded. Never the hand-PDA prop.
 local function own_pda()
@@ -27,15 +28,20 @@ local function restore_displaced_pda()
   local own_id = displaced_pda_id
   displaced_pda_id = nil
   if own_id == nil or db.actor == nil then return end
+  restoring = true
   -- The prop is released asynchronously, so wait (bounded) until slot 7 is free again.
   local deadline = time_global() + 3000
   dsh.wait_condition(
     function() return db.actor == nil or db.actor:item_in_slot(7) == nil or time_global() > deadline end,
     function()
+      restoring = false
       if db.actor == nil then return end
       local own = level.object_by_id(own_id)
       if own and db.actor:item_in_slot(7) == nil then
         db.actor:move_to_slot(own, true)
+        if own:condition() > 0 and not db.actor:has_info("pda_is_broken") and not pda_battery.is_charging() then
+          level.set_actor_allow_pda(true) -- drop_hand_pda disabled P; do not wait for the market heartbeat
+        end
         log2("[pda3d] own pda %s back to slot", tostring(own_id))
       end
     end
@@ -44,6 +50,12 @@ end
 
 function hand_pda_active()
   return hand_pda_id ~= nil
+end
+
+-- True from the moment the own PDA is moved aside until it is back in slot 7; he_pda_model must not
+-- re-slot the upgraded PDA during that window.
+function hand_pda_busy()
+  return hand_pda_id ~= nil or displaced_pda_id ~= nil or restoring
 end
 
 function drop_hand_pda()
@@ -113,6 +125,7 @@ end
 function sweep_hand_pda()
   hand_pda_id = nil
   displaced_pda_id = nil
+  restoring = false
   if db.actor == nil then return end
 
   local stale = {}
@@ -179,6 +192,11 @@ function try_autostart(w)
 			end
 		end)
 	end
+end
+
+-- A found PDA's reader is attached over the PDA window.
+function reader_open()
+  return child_mode and child ~= nil
 end
 
 function pda_wnd()
