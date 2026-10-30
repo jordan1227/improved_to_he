@@ -259,11 +259,28 @@ void CUIMapWnd::Show(bool status)
             it->second->SetClipRect(ActiveMapRect());
         }
 
+        // NLC: while the player's own marker is hidden (base PDA) the map must not reveal the position either:
+        // no centring on the actor and no "centre on me" button.
+        const bool nlc_actor_hidden = nlc_map_spot_type_hidden("actor_location");
         if (m_flags.test(lmFirst))
         {
             inherited::Update(); // only maps, not action planner
-            OnToolActorClicked(NULL, NULL);
+            if (nlc_actor_hidden)
+            {
+                if (!GlobalMap()->Locked())
+                {
+                    u16 idx = GetIdxByName(Level().name());
+                    SetTargetMap(idx != u16(-1) ? GetMapByIdx(idx) : GlobalMap(), true);
+                }
+            }
+            else
+                OnToolActorClicked(NULL, NULL);
             m_flags.set(lmFirst, FALSE);
+        }
+        if (m_ToolBar[eActor])
+        {
+            m_ToolBar[eActor]->Show(!nlc_actor_hidden);
+            m_ToolBar[eActor]->Enable(!nlc_actor_hidden);
         }
         InventoryUtilities::SendInfoToActor("ui_pda_map_local");
     }
@@ -671,6 +688,8 @@ void CUIMapWnd::ValidateToolBar()
 void CUIMapWnd::OnToolActorClicked(CUIWindow*, void*)
 {
     if (GlobalMap()->Locked())
+        return;
+    if (nlc_map_spot_type_hidden("actor_location")) // NLC
         return;
 
     Fvector v = Level().CurrentEntity()->Position();

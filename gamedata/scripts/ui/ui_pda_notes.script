@@ -24,6 +24,16 @@ local pending_open -- note id to select on the next on_show
 
 local function tr(id) return game.translate_string(id) end
 
+-- Pinned system entries (docs/PDA_UPGRADE_DESIGN.md 6.2): built on demand, never stored, read-only, always
+-- above the player's notes. color is {a, r, g, b}; live entries are rebuilt while shown.
+local SYSTEM = {
+    { id = "@rem", system = true, live = true, title = "pda_notes_sys_reminders", tex = "ui_icons_mapPDA_mark_t",
+        color = { 255, 238, 170, 40 }, build = function() return he_pda_reminders.notes_text() end },
+    { id = "@stash", system = true, title = "pda_notes_sys_stashes", tex = "ui_icons_mapPDA_habar",
+        color = { 255, 120, 190, 230 }, build = function() return he_pda_stash_log.notes_text() end },
+}
+local SYS_REFRESH_MS = 5000
+
 -------------------------------------------------------------------------------
 -- Storage
 -------------------------------------------------------------------------------
@@ -176,6 +186,15 @@ function on_hide()
     end
 end
 
+function on_update()
+    ogse_signals.get_mgr():reschedule(1000)
+    if ui and ui.root then ui:Tick() end
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_update", fun = this.on_update })
+end
+
 -------------------------------------------------------------------------------
 -- UI
 -------------------------------------------------------------------------------
@@ -202,14 +221,16 @@ function note_item:__init(n) super()
     self:Refresh(n)
 end
 function note_item:Refresh(n)
-    self.icon:InitTexture((ICONS[n.icon] or ICONS[1]).tex)
+    local system = n.system == true
+    self.icon:InitTexture(system and n.tex or (ICONS[n.icon] or ICONS[1]).tex)
     local font = GetFontLetterica16Russian()
-    local place = n.lvl and tr(n.lvl) or ""
+    -- pinned entries carry no place text: the title gets the whole row (colour and icon mark them as automatic)
+    local place = system and "" or (n.lvl and tr(n.lvl) or "")
     self.place:SetText(place)
     self.place:SetTextColor(255, 140, 140, 140)
     -- the title gets what the location leaves, cut with "..." when needed
     local avail = 234 - (place ~= "" and font:SizeOf(place) + 10 or 0)
-    local title = (n.pin and "* " or "") .. (n.title ~= "" and n.title or tr("pda_notes_untitled"))
+    local title = system and tr(n.title) or ((n.pin and "* " or "") .. (n.title ~= "" and n.title or tr("pda_notes_untitled")))
     if font:SizeOf(title) > avail then
         while string.len(title) > 1 and font:SizeOf(title .. "...") > avail do
             title = string.sub(title, 1, -2)
@@ -218,7 +239,8 @@ function note_item:Refresh(n)
     end
     self.name:SetWndRect(26, 0, math.max(20, avail), 22)
     self.name:SetText(title)
-    self.name:SetTextColor(255, 230, 230, 230)
+    local c = system and n.color or { 255, 230, 230, 230 }
+    self.name:SetTextColor(c[1], c[2], c[3], c[4])
 end
 
 class "PDANotes" (CUIScriptWnd)
@@ -299,6 +321,9 @@ function PDANotes:InitControls()
     self.btn_delete = xml:InitButton("btn_delete", self.root)
     self:Register(self.btn_delete, "btn_delete")
     self.empty = xml:InitStatic("empty", self.root)
+    -- read-only coloured body of the pinned system entries (the editor ignores colour codes)
+    self.sys_scroll = xml:InitScrollView("sys_scroll", self.root)
+    self.sys_scroll:Show(false)
 
     self:AddCallback("notes_list", ui_events.LIST_ITEM_CLICKED, self.OnListClick, self)
     self:AddCallback("btn_new", ui_events.BUTTON_CLICKED, self.OnNew, self)
@@ -324,7 +349,9 @@ function PDANotes:FillList()
     local d = data()
     self.list:RemoveAll()
     self.items = {}
-    self.order = sorted(d)
+    self.order = {}
+    for _, s in ipairs(SYSTEM) do table.insert(self.order, s) end
+    for _, n in ipairs(sorted(d)) do table.insert(self.order, n) end
     for _, n in ipairs(self.order) do
         local it = note_item(n)
         self.list:AddItem(it)
@@ -349,13 +376,88 @@ function PDANotes:Current()
     return n, d
 end
 
+function PDANotes:SystemById(id)
+    for _, s in ipairs(SYSTEM) do
+        if s.id == id then return s end
+    end
+end
+
+-- (Re)builds the body of a system entry. keep_scroll preserves the reading position on refreshes.
+function PDANotes:FillSystem(sys, keep_scroll)
+    local pos = keep_scroll and self.sys_scroll:GetCurrentScrollPos() or 0
+    if self.sys_text then
+        self.sys_scroll:Clear()
+        self.sys_text:DetachFromParent()
+        self.sys_text = nil
+    end
+    local text = sys.build()
+    self.sys_last = text
+    self.sys_text = self.xml:InitStatic("sys_text", self.sys_scroll)
+    self.sys_text:SetTextComplexMode(true)
+    self.sys_text:SetText(text)
+    self.sys_text:AdjustHeightToText()
+    self.sys_scroll:ForceUpdate()
+    if keep_scroll then self.sys_scroll:SetScrollPos(math.min(pos, self.sys_scroll:GetMaxScrollPos())) end
+end
+
+-- Pinned entries replace the editor with a read-only view; a normal note brings the editor back.
+function PDANotes:ShowSystem(sys)
+    self.sys_scroll:Show(sys ~= nil)
+    self.caption:SetText(sys and tr(sys.title) or tr("pda_notes_editor"))
+    if not sys then
+        if self.sys_text then
+            self.sys_scroll:Clear()
+            self.sys_text:DetachFromParent()
+            self.sys_text = nil
+        end
+        return
+    end
+    self.body:CaptureFocus(false)
+    for _, w in ipairs({ self.title, self.body, self.title_label, self.btn_pin, self.btn_map, self.btn_mark,
+        self.btn_delete, self.empty }) do
+        w:Show(false)
+    end
+    for _, b in ipairs(self.icon_btns) do b:Show(false) end
+    self.body_frame:Show(true)
+    self.info:Show(true)
+    self.info:SetText(tr("pda_notes_sys_info"))
+    self.sys_next = time_global() + SYS_REFRESH_MS
+    self:FillSystem(sys, false)
+end
+
+-- Called about once a second while the tab is shown: live system entries refresh every few seconds, and
+-- only when their text actually changed.
+function PDANotes:Tick()
+    local sys = self:SystemById(self.cur)
+    if not sys or not sys.live or time_global() < (self.sys_next or 0) then return end
+    self.sys_next = time_global() + SYS_REFRESH_MS
+    if sys.build() ~= self.sys_last then self:FillSystem(sys, true) end
+end
+
 function PDANotes:Select(id)
     local d = data()
-    if not id or not find(d, id) then
-        id = self.order[1] and self.order[1].id
+    local sys = self:SystemById(id)
+    if not sys and not (id and find(d, id)) then
+        -- default: the first note, or the first pinned entry when there are no notes
+        id = nil
+        for _, o in ipairs(self.order) do
+            if not o.system then
+                id = o.id
+                break
+            end
+        end
+        id = id or (self.order[1] and self.order[1].id)
+        sys = self:SystemById(id)
     end
     self.cur = id
     self.confirm_delete = false
+    self:ShowSystem(sys)
+    if sys then
+        for i, o in ipairs(self.order) do
+            if o.id == id then self.list:SetSelectedItem(i - 1) end
+        end
+        return
+    end
     local n = id and find(d, id)
     local has = n ~= nil
     for _, w in ipairs({ self.title, self.body, self.body_frame, self.info, self.title_label,

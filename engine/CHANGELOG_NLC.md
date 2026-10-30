@@ -5,6 +5,17 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.162 (2026-10-27)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0E331415885F53CDF1862198ECEE15BD1DD2056B63BC20F0B363F1DE1299F33B` (archived with its PDB in `nlc_tools/builds/20261027_205223_0e331415`).
+- **Status:** runtime pending. Built on top of `nlc-3.589.161`; `docs/PDA_UPGRADE_DESIGN.md` is the design record.
+- **Also in this exe:** the uncommitted low-psy hand-shake tremor edits that another session had in the working tree at build time (`Actor.h`, `HudItem.h/.cpp`, `player_hud.cpp`; `CWeaponBobbing::NlcPsyShake`, `level.nlc_set_psy_hand_shake_speed`). They are not part of this entry and were not reviewed here.
+- **Required game data:** `scripts/he_pda_layers.script`, `he_pda_signal.script`, `he_camp_map.script`, `he_pda_cracker.script`, `he_pda_reminders.script`, `he_pda_stash_log.script`, `scripts/ui/ui_pda_addons.script` (`on_tab`), `scripts/ui/ui_pda_notes.script`, `config/ui/map_spots.xml`, `config/ui/ui_pda_layers.xml`, `config/ui/ui_pda_notes.xml`, `scripts/ogse/ogse_signals_addons_list.script`. Scripts call the new functions only when they exist, so an older engine only loses the position-marker gating.
+- PDA map spot types can be hidden at runtime: `level.nlc_map_hide_spot_type(type, hidden)` and `level.nlc_map_spot_type_hidden(type)` (`CMapLocation::UpdateLevelMap` / `UpdateMiniMap` skip hidden types; the pseudo type `"@user"` hides every player-made marker whatever its icon type). The set is runtime only and is cleared when the map manager is created.
+- While `actor_location` is hidden the PDA map no longer reveals the player: the first open centres on the current level map instead of the player and the toolbar "centre on me" button is hidden and ignored (`CUIMapWnd::Show`, `OnToolActorClicked`).
+- The PDA window reports the active tab to `ui_pda_addons.on_tab(tab)` (`EPdaTabs` index, `-1` when the PDA closes): `CUIPdaWnd::NotifyTabChanged` from `Show`, `Hide` and `SetActiveSubdialog`.
+
 ## nlc-3.589.161 (2026-10-27)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

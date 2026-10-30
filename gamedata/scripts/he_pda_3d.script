@@ -17,15 +17,29 @@ local HAND_PDA_SECTION = "device_pda_hack"
 local hand_pda_id = nil
 local displaced_pda_id = nil
 
+-- The player's own PDA, base or upgraded. Never the hand-PDA prop.
+local function own_pda()
+  if db.actor == nil then return nil end
+  return db.actor:object("device_pda") or db.actor:object("device_pda_upgraded")
+end
+
 local function restore_displaced_pda()
   local own_id = displaced_pda_id
   displaced_pda_id = nil
   if own_id == nil or db.actor == nil then return end
-  local own = level.object_by_id(own_id)
-  if own and db.actor:item_in_slot(7) == nil then
-    db.actor:move_to_slot(own, true)
-    log2("[pda3d] own pda %s back to slot", tostring(own_id))
-  end
+  -- The prop is released asynchronously, so wait (bounded) until slot 7 is free again.
+  local deadline = time_global() + 3000
+  dsh.wait_condition(
+    function() return db.actor == nil or db.actor:item_in_slot(7) == nil or time_global() > deadline end,
+    function()
+      if db.actor == nil then return end
+      local own = level.object_by_id(own_id)
+      if own and db.actor:item_in_slot(7) == nil then
+        db.actor:move_to_slot(own, true)
+        log2("[pda3d] own pda %s back to slot", tostring(own_id))
+      end
+    end
+  )
 end
 
 function hand_pda_active()
@@ -45,8 +59,11 @@ end
 local function give_hand_pda(cb)
   if hand_pda_id ~= nil or db.actor == nil then return cb() end
 
-  local own = db.actor:object("device_pda")
-  if own and own:condition() > 0
+  -- A found PDA is always shown on the base model. A working base PDA is the display device itself;
+  -- the upgraded PDA (or any unusable one) is moved aside and the base-model prop takes slot 7.
+  local own = own_pda()
+  if own and own:section() == "device_pda"
+    and own:condition() > 0
     and not db.actor:has_info("pda_is_broken")
     and not pda_battery.is_charging()
   then
@@ -59,7 +76,7 @@ local function give_hand_pda(cb)
   if own and db.actor:item_in_slot(7) ~= nil then
     db.actor:move_to_ruck(own)
     displaced_pda_id = own:id()
-    log2("[pda3d] own pda %s unusable, moved to ruck", tostring(displaced_pda_id))
+    log2("[pda3d] own pda %s (%s) moved to ruck", tostring(displaced_pda_id), own:section())
   end
 
   local sobj = misc.spawn_to(HAND_PDA_SECTION, db.actor)
@@ -112,7 +129,7 @@ function sweep_hand_pda()
     misc.release_obj(id)
   end
 
-  local own = db.actor:object("device_pda")
+  local own = own_pda()
   if own and db.actor:item_in_slot(7) == nil then
     db.actor:move_to_slot(own, true)
     log2("[pda3d] own pda back to slot after sweep")

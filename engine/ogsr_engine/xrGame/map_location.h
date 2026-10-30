@@ -112,6 +112,11 @@ public:
 #endif
 };
 
+// NLC: spot types the script asked to hide (level.nlc_map_hide_spot_type). Runtime only, never saved.
+void nlc_map_hide_spot_type(LPCSTR type, bool hidden);
+bool nlc_map_spot_type_hidden(LPCSTR type);
+void nlc_map_reset_hidden_spot_types();
+
 class CRelationMapLocation : public CMapLocation
 {
     typedef CMapLocation inherited;

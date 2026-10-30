@@ -237,6 +237,8 @@ public:
         ~CWeaponBobbing() = default;
 
         void Update(Fmatrix& m, Fmatrix& m2);
+        // NLC: low-psy hand shake (sivol_psy_vision): a smooth tremor on top of any bobbing, also with bobbing off
+        void NlcPsyShake(Fmatrix& m, Fmatrix& m2);
         void CheckState();
 
     private:

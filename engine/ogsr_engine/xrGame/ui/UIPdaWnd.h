@@ -79,6 +79,7 @@ public:
     void SetActiveSubdialog(EPdaTabs section);
     void UpdateScriptTabs(); // NLC
     void NotifyNotesTab(bool shown); // NLC
+    void NotifyTabChanged(int tab); // NLC
     virtual bool StopAnyMove();
 
     void PdaContentsChanged(pda_section::part type, bool = true, bool = false);

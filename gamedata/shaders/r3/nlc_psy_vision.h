@@ -13,12 +13,13 @@ uniform float4 m_nlc_psy_vision; // x tunnel strength 0..1, y shock envelope 0..
 uniform float4 m_nlc_psy_vision_2; // x tunnel radius (script: stage, snap), y snap lean side (+-1), z feather, w breathe
 uniform float4 m_nlc_psy_vision_3; // x ripple amplitude, y flow speed, z blur radius, w edge darkening
 uniform float4 m_nlc_psy_vision_4; // xyz edge tint, w desaturation
-uniform float4 m_nlc_psy_vision_5; // x ghost offset, y shock progress 0..1, z full-screen double vision 0..1, w blink 0..1
+uniform float4 m_nlc_psy_vision_5; // x ghost offset, y wave progress 0..1 (reaches the tunnel at 1), z full-screen double vision 0..1, w blink 0..1
 uniform float4 m_nlc_psy_vision_6; // xyz cold shock colour, w its strength at the pulse peak
 uniform float4 m_nlc_psy_vision_7; // x double vision offset, y its spin speed, z edge gain, w cold share in the centre
 uniform float4 m_nlc_psy_vision_8; // x snap (vertigo) 0..1, y ADS focus wobble 0..1, z blink recovery 0..1, w heartbeat pulse 0..1
 uniform float4 m_nlc_psy_vision_9; // x distant-world swim 0..2, y edge colour fringe 0..1, z near / w far distance (m)
-uniform float4 m_nlc_psy_vision_10; // x blood sight 0..1, y red hue tolerance, z grey contrast, w red saturation
+uniform float4 m_nlc_psy_vision_10; // x colour loss 0..1, y red hue tolerance, z grey contrast, w red saturation
+uniform float4 m_nlc_psy_vision_11; // x side of the psy source (height units, + = right): the tunnel centre shifts away from it
 
 #define NLC_PSY_ELLIPSE 0.8f // < 1 widens the tunnel horizontally
 #define NLC_PSY_HUD_NEAR 1.2f // view distance (m): closer pixels are treated as hands/weapon
@@ -106,12 +107,15 @@ float3 nlc_psy_vision_apply(float2 tc, float3 P, float3 img)
     float breathe = sin(t * 1.7f) * 0.6f + sin(t * 0.63f + 1.3f) * 0.4f + beat;
     float radius = max(m_nlc_psy_vision_2.x + breathe * m_nlc_psy_vision_2.w * s - shock * NLC_PSY_SHOCK_TIGHTEN, 0.05f);
     float feather = max(m_nlc_psy_vision_2.z, 0.02f);
-    float mask = smoothstep(radius, radius + feather, r);
+    // A known psy source shifts the centre away from it, so that side closes in first.
+    float lean = m_nlc_psy_vision_11.x;
+    float rt = length(d + float2(lean, 0.f));
+    float mask = smoothstep(radius, radius + feather, rt);
 
-    // Shock ring: runs from the screen corner in to the tunnel edge over the pulse, so it is always visible.
-    float r_corner = length(float2(0.5f * aspect * NLC_PSY_ELLIPSE, 0.5f));
+    // Psy wave: runs from the frame edge in to the tunnel edge, then fades out; the rest of the pulse stays behind it.
+    float r_corner = length(float2(0.5f * aspect * NLC_PSY_ELLIPSE, 0.5f)) + abs(lean);
     float ring_r = lerp(r_corner, radius, m_nlc_psy_vision_5.y);
-    float ring = shock * exp(-(r - ring_r) * (r - ring_r) / 0.004f);
+    float ring = shock * (1.f - smoothstep(0.85f, 1.f, m_nlc_psy_vision_5.y)) * exp(-(rt - ring_r) * (rt - ring_r) / 0.004f);
 
     float amount = saturate(mask * saturate(s * m_nlc_psy_vision_7.z + shock * 0.8f) + ring);
 
@@ -190,28 +194,33 @@ float3 nlc_psy_vision_apply(float2 tc, float3 P, float3 img)
     float cold_all = m_nlc_psy_vision_6.w * shock * m_nlc_psy_vision_7.w;
     outc = lerp(outc, dot(outc, NLC_PSY_LUM) * m_nlc_psy_vision_6.xyz, cold_all);
 
-    // Blood sight: black and white, only red keeps its colour. A colour key (hue near pure red, saturated, not near
-    // black), so it catches every blood source (decals, hit and anomaly blood, pools) and other deep reds as well.
-    float bs = m_nlc_psy_vision_10.x;
-    [branch] if (bs > 0.001f)
-    {
-        float mx = max(outc.r, max(outc.g, outc.b));
-        float mn = min(outc.r, min(outc.g, outc.b));
-        float sat = (mx - mn) / max(mx, 0.0001f);
-        float hue = (outc.r >= mx && mx > mn) ? abs((outc.g - outc.b) / (mx - mn)) / 6.f : 0.5f; // 0 = red, 1/6 = yellow
-        float tol = max(m_nlc_psy_vision_10.y, 0.005f);
-        float red = (1.f - smoothstep(tol * 0.6f, tol, hue)) * smoothstep(0.25f, 0.5f, sat) * smoothstep(0.01f, 0.04f, mx);
-        float g = dot(outc, NLC_PSY_LUM);
-        float gc = max(0.f, (g - 0.25f) * m_nlc_psy_vision_10.z + 0.25f);
-        float3 keep = max(0.f, g + (outc - g) * m_nlc_psy_vision_10.w);
-        outc = lerp(outc, lerp(gc.xxx, keep, red), bs);
-    }
-
     // Blink recovery: the world comes back grey and dim.
     float rec = m_nlc_psy_vision_8.z;
     outc = lerp(outc, dot(outc, NLC_PSY_LUM).xxx, rec * 0.7f) * (1.f - rec * 0.15f);
 
     return outc;
+}
+
+// Colour loss, applied by combine_2_naa.ps after bloom, flares and colour grading (bright skies and fires would keep
+// their colour otherwise): black and white, only red keeps its colour. A colour key (hue near pure red, saturated, not
+// near black), so it catches every blood source (decals, hit and anomaly blood, pools) and other deep reds as well.
+float3 nlc_psy_colour(float3 img)
+{
+    float bs = m_nlc_psy_vision_10.x;
+    [branch] if (bs > 0.001f)
+    {
+        float mx = max(img.r, max(img.g, img.b));
+        float mn = min(img.r, min(img.g, img.b));
+        float sat = (mx - mn) / max(mx, 0.0001f);
+        float hue = (img.r >= mx && mx > mn) ? abs((img.g - img.b) / (mx - mn)) / 6.f : 0.5f; // 0 = red, 1/6 = yellow
+        float tol = max(m_nlc_psy_vision_10.y, 0.005f);
+        float red = (1.f - smoothstep(tol * 0.6f, tol, hue)) * smoothstep(0.25f, 0.5f, sat) * smoothstep(0.01f, 0.04f, mx);
+        float g = dot(img, NLC_PSY_LUM);
+        float gc = max(0.f, (g - 0.25f) * m_nlc_psy_vision_10.z + 0.25f);
+        float3 keep = max(0.f, g + (img - g) * m_nlc_psy_vision_10.w);
+        img = lerp(img, lerp(gc.xxx, keep, red), bs);
+    }
+    return img;
 }
 
 // Blink, applied by combine_2_naa.ps after bloom, flares and colour grading: the whole view darkens (the centre keeps
@@ -237,7 +246,7 @@ float3 nlc_psy_vision(float2 tc, float3 P, float3 img)
 {
     float3 outc = img;
     [branch] if (m_nlc_psy_vision.x + m_nlc_psy_vision.y + m_nlc_psy_vision_5.z + m_nlc_psy_vision_5.w + m_nlc_psy_vision_8.x +
-                 m_nlc_psy_vision_8.y + m_nlc_psy_vision_8.z + m_nlc_psy_vision_9.x + m_nlc_psy_vision_9.y + m_nlc_psy_vision_10.x > 0.001f)
+                 m_nlc_psy_vision_8.y + m_nlc_psy_vision_8.z + m_nlc_psy_vision_9.x + m_nlc_psy_vision_9.y > 0.001f)
         outc = nlc_psy_vision_apply(tc, P, img);
     return outc;
 }

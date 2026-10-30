@@ -1096,6 +1096,9 @@ void player_hud::update(const Fmatrix& cam_trans)
             // m_bobbing привазан к айтему только что б получить zoom factor. Зумится может только основной предмет в руках потому можно считать только по нему
             m_attached_items[0]->m_parent_hud_item->m_bobbing->Update(m_attach_offset, m_attach_offset_2);
         }
+        // NLC: low-psy hand shake, independent of the bobbing setting
+        if (m_attached_items[0])
+            m_attached_items[0]->m_parent_hud_item->m_bobbing->NlcPsyShake(m_attach_offset, m_attach_offset_2);
     }
 
     m_transform.mul(trans, m_attach_offset);

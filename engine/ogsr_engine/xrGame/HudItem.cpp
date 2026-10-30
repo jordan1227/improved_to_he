@@ -354,7 +354,7 @@ void CHudItem::UpdateCL()
     // (disabled while bobbing is allowed, see AnmIdleMovingAllowed) keep playing when not aiming.
     const bool bobbing_ads_ok = !psActorFlags.test(AF_WEAPON_BOBBING_ADS_ONLY) || (g_actor && g_actor->IsZoomAimingMode());
     const bool bobbing_was_allowed = HudBobbingAllowed();
-    AllowHudBobbing((psActorFlags.test(AF_WEAPON_BOBBING) && allow_bobbing && bobbing_ads_ok) || (g_actor && g_actor->NlcPsyShakeActive()));
+    AllowHudBobbing((psActorFlags.test(AF_WEAPON_BOBBING) && allow_bobbing && bobbing_ads_ok) || (g_actor && g_actor->PsyAuraAffect));
 
     // NLC: leaving ADS picks the idle animation (OnZoomOut) while bobbing is still allowed, so a moving actor
     // got plain idle and nothing re-selected it until the movement changed. Re-select once bobbing stops.
@@ -1578,9 +1578,7 @@ void CHudItem::CWeaponBobbing::Update(Fmatrix& m, Fmatrix& m2)
     CheckState();
 
     // mmccxvii: Тряска рук при воздействии контролера
-    const bool ControllerCondition = Actor()->NlcPsyShakeActive();
-    // NLC: the aura shakes at full amplitude; low psy health (sivol_psy_vision) at its own share, the larger one wins
-    const float controller_k = Actor()->PsyAuraAffect ? _max(1.f, Actor()->NlcPsyHandShake) : Actor()->NlcPsyHandShake;
+    const bool ControllerCondition = Actor()->PsyAuraAffect;
 
     if ((dwMState & ACTOR_DEFS::mcAnyMove) || ControllerCondition)
 
@@ -1619,7 +1617,7 @@ void CHudItem::CWeaponBobbing::Update(Fmatrix& m, Fmatrix& m2)
         // mmccxvii: Тряска рук при воздействии контролера
         if (ControllerCondition)
         {
-            A = m_fAmplitudeController * k * controller_k;
+            A = m_fAmplitudeController * k;
             ST = m_fSpeedRun * 10 * fTime * k;
         }
         else if (isActorAccelerated(dwMState, m_bZoomMode))
@@ -1670,6 +1668,40 @@ void CHudItem::CWeaponBobbing::Update(Fmatrix& m, Fmatrix& m2)
 
         m2.k.set(mR.k);
         m2.j.set(mR.j);
+    }
+}
+
+// NLC: the walk/run bobbing above stays untouched (the controller branch is for PsyAuraAffect only); this adds a
+// smooth multi-sine tremor at NlcPsyHandShakeHz, scaled by the script's share of the controller amplitude
+void CHudItem::CWeaponBobbing::NlcPsyShake(Fmatrix& m, Fmatrix& m2)
+{
+    const CActor* A = Actor();
+    if (!A || A->PsyAuraAffect || A->NlcPsyHandShake <= 0.01f)
+        return;
+
+    // read the actor directly: dwMState / m_bZoomMode are only refreshed while bobbing runs
+    float k = (A->get_state() & ACTOR_DEFS::mcCrouch) ? m_fCrouchFactor : 1.f;
+    if (A->IsZoomAimingMode())
+    {
+        auto wpn = smart_cast<CWeapon*>(parent_hud_item);
+        k *= (wpn && wpn->IsScopeAttached() && !wpn->IsGrenadeMode()) ? m_fScopeZoomFactor : m_fZoomFactor;
+    }
+    const float amp = m_fAmplitudeController * k * A->NlcPsyHandShake;
+    const float ph = Device.fTimeGlobal * PI_MUL_2 * A->NlcPsyHandShakeHz;
+
+    Fvector dangle;
+    dangle.x = amp * (_sin(ph) * 0.6f + _sin(ph * 1.73f + 1.3f) * 0.4f);
+    dangle.y = amp * (_sin(ph * 0.91f + 2.1f) * 0.6f + _sin(ph * 1.47f + 0.4f) * 0.4f);
+    dangle.z = dangle.x * 0.5f;
+
+    Fmatrix R, mR;
+    R.setHPB(dangle.x, dangle.y, dangle.z);
+    for (Fmatrix* t : {&m, &m2})
+    {
+        t->c.y += dangle.y * 0.5f;
+        mR.mul(*t, R);
+        t->k.set(mR.k);
+        t->j.set(mR.j);
     }
 }
 
@@ -1739,4 +1771,4 @@ void CHudItem::OnAnimationEnd(u32 state)
     }
 }
 
-bool CHudItem::AnmIdleMovingAllowed() const { return !HudBobbingAllowed() || Actor()->NlcPsyShakeActive(); }
+bool CHudItem::AnmIdleMovingAllowed() const { return !HudBobbingAllowed() || Actor()->PsyAuraAffect; }

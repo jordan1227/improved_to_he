@@ -1,0 +1,135 @@
+-- Built-in password cracker of the player's PDA (upgraded PDA, or a base PDA with Docent's module).
+-- Enter on an empty password field of a found PDA starts it; a second Enter within CONFIRM_MS confirms.
+-- It pays with battery hours of the player's OWN PDA only (pda_battery.spend_hours); the anagramm_flash
+-- path (END key / drag and drop) in ui_cheat_pda is a separate source and is not touched.
+-- docs/PDA_UPGRADE_DESIGN.md section 5.
+local HOURS_PER_LETTER = 1.4 -- battery hours per cracked letter (tuning value)
+local STEP_MS = 50 -- same cadence as the flash solver
+local CONFIRM_MS = 4000
+local HINT_KEY = "he_pda_crack_hint_seen"
+local armed_until = 0
+
+local function tr(id) return game.translate_string(id) end
+
+local function tip(id, color, ...)
+	local text = tr(id)
+	if select("#", ...) > 0 then text = string.format(text, ...) end
+	sak.send_tip_local(text, tr("he_pda_crack_caption"), 0, 5, "pribor", "no", color or "yellow")
+end
+
+-- Cyrillic letters as cp1251 codes (this file stays ASCII), then digits and latin, as in the flash solver.
+local function build_alphabet()
+	local t = {}
+	for c = 0xE0, 0xE5 do t[#t + 1] = string.char(c) end
+	t[#t + 1] = string.char(0xB8)
+	for c = 0xE6, 0xFF do t[#t + 1] = string.char(c) end
+	for c = 48, 57 do t[#t + 1] = string.char(c) end
+	for c = 97, 122 do t[#t + 1] = string.char(c) end
+	return t
+end
+
+function installed()
+	return he_pda_access ~= nil and he_pda_access.cracker_installed()
+end
+
+-- One-time hint when the reader opens with the cracker installed.
+function on_open()
+	if not installed() or get_value(HINT_KEY) then return end
+	set_value(HINT_KEY, true)
+	dsh.timeout(1500, function() tip("he_pda_crack_hint") end)
+end
+
+-- Why the cracker cannot start now (string id), or nil.
+local function refusal(len)
+	if not he_pda_access.own_pda() then return "he_pda_crack_no_pda" end
+	if not he_pda_access.own_pda_working() then return "he_pda_crack_pda_down" end
+	if len > he_pda_access.cracker_max_len() then return "he_pda_crack_too_long" end
+	if not pda_battery.can_spend_hours(HOURS_PER_LETTER) then return "he_pda_crack_low_charge" end
+end
+
+local function start(wnd, password, len)
+	local abc = build_alphabet()
+	local current = string.rep("*", len)
+	wnd.solving_anagramm = true
+	tip("he_pda_crack_started")
+
+	local function dead()
+		if ui_cheat_pda.cheat_instance ~= wnd or not wnd.solving_anagramm then
+			wnd.solving_anagramm = false
+			return true
+		end
+		return false
+	end
+
+	local function finish()
+		wnd.solving_anagramm = false
+		tip("he_pda_crack_done", "green")
+		vergas_lib.s_play(vergas_lib.set_pr_from_config_str("list_sounds_pda", "snd_pass_ok"), 1)
+		wnd.v_pass = password
+		wnd:password_check()
+	end
+
+	local next_letter
+	next_letter = function()
+		if dead() then return end
+		if current == password then return finish() end
+		local index = math.random(1, len)
+		while string.sub(current, index, index) ~= "*" do index = math.random(1, len) end
+		local target = string.sub(password, index, index)
+		local pos, tries = 1, 0
+		vergas_lib.s_play(vergas_lib.set_pr_from_config_str("list_sounds_pda", "snd_klik_pda"), 1)
+
+		local function cycle()
+			if dead() then return end
+			if tries > #abc then
+				wnd.solving_anagramm = false
+				tip("he_pda_crack_failed", "red")
+				return
+			end
+			tries = tries + 1
+			local letter = abc[pos]
+			current = string.sub(current, 1, index - 1) .. letter .. string.sub(current, index + 1)
+			wnd.v_pass = current
+			wnd:set_wnd_ps(2)
+			if letter ~= target then
+				pos = pos % #abc + 1
+				dsh.timeout(STEP_MS, cycle)
+				return
+			end
+			-- the letter is found: it must be paid for before it stays
+			if not pda_battery.spend_hours(HOURS_PER_LETTER) then
+				current = string.sub(current, 1, index - 1) .. "*" .. string.sub(current, index + 1)
+				wnd.v_pass = current
+				wnd:set_wnd_ps(2)
+				wnd.solving_anagramm = false
+				tip("he_pda_crack_low_stop", "red")
+				return
+			end
+			dsh.timeout(STEP_MS * 2, next_letter)
+		end
+		cycle()
+	end
+	next_letter()
+end
+
+-- Called from ui_cheat_pda on Enter with an empty field.
+function run(wnd)
+	if wnd.solving_anagramm then return end
+	local password = wnd.tbl_info and wnd.tbl_info[2]
+	if type(password) ~= "string" or password == "" then return end
+	local len = string.len(password)
+	local why = refusal(len)
+	if why then
+		tip(why, "red", he_pda_access.cracker_max_len())
+		return
+	end
+	local now = time_global()
+	if now > armed_until then
+		armed_until = now + CONFIRM_MS
+		local pct = math.max(1, math.floor(pda_battery.hours_to_percent(len * HOURS_PER_LETTER) + 0.5))
+		tip("he_pda_crack_confirm", "yellow", len, pct)
+		return
+	end
+	armed_until = 0
+	start(wnd, password, len)
+end

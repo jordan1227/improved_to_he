@@ -1,0 +1,53 @@
+-- Signal readout and outage warning of the upgraded PDA.
+-- Read-only over the existing interference model (sivol_pda / pda_noise / sivol_critical_malfunction):
+-- no roll, threshold or duration is changed here.
+-- A strong Electra outage rolls once the exposure passes sivol_emp_config.CRITICAL_MALFUNCTION.trigger_threshold
+-- (0.85) and the PDA then goes dark almost at once, so the warning starts earlier, at WARN_AT, and also
+-- sounds while the PDA is holstered. docs/PDA_UPGRADE_DESIGN.md section 4.
+local WARN_AT = 0.65
+local WARN_EVERY_MS = 6000
+local next_warn = 0
+
+local function tr(id) return game.translate_string(id) end
+
+local function active()
+	return db.actor ~= nil and he_pda_access.has_upgrade() and he_pda_access.own_pda_working()
+end
+
+-- 0 (no signal) to 4 bars.
+function bars()
+	if sivol_pda.reception_blocked() then return 0 end
+	local s = sivol_pda.get_smooth() or 0
+	if s < 0.15 then return 4 end
+	if s < 0.35 then return 3 end
+	if s < 0.55 then return 2 end
+	return 1
+end
+
+-- Icon state for the PDA screen: 0 to 4, or nil when the readout does not apply (see ui_pda_layers.xml sig_0..4).
+function level()
+	if not active() then return nil end
+	return bars()
+end
+
+local function chirp()
+	local snd = xr_sound.get_safe_sound_object([[device\pda\pda_tip]])
+	if snd then snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0) end
+end
+
+function on_update()
+	ogse_signals.get_mgr():reschedule(500)
+	if not active() then return end
+	if sivol_critical_malfunction.is_active() then return end
+	local exposure, strong = pda_noise.get_electra_intensity()
+	if not strong then return end
+	if (exposure or 0) * (1 - sivol_pda.get_artifact_shield()) < WARN_AT then return end
+	local now = time_global()
+	if now < next_warn then return end
+	next_warn = now + WARN_EVERY_MS
+	chirp()
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = this.on_update })
+end

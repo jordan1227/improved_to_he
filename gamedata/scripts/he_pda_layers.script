@@ -1,0 +1,162 @@
+-- Map layers of the upgraded PDA: "me" (live position marker), "camps" (known campfires and candles),
+-- "markers" (the player's own map marks). Owns the layer strip on the map tab and the signal readout.
+-- Visibility goes through the engine's level.nlc_map_hide_spot_type (spot types hidden at runtime, never
+-- saved), so every state is re-applied on load, on PDA open/close, on tab changes and every 500 ms.
+-- docs/PDA_UPGRADE_DESIGN.md sections 2 to 4.
+local KEY = "he_pda_layers_v1"
+local TAB_MAP = 1 -- EPdaTabs::eptMap
+local XML_FILE = "ui_pda_layers.xml"
+local MAP_REFRESH_MS = 5000
+
+local LAYERS = {
+	{ key = "me", btn = "btn_me" },
+	{ key = "camps", btn = "btn_camps" },
+	{ key = "markers", btn = "btn_markers" },
+}
+
+local ui -- live overlay while the PDA window is shown
+local last_tab = -1
+local next_map_refresh = 0
+
+local function cfg()
+	local c = get_value(KEY)
+	if type(c) ~= "table" then c = { me = true, camps = true, markers = true } end
+	return c
+end
+
+local function hide(spot_type, hidden)
+	if level.nlc_map_hide_spot_type then level.nlc_map_hide_spot_type(spot_type, hidden) end
+end
+
+-- The strip and every layer are an upgraded-PDA perk and need the PDA to work.
+local function strip_eligible()
+	return he_pda_access.has_upgrade() and he_pda_access.own_pda_working()
+end
+
+function apply()
+	if not db.actor then return end
+	local c = cfg()
+	local fix = he_pda_access.position_fix_eligible() and c.me ~= false
+	hide("actor_location", not fix)
+	hide("actor_location_p", not fix)
+	local camps = he_pda_access.camp_layer_eligible() and c.camps ~= false
+	hide("campfire_known", not camps)
+	hide("campfire_lit", not camps)
+	-- player-made marks are only ever hidden through the strip; without it they always show
+	hide("@user", strip_eligible() and c.markers == false)
+end
+
+class "PDALayers" (CUIScriptWnd)
+function PDALayers:__init(owner) super()
+	self.owner = owner
+	self.tab = last_tab
+	self:Init(0, 0, 1024, 768)
+	self.xml = CScriptXmlInit()
+	self.xml:ParseFile(XML_FILE)
+	self.stat = CUIStatic()
+	self.stat:Init(0, 0, 1024, 768)
+	owner:AttachChild(self.stat)
+	self.stat:Show(true)
+	self.btns = {}
+	for _, l in ipairs(LAYERS) do
+		local b = self.xml:InitButton(l.btn, self.stat)
+		self:Register(b, l.btn)
+		self:AddCallback(l.btn, ui_events.BUTTON_CLICKED, function() self:Toggle(l.key) end)
+		self.btns[l.key] = b
+	end
+	-- signal readout: five icons (0 to 4 bars), only the current one is shown
+	self.sig = {}
+	for k = 0, 4 do
+		self.sig[k] = self.xml:InitStatic("sig_" .. k, self.stat)
+		self.sig[k]:Show(false)
+	end
+	self:Refresh()
+end
+
+function PDALayers:Refresh()
+	local c = cfg()
+	local show = self.tab == TAB_MAP and strip_eligible()
+	for key, b in pairs(self.btns) do
+		b:Show(show)
+		b:Enable(show)
+		b:SetColor(c[key] ~= false and GetARGB(255, 255, 255, 255) or GetARGB(90, 255, 255, 255))
+	end
+	local state = he_pda_signal.level()
+	for k = 0, 4 do self.sig[k]:Show(state == k) end
+end
+
+function PDALayers:Toggle(key)
+	local c = cfg()
+	c[key] = not (c[key] ~= false)
+	set_value(KEY, c)
+	vergas_lib.s_play(vergas_lib.set_pr_from_config_str("list_sounds_pda", "snd_klik_pda"), 1)
+	apply()
+	self:Refresh()
+end
+
+function PDALayers:Close()
+	if self.stat then
+		self:ClearCallbacks()
+		self.owner:DetachChild(self.stat)
+		self.stat = nil
+	end
+end
+
+local function close_ui()
+	if ui then
+		ui:Close()
+		ui = nil
+	end
+end
+
+local function open_ui()
+	if ui then return end
+	local pda = level.get_pda_wnd()
+	if pda then ui = PDALayers(pda) end
+end
+
+-- Called by the engine through ui_pda_addons.on_tab: the active PDA tab (EPdaTabs), -1 when closed.
+function on_tab(tab)
+	last_tab = tonumber(tab) or -1
+	if last_tab < 0 then
+		close_ui()
+	else
+		open_ui()
+		if ui then
+			ui.tab = last_tab
+			ui:Refresh()
+		end
+		if last_tab == TAB_MAP then he_camp_map.refresh() end
+	end
+	apply()
+end
+
+function on_update()
+	ogse_signals.get_mgr():reschedule(500)
+	if not db.actor then return end
+	apply()
+	local pda = level.get_pda_wnd()
+	local shown = pda ~= nil and pda:IsShown()
+	if shown then
+		open_ui()
+		if ui then ui:Refresh() end
+		if last_tab == TAB_MAP and time_global() >= next_map_refresh then
+			next_map_refresh = time_global() + MAP_REFRESH_MS
+			he_camp_map.refresh()
+		end
+	else
+		close_ui()
+	end
+end
+
+function on_load()
+	ui = nil
+	last_tab = -1
+	next_map_refresh = 0
+	apply()
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = this.on_update })
+	sm:subscribe({ signal = "on_late_init_all", fun = this.on_load })
+end

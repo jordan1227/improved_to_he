@@ -362,6 +362,11 @@ void nlc_pda_set_tab(int tab)
         pGameSP->PdaMenu->SetActiveSubdialog(EPdaTabs(tab));
 }
 
+// NLC: hide or show every map spot of one type (for example "actor_location") on the PDA map.
+void nlc_map_hide_spot_type_script(LPCSTR type, bool hidden) { nlc_map_hide_spot_type(type, hidden); }
+
+bool nlc_map_spot_type_hidden_script(LPCSTR type) { return nlc_map_spot_type_hidden(type); }
+
 // NLC: switch the open PDA to the map and centre it on a level position.
 void nlc_pda_show_on_map(LPCSTR level_name, Fvector pos)
 {
@@ -1223,6 +1228,10 @@ void CLevel::script_register(lua_State* L)
                 if (CActor* A = Actor())
                     A->NlcPsyHandShake = _valid(k) ? clampr(k, 0.f, 2.f) : 0.f;
             }),
+            def("nlc_set_psy_hand_shake_speed", [](float hz) {
+                if (CActor* A = Actor())
+                    A->NlcPsyHandShakeHz = _valid(hz) ? clampr(hz, 0.1f, 20.f) : 1.5f;
+            }),
             def("nlc_get_draw_speed_factor", [](LPCSTR name) { return nlc_get_hud_speed_factor(NLC_SPEED_DRAW, name); }),
             def("nlc_get_draw_speed_k", [] { return nlc_hud_speed_k(NLC_SPEED_DRAW); }),
             def("nlc_set_reload_speed_k", [](float k) { nlc_set_hud_speed_factor(NLC_SPEED_RELOAD, "injury", k); }), // .102 name, = "injury" factor
@@ -1235,6 +1244,8 @@ void CLevel::script_register(lua_State* L)
             def("map_iterate_user_spots", &map_iterate_user_spots), // NLC
             def("nlc_pda_set_tab", &nlc_pda_set_tab), // NLC
             def("nlc_pda_show_on_map", &nlc_pda_show_on_map), // NLC
+            def("nlc_map_hide_spot_type", &nlc_map_hide_spot_type_script), // NLC
+            def("nlc_map_spot_type_hidden", &nlc_map_spot_type_hidden_script), // NLC
 
             def("change_level", &change_level), def("set_cam_inert", &set_cam_inert), def("set_monster_relation", &set_monster_relation), def("patrol_path_add", &patrol_path_add),
             def("patrol_path_remove", &patrol_path_remove), def("valid_vertex_id", &valid_vertex_id), def("vertex_count", &vertex_count), def("disable_vertex", &disable_vertex),

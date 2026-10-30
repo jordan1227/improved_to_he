@@ -197,6 +197,14 @@ void CUIPdaWnd::NotifyNotesTab(bool shown)
         fn();
 }
 
+// NLC: tells ui_pda_addons which tab is active (EPdaTabs index, -1 when the PDA is closed).
+void CUIPdaWnd::NotifyTabChanged(int tab)
+{
+    luabind::functor<void> fn;
+    if (ai().script_engine().functor("ui_pda_addons.on_tab", fn))
+        fn(tab);
+}
+
 void CUIPdaWnd::SendMessage(CUIWindow* pWnd, s16 msg, void* pData)
 {
     if (pWnd == UITabControl)
@@ -358,6 +366,8 @@ void CUIPdaWnd::Show()
     UpdateScriptTabs(); // NLC
 
     inherited::Show();
+
+    NotifyTabChanged(m_pActiveSection == eptNoActiveTab ? -1 : int(m_pActiveSection)); // NLC
 }
 
 void CUIPdaWnd::Hide()
@@ -366,6 +376,8 @@ void CUIPdaWnd::Hide()
         NotifyNotesTab(false); // NLC: lets the script save the open note
 
     inherited::Hide();
+
+    NotifyTabChanged(-1); // NLC
 
     InventoryUtilities::SendInfoToActor("ui_pda_hide");
     HUD().GetUI()->UIMainIngameWnd->SetFlashIconState_(CUIMainIngameWnd::efiPdaTask, false);
@@ -457,6 +469,8 @@ void CUIPdaWnd::SetActiveSubdialog(EPdaTabs section)
 
     if (section == eptNotes)
         NotifyNotesTab(true); // NLC
+
+    NotifyTabChanged(int(section)); // NLC
 }
 
 void CUIPdaWnd::Draw()

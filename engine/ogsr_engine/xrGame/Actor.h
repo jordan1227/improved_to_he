@@ -133,10 +133,11 @@ public:
 
     // Имеется ли воздействие пси-ауры на ГГ (тряска рук)
     bool PsyAuraAffect{};
-    // NLC: script-driven psy hand shake (sivol_psy_vision, level.nlc_set_psy_hand_shake): the controller aura shake
-    // at this share of its amplitude, 0 = off; combined with PsyAuraAffect by max
+    // NLC: script-driven psy hand shake (sivol_psy_vision, level.nlc_set_psy_hand_shake): a smooth tremor layered on
+    // the normal bobbing (CWeaponBobbing::NlcPsyShake) at this share of the controller amplitude, 0 = off; off while
+    // PsyAuraAffect runs the controller shake. Speed: level.nlc_set_psy_hand_shake_speed (Hz)
     float NlcPsyHandShake{};
-    bool NlcPsyShakeActive() const { return PsyAuraAffect || NlcPsyHandShake > 0.01f; }
+    float NlcPsyHandShakeHz{1.5f};
 
     /////////////////////////////////////////////////////////////////
     // Inventory Owner

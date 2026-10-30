@@ -99,6 +99,7 @@ CMapManager::CMapManager()
 {
     m_locations = xr_new<CMapLocationWrapper>();
     m_locations->registry().init(1);
+    nlc_map_reset_hidden_spot_types(); // NLC: script re-applies its hidden spot types after a load
 }
 
 CMapManager::~CMapManager() { delete_data(m_locations); }

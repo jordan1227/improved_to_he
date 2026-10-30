@@ -1,0 +1,74 @@
+-- Stash log of the PDA Notes tab: when (day, time) and on which level the player was told about a stash.
+-- Only that (docs/PDA_UPGRADE_DESIGN.md P12): no opened/untouched status, the player remembers what they
+-- emptied. One hook, treasure_manager.CTreasure:give_treasure, calls on_issued when the information
+-- reaches the player. Existing saves are filled in from the treasure manager with an unknown date.
+local KEY = "he_stash_log_v1" -- [stash key] = { gm = absolute game minutes, day, h, m, lvl = level name }
+
+local function tr(id) return game.translate_string(id) end
+
+local function log_table()
+	local log = get_value(KEY)
+	if type(log) ~= "table" then log = {} end
+	return log
+end
+
+-- Level the stash box is on, from its story object; nil when it cannot be told.
+local function box_level(target)
+	local sobj = target and alife():story_object(target)
+	if not sobj then return nil end
+	return alife():level_name(game_graph():vertex(sobj.m_game_vertex_id):level_id())
+end
+
+function on_issued(k)
+	local log = log_table()
+	if log[k] then return end
+	local tm = treasure_manager.get_treasure_manager()
+	local info = tm and tm.treasure_info[k]
+	log[k] = {
+		gm = misc.game_time_minutes(),
+		day = timers.Get_Game_Days() or 0,
+		h = level.get_time_hours(),
+		m = level.get_time_minutes(),
+		lvl = box_level(info and info.target),
+	}
+	set_value(KEY, log)
+end
+
+-- Stashes already issued before this log existed: shown with an unknown date.
+local function backfill(log)
+	local tm = treasure_manager.get_treasure_manager()
+	if not tm then return log end
+	local changed = false
+	for k, v in pairs(tm.treasure_info) do
+		if v.active == true and v.done == true and not log[k] then
+			log[k] = { lvl = box_level(v.target) }
+			changed = true
+		end
+	end
+	if changed then set_value(KEY, log) end
+	return log
+end
+
+local function header(rec)
+	local place = rec.lvl and tr(rec.lvl) or ""
+	local when = rec.gm and string.format(tr("pda_notes_stamp"), rec.day or 0, rec.h or 0, rec.m or 0)
+		or tr("he_stash_log_unknown")
+	if place == "" then return when end
+	return place .. " - " .. when
+end
+
+-- Body of the pinned Stashes entry, newest first.
+function notes_text()
+	local list = {}
+	for k, rec in pairs(backfill(log_table())) do
+		local desc = engine_callbacks.stash_description(k)
+		if desc then table.insert(list, { rec = rec, desc = desc }) end
+	end
+	if #list == 0 then return tr("he_stash_log_empty") end
+	table.sort(list, function(a, b) return (a.rec.gm or -1) > (b.rec.gm or -1) end)
+	local out = ""
+	for _, e in ipairs(list) do
+		out = out .. "%c[255,160,160,160]" .. header(e.rec) .. "\\n%c[default]" .. e.desc .. "\\n \\n"
+	end
+	return out
+end

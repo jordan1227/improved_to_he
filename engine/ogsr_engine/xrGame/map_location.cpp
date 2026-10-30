@@ -25,6 +25,36 @@
 #include "visual_memory_manager.h"
 #include "location_manager.h"
 
+// NLC: spot types hidden by script. A handful of entries at most, so a flat vector is enough.
+static xr_vector<shared_str> g_nlc_hidden_spot_types;
+
+void nlc_map_hide_spot_type(LPCSTR type, bool hidden)
+{
+    if (!type || !type[0])
+        return;
+    const shared_str t(type);
+    auto it = std::find(g_nlc_hidden_spot_types.begin(), g_nlc_hidden_spot_types.end(), t);
+    if (hidden)
+    {
+        if (it == g_nlc_hidden_spot_types.end())
+            g_nlc_hidden_spot_types.push_back(t);
+    }
+    else if (it != g_nlc_hidden_spot_types.end())
+        g_nlc_hidden_spot_types.erase(it);
+}
+
+bool nlc_map_spot_type_hidden(LPCSTR type)
+{
+    if (g_nlc_hidden_spot_types.empty() || !type)
+        return false;
+    for (const shared_str& t : g_nlc_hidden_spot_types)
+        if (t == type)
+            return true;
+    return false;
+}
+
+void nlc_map_reset_hidden_spot_types() { g_nlc_hidden_spot_types.clear(); }
+
 CMapLocation::CMapLocation(LPCSTR type, u16 object_id, bool is_user_loc)
 {
     m_flags.zero();
@@ -514,6 +544,9 @@ void CMapLocation::UpdateMiniMap(CUICustomMap* map)
     CMapSpot* sp = m_minimap_spot;
     if (!sp)
         return;
+    // NLC: "@user" is a pseudo type that hides every player-made marker, whatever its icon type
+    if (nlc_map_spot_type_hidden(m_type) || (IsUserDefined() && nlc_map_spot_type_hidden("@user")))
+        return;
     if (SpotEnabled())
         UpdateSpot(map, sp);
 }
@@ -522,6 +555,8 @@ void CMapLocation::UpdateLevelMap(CUICustomMap* map)
 {
     CMapSpot* sp = m_level_spot;
     if (!sp)
+        return;
+    if (nlc_map_spot_type_hidden(m_type) || (IsUserDefined() && nlc_map_spot_type_hidden("@user"))) // NLC
         return;
     if (SpotEnabled())
         UpdateSpot(map, sp);
