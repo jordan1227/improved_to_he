@@ -1,0 +1,280 @@
+-- [sivol] Yurik's MP5 job in the Garbage tunnel (docs/YURIK_MP5_DESIGN.md).
+-- 1) Sphere restrictor over the green fog: the pack below is out-restricted from it, so the
+--    dogs can't follow the actor into the gas or reach the pocket behind it. The gas damage
+--    itself lives in sivol_anom_effects (FOG_PLACEMENTS).
+-- 2) The corpse's MP5 starts at CORPSE_GUN_COND.
+-- 3) First take of the corpse's MP5 (with or without the job) brings a pack to the tunnel.
+-- 4) Handover: dialogue branches on the gun's condition, Yurik gets ammo for it.
+-- 5) "I'll use it a little longer": nagging, and after KEEP_DAYS the job fails with no reward.
+-- Test: fl sivol_gar_mp5.status(), fl sivol_gar_mp5.spawn_pack(), fl sivol_gar_mp5.debug_keep_days(2),
+--       fl sivol_gar_mp5.keep_timeout()
+
+local LEVEL = "l02_garbage"
+local GUN = "wpn_mp5_m1"
+local UPDATE_MS = 1000
+
+local CORPSE_SID = 124 -- gar_stalker
+local CORPSE_X, CORPSE_Y, CORPSE_Z = -267.29, 0.34, 23.94
+local CORPSE_TAKE_RADIUS = 15
+local CORPSE_GUN_COND = 0.95
+local WORN_BELOW = 0.90
+
+local GAS_NAME = "gar_tunnel_gas"
+local GAS_RADIUS = 13
+local GAS_X, GAS_Y, GAS_Z, GAS_LV, GAS_GV = -248.85, 0.33, 16.54, 10048, 314
+
+local KEEP_DAYS = 4 -- TUNE IN-GAME
+local KEEP_TIMER = "sivol_gar_mp5_keep"
+local STAGE2_MINUTES = 1440
+local STAGE3_MINUTES = 3600
+
+local AMMO_BOXES = 3
+
+local PACK_LOGIC = "[smart_terrains]\nnone = true\n[logic]\ncfg=scripts\\gar\\gar_monsters_tonel.ltx\n[spawner]\nday_night_switch=false\ncheck_distance=false"
+local PACK_TIMER = "sivol_gar_mp5_pack"
+local PACKS = {
+	{ { "dog_normal", 4 } },
+	{ { "dog_normal", 5 } },
+	{ { "dog_normal", 4 } },
+	{ { "tushkano_normal", 6 } },
+	{ { "tushkano_normal", 8 } },
+	{ { "pseudodog_normal", 1 }, { "dog_normal", 3 } },
+}
+local PACK_POINTS = {
+	{ -187.7568, 0.3720, 16.2489, 37887, 314 },
+	{ -188.1625, 0.4000, 24.3063, 37401, 315 },
+	{ -181.8606, -0.2903, -4.1604, 41999, 305 },
+	{ -204.6713, 0.4202, -27.6676, 27141, 306 },
+}
+
+local next_update = 0
+local gas_ready = false
+local gun_cond_at_handover = nil
+
+local function on_level()
+	return level.name() == LEVEL
+end
+
+local function set_server_condition(id, cond)
+	local sobj = g_sim:object(id)
+	if not sobj then return end
+	local pk = get_netpk(sobj, 1)
+	local data = pk:get()
+	data.condition = cond
+	pk:set(data)
+end
+
+-------------------------------------------------------------------------------
+-- gas restrictor
+-------------------------------------------------------------------------------
+local function ensure_gas_restrictor()
+	if gas_ready then return end
+	local id = get_value("sivol_gar_tunnel_gas_id")
+	local sobj = id and g_sim:object(id)
+	if sobj and sobj:name() == GAS_NAME then
+		gas_ready = true
+		return
+	end
+	sobj = g_sim:create("space_restrictor", vector():set(GAS_X, GAS_Y, GAS_Z), GAS_LV, GAS_GV)
+	if not sobj then
+		log2("[sivol_gar_mp5] could not create the %s restrictor", GAS_NAME)
+		return
+	end
+	kotovod_restrictors.rewrite_restrictor(sobj, "", GAS_RADIUS)
+	sobj:set_name(GAS_NAME)
+	set_value("sivol_gar_tunnel_gas_id", sobj.id)
+	gas_ready = true
+	log2("[sivol_gar_mp5] created %s id=%d r=%.1f", GAS_NAME, sobj.id, GAS_RADIUS)
+end
+
+-------------------------------------------------------------------------------
+-- corpse gun
+-------------------------------------------------------------------------------
+local function update_corpse_gun()
+	if get_value("sivol_gar_mp5_cond_set") then return end
+	local corpse = level_object_by_sid(CORPSE_SID)
+	local item = corpse and corpse:object(GUN)
+	if not item then return end
+	item:set_condition(CORPSE_GUN_COND)
+	set_server_condition(item:id(), CORPSE_GUN_COND)
+	set_value("sivol_gar_mp5_cond_set", true)
+	log2("[sivol_gar_mp5] corpse gun id=%d set to condition %.2f", item:id(), CORPSE_GUN_COND)
+end
+
+-------------------------------------------------------------------------------
+-- pack
+-------------------------------------------------------------------------------
+local pack_particle = nil
+local pack_sound = nil
+
+local function create_monster(section, a)
+	local pos = vector():set(a[1], a[2], a[3])
+	local obj = alife():create(section, pos, a[4], a[5])
+	if not obj then
+		log2("[sivol_gar_mp5] could not create %s", section)
+		return
+	end
+	local pk = get_netpk(obj)
+	local data = pk:get()
+	data.custom_data = PACK_LOGIC
+	data.base_out_restrictors = GAS_NAME
+	pk:set(data)
+	sak_spawn.set_st_conds(obj)
+end
+
+function spawn_pack()
+	if not on_level() then
+		log2("[sivol_gar_mp5] pack skipped: actor left %s", LEVEL)
+		return
+	end
+	ensure_gas_restrictor()
+	local pack = PACKS[lua_random(#PACKS)]
+	local index = lua_random(#PACK_POINTS)
+	local a = PACK_POINTS[index]
+	local pos = vector():set(a[1], a[2], a[3])
+	if not pack_particle then
+		pack_particle = particles_object("anomaly2\\teleport")
+		pack_sound = sound_object("anomaly\\teleport_work_2")
+	end
+	pack_particle:play_at_pos(pos)
+	pack_sound:play_no_feedback(db.actor, sound_object.s3d, 0, pos, 1.0)
+	for _, group in ipairs(pack) do
+		for i = 1, group[2] do
+			create_monster(group[1], a)
+		end
+		log2("[sivol_gar_mp5] pack: %d x %s at point %d", group[2], group[1], index)
+	end
+end
+
+local function on_take(obj, sobj)
+	if not obj or obj:section() ~= GUN or get_value("sivol_gar_mp5_pack_done") then return end
+	if not on_level() or not db.actor then return end
+	if db.actor:position():distance_to(vector():set(CORPSE_X, CORPSE_Y, CORPSE_Z)) > CORPSE_TAKE_RADIUS then return end
+	set_value("sivol_gar_mp5_pack_done", true)
+	-- 0-2 game minutes (0-24 real seconds at time_factor 5), rolled here so reloads before the pickup differ
+	local minutes = lua_random(0, 2)
+	log2("[sivol_gar_mp5] corpse gun taken, pack in %d game minutes", minutes)
+	if minutes == 0 then
+		spawn_pack()
+	else
+		timers.start_timer(PACK_TIMER, 0, 0, minutes, "sivol_gar_mp5.spawn_pack()")
+	end
+end
+
+-------------------------------------------------------------------------------
+-- dialogue
+-------------------------------------------------------------------------------
+function have_gun()
+	return db.actor and db.actor:object(GUN) ~= nil
+end
+
+-- The gun leaves the actor in the handover phrase's own action, and the reply is chosen after it,
+-- so the condition is remembered there. Exactly one of these two is always true.
+local function handover_cond()
+	local item = db.actor and db.actor:object(GUN)
+	if item then gun_cond_at_handover = item:condition() end
+	return gun_cond_at_handover or 1
+end
+
+function gun_good()
+	return handover_cond() >= WORN_BELOW
+end
+
+function gun_worn()
+	return handover_cond() < WORN_BELOW
+end
+
+local function create_in_npc(section, sobj)
+	g_sim:create(section, sobj.position, sobj.m_level_vertex_id, sobj.m_game_vertex_id, sobj.id)
+end
+
+function give_gun(first_speaker, second_speaker)
+	handover_cond()
+	dialogs.relocate_item_section(second_speaker, GUN, "out")
+	second_speaker:set_relation(game_object.friend, first_speaker)
+	local sobj = g_sim:object(second_speaker:id())
+	if sobj then
+		for i = 1, AMMO_BOXES do
+			create_in_npc("ammo_9x18_fmj", sobj)
+		end
+	end
+	log2("[sivol_gar_mp5] handover at condition %.3f", gun_cond_at_handover or -1)
+end
+
+function keep_gun()
+	if has_alife_info("gar_dram_novice_mp5_m1_kept") then return end
+	db.actor:give_info_portion("gar_dram_novice_mp5_m1_kept")
+	set_value("sivol_gar_mp5_keep_t", timers.Get_Game_Minutes())
+	timers.start_timer(KEEP_TIMER, KEEP_DAYS, 0, 0, "sivol_gar_mp5.keep_timeout()")
+	log2("[sivol_gar_mp5] actor keeps the gun, Yurik gives up in %d game days", KEEP_DAYS)
+end
+
+local function kept_minutes()
+	return timers.Get_Game_Minutes() - get_value("sivol_gar_mp5_keep_t", timers.Get_Game_Minutes())
+end
+
+function keep_stage_1()
+	return kept_minutes() < STAGE2_MINUTES
+end
+
+function keep_stage_2()
+	local m = kept_minutes()
+	return m >= STAGE2_MINUTES and m < STAGE3_MINUTES
+end
+
+function keep_stage_3()
+	return kept_minutes() >= STAGE3_MINUTES
+end
+
+-- Runs from a timer, so the actor may be on another level and Yurik offline.
+function keep_timeout()
+	if has_alife_info("gar_dram_novice_mp5_m1_done") then return end
+	if has_alife_info("gar_dm_novice_umer") or has_alife_info("gar_dm_novice_dead") then return end
+	-- fail first: the task checks fail infos before complete infos, and _done opens what follows the job
+	db.actor:give_info_portion("gar_dram_novice_mp5_m1_fail")
+	db.actor:give_info_portion("gar_dram_novice_mp5_sour")
+	db.actor:give_info_portion("gar_dram_novice_mp5_m1_done")
+	local sobj = g_sim:story_object(story_ids.gar_dm_novice)
+	if sobj and sobj:alive() then
+		create_in_npc("wpn_bm16", sobj)
+		create_in_npc("ammo_12x70_buck", sobj)
+	else
+		log2("[sivol_gar_mp5] keep timeout: Yurik not found, no sawn-off given")
+	end
+	log2("[sivol_gar_mp5] keep timeout: job failed")
+end
+
+-------------------------------------------------------------------------------
+-- debug
+-------------------------------------------------------------------------------
+function debug_keep_days(days)
+	set_value("sivol_gar_mp5_keep_t", timers.Get_Game_Minutes() - (tonumber(days) or 0) * 1440)
+	log2("[sivol_gar_mp5] keep clock moved back %s days", tostring(days))
+end
+
+function status()
+	local corpse = level_object_by_sid(CORPSE_SID)
+	local item = corpse and corpse:object(GUN)
+	log2("[sivol_gar_mp5] corpse online=%s corpse gun cond=%s | cond_set=%s pack_done=%s | gas id=%s | kept=%s stage=%s fail=%s done=%s",
+		tostring(corpse ~= nil), item and string.format("%.3f", item:condition()) or "-",
+		tostring(get_value("sivol_gar_mp5_cond_set")), tostring(get_value("sivol_gar_mp5_pack_done")),
+		tostring(get_value("sivol_gar_tunnel_gas_id")),
+		tostring(has_alife_info("gar_dram_novice_mp5_m1_kept")),
+		keep_stage_1() and "1" or keep_stage_2() and "2" or "3",
+		tostring(has_alife_info("gar_dram_novice_mp5_m1_fail")),
+		tostring(has_alife_info("gar_dram_novice_mp5_m1_done")))
+end
+
+local function on_update()
+	local now = time_global()
+	if now < next_update then return end
+	next_update = now + UPDATE_MS
+	if not db.actor or not on_level() then return end
+	ensure_gas_restrictor()
+	update_corpse_gun()
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = on_update })
+	sm:subscribe({ signal = "on_take", fun = on_take })
+end

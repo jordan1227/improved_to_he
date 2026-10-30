@@ -92,6 +92,35 @@ local BUZZ_WEAPON_DEGRADE_PER_EXTRA_PER_SEC = 0.0007 -- TUNE IN-GAME
 -- it turns back off as soon as a mask goes on or the aura is left.
 -- intoxication_1.ppe is a placeholder for now per your note - may get swapped.
 local BUZZ_INTOX_EXPOSURE_THRESHOLD_MS = 4200 -- TUNE IN-GAME
+
+-- Green fog hazard (docs/YURIK_MP5_DESIGN.md 2.3b, 4.6). The fog is the static particle
+-- a_ufp_particles\fog_ground_00: render-only, so its placements (from level.ps_static.ltx /
+-- level.ps_static) are listed here and feed the buzz pipeline as extra aura sources.
+-- Full strength to FOG_INNER_R, none at FOG_OUTER_R, y band from the placement. The mask halves
+-- the damage; the 0.6 protection cutoff and the LOS gate don't apply to fog.
+local FOG_INNER_R = 9
+local FOG_OUTER_R = 13
+local FOG_Y_BELOW = 1.5
+local FOG_Y_ABOVE = 3
+local FOG_MASK_MULT = 0.5
+local FOG_RATE_STRONG = 0.03  -- HP/s, TUNE IN-GAME
+local FOG_RATE_WEAK   = BUZZ_ACID_PER_EXTRA_PER_SEC -- a weak buzz at its strongest
+local FOG_PLACEMENTS = {
+    l02_garbage = {
+        { -248.85, 0.33, 16.54, rate = FOG_RATE_STRONG }, -- Yurik's tunnel, no no-outfit cap
+        { 151.26, -5.45, 104.48 }, { 100.67, -1.60, -104.93 }, { 108.78, -1.60, -140.68 },
+        { 139.65, -1.60, -139.17 }, { 112.51, -1.60, -151.30 }, { 94.19, -1.60, -167.84 },
+    },
+    l04_darkvalley = { { -78.6, -6.5, -16.3 }, { -82.4, -6.5, 3.5 } },
+    generators = {
+        { -180.8, 24.6, -433.4 }, { -168.8, 24.6, -434.6 }, { -156.5, 24.6, -430.6 },
+        { -141.9, 24.6, -422.7 }, { -130.3, 24.8, -410.8 },
+    },
+    lost_village = {
+        { -41.5, 1.6, 14.4 }, { -60.4, 1.0, 18.2 }, { -70.2, 1.6, 23.5 },
+        { -19.9, 1.0, 0.8 }, { -25.8, 1.5, -3.8 }, { -39.6, 1.6, -18.7 },
+    },
+}
 -- ===============================================================================
 
 -- ======================= LINE OF SIGHT (thermal + buzz only) =======================
@@ -381,6 +410,8 @@ local function apply_los_gate(best, kind)
     if not best then return nil end
     local actor = db.actor
     if not actor then return best end
+
+    if best.gas_rate then return best end
 
     local state = los_state[kind]
     local raycast_enabled
@@ -704,6 +735,41 @@ local function get_best_buzz_cached(pos)
             buzz_result.x = z.x
             buzz_result.y = z.y
             buzz_result.z = z.z
+        end
+    end
+    buzz_result.gas_rate = nil
+    buzz_result.gas_cap = nil
+    local fog = FOG_PLACEMENTS[level.name()]
+    if fog then
+        for i = 1, #fog do
+            local z = fog[i]
+            local dy = pos.y - z[2]
+            if dy >= -FOG_Y_BELOW and dy <= FOG_Y_ABOVE then
+                local dx = pos.x - z[1]
+                local dz = pos.z - z[3]
+                local center_distance = math.sqrt(dx * dx + dz * dz)
+                if center_distance < FOG_OUTER_R then
+                    local distance = math.max(0, center_distance - FOG_INNER_R)
+                    local proximity = clamp01(1 - distance / (FOG_OUTER_R - FOG_INNER_R))
+                    if proximity > best_extra then
+                        found = true
+                        best_extra = proximity
+                        buzz_result.id = -i
+                        buzz_result.section = "fog_ground_00"
+                        buzz_result.tier_name = "fog"
+                        buzz_result.radius = FOG_OUTER_R - FOG_INNER_R
+                        buzz_result.max_extra = 1
+                        buzz_result.distance = distance
+                        buzz_result.proximity = proximity
+                        buzz_result.extra = proximity
+                        buzz_result.x = z[1]
+                        buzz_result.y = z[2]
+                        buzz_result.z = z[3]
+                        buzz_result.gas_rate = z.rate or FOG_RATE_WEAK
+                        buzz_result.gas_cap = not z.rate
+                    end
+                end
+            end
         end
     end
     return found and buzz_result or nil
@@ -1054,7 +1120,7 @@ local function apply_buzz_acid_tick(best, now)
     last_acid_tick = now
 
     local protection = get_effective_chemical_protection()
-    if protection >= BUZZ_DAMAGE_PROTECTION_THRESHOLD then
+    if not best.gas_rate and protection >= BUZZ_DAMAGE_PROTECTION_THRESHOLD then
         if PERIODIC_DIAGNOSTIC_LOGGING then
             log2(
                 "[sivol_anom_effects] buzz acid tick protection cutoff: section=%s tier=%s protection=%.3f threshold=%.3f",
@@ -1067,9 +1133,14 @@ local function apply_buzz_acid_tick(best, now)
     local damage_multiplier = clamp01(1 - protection)
     local power = BUZZ_ACID_PER_EXTRA_PER_SEC * best.extra
         * (BUZZ_ACID_TICK_MS / 1000) * damage_multiplier
+    if best.gas_rate then
+        local masked = vergas_masks and vergas_masks.get_flag_mask and vergas_masks.get_flag_mask()
+        power = best.gas_rate * best.proximity * (BUZZ_ACID_TICK_MS / 1000)
+            * damage_multiplier * (masked and FOG_MASK_MULT or 1)
+    end
 
     -- Cap per-tick damage for unarmored players (same logic as thermal tick).
-    if not actor:item_in_slot(6) then
+    if not actor:item_in_slot(6) and (not best.gas_rate or best.gas_cap) then
         power = math.min(power, BUZZ_ACID_MAX_POWER_NO_ARMOR)
     end
 
@@ -1162,6 +1233,16 @@ local function apply_buzz_weapon_degrade_tick(best, now)
     end
 end
 
+-- One-time thought the first time the actor breathes the fog unmasked.
+local function update_fog_tip(best)
+    if not best or not best.gas_rate or best.proximity < 0.5 then return end
+    if has_alife_info("sivol_gas_breath_tip_given") then return end
+    if vergas_masks and vergas_masks.get_flag_mask and vergas_masks.get_flag_mask() then return end
+    db.actor:give_info_portion("sivol_gas_breath_tip_given")
+    sak.send_tip_local(game.translate_string("sivol_gas_breath_tip"),
+        game.translate_string("thinking_out_loud"), 1, 15, "g_g", "sak", "yellow")
+end
+
 local function check_anomaly_proximity()
     local actor = db.actor
     if not enabled then
@@ -1199,6 +1280,7 @@ local function check_anomaly_proximity()
     apply_thermal_burn_tick(best_thermal, now)
 
     update_buzz_state(best_buzz, dt)
+    update_fog_tip(best_buzz)
     apply_buzz_acid_tick(best_buzz, now)
     apply_buzz_weapon_degrade_tick(best_buzz, now)
     update_buzz_intoxication(best_buzz, dt)
