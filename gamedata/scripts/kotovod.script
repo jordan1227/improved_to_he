@@ -493,13 +493,6 @@ local food_anim_time = {
 ---------- Выдача рандомных рецептов (с) Котовод ----------
 -----------------------------------------------------------
 -- Список уровней для упрощения поддержки
-local RECIPE_LEVELS = {
-    [1] = "first",
-    [2] = "second",
-    [3] = "third",
-    [4] = "dummy",
-    [5] = "modificat"
-}
 
 
 
@@ -3486,179 +3479,54 @@ function sms_recipt_found( info )
 		)
 	--end
 end
-function generate_recipes_table()
-    local table_recipes = {
-        first     = {},
-        second    = {},
-        third     = {},
-        dummy     = {},
-        modificat = {}
-    }
+-- sivol: recipe picks (docs/LOOT_RNG_DESIGN.md 3.4). has_alife_info is the only "known"
+-- test. An empty tier falls back to the nearest lower tier, then higher; early tiers never
+-- reach modifications. RECIPE_ORDER index 6 is the absolutes, offered after modifications.
+local RECIPE_ORDER = {
+    [1] = { 1, 2, 3 },
+    [2] = { 2, 1, 3 },
+    [3] = { 3, 2, 1 },
+    [4] = { 4, 3, 2, 1 },
+    [5] = { 5, 6, 3, 2, 1 },
+}
 
-    -- Единая функция для добавления рецептов уровня
-    local function add_level_recipes(source, target)
-        for _, recipe in pairs(source) do 
-            if not has_alife_info(recipe) then 
-                table.insert(table_recipes[target], recipe)
-            end 
-        end
+-- draw( n ) returns an index in 1..n. Recipes reserved for a task reward are skipped.
+function pick_unknown_recipe( lvl, draw )
+    local order = RECIPE_ORDER[ lvl ]
+    if not order then return nil end
+    local sources = { first_level, second_level, third_level, dummys, modifications_level, absoluts }
+    local reserved = {}
+    for _, r in pairs( get_value( "task_recipe_rewards", {} ) ) do
+        if r then reserved[ r ] = true end
     end
-
-    -- Добавляем рецепты для каждого уровня
-    add_level_recipes(kotovod.first_level, "first")
-    add_level_recipes(kotovod.second_level, "second")
-    add_level_recipes(kotovod.third_level, "third")
-    add_level_recipes(kotovod.dummys, "dummy")
-    add_level_recipes(kotovod.modifications_level, "modificat")
-    
-	set_value( "table_recipes", table_recipes )
-end
-function add_recipes_to_actor(lvl)
-	if get_value( "table_recipes", nil ) == nil then generate_recipes_table() end    
-    
-    local table_recipes = get_value( "table_recipes", {} )
-
-    -- Обработка абсолютов в отдельной функции
-    if str_in_tab(lvl, absoluts) then 
-        handle_absolut(lvl, table_recipes)
-        return
-    end
-
-    -- Поиск конкретного рецепта
-    if type(lvl) ~= "number" then 
-        if find_specific_recipe(lvl, table_recipes) then
-            return
-        end
-    end
-
-    -- Основной цикл выдачи рецептов    
-    while true do
-        local level_name = RECIPE_LEVELS[lvl]
-        local current_table = table_recipes[level_name]
-        
-        -- Если есть рецепты - выдаём случайный
-        if #current_table > 0 then
-            local index = dsh.get_next_random("kotovod.add_recipes_to_actor", #current_table)
-            give_recipe(current_table[index])
-            table.remove(current_table, index)        
-            set_value( "table_recipes", table_recipes )
-            return
-        end
-
-        -- Особая обработка уровня модификаций
-        if lvl == 5 and not get_value( "add_absoluts" ) then 
-            add_remaining_absoluts(table_recipes)
-			set_value( "table_recipes", true )
-            -- Продолжаем цикл для выдачи добавленных рецептов
-        else
-            -- Ищем рецепты на других уровнях
-            local found = false
-            local direction = lvl > 3 and -1 or 1
-            
-            repeat 
-                lvl = lvl + direction
-                if #table_recipes[RECIPE_LEVELS[lvl]] > 0 then
-                    found = true
-                    break
-                end
-            until lvl == 3
-
-            if not found then
-                add_rnd_treasure()
-                return
+    for _, tier in ipairs( order ) do
+        local candidates = {}
+        for _, info in ipairs( sources[ tier ] ) do
+            if not has_alife_info( info ) and not reserved[ info ] then
+                table.insert( candidates, info )
             end
         end
-    end    
-end    
-
--- Для выдачи рандомных рецептов из пдашек тайниковых
-function get_rnd_recipe_for_pda( lvl )
-    if not get_value( "table_recipes" ) then generate_recipes_table() end
-    local table_recipes = get_value( "table_recipes", {} )
-    
-    local levels_to_try = { lvl }
-    for i = 1, 3 do
-        if i ~= lvl then
-            table.insert( levels_to_try, i )
+        if #candidates > 0 then
+            return candidates[ draw( #candidates ) ]
         end
     end
-    
-    for _, try_lvl in ipairs( levels_to_try ) do
-        local level_name = RECIPE_LEVELS[ try_lvl ]
-        if level_name then
-            local current_table = table_recipes[ level_name ]
-            if current_table and #current_table > 0 then
-                local index = dsh.get_next_random( "kotovod.get_rnd_recipe_for_pda", #current_table )
-                local info = current_table[ index ]
-                table.remove( current_table, index )
-				set_value( "table_recipes", table_recipes )
-                return "enc_" .. string.sub( info, 6 ) .. "_desc"
-            end
-        end
-    end
-    
-    -- table_recipes пуст - пробуем из полных таблиц, исключая уже выданные на пда
-	local all_tables = { kotovod.first_level, kotovod.second_level, kotovod.third_level, kotovod.dummy_level, kotovod.modifications_level }
-    for _, try_lvl in ipairs( levels_to_try ) do
-        local tbl = all_tables[ try_lvl ]
-        if tbl and #tbl > 0 then
-            local not_given = {}
-            for _, info in ipairs( tbl ) do
-                local enc_id = "enc_" .. string.sub( info, 6 ) .. "_desc"
-                if not vergas_pda.is_enc_given( enc_id ) then
-                    table.insert( not_given, enc_id )
-                end
-            end
-            if #not_given > 0 then
-                local enc_id = not_given[ lua_random( 1, #not_given ) ]
-                return enc_id
-            end
-        end
-    end
-    
     return nil
 end
 
-function handle_absolut(recipe, table_recipes)
-    give_recipe(recipe)
-    if get_value( "add_absoluts" ) then 
-        remove_recipe(recipe, table_recipes)
+function add_recipes_to_actor( lvl )
+    local info = pick_unknown_recipe( lvl, function( n )
+        return dsh.get_next_random( "kotovod.add_recipes_to_actor", n )
+    end )
+    if info then
+        give_recipe( info )
+    else
+        add_rnd_treasure()
     end
 end
-function find_specific_recipe(recipe, table_recipes)
-    for _, level_recipes in pairs(table_recipes) do
-        for i = #level_recipes, 1, -1 do  
-            if string.find(level_recipes[i], recipe, 1, true) then  
-                give_recipe(recipe)
-                table.remove(level_recipes, i)  
-                set_value( "table_recipes", table_recipes )
-                return true
-            end  
-        end  
-    end
-    return false
-end
+
 function give_recipe(recipe)
     db.actor:give_info_portion(recipe)
     sms_recipt_found(recipe)
-end
-function add_remaining_absoluts(table_recipes)
-    for _, recipe in pairs(absoluts) do 
-        if not has_alife_info(recipe) then 
-            table.insert(table_recipes.modificat, recipe)    
-        end    
-    end
-    set_value( "table_recipes", table_recipes )
-end
-function remove_recipe(recipe, table_recipes)
-    for _, level_recipes in pairs(table_recipes) do
-        for i = #level_recipes, 1, -1 do
-            if level_recipes[i]:find(recipe) then        
-                table.remove(level_recipes, i)
-                set_value( "table_recipes", table_recipes )
-            end    
-        end
-    end    
 end
 -- [HE-PORT]
 local REWARD_REC_LEVEL = {
@@ -3697,68 +3565,9 @@ function get_recipe_name( info )
 end
 
 function pick_recipe( lvl )
-    if get_value( "table_recipes", nil ) == nil then generate_recipes_table() end
-    local table_recipes = get_value( "table_recipes", {} )
-    if type( lvl ) ~= "number" then return nil end
-
-    local reserved = get_value( "task_recipe_rewards", {} )
-    local reserved_set = {}
-    for _, r in pairs( reserved ) do
-        if r then reserved_set[ r ] = true end
-    end
-
-    local function collect_candidates( level_name )
-        local current_table = table_recipes[ level_name ]
-        local candidates = {}
-        if not current_table then return candidates end
-        for _, info in ipairs( current_table ) do
-            if ( not has_alife_info( info ) ) and ( not reserved_set[ info ] ) then
-                table.insert( candidates, info )
-            end
-        end
-        return candidates
-    end
-
-    local try_lvl = lvl
-    local guard = 0
-    while guard < 16 do
-        guard = guard + 1
-        local level_name = RECIPE_LEVELS[ try_lvl ]
-        local candidates = collect_candidates( level_name )
-        if #candidates > 0 then
-            local index = dsh.get_next_random( "kotovod.pick_recipe", #candidates )
-            return candidates[ index ]
-        end
-
-        if try_lvl == 5 and not get_value( "add_absoluts" ) then
-            add_remaining_absoluts( table_recipes )
-            set_value( "table_recipes", table_recipes )
-            table_recipes = get_value( "table_recipes", {} )
-            candidates = collect_candidates( RECIPE_LEVELS[ 5 ] )
-            if #candidates > 0 then
-                local index = dsh.get_next_random( "kotovod.pick_recipe", #candidates )
-                return candidates[ index ]
-            end
-            return nil
-        end
-
-        local found = false
-        local direction = try_lvl > 3 and -1 or 1
-        local scan = try_lvl
-        repeat
-            scan = scan + direction
-            if RECIPE_LEVELS[ scan ] and #collect_candidates( RECIPE_LEVELS[ scan ] ) > 0 then
-                try_lvl = scan
-                found = true
-                break
-            end
-        until scan == 3
-
-        if not found then
-            return nil
-        end
-    end
-    return nil
+    return pick_unknown_recipe( lvl, function( n )
+        return dsh.get_next_random( "kotovod.pick_recipe", n )
+    end )
 end
 
 function reserve_task_recipe( task_id, reward_rec )
@@ -3795,11 +3604,7 @@ function give_task_recipe( task_id, reward_rec )
         set_value( "task_recipe_rewards", map )
     end
     if info and not has_alife_info( info ) then
-        if get_value( "table_recipes", nil ) == nil then generate_recipes_table() end
-        local table_recipes = get_value( "table_recipes", {} )
-        if not find_specific_recipe( info, table_recipes ) then
-            give_recipe( info )
-        end
+        give_recipe( info )
         return true
     end
     local lvl = reward_rec and REWARD_REC_LEVEL[ reward_rec ] or nil

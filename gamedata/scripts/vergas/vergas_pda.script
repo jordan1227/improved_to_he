@@ -41,14 +41,6 @@ local function take_pda_seed(pda_id)
 	return key
 end
 
--- Runs fn with rnd() drawing from stream (for callers outside set_pda_info).
-function with_rng(stream, fn)
-	local prev = pda_rng
-	pda_rng = stream
-	fn()
-	pda_rng = prev
-end
-
 local function save_pending()
 	local list = {}
 	for _, e in ipairs(tbl_spwn_pda) do
@@ -183,7 +175,7 @@ function set_pda_info()
                         local shron_list = {}
                         for item in string.gmatch( forced_msg, "([^;]+)" ) do
                             local trimmed = vergas_lib.trim( item )
-                            if string.sub( trimmed, 1, 4 ) == "enc_" then
+                            if string.sub( trimmed, 1, 4 ) == "enc_" or string.sub( trimmed, 1, 4 ) == "rec_" then
                                 table.insert( msg_parts, trimmed )
                             elseif string.sub( trimmed, 1, 12 ) == "pda_actions." then
                                 table.insert( msg_parts, trimmed )
@@ -209,7 +201,7 @@ function set_pda_info()
                         shron = #shron_list > 0 and table.concat( shron_list, "," ) or "0"
 
                         if not only_flag then
-                            local std_msg = set_msg( grup_s, 0, rang_n, treasure_manager.rank_name( rank_real or rang_n ) )
+                            local std_msg = set_msg( grup_s, 0, rank_real or rang_n, treasure_manager.rank_name( rank_real or rang_n ) )
                             if std_msg and std_msg ~= "" then
                                 for part in string.gmatch( std_msg, "([^,]+)" ) do
                                     table.insert( msg_parts, part )
@@ -236,7 +228,7 @@ function set_pda_info()
 							shron = 0
 						end
 						if not shron then shron = 0 end
-						msg = set_msg( grup_s, shron, rang_n, treasure_manager.rank_name( rank_real or rang_n ) )
+						msg = set_msg( grup_s, shron, rank_real or rang_n, treasure_manager.rank_name( rank_real or rang_n ) )
 					end
 
                     info_string = login.."|"..pass.."|"..name.."|"..s_n.."|"..msg.."|"..shron.."|0"
@@ -319,14 +311,15 @@ local function build_msg_pool( grup, tier )
     return unseen, seen, shown
 end
 
+-- sivol: rang_n picks the recipe tier; callers pass the real owner rank when there is one
 function set_msg( grup, shron, rang_n, tier )
 
     local rank_config = {
-        { min = 0,    max = 299,  tbl = nil,                  			chance = 0    },
-        { min = 300,  max = 599,  tbl = kotovod.first_level,  			chance = 0.02 },
-        { min = 600,  max = 899,  tbl = kotovod.second_level, 			chance = 0.03 },
-        { min = 900,  max = 1199, tbl = kotovod.third_level,  			chance = 0.05 },
-        { min = 1200, max = 9999, tbl = kotovod.modifications_level,  	chance = 0.05 },
+        { min = 0,    max = 299,  tier = nil, chance = 0    },
+        { min = 300,  max = 599,  tier = 1,   chance = 0.02 },
+        { min = 600,  max = 899,  tier = 2,   chance = 0.03 },
+        { min = 900,  max = 1199, tier = 3,   chance = 0.05 },
+        { min = 1200, max = 9999, tier = 5,   chance = 0.05 },
     }
 
     local pool, seen, shown = build_msg_pool( grup, tier )
@@ -356,12 +349,12 @@ function set_msg( grup, shron, rang_n, tier )
     end
 
     -- рецепт по рангу
+    rang_n = tonumber( rang_n )
     if rang_n then
         for _, cfg in ipairs( rank_config ) do
             if rang_n >= cfg.min and rang_n <= cfg.max then
-                if cfg.tbl and #cfg.tbl > 0 and rnd() < cfg.chance then
-                    local info_id = cfg.tbl[ rnd( 1, #cfg.tbl ) ]
-                    table.insert( tbl_msg, "enc_" .. string.sub( info_id, 6 ) .. "_desc" )
+                if cfg.tier and rnd() < cfg.chance then
+                    table.insert( tbl_msg, "rec_" .. cfg.tier )
                 end
                 break
             end
@@ -383,7 +376,7 @@ function set_msg( grup, shron, rang_n, tier )
     -- форматируем числовые записи
     local formatted = {}
     for _, v in ipairs( tbl_msg ) do
-        if string.sub( v, 1, 4 ) == "enc_" then
+        if string.sub( v, 1, 4 ) == "enc_" or string.sub( v, 1, 4 ) == "rec_" then
             table.insert( formatted, v )
         elseif string.find( v, "+" ) then
             -- составная запись тайников — не трогаем
@@ -401,6 +394,76 @@ function set_msg( grup, shron, rang_n, tier )
     return table.concat( formatted, "," )
 end
 
+-- sivol: a recipe PDA holds only a tier ("rec_N") until that entry is first read, so an unread
+-- PDA uses up nothing and never shows a known recipe (docs/LOOT_RNG_DESIGN.md 3.4). Nothing left
+-- to learn: a stash, as in kotovod.add_recipes_to_actor; no stash: one chatter line.
+-- reader_info is the reader's split custom_data; fields 5 and 6 are updated in place.
+function resolve_recipe_token( reader_info, token, grup )
+    grup = grup or "stalker"
+    local pda_id = get_current_pda_id()
+    local stream = sivol_seeded_rng.new( "pda_recipe|" .. tostring( pda_id ) .. "|" .. token )
+    local rank = tonumber( string.sub( reader_info[ 4 ], 9, 12 ) ) or 600
+    local result, stash
+
+    local info = kotovod.pick_unknown_recipe( tonumber( string.sub( token, 5 ) ), function( n )
+        return stream:int( 1, n )
+    end )
+    if info then
+        result = "enc_" .. string.sub( info, 6 ) .. "_desc"
+    elseif reader_info[ 7 ] ~= "1" then
+        local tm = treasure_manager.get_treasure_manager()
+        local shron = tm:use( nil, grup, rank, stream )
+        if shron and shron ~= 0 then
+            stash = tm:reserve_treasure( shron, nil, stream )
+        end
+        local id = stash and vergas_lib.set_pr_from_config( "list_treasure_pda", stash )
+        if id and id ~= 0 then
+            result = tostring( id )
+        else
+            stash = nil
+        end
+    end
+    if not result then
+        local pool, seen, shown = build_msg_pool( grup, treasure_manager.rank_name( rank ) )
+        result = #pool > 0 and pool[ stream:int( 1, #pool ) ] or "000"
+        shown[ "m"..result ] = true
+        seen[ grup ] = shown
+        set_value( SEEN_KEY, seen )
+    end
+
+    local parts = vergas_lib.str_explode( ",", reader_info[ 5 ], true )
+    for i = 1, #parts do
+        if parts[ i ] == token then
+            parts[ i ] = result
+            break
+        end
+    end
+    reader_info[ 5 ] = table.concat( parts, "," )
+    if stash then
+        local old_stash = reader_info[ 6 ]
+        reader_info[ 6 ] = ( old_stash == nil or old_stash == "0" ) and stash or ( old_stash .. "," .. stash )
+    end
+
+    local sobj = pda_id and alife():object( pda_id )
+    local pk = sobj and get_netpk( sobj, 1 )
+    if pk then
+        local data = pk:get()
+        local old_cdata = data.custom_data
+        local record = vergas_lib.str_explode( "|", old_cdata, true )
+        record[ 5 ] = reader_info[ 5 ]
+        record[ 6 ] = reader_info[ 6 ]
+        data.custom_data = table.concat( record, "|" )
+        pk:set( data )
+        change_info_pda_record( old_cdata, data.custom_data )
+    else
+        log2( "[pda_recipe] !! no PDA object for serial %s, result not saved", tostring( reader_info[ 4 ] ) )
+    end
+    if treasure_manager.pda_log then
+        log2( "[pda_recipe] pda=%s token=%s result=%s stash=%s", tostring( pda_id ), token, tostring( result ), tostring( stash ) )
+    end
+    return result
+end
+
 function insert_levels_msg(tbl, grup)
 	local i
 	local j
@@ -409,7 +472,7 @@ function insert_levels_msg(tbl, grup)
 	
 	for i = 1, #tbl do
 		-- пропускаем рецепты (enc_*) через многоуровневость не гоним
-		if string.sub( tbl[i], 1, 4 ) == "enc_" then
+		if string.sub( tbl[i], 1, 4 ) == "enc_" or string.sub( tbl[i], 1, 4 ) == "rec_" then
 			table.insert( tbl_tmp, tbl[i] )
 		else
 			n = vergas_lib.set_pr_from_config("list_multilevel", grup.."_"..tbl[i])
@@ -1742,24 +1805,8 @@ function process_lvl_messages( messages )
 		messages = string.gsub( messages, "[%.%,]", ";" )
 	end
     
-    messages = string.gsub( messages, "lvl(%d+)u", function( lvl )
-        return kotovod.get_rnd_recipe_for_pda( tonumber( lvl ) ) or ""
-    end)
-    messages = string.gsub( messages, "lvl(%d+)", function( lvl )
-        local tables = {
-            [ "1" ] = kotovod.first_level,
-            [ "2" ] = kotovod.second_level,
-            [ "3" ] = kotovod.third_level,
-            [ "4" ] = kotovod.dummy_level,
-            [ "5" ] = kotovod.modifications_level,
-        }
-        local tbl = tables[ lvl ]
-        if tbl and #tbl > 0 then
-            local info = tbl[ rnd( 1, #tbl ) ]
-            return "enc_" .. string.sub( info, 6 ) .. "_desc"
-        end
-        return ""
-    end)
+    -- sivol: lvlN and lvlNu are a tier token now; resolve_recipe_token picks the recipe on first read
+    messages = string.gsub( messages, "lvl(%d+)u?", "rec_%1" )
     
     -- дедупликация: убираем одинаковые enc_* в рамках одной строки
     local seen = {}
