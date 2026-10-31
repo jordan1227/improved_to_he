@@ -17,6 +17,7 @@
 #include "../script_game_object.h"
 #include "../CustomDetector.h"
 #include "../player_hud.h"
+#include "UIInventoryLayout.h" // NLC
 
 CUICellItem* CUIInventoryWnd::CurrentItem() { return m_pCurrentCellItem; }
 
@@ -46,6 +47,12 @@ void CUIInventoryWnd::SendMessage(CUIWindow* pWnd, s16 msg, void* pData)
     else if (UIExitButton == pWnd && BUTTON_CLICKED == msg)
     {
         GetHolder()->StartStopMenu(this, true);
+    }
+    else if (UISortButton && UISortButton == pWnd && BUTTON_CLICKED == msg) // NLC
+    {
+        inv_layout().ResetPositions();
+        InitInventory();
+        inv_layout().Commit(m_pUIBagList);
     }
 
     CUIWindow::SendMessage(pWnd, msg, pData);
@@ -186,6 +193,7 @@ void CUIInventoryWnd::InitInventory()
 
     ruck_list = m_pInv->m_ruck;
     std::sort(ruck_list.begin(), ruck_list.end(), InventoryUtilities::GreaterRoomInRuck);
+    inv_layout().BeginFill(m_pUIBagList, CInventoryLayout::wndInventory, ruck_list); // NLC
 
     int i = 1;
     for (it = ruck_list.begin(), it_e = ruck_list.end(); it != it_e; ++it, ++i)
@@ -206,6 +214,10 @@ void CUIInventoryWnd::InitInventory()
             m_pUIBagList->SetItem(itm);
         }
     }
+
+    inv_layout().EndFill(m_pUIBagList); // NLC
+    if (UISortButton) // NLC
+        UISortButton->Show(m_pUIBagList->LayoutMode() == CUIDragDropListEx::lmManual);
 
     m_pUIBagList->SetScrollPos(bag_scroll);
 

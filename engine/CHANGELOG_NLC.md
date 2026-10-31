@@ -5,6 +5,58 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.168 (2026-10-31)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `858A484A80569954093B39A52382E082EC0A90C3E0AB3A9650459A78A42CBB2B` (archived with its PDB in `nlc_tools/builds/20261031_144745_858a484a`).
+- **Status:** runtime pending. Built on `nlc-3.589.167`.
+- Trade window: Ctrl+wheel during an ammo drag picks the amount, by ten with Shift. Whole boxes move, one box splits into a new box of the same owner (`CUITradeWnd::MoveAmount`).
+- Trade list contents now survive a list rebuild, by item id. Before, any inventory change during a deal returned them to the bags.
+- Ammo in a deal is priced from `CWeaponAmmo::ExactCost` and summed before rounding: selling rounds down, buying up (`CTrade::GetItemPriceExact`, used by `GetItemPrice` too). A full box costs about 1 base unit less than before.
+- **Required game data:** `config/external.ltx`, `scripts/engine_callbacks.script`, `scripts/sivol/sivol_trade_ammo.script` (`can_split`: a generic seller's lot ammo can't be split).
+
+## nlc-3.589.167 (2026-10-31)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `1599D035E2813A9B43416863B043A7EAFC5223F5ABA4552CEEA188561D847F5B` (archived with its PDB in `nlc_tools/builds/20261031_143413_1599d035`).
+- **Status:** runtime pending. Built on `nlc-3.589.166`.
+- Turned bag items rotate the other way (clockwise), addons included. Vertical slot lists are unchanged.
+- Review fixes: `g_inv_rotate 0` keeps saved rotation; a list wider than the stored column count keeps the layout (4:3); a respawned weapon's cell also goes to its section's home, because pending transfers aren't saved; out-of-range cells in a stored layout are ignored.
+- **Required game data:** `scripts/alpet/nlc_container.script` (no-backpack drop marks expire after 2 s).
+
+## nlc-3.589.166 (2026-10-31)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `AA49798AB10946909E465C37D0331191840055E0FF86BBD2038BCE60E02AB79D` (archived with its PDB in `nlc_tools/builds/20261031_140108_aa49798a`).
+- **Status:** runtime pending. Built on `nlc-3.589.165`, whose tests passed except row 20, which is with the testers.
+- The Sort buttons in the corpse and box window keep the other list's scroll.
+- Optional `<icon>` child of `<sort_button>` and `<sort_button_other>`: a child window of the button, so it hides with it. Coordinates are relative to the button.
+- **Required game data:** `inventory_new*.xml`, `carbody_new*.xml`, `trade*.xml`.
+
+## nlc-3.589.165 (2026-10-31)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `38BF59C39509C3B8384EA34CD26AF68A91A6B9583862797C1D8CD899FEC4A422` (archived with its PDB in `nlc_tools/builds/20261031_132645_38bf59c3`).
+- **Status:** runtime pending. Built on `nlc-3.589.164`, whose tests passed except the scope bug below.
+- Scope swap lost the old scope when the weapon was in a slot: the old scope spawned first and took the slot reservation `ScopeRespawn` makes for the weapon, ending up in neither the slot nor the ruck list. The weapon now spawns first, as in `Detach`.
+- Inventory boxes keep their own arrangement and rotation: one `inventory_layout_<box id>` string per arranged box, cvar `g_inv_manual_box`, `<sort_button_other>` node. A box nobody arranged is not stored and stays sorted. Corpses stay sorted.
+- **Required game data:** `carbody_new*.xml`, `inventory_new_16.xml`, `trade_16.xml`, `ui_mm_opt.xml`, `ui_st_mm.xml` (rus, eng), `ui_mm_opt_gameplay.script`, `ui_mm_opt_main.script`.
+
+## nlc-3.589.164 (2026-10-31)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `27AB0F3C5EA417340B5D6139695025B23CD96823FABEEC762DD61BB45952C598` (archived with its PDB in `nlc_tools/builds/20261031_125625_27ab0f3c`).
+- **Status:** runtime pending. `docs/INVENTORY_LAYOUT_DESIGN.md` is the record.
+- Manual bag arrangement (`ui/UIInventoryLayout`): one shared layout saved as the `inventory_layout` string in `g_ScriptVars`, no save format change. Cvars `g_inv_manual_inventory`, `g_inv_manual_trade`, `g_inv_manual_carbody`. Optional `<sort_button>` XML node in the three windows.
+- Dragging in a manual bag: footprint preview, swap with one item, refuse several (Shift pushes), wheel scrolls during a drag.
+- Per-item rotation with RMB during a drag, `g_inv_rotate`.
+- Section buttons report through `level.set_inventory_view(mode)`; they show a compact read-only list. `level.inventory_layout_dump()` logs the layout.
+- Scope swap in one respawn: `CWeaponMagazined::CanSwapScope` / `SwapScope`, weapon menu rows, scope menu row, drag onto a weapon in a slot.
+- Item menu order, separators and icons from `[inventory_item_menu]`.
+- Corpses and boxes open without a backpack (`ActorInput.cpp`); Take All is hidden then. Trade still needs a backpack.
+- `CUIDragDropListEx::Compact` no longer loses every item.
+- **Required game data:** `textures/ui/ui_inv_layout.dds`, `config/misc/inventory_layout.ltx`, `config/system.ltx`, the `sort_button` nodes in `inventory_new*.xml`, `carbody_new*.xml`, `trade*.xml`, options menu rows and strings, `scripts/vergas/inv_buttons_use.script`, `vergas_lib.script`, `alpet/nlc_container.script`, `kotovod/on_body_item_drop.script`.
+
 ## nlc-3.589.163 (2026-10-30)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

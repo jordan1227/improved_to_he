@@ -253,6 +253,8 @@ float CWeaponAmmo::Weight() const
     return 0;
 }
 
+float CWeaponAmmo::ExactCost() const { return float(m_cost) * float(m_boxCurr) / float(m_boxSize); }
+
 u32 CWeaponAmmo::Cost() const
 {
     float res = (float)m_cost;

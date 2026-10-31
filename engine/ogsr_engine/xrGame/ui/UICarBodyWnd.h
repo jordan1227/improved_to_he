@@ -66,6 +66,8 @@ protected:
     CUICharacterInfo* m_pUICharacterInfoRight;
     CUIPropertiesBox* m_pUIPropertiesBox;
     CUI3tButton* m_pUITakeAll;
+    CUI3tButton* m_pUISortButton{}; // NLC: optional <sort_button> node
+    CUI3tButton* m_pUISortOtherButton{}; // NLC: optional <sort_button_other> node, the box's side
 
 public:
     CUICellItem* m_pCurrentCellItem;
@@ -86,6 +88,7 @@ protected:
 
     // Взять все
     void TakeAll();
+    bool HasBackpack(); // NLC
     void MoveItem(CUICellItem* itm);
     void MoveItems(CUICellItem* itm);
     void DropItemsfromCell(bool b_all);

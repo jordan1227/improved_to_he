@@ -30,6 +30,7 @@ using namespace InventoryUtilities;
 #include "UIBodyHealthWnd.h"
 #include "UIOutfitSlot.h"
 #include "UI3tButton.h"
+#include "UIInventoryLayout.h" // NLC
 #include <format>
 
 #define INVENTORY_ITEM_XML "inventory_item.xml"
@@ -260,6 +261,15 @@ void CUIInventoryWnd::Init()
     AttachChild(UIExitButton);
     xml_init.Init3tButton(uiXml, "exit_button", 0, UIExitButton);
 
+    if (uiXml.NavigateToNode("sort_button", 0)) // NLC
+    {
+        UISortButton = xr_new<CUI3tButton>();
+        UISortButton->SetAutoDelete(true);
+        AttachChild(UISortButton);
+        xml_init.Init3tButton(uiXml, "sort_button", 0, UISortButton);
+        InitSortButtonIcon(uiXml, "sort_button", UISortButton);
+    }
+
     // Load sounds
     if (uiXml.NavigateToNode("action_sounds", 0))
     {
@@ -405,6 +415,7 @@ void CUIInventoryWnd::Hide()
     inherited::Hide();
 
     SendInfoToActor("ui_inventory_hide");
+    inv_layout().Commit(m_pUIBagList); // NLC
     ClearAllLists();
 
     //достать вещь в активный слот

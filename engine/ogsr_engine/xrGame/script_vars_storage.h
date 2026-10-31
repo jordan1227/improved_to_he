@@ -71,6 +71,9 @@ public:
     void get(lua_State* L, LPCSTR k, bool unpack);
     void set(lua_State* L, int key_index, int value_index);
     void set(lua_State* L, LPCSTR k, int index, int key_type);
+    LPCSTR get_string(LPCSTR k); // NLC: nullptr if absent or not a string
+    void set_string(LPCSTR k, LPCSTR value); // NLC
+    void remove_var(LPCSTR k); // NLC
     ICF int size() { return map().size(); };
 
     ICF LPCSTR name()

@@ -515,7 +515,8 @@ void CActor::ActorUse()
 
     const bool has_shadow_inventory = !!inventory().GetItemFromInventory("shadow_inventory");
 
-    if (m_pInvBoxWeLookingAt && m_pInvBoxWeLookingAt->object().nonscript_usable() && m_pInvBoxWeLookingAt->IsOpened() && has_shadow_inventory)
+    // NLC: corpses and boxes open without a backpack, taken items drop nearby (shadow_inventory:take_item). Trade still needs it.
+    if (m_pInvBoxWeLookingAt && m_pInvBoxWeLookingAt->object().nonscript_usable() && m_pInvBoxWeLookingAt->IsOpened())
     {
         // если контейнер открыт
         CUIGameSP* pGameSP = smart_cast<CUIGameSP*>(HUD().GetUI()->UIGame());
@@ -537,7 +538,7 @@ void CActor::ActorUse()
                 return;
             }
             //обыск трупа
-            else if (!pInput->iGetAsyncKeyState(DIK_LSHIFT) && has_shadow_inventory)
+            else if (!pInput->iGetAsyncKeyState(DIK_LSHIFT))
             {
                 //только если находимся в режиме single
                 CUIGameSP* pGameSP = smart_cast<CUIGameSP*>(HUD().GetUI()->UIGame());

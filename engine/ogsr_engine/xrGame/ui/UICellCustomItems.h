@@ -29,6 +29,7 @@ class CUIAmmoCellItem : public CUIInventoryCellItem
 
 public:
     CUIAmmoCellItem(CWeaponAmmo* itm);
+    u32 DragAmountTotal() override; // NLC
     virtual ~CUIAmmoCellItem() = default;
 
     virtual void Update();
@@ -54,6 +55,7 @@ public:
 protected:
     Fvector2 m_addon_offset[eMaxAddon];
     int m_iSilencerXOffset{}, m_iSilencerYOffset{};
+    CUIStatic* m_drag_addons[eMaxAddon]{}; // NLC: valid while this cell's drag item lives
     Fvector2 SilencerOffset(bool vertical) const;
     void CreateIcon(eAddonType, CIconParams& params);
     void DestroyIcon(eAddonType);
@@ -71,6 +73,7 @@ public:
     CWeapon* object() { return (CWeapon*)m_pData; }
     virtual void OnAfterChild(CUIDragDropListEx* parent_list);
     CUIDragItem* CreateDragItem();
+    virtual void OnDragRotated(CUIDragItem* drag_item); // NLC
     virtual bool EqualTo(CUICellItem* itm);
     CUIStatic* get_addon_static(u32 idx) { return m_addons[idx]; }
     Fvector2 get_addon_offset(u32 idx) { return m_addon_offset[idx]; }

@@ -14,6 +14,7 @@
 #include "client_spawn_manager.h"
 #include "seniority_hierarchy_holder.h"
 #include "script_vars_storage.h"
+#include "ui/UIInventoryLayout.h" // NLC
 #include "LevelDebugScript.h"
 
 constexpr int max_objects_size = 2 * 1024;
@@ -94,6 +95,7 @@ void CLevel::remove_objects()
     ::Sound->stop_emitters();
 
     g_ScriptVars.clear();
+    inv_layout().Reset(); // NLC
 
     shader_exports.set_dof_params(0.f, 0.f, 0.f, 0.f);
 

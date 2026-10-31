@@ -391,6 +391,46 @@ void CScriptVarsTable::get(lua_State* L, LPCSTR k, bool unpack)
         lua_pushnil(L);
 }
 
+LPCSTR CScriptVarsTable::get_string(LPCSTR k)
+{
+    auto it = map().find(k);
+    if (it == map().end() || it->second.eff_type() != LUA_TSTRING)
+        return nullptr;
+    const SCRIPT_VAR& sv = it->second;
+    return sv.size <= sizeof(sv.s_value) ? sv.s_value : (LPCSTR)sv.data;
+}
+
+void CScriptVarsTable::set_string(LPCSTR k, LPCSTR value)
+{
+    shared_str key(k);
+    auto it = map().find(key);
+    if (it != map().end() && it->second.eff_type() != LUA_TSTRING)
+    {
+        it->second.release();
+        map().erase(it);
+        it = map().end();
+    }
+
+    SCRIPT_VAR sv;
+    if (it != map().end())
+        sv = it->second;
+    else
+        ZeroMemory(&sv, sizeof(sv));
+
+    char* dst = (char*)sv.smart_alloc(LUA_TSTRING, xr_strlen(value) + 1);
+    strcpy_s(dst, sv.size, value);
+    map()[key] = sv;
+}
+
+void CScriptVarsTable::remove_var(LPCSTR k)
+{
+    auto it = map().find(k);
+    if (it == map().end())
+        return;
+    it->second.release();
+    map().erase(it);
+}
+
 void CScriptVarsTable::set(lua_State* L, int key_index, int value_index)
 {
     LPCSTR tk = NULL;

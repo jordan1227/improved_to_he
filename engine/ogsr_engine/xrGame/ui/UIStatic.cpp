@@ -190,7 +190,7 @@ void CUIStatic::DrawTexture()
                     float t1, t2;
                     t1 = rect.width();
                     t2 = rect.height();
-                    rect.y2 = rect.y1 + t1;
+                    rect.y2 = rect.y1 + t1 * m_fHeadingWidthScale; // NLC
                     rect.x2 = rect.x1 + t2;
                 }
             }

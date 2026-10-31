@@ -27,11 +27,16 @@
 #include "UICellItemFactory.h"
 #include "UIPropertiesBox.h"
 #include "UIListBoxItem.h"
+#include "UIInventoryLayout.h" // NLC
 
 #include "../game_object_space.h"
 #include "../script_callback_ex.h"
 #include "../script_game_object.h"
 #include "../xr_3da/xr_input.h"
+#include "../ai_space.h"
+#include "../alife_simulator.h"
+#include "../ai_object_location.h"
+#include "../xrServer_Objects_ALife_Items.h"
 #include <format>
 
 #define TRADE_XML "trade.xml"
@@ -57,9 +62,14 @@ struct CUITradeInternal
     CUIDragDropListEx UIOurTradeList;
     CUIDragDropListEx UIOthersTradeList;
 
+    // NLC: a rebuild keeps the deal: ids in the trade lists, also of split boxes on their way. [0] ours, [1] the other's
+    xr_set<u16> keep_in_trade[2];
+    xr_set<u16> leave_trade[2];
+
     //кнопки
     CUI3tButton UIPerformTradeButton;
     CUI3tButton UIToTalkButton;
+    CUI3tButton* UISortButton{}; // NLC: optional <sort_button> node
 
     //информация о персонажах
     CUIStatic UIOurIcon;
@@ -168,6 +178,15 @@ void CUITradeWnd::Init()
     AttachChild(&m_uidata->UIToTalkButton);
     xml_init.Init3tButton(uiXml, "button", 1, &m_uidata->UIToTalkButton);
 
+    if (uiXml.NavigateToNode("sort_button", 0)) // NLC
+    {
+        m_uidata->UISortButton = xr_new<CUI3tButton>();
+        m_uidata->UISortButton->SetAutoDelete(true);
+        AttachChild(m_uidata->UISortButton);
+        xml_init.Init3tButton(uiXml, "sort_button", 0, m_uidata->UISortButton);
+        InitSortButtonIcon(uiXml, "sort_button", m_uidata->UISortButton);
+    }
+
     m_pUIPropertiesBox = xr_new<CUIPropertiesBox>();
     m_pUIPropertiesBox->SetAutoDelete(true);
     AttachChild(m_pUIPropertiesBox);
@@ -231,6 +250,12 @@ void CUITradeWnd::SendMessage(CUIWindow* pWnd, s16 msg, void* pData)
     {
         PerformTrade();
     }
+    else if (m_uidata->UISortButton && pWnd == m_uidata->UISortButton && msg == BUTTON_CLICKED) // NLC
+    {
+        inv_layout().ResetPositions();
+        UpdateLists(e1st);
+        inv_layout().Commit(&m_uidata->UIOurBagList);
+    }
     else if (pWnd == m_pUIPropertiesBox && msg == PROPERTY_CLICKED)
     {
         if (m_pUIPropertiesBox->GetClickedItem())
@@ -279,8 +304,19 @@ void CUITradeWnd::Update()
     {
         et = e2nd;
     }
+    if (m_rebuild != eNone) // NLC
+    {
+        et = et == eNone || et == m_rebuild ? m_rebuild : eBoth;
+        m_rebuild = eNone;
+    }
     if (et != eNone)
+    {
+        // NLC: the cells these point at are about to go
+        SetCurrentItem(NULL);
+        if (m_pUIPropertiesBox->IsShown())
+            m_pUIPropertiesBox->Hide();
         UpdateLists(et);
+    }
 
     inherited::Update();
     UpdateCameraDirection(smart_cast<CGameObject*>(m_pOthersInvOwner));
@@ -329,6 +365,13 @@ void CUITradeWnd::Hide()
         HUD().GetUI()->UIGame()->RemoveCustomStatic("not_enough_money_other");
     }
 
+    inv_layout().Commit(&m_uidata->UIOurBagList); // NLC
+    m_rebuild = eNone; // NLC
+    for (int side = 0; side < 2; ++side)
+    {
+        m_uidata->keep_in_trade[side].clear();
+        m_uidata->leave_trade[side].clear();
+    }
     m_uidata->UIOurBagList.ClearAll(true);
     m_uidata->UIOurTradeList.ClearAll(true);
     m_uidata->UIOthersBagList.ClearAll(true);
@@ -444,20 +487,26 @@ float CUITradeWnd::CalcItemsWeight(CUIDragDropListEx* pList)
 u32 CUITradeWnd::CalcItemsPrice(CUIDragDropListEx* pList, CTrade* pTrade, bool bBuying)
 {
     u32 iPrice = 0;
+    float ammo_price = 0.f; // NLC: summed before rounding, or splitting a box would change what the rounds are worth
+
+    auto add = [&](PIItem item) {
+        if (smart_cast<CWeaponAmmo*>(item))
+            ammo_price += pTrade->GetItemPriceExact(item, bBuying);
+        else
+            iPrice += pTrade->GetItemPrice(item, bBuying);
+    };
 
     for (u32 i = 0; i < pList->ItemsCount(); ++i)
     {
         CUICellItem* itm = pList->GetItemIdx(i);
-        PIItem iitem = (PIItem)itm->m_pData;
-        iPrice += pTrade->GetItemPrice(iitem, bBuying);
+        add((PIItem)itm->m_pData);
 
         for (u32 j = 0; j < itm->ChildsCount(); ++j)
-        {
-            PIItem jitem = (PIItem)itm->Child(j)->m_pData;
-            iPrice += pTrade->GetItemPrice(jitem, bBuying);
-        }
+            add((PIItem)itm->Child(j)->m_pData);
     }
 
+    // the player never gains from the rounding: selling rounds down, buying up
+    iPrice += u32(bBuying ? iFloor(ammo_price) : iCeil(ammo_price));
     return iPrice;
 }
 
@@ -538,6 +587,7 @@ void CUITradeWnd::ActivatePropertiesBox()
     if (hasMany)
         m_pUIPropertiesBox->AddItem("st_move_all", (void*)33, INVENTORY_MOVE_ACTION);
 
+    m_pUIPropertiesBox->ApplyMenuConfig(); // NLC
     m_pUIPropertiesBox->AutoUpdateSize();
     m_pUIPropertiesBox->BringAllToTop();
 
@@ -607,14 +657,33 @@ void CUITradeWnd::TransferItems(CUIDragDropListEx* pSellList, CUIDragDropListEx*
 
 void CUITradeWnd::UpdateLists(EListType mode)
 {
+    const int our_scroll = m_uidata->UIOurBagList.ScrollPos(); // NLC: a rebuild keeps the player's place
+
+    auto remember_deal = [this](CUIDragDropListEx& list, int side) { // NLC
+        auto& keep = m_uidata->keep_in_trade[side];
+        auto add = [&keep](CUICellItem* cell) { keep.insert(static_cast<PIItem>(cell->m_pData)->object().ID()); };
+        for (u32 i = 0; i < list.ItemsCount(); ++i)
+        {
+            CUICellItem* itm = list.GetItemIdx(i);
+            add(itm);
+            for (u32 j = 0; j < itm->ChildsCount(); ++j)
+                add(itm->Child(j));
+        }
+        for (u16 id : m_uidata->leave_trade[side])
+            keep.erase(id);
+        m_uidata->leave_trade[side].clear();
+    };
+
     if (mode == eBoth || mode == e1st)
     {
+        remember_deal(m_uidata->UIOurTradeList, 0); // NLC
         m_uidata->UIOurBagList.ClearAll(true);
         m_uidata->UIOurTradeList.ClearAll(true);
     }
 
     if (mode == eBoth || mode == e2nd)
     {
+        remember_deal(m_uidata->UIOthersTradeList, 1); // NLC
         m_uidata->UIOthersBagList.ClearAll(true);
         m_uidata->UIOthersTradeList.ClearAll(true);
     }
@@ -626,7 +695,11 @@ void CUITradeWnd::UpdateLists(EListType mode)
         ruck_list.clear();
         m_pInv->AddAvailableItems(ruck_list, true);
         std::sort(ruck_list.begin(), ruck_list.end(), InventoryUtilities::GreaterRoomInRuck);
+        inv_layout().BeginFill(&m_uidata->UIOurBagList, CInventoryLayout::wndTrade, ruck_list); // NLC
         FillList(ruck_list, m_uidata->UIOurBagList, true);
+        inv_layout().EndFill(&m_uidata->UIOurBagList); // NLC
+        if (m_uidata->UISortButton) // NLC
+            m_uidata->UISortButton->Show(m_uidata->UIOurBagList.LayoutMode() == CUIDragDropListEx::lmManual);
     }
 
     if (mode == eBoth || mode == e2nd)
@@ -636,6 +709,11 @@ void CUITradeWnd::UpdateLists(EListType mode)
         std::sort(ruck_list.begin(), ruck_list.end(), InventoryUtilities::GreaterRoomInRuck);
         FillList(ruck_list, m_uidata->UIOthersBagList, false);
     }
+
+    if (mode == eBoth || mode == e1st) // NLC
+        m_uidata->UIOurBagList.SetScrollPos(our_scroll);
+
+    UpdatePrices(); // NLC: the kept deal is back in the trade lists
 }
 
 void CUITradeWnd::FillList(TIItemContainer& cont, CUIDragDropListEx& dragDropList, bool our)
@@ -663,7 +741,17 @@ void CUITradeWnd::FillList(TIItemContainer& cont, CUIDragDropListEx& dragDropLis
         if (item->m_highlight_equipped)
             itm->m_select_equipped = true;
         ColorizeItem(itm, canTrade, itm->m_select_equipped);
-        dragDropList.SetItem(itm);
+
+        // NLC: back into the deal it was part of
+        auto& keep = m_uidata->keep_in_trade[our ? 0 : 1];
+        const auto kept = keep.find(item->object().ID());
+        if (kept != keep.end())
+        {
+            keep.erase(kept);
+            (our ? m_uidata->UIOurTradeList : m_uidata->UIOthersTradeList).SetItem(itm);
+        }
+        else
+            dragDropList.SetItem(itm);
     }
 }
 
@@ -693,7 +781,11 @@ bool CUITradeWnd::OnItemDrop(CUICellItem* itm)
     if (old_owner == new_owner || !old_owner || !new_owner)
         return false;
 
-    if (pInput->iGetAsyncKeyState(DIK_LSHIFT) || pInput->iGetAsyncKeyState(DIK_RSHIFT))
+    if (const u32 amount = CUIDragDropListEx::m_drag_item->ChosenAmount()) // NLC
+    {
+        MoveAmount(itm, amount);
+    }
+    else if (pInput->iGetAsyncKeyState(DIK_LSHIFT) || pInput->iGetAsyncKeyState(DIK_RSHIFT))
     {
         MoveItems(itm);
     }
@@ -703,6 +795,99 @@ bool CUITradeWnd::OnItemDrop(CUICellItem* itm)
     }
 
     return true;
+}
+
+// NLC: a script can refuse a box whose count it manages itself
+static bool can_split_ammo(PIItem item)
+{
+    if (!smart_cast<CWeaponAmmo*>(item))
+        return false;
+    if (pSettings->line_exist("engine_callbacks", "trade_ammo_can_split"))
+    {
+        const std::string callback = pSettings->r_string("engine_callbacks", "trade_ammo_can_split");
+        if (luabind::functor<bool> func; ai().script_engine().functor(callback.c_str(), func))
+            return func(item->object().lua_game_object());
+    }
+    return true;
+}
+
+bool CUITradeWnd::OnItemAmount(CUICellItem* itm)
+{
+    if (!can_split_ammo((PIItem)itm->m_pData))
+        return false;
+    for (u32 j = 0; j < itm->ChildsCount(); ++j)
+        if (!can_split_ammo((PIItem)itm->Child(j)->m_pData))
+            return false;
+    return true;
+}
+
+CSE_Abstract* CALifeSimulator__spawn_ammo(CALifeSimulator* self, LPCSTR section, const Fvector& position, u32 level_vertex_id, GameGraph::_GRAPH_ID game_vertex_id,
+                                          ALife::_OBJECT_ID id_parent, int ammo_to_spawn);
+
+// Part of a box stays where it is and the rest becomes a new box of the same owner. The new box arrives
+// a few frames later, so moves go by id through the next rebuild.
+void CUITradeWnd::MoveAmount(CUICellItem* itm, u32 amount)
+{
+    CUIDragDropListEx* owner = itm->OwnerList();
+    const bool our = owner == &m_uidata->UIOurBagList || owner == &m_uidata->UIOurTradeList;
+    const bool to_trade = owner == &m_uidata->UIOurBagList || owner == &m_uidata->UIOthersBagList;
+
+    if (amount >= itm->DragAmountTotal())
+    {
+        MoveItems(itm);
+        return;
+    }
+    if (to_trade && !CanMoveToOther((PIItem)itm->m_pData, our))
+        return;
+
+    xr_vector<CWeaponAmmo*> boxes;
+    boxes.push_back(smart_cast<CWeaponAmmo*>((PIItem)itm->m_pData));
+    for (u32 j = 0; j < itm->ChildsCount(); ++j)
+        boxes.push_back(smart_cast<CWeaponAmmo*>((PIItem)itm->Child(j)->m_pData));
+    std::sort(boxes.begin(), boxes.end(), [](const CWeaponAmmo* a, const CWeaponAmmo* b) { return a->m_boxCurr > b->m_boxCurr; });
+
+    const int side = our ? 0 : 1;
+    auto& keep = m_uidata->keep_in_trade[side];
+    auto& leave = m_uidata->leave_trade[side];
+
+    // whole boxes first, one box splits for the rest
+    CWeaponAmmo* to_split = nullptr;
+    u32 rest = amount;
+    for (CWeaponAmmo* box : boxes)
+    {
+        if (box->m_boxCurr <= rest)
+        {
+            rest -= box->m_boxCurr;
+            if (to_trade)
+                keep.insert(box->ID());
+            else
+                leave.insert(box->ID());
+        }
+        else
+            to_split = box; // boxes run from big to small: the smallest that is too big
+    }
+
+    if (rest && to_split)
+    {
+        CGameObject* parent = smart_cast<CGameObject*>(to_split->H_Parent());
+        CSE_Abstract* spawned = parent ? CALifeSimulator__spawn_ammo(const_cast<CALifeSimulator*>(ai().get_alife()), to_split->cNameSect().c_str(), parent->Position(),
+                                                                     parent->ai_location().level_vertex_id(), parent->ai_location().game_vertex_id(), parent->ID(), int(rest)) :
+                                         nullptr;
+        if (spawned)
+        {
+            to_split->m_boxCurr = u16(to_split->m_boxCurr - rest);
+            if (to_split->m_pCurrentInventory)
+                to_split->m_pCurrentInventory->InvalidateState();
+            if (to_trade)
+                keep.insert(spawned->ID);
+        }
+        else
+            Msg("! [CUITradeWnd::MoveAmount] could not split [%s]", to_split->cNameSect().c_str());
+    }
+
+    m_rebuild = our ? e1st : e2nd;
+    SetCurrentItem(NULL);
+    PlaySnd(eInvItemMove);
 }
 
 bool CUITradeWnd::OnItemDbClick(CUICellItem* itm)
@@ -828,6 +1013,7 @@ void CUITradeWnd::BindDragDropListEvents(CUIDragDropListEx* lst)
     lst->m_f_item_db_click = fastdelegate::MakeDelegate(this, &CUITradeWnd::OnItemDbClick);
     lst->m_f_item_selected = fastdelegate::MakeDelegate(this, &CUITradeWnd::OnItemSelected);
     lst->m_f_item_rbutton_click = fastdelegate::MakeDelegate(this, &CUITradeWnd::OnItemRButtonClick);
+    lst->m_f_item_amount = fastdelegate::MakeDelegate(this, &CUITradeWnd::OnItemAmount); // NLC
 }
 
 void CUITradeWnd::PlaySnd(eInventorySndAction a)

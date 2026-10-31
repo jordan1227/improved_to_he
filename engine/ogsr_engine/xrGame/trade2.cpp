@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "WeaponAmmo.h"
 #include "trade.h"
 #include "actor.h"
 #include "ai/stalker/ai_stalker.h"
@@ -135,8 +136,15 @@ CInventoryOwner* CTrade::GetPartner() { return pPartner.inv_owner; }
 
 u32 CTrade::GetItemPrice(PIItem pItem, bool b_buying) const
 {
+    const float price = GetItemPriceExact(pItem, b_buying);
+    return price < 0.f ? u32(-1) : u32(iFloor(price));
+}
+
+float CTrade::GetItemPriceExact(PIItem pItem, bool b_buying) const
+{
     // computing base_cost
-    float base_cost = (float)pItem->Cost();
+    const CWeaponAmmo* ammo = smart_cast<CWeaponAmmo*>(pItem); // NLC
+    float base_cost = ammo ? ammo->ExactCost() : (float)pItem->Cost();
     if (m_use_vcost)
         base_cost = m_vcost;
 
@@ -169,7 +177,7 @@ u32 CTrade::GetItemPrice(PIItem pItem, bool b_buying) const
     if (buying)
     {
         if (!pThis.inv_owner->trade_parameters().enabled(CTradeParameters::action_buy(0), pItem->object().cNameSect()))
-            return 0;
+            return 0.f;
         p_trade_factors = &pThis.inv_owner->trade_parameters().factors(CTradeParameters::action_buy(0), pItem->object().cNameSect());
     }
     else
@@ -177,7 +185,7 @@ u32 CTrade::GetItemPrice(PIItem pItem, bool b_buying) const
         if (!pThis.inv_owner->trade_parameters().enabled(CTradeParameters::action_sell(0), pItem->object().cNameSect()))
         {
             Msg("CTrade::GetItemPrice return -1 for item [%s]", pItem->object().cNameSect().c_str());
-            return u32(-1);
+            return -1.f;
         }
         p_trade_factors = &pThis.inv_owner->trade_parameters().factors(CTradeParameters::action_sell(0), pItem->object().cNameSect());
     }
@@ -222,5 +230,5 @@ u32 CTrade::GetItemPrice(PIItem pItem, bool b_buying) const
         }
     }
 
-    return iFloor(result);
+    return result;
 }

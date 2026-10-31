@@ -4,6 +4,9 @@
 #include "UIDialogWnd.h"
 
 class CUIDragItem;
+
+// NLC: the heading of a turned bag item: clockwise, its top-left corner at the top right of the footprint
+constexpr float BAG_ROTATED_HEADING = -90.0f * (PI / 180.0f);
 class CUIDragDropListEx;
 class CUICellItem;
 class CUIProgressBar;
@@ -25,6 +28,8 @@ protected:
     bool m_condition_auto_width;
     CUIStatic* m_text;
     void init();
+    bool m_rotated{}; // NLC
+    Ivector2 m_cell_pos{}; // NLC
 
 public:
     CUICellItem();
@@ -37,6 +42,21 @@ public:
     virtual void UpdateItemText();
 
     virtual void OnAfterChild(CUIDragDropListEx* parent_list){};
+
+    // NLC: per-item rotation and cell in a manual-layout bag
+    bool IsRotated() const { return m_rotated; }
+    void SetRotated(bool b);
+    Ivector2 GridFootprint() const
+    {
+        Ivector2 fp = m_grid_size;
+        if (m_rotated)
+            std::swap(fp.x, fp.y);
+        return fp;
+    }
+    const Ivector2& CellPos() const { return m_cell_pos; }
+    void SetCellPos(const Ivector2& pos) { m_cell_pos = pos; }
+    virtual void OnDragRotated(CUIDragItem* drag_item) {}
+    virtual u32 DragAmountTotal() { return 0; } // NLC: above 0, a drag can take part of this cell (ammo rounds)
 
     u32 ChildsCount();
     void PushChild(CUICellItem*);
@@ -87,4 +107,24 @@ public:
     CUIDragDropListEx* BackList() { return m_back_list; }
     Fvector2 GetPosition();
     virtual bool CapturesFocusToo() { return false; };
+
+    // NLC: rotation while dragging out of a manual-layout bag
+    void InitLayoutGeometry(const Ivector2& grid, const Ivector2& cell);
+    bool HasLayoutGeometry() const { return m_layout_geometry; }
+    const Ivector2& LayoutGrid() const { return m_layout_grid; }
+    const Ivector2& LayoutCell() const { return m_layout_cell; }
+    bool IsRotated() const { return m_rotated; }
+    void SetRotated(bool b);
+    Ivector2 GridFootprint() const;
+    u32 ChosenAmount() const { return m_amount; } // NLC: 0 = the whole cell
+
+private:
+    bool CanRotate();
+    void ChangeAmount(int delta);
+    u32 m_amount{};
+    CUIStatic* m_amount_text{};
+    bool m_layout_geometry{};
+    bool m_rotated{};
+    Ivector2 m_layout_grid{};
+    Ivector2 m_layout_cell{};
 };

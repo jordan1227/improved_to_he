@@ -65,6 +65,7 @@ public:
     CInventory* GetPartnerInventory();
 
     u32 GetItemPrice(CInventoryItem* pItem, bool b_buying) const;
+    float GetItemPriceExact(CInventoryItem* pItem, bool b_buying) const; // NLC: before rounding, -1 = not sold
 
     void UpdateTrade();
 

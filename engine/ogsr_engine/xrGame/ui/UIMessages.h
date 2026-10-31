@@ -133,6 +133,8 @@ enum EUIMessages : s16
     INVENTORY_HANDLE_BATT_GPS,
 
     INVENTORY_EAT_BODY_PART, // NLC
+    INVENTORY_SWAP_SCOPE, // NLC: the weapon's menu, data = the new scope
+    INVENTORY_SWAP_SCOPE_ON_WEAPON, // NLC: the scope's menu, data = the weapon
 
     MAP_SPOT_NOTE_ACT, // NLC: user marker -> PDA notes
 };

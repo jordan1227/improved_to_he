@@ -13,6 +13,7 @@
 #include "../Weapon.h"
 #include "../CustomOutfit.h"
 #include "UICellCustomItems.h"
+#include "UIInventoryLayout.h" // NLC
 
 CUICellItem* CUICellItem::m_mouse_selected_item = nullptr;
 
@@ -98,7 +99,14 @@ CUIDragItem* CUICellItem::CreateDragItem()
     tmp = xr_new<CUIDragItem>(this);
     Frect r;
     GetAbsoluteRect(r);
-    if (m_UIStaticItem.GetFixedLTWhileHeading())
+    // NLC: a rotated bag item starts from its plain size, SetRotated below turns it
+    const bool layout_list = m_pParentList && !m_pParentList->GetVerticalPlacement();
+    if (layout_list && m_rotated)
+    {
+        r.x2 = r.x1 + float(m_grid_size.x * m_pParentList->CellSize().x);
+        r.y2 = r.y1 + float(m_grid_size.y * m_pParentList->CellSize().y);
+    }
+    else if (m_UIStaticItem.GetFixedLTWhileHeading())
     {
         float t1, t2;
         t1 = r.width();
@@ -112,7 +120,30 @@ CUIDragItem* CUICellItem::CreateDragItem()
         r.y2 = r.y1 + t1;
     }
     tmp->Init(GetShader(), r, GetUIStaticItem().GetOriginalRect());
+    if (layout_list)
+    {
+        tmp->InitLayoutGeometry(m_grid_size, m_pParentList->CellSize());
+        if (m_rotated)
+            tmp->SetRotated(true);
+    }
     return tmp;
+}
+
+// NLC: the heading a rotated item draws with. CUICustomItem::Render scales the rotated width by kx
+// on widescreen; weapon slots were tuned around that, a bag cell must fill its footprint.
+static float rotated_width_scale() { return UI()->is_widescreen() ? 1.f / UI()->get_current_kx() : 1.f; }
+
+void CUICellItem::SetRotated(bool b)
+{
+    m_rotated = b;
+    if (b)
+    {
+        EnableHeading(true);
+        SetHeading(BAG_ROTATED_HEADING);
+    }
+    else if (!m_pParentList || !m_pParentList->GetVerticalPlacement())
+        EnableHeading(false);
+    SetHeadingWidthScale(b ? rotated_width_scale() : 1.f);
 }
 
 void CUICellItem::SetOwnerList(CUIDragDropListEx* p) { m_pParentList = p; }
@@ -217,7 +248,7 @@ void CUICellItem::UpdateConditionProgressBar()
         if (pWeapon || pOutfit || itm->GetInvShowCondition())
         {
             Ivector2 itm_grid_size = GetGridSize();
-            if (m_pParentList->GetVerticalPlacement())
+            if (m_pParentList->GetVerticalPlacement() || m_rotated) // NLC
                 std::swap(itm_grid_size.x, itm_grid_size.y);
 
             const Ivector2& cell_size = m_pParentList->CellSize();
@@ -278,7 +309,99 @@ bool CUIDragItem::OnMouse(float x, float y, EUIMessages mouse_action)
         m_pParent->GetMessageTarget()->SendMessage(m_pParent, DRAG_DROP_ITEM_DROP, NULL);
         return true;
     }
+    // NLC: Ctrl+wheel picks how much of the cell goes, by ten with Shift
+    if ((mouse_action == WINDOW_MOUSE_WHEEL_UP || mouse_action == WINDOW_MOUSE_WHEEL_DOWN) && (pInput->iGetAsyncKeyState(DIK_LCONTROL) || pInput->iGetAsyncKeyState(DIK_RCONTROL)))
+    {
+        ChangeAmount(mouse_action == WINDOW_MOUSE_WHEEL_UP ? 1 : -1);
+        return true;
+    }
+    // NLC: RMB rotates, the wheel scrolls the list under the cursor
+    if (mouse_action == WINDOW_RBUTTON_DOWN)
+    {
+        if (CanRotate())
+            SetRotated(!m_rotated);
+        return true;
+    }
+    if ((mouse_action == WINDOW_MOUSE_WHEEL_UP || mouse_action == WINDOW_MOUSE_WHEEL_DOWN) && m_back_list)
+    {
+        m_back_list->ScrollByWheel(mouse_action);
+        return true;
+    }
     return false;
+}
+
+void CUIDragItem::InitLayoutGeometry(const Ivector2& grid, const Ivector2& cell)
+{
+    m_layout_geometry = true;
+    m_layout_grid = grid;
+    m_layout_cell = cell;
+}
+
+Ivector2 CUIDragItem::GridFootprint() const
+{
+    Ivector2 fp = m_layout_grid;
+    if (m_rotated)
+        std::swap(fp.x, fp.y);
+    return fp;
+}
+
+bool CUIDragItem::CanRotate()
+{
+    if (!m_layout_geometry || m_layout_grid.x == m_layout_grid.y || !psInvLayoutFlags.test(ILF_ROTATE))
+        return false;
+    CUIDragDropListEx* owner = m_pParent->OwnerList();
+    if (!owner || owner->LayoutMode() != CUIDragDropListEx::lmManual)
+        return false;
+    // the turned item has to fit the bag width
+    const int width = m_rotated ? m_layout_grid.x : m_layout_grid.y;
+    return width <= owner->CellsCapacity().x;
+}
+
+void CUIDragItem::SetRotated(bool b)
+{
+    m_rotated = b;
+    const Ivector2 fp = GridFootprint();
+    const Fvector2 size{float(fp.x * m_layout_cell.x), float(fp.y * m_layout_cell.y)};
+    SetWndSize(size);
+    m_static.SetWndSize(size);
+    m_static.EnableHeading(b);
+    if (b)
+    {
+        m_static.SetHeading(BAG_ROTATED_HEADING);
+        m_static.SetHeadingPivot(Fvector2().set(0.0f, 0.0f), Fvector2().set(size.x, 0.0f), true);
+    }
+    else
+        m_static.ResetHeadingPivot();
+    m_static.SetHeadingWidthScale(b ? rotated_width_scale() : 1.f);
+    m_pos_offset.set(-size.x * 0.5f, -size.y * 0.5f); // keep it under the cursor
+    m_pParent->OnDragRotated(this);
+}
+
+void CUIDragItem::ChangeAmount(int delta)
+{
+    const u32 total = m_pParent->DragAmountTotal();
+    CUIDragDropListEx* owner = m_pParent->OwnerList();
+    if (!total || !owner || !owner->m_f_item_amount || !owner->m_f_item_amount(m_pParent))
+        return;
+
+    if (pInput->iGetAsyncKeyState(DIK_LSHIFT) || pInput->iGetAsyncKeyState(DIK_RSHIFT))
+        delta *= 10;
+    int amount = int(m_amount ? m_amount : total) + delta;
+    clamp(amount, 1, int(total));
+    m_amount = u32(amount) == total ? 0 : u32(amount);
+
+    if (!m_amount_text)
+    {
+        m_amount_text = xr_new<CUIStatic>();
+        m_amount_text->SetAutoDelete(true);
+        m_amount_text->SetWndRect(Frect().set(0.0f, 0.0f, 100.0f, 20.0f));
+        m_amount_text->SetTextColor(color_rgba(255, 255, 255, 255));
+        m_static.AttachChild(m_amount_text);
+    }
+    string32 text{};
+    if (m_amount)
+        sprintf_s(text, "%u/%u", m_amount, total);
+    m_amount_text->SetText(text);
 }
 
 void CUIDragItem::OnRender() { Draw(); }
@@ -311,11 +434,11 @@ Fvector2 CUIDragItem::GetPosition() { return Fvector2().add(m_pos_offset, GetUIC
 
 void CUICellItem::Update()
 {
-    EnableHeading(m_pParentList->GetVerticalPlacement());
+    EnableHeading(m_pParentList->GetVerticalPlacement() || m_rotated); // NLC
     if (Heading())
     {
-        SetHeading(90.0f * (PI / 180.0f));
-        SetHeadingPivot(Fvector2().set(0.0f, 0.0f), Fvector2().set(0.0f, GetWndSize().y), true);
+        SetHeading(m_rotated ? BAG_ROTATED_HEADING : 90.0f * (PI / 180.0f)); // NLC
+        SetHeadingPivot(Fvector2().set(0.0f, 0.0f), m_rotated ? Fvector2().set(GetWndSize().x, 0.0f) : Fvector2().set(0.0f, GetWndSize().y), true);
     }
     else
         ResetHeadingPivot();

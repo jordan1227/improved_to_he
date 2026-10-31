@@ -72,6 +72,7 @@ protected:
     };
 
     void UpdateLists(EListType);
+    EListType m_rebuild{eNone}; // NLC: a rebuild asked from inside a drop, the dragged cell is still in use there
 
     void FillList(TIItemContainer&, CUIDragDropListEx&, bool);
 
@@ -106,6 +107,8 @@ protected:
     bool OnItemDbClick(CUICellItem* itm);
     bool OnItemSelected(CUICellItem* itm);
     bool OnItemRButtonClick(CUICellItem* itm);
+    bool OnItemAmount(CUICellItem* itm); // NLC
+    void MoveAmount(CUICellItem* itm, u32 amount); // NLC
 
     void BindDragDropListEvents(CUIDragDropListEx* lst);
 

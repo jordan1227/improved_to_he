@@ -20,9 +20,11 @@ public:
     virtual bool OnMouse(float x, float y, EUIMessages mouse_action);
     virtual bool OnKeyboard(int dik, EUIMessages keyboard_action);
 
-    bool AddItem(const char* str, void* pData = NULL, u32 tag_value = 0);
+    // NLC: key names the row in [inventory_item_menu]; the string id by default, rows with built text pass their own
+    bool AddItem(const char* str, void* pData = NULL, u32 tag_value = 0, const char* key = nullptr);
     bool AddItem_script(const char* str) { return AddItem(str); };
-    CUIListBoxItem* AddItemEx(const char* str, void* pData, u32 tag_value); // NLC: returns the row (to color it)
+    CUIListBoxItem* AddItemEx(const char* str, void* pData, u32 tag_value, const char* key = nullptr); // NLC: returns the row (to color it)
+    void ApplyMenuConfig(); // NLC: order, separators and icons from [inventory_item_menu]; call before AutoUpdateSize
     u32 GetItemsCount() { return m_UIListWnd.GetSize(); };
     void RemoveItemByTAG(u32 tag_value);
     void RemoveAll();

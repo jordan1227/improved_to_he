@@ -7,6 +7,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "ui/UIInventoryLayout.h" // NLC
 #include "level.h"
 #include "actor.h"
 #include "script_game_object.h"
@@ -1198,6 +1199,8 @@ void CLevel::script_register(lua_State* L)
 
             def("game_id", &GameID), def("set_ignore_game_state_update", &set_ignore_game_state_update),
 
+            def("set_inventory_view", [](int mode) { inv_layout().SetSectionView(mode != 4); }), // NLC: rucksack mode, 4 = the whole backpack
+            def("inventory_layout_dump", [] { inv_layout().Dump(); }), // NLC
             def("get_inventory_wnd", &GetInventoryWindow), def("get_talk_wnd", &GetTalkWindow), def("get_trade_wnd", &GetTradeWindow), def("get_pda_wnd", &GetPdaWindow),
             def("get_car_body_wnd", &GetCarBodyWindow), def("get_second_talker", &GetSecondTalker), def("get_car_body_target", &GetCarBodyTarget),
             def("get_change_level_wnd", &GetUIChangeLevelWnd), def("update_belt_slots_count", update_belt_slots_count),

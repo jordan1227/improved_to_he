@@ -1,4 +1,7 @@
 #include "stdafx.h"
+#include "ui/UIInventoryLayout.h" // NLC
+#include "Actor.h" // NLC
+#include "Scope.h" // NLC
 #include "hudmanager.h"
 #include "WeaponMagazined.h"
 #include "nlc_stealth.h" // NLC: stealth muzzle flash
@@ -2021,6 +2024,39 @@ void CWeaponMagazined::net_Relcase(CObject* object)
     m_binoc_vision->remove_links(object);
 }
 
+bool CWeaponMagazined::CanSwapScope(PIItem new_scope)
+{
+    if (!smart_cast<CScope*>(new_scope) || !ScopeAttachable() || !IsScopeAttached() || !H_Parent())
+        return false;
+
+    const shared_str& section = new_scope->object().cNameSect();
+    if (section == m_sScopeName || std::find(m_allScopeNames.begin(), m_allScopeNames.end(), section) == m_allScopeNames.end())
+        return false;
+
+    // without the respawn key the weapon could not show the new scope, and the old one would already be gone
+    xr_string key = "scope_respawn_";
+    key += section.c_str();
+    return pSettings->line_exist(cNameSect(), key.c_str());
+}
+
+bool CWeaponMagazined::SwapScope(PIItem new_scope)
+{
+    if (!CanSwapScope(new_scope))
+        return false;
+
+    const shared_str old_scope = m_sScopeName;
+    new_scope->object().DestroyObject();
+
+    // The attached flag stays set: this takes the scope_respawn_<new scope> branch. The weapon spawns first, as in
+    // Detach: ScopeRespawn reserves the next item taken for the weapon's slot, an old scope arriving first would
+    // take that reservation and end up in neither the slot nor the ruck list.
+    const bool respawned = ScopeRespawn(new_scope);
+    if (!respawned)
+        Msg("! [%s] %s: no respawn for scope %s", __FUNCTION__, cName().c_str(), new_scope->object().cNameSect().c_str());
+    CInventoryItemObject::Detach(old_scope.c_str(), true); // the old scope to the owner
+    return respawned;
+}
+
 bool CWeaponMagazined::ScopeRespawn(PIItem pIItem)
 {
     xr_string scope_respawn = "scope_respawn";
@@ -2058,6 +2094,8 @@ bool CWeaponMagazined::ScopeRespawn(PIItem pIItem)
 
             auto io = smart_cast<CInventoryOwner*>(H_Parent());
             auto ii = smart_cast<CInventoryItem*>(this);
+            // NLC: the new object keeps this one's cell
+            inv_layout().OnWeaponRespawn(smart_cast<CActor*>(H_Parent()) ? CInventoryLayout::OWNER_ACTOR : H_Parent()->ID(), ii, S);
             if (io)
             {
                 if (io->inventory().InSlot(ii))

@@ -168,6 +168,8 @@ public:
 
     void SetHeading(float f) { m_fHeading = f; };
     float GetHeading() { return m_fHeading; }
+    float GetHeadingWidthScale() const { return m_fHeadingWidthScale; } // NLC
+    void SetHeadingWidthScale(float k) { m_fHeadingWidthScale = k; } // NLC
     bool Heading() { return m_bHeading; }
     virtual void EnableHeading(bool b)
     {
@@ -201,6 +203,7 @@ protected:
 
     bool m_bClipper;
     bool m_bStretchTexture;
+    float m_fHeadingWidthScale{1.f}; // NLC: rotated stretch width, compensates kx in the heading render
     bool m_bAvailableTexture;
     bool m_bTextureEnable;
     CUIStaticItem m_UIStaticItem;

@@ -24,6 +24,7 @@
 #include "../ai_space.h"
 #include "../script_engine.h"
 #include "../script_game_object.h"
+#include "../Scope.h"
 
 void CUIInventoryWnd::EatItem(PIItem itm, u8 body_part)
 {
@@ -106,7 +107,7 @@ void CUIInventoryWnd::AddBodyPartUseItems(bool& b_show)
         else if (hp < 75.f || frac > 0.f || bleed > 0.01f)
             color = 0xFFFFFF00;
 
-        CUIListBoxItem* row = UIPropertiesBox.AddItemEx(txt, (void*)(__int64)p, INVENTORY_EAT_BODY_PART);
+        CUIListBoxItem* row = UIPropertiesBox.AddItemEx(txt, (void*)(__int64)p, INVENTORY_EAT_BODY_PART, "st_use_on");
         row->SetTextColor(color, color);
         b_show = true;
     }
@@ -180,7 +181,7 @@ void CUIInventoryWnd::ActivatePropertiesBox()
                     {
                         string128 full_action_text;
                         strconcat(sizeof(full_action_text), full_action_text, "st_move_to_slot_", std::to_string(slot).c_str());
-                        UIPropertiesBox.AddItem(full_action_text, (void*)(__int64)slot, INVENTORY_TO_SLOT_ACTION);
+                        UIPropertiesBox.AddItem(full_action_text, (void*)(__int64)slot, INVENTORY_TO_SLOT_ACTION, "st_move_to_slot");
                         b_show = true;
                     }
                     else
@@ -224,6 +225,7 @@ void CUIInventoryWnd::ActivatePropertiesBox()
     //отсоединение аддонов от вещи
     if (pWeapon)
     {
+        AddScopeRows(pWeapon, b_show); // NLC
         if (pWeapon->GrenadeLauncherAttachable() && pWeapon->IsGrenadeLauncherAttached())
         {
             UIPropertiesBox.AddItem("st_detach_gl", NULL, INVENTORY_DETACH_GRENADE_LAUNCHER_ADDON);
@@ -277,7 +279,16 @@ void CUIInventoryWnd::ActivatePropertiesBox()
             const std::string trans_str = "st_attach_addon_to_wpn_in_slot_" + std::to_string(i);
             string512 str{};
             std::snprintf(str, sizeof str, CStringTable().translate(trans_str.c_str()).c_str(), CurrentIItem()->m_nameShort.c_str(), tgt->m_nameShort.c_str());
-            UIPropertiesBox.AddItem(str, (void*)tgt, INVENTORY_ATTACH_ADDON);
+            UIPropertiesBox.AddItem(str, (void*)tgt, INVENTORY_ATTACH_ADDON, "st_attach_addon");
+            b_show = true;
+        }
+        // NLC: the same weapon with a scope on it takes this one as a swap
+        else if (auto wpn = smart_cast<CWeaponMagazined*>(tgt); wpn && wpn->CanSwapScope(CurrentIItem()))
+        {
+            string512 str{};
+            LPCSTR old_scope = READ_IF_EXISTS(pSettings, r_string, wpn->GetScopeName(), "inv_name_short", wpn->GetScopeName().c_str());
+            std::snprintf(str, sizeof str, CStringTable().translate("st_swap_scope_on_weapon").c_str(), tgt->m_nameShort.c_str(), CStringTable().translate(old_scope).c_str());
+            UIPropertiesBox.AddItem(str, (void*)tgt, INVENTORY_SWAP_SCOPE_ON_WEAPON, "st_swap_scope");
             b_show = true;
         }
     }
@@ -328,7 +339,7 @@ void CUIInventoryWnd::ActivatePropertiesBox()
 
         if (_action)
         {
-            UIPropertiesBox.AddItem(_action, (void*)cur, INVENTORY_EAT_ACTION);
+            UIPropertiesBox.AddItem(_action, (void*)cur, INVENTORY_EAT_ACTION, pMedkit || pAntirad ? "st_use" : _action);
             b_show = true;
         }
     }
@@ -347,6 +358,7 @@ void CUIInventoryWnd::ActivatePropertiesBox()
 
     if (b_show)
     {
+        UIPropertiesBox.ApplyMenuConfig(); // NLC
         UIPropertiesBox.AutoUpdateSize();
         UIPropertiesBox.BringAllToTop();
 
@@ -424,6 +436,8 @@ void CUIInventoryWnd::ProcessPropertiesBoxClicked()
         }
         break;
         case INVENTORY_ATTACH_ADDON: AttachAddon((PIItem)(UIPropertiesBox.GetClickedItem()->GetData())); break;
+        case INVENTORY_SWAP_SCOPE: SwapScope(CurrentIItem(), (PIItem)(UIPropertiesBox.GetClickedItem()->GetData())); break; // NLC
+        case INVENTORY_SWAP_SCOPE_ON_WEAPON: SwapScope((PIItem)(UIPropertiesBox.GetClickedItem()->GetData()), CurrentIItem()); break; // NLC
         case INVENTORY_DETACH_SCOPE_ADDON: DetachAddon(*(smart_cast<CWeapon*>(CurrentIItem()))->GetScopeName()); break;
         case INVENTORY_DETACH_SILENCER_ADDON: DetachAddon(*(smart_cast<CWeapon*>(CurrentIItem()))->GetSilencerName()); break;
         case INVENTORY_DETACH_GRENADE_LAUNCHER_ADDON: DetachAddon(*(smart_cast<CWeapon*>(CurrentIItem()))->GetGrenadeLauncherName()); break;
@@ -498,8 +512,73 @@ bool CUIInventoryWnd::DropItem(PIItem itm, CUIDragDropListEx* lst)
     if (!_iitem)
         return false;
     if (!_iitem->CanAttach(itm))
-        return false;
+    {
+        // NLC: a scope dropped on a weapon that already has another one
+        auto wpn = smart_cast<CWeaponMagazined*>(_iitem);
+        if (lst == m_pUIBagList || !wpn || !wpn->CanSwapScope(itm))
+            return false;
+        SwapScope(_iitem, itm);
+        return true;
+    }
     AttachAddon(_iitem);
 
     return true;
+}
+
+// NLC: one row per compatible scope section in the bag, in the two clicks the tester asked for.
+// A scope reserved in the pouch sits in the storage box and is not offered.
+void CUIInventoryWnd::AddScopeRows(CWeapon* weapon, bool& b_show)
+{
+    auto wpn = smart_cast<CWeaponMagazined*>(weapon);
+    if (!wpn || !wpn->ScopeAttachable())
+        return;
+
+    const bool attached = wpn->IsScopeAttached();
+    xr_vector<PIItem> scopes;
+    for (PIItem item : m_pInv->m_ruck)
+    {
+        if (!smart_cast<CScope*>(item) || item->m_flags.test(CInventoryItem::FIHiddenForInventory))
+            continue;
+        if (attached ? !wpn->CanSwapScope(item) : !wpn->CanAttach(item))
+            continue;
+        const shared_str& section = item->object().cNameSect();
+        if (std::none_of(scopes.begin(), scopes.end(), [&section](PIItem s) { return s->object().cNameSect() == section; }))
+            scopes.push_back(item);
+    }
+    if (scopes.empty())
+        return;
+
+    std::sort(scopes.begin(), scopes.end(), [](PIItem a, PIItem b) { return xr_strcmp(a->m_nameShort, b->m_nameShort) < 0; });
+    static const u32 max_rows = READ_IF_EXISTS(pSettings, r_u32, "inventory_item_menu", "max_scope_rows", 4);
+    if (scopes.size() > max_rows)
+        scopes.resize(max_rows);
+
+    LPCSTR format = attached ? "st_swap_scope" : "st_install_scope";
+    for (PIItem scope : scopes)
+    {
+        string512 str{};
+        std::snprintf(str, sizeof str, CStringTable().translate(format).c_str(), scope->m_nameShort.c_str());
+        CUIListBoxItem* row = UIPropertiesBox.AddItemEx(str, (void*)scope, INVENTORY_SWAP_SCOPE, format);
+        row->SetItemIcon(scope->object().cNameSect());
+    }
+    b_show = true;
+}
+
+void CUIInventoryWnd::SwapScope(PIItem weapon, PIItem new_scope)
+{
+    auto wpn = smart_cast<CWeaponMagazined*>(weapon);
+    if (!wpn || !new_scope)
+        return;
+
+    if (wpn->CanSwapScope(new_scope))
+        wpn->SwapScope(new_scope);
+    else if (wpn->CanAttach(new_scope))
+        wpn->Attach(new_scope, true);
+    else
+    {
+        Msg("! [%s] %s can not take scope %s", __FUNCTION__, weapon->object().cName().c_str(), new_scope->object().cNameSect().c_str());
+        return;
+    }
+    PlaySnd(eInvAttachAddon);
+    SetCurrentItem(nullptr);
 }

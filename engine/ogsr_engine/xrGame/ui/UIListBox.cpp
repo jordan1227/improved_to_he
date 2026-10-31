@@ -266,3 +266,9 @@ float CUIListBox::GetLongestLength()
 }
 
 void CUIListBox::SetImmediateSelection(bool f) { m_bImmediateSelection = f; }
+
+void CUIListBox::SortByMenuRank()
+{
+    m_pad->GetChildWndList().sort([](CUIWindow* a, CUIWindow* b) { return smart_cast<CUIListBoxItem*>(a)->GetMenuRank() < smart_cast<CUIListBoxItem*>(b)->GetMenuRank(); });
+    ForceUpdate();
+}

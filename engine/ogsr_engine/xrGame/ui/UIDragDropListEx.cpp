@@ -7,6 +7,9 @@
 #include "UIInventoryWnd.h"
 #include "UITradeWnd.h"
 #include "UICarBodyWnd.h"
+#include "UIInventoryLayout.h" // NLC
+#include "../inventory_item.h"
+#include "../../xr_3da/xr_input.h"
 
 CUIDragItem* CUIDragDropListEx::m_drag_item = NULL;
 
@@ -165,6 +168,15 @@ void CUIDragDropListEx::OnItemDrop(CUIWindow* w, void* pData)
     CUIDragDropListEx* old_owner = itm->OwnerList();
     CUIDragDropListEx* new_owner = m_drag_item->BackList();
 
+    // NLC: dragging inside a bag with a layout
+    if (old_owner && old_owner == new_owner && old_owner->LayoutMode() != lmAuto)
+    {
+        if (old_owner->LayoutMode() == lmManual)
+            old_owner->LayoutDrop(itm);
+        DestroyDragItem();
+        return;
+    }
+
     bool b = (old_owner == new_owner) && !GetCustomPlacement();
 
     if (old_owner && new_owner && !b)
@@ -238,15 +250,24 @@ void CUIDragDropListEx::ClearAll(bool bDestroy)
 
 void CUIDragDropListEx::Compact()
 {
-    auto& wl = m_container->GetChildWndList();
-    ClearAll(false);
+    // NLC: this took a reference to the child list, emptied it with ClearAll and looped over nothing,
+    // and ClearAll also dropped stack children. Stacks now move whole.
+    const CUIWindow::WINDOW_LIST wl = m_container->GetChildWndList();
+    for (CUIWindow* w : wl)
+        m_container->RemoveItem(smart_cast<CUICellItem*>(w), true);
 
-    CUIWindow::WINDOW_LIST_it it = wl.begin();
-    CUIWindow::WINDOW_LIST_it it_e = wl.end();
-    for (; it != it_e; ++it)
+    for (CUIWindow* w : wl)
     {
-        CUICellItem* itm = smart_cast<CUICellItem*>(*it);
-        SetItem(itm);
+        CUICellItem* itm = smart_cast<CUICellItem*>(w);
+        const Ivector2 fp = itm->GetGridSize();
+        if (!m_container->HasFreeSpace(fp))
+        {
+            Msg("!![CUIDragDropListEx::Compact] no room left for an item");
+            itm->SetOwnerList(this);
+            m_container->AttachChild(itm);
+            continue;
+        }
+        PlaceAt(itm, m_container->FindFreeCell(fp));
     }
 }
 
@@ -381,6 +402,12 @@ void CUIDragDropListEx::SetItem(CUICellItem* itm) // auto
         return;
     }
 
+    if (m_layout_mode == lmManual) // NLC
+    {
+        PlaceByLayout(itm);
+        return;
+    }
+
     Ivector2 dest_cell_pos = m_container->FindFreeCell(itm->GetGridSize());
 
     SetItem(itm, dest_cell_pos);
@@ -390,6 +417,12 @@ void CUIDragDropListEx::SetItem(CUICellItem* itm, Fvector2 abs_pos) // start at 
 {
     if (m_container->AddSimilar(itm))
         return;
+
+    if (m_layout_mode == lmManual) // NLC
+    {
+        PlaceByLayout(itm);
+        return;
+    }
 
     const Ivector2 dest_cell_pos = m_container->PickCell(abs_pos);
 
@@ -414,6 +447,117 @@ void CUIDragDropListEx::SetItem(CUICellItem* itm, Ivector2 cell_pos) // start at
     itm->UpdateItemText();
     Register(itm);
     itm->SetOwnerList(this);
+}
+
+// NLC: an item entering a manual bag. Dropped from another list: where the player put it.
+// Otherwise its stored cell, its section's home, or the first free cell.
+void CUIDragDropListEx::PlaceByLayout(CUICellItem* itm)
+{
+    auto item = static_cast<CInventoryItem*>(itm->m_pData);
+
+    if (m_drag_item && m_drag_item->BackList() == this && !m_layout_filling)
+    {
+        itm->SetRotated(m_drag_item->HasLayoutGeometry() && m_drag_item->IsRotated());
+        CUICellContainer::SDropInfo info;
+        m_container->ClassifyDrop(info);
+        const Ivector2 cell = info.state == CUICellContainer::dsPlace ? info.cell : m_container->FindNearestFree(info.cell, itm->GridFootprint());
+        PlaceAt(itm, cell);
+        inv_layout().Record(m_layout_owner, item, cell, itm->IsRotated());
+        return;
+    }
+
+    Ivector2 cell;
+    bool rotated = false;
+    if (inv_layout().Resolve(m_layout_owner, item, cell, rotated))
+    {
+        itm->SetRotated(rotated && psInvLayoutFlags.test(ILF_ROTATE));
+        PlaceAt(itm, m_container->FindNearestFree(cell, itm->GridFootprint()));
+    }
+    else
+    {
+        itm->SetRotated(false);
+        PlaceAt(itm, m_container->FindFreeCell(itm->GridFootprint()));
+    }
+}
+
+void CUIDragDropListEx::PlaceAt(CUICellItem* itm, const Ivector2& cell)
+{
+    const int rows = cell.y + itm->GridFootprint().y;
+    if (rows > CellsCapacity().y)
+        SetCellsCapacity(Ivector2().set(CellsCapacity().x, rows));
+
+    Ivector2 pos = cell;
+    m_container->PlaceItemAtPos(itm, pos);
+
+    itm->SetWindowName("cell_item");
+    itm->UpdateItemText();
+    Register(itm);
+    itm->SetOwnerList(this);
+}
+
+void CUIDragDropListEx::LayoutDrop(CUICellItem* itm)
+{
+    CUICellContainer::SDropInfo info;
+    m_container->ClassifyDrop(info);
+    if (info.state == CUICellContainer::dsReject)
+        return;
+
+    const Ivector2 origin = itm->CellPos();
+    const bool rotated = m_drag_item->HasLayoutGeometry() && m_drag_item->IsRotated();
+
+    // whole stacks move: force_root keeps the children on their root
+    m_container->RemoveItem(itm, true);
+    for (CUICellItem* hit : info.hits)
+        m_container->RemoveItem(hit, true);
+
+    itm->SetRotated(rotated);
+    PlaceAt(itm, info.cell);
+
+    if (info.state == CUICellContainer::dsSwap)
+    {
+        CUICellItem* other = info.hits.front();
+        const Ivector2 fp = other->GridFootprint();
+        // the old cell, unless the moved item still covers part of it
+        const bool fits = origin.x + fp.x <= CellsCapacity().x && m_container->IsRoomFree(origin, fp);
+        PlaceAt(other, fits ? origin : m_container->FindNearestFree(other->CellPos(), fp));
+    }
+    else if (info.state == CUICellContainer::dsPush)
+    {
+        std::stable_sort(info.hits.begin(), info.hits.end(), [](CUICellItem* a, CUICellItem* b) {
+            return a->CellPos().y != b->CellPos().y ? a->CellPos().y < b->CellPos().y : a->CellPos().x < b->CellPos().x;
+        });
+        for (CUICellItem* hit : info.hits)
+            PlaceAt(hit, m_container->FindNearestFree(hit->CellPos(), hit->GridFootprint()));
+    }
+
+    EnsureSpareRows(inv_layout().SpareRows());
+    inv_layout().Commit(this, itm);
+}
+
+void CUIDragDropListEx::EnsureSpareRows(int rows)
+{
+    const Ivector2 capacity = CellsCapacity();
+    int last_used = -1;
+    for (int y = capacity.y - 1; y >= 0 && last_used < 0; --y)
+        for (int x = 0; x < capacity.x; ++x)
+            if (!GetCellAt(Ivector2().set(x, y)).Empty())
+            {
+                last_used = y;
+                break;
+            }
+
+    if (last_used + 1 + rows > capacity.y)
+        SetCellsCapacity(Ivector2().set(capacity.x, last_used + 1 + rows));
+}
+
+void CUIDragDropListEx::ScrollByWheel(EUIMessages mouse_action)
+{
+    if (!m_vScrollBar->IsShown())
+        return;
+    if (mouse_action == WINDOW_MOUSE_WHEEL_DOWN)
+        m_vScrollBar->TryScrollInc();
+    else
+        m_vScrollBar->TryScrollDec();
 }
 
 bool CUIDragDropListEx::CanSetItem(CUICellItem* itm)
@@ -484,6 +628,7 @@ CUICellContainer::CUICellContainer(CUIDragDropListEx* parent)
     m_pParentDragDropList = parent;
     hShader->create("hud\\fog_of_war", "ui\\ui_grid");
     hShader0->create("hud\\fog_of_war", "ui\\ui_grid_0");
+    hShaderPreview->create("hud\\fog_of_war", "ui\\ui_inv_layout");
     m_cellSpacing.set(0, 0);
 }
 
@@ -524,7 +669,11 @@ CUICellItem* CUICellContainer::FindSimilar(CUICellItem* itm)
 
 void CUICellContainer::PlaceItemAtPos(CUICellItem* itm, Ivector2& cell_pos)
 {
-    Ivector2 cs = itm->GetGridSize();
+    // NLC: only a manual bag keeps item rotation
+    if (itm->IsRotated() && m_pParentDragDropList->LayoutMode() != CUIDragDropListEx::lmManual)
+        itm->SetRotated(false);
+
+    Ivector2 cs = itm->GridFootprint();
     Ivector2 cp = cell_pos;
     if (m_pParentDragDropList->GetVerticalPlacement())
     {
@@ -532,6 +681,7 @@ void CUICellContainer::PlaceItemAtPos(CUICellItem* itm, Ivector2& cell_pos)
         if (cp.y == 0)
             cp.y = m_pParentDragDropList->CellsCapacity().y - cs.y;
     }
+    itm->SetCellPos(cp);
     for (int x = 0; x < cs.x; ++x)
         for (int y = 0; y < cs.y; ++y)
         {
@@ -584,7 +734,7 @@ CUICellItem* CUICellContainer::RemoveItem(CUICellItem* itm, bool force_root)
     }
 
     Ivector2 pos = GetItemPos(itm);
-    Ivector2 cs = itm->GetGridSize();
+    Ivector2 cs = itm->GridFootprint(); // NLC
 
     if (m_pParentDragDropList->GetVerticalPlacement())
         std::swap(cs.x, cs.y);
@@ -944,7 +1094,125 @@ void CUICellContainer::Draw()
             }
     }
 
+    DrawDropPreview(tgt_cells, drawLT, f_len, sp_len); // NLC
+
     UI()->PopScissor();
+}
+
+// NLC: what a drop at the cursor would do. The dragged item comes from CUIDragDropListEx::m_drag_item.
+void CUICellContainer::ClassifyDrop(SDropInfo& info)
+{
+    CUIDragItem* drag = CUIDragDropListEx::m_drag_item;
+    CUICellItem* source = drag->ParentItem();
+    const bool own = source->OwnerList() == m_pParentDragDropList;
+
+    Ivector2 footprint = drag->HasLayoutGeometry() ? drag->GridFootprint() : source->GetGridSize();
+    info.footprint = footprint;
+
+    // the cell nearest to the icon's top-left corner
+    Fvector2 lt_abs;
+    GetAbsolutePos(lt_abs);
+    const Fvector2 lt = drag->GetPosition();
+    const float cw = float(m_cellSize.x + m_cellSpacing.x);
+    const float ch = float(m_cellSize.y + m_cellSpacing.y);
+    info.cell.x = iFloor((lt.x - lt_abs.x) / cw + 0.5f);
+    info.cell.y = iFloor((lt.y - lt_abs.y) / ch + 0.5f);
+    clamp(info.cell.x, 0, _max(0, m_cellsCapacity.x - footprint.x));
+    clamp(info.cell.y, 0, _max(0, m_cellsCapacity.y - footprint.y));
+
+    info.hits.clear();
+    for (int y = info.cell.y; y < info.cell.y + footprint.y; ++y)
+        for (int x = info.cell.x; x < info.cell.x + footprint.x; ++x)
+        {
+            const Ivector2 pos = Ivector2().set(x, y);
+            if (!ValidCell(pos)) // rows below the grid are free, it grows on the drop
+                continue;
+            CUICellItem* occupant = GetCellAt(pos).m_item;
+            if (occupant && occupant != source && std::find(info.hits.begin(), info.hits.end(), occupant) == info.hits.end())
+                info.hits.push_back(occupant);
+        }
+
+    if (info.hits.empty())
+        info.state = dsPlace;
+    else if (!own)
+        info.state = dsRelocate;
+    else if (info.hits.size() == 1)
+        info.state = dsSwap;
+    else
+    {
+        const bool shift = !!pInput->iGetAsyncKeyState(DIK_LSHIFT) || !!pInput->iGetAsyncKeyState(DIK_RSHIFT);
+        info.state = (shift || inv_layout().DropPushesByDefault()) ? dsPush : dsReject;
+    }
+}
+
+Ivector2 CUICellContainer::FindNearestFree(const Ivector2& wanted, const Ivector2& footprint)
+{
+    Ivector2 start = wanted;
+    clamp(start.x, 0, _max(0, m_cellsCapacity.x - footprint.x));
+    if (start.y < 0)
+        start.y = 0;
+
+    // rows below the grid count as free: PlaceAt grows it
+    const auto is_free = [this, &footprint](const Ivector2& pos) {
+        for (int y = pos.y; y < pos.y + footprint.y && y < m_cellsCapacity.y; ++y)
+            for (int x = pos.x; x < pos.x + footprint.x; ++x)
+                if (!GetCellAt(Ivector2().set(x, y)).Empty())
+                    return false;
+        return true;
+    };
+    if (is_free(start))
+        return start;
+
+    Ivector2 best = Ivector2().set(0, m_cellsCapacity.y);
+    int best_dist = INT_MAX;
+    for (int y = 0; y <= m_cellsCapacity.y; ++y)
+        for (int x = 0; x <= m_cellsCapacity.x - footprint.x; ++x)
+        {
+            const int dist = (x - start.x) * (x - start.x) + (y - start.y) * (y - start.y);
+            if (dist < best_dist && is_free(Ivector2().set(x, y)))
+            {
+                best_dist = dist;
+                best.set(x, y);
+            }
+        }
+    return best;
+}
+
+void CUICellContainer::DrawDropPreview(const Irect& visible, const Fvector2& drawLT, const Fvector2& cell_len, const Fvector2& spacing_len)
+{
+    CUIDragItem* drag = CUIDragDropListEx::m_drag_item;
+    if (!drag || drag->BackList() != m_pParentDragDropList || m_pParentDragDropList->LayoutMode() != CUIDragDropListEx::lmManual)
+        return;
+
+    SDropInfo info;
+    ClassifyDrop(info);
+
+    // ui_inv_layout.dds, four columns: green, orange, red, separator line
+    const float column = info.state == dsReject ? 2.f : (info.state == dsPush || info.state == dsRelocate) ? 1.f : 0.f;
+    constexpr float tw = 0.25f;
+
+    const int x1 = _max(info.cell.x, visible.x1), x2 = _min(info.cell.x + info.footprint.x - 1, visible.x2);
+    const int y1 = _max(info.cell.y, visible.y1), y2 = _min(info.cell.y + info.footprint.y - 1, visible.y2);
+    if (x1 > x2 || y1 > y2)
+        return;
+
+    UIRender->StartPrimitive((x2 - x1 + 1) * (y2 - y1 + 1) * 6, IUIRender::ptTriList, UI()->m_currentPointType);
+    for (int x = x1; x <= x2; ++x)
+        for (int y = y1; y <= y2; ++y)
+        {
+            const Fvector2 lt{drawLT.x + (cell_len.x + spacing_len.x) * (x - visible.x1), drawLT.y + (cell_len.y + spacing_len.y) * (y - visible.y1)};
+            const float l = iFloor(lt.x) - 0.5f, t = iFloor(lt.y) - 0.5f;
+            const float r = iFloor(lt.x + cell_len.x) - 0.5f, b = iFloor(lt.y + cell_len.y) - 0.5f;
+            const float u1 = column * tw, u2 = u1 + tw;
+            UIRender->PushPoint(l, t, 0, 0xFFFFFFFF, u1, 0.f);
+            UIRender->PushPoint(r, t, 0, 0xFFFFFFFF, u2, 0.f);
+            UIRender->PushPoint(r, b, 0, 0xFFFFFFFF, u2, 1.f);
+            UIRender->PushPoint(l, t, 0, 0xFFFFFFFF, u1, 0.f);
+            UIRender->PushPoint(r, b, 0, 0xFFFFFFFF, u2, 1.f);
+            UIRender->PushPoint(l, b, 0, 0xFFFFFFFF, u1, 1.f);
+        }
+    UIRender->SetShader(*hShaderPreview);
+    UIRender->FlushPrimitive();
 }
 
 void CUICellContainer::clear_select_armament()

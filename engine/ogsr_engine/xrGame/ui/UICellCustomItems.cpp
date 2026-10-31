@@ -169,6 +169,15 @@ bool CUIAmmoCellItem::EqualTo(CUICellItem* itm)
     return ((object()->cNameSect() == ci->object()->cNameSect()));
 }
 
+u32 CUIAmmoCellItem::DragAmountTotal()
+{
+    u32 total = object()->m_boxCurr;
+    for (auto* child : m_childs)
+        if (auto* ammo = smart_cast<CUIAmmoCellItem*>(child))
+            total += ammo->object()->m_boxCurr;
+    return total;
+}
+
 void CUIAmmoCellItem::Update()
 {
     inherited::Update();
@@ -331,7 +340,7 @@ void CUIWeaponCellItem::OnAfterChild(CUIDragDropListEx* parent_list)
     CUIStatic* s_scope = is_scope() ? GetIcon(eScope) : NULL;
     CUIStatic* s_launcher = is_launcher() ? GetIcon(eLauncher) : NULL;
 
-    InitAllAddons(s_silencer, s_scope, s_launcher, parent_list->GetVerticalPlacement());
+    InitAllAddons(s_silencer, s_scope, s_launcher, parent_list->GetVerticalPlacement() || m_rotated); // NLC
 }
 
 void CUIWeaponCellItem::InitAllAddons(CUIStatic* s_silencer, CUIStatic* s_scope, CUIStatic* s_launcher, bool b_vertical)
@@ -407,10 +416,20 @@ void CUIWeaponCellItem::InitAddon(CUIStatic* s, CIconParams& params, Fvector2 ad
     {
         s->SetWndSize(Fvector2().set(cell_size.y, cell_size.x));
         Fvector2 new_offset;
-        new_offset.x = addon_offset.y * base_scale.x;
-        new_offset.y = GetHeight() - addon_offset.x * base_scale.x - cell_size.x;
-        addon_offset = new_offset;
-        addon_offset.x *= UI()->get_current_kx();
+        if (m_rotated)
+        {
+            // NLC: a turned bag item: clockwise, at the full cell width (CUICellItem::SetRotated)
+            new_offset.x = GetWidth() - addon_offset.y * base_scale.y - cell_size.y;
+            new_offset.y = addon_offset.x * base_scale.x;
+            addon_offset = new_offset;
+        }
+        else
+        {
+            new_offset.x = addon_offset.y * base_scale.x;
+            new_offset.y = GetHeight() - addon_offset.x * base_scale.x - cell_size.x;
+            addon_offset = new_offset;
+            addon_offset.x *= UI()->get_current_kx();
+        }
     }
     else
     {
@@ -426,9 +445,13 @@ void CUIWeaponCellItem::InitAddon(CUIStatic* s, CIconParams& params, Fvector2 ad
     {
         s->SetHeading(GetHeading());
         Fvector2 offs;
-        offs.set(0.0f, s->GetWndSize().y);
+        if (m_rotated) // NLC
+            offs.set(s->GetWndSize().x, 0.0f);
+        else
+            offs.set(0.0f, s->GetWndSize().y);
         s->SetHeadingPivot(Fvector2().set(0.0f, 0.0f), /*Fvector2().set(0.0f,0.0f)*/ offs, true);
     }
+    s->SetHeadingWidthScale(b_rotate && m_rotated ? GetHeadingWidthScale() : 1.f); // NLC
 
     s->SetWindowName("wpn_addon");
 }
@@ -445,6 +468,7 @@ CUIStatic* MakeAddonStatic(CUIDragItem* i, CIconParams& params)
 
 CUIDragItem* CUIWeaponCellItem::CreateDragItem()
 {
+    std::fill(std::begin(m_drag_addons), std::end(m_drag_addons), nullptr); // NLC
     CUIDragItem* i = inherited::CreateDragItem();
 
     CIconParams params;
@@ -483,7 +507,59 @@ CUIDragItem* CUIWeaponCellItem::CreateDragItem()
     if (Heading())
         m_cell_size.set(m_cell_size.y, m_cell_size.x); // swap after
 
+    // NLC: out of a bag the addons follow the drag item's rotation
+    m_drag_addons[eSilencer] = s_silencer;
+    m_drag_addons[eScope] = s_scope;
+    m_drag_addons[eLauncher] = s_launcher;
+    OnDragRotated(i);
+
     return i;
+}
+
+// NLC: same placement as InitAddon, measured from the drag item instead of this cell
+void CUIWeaponCellItem::OnDragRotated(CUIDragItem* drag_item)
+{
+    if (!drag_item->HasLayoutGeometry())
+        return;
+
+    const bool rotated = drag_item->IsRotated();
+    const Ivector2& grid = drag_item->LayoutGrid();
+    const Fvector2 cell{float(drag_item->LayoutCell().x), float(drag_item->LayoutCell().y)};
+    const Fvector2 scale{cell.x / INV_GRID_WIDTHF, cell.y / INV_GRID_HEIGHTF};
+
+    const shared_str names[eMaxAddon] = {object()->GetSilencerName(), object()->GetScopeName(), object()->GetGrenadeLauncherName()};
+    for (u32 t = 0; t < eMaxAddon; ++t)
+    {
+        CUIStatic* s = m_drag_addons[t];
+        if (!s)
+            continue;
+
+        CIconParams params(names[t]);
+        const Fvector2 offset = t == eSilencer ? SilencerOffset(rotated) : m_addon_offset[t];
+        const float addon_w = params.grid_width * cell.x;
+        const float addon_h = params.grid_height * cell.y;
+
+        s->SetStretchTexture(true);
+        s->EnableHeading(rotated);
+        if (rotated)
+        {
+            // the addon's length runs along the rows, its height along the columns
+            const float length = params.grid_width * cell.y;
+            const float depth = params.grid_height * cell.x;
+            s->SetWndSize(Fvector2().set(depth, length));
+            s->SetWndPos(Fvector2().set(float(grid.y) * cell.x - offset.y * scale.x - depth, offset.x * scale.y));
+            s->SetHeading(BAG_ROTATED_HEADING);
+            s->SetHeadingPivot(Fvector2().set(0.0f, 0.0f), Fvector2().set(depth, 0.0f), true);
+            s->SetHeadingWidthScale(drag_item->wnd()->GetHeadingWidthScale());
+        }
+        else
+        {
+            s->SetWndSize(Fvector2().set(addon_w, addon_h));
+            s->SetWndPos(Fvector2().set(offset.x * scale.x, offset.y * scale.y));
+            s->ResetHeadingPivot();
+            s->SetHeadingWidthScale(1.f);
+        }
+    }
 }
 
 bool CUIWeaponCellItem::EqualTo(CUICellItem* itm)

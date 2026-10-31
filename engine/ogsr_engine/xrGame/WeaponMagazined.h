@@ -230,6 +230,13 @@ protected:
 
     bool ScopeRespawn(PIItem);
 
+public:
+    // NLC: one scope for another in a single respawn
+    bool CanSwapScope(PIItem new_scope);
+    bool SwapScope(PIItem new_scope);
+
+protected:
+
     virtual void OnMotionMark(u32 state, const motion_marks& M) override;
     int CheckAmmoBeforeReload(u32& v_ammoType);
 

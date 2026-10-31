@@ -60,6 +60,9 @@ private:
     };
     Flags16 m_flags;
     CUICellItem* m_selected_item;
+    u32 m_layout_mode{}; // NLC
+    u16 m_layout_owner{u16(-1)}; // NLC: CInventoryLayout::OWNER_ACTOR or the box's id
+    bool m_layout_filling{}; // NLC: a rebuild is placing items, a live drag must not attract them
     Ivector2 m_orig_cell_capacity;
     Ivector2 m_virtual_cells_alignment;
     bool m_bConditionProgBarVisible;
@@ -90,6 +93,7 @@ public:
     DRAG_DROP_EVENT m_f_item_db_click;
     DRAG_DROP_EVENT m_f_item_selected;
     DRAG_DROP_EVENT m_f_item_rbutton_click;
+    DRAG_DROP_EVENT m_f_item_amount; // NLC: true = a drag of this cell may take part of it
 
     u32 back_color;
 
@@ -162,6 +166,27 @@ public:
     Ivector2 PickCell(const Fvector2& abs_pos);
     CUICell& GetCellAt(const Ivector2& pos);
 
+    // NLC: manual bag arrangement (UIInventoryLayout)
+    enum ELayoutMode
+    {
+        lmAuto, // old behaviour
+        lmManual, // cells come from the layout, drops are saved
+        lmReadOnly, // compact list in backpack order, dragging inside snaps back
+    };
+    u32 LayoutMode() const { return m_layout_mode; }
+    void SetLayoutMode(u32 mode) { m_layout_mode = mode; }
+    void SetLayoutFilling(bool b) { m_layout_filling = b; }
+    u16 LayoutOwner() const { return m_layout_owner; }
+    void SetLayoutOwner(u16 owner) { m_layout_owner = owner; }
+    void EnsureSpareRows(int rows);
+    void ScrollByWheel(EUIMessages mouse_action);
+
+private:
+    void PlaceByLayout(CUICellItem* itm);
+    void PlaceAt(CUICellItem* itm, const Ivector2& cell);
+    void LayoutDrop(CUICellItem* itm);
+
+public:
 public:
     // UIWindow overriding
     virtual void Draw();
@@ -180,6 +205,7 @@ private:
     typedef CUIWindow inherited;
     ui_shader hShader; // ownerDraw
     ui_shader hShader0;
+    ui_shader hShaderPreview; // NLC: footprint of the dragged item
     UI_CELLS_VEC m_cells_to_draw;
 
 protected:
@@ -228,6 +254,26 @@ protected:
 
     void PlaceItemAtPos(CUICellItem* itm, Ivector2& cell_pos);
     CUICellItem* RemoveItem(CUICellItem* itm, bool force_root);
+
+    // NLC: manual layout
+    enum EDropState
+    {
+        dsPlace, // free, or only the item's own old cells
+        dsSwap, // exactly one other item, it takes the old cell
+        dsPush, // several items, they move to the nearest free cells
+        dsReject, // several items, the drop is refused
+        dsRelocate, // from another list onto occupied cells: lands on the nearest free cell
+    };
+    struct SDropInfo
+    {
+        EDropState state{dsPlace};
+        Ivector2 cell{};
+        Ivector2 footprint{};
+        xr_vector<CUICellItem*> hits;
+    };
+    void ClassifyDrop(SDropInfo& info);
+    Ivector2 FindNearestFree(const Ivector2& wanted, const Ivector2& footprint);
+    void DrawDropPreview(const Irect& visible, const Fvector2& drawLT, const Fvector2& cell_len, const Fvector2& spacing_len);
 
 public:
     bool ValidCell(const Ivector2& pos) const;

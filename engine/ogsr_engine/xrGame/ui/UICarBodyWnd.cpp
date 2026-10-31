@@ -9,6 +9,7 @@
 #include "UIFrameWindow.h"
 #include "UIItemInfo.h"
 #include "UIPropertiesBox.h"
+#include "UIInventoryLayout.h" // NLC
 #include "../ai/monsters/BaseMonster/base_monster.h"
 #include "../inventory.h"
 #include "UIInventoryUtilities.h"
@@ -138,6 +139,23 @@ void CUICarBodyWnd::Init()
     AttachChild(m_pUITakeAll);
     xml_init.Init3tButton(uiXml, "take_all_btn", 0, m_pUITakeAll);
 
+    if (uiXml.NavigateToNode("sort_button", 0)) // NLC
+    {
+        m_pUISortButton = xr_new<CUI3tButton>();
+        m_pUISortButton->SetAutoDelete(true);
+        AttachChild(m_pUISortButton);
+        xml_init.Init3tButton(uiXml, "sort_button", 0, m_pUISortButton);
+        InitSortButtonIcon(uiXml, "sort_button", m_pUISortButton);
+    }
+    if (uiXml.NavigateToNode("sort_button_other", 0)) // NLC
+    {
+        m_pUISortOtherButton = xr_new<CUI3tButton>();
+        m_pUISortOtherButton->SetAutoDelete(true);
+        AttachChild(m_pUISortOtherButton);
+        xml_init.Init3tButton(uiXml, "sort_button_other", 0, m_pUISortOtherButton);
+        InitSortButtonIcon(uiXml, "sort_button_other", m_pUISortOtherButton);
+    }
+
     BindDragDropListEnents(m_pUIOurBagList);
     BindDragDropListEnents(m_pUIOthersBagList);
 
@@ -244,6 +262,8 @@ void CUICarBodyWnd::UpdateLists_delayed() { m_b_need_update = true; }
 void CUICarBodyWnd::Hide()
 {
     InventoryUtilities::SendInfoToActor("ui_car_body_hide");
+    inv_layout().Commit(m_pUIOurBagList); // NLC
+    inv_layout().Commit(m_pUIOthersBagList); // NLC
     m_pUIOurBagList->ClearAll(true);
     m_pUIOthersBagList->ClearAll(true);
     inherited::Hide();
@@ -281,6 +301,7 @@ void CUICarBodyWnd::UpdateLists()
     ruck_list.clear();
     m_pOurObject->inventory().AddAvailableItems(ruck_list, true);
     std::sort(ruck_list.begin(), ruck_list.end(), InventoryUtilities::GreaterRoomInRuck);
+    inv_layout().BeginFill(m_pUIOurBagList, CInventoryLayout::wndCarBody, ruck_list); // NLC
 
     //Наш рюкзак
     for (const auto& inv_item : ruck_list)
@@ -295,6 +316,11 @@ void CUICarBodyWnd::UpdateLists()
         }
         m_pUIOurBagList->SetItem(itm);
     }
+    inv_layout().EndFill(m_pUIOurBagList); // NLC
+    if (m_pUISortButton) // NLC
+        m_pUISortButton->Show(m_pUIOurBagList->LayoutMode() == CUIDragDropListEx::lmManual);
+    // NLC: without a backpack every taken item drops at the player's feet, Take All would dump the whole box
+    m_pUITakeAll->Show(HasBackpack());
 
     ruck_list.clear();
     if (m_pOthersObject)
@@ -304,6 +330,13 @@ void CUICarBodyWnd::UpdateLists()
 
     std::sort(ruck_list.begin(), ruck_list.end(), InventoryUtilities::GreaterRoomInRuck);
 
+    // NLC: a box keeps its own arrangement, a body is looted once and stays sorted
+    const bool is_box = !m_pOthersObject && m_pInventoryBox;
+    if (is_box)
+        inv_layout().BeginFill(m_pUIOthersBagList, CInventoryLayout::wndBox, ruck_list, m_pInventoryBox->object().ID());
+    else
+        m_pUIOthersBagList->SetLayoutMode(CUIDragDropListEx::lmAuto);
+
     //Чужой рюкзак
     for (const auto& inv_item : ruck_list)
     {
@@ -312,6 +345,10 @@ void CUICarBodyWnd::UpdateLists()
         CUICellItem* itm = create_cell_item(inv_item);
         m_pUIOthersBagList->SetItem(itm);
     }
+    if (is_box) // NLC
+        inv_layout().EndFill(m_pUIOthersBagList);
+    if (m_pUISortOtherButton) // NLC
+        m_pUISortOtherButton->Show(m_pUIOthersBagList->LayoutMode() == CUIDragDropListEx::lmManual);
 
     InventoryUtilities::UpdateWeight(*m_pUIOurBagWnd);
     m_b_need_update = false;
@@ -324,6 +361,24 @@ void CUICarBodyWnd::SendMessage(CUIWindow* pWnd, s16 msg, void* pData)
         if (m_pUITakeAll == pWnd)
         {
             TakeAll();
+        }
+        else if (m_pUISortButton && m_pUISortButton == pWnd) // NLC
+        {
+            int scroll = m_pUIOurBagList->ScrollPos();
+            int other_scroll = m_pUIOthersBagList->ScrollPos();
+            inv_layout().ResetPositions();
+            UpdateLists();
+            inv_layout().Commit(m_pUIOurBagList);
+            m_pUIOurBagList->SetScrollPos(scroll);
+            m_pUIOthersBagList->SetScrollPos(other_scroll);
+        }
+        else if (m_pUISortOtherButton && m_pUISortOtherButton == pWnd && m_pInventoryBox) // NLC
+        {
+            // an unarranged box is simply not stored: the old sort until the next drag
+            int scroll = m_pUIOurBagList->ScrollPos();
+            inv_layout().ResetPositions(m_pInventoryBox->object().ID());
+            UpdateLists();
+            m_pUIOurBagList->SetScrollPos(scroll);
         }
     }
     else if (pWnd == m_pUIPropertiesBox && msg == PROPERTY_CLICKED)
@@ -494,8 +549,13 @@ void CUICarBodyWnd::SetCurrentItem(CUICellItem* itm)
     }
 }
 
+bool CUICarBodyWnd::HasBackpack() { return !m_pOurObject || !!m_pOurObject->inventory().GetItemFromInventory("shadow_inventory"); } // NLC
+
 void CUICarBodyWnd::TakeAll()
 {
+    if (!HasBackpack()) // NLC
+        return;
+
     u32 cnt = m_pUIOthersBagList->ItemsCount();
     u16 tmp_id = 0;
     if (m_pInventoryBox)
@@ -813,6 +873,7 @@ void CUICarBodyWnd::ActivatePropertiesBox()
 
     if (b_show)
     {
+        m_pUIPropertiesBox->ApplyMenuConfig(); // NLC
         m_pUIPropertiesBox->AutoUpdateSize();
         m_pUIPropertiesBox->BringAllToTop();
 

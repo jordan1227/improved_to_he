@@ -29,6 +29,7 @@ public:
     void SetSelectedTAG(u32 tag_val);
     void SetSelectedText(LPCSTR txt);
     void SetImmediateSelection(bool f);
+    void SortByMenuRank(); // NLC
 
     virtual bool OnMouse(float x, float y, EUIMessages mouse_action);
     virtual void SendMessage(CUIWindow* pWnd, s16 msg, void* pData = 0);

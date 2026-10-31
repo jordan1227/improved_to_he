@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ui/UIInventoryLayout.h" // NLC
 #include "fl_hook.h"
 #include "..\xr_3da\XR_IOConsole.h"
 #include "..\xr_3da\xr_ioc_cmd.h"
@@ -1771,6 +1772,11 @@ void CCC_RegisterCommands()
     CMD3(CCC_Mask, "g_first_person_death", &psActorFlags, AF_FIRST_PERSON_DEATH);
     CMD3(CCC_Mask, "g_show_dyn_desc_wnd", &psActorFlags, AF_SHOW_DYN_DESC_WND);
     CMD3(CCC_Mask, "g_hide_untradable_items", &psActorFlags, AF_HIDE_UNTRADABLE_ITEMS);
+    CMD3(CCC_Mask, "g_inv_manual_inventory", &psInvLayoutFlags, ILF_MANUAL_INVENTORY); // NLC
+    CMD3(CCC_Mask, "g_inv_manual_trade", &psInvLayoutFlags, ILF_MANUAL_TRADE); // NLC
+    CMD3(CCC_Mask, "g_inv_manual_carbody", &psInvLayoutFlags, ILF_MANUAL_CARBODY); // NLC
+    CMD3(CCC_Mask, "g_inv_manual_box", &psInvLayoutFlags, ILF_MANUAL_BOX); // NLC
+    CMD3(CCC_Mask, "g_inv_rotate", &psInvLayoutFlags, ILF_ROTATE); // NLC
     CMD4(CCC_Float, "g_exo_snd_vol", &m_exo_snd_vol, 0.f, 2.f);
 
     CMD1(CCC_TimeFactor, "time_factor")

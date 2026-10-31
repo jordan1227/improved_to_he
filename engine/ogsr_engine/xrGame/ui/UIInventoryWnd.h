@@ -15,6 +15,7 @@ class CInventory;
 #include "../inventory_space.h"
 
 class CArtefact;
+class CWeapon; // NLC
 class CUI3tButton;
 class CUIDragDropListEx;
 class CUICellItem;
@@ -87,6 +88,7 @@ protected:
     CUIFrameWindow UIPersonalWnd;
 
     CUI3tButton* UIExitButton;
+    CUI3tButton* UISortButton{}; // NLC: optional <sort_button> node
 
     CUIStatic UIStaticBottom;
     CUIStatic UIStaticTime;
@@ -176,6 +178,8 @@ protected:
 
     void AttachAddon(PIItem item_to_upgrade);
     void DetachAddon(const char* addon_name);
+    void AddScopeRows(CWeapon* weapon, bool& b_show); // NLC
+    void SwapScope(PIItem weapon, PIItem new_scope); // NLC
 
     void SetCurrentItem(CUICellItem* itm);
     CUICellItem* CurrentItem();

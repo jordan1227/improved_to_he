@@ -53,6 +53,7 @@ public:
     virtual float Weight() const;
 
     virtual u32 Cost() const;
+    float ExactCost() const; // NLC: without the rounding up of Cost(), trade sums it per deal
     bool Get(CCartridge& cartridge);
 
     float m_kDist, m_kDisp, m_kHit, m_kImpulse, m_kPierce, m_kAP, m_kAirRes, m_kSpeed;
