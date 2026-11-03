@@ -13,6 +13,7 @@
 #include "script_callback_ex.h"
 
 #include "stalker_movement_manager.h"
+#include "../xr_3da/motion.h" // NLC: CMotionDef::Speed in play_legs (limp pace)
 
 /*IC*/ void CStalkerAnimationManager::play_delayed_callbacks()
 {
@@ -155,6 +156,19 @@ void CStalkerAnimationManager::play_legs()
     {
         float amount = legs().blend()->blendAmount;
         speed = (m_current_speed - m_previous_speed) * amount + m_previous_speed;
+    }
+
+    // NLC: a limping stalker (legs on the damaged clip set) moves and steps slower: the movement speed and the cycle speed of the
+    // legs clip are scaled together, so the feet do not slide (the step sounds follow the blend speed)
+    if (legs().blend())
+    {
+        const float limp_k = nlc_limp_speed_k();
+        if (limp_k != 1.f)
+        {
+            if (CMotionDef* md = m_skeleton_animated->LL_GetMotionDef(legs().blend()->motionID))
+                legs().blend()->speed = md->Speed() * limp_k;
+            speed *= limp_k;
+        }
     }
 
     if (fis_zero(speed))

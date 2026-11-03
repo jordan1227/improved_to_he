@@ -1,0 +1,108 @@
+-- [HE-PORT] A pseudogiant now and then in the labs once their story is over, docs/ALIFE_DESIGN.md section 10.
+-- [lab_giants] in olr_alife.ltx: level = section,chapter,smart ("auto" for any smart there). One at a time per lab, the
+-- next some days after the last one died, never while you are on that level. Log: [olr_lab_giant].
+-- fl olr_lab_giants.report()            what each lab has and when the next one is due
+-- fl olr_lab_giants.force("l04u_labx18")    the next one is due now
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_lab_giants"
+
+local labs = nil
+local days = nil
+
+local function glog(fmt, ...)
+	log2("[olr_lab_giant] " .. fmt, ...)
+end
+
+local function config()
+	if labs then return labs end
+	labs = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("lab_giants") - 1 do
+		local _, key, val = ini:r_line("lab_giants", i, "", "")
+		if key == "lab_giant_days" then
+			local a, b = string.match(val, "([%d%.]+)%s*,%s*([%d%.]+)")
+			days = { tonumber(a), tonumber(b) }
+		else
+			local section, chapter, smart = string.match(val, "([%w_]+)%s*,%s*(%d+)%s*,%s*([%w_]+)")
+			labs[key] = { section = section, chapter = tonumber(chapter), smart = smart }
+		end
+	end
+	return labs
+end
+
+local function get_state()
+	return get_value(KEY) or {}
+end
+
+local function next_time(n)
+	config()
+	return n + math.random(math.floor(days[1] * 24), math.floor(days[2] * 24)) * 3600
+end
+
+local function place(lvl, lab)
+	if lab.smart ~= "auto" then
+		local smart = olr_smart_index.get_obj(lab.smart)
+		if smart then return smart end
+		glog("%s: smart %s not found, any smart there instead", lvl, lab.smart)
+	end
+	local name = olr_smart_index.any_on_level(lvl)
+	return name and olr_smart_index.get_obj(name)
+end
+
+function update()
+	if not ( db.actor and olr_cfg.on("lab_giants") ) then return end
+	olr_smart_index.ensure()
+	local st = get_state()
+	local n = timers.Get_Game_Seconds()
+	local sim = alife()
+	local changed = false
+	for lvl, lab in pairs(config()) do
+		local rec = st[lvl] or {}
+		local giant = rec.id and sim:object(rec.id)
+		if rec.id and not ( giant and IsMonster(giant) and giant:alive() and giant:section_name() == lab.section ) then
+			glog("%s: the giant id=%d is gone, next in %.0f h", lvl, rec.id, ( next_time(n) - n ) / 3600)
+			rec.id, rec.next = nil, next_time(n)
+			changed = true
+		end
+		if not rec.id and olr_cfg.chapter() >= lab.chapter then
+			if not rec.next then
+				rec.next = next_time(n)
+				changed = true
+				glog("%s opens: the first giant in %.0f h", lvl, ( rec.next - n ) / 3600)
+			elseif n >= rec.next and lvl ~= level.name() then
+				local smart = place(lvl, lab)
+				if smart then
+					local se = sim:create(lab.section, smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+					rec.id = se and se.id
+					glog("%s: %s id=%s at %s", lvl, lab.section, tostring(rec.id), smart:name())
+				else
+					glog("%s: no smart to put a giant at", lvl)
+					rec.next = next_time(n)
+				end
+				changed = true
+			end
+		end
+		st[lvl] = rec
+	end
+	if changed then set_value(KEY, st) end
+end
+
+function report()
+	local st = get_state()
+	local n = timers.Get_Game_Seconds()
+	glog("on=%s chapter=%d", tostring(olr_cfg.on("lab_giants")), olr_cfg.chapter())
+	for lvl, lab in pairs(config()) do
+		local rec = st[lvl] or {}
+		glog("  %s: %s from chapter %d, giant=%s, next in %s h", lvl, lab.section, lab.chapter, tostring(rec.id),
+			rec.next and string.format("%.1f", ( rec.next - n ) / 3600) or "-")
+	end
+end
+
+function force(lvl)
+	local st = get_state()
+	st[lvl] = st[lvl] or {}
+	st[lvl].next = timers.Get_Game_Seconds()
+	set_value(KEY, st)
+	glog("force: %s due now (spawns once you are off that level and its chapter is open)", tostring(lvl))
+end

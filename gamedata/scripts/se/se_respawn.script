@@ -25,6 +25,15 @@ local monster_idle_spawn_preset = {
   often  = { 60*60*5,  60*60*8  },
 }
 
+-- [HE-PORT]
+local function apply_cfg_presets()
+  idle_spawn_preset.seldom = olr_cfg.get("respawn_human_seldom") * 3600
+  for _, name in ipairs({ "seldom", "medium", "often" }) do
+    local a, b = olr_cfg.range("respawn_monster_" .. name)
+    monster_idle_spawn_preset[name] = { a * 3600, b * 3600 }
+  end
+end
+
 local function section_is_monster(section)
   if not section or section == "" then return false end
   local ok, cls = pcall(function()
@@ -80,6 +89,15 @@ end
 
 local respawners = {}
 local respawners_by_parent = {}
+
+-- [HE-PORT] olr_population reads every respawner and asks what a section is
+function all_respawners()
+  return respawners
+end
+
+function is_monster_section(section)
+  return section_is_monster(section) and true or false
+end
 
 function r_bool(spawn_ini, section, line, default)
   if spawn_ini:line_exist(section, line) then
@@ -239,6 +257,8 @@ end
 
 function se_respawn:create(prob)
 	if self.amk_name and sivol_worldspawns.convoy_respawner_paused(self.amk_name) then return false end -- sivol: convoy ambush
+	if ceiling_reached(self) then return false end -- [HE-PORT]
+	if olr_steering.holds(self) then return false end -- [HE-PORT]
 	if tostring(prob)=="true" then
 		prob=80
 	elseif tostring(prob)=="false" then
@@ -272,13 +292,14 @@ function se_respawn:create(prob)
 		return
 	end
 
-	local spawn_section = ""
+	local spawn_section = olr_respawn_rules.pick_section(self) or "" -- [HE-PORT] a rule's sequence
+	local forced = spawn_section ~= ""
 	local sum = 0
 	for k,v in pairs(self.respawn_section) do
 		sum = sum + v.prob
 	end
 	sum = lua_random(0, sum)
-	for k,v in pairs(self.respawn_section) do
+	for k,v in pairs(forced and {} or self.respawn_section) do
 		sum = sum - v.prob      
 		if sum <= 0 then
 			spawn_section = v.section
@@ -289,7 +310,7 @@ function se_respawn:create(prob)
 	if spawn_section=="" then
 		return false
 	end
-	spawn_section = he_random_fauna.pick(self, spawn_section) -- [HE-PORT]
+	if not forced then spawn_section = he_random_fauna.pick(self, spawn_section) end -- [HE-PORT]
 	spawn_props(self.sectSpawnProps, spawn_section) -- [HE-PORT]
 	if he_mil_dolg_reward.cut_spawn(self, spawn_section) then -- [HE-PORT]
 		return false
@@ -317,12 +338,27 @@ function se_respawn:create(prob)
 	else
 		obj = g_sim:create(spawn_section, self.position, self.m_level_vertex_id, self.m_game_vertex_id, parent_id)
 	end
-	amk.on_REspawn(obj,self)
-
 	local tt = self.sectSpawnProps[spawn_section]
+	-- [HE-PORT] the engine picks the best smart Zone-wide: settle it first, so a dropped one is never counted or announced
+	if self.item_spawn==false and tt.check==true and not self.amk_name then
+		obj:brain():update()
+		local kept = olr_population.keep_home(self, obj)
+		if not kept then
+			alife():release(obj, true)
+			return false
+		end
+		if kept == "smartless" then -- [HE-PORT] kept at its lair with no smart: counted, not released below
+			amk.on_REspawn(obj,self)
+			olr_population.note_spawn(self, obj)
+			table.insert(self.spawned_obj, obj.id)
+			return true
+		end
+	end
+	amk.on_REspawn(obj,self)
+	olr_population.note_spawn(self, obj) -- [HE-PORT]
+
 	if self.item_spawn==false then        
 		if tt.check==true and not self.amk_name then
-			obj:brain():update()
 			local smart_terrain_id = obj:smart_terrain_id()
 			if smart_terrain_id ~= BAD_OBJ_ID then  
 				table.insert(self.spawned_obj, obj.id)
@@ -385,6 +421,7 @@ function se_respawn:spawn()
   end
 
   for i = 1, self.max_spawn do  
+    if i > 1 and not olr_respawn_rules.extra_ok(self) then return end -- [HE-PORT]
     if self.max_count ~= -1 and table.getn(self.spawned_obj) >= self.max_count then
       return
     end  
@@ -403,6 +440,7 @@ function se_respawn:remove_spawned(id)
 end
 
 function se_respawn:execute()
+  if not olr_respawn_rules.apply(self) then return end -- [HE-PORT]
   local spawned = #self.spawned_obj
 
   if spawned > 0 and self.spawn_once then
@@ -431,6 +469,8 @@ function se_respawn:execute()
   local now_t = game.get_game_time()
   local cap = self.idle_spawn_max
   if cap <= self.idle_spawn_min then cap = cap * 2 end
+  -- a max below min made every update re-roll the timer past the cap, so it never came due
+  if cap < self.idle_spawn_min and olr_cfg.on("respawn_cap_fix") then cap = self.idle_spawn_min end
   if now_t < self.respawn_time and self.respawn_time:diffSec(now_t) > cap then
     local d = lua_random(self.idle_spawn_min, cap)
     local t = game.CTime()
@@ -628,6 +668,7 @@ local amk_named_respawner_control={}
 
 function init_respawn_params(obj)
   amk_respawner_control[obj:name()] = obj
+  obj.rr_orig, obj.rr_stage = nil, nil -- [HE-PORT] olr_respawn_rules reads the fresh values
   local ini = obj:spawn_ini()
   if not ini:section_exist(section_name) then
     return  
@@ -667,6 +708,7 @@ function init_respawn_params(obj)
     
 
   --' Вычитка пресетов
+  apply_cfg_presets() -- [HE-PORT]
   local preset_key_min = obj.idle_spawn_min
   local preset_key_max = obj.idle_spawn_max
   if idle_spawn_preset[obj.idle_spawn_min]~=nil then
@@ -694,6 +736,12 @@ function init_respawn_params(obj)
     else
       if obj.idle_spawn_max < obj.idle_spawn_min then
         obj.idle_spawn_max = obj.idle_spawn_min
+      end
+      -- [HE-PORT]
+      if obj.idle_spawn_min > 0 then
+        local mult = olr_cfg.get("respawn_numeric_mult")
+        obj.idle_spawn_min = math.floor(obj.idle_spawn_min * mult)
+        obj.idle_spawn_max = math.floor(obj.idle_spawn_max * mult)
       end
     end
   else
@@ -738,6 +786,45 @@ function reinit_spawner_params(name)
   if amk_respawner_control[name] then
     init_respawn_params(amk_respawner_control[name])
   end
+end
+
+-- [HE-PORT] respawner monsters alive on a level; recounted at most every 30 s, counted up between
+local level_counts = {}
+local level_counts_until = {}
+
+function level_monster_count(level_name)
+  if time_global() < (level_counts_until[level_name] or 0) then return level_counts[level_name] end
+  local sim = alife()
+  local n = 0
+  for _, r in pairs(respawners) do
+    if r.he_monster_respawn and r.level_name == level_name and not r.spawn_once then
+      for _, id in ipairs(r.spawned_obj) do
+        local o = sim:object(id)
+        -- ids of old saves can point at anything by now; vermin do not count
+        if o and IsMonster(o) and o:alive() and not he_random_fauna.is_vermin(o:section_name()) then n = n + 1 end
+      end
+    end
+  end
+  level_counts[level_name] = n
+  level_counts_until[level_name] = time_global() + 30000
+  return n
+end
+
+function ceiling_reached(self)
+  if olr_population.active() then return olr_population.respawn_blocked(self) end -- [HE-PORT] one count for everyone
+  if olr_respawn_rules.skips_ceiling(self) then return false end -- [HE-PORT] a rule's own replacement spawn
+  if not self.he_monster_respawn or self.spawn_once or self.item_spawn then return false end
+  local limit = olr_cfg.monster_ceiling(self.level_name)
+  if not limit or he_random_fauna.is_kept(self:name()) then return false end
+  local only_vermin = true
+  for _, v in ipairs(self.respawn_section) do
+    if not he_random_fauna.is_vermin(v.section) then only_vermin = false end
+  end
+  if only_vermin then return false end
+  local n = level_monster_count(self.level_name)
+  if n >= limit then return true end
+  level_counts[self.level_name] = n + 1
+  return false
 end
 
 function get_respawner_by_name(name)

@@ -441,6 +441,10 @@ script_rq_result PerformRayQuery(Fvector start, Fvector dir, float range, collid
 void nlc_visible_body_set(bool active, u16 id); // NLC: HUDManager.cpp
 int nlc_knife_strike_kind(u16 weapon_id); // NLC: WeaponKnife.cpp
 float nlc_knife_strike_k(u16 weapon_id); // NLC: WeaponKnife.cpp
+u32 nlc_limp_mode(); // NLC: stalker_animation_legs.cpp
+void nlc_limp_mode_set(u32 mode); // NLC: stalker_animation_legs.cpp
+void nlc_limp_speed_set(float run, float walk); // NLC: stalker_animation_legs.cpp
+void nlc_limp_health_set(float enter, float exit); // NLC: stalker_animation_legs.cpp
 #include "player_hud.h" // NLC: actor weapon handling speed factors
 
 float GetTargetDist() { return ((CHUDManager*)g_hud)->GetTarget()->GetDist(); }
@@ -1213,6 +1217,12 @@ void CLevel::script_register(lua_State* L)
             def("advance_game_time", &AdvanceGameTime),
 
             def("nlc_visible_body_active", [](bool active, u16 id) { nlc_visible_body_set(active, id); }), // NLC: HUDManager.cpp
+            // NLC: wounded stalkers' limp (stalker_animation_legs.cpp): mask 1 legs, 2 torso calm, 4 torso alert, 8 torso panic run (default [nlc_limp] in system.ltx)
+            def("nlc_limp_mode", [](u32 mode) { nlc_limp_mode_set(mode); }), def("nlc_limp_mode_get", [] { return nlc_limp_mode(); }),
+            // NLC: pace of a limping stalker as a share of the normal one (movement speed and legs cycle speed): run, walk (defaults [nlc_limp] speed_run 0.7, speed_walk 0.85)
+            def("nlc_limp_speed", [](float run, float walk) { nlc_limp_speed_set(run, walk); }),
+            // NLC: the limp starts below `enter` health and ends at `exit` or above (defaults [nlc_limp] health 0.4, exit 0.55)
+            def("nlc_limp_health", [](float enter, float exit) { nlc_limp_health_set(enter, exit); }),
             // NLC: the last strike of a knife within 1.5 s: kind 0 none / 1 slash / 2 stab, graze factor k (WeaponKnife.cpp)
             def("nlc_knife_strike_kind", [](u16 id) { return nlc_knife_strike_kind(id); }), def("nlc_knife_strike_k", [](u16 id) { return nlc_knife_strike_k(id); }),
             // NLC: actor weapon handling speed, product of named factors per kind ("injury", later an artifact bonus); total clamped 0.3..2

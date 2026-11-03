@@ -5,6 +5,67 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.175 (2026-11-02)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `4BB2D7232535C1D12BD389A362B1234807BF9CD04C002FF8D26DA388DB059FB7` (archived with its PDB in `nlc_tools/builds/20261102_235737_4bb2d723`).
+- **Status:** runtime pending. Built on `nlc-3.589.174`.
+- Dead default restriction fix: `CSpaceRestrictionHolder::register_restrictor` joined a default restrictor's name to the level's default list before finding its border empty, then deleted the restriction and left the name there. That name never initialized, so no list holding it did: `accessible()` returned true and `add_border` did nothing for those NPCs, turning off their anomaly avoidance (seen on the Marsh via `mar_ecolog_apparat_restr_02`). The border is now checked first.
+- **Required game data:** none.
+
+## nlc-3.589.174 (2026-11-02)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E563BE2EAE5109F001143B835F94F1C353A33CBE9F23AE218ED823EB334CC4E8` (archived with its PDB in `nlc_tools/builds/20261102_232903_e563be2e`).
+- **Status:** runtime pending. Built on `nlc-3.589.173`.
+- Anomaly keep-out margin: a space restriction on a `CCustomZone` closes level vertices this much past the zone's shape, and its sphere check widens by the same amount, so NPCs routed along the edge are not caught and pulled in. Section key `restrict_margin`, default 1.5 m. Other restrictors are unchanged.
+- **Required game data:** none.
+
+## nlc-3.589.173 (2026-11-02)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `1C4F98BD975640100F61679971B501259645B3E5902F77E9657A3B62119D0F13` (archived with its PDB in `nlc_tools/builds/20261102_015405_1c4f98bd`).
+- **Status:** runtime pending. Built on `nlc-3.589.172`.
+- Player dialogue options now use `script_text` (`UITalkWnd::UpdateQuestions` calls `GetPhraseText`); no other dialogue in the game had `script_text`.
+- New feature `corpses_collision_actor_only` (`external.ltx`, needs `corpses_collision = true`): a contact between a corpse and a living non-actor entity is dropped in `OnCharacterContactInDeath`. The player and other bodies still collide.
+- **Required game data:** `config/external.ltx`, `config/gameplay/dialogs_part_claim.xml`, `scripts/sivol/sivol_part_claim.script`, `config/text/*/string_table_he_part_claim.xml`.
+
+## nlc-3.589.172 (2026-11-01)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `474B3EEFAAAAAF86A6CCC38C09BB27FD1ED6B4ECDFC49A3E951DEBBF42B06E9B` (archived with its PDB in `nlc_tools/builds/20261101_193146_474b3eef`).
+- **Status:** runtime pending. Built on `nlc-3.589.171`.
+- Limp exit: the limp starts below `[nlc_limp] health` (default 0.4) and now ends at or above `[nlc_limp] exit` (default 0.55; it was health + 0.05). Lua `level.nlc_limp_health(enter, exit)` changes both at run time.
+- **Required game data:** `scripts/ai_additions/rx_bandage.script`, `config/misc/rx_bandage.ltx` (NPC bandage heal and regen), `scripts/sivol/sivol_tactics.script` (`set_limp_health`, `give_bandage`); the scripts call `level.nlc_limp_health` through `pcall`.
+
+## nlc-3.589.171 (2026-11-01)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `CADBEEFBB2C37C4D11282433390478D0AC4D016BC00E50A07119B2B14E0E8E33` (archived with its PDB in `nlc_tools/builds/20261101_191102_cadbeefb`).
+- **Status:** runtime pending. Built on `nlc-3.589.170`.
+- Limp pace: a stalker whose legs use the damaged clip set (`legs_state() == 2`) moves and steps slower. In `play_legs()` the movement speed and the playback speed of the legs clip (`CBlend::speed`) are scaled together, so the feet do not slide and the step sounds follow (`CStepManager::get_blend_time` divides by the blend speed). Share of the normal pace: `[nlc_limp] speed_run` (default 0.7) and `speed_walk` (default 0.85), Lua `level.nlc_limp_speed(run, walk)` at run time.
+- **Required game data:** `scripts/sivol/sivol_tactics.script` (`set_limp_speed`, `limp_speed`); it calls `level.nlc_limp_speed` through `pcall`.
+
+## nlc-3.589.170 (2026-11-01)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `DB30C0DA9787EBE4445CC266B353C9E6E5D3CEC6FA3E7B8FD3C86E4CE8DD0F0E` (archived with its PDB in `nlc_tools/builds/20261101_184312_db30c0da`).
+- **Status:** runtime pending. Built on `nlc-3.589.169`.
+- Wounded stalkers' upper body: the idle, walk and run torso poses take the damaged torso clips (`dmg_norm_torso_<slot>_*`, torso bone part) while the stalker limps, so the legs keep walking (a script animation would freeze them). Calm (free mental state or weapon strapped): `idle_1`, `walk_1`, `run_1`. Alert (weapon up, not firing): `aim_0` idle, `aim_2` walk, `aim_3` run (none in the damaged set, so the normal one stays), and in the panic run `run_0` as the substitute. Aim, fire, reload, draw, holster and strap clips are never replaced. Every access is bounds- and validity-checked and falls back to the normal clip.
+- Mask Lua `level.nlc_limp_mode(mask)` / `level.nlc_limp_mode_get()`: 1 legs, 2 torso calm, 4 torso alert, 8 torso panic run; defaults from `[nlc_limp]` keys `legs`, `torso_calm`, `torso_alert`, `torso_panic` (all on when absent). `[nlc_limp] health` as before. The limp flag with its hysteresis is now one function (`CStalkerAnimationManager::nlc_limp`) shared by legs and torso.
+- **Required game data:** `scripts/sivol/sivol_tactics.script` (`set_limp`, sidearm), `sivol_melee.script`, `xrs/xrs_battle_ai.script`, `config/misc/he_faction_character.ltx`. The scripts call `level.nlc_limp_mode` through `pcall`, so they also run on the previous exe.
+
+## nlc-3.589.169 (2026-11-01)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0094F71FDFF7B85FB3D57474AD56F02C7051A8C057F7130CF1A527B5FF441F2D` (archived with its PDB in `nlc_tools/builds/20261101_162358_0094f71f`).
+- **Status:** runtime pending. Built on `nlc-3.589.168`.
+- Stalker footstep volume factor: Lua `npc:nlc_step_k()` / `npc:nlc_step_k(k)` (`CAI_Stalker::step_volume_k`, clamped 0..2, not saved). A sneaking NPC sets it low so other NPCs do not hear it.
+- Per-object monster ability factors: Lua `npc:nlc_ability_k(name, k)` (sets the ability to its first-seen config value times k, so calls never compound) and `npc:nlc_ability_get(name)`. Burer `tele_cooldown`, `repulse_cooldown`, `grenade_held`, `shield_time`; controller `tube_damage`, `tube_delay`; poltergeist `detect_far`, `detect_speed`; bloodsucker `vampire_delay`, `vampire_wound`, `vis_full`, `vis_partial`. An unknown name is logged and returns false (-1 for the getter).
+- Wounded gait: below `[nlc_limp] health` (default 0.4, 0 = off, hysteresis 0.05) a standing stalker's legs use the damaged clip set (`dmg_norm_`); the torso keeps the normal set; a visual without the damaged set keeps the normal one.
+- `Entity.cpp` includes `ActorCondition.h` (the uncommitted god-mode change there did not compile without it).
+- **Required game data:** `scripts/sivol/sivol_melee.script`, `sivol_tactics.script`, `sivol_rout.script`, `xrs/xrs_battle_ai.script` (they call `nlc_step_k` through `pcall`, so they also run on the previous exe).
+
 ## nlc-3.589.168 (2026-10-31)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

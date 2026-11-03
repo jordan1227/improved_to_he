@@ -197,7 +197,7 @@ local is_processing = false
 local harvest_generation = 0
 local harvest_state = nil
 local harvest_visual = nil
-harvest_diagnostics = false
+harvest_diagnostics = true -- testing phase (docs/PART_LOOT_DESIGN.md)
 
 local function harvest_log(fmt, ...)
 	if harvest_diagnostics then log2(fmt, ...) end
@@ -373,6 +373,7 @@ local function cleanup_harvest(reason, interrupted)
 	if actor_alive then pcall(function() sak.restore_weap() end) end
 	if snd and snd:playing() then snd:stop() end
 	if level.present() then pcall(function() level.remove_cam_effector(8553) end) end
+	if state.took then sivol_part_claim.on_taken(state.monster_id, state.part_section, state.took) end
 	if interrupted then
 		log2("[monster_parts] harvest cleanup reason=%s interrupted=true", reason)
 	else
@@ -480,24 +481,97 @@ function has_knife()
     return knife and strpos( knife:section(), "knife" ) or false
 end
 
--- [HE-PORT]
+-- [HE-PORT] docs/PART_LOOT_DESIGN.md: who has a claim on a corpse's part.
+-- true = an old save's record with no data. A table = { o = "actor" or "npc", k, n, c, r = the NPC's
+-- id, name, community, rank; t = game seconds; ps = part section; alpha; strip; ta = the player took it;
+-- l, ln, s, i, lt = who looted it, what and when }.
 local FOREIGN_TIP = "%c[255,230,210,30]Убито не мной, может лучше не трогать?"
 local FOREIGN_KILLS_KEY = "monster_parts_foreign_kills"
 
+local claims_cache = nil
+
 local function foreign_kills()
-	local t = get_value( FOREIGN_KILLS_KEY, nil )
-	return type( t ) == "table" and t or {}
+	if not claims_cache then
+		local t = get_value( FOREIGN_KILLS_KEY, nil )
+		claims_cache = type( t ) == "table" and t or {}
+	end
+	return claims_cache
 end
 
-local function mark_foreign_kill( id, flag )
-	local t = foreign_kills()
-	if ( t[ id ] == true ) == flag then return end
-	t[ id ] = flag or nil
-	set_value( FOREIGN_KILLS_KEY, t )
+function claim_of( id )
+	return foreign_kills()[ id ]
+end
+
+function set_claim( id, rec )
+	foreign_kills()[ id ] = rec
+	set_value( FOREIGN_KILLS_KEY, foreign_kills() )
+end
+
+function all_claims()
+	return foreign_kills()
 end
 
 function is_foreign_kill( id )
-	return foreign_kills()[ id ] == true
+	local rec = claim_of( id )
+	return rec == true or ( type( rec ) == "table" and rec.o == "npc" )
+end
+
+-- parts on this corpse are removed instead of contested: old saves, or strip_npc_kills
+local function is_stripped_claim( id )
+	local rec = claim_of( id )
+	return rec == true or ( type( rec ) == "table" and rec.strip == true )
+end
+
+-- the player's share of a mutant's health bar, summed in memory. Fed from above bind_monster's 0.015 gate,
+-- so shotgun pellets count. The killing blow is never reported, which is fine: then who is the player.
+local actor_damage = {}
+local pending_alpha = {}
+
+function note_hit( obj, amount, who )
+	if not ( who and db.actor and amount ) or who:id() ~= db.actor:id() then return end
+	local id = obj:id()
+	local now = time_global()
+	local rec = actor_damage[ id ]
+	if not rec or now - rec.t > sivol_part_claim.cfg( "forget_ms" ) then
+		rec = { sum = 0 }
+		actor_damage[ id ] = rec
+	end
+	rec.sum = rec.sum + amount
+	rec.t = now
+end
+
+function actor_share( id )
+	local rec = actor_damage[ id ]
+	if not rec or time_global() - rec.t > sivol_part_claim.cfg( "forget_ms" ) then return 0 end
+	return rec.sum
+end
+
+-- only for parts, encounter orders and alpha news: not for rank points or kill stats
+function set_share( id, share ) -- test helper
+	actor_damage[ id ] = { sum = share, t = time_global() }
+end
+
+function credited_to_actor( id, who )
+	if who and db.actor and who:id() == db.actor:id() then return true end
+	return actor_share( id ) >= sivol_part_claim.cfg( "actor_share" )
+end
+
+function note_alpha( id, name )
+	pending_alpha[ id ] = name
+end
+
+function is_harvesting( id )
+	return harvest_state ~= nil and ( id == nil or harvest_state.monster_id == id )
+end
+
+function find_part( mob )
+	for i = 0, mob:object_count() - 1 do
+		local item = mob:object( i )
+		if item and strposx( item:section(), "mutant_" ) then
+			return item:section(), item:id()
+		end
+	end
+	return nil
 end
 
 local function strip_foreign_parts( mob )
@@ -527,14 +601,35 @@ end
 function prune_foreign_kills()
 	local t = foreign_kills()
 	local changed = false
-	for id in pairs( t ) do
+	local now = timers.Get_Game_Seconds()
+	local max_age = sivol_part_claim.cfg( "claim_max_age_h" ) * 3600
+	for id, rec in pairs( t ) do
 		local sobj = alife():object( id )
-		if not sobj or not IsMonster( nil, sobj:clsid() ) or ( sobj.alive and sobj:alive() ) then
+		if not sobj or not IsMonster( nil, sobj:clsid() ) or ( sobj.alive and sobj:alive() )
+			or ( type( rec ) == "table" and rec.t and now - rec.t > max_age )
+		then
 			t[ id ] = nil
 			changed = true
 		end
 	end
 	if changed then set_value( FOREIGN_KILLS_KEY, t ) end
+end
+
+-- what the prompt says: the claim's word if it has one, otherwise the usual text
+function corpse_tip( mob )
+	local base = get_tip_text( mob, has_knife() )
+	local rec = claim_of( mob:id() )
+	if type( rec ) ~= "table" then return base end
+	if rec.l and not find_part( mob ) then
+		return mob:object_count() > 0 and "to_scan_body" or sivol_part_claim.looted_tip( rec )
+	end
+	if mob:object_count() == 0 then return base end
+	if base == "cut_off_part" and rec.o == "npc" then
+		local prompt = sivol_part_claim.prompt( mob, rec )
+		if prompt == "foreign" then return FOREIGN_TIP end
+		return prompt or base
+	end
+	return base
 end
 
 function get_tip_text( obj, can_cut )
@@ -576,10 +671,10 @@ function correct_monster_tip()
 	for id, obj in pairs( db.creatures ) do
 		if g_sim:object( id ) and obj and obj:is_monster() and not obj:alive() and obj:section() ~= "zombie_blow" then
 			-- [HE-PORT]
-			if is_foreign_kill( id ) then
+			if is_stripped_claim( id ) then
 				obj:set_tip_text( foreign_tip( obj, strip_foreign_parts( obj ) ) )
 			else
-				obj:set_tip_text( get_tip_text( obj, can_cut ) )
+				obj:set_tip_text( corpse_tip( obj ) )
 			end
 		end
 	end
@@ -643,7 +738,7 @@ function on_monster_use( monster, who )
     monster:set_nonscript_usable( false )
 
 	-- [HE-PORT]
-	if is_foreign_kill( monster:id() ) then
+	if is_stripped_claim( monster:id() ) then
 		local stripped = strip_foreign_parts( monster )
 		if stripped > 0 then
 			monster:set_tip_text( foreign_tip( monster, stripped ) )
@@ -652,6 +747,9 @@ function on_monster_use( monster, who )
 	end
 
     if monster:object_count() == 0 then return end	
+
+	-- [HE-PORT] someone minds: a line and a second press. Nothing is locked yet at this point.
+	if sivol_part_claim.on_corpse_use( monster ) == false then return end
 
 	is_processing = true
 
@@ -779,6 +877,7 @@ function process_monster_loot( monster, mutant_items, additional_items, token )
 
     local part_to_take = mutant_items[ 1 ]
     local part_section = part_to_take:section()
+    local part_id = part_to_take:id()
 
     local knife_item = db.actor:item_in_slot( 0 )
     if not knife_item then
@@ -865,6 +964,14 @@ function process_monster_loot( monster, mutant_items, additional_items, token )
 
         state.transfer = function()
             if state.transferred then return end
+            -- [HE-PORT] resolved by id: a looter or the decay pass may have got there first
+            local part_now = level.object_by_id(part_id)
+            local part_owner = part_now and part_now:parent()
+            if not (part_owner and part_owner:id() == state.monster_id) then
+                log2("[monster_parts] harvest: part %s is no longer on corpse %s", part_section, tostring(state.monster_id))
+                state.transferred = true
+                return
+            end
             params.add_condition(knife_item, new_cond)
 
 
@@ -885,6 +992,7 @@ function process_monster_loot( monster, mutant_items, additional_items, token )
             end
 
             state.transferred = true
+            state.took = part_id
         end
 
         state.phase = "skinning"
@@ -1002,13 +1110,69 @@ function spawn_item_if_met( sect, id, cond, obj )
 	end
 end
 
+-- read while who is valid: who has a claim on this kill, nil for nobody
+local function claim_from_kill( monster, who )
+	if not who or get_bool( monster:section(), "Spawn_Inventory_Item_Keep", false ) then return nil end
+	if who:id() == db.actor:id() then return { o = "actor" } end
+	if not who:is_stalker() then return nil end
+	local strip = sivol_part_claim.cfg( "strip_npc_kills" )
+	local sid = who:story_id()
+	if not strip and sid ~= NONE_SID and sid ~= NONE_CL_SID then return nil end
+	local rec = { o = "npc", k = who:id(), n = who:name(), c = sivol_part_claim.test_community() or who:character_community(), r = who:character_rank() }
+	if not strip and ( credited_to_actor( monster:id(), who ) or sivol_part_claim.is_companion( who ) ) then
+		rec.o = "actor"
+	end
+	return rec
+end
+
+-- half a second after the death, once parts spawned by the death itself exist. Returns how many parts it released.
+local function finish_claim( mob, rec )
+	local id = mob:id()
+	local alpha = pending_alpha[ id ]
+	pending_alpha[ id ] = nil
+	actor_damage[ id ] = nil
+	if claim_of( id ) ~= nil then set_claim( id, nil ) end
+	local part = find_part( mob )
+	if rec and rec.o == "npc" then sivol_part_claim.count( part and "npc_kills_part" or "npc_kills_empty" ) end
+	if not ( rec and part ) then return 0 end
+	rec.t = timers.Get_Game_Seconds()
+	rec.ps = part
+	rec.alpha = alpha
+	if rec.o == "npc" and sivol_part_claim.strip_roll( part ) then rec.strip = true end
+	set_claim( id, rec )
+	if rec.strip then return strip_foreign_parts( mob ) end
+	-- he comes to his kill even if the part goes first
+	if rec.o == "npc" then watcher_act.corpse_checked[ id ] = true end
+	sivol_part_claim.note_fresh( id )
+	log2( "[part_claim] %s id=%s part=%s owner=%s killer=%s", mob:section(), id, part, rec.o, tostring( rec.n ) )
+	return 0
+end
+
+-- called by watcher_act once a stalker has searched a mutant's corpse
+function on_npc_searched( npc, mob, part_section, part_id, left )
+	local id = mob:id()
+	local rec = claim_of( id )
+	if part_section then
+		if type( rec ) == "table" then
+			rec.l, rec.ln, rec.s, rec.i, rec.lt = npc:id(), npc:name(), part_section, part_id, timers.Get_Game_Seconds()
+			set_claim( id, rec )
+		end
+		sivol_part_claim.count( "looted" )
+		log2( "[part_claim] %s looted %s from corpse %s", npc:name(), part_section, id )
+		mob:set_tip_text( left == 0 and sivol_part_claim.looted_tip( rec ) or "to_scan_body" )
+		sivol_part_claim.on_looted( npc, id, rec )
+	else
+		sivol_part_claim.on_found_empty( npc, id, rec )
+	end
+end
+
 function on_monster_death( monster, who )
 	if not monster then return end
 	local section = monster:section()	
 	local id = monster:id()
 
 	-- [HE-PORT]
-	mark_foreign_kill( id, who ~= nil and who:id() ~= db.actor:id() and who:is_stalker() )
+	local pending_claim = claim_from_kill( monster, who )
 
 	if who ~= nil and who:is_monster() then
 		log2( "[monster_parts] monster killer victim=%s id=%s killer=%s killer_id=%s items=%s",
@@ -1052,27 +1216,36 @@ function on_monster_death( monster, who )
 	-- В противном случае вылетает при их убийстве?
 	if monster:section() == "zombie_blow" then return end
 	-- и чтобы наверняка
+	-- Captured while who is valid. The closure must never touch who: the killer can be
+	-- released before the timer fires (docs/HANDOFF_monster_death_killer_crash.md).
+	local killer_id = who and who:id() or nil
+	local killer_section = who and who:section() or nil
+	local killer_monster = who ~= nil and who:is_monster()
 	dsh.timeout( 500, function()
 		local mob = level.object_by_id( id )
 		if not mob then return end
 
 		-- [HE-PORT]
-		local foreign = is_foreign_kill( id )
-		local stripped = foreign and strip_foreign_parts( mob ) or 0
+		local stripped = finish_claim( mob, pending_claim )
 		local has_items = mob:object_count() > stripped
 		local tip_text = "nothing_to_cut_off"
 
 		if has_items then
-			tip_text = foreign and FOREIGN_TIP or get_tip_text( mob, has_knife() )
+			tip_text = is_stripped_claim( id ) and FOREIGN_TIP or corpse_tip( mob )
 		end
 
 		mob:set_tip_text( tip_text )
 
-		if who:id() == db.actor:id() or IsAnomaly( who ) then
+		-- Resolve the killer by id only. Logged for every killer type, so a crash
+		-- report names the killer even when it is not a monster.
+		local killer = killer_id and level.object_by_id( killer_id )
+		if killer_id and not killer then
+			log2( "[monster_parts] killer gone victim=%s killer=%s killer_id=%s has_items=%s",
+				section, tostring( killer_section ), tostring( killer_id ), tostring( has_items ) )
 			return
 		end
 
-		if who:is_monster() and has_items then
+		if killer_monster and has_items then
 			local condition = dsh.get_next_random( "kotovod.on_monster_kill_check_parts", 55, 95 ) * 0.01
 
 			-- transfer_item shrinks the inventory, so snapshot the parts first
@@ -1084,7 +1257,7 @@ function on_monster_death( monster, who )
 
 			for _, item in ipairs( parts ) do
 				item:set_condition( condition )
-				mob:transfer_item( item, who )
+				mob:transfer_item( item, killer )
 			end
 
 			mob:set_tip_text( "nothing_to_cut_off" )

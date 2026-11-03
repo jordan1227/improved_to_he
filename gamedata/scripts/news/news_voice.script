@@ -1,0 +1,1112 @@
+-- [HE-PORT] PDA news voices: situational mutant-kill reports, witnessed player kills, weather and
+-- time of day by faction and rank, wounded calls, replies, A-life events.
+-- Settings in config\misc\he_news.ltx, text in string_table_he_news (generated from
+-- docs/NEWS_TEXT_SRC*.txt by docs/build_news_text.ps1). Record: docs/NEWS_OVERHAUL_DESIGN.md
+--
+-- fl news_voice.status()                         timers, budget, fame
+-- fl news_voice.check()                          every text pool and form has its string
+-- fl news_voice.danger_test("tushkano", 1, 0, 1.0)   kind, count, rank 0-3, killer hp 0-1
+-- fl news_voice.kill("tushkano", 3, "loner", 0, 0.8, 0)   force a kill report (kind, count, voice, rank, hp, tier shift)
+-- fl news_voice.weather_test("rain", "night", "duty")
+-- fl news_voice.time_test("night", "freedom")
+-- fl news_voice.event_test("raid_end", {n = 2})
+-- fl news_voice.wound_test("duty")
+-- fl news_voice.plr_test("bloodsucker", 1, "bandit", 2)   witnessed player kill at a given recognition tier
+-- fl news_voice.standing()                       the player's recognition per faction right now
+local INI_PATH = "misc\\he_news.ltx"
+local STATE_KEY = "he_nv_state"
+
+local cfg = nil
+local pending = {} -- mutant kill batches by NPCs, session only
+local pk_pending = {} -- mutant kills by the player, session only
+local pk_found = {} -- unwitnessed player kills waiting for someone to find the bodies
+local reply_for = {} -- text -> reply data, session only
+local t_first = nil -- real time of the first weather event after this load
+
+local VOICES = { "loner", "bandit", "duty", "freedom", "army", "ecolog" }
+local RANKS = { novice = 0, experienced = 1, veteran = 2, master = 3 }
+
+local function read_section(ini, sec, as_number, ordered)
+	local out = {}
+	if not ini:section_exist(sec) then
+		abort("news_voice: no section [%s] in %s", sec, INI_PATH)
+	end
+	for i = 0, ini:line_count(sec) - 1 do
+		local res, id, val = ini:r_line(sec, i, "", "")
+		if id and id ~= "" then
+			if ordered then
+				table.insert(out, { id, val })
+			elseif as_number then
+				out[id] = tonumber(val)
+				if out[id] == nil then abort("news_voice: [%s] %s is not a number", sec, id) end
+			else
+				out[id] = val
+			end
+		end
+	end
+	return out
+end
+
+local function load_cfg()
+	if cfg then return cfg end
+	local ini = ini_file(INI_PATH)
+	cfg = {
+		num = read_section(ini, "nv", false),
+		tier = read_section(ini, "nv_tier", true),
+		voice = read_section(ini, "nv_voice", false),
+		voice_prob = read_section(ini, "nv_voice_prob", true),
+		level_voice = read_section(ini, "nv_level_voice", false),
+		weights = read_section(ini, "nv_weights", true),
+		counts = read_section(ini, "nv_counts", true),
+		variant = read_section(ini, "nv_variant", true),
+		look = read_section(ini, "nv_look", false, true),
+		meta = read_section(ini, "nv_meta", false),
+		wclass = read_section(ini, "nv_weather_class", false, true),
+	}
+	for k, v in pairs(cfg.num) do
+		cfg.num[k] = tonumber(v)
+		if cfg.num[k] == nil then abort("news_voice: [nv] %s is not a number", k) end
+	end
+	return cfg
+end
+
+function is_enabled()
+	return load_cfg().num.enabled == 1
+end
+
+local function is_rus()
+	return game.translate_string("he_news_lang") == "rus"
+end
+
+local function gm()
+	return news_main.game_minutes()
+end
+
+local function state()
+	local st = get_value(STATE_KEY)
+	if type(st) ~= "table" then st = {} end
+	st.last = st.last or {}
+	st.hist = st.hist or {}
+	st.mem = st.mem or {}
+	st.spoke = st.spoke or {}
+	st.fame = st.fame or {}
+	st.blow = st.blow or -100000
+	return st
+end
+
+local function save(st)
+	local n = 0
+	for _ in pairs(st.spoke) do n = n + 1 end
+	if n > 40 then
+		local now = gm()
+		for k, t in pairs(st.spoke) do
+			if now - t > 120 then st.spoke[k] = nil end
+		end
+	end
+	set_value(STATE_KEY, st)
+end
+
+local function ready(st, cat, cd)
+	return gm() - (st.last[cat] or -100000) >= cd
+end
+
+-- budget classes: "report" (kills, player kills), "ambient" (weather, time), "react" (replies, party, A-life)
+local function class_of(cat)
+	if cat == "kill" or cat == "plr" then return "report" end
+	if cat == "weather" or string.sub(cat, 1, 5) == "time_" then return "ambient" end
+	return "react"
+end
+
+local function budget_used(st, cls)
+	local now = gm()
+	local c = load_cfg().num
+	local kept, n = {}, 0
+	for _, e in ipairs(st.hist) do
+		if type(e) ~= "table" then e = { t = e, cls = "report" } end
+		if now - e.t < c.budget_window then
+			table.insert(kept, e)
+			if e.cls == cls then n = n + 1 end
+		end
+	end
+	st.hist = kept
+	return n
+end
+
+local function budget_ok(st, cls)
+	local c = load_cfg().num
+	local limit = c.budget
+	if cls == "ambient" then limit = c.budget_ambient elseif cls == "react" then limit = c.budget_react end
+	return budget_used(st, cls) < limit
+end
+
+local function spend(st, cat)
+	st.last[cat] = gm()
+	table.insert(st.hist, { t = gm(), cls = class_of(cat) })
+end
+
+local function clamp(v, lo, hi)
+	if v < lo then return lo end
+	if v > hi then return hi end
+	return v
+end
+
+-- longer slot names first, so $mob_g is not eaten by $mob
+local SLOT_ORDER = { "mob_g", "mob_i", "people_a", "people", "where", "mob", "look", "nick", "name", "n" }
+local function fill(text, t)
+	for _, k in ipairs(SLOT_ORDER) do
+		local v = t[k]
+		if v ~= nil then
+			local val = tostring(v)
+			text = string.gsub(text, "%$" .. k .. "([^%w_])", function(rest) return val .. rest end)
+			text = string.gsub(text, "%$" .. k .. "$", function() return val end)
+		end
+	end
+	text = string.gsub(text, "  +", " ")
+	text = string.gsub(text, " ([%.,:;!?])", "%1")
+	return text
+end
+
+-- tags of a line (docs/NEWS_VOICE_STYLE.md): t<min>-<max> mutant tier, c<min>-<max> group size, k<kind>+<kind>
+local function line_ok(id, ctx)
+	local raw = load_cfg().meta[id]
+	if raw == nil or ctx == nil then return true end
+	for tk in string.gmatch(raw, "[^/]+") do
+		local k = string.sub(tk, 1, 1)
+		local body = string.sub(tk, 2)
+		if k == "t" then
+			local a, b = string.match(body, "^(%d)%-(%d)$")
+			if ctx.tier == nil or ctx.tier < tonumber(a) or ctx.tier > tonumber(b) then return false end
+		elseif k == "c" then
+			local a, b = string.match(body, "^(%d+)%-(%d+)$")
+			if ctx.count == nil or ctx.count < tonumber(a) or ctx.count > tonumber(b) then return false end
+		elseif k == "k" then
+			local found = false
+			for kind in string.gmatch(body, "[^+]+") do
+				if kind == ctx.kind then found = true end
+			end
+			if not found then return false end
+		end
+	end
+	return true
+end
+
+-- first group of the chain with a fitting line not used lately in this category
+local function pick(chain, st, cat, ctx)
+	local c = load_cfg()
+	local mem = st.mem[cat]
+	if mem == nil then mem = {}; st.mem[cat] = mem end
+	local allowed = {}
+	for _, g in ipairs(chain) do
+		local n = c.counts[g]
+		if n and n > 0 then
+			local free = {}
+			for i = 1, n do
+				local id = "he_nv_" .. g .. "_" .. i
+				if line_ok(id, ctx) then
+					table.insert(allowed, { g, i })
+					local used = false
+					for _, m in ipairs(mem) do
+						if m == id then used = true end
+					end
+					if not used then table.insert(free, i) end
+				end
+			end
+			if #free > 0 then
+				local i = free[lua_random(#free)]
+				local id = "he_nv_" .. g .. "_" .. i
+				table.insert(mem, id)
+				while #mem > c.num.mem_size do table.remove(mem, 1) end
+				return game.translate_string(id), g
+			end
+		end
+	end
+	if #allowed > 0 then
+		local a = allowed[lua_random(#allowed)]
+		return game.translate_string("he_nv_" .. a[1] .. "_" .. a[2]), a[1]
+	end
+	return nil, nil
+end
+
+local function voice_of(obj)
+	local comm = news_main.get_npc_community(obj)
+	local v = load_cfg().voice[comm]
+	if v == nil or v == "" then return nil end
+	return v
+end
+
+local function rank_of(obj)
+	local name = ranks.get_obj_rank_name(obj)
+	return RANKS[name] or 0
+end
+
+local function actor_rank()
+	local pts = db.actor:character_rank()
+	local c = load_cfg().num
+	if pts >= c.rank_mas then return 3 end
+	if pts >= c.rank_vet then return 2 end
+	if pts >= c.rank_exp then return 1 end
+	return 0
+end
+
+local function rank_group(rank)
+	if rank >= 2 then return "v" end
+	return "n"
+end
+
+-- game objects have health() as a method, server objects have it as a number field
+local function health_of(obj)
+	local h = obj.health
+	if type(h) == "function" then h = obj:health() end
+	if type(h) == "number" then return clamp(h, 0, 1) end
+	return 1
+end
+
+-- weak / normal / strong variants of a mutant section move its tier by one
+local function variant_shift(sect)
+	local shift = 0
+	for key, v in pairs(load_cfg().variant) do
+		if string.find(sect, key, 1, true) then shift = shift + v end
+	end
+	return clamp(shift, -1, 1)
+end
+
+local function section_of(obj)
+	if obj.section then return obj:section() end
+	if obj.section_name then return obj:section_name() end
+	return ""
+end
+
+-- ---------------------------------------------------------------- grammar
+
+-- case: nil accusative, "g" genitive, "i" instrumental
+local function mob_phrase(kind, count, case)
+	local id = "he_nv_mob_" .. kind
+	if count <= 1 then
+		local suf = "_s"
+		if case == "g" then suf = "_sg" elseif case == "i" then suf = "_si" end
+		return game.translate_string(id .. suf)
+	end
+	-- "pair of / ten or so" take the genitive plural in every case, "several" agrees with the noun
+	local k = "he_nv_cnt_many"
+	if count <= 3 then k = "he_nv_cnt_2" elseif count <= 6 then k = "he_nv_cnt_few" end
+	local psuf = "_p"
+	if case == "i" and k == "he_nv_cnt_few" then psuf = "_pi" end
+	if case == "g" and k ~= "he_nv_cnt_few" then k = k .. "_g" end
+	if case == "i" then k = k .. "_i" end
+	return game.translate_string(k) .. " " .. game.translate_string(id .. psuf)
+end
+
+local function mob_slots(kind, count)
+	return { mob = mob_phrase(kind, count, nil), mob_g = mob_phrase(kind, count, "g"), mob_i = mob_phrase(kind, count, "i") }
+end
+
+local function people_phrase(n, accusative)
+	local word
+	if is_rus() then
+		local m10, m100 = n % 10, n % 100
+		if m10 == 1 and m100 ~= 11 then
+			word = "one"
+		elseif m10 >= 2 and m10 <= 4 and (m100 < 12 or m100 > 14) then
+			word = "few"
+		else
+			word = "many"
+		end
+	else
+		word = (n == 1) and "one" or "many"
+	end
+	local key = accusative and ("he_nv_ppl_a_" .. word) or ("he_nv_ppl_" .. word)
+	return n .. " " .. game.translate_string(key)
+end
+
+-- ---------------------------------------------------------------- danger
+
+-- returns "trivial" | "easy" | "hard" and the score
+function danger(kind, count, rank, hp, shift)
+	local c = load_cfg().num
+	local tier = load_cfg().tier[kind]
+	if tier == nil then abort("news_voice: no tier for kind %s", tostring(kind)) end
+	tier = clamp(tier + (shift or 0), 0, 3)
+	local extra = clamp(count - 1, 0, 3)
+	local score = tier * c.w_tier + extra * c.w_count - rank * c.w_rank + (1 - hp) * c.w_hp
+	local d
+	if tier == 0 then
+		if score < c.t0_easy then d = "trivial" else d = "easy" end
+	else
+		if score < c.t_trivial then d = "trivial" elseif score < c.t_hard then d = "easy" else d = "hard" end
+		if tier == 2 and d == "trivial" then d = "easy" end
+		if tier == 3 then d = "hard" end
+	end
+	return d, score
+end
+
+-- ---------------------------------------------------------------- speakers
+
+local function weighted_voice()
+	local c = load_cfg()
+	local total = 0
+	for _, v in ipairs(VOICES) do total = total + (c.weights[v] or 0) end
+	local r = lua_random(total)
+	for _, v in ipairs(VOICES) do
+		r = r - (c.weights[v] or 0)
+		if r <= 0 then return v end
+	end
+	return "loner"
+end
+
+-- A random real stalker with a voice who has not spoken lately, else a generated name with a voice
+-- that fits the level. scope "level": stalkers of the player's level. scope "world": usually (speaker_world_chance
+-- percent) a stalker of ANOTHER level, since the PDA network does not care where the player stands.
+-- want_voice (tests) accepts only a stalker of that voice. Returns name, id, voice, level.
+local function speaker(exclude_id, st, want_voice, scope)
+	local c = load_cfg()
+	local cur = level.name()
+	local now = gm()
+	local others, all = {}, {}
+	for lname, rec in pairs(amk_offline_alife.off_npcs) do
+		if rec.stalkers and #rec.stalkers > 0 then
+			table.insert(all, lname)
+			if lname ~= cur then table.insert(others, lname) end
+		end
+	end
+	local tries = { { cur } }
+	if scope == "world" then
+		if lua_random(100) <= c.num.speaker_world_chance and #others > 0 then
+			tries = { others, { cur } }
+		else
+			tries = { { cur }, others }
+		end
+	end
+	for _, levels in ipairs(tries) do
+		local pool = {}
+		for _, lname in ipairs(levels) do
+			local rec = amk_offline_alife.off_npcs[lname]
+			if rec then
+				for _, v in ipairs(rec.stalkers) do table.insert(pool, { v.id, lname }) end
+			end
+		end
+		for _ = 1, 30 do
+			if #pool == 0 then break end
+			local e = table.remove(pool, lua_random(#pool))
+			local o = alife():object(e[1])
+			if o and e[1] ~= exclude_id and o.alive and o:alive() == true then
+				local v = voice_of(o)
+				-- voice_prob also thins out who may speak on the network (soldiers hardly use it)
+				if v and (want_voice == nil or v == want_voice) and (want_voice ~= nil or lua_random(100) <= (c.voice_prob[v] or 0)) then
+					local name = news_main.get_npc_name(o)
+					if name and name ~= "" and now - (st.spoke[name] or -100000) >= c.num.speaker_cd then
+						st.spoke[name] = now
+						log2("[news_voice] speaker %s (%s) of %s: real stalker", name, v, e[2])
+						return name, e[1], v, e[2]
+					end
+				end
+			end
+		end
+	end
+	local v = want_voice or c.level_voice[cur]
+	if want_voice == nil and (v == nil or lua_random(100) > 50) then v = weighted_voice() end
+	local n1, n2 = amk_names_lists.get_strings()
+	log2("[news_voice] speaker %s %s (%s): generated name", n1, n2, v)
+	return n1 .. " " .. n2, nil, v, nil
+end
+
+-- ---------------------------------------------------------------- output
+
+local function send(text, name, id, prio, delay_lo, delay_hi, force)
+	if force then
+		news_main.show_news(text, name, 0, 15, "gen_info")
+	else
+		news_main.do_news(text, name, lua_random(delay_lo, delay_hi), 15, "gen_info", id, prio)
+	end
+end
+
+local function maybe_reply(tone, st, level_name, pos, author_id, text)
+	local c = load_cfg().num
+	if lua_random(100) > c.reply_chance then return end
+	if not ready(st, "reply", c.reply_cd) then return end
+	reply_for[text] = { tone = tone, level = level_name, pos = pos, author = author_id }
+end
+
+-- news_main.on_news calls this after it showed the queued text
+function after_show(text)
+	local r = reply_for[text]
+	if r == nil then return end
+	reply_for[text] = nil
+	if not is_enabled() then return end
+	local st = state()
+	local c = load_cfg().num
+	local name, id, v = speaker(r.author, st, nil, "world")
+	local line = pick({ "reply_" .. r.tone .. "_" .. v, "reply_" .. r.tone .. "_any" }, st, "reply")
+	if line == nil then return end
+	st.last.reply = gm()
+	save(st)
+	news_main.show_news(line, name, c.reply_delay, 10, "default")
+	log2("[news_voice] reply %s from %s (%s)", r.tone, name, v)
+end
+
+-- ---------------------------------------------------------------- mutant kills by NPCs
+
+-- id is a number on server objects and a method on game objects
+local function killer_id(obj)
+	local id = obj.id
+	if type(id) ~= "number" then id = obj:id() end
+	return id
+end
+
+function note_kill(victim, killer)
+	if not is_enabled() then return end
+	local c = load_cfg()
+	local kind = news_main.get_monster_name(victim, 1)
+	if kind == "" or c.tier[kind] == nil then return end
+	local voice = voice_of(killer)
+	if voice == nil then return end
+	if lua_random(100) > (c.voice_prob[voice] or 0) then return end
+	local lvl = news_main.get_object_levelname(victim)
+	local pos = news_main.get_object_position(victim)
+	if not lvl or lvl == "" or not pos then return end
+	local shift = variant_shift(section_of(victim))
+	local hp = health_of(killer)
+	local rank = rank_of(killer)
+	local now = gm()
+	for _, b in ipairs(pending) do
+		if b.level == lvl and b.kind == kind and now - b.t < c.num.kill_window and pos:distance_to(b.pos) <= c.num.kill_merge_dist then
+			b.count = b.count + 1
+			if shift > b.shift then b.shift = shift end
+			if hp < b.hp then b.hp = hp end
+			return
+		end
+	end
+	table.insert(pending, {
+		t = now, level = lvl, pos = pos, kind = kind, count = 1, shift = shift,
+		hp = hp, rank = rank, voice = voice, id = killer_id(killer), name = news_main.get_npc_name(killer),
+	})
+end
+
+-- returns true when sent, or false and a reason; "cooldown" and "budget" may be retried later
+local function emit_kill(b, st, force)
+	local c = load_cfg().num
+	if not force then
+		if not ready(st, "kill", c.kill_cd) then return false, "cooldown" end
+		if not budget_ok(st, "report") then return false, "budget" end
+		if lua_random(100) > c.kill_chance then return false, "chance" end
+	end
+	if not b.name or b.name == "" then return false, "no name" end
+	local where = news_main.localized_where(b.level, b.pos)
+	if where == "" then return false, "no place" end
+	local d, score = danger(b.kind, b.count, b.rank, b.hp, b.shift)
+	local rg = rank_group(b.rank)
+	local chain = {
+		"kill_" .. d .. "_" .. b.voice .. "_" .. rg,
+		"kill_" .. d .. "_" .. b.voice,
+		"kill_" .. d .. "_any_" .. rg,
+		"kill_" .. d .. "_any",
+	}
+	local ctx = { tier = clamp(load_cfg().tier[b.kind] + (b.shift or 0), 0, 3), count = b.count, kind = b.kind }
+	local line, group = pick(chain, st, "kill", ctx)
+	if line == nil then return false, "no line" end
+	local slots = mob_slots(b.kind, b.count)
+	slots.where = where
+	local text = fill(line, slots)
+	-- the more scared the killer, the longer before they write it down
+	local lo, hi, prio = c.fear_trivial_min, c.fear_trivial_max, 0
+	if d == "easy" then lo, hi = c.fear_easy_min, c.fear_easy_max end
+	if d == "hard" then lo, hi, prio = c.fear_hard_min, c.fear_hard_max, 1 end
+	send(text, b.name, b.id, prio, lo, hi, force)
+	if not force then spend(st, "kill") end
+	local tone = "kill_ok"
+	if d == "hard" then tone = "kill_hard" end
+	maybe_reply(tone, st, b.level, b.pos, b.id, text)
+	log2("[news_voice] kill %s x%d by %s rank=%d hp=%.2f -> %s (%.2f) group=%s", b.kind, b.count, b.name, b.rank, b.hp, d, score, group)
+	return true
+end
+
+-- ---------------------------------------------------------------- the player's kills: witnesses and standing
+
+local function fame_value(st, voice)
+	local f = st.fame[voice]
+	if f == nil then return 0 end
+	local half = load_cfg().num.fame_half
+	return f.v * (0.5 ^ ((gm() - f.t) / half))
+end
+
+local function add_fame(st, voice, amount)
+	st.fame[voice] = { v = fame_value(st, voice) + amount, t = gm() }
+end
+
+-- recognition tier 0-3 of the player for a witness of this faction
+local function standing_tier(st, voice)
+	local c = load_cfg().num
+	local rank = actor_rank()
+	local repn = clamp((db.actor:character_reputation() + 1000) / 2000, 0, 1)
+	local famen = clamp(fame_value(st, voice) / c.fame_cap, 0, 1)
+	local s = c.w_rank_p * rank / 3 + c.w_rep_p * repn + c.w_fame_p * famen
+	local tier = 0
+	if s >= c.s_tier3 then tier = 3 elseif s >= c.s_tier2 then tier = 2 elseif s >= c.s_tier1 then tier = 1 end
+	return tier, s
+end
+
+local function name_roll()
+	local c = load_cfg().num
+	local rank = actor_rank()
+	local chance = 0
+	if rank >= 3 then chance = c.name_chance_master elseif rank == 2 then chance = c.name_chance_vet end
+	return lua_random(100) <= chance
+end
+
+-- a rough look of the player's outfit from its model name, or nil
+local function look_tag()
+	local vis = db.actor:get_visual_name()
+	if not vis then return nil end
+	vis = string.lower(vis)
+	for _, e in ipairs(load_cfg().look) do
+		if string.find(vis, e[1], 1, true) then
+			if e[2] == "none" then return nil end
+			return e[2]
+		end
+	end
+	return nil
+end
+
+local function masked()
+	return vergas_masks ~= nil and not vergas_masks.no_astma_protection()
+end
+
+function note_player_kill(victim)
+	if not is_enabled() then return end
+	local c = load_cfg()
+	local pos = news_main.get_object_position(victim)
+	local lvl = news_main.get_object_levelname(victim)
+	if not pos or not lvl or lvl == "" then return end
+	local kind, own_voice = nil, nil
+	if _G.IsMonster(victim) then
+		kind = news_main.get_monster_name(victim, 1)
+		if kind == "" or c.tier[kind] == nil then return end
+	else
+		-- killing a faction member: only that faction's witnesses care (loners are a separate, deferred case)
+		own_voice = voice_of(victim)
+		if own_voice == nil or own_voice == "loner" then return end
+	end
+	local actor = db.actor
+	local saw, heard = {}, {}
+	local checked = 0
+	level.iterate_nearest(pos, c.num.wit_radius, function(obj)
+		if checked >= c.num.wit_cap or obj == nil then return end
+		if obj:id() == actor:id() or obj:id() == victim:id() then return end
+		if not _G.IsStalker(obj) or not obj:alive() then return end
+		local v = voice_of(obj)
+		if v == nil then return end
+		checked = checked + 1
+		local entry = { id = obj:id(), voice = v, name = news_main.get_npc_name(obj) }
+		if obj:see(victim) or obj:see(actor) then
+			table.insert(saw, entry)
+		elseif obj:position():distance_to(pos) <= c.num.heard_radius then
+			table.insert(heard, entry)
+		end
+	end)
+	local shift = 0
+	if kind then shift = variant_shift(section_of(victim)) end
+	local now = gm()
+	for _, b in ipairs(pk_pending) do
+		if b.level == lvl and b.kind == kind and b.own_voice == own_voice and now - b.t < c.num.kill_window and pos:distance_to(b.pos) <= c.num.kill_merge_dist then
+			b.count = b.count + 1
+			if shift > b.shift then b.shift = shift end
+			for _, e in ipairs(saw) do table.insert(b.saw, e) end
+			for _, e in ipairs(heard) do table.insert(b.heard, e) end
+			return
+		end
+	end
+	table.insert(pk_pending, {
+		t = now, level = lvl, pos = pos, kind = kind, own_voice = own_voice, count = 1, shift = shift,
+		saw = saw, heard = heard, masked = masked(), look = look_tag(),
+	})
+end
+
+local function alive_server(id)
+	local o = alife():object(id)
+	return o ~= nil and o.alive and o:alive() == true
+end
+
+local function pick_alive(list, want_voice)
+	local ok = {}
+	for _, e in ipairs(list) do
+		if (want_voice == nil or e.voice == want_voice) and alive_server(e.id) then table.insert(ok, e) end
+	end
+	if #ok == 0 then return nil end
+	return ok[lua_random(#ok)]
+end
+
+-- builds and queues the text of one witnessed kill; tier_force and voice_force are for tests
+local function emit_plr(b, rep, st, force, tier_force, voice_force)
+	local where = news_main.localized_where(b.level, b.pos)
+	if where == "" then return false end
+	local text, group
+	local sender = rep.sender
+	local voice = voice_force or sender.voice
+	if rep.kind == "own" then
+		text, group = pick({ "plr_own_" .. voice }, st, "plr")
+		if text == nil then return false end
+		text = fill(text, { where = where })
+	elseif rep.kind == "seen" then
+		local tier = tier_force or standing_tier(st, voice)
+		local look = b.look
+		local pctx = { tier = clamp((load_cfg().tier[b.kind] or 0) + (b.shift or 0), 0, 3), count = b.count, kind = b.kind }
+		if b.masked then
+			text, group = pick({ "plr_masked_any" }, st, "plr", pctx)
+		else
+			if tier == 1 and not look then tier = 0 end
+			local chain = { "plr_seen_" .. tier .. "_" .. voice, "plr_seen_0_" .. voice, "plr_seen_0_loner" }
+			-- a veteran is named now and then, a master more often
+			if tier >= 2 and (rep.named or name_roll()) then table.insert(chain, 1, "plr_named_" .. voice) end
+			text, group = pick(chain, st, "plr_" .. voice, pctx)
+			-- every witnessed kill builds fame, whatever the witness made of the player
+			if not force then add_fame(st, voice, 1 + (load_cfg().tier[b.kind] or 0)) end
+		end
+		if text == nil then return false end
+		local slots = mob_slots(b.kind, b.count)
+		slots.where = where
+		slots.nick = game.translate_string("he_nv_player_name")
+		if look then slots.look = pick({ "look_" .. look }, st, "look") end
+		text = fill(text, slots)
+	elseif rep.kind == "heard" then
+		text, group = pick({ "plr_heard_any" }, st, "plr")
+		if text == nil then return false end
+		text = fill(text, { where = where })
+	else -- found
+		text, group = pick({ "plr_found_any" }, st, "plr", { tier = clamp((load_cfg().tier[b.kind] or 0) + (b.shift or 0), 0, 3), count = b.count, kind = b.kind })
+		if text == nil then return false end
+		local slots = mob_slots(b.kind, b.count)
+		slots.where = where
+		text = fill(text, slots)
+	end
+	send(text, sender.name, sender.id, 1, 300, 900, force)
+	maybe_reply("kill_ok", st, b.level, b.pos, sender.id, text)
+	log2("[news_voice] player kill %s x%s seen=%d heard=%d -> %s by %s (%s) group=%s", tostring(b.kind or b.own_voice), tostring(b.count), #b.saw, #b.heard, rep.kind, sender.name, tostring(voice), tostring(group))
+	return true
+end
+
+local function flush_player(st, now_force)
+	local c = load_cfg().num
+	local now = gm()
+	for i = #pk_pending, 1, -1 do
+		local b = pk_pending[i]
+		if now_force or now - b.t >= c.kill_window then
+			local tier = b.kind and clamp((load_cfg().tier[b.kind] or 0) + b.shift, 0, 3) or 0
+			local notable = b.own_voice ~= nil or tier >= c.plr_min_tier or b.count >= 3
+			local remove, why = true, nil
+			if not notable then
+				why = "not notable"
+			elseif not ready(st, "plr", c.plr_cd) then
+				why = "cooldown"; remove = now - b.t > c.retry_max
+			elseif not budget_ok(st, "report") then
+				why = "budget"; remove = now - b.t > c.retry_max
+			elseif lua_random(100) > c.plr_chance then
+				why = "chance"
+			else
+				local done = false
+				if b.own_voice then
+					local s = pick_alive(b.saw, b.own_voice)
+					if s then done = emit_plr(b, { kind = "own", sender = s }, st, false) else why = "no witness of that faction" end
+				else
+					local s = pick_alive(b.saw)
+					if s then
+						done = emit_plr(b, { kind = "seen", sender = s }, st, false)
+					else
+						local h = pick_alive(b.heard)
+						if h then
+							done = emit_plr(b, { kind = "heard", sender = h }, st, false)
+						else
+							table.insert(pk_found, { due = now + lua_random(c.found_delay_min, c.found_delay_max), b = b })
+							log2("[news_voice] player kill %s x%d: nobody saw, bodies will be found", tostring(b.kind), b.count)
+						end
+					end
+				end
+				if done then spend(st, "plr"); why = nil elseif why == nil and (b.saw[1] or b.heard[1]) then why = "no line" end
+			end
+			if remove then
+				table.remove(pk_pending, i)
+				if why then log2("[news_voice] drop player kill %s x%d: %s", tostring(b.kind or b.own_voice), b.count, why) end
+			end
+		end
+	end
+	for i = #pk_found, 1, -1 do
+		local f = pk_found[i]
+		if now >= f.due then
+			table.remove(pk_found, i)
+			local npc = news_main.get_nearest_stalker(f.b.level, f.b.pos, 250, 0)
+			if npc and voice_of(npc) and ready(st, "plr", c.plr_cd) and budget_ok(st, "report") then
+				local sender = { id = npc.id, voice = voice_of(npc), name = news_main.get_npc_name(npc) }
+				if emit_plr(f.b, { kind = "found", sender = sender }, st, false) then spend(st, "plr") end
+			end
+		end
+	end
+end
+
+-- ---------------------------------------------------------------- flush (every 13 gm)
+
+function flush(now_force)
+	if not is_enabled() then return end
+	local st = state()
+	local now = gm()
+	local blow = get_value("blowout", -1)
+	if blow > -1 then st.blow = now end
+	local window = load_cfg().num.kill_window
+	local retry_max = load_cfg().num.retry_max
+	for i = #pending, 1, -1 do
+		local b = pending[i]
+		if now_force or now - b.t >= window then
+			local ok, why = emit_kill(b, st, false)
+			if ok then
+				table.remove(pending, i)
+			elseif (why ~= "cooldown" and why ~= "budget") or now - b.t > retry_max then
+				table.remove(pending, i)
+				log2("[news_voice] drop kill %s x%d: %s", b.kind, b.count, why)
+			end
+		end
+	end
+	flush_player(st, now_force)
+	save(st)
+end
+
+function flush_now()
+	flush(true)
+end
+
+-- ---------------------------------------------------------------- wounded calls
+
+-- returns the voiced text for a wounded NPC, or nil to keep the old generic one
+function wound_text(obj, name, where)
+	if not is_enabled() then return nil end
+	local v = voice_of(obj)
+	if v == nil then return nil end
+	local st = state()
+	local line = pick({ "wound_" .. v }, st, "wound")
+	if line == nil then return nil end
+	save(st)
+	return fill(line, { name = name, where = where })
+end
+
+-- ---------------------------------------------------------------- weather and time
+
+local function phase_of(h)
+	if h >= 4 and h < 7 then return "dawn" end
+	if h >= 7 and h < 18 then return "day" end
+	if h >= 18 and h < 22 then return "dusk" end
+	return "night"
+end
+
+local function place_chain(chain, voice, night)
+	local c = load_cfg()
+	local lvl = level.name()
+	if not night and c.level_voice[lvl] == voice and c.counts["place_" .. lvl] and lua_random(100) <= c.num.place_chance then
+		table.insert(chain, 1, "place_" .. lvl)
+	end
+end
+
+local function emit_weather(new, phase, voice, name, id, st, force)
+	local chain = {}
+	local c = load_cfg().num
+	if not force and gm() - st.blow < c.blow_window then
+		table.insert(chain, "weather_blowout_" .. voice)
+		table.insert(chain, "weather_blowout_any")
+	end
+	if phase == "dawn" or phase == "dusk" then
+		table.insert(chain, "weather_" .. new .. "_" .. phase)
+	else
+		table.insert(chain, "weather_" .. new .. "_" .. phase .. "_" .. voice)
+		table.insert(chain, "weather_" .. new .. "_" .. phase .. "_any")
+	end
+	place_chain(chain, voice, phase == "night")
+	local line = pick(chain, st, "weather")
+	if line == nil then return false end
+	send(line, name, id, 0, 10, 50, force)
+	maybe_reply("weather", st, level.name(), db.actor:position(), id, line)
+	log2("[news_voice] weather %s %s by %s (%s)", new, phase, name, voice)
+	return true
+end
+
+-- the game names weather sections default_np_clear2, default_np_cloudy3, default_np_rain ...
+local function weather_class(section)
+	local name = string.gsub(section, "^default_", "")
+	for _, e in ipairs(load_cfg().wclass) do
+		if string.find(name, "^" .. e[1]) then return e[2] end
+	end
+	return nil
+end
+
+-- returns true when this module owns the event (news_main then skips its old path)
+function weather(old, section)
+	if not is_enabled() then return false end
+	local c = load_cfg().num
+	if not (old and section) then return true end
+	-- the game reports the current weather right after a load: not news
+	if t_first == nil then t_first = time_global() end
+	if time_global() - t_first < c.weather_load_grace * 1000 then return true end
+	local new = weather_class(section)
+	if new == nil or weather_class(old) == new then return true end
+	local st = state()
+	local key = "weather_" .. new
+	if not ready(st, "weather", c.weather_cd) or not ready(st, key, c.weather_key_cd) then return true end
+	if lua_random(100) > c.weather_chance then return true end
+	if not budget_ok(st, "ambient") then return true end
+	local phase = phase_of(level.get_time_hours())
+	local name, id, v = speaker(nil, st)
+	if emit_weather(new, phase, v, name, id, st, false) then
+		spend(st, "weather")
+		st.last[key] = gm()
+		save(st)
+		return true
+	end
+	save(st)
+	return not is_rus()
+end
+
+local function emit_time(kind, voice, name, id, st, force, slvl)
+	local c = load_cfg().num
+	local chain = {}
+	if kind == "morning" and gm() - st.blow < c.afterblow_window and (force or lua_random(100) <= c.afterblow_chance) then
+		table.insert(chain, "time_morning_afterblow_any")
+	end
+	table.insert(chain, "time_" .. kind .. "_" .. voice)
+	table.insert(chain, "time_" .. kind .. "_any")
+	-- a place line must come from someone who lives there
+	place_chain(chain, voice, kind == "night" or (slvl ~= nil and slvl ~= level.name()))
+	local line = pick(chain, st, "time")
+	if line == nil then return false end
+	send(line, name, id, 0, 10, 50, force)
+	maybe_reply("time", st, level.name(), db.actor:position(), id, line)
+	log2("[news_voice] time %s by %s (%s)", kind, name, voice)
+	return true
+end
+
+-- returns true when a line was made; the old window logic runs only when false and the game is Russian
+function daytime()
+	if not is_enabled() then return false end
+	local c = load_cfg().num
+	local m = level.get_time_hours() * 60 + level.get_time_minutes()
+	local kind = nil
+	if m >= 270 and m <= 360 then
+		kind = "morning"
+	elseif m >= 1230 and m <= 1320 then
+		kind = "evening"
+	elseif (m >= 1380 and m <= 1440) or (m >= 0 and m <= 240) then
+		kind = "night"
+	end
+	if kind == nil then return not is_rus() end
+	local st = state()
+	local cat = "time_" .. kind
+	if not ready(st, cat, c.time_cd) then return not is_rus() end
+	if is_rus() and lua_random(100) > c.time_voice_chance then return false end
+	if not budget_ok(st, "ambient") then return not is_rus() end
+	local name, id, v, slvl = speaker(nil, st, nil, "world")
+	if emit_time(kind, v, name, id, st, false, slvl) then
+		spend(st, cat)
+		save(st)
+		return true
+	end
+	save(st)
+	return not is_rus()
+end
+
+-- ---------------------------------------------------------------- A-life events
+
+-- party_start / party_end come from olr_patrols. The A-life code already sends its own
+-- olr_patrol_* line, so a party event only feeds the cooldown and one follow-up reaction.
+local function on_party(kind, ctx)
+	local c = load_cfg().num
+	local st = state()
+	if kind == "party_start" then
+		if not ctx.force then st.last.olr = gm() end
+		if ctx.force or (lua_random(100) <= c.party_start_chance and budget_ok(st, "react")) then
+			-- only hunters and Duty send parties out: bandits do not comment on it
+			local name, id, v
+			for _ = 1, 5 do
+				name, id, v = speaker(nil, st, nil, "world")
+				if v ~= "bandit" then break end
+			end
+			if v == "bandit" then v = "loner" end
+			local line = pick({ "party_start_" .. v, "party_start_any" }, st, "party")
+			if line ~= nil then
+				news_main.show_news(line, name, c.reply_delay + 12, 10, "default")
+				log2("[news_voice] party start comment from %s (%s)", name, v)
+				if not ctx.force then spend(st, "reply") end
+			end
+		end
+		save(st)
+		return true
+	end
+	if not ctx.force then st.last.olr = gm() end
+	local r = ctx.result
+	local outcome = "calm"
+	if r == "lost" or r == "dead" then
+		outcome = "lost"
+	elseif r == "won" or r == "driven" then
+		outcome = ((ctx.deaths or 0) > 0) and "costly" or "won"
+	end
+	if ctx.force or (lua_random(100) <= c.party_chance and budget_ok(st, "react")) then
+		local comments = 1
+		if ctx.force or lua_random(100) <= c.party_second_chance then comments = 2 end
+		for k = 1, comments do
+			local name, id, v = speaker(nil, st, nil, "world")
+			local line = pick({ "party_" .. outcome .. "_" .. v, "party_" .. outcome .. "_any" }, st, "party")
+			if line ~= nil then
+				news_main.show_news(line, name, c.reply_delay + 12 + (k - 1) * 30, 10, "default")
+				log2("[news_voice] party %s (%s) comment %d/%d: %s from %s", kind, tostring(r), k, comments, outcome, name)
+			end
+		end
+		if not ctx.force then spend(st, "reply") end
+	end
+	save(st)
+	return true
+end
+
+-- kind: raid_start, raid_end, loss, hunt_start, hunt_end, flee, party_start, party_end
+-- ctx: level (required), pos (optional), n (number), mob (kind name), name/id (sender), voice
+function on_olr_event(kind, ctx)
+	if not is_enabled() or ctx == nil or not ctx.level then return false end
+	if kind == "party_start" or kind == "party_end" then return on_party(kind, ctx) end
+	local c = load_cfg().num
+	local st = state()
+	if not ctx.force and (not ready(st, "olr", c.olr_cd) or not budget_ok(st, "react")) then return false end
+	local pos = ctx.pos or db.actor:position()
+	local where = news_main.localized_where(ctx.level, pos)
+	if where == "" then return false end
+	local voice = ctx.voice or "any"
+	local line = pick({ "olr_" .. kind .. "_" .. voice, "olr_" .. kind .. "_any" }, st, "olr")
+	if line == nil then return false end
+	local n = ctx.n or 1
+	local slots = { where = where, n = n, people = people_phrase(n, false), people_a = people_phrase(n, true) }
+	if ctx.mob and load_cfg().tier[ctx.mob] ~= nil then
+		local ms = mob_slots(ctx.mob, n)
+		slots.mob, slots.mob_g, slots.mob_i = ms.mob, ms.mob_g, ms.mob_i
+	end
+	local text = fill(line, slots)
+	local name, id = ctx.name, ctx.id
+	if not name then
+		local v
+		name, id, v = speaker(nil, st)
+	end
+	send(text, name, id, 1, 60, 200, ctx.force)
+	if not ctx.force then spend(st, "olr") end
+	local tone = "kill_hard"
+	if kind == "hunt_end" or kind == "raid_start" then tone = "kill_ok" end
+	maybe_reply(tone, st, ctx.level, pos, id, text)
+	save(st)
+	log2("[news_voice] olr %s on %s", kind, ctx.level)
+	return true
+end
+
+-- ---------------------------------------------------------------- test helpers
+
+function status()
+	local st = state()
+	local now = gm()
+	log2("[news_voice] now=%d blow=%s budget used report=%d ambient=%d react=%d pending=%d pk_pending=%d pk_found=%d", now, tostring(st.blow), budget_used(st, "report"), budget_used(st, "ambient"), budget_used(st, "react"), #pending, #pk_pending, #pk_found)
+	for k, v in pairs(st.last) do
+		log2("[news_voice]   last %s = %d (%d gm ago)", k, v, now - v)
+	end
+	for k, v in pairs(st.spoke) do
+		log2("[news_voice]   spoke %s %d gm ago", k, now - v)
+	end
+	for _, v in ipairs(VOICES) do
+		log2("[news_voice]   fame %s = %.2f", v, fame_value(st, v))
+	end
+end
+
+function standing()
+	local st = state()
+	log2("[news_voice] player rank=%d (points %s) reputation=%s masked=%s look=%s", actor_rank(), tostring(db.actor:character_rank()), tostring(db.actor:character_reputation()), tostring(masked()), tostring(look_tag()))
+	for _, v in ipairs(VOICES) do
+		local tier, s = standing_tier(st, v)
+		log2("[news_voice]   %s: score %.2f tier %d fame %.2f", v, s, tier, fame_value(st, v))
+	end
+end
+
+function check()
+	local c = load_cfg()
+	local bad, groups = 0, 0
+	local function need(id)
+		if game.translate_string(id) == id then
+			log2("[news_voice] MISSING string %s", id)
+			bad = bad + 1
+		end
+	end
+	for g, n in pairs(c.counts) do
+		groups = groups + 1
+		for i = 1, n do need("he_nv_" .. g .. "_" .. i) end
+	end
+	for kind, _ in pairs(c.tier) do
+		for _, suf in ipairs({ "_s", "_sg", "_si", "_p", "_pi" }) do need("he_nv_mob_" .. kind .. suf) end
+	end
+	need("he_nv_player_name")
+	for _, k in ipairs({ "cnt_2", "cnt_2_g", "cnt_2_i", "cnt_few", "cnt_few_i", "cnt_many", "cnt_many_g", "cnt_many_i", "ppl_one", "ppl_few", "ppl_many", "ppl_a_one", "ppl_a_few", "ppl_a_many" }) do
+		need("he_nv_" .. k)
+	end
+	log2("[news_voice] check: %d pools, %d missing", groups, bad)
+end
+
+function danger_test(kind, count, rank, hp)
+	local d, score = danger(kind, count, rank, hp, 0)
+	log2("[news_voice] danger %s x%d rank=%d hp=%.2f -> %s (%.2f)", kind, count, rank, hp, d, score)
+end
+
+function kill(kind, count, voice, rank, hp, shift)
+	load_cfg()
+	local st = state()
+	local name, id = speaker(nil, st, voice or "loner")
+	local b = {
+		t = gm(), level = level.name(), pos = db.actor:position(), kind = kind, count = count or 1, shift = shift or 0,
+		hp = hp or 1, rank = rank or 0, voice = voice or "loner", id = id, name = name,
+	}
+	emit_kill(b, st, true)
+	save(st)
+end
+
+function weather_test(new, phase, voice)
+	local st = state()
+	local name, id = speaker(nil, st, voice)
+	emit_weather(new, phase, voice, name, id, st, true)
+	save(st)
+end
+
+function time_test(kind, voice)
+	local st = state()
+	local name, id, _, slvl = speaker(nil, st, voice, "world")
+	emit_time(kind, voice, name, id, st, true, slvl)
+	save(st)
+end
+
+function wound_test(voice)
+	local st = state()
+	local line = pick({ "wound_" .. voice }, st, "wound")
+	if line then
+		local name = speaker(nil, st, voice)
+		news_main.show_news(fill(line, { name = name, where = news_main.localized_where(level.name(), db.actor:position()) }), name, 0, 10, "default")
+	end
+	save(st)
+end
+
+-- kind_of: "seen" (default), "heard", "found", "own"; for "own" the voice is the victim's and the witness's faction
+function plr_test(kind, count, voice, tier, kind_of)
+	load_cfg()
+	local named = false
+	if kind_of == "named" then named = true; kind_of = "seen" end
+	local st = state()
+	local b = {
+		t = gm(), level = level.name(), pos = db.actor:position(), kind = kind, count = count or 1, shift = 0,
+		saw = {}, heard = {}, masked = false, look = look_tag(),
+	}
+	local name = speaker(nil, st, voice or "loner")
+	local rep = { kind = kind_of or "seen", named = named, sender = { id = nil, voice = voice or "loner", name = name } }
+	if rep.kind == "own" then
+		b.own_voice = voice
+		b.kind = nil
+	end
+	emit_plr(b, rep, st, true, tier or 0, voice)
+	save(st)
+end
+
+function event_test(kind, ctx)
+	ctx = ctx or {}
+	ctx.level = ctx.level or level.name()
+	ctx.force = true
+	on_olr_event(kind, ctx)
+end

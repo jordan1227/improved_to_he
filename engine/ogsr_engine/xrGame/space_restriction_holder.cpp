@@ -112,6 +112,18 @@ void CSpaceRestrictionHolder::register_restrictor(CSpaceRestrictor* space_restri
 {
     string4096 m_temp_string;
     shared_str space_restrictors = space_restrictor->cName();
+
+    // NLC: check the border before joining the defaults. A name left in the defaults with no restriction behind it never
+    // initializes, and then no list holding it does: every client on the level lost all its in-restrictions (anomalies).
+    CSpaceRestrictionShape* shape = xr_new<CSpaceRestrictionShape>(space_restrictor, restrictor_type != RestrictionSpace::eDefaultRestrictorTypeNone);
+    if (shape->border().empty())
+    {
+        Msg("* [%s]: change restrictor_type of %s to eRestrictorTypeNone because border().empty()", __FUNCTION__, space_restrictor->cName().c_str());
+        space_restrictor->change_restrictor_type(RestrictionSpace::eRestrictorTypeNone);
+        xr_delete(shape);
+        return;
+    }
+
     if (restrictor_type != RestrictionSpace::eDefaultRestrictorTypeNone)
     {
         shared_str *temp = 0, temp1;
@@ -134,14 +146,6 @@ void CSpaceRestrictionHolder::register_restrictor(CSpaceRestrictor* space_restri
             on_default_restrictions_changed();
     }
 
-    CSpaceRestrictionShape* shape = xr_new<CSpaceRestrictionShape>(space_restrictor, restrictor_type != RestrictionSpace::eDefaultRestrictorTypeNone);
-    if (shape->border().empty())
-    {
-        Msg("* [%s]: change restrictor_type of %s to eRestrictorTypeNone because border().empty()", __FUNCTION__, space_restrictor->cName().c_str());
-        space_restrictor->change_restrictor_type(RestrictionSpace::eRestrictorTypeNone);
-        xr_delete(shape);
-        return;
-    }
     RESTRICTIONS::iterator I = m_restrictions.find(space_restrictors);
     if (I == m_restrictions.end())
     {

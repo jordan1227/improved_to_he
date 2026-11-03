@@ -161,7 +161,13 @@ void CActorCondition::LoadCondition(LPCSTR entity_section)
 void CActorCondition::UpdateCondition()
 {
     if (GodMode())
+    {
+        // NLC: god mode: full health, set before the death test in CEntityAlive::shedule_Update. Wounds are left alone:
+        // ClearWounds() would leave CEntityAlive::m_BloodWounds dangling (see bloodsucker_tactics.cpp, UpdateBloodDrops)
+        health() = max_health();
+        m_bIsBleeding = false;
         return;
+    }
     if (!object().g_Alive())
         return;
     if (!object().Local() && m_object != Level().CurrentViewEntity())

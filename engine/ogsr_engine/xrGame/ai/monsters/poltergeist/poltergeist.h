@@ -51,6 +51,8 @@ public:
     CPoltergeist();
     virtual ~CPoltergeist();
 
+    bool nlc_ability(LPCSTR name, float k, float* cur) override; // NLC: per-object ability factors
+
     virtual void Load(LPCSTR section);
     virtual void reload(LPCSTR section);
     virtual void reinit();

@@ -1,0 +1,144 @@
+-- [HE-PORT] PDA rumours by story chapter and place. docs/NEWS_SYSTEM_DESIGN.md 6.
+-- Data in config\misc\he_rumours.ltx, text in string_table_he_news.
+--
+-- fl news_rumours.say(n)   say n rumours now
+-- fl news_rumours.state()  time to the next one, what can be said here
+local INI_PATH = "misc\\he_rumours.ltx"
+local STATE_KEY = "he_rumour_state"
+local REPLY_CHANCE = 35
+local REPLY_DELAY = 14 -- real seconds after the rumour
+
+local groups = nil
+local replies = nil
+
+local function split(s)
+	local out = {}
+	for w in string.gmatch(s or "", "[^,%s]+") do
+		table.insert(out, w)
+	end
+	return out
+end
+
+local function load_data()
+	if groups then return end
+	local ini = ini_file(INI_PATH)
+	groups = {}
+	for i = 0, ini:line_count("he_rumours") - 1 do
+		local res, id = ini:r_line("he_rumours", i, "", "")
+		if id and id ~= "" then
+			local sec = "rumour_" .. id
+			if not ini:section_exist(sec) then
+				abort("news_rumours: no section [%s] in %s", sec, INI_PATH)
+			end
+			table.insert(groups, {
+				min_chapter = ini:r_float(sec, "min_chapter"),
+				max_chapter = ini:r_float(sec, "max_chapter"),
+				levels = ini:line_exist(sec, "levels") and split(ini:r_string(sec, "levels")) or nil,
+				lines = split(ini:r_string(sec, "lines")),
+			})
+		end
+	end
+	replies = {}
+	for i = 0, ini:line_count("he_rumour_replies") - 1 do
+		local res, id = ini:r_line("he_rumour_replies", i, "", "")
+		if id and id ~= "" then table.insert(replies, id) end
+	end
+end
+
+local function get_state()
+	local st = get_value(STATE_KEY)
+	if type(st) ~= "table" then st = { next_time = nil, used = {} } end
+	return st
+end
+
+local function group_in_region(g, region)
+	if not g.levels then return true end
+	for i = 1, #g.levels do
+		if region and region[g.levels[i]] then return true end
+	end
+	return false
+end
+
+-- [HE-PORT] every line open now that was not said since the pool last ran out
+local function pool(st)
+	load_data()
+	local chapter = olr_cfg.chapter()
+	local region = olr_smart_index.region_levels()
+	local fresh, all = {}, {}
+	for _, g in ipairs(groups) do
+		if chapter >= g.min_chapter and chapter <= g.max_chapter and group_in_region(g, region) then
+			for _, k in ipairs(g.lines) do
+				table.insert(all, k)
+				if not st.used[k] then table.insert(fresh, k) end
+			end
+		end
+	end
+	return fresh, all
+end
+
+local function sender_name()
+	local name = news_main.random_sender_name(level.name())
+	if name then return name end
+	local first, last = amk_names_lists.get_strings()
+	return first .. " " .. last
+end
+
+local function say_one(st)
+	local fresh, all = pool(st)
+	if #all == 0 then return false end
+	if #fresh == 0 then
+		st.used = {}
+		fresh = all
+	end
+	local key = fresh[lua_random(#fresh)]
+	st.used[key] = true
+	sak.send_tip(game.translate_string(key), sender_name(), 0, 15, "default", "pda_news", "gray")
+	if lua_random(100) <= REPLY_CHANCE then
+		local reply = replies[lua_random(#replies)]
+		sak.send_tip(game.translate_string(reply), sender_name(), REPLY_DELAY, 10, "default", "pda_news", "gray")
+	end
+	return true
+end
+
+local function may_say()
+	if not he_pda_model.get_pda() then return false end
+	if news_main.isIsolatedLevel(level.name()) then return false end
+	if sleep_manager.is_sleep_active() then return false end
+	local blow = get_value("blowout", -1)
+	return not (blow > -1 and blow < 5)
+end
+
+local function next_period()
+	local a, b = olr_cfg.range("rumour_period")
+	return math.floor((a + (b - a) * math.random()) * 60)
+end
+
+-- [HE-PORT] called from news_main.on_news when rumours are on
+function update()
+	if not db.actor then return end
+	local st = get_state()
+	local time_now = news_main.game_minutes()
+	if not st.next_time then
+		st.next_time = time_now + next_period()
+		set_value(STATE_KEY, st)
+	elseif time_now >= st.next_time and may_say() then
+		say_one(st)
+		st.next_time = time_now + next_period()
+		set_value(STATE_KEY, st)
+	end
+end
+
+function say(n)
+	local st = get_state()
+	for i = 1, n or 1 do
+		log2("[news_rumour] say %d: %s", i, tostring(say_one(st)))
+	end
+	set_value(STATE_KEY, st)
+end
+
+function state()
+	local st = get_state()
+	local fresh, all = pool(st)
+	log2("[news_rumour] chapter=%d open=%d unused=%d next in %s h", olr_cfg.chapter(), #all, #fresh,
+		st.next_time and string.format("%.1f", (st.next_time - news_main.game_minutes()) / 60) or "unset")
+end

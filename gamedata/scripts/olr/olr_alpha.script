@@ -1,0 +1,417 @@
+-- [HE-PORT] Alpha mutants, docs/ALIFE_DESIGN.md 5a: a mutant that keeps killing people earns a name,
+-- takes less damage, hits harder, does not panic and leaves a trophy. An encounter template can make one too.
+-- One per level at most; pack, hunter and night species, chimeras and burers. Log: [olr_alpha].
+-- fl olr_alpha.report()              the alphas alive, the kill counters
+-- fl olr_alpha.force()               the nearest allowed mutant becomes one; or force(12345)
+-- fl olr_alpha.force_kills(12345, 3) as if that mutant had killed so many
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_alpha"
+local KINDS = { pseudodog = "pseudodog", boar = "boar", snork = "snork", bloodsucker = "bloodsucker", gigant = "giant" }
+
+local cfg = nil
+local applied = {}
+local next_tick = 0
+
+local function alog(fmt, ...)
+	log2("[olr_alpha] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("alpha") - 1 do
+		local _, key, val = ini:r_line("alpha", i, "", "")
+		cfg[key] = tonumber(val) or val
+	end
+	return cfg
+end
+
+local function get_state()
+	return get_value(KEY) or { alphas = {}, kills = {} }
+end
+
+local function put_state(st)
+	set_value(KEY, st)
+end
+
+local function kind_of(section)
+	if string.find(section, "chimera", 1, true) then return "chimera" end
+	if string.find(section, "burer", 1, true) then return "burer" end
+	return KINDS[string.match(section, "^(%a+)") or ""]
+end
+
+local function say(prefix, subs)
+	local key = olr_trader_runs.pick_line(prefix)
+	if not key then
+		alog("no text for %s", prefix)
+		return
+	end
+	local text = game.translate_string(key)
+	for name, value in pairs(subs) do
+		text = string.gsub(text, "%$" .. name, function() return value end)
+	end
+	sak.send_tip(text, olr_trader_runs.other_name(), 0, 15, "default", "pda_news", "gray")
+end
+
+local function pick_name(kind)
+	local key = olr_trader_runs.pick_line("olr_alpha_name_" .. kind .. "_")
+	return key and game.translate_string(key) or kind
+end
+
+-- why this mutant cannot become one, nil if it can
+local function refusal(st, se, forced)
+	if not ( se and IsMonster(se) and se:alive() ) then return "not_alive_monster" end
+	if st.alphas[tostring(se.id)] then return "already" end
+	if not kind_of(se:section_name()) then return "species" end
+	if olr_protected.is_protected_monster(se) then return "protected" end
+	if forced then return nil end
+	-- [HE-PORT] never in front of the player (its kills stay counted, so it rises once it is offline), never at a quest scene
+	if se.online then return "online" end
+	local sid = se:smart_terrain_id()
+	local smart = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
+	if smart and olr_population.is_scene_smart(smart:name()) then return "scene" end
+	local lvl = olr_smart_index.object_level(se)
+	local count = 0
+	for _, rec in pairs(st.alphas) do
+		count = count + 1
+		if rec.level == lvl then return "level_has_one" end
+	end
+	if count >= config().alpha_max then return "alpha_max" end
+	return nil
+end
+
+-- [HE-PORT] game seconds until the Zone makes the next alpha itself (alpha_every_days min,max)
+function next_gap()
+	local a, b = string.match(tostring(config().alpha_every_days), "([%d%.]+)%s*,%s*([%d%.]+)")
+	a, b = tonumber(a) or 5, tonumber(b) or 8
+	return math.floor(( a + math.random() * ( b - a ) ) * 86400)
+end
+
+local function promote(st, se, why, name)
+	local kind = kind_of(se:section_name())
+	local lvl = olr_smart_index.object_level(se)
+	name = name or pick_name(kind)
+	st.alphas[tostring(se.id)] = { sec = se:section_name(), name = name, kind = kind, level = lvl }
+	st.kills[tostring(se.id)] = nil
+	st.next_alpha = timers.Get_Game_Seconds() + next_gap() -- the next one counts from this one
+	alog("%s id=%d on %s is now the alpha '%s' (%s)", se:section_name(), se.id, tostring(lvl), name, why)
+	local region = olr_smart_index.region_levels()
+	if region and region[lvl] and he_pda_model.get_pda() then
+		say("olr_alpha_rumour_" .. kind .. "_", { name = name, where = news_main.localized_where(lvl, se.position) })
+	end
+end
+
+-- for encounter templates: spawned, offline or not
+function make(id, name)
+	if not olr_cfg.on("alpha") then return false end
+	local st = get_state()
+	local se = alife():object(id)
+	local reason = refusal(st, se, true)
+	if reason then
+		alog("make %s: %s", tostring(id), reason)
+		return false
+	end
+	promote(st, se, "template", name)
+	put_state(st)
+	return true
+end
+
+-- [HE-PORT] the pack a mutant hunts with: its smart, else the lair that bred it; nil for a loner
+local function pack_of(se)
+	local sid = se:smart_terrain_id()
+	if sid and sid ~= BAD_OBJ_ID then return "s" .. sid end
+	local lair = olr_population.lair_of(se.id)
+	return lair and ( "r" .. lair ) or nil
+end
+
+-- the first of a pack to kill carries its mark: the pack's later kills are his, so one of them can become the alpha
+local function marked(st, se)
+	local pack = pack_of(se)
+	if not pack then return se end
+	st.marks = st.marks or {}
+	local id = st.marks[pack]
+	local m = id and alife():object(id)
+	if m and IsMonster(m) and m:alive() and pack_of(m) == pack and kind_of(m:section_name()) == kind_of(se:section_name()) then
+		if m.id ~= se.id then
+			alog("%s id=%d killed for its pack: the kill goes to the marked %s id=%d", se:section_name(), se.id, m:section_name(), m.id)
+		end
+		return m
+	end
+	st.marks[pack] = se.id
+	alog("%s id=%d is the first of its pack (%s) to kill: it carries the mark", se:section_name(), se.id, pack)
+	return se
+end
+
+local function note_kill(killer_id)
+	if not olr_cfg.on("alpha") then return end
+	local st = get_state()
+	if st.alphas[tostring(killer_id)] then return end
+	local se = alife():object(killer_id)
+	if not ( se and IsMonster(se) and kind_of(se:section_name()) ) then return end
+	se = marked(st, se)
+	killer_id = se.id
+	local key = tostring(killer_id)
+	if st.alphas[key] then return end
+	st.kills[key] = ( st.kills[key] or 0 ) + 1
+	alog("%s id=%d has %d kills of %d", se:section_name(), killer_id, st.kills[key], config().alpha_kills)
+	if st.kills[key] >= config().alpha_kills then
+		local reason = refusal(st, se)
+		if reason then
+			alog("%s id=%d stays ordinary: %s", se:section_name(), killer_id, reason)
+		else
+			promote(st, se, st.kills[key] .. " kills")
+		end
+	end
+	put_state(st)
+end
+
+function on_npc_death(npc, who)
+	if who and who.is_monster and who:is_monster() then note_kill(who:id()) end
+end
+
+function on_offline_death(victim, killer)
+	if killer and IsStalker(victim) and IsMonster(killer) then note_kill(killer.id) end
+end
+
+local function alpha_of(id)
+	return applied[id]
+end
+
+function on_monster_before_hit(obj, hit_data)
+	if not ( obj and hit_data ) or hit_data.ignore_hit or not alpha_of(obj:id()) then return end
+	-- tougher still against stalkers: four men with grenade launchers would never lose to it otherwise
+	local id = hit_data.who_id or ( hit_data.who and hit_data.who:id() )
+	local by_actor = id ~= nil and db.actor ~= nil and id == db.actor:id()
+	hit_data.power = ( hit_data.power or 0 ) * ( by_actor and config().alpha_tough or config().alpha_tough_npc )
+end
+
+local function outgoing(hit_data)
+	if not hit_data or hit_data.ignore_hit then return end
+	local id = hit_data.who_id
+	if not id and hit_data.who then id = hit_data.who:id() end
+	if id and alpha_of(id) then
+		hit_data.power = ( hit_data.power or 0 ) * config().alpha_damage
+	end
+end
+
+function on_actor_before_hit(obj, hit_data)
+	outgoing(hit_data)
+end
+
+function on_npc_before_hit(npc, hit_data)
+	outgoing(hit_data)
+end
+
+-- for olr_patrols
+function list()
+	local out = {}
+	for key, rec in pairs(get_state().alphas) do
+		table.insert(out, { id = tonumber(key), name = rec.name, kind = rec.kind, level = rec.level })
+	end
+	return out
+end
+
+-- a party got it where nobody saw; the caller releases the mutant
+function killed_offline(id, by_actor)
+	local st = get_state()
+	local key = tostring(id)
+	local rec = st.alphas[key]
+	if not rec then return end
+	st.alphas[key] = nil
+	st.kills[key] = nil
+	applied[id] = nil
+	local c = config()
+	st.news = st.news or {}
+	table.insert(st.news, { due = timers.Get_Game_Seconds() + math.random(c.alpha_news_min_h, c.alpha_news_max_h) * 3600, prefix = by_actor and "olr_alpha_dead_player_" or "olr_alpha_dead_", name = rec.name })
+	put_state(st)
+	alog("'%s' id=%d killed unseen", rec.name, id)
+	return rec
+end
+
+function on_monster_death(monster, who)
+	if not monster then return end
+	local id = monster:id()
+	local key = tostring(id)
+	local st = get_state()
+	local rec = st.alphas[key]
+	st.kills[key] = nil
+	if not rec then
+		put_state(st)
+		return
+	end
+	applied[id] = nil
+	st.alphas[key] = nil
+	put_state(st)
+	local by_actor = monster_parts.credited_to_actor(id, who)
+	monster_parts.note_alpha(id, rec.name)
+	-- an alpha always has its part to carve
+	local part = monster_parts.get_monster_part(rec.sec)
+	local added = false
+	if part and part ~= "" and monster:object_count() == 0 then
+		added = misc.spawn_to(part, alife():object(id)) ~= nil
+		misc.process_spawn()
+	end
+	local c = config()
+	local due = timers.Get_Game_Seconds() + math.random(c.alpha_news_min_h, c.alpha_news_max_h) * 3600
+	local st2 = get_state()
+	st2.news = st2.news or {}
+	table.insert(st2.news, { due = due, prefix = by_actor and "olr_alpha_dead_player_" or "olr_alpha_dead_", name = rec.name })
+	put_state(st2)
+	alog("'%s' id=%d killed by %s, part %s added=%s, word gets out in %.1f h", rec.name, id, by_actor and "the player" or tostring(who and who:name()),
+		tostring(part), tostring(added), ( due - timers.Get_Game_Seconds() ) / 3600)
+end
+
+-- applies to the alphas that are online, forgets the ones whose id is no longer theirs
+-- [HE-PORT] when no alpha came of kills for alpha_every_days: the one with most kills, else a pack's marked one,
+-- else any pack mutant of an alpha kind on an open surface level away from the player
+local function zone_pick(st)
+	local sim = alife()
+	local best, best_n = nil, 0
+	for key, k in pairs(st.kills or {}) do
+		local se = sim:object(tonumber(key))
+		if k > best_n and not refusal(st, se) then best, best_n = se, k end
+	end
+	if best then return best, best_n .. " kills, the strongest of them" end
+	for pack, id in pairs(st.marks or {}) do
+		local se = sim:object(id)
+		if not refusal(st, se) then return se, "the marked one of its pack" end
+	end
+	local open = olr_cfg.frontier_levels()
+	local surface = olr_cfg.budget_levels()
+	local here = level.name()
+	local pool = {}
+	for _, id in ipairs(olr_offline_task.cached_monsters()) do
+		local se = sim:object(id)
+		local lvl = se and olr_smart_index.object_level(se)
+		if lvl and lvl ~= here and surface[lvl] and ( not open or open[lvl] ) and not refusal(st, se)
+			and ( se:smart_terrain_id() ~= BAD_OBJ_ID or olr_population.lair_of(se.id) )
+		then
+			table.insert(pool, se)
+		end
+	end
+	if #pool == 0 then return nil end
+	-- weighted by kind (alpha_kind_weights), so the rare strong ones are not drowned by the common packs
+	local weights = {}
+	for k, w in string.gmatch(tostring(config().alpha_kind_weights), "([%w_]+):([%d%.]+)") do weights[k] = tonumber(w) end
+	local sum = 0
+	for _, se in ipairs(pool) do sum = sum + ( weights[kind_of(se:section_name())] or 1 ) end
+	local r = math.random() * sum
+	for _, se in ipairs(pool) do
+		r = r - ( weights[kind_of(se:section_name())] or 1 )
+		if r <= 0 then return se, "a pack leader the Zone raised" end
+	end
+	return pool[#pool], "a pack leader the Zone raised"
+end
+
+function update()
+	if not ( db.actor and olr_cfg.on("alpha") ) or time_global() < next_tick then return end
+	next_tick = time_global() + 5000
+	local st = get_state()
+	local changed = false
+	local sim = alife()
+	local n = timers.Get_Game_Seconds()
+	if not st.next_alpha then
+		st.next_alpha = n + next_gap()
+		changed = true
+		alog("the next alpha by day %.1f at the latest", st.next_alpha / 86400 + 1)
+	elseif n >= st.next_alpha then
+		local se, why = zone_pick(st)
+		if se then
+			promote(st, se, why)
+		else
+			st.next_alpha = n + 86400
+			alog("no mutant fit to lead a pack, a day later")
+		end
+		changed = true
+	end
+	for i = #( st.news or {} ), 1, -1 do
+		if n >= st.news[i].due then
+			say(st.news[i].prefix, { name = st.news[i].name })
+			table.remove(st.news, i)
+			changed = true
+		end
+	end
+	for key, rec in pairs(st.alphas) do
+		local id = tonumber(key)
+		local se = sim:object(id)
+		if not ( se and se:section_name() == rec.sec and IsMonster(se) and se:alive() ) then
+			alog("'%s' id=%d is gone", rec.name, id)
+			st.alphas[key] = nil
+			applied[id] = nil
+			changed = true
+		else
+			local lvl = olr_smart_index.object_level(se)
+			if lvl ~= rec.level then
+				rec.level = lvl
+				changed = true
+			end
+			local obj = se.online and level.object_by_id(id)
+			if obj and not applied[id] then
+				obj:set_custom_panic_threshold(0)
+				applied[id] = true
+				alog("'%s' id=%d online on %s, tough x%.2f, damage x%.2f, no panic", rec.name, id, tostring(lvl), config().alpha_tough, config().alpha_damage)
+			elseif not obj then
+				applied[id] = nil
+			end
+		end
+	end
+	if changed then put_state(st) end
+end
+
+function report()
+	local st = get_state()
+	local sim = alife()
+	alog("on=%s kills needed %d, max %d, tough x%.2f, damage x%.2f; the Zone makes one by day %.1f", tostring(olr_cfg.on("alpha")), config().alpha_kills, config().alpha_max, config().alpha_tough, config().alpha_damage,
+		( st.next_alpha or 0 ) / 86400 + 1)
+	for pack, id in pairs(st.marks or {}) do
+		local se = sim:object(id)
+		alog("  mark %s on id=%d %s", pack, id, se and se:alive() and se:section_name() or "dead")
+	end
+	for key, rec in pairs(st.alphas) do
+		local se = sim:object(tonumber(key))
+		alog("  '%s' id=%s %s on %s online=%s applied=%s", rec.name, key, rec.sec, tostring(rec.level), se and tostring(se.online) or "?", tostring(applied[tonumber(key)] == true))
+	end
+	for key, n in pairs(st.kills) do
+		local se = sim:object(tonumber(key))
+		alog("  counter id=%s %s kills %d", key, se and se:section_name() or "?", n)
+	end
+end
+
+function force(id)
+	local st = get_state()
+	local sim = alife()
+	local se = id and sim:object(id)
+	if not id then
+		local here, best = db.actor:position(), 999
+		for oid in pairs(db.storage) do
+			local o = sim:object(oid)
+			if o and not refusal(st, o, true) then
+				local d = o.position:distance_to(here)
+				if d < best then se, best = o, d end
+			end
+		end
+	end
+	if not se and not id then
+		-- nobody suitable online: the nearest offline on this level
+		local here, best = db.actor:position(), 99999
+		for _, oid in ipairs(olr_offline_task.cached_monsters()) do
+			local o = sim:object(oid)
+			if o and not refusal(st, o, true) and olr_smart_index.object_level(o) == level.name() and o.position:distance_to(here) < best then
+				se, best = o, o.position:distance_to(here)
+			end
+		end
+	end
+	local reason = refusal(st, se, true)
+	if reason then
+		alog("force %s: %s", tostring(id), reason)
+		return
+	end
+	promote(st, se, "forced")
+	put_state(st)
+end
+
+function force_kills(id, n)
+	for i = 1, n or 1 do note_kill(id) end
+end

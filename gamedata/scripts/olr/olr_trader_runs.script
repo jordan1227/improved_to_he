@@ -1,0 +1,1634 @@
+-- [HE-PORT] Zone careers, docs/ALIFE_DESIGN.md Phase 5b: stalkers carry valuable hauls to a trader,
+-- some of it turns up on his shelf for a while, rich stalkers go home and rookies arrive.
+-- fl olr_trader_runs.report()                      runs, shelf items, traders found
+-- fl olr_trader_runs.force_run()                   gives an artefact to an offline NPC, sends him to a trader; or force_run(12345)
+-- fl olr_trader_runs.force_run(nil,"gun")          the same with a gun, for Sylvester
+-- fl olr_trader_runs.force_run(nil,"part")         the same with a bloodsucker jaw, for Prosha, Dan and the rest
+-- fl olr_trader_runs.parts_census()                who carries mutant parts now, and who would set off
+-- fl olr_trader_runs.test_prosha_out(true)          as if it were one of the days Prosha turns everyone away; false to stop
+-- fl olr_trader_runs.force_visit("barman")         the nearest online loner walks to that trader's spot and sells; stand near it
+-- fl olr_trader_runs.force_shelf("sidor","af_medusa_dyn2d")  puts an item on that trader's shelf now
+-- fl olr_trader_runs.force_leave()                 the offline NPC who earned most heads home; or force_leave(12345)
+-- fl olr_trader_runs.finish_all()                  completes all runs now, wherever they are
+-- fl olr_trader_runs.say_leave("talk")              sends a departure message now: solo, talk, out, dead, rookie
+-- fl olr_trader_runs.force_fuel("fuel_bar")         the generator runs dry, the wait is skipped, the runners set off for Kishka
+-- fl olr_trader_runs.fuel_state()                   what each generator is waiting for and who is running
+-- fl olr_trader_runs.force_claim("bar_barman")      the nearest loner on this level, or any, goes for a reward from that NPC; or force_claim("bar_barman", 12345)
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local RUNS_KEY = "nlc.olr_runs"
+local COOLDOWN_KEY = "nlc.olr_run_cooldown"
+local SHELF_KEY = "nlc.olr_shelf"
+local LEAVE_KEY = "nlc.olr_next_leave"
+local ROOKIES_KEY = "nlc.olr_rookies_due"
+local EARNED_KEY = "nlc.olr_earned"
+local HAUL_KEY = "nlc.olr_haul_seen"
+local HAUL_COMMS = { "stalker", "green", "ecolog" }
+-- what a visitor lacks that this trader would hand him with his pay
+local NEED = { dan = "ammo_12x", pahom = "medkit", prosha = "kolbasa" }
+local SIT_POSES = { "sit_ass", "sit_knee", "sit" }
+local FUEL_KEY = "nlc.olr_fuel_want"
+local FUEL_INFO = { fuel_esc = "kanistra_esc_not_over", fuel_bar = "kanistra_bar_not_over" }
+local FUEL_NOT_END = { fuel_esc = "timer_kanistra_esc_not_end", fuel_bar = "timer_kanistra_bar_not_end" }
+local ERRAND_COMMS = { stalker = true, green = true, ecolog = true, dolg = true, freedom = true }
+local NEAR_ACTOR = 150
+
+local traders = nil
+local errands = {}
+local settings = {}
+local runs = nil
+local spot_owner = {}
+local receivers = {}
+local given = {}
+local waiters = {}
+local haul_comm, haul_index = 1, 0
+
+-- with the game time, to read how long a race took
+local function elog(fmt, ...)
+	log2("[olr_errand] day %d %02d:%02d " .. fmt, level.get_time_days(), level.get_time_hours(), level.get_time_minutes(), ...)
+end
+
+local function load_config()
+	if traders then return end
+	traders = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("traders") - 1 do
+		local _, key, val = ini:r_line("traders", i, "", "")
+		local name, lvl, smart, kinds = string.match(val, "([%w_]+)%s*,%s*([%w_]+)%s*,%s*([%w_]+)%s*,%s*(.+)")
+		local t = { key = key, name = name, level = lvl, smart = smart, kinds = {}, spots = {} }
+		for k in string.gmatch(kinds, "%a+") do t.kinds[k] = true end
+		-- guns do not reach a shelf
+		if ( t.kinds.art or t.kinds.part ) and not t.kinds.noshelf then t.echo = ini_file("misc\\shop_" .. key .. "\\olr_echo.ltx") end
+		traders[key] = t
+	end
+	for i = 0, ini:line_count("errands") - 1 do
+		local _, key, val = ini:r_line("errands", i, "", "")
+		local lvl, smart, path, pay, gulag, job = string.match(val, "([%w_]+)%s*,%s*([%w_]+)%s*,%s*([%w_]+)%s*,%s*(%d+)%s*,%s*([%w_]+)%s*,%s*([%w_@]+)")
+		errands[key] = { key = key, level = lvl, smart = smart, path = path, pay = tonumber(pay), gulag = gulag, job = job, spots = {} }
+	end
+	for i = 0, ini:line_count("trader_spots") - 1 do
+		local _, key, val = ini:r_line("trader_spots", i, "", "")
+		local owner = traders[key] or errands[key]
+		if owner then
+			for n in string.gmatch(val, "%d+") do table.insert(owner.spots, tonumber(n)) end
+		end
+	end
+	for i = 0, ini:line_count("trader_look") - 1 do
+		local _, key, val = ini:r_line("trader_look", i, "", "")
+		if traders[key] then traders[key].look = val end
+	end
+	for i = 0, ini:line_count("trader_anchor") - 1 do
+		local _, key, val = ini:r_line("trader_anchor", i, "", "")
+		local x, z = string.match(val, "(-?[%d.]+)%s*,%s*(-?[%d.]+)")
+		if traders[key] and x then traders[key].x, traders[key].z = tonumber(x), tonumber(z) end
+	end
+	for i = 0, ini:line_count("trader_terms") - 1 do
+		local _, key, val = ini:r_line("trader_terms", i, "", "")
+		local pref, pay, good = string.match(val, "(-?[%d.]+)%s*,%s*([%d.]+)%s*,%s*([%w_%-]+)")
+		if traders[key] and pref then
+			traders[key].pref, traders[key].pay = tonumber(pref), tonumber(pay)
+			if good ~= "-" then traders[key].good = good end
+		end
+	end
+	for i = 0, ini:line_count("trader_settings") - 1 do
+		local _, key, val = ini:r_line("trader_settings", i, "", "")
+		settings[key] = tonumber(val) or val
+	end
+	settings.caps = {}
+	for n in string.gmatch(ini:r_string("trader_settings", "shelf_cost_cap"), "%d+") do
+		table.insert(settings.caps, tonumber(n))
+	end
+end
+
+local function load_runs()
+	if runs then return runs end
+	runs = {}
+	if db.actor then
+		runs = get_value(RUNS_KEY) or {}
+	end
+	return runs
+end
+
+local function store_runs()
+	set_value(RUNS_KEY, runs)
+end
+
+local function now()
+	return timers.Get_Game_Seconds()
+end
+
+local function enabled()
+	return olr_cfg.on("trader_runs")
+end
+
+function on_run(id)
+	if not ( db.actor and enabled() ) then return false end
+	return load_runs()[tostring(id)] ~= nil
+end
+
+-- a traveller may be bound to a smart that would not take him as a resident
+function is_traveller(id)
+	return on_run(id) or olr_patrols.is_member(id)
+end
+
+local function item_kind(item)
+	local section = item:section_name()
+	if string.sub(section, 1, 7) == "mutant_" then return "part" end
+	if string.sub(section, 1, 4) == "wpn_" and isWeapon(item) and not get_bool(section, "quest_item", false) then return "gun" end
+	if string.sub(section, 1, 3) ~= "af_" or nlc_capsules.is_capsule_section(section) then return nil end
+	return "art"
+end
+
+-- Bes, Seryi and the like: a written name in the string table, where random stalkers have name_x lname_y keys
+function has_story_name(se)
+	local name = se.character_name
+	return name ~= nil and name ~= "" and not string.find(name, "^name_")
+end
+
+local function eligible(se)
+	if not ( se and IsStalker(se) and se:alive() ) then return false, "not_alive_stalker" end
+	if has_story_name(se) then return false, "story_name" end
+	if se.online then return false, "online" end
+	if olr_patrols.is_member(se.id) then return false, "party" end
+	if se.m_story_id ~= nil and se.m_story_id ~= NONE_SID and se.m_story_id ~= NONE_CL_SID then return false, "story_id" end
+	local comm = se:community()
+	if comm ~= "stalker" and comm ~= "green" and comm ~= "ecolog" and comm ~= "dolg" then return false, "community" end
+	if not olr_faction_policy.may_migrate(se, comm) then return false, "may_migrate" end
+	if olr_protected.is_no_offline_alife_obj(se:name()) then return false, "protected" end
+	if olr_protected.is_quest_bound(se) then return false, "quest_bound" end -- [HE-PORT]
+	local sid = se:smart_terrain_id()
+	if sid ~= BAD_OBJ_ID then
+		local smart = alife():object(sid)
+		if smart and olr_smart_index.is_locked(smart:name()) then return false, "smart_locked" end
+		if smart and not olr_smart_index.can_release(smart:name()) then return false, "smart_needs_him" end
+	end
+	return true
+end
+
+function may_travel(se)
+	load_config()
+	return eligible(se)
+end
+
+local function off_cooldown(id)
+	local until_t = ( get_value(COOLDOWN_KEY) or {} )[tostring(id)]
+	return not until_t or now() >= until_t
+end
+
+local function set_cooldown(id)
+	local t = get_value(COOLDOWN_KEY) or {}
+	local n = now()
+	for k, v in pairs(t) do
+		if v <= n then t[k] = nil end
+	end
+	t[tostring(id)] = n + settings.run_cooldown_h * 3600
+	set_value(COOLDOWN_KEY, t)
+end
+
+local function active_at(key)
+	local n = 0
+	for _, run in pairs(load_runs()) do
+		if run.trader == key then n = n + 1 end
+	end
+	return n
+end
+
+-- levels within two hops of here, with their distance
+local function near_levels(here)
+	local hops = { [here] = 0 }
+	for lvl in pairs(olr_smart_index.neighbour_levels(here)) do
+		hops[lvl] = hops[lvl] or 1
+		for far in pairs(olr_smart_index.neighbour_levels(lvl)) do
+			hops[far] = hops[far] or 2
+		end
+	end
+	return hops
+end
+
+-- why this trader cannot deal now, nil if he can: dead, or Prosha turning everyone away today
+local function trader_absent(t)
+	local se = t.id and alife():object(t.id)
+	if not ( se and se:name() == t.name ) then
+		se = alife():object(t.name)
+		t.id = se and se.id
+	end
+	if not se then return "gone" end
+	if IsStalker(se) and not se:alive() then return "dead" end
+	if t.key == "prosha" then
+		if get_value("nlc.olr_test_prosha_out") or sak_dialog.is_holiday_prosha() then return "out_today" end
+		-- his [spawner]: before info_way114a he is there until Petrenko's Yantar route starts, and nowhere after that for now
+		if not has_alife_info("info_way114a") and has_alife_info("petrenko_yantar_way_start") then return "gone_for_now" end
+	end
+	-- spawner says he is not around: worth waiting for, he comes back
+	if not se.online and IsStalker(se) and xr_spawner.check_spawn(se) == false then return "away_now" end
+	return nil
+end
+
+-- why this trader will not do for this NPC, nil if he will
+local function refusal(se, t, kinds, hops, front)
+	if not hops[t.level] then return "too_far" end
+	local takes = false
+	for k in pairs(kinds) do
+		if t.kinds[k] then takes = true end
+	end
+	if not takes then return "kind" end
+	local away = trader_absent(t)
+	if away and away ~= "away_now" then return away end
+	if front and not front[t.level] then return "frontier" end
+	if active_at(t.key) >= settings.runs_per_trader then return "busy" end
+	if not olr_smart_index.level_rank_fits(t.level, se:community(), se:rank()) then return "rank" end
+	return nil
+end
+
+-- does he lack what this trader hands out with his pay; Dan's shells only matter to someone with a shotgun
+local function short_of(se, t)
+	local want = NEED[t.key]
+	if not ( want and t.good ) then return false end
+	-- the table of what he carries is behind what was just handed to him
+	if given[se.id .. t.good] and now() - given[se.id .. t.good] < 86400 then return false end
+	local shotgun = false
+	for _, rec in pairs(amk_offline_alife.items[se.id] or {}) do
+		local item = rec and alife():object(rec.id)
+		if item and item.parent_id == se.id then
+			local section = item:section_name()
+			if string.sub(section, 1, #want) == want then return false end
+			if t.key == "dan" and string.sub(section, 1, 4) == "wpn_" and system_ini():line_exist(section, "ammo_class")
+				and string.find(system_ini():r_string(section, "ammo_class"), "12x", 1, true)
+			then
+				shotgun = true
+			end
+		end
+	end
+	return t.key ~= "dan" or shotgun
+end
+
+local function pick_trader(se, kinds, avoid)
+	local here = olr_smart_index.object_level(se)
+	if not here then return nil end
+	local hops = near_levels(here)
+	local front = olr_cfg.frontier_levels()
+	local best, best_score = nil, 99
+	for _, t in pairs(traders) do
+		if t ~= avoid and not refusal(se, t, kinds, hops, front) then
+			local score = hops[t.level]
+			-- for parts the road is not all that counts: who pays well, and who has what he needs
+			if kinds.part and t.kinds.part then
+				score = score + ( t.pref or 0 ) + math.random() * 0.5
+				if short_of(se, t) then score = score - settings.part_need_bonus end
+			end
+			if score < best_score then best, best_score = t, score end
+		end
+	end
+	return best
+end
+
+local function explain_refusal(se, kinds)
+	local here = olr_smart_index.object_level(se)
+	local hops = here and near_levels(here) or {}
+	local front = olr_cfg.frontier_levels()
+	local out = {}
+	for _, t in pairs(traders) do
+		table.insert(out, t.key .. "=" .. ( refusal(se, t, kinds or { art = true }, hops, front) or "ok" ))
+	end
+	return table.concat(out, " ")
+end
+
+-- binds him to the smart, or to the nearest on that level that will have him; nil if none will
+local function send_to(se, preferred, lname)
+	if olr_smart_index.attach_checked(se, preferred) then return preferred end
+	local first = alife():object(preferred)
+	local x, z = first and first.position.x or 0, first and first.position.z or 0
+	for _, rec in ipairs(olr_smart_index.smarts_near(lname, x, z)) do
+		if rec.name ~= preferred and olr_smart_index.attach_checked(se, rec.name) then
+			elog("%s id=%d: %s refused him, bound to %s", se:name(), se.id, preferred, rec.name)
+			return rec.name
+		end
+	end
+	elog("%s id=%d: no smart on %s will have him", se:name(), se.id, lname)
+	return nil
+end
+
+-- a trader who stands apart from any named smart: visitors are bound to the nearest
+local function trader_smart(t)
+	if t.smart == "auto" then t.smart = olr_smart_index.nearest_on_level(t.level, t.x, t.z) or "auto" end
+	return t.smart ~= "auto" and t.smart or nil
+end
+
+local function begin_run(se, t, item_ids, stay)
+	load_runs()
+	local n = now()
+	runs[tostring(se.id)] = {
+		trader = t.key, items = item_ids,
+		sell_after = n + math.random(2, 6) * 3600,
+		deadline = n + settings.run_deadline_h * 3600,
+	}
+	store_runs()
+	local smart = trader_smart(t)
+	if not stay and not ( smart and send_to(se, smart, t.level) ) then
+		runs[tostring(se.id)] = nil
+		store_runs()
+		return
+	end
+	if olr_cfg.log_census() then
+		log2("[olr_trader_runs] run begins: %s id=%d on %s to %s, items=%d", se:name(), se.id, tostring(olr_smart_index.object_level(se)), t.key, #item_ids)
+	end
+end
+
+local function item_condition(item)
+	local pk = get_netpk(item, 1)
+	local data = pk and pk:get()
+	return data and data.condition or 0.8
+end
+
+-- parts are worth the walk as a haul: many weak ones, a couple of middling ones, or one rare one
+local function part_haul(parts, skip_id)
+	local list, points, rare = {}, 0, false
+	for _, item in ipairs(parts or {}) do
+		if item.id ~= skip_id and item_condition(item) >= settings.part_min_condition then
+			local cost = amk_offline_alife.get_item_cost(item)
+			table.insert(list, item)
+			if cost >= settings.part_rare_cost then
+				points = points + settings.part_points_rare
+				rare = true
+			elseif cost > settings.part_weak_cost then
+				points = points + settings.part_points_mid
+			else
+				points = points + 1
+			end
+		end
+	end
+	return points >= settings.part_points_haul and list or nil, points, rare
+end
+
+local function money_of(se)
+	local pk = get_netpk(se)
+	local data = pk and pk:get()
+	return data and data.money or 0
+end
+
+-- when he first noticed this was a haul
+local function haul_seen(id, forget)
+	local seen = get_value(HAUL_KEY) or {}
+	local key = tostring(id)
+	if forget then
+		if seen[key] then
+			seen[key] = nil
+			set_value(HAUL_KEY, seen)
+		end
+		return nil
+	end
+	if not seen[key] then
+		seen[key] = now()
+		set_value(HAUL_KEY, seen)
+	end
+	return seen[key]
+end
+
+-- a small haul can wait for more; a big or rare one should not, and neither should someone short of money.
+-- Nobody sets off with it at night
+local function haul_time(npc, points, rare, seen)
+	local h = level.get_time_hours()
+	if h >= settings.part_day_end_h or h < settings.part_day_start_h then return false end
+	local wait = settings.part_wait_h
+	if rare or points >= settings.part_points_big then wait = settings.part_wait_big_h end
+	if money_of(npc) < settings.part_poor_money then wait = wait / 2 end
+	return now() - seen >= wait * 3600
+end
+
+-- a job is over: whatever he carries, he sells at the next chance
+function haul_ready_now(id)
+	load_config()
+	local seen = get_value(HAUL_KEY) or {}
+	seen[tostring(id)] = now() - settings.part_wait_h * 3600
+	set_value(HAUL_KEY, seen)
+end
+
+local function parts_of(se)
+	local out = {}
+	local sim = alife()
+	for _, rec in pairs(amk_offline_alife.items[se.id] or {}) do
+		local item = rec and sim:object(rec.id)
+		if item and item.parent_id == se.id and item:name() == rec.name and item_kind(item) == "part" then
+			table.insert(out, item)
+		end
+	end
+	return out
+end
+
+-- called by amk_offline_alife.process_trade: what stays in the list is sold on the spot as before.
+-- parts is every mutant part he has, skip_id the one just put up for sale on the net
+function take_haul(npc, sell_list, parts, skip_id)
+	if not enabled() then return sell_list end
+	load_config()
+	if not ( eligible(npc) and off_cooldown(npc.id) ) then return sell_list end
+	local kinds = {}
+	for _, item in pairs(sell_list) do
+		local kind = item_kind(item)
+		if kind and kind ~= "part" and amk_offline_alife.get_item_cost(item) >= settings.run_min_cost then kinds[kind] = true end
+	end
+	local haul, points, rare = part_haul(parts, skip_id)
+	local seen = nil
+	if haul then
+		seen = haul_seen(npc.id)
+		if haul_time(npc, points, rare, seen) then kinds.part = true else haul = nil end
+	else
+		haul_seen(npc.id, true)
+	end
+	if not next(kinds) then return sell_list end
+	local t = pick_trader(npc, kinds)
+	if not t then
+		if haul then log2("[olr_trader_runs] %s id=%d has a haul of %d parts, %.1f points, and no trader in reach: %s", npc:name(), npc.id, #haul, points, explain_refusal(npc, { part = true })) end
+		return sell_list
+	end
+	local rest, ids, carried = {}, {}, {}
+	if haul and t.kinds.part then
+		for _, item in ipairs(haul) do
+			carried[item.id] = true
+			table.insert(ids, item.id)
+		end
+		log2("[olr_trader_runs] %s id=%d carries %d parts, %.1f points, to %s", npc:name(), npc.id, #haul, points, t.key)
+	end
+	for _, item in pairs(sell_list) do
+		local kind = item_kind(item)
+		if carried[item.id] then
+			-- already in the sack
+		elseif kind and kind ~= "part" and t.kinds[kind] and amk_offline_alife.get_item_cost(item) >= settings.run_min_cost then
+			table.insert(ids, item.id)
+		else
+			table.insert(rest, item)
+		end
+	end
+	if #ids == 0 then return sell_list end
+	begin_run(npc, t, ids)
+	if next(carried) then haul_seen(npc.id, true) end
+	return rest
+end
+
+-- called by trade_arts_news: an artefact nobody bought from an ad goes to a trader, if a run is possible.
+-- True means do not delete it.
+function take_unsold(npc, obj)
+	if not enabled() then return false end
+	load_config()
+	local run = load_runs()[tostring(npc.id)]
+	if run then
+		for _, id in ipairs(run.items) do
+			if id == obj.id then return true end
+		end
+		return false
+	end
+	if item_kind(obj) ~= "art" or not ( eligible(npc) and off_cooldown(npc.id) ) then return false end
+	local t = pick_trader(npc, { art = true })
+	if not t then return false end
+	begin_run(npc, t, { obj.id })
+	return true
+end
+
+local function news(key)
+	db.actor:give_game_news(game.translate_string(key), "ui\\ui_iconsTotal", Frect():set(0, 0, 83, 47), 0, 12000)
+end
+
+-- departure lines: olr_leave_solo_N, olr_leave_talk_N_a/b/c, olr_leave_out_N, olr_leave_dead_N, olr_rookie_N.
+-- N runs from 1 until a key has no text, so lines are added in the string table alone.
+local line_counts = {}
+
+local function has_line(key)
+	return game.translate_string(key) ~= key
+end
+
+local function line_count(prefix, suffix)
+	local id = prefix .. ( suffix or "" )
+	if not line_counts[id] then
+		local n = 0
+		while has_line(prefix .. ( n + 1 ) .. ( suffix or "" )) do n = n + 1 end
+		line_counts[id] = n
+	end
+	return line_counts[id]
+end
+
+-- character_name holds string table keys, "name_stalker_85 lname_stalker_70"
+function display_name(se)
+	local name = se.character_name
+	if not name or name == "" then return nil end
+	return ( string.gsub(name, "%S+", function(w) return game.translate_string(w) end) )
+end
+
+local function someone_else()
+	local name = news_main.random_sender_name(level.name())
+	if name then return name end
+	local first, last = amk_names_lists.get_strings()
+	return first .. " " .. last
+end
+
+local function say(key, who, delay, name)
+	local text = game.translate_string(key)
+	if name then text = string.gsub(text, "%$name", function() return name end) end
+	sak.send_tip(text, who, delay or 0, 15, "default", "pda_news", "gray")
+end
+
+local function say_solo(who)
+	local n = line_count("olr_leave_solo_")
+	if n > 0 then say("olr_leave_solo_" .. math.random(n), who) end
+end
+
+local function say_talk(who)
+	local n = line_count("olr_leave_talk_", "_a")
+	if n == 0 then return say_solo(who) end
+	local i = math.random(n)
+	local other = someone_else()
+	say("olr_leave_talk_" .. i .. "_a", who)
+	say("olr_leave_talk_" .. i .. "_b", other, 14, who)
+	if has_line("olr_leave_talk_" .. i .. "_c") then say("olr_leave_talk_" .. i .. "_c", who, 28, other) end
+end
+
+function pick_line(prefix)
+	local n = line_count(prefix)
+	return n > 0 and prefix .. math.random(n) or nil
+end
+
+function line_total(prefix)
+	return line_count(prefix)
+end
+
+function other_name()
+	return someone_else()
+end
+
+function announce_fuel(who)
+	local key = pick_line("olr_fuel_go_")
+	if key then sak.send_tip(game.translate_string(key), who, 0, 15, "default", "pda_news", "gray") end
+end
+
+local function say_about(prefix, name)
+	local n = line_count(prefix)
+	if n > 0 then say(prefix .. math.random(n), someone_else(), 0, name) end
+end
+
+local function run_name(se)
+	return display_name(se) or someone_else()
+end
+
+function shelf_add(t, section, condition)
+	local trader = alife():object(t.name)
+	if not trader then return false end
+	local obj = misc.spawn_to(section, trader)
+	misc.process_spawn()
+	if not obj then return false end
+	params.upd_condition(obj, condition)
+	local pk = get_netpk(obj, 1)
+	local data = pk:get()
+	data.condition = condition
+	pk:set(data)
+	local shelf = get_value(SHELF_KEY) or {}
+	table.insert(shelf, { id = obj.id, trader = t.key, sect = section, due = now() + math.random(settings.shelf_ttl_min_h, settings.shelf_ttl_max_h) * 3600 })
+	set_value(SHELF_KEY, shelf)
+	return true
+end
+
+local function shelf_count(key)
+	local n = 0
+	for _, entry in ipairs(get_value(SHELF_KEY) or {}) do
+		if entry.trader == key then n = n + 1 end
+	end
+	return n
+end
+
+local function maybe_shelve(t, item, condition)
+	if not olr_cfg.on("shelf_echo") then return end
+	if not t.echo then return end
+	local section = item:section_name()
+	local kind = item_kind(item)
+	if not ( kind and t.kinds[kind] ) or get_bool(section, "quest_item", false) then return end
+	if not t.echo:line_exist("olr_echo_sell", section) then return end -- he could not show it
+	local cost = amk_offline_alife.get_item_cost(item)
+	if cost < settings.shelf_min_cost or cost > settings.caps[olr_cfg.chapter() + 1] then return end
+	if shelf_count(t.key) >= settings.shelf_max or math.random(100) > settings.shelf_chance then return end
+	if shelf_add(t, section, condition or item_condition(item)) and math.random(100) <= settings.hint_chance then
+		local region = olr_smart_index.region_levels()
+		if region and region[t.level] then news("olr_shelf_hint_" .. t.key) end
+	end
+end
+
+-- what a loner earned in the Zone, as opposed to what he came with
+function note_earned(se, money)
+	if money <= 0 or not enabled() or se:community() ~= "stalker" then return end
+	local earned = get_value(EARNED_KEY) or {}
+	local key = tostring(se.id)
+	earned[key] = ( earned[key] or 0 ) + money
+	set_value(EARNED_KEY, earned)
+end
+
+local function free_spots(id)
+	for lvid, owner in pairs(spot_owner) do
+		if owner == id then spot_owner[lvid] = nil end
+	end
+end
+
+local function pay_npc(se, money)
+	if money <= 0 or not se then return end
+	note_earned(se, money)
+	local npc = se.online and level.object_by_id(se.id)
+	if npc then
+		npc:give_money(money)
+	else
+		local pk = get_netpk(se)
+		local data = pk:get()
+		data.money = data.money + money
+		pk:set(data)
+	end
+end
+
+local function drop_items(id, run, ctx)
+	local sim = alife()
+	for _, item_id in ipairs(run.items) do
+		local item = sim:object(item_id)
+		if item and item.parent_id == id then
+			amk_offline_alife.forget_item(id, item_id)
+			misc.release_obj(item_id, ctx)
+		end
+	end
+end
+
+-- an errand is over: arrived, or not by the deadline
+local function finish_errand(id, run, arrived)
+	free_spots(id)
+	local se = alife():object(id)
+	drop_items(id, run, "olr_trader_runs.errand")
+	set_cooldown(id)
+	if not arrived then
+		elog("%s by %s id=%d: deadline passed, nothing delivered", run.errand, run.who, id)
+		return
+	end
+	pay_npc(se, run.pay)
+	if run.kind == "fuel" then
+		kotovod[FUEL_NOT_END[run.errand]](true)
+		local key = pick_line("olr_" .. run.errand .. "_done_")
+		if key then
+			local text = string.gsub(game.translate_string(key), "%$name", function() return run.who end)
+			sak.send_tip(text, game.translate_string(run.errand == "fuel_esc" and "esc_news" or "bar_news"), 0, 15, "default", "pda_news", "gray")
+		end
+		elog("%s by %s id=%d: delivered, paid %d, line %s", run.errand, run.who, id, run.pay, tostring(key))
+		-- the one who came second hears about it
+		for other_key, other in pairs(load_runs()) do
+			if other.errand == run.errand and other ~= run then
+				other.beaten_by = run.who
+				local win = pick_line("olr_fuel_race_win_")
+				if win then say(win, run.who, 40, other.who) end
+				local lose = pick_line("olr_fuel_race_lose_")
+				if lose then say(lose, other.who, 60, run.who) end
+				elog("%s: %s beat %s, lines %s %s", run.errand, run.who, other.who, tostring(win), tostring(lose))
+			end
+		end
+	else
+		local key = pick_line("olr_claim_done_")
+		if key then
+			local text = string.gsub(game.translate_string(key), "%$name", function() return run.who end)
+			sak.send_tip(text, game.translate_string("he_enc_name_" .. run.giver), 0, 15, "default", "pda_news", "gray")
+		end
+		elog("claim by %s id=%d from %s: paid %d, line %s", run.who, id, run.giver, run.pay, tostring(key))
+	end
+end
+
+-- the man at the generator, whoever holds that job now
+local function generator_man(e)
+	local smart = alife():object(e.gulag)
+	local g = smart and smart.gulag
+	if not g then return nil end
+	for obj_id, job_n in pairs(g.ObjectJob) do
+		local job = g.Job[job_n]
+		if job and job.section == e.job then return obj_id end
+	end
+	return nil
+end
+
+-- what a part fetches, as CTrade::GetItemPriceExact prices it; sak.kolb_baded rots it in his bag meanwhile
+local function part_value(item)
+	local condition = item_condition(item)
+	return math.floor(amk_offline_alife.get_item_cost(item) * ( 0.1 + condition * 0.9 )), condition
+end
+
+-- sells these to the trader, deletes them, returns the money
+local function sell_items(id, se, t, item_ids)
+	local sim = alife()
+	local money = 0
+	local parts = 0
+	for _, item_id in ipairs(item_ids) do
+		local item = sim:object(item_id)
+		if item and item.parent_id == id then
+			local value, condition = amk_offline_alife.get_item_cost(item), nil
+			if item_kind(item) == "part" then
+				value, condition = part_value(item)
+				value = math.floor(value * ( t and t.pay or 1 ))
+				parts = parts + 1
+			end
+			money = money + value
+			if t and value > 0 then
+				olr_glut.note(t.name, item:section_name(), 1, "run")
+				maybe_shelve(t, item, condition)
+			end
+			amk_offline_alife.forget_item(id, item_id)
+			misc.release_obj(item_id, "olr_trader_runs")
+		end
+	end
+	if parts > 0 then
+		log2("[olr_trader_runs] id=%d at %s: %d parts, %d money in all", id, tostring(t and t.key), parts, money)
+		if money > 0 and se and t and short_of(se, t) then
+			local good = misc.spawn_to(t.good, se)
+			misc.process_spawn()
+			if good then
+				given[se.id .. t.good] = now()
+				money = math.max(0, money - amk_offline_alife.get_item_cost(good))
+				log2("[olr_trader_runs] id=%d takes %s as part of the pay, %d money left", id, t.good, money)
+			end
+		end
+	end
+	return money
+end
+
+-- Prosha is a short walk from the gas station: whoever came with parts sells them on the way
+local function stop_at_prosha(id, se, run)
+	local t = traders.prosha
+	if not ( se and t and t.level == settings.fuel_source_level ) then return end
+	local away = trader_absent(t)
+	if away then
+		elog("%s: %s id=%d cannot stop at Prosha, %s", run.errand, run.who, id, away)
+		return
+	end
+	local ids = {}
+	for _, item in ipairs(parts_of(se)) do table.insert(ids, item.id) end
+	if #ids == 0 then return end
+	local money = sell_items(id, se, t, ids)
+	pay_npc(se, money)
+	haul_seen(id, true)
+	elog("%s: %s id=%d sold %d parts to Prosha on the way, %d money", run.errand, run.who, id, #ids, money)
+	local line = pick_line("olr_fuel_prosha_")
+	if line and ( olr_smart_index.region_levels() or {} )[t.level] then say(line, run.who) end
+end
+
+-- he is at the gas station: now he has a canister, and the second leg begins
+local function fuel_filled_up(id, run)
+	local e = errands[run.errand]
+	local se = alife():object(id)
+	free_spots(id)
+	stop_at_prosha(id, se, run)
+	local item = se and misc.spawn_to("amk_kanistra", se)
+	misc.process_spawn()
+	if not item then
+		elog("%s: %s id=%d, canister did not spawn, run over", run.errand, run.who, id)
+		runs[tostring(id)] = nil
+		return
+	end
+	local n = now()
+	run.stage = "bring"
+	run.items = { item.id }
+	run.level = e.level
+	run.force = nil
+	run.sell_after = n + math.random(settings.fuel_leg_min_h, settings.fuel_leg_max_h) * 3600
+	run.deadline = n + settings.errand_deadline_h * 3600
+	local stay = se.online and olr_smart_index.object_level(se) == e.level
+	if not stay then send_to(se, e.smart, e.level) end
+	elog("%s: %s id=%d filled up at Kishka, heads for %s, %.0f h to run", run.errand, run.who, id, e.level, settings.errand_deadline_h)
+end
+
+local function finish_run(id, run)
+	if run.errand then return finish_errand(id, run, true) end
+	free_spots(id)
+	local se = alife():object(id)
+	local t = traders[run.trader]
+	local money = sell_items(id, se, t, run.items)
+	if money > 0 and se then
+		note_earned(se, money)
+		local npc = se.online and level.object_by_id(id)
+		if npc then
+			npc:give_money(money)
+		else
+			local pk = get_netpk(se)
+			local data = pk:get()
+			data.money = data.money + money
+			pk:set(data)
+		end
+	end
+	set_cooldown(id)
+end
+
+-- the spot this online NPC should walk to, nil if none: not on a run here, or all taken
+function visit_spot(npc)
+	if not ( db.actor and enabled() ) then return nil end
+	local id = npc:id()
+	local rec = receivers[id]
+	if rec then
+		if time_global() < rec.until_t and level.object_by_id(rec.courier) then return rec.lvid end
+		receivers[id] = nil
+	end
+	local run = load_runs()[tostring(id)]
+	if not run or run.leave or run.hold_until or olr_patrols.is_member(id) then return nil end
+	load_config()
+	local t = run.errand and errands[run.errand] or traders[run.trader]
+	if run.errand then
+		if run.level ~= level.name() then return nil end
+		if run.stage == "get" then return settings.fuel_source_vertex end
+		if not ( t and #t.spots > 0 ) then
+			local base = nil
+			local target = visit_trader(npc)
+			if target then
+				base = target:level_vertex_id()
+			elseif run.path and level.patrol_path_exists(run.path) then
+				base = patrol(run.path):level_vertex_id(0)
+			end
+			if not base then return nil end
+			-- a place by the person rather than on him, not the same for two visitors
+			local a = ( id % 8 ) * math.pi / 4
+			local lvid = level.vertex_in_direction(base, vector():set(math.cos(a), 0, math.sin(a)), 2.5)
+			spot_owner[lvid] = id
+			return lvid
+		end
+	end
+	if not t or t.level ~= level.name() or #t.spots == 0 then return nil end
+	if not run.errand and trader_absent(t) then return nil end -- no use standing at his door
+	local first = math.random(#t.spots)
+	local free = nil
+	for i = 1, #t.spots do
+		local lvid = t.spots[( first + i - 2 ) % #t.spots + 1]
+		local owner = spot_owner[lvid]
+		if owner == id then return lvid end
+		if not free and ( not owner or not load_runs()[tostring(owner)] ) then free = lvid end
+	end
+	if free then spot_owner[free] = id end
+	return free
+end
+
+-- a courier reached the generator man: he stops and faces him for a moment
+-- Prosha is turning everyone away: where a visitor waits for tomorrow, by the fire if there is one. Nil if he does not
+function wait_spot(npc)
+	if not ( db.actor and enabled() ) then return nil end
+	load_config()
+	local id = npc:id()
+	local run = load_runs()[tostring(id)]
+	local t = run and not run.errand and not run.leave and not olr_patrols.is_member(id) and traders[run.trader]
+	if not ( t and t.level == level.name() and #t.spots > 0 and ( trader_absent(t) == "out_today" or trader_absent(t) == "away_now" ) )
+		or npc:position():distance_to(level.vertex_position(t.spots[1])) > settings.wait_near
+	then
+		waiters[id] = nil
+		return nil
+	end
+	if waiters[id] then return waiters[id] end
+	local w = { pose = SIT_POSES[id % #SIT_POSES + 1] }
+	local kamp = ogse_campfire.get_nearest_campfire(npc:position(), settings.wait_fire_dist)
+	if kamp then
+		local a = ( id % 8 ) * math.pi / 4
+		w.lvid = level.vertex_in_direction(kamp.object:level_vertex_id(), vector():set(math.cos(a), 0, math.sin(a)), 2)
+		local fire = kamp.object:position()
+		w.look = vector():set(fire.x, fire.y, fire.z)
+	else
+		w.lvid = npc:level_vertex_id()
+	end
+	log2("[olr_trader_runs] %s id=%d waits for %s %s", npc:name(), id, t.key, kamp and "by the fire" or "where he is")
+	waiters[id] = w
+	return w
+end
+
+function visit_arrived(npc)
+	local run = load_runs()[tostring(npc:id())]
+	if not ( run and run.kind == "fuel" and run.stage == "bring" ) then return end
+	local man = visit_trader(npc)
+	if man and not man:is_talking() then
+		receivers[man:id()] = { courier = npc:id(), lvid = man:level_vertex_id(), until_t = time_global() + settings.visit_wait_max_s * 1000 }
+		elog("%s id=%d stops for courier %s id=%d", man:name(), man:id(), npc:name(), npc:id())
+	end
+end
+
+function visit_trader(npc)
+	local rec = receivers[npc:id()]
+	if rec then return level.object_by_id(rec.courier) end
+	local run = load_runs()[tostring(npc:id())]
+	if run and run.target_id then return level.object_by_id(run.target_id) end
+	if run and run.kind == "fuel" then
+		local man = run.stage == "bring" and generator_man(errands[run.errand])
+		return man and level.object_by_id(man) or nil
+	end
+	local t = run and traders[run.trader]
+	local se = t and alife():object(t.look or t.name) or ( t and alife():object(t.name) )
+	return se and level.object_by_id(se.id)
+end
+
+function visit_wait_ms()
+	return math.random(settings.visit_wait_min_s, settings.visit_wait_max_s) * 1000
+end
+
+function visit_timeout_ms()
+	return settings.visit_timeout_s * 1000
+end
+
+function visit_done(npc, how)
+	local id = npc:id()
+	if receivers[id] then
+		receivers[id] = nil
+		return
+	end
+	local key = tostring(id)
+	local run = load_runs()[key]
+	if not run then return end
+	if run.stage == "get" then
+		fuel_filled_up(id, run)
+		store_runs()
+		return
+	end
+	runs[key] = nil
+	store_runs()
+	finish_run(id, run)
+	if olr_cfg.log_census() then
+		log2("[olr_trader_runs] %s id=%d sold at the %s spot: %s", npc:name(), id, tostring(run.trader or run.errand), how)
+	end
+end
+
+local function can_vanish(se)
+	if not se.online then return true end
+	return se.position:distance_to(db.actor:position()) > NEAR_ACTOR
+end
+
+local function runs_tick()
+	local sim = alife()
+	local n = now()
+	local changed = false
+	for key, run in pairs(load_runs()) do
+		local id = tonumber(key)
+		local se = sim:object(id)
+		if not ( se and IsStalker(se) and se:alive() ) then
+			if run.leave and run.who then say_about("olr_leave_dead_", run.who) end
+			if run.errand then
+				elog("%s: %s id=%d died on the way", run.errand, tostring(run.who), id)
+				free_spots(id)
+				say_about("olr_" .. run.kind .. "_dead_", run.who)
+			end
+			runs[key] = nil
+			changed = true
+		elseif run.hold_until and n < run.hold_until and not run.force and not has_alife_info(FUEL_INFO[run.errand]) then
+			-- not gone yet
+		elseif run.errand then
+			if run.hold_until then
+				if not run.force and not has_alife_info(FUEL_INFO[run.errand]) then
+					elog("%s: %s id=%d sets off", run.errand, run.who, id)
+					announce_fuel(run.who)
+					send_to(se, run.smart, run.level)
+				end
+				run.hold_until = nil
+				changed = true
+			end
+			local arrived = run.force or ( olr_smart_index.object_level(se) == run.level and n >= run.sell_after and can_vanish(se) and not se.online )
+			if run.kind == "fuel" and has_alife_info(FUEL_INFO[run.errand]) then
+				elog("%s: %s id=%d lost the race at stage %s, to %s", run.errand, run.who, id, run.stage, tostring(run.beaten_by or "the player"))
+				if not run.beaten_by then
+					local beaten = pick_line("olr_fuel_race_player_")
+					if beaten then say(beaten, run.who) end
+				end
+				free_spots(id)
+				drop_items(id, run, "olr_trader_runs.race_lost")
+				set_cooldown(id)
+				runs[key] = nil
+				changed = true
+			elseif arrived and run.stage == "get" then
+				fuel_filled_up(id, run)
+				changed = true
+			elseif arrived or n >= run.deadline then
+				runs[key] = nil
+				changed = true
+				finish_errand(id, run, arrived)
+			end
+		elseif run.leave then
+			if olr_smart_index.object_level(se) == run.level and can_vanish(se) or n >= run.deadline then
+				if not se.online then
+					runs[key] = nil
+					changed = true
+					sim:release(se, true)
+					set_value(ROOKIES_KEY, ( get_value(ROOKIES_KEY) or 0 ) + 1)
+					if run.who and math.random(100) <= settings.leave_out_chance then say_about("olr_leave_out_", run.who) end
+				end
+			end
+		else
+			local t = traders[run.trader]
+			local arrived = t and olr_smart_index.object_level(se) == t.level and n >= run.sell_after and can_vanish(se)
+			local away = ( arrived or n >= run.deadline ) and t and trader_absent(t)
+			if ( away == "out_today" or away == "away_now" ) and run.waiting and n - run.waiting >= settings.wait_max_h * 3600 then
+				-- enough: on to someone else, goods and all
+				local other = pick_trader(se, { part = true }, t)
+				log2("[olr_trader_runs] %s id=%d gives up on %s after %d h, goes to %s", se:name(), id, t.key, settings.wait_max_h, other and other.key or "nobody")
+				runs[key] = nil
+				changed = true
+				free_spots(id)
+				if other then begin_run(se, other, run.items) else set_cooldown(id) end
+			elseif away == "out_today" or away == "away_now" then
+				-- he deals again later: the visitor waits nearby, spoiling goods and all
+				if not run.waiting then
+					run.waiting = n
+					changed = true
+					log2("[olr_trader_runs] %s id=%d at %s: %s, waits", se:name(), id, t.key, away)
+					local line = pick_line("olr_" .. t.key .. "_out_")
+					if line and math.random(100) <= settings.hint_chance and ( olr_smart_index.region_levels() or {} )[t.level] then
+						say(line, run_name(se))
+					end
+				end
+				if run.deadline < n + 3600 then
+					run.deadline = n + 3 * 3600
+					changed = true
+				end
+			elseif away then
+				log2("[olr_trader_runs] %s id=%d: %s is %s, keeps the goods", se:name(), id, t.key, away)
+				runs[key] = nil
+				changed = true
+				free_spots(id)
+				set_cooldown(id)
+			elseif arrived or n >= run.deadline then
+				runs[key] = nil
+				changed = true
+				finish_run(id, run)
+			end
+		end
+	end
+	if changed then store_runs() end
+end
+
+local function shelf_tick()
+	local shelf = get_value(SHELF_KEY)
+	if not shelf or #shelf == 0 then return end
+	local sim = alife()
+	local n = now()
+	local kept = {}
+	for _, entry in ipairs(shelf) do
+		local obj = sim:object(entry.id)
+		local t = traders[entry.trader]
+		local trader = t and sim:object(t.name)
+		if obj and trader and obj.parent_id == trader.id then
+			if n >= entry.due then
+				misc.release_obj(entry.id, "olr_trader_runs.shelf")
+			else
+				table.insert(kept, entry)
+			end
+		end
+	end
+	if #kept ~= #shelf then set_value(SHELF_KEY, kept) end
+end
+
+local function begin_leave(se)
+	load_runs()
+	local who = run_name(se)
+	runs[tostring(se.id)] = {
+		leave = true, level = settings.leave_level, items = {}, who = who,
+		deadline = now() + settings.leave_deadline_h * 3600,
+	}
+	store_runs()
+	if not send_to(se, settings.leave_smart, settings.leave_level) then
+		runs[tostring(se.id)] = nil
+		store_runs()
+		return
+	end
+	if olr_cfg.log_census() then
+		log2("[olr_trader_runs] leaving begins: %s id=%d on %s", se:name(), se.id, tostring(olr_smart_index.object_level(se)))
+	end
+	if math.random(100) <= settings.leave_talk_chance then say_talk(who) else say_solo(who) end
+end
+
+-- the one who earned most and enough; also drops the records of the dead
+local function leave_candidate()
+	local sim = alife()
+	local earned = get_value(EARNED_KEY) or {}
+	local best, best_earned = nil, settings.leave_earned - 1
+	local dropped = false
+	for key, amount in pairs(earned) do
+		local se = sim:object(tonumber(key))
+		if not ( se and IsStalker(se) and se:alive() ) then
+			earned[key] = nil
+			dropped = true
+		elseif amount > best_earned and eligible(se) and not on_run(se.id) then
+			best, best_earned = se, amount
+		end
+	end
+	if dropped then set_value(EARNED_KEY, earned) end
+	return best
+end
+
+local function leave_tick()
+	if not olr_cfg.on("leaving_zone") then return end
+	local n = now()
+	local nxt = get_value(LEAVE_KEY)
+	if not nxt then
+		set_value(LEAVE_KEY, n + settings.leave_cooldown_h * 3600)
+		return
+	end
+	if n < nxt then return end
+	local se = leave_candidate()
+	if se then
+		begin_leave(se)
+		set_value(LEAVE_KEY, n + settings.leave_cooldown_h * 3600)
+	else
+		set_value(LEAVE_KEY, n + 3600)
+	end
+end
+
+local function errand_ok(se)
+	if not ( se and IsStalker(se) and se:alive() ) then return false, "not_alive_stalker" end
+	if on_run(se.id) then return false, "on_run" end
+	if has_story_name(se) then return false, "story_name" end
+	if olr_patrols.is_member(se.id) then return false, "party" end
+	if se.m_story_id ~= nil and se.m_story_id ~= NONE_SID and se.m_story_id ~= NONE_CL_SID then return false, "story_id" end
+	if not ERRAND_COMMS[se:community()] then return false, "community" end
+	if olr_protected.is_no_offline_alife_obj(se:name()) then return false, "protected" end
+	if olr_protected.is_quest_bound(se) then return false, "quest_bound" end -- [HE-PORT]
+	return true
+end
+
+local function begin_errand(se, spec)
+	local name = display_name(se) or someone_else()
+	local key = tostring(se.id)
+	load_runs()
+	local n = now()
+	local run = {
+		errand = spec.errand, kind = spec.kind, stage = spec.stage, items = spec.items or {}, level = spec.level, path = spec.path,
+		target_id = spec.target_id, pay = spec.pay, who = name, giver = spec.giver,
+		sell_after = n + spec.delay * 3600, deadline = n + settings.errand_deadline_h * 3600,
+	}
+	runs[key] = run
+	store_runs()
+	if spec.hold and spec.hold > 0 then
+		run.hold_until = n + spec.hold * 3600
+		run.smart = spec.smart
+		store_runs()
+		elog("%s: %s id=%d (%s) sets off in %d h", spec.errand, se:name(), se.id, name, spec.hold)
+		return true
+	end
+	if spec.kind == "fuel" then announce_fuel(name) end
+	local stay = se.online and olr_smart_index.object_level(se) == spec.level
+	if not stay and not send_to(se, spec.smart, spec.level) then
+		runs[key] = nil
+		store_runs()
+		return false
+	end
+	elog("%s begins: %s id=%d (%s) on %s to %s, smart %s, online=%s, pay %d", spec.errand, se:name(), se.id, name,
+		tostring(olr_smart_index.object_level(se)), spec.level, stay and "stays" or spec.smart, tostring(se.online), spec.pay)
+	return true
+end
+
+-- the ones best placed to go: close to the gas station and to the generator, short of money, with some luck
+local function fuel_candidates(e, want)
+	local sim = alife()
+	local source = settings.fuel_source_level
+	local to_gen = near_levels(source)[e.level] or 3
+	local man = generator_man(e)
+	local list = {}
+	local why = {}
+	local ids = olr_offline_task.cached_stalkers("stalker")
+	for _, id in ipairs(ids) do
+		local se = sim:object(id)
+		local ok, reason = eligible(se)
+		local here = ok and olr_smart_index.object_level(se)
+		local h = here and near_levels(here)[source]
+		if ok and id == man then ok, reason = false, "runs_the_generator" end
+		if ok and not h then ok, reason = false, "too_far" end
+		if ok and not off_cooldown(id) then ok, reason = false, "cooldown" end
+		if ok and not olr_smart_index.level_rank_fits(e.level, se:community(), se:rank()) then ok, reason = false, "rank" end
+		if ok then
+			local poor = money_of(se) < 5000 and 1 or 0
+			-- he has parts to sell at Prosha, by the gas station: the trip pays twice
+			local parts = traders.prosha and traders.prosha.level == source and #parts_of(se) > 0
+			if parts then elog("%s: %s id=%d has parts for Prosha", e.key, se:name(), id) end
+			table.insert(list, { se = se, score = h + to_gen - poor - ( parts and settings.fuel_parts_bonus or 0 ) + math.random(), hops = h })
+		else
+			why[reason] = ( why[reason] or 0 ) + 1
+		end
+	end
+	table.sort(list, function(a, b) return a.score < b.score end)
+	local out = {}
+	for reason, n in pairs(why) do table.insert(out, reason .. "=" .. n) end
+	elog("%s: %d of %d could go, man at the generator id=%s, refused %s", e.key, #list, #ids, tostring(man), table.concat(out, " "))
+	local picked = {}
+	for i = 1, math.min(want, #list) do
+		elog("%s: picked %s id=%d, %d levels from Kishka, score %.1f", e.key, list[i].se:name(), list[i].se.id, list[i].hops, list[i].score)
+		table.insert(picked, list[i].se)
+	end
+	return picked
+end
+
+local function start_fuel_runs(e)
+	local source = olr_smart_index.nearest_on_level(settings.fuel_source_level, settings.fuel_source_x, settings.fuel_source_z)
+	if not source then
+		elog("%s: no smart at the gas station", e.key)
+		return false
+	end
+	local started = 0
+	for _, se in ipairs(fuel_candidates(e, settings.fuel_runners)) do
+		-- each makes up his own mind: the later ones set off some hours after
+		local hold = started > 0 and math.random(settings.fuel_stagger_min_h, settings.fuel_stagger_max_h) or 0
+		if begin_errand(se, { errand = e.key, kind = "fuel", stage = "get", level = settings.fuel_source_level, smart = source, path = e.path, pay = e.pay,
+			delay = math.random(settings.fuel_leg_min_h, settings.fuel_leg_max_h) + hold, hold = hold })
+		then
+			started = started + 1
+		end
+	end
+	elog("%s: %d runners set off for %s", e.key, started, source)
+	return started > 0
+end
+
+-- called by kotovod when a generator runs dry: the player has a head start. False means the old timer roll decides.
+function fuel_out(key)
+	if not olr_cfg.on("fuel_runs") then return false end
+	load_config()
+	if not errands[key] then return false end
+	local at = now() + math.random(settings.fuel_wait_min_h, settings.fuel_wait_max_h) * 3600
+	local want = get_value(FUEL_KEY) or {}
+	want[key] = { at = at, expire = at + settings.fuel_want_h * 3600 }
+	set_value(FUEL_KEY, want)
+	elog("%s ran dry: runners go in %.1f h unless fuelled first", key, ( at - now() ) / 3600)
+	return true
+end
+
+local function fuel_tick()
+	local want = get_value(FUEL_KEY)
+	if not want or not next(want) then return end
+	local n = now()
+	for key, rec in pairs(want) do
+		local e = errands[key]
+		if not e or type(rec) ~= "table" or has_alife_info(FUEL_INFO[key]) then
+			elog("%s: fuelled meanwhile, no run", key)
+			want[key] = nil
+		elseif n >= rec.expire then
+			elog("%s: nobody could take it in time", key)
+			want[key] = nil
+		elseif n >= rec.at and start_fuel_runs(e) then
+			want[key] = nil
+		end
+	end
+	set_value(FUEL_KEY, want)
+end
+
+-- called by news_encounters when a stalker finished a sighting without the player
+function claim_reward(killer_id, giver_id, giver_key, reward)
+	if not olr_cfg.on("reward_claims") then return false end
+	load_config()
+	local sim = alife()
+	local se = killer_id and sim:object(killer_id)
+	local ok, reason = errand_ok(se)
+	if not ok then
+		elog("claim for %s: killer id=%s %s", tostring(giver_key), tostring(killer_id), tostring(reason))
+		return false
+	end
+	local giver = sim:object(giver_id)
+	if not ( giver and IsStalker(giver) and giver:alive() ) then
+		elog("claim: giver %s is gone", tostring(giver_key))
+		return false
+	end
+	local lvl = olr_smart_index.object_level(giver)
+	local sid = giver:smart_terrain_id()
+	local smart = sid ~= BAD_OBJ_ID and sim:object(sid)
+	local smart_name = smart and smart:name() or olr_smart_index.pick_any_on_levels({ [lvl] = true })
+	if not smart_name then
+		elog("claim: no smart near %s on %s", tostring(giver_key), tostring(lvl))
+		return false
+	end
+	local amounts = {}
+	for v in string.gmatch(tostring(settings.claim_money), "%d+") do table.insert(amounts, tonumber(v)) end
+	local pay = amounts[tonumber(string.match(tostring(reward), "%d+")) or 1] or amounts[1]
+	return begin_errand(se, { errand = "claim", kind = "claim", level = lvl, smart = smart_name, target_id = giver_id, giver = giver_key, pay = pay,
+		delay = math.random(2, 6) })
+end
+
+local function rookie_tick()
+	local due = get_value(ROOKIES_KEY) or 0
+	if due <= 0 or level.name() == settings.leave_level then return end
+	local smart = alife():object(settings.leave_smart)
+	if not smart then return end
+	local obj = alife():create("olr_stalker_novice", smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+	if not obj then return end
+	local pk = get_netpk(obj)
+	local data = pk:get()
+	data.custom_data = "[smart_terrains]\n" .. settings.leave_smart .. " = true\n"
+	pk:set(data)
+	olr_squads.track(obj.id, "stalker")
+	set_value(ROOKIES_KEY, due - 1)
+	if math.random(100) <= settings.rookie_news_chance then say_about("olr_rookie_") end
+end
+
+-- a few stalkers a tick: has someone's bag become a haul worth the walk
+local function haul_tick()
+	local sim = alife()
+	for _ = 1, settings.haul_scan do
+		local ids = olr_offline_task.cached_stalkers(HAUL_COMMS[haul_comm])
+		haul_index = haul_index + 1
+		if haul_index > #ids then
+			haul_index = 0
+			haul_comm = haul_comm % #HAUL_COMMS + 1
+		else
+			local se = sim:object(ids[haul_index])
+			if se and IsStalker(se) and se:alive() and amk_offline_alife.items[se.id] then
+				local parts = parts_of(se)
+				if #parts > 0 then take_haul(se, {}, parts) end
+			end
+		end
+	end
+end
+
+function update()
+	if not db.actor or not enabled() then return end
+	if olr_cfg.sleep_paused() then return end
+	load_config()
+	runs_tick()
+	shelf_tick()
+	haul_tick()
+	if olr_cfg.on("fuel_runs") then fuel_tick() end
+	leave_tick()
+	rookie_tick()
+end
+
+function report()
+	load_config()
+	local sim = alife()
+	log2("[olr_trader_runs] runs=%s shelf=%s leaving=%s rookies_due=%d", tostring(enabled()), tostring(olr_cfg.on("shelf_echo")),
+		tostring(olr_cfg.on("leaving_zone")), get_value(ROOKIES_KEY) or 0)
+	local earners, top = 0, 0
+	for _, amount in pairs(get_value(EARNED_KEY) or {}) do
+		earners = earners + 1
+		if amount > top then top = amount end
+	end
+	log2("[olr_trader_runs]   earners=%d top=%d leave_earned=%d", earners, top, settings.leave_earned)
+	for key, t in pairs(traders) do
+		log2("[olr_trader_runs]   trader %s object=%s found=%s level=%s smart=%s spots=%d absent=%s pref=%s pay=%s good=%s", key, t.name, tostring(sim:object(t.name) ~= nil), t.level, t.smart, #t.spots, tostring(trader_absent(t)), tostring(t.pref), tostring(t.pay), tostring(t.good))
+	end
+	local n = now()
+	for key, run in pairs(load_runs()) do
+		local id = tonumber(key)
+		local se = sim:object(id)
+		log2("[olr_trader_runs]   run id=%d %s to=%s on=%s online=%s items=%d deadline_in=%.1f h", id, se and se:name() or "?",
+			run.leave and "exit" or run.errand or run.trader, se and tostring(olr_smart_index.object_level(se)) or "?", se and tostring(se.online) or "?",
+			#run.items, ( run.deadline - n ) / 3600)
+	end
+	for _, entry in ipairs(get_value(SHELF_KEY) or {}) do
+		log2("[olr_trader_runs]   shelf %s at %s id=%d leaves_in=%.1f h", entry.sect, entry.trader, entry.id, ( entry.due - n ) / 3600)
+	end
+end
+
+local function run_candidate(kinds)
+	local sim = alife()
+	local ids = olr_offline_task.cached_stalkers("stalker")
+	local why = {}
+	local levels = {}
+	local shown = 0
+	for _, id in ipairs(ids) do
+		local se = sim:object(id)
+		local ok, reason = eligible(se)
+		if ok and on_run(id) then reason = "on_run"
+		elseif ok and not off_cooldown(id) then reason = "cooldown"
+		elseif ok and not pick_trader(se, kinds) then
+			reason = "no_trader"
+			local lvl = tostring(olr_smart_index.object_level(se))
+			levels[lvl] = ( levels[lvl] or 0 ) + 1
+			if shown < 8 and levels[lvl] == 1 then
+				shown = shown + 1
+				log2("[olr_trader_runs]   %s id=%d on %s rank=%d: %s", se:name(), id, lvl, se:rank(), explain_refusal(se, kinds))
+			end
+		elseif ok then
+			return se
+		end
+		why[reason] = ( why[reason] or 0 ) + 1
+	end
+	log2("[olr_trader_runs] force_run: nobody among %d offline loners", #ids)
+	for reason, n in pairs(why) do
+		log2("[olr_trader_runs]   %s: %d", reason, n)
+	end
+	for lvl, n in pairs(levels) do
+		log2("[olr_trader_runs]   no_trader on %s: %d", lvl, n)
+	end
+	log2("[olr_trader_runs]   chapter=%d runs_per_trader=%s", olr_cfg.chapter(), tostring(settings.runs_per_trader))
+	return nil
+end
+
+function force_run(id, kind)
+	load_config()
+	local kinds = { [kind or "art"] = true }
+	local se = nil
+	if id then se = alife():object(id) else se = run_candidate(kinds) end
+	if not id and not se then return end
+	local ok, reason = eligible(se)
+	if not ok then
+		log2("[olr_trader_runs] force_run %s: not eligible, %s", tostring(id), reason)
+		return
+	end
+	local t = pick_trader(se, kinds)
+	if not t then
+		log2("[olr_trader_runs] force_run %d: no trader within reach", se.id)
+		return
+	end
+	local item = misc.spawn_to(kind == "gun" and "wpn_ak74" or kind == "part" and "mutant_krovosos_jaw" or "af_medusa_dyn2d", se)
+	misc.process_spawn()
+	if not item then
+		log2("[olr_trader_runs] force_run %d: artefact did not spawn", se.id)
+		return
+	end
+	begin_run(se, t, { item.id })
+	log2("[olr_trader_runs] force_run: %s id=%d on %s heads for %s", se:name(), se.id, tostring(olr_smart_index.object_level(se)), t.key)
+end
+
+-- Prosha's state without the test flag in the way
+function prosha_state()
+	load_config()
+	local se = alife():object(traders.prosha.name)
+	log2("[olr_trader_runs] prosha: absent=%s flag=%s holiday=%s spawner=%s online=%s", tostring(trader_absent(traders.prosha)), tostring(get_value("nlc.olr_test_prosha_out")),
+		tostring(sak_dialog.is_holiday_prosha()), tostring(se and xr_spawner.check_spawn(se)), tostring(se and se.online))
+end
+
+function test_prosha_out(on)
+	set_value("nlc.olr_test_prosha_out", on == true)
+	log2("[olr_trader_runs] test_prosha_out %s", tostring(on == true))
+end
+
+function parts_census()
+	load_config()
+	local sim = alife()
+	local byowner = {}
+	local total = 0
+	for _, o in sim:objects() do
+		if string.sub(o:section_name(), 1, 7) == "mutant_" and o.parent_id ~= BAD_OBJ_ID then
+			local owner = sim:object(o.parent_id)
+			-- traders' stock is not a haul
+			if owner and IsStalker(owner) and owner.id ~= db.actor:id() and owner:alive() and ( owner.m_story_id == nil or owner.m_story_id == NONE_SID or owner.m_story_id == NONE_CL_SID ) then
+				byowner[owner.id] = byowner[owner.id] or { se = owner, parts = {} }
+				table.insert(byowner[owner.id].parts, o)
+				total = total + 1
+			end
+		end
+	end
+	local owners, hauls, shown = 0, 0, 0
+	for id, rec in pairs(byowner) do
+		owners = owners + 1
+		local haul, points = part_haul(rec.parts)
+		if haul then hauls = hauls + 1 end
+		if shown < 40 then
+			shown = shown + 1
+			local ok, reason = eligible(rec.se)
+			log2("[olr_trader_runs]   %s id=%d %s on %s: %d parts, %.1f points, haul=%s, could go=%s %s", rec.se:name(), id, rec.se:community(),
+				tostring(olr_smart_index.object_level(rec.se)), #rec.parts, points, tostring(haul ~= nil), tostring(ok), tostring(reason or ""))
+		end
+	end
+	log2("[olr_trader_runs] parts_census: %d parts on %d living stalkers, %d have a haul", total, owners, hauls)
+end
+
+function force_visit(key, id)
+	load_config()
+	local t = traders[key]
+	if not t then
+		log2("[olr_trader_runs] no trader '%s'", tostring(key))
+		return
+	end
+	if t.level ~= level.name() then
+		log2("[olr_trader_runs] force_visit: %s is on %s, you are on %s", key, t.level, level.name())
+		return
+	end
+	local sim = alife()
+	local se = id and sim:object(id)
+	if not id then
+		local here, best = db.actor:position(), 999
+		for oid in pairs(db.storage) do
+			local npc = oid ~= db.actor:id() and level.object_by_id(oid)
+			if npc and IsStalker(npc) and npc:alive() and ( npc:character_community() == "stalker" or npc:character_community() == "green" ) and not npc:is_talking() then
+				local o = sim:object(oid)
+				local d = npc:position():distance_to(here)
+				if o and d < best and not on_run(oid) and not olr_protected.is_no_offline_alife_obj(o:name())
+					and ( o.m_story_id == nil or o.m_story_id == NONE_SID or o.m_story_id == NONE_CL_SID )
+				then
+					se, best = o, d
+				end
+			end
+		end
+	end
+	if not ( se and se.online and IsStalker(se) and se:alive() ) then
+		log2("[olr_trader_runs] force_visit: no online loner found (id %s)", tostring(id))
+		return
+	end
+	local kind = t.kinds.gun and "wpn_ak74" or t.kinds.art and "af_medusa_dyn2d" or "mutant_krovosos_jaw"
+	local item = misc.spawn_to(kind, se)
+	misc.process_spawn()
+	if not item then
+		log2("[olr_trader_runs] force_visit: item did not spawn")
+		return
+	end
+	begin_run(se, t, { item.id }, true)
+	log2("[olr_trader_runs] force_visit: %s id=%d goes to %s, %d spots", se:name(), se.id, key, #t.spots)
+end
+
+function force_fuel(key)
+	load_config()
+	local e = errands[key]
+	if not e then
+		elog("force_fuel: no errand %s", tostring(key))
+		return
+	end
+	db.actor:disable_info_portion(FUEL_INFO[key])
+	elog("force_fuel %s: %s", key, tostring(start_fuel_runs(e)))
+end
+
+function fuel_state()
+	load_config()
+	local n = now()
+	local want = get_value(FUEL_KEY) or {}
+	for key, e in pairs(errands) do
+		local rec = want[key]
+		elog("%s fuelled=%s man=%s runners go in %s", key, tostring(has_alife_info(FUEL_INFO[key])), tostring(generator_man(e)),
+			type(rec) == "table" and string.format("%.1f h", ( rec.at - n ) / 3600) or "-")
+	end
+	for key, run in pairs(load_runs()) do
+		if run.kind == "fuel" then
+			local se = alife():object(tonumber(key))
+			local sid = se and se:smart_terrain_id()
+			local smart = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
+			elog("  %s %s id=%s stage=%s on %s smart=%s online=%s deadline_in=%.1f h", run.errand, run.who, key, tostring(run.stage),
+				se and tostring(olr_smart_index.object_level(se)) or "?", smart and smart:name() or "none", se and tostring(se.online) or "?", ( run.deadline - n ) / 3600)
+		end
+	end
+end
+
+function force_claim(giver_name, id)
+	load_config()
+	local giver = alife():object(giver_name)
+	if not giver then
+		elog("force_claim: no object %s", tostring(giver_name))
+		return
+	end
+	if not id then
+		local here, best = db.actor:position(), 999
+		for oid in pairs(db.storage) do
+			local npc = oid ~= db.actor:id() and level.object_by_id(oid)
+			local o = npc and IsStalker(npc) and npc:alive() and alife():object(oid)
+			if o and errand_ok(o) and npc:position():distance_to(here) < best then
+				id, best = oid, npc:position():distance_to(here)
+			end
+		end
+	end
+	if not id then
+		for _, sid in ipairs(olr_offline_task.cached_stalkers("stalker")) do
+			if eligible(alife():object(sid)) then
+				id = sid
+				break
+			end
+		end
+	end
+	elog("force_claim %s, killer %s: %s", giver_name, tostring(id), tostring(claim_reward(id, giver.id, giver_name, "lvl1")))
+end
+
+function force_shelf(key, section)
+	load_config()
+	local t = traders[key]
+	if not t then
+		log2("[olr_trader_runs] no trader '%s'", tostring(key))
+		return
+	end
+	log2("[olr_trader_runs] force_shelf %s at %s: %s", section, key, tostring(shelf_add(t, section, 0.8)))
+end
+
+function force_leave(id)
+	load_config()
+	local sim = alife()
+	local se = nil
+	if id then
+		se = sim:object(id)
+	else
+		local earned = get_value(EARNED_KEY) or {}
+		local best, best_money, seen, enough = -1, -1, 0, 0
+		for _, sid in ipairs(olr_offline_task.cached_stalkers("stalker")) do
+			local o = sim:object(sid)
+			if eligible(o) and not on_run(sid) then
+				local amount = earned[tostring(sid)] or 0
+				local money = money_of(o)
+				seen = seen + 1
+				if amount >= settings.leave_earned then enough = enough + 1 end
+				if amount > best or ( amount == best and money > best_money ) then se, best, best_money = o, amount, money end
+			end
+		end
+		log2("[olr_trader_runs] force_leave: %d eligible, %d earned at least %d, the top earned %d and has %d", seen, enough, settings.leave_earned, best, best_money)
+	end
+	if not se then
+		log2("[olr_trader_runs] force_leave: nobody found")
+		return
+	end
+	begin_leave(se)
+	log2("[olr_trader_runs] force_leave: %s id=%d money=%d", se:name(), se.id, money_of(se))
+end
+
+function say_leave(kind)
+	load_config()
+	line_counts = {}
+	local who = someone_else()
+	if kind == "talk" then say_talk(who)
+	elseif kind == "out" then say_about("olr_leave_out_", who)
+	elseif kind == "dead" then say_about("olr_leave_dead_", who)
+	elseif kind == "rookie" then say_about("olr_rookie_")
+	else say_solo(who) end
+	log2("[olr_trader_runs] lines: solo=%d talk=%d out=%d dead=%d rookie=%d", line_count("olr_leave_solo_"), line_count("olr_leave_talk_", "_a"),
+		line_count("olr_leave_out_"), line_count("olr_leave_dead_"), line_count("olr_rookie_"))
+end
+
+function finish_all()
+	load_config()
+	for key, run in pairs(load_runs()) do
+		run.sell_after = 0
+		run.deadline = 0
+		run.force = run.errand ~= nil
+	end
+	log2("[olr_trader_runs] finish_all: a fuel runner still on his first leg moves to the second; run it again")
+	runs_tick()
+end

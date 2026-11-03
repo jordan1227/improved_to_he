@@ -1,0 +1,106 @@
+-- [HE-PORT] A group on foot, docs/ALIFE_DESIGN.md Phase 3.5: online members of a group walk where their owner
+-- says, the leader first and the rest in his wake. An evaluator + action in the motivation planner, below
+-- combat, danger, wounds and talk, above the smart job. The owner decides everything: olr_patrols.walk_goal
+-- returns a vertex and a pace (walk, catch, hold), or nil when this NPC has nowhere to go.
+-- Hooks: modules.script (load_scheme), xr_logic.enable_generic_schemes (set_scheme),
+-- xr_motivator.addCommonPrecondition.
+
+evid = 18978
+actid = 18978
+
+local CHECK_MS = 1000
+local KICK_MS = 2000
+local STATES = { walk = "patrol", catch = "sprint", hold = "guard" }
+
+local building = false
+
+class "evaluator_walk" (property_evaluator)
+
+function evaluator_walk:__init(name, st) super(nil, name)
+	self.st = st
+end
+
+function evaluator_walk:evaluate()
+	local st = self.st
+	if not self.wounded_eva then
+		self.wounded_eva = self.object:motivation_action_manager():evaluator(xr_evaluators_id.sidor_wounded_base + 0)
+	end
+	-- the action needs "not wounded"; staying true while wounded would leave no plan
+	if self.wounded_eva:evaluate() then return false end
+	local now = time_global()
+	if now < ( st.next_check or 0 ) then return st.lvid ~= nil end
+	st.next_check = now + CHECK_MS
+	st.lvid, st.pace = olr_patrols.walk_goal(self.object)
+	return st.lvid ~= nil
+end
+
+class "action_walk" (action_base)
+
+function action_walk:__init(name, st) super(nil, name)
+	self.st = st
+end
+
+function action_walk:send()
+	local npc = self.object
+	self.sent = self.st.lvid
+	self.kick = time_global() + KICK_MS
+	utils.send_to_nearest_accessible_vertex(npc, self.st.lvid)
+end
+
+function action_walk:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	npc:set_path_type(game_object.level_path)
+	npc:set_detail_path_type(move.line)
+	npc:set_desired_position()
+	npc:set_desired_direction()
+	self.pace = nil
+	self.sent = nil
+end
+
+function action_walk:execute()
+	action_base.execute(self)
+	local st = self.st
+	if not st.lvid then return end
+	if st.pace ~= self.pace then
+		self.pace = st.pace
+		state_mgr.set_state(self.object, STATES[st.pace] or "patrol")
+	end
+	if st.pace ~= "hold" and ( st.lvid ~= self.sent or time_global() >= self.kick ) then
+		self:send()
+	end
+end
+
+function action_walk:finalize()
+	action_base.finalize(self)
+	self.st.lvid, self.st.next_check = nil, nil
+end
+
+function add_to_binder(npc, ini, scheme, section, st)
+	local manager = npc:motivation_action_manager()
+	manager:add_evaluator(evid, evaluator_walk("group_walk", st))
+
+	local action = action_walk("action_group_walk", st)
+	action:add_precondition(world_property(stalker_ids.property_alive, true))
+	action:add_precondition(world_property(stalker_ids.property_danger, false))
+	action:add_precondition(world_property(stalker_ids.property_enemy, false))
+	action:add_precondition(world_property(stalker_ids.property_anomaly, false))
+	building = true
+	xr_motivator.addCommonPrecondition(action)
+	building = false
+	action:add_precondition(world_property(evid, true))
+	action:add_effect(world_property(evid, false))
+	manager:add_action(actid, action)
+
+	manager:action(xr_actions_id.alife):add_precondition(world_property(evid, false))
+end
+
+function set_scheme(npc, ini, scheme, section)
+	xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
+end
+
+-- scheme actions (smart jobs) wait while he walks with the group
+function addCommonPrecondition(action)
+	if building then return end
+	action:add_precondition(world_property(evid, false))
+end

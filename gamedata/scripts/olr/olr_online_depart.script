@@ -1,6 +1,4 @@
 -- [HE-PORT]
-local CHECK_INTERVAL     = 90000
-local LEAVE_CHANCE       = 20
 local MAX_LEAVES_PER_TICK = 1
 local SMART_LEAVE_WINDOW = 600000
 local SMART_LEAVE_MAX    = 2
@@ -33,6 +31,12 @@ local allowed_comms = {
 
 local function now_ms()
 	return time_global()
+end
+
+-- [HE-PORT]
+local function comm_allowed(comm)
+	if comm == "military" and not olr_cfg.on("military_olr") then return false end
+	return allowed_comms[comm]
 end
 
 -- [HE-PORT]
@@ -201,9 +205,10 @@ local function apply_depart(se, mode)
 	end
 
 	local comm = migrate_comm(se)
-	if not allowed_comms[comm] and not allowed_comms[se:community()] then
+	if not comm_allowed(comm) and not comm_allowed(se:community()) then
 		return false
 	end
+	if not olr_faction_policy.may_migrate(se, se:community()) then return false end -- [HE-PORT]
 	if not olr_smart_index.ensure() then
 		return false
 	end
@@ -228,7 +233,11 @@ local function apply_depart(se, mode)
 	local pinned = olr_faction_policy.no_wander( level.name() )
 	local assigned = nil
 	if mode == "job_transfer" or pinned then
-		assigned = olr_smart_index.pick_name(comm, smart_name)
+		if olr_cfg.on("migrate_neighbours") then
+			assigned = olr_smart_index.pick_migration(se, comm, smart_name)
+		else
+			assigned = olr_smart_index.pick_name(comm, smart_name)
+		end
 		if pinned and not assigned then return false end
 	end
 	local ok = pcall(function()
@@ -256,6 +265,28 @@ local function apply_depart(se, mode)
 
 	mark_departed(se.id)
 	mark_smart_leave(smart_name)
+	return true
+end
+
+-- [HE-PORT] AlifeTactics rout (sivol_rout): move an online NPC to a chosen smart with the checks of
+-- apply_depart and the depart cooldown. Returns true, or false and the reason.
+function rout_reassign(se, smart_name)
+	if not se or not se:alive() then return false, "dead" end
+	if is_departed(se.id) then return false, "depart cooldown" end
+	if olr_protected and olr_protected.is_no_offline_alife_obj(se:name()) then return false, "protected" end
+	local comm = migrate_comm(se)
+	if not comm_allowed(comm) and not comm_allowed(se:community()) then return false, "community" end
+	if not olr_faction_policy.may_migrate(se, se:community()) then return false, "policy" end
+	if not olr_smart_index.ensure() then return false, "no index" end
+	local from = get_smart_name(se)
+	if not can_leave_smart(from) then return false, "leave limit" end
+	if olr_smart_index.is_locked(from) then return false, "smart locked" end
+	if not olr_smart_index.can_release(from) then return false, "cannot release" end
+	if olr_post_watch and not olr_post_watch.may_release(from, se.id) then return false, "post watch" end
+	if not olr_smart_index.attach_checked(se, smart_name) then return false, "attach failed" end
+	olr_offline_task.clear_wandering(se:name())
+	mark_departed(se.id)
+	mark_smart_leave(from)
 	return true
 end
 
@@ -291,7 +322,8 @@ local function try_depart_one(se, npc)
 	local strn_id = se:smart_terrain_id()
 	if not strn_id or strn_id == BAD_OBJ_ID then return false end
 	local comm = migrate_comm(se)
-	if not allowed_comms[comm] and not allowed_comms[se:community()] then return false end
+	if not comm_allowed(comm) and not comm_allowed(se:community()) then return false end
+	if not olr_faction_policy.may_migrate(se, se:community()) then return false end -- [HE-PORT]
 
 	local mode = pick_mode()
 	if mode == "rest_then_leave" then
@@ -307,7 +339,7 @@ end
 function update()
 	if not db.actor then return end
 	if device().precache_frame > 1 then return end
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then
+	if olr_cfg.sleep_paused() then
 		return
 	end
 
@@ -317,11 +349,11 @@ function update()
 	-- [HE-PORT]
 	if not started then
 		started = true
-		time_next_check = t + CHECK_INTERVAL
+		time_next_check = t + olr_cfg.get("depart_interval") * 1000
 		return
 	end
 	if t < time_next_check then return end
-	time_next_check = t + CHECK_INTERVAL
+	time_next_check = t + olr_cfg.get("depart_interval") * 1000
 
 	cleanup_departed()
 
@@ -343,7 +375,7 @@ function update()
 					if is_eligible_client(npc) then
 						local se = sim:object(id)
 						if se and se.online and se:alive() then
-							if math.random(1, 100) <= LEAVE_CHANCE then
+							if math.random(1, 100) <= olr_cfg.get("depart_chance") then
 								if try_depart_one(se, npc) then
 									left = left + 1
 								end

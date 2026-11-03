@@ -1,0 +1,102 @@
+-- [HE-PORT] Glut pricing, docs/ALIFE_DESIGN.md E3: a trader flooded with an artefact or mutant part pays
+-- and asks less for it, one who has been bought out asks and pays more, recovering over days.
+-- Works through the engine's trade price callbacks (engine_callbacks.script). Log: [olr_glut].
+-- fl olr_glut.report()                          every trader's counters and factors
+-- fl olr_glut.force("escape_trader","mutant_tail_dog",8)   as if that many were sold to him
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_glut"
+local ARGS = { glut_flood_at = 8, glut_short_at = 4, glut_low = 0.75, glut_high = 1.15, glut_halflife_h = 48 }
+
+local cfg = nil
+local state = nil
+local last_trader = nil -- the trade window asks prices before any deal
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for key, default in pairs(ARGS) do
+		cfg[key] = ini:line_exist("trader_settings", key) and ini:r_float("trader_settings", key) or default
+	end
+	return cfg
+end
+
+local function get_state()
+	if not state then state = get_value(KEY) or {} end
+	return state
+end
+
+-- artefact variants count as one thing; only artefacts and parts have a market
+local function family(section)
+	local prefix3, prefix7 = string.sub(section, 1, 3), string.sub(section, 1, 7)
+	if prefix3 ~= "af_" and prefix7 ~= "mutant_" then return nil end
+	return ( string.gsub(section, "_dyn%d+d$", "") )
+end
+
+local function current(rec, n)
+	return rec.c * math.pow(0.5, ( n - rec.t ) / ( config().glut_halflife_h * 3600 ))
+end
+
+local function factor_of(count)
+	local c = config()
+	if count >= 0 then
+		return 1 - ( 1 - c.glut_low ) * math.min(1, count / c.glut_flood_at)
+	end
+	return 1 + ( c.glut_high - 1 ) * math.min(1, -count / c.glut_short_at)
+end
+
+-- called on every price the trade window shows, so nothing here may be slow
+function factor(trader_name, section)
+	if not olr_cfg.on("glut") then return 1 end
+	last_trader = trader_name
+	local book = get_state()[trader_name]
+	if not book then return 1 end
+	local fam = family(section)
+	local rec = fam and book[fam]
+	if not rec then return 1 end
+	return factor_of(current(rec, timers.Get_Game_Seconds()))
+end
+
+function note(trader_name, section, amount, why)
+	if not olr_cfg.on("glut") then return end
+	local fam = family(section)
+	if not fam then return end
+	local n = timers.Get_Game_Seconds()
+	local st = get_state()
+	st[trader_name] = st[trader_name] or {}
+	local rec = st[trader_name][fam]
+	local count = ( rec and current(rec, n) or 0 ) + amount
+	if math.abs(count) < 0.25 then
+		st[trader_name][fam] = nil
+	else
+		st[trader_name][fam] = { c = count, t = n }
+	end
+	set_value(KEY, st)
+	log2("[olr_glut] %s %s %+d (%s): count %.1f, factor %.2f", trader_name, fam, amount, tostring(why), count, factor_of(count))
+end
+
+-- the actor sold (true) or bought (false) an item in a money trade
+function on_trade(item, sold)
+	local mode = get_value("tradein_npc")
+	log2("[olr_glut] on_trade %s sold=%s trader=%s mode=%s", type(item) == "userdata" and item:section() or "?", tostring(sold), tostring(last_trader), tostring(mode))
+	if not last_trader or type(item) ~= "userdata" then return end
+	if mode and ( string.find(mode, "_barter$") or string.find(mode, "_mod$") or string.find(mode, "_recipes$") ) then return end
+	note(last_trader, item:section(), sold and 1 or -1, "player")
+end
+
+function report()
+	local n = timers.Get_Game_Seconds()
+	log2("[olr_glut] on=%s flood at %d, short at %d, range %.2f-%.2f, half-life %d h", tostring(olr_cfg.on("glut")), config().glut_flood_at, config().glut_short_at,
+		config().glut_low, config().glut_high, config().glut_halflife_h)
+	for trader, book in pairs(get_state()) do
+		for fam, rec in pairs(book) do
+			local count = current(rec, n)
+			log2("[olr_glut]   %s %s count %.1f factor %.2f", trader, fam, count, factor_of(count))
+		end
+	end
+end
+
+function force(trader_name, section, amount)
+	note(trader_name, section, amount or 8, "forced")
+end

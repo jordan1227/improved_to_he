@@ -24,6 +24,8 @@ private:
     xr_vector<CObject*> m_nearest;
 
 public:
+    bool nlc_ability(LPCSTR name, float k, float* cur) override; // NLC: per-object ability factors
+
     static bool can_scan;
 
     u32 last_hit_frame;

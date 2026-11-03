@@ -1,0 +1,450 @@
+-- [HE-PORT] Reactive life, docs/ALIFE_DESIGN.md Phase 5: the Zone answers what happened in it.
+-- Moves people who already exist; creates nobody, except a stalker the Scorcher turned.
+-- Every decision is logged as [olr_reactive], whatever the outcome.
+-- fl olr_reactive.report()                          timers and counters
+-- fl olr_reactive.force_investigate("esc_lager","stalker")  a group heads for that smart now
+-- fl olr_reactive.force_scavenge("esc_lager")       mutants near that smart drift to it, day or night
+-- fl olr_reactive.force_gossip("dolg")              one gossip line about a move onto this level
+-- fl olr_reactive.force_chapter(4)                  the chapter 4 wave and expedition
+-- fl olr_reactive.force_scorcher()                  someone sets off for the Scorcher now
+-- fl olr_reactive.scorcher_finish()                 and is lost now
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_reactive"
+local NEAR_ACTOR = 165
+local SCAVENGERS = { "flesh", "tushkano", "rat" }
+local GOSSIP_GROUP = { green = "stalker", nebo = "stalker" }
+local GOSSIP_KINDS = { stalker = true, dolg = true, freedom = true, ecolog = true, killer = true, bandit = true }
+local WAVE_LINES = 3
+local WAVE_GAP = 25
+
+local cfg = nil
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("reactive") - 1 do
+		local _, key, val = ini:r_line("reactive", i, "", "")
+		cfg[key] = tonumber(val) or val
+	end
+	return cfg
+end
+
+local function rlog(fmt, ...)
+	log2("[olr_reactive] " .. fmt, ...)
+end
+
+local function now()
+	return timers.Get_Game_Seconds()
+end
+
+local function get_state()
+	return get_value(KEY) or { deaths = {}, smart_cd = {}, scav_cd = {} }
+end
+
+local function put_state(st)
+	set_value(KEY, st)
+end
+
+local function say(key, who, delay, subs)
+	local text = game.translate_string(key)
+	for name, value in pairs(subs or {}) do
+		text = string.gsub(text, "%$" .. name, function() return value end)
+	end
+	sak.send_tip(text, who, delay or 0, 15, "default", "pda_news", "gray")
+end
+
+local function say_line(prefix, who, delay, subs)
+	local key = olr_trader_runs.pick_line(prefix)
+	if key then
+		say(key, who or olr_trader_runs.other_name(), delay, subs)
+	else
+		rlog("no text for %s", prefix)
+	end
+	return key
+end
+
+local function where_of(smart)
+	return news_main.localized_where(olr_smart_index.object_level(smart), smart.position)
+end
+
+local function heard_here(lvl)
+	local region = olr_smart_index.region_levels()
+	return region ~= nil and region[lvl] == true and he_pda_model.get_pda() ~= nil
+end
+
+-- ---------------------------------------------------------------------------
+-- investigate: people die at a smart, others of their faction come to look
+-- ---------------------------------------------------------------------------
+local function send_group(name, comm)
+	olr_smart_index.ensure()
+	local smart = olr_smart_index.get_obj(name)
+	if not smart then
+		rlog("investigate %s: no such smart", tostring(name))
+		return 0
+	end
+	local lvl = olr_smart_index.get_level(name)
+	if not olr_smart_index.is_story_open(name) or olr_smart_index.is_locked(name) then
+		rlog("investigate %s: smart closed or locked", name)
+		return 0
+	end
+	local allowed = olr_smart_index.neighbour_levels(lvl)
+	allowed[lvl] = true
+	local sim = alife()
+	local ids = olr_offline_task.cached_stalkers(comm)
+	local sent, seen, refused = 0, 0, {}
+	for _, id in ipairs(ids) do
+		if sent >= config().investigate_group then break end
+		local se = sim:object(id)
+		local here = se and IsStalker(se) and se:alive() and olr_smart_index.object_level(se)
+		if here and allowed[here] then
+			seen = seen + 1
+			local ok, reason = olr_trader_runs.may_travel(se)
+			if ok and not olr_smart_index.rank_fits(name, comm, se:rank()) then
+				ok, reason = false, "rank"
+			end
+			if ok and se:smart_terrain_id() == smart.id then
+				ok, reason = false, "already_there"
+			end
+			if ok then
+				if olr_smart_index.attach_checked(se, name) then
+					sent = sent + 1
+					rlog("investigate %s: %s id=%d rank=%d from %s", name, se:name(), id, se:rank(), here)
+				else
+					refused.attach = ( refused.attach or 0 ) + 1
+				end
+			else
+				refused[reason] = ( refused[reason] or 0 ) + 1
+			end
+		end
+	end
+	local why = {}
+	for reason, n in pairs(refused) do table.insert(why, reason .. "=" .. n) end
+	rlog("investigate %s for %s: sent %d of %d nearby, list %d, refused %s", name, comm, sent, seen, #ids, table.concat(why, " "))
+	if sent > 0 and heard_here(lvl) then
+		say_line("olr_investigate_", nil, 0, { where = where_of(smart) })
+	end
+	return sent
+end
+
+local function note_investigate(st, name, comm)
+	local c = config()
+	local n = now()
+	local key = name .. "|" .. comm
+	local rec = st.deaths[key]
+	if not rec or n - rec.t > c.investigate_window_h * 3600 then
+		rec = { c = 0, t = n }
+		st.deaths[key] = rec
+	end
+	rec.c = rec.c + 1
+	rlog("death at %s, %s: %d of %d", name, comm, rec.c, c.investigate_deaths)
+	if rec.c < c.investigate_deaths then return end
+	if n < ( st.smart_cd[name] or 0 ) or n < ( st.inv_next or 0 ) then
+		rlog("investigate %s: on cooldown", name)
+		return
+	end
+	st.deaths[key] = nil
+	if send_group(name, comm) > 0 then
+		st.smart_cd[name] = n + c.investigate_smart_cd_h * 3600
+		st.inv_next = n + c.investigate_cd_h * 3600
+	end
+end
+
+-- ---------------------------------------------------------------------------
+-- scavenge: small mutants drift to fresh bodies, offline and unseen
+-- ---------------------------------------------------------------------------
+local function is_scavenger(section)
+	for _, prefix in ipairs(SCAVENGERS) do
+		if string.sub(section, 1, #prefix) == prefix then return true end
+	end
+	return false
+end
+
+local function is_night()
+	local h = level.get_time_hours()
+	return h >= 21 or h < 5
+end
+
+local function drift_to(pos, lv, gv, lvl)
+	local c = config()
+	local sim = alife()
+	local moved = 0
+	for _, id in ipairs(olr_offline_task.cached_monsters()) do
+		if moved >= c.scavenge_max then break end
+		local se = sim:object(id)
+		if se and IsMonster(se) and se:alive() and not se.online and is_scavenger(se:section_name())
+			and se.position:distance_to(pos) <= c.scavenge_radius
+			and se.position:distance_to(pos) > 15
+			and olr_smart_index.object_level(se) == lvl
+		then
+			sim:teleport_object(id, pos, lv, gv)
+			moved = moved + 1
+			rlog("scavenge: %s id=%d drifts to the bodies on %s", se:section_name(), id, lvl)
+		end
+	end
+	rlog("scavenge on %s: %d moved", lvl, moved)
+	return moved
+end
+
+local function unseen(lvl, pos)
+	return lvl ~= level.name() or pos:distance_to(db.actor:position()) > NEAR_ACTOR
+end
+
+local function note_scavenge(st, name, se, lvl)
+	if not is_night() then return end
+	if olr_cfg.camp_list()[name] then
+		rlog("scavenge: %s is a camp, no", name)
+		return
+	end
+	if not unseen(lvl, se.position) then
+		rlog("scavenge: bodies at %s are in the player's range, no", name)
+		return
+	end
+	local n = now()
+	if n < ( st.scav_cd[lvl] or 0 ) then return end
+	st.scav_cd[lvl] = n + config().scavenge_cd_h * 3600
+	drift_to(se.position, se.m_level_vertex_id, se.m_game_vertex_id, lvl)
+end
+
+-- ---------------------------------------------------------------------------
+-- deaths, online from the signal and offline from news_main
+-- ---------------------------------------------------------------------------
+local function on_death(se)
+	if not ( se and db.actor and olr_cfg.on("reactive") ) then return end
+	if se.id == db.actor:id() or not IsStalker(se) then return end
+	local sid = se:smart_terrain_id()
+	local smart = sid ~= BAD_OBJ_ID and alife():object(sid)
+	if not smart then
+		rlog("death of %s id=%d: no smart, ignored", se:name(), se.id)
+		return
+	end
+	local name = smart:name()
+	olr_smart_index.ensure()
+	local st = get_state()
+	if olr_cfg.on("investigate") then note_investigate(st, name, se:community()) end
+	if olr_cfg.on("scavenge") then note_scavenge(st, name, se, olr_smart_index.get_level(name)) end
+	put_state(st)
+end
+
+function on_npc_death(npc)
+	if npc then on_death(alife():object(npc:id())) end
+end
+
+function on_offline_death(victim)
+	on_death(victim)
+end
+
+-- ---------------------------------------------------------------------------
+-- gossip: olr_smart_index.attach_to reports every move between levels
+-- ---------------------------------------------------------------------------
+function on_move(se, smart_name, from)
+	if not ( db.actor and IsStalker(se) and olr_cfg.on("reactive") and olr_cfg.on("gossip") ) then return end
+	olr_smart_index.ensure()
+	local to = olr_smart_index.get_level(smart_name)
+	if not to or to == from or olr_trader_runs.on_run(se.id) then return end
+	local comm = se:community()
+	comm = GOSSIP_GROUP[comm] or comm
+	if not GOSSIP_KINDS[comm] then return end
+	local region = olr_smart_index.region_levels()
+	if not ( region and ( region[to] or region[from or ""] ) ) or not he_pda_model.get_pda() then return end
+	local st = get_state()
+	local n = now()
+	if n < ( st.gossip_next or 0 ) then return end
+	if math.random(100) > config().gossip_chance then return end
+	st.gossip_next = n + config().gossip_cd_h * 3600
+	put_state(st)
+	local smart = olr_smart_index.get_obj(smart_name)
+	local key = say_line("olr_gossip_" .. comm .. "_", nil, 0, { where = smart and where_of(smart) or "" })
+	rlog("gossip %s: %s %s -> %s, line %s", comm, se:name(), tostring(from), to, tostring(key))
+end
+
+-- ---------------------------------------------------------------------------
+-- chapter change: a wave on the net, and at the end the north opens
+-- ---------------------------------------------------------------------------
+local function send_expedition()
+	local sim = alife()
+	local sent, seen, no_target = 0, 0, 0
+	for _, id in ipairs(olr_offline_task.cached_stalkers("stalker")) do
+		if sent >= config().expedition_size then break end
+		local se = sim:object(id)
+		local here = se and IsStalker(se) and se:alive() and olr_smart_index.object_level(se)
+		if ( here == "l05_bar" or here == "l07_military" ) and olr_trader_runs.may_travel(se) then
+			seen = seen + 1
+			local target = olr_smart_index.pick_name("stalker", nil, nil, { l10_radar = true }, { no_territory = true, rank = se:rank() })
+			if target and olr_smart_index.attach_checked(se, target) then
+				sent = sent + 1
+				rlog("expedition: %s id=%d rank=%d from %s to %s", se:name(), id, se:rank(), here, target)
+			else
+				no_target = no_target + 1
+			end
+		end
+	end
+	rlog("expedition to Radar: %d sent, %d could go, %d found no open smart there", sent, seen, no_target)
+end
+
+local function chapter_wave(ch)
+	local prefix = "olr_chapter_" .. ch .. "_"
+	local n = olr_trader_runs.line_total(prefix)
+	rlog("chapter %d: wave of %d lines available", ch, n)
+	if n > 0 and he_pda_model.get_pda() then
+		local first = math.random(n)
+		for i = 0, math.min(n, WAVE_LINES) - 1 do
+			say(prefix .. ( ( first + i - 1 ) % n + 1 ), olr_trader_runs.other_name(), i * WAVE_GAP)
+		end
+	end
+	if ch == 4 then send_expedition() end
+end
+
+local function chapter_tick(st)
+	local ch = olr_cfg.chapter()
+	if st.chapter == nil then
+		st.chapter = ch
+		rlog("chapter on record: %d", ch)
+		return
+	end
+	if ch > st.chapter then
+		for i = st.chapter + 1, ch do chapter_wave(i) end
+		st.chapter = ch
+	end
+end
+
+-- ---------------------------------------------------------------------------
+-- the Scorcher takes the careless: a real loner says he is going, then falls silent
+-- ---------------------------------------------------------------------------
+local function schedule_scorcher(st, hours)
+	st.scorch_next = now() + hours * 3600
+end
+
+local function scorcher_start(st)
+	local sim = alife()
+	for _, id in ipairs(olr_offline_task.cached_stalkers("stalker")) do
+		local se = sim:object(id)
+		if se and IsStalker(se) and se:alive() and olr_smart_index.object_level(se) == "l07_military" and olr_trader_runs.may_travel(se) then
+			local c = config()
+			local who = olr_trader_runs.display_name(se)
+			st.scorch = { id = id, who = who, due = now() + math.random(c.scorcher_delay_min_h, c.scorcher_delay_max_h) * 3600 }
+			say_line("olr_scorcher_go_", who)
+			rlog("scorcher: %s id=%d (%s) sets off, lost in %.1f h", se:name(), id, who, ( st.scorch.due - now() ) / 3600)
+			return true
+		end
+	end
+	rlog("scorcher: nobody eligible on Military")
+	return false
+end
+
+local function scorcher_lost(st)
+	local rec = st.scorch
+	local sim = alife()
+	local se = sim:object(rec.id)
+	if not ( se and IsStalker(se) and se:alive() ) then
+		rlog("scorcher: %s died first, no message", rec.who)
+		st.scorch = nil
+		return
+	end
+	if se.online then
+		rlog("scorcher: %s is online, waiting", rec.who)
+		return
+	end
+	local name = olr_smart_index.any_on_level("l10_radar")
+	local smart = name and olr_smart_index.get_obj(name)
+	sim:release(se, true)
+	if smart then
+		local obj = sim:create("stalker_fresh_zombied", smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+		if obj then
+			local pk = get_netpk(obj)
+			local data = pk:get()
+			data.custom_data = "[smart_terrains]\n" .. name .. " = true\n"
+			pk:set(data)
+		end
+		rlog("scorcher: %s is lost, zombied id=%s at %s", rec.who, tostring(obj and obj.id), name)
+	else
+		rlog("scorcher: %s is lost, no Radar smart for the zombied", rec.who)
+	end
+	st.scorch = nil
+	say_line("olr_scorcher_lost_", nil, 0, { name = rec.who })
+end
+
+local function scorcher_tick(st)
+	if st.scorch then
+		if now() >= st.scorch.due then scorcher_lost(st) end
+		return
+	end
+	if olr_cfg.chapter() >= 4 then return end
+	local c = config()
+	if not st.scorch_next then
+		schedule_scorcher(st, math.random(c.scorcher_min_h, c.scorcher_max_h))
+		rlog("scorcher: first one in %.1f h", ( st.scorch_next - now() ) / 3600)
+		return
+	end
+	if now() < st.scorch_next then return end
+	if scorcher_start(st) then
+		schedule_scorcher(st, math.random(c.scorcher_min_h, c.scorcher_max_h))
+	else
+		schedule_scorcher(st, 12)
+	end
+end
+
+function update()
+	if not ( db.actor and olr_cfg.on("reactive") ) then return end
+	local st = get_state()
+	if olr_cfg.on("chapter_events") then chapter_tick(st) end
+	if olr_cfg.on("scorcher_losses") then scorcher_tick(st) end
+	put_state(st)
+end
+
+-- ---------------------------------------------------------------------------
+-- test helpers
+-- ---------------------------------------------------------------------------
+function report()
+	local st = get_state()
+	local n = now()
+	rlog("on=%s investigate=%s scavenge=%s gossip=%s chapter_events=%s scorcher=%s night=%s", tostring(olr_cfg.on("reactive")), tostring(olr_cfg.on("investigate")),
+		tostring(olr_cfg.on("scavenge")), tostring(olr_cfg.on("gossip")), tostring(olr_cfg.on("chapter_events")), tostring(olr_cfg.on("scorcher_losses")), tostring(is_night()))
+	rlog("chapter on record %s, now %d; next investigate in %.1f h; next gossip in %.1f h; next scorcher in %.1f h", tostring(st.chapter), olr_cfg.chapter(),
+		( ( st.inv_next or n ) - n ) / 3600, ( ( st.gossip_next or n ) - n ) / 3600, ( ( st.scorch_next or n ) - n ) / 3600)
+	for key, rec in pairs(st.deaths) do
+		rlog("deaths %s: %d, %.1f h ago", key, rec.c, ( n - rec.t ) / 3600)
+	end
+	if st.scorch then rlog("scorcher pending: %s id=%d, lost in %.1f h", st.scorch.who, st.scorch.id, ( st.scorch.due - n ) / 3600) end
+end
+
+function force_investigate(name, comm)
+	send_group(name, comm or "stalker")
+end
+
+function force_scavenge(name)
+	olr_smart_index.ensure()
+	local smart = olr_smart_index.get_obj(name)
+	if not smart then
+		rlog("force_scavenge: no smart %s", tostring(name))
+		return
+	end
+	drift_to(smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id, olr_smart_index.get_level(name))
+end
+
+function force_gossip(comm)
+	local key = say_line("olr_gossip_" .. ( comm or "stalker" ) .. "_", nil, 0, { where = news_main.localized_where(level.name(), db.actor:position()) })
+	rlog("force_gossip: line %s", tostring(key))
+end
+
+function force_chapter(ch)
+	chapter_wave(ch)
+end
+
+function force_scorcher()
+	local st = get_state()
+	scorcher_start(st)
+	put_state(st)
+end
+
+function scorcher_finish()
+	local st = get_state()
+	if st.scorch then
+		st.scorch.due = 0
+		scorcher_lost(st)
+		put_state(st)
+	else
+		rlog("scorcher_finish: nobody on the way")
+	end
+end

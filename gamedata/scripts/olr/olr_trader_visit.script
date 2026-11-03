@@ -1,0 +1,177 @@
+-- [HE-PORT] Zone careers, docs/ALIFE_DESIGN.md Phase 5b: an online NPC on a trader run walks to a spot
+-- by the trader, waits a while, then sells. An evaluator + action in the motivation planner, below
+-- combat, danger, wounds and talk, above his smart job. olr_trader_runs owns the runs and spots.
+-- Hooks: modules.script (load_scheme), xr_logic.enable_generic_schemes (set_scheme),
+-- xr_motivator.addCommonPrecondition.
+
+evid = 18976
+actid = 18976
+
+local CHECK_MS = 1500
+local KICK_MS = 2000
+local ARRIVE_DIST = 1.5
+local SETTLE_MS = 5000 -- a path this old that has ended means he got as near as he can
+local MS_PER_M = 1000 -- extra time per metre to walk, on top of visit_timeout_s
+
+local building = false
+
+class "evaluator_visit" (property_evaluator)
+
+function evaluator_visit:__init(name, st) super(nil, name)
+	self.st = st
+end
+
+function evaluator_visit:evaluate()
+	local st = self.st
+	if not self.wounded_eva then
+		self.wounded_eva = self.object:motivation_action_manager():evaluator(xr_evaluators_id.sidor_wounded_base + 0)
+	end
+	-- the action needs "not wounded"; staying true while wounded would leave no plan
+	if self.wounded_eva:evaluate() then return false end
+	local now = time_global()
+	if now < ( st.next_check or 0 ) then return st.lvid ~= nil or st.sit ~= nil end
+	st.next_check = now + CHECK_MS
+	st.lvid = olr_trader_runs.visit_spot(self.object)
+	st.sit = not st.lvid and olr_trader_runs.wait_spot(self.object) or nil
+	return st.lvid ~= nil or st.sit ~= nil
+end
+
+class "action_visit" (action_base)
+
+function action_visit:__init(name, st) super(nil, name)
+	self.st = st
+end
+
+function action_visit:walk(lvid)
+	local npc = self.object
+	npc:set_path_type(game_object.level_path)
+	npc:set_detail_path_type(move.line)
+	npc:set_desired_position()
+	npc:set_desired_direction()
+	utils.send_to_nearest_accessible_vertex(npc, lvid or self.st.lvid)
+	self.kick = time_global() + KICK_MS
+end
+
+-- nothing to do until tomorrow: to the fire, and down on the ground
+function action_visit:begin_sit()
+	self.sitting = true
+	self.seated = false
+	self.started = time_global()
+	self:walk(self.st.sit.lvid)
+	state_mgr.set_state(self.object, "patrol")
+end
+
+function action_visit:execute_sit()
+	local st, npc = self.st, self.object
+	if self.seated then return end
+	local now = time_global()
+	local dist = npc:position():distance_to(level.vertex_position(st.sit.lvid))
+	if dist <= ARRIVE_DIST or ( npc:path_completed() and now - self.started >= SETTLE_MS ) then
+		self.seated = true
+		state_mgr.set_state(npc, st.sit.pose, nil, nil, st.sit.look and { look_position = st.sit.look } or nil)
+	elseif now >= self.kick then
+		self:walk(st.sit.lvid)
+	end
+end
+
+function action_visit:initialize()
+	action_base.initialize(self)
+	local st, npc = self.st, self.object
+	self.sitting = false
+	if st.sit and not st.lvid then return self:begin_sit() end
+	if not st.lvid then return end
+	self:begin_walk()
+end
+
+function action_visit:begin_walk()
+	local st, npc = self.st, self.object
+	self.started = time_global()
+	local dist = npc:position():distance_to(level.vertex_position(st.lvid))
+	self.timeout = self.started + olr_trader_runs.visit_timeout_ms() + dist * MS_PER_M
+	if olr_cfg.log_census() then
+		log2("[olr_trader_visit] %s id=%d heads for vertex %d, %.0f m away", npc:name(), npc:id(), st.lvid, dist)
+	end
+	self:walk()
+	if st.wait_until then
+		self:stand()
+	else
+		state_mgr.set_state(npc, "patrol")
+	end
+end
+
+function action_visit:stand()
+	olr_trader_runs.visit_arrived(self.object)
+	local trader = olr_trader_runs.visit_trader(self.object)
+	state_mgr.set_state(self.object, "guard", nil, nil, trader and { look_object = trader } or nil)
+end
+
+function action_visit:finish(how)
+	local st = self.st
+	local npc = self.object
+	olr_trader_runs.visit_done(npc, string.format("%s, %.1f m from the spot", how, npc:position():distance_to(level.vertex_position(st.lvid))))
+	st.lvid, st.sit, st.wait_until, st.next_check = nil, nil, nil, nil
+end
+
+function action_visit:execute()
+	action_base.execute(self)
+	local st, npc = self.st, self.object
+	if st.sit and not st.lvid then
+		if not self.sitting then self:begin_sit() end
+		return self:execute_sit()
+	end
+	if not st.lvid then return end
+	if self.sitting then
+		-- he is dealing again
+		self.sitting = false
+		self:begin_walk()
+	end
+	local now = time_global()
+	if st.wait_until then
+		if now >= st.wait_until then self:finish("arrived") end
+		return
+	end
+	if now >= self.timeout then
+		self:finish("timed out")
+		return
+	end
+	local dist = npc:position():distance_to(level.vertex_position(st.lvid))
+	if dist <= ARRIVE_DIST or ( npc:path_completed() and now - self.started >= SETTLE_MS ) then
+		st.wait_until = now + olr_trader_runs.visit_wait_ms()
+		self:stand()
+	elseif now >= self.kick then
+		self:walk()
+	end
+end
+
+function action_visit:finalize()
+	action_base.finalize(self)
+end
+
+function add_to_binder(npc, ini, scheme, section, st)
+	local manager = npc:motivation_action_manager()
+	manager:add_evaluator(evid, evaluator_visit("trader_visit", st))
+
+	local action = action_visit("action_trader_visit", st)
+	action:add_precondition(world_property(stalker_ids.property_alive, true))
+	action:add_precondition(world_property(stalker_ids.property_danger, false))
+	action:add_precondition(world_property(stalker_ids.property_enemy, false))
+	action:add_precondition(world_property(stalker_ids.property_anomaly, false))
+	building = true
+	xr_motivator.addCommonPrecondition(action)
+	building = false
+	action:add_precondition(world_property(evid, true))
+	action:add_effect(world_property(evid, false))
+	manager:add_action(actid, action)
+
+	manager:action(xr_actions_id.alife):add_precondition(world_property(evid, false))
+end
+
+function set_scheme(npc, ini, scheme, section)
+	xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
+end
+
+-- scheme actions (smart jobs) wait while he is on his way to the trader
+function addCommonPrecondition(action)
+	if building then return end
+	action:add_precondition(world_property(evid, false))
+end

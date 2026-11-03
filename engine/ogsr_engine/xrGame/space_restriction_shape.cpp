@@ -12,6 +12,7 @@
 #include "level_graph.h"
 #include "space_restrictor.h"
 #include "graph_engine.h"
+#include "CustomZone.h"
 
 struct CBorderMergePredicate
 {
@@ -49,8 +50,9 @@ void CSpaceRestrictionShape::fill_shape(const CCF_Shape::shape_def& shape)
     switch (shape.type)
     {
     case 0: {
-        start.sub(Fvector().set(shape.data.sphere.P), Fvector().set(shape.data.sphere.R, 0.f, shape.data.sphere.R));
-        dest.add(Fvector().set(shape.data.sphere.P), Fvector().set(shape.data.sphere.R, 0.f, shape.data.sphere.R));
+        const float R = shape.data.sphere.R + m_margin;
+        start.sub(Fvector().set(shape.data.sphere.P), Fvector().set(R, 0.f, R));
+        dest.add(Fvector().set(shape.data.sphere.P), Fvector().set(R, 0.f, R));
         start.add(m_restrictor->Position());
         dest.add(m_restrictor->Position());
         break;
@@ -78,6 +80,14 @@ void CSpaceRestrictionShape::fill_shape(const CCF_Shape::shape_def& shape)
     }
     default: NODEFAULT;
     }
+    // NLC: the sphere case already has the margin in R
+    if (shape.type != 0)
+    {
+        start.x -= m_margin;
+        start.z -= m_margin;
+        dest.x += m_margin;
+        dest.z += m_margin;
+    }
     ai().level_graph().iterate_vertices(start, dest, CBorderMergePredicate(this));
 
 #ifdef DEBUG
@@ -88,6 +98,10 @@ void CSpaceRestrictionShape::fill_shape(const CCF_Shape::shape_def& shape)
 void CSpaceRestrictionShape::build_border()
 {
     m_border.clear();
+    // NLC: a zone touches a body by the body's own sphere and has power past its shape (effective_radius), so an NPC
+    // routed along the edge of the closed vertices is caught and pulled in. Keep him this much further out.
+    if (auto zone = smart_cast<CCustomZone*>(m_restrictor))
+        m_margin = READ_IF_EXISTS(pSettings, r_float, zone->cNameSect(), "restrict_margin", 1.5f);
     CCF_Shape* shape = smart_cast<CCF_Shape*>(m_restrictor->collidable.model);
     VERIFY(shape);
     xr_vector<CCF_Shape::shape_def>::const_iterator I = shape->Shapes().begin();
@@ -184,6 +198,12 @@ bool CSpaceRestrictionShape::inside(const Fsphere& sphere)
 {
     VERIFY(m_initialized);
     VERIFY(m_restrictor);
+    if (m_margin > 0.f)
+    {
+        Fsphere wider = sphere;
+        wider.R += m_margin;
+        return (m_restrictor->inside(wider));
+    }
     return (m_restrictor->inside(sphere));
 }
 

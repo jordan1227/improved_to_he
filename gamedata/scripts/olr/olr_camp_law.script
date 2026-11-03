@@ -1,0 +1,81 @@
+-- [HE-PORT] camp law, docs/ALIFE_DESIGN.md Phase 3: firing on someone who was not hostile
+-- inside a faction camp angers the hosts, whoever the victim is. Victims of the host's own
+-- community are left to the engine's goodwill rules.
+-- fl olr_camp_law.report()   the camps on this level and how far they are
+
+local WARNING_GOODWILL = -50
+local KILL_GOODWILL = -400
+local KILL_REPUTATION = -200
+
+local camps = nil
+local camps_level = nil
+local warned = {}
+
+local function camps_here()
+	local here = level.name()
+	if camps_level == here then return camps end
+	camps_level = here
+	camps = {}
+	local sim = alife()
+	for name, law in pairs(olr_cfg.camp_list()) do
+		local smart = sim:object(name)
+		if smart and olr_smart_index.object_level(smart) == here then
+			table.insert(camps, { name = name, host = law.host, radius = law.radius, pos = vector():set(smart.position) })
+		end
+	end
+	return camps
+end
+
+local function same_side(community, host)
+	if community == "green" or community == "nebo" then community = "stalker" end
+	return community == host
+end
+
+local function host_at(pos, community)
+	local list = camps_here()
+	for i = 1, #list do
+		local camp = list[i]
+		if pos:distance_to(camp.pos) <= camp.radius then
+			if same_side(community, camp.host) then return nil end
+			return camp.host
+		end
+	end
+	return nil
+end
+
+function on_npc_before_hit(npc, hit_data)
+	if not ( npc and hit_data and db.actor ) or hit_data.ignore_hit then return end
+	if not olr_cfg.on("camp_law") then return end
+	local who = hit_data.who
+	if not who and hit_data.who_id then who = level.object_by_id(hit_data.who_id) end
+	if not ( who and who:id() == db.actor:id() ) then return end
+	local id = npc:id()
+	if warned[id] or not npc:alive() then return end
+	if npc:relation(db.actor) == game_object.enemy or npc:nlc_relation_exempt() then return end
+	local host = host_at(npc:position(), npc:character_community())
+	if not host then return end
+	warned[id] = host
+	relation_registry.change_community_goodwill(host, db.actor:id(), WARNING_GOODWILL)
+	db.actor:give_game_news(game.translate_string("olr_camp_warning"), "ui\\ui_iconsTotal", Frect():set(0, 0, 83, 47), 0, 8000)
+end
+
+function on_npc_death(npc, who)
+	if not npc then return end
+	local id = npc:id()
+	local host = warned[id]
+	warned[id] = nil
+	if not ( host and who and db.actor and who:id() == db.actor:id() ) then return end
+	relation_registry.change_community_goodwill(host, db.actor:id(), KILL_GOODWILL)
+	db.actor:change_character_reputation(KILL_REPUTATION)
+end
+
+function report()
+	camps_level = nil
+	local list = camps_here()
+	local pos = db.actor:position()
+	log2("[olr_camp_law] on=%s camps on %s: %d", tostring(olr_cfg.on("camp_law")), level.name(), #list)
+	for i = 1, #list do
+		local camp = list[i]
+		log2("[olr_camp_law]   %s host=%s radius=%d you are %.0f m away", camp.name, camp.host, camp.radius, pos:distance_to(camp.pos))
+	end
+end

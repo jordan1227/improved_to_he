@@ -215,9 +215,12 @@ function ev_see_stuff:evaluate()
 					obj_owner[obj:id()]=nil
 				end
 				if (corpse_checked[obj:id()]==false) or (obj.parent_id and corpse_checked[obj.parent_id]==false) then return false end
+				local claimed_corpse = IsMonster(obj) and obj:alive()==false -- [HE-PORT] docs/PART_LOOT_DESIGN.md
+				if claimed_corpse and not sivol_part_claim.may_approach(npc, obj) then return false end
 				if (self.st.disabled_objects[obj:id()]~=true) and (obj:parent()==nil or obj_owner[obj:id()]==BAD_OBJ_ID or not IsStalker(obj:parent())) and 
 					(obj_owner[obj:id()]==nil or obj_owner[obj:id()]==BAD_OBJ_ID or obj_owner[obj:id()]==npc:id()) and npc:accessible(obj:level_vertex_id()) and
-					(db.actor==nil or db.actor:alive()==false or db.actor:position():distance_to_sqr(obj:position())>6) then
+					(db.actor==nil or db.actor:alive()==false or db.actor:position():distance_to_sqr(obj:position())>6
+						or (claimed_corpse and sivol_part_claim.is_owner(npc, obj))) then
 					local valuable,corpse=isValuable(npc, obj)
 					if valuable then 
 						local value=3000
@@ -228,7 +231,7 @@ function ev_see_stuff:evaluate()
 						
 						if corpse or not npc_has_same_wo(npc, obj) then
 							local max_dist=5+math.sqrt(value)
-							if busy then
+							if busy and not (claimed_corpse and sivol_part_claim.is_owner(npc, obj)) then
 								max_dist=max_dist/5
 							end
 							local dist=level.vertex_position(obj:level_vertex_id()):distance_to(npc:position())
@@ -267,6 +270,8 @@ end
 function ev_near_stuff:evaluate()
 	local npc=self.object
 	local gi=getGObject(self.st)
+	-- [HE-PORT] reaching the player he chases is not reaching the corpse (docs/PART_LOOT_DESIGN.md 6.8)
+	if gi and sivol_part_claim.is_chasing(npc:id(), gi:id()) then return false end
 	if gi then
 		if self.st.dest_lvid then
 			return npc:level_vertex_id()==self.st.dest_lvid
@@ -373,7 +378,15 @@ function act_grab_body:initialize()
 	local gi=getGObject(self.st)
 	self.st.block_search=true
 	if gi then
- 		self.tt=time_global()+6973
+ 		-- [HE-PORT] meet contact can interrupt the search every few seconds while the player stands near:
+		-- the deadline is per corpse, or he would start over each time
+		local gid = gi:id()
+		if self.st.grab_id ~= gid then
+			self.st.grab_id = gid
+			self.st.grab_due = time_global()+6973
+		end
+		self.tt=self.st.grab_due
+		if IsMonster(gi) then sivol_part_claim.plog("%s searches corpse %s, due in %d ms", npc:name(), gid, self.tt-time_global()) end
 		state_mgr.set_state(npc,"search",nil,nil,{look_object=gi})
 	else
 		self.st.dest_lvid=nil
@@ -390,15 +403,40 @@ function act_grab_body:execute()
 	end
 	if self.tt<time_global() then
 		if gi and gi:parent()==nil then
+			local is_mutant = IsMonster(gi) -- [HE-PORT] docs/PART_LOOT_DESIGN.md
+			-- the player is cutting it: wait, and let him finish
+			if is_mutant and monster_parts.is_harvesting(gi:id()) then
+				self.tt=time_global()+1000
+				return
+			end
+			-- he was paid or said go ahead while on his way: the part stays for the player
+			if is_mutant and sivol_part_claim.is_ceded(npc, gi:id()) then
+				clearGObject(self.st)
+				return
+			end
+			local part_sec, part_id, seen, pending = nil, nil, 0, {}
 			gi:iterate_inventory(function(d,item)
 					-- if item:section()~="bolt" then 
 					local sec = item:section()
+					seen = seen + 1
 					if sec~="bolt" and  not amk_offline_alife.check_bad_item(sec) then
 			if not npc_has_same_wo(npc, item) then
-				gi:transfer_item(item,npc)
+				if not is_mutant then
+						gi:transfer_item(item,npc)
+					elseif not strposx(sec,"arc_diary") then
+						-- transfer_item shrinks the inventory, so snapshot first. Diaries stay for the player.
+						table.insert(pending, item)
+					end
 			end
 					end
 				end, nil)
+		if is_mutant then
+			for _, item in ipairs(pending) do
+				if not part_sec and strposx(item:section(),"mutant_") then part_sec, part_id = item:section(), item:id() end
+				gi:transfer_item(item,npc)
+			end
+			monster_parts.on_npc_searched(npc, gi, part_sec, part_id, seen - #pending)
+		end
 		corpse_checked[gi:id()]=false
 		he_npc_wardrobe.strip_corpse(npc, gi) -- [HE-PORT]
 		end
@@ -449,6 +487,12 @@ function act_reach_item:initialize()
 			npc:set_body_state(move.standing)
 			npc:set_mental_state(anim.free)
 			npc:set_movement_type(move.walk)
+			-- [HE-PORT] how fast depends on how much it matters to him
+			local gear = IsMonster(gi) and sivol_part_claim.gear(npc, gi) or nil
+			if gear then
+				npc:set_movement_type(move.run)
+				if gear == "sprint" then npc:set_mental_state(anim.panic) end
+			end
 			npc:movement_enabled(true)
 			npc:set_sight(look.danger,nil,0)
 			self.st.dest_lvid=correct_position(gi,npc) --gi:level_vertex_id()
@@ -467,6 +511,24 @@ function act_reach_item:execute()
 	action_base.execute(self)
 	local npc=self.object
 	local gi=getGObject(self.st)
+	if gi and IsMonster(gi) then -- [HE-PORT] the player took his part and walks off (docs/PART_LOOT_DESIGN.md 6.8)
+		local chase = sivol_part_claim.chase_vertex(npc, gi)
+		if chase == "end" then
+			self.st.disabled_objects[gi:id()]=true
+			corpse_checked[gi:id()]=false
+			self.st.dest_lvid=nil
+			freeGObject(self.st)
+			return
+		elseif chase then
+			npc:set_movement_type(move.run)
+			if self.st.dest_lvid~=chase then
+				self.st.dest_lvid=chase
+				npc:set_dest_level_vertex_id(chase)
+			end
+			self.ct=time_global()
+			return
+		end
+	end
 	if gi and gi:parent()~=nil then
 		-- ГГ забрал вкусность. Можно добавить наезд на ГГ.
 		self.st.dest_lvid=nil
@@ -521,6 +583,7 @@ function add_to_binder(object, char_ini, scheme, section, st)
 --		action:add_precondition(world_property(blowout_scheme.evid_anomaly,false))
 		action:add_precondition(world_property(blowout_scheme.evid_blowout,false))
 		if sivol_pulse_npc then action:add_precondition(world_property(sivol_pulse_npc.evid,false)) end
+		if sivol_rout then action:add_precondition(world_property(sivol_rout.evid,false)) end
 		action:add_precondition(world_property(evid_see_stuff,true))
 		action:add_precondition(world_property(evid_near_stuff,true))
 		action:add_precondition(world_property(evid_see_body,false))
@@ -538,6 +601,7 @@ function add_to_binder(object, char_ini, scheme, section, st)
 --		action:add_precondition(world_property(blowout_scheme.evid_anomaly,false))
 		action:add_precondition(world_property(blowout_scheme.evid_blowout,false))
 		if sivol_pulse_npc then action:add_precondition(world_property(sivol_pulse_npc.evid,false)) end
+		if sivol_rout then action:add_precondition(world_property(sivol_rout.evid,false)) end
 		action:add_precondition(world_property(evid_see_stuff,true))
 		action:add_precondition(world_property(evid_see_body,true))
 		action:add_precondition(world_property(evid_near_stuff,true))
@@ -556,6 +620,7 @@ function add_to_binder(object, char_ini, scheme, section, st)
 --		action:add_precondition(world_property(blowout_scheme.evid_anomaly,false))
 		action:add_precondition(world_property(blowout_scheme.evid_blowout,false))
 		if sivol_pulse_npc then action:add_precondition(world_property(sivol_pulse_npc.evid,false)) end
+		if sivol_rout then action:add_precondition(world_property(sivol_rout.evid,false)) end
 		action:add_precondition(world_property(evid_see_stuff,true))
 		action:add_precondition(world_property(evid_near_stuff,false))
 		action:add_precondition(world_property(prop_idlecombat,true))

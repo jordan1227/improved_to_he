@@ -43,6 +43,8 @@ public:
     //////////////////////////////////////////////////////////////////////////
 
 public:
+    bool nlc_ability(LPCSTR name, float k, float* cur) override; // NLC: per-object ability factors
+
     CControllerPsyHit* m_psy_hit;
 
     ref_sound m_sound_aura_left_channel;

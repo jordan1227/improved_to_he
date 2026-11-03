@@ -6,6 +6,8 @@
 #include "hudmanager.h"
 #include "Entity.h"
 #include "actor.h"
+#include "ActorCondition.h" // NLC: god mode in KillEntity needs the full CActorCondition
+#include "Actor_Flags.h"
 #include "xrserver_objects_alife_monsters.h"
 #include "entity.h"
 #include "level.h"
@@ -248,6 +250,13 @@ void CEntity::net_Destroy()
 
 void CEntity::KillEntity(u16 whoID)
 {
+    // NLC: god mode (g_god): the actor cannot be killed, whatever asks for it (kill zones, script kill, health set below zero)
+    if (CActor* actor = smart_cast<CActor*>(this); actor && GodMode())
+    {
+        actor->conditions().health() = actor->conditions().max_health();
+        return;
+    }
+
     if (whoID != ID())
     {
 #ifdef DEBUG

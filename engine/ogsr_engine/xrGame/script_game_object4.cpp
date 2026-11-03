@@ -859,6 +859,20 @@ void CScriptGameObject::stalker_disp_base(float range, float maxr)
     stalker->m_fDispBase = asin(maxr / range);
 }
 
+float CScriptGameObject::nlc_step_k()
+{
+    CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(&object());
+    ASSERT_FMT(stalker, "[%s]: %s not a CAI_Stalker", __FUNCTION__, object().cName().c_str());
+    return stalker->nlc_step_k();
+}
+
+void CScriptGameObject::nlc_step_k(float k)
+{
+    CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(&object());
+    ASSERT_FMT(stalker, "[%s]: %s not a CAI_Stalker", __FUNCTION__, object().cName().c_str());
+    stalker->nlc_step_k(std::clamp(k, 0.f, 2.f));
+}
+
 void CScriptGameObject::DropItemAndThrow(CScriptGameObject* pItem, Fvector speed)
 {
     auto owner = smart_cast<CInventoryOwner*>(&object());

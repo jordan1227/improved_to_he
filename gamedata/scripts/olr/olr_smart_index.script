@@ -4,7 +4,8 @@ local name_to_obj = {}
 local name_to_level = {}
 local built = false
 local last_build = 0
-local BUILD_TTL = 120000
+local last_signature = ""
+local merged_names = {}
 -- [HE-PORT]
 local ACTOR_KEEPOUT = 260
 
@@ -75,6 +76,119 @@ local function smart_open(smart)
 	return true
 end
 
+-- [HE-PORT] the smart's own story gate (cond), read at pick time
+local function story_open(name)
+	local smart = live(name)
+	return smart_open(smart) and smart:is_gulag_available()
+end
+
+-- [HE-PORT]
+local function band_fits(level_name, preset_name, community, rank)
+	local preset = smart_terrain_params.get_preset(olr_cfg.chapter_preset(preset_name or olr_cfg.preset_for(level_name)))
+	if preset == false then return true end
+	local band = preset[community]
+	return band ~= nil and rank >= band[1] and rank <= band[2]
+end
+
+local function smart_preset(name)
+	local lname = name_to_level[name]
+	local borrowed = olr_cfg.preset_for(lname)
+	if borrowed ~= lname then return borrowed end
+	local smart = live(name)
+	return smart and smart.gparams.preset_name or lname
+end
+
+-- [HE-PORT] every smart on a level, nearest first
+function smarts_near(lname, x, z)
+	rebuild(false)
+	local list = {}
+	for name, lvl in pairs(name_to_level) do
+		local smart = lvl == lname and live(name)
+		if smart then
+			local dx, dz = smart.position.x - x, smart.position.z - z
+			table.insert(list, { name = name, d = dx * dx + dz * dz })
+		end
+	end
+	table.sort(list, function(a, b) return a.d < b.d end)
+	return list
+end
+
+-- [HE-PORT] nearest smart on a level, open or not, for places the story does not gate
+function nearest_on_level(lname, x, z)
+	rebuild(false)
+	local best, best_d = nil, nil
+	for name, lvl in pairs(name_to_level) do
+		local smart = lvl == lname and live(name)
+		if smart then
+			local dx, dz = smart.position.x - x, smart.position.z - z
+			local d = dx * dx + dz * dz
+			if not best_d or d < best_d then best, best_d = name, d end
+		end
+	end
+	return best
+end
+
+-- [HE-PORT] any smart on a level, closed to OLR or not; a story-open one if there is one
+function any_on_level(lname)
+	rebuild(false)
+	local any = nil
+	for name, lvl in pairs(name_to_level) do
+		if lvl == lname then
+			if story_open(name) then return name end
+			any = any or name
+		end
+	end
+	return any
+end
+
+-- [HE-PORT]
+function is_story_open(name)
+	return story_open(name)
+end
+
+function rank_fits(name, community, rank)
+	return band_fits(name_to_level[name], smart_preset(name), community, rank)
+end
+
+-- [HE-PORT] the top of a level's rank band for a faction, nil when the level sets none
+function level_rank_cap(level_name, community)
+	if not level_name then return nil end
+	local preset = smart_terrain_params.get_preset(olr_cfg.chapter_preset(olr_cfg.preset_for(level_name)))
+	if not preset then return nil end
+	local band = preset[community]
+	return band and band[2] or nil
+end
+
+-- [HE-PORT] for people who are already somewhere, not at a smart
+function level_rank_fits(level_name, community, rank)
+	return band_fits(level_name, nil, community, rank)
+end
+
+-- [HE-PORT] can this section's rank range live at this smart at all
+function section_fits(name, community, section)
+	local preset = smart_terrain_params.get_preset(olr_cfg.chapter_preset(smart_preset(name)))
+	if preset == false then return true end
+	local band = preset[community]
+	if not band then return false end
+	local ini = system_ini()
+	if ini:line_exist(section, "spec_rank") then
+		local range = ranks.get_rank_interval(ini:r_string(section, "spec_rank"))
+		return range ~= nil and range[1] <= band[2] and range[2] >= band[1]
+	end
+	local rank = ini:line_exist(section, "rank") and ini:r_s32(section, "rank") or 0
+	return rank >= band[1] and rank <= band[2]
+end
+
+function sections_fitting(name, community, sections)
+	local out = {}
+	for i = 1, #sections do
+		if section_fits(name, community, sections[i]) then
+			table.insert(out, sections[i])
+		end
+	end
+	return out
+end
+
 local function smart_accepts(smart, community, level_name)
 	if not smart_open(smart) then return false end
 	return olr_faction_policy.accepts(smart, community, level_name)
@@ -129,9 +243,13 @@ local function global_registry()
 end
 
 function rebuild(force)
-	if not force and built and (time_global() - last_build) < BUILD_TTL then
+	local signature = olr_cfg.closed_signature()
+	if not force and built and signature == last_signature and (time_global() - last_build) < olr_cfg.get("index_ttl") * 1000 then
 		return built
 	end
+	last_signature = signature
+	local timer = profile_timer()
+	timer:start()
 
 	local new_index = {}
 	local new_map = {}
@@ -157,10 +275,15 @@ function rebuild(force)
 
 	if any then
 		index = new_index
+		merged_names = {} -- [HE-PORT]
 		name_to_obj = new_map
 		name_to_level = new_level
 		built = true
 		last_build = time_global()
+		timer:stop()
+		if olr_cfg.log_census() then
+			log2("[olr_index] rebuilt in %.1f ms", timer:time() / 1000)
+		end
 		return true
 	end
 	return false
@@ -189,6 +312,8 @@ function get_names(community)
 	if not community then
 		return {}
 	end
+	-- [HE-PORT] merged once per index build, not per NPC
+	if merged_names[community] then return merged_names[community] end
 	local list
 	if community == "green" or community == "nebo" or community == "stalker"
 		or community == "dolg" or community == "military"
@@ -205,8 +330,10 @@ function get_names(community)
 				table.insert(filtered, n)
 			end
 		end
+		merged_names[community] = filtered
 		return filtered
 	end
+	merged_names[community] = list
 	return list
 end
 
@@ -261,7 +388,44 @@ local function pick_from(list, exclude_name)
 	return list[math.random(n)]
 end
 
-function pick_name(community, exclude_name, exclude_level, only_levels)
+-- [HE-PORT]
+local function pick_story_open(list, exclude_name, community, rank)
+	local n = #list
+	if n == 0 then return nil end
+	local start = math.random(n)
+	for i = 0, n - 1 do
+		local name = list[(start + i - 1) % n + 1]
+		if name ~= exclude_name and story_open(name) and not ( rank and not rank_fits(name, community, rank) ) then
+			return name
+		end
+	end
+	return nil
+end
+
+-- [HE-PORT]
+local function keep_levels(list, levels, drop)
+	local pool = {}
+	for i = 1, #list do
+		local inside = levels[ name_to_level[ list[ i ] ] or "" ] == true
+		if inside ~= ( drop == true ) then
+			table.insert( pool, list[ i ] )
+		end
+	end
+	return pool
+end
+
+-- [HE-PORT] most people pick a home level, some a visit
+local function territory_list(list, community)
+	local home, all = olr_cfg.territory(community)
+	if not home then return list end
+	if math.random(100) <= 80 then
+		local pool = keep_levels(list, home)
+		if #pool > 0 then return pool end
+	end
+	return keep_levels(list, all)
+end
+
+function pick_name(community, exclude_name, exclude_level, only_levels, opts)
 	local list = get_names(community)
 	if exclude_level then
 		local pool = {}
@@ -299,9 +463,67 @@ function pick_name(community, exclude_name, exclude_level, only_levels)
 		end
 		list = boosted
 	end
-	-- [HE-PORT]
-	list = drop_near_actor( list )
+	-- [HE-PORT] opts.home (olr_population.keep_home): a lair placing its own offspring on its own level, so the
+	-- frontier, the Cordon grace and the player's nearness do not apply
+	local home = opts and opts.home
+	local front = not home and olr_cfg.frontier_levels()
+	if front then
+		list = keep_levels( list, front )
+	end
+	if not ( opts and opts.no_territory ) then
+		list = territory_list( list, community )
+	end
+	local quiet = not home and olr_cfg.grace_blocked_levels()
+	if quiet then
+		list = keep_levels( list, quiet, true )
+	end
+	if not home then list = drop_near_actor( list ) end
+	if olr_cfg.on("story_gates") then return pick_story_open(list, exclude_name, community, opts and opts.rank) end
 	return pick_from(list, exclude_name)
+end
+
+-- [HE-PORT] one level over at most, inside the territory, fitting the rank
+function pick_migration(se, community, exclude_name)
+	local here = object_level(se)
+	if not here then return nil end
+	local allowed = neighbour_levels(here)
+	allowed[here] = true
+	local _, all = olr_cfg.territory(community)
+	if all and all[here] then
+		for lvl in pairs(allowed) do
+			if not all[lvl] then allowed[lvl] = nil end
+		end
+	end
+	local human = olr_faction_policy.is_stalker_comm(community)
+	local open
+	if olr_population.active() then -- [HE-PORT] migrants, native or OLR, go where the shared count is under target
+		open = olr_population.open_levels(human and 1 or 2)
+	else
+		open = olr_cfg.budget_open(human and 1 or 2, human and olr_squads.level_counts() or olr_monster_squads.level_counts())
+	end
+	if open then
+		for lvl in pairs(allowed) do
+			if not open[lvl] and lvl ~= here then allowed[lvl] = nil end
+		end
+	end
+	allowed = olr_steering.steer_levels(allowed, here, human) -- [HE-PORT]
+	return pick_name(community, exclude_name, nil, allowed, { no_territory = true, rank = se:rank() })
+end
+
+-- [HE-PORT] test helper: what a pick for this community could choose on a level right now
+function level_picks(community, lname)
+	local open, shut = {}, {}
+	local list = get_names(community)
+	for i = 1, #list do
+		if name_to_level[list[i]] == lname then
+			if story_open(list[i]) then
+				table.insert(open, list[i])
+			else
+				table.insert(shut, list[i])
+			end
+		end
+	end
+	return open, shut
 end
 
 -- [HE-PORT]
@@ -309,7 +531,7 @@ function pick_any_on_levels(allowed_levels, exclude_name)
 	rebuild(false)
 	local pool = {}
 	for name, lvl in pairs(name_to_level) do
-		if (not allowed_levels) or allowed_levels[lvl] then
+		if ((not allowed_levels) or allowed_levels[lvl]) and not olr_cfg.level_closed(lvl) then
 			if smart_open(live(name)) then
 				table.insert(pool, name)
 			end
@@ -317,6 +539,7 @@ function pick_any_on_levels(allowed_levels, exclude_name)
 	end
 	-- [HE-PORT]
 	pool = drop_near_actor( pool )
+	if olr_cfg.on("story_gates") then return pick_story_open(pool, exclude_name) end
 	return pick_from(pool, exclude_name)
 end
 
@@ -446,8 +669,18 @@ function count(community)
 end
 
 -- [HE-PORT]
+-- [HE-PORT] a smart that refuses him leaves him with none, and a stalker with none wanders the whole map
+function attach_checked(sobj, smart_name)
+	local smart = alife():object(smart_name)
+	if not ( smart and attach_to(sobj, smart_name) ) then return false end
+	if smart:enabled(sobj) then return true end
+	xrs_utils.clear_smart_terrain(sobj)
+	return false
+end
+
 function attach_to(sobj, smart_name)
 	if not (sobj and smart_name) then return false end
+	local from = object_level(sobj) -- [HE-PORT]
 	xrs_utils.clear_smart_terrain(sobj)
 	smart_terrain.unregister_npc(sobj)
 	if sobj.brain then
@@ -458,5 +691,41 @@ function attach_to(sobj, smart_name)
 		sobj:brain():can_choose_alife_tasks(true)
 		sobj:brain():update(true)
 	end
+	olr_reactive.on_move(sobj, smart_name, from) -- [HE-PORT]
 	return true
+end
+
+-- [HE-PORT] AlifeTactics rout: the nearest smart on the NPC's level that its community may use, with room
+-- for one more, and not closer to the enemy than the NPC is. Returns a smart name or nil.
+function pick_nearest_friendly(sobj, community, from_pos, enemy_pos)
+	if not (sobj and from_pos and enemy_pos) then return nil end
+	rebuild(false)
+	local lname = object_level(sobj)
+	if not lname then return nil end
+	local own = sobj:smart_terrain_id()
+	local sim = g_sim or alife()
+	local own_name = nil
+	if own and own ~= BAD_OBJ_ID and sim then
+		local o = sim:object(own)
+		own_name = o and o:name() or nil
+	end
+	local list = get_names(community)
+	local here_e = from_pos:distance_to(enemy_pos)
+	local gates = olr_cfg.on("story_gates")
+	local ranked = olr_cfg.on("rank_gates")
+	local best, best_d = nil, nil
+	for i = 1, #list do
+		local name = list[i]
+		if name ~= own_name and name_to_level[name] == lname and not is_locked(name) then
+			local smart = live(name)
+			if smart and smart_open(smart) and ( not gates or story_open(name) ) and ( not ranked or rank_fits(name, community, sobj:rank()) ) then
+				local pop, cap = population(name), capacity(name)
+				if not ( pop and cap and pop >= cap ) and smart.position:distance_to(enemy_pos) > here_e then
+					local d = from_pos:distance_to(smart.position)
+					if not best_d or d < best_d then best, best_d = name, d end
+				end
+			end
+		end
+	end
+	return best
 end

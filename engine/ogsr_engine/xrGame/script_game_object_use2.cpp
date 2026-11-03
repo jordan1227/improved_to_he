@@ -224,6 +224,26 @@ void CScriptGameObject::set_custom_panic_threshold(float value)
         monster->set_custom_panic_threshold(value);
 }
 
+bool CScriptGameObject::nlc_ability_k(LPCSTR name, float k)
+{
+    CBaseMonster* monster = smart_cast<CBaseMonster*>(&object());
+    if (!monster)
+        return false;
+    const bool ok = monster->nlc_ability(name, std::clamp(k, 0.1f, 5.f), nullptr);
+    if (!ok)
+        Msg("! [nlc_ability] %s has no ability '%s'", object().cName().c_str(), name);
+    return ok;
+}
+
+float CScriptGameObject::nlc_ability_get(LPCSTR name)
+{
+    CBaseMonster* monster = smart_cast<CBaseMonster*>(&object());
+    float cur = -1.f;
+    if (!monster || !monster->nlc_ability(name, 1.f, &cur))
+        return -1.f;
+    return cur;
+}
+
 void CScriptGameObject::set_default_panic_threshold()
 {
     CBaseMonster* monster = smart_cast<CBaseMonster*>(&object());

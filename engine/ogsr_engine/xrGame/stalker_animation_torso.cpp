@@ -42,24 +42,24 @@ MotionID CStalkerAnimationManager::no_object_animation(const EBodyState& body_st
 {
     const CAI_Stalker& stalker = object();
     const CStalkerMovementManager& movement = stalker.movement();
-    const xr_vector<CAniVector>& animation = m_data_storage->m_part_animations.A[body_state].m_torso.A[0].A;
 
+    // NLC: the idle / walk / run poses take the damaged torso clip when the stalker limps (nlc_torso_calm / nlc_torso_alert)
     if (eMentalStateFree == movement.mental_state() && eBodyStateStand == body_state)
     {
         if (standing())
-            return (animation[9].A[1]);
+            return (nlc_torso_calm(0, body_state, 9, 1));
 
-        return (animation[7 + movement.movement_type()].A[1]);
+        return (nlc_torso_calm(0, body_state, 7 + movement.movement_type(), 1));
     }
 
     if (standing())
-        return (animation[6].A[0]);
+        return (nlc_torso_alert(0, body_state, 6, 0));
 
     if (eMovementTypeWalk == movement.movement_type())
-        return (animation[6].A[2]);
+        return (nlc_torso_alert(0, body_state, 6, 2));
 
     VERIFY(eMovementTypeRun == movement.movement_type());
-    return (animation[6].A[3]);
+    return (nlc_torso_alert(0, body_state, 6, 3));
 }
 
 MotionID CStalkerAnimationManager::unknown_object_animation(u32 slot, const EBodyState& body_state) const
@@ -109,26 +109,24 @@ MotionID CStalkerAnimationManager::unknown_object_animation(u32 slot, const EBod
     case ObjectHandlerSpace::eWorldOperatorUnstrapping2Idle: return (animation_stand[12].A[1]);
     }
 
+    // NLC: the idle / walk / run poses take the damaged torso clip when the stalker limps; the aiming / firing states above do not
     if (eMentalStateFree == movement.mental_state() && eBodyStateStand == body_state)
     {
         if (standing())
-            return (animation[9].A[1]);
+            return (nlc_torso_calm(slot, body_state, 9, 1));
 
-        return (animation[7 + movement.movement_type()].A[1]);
+        return (nlc_torso_calm(slot, body_state, 7 + movement.movement_type(), 1));
     }
 
     if (standing())
-        return (animation[6].A[0]);
+        return (nlc_torso_alert(slot, body_state, 6, 0));
 
     if (eMovementTypeWalk == movement.movement_type())
-        return (animation[6].A[2]);
+        return (nlc_torso_alert(slot, body_state, 6, 2));
 
     VERIFY(eMovementTypeRun == movement.movement_type());
 
-    if (eBodyStateStand == body_state)
-        return (animation[6].A[3]);
-
-    return (animation[6].A[3]);
+    return (nlc_torso_alert(slot, body_state, 6, 3));
 }
 
 MotionID CStalkerAnimationManager::weapon_animation(u32 slot, const EBodyState& body_state)

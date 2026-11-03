@@ -1,0 +1,170 @@
+-- [HE-PORT] Offline hunts, docs/ALIFE_DESIGN.md Phase 5: AMK's offline fights lost their search radius in August, and
+-- bringing it back would also bring stalker-on-stalker kills and pickups on every tick. This searches for mutants only,
+-- a few times a game day, never on the player's level, and runs them through amk_offline_alife.on_monsters_found.
+-- Deaths reach news, reactive life and the alpha counters from there. Log: [olr_hunts].
+-- fl olr_offline_hunts.report()          when the next one is due, counts so far this session
+-- fl olr_offline_hunts.force()           one fight now on any level but this one, logged in full
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_hunt_next"
+local WOUNDED_KEY = "nlc.olr_hunt_wounded"
+local COMMS = { "stalker", "green", "dolg", "freedom", "ecolog", "killer", "bandit" }
+
+local cfg = nil
+local fights, dead_stalkers, dead_mutants = 0, 0, 0
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("offline_hunts") - 1 do
+		local _, key, val = ini:r_line("offline_hunts", i, "", "")
+		cfg[key] = tonumber(val) or val
+	end
+	return cfg
+end
+
+local function hlog(fmt, ...)
+	log2("[olr_hunts] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+local function usable(se)
+	if not ( se and IsStalker(se) and se.id ~= db.actor:id() and se:alive() ) or se.online then return false end
+	if se.m_story_id ~= nil and se.m_story_id ~= NONE_SID and se.m_story_id ~= NONE_CL_SID then return false end
+	if olr_trader_runs.has_story_name(se) then return false end
+	if olr_protected.is_quest_bound(se) then return false end -- [HE-PORT]
+	if se:health() <= 0.1 or not se:can_switch_online() then return false end
+	if olr_trader_runs.on_run(se.id) or olr_patrols.is_member(se.id) then return false end
+	-- the AMK fight reads the weapons from its own item list; someone born after its last scan has none yet
+	if not amk_offline_alife.items[se.id] then return false end
+	return not ( olr_protected.is_no_offline_alife_obj(se:name()) or he_quest_target_lock.is_locked_id(se.id) )
+end
+
+local function mutants_near(se, lvl, kept)
+	local c = config()
+	local sim = alife()
+	local out = {}
+	for _, id in ipairs(olr_offline_task.cached_monsters()) do
+		local m = sim:object(id)
+		if m and IsMonster(m) and m:alive() and not m.online and not kept[id] and not string.find(m:section_name(), c.hunt_skip, 1, true) and m.position:distance_to(se.position) <= c.hunt_radius
+			and olr_smart_index.object_level(m) == lvl and m:can_switch_online() and not olr_protected.is_protected_monster(m)
+		then
+			table.insert(out, { id = id, name = m:name() })
+			if #out >= c.hunt_max_monsters then break end
+		end
+	end
+	return out
+end
+
+local function friends_near(se, lvl)
+	local c = config()
+	local sim = alife()
+	local out = {}
+	for _, id in ipairs(olr_offline_task.cached_stalkers(se:community())) do
+		local f = id ~= se.id and sim:object(id)
+		if f and usable(f) and f.position:distance_to(se.position) <= c.hunt_friend_radius and olr_smart_index.object_level(f) == lvl then
+			table.insert(out, { id = id, name = f:name() })
+			if #out >= c.hunt_max_friends then break end
+		end
+	end
+	return out
+end
+
+-- amk_offline_alife calls this at each mutant's death: who gets what it carried
+function on_kill(monster, killer, team)
+	local taker = killer
+	if math.random(100) <= config().hunt_share_chance then
+		local others = {}
+		for _, t in pairs(team) do
+			if t.player.id ~= killer.id and t.health > 0.1 then table.insert(others, t.player) end
+		end
+		if #others > 0 then taker = others[math.random(#others)] end
+	end
+	if olr_alpha.killed_offline(monster.id, false) then
+		-- an alpha always has its part to carve
+		local carried = amk_offline_alife.items[monster.id]
+		local part = monster_parts.get_monster_part(monster:section_name())
+		if not ( carried and next(carried) ) and part and part ~= "" then
+			misc.spawn_to(part, taker)
+			misc.process_spawn()
+		end
+	end
+	hlog("%s id=%d killed by %s id=%d, %s takes what it had", monster:section_name(), monster.id, killer:name(), killer.id, taker:name())
+	return taker
+end
+
+-- nothing heals a stalker offline: those a fight left hurt get better a little at each hunt tick
+function note_wounded(se, friends)
+	local list = get_value(WOUNDED_KEY) or {}
+	list[tostring(se.id)] = true
+	for _, f in ipairs(friends) do list[tostring(f.id)] = true end
+	set_value(WOUNDED_KEY, list)
+end
+
+local function heal_tick()
+	local list = get_value(WOUNDED_KEY)
+	if not list then return end
+	local sim = alife()
+	for key in pairs(list) do
+		local se = sim:object(tonumber(key))
+		if not ( se and IsStalker(se) and se:alive() ) or se:health() >= 1 then
+			list[key] = nil
+		elseif not se.online then
+			amk_offline_alife.set_npc_health(se, math.min(1, se:health() + config().hunt_heal))
+		end
+	end
+	set_value(WOUNDED_KEY, list)
+end
+
+local function fight(forced)
+	local c = config()
+	local sim = alife()
+	local here = level.name()
+	local kept = news_encounters.tracked_ids()
+	local tried = 0
+	for _ = 1, c.hunt_tries do
+		local ids = olr_offline_task.cached_stalkers(COMMS[math.random(#COMMS)])
+		local se = #ids > 0 and sim:object(ids[math.random(#ids)])
+		if se and usable(se) then
+			tried = tried + 1
+			local lvl = olr_smart_index.object_level(se)
+			if lvl and lvl ~= here then
+				local monsters = mutants_near(se, lvl, kept)
+				if #monsters > 0 then
+					local friends = friends_near(se, lvl)
+					local size_a, died_a, size_b, died_b = amk_offline_alife.on_monsters_found(se, { hunt = true, damage_k = c.hunt_damage_k, friends = friends, monsters = monsters })
+					fights = fights + 1
+					note_wounded(se, friends)
+					dead_stalkers = dead_stalkers + ( died_a or 0 )
+					dead_mutants = dead_mutants + ( died_b or 0 )
+					hlog("fight on %s: %s id=%d rank=%d with %d friends vs %d mutants: %s of %s stalkers dead, %s of %s mutants dead", lvl, se:name(), se.id, se:rank(), #friends, #monsters,
+						tostring(died_a), tostring(size_a), tostring(died_b), tostring(size_b))
+					return true
+				end
+			end
+		end
+	end
+	if forced then hlog("nobody found a mutant, %d stalkers looked", tried) end
+	return false
+end
+
+function update()
+	-- [HE-PORT] AMK fights wound people too: the healing runs whenever either is on
+	local hunts = olr_cfg.on("offline_hunts")
+	if not ( db.actor and ( hunts or olr_amk_offline.active() ) ) then return end
+	local n = timers.Get_Game_Seconds()
+	local nxt = get_value(KEY)
+	if nxt and n < nxt then return end
+	set_value(KEY, n + 24 * 3600 / config().hunt_per_day)
+	heal_tick()
+	if nxt and hunts then fight() end
+end
+
+function report()
+	local n = timers.Get_Game_Seconds()
+	hlog("on=%s next in %.1f h; this session %d fights, %d stalkers and %d mutants dead", tostring(olr_cfg.on("offline_hunts")), ( ( get_value(KEY) or n ) - n ) / 3600, fights, dead_stalkers, dead_mutants)
+end
+
+function force()
+	hlog("force: %s", tostring(fight(true)))
+end

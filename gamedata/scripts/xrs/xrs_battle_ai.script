@@ -229,6 +229,16 @@ local nlc_mutant_acquire_ms = {
   [ "master"      ] = 150,
 }
 local nlc_mutant_acquire_reset = 3000 -- ms without engaging it: the same mutant is acquired again
+-- NLC AlifeTactics G2 (docs/ALIFE_TACTICS_DESIGN.md 4): delay before the first shot at a new human target (the
+-- player or a stalker) by the NPC's own rank; false = fire at once (the old behaviour). Not local: g_loadstring.
+nlc_human_acquire = true
+nlc_human_acquire_ms = {
+  [ "novice"      ] = 500,
+  [ "experienced" ] = 350,
+  [ "veteran"     ] = 220,
+  [ "master"      ] = 120,
+}
+nlc_human_acquire_reset = 3000 -- ms without engaging it: the same target is acquired again
 -- combat start against a mutant closer than this: body turning does not block firing, other reasons at most
 -- nlc_mutant_ready_cap ms (docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6g)
 local nlc_mutant_ready_dist = 10
@@ -369,13 +379,19 @@ function is_combat_ignore( npc, enemy )
 end
 
 
+-- NLC AlifeTactics G1 (docs/ALIFE_TACTICS_DESIGN.md 4): an NPC's skill uses its own rank. true = the old
+-- behaviour, where a target player who outranks the NPC lends it his rank
+nlc_rank_follows_actor = false
+
 function get_obj_rank_name( obj )
-  local enemy = get_target( obj )
-  if
-    enemy and enemy:is_actor()
-    and db.actor:character_rank() > obj:character_rank()
-  then
-    obj = db.actor
+  if nlc_rank_follows_actor then
+    local enemy = get_target( obj )
+    if
+      enemy and enemy:is_actor()
+      and db.actor:character_rank() > obj:character_rank()
+    then
+      obj = db.actor
+    end
   end
   return ranks.get_obj_rank_name( obj )
 end
@@ -388,6 +404,8 @@ function get_best_weapon( npc, active )
       return npc:item_in_slot( sl )
     end
   end
+  local sa = sivol_tactics.sidearm( npc ) -- NLC AlifeTactics: the pistol when the rifle is empty
+  if sa then return sa end
   local wm = nil -- [HE-PORT]
   return ( wm and wm:get_weapon() ) or npc:best_weapon()
 end
@@ -736,7 +754,7 @@ function evaluator_check_altcombat:reprioritize_targets()
     end
     if v.engine then
       if v.actor or v.weight < 1000 then
-        v.weight       = v.weight * combat_mult_engine
+        v.weight       = v.weight * ( sivol_tactics.engine_k() or combat_mult_engine )
         last_range     = v.range
         last_target_id = k
       elseif not v.actor then
@@ -752,6 +770,9 @@ function evaluator_check_altcombat:reprioritize_targets()
       end
     end
   end
+
+  -- NLC AlifeTactics (7): less focus on the player, the last shooter first, no flipping
+  sivol_tactics.adjust_weights( npc, targets_list[ npc:id() ], primary_target[ npc:id() ] )
 
   local last_weight = 1000
   for k, v in pairs( targets_list[ npc:id() ] ) do
@@ -1012,6 +1033,11 @@ function action_altcombat:_execute()
   local bw    = get_best_weapon( npc )
   local enemy = get_target( npc, true ) -- текущий враг
   if self:evade_grenades( bw, enemy ) then return end
+  -- NLC AlifeTactics: butt strike at a close human target, flank-and-stab on a lone zombie
+  if ( enemy or sivol_melee.busy( npc ) ) and sivol_melee.update( npc, enemy, self, bw ) then
+    reset_combat_situation( npc:id() )
+    return
+  end
 
   local deadman
   if not ( enemy or self:has_grenade() ) then
@@ -1126,12 +1152,16 @@ function action_altcombat:execute_situation()
           else
             max_time = 60
           end
-          lcp.ttl = time_global() + ( math.random( max_time ) * 1000 )
+          lcp.ttl = time_global() + ( math.random( max_time ) * 1000 * sivol_tactics.hold_k( npc ) )
         end
       else
         use_lcp = true
       end
     end
+  end
+  if self.nlc_force_move then
+    self.nlc_force_move = nil
+    use_lcp = false
   end
   if not use_lcp then
     if lcp then
@@ -1152,6 +1182,14 @@ function action_altcombat:execute_situation()
       last_choosed_path[ npc:id() ] = lcp
     end
     reset_last_time_send( npc )
+  end
+  -- NLC AlifeTactics M1: keep the pushing choice for a while
+  if self.nlc_hold_ms then
+    if lcp then
+      lcp.alg      = last_algorythm
+      lcp.inertion = time_global() + self.nlc_hold_ms
+    end
+    self.nlc_hold_ms = nil
   end
 
   self.covers:set_best_enemy( npc, be )
@@ -1230,7 +1268,14 @@ function action_altcombat:process_situation( be, bw )
 
     -- если враг не умеет стрелять (мутант)
     if not be_can_fire( be ) then
-      if lcp and lcp.situation == cur_situation then
+      if be:is_monster() and distance < 3.5 then
+        -- NLC AlifeTactics: a melee mutant within reach. The old rule kept the cover choice (and the hideout wait)
+        -- while it hit him ([sivol_tactics] melee hit ... sit=3 keep=true hideout=...): re-plan, at most every 1.5 s
+        if not self.nlc_move_t or self.nlc_move_t < time_global() then
+          self.nlc_move_t = time_global() + 1500
+          self.nlc_force_move = true
+        end
+      elseif lcp and lcp.situation == cur_situation then
         lcp.keep = true
       end
     end
@@ -1283,6 +1328,15 @@ function action_altcombat:process_situation( be, bw )
       time_hide[ npc:id() ] = nil
       cur_situation  = 9
       last_algorythm = "find_cover_2"
+      -- NLC AlifeTactics (5, 10): press the attack, or push an enemy who is reloading
+      local tact_alg, tact_hold = sivol_tactics.s9(
+        npc, be, self.st.is_camper,
+        ( not in_hideout( npc ) ) or ( lcp and lcp.ttl and lcp.ttl < time_global() )
+      )
+      if tact_alg then
+        last_algorythm = tact_alg
+        self.nlc_hold_ms = tact_hold
+      end
       self:set_transfer_and_combat( be, bw, npc_rank )
       choose_idle_scheme( npc, "attack" )
 
@@ -1328,7 +1382,7 @@ function action_altcombat:process_situation( be, bw )
         end
       end
       if not time_hide[ npc:id() ] then
-        time_hide[ npc:id() ] = time_global() + ( math.random( 7, 60 ) * 1000 )
+        time_hide[ npc:id() ] = time_global() + ( math.random( 7, 60 ) * 1000 * sivol_tactics.patience( npc ) )
       end
     end
     if time_hide[ npc:id() ] < time_global() then
@@ -1339,19 +1393,35 @@ function action_altcombat:process_situation( be, bw )
         )
       else
         cur_situation  = 14
-        last_algorythm = random_choice(
+        last_algorythm = sivol_tactics.pick( npc, "s14" ) or random_choice(
           "find_cover_1", "find_cover_3", "find_cover_4"
         )
       end
     else
       cur_situation  = 15
-      last_algorythm = random_choice(
+      last_algorythm = sivol_tactics.pick( npc, "s15" ) or random_choice(
         "find_cover_2", "find_cover_3", "find_cover_7", "find_cover_9",
         "find_cover_10", "find_cover_11", "keep"
       )
     end
     self:set_transfer_and_combat( be, bw, npc_rank )
     choose_idle_scheme( npc, "lost" )
+  end
+  -- NLC AlifeTactics: pinned down by fire from a shooter he cannot see
+  if cur_situation >= 10 then
+    local sup, sup_hold = sivol_tactics.suppress( npc, be )
+    if sup then
+      last_algorythm = sup
+      self.nlc_hold_ms = sup_hold
+    end
+  end
+  -- NLC AlifeTactics 15.1: a hurt fighter with a medkit or bandage backs into cover so rx_bandage can start
+  if cur_situation >= 4 then
+    local heal = sivol_tactics.heal_alg( npc ) or sivol_tactics.retreat_alg( npc )
+    if heal then
+      last_algorythm = heal
+      self.nlc_hold_ms = nil
+    end
   end
   return cur_situation, last_algorythm
 end
@@ -1560,6 +1630,7 @@ end
 
 
 function action_altcombat:finalize()
+  sivol_melee.abort( self.object ) -- NLC AlifeTactics: a melee mode does not outlive the combat action
   if self.grenadier_initialized then
     self.grenadier:finalize()
     self.grenadier_initialized = false
@@ -1616,7 +1687,7 @@ function friend_is_near( npc, obj )
         npc:alive() and npc:relation( obj ) == game_object.friend
         and npc:see_right_now( obj )
       )
-      or npc:position():distance_to( obj ) < 25
+      or npc:position():distance_to( obj:position() ) < 25
     then
       return true
     end
@@ -1676,7 +1747,7 @@ function notify_friends( npc, enemy, wounded )
         local obj = level.object_by_id( id )
         if
           obj and obj:alive() and (
-            obj:see( npc ) or npc:position():distance_to( obj ) < 10
+            obj:see( npc ) or npc:position():distance_to( obj:position() ) < 10
           )
         then
           notify_friend_of( npc, obj, enemy, wounded )
@@ -1729,11 +1800,13 @@ function process_wounded( npc, friend )
       if not t[ friend:id() ] then
         set_sound_event( npc, "dead" )
         t[ friend:id() ] = true
+        sivol_tactics.friend_lost( npc, friend )
       end
     elseif xr_wounded.is_wounded( friend ) then
       if not t[ friend:id() ] then
         set_sound_event( npc, "fr_hit" )
         t[ friend:id() ] = true
+        sivol_tactics.friend_lost( npc, friend )
       end
     end
   end
@@ -1766,6 +1839,8 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
     if not targets_list[ npc:id() ] then
       targets_list[ npc:id() ] = {}
     end
+    sivol_tactics.note_hit( npc, who, amount )
+    sivol_tactics.melee_hit_log( npc, who, amount )
     if ( who:is_actor() or who:is_stalker() ) and who:alive() then
       if not get_target_info( npc, who:id() ) then
         enable_memory_object( npc, who )
@@ -2163,6 +2238,7 @@ end
 
 function set_primary_target( npc, new_id )
   local id = primary_target[ npc:id() ]
+  if id ~= new_id then sivol_tactics.on_primary( npc, id, new_id ) end
   if id and id ~= new_id then
     local obj     = level.object_by_id( id )
     local timeout = remember_enemy
@@ -2731,7 +2807,20 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
   then
     type_of_fire = object.aim1
   elseif self:can_fire_to_enemy( enemy ) then
-    if enemy:is_actor() then
+    if nlc_human_acquire and ( enemy:is_actor() or enemy:is_stalker() ) then
+      self.aiming = false
+      local now = time_global()
+      if self.nlc_hacq_id ~= enemy:id() or now - ( self.nlc_hacq_last or 0 ) > nlc_human_acquire_reset then
+        self.nlc_hacq_id    = enemy:id()
+        self.nlc_hacq_until = now + ( nlc_human_acquire_ms[ npc_rank or get_obj_rank_name( npc ) ] or 350 )
+      end
+      self.nlc_hacq_last = now
+      if now < self.nlc_hacq_until then
+        type_of_fire = object.aim1
+      else
+        type_of_fire = object.fire1
+      end
+    elseif enemy:is_actor() then
       if self.aiming then
         if self.aiming < time_global() then
           type_of_fire = object.fire1
@@ -2994,8 +3083,8 @@ function action_altcombat:nlc_track_actor_fire( weapon, npc_pos, npc_dir, aim_po
   local head = db.actor:bone_position( "bip01_head" )
   local cam_info = string.format( "cam %s, head-cam %.2f m (up %.2f)",
     nlc_ray_blocked( npc, eye, cam, db.actor ) and "blocked" or "clear", head:distance_to( cam ), cam.y - head.y )
-  log2( "[xrs_aim] %s %s dist=%.1f bone=%s aim=%s (%s; %s) spread=%.2f deg aim_err=%.2f deg (%.2f m) fired=%d seen=%s src=%s aim_h=%.2f org_h=%.2f",
-    npc:name(), tostring( npc_rank ), distance, tostring( st and st.bone ), tostring( st and st.aim_bone ), rays, cam_info,
+  log2( "[xrs_aim] %s %s(real %s) dist=%.1f bone=%s aim=%s (%s; %s) spread=%.2f deg aim_err=%.2f deg (%.2f m) fired=%d seen=%s src=%s aim_h=%.2f org_h=%.2f",
+    npc:name(), tostring( npc_rank ), ranks.get_obj_rank_name( npc ), distance, tostring( st and st.bone ), tostring( st and st.aim_bone ), rays, cam_info,
     math.deg( npc:stalker_disp_base() ), err, math.tan( math.rad( err ) ) * distance, s.fired, tostring( npc:see( db.actor ) ), tostring( st and st.look_src ), aim_pos.y - db.actor:position().y, npc_pos.y - db.actor:position().y )
 end
 
@@ -3752,6 +3841,13 @@ function add_to_binder( object, ini, scheme, section, storage )
   if sivol_pulse_npc then
     action:add_precondition( world_property( sivol_pulse_npc.evid, false ) )
   end
+  if sivol_rout then
+    action:add_precondition( world_property( sivol_rout.evid, false ) )
+  end
+  -- NLC AlifeTactics 15.1: treatment first (rx_bandage's evaluator is false in a fight unless heal_in_combat)
+  if rx_bandage then
+    action:add_precondition( world_property( rx_bandage.evid_bandage, false ) )
+  end
   -- action:add_precondition(
   --   world_property( blowout_scheme.evid_blowout, false )
   -- )
@@ -3799,4 +3895,23 @@ function disable_scheme( npc, scheme )
   if st then
     st.enabled = false
   end
+end
+
+
+-- NLC AlifeTactics harness (sivol_tactics.who): situation, algorithm and the weight of the primary target
+function nlc_who( id )
+  local lcp = last_choosed_path[ id ]
+  local t   = targets_list[ id ]
+  local pt  = primary_target[ id ]
+  local rec = t and pt and t[ pt ]
+  return lcp and lcp.situation, lcp and lcp.alg, rec and rec.weight
+end
+
+-- NLC AlifeTactics diagnostic (sivol_tactics.melee_hit_log): what the combat code has chosen for this NPC
+function nlc_state( npc )
+  local lcp = last_choosed_path[ npc:id() ]
+  if not lcp then return "no path chosen" end
+  local ttl = lcp.ttl and string.format( "%.0f s", ( lcp.ttl - time_global() ) / 1000 ) or "-"
+  return string.format( "sit=%s alg=%s keep=%s ttl=%s hideout=%s target=%s", tostring( lcp.situation ), tostring( lcp.alg ),
+    tostring( lcp.keep ), ttl, tostring( ( in_hideout( npc ) ) ), tostring( primary_target[ npc:id() ] ) )
 end

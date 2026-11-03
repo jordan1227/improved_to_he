@@ -1,0 +1,884 @@
+-- sivol_melee.script
+-- Close combat for stalkers fighting in xrs_battle_ai (called from action_altcombat:_execute):
+--  * butt strike: a human target (player or stalker) within STRIKE_DIST of an armed fighter may get a rifle
+--    thrust (the knife clip norm_all_5_attack_1 played over the rifle pose, a script hit of type strike);
+--  * sneak stab: a target that has not noticed the fighter is circled to its back crouched and stabbed with a
+--    drawn knife (norm_all_5_attack_0, a wound hit with a large power), the player included;
+--  * zombie flank: a lone zombie (clsid.zombie_s) that has not noticed the fighter is circled to its back and
+--    stabbed; a zombie lying in fake death is gone for at once (if the stagger is still fresh) and stabbed.
+-- The knife is a wpn_knife created in the fighter's inventory when a stab mode starts and queued for removal
+-- (rx_ai.ids_to_remove) when it ends or the fighter dies, so nobody carries one around or drops one. If it
+-- does not appear in time the rifle clip is used. Gated by the faction key melee_k
+-- (misc/he_faction_character.ltx, 0 = never) and rank. Design record: docs/ALIFE_TACTICS_DESIGN.md section 16.
+--   g_loadstring sivol_melee.enabled = false        everything off
+--   g_loadstring sivol_melee.strike_enabled = false / sneak_enabled / flank_enabled
+--   g_loadstring sivol_melee.test_instant = true    sneak: no roll, no cooldown, ignores awareness (for tests)
+--   fl sivol_melee.force_sneak(npc_id, target_id)   start a sneak (target defaults to the player); it runs while
+--                                                   the NPC is in combat
+
+enabled = true
+strike_enabled = true
+sneak_enabled = true
+kite_enabled = true
+flank_enabled = true
+log_events = true
+log_rejects = true     -- why a flank or sneak was not started (once per pair and 5 s)
+test_instant = false
+
+local STRIKE_DIST     = 1.8
+local STRIKE_MAX_DIST = 2.4          -- the hit lands only if the target is still this close
+local CHECK_MS        = 400
+local STRIKE_COOL     = { 8000, 14000 }
+local STRIKE_HIT_MS   = 450
+local STRIKE_END_MS   = 1000
+local STRIKE_CHANCE   = { novice = 0.25, experienced = 0.4, veteran = 0.5, master = 0.6 }   -- per check, x melee_k
+STRIKE_POWER = { novice = 0.25, experienced = 0.3, veteran = 0.35, master = 0.4 }           -- hit power, strike type
+STRIKE_RELOAD_K = 1.5                                                                         -- chance factor while reloading
+local CLIP_STAND_BUTT = "norm_all_5_attack_1"
+local CLIP_CROUCH_BUTT = "cr_all_5_attack_1"
+local CLIP_STAND_STAB = "norm_all_5_attack_0"
+local CLIP_CROUCH_STAB = "cr_all_5_attack_0"
+
+local KNIFE           = "wpn_knife"
+local KNIFE_NEAR      = 7            -- m: the knife is drawn this close to the target
+local KNIFE_WAIT_MS   = 3500         -- no knife by then (or not in hand 1.5 s later): the rifle clip is used
+
+local FLANK_RANGE     = 14
+local FLANK_RANGE_DOWN = 10          -- a zombie in fake death: the stagger is short, so only close ones
+local DOWN_FRESH_MS   = 2000         -- ... and only while it has been down for less than this
+local FLANK_MIN       = 3
+local FLANK_TIMEOUT   = 14000
+local FLANK_CHANCE    = 0.5          -- x melee_k, once per zombie and fighter
+local FLANK_CHANCE_DOWN = 0.8
+local FLANK_COOL      = 20000
+local FLANK_BEHIND    = 1.3
+local STAB_DIST       = 1.8
+local STAB_HIT_MS     = 310
+local STAB_END_MS     = 1000
+local STAB_MAX        = 4
+STAB_POWER = 2.5                                                                              -- x STAB_K x (0.5..1.5)
+STAB_K = { novice = 1.5, experienced = 2.0, veteran = 2.5, master = 3.5 }                     -- rx_knife.ltx k_mutant
+
+local SNEAK_MIN       = 4
+local SNEAK_MAX       = 22
+local SNEAK_TIMEOUT   = 20000
+local SNEAK_COOL      = 45000        -- per fighter and target
+local SNEAK_STAB_DIST = 1.7
+local SNEAK_STAGE     = 6          -- m behind the target of the first waypoint
+local SNEAK_CHANCE    = { novice = 0.1, experienced = 0.2, veteran = 0.35, master = 0.5 }     -- per attempt, x melee_k
+SNEAK_ACTOR_K = 0.5                                                                           -- the player is attacked less often
+SNEAK_POWER_STALKER = 4.0                                                                     -- wound hit on an unaware stalker
+SNEAK_POWER_ACTOR = 1.6                                                                       -- on the player
+SNEAK_AWARE_K = 0.4                                                                           -- factor when the target turned in time
+local SNEAK_STEP_K    = 0.25       -- footstep volume factor while sneaking (engine nlc_step_k; crouch 0.1 x 0.25 is below every hearing threshold)
+local SNEAK_RANK_K    = { novice = 0.9, experienced = 1.0, veteran = 1.1, master = 1.2 }
+local FINISH_CHANCE   = { novice = 0.6, experienced = 0.75, veteran = 0.9, master = 1.0 }    -- finishing kill after a stab on an unaware stalker who is still alive
+local FINISH_DELAY_MS = 200        -- the wound hit is judged this long after it lands
+local FINISH_RETRY_K  = 0.3        -- added to the chance after the second thrust
+
+local CAM_ID = 94001                 -- camera effector id for the hit feedback on the player
+local CAM_ANMS = { "camera_effects\\hit_front_left.anm", "camera_effects\\hit_front_right.anm" }
+
+local BONES = { "bip01_spine1", "bip01_spine", "bip01_l_upperarm", "bip01_r_upperarm", "bip01_pelvis" }
+
+local state = {}       -- [npc id] = { mode = "strike" | "flank" | "sneak", ... }
+local next_check = {}
+local cool = {}
+local flanked = {}     -- ["npc id:zombie id"] = true
+local sneak_t = {}     -- ["npc id:target id"] = time before which no new sneak is tried
+local reject_t = {}    -- ["key"] = next time a reject is logged
+local knife_made = {}  -- [npc id] = true: a knife we created is (or will be) in his inventory
+local knife_req = {}   -- [npc id] = time before which no second knife is created
+local down_seen = {}   -- [zombie id] = when it was first seen in fake death
+
+local function mlog(fmt, ...)
+    if log_events then log2("[sivol_melee] " .. fmt, ...) end
+end
+
+local function reject(npc, target, why, now)
+    if not log_rejects then return end
+    local key = npc:id() .. ":" .. target:id() .. why
+    if reject_t[key] and now < reject_t[key] then return end
+    reject_t[key] = now + 5000
+    mlog("%s no melee on %s: %s", npc:name(), target:name(), why)
+end
+
+local function flat_dist(a, b)
+    local dx, dz = a.x - b.x, a.z - b.z
+    return math.sqrt(dx * dx + dz * dz)
+end
+
+local function look_at(npc, target)
+    npc:set_sight(look.fire_point, target:bone_position("bip01_neck"))
+end
+
+-- engine nlc_step_k (build nlc-3.589.169): quieter footsteps; harmless on an older exe
+local function set_step_k(npc, k)
+    pcall(function() npc:nlc_step_k(k) end)
+end
+
+local function done(npc, id, now, ms)
+    state[id] = nil
+    cool[id] = now + ms
+    npc:clear_animations()
+    set_step_k(npc, 1)
+end
+
+local function apply_hit(npc, target, htype, power, impulse, bone)
+    local hi = hit()
+    hi:bone(bone or BONES[math.random(#BONES)])
+    hi.type = htype
+    hi.power = power
+    hi.impulse = impulse
+    hi.draftsman = npc
+    hi.direction = target:center():sub(npc:center())
+    target:hit(hi)
+    if target:is_actor() then
+        level.add_cam_effector(CAM_ANMS[math.random(#CAM_ANMS)], CAM_ID, false, "")
+    end
+end
+
+-- the weapon stops firing while the clip plays (it keeps the last order otherwise)
+local function hold_fire(act, bw)
+    if act and bw then act:set_weapons_idle(bw) end
+end
+
+local function is_reloading(bw)
+    return bw and weapon_states and bw:get_hud_item_state() == weapon_states.reload
+end
+
+-- a zombie lying in fake death: pelvis as high as the head
+local function is_down(z)
+    return z:bone_position("bip01_pelvis").y + 0.2 > z:bone_position("bip01_head").y
+end
+
+local function behind_vertex(o, dist)
+    local d = o:direction()
+    local len = math.sqrt(d.x * d.x + d.z * d.z)
+    if len < 0.01 then return o:level_vertex_id() end
+    return level.vertex_in_direction(o:level_vertex_id(), vector():set(-d.x / len, 0, -d.z / len), dist or FLANK_BEHIND)
+end
+
+-- ---------------------------------------------------------------------------
+-- the knife of the stab modes
+-- ---------------------------------------------------------------------------
+local function request_knife(npc, s, now)
+    s.knife = true
+    s.knife_t0 = now
+    local id = npc:id()
+    if npc:object(KNIFE) then return end
+    if knife_req[id] and now < knife_req[id] then return end
+    knife_req[id] = now + 4000
+    alife():create(KNIFE, npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), id)
+    knife_made[id] = true
+end
+
+-- "none": no knife wanted or it never came (use the rifle clip), "far": not yet needed,
+-- "wait": being created or drawn, "ready": in the hand
+local function knife_state(npc, s, now, d)
+    if not s.knife then return "none" end
+    if d > KNIFE_NEAR then return "far" end
+    local k = npc:object(KNIFE)
+    if not k then
+        if now - s.knife_t0 > KNIFE_WAIT_MS then return "none" end
+        return "wait"
+    end
+    local a = npc:active_item()
+    if a and a:id() == k:id() then return "ready" end
+    if not s.drawn then
+        s.drawn = now
+        npc:set_item(object.aim1, k)
+    end
+    if now - s.drawn > 1500 then
+        npc:set_item(object.aim1, k)
+        s.drawn = now
+        if now - s.knife_t0 > KNIFE_WAIT_MS + 2000 then return "none" end
+    end
+    return "wait"
+end
+
+-- the knife we created goes away again (the fighter's rifle is re-equipped by the combat code)
+local function drop_knife(npc)
+    local id = npc:id()
+    if not knife_made[id] then return end
+    local k = npc:object(KNIFE)
+    if k then
+        table.insert(rx_ai.ids_to_remove, k:id())
+        knife_made[id] = nil
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- aftermath log: what the victim and the assassin do in the seconds after a stab (log_events)
+-- ---------------------------------------------------------------------------
+local diag = {}        -- [npc id] = { target, t0, n, ammo0, down_ammo }
+local DIAG_AT = { 500, 1000, 2000, 3500, 5500 }
+
+local function rifle_ammo(npc)
+    local r = npc:item_in_slot(2)
+    if r and r:is_weapon_magazined() then return r:get_ammo_in_magazine() end
+    return nil
+end
+
+local function diag_start(npc, target)
+    if not log_events then return end
+    diag[npc:id()] = { target = target:id(), t0 = time_global(), n = 1, ammo0 = rifle_ammo(npc) }
+end
+
+function poll(now)
+    for id, d in pairs(diag) do
+        local npc = level.object_by_id(id)
+        if not npc or not npc:alive() then
+            diag[id] = nil
+        elseif now - d.t0 >= DIAG_AT[d.n] then
+            local tg = level.object_by_id(d.target)
+            local alive = tg ~= nil and tg:alive()
+            local wnd = alive and xr_wounded.is_wounded(tg)
+            local ammo = rifle_ammo(npc)
+            local item = npc:active_item()
+            if (not alive or wnd) and d.down_ammo == nil then d.down_ammo = ammo or -1 end
+            local pt = xrs_battle_ai.get_target(npc)
+            mlog("%s aftermath +%.1f s: victim %s | item=%s rifle ammo=%s (at the stab %s%s) target=%s%s", npc:name(), (now - d.t0) / 1000,
+                tg and string.format("alive=%s wounded=%s hp=%.2f", tostring(alive), tostring(wnd), tg.health) or "gone",
+                item and item:section() or "-", tostring(ammo), tostring(d.ammo0),
+                (d.down_ammo and d.down_ammo >= 0 and ammo) and string.format(", fired since he went down %d", d.down_ammo - ammo) or "",
+                pt and pt:name() or "none", busy(npc) and " (melee)" or "")
+            d.n = d.n + 1
+            if d.n > #DIAG_AT then diag[id] = nil end
+        end
+    end
+end
+
+-- kind "sneak": the gait follows the distance to the target (speeds: [stalker_movement_speeds], step power:
+-- [stalker_step_manager], both in m_stalker.ltx; the footstep factor nlc_step_k on top):
+--   > SNEAK_RUN_FAR    standing run   3.6 m/s, power 1.0: out of hearing range at this distance
+--   > SNEAK_WALK_FAR   standing walk  1.8 m/s, power 0.2
+--   > SNEAK_CREEP_DIST crouch run     2.5 m/s, power 0.1: as quiet as the creep, low profile
+--   closer             crouch walk    1.1 m/s, power 0.1: the creep (a moving target is not crept up on: crouch run)
+-- "rush": the panicked sprint, standing, danger mental state for the last metres; "circle": crouched run to get
+-- behind an unaware target, standing when close
+local SNEAK_RUN_FAR    = 20
+local SNEAK_WALK_FAR   = 12
+local SNEAK_CREEP_DIST = 5
+local SNEAK_MOVING     = 0.5     -- m/s: a target moving faster than this is not crept up on
+
+local function approach(npc, lvid, d, kind, moving)
+    local gait
+    npc:set_desired_position()
+    npc:set_desired_direction()
+    npc:set_path_type(game_object.level_path)
+    npc:set_detail_path_type(move.curve)
+    if kind == "rush" then
+        npc:set_body_state(move.standing)
+        npc:set_mental_state(d > 3 and anim.panic or anim.danger)
+        npc:set_movement_type(move.run)
+    elseif kind == "sneak" then
+        npc:set_mental_state(anim.danger)
+        if d > SNEAK_RUN_FAR then
+            npc:set_body_state(move.standing)
+            npc:set_movement_type(move.run)
+            gait = "run"
+        elseif d > SNEAK_WALK_FAR then
+            npc:set_body_state(move.standing)
+            npc:set_movement_type(move.walk)
+            gait = "walk"
+        elseif d > SNEAK_CREEP_DIST or moving then
+            npc:set_body_state(move.crouch)
+            npc:set_movement_type(move.run)
+            gait = "crouch run"
+        else
+            npc:set_body_state(move.crouch)
+            npc:set_movement_type(move.walk)
+            gait = "creep"
+        end
+    else
+        npc:set_mental_state(anim.danger)
+        npc:set_body_state(d > 6 and move.crouch or move.standing)
+        npc:set_movement_type(d > 6 and move.run or move.walk)
+    end
+    utils.send_to_nearest_accessible_vertex(npc, lvid)
+    npc:set_sight(look.path_dir, nil, 0)
+    return gait
+end
+
+local function play_stab(npc, target)
+    npc:clear_animations()
+    npc:set_movement_type(move.stand)
+    npc:add_animation(npc:body_state() == move.crouch and CLIP_CROUCH_STAB or CLIP_STAND_STAB, true, false)
+    look_at(npc, target)
+end
+
+-- ---------------------------------------------------------------------------
+-- butt strike
+-- ---------------------------------------------------------------------------
+local function start_strike(npc, enemy, rank, now, act, bw)
+    local id = npc:id()
+    state[id] = { mode = "strike", target = enemy:id(), hit_at = now + STRIKE_HIT_MS, until_t = now + STRIKE_END_MS, rank = rank }
+    npc:clear_animations()
+    hold_fire(act, bw)
+    npc:add_animation(npc:body_state() == move.crouch and CLIP_CROUCH_BUTT or CLIP_STAND_BUTT, true, false)
+    look_at(npc, enemy)
+    mlog("%s butt strike at %s dist=%.1f rank=%s%s", npc:name(), enemy:name(), flat_dist(npc:position(), enemy:position()), rank,
+        is_reloading(bw) and " (reloading)" or "")
+end
+
+local function run_strike(npc, s, now, act, bw)
+    local id = npc:id()
+    local target = level.object_by_id(s.target)
+    if not target or not target:alive() then
+        done(npc, id, now, 3000)
+        return false
+    end
+    if s.hit_at and now >= s.hit_at then
+        s.hit_at = nil
+        if flat_dist(npc:position(), target:position()) <= STRIKE_MAX_DIST then
+            local power = (STRIKE_POWER[s.rank] or 0.3) * (0.5 + math.random())
+            apply_hit(npc, target, hit.strike, power, 40)
+            mlog("%s butt hits %s power=%.2f", npc:name(), target:name(), power)
+        else
+            mlog("%s butt misses %s", npc:name(), target:name())
+        end
+    end
+    if now >= s.until_t then
+        done(npc, id, now, math.random(STRIKE_COOL[1], STRIKE_COOL[2]))
+        return false
+    end
+    hold_fire(act, bw)
+    look_at(npc, target)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- sneak stab on a target that has not noticed the fighter
+-- ---------------------------------------------------------------------------
+local function start_sneak(npc, target, rank, now, d)
+    -- first a point well behind the target (out of its view cone), then the last metres
+    local s = { mode = "sneak", target = target:id(), t0 = now, lvid = behind_vertex(target), next_pos = now + 1000, rank = rank,
+        stage_lvid = behind_vertex(target, SNEAK_STAGE), phase = (d > 8) and "stage" or "close" }
+    request_knife(npc, s, now)
+    state[npc:id()] = s
+    set_step_k(npc, SNEAK_STEP_K)
+    mlog("%s sneaks on %s dist=%.1f rank=%s", npc:name(), target:name(), d, rank)
+end
+
+local function try_sneak(npc, enemy, mk, rank, now)
+    if not sneak_enabled then return false end
+    if npc.health < 0.6 then return false end
+    local np, ep = npc:position(), enemy:position()
+    local d = flat_dist(np, ep)
+    if d < SNEAK_MIN or d > SNEAK_MAX or math.abs(ep.y - np.y) > 2.5 then return false end
+    if not npc:see(enemy) then return false end
+    if enemy:see(npc) and not test_instant then return false end
+    local key = npc:id() .. ":" .. enemy:id()
+    if sneak_t[key] and now < sneak_t[key] and not test_instant then return false end
+    sneak_t[key] = now + SNEAK_COOL
+    local chance = (SNEAK_CHANCE[rank] or 0.2) * mk * (enemy:is_actor() and SNEAK_ACTOR_K or 1)
+    if test_instant then chance = 1 end
+    if math.random() >= chance then
+        reject(npc, enemy, string.format("roll (%.2f)", chance), now)
+        return false
+    end
+    if not npc:accessible(behind_vertex(enemy)) then
+        reject(npc, enemy, "no path behind", now)
+        return false
+    end
+    start_sneak(npc, enemy, rank, now, d)
+    return true
+end
+
+local function end_sneak(npc, s, now, why, ms, act, bw)
+    mlog("%s sneak ends: %s (%.1f s)", npc:name(), why, (now - s.t0) / 1000)
+    done(npc, npc:id(), now, ms or 6000)
+    npc:set_movement_type(move.stand)
+    -- the rifle is ordered back into the hand now, before the knife is released
+    if act and bw then act:set_weapons_idle(bw) end
+    drop_knife(npc)
+end
+
+-- a stab on an unaware stalker, judged FINISH_DELAY_MS after the hit: dead from it, a finishing kill (chance by rank),
+-- or one more thrust (the player is never judged)
+local function judge_stab(npc, s, target, now)
+    if not target:alive() then
+        mlog("%s: %s died of the stab", npc:name(), target:name())
+        return
+    end
+    local stabs = s.stabs or 1
+    local chance = (FINISH_CHANCE[s.rank] or 0.75) + (stabs > 1 and FINISH_RETRY_K or 0)
+    if math.random() < chance then
+        target:kill(npc)
+        mlog("%s finishes %s (chance %.2f, stab %d)", npc:name(), target:name(), chance, stabs)
+    elseif stabs < 2 then
+        s.hit_at = now + STAB_HIT_MS
+        s.stab_until = now + STAB_END_MS
+        play_stab(npc, target)
+        mlog("%s stabs %s again (hp %.2f)", npc:name(), target:name(), target.health)
+    else
+        mlog("%s: %s survived two stabs (hp %.2f)", npc:name(), target:name(), target.health)
+    end
+end
+
+local function run_sneak(npc, s, enemy, now, act, bw)
+    local target = level.object_by_id(s.target)
+    -- during the stab the target may already be down or dead: the clip and the judgement still run
+    if not target or (not s.stab_until and (not target:alive() or xr_wounded.is_wounded(target))) then
+        end_sneak(npc, s, now, "target gone", 3000, act, bw)
+        return false
+    end
+    if now - s.t0 > SNEAK_TIMEOUT and not s.stab_until then
+        end_sneak(npc, s, now, "timeout", nil, act, bw)
+        return false
+    end
+    if npc.health < 0.5 or xr_wounded.is_wounded(npc) or npc:is_talking() then
+        end_sneak(npc, s, now, "hurt", nil, act, bw)
+        return false
+    end
+    if enemy and enemy:id() ~= target:id() and (enemy:is_actor() or enemy:is_stalker()) and not test_instant and not s.forced
+        and not s.stab_until then
+        end_sneak(npc, s, now, "another enemy", nil, act, bw)
+        return false
+    end
+    local d = flat_dist(npc:position(), target:position())
+    local ks = knife_state(npc, s, now, d)
+    if not s.knife or ks == "none" then hold_fire(act, bw) end
+    if s.stab_until then
+        if s.hit_at and now >= s.hit_at then
+            s.hit_at = nil
+            if d <= STAB_DIST + 0.6 then
+                local aware = target:see(npc)
+                local power = (target:is_actor() and SNEAK_POWER_ACTOR or SNEAK_POWER_STALKER) * (SNEAK_RANK_K[s.rank] or 1)
+                    * (0.9 + 0.2 * math.random()) * (aware and SNEAK_AWARE_K or 1)
+                apply_hit(npc, target, hit.wound, power, 20, "bip01_spine1")
+                mlog("%s backstab on %s power=%.2f%s", npc:name(), target:name(), power, aware and " (target turned)" or "")
+                s.stabs = (s.stabs or 0) + 1
+                if not target:is_actor() then
+                    if s.stabs == 1 then diag_start(npc, target) end
+                    -- a target that noticed him in time is only wounded; the second thrust is always judged
+                    if not aware or s.stabs > 1 then s.judge_at = now + FINISH_DELAY_MS end
+                end
+            else
+                mlog("%s backstab misses %s", npc:name(), target:name())
+            end
+        end
+        if s.judge_at and now >= s.judge_at then
+            s.judge_at = nil
+            judge_stab(npc, s, target, now)
+        end
+        if now >= s.stab_until then
+            end_sneak(npc, s, now, "stabbed", 20000, act, bw)
+            return false
+        end
+        look_at(npc, target)
+        return true
+    end
+    if target:see(npc) and d > 2.5 and not test_instant and not s.forced then
+        end_sneak(npc, s, now, "spotted", 15000, act, bw)
+        return false
+    end
+    if d <= SNEAK_STAB_DIST then
+        if ks == "wait" then
+            look_at(npc, target)
+            return true
+        end
+        s.hit_at = now + STAB_HIT_MS
+        s.stab_until = now + STAB_END_MS
+        play_stab(npc, target)
+        return true
+    end
+    if now >= s.next_pos then
+        s.next_pos = now + 1000
+        s.lvid = behind_vertex(target)
+        s.stage_lvid = behind_vertex(target, SNEAK_STAGE)
+    end
+    -- how fast does the target move? a creep (1.1 m/s) cannot close on a walker
+    if not s.tp_t or now - s.tp_t >= 700 then
+        local tp = target:position()
+        if s.tp then s.tspeed = flat_dist(tp, s.tp) * 1000 / (now - s.tp_t) end
+        s.tp, s.tp_t = vector():set(tp), now
+    end
+    local lv = s.lvid
+    if s.phase == "stage" then
+        if d < 7 or flat_dist(npc:position(), level.vertex_position(s.stage_lvid)) < 3 then
+            s.phase = "close"
+        else
+            lv = s.stage_lvid
+        end
+    end
+    local gait = approach(npc, lv, d, "sneak", (s.tspeed or 0) > SNEAK_MOVING)
+    if gait ~= s.gait then
+        s.gait = gait
+        mlog("%s sneak gait: %s (dist %.1f, target %.1f m/s)", npc:name(), tostring(gait), d, s.tspeed or 0)
+    end
+    return true
+end
+
+-- console test: start a sneak now, whatever the chance (target defaults to the player). It runs while the
+-- NPC is in combat; sivol_melee.test_instant = true also keeps it going when the target sees him.
+function force_sneak(npc_id, target_id)
+    local npc = npc_id and level.object_by_id(npc_id)
+    local target = target_id and level.object_by_id(target_id) or db.actor
+    if not (npc and target and npc:alive()) then
+        log2("[sivol_melee] force_sneak: no such NPC or target")
+        return false
+    end
+    start_sneak(npc, target, ranks.get_obj_rank_name(npc), time_global(), flat_dist(npc:position(), target:position()))
+    state[npc:id()].forced = true
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- zombie flank
+-- ---------------------------------------------------------------------------
+-- other monsters near the zombie make the stab a bad idea
+local function lone_zombie(npc, z)
+    local zp = z:position()
+    for o in npc:memory_visible_objects() do
+        local obj = o:object()
+        if obj and obj:id() ~= z:id() and obj:is_monster() and obj:alive() and obj:position():distance_to(zp) < 10 then
+            return false
+        end
+    end
+    return true
+end
+
+local function try_flank(npc, z, mk, now)
+    if not flank_enabled or not z:alive() then return false end
+    if npc.health < 0.7 then
+        reject(npc, z, "health", now)
+        return false
+    end
+    local down = is_down(z)
+    local ze = z:get_enemy()
+    local busy = ze ~= nil and ze:id() ~= npc:id()      -- fighting somebody else: its back is turned to us
+    local key = npc:id() .. ":" .. z:id() .. (down and ":down" or "")
+    if flanked[key] then return false end
+    local d = flat_dist(npc:position(), z:position())
+    if d > (down and FLANK_RANGE_DOWN or FLANK_RANGE) or d < FLANK_MIN then return false end
+    if down then
+        if not down_seen[z:id()] or now - down_seen[z:id()] > DOWN_FRESH_MS then
+            reject(npc, z, "down for too long", now)
+            return false
+        end
+    else
+        if z:see(npc) and d < 8 and not busy then
+            reject(npc, z, "it sees me", now)
+            return false
+        end
+        if not lone_zombie(npc, z) then
+            reject(npc, z, "not alone", now)
+            return false
+        end
+    end
+    flanked[key] = true
+    local chance = (down and FLANK_CHANCE_DOWN or FLANK_CHANCE) * mk
+    if math.random() >= chance then
+        mlog("%s skips the %szombie %s (roll %.2f)", npc:name(), down and "downed " or "", z:name(), chance)
+        return false
+    end
+    local s = { mode = "flank", target = z:id(), t0 = now, lvid = down and z:level_vertex_id() or behind_vertex(z),
+        next_pos = now + 1000, stabs = 0, rank = ranks.get_obj_rank_name(npc), down = down, busy = busy }
+    request_knife(npc, s, now)
+    state[npc:id()] = s
+    if not (down or busy) then set_step_k(npc, SNEAK_STEP_K) end
+    mlog("%s %s zombie %s dist=%.1f%s", npc:name(), down and "goes for the downed" or "circles", z:name(), d, busy and " (it is busy)" or "")
+    return true
+end
+
+local function end_flank(npc, s, now, why)
+    mlog("%s flank ends: %s (stabs=%d, %.1f s)", npc:name(), why, s.stabs, (now - s.t0) / 1000)
+    done(npc, npc:id(), now, FLANK_COOL)
+    npc:set_movement_type(move.stand)
+    drop_knife(npc)
+end
+
+local function run_flank(npc, s, enemy, now, act, bw)
+    local z = level.object_by_id(s.target)
+    if not z or not z:alive() then
+        end_flank(npc, s, now, "zombie dead")
+        return false
+    end
+    if now - s.t0 > FLANK_TIMEOUT then
+        end_flank(npc, s, now, "timeout")
+        return false
+    end
+    if npc.health < 0.5 or xr_wounded.is_wounded(npc) or npc:is_talking() then
+        end_flank(npc, s, now, "hurt")
+        return false
+    end
+    if enemy and enemy:id() ~= z:id() and (enemy:is_actor() or enemy:is_stalker()) then
+        end_flank(npc, s, now, "another enemy")
+        return false
+    end
+    local d = flat_dist(npc:position(), z:position())
+    local down = is_down(z)
+    if s.down and not down then
+        -- it got up: back to the normal fight (the combat code re-equips the rifle, backs off and shoots)
+        end_flank(npc, s, now, "zombie got up")
+        return false
+    end
+    local ks = knife_state(npc, s, now, d)
+    if not s.knife or ks == "none" then hold_fire(act, bw) end
+    if s.stab_until then
+        if s.hit_at and now >= s.hit_at then
+            s.hit_at = nil
+            if d <= STAB_DIST + 0.6 then
+                local power = STAB_POWER * (STAB_K[s.rank] or 2) * (0.5 + math.random())
+                apply_hit(npc, z, hit.wound, power, 10)
+                mlog("%s stabs %s power=%.2f", npc:name(), z:name(), power)
+            end
+        end
+        if now >= s.stab_until then
+            s.stab_until = nil
+            npc:clear_animations()
+            if s.stabs >= STAB_MAX then
+                end_flank(npc, s, now, "enough")
+                return false
+            end
+        end
+        look_at(npc, z)
+        return true
+    end
+    if not down then
+        local ze = z:get_enemy()
+        if ze and ze:id() == npc:id() and d > 4 then
+            end_flank(npc, s, now, "it turned on me")
+            return false
+        end
+    end
+    if d <= STAB_DIST then
+        if ks == "wait" then
+            look_at(npc, z)
+            return true
+        end
+        s.stabs = s.stabs + 1
+        s.hit_at = now + STAB_HIT_MS
+        s.stab_until = now + STAB_END_MS
+        play_stab(npc, z)
+        return true
+    end
+    if now >= s.next_pos then
+        s.next_pos = now + 1000
+        s.lvid = down and z:level_vertex_id() or behind_vertex(z)
+    end
+    approach(npc, s.lvid, d, (s.down or s.busy) and "rush" or "circle")
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- kite: back away from a melee mutant that is coming for the fighter, shooting as he goes
+-- ---------------------------------------------------------------------------
+-- class -> the nearest distance at which he starts (slow zombies late, fast boars and dogs early)
+local KITE_CLS = { [clsid.zombie_s] = 2.5, [clsid.flesh_s] = 3, [clsid.boar_s] = 4, [clsid.dog_s] = 4, [clsid.pseudodog_s] = 4 }
+local KITE_MAX = 9
+local KITE_STOP = 15
+local KITE_TIMEOUT = 9000
+local KITE_COOL = 4000
+local KITE_STEP = 8
+local KITE_CHANCE = { novice = 0.25, experienced = 0.5, veteran = 0.75, master = 0.9 }     -- per approach
+
+-- a vertex up to KITE_STEP m away from the mutant that is clearly farther from it than the fighter is now
+local function kite_vertex(npc, mpos)
+    local np = npc:position()
+    local dx, dz = np.x - mpos.x, np.z - mpos.z
+    local len = math.sqrt(dx * dx + dz * dz)
+    if len < 0.1 then return nil end
+    local base = math.atan2(dz, dx)
+    for _, turn in ipairs({ 0, 0.5, -0.5, 1.0, -1.0 }) do
+        local a = base + turn
+        local lvid = level.vertex_in_direction(npc:level_vertex_id(), vector():set(math.cos(a), 0, math.sin(a)), KITE_STEP)
+        if npc:accessible(lvid) and flat_dist(level.vertex_position(lvid), mpos) > len + 3 then return lvid end
+    end
+    return nil
+end
+
+local function has_ammo(bw)
+    if not bw then return false end
+    if bw:is_weapon_magazined() then return bw:get_ammo_in_magazine() > 0 or bw:get_ammo_total() > 0 end
+    return true
+end
+
+local function try_kite(npc, z, rank, now)
+    if not kite_enabled or not z:alive() then return false end
+    local mind = KITE_CLS[z:clsid()]
+    if not mind or npc.health < 0.3 then return false end
+    local ze = z:get_enemy()
+    if not (ze and ze:id() == npc:id()) then return false end
+    local d = flat_dist(npc:position(), z:position())
+    if d < mind or d > KITE_MAX then return false end
+    local id = npc:id()
+    if math.random() >= (KITE_CHANCE[rank] or 0.5) then
+        cool[id] = now + 3000
+        return false
+    end
+    local lvid = kite_vertex(npc, z:position())
+    if not lvid then
+        reject(npc, z, "no room to back off", now)
+        cool[id] = now + 3000
+        return false
+    end
+    state[id] = { mode = "kite", target = z:id(), t0 = now, rank = rank, lvid = lvid, next_pos = now + 700 }
+    mlog("%s backs off from %s dist=%.1f rank=%s", npc:name(), z:name(), d, rank)
+    return true
+end
+
+local function end_kite(npc, s, now, why)
+    mlog("%s kite ends: %s (%.1f s)", npc:name(), why, (now - s.t0) / 1000)
+    done(npc, npc:id(), now, KITE_COOL)
+end
+
+local function run_kite(npc, s, enemy, now, act, bw)
+    local z = level.object_by_id(s.target)
+    if not z or not z:alive() then
+        end_kite(npc, s, now, "mutant dead")
+        return false
+    end
+    if now - s.t0 > KITE_TIMEOUT then
+        end_kite(npc, s, now, "timeout")
+        return false
+    end
+    if npc.health < 0.3 or xr_wounded.is_wounded(npc) or npc:is_talking() then
+        end_kite(npc, s, now, "hurt")
+        return false
+    end
+    if enemy and enemy:id() ~= z:id() and (enemy:is_actor() or enemy:is_stalker()) then
+        end_kite(npc, s, now, "another enemy")
+        return false
+    end
+    if not has_ammo(bw) then
+        end_kite(npc, s, now, "no ammo")
+        return false
+    end
+    local d = flat_dist(npc:position(), z:position())
+    if d > KITE_STOP then
+        end_kite(npc, s, now, "clear")
+        return false
+    end
+    if now >= s.next_pos then
+        s.next_pos = now + 700
+        local lv = kite_vertex(npc, z:position())
+        if lv then
+            s.lvid = lv
+        elseif d < 2.5 then
+            end_kite(npc, s, now, "cornered")
+            return false
+        end
+    end
+    npc:set_desired_position()
+    npc:set_desired_direction()
+    npc:set_path_type(game_object.level_path)
+    npc:set_detail_path_type(move.curve)
+    npc:set_mental_state(anim.danger)
+    npc:set_body_state(move.standing)
+    npc:set_movement_type(d < 6 and move.run or move.walk)
+    utils.send_to_nearest_accessible_vertex(npc, s.lvid)
+    act:set_combat_sight(z, bw)
+    act:set_weapons_fire(z, bw, false, s.rank)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- entry point: true = the fighter is busy with melee this update (the caller skips aiming and cover choice)
+-- act = the altcombat action (to stop the weapon), bw = the fighter's weapon
+-- ---------------------------------------------------------------------------
+function update(npc, enemy, act, bw)
+    if not enabled then return false end
+    local id = npc:id()
+    local now = time_global()
+    local s = state[id]
+    if s then
+        if s.mode == "strike" then return run_strike(npc, s, now, act, bw) end
+        if s.mode == "sneak" then return run_sneak(npc, s, enemy, now, act, bw) end
+        if s.mode == "kite" then return run_kite(npc, s, enemy, now, act, bw) end
+        return run_flank(npc, s, enemy, now, act, bw)
+    end
+    if now < (next_check[id] or 0) then return false end
+    next_check[id] = now + CHECK_MS
+    if enemy:clsid() == clsid.zombie_s then
+        local zid = enemy:id()
+        if is_down(enemy) then
+            down_seen[zid] = down_seen[zid] or now
+        else
+            down_seen[zid] = nil
+        end
+    end
+    if now < (cool[id] or 0) then return false end
+    if npc.health < 0.25 or xr_wounded.is_wounded(npc) or npc:is_talking() then return false end
+    local r = sivol_tactics.row(npc)
+    local mk = r and r.melee_k or 0
+    if mk <= 0 then return false end
+    if enemy:is_actor() or enemy:is_stalker() then
+        if not enemy:alive() or xr_wounded.is_wounded(enemy) then return false end
+        local w = npc:active_item()
+        if not (w and w:is_weapon()) or xrs_battle_ai.IsRPG(w) then return false end
+        local rank = ranks.get_obj_rank_name(npc)
+        local ep, np = enemy:position(), npc:position()
+        local d = flat_dist(np, ep)
+        if d >= STRIKE_DIST then
+            return try_sneak(npc, enemy, mk, rank, now)
+        end
+        if not strike_enabled or math.abs(ep.y - np.y) > 1.2 or not npc:see(enemy) then return false end
+        local chance = (STRIKE_CHANCE[rank] or 0.4) * mk * (is_reloading(bw) and STRIKE_RELOAD_K or 1)
+        if math.random() < chance then
+            start_strike(npc, enemy, rank, now, act, bw)
+            return true
+        end
+        return false
+    end
+    if enemy:clsid() == clsid.zombie_s and try_flank(npc, enemy, mk, now) then return true end
+    if enemy:is_monster() then
+        return try_kite(npc, enemy, ranks.get_obj_rank_name(npc), now)
+    end
+    return false
+end
+
+-- the fighter left the combat action (combat over, rout, vigil ...): a running melee mode ends, the knife goes
+function abort(npc)
+    local id = npc:id()
+    local s = state[id]
+    if not s then return end
+    mlog("%s %s ends: left combat", npc:name(), s.mode)
+    state[id] = nil
+    cool[id] = time_global() + 6000
+    npc:clear_animations()
+    set_step_k(npc, 1)
+    drop_knife(npc)
+end
+
+function forget(npc)
+    local id = npc:id()
+    state[id] = nil
+    next_check[id] = nil
+    cool[id] = nil
+    knife_req[id] = nil
+    diag[id] = nil
+    local prefix = id .. ":"
+    for key in pairs(flanked) do
+        if string.find(key, prefix, 1, true) == 1 then flanked[key] = nil end
+    end
+    for key in pairs(sneak_t) do
+        if string.find(key, prefix, 1, true) == 1 then sneak_t[key] = nil end
+    end
+    knife_made[id] = nil
+end
+
+-- the fighter dies with our knife in the inventory: queue it for removal so it is not looted
+function on_death(npc, who)
+    set_step_k(npc, 1)
+    drop_knife(npc)
+    state[npc:id()] = nil
+end
+
+-- the stab window runs even when the combat code has dropped the (wounded) victim from his targets
+function busy(npc)
+    local s = state[npc:id()]
+    return s ~= nil and s.mode == "sneak" and s.stab_until ~= nil
+end
+
+function status(id)
+    local s = state[id]
+    return s and ("MELEE(" .. s.mode .. ")") or ""
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_npc_net_destroy", fun = this.forget })
+    sm:subscribe({ signal = "on_npc_death", fun = this.on_death })
+end

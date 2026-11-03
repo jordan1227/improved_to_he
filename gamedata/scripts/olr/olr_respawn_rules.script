@@ -1,0 +1,173 @@
+-- [HE-PORT] Story and calendar rules for native respawners, docs/ALIFE_DESIGN.md section 10. The AMK respawner data is
+-- written into each save when the level is first visited, so the rules are applied at run time by the respawner's
+-- amk_name and reach old saves too. A rule is a list of stages ([rr_<name>_<n>] in olr_alife.ltx); the first whose
+-- chapter and game day fit is used, and with none the respawner waits. Hooks: se_respawn execute, create, spawn.
+-- Log: [olr_respawn].
+-- fl olr_respawn_rules.report()          every rule and the stage it is on now
+
+local INI_PATH = "misc\\olr_alife.ltx"
+
+local rules = nil
+
+local function rlog(fmt, ...)
+	log2("[olr_respawn] " .. fmt, ...)
+end
+
+local function names(s)
+	local t = {}
+	for name in string.gmatch(s or "", "[^,%s]+") do table.insert(t, name) end
+	return t
+end
+
+-- "a,40,b,60" or "a,b" as respawn_section entries
+local function spawns(s)
+	local t = names(s)
+	local out = {}
+	local k = 1
+	while k <= #t do
+		local p = tonumber(t[k + 1])
+		table.insert(out, { section = t[k], prob = p or 1 })
+		k = k + ( p and 2 or 1 )
+	end
+	return out
+end
+
+local function load()
+	if rules then return rules end
+	rules = {}
+	local ini = ini_file(INI_PATH)
+	if not ini:section_exist("respawn_rules") then return rules end
+	for i = 0, ini:line_count("respawn_rules") - 1 do
+		local _, name, count = ini:r_line("respawn_rules", i, "", "")
+		local stages = {}
+		for n = 1, tonumber(count) or 0 do
+			local sec = "rr_" .. name .. "_" .. n
+			if not ini:section_exist(sec) then abort("olr_respawn_rules: no [%s] in %s", sec, INI_PATH) end
+			local st = { key = n }
+			for j = 0, ini:line_count(sec) - 1 do
+				local _, k, v = ini:r_line(sec, j, "", "")
+				st[k] = v
+			end
+			for _, k in ipairs({ "min_chapter", "max_chapter", "min_day", "max_day", "max_count", "max_spawn", "extra_chance" }) do
+				st[k] = tonumber(st[k])
+			end
+			if st.sections then st.sections = spawns(st.sections) end
+			if st.sequence then
+				st.slots = {}
+				local all, seen = {}, {}
+				for _, slot in ipairs(names(st.sequence)) do
+					local alts = {}
+					for s in string.gmatch(slot, "[^/]+") do
+						table.insert(alts, s)
+						if not seen[s] then
+							seen[s] = true
+							table.insert(all, { section = s, prob = 1 })
+						end
+					end
+					table.insert(st.slots, alts)
+				end
+				st.sections = all
+			end
+			if st.idle_h then
+				local a, b = string.match(st.idle_h, "([%d%.]+)%s*,%s*([%d%.]+)")
+				st.idle = { tonumber(a) * 3600, tonumber(b) * 3600 }
+			end
+			if st.once then st.once = st.once == "true" end
+			table.insert(stages, st)
+		end
+		rules[name] = stages
+	end
+	return rules
+end
+
+-- day 1 is the day the game starts
+function game_day()
+	return math.floor(timers.Get_Game_Seconds() / 86400) + 1
+end
+
+local function stage_of(stages)
+	local ch, day = olr_cfg.chapter(), game_day()
+	for _, st in ipairs(stages) do
+		if ( not st.min_chapter or ch >= st.min_chapter ) and ( not st.max_chapter or ch <= st.max_chapter )
+			and ( not st.min_day or day >= st.min_day ) and ( not st.max_day or day <= st.max_day )
+		then
+			return st
+		end
+	end
+	return nil
+end
+
+local function rule_stage(obj)
+	if not ( obj.amk_name and olr_cfg.on("respawn_rules") ) then return nil, nil end
+	local stages = load()[obj.amk_name]
+	if not stages then return nil, nil end
+	return stages, stage_of(stages)
+end
+
+-- se_respawn:execute asks first: false while the rule has no stage for now
+function apply(obj)
+	local stages, st = rule_stage(obj)
+	if not stages then return true end
+	if not obj.rr_orig then
+		obj.rr_orig = { sections = obj.respawn_section, max_count = obj.max_count, max_spawn = obj.max_spawn, once = obj.spawn_once,
+			imin = obj.idle_spawn_min, imax = obj.idle_spawn_max }
+	end
+	local key = st and st.key or 0
+	if obj.rr_stage == key then return st ~= nil end
+	obj.rr_stage = key
+	if not st then
+		rlog("%s waits: no stage for chapter %d, day %d", obj.amk_name, olr_cfg.chapter(), game_day())
+		return false
+	end
+	local o = obj.rr_orig
+	obj.respawn_section = st.sections or o.sections
+	for _, v in ipairs(obj.respawn_section) do se_respawn.spawn_props(obj.sectSpawnProps, v.section) end
+	obj.max_count = st.max_count or o.max_count
+	obj.max_spawn = st.max_spawn or o.max_spawn
+	if st.once ~= nil then obj.spawn_once = st.once else obj.spawn_once = o.once end
+	if not obj.spawn_once then obj.already_once_spawned = nil end
+	local idle = st.idle or { o.imin, o.imax }
+	obj.idle_spawn_min, obj.idle_spawn_max = idle[1], idle[2]
+	local list = {}
+	for _, v in ipairs(obj.respawn_section) do table.insert(list, v.section) end
+	rlog("%s: stage %d (chapter %d, day %d): %s, up to %d, idle %.0f-%.0f h, once=%s%s", obj.amk_name, key, olr_cfg.chapter(), game_day(),
+		st.sequence or table.concat(list, ","), obj.max_count, obj.idle_spawn_min / 3600, obj.idle_spawn_max / 3600, tostring(obj.spawn_once),
+		st.extra_chance and string.format(", more than one at %d%%", st.extra_chance) or "")
+	return true
+end
+
+-- se_respawn:create: the section for the next one in a sequence, nil for the respawner's own roll
+function pick_section(obj)
+	local _, st = rule_stage(obj)
+	if not ( st and st.slots ) then return nil end
+	local slot = st.slots[math.min(#obj.spawned_obj + 1, #st.slots)]
+	return slot[math.random(#slot)]
+end
+
+-- olr_population: a respawner with a rule is counted but never waits for the level's target
+function governs(obj)
+	return obj.amk_name ~= nil and olr_cfg.on("respawn_rules") and load()[obj.amk_name] ~= nil
+end
+
+-- se_respawn ceiling_reached: a stage with skip_ceiling = true spawns even when the level's monster ceiling is full
+function skips_ceiling(obj)
+	local _, st = rule_stage(obj)
+	return st ~= nil and st.skip_ceiling == "true"
+end
+
+-- se_respawn:spawn: whether one more comes in the same visit
+function extra_ok(obj)
+	local _, st = rule_stage(obj)
+	if not ( st and st.extra_chance ) then return true end
+	return math.random(100) <= st.extra_chance
+end
+
+function report()
+	rlog("on=%s chapter=%d day=%d", tostring(olr_cfg.on("respawn_rules")), olr_cfg.chapter(), game_day())
+	for name, stages in pairs(load()) do
+		local st = stage_of(stages)
+		local obj = se_respawn.get_respawner_by_name(name)
+		rlog("  %s: stage %s of %d, %s, alive from it %s", name, st and tostring(st.key) or "none", #stages, obj and "respawner found" or "respawner not created yet",
+			obj and obj.spawned_obj and tostring(#obj.spawned_obj) or "-")
+	end
+end

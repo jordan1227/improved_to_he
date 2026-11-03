@@ -154,7 +154,7 @@ void CUITalkWnd::UpdateQuestions()
                 for (PHRASE_VECTOR::const_iterator it = m_pCurrentDialog->PhraseList().begin(); it != m_pCurrentDialog->PhraseList().end(); it++)
                 {
                     CPhrase* phrase = *it;
-                    AddQuestion(phrase->GetText(), phrase->GetID(), number);
+                    AddQuestion(m_pCurrentDialog->GetPhraseText(phrase->GetID()), phrase->GetID(), number); // NLC: player options honour script_text
                 }
             }
             else

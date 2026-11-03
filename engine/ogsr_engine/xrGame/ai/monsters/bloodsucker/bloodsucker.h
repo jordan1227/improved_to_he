@@ -17,6 +17,8 @@ public:
     CAI_Bloodsucker();
     virtual ~CAI_Bloodsucker();
 
+    bool nlc_ability(LPCSTR name, float k, float* cur) override; // NLC: per-object ability factors
+
     virtual void reinit();
     virtual void reload(LPCSTR section);
 

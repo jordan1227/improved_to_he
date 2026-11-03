@@ -1,11 +1,7 @@
 -- [HE-PORT]
-local SPAWN_INTERVAL      = 420000
-local MAX_MONSTERS_TOTAL  = 44
 local MIN_ACTOR_DIST      = 300
 local SAVE_KEY            = "olr_monster_squads.ids"
 -- [HE-PORT]
-local SPAWN_INTERVAL_LOW  = 200000
-local REGION_TARGET       = 16
 local REGION_SHARE        = 70
 local RECYCLE_BATCH       = 6
 
@@ -92,6 +88,7 @@ end
 
 local function pick_tier()
 	local w, m, s = tier_weights()
+	if not olr_cfg.on("monster_strong_tier") then s = 0 end -- [HE-PORT]
 	local roll = math.random(1, w + m + s)
 	if roll <= w then return "weak" end
 	if roll <= w + m then return "medium" end
@@ -140,7 +137,7 @@ local function count_alive()
 	local dead = {}
 	for id, _ in pairs(spawned_ids) do
 		local obj = sim:object(id)
-		if obj and obj:alive() then
+		if obj and IsMonster(obj) and obj:alive() then
 			alive = alive + 1
 		else
 			table.insert(dead, id)
@@ -160,11 +157,32 @@ local function count_in_region()
 	local n = 0
 	for id, _ in pairs(spawned_ids) do
 		local obj = sim:object(id)
-		if obj and obj:alive() and region[ olr_smart_index.object_level(obj) or "" ] then
+		if obj and IsMonster(obj) and obj:alive() and region[ olr_smart_index.object_level(obj) or "" ] then
 			n = n + 1
 		end
 	end
 	return n
+end
+
+-- [HE-PORT] OLR monsters per level; refreshed at most every 30 s
+local counts = {}
+local counts_until = 0
+
+function level_counts()
+	if time_global() < counts_until then return counts end
+	load_ids()
+	counts_until = time_global() + 30000
+	counts = {}
+	local sim = g_sim or alife()
+	if not sim then return counts end
+	for id, _ in pairs(spawned_ids) do
+		local obj = sim:object(id)
+		if obj and IsMonster(obj) and obj:alive() then
+			local lname = olr_smart_index.object_level(obj) or ""
+			counts[lname] = (counts[lname] or 0) + 1
+		end
+	end
+	return counts
 end
 
 -- [HE-PORT]
@@ -176,7 +194,7 @@ local function recycle_far(limit)
 	for id, _ in pairs(spawned_ids) do
 		if #victims >= limit then break end
 		local obj = sim:object(id)
-		if obj and obj:alive() and not obj.online and IsMonster(obj)
+		if obj and IsMonster(obj) and obj:alive() and not obj.online
 			and own_sections[ obj:section_name() ]
 			and not region[ olr_smart_index.object_level(obj) or "" ]
 		then
@@ -205,6 +223,7 @@ local function target_allowed(smart_obj)
 	local lname = smart_level(smart_obj)
 	if not lname then return false end
 	if lname ~= level.name() then return true end
+	if not olr_cfg.on("spawn_on_player_level") then return false end -- [HE-PORT]
 	if not db.actor then return false end
 	local ok, d = pcall(function()
 		return db.actor:position():distance_to(smart_obj.position)
@@ -227,18 +246,22 @@ local function pick_any_monster_name(region)
 	return pool[math.random(#pool)]
 end
 
-local function pick_target(comm, region)
+local function pick_target(comm, region, sections, budget, filter)
+	local gates = olr_cfg.on("rank_gates") -- [HE-PORT]
 	for attempt = 1, 10 do
 		local sname
-		local only = ( attempt <= 4 or attempt == 7 or attempt == 8 ) and region or nil -- [HE-PORT]
+		local only = olr_cfg.intersect_levels(( attempt <= 4 or attempt == 7 or attempt == 8 ) and region or nil, budget) -- [HE-PORT]
 		if attempt <= 6 then
 			sname = olr_smart_index.pick_name(comm, nil, nil, only)
-		else
+		elseif olr_cfg.on("monster_any_fallback") then -- [HE-PORT]
 			sname = pick_any_monster_name(only)
 		end
 		if sname then
 			local sobj = olr_smart_index.get_obj(sname)
-			if sobj and target_allowed(sobj) then
+			if sobj and target_allowed(sobj)
+				and not ( gates and #olr_smart_index.sections_fitting(sname, comm, sections) == 0 )
+				and not ( filter and not filter(sname, sobj) ) -- [HE-PORT] olr_population seeding exclusions
+			then
 				return sname, sobj, (attempt <= 6)
 			end
 		end
@@ -246,25 +269,39 @@ local function pick_target(comm, region)
 	return nil, nil, false
 end
 
-local function spawn_squad(in_region)
+local function spawn_squad(in_region, seed_opts)
 	local st = pick_squad_type()
 	if not st then return 0 end
 	if not olr_smart_index.ensure() then return 0 end
+	if seed_opts then seed_opts.comm = st.comm end -- [HE-PORT]
 
 	local region = in_region and olr_smart_index.region_levels() or nil -- [HE-PORT]
-	local smart_name, smart_obj, own_comm = pick_target(st.comm, region)
+	local budget = seed_opts and seed_opts.only or olr_cfg.budget_open(2, level_counts()) -- [HE-PORT]
+	local smart_name, smart_obj, own_comm = pick_target(st.comm, region, st.sections, budget, seed_opts and seed_opts.filter)
 	if not smart_obj then return 0 end
+	-- [HE-PORT]
+	local pool = st.sections
+	if olr_cfg.on("rank_gates") then
+		pool = olr_smart_index.sections_fitting(smart_name, st.comm, st.sections)
+	end
 
 	local size = math.random(st.min, st.max)
 	if is_night() and st.tier ~= "strong" and size < st.max then
 		size = size + 1
 	end
+	if seed_opts then -- [HE-PORT]
+		size = math.min(size, seed_opts.max_size)
+	elseif budget then -- [HE-PORT]
+		local lname = olr_smart_index.get_level(smart_name)
+		local left = olr_cfg.budget_of(2, lname) - ( level_counts()[lname] or 0 )
+		size = math.min(size, math.max(2, math.ceil(left)))
+	end
 
-	local bind = own_comm and (math.random(1, 10) <= 6)
+	local bind = own_comm and (math.random(1, 100) <= olr_cfg.get("monster_bind_chance")) -- [HE-PORT]
 	local spawned = 0
 
 	for i = 1, size do
-		local section = st.sections[math.random(#st.sections)]
+		local section = pool[math.random(#pool)]
 		local ok, res = pcall(function()
 			local pos = smart_obj.position
 			local offset_pos = vector():set(
@@ -299,13 +336,60 @@ local function spawn_squad(in_region)
 		end
 	end
 
-	return spawned
+	if spawned > 0 then -- [HE-PORT]
+		counts_until = 0
+		if not seed_opts then olr_population.note_olr(olr_smart_index.get_level(smart_name), false, spawned) end
+	end
+	return spawned, smart_name
+end
+
+-- [HE-PORT] olr_population seeding at an AMK lair spot: smartless, on the lair's home path like amk_mod.respawned gives
+function seed_at(sections, spot, home)
+	load_ids()
+	local sim = alife()
+	local n = 0
+	for _, section in ipairs(sections) do
+		local pos = vector():set(spot.pos.x + math.random(-4, 4), spot.pos.y, spot.pos.z + math.random(-4, 4))
+		local obj = sim:create(section, pos, spot.lv, spot.gv)
+		if obj then
+			local pk = get_netpk(obj)
+			local data = pk and pk:get()
+			if data then
+				data.custom_data = "[smart_terrains]\nnone=true\n[logic]\nactive = mob_home\n[mob_home]\npath_home = " .. home ..
+					"\nhome_min_radius = 30\nhome_max_radius = 50\naggressive_home\n"
+				pk:set(data)
+			end
+			obj.smart_terrain_conditions = { none = xr_logic.parse_condlist(obj, "smart_terrains", "none", "true") }
+			spawned_ids[obj.id] = true
+			n = n + 1
+		end
+	end
+	if n > 0 then
+		counts_until = 0
+		store_ids()
+	end
+	return n
+end
+
+-- [HE-PORT] olr_population seeding: one squad on a level the player has not seen, on a smart the filter lets through
+function seed(lname, filter, max_size)
+	if not olr_smart_index.ensure() then return 0 end
+	load_ids()
+	local opts = { only = { [lname] = true }, filter = filter, max_size = max_size }
+	local n, sname = spawn_squad(false, opts)
+	if n > 0 then store_ids() end
+	return n, sname, opts.comm
 end
 
 function update()
 	if not db.actor then return end
 	if device().precache_frame > 1 then return end
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if olr_cfg.sleep_paused() then return end
+	-- [HE-PORT] a loaded save must not add a batch by itself
+	if time_next_spawn == 0 and olr_cfg.on("delay_first_tick") then
+		time_next_spawn = time_global() + olr_cfg.get("monster_tick") * 1000
+		return
+	end
 	if time_global() < time_next_spawn then return end
 
 	local sim = g_sim or alife()
@@ -313,17 +397,27 @@ function update()
 	load_ids()
 
 	-- [HE-PORT]
+	-- [HE-PORT] budgets: one group per tick, a level at a time
+	if olr_cfg.on("budgets") then
+		time_next_spawn = time_global() + olr_cfg.get("monster_tick") * 1000
+		if olr_smart_index.ensure() then
+			spawn_squad(math.random(1, 100) <= REGION_SHARE)
+		end
+		store_ids()
+		return
+	end
 	local alive = count_alive()
-	if count_in_region() < REGION_TARGET then
-		time_next_spawn = time_global() + SPAWN_INTERVAL_LOW
-		if alive >= MAX_MONSTERS_TOTAL then
-			recycle_far(alive - MAX_MONSTERS_TOTAL + RECYCLE_BATCH)
+	local max_total = olr_cfg.get("monster_cap")
+	if count_in_region() < olr_cfg.get("monster_region_target") then
+		time_next_spawn = time_global() + olr_cfg.get("monster_tick_low") * 1000
+		if alive >= max_total then
+			recycle_far(alive - max_total + RECYCLE_BATCH)
 			alive = count_alive()
 		end
 	else
-		time_next_spawn = time_global() + SPAWN_INTERVAL
+		time_next_spawn = time_global() + olr_cfg.get("monster_tick") * 1000
 	end
-	if alive >= MAX_MONSTERS_TOTAL then
+	if alive >= max_total then
 		store_ids()
 		return
 	end
@@ -337,7 +431,7 @@ function update()
 	end
 
 	for i = 1, waves do
-		if count_alive() >= MAX_MONSTERS_TOTAL then break end
+		if count_alive() >= max_total then break end
 		spawn_squad(math.random(1, 100) <= REGION_SHARE) -- [HE-PORT]
 	end
 
@@ -348,4 +442,21 @@ function get_status()
 	load_ids()
 	local w, m, s = tier_weights()
 	return count_alive(), w, m, s
+end
+
+-- [HE-PORT]
+function is_spawned(id)
+	load_ids()
+	return spawned_ids[id] ~= nil
+end
+
+-- [HE-PORT] test helpers
+function known_ids()
+	load_ids()
+	return spawned_ids
+end
+
+function debug_tick()
+	time_next_spawn = 1
+	update()
 end

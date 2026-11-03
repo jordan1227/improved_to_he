@@ -55,6 +55,18 @@ void OnCharacterContactInDeath(bool& do_colide, bool bo1, dContact& c, SGameMtl*
     }
 
     surface.mu = l_character_physic_support->m_curr_skin_friction_in_death;
+
+    // NLC: corpses_collision_actor_only, living NPCs and mutants pass through corpses, the player and other bodies do not
+    if (Core.Features.test(xrCore::Feature::corpses_collision_actor_only))
+    {
+        const dxGeomUserData* other = retrieveGeomUserData(bo1 ? c.geom.g2 : c.geom.g1);
+        if (other && other->ph_ref_object && !smart_cast<CActor*>(other->ph_ref_object))
+        {
+            const CEntityAlive* entity = smart_cast<CEntityAlive*>(other->ph_ref_object);
+            if (entity && entity->g_Alive())
+                do_colide = false;
+        }
+    }
 }
 
 IC bool is_imotion(interactive_motion* im) { return im && im->is_enabled(); }

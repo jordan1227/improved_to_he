@@ -852,3 +852,20 @@ void CAI_Bloodsucker::debug_on_key(int key)
 #endif //_DEBUG
 
 #endif // DEBUG
+
+// NLC: per-object ability factors (docs/ALIFE_TACTICS_DESIGN.md 8); the vampire ones only exist when Vampire_On
+bool CAI_Bloodsucker::nlc_ability(LPCSTR name, float k, float* cur)
+{
+    if (m_vampire_enable)
+    {
+        if (nlc_abil(name, "vampire_delay", m_vampire_min_delay, k, cur))
+            return true;
+        if (nlc_abil(name, "vampire_wound", m_vampire_wound, k, cur))
+            return true;
+    }
+    if (nlc_abil(name, "vis_full", m_full_visibility_radius, k, cur))
+        return true;
+    if (nlc_abil(name, "vis_partial", m_partial_visibility_radius, k, cur))
+        return true;
+    return false;
+}

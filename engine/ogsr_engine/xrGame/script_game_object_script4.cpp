@@ -219,6 +219,9 @@ class_<CScriptGameObject> script_register_game_object3(class_<CScriptGameObject>
         .def("stalker_disp_base", (void(CScriptGameObject::*)(float))(&CScriptGameObject::stalker_disp_base))
         .def("stalker_disp_base", (void(CScriptGameObject::*)(float, float))(&CScriptGameObject::stalker_disp_base))
 
+        .def("nlc_step_k", (float(CScriptGameObject::*)())(&CScriptGameObject::nlc_step_k))
+        .def("nlc_step_k", (void(CScriptGameObject::*)(float))(&CScriptGameObject::nlc_step_k))
+
         .def("drop_item_and_throw", &CScriptGameObject::DropItemAndThrow)
         .def("controller_psy_hit_active", &CScriptGameObject::controller_psy_hit_active)
 

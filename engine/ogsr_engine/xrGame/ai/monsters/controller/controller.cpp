@@ -2036,3 +2036,13 @@ void CController::debug_on_key(int key)
 }
 #endif
 */
+
+// NLC: per-object ability factors (docs/ALIFE_TACTICS_DESIGN.md 8)
+bool CController::nlc_ability(LPCSTR name, float k, float* cur)
+{
+    if (nlc_abil(name, "tube_damage", m_tube_damage, k, cur))
+        return true;
+    if (nlc_abil(name, "tube_delay", m_tube_condition_see_duration, k, cur))
+        return true;
+    return false;
+}

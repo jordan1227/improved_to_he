@@ -216,19 +216,39 @@ end
 
 -- Engine hook (CWeaponMagazined::OnShot, NPCs within 30 m of the camera): ground point under the ejection port and its
 -- material. Break-action shotguns drop their casings on reload, which NPCs do not report, so they stay silent.
+-- reuse idle sound objects: creating one per shot loads and decodes the ogg on the render thread (stutter on every pistol shot)
+local npc_sound_pool = {}
+local function pooled_sound(name, now)
+	local list = npc_sound_pool[name]
+	if not list then
+		list = {}
+		npc_sound_pool[name] = list
+	end
+	for i = 1, #list do
+		local p = list[i]
+		if now >= p.free_at and not p.object:playing() then return p end
+	end
+	local p = { object = sound_object(name), free_at = 0 }
+	list[#list + 1] = p
+	return p
+end
+
 function on_npc_shot(npc, wpn, pos, material)
 	if not (cfg.enabled and cfg.npc_enabled and npc and wpn and pos) then return end
 	if #npc_sounds >= cfg.npc_max_active then return end
 	local section = wpn:section()
 	local shell_type = get_weapon_class(section)
 	if not shell_type or WEAPON_DOUBLE_BARREL[base_section(section)] then return end
-	local snd = sound_object(get_sound_name(shell_type, surface_of(material)))
+	local now = time_global()
+	local pooled = pooled_sound(get_sound_name(shell_type, surface_of(material)), now)
+	local snd = pooled.object
 	local delay = (cfg.npc_land_time_ms + math.random(0, cfg.land_jitter_ms)) / 1000
+	pooled.free_at = now + delay * 1000 + 300
 	snd:play_at_pos(npc, pos, delay, sound_object.s3d)
 	snd.volume = cfg.npc_volume
 	snd.min_distance = cfg.npc_min_dist
 	snd.max_distance = cfg.npc_max_dist
-	npc_sounds[#npc_sounds + 1] = { object = snd, until_time = time_global() + delay * 1000 + 100 }
+	npc_sounds[#npc_sounds + 1] = { object = snd, until_time = now + delay * 1000 + 100 }
 end
 
 local function on_update()

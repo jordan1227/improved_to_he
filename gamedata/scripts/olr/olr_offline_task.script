@@ -1,3 +1,8 @@
+-- [HE-PORT] the id caches are up to two minutes old, and AMK pickups recycle ids fast: an id may be an item by now
+local function live(o)
+	return o ~= nil and ( IsStalker(o) or IsMonster(o) ) and o:alive()
+end
+
 -- [HE-PORT]
 local mutant_clsids = {
 	[clsid.dog_s]          = true,
@@ -114,6 +119,12 @@ function cached_stalkers( comm )
 end
 
 -- [HE-PORT]
+function cached_monsters()
+	rebuild_cache()
+	return monster_ids_cache
+end
+
+-- [HE-PORT]
 function prime_cache()
 	cache_building = false
 	rebuild_cache(true)
@@ -191,13 +202,22 @@ end
 -- [HE-PORT]
 local function wandering_count( id_list, sim )
 	local n = 0
+	local records = get_value( "nlc.olr_wanderers" ) or {}
 	for _, id in ipairs( id_list ) do
 		local o = sim:object( id )
-		if o and o:alive() and o:smart_terrain_id() == BAD_OBJ_ID and has_wander_record( o:name() ) then
+		if live(o) and o:smart_terrain_id() == BAD_OBJ_ID and records[ o:name() ] ~= nil then
 			n = n + 1
 		end
 	end
 	return n
+end
+
+-- [HE-PORT]
+local function pick_target(kill, community_name, exclude)
+	if olr_cfg.on("migrate_neighbours") then
+		return olr_smart_index.pick_migration(kill, community_name, exclude)
+	end
+	return olr_smart_index.pick_name(community_name, exclude)
 end
 
 local function migrate_stalker(kill, community_name)
@@ -205,8 +225,9 @@ local function migrate_stalker(kill, community_name)
 	if olr_smart_index.is_locked(exclude) then return false end
 	-- [HE-PORT]
 	if exclude and not olr_smart_index.can_release(exclude) then return false end
-	local target = olr_smart_index.pick_name(community_name, exclude)
+	local target = pick_target(kill, community_name, exclude)
 	if not target then return false end
+	local from_lvl = olr_smart_index.object_level(kill) -- [HE-PORT]
 
 	xrs_utils.clear_smart_terrain(kill)
 	smart_terrain.unregister_npc(kill)
@@ -219,6 +240,8 @@ local function migrate_stalker(kill, community_name)
 		kill:brain():can_choose_alife_tasks(true)
 		kill:brain():update(true)
 	end
+	olr_population.on_migrated_human(from_lvl, target) -- [HE-PORT]
+	if olr_cfg.log_census() then log2("[olr_migrate] %s %s (%s): %s -> %s", olr_cfg.stamp(), kill:name(), kill:community(), tostring(exclude), tostring(target)) end
 	return true
 end
 
@@ -227,8 +250,9 @@ local function migrate_monster(kill, community_name)
 	if olr_smart_index.is_locked(exclude) then return false end
 	-- [HE-PORT]
 	if exclude and not olr_smart_index.can_release(exclude) then return false end
-	local target = olr_smart_index.pick_name(community_name, exclude)
+	local target = pick_target(kill, community_name, exclude)
 	if not target then return false end
+	local from_lvl = olr_smart_index.object_level(kill) -- [HE-PORT]
 
 	smart_terrain.unregister_npc(kill)
 	if kill.brain then
@@ -240,11 +264,13 @@ local function migrate_monster(kill, community_name)
 		kill:brain():can_choose_alife_tasks(true)
 		kill:brain():update(true)
 	end
+	if not olr_monster_squads.is_spawned(kill.id) then olr_population.on_migrated(kill, from_lvl, target) end -- [HE-PORT]
 	return true
 end
 
 local function faction_migration(community_name)
 	if not db.actor then return end
+	if community_name == "military" and not olr_cfg.on("military_olr") then return end -- [HE-PORT]
 	if not olr_smart_index.ensure() then return end
 	if olr_smart_index.count(community_name) <= 0 then return end
 	rebuild_cache()
@@ -267,21 +293,22 @@ local function faction_migration(community_name)
 	-- [HE-PORT]
 	local wanderers = wandering_count( id_list, sim )
 	local wander_cap = math.floor( #id_list * WANDER_SHARE )
+	local records = get_value( "nlc.olr_wanderers" ) or {} -- [HE-PORT] one read, not one per NPC
 
 	for _, id in ipairs(id_list) do
 		local kill = sim:object(id)
-		if kill and kill:alive() and not kill.online and not olr_protected.is_no_offline_alife_obj(kill:name()) then -- [HE-PORT]
+		if live(kill) and not kill.online and not olr_protected.is_no_offline_alife_obj(kill:name()) then -- [HE-PORT]
 			local strn_id = kill:smart_terrain_id()
 			local nm = kill:name()
 			if strn_id == BAD_OBJ_ID then
-				if has_wander_record( nm ) and not is_wandering( nm ) then
+				if records[ nm ] ~= nil and not is_wandering( nm ) then
 					local ok, res = pcall( migrate_stalker, kill, community_name )
 					if ok and res then
 						clear_wandering( nm )
 						wanderers = wanderers - 1
 					end
 				end
-			elseif math.random(1, MIGRATE_ROLL) == 1 then -- [HE-PORT]
+			elseif math.random(1, MIGRATE_ROLL) == 1 and olr_faction_policy.may_migrate(kill, kill:community()) then -- [HE-PORT]
 				if wanderers < wander_cap and math.random( 1, WANDER_ROLL ) == 1 and not olr_faction_policy.no_wander( olr_smart_index.object_level( kill ) ) then -- [HE-PORT]
 					local ok, res = pcall( send_wandering, kill )
 					if ok and res then wanderers = wanderers + 1 end
@@ -306,22 +333,22 @@ function stalkers_neutral_task_select()
 end
 
 function dolgs_task_select()
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if olr_cfg.sleep_paused() then return end
 	faction_migration("dolg")
 end
 
 function freedom_task_select()
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if olr_cfg.sleep_paused() then return end
 	faction_migration("freedom")
 end
 
 function killers_task_select()
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if olr_cfg.sleep_paused() then return end
 	faction_migration("killer")
 end
 
 function military_task_select()
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if olr_cfg.sleep_paused() then return end
 	faction_migration("military")
 end
 
@@ -348,7 +375,7 @@ function bar_sweep()
 		if olr_faction_policy.level_denied(comm, "l05_bar") then
 			for _, id in ipairs(ids) do
 				local kill = sim:object(id)
-				if kill and kill:alive() and not kill.online and has_wander_record(kill:name()) and not olr_protected.is_no_offline_alife_obj(kill:name()) then -- [HE-PORT]
+				if live(kill) and not kill.online and has_wander_record(kill:name()) and not olr_protected.is_no_offline_alife_obj(kill:name()) then -- [HE-PORT]
 					if obj_level_name(kill) == "l05_bar" then
 						local target = olr_smart_index.pick_name(comm, nil, "l05_bar")
 						local smart = target and olr_smart_index.get_obj(target)
@@ -376,7 +403,9 @@ function guest_sweep()
 	for comm, ids in pairs(stalker_ids_cache) do
 		for _, id in ipairs(ids) do
 			local kill = sim:object(id)
-			if kill and kill:alive() and not kill.online and not olr_protected.is_no_offline_alife_obj(kill:name()) then -- [HE-PORT]
+			if live(kill) and not kill.online and not olr_protected.is_no_offline_alife_obj(kill:name())
+				and not olr_protected.is_quest_bound(kill) -- [HE-PORT]
+			then
 				local lname = obj_level_name(kill)
 				local okd, denied = pcall(olr_faction_policy.is_guest_denied, comm, lname)
 				if okd and denied then
@@ -436,7 +465,7 @@ function monster_level_sweep()
 	for comm, ids in pairs( stalker_ids_cache ) do
 		for _, id in ipairs( ids ) do
 			local kill = sim:object( id )
-			if kill and kill:alive() and not kill.online and levels[ kill.level_name ]
+			if live(kill) and not kill.online and levels[ kill.level_name ]
 				and not olr_protected.is_no_offline_alife_obj( kill:name() )
 			then
 				pcall( sweep_one, sim, kill, comm, kill.level_name )
@@ -497,7 +526,7 @@ function danger_sweep()
 	for comm, ids in pairs( stalker_ids_cache ) do
 		for _, id in ipairs( ids ) do
 			local kill = sim:object( id )
-			if kill and kill:alive() and not kill.online and not olr_protected.is_no_offline_alife_obj( kill:name() ) then
+			if live(kill) and not kill.online and not olr_protected.is_no_offline_alife_obj( kill:name() ) then
 				pcall( danger_one, sim, kill, comm, olr_smart_index.object_level( kill ), kill.position, false )
 			end
 		end
@@ -516,7 +545,30 @@ function danger_sweep()
 end
 
 -- [HE-PORT]
-local ROAM_INTERVAL = 8 * 60000
+-- [HE-PORT] the spot olr_offline_walk used to clear: offline people stuck there go to their smart
+local function cordon_unstick()
+	if level.name() ~= "l01_escape" then return end
+	local sim = g_sim
+	if not sim then return end
+	local spot = vector():set(-133, 1, 238)
+	local function clear(ids)
+		for _, id in ipairs(ids) do
+			local o = sim:object(id)
+			if live(o) and not o.online and olr_smart_index.object_level(o) == "l01_escape"
+				and o.position:distance_to_xz(spot) < 30
+			then
+				local sid = o:smart_terrain_id()
+				local smart = sid ~= BAD_OBJ_ID and sim:object(sid)
+				if smart then
+					sim:teleport_object(id, smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+				end
+			end
+		end
+	end
+	for _, ids in pairs(stalker_ids_cache) do clear(ids) end
+	clear(monster_ids_cache)
+end
+
 local roam_next = 0
 local roam_idx = 0
 local roam_plan = {
@@ -533,19 +585,61 @@ local roam_plan = {
 function roam_update()
 	if not db.actor then return end
 	if device().precache_frame > 1 then return end
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if olr_cfg.sleep_paused() then return end
 	if time_global() < roam_next then return end
-	roam_next = time_global() + ROAM_INTERVAL
+	roam_next = time_global() + olr_cfg.get("migration_tick") * 1000
 	roam_idx = roam_idx + 1
 	if roam_idx > #roam_plan then roam_idx = 1 end
 	pcall(faction_migration, roam_plan[roam_idx])
 	pcall(bar_sweep)
-	pcall(guest_sweep)
+	if olr_cfg.on("military_guests") then -- [HE-PORT]
+		pcall(guest_sweep)
+	end
+	if not olr_cfg.on("offline_walk") then -- [HE-PORT]
+		cordon_unstick()
+	end
+end
+
+-- [HE-PORT] olr_population.update, every half game hour or so: native monsters in free smarts, dt_h game hours since
+-- the last pass, at most native_max_per_pass of them; the start is random so no part of the list is favoured
+function native_pass(dt_h)
+	if not db.actor then return 0 end
+	if not olr_smart_index.ensure() then return 0 end
+	rebuild_cache()
+	local list = monster_ids_cache
+	if not list or #list == 0 then return 0 end
+	local sim = g_sim or alife()
+	local left = olr_population.native_max_per_pass()
+	local moved = 0
+	local start = math.random(#list)
+	for k = 0, #list - 1 do
+		if left <= 0 then break end
+		local id = list[ ( start + k - 1 ) % #list + 1 ]
+		local kill = sim:object(id)
+		if live(kill) and not kill.online and kill:smart_terrain_id() ~= BAD_OBJ_ID
+			and not olr_monster_squads.is_spawned(id)
+		then
+			local p = olr_population.native_chance(kill, dt_h)
+			if p and math.random() < p then
+				left = left - 1
+				local comm = monster_comm_by_clsid[kill:clsid()]
+				if not comm then
+					local okc, c = pcall(function() return kill:community() end)
+					if okc then comm = c end
+				end
+				if comm then
+					local ok, res = pcall(migrate_monster, kill, comm)
+					if ok and res then moved = moved + 1 end
+				end
+			end
+		end
+	end
+	return moved
 end
 
 local function monster_migration()
 	if not db.actor then return end
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if olr_cfg.sleep_paused() then return end
 	if not olr_smart_index.ensure() then return end
 	rebuild_cache()
 	if not monster_ids_cache or #monster_ids_cache == 0 then return end
@@ -554,9 +648,10 @@ local function monster_migration()
 
 	for _, id in ipairs(monster_ids_cache) do
 		local kill = sim:object(id)
-		if kill and kill:alive() and not kill.online then
+		if live(kill) and not kill.online then
 			local strn_id = kill:smart_terrain_id()
-			if strn_id ~= BAD_OBJ_ID then
+			-- [HE-PORT] OLR's own move here; natives move in native_pass, on game time
+			if strn_id ~= BAD_OBJ_ID and ( olr_monster_squads.is_spawned(id) or not olr_cfg.on("garrisons_stay") ) then
 				if math.random(1, MIGRATE_ROLL) == 1 then -- [HE-PORT]
 					local cls = kill:clsid()
 					local comm = monster_comm_by_clsid[cls]
@@ -573,6 +668,41 @@ local function monster_migration()
 	end
 end
 
+-- [HE-PORT] once per save: OLR people an earlier version left where they no longer belong
+function old_save_sweep()
+	if not ( olr_cfg.on("sweep_old_saves") and db.actor ) then return end
+	if get_value( "nlc.olr_sweep_1" ) then return end
+	set_value( "nlc.olr_sweep_1", 1 )
+	local sim = g_sim
+	if not sim then return end
+	local here = level.name()
+	local victims = {}
+	for _, se in sim:objects() do
+		if se.id ~= 0 and not se.online and IsStalker( se ) and se:alive()
+			and string.sub( se:section_name(), 1, 4 ) == "olr_"
+			and not olr_protected.is_no_offline_alife_obj( se:name() )
+		then
+			local lname = olr_smart_index.object_level( se )
+			local comm = se:community()
+			if lname and lname ~= here and (
+				olr_faction_policy.level_denied( comm, lname )
+				or ( comm == "military" and not olr_cfg.on( "military_olr" ) )
+				or ( comm == "monolith" and not olr_cfg.mono_open() )
+				or not olr_smart_index.level_rank_fits( lname, comm, se:rank() )
+			) then
+				table.insert( victims, se )
+			end
+		end
+	end
+	for i = 1, #victims do
+		olr_squads.forget( victims[ i ].id )
+		sim:release( victims[ i ], true )
+	end
+	-- the cache primed a moment ago still holds those ids, which can be reused by anything
+	if #victims > 0 then prime_cache() end
+	log2( "[olr_sweep] released %d OLR NPCs left over from before the rules", #victims )
+end
+
 function mutants_task_select()
 	monster_migration()
 end
@@ -583,7 +713,8 @@ end
 
 function zombies_task_select()
 	if not db.actor then return end
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if olr_cfg.on("garrisons_stay") then return end -- [HE-PORT]
+	if olr_cfg.sleep_paused() then return end
 	if not olr_smart_index.ensure() then return end
 	rebuild_cache()
 	if not zombie_ids_cache or #zombie_ids_cache == 0 then return end
@@ -591,7 +722,7 @@ function zombies_task_select()
 	if not sim then return end
 	for _, id in ipairs(zombie_ids_cache) do
 		local kill = sim:object(id)
-		if kill and kill:alive() and not kill.online then
+		if live(kill) and not kill.online then
 			local strn_id = kill:smart_terrain_id()
 			if strn_id ~= BAD_OBJ_ID then
 				if math.random(1, MIGRATE_ROLL) == 1 then -- [HE-PORT]

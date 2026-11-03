@@ -1,0 +1,150 @@
+-- [HE-PORT] Population steering, docs/ALIFE_DESIGN.md Phase 6: every level is pulled back toward the population it had
+-- at the start of the game. Nothing is created or removed here. A level well over its start pauses its native
+-- respawners (monsters or humans, apart); a level well under gets the migrants of its neighbours first.
+-- The start is the most each level held in the first [steering] steer_base_h game hours (on an older save, what it has now).
+-- Log: [olr_steer].
+-- fl olr_steering.report()              start and now per level, what is paused or pulled
+-- fl olr_steering.force()               recount now and decide again
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_steer"
+
+local cfg = nil
+local cache = nil
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("steering") - 1 do
+		local _, key, val = ini:r_line("steering", i, "", "")
+		cfg[key] = tonumber(val) or val
+	end
+	return cfg
+end
+
+local function slog(fmt, ...)
+	log2("[olr_steer] " .. fmt, ...)
+end
+
+local function get_state()
+	if not cache then cache = get_value(KEY) or { over = {}, under = {} } end
+	return cache
+end
+
+local function put_state(st)
+	cache = st
+	set_value(KEY, st)
+end
+
+local function judge(now, base)
+	local c = config()
+	if now > base * c.steer_over and now - base >= c.steer_min_diff then return "over" end
+	if now < base * c.steer_under and base - now >= c.steer_min_diff then return "under" end
+	return nil
+end
+
+local function decide(st)
+	local counts = olr_census.counts()
+	if not counts then return end
+	st.over, st.under = {}, {}
+	for lvl, b in pairs(st.base) do
+		local now = counts[lvl] or { h = 0, m = 0 }
+		for _, kind in ipairs({ "h", "m" }) do
+			local verdict = judge(now[kind], b[kind])
+			if verdict then
+				st[verdict][lvl .. "|" .. kind] = true
+				slog("%s %s: %d now, %d at the start: %s", lvl, kind == "h" and "humans" or "monsters", now[kind], b[kind], verdict)
+			end
+		end
+	end
+end
+
+function update()
+	if not ( db.actor and olr_cfg.on("steering") ) then return end
+	if olr_population.active() then return end -- [HE-PORT] the shared count's targets take the start's place
+	local st = get_state()
+	local n = timers.Get_Game_Seconds()
+	if st.next and n < st.next then return end
+	st.next = n + config().steer_every_h * 3600
+	if not st.base then
+		-- respawners fill the Zone over the first days: the start is the most each level held in that time
+		local counts = olr_census.counts()
+		if not counts then return end
+		st.peak = st.peak or {}
+		for lvl, c in pairs(counts) do
+			local p = st.peak[lvl] or { h = 0, m = 0 }
+			p.h, p.m = math.max(p.h, c.h), math.max(p.m, c.m)
+			st.peak[lvl] = p
+		end
+		if n >= config().steer_base_h * 3600 then
+			st.base, st.peak = st.peak, nil
+			slog("start of the game counted (the most seen in the first %d h)", config().steer_base_h)
+		end
+		put_state(st)
+		return
+	end
+	decide(st)
+	put_state(st)
+end
+
+local function flag(verdict, lvl, human)
+	if not ( lvl and olr_cfg.on("steering") ) then return false end
+	if olr_population.active() then return olr_population.verdict(lvl, human) == verdict end
+	return get_state()[verdict][lvl .. "|" .. ( human and "h" or "m" )] == true
+end
+
+-- se_respawn:create: a respawner of a level well over its start waits
+function holds(resp)
+	if resp.item_spawn or resp.spawn_once or not resp.level_name then return false end
+	if olr_population.active() then return false end -- ceiling_reached already asked olr_population
+	if not flag("over", resp.level_name, not resp.he_monster_respawn) then return false end
+	return true
+end
+
+-- olr_smart_index.pick_migration: the levels a migrant may go to, steered
+function steer_levels(allowed, here, human)
+	if not olr_cfg.on("steering") then return allowed end
+	local under = {}
+	for lvl in pairs(allowed) do
+		if lvl ~= here and flag("over", lvl, human) then allowed[lvl] = nil end
+		if lvl ~= here and flag("under", lvl, human) then under[lvl] = true end
+	end
+	if next(under) and math.random(100) <= config().steer_pull then return under end
+	return allowed
+end
+
+function report()
+	if olr_population.active() then
+		slog("on=%s, reads over/under from olr_population (see [olr_pop] report)", tostring(olr_cfg.on("steering")))
+		return
+	end
+	local st = get_state()
+	slog("on=%s start counted=%s", tostring(olr_cfg.on("steering")), tostring(st.base ~= nil))
+	if not st.base then return end
+	local counts = olr_census.counts() or {}
+	local names = {}
+	for lvl in pairs(st.base) do table.insert(names, lvl) end
+	table.sort(names)
+	for _, lvl in ipairs(names) do
+		local b, now = st.base[lvl], counts[lvl] or { h = 0, m = 0 }
+		local marks = {}
+		for _, k in ipairs({ "h", "m" }) do
+			if st.over[lvl .. "|" .. k] then table.insert(marks, k .. " over") end
+			if st.under[lvl .. "|" .. k] then table.insert(marks, k .. " under") end
+		end
+		slog("  %s: humans %d (start %d), monsters %d (start %d) %s", lvl, now.h, b.h, now.m, b.m, table.concat(marks, ", "))
+	end
+end
+
+function force()
+	local st = get_state()
+	if not st.base then
+		st.base, st.peak = st.peak or olr_census.counts(), nil
+		slog("force: the start counted now")
+	end
+	decide(st)
+	st.next = timers.Get_Game_Seconds() + config().steer_every_h * 3600
+	put_state(st)
+	report()
+end

@@ -12,7 +12,27 @@ bandage_sets = {forbiddens = {factions = {},npcs = {}},
 				check_prd = rx_utils.read_from_ini(bg_ini,"main","check_period",1500),
 				enabled = rx_utils.read_from_ini(bg_ini,"main","enabled",true,0)}
 bandage_sets.spawn_mt = rx_utils.read_from_ini(bg_ini,"main","spawn_medkits",120)*1000
-bandage_sets.spawn_bt = rx_utils.read_from_ini(bg_ini,"main","spawn_bandages",60)*1000
+-- NLC AlifeTactics 16.13: the two free-bandage times are lists by rank, novice,experienced,veteran,master (one number = all ranks), s
+local function rank_list(key,def)
+	local s = rx_utils.read_from_ini(bg_ini,"main",key,tostring(def),1)
+	local t = {}
+	for v in string.gmatch(s,"[^,%s]+") do
+		t[#t+1] = tonumber(v) or def
+	end
+	local r = {}
+	for i,name in ipairs({"novice","experienced","veteran","master"}) do
+		r[name] = (t[i] or t[#t] or def)*1000
+	end
+	return r
+end
+bandage_sets.spawn_bt = rank_list("spawn_bandages",120)	-- NLC: ms between free bandages (0 = none)
+-- NLC AlifeTactics 16.12: a bandage restores health in an NPC (see dress)
+bandage_sets.band_h = rx_utils.read_from_ini(bg_ini,"main","bandage_health",60)/100		-- uses a bandage he carries below this health
+bandage_sets.free_h = rx_utils.read_from_ini(bg_ini,"main","bandage_free_health",75)/100	-- gets and uses a free bandage below this
+bandage_sets.free_delay = rank_list("bandage_free_delay",25)	-- ms from needing a bandage to the first free one
+bandage_sets.heal = rx_utils.read_from_ini(bg_ini,"main","bandage_heal",20)/100		-- health a bandage restores
+bandage_sets.cap = rx_utils.read_from_ini(bg_ini,"main","bandage_cap",80)/100			-- ... never above this
+bandage_sets.regen = rx_utils.read_from_ini(bg_ini,"main","regen_rate",4)/100/60		-- health per second out of combat when no bandage is wanted (0 = off)
 bandage_sets.spawn_rnd = rx_utils.read_from_ini(bg_ini,"main","spawn_random",false,0)
 bandage_sets.max_h = rx_utils.read_from_ini(bg_ini,"main","medkit_health",50)/100
 bandage_sets.min_b = rx_utils.read_from_ini(bg_ini,"main","bandage_bleeding",0.2)
@@ -24,6 +44,43 @@ bg_ini = nil
 
 local anims = {{a = "norm_torso_12_draw_0",t = 400},{a = "norm_torso_12_attack_0",t = 3600},{a = "norm_torso_12_holster_0",t = 250}}
 
+-- NLC AlifeTactics 15.1: treatment in a fight. false = only once the enemy is gone.
+--   g_loadstring rx_bandage.heal_in_combat = true
+heal_in_combat = false
+
+-- NLC AlifeTactics 16.12: out of combat and with no bandage wanted, health creeps back to full (regen_rate % per minute).
+-- Called from the evaluator's 5 s idle poll, so it costs nothing extra.
+local function regen(self,npc)
+	local rate = bandage_sets.regen
+	local hp = npc.health
+	if rate <= 0 or hp >= 1 or xr_wounded.is_wounded(npc) then
+		self.regen_t = nil
+		return
+	end
+	local now = time_global()
+	local dt = self.regen_t and math.min(now-self.regen_t,12000) or 0
+	self.regen_t = now
+	if dt > 0 then
+		local d = math.min(rate*dt/1000,1-hp)
+		npc.health = d
+		if hp+d >= 0.999 then
+			log2("[rx_bandage] %s regenerated to full health",npc:name())
+		end
+	end
+end
+
+-- NLC AlifeTactics 16.12: a bandage restores bandage_heal in an NPC, never above bandage_cap
+local function dress(npc,st)
+	local hp = npc.health
+	st.free_b = nil
+	st.need_b = nil
+	local d = math.min(bandage_sets.heal,bandage_sets.cap-hp)
+	if d > 0 then
+		npc.health = d
+	end
+	log2("[rx_bandage] %s dressed: hp %.2f -> %.2f",npc:name(),hp,hp+math.max(d,0))
+end
+
 class "evaluator_bandage" (property_evaluator)
 function evaluator_bandage:__init(npc,name,storage) super (nil,name)
 	self.st = storage
@@ -32,6 +89,9 @@ function evaluator_bandage:__init(npc,name,storage) super (nil,name)
 end
 function evaluator_bandage:evaluate()
 	local npc = self.object
+	if not heal_in_combat and (npc:best_enemy() or xrs_battle_ai.in_combat[npc:id()] or xrs_battle_ai.primary_target[npc:id()]) then
+		return false
+	end
 	if self.hitt > time_global() then
 		return false
 	end
@@ -47,7 +107,26 @@ function evaluator_bandage:evaluate()
 		return false
 	end
 	local wound,bleed = npc.health < bandage_sets.max_h,npc:get_bleeding() > bandage_sets.min_b
-	if not (wound or bleed) then			-- если лечиться не нужно
+	-- NLC AlifeTactics 16.12: a bandage also treats a wound that does not bleed. One he carries is used below band_h, a free
+	-- one (made after free_delay of needing it) below free_h; a medkit stays at max_h
+	local hp,item_b,has_med = npc.health,nil,false
+	for k,v in ipairs(bandage_sets.bandages) do
+		item_b = npc:object(v)
+		if item_b then break end
+	end
+	if not item_b then self.st.free_b = nil end
+	for k,v in ipairs(bandage_sets.medkits) do
+		if npc:object(v) then
+			has_med = true
+			break
+		end
+	end
+	local want_med = wound and (has_med or bandage_sets.spawn_mt ~= 0)
+	local thr = item_b and (self.st.free_b and bandage_sets.free_h or bandage_sets.band_h) or bandage_sets.free_h
+	local want_band = bleed or (hp < thr and hp < bandage_sets.cap)
+	if not (want_med or want_band) then
+		self.st.need_b = nil
+		regen(self,npc)			-- если лечиться не нужно
 		self.hitt = time_global()+5000
 		return false
 	end
@@ -78,7 +157,7 @@ function evaluator_bandage:evaluate()
 				self.hitt = time_global()+6000
 			end
 		end
-		if not medkit and bleed then	-- если нет аптечки, но нужна перевязка - ищем бинты
+		if not medkit and want_band then	-- если нет аптечки, но нужна перевязка - ищем бинты
 			for k,v in ipairs(bandage_sets.bandages) do
 				medkit = npc:object(v)
 				if medkit then
@@ -176,7 +255,11 @@ function action_bandage:execute()
 		if self.animst == 3 then
 			local medkit = self.st.medkit and npc:object(self.st.medkit)
 			if medkit then
+				local is_bandage = string.find(medkit:section(),"bandage") ~= nil
 				rx_utils.eat_medkit(npc,medkit)
+				if is_bandage then
+					dress(npc,self.st)
+				end
 			else
 				npc.health = 0.5
 			end
@@ -248,9 +331,9 @@ function add_to_binder(npc,ini,scheme,section,storage)
 --	if rx_gl then
 --		action:add_precondition(world_property(rx_gl.evid_gl_fire,false))
 --	end
-	if rx_facer then
-		action:add_precondition(world_property(rx_facer.evid_facer,false))
-	end
+--	if rx_facer then
+--		action:add_precondition(world_property(rx_facer.evid_facer,false))
+--	end
 	if xrs_grenade and xrs_grenade.evid_aaa_grenade then
 --		action:add_precondition(world_property(xrs_grenade.evid_crazy_grenadier,false))
 		action:add_precondition(world_property(xrs_grenade.evid_aaa_grenade,false))
@@ -260,6 +343,9 @@ function add_to_binder(npc,ini,scheme,section,storage)
 	end
 	if sivol_pulse_npc then
 		action:add_precondition(world_property(sivol_pulse_npc.evid,false))
+	end
+	if sivol_rout then
+		action:add_precondition(world_property(sivol_rout.evid,false))
 	end
 	action:add_precondition(world_property(evid_bandage,true))
 	action:add_effect(world_property(evid_bandage,false))
@@ -293,11 +379,16 @@ function spawn_medkit(npc,st)
 end
 
 function spawn_bandage(npc,st)
-	if st.spawn_time_b and time_global() > st.spawn_time_b then
+	local now = time_global()
+	st.need_b = st.need_b or now
+	local rank = ranks.get_obj_rank_name(npc)
+	local ivl,delay = bandage_sets.spawn_bt[rank] or 120000,bandage_sets.free_delay[rank] or 25000
+	if ivl ~= 0 and now - st.need_b >= delay and (not st.next_free or now >= st.next_free) then
 		local pos = bandage_sets.spawn_rnd and math.random(#bandage_sets.bandages) or 1
 --		printf("npc_update[%s]:spawn bandage [%s]",npc:character_name(),bandage_sets.bandages[pos])
 		alife():create(bandage_sets.bandages[pos],npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
-		st.spawn_time_b = time_global()+bandage_sets.spawn_bt
+		st.next_free = now+ivl
+		st.free_b = true
 		return true
 	end
 end
@@ -315,7 +406,7 @@ end
 
 function set_scheme(npc,ini,scheme,section)
 	local st = xr_logic.assign_storage_and_bind(npc,ini,scheme,section)
-	st.spawn_time_b = bandage_sets.spawn_bt ~= 0 and time_global()+bandage_sets.spawn_bt+math.random(8000) or nil
+	st.next_free = nil
 	st.spawn_time_m = bandage_sets.spawn_mt ~= 0 and time_global()+bandage_sets.spawn_mt+math.random(8000) or nil
 end
 

@@ -492,3 +492,13 @@ CBaseMonster::SDebugInfo CPoltergeist::show_debug_info()
 void CPoltergeist::enable_ability(bool flag) { ability()->m_enabled = flag; }
 
 bool CPoltergeist::is_ability_enabled() { return ability()->m_enabled; }
+
+// NLC: per-object ability factors (docs/ALIFE_TACTICS_DESIGN.md 8)
+bool CPoltergeist::nlc_ability(LPCSTR name, float k, float* cur)
+{
+    if (nlc_abil(name, "detect_far", m_detection_far_range, k, cur))
+        return true;
+    if (nlc_abil(name, "detect_speed", m_detection_speed_factor, k, cur))
+        return true;
+    return false;
+}

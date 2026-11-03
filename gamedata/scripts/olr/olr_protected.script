@@ -93,7 +93,9 @@ local no_offline_alife_objs = {
 	["gar_bandit_dm_2"] = true,
 	["gar_bandit_dm_3"] = true,
 	["gar_bandit_leader"] = true,
+	["gar_dm_bandit_1"] = true, -- [HE-PORT] Orekh's men, picked by story id at gar_dram
 	["gar_dm_bandit_2"] = true,
+	["gar_dm_bandit_3"] = true, -- [HE-PORT]
 	["gar_dm_novice"] = true,
 	["gar_dolg_blokpost_commander"] = true,
 	["gar_dolg_commander_blokpost"] = true,
@@ -345,7 +347,9 @@ local release_infos = {
 	["esc_shustryi"] = { "esc_shustryi_medusa_done", "esc_shustryi_outfit_done" },
 	["esc_stalker_fanat"] = { "escape_lager_complete", "fanat_teleport_04_done", "fanat_teleport_04_done_ok", "fanat_teleport_05_done", "meelofon_room_done" },
 	["esc_vagon_wounded"] = { "esc_tolik_five_teil_done" },
+	["gar_dm_bandit_1"] = { "dt_kocherga_secret_done", "gar_dm_bandits_done", "gar_dm_bandits_secret_done" }, -- [HE-PORT]
 	["gar_dm_bandit_2"] = { "dt_kocherga_secret_done", "gar_dm_bandits_done", "gar_dm_bandits_secret_done" },
+	["gar_dm_bandit_3"] = { "dt_kocherga_secret_done", "gar_dm_bandits_done", "gar_dm_bandits_secret_done" }, -- [HE-PORT]
 	["gar_dm_novice"] = { "gar_dram_novice_burer_hand_done", "gar_dram_novice_mp5_m1_done" },
 	["gar_hellcar"] = { "val_pula_ammo_done" },
 	["gar_seryi"] = { "garbage_meetstalker_done", "garbage_seryi_done", "meelofon_room_done" },
@@ -422,6 +426,84 @@ function is_no_offline_alife_obj(name)
 	if always_protected[ name ] then return true end
 	if quests_done( name ) then return nil end
 	return true
+end
+
+-- [HE-PORT]
+-- [HE-PORT]
+function is_always_protected(name)
+	return always_protected[ name ] == true
+end
+
+-- [HE-PORT] quest-bound: an NPC the original mod stages for a quest, which OLR must not move, rebind or drag into
+-- offline fights until that quest lets him go. Moving him cannot be undone: xrs_utils.set_smart_terrain rewrites his
+-- custom data and drops the authored [smart_terrains] that stage him (gar_dram lost Orekh's men this way).
+-- True for: the protected names and quest locks above; a story id whose release (release_infos) is not reached yet;
+-- a smart that is a quest scene ([seed_exclude]); a profile a gulag job picks by name; a written character name; own
+-- [logic] or a [smart_terrains] line with a condition in his custom data. OLR's and the respawners' own people have
+-- no staging, so only the first three apply to them. Cached per id for a minute of game-script time.
+local gulag_profiles = {
+	bar_dolg_kicenko = true, bar_dolg_petrenko = true, bar_dolg_plichko = true, esc_fanat = true, esc_fox = true,
+	esc_petruha = true, esc_provodnik = true, esc_shustryi = true, esc_wolf = true, gar_bandit_dm_3 = true,
+	gar_bandit_general = true, gar_bandit_leader = true, gar_bes = true, gar_dolg_prapor = true, gar_kulinar = true,
+	gar_seriy = true, gar_yurik = true, green_dan = true, mar_soldier_kalinin = true,
+	mil_freedom_blockpost_commander = true, mil_freedom_cook = true, mil_freedom_lukash = true, mil_freedom_max = true,
+	mil_freedom_shurup = true, mil_freedom_skryaga = true, mil_freedom_ugrumiy = true, ros_fraer = true,
+	ros_kocherga = true, serafim = true, sim_diador = true, val_bandit_borov = true, val_bandit_general = true,
+	val_voron = true, vorobey = true,
+}
+
+local bound_cache = {}
+
+local function has_sid(se)
+	local sid = se.m_story_id
+	return sid ~= nil and sid ~= NONE_SID and sid ~= NONE_CL_SID
+end
+
+local function generic(se, name)
+	return string.sub(se:section_name(), 1, 4) == "olr_" or string.find(name, "_respawn", 1, true) ~= nil
+		or olr_squads.is_spawned(se.id)
+end
+
+local function staged(se)
+	local ini = se:spawn_ini()
+	if not ini then return nil end
+	if ini:section_exist("logic") then return "logic" end
+	if ini:section_exist("smart_terrains") then
+		for i = 0, ini:line_count("smart_terrains") - 1 do
+			local _, k, v = ini:r_line("smart_terrains", i, "", "")
+			if string.find(( k or "" ) .. ( v or "" ), "{", 1, true) then return "smart_terrains" end
+		end
+	end
+	return nil
+end
+
+local function why_bound(se, name)
+	if is_no_offline_alife_obj(name) then return "protected" end
+	if has_sid(se) and not quests_done(name) then return "story_id" end
+	local sid = se:smart_terrain_id()
+	local smart = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
+	if smart and olr_population.is_scene_smart(smart:name()) then return "scene_smart" end
+	if generic(se, name) then return nil end
+	if IsStalker(se) then
+		if se.profile_name and gulag_profiles[se:profile_name()] then return "gulag_profile" end
+		if olr_trader_runs.has_story_name(se) then return "written_name" end
+	end
+	return staged(se)
+end
+
+function quest_bound_reason(se)
+	if not ( se and se.id and se.id ~= 0 ) then return nil end
+	local name = se:name()
+	local c = bound_cache[se.id]
+	local now = time_global()
+	if c and c.name == name and now < c.till then return c.why end
+	local why = why_bound(se, name)
+	bound_cache[se.id] = { name = name, why = why, till = now + 60000 }
+	return why
+end
+
+function is_quest_bound(se)
+	return quest_bound_reason(se) ~= nil
 end
 
 -- [HE-PORT]

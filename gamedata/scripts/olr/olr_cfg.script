@@ -1,0 +1,296 @@
+-- [HE-PORT] OLR A-life switchboard, reads config\misc\olr_alife.ltx
+local INI_PATH = "misc\\olr_alife.ltx"
+
+local active_name = nil
+local values = nil
+local closed_levels = {}
+local census_log = false
+local territories = {}
+local preset_borrow = {}
+local camp_laws = {}
+local chapter_info = {}
+local frontiers = {}
+local level_budgets = {}
+local ceilings = {}
+
+local function parse_value(v)
+	if v == "true" then return true end
+	if v == "false" then return false end
+	return tonumber(v) or v
+end
+
+local function read_section(ini, sec, fn)
+	for i = 0, ini:line_count(sec) - 1 do
+		local res, id, val = ini:r_line(sec, i, "", "")
+		if id and id ~= "" then
+			fn(id, val or "")
+		end
+	end
+end
+
+local function load_preset(name)
+	local ini = ini_file(INI_PATH)
+	if not ini:section_exist("settings") then
+		abort("olr_cfg: no [settings] in %s", INI_PATH)
+	end
+	name = name or ini:r_string("settings", "preset")
+	local sec = "preset_" .. name
+	if not ini:section_exist(sec) then
+		abort("olr_cfg: no [%s] in %s", sec, INI_PATH)
+	end
+	local t = {}
+	read_section(ini, sec, function(k, v) t[k] = parse_value(v) end)
+	closed_levels = {}
+	read_section(ini, "closed_levels", function(k, v) closed_levels[k] = v end)
+	territories = {}
+	read_section(ini, "territory", function(k, v)
+		local home, visit = string.match(v, "([^|]*)|(.*)")
+		local t = { home = {}, all = {} }
+		for s in string.gmatch(home or v, "[%w_]+") do
+			t.home[s] = true
+			t.all[s] = true
+		end
+		for s in string.gmatch(visit or "", "[%w_]+") do
+			t.all[s] = true
+		end
+		territories[k] = t
+	end)
+	preset_borrow = {}
+	read_section(ini, "preset_fallback", function(k, v) preset_borrow[k] = v end)
+	camp_laws = {}
+	read_section(ini, "camp_law", function(k, v)
+		local host, radius = string.match(v, "([%w_]+)%s*,%s*(%d+)")
+		camp_laws[k] = { host = host, radius = tonumber(radius) }
+	end)
+	chapter_info = {}
+	read_section(ini, "chapters", function(k, v) chapter_info[tonumber(k)] = v end)
+	local added = {}
+	read_section(ini, "frontier", function(k, v) added[tonumber(k)] = v end)
+	frontiers = {}
+	local open = {}
+	for ch = 0, #chapter_info do
+		for s in string.gmatch(added[ch] or "", "[%w_]+") do
+			open[s] = true
+		end
+		frontiers[ch] = {}
+		for s in pairs(open) do frontiers[ch][s] = true end
+	end
+	level_budgets = {}
+	read_section(ini, "level_budget", function(k, v)
+		local a, b = string.match(v, "(%d+)%s*,%s*(%d+)")
+		level_budgets[k] = { tonumber(a), tonumber(b) }
+	end)
+	ceilings = {}
+	read_section(ini, "monster_ceiling", function(k, v)
+		local t = {}
+		for n in string.gmatch(v, "%d+") do table.insert(t, tonumber(n)) end
+		ceilings[k] = t
+	end)
+	census_log = ini:line_exist("settings", "census_log") and ini:r_bool("settings", "census_log")
+	values = t
+	active_name = name
+end
+
+function get(key)
+	if not values then load_preset() end
+	local v = values[key]
+	if v == nil then
+		abort("olr_cfg: no key '%s' in preset '%s'", tostring(key), tostring(active_name))
+	end
+	return v
+end
+
+function on(key)
+	return get(key) == true
+end
+
+-- [HE-PORT] "12,18" as two numbers
+function range(key)
+	local a, b = string.match(tostring(get(key)), "([%d%.]+)%s*,%s*([%d%.]+)")
+	if not a then
+		abort("olr_cfg: key '%s' is not a min,max pair", tostring(key))
+	end
+	return tonumber(a), tonumber(b)
+end
+
+-- [HE-PORT] "a,b,c" as a set
+function set(key)
+	local out = {}
+	for s in string.gmatch(tostring(get(key)), "[%w_]+") do
+		out[s] = true
+	end
+	return out
+end
+
+-- [HE-PORT] "day 12 14:05": the Zone's own day count (day 1 is the first) and clock, for the logs
+function stamp()
+	return string.format("day %d %02d:%02d", math.floor(timers.Get_Game_Seconds() / 86400) + 1, level.get_time_hours(), level.get_time_minutes())
+end
+
+-- [HE-PORT] the codev paused OLR while the player sleeps; with run_in_sleep the Zone goes on (sleep is a fast-forward)
+function sleep_paused()
+	if not ( sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() ) then return false end
+	return not on("run_in_sleep")
+end
+
+function preset_name()
+	if not values then load_preset() end
+	return active_name
+end
+
+function log_census()
+	if not values then load_preset() end
+	return census_log
+end
+
+-- [HE-PORT] a level OLR humans may not enter yet
+function level_closed(level_name)
+	if not on("story_gates") then return false end
+	local info = closed_levels[level_name or ""]
+	if not info then return false end
+	return not has_alife_info(info)
+end
+
+-- [HE-PORT] changes when a closed level opens, so the smart index knows to rebuild
+function closed_signature()
+	if not on("story_gates") then return "" end
+	local s = ""
+	for lvl in pairs(closed_levels) do
+		if level_closed(lvl) then s = s .. lvl end
+	end
+	return s
+end
+
+-- [HE-PORT] home levels and all allowed levels of a community, nil when it has no territory
+function territory(community)
+	if not on("territories") then return nil end
+	if community == "green" or community == "nebo" then community = "stalker" end
+	local t = territories[community]
+	if not t then return nil end
+	return t.home, t.all
+end
+
+function preset_for(level_name)
+	return preset_borrow[level_name] or level_name
+end
+
+function camp_list()
+	if not values then load_preset() end
+	return camp_laws
+end
+
+-- [HE-PORT] highest chapter whose info is set
+function chapter()
+	if not values then load_preset() end
+	for ch = #chapter_info, 1, -1 do
+		if has_alife_info(chapter_info[ch]) then return ch end
+	end
+	return 0
+end
+
+-- [HE-PORT] a preset as the story has it now: <name>@ch<N> in smart_terrain_presets.ltx for the highest N reached, if any
+local chapter_presets = {}
+function chapter_preset(name)
+	if not name or not on("chapter_presets") then return name end
+	local ch = chapter()
+	local key = name .. "|" .. ch
+	local found = chapter_presets[key]
+	if found then return found end
+	local ltx = dsh.cached_ini_file("misc\\smart_terrain_presets.ltx")
+	found = name
+	for c = ch, 0, -1 do
+		if ltx:section_exist(name .. "@ch" .. c) then
+			found = name .. "@ch" .. c
+			break
+		end
+	end
+	chapter_presets[key] = found
+	return found
+end
+
+function frontier_levels()
+	if not on("frontier") then return nil end
+	return frontiers[chapter()]
+end
+
+-- [HE-PORT] kind 1 is humans, 2 monsters; counts is OLR people per level
+function budget_of(kind, level_name)
+	local b = level_budgets[level_name or ""]
+	return b and b[kind] * get("budget_mult") or 0
+end
+
+function budget_open(kind, counts)
+	if not on("budgets") then return nil end
+	local below = on("population") and olr_population.open_levels(kind) or nil -- [HE-PORT] and the level under its target
+	local out = {}
+	for lvl in pairs(level_budgets) do
+		if (counts[lvl] or 0) < budget_of(kind, lvl) and ( not below or below[lvl] ) then out[lvl] = true end
+	end
+	return out
+end
+
+function budget_levels()
+	if not values then load_preset() end
+	return level_budgets
+end
+
+function intersect_levels(a, b)
+	if not b then return a end
+	if not a then return b end
+	local out = {}
+	for lvl in pairs(a) do
+		if b[lvl] then out[lvl] = true end
+	end
+	return out
+end
+
+-- [HE-PORT] how many respawner monsters this level may hold now, nil for no limit
+function monster_ceiling(level_name)
+	if not on("monster_ceiling") then return nil end
+	local t = ceilings[level_name or ""]
+	if not t then return nil end
+	return t[chapter() + 1] * get("ceiling_mult")
+end
+
+-- [HE-PORT] the first hours of a new game on the quiet levels; one roll per pick
+function grace_active()
+	local hours = get("grace_hours")
+	if not ( hours > 0 and db.actor ~= nil and db.oGameStartTime ~= nil ) then return false end
+	-- the timers count from midnight of day 1; a new game starts later that day
+	local start_hour = tonumber(string.match(system_ini():r_string("alife", "start_time"), "%d+")) or 0
+	return timers.Get_Game_Seconds() < ( start_hour + hours ) * 3600
+end
+
+function grace_blocked_levels()
+	if not grace_active() or math.random(100) <= get("grace_chance") then return nil end
+	return set("grace_levels")
+end
+
+-- [HE-PORT] OLR Monolith only exist past this story point
+function mono_open()
+	local info = get("mono_gate")
+	return info == "none" or has_alife_info(info)
+end
+
+function report()
+	if not values then load_preset() end
+	local keys = {}
+	for k in pairs(values) do table.insert(keys, k) end
+	table.sort(keys)
+	log2("[olr_cfg] preset=%s chapter=%d grace=%s", active_name, chapter(), tostring(grace_active()))
+	for i = 1, #keys do
+		log2("[olr_cfg]   %s = %s", keys[i], tostring(values[keys[i]]))
+	end
+	for lvl, info in pairs(closed_levels) do
+		log2("[olr_cfg]   level %s closed=%s (%s)", lvl, tostring(level_closed(lvl)), info)
+	end
+	if db.actor then
+		db.actor:give_game_news("olr_cfg: preset " .. active_name, "ui\\ui_iconsTotal", Frect():set(0, 0, 83, 47), 0, 15000)
+	end
+end
+
+-- [HE-PORT] test helper: OLR modules follow at once, respawners, fauna and wardrobe at the next launch
+function set_preset(name)
+	load_preset(name)
+	report()
+end

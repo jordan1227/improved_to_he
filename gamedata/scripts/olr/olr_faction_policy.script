@@ -88,6 +88,7 @@ danger_zones = {
 
 -- [HE-PORT]
 function no_wander( level_name )
+	if not olr_cfg.on( "free_wander" ) then return true end
 	return no_wander_levels[ level_name or "" ] == true
 end
 
@@ -117,13 +118,50 @@ function expand_comm(community)
 	if community == "stalker" then
 		return { "stalker", "green" }
 	end
-	if community == "dolg" then
-		return { "dolg", "military" }
-	end
-	if community == "military" then
-		return { "military", "dolg" }
+	-- [HE-PORT]
+	if olr_cfg.on("military_guests") then
+		if community == "dolg" then
+			return { "dolg", "military" }
+		end
+		if community == "military" then
+			return { "military", "dolg" }
+		end
 	end
 	return { community }
+end
+
+-- [HE-PORT] authored garrisons stay home; loners and OLR's own people may move
+function may_migrate(se, community)
+	if olr_trader_runs.on_run(se.id) then return false end
+	-- quest-staged people stay put until their quest lets them go (the Garbage hostage scene lost Orekh's two men)
+	if olr_protected.is_quest_bound(se) then return false end
+	if not olr_cfg.on("garrisons_stay") then return true end
+	if string.sub(se:section_name(), 1, 4) == "olr_" then return true end
+	return community == "stalker" or community == "green" or community == "nebo"
+end
+
+-- [HE-PORT] the engine cannot walk an online NPC to another level: near the player it only
+-- circles. Anyone bound to a smart elsewhere travels offline, and an NPC already online leaves
+-- only where the player is not next to him, so nobody vanishes in view.
+local TRANSIT_OFFLINE_DIST = 100
+
+function in_transit(se)
+	if not olr_cfg.on("transit_offline") then return false end
+	local sid = se:smart_terrain_id()
+	if sid == BAD_OBJ_ID or not se:alive() then return false end
+	local smart = alife():object(sid)
+	if not smart then return false end
+	local here = olr_smart_index.object_level(se)
+	if not here or smart.level_name == here then return false end
+	-- quest locks stay put; anyone else bound elsewhere is on his way anyway
+	local name = se:name()
+	if olr_protected.is_always_protected(name) or he_mil_freedom_reinf.is_protected(name) or he_quest_target_lock.is_locked(name) then
+		return false
+	end
+	if se.online then
+		return db.actor ~= nil and se.position:distance_to(db.actor:position()) > TRANSIT_OFFLINE_DIST
+	end
+	return true
 end
 
 function is_stalker_comm(c)
@@ -131,6 +169,10 @@ function is_stalker_comm(c)
 end
 
 function level_denied(community, level_name, from_level)
+	-- [HE-PORT]
+	if community ~= "zombied" and human_comms[community] and from_level ~= level_name and olr_cfg.level_closed(level_name) then
+		return true
+	end
 	-- [HE-PORT]
 	if monster_levels[level_name] then
 		return human_comms[community] == true and from_level ~= level_name
@@ -200,8 +242,10 @@ function cross_accepts(smart, community)
 	if not src then return false end
 	local gp = smart and smart.gparams
 	if not gp or not cross_types[gp.type] then return false end
+	local guests = olr_cfg.on("military_guests") -- [HE-PORT]
+	if community == "military" and not guests then return false end
 	for i = 1, #src do
-		if native_accepts(smart, src[i]) then
+		if ( guests or src[i] ~= "military" ) and native_accepts(smart, src[i]) then
 			return true
 		end
 	end

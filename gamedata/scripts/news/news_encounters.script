@@ -1,0 +1,815 @@
+-- [HE-PORT] Announced zone encounters: sightings now, ambushes and infestations later.
+-- docs/NEWS_SYSTEM_DESIGN.md 5. Data in config\misc\he_zone_encounters.ltx, text in string_table_he_news.
+--
+-- fl news_encounters.list()              every template and why it can or cannot fire
+-- fl news_encounters.list("agr")         the same, ids containing "agr"
+-- fl news_encounters.fire("id")          fire now, ignoring story gates and kind switches
+-- fl news_encounters.tick(n)             run n normal ticks now
+-- fl news_encounters.state()             timers, tracked members, open orders
+-- fl news_encounters.complete_order("id") as if the player killed every target of that order
+-- fl news_encounters.expire_now()        make all cooldowns, ttl and orders due
+-- fl news_encounters.validate()          check the data
+local INI_PATH = "misc\\he_zone_encounters.ltx"
+local STATE_KEY = "he_enc_state"
+local DIALOG = "miniquest_monsters_dlg"
+local DONE_LINES = 8
+local GONE_LINES = 5
+local GONE_NAMED_LINES = 3
+local NO_ROOM_RETRY = 120 -- game minutes until the next try when nothing could fire
+local DAY_BEGIN, DAY_END = 6, 21
+
+local templates = nil
+local order_ids = nil
+local validated = false
+
+local function split(s)
+	local out = {}
+	for w in string.gmatch(s or "", "[^,%s]+") do
+		table.insert(out, w)
+	end
+	return out
+end
+
+local function read_str(ini, sec, key, default)
+	if ini:line_exist(sec, key) then
+		return ini:r_string(sec, key)
+	end
+	return default
+end
+
+local function read_num(ini, sec, key, default)
+	if ini:line_exist(sec, key) then
+		return tonumber(ini:r_string(sec, key)) or default
+	end
+	return default
+end
+
+local function read_spawn(ini, id)
+	local out = {}
+	local n = 1
+	while ini:line_exist(id, "spawn" .. n) do
+		local f = split(ini:r_string(id, "spawn" .. n))
+		if #f ~= 7 then
+			abort("news_encounters: [%s] spawn%d needs section,count,x,y,z,lv,gv", id, n)
+		end
+		table.insert(out, {
+			section = f[1], count = tonumber(f[2]),
+			pos = { tonumber(f[3]), tonumber(f[4]), tonumber(f[5]) },
+			lv = tonumber(f[6]), gv = tonumber(f[7]),
+		})
+		n = n + 1
+	end
+	return out
+end
+
+local function load_templates()
+	if templates then return end
+	local ini = ini_file(INI_PATH)
+	templates = {}
+	order_ids = {}
+	for i = 0, ini:line_count("he_zone_encounters") - 1 do
+		local res, id = ini:r_line("he_zone_encounters", i, "", "")
+		if id and id ~= "" then
+			if not ini:section_exist(id) then
+				abort("news_encounters: no section [%s] in %s", id, INI_PATH)
+			end
+			local t = {
+				id = id,
+				kind = read_str(ini, id, "kind", "sighting"),
+				level = read_str(ini, id, "level", ""),
+				tier = read_num(ini, id, "tier", 1),
+				has_info = split(read_str(ini, id, "has_info", "")),
+				no_info = split(read_str(ini, id, "no_info", "")),
+				min_chapter = read_num(ini, id, "min_chapter", 0),
+				max_chapter = read_num(ini, id, "max_chapter", 4),
+				window = read_str(ini, id, "window", "any"),
+				cooldown = read_num(ini, id, "cooldown", 120),
+				ttl = read_num(ini, id, "ttl", 0),
+				sender = read_str(ini, id, "sender", "nearest"),
+				icon = read_str(ini, id, "icon", "default"),
+				npc = read_str(ini, id, "npc", nil),
+				alive = read_num(ini, id, "alive", nil),
+				reward = read_str(ini, id, "reward", nil),
+				reward_hours = read_num(ini, id, "reward_hours", 36),
+				text = split(read_str(ini, id, "text", "")),
+				spawn = read_spawn(ini, id),
+				anchor = read_str(ini, id, "anchor", nil),
+				corpses = split(read_str(ini, id, "corpses", "")),
+				alpha = read_str(ini, id, "alpha", nil),
+			}
+			local a = split(read_str(ini, id, "anchor_spawn", ""))
+			t.anchor_section, t.anchor_count = a[1], tonumber(a[2])
+			templates[id] = t
+			table.insert(order_ids, id)
+		end
+	end
+end
+
+local function new_state()
+	return { next_tick = nil, cool = {}, level_cool = {}, tracked = {}, orders = {} }
+end
+
+local function get_state()
+	local st = get_value(STATE_KEY)
+	if type(st) ~= "table" then st = new_state() end
+	return st
+end
+
+local function put_state(st)
+	set_value(STATE_KEY, st)
+end
+
+local function now()
+	return news_main.game_minutes()
+end
+
+local function level_of(gv)
+	return alife():level_name(game_graph():vertex(gv):level_id())
+end
+
+local function any_info(list)
+	for i = 1, #list do
+		if has_alife_info(list[i]) then return true end
+	end
+	return false
+end
+
+local function grace_level(lname)
+	return olr_cfg.grace_active() and olr_cfg.set("grace_levels")[lname] == true
+end
+
+-- [HE-PORT] npc is a character profile, most givers' object names differ; the story id finds the object
+local function giver(t)
+	if not t.npc then return nil end
+	if t.alive then return alife():story_object(t.alive) end
+	return g_sim:object(t.npc)
+end
+
+-- nil when fine, otherwise why not
+local function giver_problem(t)
+	if t.npc then
+		local g = giver(t)
+		if not g then return "giver not in the world" end
+		if not g:alive() then return "giver dead" end
+	elseif t.alive and not news_main.isAlive(t.alive) then
+		return "source dead"
+	end
+	return nil
+end
+
+-- [HE-PORT] Structural mistakes are FATAL, as bad data should be seen at once.
+function validate()
+	load_templates()
+	local ini = system_ini()
+	local warnings = 0
+	local unspawned = 0
+	for _, id in ipairs(order_ids) do
+		local t = templates[id]
+		if t.level == "" or #t.text == 0 then
+			abort("news_encounters: [%s] needs level and text", id)
+		end
+		for _, p in ipairs(t.spawn) do
+			if not ini:section_exist(p.section) then
+				abort("news_encounters: [%s] unknown section %s", id, p.section)
+			end
+			if not game_graph():valid_vertex_id(p.gv) then
+				abort("news_encounters: [%s] invalid gv %d", id, p.gv)
+			end
+			if level_of(p.gv) ~= t.level then
+				abort("news_encounters: [%s] gv %d is on %s, not %s", id, p.gv, level_of(p.gv), t.level)
+			end
+		end
+		if t.corpses[1] and not ini:section_exist(t.corpses[1]) then
+			abort("news_encounters: [%s] unknown section %s", id, t.corpses[1])
+		end
+		if t.anchor_section and not ini:section_exist(t.anchor_section) then
+			abort("news_encounters: [%s] unknown section %s", id, t.anchor_section)
+		end
+		if #t.spawn == 0 and not t.anchor then
+			abort("news_encounters: [%s] has neither spawn nor anchor", id)
+		end
+		if t.reward and not news_main.miniquest_rewards[t.reward] and t.reward ~= "lvl4" then
+			abort("news_encounters: [%s] unknown reward %s", id, t.reward)
+		end
+		local anchor_obj = t.anchor and g_sim:object(t.anchor)
+		if anchor_obj and level_of(anchor_obj.m_game_vertex_id) ~= t.level then
+			warnings = warnings + 1
+			log2("[news_enc] [%s] anchor %s is on %s, not %s", id, t.anchor, level_of(anchor_obj.m_game_vertex_id), t.level)
+		end
+		if t.anchor and not g_sim:object(t.anchor) then
+			warnings = warnings + 1
+			log2("[news_enc] [%s] anchor %s not found", id, t.anchor)
+		end
+		if t.npc then
+			local g = giver(t)
+			if not g then
+				unspawned = unspawned + 1
+				log2("[news_enc] [%s] giver %s not in the world", id, t.npc)
+			elseif g:profile_name() ~= t.npc then
+				warnings = warnings + 1
+				log2("[news_enc] [%s] story id %s is profile %s, not %s", id, tostring(t.alive), g:profile_name(), t.npc)
+			end
+		end
+		for _, k in ipairs(t.text) do
+			if game.translate_string(k) == k then
+				warnings = warnings + 1
+				log2("[news_enc] [%s] no text for %s", id, k)
+			end
+		end
+	end
+	validated = true
+	log2("[news_enc] validate: %d templates, %d warnings, %d givers not in the world", #order_ids, warnings, unspawned)
+end
+
+local function npc_has_order(st, npc)
+	for _, o in pairs(st.orders) do
+		if o.npc == npc then return true end
+	end
+	return false
+end
+
+local function in_window(t)
+	if t.window == "any" then return true end
+	local h = level.get_time_hours()
+	local day = h >= DAY_BEGIN and h < DAY_END
+	if t.window == "day" then return day end
+	return not day
+end
+
+local function sections_awake(t)
+	for _, p in ipairs(t.spawn) do
+		if not news_main.is_creature_day(p.section) then return false end
+	end
+	return true
+end
+
+-- [HE-PORT] nil when the template may fire, otherwise why not
+local function blocked_by(t, st, forced)
+	local time_now = now()
+	if not forced then
+		if t.kind == "ambush" and not olr_cfg.on("enc_ambush") then return "ambush off" end
+		if t.kind == "infestation" and not olr_cfg.on("enc_infestation") then return "infestation off" end
+		if #t.has_info > 0 and not any_info(t.has_info) then return "has_info" end
+		if #t.no_info > 0 and any_info(t.no_info) then return "no_info" end
+		local ch = olr_cfg.chapter()
+		if ch < t.min_chapter or ch > t.max_chapter then return "chapter" end
+		if not in_window(t) then return "window" end
+		if not sections_awake(t) then return "daytime section" end
+		if st.cool[t.id] and time_now < st.cool[t.id] then return "cooldown" end
+		if st.level_cool[t.level] and time_now < st.level_cool[t.level] then return "level cooldown" end
+		if grace_level(t.level) then return "grace" end
+		if t.kind ~= "sighting" then
+			local open = olr_cfg.frontier_levels()
+			if open and not open[t.level] then return "frontier" end
+		end
+	end
+	local problem = giver_problem(t)
+	if problem then return problem end
+	if t.npc and npc_has_order(st, t.npc) then return "giver busy" end
+	if t.anchor and not g_sim:object(t.anchor) then return "no anchor" end
+	return nil
+end
+
+-- [HE-PORT] all points as { section, count, pos, lv, gv }, nil if any is too close to the player
+local function preflight(t, min_dist)
+	local out = {}
+	for _, p in ipairs(t.spawn) do
+		local pos = vector():set(p.pos[1], p.pos[2], p.pos[3])
+		if not news_main.point_is_far(pos, p.lv, p.gv, min_dist) then return nil end
+		table.insert(out, { section = p.section, count = p.count, pos = pos, lv = p.lv, gv = p.gv })
+	end
+	if t.anchor then
+		local smart = g_sim:object(t.anchor)
+		if not smart then return nil end
+		if not news_main.point_is_far(smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id, min_dist) then
+			return nil
+		end
+		table.insert(out, {
+			section = t.anchor_section, count = t.anchor_count, pos = smart.position,
+			lv = smart.m_level_vertex_id, gv = smart.m_game_vertex_id,
+		})
+	end
+	return out
+end
+
+local function bind_monster(obj, anchor)
+	local pk = get_netpk(obj)
+	local data = pk:get()
+	if anchor then
+		data.custom_data = "[smart_terrains]\n" .. anchor .. " = true\n"
+		pk:set(data)
+		return
+	end
+	local cd = amk.parse_custom_data(data.custom_data)
+	if not cd.smart_terrains then cd.smart_terrains = {} end
+	cd.smart_terrains.none = "true"
+	data.custom_data = amk.gen_custom_data(cd)
+	pk:set(data)
+	local conds = {}
+	conds["none"] = xr_logic.parse_condlist(obj, "smart_terrains", "none", "true")
+	obj.smart_terrain_conditions = conds
+end
+
+-- [HE-PORT] ambush branch; a rolled rank outside the anchor smart's band is released at once
+local function bind_npc(obj, anchor)
+	if anchor and not olr_smart_index.rank_fits(anchor, obj:community(), obj:rank()) then
+		alife():release(obj, true)
+		return false
+	end
+	local pk = get_netpk(obj)
+	local data = pk:get()
+	data.custom_data = "[smart_terrains]\n" .. (anchor or "none") .. " = true\n"
+	pk:set(data)
+	return true
+end
+
+local function spawn_all(t, points)
+	local members = {}
+	for _, p in ipairs(points) do
+		for i = 1, p.count do
+			local pos = vector():set(p.pos.x + lua_random(5), p.pos.y, p.pos.z + lua_random(5))
+			local obj = alife():create(p.section, pos, p.lv, p.gv)
+			if IsMonster(obj) then
+				bind_monster(obj, t.anchor)
+				table.insert(members, { id = obj.id, sec = p.section })
+			elseif bind_npc(obj, t.anchor) then
+				table.insert(members, { id = obj.id, sec = p.section })
+			end
+		end
+	end
+	return members
+end
+
+-- [HE-PORT] the engine gives a new stalker its supplies at creation; a flavour body keeps none
+local function strip_bodies(bodies)
+	local wanted = {}
+	for _, id in ipairs(bodies) do wanted[id] = true end
+	local junk = {}
+	for id, o in alife():objects() do
+		if wanted[o.parent_id] then table.insert(junk, o) end
+	end
+	for _, o in ipairs(junk) do alife():release(o, true) end
+end
+
+-- [HE-PORT] dead on creation, no loot; death_droped keeps death_manager away, as in sak.create_corpse
+local function spawn_corpses(t, points)
+	local out = {}
+	if not t.corpses[1] then return out end
+	local p = points[1]
+	for i = 1, tonumber(t.corpses[2]) or 1 do
+		local pos = vector():set(p.pos.x + lua_random(-4, 4), p.pos.y + 1, p.pos.z + lua_random(-4, 4))
+		local obj = alife():create(t.corpses[1], pos, p.lv, p.gv)
+		local pk = get_netpk(obj)
+		local data = pk:get()
+		data.health = 0
+		data.upd.health = 0
+		data.custom_data = "[dont_spawn_character_supplies]\n[dont_spawn_loot]\n[smart_terrains]\nnone = true\n"
+		pk:set(data)
+		local se_obj = alife():object(obj.id) or obj
+		se_obj.death_droped = true
+		table.insert(out, obj.id)
+	end
+	strip_bodies(out)
+	return out
+end
+
+-- [HE-PORT] sak_off_corpses leaves these for the ttl, or they would vanish before the player arrives
+function keeps_corpse(id)
+	local st = get_value(STATE_KEY)
+	if type(st) ~= "table" then return false end
+	for _, m in ipairs(st.tracked) do
+		if m.corpse and m.id == id then return true end
+	end
+	return false
+end
+
+-- [HE-PORT] "" for Pripyat before the Scorcher; the level name is better than a hole in the sentence
+local function where_text(t, points)
+	if game.translate_string("he_news_lang") == "eng" then
+		return game.translate_string("he_where_" .. t.level)
+	end
+	local w = news_main.get_point_description(t.level, points[1].pos)
+	if w == "" then
+		w = news_data.level_name[t.level] and news_data.level_name[t.level][2] or ""
+	end
+	return w
+end
+
+local function sender_of(t, points)
+	local kind = t.sender
+	if kind == "unknown" then
+		return game.translate_string("he_enc_name_unknown")
+	end
+	if string.sub(kind, 1, 5) == "name:" then
+		return game.translate_string(string.sub(kind, 6))
+	end
+	local author = news_main.get_nearest_stalker(t.level, points[1].pos, 200, 0)
+	if author then
+		local name = news_main.get_npc_name(author)
+		if name and name ~= "" then return name end
+	end
+	local name, sname = amk_names_lists.get_strings()
+	return name .. " " .. sname
+end
+
+local function announce(t, points)
+	local text = game.translate_string(t.text[lua_random(#t.text)])
+	if string.find(text, "$where", 1, true) then
+		text = string.gsub(text, "%$where", where_text(t, points))
+	end
+	he_pda_news.enqueue("sak", text, sender_of(t, points), lua_random(1, 8), 15, t.icon, "pda_news", "gray")
+end
+
+local function fire_template(t, st, points)
+	local members = spawn_all(t, points)
+	if #members == 0 then return false end
+	local time_now = now()
+	st.cool[t.id] = time_now + t.cooldown * 60
+	st.level_cool[t.level] = time_now + olr_cfg.get("enc_region_cooldown") * 60
+	for _, m in ipairs(members) do
+		m.tid = t.id
+		m.expire = t.ttl > 0 and (time_now + t.ttl * 60) or 0
+		table.insert(st.tracked, m)
+	end
+	if t.alpha then olr_alpha.make(members[1].id, game.translate_string(t.alpha)) end -- [HE-PORT]
+	local bodies = spawn_corpses(t, points)
+	for _, id in ipairs(bodies) do
+		table.insert(st.tracked, {
+			id = id, sec = t.corpses[1], tid = t.id, corpse = true, unswept = true,
+			expire = t.ttl > 0 and (time_now + t.ttl * 60) or 0,
+		})
+	end
+	if t.npc and t.reward then
+		local ids = {}
+		for _, m in ipairs(members) do table.insert(ids, m.id) end
+		st.orders[t.id] = {
+			npc = t.npc, npc_id = giver(t).id, reward = t.reward,
+			expire = time_now + t.reward_hours * 60,
+			members = ids, secs = members[1].sec, actor_kills = 0, done = false,
+		}
+	end
+	announce(t, points)
+	put_state(st)
+	log2("[news_enc] fired %s on %s, %d spawned, level=%s", t.id, t.level, #members, level.name())
+	return true
+end
+
+local function local_only(list)
+	local region = olr_smart_index.region_levels()
+	if not region then return list end
+	local out = {}
+	for _, t in ipairs(list) do
+		if region[t.level] then table.insert(out, t) end
+	end
+	return out
+end
+
+local function shuffled(list)
+	for i = #list, 2, -1 do
+		local j = lua_random(i)
+		list[i], list[j] = list[j], list[i]
+	end
+	return list
+end
+
+local function try_fire(list, st)
+	local min_dist = olr_cfg.get("enc_min_dist")
+	for _, t in ipairs(shuffled(list)) do
+		local points = preflight(t, min_dist)
+		if points and fire_template(t, st, points) then return t end
+	end
+	return nil
+end
+
+-- [HE-PORT] gates first, so a closed template never costs a tick; a point too close only skips that one
+local function run_tick(st)
+	if not validated then validate() end
+	local eligible = {}
+	for _, id in ipairs(order_ids) do
+		if not blocked_by(templates[id], st, false) then
+			table.insert(eligible, templates[id])
+		end
+	end
+	if #eligible == 0 then return nil end
+	if lua_random(100) <= olr_cfg.get("enc_local_bias") then
+		local near = local_only(eligible)
+		if #near > 0 then
+			local t = try_fire(near, st)
+			if t then return t end
+		end
+	end
+	return try_fire(eligible, st)
+end
+
+local function close_order(st, tid, order)
+	sak_dialog.remove_npc_from_npc_targets("npc_miniquest_" .. order.npc)
+	st.orders[tid] = nil
+end
+
+local function finish_order(st, tid, order)
+	if order.actor_kills <= 0 then
+		log2("[news_enc] order %s: targets gone without the player", tid)
+		local text
+		if order.killer_name then
+			text = game.translate_string("he_enc_gone_named_" .. lua_random(GONE_NAMED_LINES))
+			text = string.gsub(text, "%$name", function() return order.killer_name end)
+			olr_trader_runs.claim_reward(order.killer_id, order.npc_id, order.npc, order.reward) -- [HE-PORT]
+		else
+			text = game.translate_string("he_enc_gone_" .. lua_random(GONE_LINES))
+		end
+		he_pda_news.enqueue("sak", text,
+			game.translate_string("he_enc_name_" .. order.npc), lua_random(1, 8), 15, "default", "pda_news", "gray")
+		close_order(st, tid, order)
+		return
+	end
+	if not g_sim:object(order.npc_id) then
+		log2("[news_enc] order %s: giver gone", tid)
+		close_order(st, tid, order)
+		return
+	end
+	order.done = true
+	order.members = {}
+	-- a finished job stays open long enough to walk back
+	order.expire = math.max(order.expire, now() + olr_cfg.get("enc_reward_wait") * 60)
+	sak_dialog.add_npc_id_to_npc_targets(order.npc_id, DIALOG, "npc_miniquest_" .. order.npc)
+	local name = game.translate_string("he_enc_name_" .. order.npc)
+	local line = game.translate_string("he_enc_done_" .. lua_random(DONE_LINES))
+	sak.send_tip_local(string.format(line, name), game.translate_string("he_enc_done_header"), 0, 15, "g_g", "no", "yellow")
+	log2("[news_enc] order %s done, giver %s", tid, order.npc)
+end
+
+local function member_alive(id, sec)
+	local obj = alife():object(id)
+	return obj ~= nil and obj:section_name() == sec and obj.alive ~= nil and obj:alive()
+end
+
+-- [HE-PORT] kotovod/monster_news sends every monster death here
+function on_target_death(victim, who)
+	local st = get_state()
+	local vid = victim:id()
+	for tid, order in pairs(st.orders) do
+		if not order.done then
+			for i = #order.members, 1, -1 do
+				if order.members[i] == vid then
+					table.remove(order.members, i)
+					if monster_parts.credited_to_actor(vid, who) then -- the player's kill at 20% of its health (docs/PART_LOOT_DESIGN.md)
+						order.actor_kills = order.actor_kills + 1
+					elseif who and IsStalker(who) then
+						order.killer_name = news_main.get_npc_name(who)
+						order.killer_id = who:id()
+					end
+					if #order.members == 0 then
+						finish_order(st, tid, order)
+					end
+					put_state(st)
+					return
+				end
+			end
+		end
+	end
+end
+
+local function member_secs(st, id)
+	for _, m in ipairs(st.tracked) do
+		if m.id == id then return m.sec end
+	end
+	return nil
+end
+
+-- [HE-PORT] olr_night leaves an encounter's own mutants where the text says they are
+function tracked_ids()
+	local out = {}
+	for _, m in ipairs(get_state().tracked or {}) do out[m.id] = true end
+	return out
+end
+
+-- [HE-PORT] news_main.on_offline_death: the name for the giver's line; the tick sees the death itself
+function note_offline_killer(victim, killer)
+	if not IsStalker(killer) then return end
+	local st = get_state()
+	for _, order in pairs(st.orders) do
+		for _, id in ipairs(order.members) do
+			if id == victim.id then
+				order.killer_name = news_main.get_npc_name(killer)
+				order.killer_id = killer.id
+				put_state(st)
+				return
+			end
+		end
+	end
+end
+
+-- [HE-PORT] offline battles and releases send no death signal; the section check guards a reused id
+local function update_orders(st)
+	local time_now = now()
+	for tid, order in pairs(st.orders) do
+		if not order.done then
+			for i = #order.members, 1, -1 do
+				local id = order.members[i]
+				if not member_alive(id, member_secs(st, id) or order.secs) then
+					table.remove(order.members, i)
+				end
+			end
+			if #order.members == 0 then
+				finish_order(st, tid, order)
+			end
+		end
+		if st.orders[tid] and time_now >= order.expire then
+			log2("[news_enc] order %s expired", tid)
+			close_order(st, tid, order)
+		end
+	end
+end
+
+local function member_in_open_order(st, id)
+	for _, order in pairs(st.orders) do
+		for _, m in ipairs(order.members) do
+			if m == id then return true end
+		end
+	end
+	return false
+end
+
+local function update_tracked(st)
+	local time_now = now()
+	local here = level.name()
+	local unswept = {}
+	for _, m in ipairs(st.tracked) do
+		if m.unswept then
+			table.insert(unswept, m.id)
+			m.unswept = nil
+		end
+	end
+	-- a second pass in case supplies arrived after the creation frame
+	if #unswept > 0 then strip_bodies(unswept) end
+	for i = #st.tracked, 1, -1 do
+		local m = st.tracked[i]
+		local obj = alife():object(m.id)
+		if not obj or obj:section_name() ~= m.sec or (not m.corpse and obj.alive and not obj:alive()) then
+			table.remove(st.tracked, i)
+		elseif m.expire > 0 and time_now >= m.expire and not obj.online
+			and level_of(obj.m_game_vertex_id) ~= here and not member_in_open_order(st, m.id) then
+			log2("[news_enc] released %s id=%d (%s)", m.sec, m.id, tostring(m.tid))
+			alife():release(obj, true)
+			table.remove(st.tracked, i)
+		end
+	end
+end
+
+local function next_period()
+	local a, b = olr_cfg.range("enc_period")
+	return math.floor((a + (b - a) * math.random()) * 60)
+end
+
+local function may_tick()
+	if not he_pda_model.get_pda() then return false end
+	local blow = get_value("blowout", -1)
+	return not (blow > -1 and blow < 5)
+end
+
+-- [HE-PORT] called from news_main.on_news when enc_channel is on
+function update()
+	if not db.actor then return end
+	load_templates()
+	local st = get_state()
+	update_orders(st)
+	update_tracked(st)
+	local time_now = now()
+	if not st.next_tick then
+		st.next_tick = time_now + next_period()
+	elseif time_now >= st.next_tick and may_tick() then
+		if run_tick(st) then
+			st.next_tick = time_now + next_period()
+		else
+			st.next_tick = time_now + NO_ROOM_RETRY
+		end
+	end
+	put_state(st)
+end
+
+-- [HE-PORT] the dialog action behind news_main.miniquest_reward
+function pay_reward(npc)
+	local st = get_state()
+	local npc_id = npc:id()
+	for tid, order in pairs(st.orders) do
+		if order.done and order.npc_id == npc_id then
+			local table_name = order.reward == "lvl4" and "lvl3" or order.reward
+			local rolls = order.reward == "lvl4" and 2 or 1
+			for i = 1, rolls do
+				local rand = dsh.get_next_random("miniquest_reward", 1, #news_main.miniquest_rewards[table_name])
+				loadstring(news_main.miniquest_rewards[table_name][rand])()
+			end
+			close_order(st, tid, order)
+			put_state(st)
+			log2("[news_enc] order %s paid (%s)", tid, order.reward)
+			return
+		end
+	end
+end
+
+-- [HE-PORT] dialog preconditions: the thanks line of the order this giver has finished
+local function done_order_of(first, second)
+	local npc_id = sak_dialog.who_is_npc(first, second):id()
+	for tid, order in pairs(get_state().orders) do
+		if order.done and order.npc_id == npc_id then return tid end
+	end
+	return nil
+end
+
+function order_is(tid, first, second)
+	return done_order_of(first, second) == tid
+end
+
+-- generic thanks, so the dialog never runs out of phrases
+function order_is_generic(first, second)
+	return done_order_of(first, second) == nil
+end
+
+-- test helpers ---------------------------------------------------------------------
+
+function list(filter)
+	load_templates()
+	local st = get_state()
+	local open = 0
+	for _, id in ipairs(order_ids) do
+		if not filter or string.find(id, filter, 1, true) then
+			local t = templates[id]
+			local why = blocked_by(t, st, false)
+			if not why then open = open + 1 end
+			log2("[news_enc] %-28s %-14s %-11s %s", id, t.level, t.kind, why or "OPEN")
+		end
+	end
+	log2("[news_enc] open now: %d, chapter %d, grace %s", open, olr_cfg.chapter(), tostring(olr_cfg.grace_active()))
+end
+
+function fire(id)
+	load_templates()
+	local t = templates[id]
+	if not t then
+		log2("[news_enc] no template %s", tostring(id))
+		return
+	end
+	local st = get_state()
+	local why = blocked_by(t, st, true)
+	if why then
+		log2("[news_enc] %s blocked: %s", id, why)
+		return
+	end
+	local points = preflight(t, olr_cfg.get("enc_min_dist"))
+	if not points then
+		log2("[news_enc] %s: a point is closer than enc_min_dist to the player", id)
+		return
+	end
+	fire_template(t, st, points)
+end
+
+function tick(n)
+	load_templates()
+	for i = 1, n or 1 do
+		local st = get_state()
+		local t = run_tick(st)
+		put_state(st)
+		log2("[news_enc] tick %d: %s", i, t and t.id or "nothing eligible")
+	end
+end
+
+function state()
+	local st = get_state()
+	local time_now = now()
+	log2("[news_enc] preset=%s channel=%s next_tick in %s h", olr_cfg.preset_name(), tostring(olr_cfg.on("enc_channel")),
+		st.next_tick and string.format("%.1f", (st.next_tick - time_now) / 60) or "unset")
+	for _, m in ipairs(st.tracked) do
+		log2("[news_enc] tracked id=%d %s (%s) expires in %.1f h", m.id, m.sec, tostring(m.tid), (m.expire - time_now) / 60)
+	end
+	for tid, o in pairs(st.orders) do
+		log2("[news_enc] order %s giver=%s done=%s targets=%d player_kills=%d reward=%s expires in %.1f h", tid, o.npc,
+			tostring(o.done), #o.members, o.actor_kills, o.reward, (o.expire - time_now) / 60)
+	end
+end
+
+function complete_order(id)
+	local st = get_state()
+	local order = st.orders[id]
+	if not order or order.done then
+		log2("[news_enc] no open order %s", tostring(id))
+		return
+	end
+	order.actor_kills = math.max(order.actor_kills, 1)
+	order.members = {}
+	finish_order(st, id, order)
+	put_state(st)
+end
+
+function expire_now()
+	local st = get_state()
+	local time_now = now()
+	st.next_tick = time_now
+	for k in pairs(st.cool) do st.cool[k] = time_now end
+	for k in pairs(st.level_cool) do st.level_cool[k] = time_now end
+	for _, m in ipairs(st.tracked) do
+		if m.expire > 0 then m.expire = time_now end
+	end
+	for _, o in pairs(st.orders) do o.expire = time_now end
+	put_state(st)
+	log2("[news_enc] everything due")
+end

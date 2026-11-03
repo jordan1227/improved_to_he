@@ -133,6 +133,7 @@ void InitConsole()
     CORE_FEATURE_SET(cop_style_scope_texture, "features");    
     CORE_FEATURE_SET(stop_anim_playing, "features");
     CORE_FEATURE_SET(corpses_collision, "features");
+    CORE_FEATURE_SET(corpses_collision_actor_only, "features");
     CORE_FEATURE_SET(more_hide_weapon, "features");
     CORE_FEATURE_SET(keep_inprogress_tasks_only, "features");
     CORE_FEATURE_SET(show_dialog_numbers, "features");

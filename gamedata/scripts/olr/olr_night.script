@@ -1,0 +1,248 @@
+-- [HE-PORT] Night instincts, docs/ALIFE_DESIGN.md Phase 5: at dusk some hunters go out on open ground
+-- nearby, at dawn back where they were. Moved unseen, as scavengers are. Nobody is created. Only mutants out of the player's range move,
+-- never onto a camp, and never an encounter's own. Every decision is logged as [olr_night].
+-- fl olr_night.report()                what is out tonight, and where it came from
+-- fl olr_night.force_dusk()            this level goes out now, whatever the hour; or force_dusk("l02_garbage")
+-- fl olr_night.force_dawn()            everyone offline goes home now
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_night"
+local NEAR_ACTOR = 165
+
+local cfg = nil
+
+local function config()
+	if cfg then return cfg end
+	cfg = { species = {}, levels = {} }
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("night") - 1 do
+		local _, key, val = ini:r_line("night", i, "", "")
+		cfg[key] = tonumber(val) or val
+	end
+	for name in string.gmatch(cfg.night_species, "[%w_]+") do table.insert(cfg.species, name) end
+	for name in string.gmatch(cfg.night_levels, "[%w_]+") do cfg.levels[name] = true end
+	return cfg
+end
+
+local function nlog(fmt, ...)
+	log2("[olr_night] " .. fmt, ...)
+end
+
+local function get_state()
+	return get_value(KEY) or { out = {}, done = {} }
+end
+
+local function put_state(st)
+	set_value(KEY, st)
+end
+
+local function is_night()
+	local c, h = config(), level.get_time_hours()
+	return h >= c.night_start_h or h < c.night_end_h
+end
+
+-- the same number from dusk until the next morning
+local function night_number()
+	return math.floor(( timers.Get_Game_Seconds() - config().night_end_h * 3600 ) / 86400)
+end
+
+local function is_hunter(section)
+	for _, name in ipairs(config().species) do
+		if string.find(section, name, 1, true) then return true end
+	end
+	return false
+end
+
+local function unseen(se, lvl)
+	return not se.online and ( lvl ~= level.name() or se.position:distance_to(db.actor:position()) > NEAR_ACTOR )
+end
+
+-- the hunters who could go out on this level; most mutants have no smart, so none is asked of them
+local function hunters(st, lvl)
+	local sim = alife()
+	local kept = news_encounters.tracked_ids()
+	local out = {}
+	local skipped = { encounter = 0, seen = 0, out = 0, protected = 0 }
+	for _, id in ipairs(olr_offline_task.cached_monsters()) do
+		local se = sim:object(id)
+		if se and IsMonster(se) and se:alive() and is_hunter(se:section_name()) and olr_smart_index.object_level(se) == lvl then
+			if st.out[tostring(id)] then skipped.out = skipped.out + 1
+			elseif kept[id] then skipped.encounter = skipped.encounter + 1
+			elseif olr_protected.is_protected_monster(se) then skipped.protected = skipped.protected + 1
+			elseif not unseen(se, lvl) then skipped.seen = skipped.seen + 1
+			else table.insert(out, se) end
+		end
+	end
+	return out, skipped
+end
+
+local function camps_on(lvl)
+	local list = {}
+	-- the camp list only has the hubs: wherever people are is a camp tonight
+	local sim = alife()
+	for _, comm in ipairs({ "stalker", "green", "dolg", "freedom", "ecolog", "military", "killer", "bandit", "monolith" }) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local se = sim:object(id)
+			if se and IsStalker(se) and se:alive() and olr_smart_index.object_level(se) == lvl then table.insert(list, se.position) end
+		end
+	end
+	for name in pairs(olr_cfg.camp_list()) do
+		local smart = olr_smart_index.get_level(name) == lvl and olr_smart_index.get_obj(name)
+		if smart then table.insert(list, smart.position) end
+	end
+	return list
+end
+
+-- smarts near this lair that are not a camp, or close to one
+local function open_ground(lair, lvl, camps)
+	local c = config()
+	local list = {}
+	local min2, max2 = c.night_min_dist * c.night_min_dist, c.night_radius * c.night_radius
+	for _, rec in ipairs(olr_smart_index.smarts_near(lvl, lair.position.x, lair.position.z)) do
+		if rec.d > max2 then break end
+		local smart = rec.d >= min2 and olr_smart_index.get_obj(rec.name)
+		if smart and not olr_cfg.camp_list()[rec.name] and olr_smart_index.is_story_open(rec.name) and not olr_smart_index.is_locked(rec.name) then
+			local clear = true
+			for _, pos in ipairs(camps) do
+				if smart.position:distance_to(pos) < c.night_camp_dist then clear = false end
+			end
+			if clear then table.insert(list, smart) end
+		end
+	end
+	return list
+end
+
+local function say_night(st, lvl, smart)
+	local c = config()
+	local region = olr_smart_index.region_levels()
+	if not ( region and region[lvl] and he_pda_model.get_pda() ) then return end
+	local n = timers.Get_Game_Seconds()
+	if n < ( st.news_next or 0 ) or math.random(100) > c.night_news_chance then return end
+	local key = olr_trader_runs.pick_line("olr_night_")
+	if not key then
+		nlog("no text for olr_night_")
+		return
+	end
+	st.news_next = n + c.night_news_cd_h * 3600
+	local where = news_main.localized_where(lvl, smart.position)
+	local text = string.gsub(game.translate_string(key), "%$where", function() return where end)
+	sak.send_tip(text, olr_trader_runs.other_name(), 0, 15, "default", "pda_news", "gray")
+	nlog("line %s, %s", key, where)
+end
+
+-- one seed and whoever is close to it go to one open smart, unseen; true if any went
+local function send_pack(st, seed, pool, lvl, camps)
+	local c = config()
+	local targets = open_ground(seed, lvl, camps)
+	if #targets == 0 then
+		nlog("%s id=%d: no open ground within %d m", seed:section_name(), seed.id, c.night_radius)
+		return nil
+	end
+	local smart = targets[math.random(#targets)]
+	if lvl == level.name() and smart.position:distance_to(db.actor:position()) <= NEAR_ACTOR then
+		nlog("%s id=%d: %s is in the player's range, stays", seed:section_name(), seed.id, smart:name())
+		return nil
+	end
+	local sent = 0
+	local sim = alife()
+	for _, se in ipairs(pool) do
+		if sent >= c.night_group_size then break end
+		if not st.out[tostring(se.id)] and se.position:distance_to(seed.position) <= c.night_pack_dist then
+			local pos = se.position
+			st.out[tostring(se.id)] = { sec = se:section_name(), to = smart:name(), x = pos.x, y = pos.y, z = pos.z, lv = se.m_level_vertex_id, gv = se.m_game_vertex_id }
+			sim:teleport_object(se.id, smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+			sent = sent + 1
+			nlog("%s id=%d goes out to %s", se:section_name(), se.id, smart:name())
+		end
+	end
+	return sent > 0 and smart or nil
+end
+
+local function go_out(st, lvl)
+	local c = config()
+	local camps = camps_on(lvl)
+	local pool, skipped = hunters(st, lvl)
+	local found = #pool
+	local moved = 0
+	for _ = 1, math.min(found, c.night_groups * 3) do
+		if moved >= c.night_groups then break end
+		local smart = send_pack(st, pool[math.random(found)], pool, lvl, camps)
+		if smart then
+			moved = moved + 1
+			say_night(st, lvl, smart)
+		end
+	end
+	nlog("%s at dusk: %d hunters free (skipped: %d encounter, %d in view, %d already out, %d protected), %d packs out, %d camps kept clear", lvl, found, skipped.encounter, skipped.seen, skipped.out, skipped.protected, moved, #camps)
+end
+
+local function go_home(st, limit)
+	local sim = alife()
+	local done = 0
+	local here = level.name()
+	for key, rec in pairs(st.out) do
+		if done >= limit then break end
+		local se = sim:object(tonumber(key))
+		if not ( se and IsMonster(se) and se:alive() and se:section_name() == rec.sec ) or not rec.x then
+			nlog("id=%s %s did not see the morning", key, rec.sec)
+			st.out[key] = nil
+		elseif not se.online then
+			local pos = vector():set(rec.x, rec.y, rec.z)
+			local lvl = olr_smart_index.object_level(se)
+			if lvl ~= here or pos:distance_to(db.actor:position()) > NEAR_ACTOR then
+				sim:teleport_object(se.id, pos, rec.lv, rec.gv)
+				nlog("%s id=%s goes home", rec.sec, key)
+				st.out[key] = nil
+				done = done + 1
+			end
+		end
+	end
+	return done
+end
+
+function update()
+	if not ( db.actor and olr_cfg.on("night_instincts") ) then return end
+	olr_smart_index.ensure()
+	local st = get_state()
+	if not is_night() then
+		if next(st.out) then
+			go_home(st, config().night_home_per_tick)
+			put_state(st)
+		end
+		return
+	end
+	if olr_cfg.grace_active() then return end
+	local tonight = night_number()
+	local region = olr_smart_index.region_levels()
+	for lvl in pairs(region or {}) do
+		if config().levels[lvl] and st.done[lvl] ~= tonight then
+			st.done[lvl] = tonight
+			go_out(st, lvl)
+			put_state(st)
+			return -- one level a tick
+		end
+	end
+end
+
+function report()
+	local st = get_state()
+	local n = 0
+	for key, rec in pairs(st.out) do
+		n = n + 1
+		local se = alife():object(tonumber(key))
+		nlog("  %s id=%s from %.0f,%.0f to %s on %s online=%s", rec.sec, key, rec.x or 0, rec.z or 0, rec.to, se and tostring(olr_smart_index.object_level(se)) or "?", se and tostring(se.online) or "?")
+	end
+	nlog("on=%s night=%s (number %d) out=%d", tostring(olr_cfg.on("night_instincts")), tostring(is_night()), night_number(), n)
+end
+
+function force_dusk(lvl)
+	olr_smart_index.ensure()
+	local st = get_state()
+	go_out(st, lvl or level.name())
+	put_state(st)
+end
+
+function force_dawn()
+	local st = get_state()
+	nlog("force_dawn: %d went home", go_home(st, 999))
+	put_state(st)
+end

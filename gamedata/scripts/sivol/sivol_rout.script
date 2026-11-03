@@ -1,0 +1,545 @@
+-- sivol_rout.script
+-- A broken NPC runs from a fight, to a friendly smart where it may (docs/ALIFE_TACTICS_DESIGN.md section 6).
+-- Same shape as sivol_pulse_npc: an evaluator + action in the motivation planner; while the property is
+-- true it overrides alife, combat and danger. The morale score and the faction table are in sivol_tactics.
+-- Hooks: modules.script (load_scheme), xr_logic.enable_generic_schemes (set_scheme, evaluator first),
+-- xr_motivator.addCommonPrecondition, and next to the pulse gates in xrs_battle_ai, rx_bandage, rx_gl,
+-- watcher_act, xr_companion, sivol_stealth_suspicion.
+--   g_loadstring sivol_rout.enabled = false
+-- The OLR preset key tactics_rout (misc/olr_alife.ltx) switches it off for the legacy preset.
+
+enabled = true
+log_events = true
+vigil_enabled = true   -- after a fight with no enemy left the NPC does not relax at once (see try_vigil)
+
+evid = 18977
+actid = 18977
+
+local CHECK_MS     = 500      -- morale re-check while fighting
+local CASCADE_MS   = 3000     -- at most one new rout per this
+local KICK_MS      = 2000     -- destination refresh while running
+local CORNER_DIST  = 8        -- an enemy this close ...
+local CORNER_MS    = 3000     -- ... for this long: turn and fight
+local CORNER_COOL  = 60000    -- no new rout this long after being cornered
+local END_COOL     = 15000    -- no new rout this long after any other end
+local CLEAR_MS     = 20000    -- enemy unseen this long ...
+local CLEAR_DIST   = 40       -- ... and this far away: the rout is over
+local ARRIVE_DIST  = 3
+local TIMEOUT_BASE = 60       -- s, plus one s per metre to the destination
+local AWAY_DIST    = { 40, 60 }
+local POST_MS      = { 3000, 6000 }  -- regroup pose after a rout that ended by distance or arrival
+local POST_ALERT   = 25              -- an enemy seen closer than this ends the regroup
+local POST_STATE   = { novice = "hide_no_wpn", experienced = "hide_na", veteran = "guard", master = "guard" }
+-- vigil: seconds an NPC stays wary after the last enemy is gone (walks towards where he was for the first 6),
+-- by rank; an enemy seen within VIGIL_ALERT ends it
+local VIGIL_MS         = { novice = { 6000, 10000 }, experienced = { 10000, 16000 }, veteran = { 14000, 22000 }, master = { 18000, 28000 } }
+local VIGIL_ALERT      = 60
+local VIGIL_MIN_COMBAT = 4000            -- a fight shorter than this is not followed by a vigil
+local VIGIL_WALK_MS    = 6000
+local VIGIL_WALK_MAX   = 12              -- m towards the last enemy position
+local HIDE_BONUS   = 40       -- m of distance a hidden vertex is worth when picking the away vertex
+
+-- state_mgr's "sprint" is the plain run animation with the gun out. The fast panicked run is the engine mental
+-- state anim.panic, so the rout gets a state of its own (state_lib.states is looked up by name).
+state_lib.states.rout_panic = {
+    weapon = "unstrapped",
+    movement = move.run,
+    mental = anim.panic,
+    bodystate = move.standing,
+    animstate = "stand",
+    animation = nil,
+}
+local FLEE_STATE = { novice = "rout_panic", experienced = "rout_panic", veteran = "rout_panic", master = "rout_panic" }
+local SHOUT = { novice = { "help", "story_reac_fear" }, experienced = { "story_reac_fear" }, veteran = { false }, master = { false } }
+-- schemes whose NPCs never rout (they follow somebody or are scripted travellers)
+local EXEMPT_SCHEMES = { companion = true, follower = true, karavan = true }
+
+local was_combat = {}   -- [npc id] = in_combat at the last evaluation
+local combat_t0 = {}    -- [npc id] = when the current fight started
+local last_epos = {}    -- [npc id] = { x, y, z } last known enemy position
+local track_t = {}
+local DANGER_TYPES = {
+    [danger_object.enemy_sound] = true, [danger_object.attack_sound] = true, [danger_object.attacked] = true,
+    [danger_object.grenade] = true, [danger_object.bullet_ricochet] = true,
+}
+local danger_logged = 0
+local state = {}        -- [npc id] = { engaged, t0, timeout, kind, name, lvid, dpos, epos, seen_t, corner_t, cool, force, next_check }
+local last_break = -100000
+
+local function rlog(fmt, ...)
+    if log_events then log2("[sivol_rout] " .. fmt, ...) end
+end
+
+local function preset_on()
+    return olr_cfg.on("tactics_rout")
+end
+
+local function rank_of(npc)
+    local r = ranks.get_obj_rank_name(npc)
+    return FLEE_STATE[r] and r or "experienced"
+end
+
+function status(id)
+    local s = state[id]
+    if s and s.engaged then
+        return string.format("ROUT(%s %s%s)", tostring(s.kind), tostring(s.name), s.post and " regroup" or "")
+    end
+    if s and s.cool and s.cool > time_global() then
+        return string.format("rout_cool=%.0fs", (s.cool - time_global()) / 1000)
+    end
+    return ""
+end
+
+-- why this NPC must not rout at all (nil = may)
+function refusal(npc)
+    if not npc:alive() then return "dead" end
+    local id = npc:id()
+    local st = db.storage[id]
+    local sch = st and st.active_scheme
+    if sch and EXEMPT_SCHEMES[sch] then return "scheme " .. sch end
+    if npc:story_id() < 4294967295 then return "story npc" end
+    local name = npc:name()
+    if olr_protected.is_no_offline_alife_obj(name) then return "protected" end
+    if olr_protected.is_travel_blocked(name) then return "travel blocked" end
+    if he_quest_target_lock.is_locked_id(id) then return "quest lock" end
+    if npc:is_talking() then return "talking" end
+    if xr_wounded.is_wounded(npc) then return "wounded" end
+    return nil
+end
+
+-- may this NPC change smart on a rout: tracked by OLR (or a respawner's), see section 6 "narrow scope"
+local function home_scope(npc)
+    local id = npc:id()
+    if sivol_tactics.test_ids[id] then return true end
+    if olr_squads.is_spawned(id) or olr_monster_squads.is_spawned(id) then return true end
+    return string.find(npc:name(), "_respawn", 1, true) ~= nil
+end
+
+local function enemy_of(npc)
+    local e = xrs_battle_ai.get_target(npc) or npc:best_enemy()
+    if e and e:alive() then return e end
+    return nil
+end
+
+-- is the vertex hidden from the enemy's eye: a static ray between them hits something first
+local function blocked_from(eye, vpos)
+    local to = vector():set(vpos.x, vpos.y + 1.5, vpos.z)
+    local dx, dy, dz = to.x - eye.x, to.y - eye.y, to.z - eye.z
+    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if dist <= 1 then return false end
+    local rq = level.ray_query(eye, vector():set(dx / dist, dy / dist, dz / dist), dist, rq_target.rqtStatic, nil)
+    return rq and rq.result and rq.range ~= nil and rq.range < dist - 0.5 or false
+end
+
+-- a vertex away from the enemy position, cover-first (see blocked_from), then the farthest
+local function away_vertex(npc, epos)
+    local pos = npc:position()
+    local dx, dz = pos.x - epos.x, pos.z - epos.z
+    local d = math.sqrt(dx * dx + dz * dz)
+    if d < 0.5 then
+        local a = math.random() * 2 * math.pi
+        dx, dz, d = math.cos(a), math.sin(a), 1
+    end
+    local want = AWAY_DIST[1] + math.random() * (AWAY_DIST[2] - AWAY_DIST[1])
+    local base = math.atan2(dz, dx)
+    -- the first leg prefers a vertex the enemy cannot see (a wall or a corner between us), then the farthest one
+    local best, best_score = nil, -1
+    local eye = vector():set(epos.x, epos.y + 1.5, epos.z)
+    for _, turn in ipairs({ 0, 0.6, -0.6, 1.2, -1.2, 1.8, -1.8 }) do
+        local a = base + turn
+        local lvid = level.vertex_in_direction(npc:level_vertex_id(), vector():set(math.cos(a), 0, math.sin(a)), want)
+        local vpos = level.vertex_position(lvid)
+        local score = vpos:distance_to(epos)
+        if blocked_from(eye, vpos) then score = score + HIDE_BONUS end
+        if score > best_score then best, best_score = lvid, score end
+    end
+    return best
+end
+
+local function smart_pos(smart_obj)
+    return vector():set(smart_obj.position.x, smart_obj.position.y, smart_obj.position.z)
+end
+
+-- the destination: a friendly smart (changing the NPC's smart where the scope allows), his own smart, or away
+local function choose_dest(npc, s, epos, forced)
+    local sim = alife()
+    local se = sim and sim:object(npc:id())
+    local pos = npc:position()
+    local here_e = pos:distance_to(epos)
+    s.kind, s.name, s.lvid, s.dpos = "away", nil, nil, nil
+    if se then
+        local comm = se:community()
+        if comm == "green" or comm == "nebo" then comm = "stalker" end
+        local cur_id = se:smart_terrain_id()
+        local cur = (cur_id and cur_id ~= BAD_OBJ_ID) and sim:object(cur_id) or nil
+        if home_scope(npc) then
+            local name = olr_smart_index.pick_nearest_friendly(se, comm, pos, epos)
+            if name then
+                local ok, why = olr_online_depart.rout_reassign(se, name)
+                if ok then
+                    local smart = olr_smart_index.get_obj(name)
+                    if smart then
+                        s.kind, s.name = "home", name
+                        s.lvid, s.dpos = smart.m_level_vertex_id, smart_pos(smart)
+                        return
+                    end
+                else
+                    rlog("%s: home %s refused: %s", npc:name(), name, tostring(why))
+                end
+            else
+                -- nothing on this level: a neighbour level is handed to the A-life brain; he still runs away now
+                local far = olr_smart_index.pick_migration(se, comm, cur and cur:name() or nil)
+                if far and olr_smart_index.object_level(se) ~= nil then
+                    local ok, why = olr_online_depart.rout_reassign(se, far)
+                    if ok then
+                        s.name = far
+                        rlog("%s: neighbour smart %s assigned, running away meanwhile", npc:name(), far)
+                    end
+                end
+            end
+        end
+        -- his own smart, if it is on this level and farther from the enemy than he is
+        if s.kind == "away" and not s.name and cur and cur.m_level_vertex_id and cur.position then
+            local ok, d = pcall(function() return pos:distance_to(cur.position) end)
+            if ok and d > 15 and cur.position:distance_to(epos) > here_e and olr_smart_index.object_level(cur) == level.name() then
+                s.kind, s.name = "own", cur:name()
+                s.lvid, s.dpos = cur.m_level_vertex_id, smart_pos(cur)
+                return
+            end
+        end
+    end
+    s.lvid = away_vertex(npc, epos)
+    s.dpos = level.vertex_position(s.lvid)
+end
+
+local function begin(npc, s, why, forced)
+    local now = time_global()
+    local enemy = enemy_of(npc)
+    local epos = enemy and vector():set(enemy:position().x, enemy:position().y, enemy:position().z)
+        or vector():set(db.actor:position().x, db.actor:position().y, db.actor:position().z)
+    choose_dest(npc, s, epos, forced)
+    local dist = npc:position():distance_to(s.dpos)
+    s.engaged = true
+    s.t0 = now
+    s.timeout = (TIMEOUT_BASE + dist) * 1000
+    s.epos = epos
+    s.seen_t = now
+    s.corner_t = nil
+    s.kick = 0
+    s.rank = rank_of(npc)
+    s.force = nil
+    s.shouted = false
+    s.post = nil
+    last_break = now
+    sivol_tactics.mark_broken(npc)
+    -- tell the friends who have not noticed the enemy yet
+    if enemy then xrs_battle_ai.notify_friends(npc, enemy) end
+    rlog("%s break score=%.2f why=%s dest=%s(%s) dist=%.0f enemy=%s", npc:name(),
+        sivol_tactics.last_score[npc:id()] and sivol_tactics.last_score[npc:id()][1] or 0, tostring(why),
+        tostring(s.kind), tostring(s.name), dist, enemy and enemy:name() or "none")
+    return true
+end
+
+local function finish(npc, s, why)
+    local now = time_global()
+    local e = enemy_of(npc)
+    local from = s.epos and npc:position():distance_to(s.epos) or -1
+    rlog("%s end why=%s dist=%.0f from the enemy, %.0f s after the break, hp=%.2f", npc:name(), why, from,
+        (now - s.t0) / 1000, npc.health)
+    s.engaged = nil
+    s.corner_t = nil
+    s.post = nil
+    s.walking = nil
+    s.cool = now + ((why == "cornered") and CORNER_COOL or END_COOL)
+end
+
+-- evaluator: engaged -> keep running until an end condition; otherwise score the morale
+class "evaluator_rout" (property_evaluator)
+
+function evaluator_rout:__init(name, st) super(nil, name)
+    self.st = st
+end
+
+local function end_reason(npc, s, now)
+    if now >= s.t0 + s.timeout then return "timeout" end
+    if s.dpos and s.kind ~= "away" and npc:position():distance_to(s.dpos) < ARRIVE_DIST then return "arrived" end
+    local e = enemy_of(npc)
+    if e then
+        local ep = e:position()
+        s.epos = vector():set(ep.x, ep.y, ep.z)
+        local d = npc:position():distance_to(ep)
+        if d <= CORNER_DIST and now - s.t0 >= CORNER_MS then
+            s.corner_t = s.corner_t or now
+            if now - s.corner_t >= CORNER_MS then return "cornered" end
+        else
+            s.corner_t = nil
+        end
+        if d < CLEAR_DIST or npc:see(e) then s.seen_t = now end
+    else
+        s.corner_t = nil
+    end
+    if now - s.seen_t >= CLEAR_MS and s.epos and npc:position():distance_to(s.epos) > CLEAR_DIST then
+        return "clear"
+    end
+    return nil
+end
+
+-- the fight is over and no enemy is left: stay wary for a while instead of relaxing at once
+local function try_vigil(npc, s, now, wounded_eva)
+    local id = npc:id()
+    if not vigil_enabled or not preset_on() then return false end
+    if now - (combat_t0[id] or now) < VIGIL_MIN_COMBAT then return false end
+    if npc.health < 0.3 or wounded_eva:evaluate() or npc:is_talking() then return false end
+    if npc:best_enemy() or xrs_battle_ai.primary_target[id] then return false end
+    if not sivol_tactics.row(npc) or refusal(npc) then return false end
+    local rank = rank_of(npc)
+    local pos = npc:position()
+    local ep = last_epos[id]
+    s.engaged = true
+    s.kind = "vigil"
+    s.name = nil
+    s.post = true
+    s.post_set = false
+    s.walking = nil
+    s.t0 = now
+    s.rank = rank
+    s.epos = ep and vector():set(ep.x, ep.y, ep.z) or nil
+    s.post_until = now + math.random(VIGIL_MS[rank][1], VIGIL_MS[rank][2])
+    s.walk_until = now + VIGIL_WALK_MS
+    s.hp0 = npc.health
+    s.lvid = nil
+    if s.epos then
+        local dx, dz = s.epos.x - pos.x, s.epos.z - pos.z
+        local d = math.sqrt(dx * dx + dz * dz)
+        if d > 8 then
+            s.lvid = level.vertex_in_direction(npc:level_vertex_id(), vector():set(dx / d, 0, dz / d), math.min(d - 5, VIGIL_WALK_MAX))
+        end
+    end
+    rlog("%s vigil for %.0f s (fight %.0f s, enemy last seen %s)", npc:name(), (s.post_until - now) / 1000,
+        (now - (combat_t0[id] or now)) / 1000, ep and string.format("%.0f m away", pos:distance_to(vector():set(ep.x, ep.y, ep.z))) or "nowhere")
+    return true
+end
+
+function evaluator_rout:evaluate()
+    if not enabled then return false end
+    local npc = self.object
+    local id = npc:id()
+    local now = time_global()
+    local s = state[id]
+    if not self.wounded_eva then
+        self.wounded_eva = npc:motivation_action_manager():evaluator(xr_evaluators_id.sidor_wounded_base + 0)
+    end
+    local cur = xrs_battle_ai.in_combat[id] and true or false
+    local prev = was_combat[id]
+    was_combat[id] = cur
+    if cur and not prev then combat_t0[id] = now end
+    if s and s.engaged then
+        -- the run needs "not wounded"; a wounded NPC keeping this true would leave no plan
+        if self.wounded_eva:evaluate() or npc:is_talking() or not npc:alive() then
+            finish(npc, s, "wounded")
+            return false
+        end
+        if s.post then
+            -- regroup: a guard pose for a few seconds, early end if an enemy shows up close
+            local e = enemy_of(npc)
+            local alert = (s.kind == "vigil") and VIGIL_ALERT or POST_ALERT
+            local shot = s.hp0 and npc.health < s.hp0 - 0.02
+            -- the danger planner is switched off while this runs: a new sound (a mutant behind him) must end it
+            local bd = npc:best_danger()
+            local danger = bd ~= nil and DANGER_TYPES[bd:type()] == true and bd:time() >= s.t0
+            if danger and danger_logged < 8 then
+                danger_logged = danger_logged + 1
+                rlog("%s danger type %s (t=%d, started %d)", npc:name(), tostring(bd:type()), bd:time(), s.t0)
+            end
+            if shot or danger or now >= s.post_until or (e and npc:see(e) and npc:position():distance_to(e:position()) < alert) then
+                finish(npc, s, shot and "hit" or (danger and "danger" or ((now >= s.post_until) and ((s.kind == "vigil") and "vigil over" or "regrouped") or "spotted")))
+                return false
+            end
+            return true
+        end
+        local why = end_reason(npc, s, now)
+        if why then
+            if why == "clear" or why == "arrived" then
+                s.post = true
+                s.post_set = false
+                s.post_until = now + math.random(POST_MS[1], POST_MS[2])
+                rlog("%s regroups (%s) for %.0f s", npc:name(), why, (s.post_until - now) / 1000)
+                return true
+            end
+            finish(npc, s, why)
+            return false
+        end
+        return true
+    end
+    if s and s.force then
+        s.force = nil
+        if self.wounded_eva:evaluate() then return false end
+        return begin(npc, s, "forced", true)
+    end
+    if prev and not cur then
+        if not s then
+            s = {}
+            state[id] = s
+        end
+        if try_vigil(npc, s, now, self.wounded_eva) then return true end
+    end
+    if not cur then return false end
+    -- where the enemy was, for the vigil (twice a second at most)
+    if not track_t[id] or now >= track_t[id] then
+        track_t[id] = now + 500
+        local te = enemy_of(npc)
+        if te then
+            local tp = te:position()
+            last_epos[id] = { x = tp.x, y = tp.y, z = tp.z }
+        end
+    end
+    if s and ((s.next_check and now < s.next_check) or (s.cool and now < s.cool)) then return false end
+    if not s then
+        s = {}
+        state[id] = s
+    end
+    s.next_check = now + CHECK_MS
+    if now - last_break < CASCADE_MS then return false end
+    if self.wounded_eva:evaluate() or npc:is_talking() then return false end
+    local r = sivol_tactics.row(npc)
+    if not r or r.rout_k <= 0 then return false end
+    if not preset_on() then return false end
+    local score, why = sivol_tactics.morale(npc, r)
+    if score < 1 then return false end
+    local refuse = refusal(npc)
+    if refuse then
+        if not s.refused or now - s.refused > 10000 then
+            s.refused = now
+            rlog("%s would break (score=%.2f why=%s) but is refused: %s", npc:name(), score, why, refuse)
+        end
+        return false
+    end
+    return begin(npc, s, why, false)
+end
+
+-- action
+class "action_rout" (action_base)
+
+function action_rout:__init(name, st) super(nil, name)
+    self.st = st
+end
+
+function action_rout:initialize()
+    action_base.initialize(self)
+    local npc = self.object
+    local s = state[npc:id()]
+    if not s then return end
+    npc:set_path_type(game_object.level_path)
+    npc:set_detail_path_type(move.line)
+    npc:set_desired_position()
+    npc:set_desired_direction()
+    if s.kind == "vigil" then return end
+    if s.lvid then utils.send_to_nearest_accessible_vertex(npc, s.lvid) end
+    state_mgr.set_state(npc, FLEE_STATE[s.rank] or "sprint")
+    s.kick = time_global() + KICK_MS
+    if not s.shouted then
+        s.shouted = true
+        local themes = SHOUT[s.rank]
+        local theme = themes and themes[math.random(#themes)]
+        if theme and xr_sound and xr_sound.set_sound_play then xr_sound.set_sound_play(npc, theme) end
+    end
+end
+
+function action_rout:execute()
+    action_base.execute(self)
+    local npc = self.object
+    local s = state[npc:id()]
+    if not (s and s.engaged) then return end
+    local now = time_global()
+    if s.post then
+        if s.kind == "vigil" and s.lvid and now < s.walk_until then
+            if not s.walking then
+                s.walking = true
+                state_mgr.set_state(npc, "raid")
+                utils.send_to_nearest_accessible_vertex(npc, s.lvid)
+            end
+            return
+        end
+        if not s.post_set then
+            s.post_set = true
+            local lp = s.epos and { look_position = s.epos } or nil
+            state_mgr.set_state(npc, POST_STATE[s.rank] or "guard", nil, nil, lp)
+        end
+        return
+    end
+    if now < s.kick then return end
+    s.kick = now + KICK_MS
+    if s.kind == "away" and s.epos then
+        if npc:position():distance_to(level.vertex_position(s.lvid)) < 6 then
+            s.lvid = away_vertex(npc, s.epos)
+            s.dpos = level.vertex_position(s.lvid)
+        end
+    end
+    if s.lvid then utils.send_to_nearest_accessible_vertex(npc, s.lvid) end
+end
+
+function action_rout:finalize()
+    action_base.finalize(self)
+end
+
+-- console: break an NPC now (every refusal check still runs and is logged)
+function force(id)
+    local npc = id and level.object_by_id(id)
+    if not npc then
+        log2("[sivol_rout] force: no object %s", tostring(id))
+        return false
+    end
+    local refuse = refusal(npc)
+    if refuse then
+        rlog("%s refused: %s", npc:name(), refuse)
+        return false
+    end
+    local s = state[id]
+    if not s then
+        s = {}
+        state[id] = s
+    end
+    s.force = true
+    s.cool = nil
+    rlog("%s will break at the next planner update", npc:name())
+    return true
+end
+
+function add_to_binder(npc, ini, scheme, section, st)
+    local manager = npc:motivation_action_manager()
+    manager:add_evaluator(evid, evaluator_rout("rout", st))
+
+    local action = action_rout("action_rout", st)
+    action:add_precondition(world_property(stalker_ids.property_alive, true))
+    action:add_precondition(world_property(xr_evaluators_id.sidor_wounded_base + 0, false))
+    action:add_precondition(world_property(evid, true))
+    action:add_effect(world_property(evid, false))
+    manager:add_action(actid, action)
+
+    -- like a grenade: overrides the world, combat and danger
+    manager:action(xr_actions_id.alife):add_precondition(world_property(evid, false))
+    manager:action(stalker_ids.action_combat_planner):add_precondition(world_property(evid, false))
+    manager:action(stalker_ids.action_danger_planner):add_precondition(world_property(evid, false))
+end
+
+function set_scheme(npc, ini, scheme, section)
+    xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
+end
+
+-- scheme actions wait while the NPC is running
+function addCommonPrecondition(action)
+    action:add_precondition(world_property(evid, false))
+end
+
+function forget(npc)
+    local id = npc:id()
+    state[id] = nil
+    was_combat[id] = nil
+    combat_t0[id] = nil
+    last_epos[id] = nil
+    track_t[id] = nil
+end
+
+function attach(sm)
+    sm:subscribe({ signal = "on_npc_net_destroy", fun = this.forget })
+end

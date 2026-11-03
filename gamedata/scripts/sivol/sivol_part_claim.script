@@ -1,0 +1,1634 @@
+-- [HE-PORT] Who minds when a mutant part is taken: docs/PART_LOOT_DESIGN.md, Phases 1-3.
+-- monster_parts holds the claim records; this file decides the reaction.
+-- Never writes reputation or goodwill (section 2.9): a loner sits 10 points from enemy.
+-- fl sivol_part_claim.help()                lists the test commands in the log
+
+local INI_PATH = "misc\\he_part_claim.ltx"
+local STATE_KEY = "he_part_claim_state"
+
+-- 0 wave off, 1 ask, 2 demand. Rows are NPC rank tiers, columns part tiers (weak, mid, rare, top).
+local CARE = {
+	{ 1, 2, 2, 2 }, -- novice
+	{ 0, 1, 2, 2 }, -- experienced
+	{ 0, 1, 2, 2 }, -- veteran
+	{ 0, 0, 1, 2 }, -- master
+}
+local TEMPER_SHIFT = { lazy = -1, curious = 0, careful = 0, tactical = 1 }
+local GEARS = { "walk", "run", "sprint" }
+local SAME_SIDE = { green = "stalker", nebo = "stalker" }
+local NO_GOSSIP = { bandit = true, ecolog = true }
+
+local cfg_values = nil
+local rank_override, temper_override, player_rank_override = nil, nil, nil
+local community_override = nil
+local attack_override = nil
+local VOICE = { demand = "threat_stop", weapon = "threat_weap", attack = "threat_stop" } -- line kind -> sound theme; more once voices are chosen
+
+local warned = {}     -- corpse id -> time of the warning; the next press inside the window cuts
+local waved = {}      -- corpse id -> he said go ahead
+local barked = {}     -- corpse id -> the walk-up line was said
+local fresh = {}      -- corpse id -> when the player's kill happened
+local tip_state = {}  -- corpse id -> last prompt, so the tip is only set on a change
+local taken_queue = {}
+local aim_id, aim_since = nil, 0
+local gossip_queue = {}
+local weapon_said = {}     -- npc id -> when he last told the player to lower it
+local sprint_roll = {}
+
+local DIALOG = "he_part_claim_dlg"
+local offers = {}          -- npc id -> what his talk is about. In memory: a reload drops the offer (first_update)
+local deals = {}           -- corpse id -> { npc, share }: the player cuts, he gets it, he pays
+local chases = {}          -- corpse id -> { npc, due }
+local talking_id = nil     -- the listed NPC the player is talking to
+local talk_interrupted = false
+local talk_hit = false
+local stale_cleared = false
+local pending_attack = nil -- { id, at }: he said it, the shot comes a moment later
+-- community terms: no split offered, no hand-over, buys samples, takes a bottle, does not loot
+local TERMS = {
+	bandit = { no_split = true },
+	killer = { no_hand = true },
+	ecolog = { sample = true, no_yield = true },
+	freedom = { bottle = true },
+}
+
+function cfg(key)
+	if not cfg_values then
+		cfg_values = {}
+		local ini = ini_file(INI_PATH)
+		for i = 0, ini:line_count("main") - 1 do
+			local _, k, v = ini:r_line("main", i, "", "")
+			if v == "true" then cfg_values[k] = true
+			elseif v == "false" then cfg_values[k] = false
+			else cfg_values[k] = tonumber(v) or v end
+		end
+	end
+	local v = cfg_values[key]
+	if v == nil then abort("sivol_part_claim: no key '%s' in %s", tostring(key), INI_PATH) end
+	return v
+end
+
+function plog(fmt, ...)
+	if cfg("log") then log2("[part_claim] " .. fmt, ...) end
+end
+
+local function load_state()
+	return get_value(STATE_KEY) or { counts = {}, day = -1, gossip = 0 }
+end
+
+function count(name)
+	local st = load_state()
+	st.counts[name] = ( st.counts[name] or 0 ) + 1
+	set_value(STATE_KEY, st)
+end
+
+-- the last deal with an NPC, kept in the save for a game day: paid, gave or refused
+local function remember(npc, outcome)
+	local st = load_state()
+	local now = timers.Get_Game_Seconds()
+	local mem = st.mem or {}
+	for id, m in pairs(mem) do
+		if now - m.t > cfg("memory_s") then mem[id] = nil end
+	end
+	mem[npc:id()] = { n = npc:name(), o = outcome, t = now }
+	st.mem = mem
+	set_value(STATE_KEY, st)
+	plog("%s remembers: %s", npc:name(), outcome)
+end
+
+local function memory_of(npc)
+	local m = load_state().mem
+	m = m and m[npc:id()]
+	if not m or m.n ~= npc:name() then return nil end
+	if timers.Get_Game_Seconds() - m.t > cfg("memory_s") then return nil end
+	return m.o
+end
+
+-- a sum after a refusal he still remembers: the player pays more, and is paid less
+local function grudge(npc, n, pays)
+	if memory_of(npc) ~= "refused" then return n end
+	if pays then return math.ceil(n * cfg("grudge_markup")) end
+	return math.floor(n * cfg("grudge_cut"))
+end
+
+local function rank_tier(rank)
+	if rank < 300 then return 1 elseif rank < 600 then return 2 elseif rank < 900 then return 3 end
+	return 4
+end
+
+-- his rank for the rank gap. Any exoskeleton carries authority, poor stats or not.
+local function player_tier()
+	local tier = player_rank_override or rank_tier(db.actor:character_rank())
+	if he_exo_charge.is_exo(db.actor:item_in_slot(6)) then tier = tier + 1 end
+	return tier
+end
+
+local function part_tier(section, alpha)
+	if alpha then return 4 end
+	local cost = system_ini():line_exist(section, "cost") and system_ini():r_float(section, "cost") or 0
+	if cost >= cfg("part_top_cost") then return 4 end
+	if cost >= cfg("part_rare_cost") then return 3 end
+	if cost > cfg("part_weak_cost") then return 2 end
+	return 1
+end
+
+function strip_roll(section)
+	if cfg("strip_npc_kills") then return true end
+	local keep = cfg("keep_tier_" .. part_tier(section))
+	if keep >= 100 then return false end
+	return dsh.get_next_random("he_part_claim_keep", 1, 100) > keep
+end
+
+function is_companion(npc)
+	local st = db.storage[npc:id()]
+	if not st then return false end
+	return ( st.companion ~= nil and st.companion.enabled == true ) or st.active_scheme == "companion"
+end
+
+-- may this NPC react at all? Checked before he is listed anywhere (section 4.3)
+function may_claim(npc)
+	local sid = npc:story_id()
+	if sid ~= NONE_SID and sid ~= NONE_CL_SID then return false, "story" end
+	local name = npc:name()
+	if olr_protected.is_always_protected(name) then return false, "always_protected" end
+	-- listing him for a talk makes he_quest_target_lock report him as locked, so this is only asked before that
+	if not offers[npc:id()] and olr_protected.is_no_offline_alife_obj(name) then return false, "protected" end
+	if not sivol_tactics.row(npc) then return false, "exempt" end
+	local st = db.storage[npc:id()]
+	local meet = st and st.meet
+	if meet and meet.meet_dialog then
+		local d = xr_logic.pick_section_from_condlist(db.actor, npc, meet.meet_dialog)
+		if d ~= nil and d ~= "nil" and d ~= "" then return false, "meet_dialog" end
+	end
+	if olr_trader_runs.on_run(npc:id()) then return false, "on_run" end
+	if npc.nlc_relation_exempt ~= nil and npc:nlc_relation_exempt() then return false, "exempt_fight" end
+	if xr_wounded.is_wounded(npc) then return false, "wounded" end
+	return true
+end
+
+-- where is the NPC who has the claim, right now? Ids only, never a stored object.
+local function resolve(rec)
+	if type(rec) ~= "table" or not rec.k then return "unknown" end
+	local se = alife():object(rec.k)
+	if not ( se and se:name() == rec.n and IsStalker(se) and se:alive() ) then return "gone" end
+	local npc = level.object_by_id(rec.k)
+	if not npc then return "away" end
+	if npc:relation(db.actor) == game_object.enemy then return "hostile", npc end
+	if npc:best_enemy() or not may_claim(npc) then return "away", npc end
+	local d = npc:position():distance_to(db.actor:position())
+	if d <= cfg("close_dist") or ( d <= cfg("near_dist") and npc:see(db.actor) ) then return "near", npc end
+	return "away", npc
+end
+
+local function side_of(comm)
+	return SAME_SIDE[comm] or comm
+end
+
+-- a friend of the owner who can see the player
+local function find_friend(rec)
+	local here = db.actor:position()
+	local side = side_of(rec.c)
+	local limit = cfg("witness_dist")
+	for id in pairs(db.creatures) do
+		local obj = level.object_by_id(id)
+		if id ~= rec.k and obj and obj:is_stalker() and obj:alive() and side_of(obj:character_community()) == side
+			and obj:position():distance_to(here) <= limit and obj:see(db.actor)
+			and obj:relation(db.actor) ~= game_object.enemy and may_claim(obj)
+		then
+			return obj
+		end
+	end
+	return nil
+end
+
+-- the ladder, sections 6.1 and 6.2. Returns step, kind; nil if he does not care at all.
+local function theft_react_of(row)
+	if community_override then return sivol_tactics.get(community_override, "theft_react") end
+	return row.theft_react
+end
+
+local function reaction(npc, rec, section)
+	local row = sivol_tactics.row(npc)
+	if not row then return nil end
+	local theft_react = theft_react_of(row)
+	if theft_react <= -9 then return nil end
+	local npc_tier = rank_override or rank_tier(npc:character_rank())
+	local tier = part_tier(section, rec.alpha)
+	local gap = player_tier() - npc_tier
+	local temper = temper_override or sivol_stealth_suspicion.temper_of(npc)
+	local step = CARE[npc_tier][tier] + theft_react + ( TEMPER_SHIFT[temper] or 0 )
+	local plead = false
+	if theft_react < 2 then -- bandits take no notice of rank
+		if gap <= -2 then
+			step = step + 1
+		elseif gap >= 2 and not ( tier == 4 and npc_tier >= 3 ) then
+			plead = true
+		end
+	end
+	step = math.max(0, math.min(2, step))
+	local kind = "demand"
+	if step == 0 then kind = "wave"
+	elseif step == 1 then kind = ( npc_tier == 4 and tier == 3 ) and "hire" or "ask"
+	elseif plead then kind = "plead" end
+	plog("%s: %s, npc tier %d, part tier %d, gap %d, %s, theft_react %d: step %d %s", npc:name(), section, npc_tier, tier, gap, temper, theft_react, step, kind)
+	return step, kind
+end
+
+local function npc_name(id)
+	local se = alife():object(id)
+	return se and olr_trader_runs.display_name(se) or game.translate_string("he_part_someone")
+end
+
+-- Who is speaking and what part it is about, for choosing a pool. Nothing here changes what happens.
+local RANK_POOL = { "novice", "exp", "vet", "master" }
+local VARIANT_CHANCE = { comm = 55, mut = 30, rank = 40 } -- percent, so the plain pool stays the common one
+
+local function line_ctx(npc, part)
+	return { comm = community_override or npc:character_community(), tier = rank_override or rank_tier(npc:character_rank()), part = part }
+end
+
+local function part_noun(section)
+	local key = "he_part_mutname_" .. ( string.gsub(section, "^mutant_", "") )
+	local text = game.translate_string(key)
+	return text ~= key and text or nil
+end
+
+-- A more specific pool is only tried now and then, most specific first: community
+-- (he_part_line_ask_freedom_N), the part (_mut_N, names it through $part), rank (_master_N).
+-- An empty or missing pool falls through to the next one, and last to the plain pool.
+local function pick_key(prefix, ctx)
+	if ctx then
+		if ctx.comm and math.random(100) <= VARIANT_CHANCE.comm then
+			local key = olr_trader_runs.pick_line(prefix .. ctx.comm .. "_")
+			if key then return key end
+		end
+		local noun = ctx.part and part_noun(ctx.part)
+		if noun and math.random(100) <= VARIANT_CHANCE.mut then
+			local key = olr_trader_runs.pick_line(prefix .. "mut_")
+			if key then return key, noun end
+		end
+		if ctx.tier and math.random(100) <= VARIANT_CHANCE.rank then
+			local key = olr_trader_runs.pick_line(prefix .. RANK_POOL[ctx.tier] .. "_")
+			if key then return key end
+		end
+	end
+	return olr_trader_runs.pick_line(prefix)
+end
+
+local function line_text(prefix, subs, ctx)
+	local key, noun = pick_key(prefix, ctx)
+	if not key then
+		log2("[part_claim] no text for %s", prefix)
+		return nil
+	end
+	local text = game.translate_string(key)
+	local all = { part = noun }
+	for name, value in pairs(subs or {}) do all[name] = value end
+	for name, value in pairs(all) do
+		text = string.gsub(text, "%$" .. name, function() return value end)
+	end
+	return text
+end
+
+-- the part his open talk is about, for barks that are not tied to one corpse call
+local function offer_part(npc)
+	local o = offers[npc:id()]
+	local rec = o and monster_parts.claim_of(o.corpse)
+	return type(rec) == "table" and ( rec.s or rec.ps ) or nil
+end
+
+-- said aloud, so it needs no PDA
+local function bark(npc, kind, subs, part)
+	local text = line_text("he_part_line_" .. kind .. "_", subs, line_ctx(npc, part or offer_part(npc)))
+	-- a wave has no talk to open with, so the last deal goes here
+	local outcome = kind == "wave" and memory_of(npc)
+	local key = outcome and olr_trader_runs.pick_line("he_part_dlg_mem_" .. outcome .. "_")
+	if text and key then
+		text = game.translate_string(key) .. " " .. text
+		plog("%s waves, memory %s", npc:name(), outcome)
+	end
+	if text then sak.send_tip_local(text, npc_name(npc:id()), 0, 8, "default", "no", "gray") end
+	if VOICE[kind] then xr_sound.set_sound_play(npc, VOICE[kind]) end
+	plog("%s says %s", npc:name(), kind)
+end
+
+-- what people call the player, by his rank (section 6.5)
+local function who_is_he()
+	local tier = rank_tier(db.actor:character_rank())
+	local chance = cfg("name_chance_" .. tier)
+	if chance > 0 and math.random(100) <= chance then return game.translate_string("he_part_who_name") end
+	local key = olr_trader_runs.pick_line(tier == 1 and "he_part_who_novice_" or "he_part_who_other_")
+	return key and game.translate_string(key) or game.translate_string("he_part_someone")
+end
+
+local function gossip_allowed()
+	local st = load_state()
+	local day = math.floor(timers.Get_Game_Seconds() / 86400)
+	if st.day ~= day then st.day, st.gossip = day, 0 end
+	if st.gossip >= cfg("gossip_per_day") or not he_pda_model.get_pda() then
+		set_value(STATE_KEY, st)
+		return false
+	end
+	st.gossip = st.gossip + 1
+	set_value(STATE_KEY, st)
+	return true
+end
+
+local function send_gossip(prefix, sender_id, subs, ctx)
+	if not gossip_allowed() then return end
+	local text = line_text(prefix, subs, ctx)
+	if text then
+		sak.send_tip(text, npc_name(sender_id), 0, 15, "default", "pda_news", "gray")
+		log2("[part_claim] gossip %s from id=%s", prefix, tostring(sender_id))
+	end
+end
+
+-- word gets around after a while, in real time
+local function gossip_delay()
+	return math.random(cfg("gossip_delay_min"), cfg("gossip_delay_max")) * 1000
+end
+
+local function gossip(prefix, sender_id, subs, ctx)
+	table.insert(gossip_queue, { at = time_global() + gossip_delay(), prefix = prefix, id = sender_id, subs = subs, ctx = ctx })
+end
+
+-- the owner may be offline by the time word gets out, so his community, rank and part come from the claim
+local function offer_ctx(o)
+	local rec = monster_parts.claim_of(o.corpse)
+	if type(rec) ~= "table" then return nil end
+	return { comm = rec.c, tier = rank_tier(rec.r or 0), part = rec.ps }
+end
+
+-- talk offers ---------------------------------------------------------------------
+
+local function offer_tip(npc_id)
+	return "part_claim_" .. npc_id
+end
+
+local function open_offer(npc, corpse_id, mode, kind, ms, force)
+	local id = npc:id()
+	if offers[id] then sak_dialog.remove_npc_from_npc_targets(offer_tip(id)) end
+	sak_dialog.add_npc_id_to_npc_targets(id, DIALOG, offer_tip(id))
+	offers[id] = { corpse = corpse_id, mode = mode, kind = kind, due = time_global() + ms, force = force }
+	plog("%s can talk: corpse %s mode %s kind %s force %s", npc:name(), corpse_id, mode, tostring(kind), tostring(force))
+	return offers[id]
+end
+
+local function drop_offer(id, why)
+	if not offers[id] then return end
+	local corpse = offers[id].corpse
+	sak_dialog.remove_npc_from_npc_targets(offer_tip(id))
+	offers[id] = nil
+	if deals[corpse] and deals[corpse].npc == id then
+		deals[corpse] = nil
+		waved[corpse] = nil
+	end
+	plog("talk offer of id=%s closed: %s", id, why)
+end
+
+local function may_force(npc, kind)
+	if kind ~= "demand" then return false end
+	return ( temper_override or sivol_stealth_suspicion.temper_of(npc) ) ~= "careful"
+end
+
+-- an open bargain over another corpse stands: a new talk must not wipe it
+local function busy_with_other(npc, corpse_id)
+	local o = offers[npc:id()]
+	return o ~= nil and o.corpse ~= corpse_id and ( o.mode == "after" or o.mode == "deal" or deals[o.corpse] ~= nil )
+end
+
+function open_before(npc, corpse_id, kind)
+	local o = offers[npc:id()]
+	if ( o and o.corpse == corpse_id ) or busy_with_other(npc, corpse_id) then return end
+	open_offer(npc, corpse_id, "before", kind, cfg("offer_ms"), may_force(npc, kind))
+end
+
+function open_after(npc, corpse_id, rec, step, kind)
+	local o = open_offer(npc, corpse_id, "after", kind, gossip_delay(), may_force(npc, kind))
+	o.gossip = not NO_GOSSIP[rec.c]
+	if step == 2 and kind ~= "plead" then
+		chases[corpse_id] = { npc = npc:id(), due = time_global() + cfg("chase_ms") }
+		watcher_act.corpse_checked[corpse_id] = true
+		plog("%s will come after the player, corpse %s", npc:name(), corpse_id)
+	end
+end
+
+local function value_of(section, condition, share)
+	local cost = system_ini():line_exist(section, "cost") and system_ini():r_float(section, "cost") or 0
+	return math.floor(cost * ( 0.1 + 0.9 * condition ) * share)
+end
+
+-- the player's cut part, by the id it was cut with, then by section
+local function player_part(rec)
+	local item = rec.tid and level.object_by_id(rec.tid)
+	local owner = item and item:parent()
+	if owner and owner:id() == db.actor:id() and item:section() == rec.ps then return item end
+	return rec.ps and db.actor:object(rec.ps) or nil
+end
+
+local function give_to(npc, item)
+	local section = item:section()
+	parts_decay.forget(item:id())
+	db.actor:transfer_item(item, npc)
+	sak.relocate_item("out", section, 1)
+end
+
+-- a kindness earns a low-tier stash on a southern level, otherwise money (section 6.6)
+local function reward(npc, rec, kind, section, condition)
+	local tier = part_tier(section, rec.alpha)
+	if tier >= 3 or kind == "plead" then
+		local levels = {}
+		for prefix in string.gmatch(cfg("stash_levels"), "[%w]+") do levels[prefix] = true end
+		local got = treasure_manager.get_treasure_manager():give_novice_stash(levels)
+		plog("stash reward: %s", tostring(got))
+		if got then return end
+	end
+	local pay = math.max(grudge(npc, value_of(section, condition, cfg("share_split"))), cfg("reward_min"))
+	dialogs.relocate_money(npc, pay, "in")
+	plog("money reward: %d", pay)
+end
+
+-- the agreed cut: called once the part reached the player. He comes for it, nothing moves until they talk.
+function finish_deal(entry, rec)
+	local deal = deals[entry.id]
+	if not deal then return false end
+	deals[entry.id] = nil
+	local npc = level.object_by_id(deal.npc)
+	if not ( npc and npc:alive() ) then
+		plog("deal on corpse %s lapsed: the buyer is gone", entry.id)
+		return true
+	end
+	local kind = offers[deal.npc] and offers[deal.npc].kind or "ask"
+	local o = open_offer(npc, entry.id, "deal", kind, gossip_delay(), true)
+	o.share = deal.share
+	o.gossip = not NO_GOSSIP[rec.c]
+	chases[entry.id] = { npc = deal.npc, due = time_global() + cfg("chase_ms") }
+	watcher_act.corpse_checked[entry.id] = true
+	bark(npc, "deal_wait")
+	return true
+end
+
+-- how a looter answers: same ladder, plus the rank gap, plus having landed the shot
+local function mirror_mode(npc, rec)
+	local row = sivol_tactics.row(npc)
+	if row and theft_react_of(row) >= 2 then return "no" end
+	if rec.o == "npc" then return "sell" end
+	local step, kind = reaction(npc, rec, rec.s or rec.ps)
+	if not step or step == 0 or kind == "plead" then return "give" end
+	if rec.k == npc:id() then step = step + 1 end
+	if step == 1 then return "split" end
+	if player_tier() - ( rank_override or rank_tier(npc:character_rank()) ) <= -2 then return "no" end
+	return "sell"
+end
+
+function looted_tip(rec)
+	if rec and rec ~= true and rec.o == "actor" and rec.l then
+		local text = game.translate_string("he_part_tip_looted_by")
+		return ( string.gsub(text, "%$name", function() return npc_name(rec.l) end) )
+	end
+	return "he_part_tip_looted"
+end
+
+-- a stalker just took a part off this corpse
+function on_looted(npc, corpse_id, rec)
+	if type(rec) ~= "table" or rec.strip then return end
+	local d = npc:position():distance_to(db.actor:position())
+	if rec.yield then
+		if npc:id() == rec.k and d <= cfg("witness_dist") then
+			bark(npc, "thanks")
+			reward(npc, rec, rec.yield_kind, rec.s or rec.ps, 1)
+			rec.yield = nil
+			monster_parts.set_claim(corpse_id, rec)
+		end
+		return
+	end
+	if d > ( rec.o == "actor" and cfg("mirror_dist") or cfg("sell_dist") ) then return end
+	local ok, why = may_claim(npc)
+	if not ok then return plog("%s looted but cannot be talked to: %s", npc:name(), tostring(why)) end
+	if busy_with_other(npc, corpse_id) then return plog("%s looted, but has another talk open", npc:name()) end
+	open_offer(npc, corpse_id, mirror_mode(npc, rec), nil, cfg("mirror_ms"), false)
+end
+
+-- the part a looter holds
+local function looter_part(npc, rec)
+	local item = rec.i and level.object_by_id(rec.i)
+	local owner = item and item:parent()
+	if owner and owner:id() == npc:id() and item:section() == rec.s then return item end
+	return rec.s and npc:object(rec.s) or nil
+end
+
+-- the dialog ------------------------------------------------------------------------
+
+local function dlg_ctx(a, b)
+	local npc = sak_dialog.who_is_npc(a, b)
+	local o = offers[npc:id()]
+	local rec = o and monster_parts.claim_of(o.corpse)
+	if type(rec) ~= "table" then return npc, nil, nil end
+	return npc, o, rec
+end
+
+-- exactly one of these holds for any state, or the engine aborts on an empty branch set
+local DLG_MODES = { before_ask = true, before_demand = true, before_plead = true, before_hire = true,
+	after_ask = true, after_demand = true, after_plead = true, after_hire = true, deal = true, give = true, split = true, sell = true, no = true }
+
+local function dlg_mode(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	if not o then return "none" end
+	local mode = o.mode
+	if mode == "before" or mode == "after" then
+		mode = mode .. "_" .. tostring(o.kind)
+	elseif mode ~= "deal" and not looter_part(npc, rec) then
+		return "lost"
+	end
+	return DLG_MODES[mode] and mode or "none"
+end
+
+local function mode_is(name)
+	return function(a, b) return dlg_mode(a, b) == name end
+end
+
+dlg_m_before_ask = mode_is("before_ask")
+dlg_m_before_demand = mode_is("before_demand")
+dlg_m_before_plead = mode_is("before_plead")
+dlg_m_before_hire = mode_is("before_hire")
+dlg_m_after_ask = mode_is("after_ask")
+dlg_m_after_demand = mode_is("after_demand")
+dlg_m_after_plead = mode_is("after_plead")
+dlg_m_after_hire = mode_is("after_hire")
+dlg_m_deal = mode_is("deal")
+dlg_m_give = mode_is("give")
+dlg_m_split = mode_is("split")
+dlg_m_sell = mode_is("sell")
+dlg_m_no = mode_is("no")
+dlg_m_lost = mode_is("lost")
+dlg_m_none = mode_is("none")
+
+-- Each NPC keeps one of three wordings per opener, chosen by his id, so the answer is the same every
+-- time the engine asks. v0 is whatever v1 and v2 are not: exactly one phrase is valid, never none.
+local function opener_is(n)
+	return function(a, b)
+		local npc = sak_dialog.who_is_npc(a, b)
+		return npc ~= nil and npc:id() % 3 == n
+	end
+end
+
+dlg_v1 = opener_is(1)
+dlg_v2 = opener_is(2)
+
+function dlg_v0(a, b)
+	return not dlg_v1(a, b) and not dlg_v2(a, b)
+end
+
+local function terms_of(rec)
+	return TERMS[rec.c] or {}
+end
+
+local function can_pay(n)
+	return db.actor:money() >= n
+end
+
+-- before the cut there is no knife result yet, so the price is for a whole part
+local function deal_price(rec, share)
+	return value_of(rec.ps, 1, share)
+end
+
+local function hire_share(rec)
+	return cfg(terms_of(rec).sample and "share_sample" or "share_hire")
+end
+
+function dlg_can_split(a, b)
+	local npc, _, rec = dlg_ctx(a, b)
+	return rec ~= nil and not terms_of(rec).no_split and can_pay(grudge(npc, deal_price(rec, cfg("share_split")), true))
+end
+
+function dlg_can_hire(a, b)
+	local _, _, rec = dlg_ctx(a, b)
+	return rec ~= nil and not terms_of(rec).no_split and not terms_of(rec).no_hand and monster_parts.has_knife() ~= false
+end
+
+local function player_bottle()
+	return db.actor:object("vodka") or db.actor:object("vodka_a")
+end
+
+function dlg_can_bottle(a, b)
+	local _, _, rec = dlg_ctx(a, b)
+	if not ( rec and terms_of(rec).bottle ) then return false end
+	local has = player_bottle() ~= nil
+	plog("bottle offered: player has one = %s", tostring(has))
+	return has
+end
+
+function dlg_can_yield(a, b)
+	local _, _, rec = dlg_ctx(a, b)
+	return rec ~= nil and not terms_of(rec).no_yield
+end
+
+function dlg_can_hand(a, b)
+	local _, _, rec = dlg_ctx(a, b)
+	return rec ~= nil and not terms_of(rec).no_hand and player_part(rec) ~= nil
+end
+
+function dlg_part_ok(a, b)
+	local _, _, rec = dlg_ctx(a, b)
+	local item = rec and player_part(rec)
+	return item ~= nil and item:condition() >= cfg("min_hand_condition")
+end
+
+function dlg_part_rotten(a, b)
+	return not dlg_part_ok(a, b)
+end
+
+function dlg_can_pay_after(a, b)
+	local npc, _, rec = dlg_ctx(a, b)
+	local item = rec and player_part(rec)
+	return item ~= nil and not terms_of(rec).no_split and can_pay(grudge(npc, value_of(rec.ps, item:condition(), cfg("share_split")), true))
+end
+
+function dlg_can_mirror_buy(a, b)
+	local npc, _, rec = dlg_ctx(a, b)
+	local item = rec and looter_part(npc, rec)
+	return item ~= nil and can_pay(grudge(npc, value_of(item:section(), item:condition(), cfg("share_split")), true))
+end
+
+function dlg_can_mirror_sell(a, b)
+	local npc, _, rec = dlg_ctx(a, b)
+	local item = rec and looter_part(npc, rec)
+	return item ~= nil and can_pay(grudge(npc, value_of(item:section(), item:condition(), cfg("share_sell")), true))
+end
+
+local function settle(npc, o, why)
+	o.settled = true
+	waved[o.corpse] = true
+	plog("%s settled corpse %s: %s", npc:name(), o.corpse, why)
+end
+
+-- script_text for any phrase, NPC or player: a line from a pool, picked by what is known about this talk.
+-- The pick is a hash of the NPC and the corpse, not a dice roll, because the engine asks more than once
+-- and the line must not change between asks. Community pool 60%, rank pool 50%, else the plain pool.
+-- Never nil: the engine also asks once the offer is gone, and the old static key is the fallback.
+local function stable(seed, salt, n)
+	return ( ( seed % 65521 ) * 40503 + salt * 9973 + seed % 7 ) % 2147483629 % n
+end
+
+local function dlg_pick(prefix, fallback, a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	if not npc then return game.translate_string(fallback) end
+	local seed = npc:id() * 7 + ( o and o.corpse or 0 )
+	local salt = 0
+	for i = 1, #prefix do salt = salt + string.byte(prefix, i) end
+	local comm = npc:character_community()
+	local tier = RANK_POOL[rank_override or rank_tier(npc:character_rank())]
+	local key = nil
+	local n = olr_trader_runs.line_total(prefix .. comm .. "_")
+	if n > 0 and stable(seed, salt, 100) < 60 then key = prefix .. comm .. "_" .. ( stable(seed, salt + 1, n) + 1 ) end
+	if not key then
+		n = olr_trader_runs.line_total(prefix .. tier .. "_")
+		if n > 0 and stable(seed, salt + 2, 100) < 50 then key = prefix .. tier .. "_" .. ( stable(seed, salt + 3, n) + 1 ) end
+	end
+	if not key then
+		n = olr_trader_runs.line_total(prefix)
+		if n > 0 then key = prefix .. ( stable(seed, salt + 4, n) + 1 ) end
+	end
+	local section = rec and ( rec.s or rec.ps )
+	local noun = section and part_noun(section) or game.translate_string("he_part_mutname_unknown")
+	return ( string.gsub(game.translate_string(key or fallback), "%$part", function() return noun end) )
+end
+
+local function text_fn(prefix, fallback)
+	return function(a, b, ...) return dlg_pick(prefix, fallback, a, b) end
+end
+
+-- an opener: a line about the last deal, if there was one with him, then the usual words
+local function opener_fn(prefix, fallback)
+	return function(a, b, ...)
+		local text = dlg_pick(prefix, fallback, a, b)
+		local npc, o = dlg_ctx(a, b)
+		local outcome = o and o.mode ~= "deal" and memory_of(npc)
+		local pool = "he_part_dlg_mem_" .. tostring(outcome) .. "_"
+		local n = olr_trader_runs.line_total(pool)
+		plog("opener %s for %s: memory %s, %d lines", prefix, npc:name(), tostring(outcome), n)
+		if not outcome then return text end
+		if n == 0 then return text end
+		local said = game.translate_string(pool .. ( stable(npc:id(), o.corpse, n) + 1 )) .. " " .. text
+		plog("opener text: %s", said)
+		return said
+	end
+end
+
+dlg_t_o_before_ask = opener_fn("he_part_dlg_o_before_ask_", "he_part_dlg_open_before_ask")
+dlg_t_o_before_demand = opener_fn("he_part_dlg_o_before_demand_", "he_part_dlg_open_before_demand")
+dlg_t_o_before_plead = opener_fn("he_part_dlg_o_before_plead_", "he_part_dlg_open_before_plead")
+dlg_t_o_before_hire = opener_fn("he_part_dlg_o_before_hire_", "he_part_dlg_open_before_hire")
+dlg_t_o_after_ask = opener_fn("he_part_dlg_o_after_ask_", "he_part_dlg_open_after_ask")
+dlg_t_o_after_demand = opener_fn("he_part_dlg_o_after_demand_", "he_part_dlg_open_after_demand")
+dlg_t_o_after_plead = opener_fn("he_part_dlg_o_after_plead_", "he_part_dlg_open_after_plead")
+dlg_t_o_after_hire = opener_fn("he_part_dlg_o_after_hire_", "he_part_dlg_open_after_hire")
+dlg_t_o_give = opener_fn("he_part_dlg_o_give_", "he_part_dlg_open_give")
+dlg_t_o_split = opener_fn("he_part_dlg_o_split_", "he_part_dlg_open_split")
+dlg_t_o_sell = opener_fn("he_part_dlg_o_sell_", "he_part_dlg_open_sell")
+dlg_t_o_no = opener_fn("he_part_dlg_o_no_", "he_part_dlg_open_no")
+dlg_t_o_deal = opener_fn("he_part_dlg_o_deal_", "he_part_dlg_open_deal")
+dlg_t_o_lost = opener_fn("he_part_dlg_o_lost_", "he_part_dlg_open_lost")
+dlg_t_o_none = opener_fn("he_part_dlg_o_none_", "he_part_dlg_open_none")
+
+dlg_t_r_split = text_fn("he_part_dlg_r_split_", "he_part_dlg_rep_split")
+dlg_t_r_hire = text_fn("he_part_dlg_r_hire_", "he_part_dlg_rep_hire")
+dlg_t_r_bottle = text_fn("he_part_dlg_r_bottle_", "he_part_dlg_rep_bottle")
+dlg_t_r_yield = text_fn("he_part_dlg_r_yield_", "he_part_dlg_rep_yield")
+dlg_t_r_leave_before = text_fn("he_part_dlg_r_leave_before_", "he_part_dlg_rep_leave")
+dlg_t_r_leave_mirror = text_fn("he_part_dlg_r_leave_mirror_", "he_part_dlg_rep_leave")
+dlg_t_r_hand = text_fn("he_part_dlg_r_hand_", "he_part_dlg_rep_hand")
+dlg_t_r_rotten = text_fn("he_part_dlg_r_rotten_", "he_part_dlg_rep_rotten")
+dlg_t_r_pay = text_fn("he_part_dlg_r_pay_", "he_part_dlg_rep_pay")
+dlg_t_r_buy_back = text_fn("he_part_dlg_r_buy_back_", "he_part_dlg_rep_buy_back")
+dlg_t_r_he_keeps = text_fn("he_part_dlg_r_he_keeps_", "he_part_dlg_rep_he_keeps")
+dlg_t_r_buy = text_fn("he_part_dlg_r_buy_", "he_part_dlg_rep_buy")
+dlg_t_r_deal = text_fn("he_part_dlg_r_deal_", "he_part_dlg_rep_deal")
+dlg_t_r_bye = text_fn("he_part_dlg_r_bye_", "he_part_dlg_bye")
+
+dlg_t_p_bottle = text_fn("he_part_dlg_p_bottle_", "he_part_dlg_opt_bottle")
+dlg_t_p_yield = text_fn("he_part_dlg_p_yield_", "he_part_dlg_opt_yield")
+dlg_t_p_leave_before = text_fn("he_part_dlg_p_leave_before_", "he_part_dlg_opt_leave")
+dlg_t_p_leave_mirror = text_fn("he_part_dlg_p_leave_mirror_", "he_part_dlg_opt_leave")
+dlg_t_p_refuse_after = text_fn("he_part_dlg_p_refuse_after_", "he_part_dlg_opt_refuse")
+dlg_t_p_refuse_deal = text_fn("he_part_dlg_p_refuse_deal_", "he_part_dlg_opt_refuse")
+
+-- player options with the sum in brackets (script_text)
+local function percent(item)
+	return math.floor(item:condition() * 100 + 0.5)
+end
+
+local function priced(text, n, plus, item, approx)
+	if not n or n <= 0 then return text end
+	local sum = ( approx and "~" or "" ) .. ( plus and "+" or "" ) .. tostring(n)
+	local bracket = string.gsub(game.translate_string(item and "he_part_dlg_price_cond" or "he_part_dlg_price"), "%$n", sum)
+	if item then bracket = string.gsub(bracket, "%$c", tostring(percent(item))) end
+	return text .. " " .. bracket
+end
+
+function dlg_text_split(a, b, ...)
+	local npc, _, rec = dlg_ctx(a, b)
+	return priced(dlg_pick("he_part_dlg_p_split_", "he_part_dlg_opt_split", a, b), rec and grudge(npc, deal_price(rec, cfg("share_split")), true))
+end
+
+function dlg_text_hire(a, b, ...)
+	local npc, _, rec = dlg_ctx(a, b)
+	return priced(dlg_pick("he_part_dlg_p_hire_", "he_part_dlg_opt_hire", a, b), rec and grudge(npc, deal_price(rec, hire_share(rec))), true, nil, true)
+end
+
+function dlg_text_pay(a, b, ...)
+	local npc, _, rec = dlg_ctx(a, b)
+	local item = rec and player_part(rec)
+	return priced(dlg_pick("he_part_dlg_p_pay_", "he_part_dlg_opt_pay", a, b), item and grudge(npc, value_of(rec.ps, item:condition(), cfg("share_split")), true), false, item)
+end
+
+function dlg_text_deal(a, b, ...)
+	local npc, o, rec = dlg_ctx(a, b)
+	local item = rec and player_part(rec)
+	return priced(dlg_pick("he_part_dlg_p_hand_deal_", "he_part_dlg_opt_hand", a, b), item and grudge(npc, value_of(rec.ps, item:condition(), o.share)), true, item)
+end
+
+function dlg_t_p_hand_after(a, b, ...)
+	local _, _, rec = dlg_ctx(a, b)
+	local item = rec and player_part(rec)
+	local text = dlg_pick("he_part_dlg_p_hand_after_", "he_part_dlg_opt_hand", a, b)
+	if not item then return text end
+	return text .. " " .. string.gsub(game.translate_string("he_part_dlg_cond"), "%$c", tostring(percent(item)))
+end
+
+local function looter_priced(prefix, fallback, a, b, share, plus)
+	local npc, _, rec = dlg_ctx(a, b)
+	local item = rec and looter_part(npc, rec)
+	return priced(dlg_pick(prefix, fallback, a, b), item and grudge(npc, value_of(item:section(), item:condition(), share), not plus), plus, item)
+end
+
+function dlg_text_buy_back(a, b, ...)
+	return looter_priced("he_part_dlg_p_buy_back_", "he_part_dlg_opt_buy_back", a, b, cfg("share_split"))
+end
+
+function dlg_text_he_keeps(a, b, ...)
+	return looter_priced("he_part_dlg_p_he_keeps_", "he_part_dlg_opt_he_keeps", a, b, cfg("share_split"), true)
+end
+
+function dlg_text_buy(a, b, ...)
+	return looter_priced("he_part_dlg_p_buy_", "he_part_dlg_opt_buy", a, b, cfg("share_sell"))
+end
+
+function dlg_do_deal(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	local item = rec and player_part(rec)
+	if not ( o and item ) then return end
+	local pay = grudge(npc, value_of(rec.ps, item:condition(), o.share))
+	give_to(npc, item)
+	if pay > 0 then dialogs.relocate_money(npc, pay, "in") end
+	settle(npc, o, "the agreed cut, paid " .. pay)
+	remember(npc, "paid")
+end
+
+function dlg_end(a, b)
+	local npc, o = dlg_ctx(a, b)
+	if o then
+		o.closed = true
+		talking_id = npc:id() -- the talk may close before the next update sees it
+	end
+end
+
+function dlg_do_split(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	if not o then return end
+	dialogs.relocate_money(npc, grudge(npc, deal_price(rec, cfg("share_split")), true), "out")
+	settle(npc, o, "the player pays and cuts")
+	remember(npc, "paid")
+end
+
+function dlg_do_hire(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	if not o then return end
+	deals[o.corpse] = { npc = npc:id(), share = hire_share(rec) }
+	waved[o.corpse] = true
+	plog("%s hires the player for corpse %s", npc:name(), o.corpse)
+end
+
+function dlg_do_bottle(a, b)
+	local npc, o = dlg_ctx(a, b)
+	local item = player_bottle()
+	if not ( o and item ) then return end
+	local section = item:section()
+	db.actor:transfer_item(item, npc)
+	sak.relocate_item("out", section, 1)
+	settle(npc, o, "a bottle")
+	remember(npc, "paid")
+end
+
+function dlg_do_yield(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	if not o then return end
+	rec.yield = true
+	rec.yield_kind = o.kind
+	monster_parts.set_claim(o.corpse, rec)
+	o.settled = true
+	remember(npc, "gave")
+	plog("%s gets corpse %s: the player steps back", npc:name(), o.corpse)
+end
+
+function dlg_do_hand(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	local item = rec and player_part(rec)
+	if not ( o and item ) then return end
+	local section, condition = item:section(), item:condition()
+	give_to(npc, item)
+	reward(npc, rec, o.kind, section, condition)
+	settle(npc, o, "the player hands it over")
+	remember(npc, "gave")
+end
+
+function dlg_do_pay(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	local item = rec and player_part(rec)
+	if not ( o and item ) then return end
+	dialogs.relocate_money(npc, grudge(npc, value_of(rec.ps, item:condition(), cfg("share_split")), true), "out")
+	settle(npc, o, "the player pays his share")
+	remember(npc, "paid")
+end
+
+local function take_back(npc, rec)
+	local item = looter_part(npc, rec)
+	if not item then return nil end
+	local section = item:section()
+	npc:transfer_item(item, db.actor)
+	sak.relocate_item("in", section, 1)
+	return item
+end
+
+function dlg_mirror_give(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	if not o then return end
+	take_back(npc, rec)
+	settle(npc, o, "he gives it back")
+end
+
+function dlg_mirror_buy(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	local item = rec and looter_part(npc, rec)
+	if not ( o and item ) then return end
+	dialogs.relocate_money(npc, grudge(npc, value_of(item:section(), item:condition(), cfg("share_split")), true), "out")
+	take_back(npc, rec)
+	settle(npc, o, "the player buys it back at a share")
+	remember(npc, "paid")
+end
+
+function dlg_mirror_keep(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	local item = rec and looter_part(npc, rec)
+	if not ( o and item ) then return end
+	dialogs.relocate_money(npc, grudge(npc, value_of(item:section(), item:condition(), cfg("share_split"))), "in")
+	settle(npc, o, "he keeps it and pays a share")
+	remember(npc, "gave")
+end
+
+function dlg_mirror_sell(a, b)
+	local npc, o, rec = dlg_ctx(a, b)
+	local item = rec and looter_part(npc, rec)
+	if not ( o and item ) then return end
+	dialogs.relocate_money(npc, grudge(npc, value_of(item:section(), item:condition(), cfg("share_sell")), true), "out")
+	take_back(npc, rec)
+	settle(npc, o, "he sells it")
+	remember(npc, "paid")
+end
+
+-- A rare attack after a flat refusal, off by default. Only a lone NPC tries it, nobody near him would
+-- join in unexempted. The exemption (engine, not saved) costs the player no reputation or goodwill for
+-- him, so the ids go in the save and it is put back whenever he is online, until he dies.
+local function is_alone(npc)
+	local here = npc:position()
+	local limit = cfg("attack_lone_dist")
+	for id in pairs(db.creatures) do
+		local obj = id ~= npc:id() and id ~= db.actor:id() and level.object_by_id(id)
+		if obj and obj:is_stalker() and obj:alive() and obj:position():distance_to(here) <= limit then return false end
+	end
+	return true
+end
+
+local function attack_chance(npc, rec)
+	local chance = cfg("attack_base") + ( part_tier(rec.s or rec.ps, rec.alpha) - 1 ) * cfg("attack_per_tier")
+	chance = chance + math.max(0, ( rank_override or rank_tier(npc:character_rank()) ) - player_tier()) * cfg("attack_per_gap")
+	if db.actor:character_reputation() <= cfg("attack_rep_low") then chance = chance + cfg("attack_rep_bonus") end
+	return math.min(chance, cfg("attack_max"))
+end
+
+-- The roll is made once, when the refusal reply is asked for (or at the end of the talk if it never was),
+-- and kept on the offer: the reply can then fit what follows, and repeated asks give the same answer.
+local function attack_decide(npc, o)
+	if o.attack ~= nil then return o.attack end
+	o.attack = false
+	if not ( attack_override or cfg("attack_enabled") ) then return false end
+	if o.kind ~= "demand" or not ( o.mode == "after" or o.mode == "deal" ) then return false end
+	local rec = monster_parts.claim_of(o.corpse)
+	if type(rec) ~= "table" or is_companion(npc) or not is_alone(npc) then return false end
+	local chance = attack_override or attack_chance(npc, rec)
+	local roll = math.random(100)
+	plog("%s attack roll %d against %d", npc:name(), roll, chance)
+	o.attack = roll <= chance
+	return o.attack
+end
+
+local function attack_roll(npc, o)
+	if not attack_decide(npc, o) then return false end
+	bark(npc, "attack")
+	pending_attack = { id = npc:id(), at = time_global() + cfg("attack_warn_ms") }
+	return true
+end
+
+-- the refusal reply: menacing when the roll says he will go for the player, else the usual pool
+local function refuse_reply(prefix)
+	return function(a, b, ...)
+		local npc, o = dlg_ctx(a, b)
+		if npc and o and attack_decide(npc, o) then
+			return dlg_pick("he_part_dlg_r_attack_", "he_part_dlg_rep_refuse", a, b)
+		end
+		return dlg_pick(prefix, "he_part_dlg_rep_refuse", a, b)
+	end
+end
+
+dlg_t_r_refuse_after = refuse_reply("he_part_dlg_r_refuse_after_")
+dlg_t_r_refuse_deal = refuse_reply("he_part_dlg_r_refuse_deal_")
+
+local function set_hostile(npc)
+	npc:nlc_relation_exempt(true) -- first, so no hit lands without it
+	if npc:relation(db.actor) ~= game_object.enemy then npc:set_relation(game_object.enemy, db.actor) end
+end
+
+local function update_attackers(now)
+	if pending_attack and now >= pending_attack.at then
+		local npc = level.object_by_id(pending_attack.id)
+		pending_attack = nil
+		if npc and npc:alive() and not npc:best_enemy() and is_alone(npc) then
+			local st = load_state()
+			st.attackers = st.attackers or {}
+			st.attackers[npc:id()] = npc:name()
+			set_value(STATE_KEY, st)
+			set_hostile(npc)
+			plog("%s opens fire", npc:name())
+		end
+	end
+	local st = load_state()
+	if not st.attackers then return end
+	local changed = false
+	for id, name in pairs(st.attackers) do
+		local se = alife():object(id)
+		if not ( se and se:name() == name and IsStalker(se) and se:alive() ) then
+			st.attackers[id] = nil
+			changed = true
+		else
+			local npc = level.object_by_id(id)
+			if npc and not npc:nlc_relation_exempt() then set_hostile(npc) end
+		end
+	end
+	if changed then set_value(STATE_KEY, st) end
+end
+
+-- the talk closing: Esc, range, a fight or his death, section 6.11
+function on_talk_hide()
+	local id = talking_id
+	talking_id = nil
+	local interrupted = talk_interrupted
+	talk_interrupted, talk_hit = false, false
+	local o = id and offers[id]
+	if not o then return end
+	o.force = false
+	if interrupted then
+		o.paused = true
+		o.due = math.max(o.due, time_global()) + cfg("offer_ms")
+		plog("talk with id=%s interrupted, offer paused", id)
+		return
+	end
+	local npc = level.object_by_id(id)
+	if not ( npc and npc:alive() ) then
+		o.gossip = false
+		return drop_offer(id, "he is gone")
+	end
+	if o.settled then
+		o.gossip = false
+		return drop_offer(id, "settled")
+	end
+	local looter = o.mode ~= "before" and o.mode ~= "after" and o.mode ~= "deal"
+	if o.closed and ( o.mode == "after" or o.mode == "deal" ) then remember(npc, "refused") end
+	if o.closed and attack_roll(npc, o) then return drop_offer(id, "he goes for the player") end
+	if o.closed or looter then
+		if o.gossip then gossip("he_part_gossip_taken_", id, { who = who_is_he() }) end
+		return drop_offer(id, o.closed and "refused" or "the looter has answered")
+	end
+	if ( o.mode == "after" or o.mode == "deal" ) and not o.walked then
+		o.walked = true
+		bark(npc, "walkoff")
+	end
+	plog("talk with id=%s closed with no answer, offer stands", id)
+end
+
+function on_actor_before_hit(obj, hit_data)
+	if talking_id and hit_data and not hit_data.ignore_hit and hit_data.hit_type ~= hit.radiation and ( hit_data.power or 0 ) > 0 then
+		talk_hit = true
+	end
+end
+
+function on_npc_before_hit(npc, hit_data)
+	if talking_id and npc and npc:id() == talking_id and hit_data and not hit_data.ignore_hit then
+		talk_hit = true
+	end
+end
+
+local function can_open_talk(npc)
+	if hud_animation_owner and hud_animation_owner.busy and hud_animation_owner.busy() then return false end
+	if level.main_input_receiver() ~= nil or db.actor:is_talking() or npc:is_talking() then return false end
+	return npc:position():distance_to(db.actor:position()) <= cfg("force_dist") and npc:get_start_dialog() == DIALOG
+end
+
+local function taken_pending(corpse)
+	for _, entry in ipairs(taken_queue) do
+		if entry.id == corpse then return true end
+	end
+	return false
+end
+
+local function update_offers(now)
+	if not stale_cleared then
+		stale_cleared = true
+		-- offers do not survive a reload; the saved list entries must not either
+		local targets = sak_dialog.load_npc_targets()
+		for i = #targets, 1, -1 do
+			local tip = targets[i].tips
+			if type(tip) == "string" and string.sub(tip, 1, 11) == "part_claim_" then
+				sak_dialog.remove_npc_from_npc_targets(tip)
+				plog("removed stale talk entry %s", tip)
+			end
+		end
+	end
+	local partner = nil
+	if db.actor:is_talking() then
+		for id in pairs(offers) do
+			local npc = level.object_by_id(id)
+			if npc and npc:is_talking() then partner = npc end
+		end
+	end
+	if partner then
+		talking_id = partner:id()
+		if not talk_interrupted and ( partner:best_enemy() or talk_hit or db.blowout_active == true ) then
+			talk_interrupted = true
+			bark(partner, "interrupted")
+			partner:stop_talk()
+		end
+		return
+	end
+	for id, o in pairs(offers) do
+		local npc = level.object_by_id(id)
+		local se = alife():object(id)
+		if not ( se and IsStalker(se) and se:alive() ) then
+			drop_offer(id, "dead")
+		elseif not npc then
+			if o.gossip then send_gossip("he_part_gossip_taken_", id, { who = who_is_he() }, offer_ctx(o)) end
+			drop_offer(id, "offline")
+		elseif npc:relation(db.actor) == game_object.enemy then
+			drop_offer(id, "hostile")
+		elseif o.settled then
+			drop_offer(id, "settled")
+		elseif now >= o.due and not taken_pending(o.corpse) then
+			if o.gossip and not o.paused then send_gossip("he_part_gossip_taken_", id, { who = who_is_he() }, offer_ctx(o)) end
+			drop_offer(id, "time")
+		elseif o.paused then
+			if not npc:best_enemy() and db.blowout_active ~= true then
+				o.paused = false
+				bark(npc, "resume")
+			end
+		elseif o.force and can_open_talk(npc) then
+			if npc:is_talk_enabled() then
+				o.force = false
+				plog("%s stops the player for a talk", npc:name())
+				db.actor:run_talk_dialog(npc)
+				break
+			elseif not o.weapon_since then
+				o.weapon_since = now -- the knife goes away by itself after a harvest: give it time
+			elseif now - o.weapon_since >= 3000 and now > ( weapon_said[id] or 0 ) then
+				weapon_said[id] = now + 60000
+				bark(npc, "weapon")
+			end
+		end
+	end
+end
+
+-- called by watcher_act while he walks to a corpse: the player's vertex while he goes after him,
+-- "end" when he gives up, nil when this is no chase
+function chase_vertex(npc, obj)
+	local id = obj:id()
+	local c = chases[id]
+	if not c or c.npc ~= npc:id() then return nil end
+	local o = offers[c.npc]
+	local gone = npc:position():distance_to(db.actor:position()) > cfg("chase_dist")
+	if time_global() > c.due or gone or not o or o.settled or npc:is_talking() then
+		chases[id] = nil
+		plog("%s stops chasing: due %s, too far %s, offer %s", npc:name(), tostring(time_global() > c.due), tostring(gone), tostring(o ~= nil))
+		if o and not o.settled and not npc:is_talking() then o.due = time_global() end
+		return "end"
+	end
+	if not c.logged then
+		c.logged = true
+		plog("%s comes after the player", npc:name())
+	end
+	local v = db.actor:level_vertex_id()
+	return npc:accessible(v) and v or nil
+end
+
+function is_chasing(npc_id, corpse_id)
+	local c = chases[corpse_id]
+	if not c or c.npc ~= npc_id then return false end
+	return time_global() <= c.due and offers[npc_id] ~= nil
+end
+
+-- called by monster_parts.corpse_tip: true word for the prompt, nil for the usual text
+function prompt(mob, rec)
+	local id = mob:id()
+	if warned[id] then return "he_part_tip_again" end
+	if waved[id] or rec.ta then return nil end
+	local state = resolve(rec)
+	if state == "near" or state == "away" then return "foreign" end
+	return nil
+end
+
+-- the player pressed use on a corpse, knife or not. False stops the harvest for now.
+function on_corpse_use(monster)
+	local id = monster:id()
+	local rec = monster_parts.claim_of(id)
+	if type(rec) ~= "table" or rec.o ~= "npc" or rec.strip or waved[id] then return true end
+	local section = monster_parts.find_part(monster)
+	if not section or not monster_parts.has_knife() then return true end
+	local state, npc = resolve(rec)
+	plog("use corpse %s: owner %s state %s", id, tostring(rec.n), state)
+	local speaker, kind, subs = nil, nil, nil
+	if state == "near" then
+		local step
+		step, kind = reaction(npc, rec, section)
+		if not step then return true end
+		speaker = npc
+		if step == 0 then
+			waved[id] = true
+			bark(npc, "wave", nil, section)
+			return true
+		end
+	elseif state == "away" or state == "gone" then
+		speaker = find_friend(rec)
+		if not speaker then return true end
+		if state == "gone" then
+			waved[id] = true
+			bark(speaker, "friend_dead", nil, section)
+			return true
+		end
+		kind, subs = "friend_warn", { name = npc_name(rec.k) }
+	else
+		return true -- hostile or unknown: free
+	end
+	local now = time_global()
+	if warned[id] and now - warned[id] <= cfg("press_ms") then
+		if now - warned[id] < cfg("press_min_ms") then return false end -- the same press, not a decision
+		warned[id] = nil
+		return true
+	end
+	warned[id] = now
+	barked[id] = true
+	bark(speaker, kind, subs, section)
+	if state == "near" then open_before(npc, id, kind) end
+	monster:set_tip_text("he_part_tip_again")
+	tip_state[id] = "he_part_tip_again"
+	return false
+end
+
+-- the part reached the player. Only queues: this runs inside the harvest cleanup.
+function on_taken(id, section, part_id)
+	table.insert(taken_queue, { id = id, section = section, part_id = part_id, at = time_global() + 1500 })
+end
+
+local function process_taken(entry)
+	local rec = monster_parts.claim_of(entry.id)
+	count("cut_by_player")
+	if type(rec) ~= "table" or rec.o ~= "npc" or rec.strip then return end
+	rec.ta = true
+	rec.tid = entry.part_id
+	rec.yield = nil
+	monster_parts.set_claim(entry.id, rec)
+	warned[entry.id] = nil
+	if finish_deal(entry, rec) or waved[entry.id] then return end
+	local state, npc = resolve(rec)
+	if state == "near" then
+		local step, kind = reaction(npc, rec, entry.section)
+		if not step or step == 0 then return end
+		bark(npc, "taken_" .. kind, nil, entry.section)
+		open_after(npc, entry.id, rec, step, kind)
+	elseif npc and offers[rec.k] and offers[rec.k].corpse == entry.id then
+		-- warned, then he moved off: the talk is still open, now about what was taken
+		local o = offers[rec.k]
+		o.mode, o.gossip, o.due = "after", not NO_GOSSIP[rec.c], time_global() + gossip_delay()
+	elseif state == "away" or state == "gone" then
+		local friend = find_friend(rec)
+		if friend and not NO_GOSSIP[rec.c] then
+			gossip("he_part_gossip_friend_", friend:id(), { who = who_is_he(), name = npc_name(rec.k) }, line_ctx(friend, rec.ps))
+		end
+	end
+end
+
+-- the owner reached his corpse and found nothing on it. He did not see who: no name.
+function on_found_empty(npc, id, rec)
+	if type(rec) ~= "table" or rec.o ~= "npc" or rec.k ~= npc:id() or not rec.ta or rec.found then return end
+	rec.found = true
+	monster_parts.set_claim(id, rec)
+	if npc:position():distance_to(db.actor:position()) > cfg("near_dist") and not NO_GOSSIP[rec.c] then
+		gossip("he_part_gossip_empty_", npc:id(), nil, line_ctx(npc, rec.ps))
+	end
+end
+
+-- how long a stalker holds back from the player's kill: the player's rank against his, not attitude,
+-- which late in the game is friendly everywhere and can be forced by scripts. A novice earns nothing.
+local function respect_ms(npc)
+	local row = sivol_tactics.row(npc)
+	if not row or row.theft_react >= 2 then return 0 end
+	local player = player_tier()
+	if player <= 1 then return 0 end
+	local gap = player - ( rank_override or rank_tier(npc:character_rank()) )
+	if gap < 0 then return 0 end
+	return cfg("fresh_ms_gap_" .. math.min(gap, 2))
+end
+
+-- he took the money or said go ahead: he leaves the part to the player, while the kill is fresh
+function is_ceded(npc, id)
+	local rec = monster_parts.claim_of(id)
+	if type(rec) ~= "table" or rec.k ~= npc:id() or rec.ta or rec.yield then return false end
+	if not ( waved[id] or deals[id] ) then return false end
+	return fresh[id] ~= nil and time_global() - fresh[id] <= cfg("owner_ms")
+end
+
+-- called by watcher_act: stalkers may leave the player's fresh kill alone while he is close (section 6.7)
+function may_approach(npc, obj)
+	local id = obj:id()
+	local t = fresh[id]
+	if not t or cfg("strip_npc_kills") then return true end
+	if is_ceded(npc, id) then return false end
+	local rec = monster_parts.claim_of(id)
+	if type(rec) == "table" and rec.o == "npc" then
+		-- first go to the one who killed it, while he is around. Bandits take what they like.
+		local owner = level.object_by_id(rec.k)
+		if rec.k == npc:id() or rec.ta or time_global() - t > cfg("owner_ms") or not owner or not owner:alive() then return true end
+		local row = sivol_tactics.row(npc)
+		return row == nil or row.theft_react >= 2
+	end
+	if time_global() - t > cfg("owner_ms") then
+		fresh[id] = nil
+		return true
+	end
+	if not ( db.actor and db.actor:alive() ) then return true end
+	if db.actor:position():distance_to(obj:position()) > cfg("fresh_dist") then return true end
+	local hold = respect_ms(npc)
+	if time_global() - t >= hold then return true end
+	plog("%s holds back from the player's kill %s, %d ms of %d", npc:name(), id, time_global() - t, hold)
+	return false
+end
+
+function note_fresh(id)
+	fresh[id] = time_global()
+	-- ids get reused
+	warned[id], waved[id], barked[id], tip_state[id], sprint_roll[id] = nil, nil, nil, nil, nil
+	deals[id], chases[id] = nil, nil
+end
+
+function is_owner(npc, obj)
+	local rec = monster_parts.claim_of(obj:id())
+	return type(rec) == "table" and rec.o == "npc" and rec.k == npc:id() and not rec.strip
+end
+
+-- called by watcher_act when he sets off for a corpse: nil to walk, "run" or "sprint"
+function gear(npc, obj)
+	local rec = monster_parts.claim_of(obj:id())
+	if type(rec) ~= "table" or rec.o ~= "npc" or rec.k ~= npc:id() or rec.strip or not rec.ps then return nil end
+	if not may_claim(npc) then return nil end
+	local step, kind = reaction(npc, rec, rec.ps)
+	if not step then return nil end
+	local g = 1
+	if step == 2 or rec.alpha then g = 2 end
+	local temper = temper_override or sivol_stealth_suspicion.temper_of(npc)
+	if temper == "lazy" then g = g - 1 elseif temper == "tactical" and step >= 1 then g = g + 1 end
+	g = math.max(1, math.min(2, g))
+	-- a sprint is rare: a top part or an alpha's trophy, and a roll kept for this corpse
+	if g == 2 and part_tier(rec.ps, rec.alpha) == 4 then
+		local id = obj:id()
+		if sprint_roll[id] == nil then sprint_roll[id] = math.random(100) <= cfg("sprint_chance") end
+		if sprint_roll[id] then g = 3 end
+	end
+	if g > 1 then plog("%s goes for his kill at a %s, %s", npc:name(), GEARS[g], kind) end
+	return g > 1 and GEARS[g] or nil
+end
+
+-- the corpse the player has held the crosshair on for aim_ms with a knife ready, the same ray as the use prompt
+local function aimed_corpse(now)
+	local target = level.get_target_obj()
+	local id = target and target:id() or nil
+	if id ~= aim_id then
+		aim_id, aim_since = id, now
+		return nil
+	end
+	if not id or now - aim_since < cfg("aim_ms") or level.get_target_dist() > cfg("aim_dist") then return nil end
+	return monster_parts.has_knife() and id or nil
+end
+
+local function scan_claims()
+	local here = db.actor:position()
+	local aimed = aimed_corpse(time_global())
+	local tip_dist = cfg("tip_dist")
+	local now = time_global()
+	for id, rec in pairs(monster_parts.all_claims()) do
+		if type(rec) == "table" and rec.o == "npc" and not rec.strip and not rec.ta and not rec.l then
+			local mob = level.object_by_id(id)
+			if mob and mob:position():distance_to(here) <= tip_dist then
+				if warned[id] and now - warned[id] > cfg("press_ms") then warned[id] = nil end
+				local tip = monster_parts.corpse_tip(mob)
+				if tip_state[id] ~= tip then
+					plog("corpse %s prompt: %s", id, tostring(tip))
+					tip_state[id] = tip
+					mob:set_tip_text(tip)
+				end
+				-- the player is sizing up the part with a knife ready
+				if not barked[id] and not waved[id] and aimed == id then
+					local state, npc = resolve(rec)
+					if state == "near" and rec.ps then
+						local step, kind = reaction(npc, rec, rec.ps)
+						barked[id] = true
+						if step == 0 then
+							waved[id] = true
+							bark(npc, "wave", nil, rec.ps)
+						elseif step then
+							warned[id] = now
+							bark(npc, kind, nil, rec.ps)
+							open_before(npc, id, kind)
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+function update()
+	ogse_signals.get_mgr():reschedule(500)
+	if not ( db.actor and db.actor:alive() ) or monster_parts.is_harvesting() then return end
+	local now = time_global()
+	for i = #taken_queue, 1, -1 do
+		if now >= taken_queue[i].at then
+			process_taken(table.remove(taken_queue, i))
+		end
+	end
+	for i = #gossip_queue, 1, -1 do
+		if now >= gossip_queue[i].at then
+			local g = table.remove(gossip_queue, i)
+			send_gossip(g.prefix, g.id, g.subs, g.ctx)
+		end
+	end
+	update_attackers(now)
+	update_offers(now)
+	scan_claims()
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = this.update })
+	sm:subscribe({ signal = "on_talk_hide", fun = this.on_talk_hide })
+	sm:subscribe({ signal = "on_actor_before_hit", fun = this.on_actor_before_hit })
+	sm:subscribe({ signal = "on_npc_before_hit", fun = this.on_npc_before_hit })
+end
+
+-- test helpers ---------------------------------------------------------------------
+
+function report()
+	local st = load_state()
+	for k, v in pairs(st.counts) do log2("[part_claim] count %s = %s", k, tostring(v)) end
+	log2("[part_claim] gossip today %s, player rank %s", tostring(st.gossip), tostring(db.actor:character_rank()))
+	for id, o in pairs(offers) do
+		log2("[part_claim] offer id=%s corpse=%s mode=%s kind=%s in %d ms force=%s paused=%s", id, o.corpse, o.mode, tostring(o.kind), o.due - time_global(), tostring(o.force), tostring(o.paused))
+	end
+	for id, rec in pairs(monster_parts.all_claims()) do
+		if type(rec) == "table" then
+			local state, npc = resolve(rec)
+			local step, kind = nil, nil
+			if npc and rec.ps then step, kind = reaction(npc, rec, rec.ps) end
+			local ok, why = true, nil
+			if npc then ok, why = may_claim(npc) end
+			log2("[part_claim] corpse %s part=%s owner=%s killer=%s state=%s step=%s %s may_claim=%s %s taken=%s looter=%s",
+				id, tostring(rec.ps), tostring(rec.o), tostring(rec.n), state, tostring(step), tostring(kind), tostring(ok), tostring(why), tostring(rec.ta), tostring(rec.ln))
+		else
+			log2("[part_claim] corpse %s old record", id)
+		end
+	end
+end
+
+local function nearest(test)
+	local here = db.actor:position()
+	local best, dist = nil, 100000
+	for id in pairs(db.creatures) do
+		local obj = level.object_by_id(id)
+		if obj and test(obj) then
+			local d = obj:position():distance_to(here)
+			if d < dist then best, dist = obj, d end
+		end
+	end
+	return best, dist
+end
+
+function damage()
+	local mob, d = nearest(function(o) return o:is_monster() and o:alive() end)
+	if not mob then return log2("[part_claim] no mutant near") end
+	log2("[part_claim] %s at %.1f m: player's share %.3f, health %.3f, needs %.2f", mob:section(), d, monster_parts.actor_share(mob:id()), mob.health, cfg("actor_share"))
+end
+
+function force_claim()
+	local mob = nearest(function(o) return o:is_monster() and not o:alive() end)
+	local npc = nearest(function(o) return o:is_stalker() and o:alive() end)
+	if not ( mob and npc ) then return log2("[part_claim] force_claim: needs a dead mutant and a stalker nearby") end
+	local id = mob:id()
+	local part = monster_parts.find_part(mob)
+	if not part then
+		part = monster_parts.get_monster_part(mob:section())
+		if not part or part == "" then return log2("[part_claim] force_claim: %s has no part", mob:section()) end
+		misc.spawn_to(part, alife():object(id))
+		misc.process_spawn()
+	end
+	monster_parts.set_claim(id, { o = "npc", k = npc:id(), n = npc:name(), c = npc:character_community(), r = npc:character_rank(),
+		t = timers.Get_Game_Seconds(), ps = part })
+	watcher_act.corpse_checked[id] = true
+	waved[id], warned[id], barked[id] = nil, nil, nil
+	log2("[part_claim] force_claim: corpse %s is %s's, part %s", id, npc:name(), part)
+end
+
+-- a looter holding the part for the mirror talk: the nearest stalker and dead mutant, mode give, split, sell or no
+function mirror_test(mode)
+	local mob = nearest(function(o) return o:is_monster() and not o:alive() end)
+	local npc = nearest(function(o) return o:is_stalker() and o:alive() and o:story_id() == NONE_SID end)
+	if not ( mob and npc ) then return log2("[part_claim] mirror_test: needs a dead mutant and a stalker nearby") end
+	local part = monster_parts.get_monster_part(mob:section())
+	if not part or part == "" then return log2("[part_claim] mirror_test: %s has no part", mob:section()) end
+	misc.spawn_to(part, alife():object(npc:id()))
+	misc.process_spawn()
+	monster_parts.set_claim(mob:id(), { o = "actor", k = npc:id(), n = npc:name(), c = npc:character_community(), r = npc:character_rank(),
+		t = timers.Get_Game_Seconds(), ps = part, l = npc:id(), ln = npc:name(), s = part, lt = timers.Get_Game_Seconds() })
+	open_offer(npc, mob:id(), mode or mirror_mode(npc, monster_parts.claim_of(mob:id())), nil, cfg("mirror_ms"), false)
+end
+
+-- every part the player carries drops to this condition: for the rotten hand-over test
+function rot_parts(condition)
+	condition = condition or 0.18
+	db.actor:iterate_inventory(function(_, item)
+		if strposx(item:section(), "mutant_") then
+			item:set_condition(condition)
+			log2("[part_claim] %s now at %.2f", item:section(), condition)
+		end
+	end, nil)
+end
+
+function set_rank(tier)
+	rank_override = tier
+end
+
+function set_temper(temper)
+	temper_override = temper
+end
+
+-- new kills count as this community's: its terms and theft_react, on any stalker who will not shoot you
+function set_community(comm)
+	community_override = comm
+end
+
+function test_community()
+	return community_override
+end
+
+-- percent chance for the attack roll, ignoring config and part: 100 makes a lone NPC fire on refusal. nil to stop
+function set_attack(percent)
+	attack_override = percent
+end
+
+-- forget or set the last deal with the nearest stalker: 'paid', 'gave', 'refused', nil
+function set_memory(outcome)
+	local npc = nearest(function(o) return o:is_stalker() and o:alive() end)
+	if not npc then return log2("[part_claim] set_memory: no stalker near") end
+	local st = load_state()
+	st.mem = st.mem or {}
+	st.mem[npc:id()] = outcome and { n = npc:name(), o = outcome, t = timers.Get_Game_Seconds() } or nil
+	set_value(STATE_KEY, st)
+	log2("[part_claim] %s remembers %s", npc:name(), tostring(outcome))
+end
+
+-- what A-life says about an object by id: does it exist, where, may it come online
+function where(id)
+	local se = alife():object(id)
+	if not se then return log2("[part_claim] where %s: no such object", tostring(id)) end
+	log2("[part_claim] where %s: %s alive=%s online=%s can_online=%s smart=%s level=%s player level=%s", id, se:name(), tostring(se:alive()), tostring(se.online),
+		tostring(se:can_switch_online()), tostring(se:smart_terrain_id()), alife():level_name(game_graph():vertex(se.m_game_vertex_id):level_id()), level.name())
+end
+
+function set_player_rank(tier)
+	player_rank_override = tier
+end
+
+function help()
+	log2("[part_claim] scene(mutant, killer, share): spawns a mutant 4 m ahead with a part and really kills it")
+	log2("[part_claim]   killer: nil = nearest stalker, 'actor' = you, a community such as 'dolg' = its nearest member. Use set_rank for his rank.")
+	log2("[part_claim]   share: your damage, 0.25 makes it yours. Example: fl sivol_part_claim.scene('gigant_strong', 'stalker')")
+	log2("[part_claim] mirror_test(mode): the nearest stalker holds the part of the nearest dead mutant; press use on him. Modes give, split, sell, no")
+	log2("[part_claim] set_community('ecolog'): the next scene counts its killer as that community: ecolog, bandit, killer, freedom, dolg. nil to stop")
+	log2("[part_claim] rot_parts(0.18): every part you carry drops to that condition")
+	log2("[part_claim] report(), damage(), force_claim(), set_rank(1-4), set_player_rank(1-4), set_temper('tactical'), each with nil to stop")
+	log2("[part_claim] set_memory('refused'): the nearest stalker's last deal, for the opener line. set_attack(100): a lone NPC fires on a refused demand")
+	log2("[part_claim] live: fl sivol_tactics.set('dolg', 'theft_react', 2)")
+end
+
+local function when_online(id, tries, fn)
+	local obj = level.object_by_id(id)
+	if obj then return fn(obj) end
+	if tries <= 0 then
+		local se = alife():object(id)
+		return log2("[part_claim] scene: %s never came online: exists=%s can_online=%s wardrobe_hold=%s", tostring(id), tostring(se ~= nil),
+			tostring(se and se:can_switch_online()), tostring(he_npc_wardrobe.held(id)))
+	end
+	dsh.timeout(500, function() when_online(id, tries - 1, fn) end)
+end
+
+local function scene_spawn(section, dist, angle)
+	local a = db.actor
+	local dir = vector():setHP(a:direction():getH() + angle, 0)
+	local lvid = level.vertex_in_direction(a:level_vertex_id(), dir, dist)
+	return alife():create(section, level.vertex_position(lvid), lvid, a:game_vertex_id())
+end
+
+local function scene_kill(mutant, killer_id, share)
+	local se = scene_spawn(mutant, 4, 0)
+	if not se then return log2("[part_claim] scene: cannot spawn %s", tostring(mutant)) end
+	local id = se.id
+	when_online(id, 10, function(mob)
+		if not monster_parts.find_part(mob) then
+			local part = monster_parts.get_monster_part(mutant)
+			if part and part ~= "" then
+				misc.spawn_to(part, alife():object(id))
+				misc.process_spawn()
+			end
+		end
+		if share then monster_parts.set_share(id, share) end
+		dsh.timeout(300, function()
+			local m, k = level.object_by_id(id), level.object_by_id(killer_id)
+			if not ( m and k ) then return log2("[part_claim] scene: mutant or killer gone") end
+			log2("[part_claim] scene: %s id=%s killed by %s, share %s", mutant, id, k:name(), tostring(share))
+			m:kill(k)
+		end)
+	end)
+end
+
+function scene(mutant, killer, share)
+	mutant = mutant or "dog_weak"
+	if killer == "actor" then return scene_kill(mutant, db.actor:id(), share) end
+	local comm = killer
+	local npc = nearest(function(o) return o:is_stalker() and o:alive() and o:story_id() == NONE_SID
+		and ( comm == nil or o:character_community() == comm ) end)
+	if not npc then return log2("[part_claim] scene: no stalker of community %s near", tostring(comm)) end
+	scene_kill(mutant, npc:id(), share)
+end

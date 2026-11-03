@@ -1,0 +1,492 @@
+-- [HE-PORT] read-only population count per level, docs/ALIFE_DESIGN.md Phase 0
+-- Everything goes to xray.log with the [olr_census] tag.
+-- fl olr_census.report()                 every level, one block each
+-- fl olr_census.report("l01_escape")     one level, also names everyone breaking its preset
+-- fl olr_census.near(60)                 everyone within 60 m and who spawned them
+-- fl olr_census.objects()                 all objects, what NPCs carry, for save growth on a long game
+-- fl olr_census.gates("l10_radar")       which smarts OLR could pick there right now, per community
+-- fl olr_census.fauna_roll("esc_rats1")  1000 rolls of what that respawner would spawn
+-- fl olr_census.respawners("l01_escape") timers of the level's creature respawners
+-- fl olr_census.npc(3880)                why an NPC behaves as it does: enemy, weapon, ammo, restrictors
+-- fl olr_census.budgets()                chapter, OLR budgets and respawner ceilings per level
+-- fl olr_census.tick(5)                  runs 5 OLR spawn ticks now and lists what appeared (adds population, use a test save)
+-- fl olr_census.kit()                    for testers: census, steering, respawn rules, lab giants, parties, runs, hunts, night, underground
+
+local RANK_BANDS = { "novice", "experienced", "veteran", "master" }
+local GATE_COMMS = { "stalker", "bandit", "dolg", "freedom", "ecolog", "killer", "military", "monolith", "zombied", "dog", "boar", "snork", "bloodsucker", "burer" }
+
+local function new_row()
+	return {
+		humans = 0, monsters = 0,
+		smartless_h = 0, smartless_m = 0,
+		dormant_h = 0, dormant_m = 0,
+		comm = {}, species = {},
+		origin_h = {}, origin_m = {},
+		broken_olr = 0, broken_other = 0, broken = {},
+	}
+end
+
+local function add(t, k)
+	t[k] = (t[k] or 0) + 1
+end
+
+local function joined(t)
+	local keys = {}
+	for k in pairs(t) do table.insert(keys, k) end
+	table.sort(keys)
+	for i = 1, #keys do
+		keys[i] = keys[i] .. "=" .. t[keys[i]]
+	end
+	return table.concat(keys, " ")
+end
+
+local function any_smart()
+	for _, smart in pairs(smart_terrain.get_registry_by_name()) do
+		return smart
+	end
+	return nil
+end
+
+-- id of a spawned creature -> name of its respawner
+local function respawner_ids(sim)
+	local ids = {}
+	for _, se in sim:objects() do
+		local list = se.spawned_obj
+		if list then
+			for _, id in pairs(list) do ids[id] = se.amk_name or se:name() end
+		end
+	end
+	return ids
+end
+
+-- exists in alife, but its [spawner] cond or gulag job keeps it from ever coming online now
+local function is_dormant(se, human)
+	if se.get_job_online and se:get_job_online() == false then return true end
+	if human then
+		if se.dont_spawn_online == true then return true end
+		return se.spawner ~= nil and db.actor ~= nil
+			and xr_logic.pick_section_from_condlist(db.actor, se, se.spawner) == nil
+	end
+	return xr_spawner.check_spawn(se) == false
+end
+
+-- [HE-PORT] olr_population counts the same way
+function is_dormant_creature(se, human)
+	return is_dormant(se, human)
+end
+
+local function human_origin(se, from_respawner)
+	local section = se:section_name()
+	if olr_squads.is_spawned(se.id) then
+		if string.sub(section, 1, 13) == "olr_monolith_" then return "olr_monolith" end
+		return "olr_squad"
+	end
+	-- an olr_ section nobody tracks can only be a raid
+	if string.sub(section, 1, 4) == "olr_" then return "olr_raid" end
+	if from_respawner then return "respawner" end
+	return "other"
+end
+
+local function monster_origin(se, from_respawner)
+	if olr_monster_squads.is_spawned(se.id) then return "olr_squad" end
+	if from_respawner then return "respawner" end
+	return "other"
+end
+
+local function origin_of(se, human, from_respawner)
+	if human then return human_origin(se, from_respawner) end
+	return monster_origin(se, from_respawner)
+end
+
+-- rats share the tushkano class, but the presets list them apart
+local function community_of(probe, se)
+	if string.sub(se:section_name(), 1, 4) == "rat_" then return "rat" end
+	return probe:get_obj_community(se)
+end
+
+local function is_creature(se)
+	local human = IsStalker(se)
+	return (human or IsMonster(se)) and se.id ~= 0 and se:alive(), human
+end
+
+local function collect()
+	local sim = alife()
+	local probe = any_smart()
+	if not (sim and probe) then return nil end
+	local from_respawner = respawner_ids(sim)
+	local rows = {}
+	for _, se in sim:objects() do
+		local creature, human = is_creature(se)
+		if creature then
+			local lname = olr_smart_index.object_level(se) or "?"
+			local row = rows[lname]
+			if not row then
+				row = new_row()
+				rows[lname] = row
+			end
+			local comm = community_of(probe, se)
+			local smartless = se:smart_terrain_id() == BAD_OBJ_ID
+			local dormant = is_dormant(se, human)
+			local origin = origin_of(se, human, from_respawner[se.id])
+			if human then
+				row.humans = row.humans + 1
+				if smartless then row.smartless_h = row.smartless_h + 1 end
+				if dormant then row.dormant_h = row.dormant_h + 1 end
+				local band = ranks.get_obj_rank_name(se) or "?"
+				row.comm[comm] = row.comm[comm] or {}
+				add(row.comm[comm], band)
+				if dormant then add(row.comm[comm], "dormant") end
+				add(row.origin_h, origin)
+			else
+				row.monsters = row.monsters + 1
+				if smartless then row.smartless_m = row.smartless_m + 1 end
+				if dormant then row.dormant_m = row.dormant_m + 1 end
+				add(row.species, comm or se:section_name())
+				add(row.origin_m, origin)
+			end
+			if comm and comm ~= "trader" and not probe:check_preset(comm, se:rank(), lname) then
+				if string.sub(origin, 1, 3) == "olr" then
+					row.broken_olr = row.broken_olr + 1
+				elseif not dormant then
+					row.broken_other = row.broken_other + 1
+				end
+				local resp = from_respawner[se.id]
+				table.insert(row.broken, string.format("%s %s rank=%d %s%s%s", se:name(), tostring(comm), se:rank(), origin,
+					resp and ("(" .. resp .. ")") or "", dormant and " dormant" or ""))
+			end
+		end
+	end
+	return rows
+end
+
+local function print_row(lname, row, verbose)
+	log2("[olr_census] %s: humans=%d dormant=%d smartless=%d monsters=%d dormant=%d smartless=%d broken_preset olr=%d other=%d",
+		lname, row.humans, row.dormant_h, row.smartless_h, row.monsters, row.dormant_m, row.smartless_m, row.broken_olr, row.broken_other)
+	local comms = {}
+	for comm in pairs(row.comm) do table.insert(comms, comm) end
+	table.sort(comms)
+	for i = 1, #comms do
+		local parts = {}
+		for _, band in ipairs(RANK_BANDS) do
+			local n = row.comm[comms[i]][band]
+			if n then table.insert(parts, band .. "=" .. n) end
+		end
+		if row.comm[comms[i]].dormant then table.insert(parts, "of_them_dormant=" .. row.comm[comms[i]].dormant) end
+		log2("[olr_census]   %s: %s", comms[i], table.concat(parts, " "))
+	end
+	if row.humans > 0 then log2("[olr_census]   human origin: %s", joined(row.origin_h)) end
+	if row.monsters > 0 then
+		log2("[olr_census]   monsters: %s", joined(row.species))
+		log2("[olr_census]   monster origin: %s", joined(row.origin_m))
+	end
+	if verbose then
+		for i = 1, #row.broken do
+			log2("[olr_census]   broken: %s", row.broken[i])
+		end
+	end
+end
+
+local function totals(rows)
+	local t = new_row()
+	for _, row in pairs(rows) do
+		t.humans = t.humans + row.humans
+		t.monsters = t.monsters + row.monsters
+		t.dormant_h = t.dormant_h + row.dormant_h
+		t.dormant_m = t.dormant_m + row.dormant_m
+		t.broken_olr = t.broken_olr + row.broken_olr
+		t.broken_other = t.broken_other + row.broken_other
+		for k, n in pairs(row.origin_h) do t.origin_h[k] = (t.origin_h[k] or 0) + n end
+		for k, n in pairs(row.origin_m) do t.origin_m[k] = (t.origin_m[k] or 0) + n end
+	end
+	return t
+end
+
+local function summary_line(t)
+	return string.format("preset=%s humans=%d dormant=%d monsters=%d dormant=%d broken_preset olr=%d other=%d | humans: %s | monsters: %s",
+		olr_cfg.preset_name(), t.humans, t.dormant_h, t.monsters, t.dormant_m, t.broken_olr, t.broken_other, joined(t.origin_h), joined(t.origin_m))
+end
+
+local function news(text)
+	if db.actor then
+		db.actor:give_game_news(text, "ui\\ui_iconsTotal", Frect():set(0, 0, 83, 47), 0, 15000)
+	end
+end
+
+function report(level_name)
+	local rows = collect()
+	if not rows then return end
+	if level_name then
+		local row = rows[level_name]
+		if row then
+			print_row(level_name, row, true)
+		else
+			log2("[olr_census] %s: nobody alive", level_name)
+		end
+		return
+	end
+	local names = {}
+	for lname in pairs(rows) do table.insert(names, lname) end
+	table.sort(names)
+	for i = 1, #names do
+		print_row(names[i], rows[names[i]], false)
+	end
+	local line = summary_line(totals(rows))
+	log2("[olr_census] TOTAL %s", line)
+	news("olr_census: " .. line)
+end
+
+-- [HE-PORT] for olr_steering: active humans and monsters per level, without the dormant ones and vermin
+function counts()
+	local rows = collect()
+	if not rows then return nil end
+	local out = {}
+	for lname, row in pairs(rows) do
+		local vermin = ( row.species.rat or 0 ) + ( row.species.tushkano or 0 )
+		out[lname] = { h = row.humans - row.dormant_h, m = row.monsters - row.dormant_m - vermin }
+	end
+	return out
+end
+
+-- [HE-PORT] one command for testers: the whole A-life picture in the log
+function kit()
+	log2("[olr_census] ===== kit: day %d %02d:%02d on %s =====", level.get_time_days(), level.get_time_hours(), level.get_time_minutes(), level.name())
+	log2("[olr_census] preset=%s chapter=%d grace=%s", olr_cfg.preset_name(), olr_cfg.chapter(), tostring(olr_cfg.grace_active()))
+	report()
+	olr_steering.report()
+	olr_population.report()
+	olr_respawn_rules.report()
+	olr_lab_giants.report()
+	olr_patrols.report()
+	olr_trader_runs.report()
+	olr_trader_runs.parts_census()
+	olr_offline_hunts.report()
+	olr_alpha.report()
+	olr_night.report()
+	olr_underground.report()
+	log2("[olr_census] ===== kit end =====")
+end
+
+function on_first_update()
+	if not olr_cfg.log_census() then return end
+	local rows = collect()
+	if rows then
+		log2("[olr_census] on load %s: %s", level.name(), summary_line(totals(rows)))
+	end
+end
+
+function near(radius)
+	radius = radius or 60
+	local sim = alife()
+	if not (sim and db.actor) then return end
+	local probe = any_smart()
+	local from_respawner = respawner_ids(sim)
+	local here = level.name()
+	local pos = db.actor:position()
+	local out = {}
+	for _, se in sim:objects() do
+		local creature, human = is_creature(se)
+		if creature and olr_smart_index.object_level(se) == here then
+			local d = pos:distance_to(se.position)
+			if d <= radius then
+				table.insert(out, { d = d, se = se, human = human })
+			end
+		end
+	end
+	table.sort(out, function(a, b) return a.d < b.d end)
+	log2("[olr_census] near %d m on %s: %d", radius, here, #out)
+	for i = 1, #out do
+		local se = out[i].se
+		local resp = from_respawner[se.id]
+		local sid = se:smart_terrain_id()
+		local smart = sid ~= BAD_OBJ_ID and sim:object(sid)
+		-- bound to another level and held offline: seen here, invisible in the world
+		local elsewhere = smart and out[i].human and smart.level_name ~= here
+		log2("[olr_census]   %3.0f m %s id=%d %s rank=%d origin=%s%s smart=%s online=%s%s",
+			out[i].d, se:section_name(), se.id, tostring(community_of(probe, se)), se:rank(),
+			origin_of(se, out[i].human, resp), resp and ("(" .. resp .. ")") or "", smart and smart:name() or "none", tostring(se.online),
+			elsewhere and ( " BOUND_ELSEWHERE:" .. smart.level_name .. " can_online=" .. tostring(se:can_switch_online()) ) or "")
+	end
+end
+
+function objects()
+	local sim = alife()
+	local total, carried, on_npc = 0, 0, 0
+	local counts = {}
+	for _, se in sim:objects() do
+		total = total + 1
+		if se.parent_id ~= BAD_OBJ_ID then
+			carried = carried + 1
+			local owner = sim:object(se.parent_id)
+			if owner and IsStalker(owner) then
+				on_npc = on_npc + 1
+				local section = se:section_name()
+				counts[section] = ( counts[section] or 0 ) + 1
+			end
+		end
+	end
+	local list = {}
+	for section, n in pairs(counts) do table.insert(list, { s = section, n = n }) end
+	table.sort(list, function(a, b) return a.n > b.n end)
+	log2("[olr_census] objects: %d in all, %d carried, %d on stalkers", total, carried, on_npc)
+	for i = 1, math.min(25, #list) do
+		log2("[olr_census]   %5d %s", list[i].n, list[i].s)
+	end
+end
+
+function gates(level_name)
+	level_name = level_name or level.name()
+	log2("[olr_census] gates %s (preset %s, closed to incoming humans: %s)", level_name, olr_cfg.preset_name(), tostring(olr_cfg.level_closed(level_name)))
+	olr_smart_index.rebuild(true)
+	for _, comm in ipairs(GATE_COMMS) do
+		local open, shut = olr_smart_index.level_picks(comm, level_name)
+		if #open > 0 or #shut > 0 then
+			log2("[olr_census]   %s: open=%d [%s] story_shut=%d [%s]", comm, #open, table.concat(open, " "), #shut, table.concat(shut, " "))
+		else
+			log2("[olr_census]   %s: nothing", comm)
+		end
+	end
+end
+
+local function respawner_matches(se, name)
+	return se.spawned_obj and (se.amk_name == name or se:name() == name)
+end
+
+function fauna_roll(name, count)
+	count = count or 1000
+	local found = false
+	for _, se in alife():objects() do
+		if respawner_matches(se, name) then
+			found = true
+			for _, entry in pairs(se.respawn_section) do
+				local got = {}
+				for i = 1, count do
+					add(got, he_random_fauna.pick(se, entry.section))
+				end
+				log2("[olr_census] fauna %s: %s -> %s", name, entry.section, joined(got))
+			end
+		end
+	end
+	if not found then
+		log2("[olr_census] fauna %s: no such respawner", name)
+	end
+end
+
+function respawners(level_name)
+	level_name = level_name or level.name()
+	local now = game.get_game_time()
+	for _, se in alife():objects() do
+		if se.spawned_obj and se.item_spawn == false and olr_smart_index.object_level(se) == level_name then
+			local secs = {}
+			for _, entry in pairs(se.respawn_section) do
+				table.insert(secs, entry.section)
+			end
+			local left = 0
+			if now < se.respawn_time then left = se.respawn_time:diffSec(now) / 3600 end
+			log2("[olr_census]   %s monster=%s idle=%.0f-%.0f h next_in=%.1f h alive=%d [%s]",
+				se.amk_name or se:name(), tostring(se.he_monster_respawn == true),
+				se.idle_spawn_min / 3600, se.idle_spawn_max / 3600, left, #se.spawned_obj, table.concat(secs, " "))
+		end
+	end
+end
+
+function npc(id)
+	local se = alife():object(id)
+	if not se then
+		log2("[olr_census] npc %s: no such object", tostring(id))
+		return
+	end
+	local sid = se:smart_terrain_id()
+	local smart = sid ~= BAD_OBJ_ID and alife():object(sid)
+	log2("[olr_census] npc %d %s section=%s comm=%s rank=%d online=%s level=%s smart=%s dormant=%s", id, se:name(), se:section_name(),
+		tostring(se:community()), se:rank(), tostring(se.online), tostring(olr_smart_index.object_level(se)),
+		smart and smart:name() or "none", tostring(is_dormant(se, IsStalker(se))))
+	local obj = level.object_by_id(id)
+	if not obj then return end
+	local enemy = obj:best_enemy()
+	if enemy then
+		log2("[olr_census]   best_enemy=%s dist=%.0f relation=%d sees=%s", enemy:name(), obj:position():distance_to(enemy:position()),
+			obj:relation(enemy), tostring(obj:see(enemy)))
+	else
+		log2("[olr_census]   best_enemy=none")
+	end
+	local active = obj:active_item()
+	if active then
+		log2("[olr_census]   active=%s mag=%d", active:section(), active:get_ammo_in_magazine())
+	else
+		log2("[olr_census]   active=none")
+	end
+	local best = obj:best_weapon()
+	if best then
+		log2("[olr_census]   best_weapon=%s mag=%d total=%d", best:section(), best:get_ammo_in_magazine(), best:get_ammo_total())
+	else
+		log2("[olr_census]   best_weapon=none")
+	end
+	local weapons, ammo = {}, {}
+	obj:iterate_inventory(function(_, item)
+		local sect = item:section()
+		if string.sub(sect, 1, 4) == "wpn_" then table.insert(weapons, sect) end
+		if string.sub(sect, 1, 5) == "ammo_" then add(ammo, sect) end
+	end, obj)
+	log2("[olr_census]   weapons: %s | ammo boxes: %s", table.concat(weapons, " "), joined(ammo))
+	local st = db.storage[id]
+	log2("[olr_census]   wounded=%s out=[%s] in=[%s] scheme=%s", tostring(obj:wounded()), obj:out_restrictions(), obj:in_restrictions(),
+		tostring(st and st.active_section))
+end
+
+function budgets()
+	local names = {}
+	for lname in pairs(olr_cfg.budget_levels()) do table.insert(names, lname) end
+	table.sort(names)
+	local front = olr_cfg.frontier_levels()
+	local humans, monsters = olr_squads.level_counts(), olr_monster_squads.level_counts()
+	log2("[olr_census] budgets preset=%s chapter=%d grace=%s", olr_cfg.preset_name(), olr_cfg.chapter(), tostring(olr_cfg.grace_active()))
+	for i = 1, #names do
+		local lname = names[i]
+		log2("[olr_census]   %s open=%s olr_humans=%d/%.1f olr_monsters=%d/%.1f respawner_monsters=%d/%s", lname,
+			tostring(front == nil or front[lname] == true), humans[lname] or 0, olr_cfg.budget_of(1, lname),
+			monsters[lname] or 0, olr_cfg.budget_of(2, lname), se_respawn.level_monster_count(lname), tostring(olr_cfg.monster_ceiling(lname)))
+	end
+	olr_population.report() -- [HE-PORT] with population on, the ceiling above is not used: these targets are
+end
+
+local function new_ids(before, after)
+	local out = {}
+	for id in pairs(after) do
+		if not before[id] then table.insert(out, id) end
+	end
+	return out
+end
+
+local function copy_keys(t)
+	local out = {}
+	for k in pairs(t) do out[k] = true end
+	return out
+end
+
+local function print_new(sim, probe, kind, ids)
+	for _, id in ipairs(ids) do
+		local se = sim:object(id)
+		if se then
+			local lname = olr_smart_index.object_level(se) or "?"
+			local comm = community_of(probe, se)
+			log2("[olr_census]   %s %s on %s rank=%d preset_ok=%s online=%s", kind, se:section_name(), lname, se:rank(),
+				tostring(comm == nil or probe:check_preset(comm, se:rank(), lname)), tostring(se.online))
+		end
+	end
+end
+
+function tick(count)
+	count = count or 1
+	local sim = alife()
+	local probe = any_smart()
+	if not (sim and probe) then return end
+	local before_h, before_m = copy_keys(olr_squads.known_ids()), copy_keys(olr_monster_squads.known_ids())
+	for i = 1, count do
+		olr_squads.debug_tick()
+		olr_monster_squads.debug_tick()
+	end
+	local ids_h, ids_m = new_ids(before_h, olr_squads.known_ids()), new_ids(before_m, olr_monster_squads.known_ids())
+	log2("[olr_census] tick x%d on preset %s from %s: humans +%d, monsters +%d", count, olr_cfg.preset_name(), level.name(), #ids_h, #ids_m)
+	print_new(sim, probe, "human", ids_h)
+	print_new(sim, probe, "monster", ids_m)
+end

@@ -85,6 +85,18 @@ private:
     IC void fill_object_info();
     IC u32 object_slot() const;
     IC EBodyState body_state() const;
+    // NLC: wounded gait (docs/ALIFE_TACTICS_DESIGN.md 15.2 and 16.10): the clip set index for the legs (state 2, "dmg_norm_", when limping)
+    u32 legs_state() const;
+    MotionID nlc_leg_motion(u32 movement_type, u32 direction, u32 variant);
+    mutable bool m_nlc_limp{};
+    // the limp flag with its hysteresis (health below [nlc_limp] health), false when critically wounded or off
+    bool nlc_limp() const;
+    // the pace of a limping stalker as a share of the normal one ([nlc_limp] speed_run / speed_walk), 1 when he does not limp on his legs
+    float nlc_limp_speed_k() const;
+    // damaged torso clips (state 2) for the idle / walk / run poses only; the normal clip when there is none or the mode bit is off
+    MotionID nlc_dmg_clip(u32 slot, u32 set, u32 index) const;
+    MotionID nlc_torso_calm(u32 slot, const EBodyState& body_state, u32 set, u32 index) const;
+    MotionID nlc_torso_alert(u32 slot, const EBodyState& body_state, u32 set, u32 index) const;
 
 private:
     bool need_look_back() const;
@@ -171,5 +183,14 @@ public:
     void add_animation_stats();
 #endif // DEBUG
 };
+
+// NLC: limp mode mask (Lua level.nlc_limp_mode / nlc_limp_mode_get; defaults from [nlc_limp] in system.ltx):
+// 1 legs, 2 torso while calm (free mental state), 4 torso while alert (danger), 8 torso in the panic run
+u32 nlc_limp_mode();
+void nlc_limp_mode_set(u32 mode);
+// the pace of a limping stalker (movement speed and legs cycle speed) as a share of the normal one, run and walk (Lua level.nlc_limp_speed)
+void nlc_limp_speed_set(float run, float walk);
+// the health below which the limp starts and the health at or above which it ends ([nlc_limp] health / exit, Lua level.nlc_limp_health)
+void nlc_limp_health_set(float enter, float exit);
 
 #include "stalker_animation_manager_inline.h"

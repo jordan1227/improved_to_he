@@ -95,6 +95,11 @@ public:
     SBoneProtections* bone_hit_protection() const { return m_boneHitProtection; } // NLC: script export
     bool nlc_relation_exempt() const { return m_nlc_relation_exempt; } // NLC: quest exemption (relation_registry_actions.cpp)
     void nlc_relation_exempt(bool exempt) { m_nlc_relation_exempt = exempt; }
+    // NLC: factor on this stalker's footstep volume, and so on how far others hear it (a sneaking NPC sets it low;
+    // scripts: nlc_step_k, see sivol_melee). Not saved: it is 1 again after a load or an online switch.
+    float nlc_step_k() const { return m_nlc_step_k; }
+    void nlc_step_k(float k) { m_nlc_step_k = k; }
+    float step_volume_k() override { return m_nlc_step_k; }
 
 private:
     // NLC: head-hit concussion (docs/damage_model/DESIGN_npc_damage_model.md 14, E4). A surviving bullet hit on a
@@ -213,6 +218,7 @@ private:
     // NLC: quest exemption, set by script (not saved): the actor attacking or killing this stalker changes no
     // reputation or goodwill (relation_registry_actions.cpp ATTACK / KILL; docs/YURIK_QUEST_DESIGN.md 8)
     bool m_nlc_relation_exempt{};
+    float m_nlc_step_k{1.f};
     float nlc_weapon_accuracy_base() const;
     bool m_fast_can_kill_entity;
 

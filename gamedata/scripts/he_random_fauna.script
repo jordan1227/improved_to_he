@@ -5,6 +5,7 @@ local REFILL_KEY = "he_random_fauna_refill"
 local loaded = false
 local keep_original = 40
 local level_pool = {}
+local story_pool = {}
 local accept = {}
 local keep = {}
 local refill = { level = "", interval = 1440, lairs = {} }
@@ -40,14 +41,27 @@ local function load()
 	if ini:line_exist("settings", "keep_original") then
 		keep_original = ini:r_u32("settings", "keep_original")
 	end
+	keep_original = olr_cfg.get("fauna_keep_original")
+	local strict = olr_cfg.on("fauna_strict")
 	local pools = {}
-	read_section(ini, "levels", function(lvl, pool)
+	local function read_level(lvl, pool)
+		if strict and ini:section_exist(pool .. "_strict") then
+			pool = pool .. "_strict"
+		end
 		if not pools[pool] then
 			pools[pool] = load_pool(ini, pool)
 		end
 		level_pool[lvl] = pools[pool]
-	end)
-	read_section(ini, "lair_accept", function(name, val)
+	end
+	read_section(ini, "levels", read_level)
+	if strict then
+		read_section(ini, "levels_strict", read_level)
+		read_section(ini, "levels_story", function(lvl, val)
+			local info, pool = string.match(val, "([%w_]+)%s*,%s*([%w_]+)")
+			story_pool[lvl] = { info = info, pool = load_pool(ini, pool) }
+		end)
+	end
+	local function read_accept(name, val)
 		if val == "any" then
 			accept[name] = true
 		else
@@ -57,7 +71,11 @@ local function load()
 			end
 			accept[name] = set
 		end
-	end)
+	end
+	read_section(ini, "lair_accept", read_accept)
+	if strict then
+		read_section(ini, "lair_accept_strict", read_accept)
+	end
 	read_section(ini, "keep_respawners", function(name)
 		keep[name] = true
 	end)
@@ -93,8 +111,16 @@ local function pool_of(respawner)
 	load()
 	if keep[respawner:name()] then return nil end
 	local p = level_pool[respawner.level_name or ""]
+	local late = story_pool[respawner.level_name or ""]
+	if late and has_alife_info(late.info) then
+		p = late.pool
+	end
 	if not p or p.sum <= 0 then return nil end
 	return p
+end
+
+function is_vermin(section)
+	return string.sub(section, 1, 4) == "rat_" or string.sub(section, 1, 9) == "tushkano_"
 end
 
 function pick(respawner, section)
@@ -102,7 +128,20 @@ function pick(respawner, section)
 	if not p or math.random(100) <= keep_original then
 		return section
 	end
+	if is_vermin(section) and olr_cfg.on("fauna_keep_vermin") then
+		return section
+	end
+	local quiet = olr_cfg.grace_blocked_levels()
+	if quiet and quiet[respawner.level_name or ""] then
+		return section
+	end
 	return roll(p) or section
+end
+
+-- [HE-PORT]
+function is_kept(name)
+	load()
+	return keep[name] == true
 end
 
 function add_sections(respawner, set)

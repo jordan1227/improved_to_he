@@ -24,6 +24,7 @@ public:
 protected:
     CSpaceRestrictor* m_restrictor;
     bool m_default;
+    float m_margin{}; // NLC: extra keep-out around an anomaly, see build_border
 
 protected:
     IC Fvector position(const CCF_Shape::shape_def& data) const;

@@ -1,18 +1,9 @@
 -- [HE-PORT]
 local time_next_spawn = 0
-local SPAWN_INTERVAL = 600000
-local MAX_SQUADS_TOTAL = 40
--- [HE-PORT]
-local SPAWN_INTERVAL_LOW = 240000
-local REGION_TARGET = 14
 local REGION_SHARE = 75
 local CUR_LEVEL_MIN_DIST = 400
 local RECYCLE_BATCH = 6
 local keep_smarts = { mil_freedom = true, mil_fblockpost = true, mil_fneutral = true }
--- [HE-PORT]
-local MONO_TARGET = 15
-local MONO_MAX = 18
-local MONO_NORTH_WEIGHT = 30
 local spawned_ids = {}
 local squad_counter = 0
 -- [HE-PORT]
@@ -122,7 +113,10 @@ end
 
 -- [HE-PORT]
 local function level_set(kind)
-	if kind == "north" then return olr_faction_policy.north_levels end
+	if kind == "north" then
+		if olr_cfg.get("mono_levels") == "north" then return olr_faction_policy.north_levels end
+		return olr_cfg.set("mono_levels")
+	end
 	return nil
 end
 
@@ -138,7 +132,22 @@ local function north_weights(list)
 	local out = {}
 	for _, fw in ipairs(list) do
 		if fw[1] == "monolith_north" then
-			table.insert(out, { fw[1], MONO_NORTH_WEIGHT })
+			table.insert(out, { fw[1], olr_cfg.get("mono_north_weight") })
+		else
+			table.insert(out, fw)
+		end
+	end
+	return out
+end
+
+-- [HE-PORT]
+local function allowed_weights(list)
+	local out = {}
+	for _, fw in ipairs(list) do
+		if fw[1] == "military" and not olr_cfg.on("military_olr") then
+			-- garrisons only
+		elseif fw[1] == "monolith_north" and not olr_cfg.mono_open() then
+			-- not before the story opens the north
 		else
 			table.insert(out, fw)
 		end
@@ -149,6 +158,7 @@ end
 local function pick_random_faction()
 	local list = he_mil_dolg_reward.olr_weights(faction_weights) -- [HE-PORT]
 	list = north_weights(list) -- [HE-PORT]
+	list = allowed_weights(list) -- [HE-PORT]
 	local total = 0
 	for _, fw in ipairs(list) do total = total + fw[2] end
 	local roll = math.random(1, total)
@@ -198,7 +208,7 @@ local function count_alive_spawned()
 	local dead_ids = {}
 	for id, _ in pairs(spawned_ids) do
 		local obj = sim:object(id)
-		if obj and obj:alive() then
+		if obj and IsStalker(obj) and obj:alive() then
 			if not is_mono(obj) then -- [HE-PORT]
 				alive = alive + 1
 			end
@@ -219,7 +229,7 @@ local function count_mono()
 	local n = 0
 	for id, _ in pairs(spawned_ids) do
 		local obj = sim:object(id)
-		if obj and obj:alive() and is_mono(obj) then
+		if obj and IsStalker(obj) and obj:alive() and is_mono(obj) then
 			n = n + 1
 		end
 	end
@@ -234,11 +244,32 @@ local function count_in_region()
 	local n = 0
 	for id, _ in pairs(spawned_ids) do
 		local obj = sim:object(id)
-		if obj and obj:alive() and region[ olr_smart_index.object_level(obj) or "" ] then
+		if obj and IsStalker(obj) and obj:alive() and region[ olr_smart_index.object_level(obj) or "" ] then
 			n = n + 1
 		end
 	end
 	return n
+end
+
+-- [HE-PORT] OLR people per level, Monolith apart; refreshed at most every 30 s
+local counts = {}
+local counts_until = 0
+
+function level_counts()
+	if time_global() < counts_until then return counts end
+	load_spawned_ids()
+	counts_until = time_global() + 30000
+	counts = {}
+	local sim = g_sim
+	if not sim then return counts end
+	for id, _ in pairs(spawned_ids) do
+		local obj = sim:object(id)
+		if obj and IsStalker(obj) and obj:alive() and not is_mono(obj) then
+			local lname = olr_smart_index.object_level(obj) or ""
+			counts[lname] = (counts[lname] or 0) + 1
+		end
+	end
+	return counts
 end
 
 -- [HE-PORT]
@@ -250,7 +281,7 @@ local function recycle_far(limit)
 	for id, _ in pairs(spawned_ids) do
 		if #victims >= limit then break end
 		local obj = sim:object(id)
-		if obj and obj:alive() and not obj.online and IsStalker(obj)
+		if obj and IsStalker(obj) and obj:alive() and not obj.online
 			and string.sub(obj:section_name(), 1, 4) == "olr_"
 			and not is_mono(obj) -- [HE-PORT]
 			and not region[ olr_smart_index.object_level(obj) or "" ]
@@ -285,6 +316,9 @@ end
 
 -- [HE-PORT]
 local function too_close(smart_name)
+	if not olr_cfg.on("spawn_on_player_level") and olr_smart_index.get_level(smart_name) == level.name() then
+		return true
+	end
 	local d = olr_smart_index.actor_dist(smart_name)
 	return d ~= nil and d < CUR_LEVEL_MIN_DIST
 end
@@ -324,20 +358,35 @@ local function spawn_squad(faction_name, in_region)
 	-- [HE-PORT]
 	local levels = level_set(config.levels)
 	local region = in_region and olr_smart_index.region_levels() or nil
+	local free_roam = olr_cfg.on("mono_free_roam")
+	-- [HE-PORT]
+	local comm = config.comm or faction_name
+	local gates = olr_cfg.on("rank_gates") and not config.smarts
+	local pool = config.sections
+	local budget = nil
+	if not ( config.smarts or config.levels ) then
+		budget = olr_cfg.budget_open(1, level_counts())
+	end
 
 	local smart_name, smart_obj
 	for attempt = 1, 8 do
-		local only = ( attempt <= 5 ) and region or nil -- [HE-PORT]
+		local only = olr_cfg.intersect_levels(( attempt <= 5 ) and region or nil, budget) -- [HE-PORT]
 		if config.smarts then -- [HE-PORT]
 			smart_name = config.smarts[math.random(#config.smarts)]
 			if he_mil_dolg_reward.olr_smart_full(smart_name) then smart_name = nil end
-		elseif config.anchor_any then
+		elseif config.anchor_any and free_roam then
 			smart_name = olr_smart_index.pick_any_on_levels(narrow_levels(levels, only), nil)
+		elseif config.anchor_any then
+			smart_name = olr_smart_index.pick_name(config.comm, nil, nil, narrow_levels(levels, only))
 		else
 			smart_name = olr_smart_index.pick_name(config.comm or faction_name, nil, nil, only)
 		end
 		if smart_name and not too_close(smart_name) then -- [HE-PORT]
 			smart_obj = olr_smart_index.get_obj(smart_name)
+			if smart_obj and gates then
+				pool = olr_smart_index.sections_fitting(smart_name, comm, config.sections)
+				if #pool == 0 then smart_obj = nil end
+			end
 			if smart_obj then break end
 		end
 	end
@@ -346,16 +395,19 @@ local function spawn_squad(faction_name, in_region)
 	local smart_level = get_spawn_location(smart_obj)
 
 	-- [HE-PORT]
-	local comm = config.comm or faction_name
 	local okd, denied = pcall(olr_faction_policy.smart_denied, comm, smart_name, smart_level)
 	if okd and denied then return 0 end
 
 	local size = math.random(config.min_size, config.max_size)
+	if budget then -- [HE-PORT]
+		local left = olr_cfg.budget_of(1, smart_level) - ( level_counts()[smart_level] or 0 )
+		size = math.min(size, math.max(2, math.ceil(left)))
+	end
 	local spawned = 0
-	local wander = not config.no_wander and (config.wander_only == true or math.random(1, 10) <= 4) -- [HE-PORT]
+	local wander = not config.no_wander and ((config.wander_only == true and free_roam) or math.random(1, 100) <= olr_cfg.get("human_spawn_wander")) -- [HE-PORT]
 
 	for i = 1, size do
-		local section = config.sections[math.random(#config.sections)]
+		local section = pool[math.random(#pool)]
 		local ok, result = pcall(function()
 			local pos = smart_obj.position
 			local offset_pos = vector():set(
@@ -370,6 +422,11 @@ local function spawn_squad(faction_name, in_region)
 				smart_obj.m_game_vertex_id
 			)
 			if obj then
+				-- [HE-PORT] the profile can roll a rank outside its section's range
+				if gates and not olr_smart_index.rank_fits(smart_name, comm, obj:rank()) then
+					alife():release(obj, true)
+					return false
+				end
 				local pk = get_netpk(obj)
 				if pk then
 					local data = pk:get()
@@ -383,7 +440,7 @@ local function spawn_squad(faction_name, in_region)
 					end
 				end
 				spawned_ids[obj.id] = faction_name
-				if config.roam then
+				if config.roam and free_roam then
 					roam_track(obj.id)
 				end
 				return true
@@ -397,6 +454,8 @@ local function spawn_squad(faction_name, in_region)
 
 	if spawned > 0 then
 		squad_counter = squad_counter + 1
+		counts_until = 0 -- [HE-PORT]
+		olr_population.note_olr(smart_level, true, spawned) -- [HE-PORT]
 	end
 
 	return spawned
@@ -405,37 +464,55 @@ end
 function update()
 	if not db.actor then return end
 	if device().precache_frame > 1 then return end
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if olr_cfg.sleep_paused() then return end
+	-- [HE-PORT] a loaded save must not add a batch by itself
+	if time_next_spawn == 0 and olr_cfg.on("delay_first_tick") then
+		time_next_spawn = time_global() + olr_cfg.get("human_tick") * 1000
+		return
+	end
 	if time_global() < time_next_spawn then return end
 
 	local sim = g_sim
 	if not sim then return end
 
 	local alive = count_alive_spawned()
+	local max_total = olr_cfg.get("human_cap") -- [HE-PORT]
 	-- [HE-PORT]
-	if count_mono() < MONO_TARGET then
+	if olr_cfg.mono_open() and count_mono() < olr_cfg.get("mono_target") then
 		spawn_squad("monolith_north", actor_in_north())
 	end
+	-- [HE-PORT] budgets: one group per tick, a level at a time
+	if olr_cfg.on("budgets") then
+		time_next_spawn = time_global() + olr_cfg.get("human_tick") * 1000
+		for i = 1, 3 do
+			local faction = pick_random_faction()
+			if not ( faction == "monolith_north" and count_mono() >= olr_cfg.get("mono_max") ) then
+				if spawn_squad(faction, math.random(1, 100) <= REGION_SHARE) > 0 then break end
+			end
+		end
+		store_spawned_ids()
+		return
+	end
 	-- [HE-PORT]
-	if count_in_region() < REGION_TARGET then
-		time_next_spawn = time_global() + SPAWN_INTERVAL_LOW
-		if alive >= MAX_SQUADS_TOTAL then
-			recycle_far(alive - MAX_SQUADS_TOTAL + RECYCLE_BATCH)
+	if count_in_region() < olr_cfg.get("human_region_target") then
+		time_next_spawn = time_global() + olr_cfg.get("human_tick_low") * 1000
+		if alive >= max_total then
+			recycle_far(alive - max_total + RECYCLE_BATCH)
 			alive = count_alive_spawned()
 		end
 	else
-		time_next_spawn = time_global() + SPAWN_INTERVAL
+		time_next_spawn = time_global() + olr_cfg.get("human_tick") * 1000
 	end
-	if alive >= MAX_SQUADS_TOTAL then
+	if alive >= max_total then
 		store_spawned_ids()
 		return
 	end
 
 	local num_squads = math.random(1, 3)
 	for i = 1, num_squads do
-		if count_alive_spawned() >= MAX_SQUADS_TOTAL then break end
+		if count_alive_spawned() >= max_total then break end
 		local faction = pick_random_faction()
-		if not ( faction == "monolith_north" and count_mono() >= MONO_MAX ) then -- [HE-PORT]
+		if not ( faction == "monolith_north" and count_mono() >= olr_cfg.get("mono_max") ) then -- [HE-PORT]
 			spawn_squad(faction, math.random(1, 100) <= REGION_SHARE) -- [HE-PORT]
 		end
 	end
@@ -447,7 +524,8 @@ end
 function roam_update()
 	if not db.actor then return end
 	if device().precache_frame > 1 then return end
-	if sleep_manager and sleep_manager.is_sleep_active and sleep_manager.is_sleep_active() then return end
+	if olr_cfg.sleep_paused() then return end
+	if not olr_cfg.on("mono_free_roam") then return end -- [HE-PORT]
 	if time_global() < roam_next then return end
 	roam_next = time_global() + ROAM_INTERVAL
 
@@ -458,14 +536,17 @@ function roam_update()
 	local t = get_value(ROAM_KEY)
 	if not t or #t == 0 then return end
 
-	local levels = olr_faction_policy.north_levels
+	local levels = level_set("north") -- [HE-PORT]
 	local kept = {}
 	for _, id in ipairs(t) do
 		local obj = sim:object(id)
-		if obj and obj:alive() then
+		if obj and IsStalker(obj) and obj:alive() then
 			table.insert(kept, id)
 			if not obj.online and math.random(1, 3) == 1 then
 				local target = olr_smart_index.pick_any_on_levels(levels, nil)
+				if target and not olr_cfg.on("spawn_on_player_level") and olr_smart_index.get_level(target) == level.name() then -- [HE-PORT]
+					target = nil
+				end
 				local smart = target and olr_smart_index.get_obj(target)
 				if smart then
 					pcall(function()
@@ -481,4 +562,38 @@ end
 
 function get_status()
 	local alive = count_alive_spawned()
+end
+
+-- [HE-PORT]
+function is_spawned(id)
+	load_spawned_ids()
+	return spawned_ids[id] ~= nil
+end
+
+-- [HE-PORT]
+function track(id, faction)
+	load_spawned_ids()
+	spawned_ids[id] = faction
+	counts_until = 0
+	store_spawned_ids()
+end
+
+-- [HE-PORT]
+function forget(id)
+	load_spawned_ids() -- [HE-PORT] else the save brings the id back
+	if spawned_ids[id] then
+		spawned_ids[id] = nil
+		store_spawned_ids()
+	end
+end
+
+-- [HE-PORT] test helpers
+function known_ids()
+	load_spawned_ids()
+	return spawned_ids
+end
+
+function debug_tick()
+	time_next_spawn = 1
+	update()
 end

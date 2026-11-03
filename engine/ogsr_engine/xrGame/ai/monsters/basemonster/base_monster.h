@@ -1,5 +1,8 @@
 #pragma once
 
+#include <map>
+#include <string>
+#include <type_traits>
 #include "../../../CustomMonster.h"
 
 #include "../monster_enemy_memory.h"
@@ -59,6 +62,37 @@ class CBaseMonster : public CCustomMonster, public CStepManager, public CInvento
 public:
     CBaseMonster();
     virtual ~CBaseMonster();
+
+    // NLC: per-object ability factors (docs/ALIFE_TACTICS_DESIGN.md 8). A species overrides nlc_ability: with cur set it
+    // writes the named ability's current value there, otherwise it sets the ability to its first-seen (config) value
+    // times k, so repeated calls never compound. false = the species has no such ability.
+    // Scripts: nlc_ability_k / nlc_ability_get (script_game_object_use2.cpp).
+    virtual bool nlc_ability(LPCSTR name, float k, float* cur) { return false; }
+
+protected:
+    std::map<std::string, float> m_nlc_abil_base;
+    template <class T>
+    bool nlc_abil(LPCSTR name, LPCSTR want, T& member, float k, float* cur)
+    {
+        if (xr_strcmp(name, want))
+            return false;
+        auto it = m_nlc_abil_base.find(want);
+        if (it == m_nlc_abil_base.end())
+            it = m_nlc_abil_base.emplace(want, float(member)).first;
+        if (cur)
+        {
+            *cur = float(member);
+            return true;
+        }
+        const float v = it->second * k;
+        if constexpr (std::is_integral_v<T>)
+            member = T(v + 0.5f);
+        else
+            member = v;
+        return true;
+    }
+
+public:
 
 public:
     virtual Feel::Sound* dcast_FeelSound() { return this; }

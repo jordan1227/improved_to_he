@@ -1388,3 +1388,21 @@ void CBurer::nlc_scan_update()
 
     nlc_log("scan fx sense=%.2f notice=%.2f dist=%.1f", level, sense.notice, Position().distance_to(actor->Position()));
 }
+
+// NLC: per-object ability factors (docs/ALIFE_TACTICS_DESIGN.md 8); a cast reads the member when it starts
+bool CBurer::nlc_ability(LPCSTR name, float k, float* cur)
+{
+    if (nlc_abil(name, "tele_cooldown", m_nlc_tele_cooldown, k, cur))
+        return true;
+    if (nlc_abil(name, "repulse_cooldown", m_nlc_repulse.cooldown, k, cur))
+        return true;
+    if (nlc_abil(name, "grenade_held", m_nlc_gren.max_held, k, cur))
+    {
+        if (!cur && m_nlc_gren.max_held < 1)
+            m_nlc_gren.max_held = 1;
+        return true;
+    }
+    if (nlc_abil(name, "shield_time", m_shield_time, k, cur))
+        return true;
+    return false;
+}

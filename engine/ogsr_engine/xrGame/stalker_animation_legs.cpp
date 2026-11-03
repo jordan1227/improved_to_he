@@ -130,6 +130,157 @@ void CStalkerAnimationManager::legs_process_direction(float yaw)
     movement.m_body.target.yaw = yaw + direction_angles[m_current_direction];
 }
 
+// NLC: wounded gait. Below [nlc_limp] health (default 0.4, 0 = off) a standing stalker walks and runs with the damaged
+// clip set (state 2, "dmg_norm_"); the torso keeps its normal set, so every weapon pose still works. Hysteresis 0.05.
+static u32 g_nlc_limp_mode = u32(-1); // -1: not read from [nlc_limp] yet
+
+u32 nlc_limp_mode()
+{
+    if (g_nlc_limp_mode == u32(-1))
+    {
+        g_nlc_limp_mode = (READ_IF_EXISTS(pSettings, r_bool, "nlc_limp", "legs", true) ? 1u : 0u) | (READ_IF_EXISTS(pSettings, r_bool, "nlc_limp", "torso_calm", true) ? 2u : 0u) |
+            (READ_IF_EXISTS(pSettings, r_bool, "nlc_limp", "torso_alert", true) ? 4u : 0u) | (READ_IF_EXISTS(pSettings, r_bool, "nlc_limp", "torso_panic", true) ? 8u : 0u);
+    }
+    return g_nlc_limp_mode;
+}
+
+void nlc_limp_mode_set(u32 mode)
+{
+    g_nlc_limp_mode = mode & 15u;
+    Msg("~ [nlc_limp] mode = %u (1 legs, 2 torso calm, 4 torso alert, 8 torso panic run)", g_nlc_limp_mode);
+}
+
+static float g_nlc_limp_enter = -1.f; // -1: not read from [nlc_limp] yet
+static float g_nlc_limp_exit = -1.f;
+
+static void nlc_limp_health_read()
+{
+    if (g_nlc_limp_enter >= 0.f)
+        return;
+    g_nlc_limp_enter = READ_IF_EXISTS(pSettings, r_float, "nlc_limp", "health", 0.4f);
+    g_nlc_limp_exit = READ_IF_EXISTS(pSettings, r_float, "nlc_limp", "exit", 0.55f);
+    clamp(g_nlc_limp_enter, 0.f, 1.f);
+    clamp(g_nlc_limp_exit, g_nlc_limp_enter + 0.01f, 1.f);
+}
+
+// the limp starts below `enter` and ends at `exit` or above (Lua level.nlc_limp_health)
+void nlc_limp_health_set(float enter, float exit)
+{
+    clamp(enter, 0.f, 1.f);
+    clamp(exit, enter + 0.01f, 1.f);
+    g_nlc_limp_enter = enter;
+    g_nlc_limp_exit = exit;
+    Msg("~ [nlc_limp] health enter = %.2f, exit = %.2f", enter, exit);
+}
+
+bool CStalkerAnimationManager::nlc_limp() const
+{
+    nlc_limp_health_read();
+    if (g_nlc_limp_enter <= 0.f)
+        return false;
+    const float h = object().GetfHealth();
+    if (!m_nlc_limp && h < g_nlc_limp_enter)
+        m_nlc_limp = true;
+    else if (m_nlc_limp && h >= g_nlc_limp_exit - 0.001f)
+        m_nlc_limp = false;
+    return m_nlc_limp && !object().critically_wounded();
+}
+
+static float g_nlc_limp_run = -1.f; // -1: not read from [nlc_limp] yet
+static float g_nlc_limp_walk = -1.f;
+
+static void nlc_limp_speed_read()
+{
+    if (g_nlc_limp_run >= 0.f)
+        return;
+    g_nlc_limp_run = READ_IF_EXISTS(pSettings, r_float, "nlc_limp", "speed_run", 0.7f);
+    g_nlc_limp_walk = READ_IF_EXISTS(pSettings, r_float, "nlc_limp", "speed_walk", 0.85f);
+    clamp(g_nlc_limp_run, 0.2f, 1.5f);
+    clamp(g_nlc_limp_walk, 0.2f, 1.5f);
+}
+
+void nlc_limp_speed_set(float run, float walk)
+{
+    clamp(run, 0.2f, 1.5f);
+    clamp(walk, 0.2f, 1.5f);
+    g_nlc_limp_run = run;
+    g_nlc_limp_walk = walk;
+    Msg("~ [nlc_limp] speed run = %.2f, walk = %.2f", run, walk);
+}
+
+float CStalkerAnimationManager::nlc_limp_speed_k() const
+{
+    if (legs_state() != 2)
+        return 1.f;
+    nlc_limp_speed_read();
+    return object().movement().movement_type() == eMovementTypeRun ? g_nlc_limp_run : g_nlc_limp_walk;
+}
+
+u32 CStalkerAnimationManager::legs_state() const
+{
+    const u32 st = body_state();
+    if (st != eBodyStateStand)
+        return st;
+    if (!nlc_limp() || !(nlc_limp_mode() & 1u))
+        return st;
+    return 2;
+}
+
+// the damaged torso clip of a weapon slot (state 2, "dmg_norm_torso_<slot>_<set>_<index>"), an invalid id when the visual has none
+MotionID CStalkerAnimationManager::nlc_dmg_clip(u32 slot, u32 set, u32 index) const
+{
+    const auto& parts = m_data_storage->m_part_animations.A;
+    if (parts.size() <= 2)
+        return MotionID();
+    const auto& dmg = parts[2].m_torso.A;
+    if (slot >= dmg.size() || set >= dmg[slot].A.size() || index >= dmg[slot].A[set].A.size())
+        return MotionID();
+    return dmg[slot].A[set].A[index];
+}
+
+// torso pose with the weapon not up (free mental state): idle_1, walk_1, run_1 of the slot
+MotionID CStalkerAnimationManager::nlc_torso_calm(u32 slot, const EBodyState& body_state, u32 set, u32 index) const
+{
+    if (body_state == eBodyStateStand && (nlc_limp_mode() & 2u) && nlc_limp())
+    {
+        const MotionID m = nlc_dmg_clip(slot, set, index);
+        if (m.valid())
+            return m;
+    }
+    return m_data_storage->m_part_animations.A[body_state].m_torso.A[slot].A[set].A[index];
+}
+
+// torso pose with the weapon up but not firing (danger): aim_0 / aim_2 / aim_3 of the slot; the panic run falls back to run_0 when there is no aim_3
+MotionID CStalkerAnimationManager::nlc_torso_alert(u32 slot, const EBodyState& body_state, u32 set, u32 index) const
+{
+    if (body_state == eBodyStateStand && nlc_limp())
+    {
+        const u32 mode = nlc_limp_mode();
+        if (mode & 4u)
+        {
+            const MotionID m = nlc_dmg_clip(slot, set, index);
+            if (m.valid())
+                return m;
+        }
+        if ((mode & 8u) && index == 3 && object().movement().mental_state() == MonsterSpace::eMentalStatePanic)
+        {
+            const MotionID m = nlc_dmg_clip(slot, 8, 0);
+            if (m.valid())
+                return m;
+        }
+    }
+    return m_data_storage->m_part_animations.A[body_state].m_torso.A[slot].A[set].A[index];
+}
+
+MotionID CStalkerAnimationManager::nlc_leg_motion(u32 movement_type, u32 direction, u32 variant)
+{
+    const u32 st = legs_state();
+    MotionID m = m_data_storage->m_part_animations.A[st].m_movement.A[movement_type].A[direction].A[variant];
+    if (!m.valid() && st != u32(body_state())) // the visual has no damaged set: the normal one
+        m = m_data_storage->m_part_animations.A[body_state()].m_movement.A[movement_type].A[direction].A[variant];
+    return m;
+}
+
 MotionID CStalkerAnimationManager::legs_move_animation()
 {
     m_no_move_actual = false;
@@ -142,7 +293,7 @@ MotionID CStalkerAnimationManager::legs_move_animation()
     {
         m_current_speed = movement.speed(eMovementDirectionForward);
 
-        return (m_data_storage->m_part_animations.A[body_state()].m_movement.A[movement.movement_type()].A[eMovementDirectionForward].A[1]);
+        return (nlc_leg_motion(movement.movement_type(), eMovementDirectionForward, 1));
     }
 
     float yaw, pitch;
@@ -197,7 +348,7 @@ MotionID CStalkerAnimationManager::legs_move_animation()
 
     m_current_speed = movement.speed(speed_direction);
 
-    return (m_data_storage->m_part_animations.A[body_state()].m_movement.A[movement.movement_type()].A[speed_direction].A[0]);
+    return (nlc_leg_motion(movement.movement_type(), speed_direction, 0));
 }
 
 MotionID CStalkerAnimationManager::legs_no_move_animation()

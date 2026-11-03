@@ -277,6 +277,10 @@ public:
     void berserk(bool flag);
     bool is_berserk();
     void set_custom_panic_threshold(float value);
+
+    // NLC: per-object monster ability factors (docs/ALIFE_TACTICS_DESIGN.md 8); false / -1 = no such ability
+    bool nlc_ability_k(LPCSTR name, float k);
+    float nlc_ability_get(LPCSTR name);
     void SetSection(LPCSTR section);
     void SetObjectName(LPCSTR name);
     void ReloadNextAmmo(u32 next_ammo_type);
@@ -872,6 +876,9 @@ public:
     float stalker_disp_base();
     void stalker_disp_base(float);
     void stalker_disp_base(float, float);
+
+    float nlc_step_k(); // NLC: stalker footstep volume factor
+    void nlc_step_k(float);
 
     bool controller_psy_hit_active();
 
