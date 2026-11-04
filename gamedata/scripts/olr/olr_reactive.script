@@ -5,7 +5,8 @@
 -- fl olr_reactive.force_investigate("esc_lager","stalker")  a group heads for that smart now
 -- fl olr_reactive.force_scavenge("esc_lager")       mutants near that smart drift to it, day or night
 -- fl olr_reactive.force_gossip("dolg")              one gossip line about a move onto this level
--- fl olr_reactive.force_chapter(4)                  the chapter 4 wave and expedition
+-- fl olr_reactive.force_chapter(4)                  the chapter 4 wave, the north flag and the expedition now
+-- fl olr_reactive.force_pending(4) / force_due(4)   schedule a chapter's delayed wave / make it due now
 -- fl olr_reactive.force_scorcher()                  someone sets off for the Scorcher now
 -- fl olr_reactive.scorcher_finish()                 and is lost now
 
@@ -283,29 +284,122 @@ local function send_expedition()
 	rlog("expedition to Radar: %d sent, %d could go, %d found no open smart there", sent, seen, no_target)
 end
 
-local function chapter_wave(ch)
+local function chapter_wave(ch, max_lines)
 	local prefix = "olr_chapter_" .. ch .. "_"
 	local n = olr_trader_runs.line_total(prefix)
 	rlog("chapter %d: wave of %d lines available", ch, n)
 	if n > 0 and he_pda_model.get_pda() then
 		local first = math.random(n)
-		for i = 0, math.min(n, WAVE_LINES) - 1 do
+		for i = 0, math.min(n, max_lines or WAVE_LINES) - 1 do
 			say(prefix .. ( ( first + i - 1 ) % n + 1 ), olr_trader_runs.other_name(), i * WAVE_GAP)
 		end
 	end
-	if ch == 4 then send_expedition() end
+end
+
+-- the world side of chapter 4: the north opens to OLR humans, and the first of them set off
+local function open_north()
+	olr_cfg.set_flag("north_open")
+	send_expedition()
+end
+
+-- the coma at the X-6 exit is over: war_zone_sleeps is set when it starts, magic_sleep is true while it lasts
+local function coma_over()
+	return has_alife_info("war_zone_sleeps") and not ( sleep_manager and sleep_manager.magic_sleep )
+end
+
+-- can a PDA line be seen right now? Mirrors he_pda_news.available(), plus the blowout block of sak.send_tip
+local function pda_can_receive()
+	if not db.actor then return false end
+	if db.actor:has_info("pda_is_broken") or db.actor:has_info("pda_will_be_broken") then return false end
+	local pda = he_pda_model.get_pda()
+	if not pda or pda:condition() <= 0 then return false end
+	if pda_battery.is_charging() or db.blowout_active == true then return false end
+	if sleep_manager.is_sleep_active() or db.actor:is_talking() then return false end
+	if he_pda_access.is_busy() then return false end
+	if sivol_pda.reception_blocked() then return false end
+	return true
+end
+
+-- game seconds from [reactive] news_delay_N = min,max (hours); no line means no delay
+local function news_delay(ch)
+	local lo, hi = string.match(tostring(config()["news_delay_" .. ch] or ""), "([%d%.]+)%s*,%s*([%d%.]+)")
+	lo, hi = tonumber(lo) or 0, tonumber(hi) or 0
+	return ( lo + math.random() * ( hi - lo ) ) * 3600
+end
+
+-- a story point was reached: the news follows later, as gossip does. Chapter 4 waits for the end of the coma.
+local function schedule_wave(st, ch)
+	if ch == 4 and not coma_over() then
+		st.pending[ch] = { wait_coma = true }
+		rlog("chapter %d reached, the wave waits for the end of the coma", ch)
+		return
+	end
+	local delay = news_delay(ch)
+	st.pending[ch] = { due = now() + delay }
+	rlog("chapter %d reached, wave in %.1f h", ch, delay / 3600)
+end
+
+local function later_wave_due(st, ch)
+	for k = ch + 1, 4 do
+		local rec = st.pending[k]
+		if rec and not rec.wait_coma and now() >= rec.due then return true end
+	end
+	return false
+end
+
+local function run_pending(st)
+	local c = config()
+	for ch = 1, 4 do
+		local rec = st.pending[ch]
+		if rec and rec.wait_coma and coma_over() then
+			local delay = news_delay(ch)
+			rec.wait_coma = nil
+			rec.due = now() + delay
+			rlog("chapter %d: the coma is over, wave in %.1f h", ch, delay / 3600)
+		end
+		if rec and not rec.wait_coma and now() >= rec.due then
+			if ch == 4 and not rec.world then
+				rec.world = true
+				open_north()
+			end
+			if later_wave_due(st, ch) then
+				rlog("chapter %d: wave dropped, a later one is due", ch)
+				st.pending[ch] = nil
+			elseif pda_can_receive() then
+				local late_h = ( now() - rec.due ) / 3600
+				local lines = ( c.news_late_h and late_h >= c.news_late_h ) and ( c.news_late_lines or WAVE_LINES ) or WAVE_LINES
+				rlog("chapter %d: wave goes out, %.1f h after its time, %d lines at most", ch, late_h, lines)
+				chapter_wave(ch, lines)
+				st.pending[ch] = nil
+			end
+		end
+	end
 end
 
 local function chapter_tick(st)
 	local ch = olr_cfg.chapter()
+	st.pending = st.pending or {}
 	if st.chapter == nil then
 		st.chapter = ch
 		rlog("chapter on record: %d", ch)
-		return
+	end
+	if ch < st.chapter then
+		-- the lever of an earlier build counted as chapter 4; now it needs the coma too
+		rlog("chapter fell from %d to %d, record reset", st.chapter, ch)
+		for k in pairs(st.pending) do
+			if k > ch then st.pending[k] = nil end
+		end
+		st.chapter = ch
 	end
 	if ch > st.chapter then
-		for i = st.chapter + 1, ch do chapter_wave(i) end
+		for i = st.chapter + 1, ch do schedule_wave(st, i) end
 		st.chapter = ch
+	end
+	run_pending(st)
+	-- a save that was past chapter 4 before the north flag existed has nothing pending for it: open the north now
+	if ch >= 4 and not st.pending[4] and not olr_cfg.flag_is_set("north_open") then
+		olr_cfg.set_flag("north_open")
+		rlog("chapter 4 already behind this save: the north is open")
 	end
 end
 
@@ -366,11 +460,18 @@ local function scorcher_lost(st)
 end
 
 local function scorcher_tick(st)
+	if olr_cfg.chapter() >= 4 then
+		-- the Scorcher is off: nobody is lost to it now, and a message sent during the coma would be dropped anyway
+		if st.scorch then
+			rlog("scorcher: %s was on the way, the Scorcher fell first, no message", st.scorch.who)
+			st.scorch = nil
+		end
+		return
+	end
 	if st.scorch then
 		if now() >= st.scorch.due then scorcher_lost(st) end
 		return
 	end
-	if olr_cfg.chapter() >= 4 then return end
 	local c = config()
 	if not st.scorch_next then
 		schedule_scorcher(st, math.random(c.scorcher_min_h, c.scorcher_max_h))
@@ -403,6 +504,14 @@ function report()
 		tostring(olr_cfg.on("scavenge")), tostring(olr_cfg.on("gossip")), tostring(olr_cfg.on("chapter_events")), tostring(olr_cfg.on("scorcher_losses")), tostring(is_night()))
 	rlog("chapter on record %s, now %d; next investigate in %.1f h; next gossip in %.1f h; next scorcher in %.1f h", tostring(st.chapter), olr_cfg.chapter(),
 		( ( st.inv_next or n ) - n ) / 3600, ( ( st.gossip_next or n ) - n ) / 3600, ( ( st.scorch_next or n ) - n ) / 3600)
+	rlog("coma over %s, north_open %s", tostring(coma_over()), tostring(olr_cfg.flag_is_set("north_open")))
+	for ch, rec in pairs(st.pending or {}) do
+		if rec.wait_coma then
+			rlog("pending chapter %d: waits for the end of the coma", ch)
+		else
+			rlog("pending chapter %d: due in %.1f h, world done %s", ch, ( rec.due - n ) / 3600, tostring(rec.world == true))
+		end
+	end
 	for key, rec in pairs(st.deaths) do
 		rlog("deaths %s: %d, %.1f h ago", key, rec.c, ( n - rec.t ) / 3600)
 	end
@@ -430,6 +539,30 @@ end
 
 function force_chapter(ch)
 	chapter_wave(ch)
+	if ch == 4 then open_north() end
+end
+
+-- fl olr_reactive.force_due(4): the pending wave of that chapter is due now (and the coma counts as over)
+function force_due(ch)
+	local st = get_state()
+	st.pending = st.pending or {}
+	local rec = st.pending[ch]
+	if not rec then
+		rlog("force_due: nothing pending for chapter %d", ch)
+		return
+	end
+	rec.wait_coma = nil
+	rec.due = now()
+	put_state(st)
+	rlog("force_due: chapter %d is due now", ch)
+end
+
+-- fl olr_reactive.force_pending(3): schedule a wave as if the chapter had just been reached
+function force_pending(ch)
+	local st = get_state()
+	st.pending = st.pending or {}
+	schedule_wave(st, ch)
+	put_state(st)
 end
 
 function force_scorcher()
