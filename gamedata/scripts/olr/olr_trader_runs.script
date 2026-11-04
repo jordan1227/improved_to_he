@@ -3,6 +3,9 @@ local INI_PATH = "misc\\olr_alife.ltx"
 local RUNS_KEY = "nlc.olr_runs"
 local COOLDOWN_KEY = "nlc.olr_run_cooldown"
 local SHELF_KEY = "nlc.olr_shelf"
+local LEAVE_KEY = "nlc.olr_next_leave"
+local ROOKIES_KEY = "nlc.olr_rookies_due"
+local EARNED_KEY = "nlc.olr_earned"
 local HAUL_KEY = "nlc.olr_haul_seen"
 local HAUL_COMMS = { "stalker", "green", "ecolog" }
 local NEED = { dan = "ammo_12x", pahom = "medkit", prosha = "kolbasa" }
@@ -449,13 +452,14 @@ local function has_line(key)
 	return game.translate_string(key) ~= key
 end
 
-local function line_count(prefix)
-	if not line_counts[prefix] then
+local function line_count(prefix, suffix)
+	local id = prefix .. ( suffix or "" )
+	if not line_counts[id] then
 		local n = 0
-		while has_line(prefix .. ( n + 1 )) do n = n + 1 end
-		line_counts[prefix] = n
+		while has_line(prefix .. ( n + 1 ) .. ( suffix or "" )) do n = n + 1 end
+		line_counts[id] = n
 	end
-	return line_counts[prefix]
+	return line_counts[id]
 end
 
 function display_name(se)
@@ -475,6 +479,21 @@ local function say(key, who, delay, name)
 	local text = game.translate_string(key)
 	if name then text = string.gsub(text, "%$name", function() return name end) end
 	sak.send_tip(text, who, delay or 0, 15, "default", "pda_news", "gray")
+end
+
+local function say_solo(who)
+	local n = line_count("olr_leave_solo_")
+	if n > 0 then say("olr_leave_solo_" .. math.random(n), who) end
+end
+
+local function say_talk(who)
+	local n = line_count("olr_leave_talk_", "_a")
+	if n == 0 then return say_solo(who) end
+	local i = math.random(n)
+	local other = someone_else()
+	say("olr_leave_talk_" .. i .. "_a", who)
+	say("olr_leave_talk_" .. i .. "_b", other, 14, who)
+	if has_line("olr_leave_talk_" .. i .. "_c") then say("olr_leave_talk_" .. i .. "_c", who, 28, other) end
 end
 
 function pick_line(prefix)
@@ -545,6 +564,14 @@ local function maybe_shelve(t, item, condition)
 	end
 end
 
+function note_earned(se, money)
+	if money <= 0 or not enabled() or se:community() ~= "stalker" then return end
+	local earned = get_value(EARNED_KEY) or {}
+	local key = tostring(se.id)
+	earned[key] = ( earned[key] or 0 ) + money
+	set_value(EARNED_KEY, earned)
+end
+
 local function free_spots(id)
 	for lvid, owner in pairs(spot_owner) do
 		if owner == id then spot_owner[lvid] = nil end
@@ -553,6 +580,7 @@ end
 
 local function pay_npc(se, money)
 	if money <= 0 or not se then return end
+	note_earned(se, money)
 	local npc = se.online and level.object_by_id(se.id)
 	if npc then
 		npc:give_money(money)
@@ -714,7 +742,19 @@ local function finish_run(id, run)
 	free_spots(id)
 	local se = alife():object(id)
 	local t = traders[run.trader]
-	pay_npc(se, sell_items(id, se, t, run.items))
+	local money = sell_items(id, se, t, run.items)
+	if money > 0 and se then
+		note_earned(se, money)
+		local npc = se.online and level.object_by_id(id)
+		if npc then
+			npc:give_money(money)
+		else
+			local pk = get_netpk(se)
+			local data = pk:get()
+			data.money = data.money + money
+			pk:set(data)
+		end
+	end
 	set_cooldown(id)
 end
 
@@ -727,7 +767,7 @@ function visit_spot(npc)
 		receivers[id] = nil
 	end
 	local run = load_runs()[tostring(id)]
-	if not run or run.hold_until or olr_patrols.is_member(id) then return nil end
+	if not run or run.leave or run.hold_until or olr_patrols.is_member(id) then return nil end
 	load_config()
 	local t = run.errand and errands[run.errand] or traders[run.trader]
 	if run.errand then
@@ -767,7 +807,7 @@ function wait_spot(npc)
 	load_config()
 	local id = npc:id()
 	local run = load_runs()[tostring(id)]
-	local t = run and not run.errand and not olr_patrols.is_member(id) and traders[run.trader]
+	local t = run and not run.errand and not run.leave and not olr_patrols.is_member(id) and traders[run.trader]
 	if not ( t and t.level == level.name() and #t.spots > 0 and ( trader_absent(t) == "out_today" or trader_absent(t) == "away_now" ) )
 		or npc:position():distance_to(level.vertex_position(t.spots[1])) > settings.wait_near
 	then
@@ -857,6 +897,7 @@ local function runs_tick()
 		local id = tonumber(key)
 		local se = sim:object(id)
 		if not ( se and IsStalker(se) and se:alive() ) then
+			if run.leave and run.who then say_about("olr_leave_dead_", run.who) end
 			if run.errand then
 				elog("%s: %s id=%d died on the way", run.errand, tostring(run.who), id)
 				free_spots(id)
@@ -894,6 +935,16 @@ local function runs_tick()
 				runs[key] = nil
 				changed = true
 				finish_errand(id, run, arrived)
+			end
+		elseif run.leave then
+			if olr_smart_index.object_level(se) == run.level and can_vanish(se) or n >= run.deadline then
+				if not se.online then
+					runs[key] = nil
+					changed = true
+					sim:release(se, true)
+					set_value(ROOKIES_KEY, ( get_value(ROOKIES_KEY) or 0 ) + 1)
+					if run.who and math.random(100) <= settings.leave_out_chance then say_about("olr_leave_out_", run.who) end
+				end
 			end
 		else
 			local t = traders[run.trader]
@@ -955,6 +1006,61 @@ local function shelf_tick()
 		end
 	end
 	if #kept ~= #shelf then set_value(SHELF_KEY, kept) end
+end
+
+local function begin_leave(se)
+	load_runs()
+	local who = run_name(se)
+	runs[tostring(se.id)] = {
+		leave = true, level = settings.leave_level, items = {}, who = who,
+		deadline = now() + settings.leave_deadline_h * 3600,
+	}
+	store_runs()
+	if not send_to(se, settings.leave_smart, settings.leave_level) then
+		runs[tostring(se.id)] = nil
+		store_runs()
+		return
+	end
+	if olr_cfg.log_census() then
+		log2("[olr_trader_runs] leaving begins: %s id=%d on %s", se:name(), se.id, tostring(olr_smart_index.object_level(se)))
+	end
+	if math.random(100) <= settings.leave_talk_chance then say_talk(who) else say_solo(who) end
+end
+
+local function leave_candidate()
+	local sim = alife()
+	local earned = get_value(EARNED_KEY) or {}
+	local best, best_earned = nil, settings.leave_earned - 1
+	local dropped = false
+	for key, amount in pairs(earned) do
+		local se = sim:object(tonumber(key))
+		if not ( se and IsStalker(se) and se:alive() ) then
+			earned[key] = nil
+			dropped = true
+		elseif amount > best_earned and eligible(se) and not on_run(se.id) then
+			best, best_earned = se, amount
+		end
+	end
+	if dropped then set_value(EARNED_KEY, earned) end
+	return best
+end
+
+local function leave_tick()
+	if not olr_cfg.on("leaving_zone") then return end
+	local n = now()
+	local nxt = get_value(LEAVE_KEY)
+	if not nxt then
+		set_value(LEAVE_KEY, n + settings.leave_cooldown_h * 3600)
+		return
+	end
+	if n < nxt then return end
+	local se = leave_candidate()
+	if se then
+		begin_leave(se)
+		set_value(LEAVE_KEY, n + settings.leave_cooldown_h * 3600)
+	else
+		set_value(LEAVE_KEY, n + 3600)
+	end
 end
 
 local function errand_ok(se)
@@ -1118,6 +1224,22 @@ function claim_reward(killer_id, giver_id, giver_key, reward)
 		delay = math.random(2, 6) })
 end
 
+local function rookie_tick()
+	local due = get_value(ROOKIES_KEY) or 0
+	if due <= 0 or level.name() == settings.leave_level then return end
+	local smart = alife():object(settings.leave_smart)
+	if not smart then return end
+	local obj = alife():create("olr_stalker_novice", smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+	if not obj then return end
+	local pk = get_netpk(obj)
+	local data = pk:get()
+	data.custom_data = "[smart_terrains]\n" .. settings.leave_smart .. " = true\n"
+	pk:set(data)
+	olr_squads.track(obj.id, "stalker")
+	set_value(ROOKIES_KEY, due - 1)
+	if math.random(100) <= settings.rookie_news_chance then say_about("olr_rookie_") end
+end
+
 local function haul_tick()
 	local sim = alife()
 	for _ = 1, settings.haul_scan do
@@ -1144,12 +1266,21 @@ function update()
 	shelf_tick()
 	haul_tick()
 	if olr_cfg.on("fuel_runs") then fuel_tick() end
+	leave_tick()
+	rookie_tick()
 end
 
 function report()
 	load_config()
 	local sim = alife()
-	log2("[olr_trader_runs] runs=%s shelf=%s", tostring(enabled()), tostring(olr_cfg.on("shelf_echo")))
+	log2("[olr_trader_runs] runs=%s shelf=%s leaving=%s rookies_due=%d", tostring(enabled()), tostring(olr_cfg.on("shelf_echo")),
+		tostring(olr_cfg.on("leaving_zone")), get_value(ROOKIES_KEY) or 0)
+	local earners, top = 0, 0
+	for _, amount in pairs(get_value(EARNED_KEY) or {}) do
+		earners = earners + 1
+		if amount > top then top = amount end
+	end
+	log2("[olr_trader_runs]   earners=%d top=%d leave_earned=%d", earners, top, settings.leave_earned)
 	for key, t in pairs(traders) do
 		log2("[olr_trader_runs]   trader %s object=%s found=%s level=%s smart=%s spots=%d absent=%s pref=%s pay=%s good=%s", key, t.name, tostring(sim:object(t.name) ~= nil), t.level, t.smart, #t.spots, tostring(trader_absent(t)), tostring(t.pref), tostring(t.pay), tostring(t.good))
 	end
@@ -1158,7 +1289,7 @@ function report()
 		local id = tonumber(key)
 		local se = sim:object(id)
 		log2("[olr_trader_runs]   run id=%d %s to=%s on=%s online=%s items=%d deadline_in=%.1f h", id, se and se:name() or "?",
-			tostring(run.errand or run.trader), se and tostring(olr_smart_index.object_level(se)) or "?", se and tostring(se.online) or "?",
+			run.leave and "exit" or run.errand or run.trader, se and tostring(olr_smart_index.object_level(se)) or "?", se and tostring(se.online) or "?",
 			#run.items, ( run.deadline - n ) / 3600)
 	end
 	for _, entry in ipairs(get_value(SHELF_KEY) or {}) do
@@ -1379,6 +1510,48 @@ function force_shelf(key, section)
 		return
 	end
 	log2("[olr_trader_runs] force_shelf %s at %s: %s", section, key, tostring(shelf_add(t, section, 0.8)))
+end
+
+function force_leave(id)
+	load_config()
+	local sim = alife()
+	local se = nil
+	if id then
+		se = sim:object(id)
+	else
+		local earned = get_value(EARNED_KEY) or {}
+		local best, best_money, seen, enough = -1, -1, 0, 0
+		for _, sid in ipairs(olr_offline_task.cached_stalkers("stalker")) do
+			local o = sim:object(sid)
+			if eligible(o) and not on_run(sid) then
+				local amount = earned[tostring(sid)] or 0
+				local money = money_of(o)
+				seen = seen + 1
+				if amount >= settings.leave_earned then enough = enough + 1 end
+				if amount > best or ( amount == best and money > best_money ) then se, best, best_money = o, amount, money end
+			end
+		end
+		log2("[olr_trader_runs] force_leave: %d eligible, %d earned at least %d, the top earned %d and has %d", seen, enough, settings.leave_earned, best, best_money)
+	end
+	if not se then
+		log2("[olr_trader_runs] force_leave: nobody found")
+		return
+	end
+	begin_leave(se)
+	log2("[olr_trader_runs] force_leave: %s id=%d money=%d", se:name(), se.id, money_of(se))
+end
+
+function say_leave(kind)
+	load_config()
+	line_counts = {}
+	local who = someone_else()
+	if kind == "talk" then say_talk(who)
+	elseif kind == "out" then say_about("olr_leave_out_", who)
+	elseif kind == "dead" then say_about("olr_leave_dead_", who)
+	elseif kind == "rookie" then say_about("olr_rookie_")
+	else say_solo(who) end
+	log2("[olr_trader_runs] lines: solo=%d talk=%d out=%d dead=%d rookie=%d", line_count("olr_leave_solo_"), line_count("olr_leave_talk_", "_a"),
+		line_count("olr_leave_out_"), line_count("olr_leave_dead_"), line_count("olr_rookie_"))
 end
 
 function finish_all()
