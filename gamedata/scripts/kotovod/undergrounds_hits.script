@@ -14,6 +14,15 @@ underground_levels = {
 -- Suits that can carry an O2 tank (keep in sync with the 'ballon' entry in dsh_drag_drop.script)
 local protection_suits = { "scientific_", "ecolog_", "protection_", "militaryspec_", "monolit_exoskeleton", "monolit_q_exoskeleton" }
 
+-- O2-gate tuning (tank-required areas only; the sak.breath_poison path is separate)
+local HIT_EVERY_TICKS      = 3     -- damage every Nth 2 s tick (6 s)
+local HIT_DIVISOR          = 40    -- suited hit = 5 / max( cond, COND_FLOOR ) / HIT_DIVISOR
+local NOSUIT_HIT           = 0.27  -- hit with no outfit at all
+local COND_FLOOR           = 0.25  -- also guards the divide by zero at condition 0
+local MASK_GRACE_MS        = 2000  -- no damage/tip this long after the mask comes off with a tank on
+local DELIBERATE_MS        = 8000  -- a mask-off this close to a mask toggle is the player's own
+local SAFE_RADIUS_FALLBACK = 2.2   -- smaller of the real zone radii (campfire 3.5, candle 2.2)
+
 -- Full tank runtime in minutes: 150 on easy (g_game_difficulty 0), 120 otherwise
 function get_ballon_duration()
 	local diff = get_value( "g_diff" ) or tonumber( level.get_game_difficulty() )
@@ -63,6 +72,7 @@ function on_safe_spawn()
 	-- Иначе будет лишний хит во время загрузки, плюсом броня не отработает, она дропается?
     dsh.wait_condition( function() return amk_mod.sync_done end, function()
 		local sm = ogse_signals.get_mgr()
+		refresh_safe_zone_flag( zones, lname )
         undergrounds_hits.update_ballon_timer() -- Нужно обновить сразу, чтобы не ждать 6 тиков
 		sm:subscribe({ signal = "on_drop_after_all", fun = this.check_outfit 		 })
         sm:subscribe({ signal = "on_update", 		 fun = this.actor_in_protection  })
@@ -90,6 +100,26 @@ end
 -- После 6 тиков пройдет игровая минута, тогда и обновим статик, чтобы не гонять каждые 2 сек
 local tick_counter = 0
 
+-- Mask watcher state (updated every tick, also inside safe zones)
+local hit_counter = 0
+local masked_prev = nil
+local mask_grace_until = 0
+local mask_off_deliberate = false
+
+local function track_mask( now )
+    local masked = vergas_masks.get_flag_mask() == true
+    if masked_prev == true and not masked then
+        -- the mask just came off: short grace while the tank is on, and remember if it was the player's own doing
+        if get_value( "lab_protection", false ) then mask_grace_until = now + MASK_GRACE_MS end
+        local t = vergas_masks.get_last_mask_toggle()
+        mask_off_deliberate = vergas_masks.is_animating() or ( t ~= nil and now >= t and now - t < DELIBERATE_MS )
+    elseif masked then
+        mask_off_deliberate = false
+        mask_grace_until = 0
+    end
+    masked_prev = masked
+end
+
 function actor_in_protection()
     ogse_signals.get_mgr():reschedule( 2000 )
 
@@ -104,6 +134,8 @@ function actor_in_protection()
     
     local actor = db.actor
     local armor = actor:item_in_slot( 6 )
+    local now_ms = time_global()
+    track_mask( now_ms )
     
     local function can_play_breath_sound()
         return armor 
@@ -123,10 +155,16 @@ function actor_in_protection()
     lab_info()
 
     if not can_play_breath_sound() then
+        -- grace right after the mask comes off, then one hit every HIT_EVERY_TICKS ticks
+        if now_ms < mask_grace_until then return end
+        hit_counter = hit_counter + 1
+        if hit_counter < HIT_EVERY_TICKS then return end
+        hit_counter = 0
         level.add_pp_effector( "black_tip_eff.ppe", 1031, false )    
-        actor.health = armor and ( - ( 5 / armor:condition() ) / 75 ) or -0.15
+        actor.health = armor and ( - ( 5 / math.max( armor:condition(), COND_FLOOR ) ) / HIT_DIVISOR ) or -NOSUIT_HIT
         play_damage_sound( actor )
     else
+        hit_counter = 0
         play_breath_sound( actor )
     end
 end
@@ -392,6 +430,7 @@ function attach_ballon()
 	end	
 	set_value( "lab_protection", true )
 	sync_ballon_menu()
+	show_remove_hint()
 	sak.send_tip(
 		"Подача кислорода восстановлена", 
 		"Датчик костюма", 0, 5, "pribor", "pda_news", "green"
@@ -476,7 +515,33 @@ function disable_sz_protection()
 end
 
 function get_sz_protection()
-	return in_safe_zone
+	return in_safe_zone and underground_levels[ level.name() ] == true
+end
+
+-- After a load the restrictor is already in its "inside" state and does not fire again,
+-- so re-derive the flag from the actor position. The radius is the smaller real one,
+-- so this never claims a zone the actor is outside of (on_actor_outside then clears it).
+function refresh_safe_zone_flag( zones, lname )
+	in_safe_zone = false
+	local ids = zones and zones[ lname ]
+	if not ids then return end
+	local apos = db.actor:position()
+	for _, id in ipairs( ids ) do
+		local sobj = alife():object( id )
+		if sobj and sobj.position:distance_to( apos ) < SAFE_RADIUS_FALLBACK then
+			in_safe_zone = true
+			return
+		end
+	end
+end
+
+-- One-time (per save) reminder of how to take the tank off: RMB on the worn suit in the inventory
+function show_remove_hint()
+	if get_value( "ballon_remove_hint_shown", false ) then return end
+	set_value( "ballon_remove_hint_shown", true )
+	dsh.timeout( 5500, function()
+		sak.send_tip( translate( "lab_prot_remove_hint" ), translate( "lab_prot_title" ), 0, 12, "g_g", "sak", "green" )
+	end )
 end
 
 function check_outfit(obj, sobj)
@@ -498,8 +563,8 @@ end
 
 local lab_protection_state = {
     last_state = nil,
-    last_notification_time = 0,
-    notification_cooldown = 20000  -- repeat interval for an unchanged state, ms
+    warned = false,  -- a warning tip was shown since the last "all OK"
+    shown = {}       -- warning states already shown in this lab entry
 }
 
 -- Same suit rules as can_play_breath_sound() in actor_in_protection
@@ -530,22 +595,42 @@ end
 
 function reset_lab_protection_state()
     lab_protection_state.last_state = nil
-    lab_protection_state.last_notification_time = 0
+    lab_protection_state.warned = false
+    lab_protection_state.shown = {}
+    in_safe_zone = false
+    hit_counter = 0
+    masked_prev = nil
+    mask_grace_until = 0
+    mask_off_deliberate = false
 end
 
 function lab_info()
+    -- never judge the state while the mask (or a consumable chained to it) is animating
+    if vergas_masks.is_animating() then return end
     local now = time_global()
     local state = get_actor_protection_state()
-    local changed = ( lab_protection_state.last_state ~= state )
-    if not changed and now - lab_protection_state.last_notification_time < lab_protection_state.notification_cooldown then
+    local previous = lab_protection_state.last_state
+    if state == previous then return end
+
+    -- a mask taken off on purpose (or still inside the grace) is not worth a reminder;
+    -- last_state is left untouched so a mask that stays off past the grace still reports
+    if state == "no_mask" and ( mask_off_deliberate or now < mask_grace_until ) then return end
+
+    lab_protection_state.last_state = state
+
+    if state == "fully_protected" then
+        -- confirm only after a warning that was actually shown
+        if lab_protection_state.warned then
+            lab_protection_state.warned = false
+            show_protection_tip( state )
+        end
         return
     end
-    local previous = lab_protection_state.last_state
-    lab_protection_state.last_state = state
-    lab_protection_state.last_notification_time = now
 
-    -- confirm full protection only after an unprotected state, never on a first look or as a repeat
-    if state == "fully_protected" and not ( changed and previous ) then return end
+    -- each warning at most once per lab entry
+    if lab_protection_state.shown[ state ] then return end
+    lab_protection_state.shown[ state ] = true
+    lab_protection_state.warned = true
     show_protection_tip( state )
 end
 
@@ -562,7 +647,6 @@ local table_color_thresholds = {
 
 local ballon_hud_static = nil
 local ballon_timer = nil
-local ballon_remove_label = nil
 
 function get_timer_color( minutes_left )
     for _, level in ipairs( table_color_thresholds ) do
@@ -607,17 +691,7 @@ function create_ballon_hud()
         parent_window:AttachChild( ballon_timer )
     end
     
-    ballon_remove_label = CUIStatic()
-    ballon_remove_label:SetTextComplexMode( true )
-    ballon_remove_label:SetText( translate( "ui_ballon_remove" ) )
-    ballon_remove_label:SetFont( GetFontLetterica16Russian() )
-    ballon_remove_label:SetTextColor( 255, 80, 80, 255 )
-    ballon_remove_label:Init( 15, 60, 120, 30 )
-    ballon_remove_label:SetAutoDelete( false )
-    ballon_remove_label:Show( true )
-    if parent_window then
-        parent_window:AttachChild( ballon_remove_label )
-    end
+    -- the old "remove tank" label is gone: show_remove_hint() gives a one-time tip instead
     
     return true
 end
@@ -666,7 +740,6 @@ function clean_ballon_hud()
     
     ballon_hud_static = nil
     ballon_timer = nil
-    ballon_remove_label = nil
 end
 
 function create_underground_safe_zones()
