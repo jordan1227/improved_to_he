@@ -1,22 +1,9 @@
--- [HE-PORT] AMK offline life, docs/ALIFE_DESIGN.md section 10 batch 12 (preset key amk_sight). amk_offline_alife asks
--- here what an offline stalker sees (its look_radius had been 0 since the August rewrite, so nobody saw mutants,
--- enemies, loose weapons or artefacts), who may take part, which level the next call goes to (overfull ones first),
--- and what the stalker does: one action rolled by weight from what he found, trade only when he found nothing.
--- Artefacts are earned: mutants near one are fought first. Config [amk_offline] in olr_alife.ltx. Log: [olr_amk].
--- fl olr_amk_offline.report()      sight radii, weights and what the calls did this session
--- fl olr_amk_offline.force(n)      n calls now (amk_offline_alife.offline_alife), for a test save
--- fl olr_amk_offline.fight_test("gar_bandit_blokpost05")  AMK's checks on one stalker, step by step, then his action
--- fl olr_amk_offline.watch_next()  hold the next road meeting instead of settling it; then fl olr_amk_offline.go()
--- fl olr_amk_offline.go_to("val_lager_bandit06")  teleport next to anyone, by name or id
--- fl olr_amk_offline.roads()        one road-encounter pass now (stalkers on the move meeting enemies)
--- fl olr_amk_offline.enemies("l02_garbage")  the nearest enemy of each offline stalker there, and how far
--- fl olr_amk_offline.arts("l02_garbage")  the loose artefacts AMK knows on a level, nearest offline stalker, guards
 
 local INI_PATH = "misc\\olr_alife.ltx"
 
 local cfg = nil
 local done = {}
-local art_scan = {}   -- level -> game seconds of its last artefact scan
+local art_scan = {}
 local art_scan_real = 0
 
 local function config()
@@ -42,41 +29,30 @@ function active()
 	return olr_cfg.on("amk_sight")
 end
 
--- collect_info: weapon, friend, enemy, corpse, monster, artefact sight in metres (all 0 with amk_sight off, as before)
 function radii()
 	if not active() then return 0, 0, 0, 0, 0, 0 end
 	local c = config()
 	return c.sight_weapon, c.sight_friend, c.sight_enemy, c.sight_corpse, c.sight_monster, c.sight_art
 end
 
--- collect_info: game_relations.ltx goodwill_enemy is -5000 while the matrix goes down to -2000 only, so no two stalkers
--- were ever enemies offline; enemy_goodwill (AMK's own default, -1000) takes its place
 function enemy_goodwill(native)
 	if not active() then return native end
 	return config().enemy_goodwill
 end
 
--- the stalker who acts, his friends and his enemies: never a quest NPC, a trader on a run, a party member, or someone
--- AMK has no item list for yet (its fight reads the weapons from that list)
 function usable(se)
 	if not active() then return true end
 	if not ( se and se.id ) then return false end
 	if olr_protected.is_no_offline_alife_obj(se:name()) then return false end
-	-- quest-staged people (own logic, a written name, a quest scene) stay out of fights; story NPCs join as allies only
 	if olr_protected.is_quest_bound(se) then return false end
-	-- dormant: kept out of the world by a scene or a job (e.g. the Garbage bandit post once Duty holds it)
 	if olr_census.is_dormant_creature(se, IsStalker(se)) then return false end
-	for prefix in string.gmatch(config().skip_prefix, "[%w_]+") do -- scripted scenes, e.g. the Dark Valley raid
+	for prefix in string.gmatch(config().skip_prefix, "[%w_]+") do
 		if string.sub(se:name(), 1, string.len(prefix)) == prefix then return false end
 	end
 	if olr_trader_runs.on_run(se.id) or olr_patrols.is_member(se.id) then return false end
 	return amk_offline_alife.items[se.id] ~= nil
 end
 
--- collect_info, last: what he saw, trimmed. AMK's lists are rebuilt only on a level load, so a migrant may sit in his old
--- level's list (fights across levels); online people and mutants would drop dead in front of the player; a camp's own
--- guards (bound to a smart and within road_far of it, or at a quest-scene smart) are never anyone's enemy target, so
--- hostile camps do not wear each other down; and on the player's level nothing happens within player_clear m of him
 local function at_post(se, sim)
 	local sid = se:smart_terrain_id()
 	if not sid or sid == BAD_OBJ_ID then return false end
@@ -118,8 +94,6 @@ function trim_seen(victim, map, vdata)
 	end
 end
 
--- after a fight: those hurt heal a little at each hunt tick (nothing else heals offline), and nobody's rank climbs past
--- the top of his level's band for his faction (AMK gives 25-100 a kill and 15 an artefact, with no ceiling)
 local function fighters(victim, vdata)
 	local list = { { id = victim.id } }
 	for _, l in ipairs({ vdata.friends or {}, vdata.enemies or {} }) do
@@ -154,9 +128,6 @@ local function after_fight(victim, list, before)
 	end
 end
 
--- AMK lists a level's artefacts only on a level load, so the ones born after (an emission, a visit) were unknown:
--- before a call goes to a level not scanned for art_refresh_h game hours, loose af_ objects there join its list
--- (at most one scan every 10 s of wall clock, the scan walks every object)
 local function refresh_arts(lvl)
 	local t = amk_offline_alife.off_npcs[lvl]
 	if not t then return end
@@ -179,8 +150,6 @@ local function refresh_arts(lvl)
 	if added > 0 then alog("%s: %d loose artefacts joined the list (%d on it now)", lvl, added, #t.artefacts) end
 end
 
--- story NPCs (AMK lists only nameless stalkers) join a fight as allies of the stalker who acts, never act or get
--- picked as a target themselves, and a fight wounds them instead of killing them
 local function has_story_id(se)
 	local sid = se.m_story_id
 	return sid ~= nil and sid ~= NONE_SID and sid ~= NONE_CL_SID
@@ -212,7 +181,6 @@ function add_named_friends(victim, map, vdata, r, rel_friend)
 	end
 end
 
--- the fight rounds: a story NPC counts as one AMK may only wound (flags 2: no death, news, rank or loot for him)
 function fight_flags(se, flags)
 	if active() and has_story_id(se) then
 		alog("%s (story NPC) fights; he can be wounded, not killed", se:name())
@@ -221,7 +189,6 @@ function fight_flags(se, flags)
 	return flags
 end
 
--- a quest artefact copied by a pickup loses its story id, and the original is gone
 function art_ok(se)
 	return not ( active() and has_story_id(se) )
 end
@@ -234,13 +201,10 @@ function spared(se)
 	return false
 end
 
--- collect_info: the same faction stands together (the matrix gives bandits only 40 to each other), and in a fight
--- allies count as far as enemies do
 function same_side(a, b)
 	return active() and a:community() == b:community()
 end
 
--- offline_alife: over_share % of the calls go to a level the shared count has well over its monster target (over_margin x)
 local function pick_level_raw(maps)
 	if active() and olr_population.active() and math.random(100) <= config().over_share then
 		local over = {}
@@ -259,7 +223,6 @@ function pick_level(maps)
 	return lvl
 end
 
--- a box is worth a look only with something in it (AMK lists every unowned box in 140 m, empty or not)
 local function full_boxes(vdata)
 	local out = {}
 	for _, b in ipairs(vdata.inv_boxes) do
@@ -269,8 +232,6 @@ local function full_boxes(vdata)
 	return out
 end
 
--- the same: a body is worth a look while it still carries something (AMK lists every corpse in sight, looted or not,
--- and each look also sends a "found a body" line)
 local function with_loot(list)
 	local out = {}
 	for _, c in ipairs(list) do
@@ -281,7 +242,6 @@ local function with_loot(list)
 end
 
 local function found(vdata, map)
-	-- a level under its target keeps its mutants (hunts and lairs already work on it)
 	if olr_population.active() and olr_population.verdict(map, false) == "under" then vdata.monsters = {} end
 	vdata.inv_boxes = full_boxes(vdata)
 	vdata.corpses.stalkers = with_loot(vdata.corpses.stalkers)
@@ -313,7 +273,6 @@ local function roll(have)
 	return nil
 end
 
--- live mutants within art_guard_radius of an artefact, from AMK's own list of the level
 local function guards_of(artefact, map)
 	local out = {}
 	local list = amk_offline_alife.off_npcs[map] and amk_offline_alife.off_npcs[map].monsters or {}
@@ -330,12 +289,10 @@ local function guards_of(artefact, map)
 	return out
 end
 
--- one artefact: fight its guards first, take it only if he is still standing and they are all dead
 local function earn(victim, vdata, map)
 	local first = vdata.artefacts[1]
 	local art = first and alife():object(first.id)
 	if not ( art and art:name() == first.name ) then return end
-	-- pick_item moves it by making a copy and releasing this one: nothing may touch art after the pickup
 	local sec = art:section_name()
 	vdata.artefacts = { first }
 	local guards = guards_of(art, map)
@@ -365,7 +322,6 @@ local function earn(victim, vdata, map)
 	end
 end
 
--- offline_alife, in place of the fixed order: true once the stalker did something (false: the call tries another)
 function act(victim, vdata, map)
 	local have = found(vdata, map)
 	local kind = roll(have)
@@ -393,8 +349,6 @@ function act(victim, vdata, map)
 		a.process_trade(victim, vdata)
 		kind = "trade"
 	else
-		-- nothing in sight: the call looks at the next stalker (AMK tries up to 30 a call) instead of ending in a sale;
-		-- only trade_chance % of such looks trade, so a stalker near a fight or a find gets his turn
 		note("nothing_seen")
 		return false
 	end
@@ -403,7 +357,6 @@ function act(victim, vdata, map)
 	return true
 end
 
--- news_main: how many missed calls one news tick may run (time_factor)
 function catch_up_calls()
 	if not active() then return 1 end
 	return config().catch_up_calls
@@ -426,8 +379,6 @@ function report()
 	log2("[olr_amk] this session: %s", table.concat(list, " "))
 end
 
--- the loose artefacts AMK has on its list for a level (lists are rebuilt on every level load) and the nearest offline
--- stalker to each, with whether he would see it
 function arts(map)
 	map = map or level.name()
 	local t = amk_offline_alife.off_npcs[map]
@@ -460,8 +411,6 @@ function arts(map)
 	end
 end
 
--- for each offline stalker on a level, the nearest one he counts as an enemy (relation at or below enemy_goodwill):
--- why offline faction fights happen or not
 function enemies(map)
 	map = map or level.name()
 	local t = amk_offline_alife.off_npcs[map]
@@ -498,9 +447,6 @@ function enemies(map)
 	for i = 1, math.min(8, #best) do log2("[olr_amk]   %s", best[i].line) end
 end
 
--- AMK looks at one stalker a call, about once in twelve game days each: two squads crossing on the road were never
--- seen. Every road_every_min game minutes, offline stalkers on the move (road_far m or more from their smart, or with
--- none) check for enemies in sight; road_fight_chance % of such meetings become a fight, road_max_fights a pass.
 local road_t = nil
 local road_real = 0
 
@@ -520,7 +466,6 @@ local function on_the_move(se, sim)
 	return not smart or smart.position:distance_to(se.position) >= config().road_far
 end
 
--- watch mode: the next road meeting is not settled offline but held, so the player can go and see it online
 local watch = false
 local held = nil
 
@@ -536,7 +481,6 @@ function go()
 	end
 	local h = held
 	held = nil
-	-- a little off the spot, so the player does not land between them
 	local pos = vector():set(h.pos.x + 25, h.pos.y, h.pos.z + 25)
 	alog("go: to %s on %s (%s)", h.who, h.map, h.what)
 	if h.map == level.name() then
@@ -546,7 +490,6 @@ function go()
 	end
 end
 
--- teleport next to any creature by name or id (offline ones come online around the player)
 function go_to(who)
 	local se = type(who) == "number" and alife():object(who) or alife():object(tostring(who))
 	if not se then
@@ -604,7 +547,6 @@ function roads(forced)
 			end
 		end
 	end
-	-- collect_info walks the whole level: road_max_checks of them a pass, picked at random
 	local checked = 0
 	while #movers > 0 and checked < c.road_max_checks and fights < c.road_max_fights do
 		local m = table.remove(movers, math.random(#movers))
@@ -624,7 +566,6 @@ function roads(forced)
 	if forced or met > 0 then alog("road pass: %d on the move, %d met enemies, %d fights", movers, met, fights) end
 end
 
--- olr_init, every few seconds; the pass itself runs every road_every_min game minutes (and not twice in 5 s of wall clock)
 function roads_update()
 	if not ( active() and db.actor ) then return end
 	local now = timers.Get_Game_Seconds()
