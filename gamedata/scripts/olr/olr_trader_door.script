@@ -1,0 +1,111 @@
+local CLOSE_MIN_MS = 8000
+local CHECK_MS = 1000
+local NEAR = 6
+local EDGE = -0.7
+
+local opened = {}
+local next_check = 0
+
+local function door_obj(name)
+	local se = alife():object(name)
+	if not se then return nil, nil, true end
+	local obj = level.object_by_id(se.id)
+	if not obj then return nil end
+	local stor = db.storage[obj:id()]
+	local st = stor and stor.active_scheme == "ph_door" and stor.ph_door
+	if not ( st and st.actions ) then return nil end
+	return obj, st
+end
+
+local function each_action(st, method)
+	for a in pairs(st.actions) do
+		if a.initialized and a[method] then a[method](a, false) end
+	end
+end
+
+local function valid(name, obj, st)
+	local rec = opened[name]
+	if not rec then return nil end
+	if not st.closed or db.storage[obj:id()].active_section ~= rec.section then
+		opened[name] = nil
+		return nil
+	end
+	return rec
+end
+
+function is_open(name)
+	local obj, st, missing = door_obj(name)
+	if missing then return true end
+	if not obj then return false end
+	if not st.closed then return true end
+	return valid(name, obj, st) ~= nil
+end
+
+function open(name, outer_lvid, inner_lvid, keep_name)
+	local obj, st, missing = door_obj(name)
+	if missing then return true end
+	if not obj then return false end
+	if not st.closed then
+		opened[name] = nil
+		return true
+	end
+	local rec = valid(name, obj, st)
+	if not rec then
+		local a, b = level.vertex_position(outer_lvid), level.vertex_position(inner_lvid)
+		local dx, dz = b.x - a.x, b.z - a.z
+		local len = math.sqrt(dx * dx + dz * dz)
+		if len < 0.01 then len = 1 end
+		local keep = keep_name and alife():object(keep_name)
+		local p = obj:position()
+		rec = {
+			section = db.storage[obj:id()].active_section,
+			pos = vector():set(p.x, p.y, p.z),
+			dx = dx / len,
+			dz = dz / len,
+			keep = keep and keep.id or -1,
+		}
+		opened[name] = rec
+		each_action(st, "open_door")
+		log2("[olr_trader_door] %s opened for a visitor", name)
+	end
+	rec.t = time_global()
+	return true
+end
+
+local function inside(rec, p)
+	if p:distance_to(rec.pos) > NEAR then return false end
+	return ( p.x - rec.pos.x ) * rec.dx + ( p.z - rec.pos.z ) * rec.dz > EDGE
+end
+
+local function blocked(rec)
+	if db.actor and inside(rec, db.actor:position()) then return true end
+	local busy = false
+	local actor_id = db.actor and db.actor:id() or -1
+	level.iterate_nearest(rec.pos, NEAR, function(o)
+		if busy or not o then return end
+		local id = o:id()
+		if id == rec.keep or id == actor_id then return end
+		if not ( IsStalker(o) and o:alive() ) then return end
+		if inside(rec, o:position()) then busy = true end
+	end)
+	return busy
+end
+
+function update()
+	local now = time_global()
+	if now < next_check then return end
+	next_check = now + CHECK_MS
+	for name in pairs(opened) do
+		local obj, st = door_obj(name)
+		if not obj then
+			opened[name] = nil
+		else
+			local rec = valid(name, obj, st)
+			if rec and now - rec.t >= CLOSE_MIN_MS and not blocked(rec) then
+				each_action(st, "close_door")
+				opened[name] = nil
+				log2("[olr_trader_door] %s closed behind the visitor", name)
+			end
+		end
+	end
+end

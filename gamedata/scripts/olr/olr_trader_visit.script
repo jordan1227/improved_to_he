@@ -7,8 +7,39 @@ local KICK_MS = 2000
 local ARRIVE_DIST = 1.5
 local SETTLE_MS = 5000
 local MS_PER_M = 1000
+local MOVE_STATES = { "patrol", "rush" }
+local STEP_DIST = 1.0
+local FINAL_DIST = 0.5
+local START_NEAR = 3
+local TRACE_MS = 5000
 
 local building = false
+
+local function set_zone(npc, st, zone, on)
+	if on and not st.zone_on then
+		npc:add_restrictions(zone, "")
+		st.zone_on = zone
+	elseif not on and st.zone_on then
+		npc:remove_restrictions(st.zone_on, "")
+		st.zone_on = nil
+	else
+		return
+	end
+	if olr_cfg.log_census() then
+		log2("[olr_trader_visit] %s id=%d zone %s %s", npc:name(), npc:id(), zone or "-", on and "on" or "off")
+	end
+end
+
+local function restore_restrictions(npc, st)
+	set_zone(npc, st, st.zone_on, false)
+	if st.restr_out and st.restr_out ~= "" then
+		npc:add_restrictions(st.restr_out, "")
+		if olr_cfg.log_census() then
+			log2("[olr_trader_visit] %s id=%d out restrictions back: %s", npc:name(), npc:id(), st.restr_out)
+		end
+	end
+	st.restr_out = nil
+end
 
 class "evaluator_visit" (property_evaluator)
 
@@ -27,6 +58,7 @@ function evaluator_visit:evaluate()
 	st.next_check = now + CHECK_MS
 	st.lvid = olr_trader_runs.visit_spot(self.object)
 	st.sit = not st.lvid and olr_trader_runs.wait_spot(self.object) or nil
+	if not st.lvid and ( st.restr_out or st.zone_on ) then restore_restrictions(self.object, st) end
 	return st.lvid ~= nil or st.sit ~= nil
 end
 
@@ -34,6 +66,12 @@ class "action_visit" (action_base)
 
 function action_visit:__init(name, st) super(nil, name)
 	self.st = st
+end
+
+function action_visit:move_state()
+	local st = self.st
+	if not st.move_state then st.move_state = MOVE_STATES[math.random(#MOVE_STATES)] end
+	return st.move_state
 end
 
 function action_visit:walk(lvid)
@@ -51,7 +89,7 @@ function action_visit:begin_sit()
 	self.seated = false
 	self.started = time_global()
 	self:walk(self.st.sit.lvid)
-	state_mgr.set_state(self.object, "patrol")
+	state_mgr.set_state(self.object, self:move_state())
 end
 
 function action_visit:execute_sit()
@@ -81,6 +119,8 @@ function action_visit:begin_walk()
 	self.started = time_global()
 	local dist = npc:position():distance_to(level.vertex_position(st.lvid))
 	self.timeout = self.started + olr_trader_runs.visit_timeout_ms() + dist * MS_PER_M
+	self.route = olr_trader_runs.visit_route(npc, st.lvid)
+	if self.route then return self:route_begin() end
 	if olr_cfg.log_census() then
 		log2("[olr_trader_visit] %s id=%d heads for vertex %d, %.0f m away", npc:name(), npc:id(), st.lvid, dist)
 	end
@@ -88,7 +128,7 @@ function action_visit:begin_walk()
 	if st.wait_until then
 		self:stand()
 	else
-		state_mgr.set_state(npc, "patrol")
+		state_mgr.set_state(npc, self:move_state())
 	end
 end
 
@@ -102,7 +142,165 @@ function action_visit:finish(how)
 	local st = self.st
 	local npc = self.object
 	olr_trader_runs.visit_done(npc, string.format("%s, %.1f m from the spot", how, npc:position():distance_to(level.vertex_position(st.lvid))))
-	st.lvid, st.sit, st.wait_until, st.next_check = nil, nil, nil, nil
+	st.lvid, st.sit, st.wait_until, st.next_check, st.route_out = nil, nil, nil, nil, nil
+	st.move_state = nil
+	self.route = nil
+	restore_restrictions(npc, st)
+end
+
+function action_visit:route_open()
+	local st, npc = self.st, self.object
+	if st.restr_out then return end
+	st.restr_out = npc:out_restrictions()
+	if st.restr_out ~= "" then
+		npc:remove_restrictions(st.restr_out, "")
+		if olr_cfg.log_census() then
+			log2("[olr_trader_visit] %s id=%d out restrictions lifted for the route: %s", npc:name(), npc:id(), st.restr_out)
+		end
+	end
+end
+
+function action_visit:route_kick()
+	self:walk(self.route.pts[self.ri])
+end
+
+function action_visit:route_walk()
+	local npc, v = self.object, self.route.pts[self.ri]
+	self:walk(v)
+	self.leg_t = time_global()
+	if olr_cfg.log_census() and self.logged_ri ~= self.ri then
+		self.logged_ri = self.ri
+		log2("[olr_trader_visit] %s id=%d leg to point %d (vertex %d), %.1f m, accessible=%s, out=%s",
+			npc:name(), npc:id(), self.ri, v, npc:position():distance_to(level.vertex_position(v)), tostring(npc:accessible(v)), tostring(self.st.route_out == true))
+	end
+end
+
+function action_visit:route_trace(now)
+	if not olr_cfg.log_census() or now < ( self.trace_t or 0 ) then return end
+	self.trace_t = now + TRACE_MS
+	local npc, v = self.object, self.route.pts[self.ri]
+	log2("[olr_trader_visit] %s id=%d at point %d: %.1f m to go, vertex %d -> %d, path_completed=%s, door_step=%s, waiting=%s",
+		npc:name(), npc:id(), self.ri, npc:position():distance_to(level.vertex_position(v)), npc:level_vertex_id(), v,
+		tostring(npc:path_completed()), tostring(self.door_step), tostring(self.st.wait_until ~= nil))
+end
+
+function action_visit:route_begin()
+	local st, npc, r = self.st, self.object, self.route
+	local pos = npc:position()
+	local best = nil
+	for i, v in ipairs(r.pts) do
+		local d = pos:distance_to(level.vertex_position(v))
+		if not best or d < best then best, self.ri = d, i end
+	end
+	if best > START_NEAR and not st.route_out then self.ri = 1 end
+	self:route_open()
+	self.logged_ri = nil
+	self.door_step = nil
+	self.timeout = self.timeout + ( r.open_ms or 0 ) + ( r.enter_ms or 0 )
+	if st.wait_until and time_global() >= st.wait_until then st.route_out = true end
+	if olr_cfg.log_census() then
+		log2("[olr_trader_visit] %s id=%d takes the route to vertex %d from point %d%s", npc:name(), npc:id(), st.lvid, self.ri, st.route_out and ", leaving" or "")
+	end
+	if st.wait_until and not st.route_out and self.ri == #r.pts then
+		return self:stand()
+	end
+	if st.route_out and self.ri == 1 then return end
+	state_mgr.set_state(npc, self:move_state())
+	self:route_walk()
+end
+
+function action_visit:route_needs_door()
+	local r = self.route
+	if not r.door then return false end
+	if self.st.route_out then return self.ri >= r.door_at end
+	return self.ri > r.door_at
+end
+
+function action_visit:route_reached()
+	local r, npc = self.route, self.object
+	local dist = npc:position():distance_to(level.vertex_position(r.pts[self.ri]))
+	local near = self.ri == #r.pts and FINAL_DIST or STEP_DIST
+	return dist <= near or ( npc:path_completed() and time_global() - self.leg_t >= SETTLE_MS )
+end
+
+function action_visit:route_door(now)
+	local r, npc = self.route, self.object
+	if not self.door_step then
+		if olr_trader_door.is_open(r.door) then return true end
+		self.door_step = "open"
+		self.door_t = now + r.open_ms
+		state_mgr.set_state(npc, "guard", nil, nil, { look_position = level.vertex_position(r.pts[r.door_at + 1]) })
+		return false
+	end
+	if now < self.door_t then return false end
+	if self.door_step == "open" then
+		if olr_trader_door.open(r.door, r.pts[r.door_at], r.pts[r.door_at + 1], r.keep) then
+			self.door_step = "enter"
+			self.door_t = now + r.enter_ms
+		else
+			self.door_t = now + 1000
+		end
+		return false
+	end
+	self.door_step = nil
+	state_mgr.set_state(npc, self:move_state())
+	return true
+end
+
+function action_visit:route_execute()
+	local st, npc, r = self.st, self.object, self.route
+	local now = time_global()
+	local n = #r.pts
+	self:route_trace(now)
+	if r.zone and not st.zone_on and ( st.route_out or self.ri > 1
+		or npc:position():distance_to(level.vertex_position(r.pts[1])) <= r.zone_near )
+	then
+		set_zone(npc, st, r.zone, true)
+		self:route_kick()
+	end
+	olr_trader_door.update()
+	if self:route_needs_door() then
+		olr_trader_door.open(r.door, r.pts[r.door_at], r.pts[r.door_at + 1], r.keep)
+	end
+	if st.route_out then
+		if now >= self.timeout then return self:finish("timed out on the way out") end
+		if self.ri == 1 and self:route_reached() then return self:finish("arrived") end
+		if self:route_reached() then
+			self.ri = math.max(1, self.ri - 1)
+			return self:route_walk()
+		end
+		if now >= self.kick then self:route_kick() end
+		return
+	end
+	if st.wait_until then
+		if now >= st.wait_until then
+			st.route_out = true
+			self.timeout = now + olr_trader_runs.visit_timeout_ms()
+			self.ri = math.max(1, n - 1)
+			state_mgr.set_state(npc, self:move_state())
+			self:route_walk()
+		end
+		return
+	end
+	if now >= self.timeout then return self:finish("timed out") end
+	if self.door_step then
+		if self:route_door(now) then
+			self.ri = self.ri + 1
+			self:route_walk()
+		end
+		return
+	end
+	if not self:route_reached() then
+		if now >= self.kick then self:route_kick() end
+		return
+	end
+	if self.ri == n then
+		st.wait_until = now + olr_trader_runs.visit_wait_ms()
+		return self:stand()
+	end
+	if r.door and self.ri == r.door_at and not self:route_door(now) then return end
+	self.ri = self.ri + 1
+	self:route_walk()
 end
 
 function action_visit:execute()
@@ -117,6 +315,7 @@ function action_visit:execute()
 		self.sitting = false
 		self:begin_walk()
 	end
+	if self.route then return self:route_execute() end
 	local now = time_global()
 	if st.wait_until then
 		if now >= st.wait_until then self:finish("arrived") end
@@ -136,6 +335,9 @@ function action_visit:execute()
 end
 
 function action_visit:finalize()
+	if self.route and self.st.lvid and olr_cfg.log_census() then
+		log2("[olr_trader_visit] %s id=%d route interrupted at point %d", self.object:name(), self.object:id(), self.ri or 0)
+	end
 	action_base.finalize(self)
 end
 
