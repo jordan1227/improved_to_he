@@ -1,3 +1,17 @@
+-- [HE-PORT] Hunting parties, docs/ALIFE_DESIGN.md Phase 3.5: real Duty men and hunters from nearby levels gather at
+-- one smart, go after an alpha or a mutant lair together, and afterwards go back to their lives; what they cut
+-- goes the usual way to a trader. Nobody is created and nobody vanishes. One party at a time. Log: [olr_patrols].
+-- Online they walk through olr_group_walk; if nobody sees the end, it is rolled from their ranks.
+-- fl olr_patrols.report()                the party and when the next one is due
+-- fl olr_patrols.force("alpha")          starts one now, "alpha" or "raid", near this level
+-- fl olr_patrols.force_hunt()            skips the gathering: those offline are put at the gathering place at once
+-- fl olr_patrols.force_resolve()         the fight is decided now, as if nobody saw it
+-- fl olr_patrols.test_walk(60)           the online stalkers nearest you walk 60 m ahead as a group, no story
+-- fl olr_patrols.go()                   puts you by the party's leader, on any level
+-- fl olr_patrols.test_here()             a party of spawned men starts 25 m from you, for the nearest lair on this level
+-- fl olr_patrols.test_here("alpha")      the same for an alpha on this level; spawns one about 150 m away if there is none
+-- fl olr_patrols.watch()                 every member now: distances, action, enemy, health, parts
+-- fl olr_patrols.stop()                  ends the party, everyone goes home
 
 local INI_PATH = "misc\\olr_alife.ltx"
 local KEY = "nlc.olr_patrol"
@@ -78,6 +92,9 @@ local function is_prey(section)
 	return false
 end
 
+-- ---------------------------------------------------------------------------
+-- who they go after
+-- ---------------------------------------------------------------------------
 local function pick_alpha(region)
 	local list = {}
 	for _, a in ipairs(olr_alpha.list()) do
@@ -90,6 +107,7 @@ local function pick_alpha(region)
 	return #list > 0 and list[math.random(#list)] or nil
 end
 
+-- a lair is a smart with prey around it: most mutants have no smart of their own
 local function pick_lair(region)
 	local sim = alife()
 	local c = config()
@@ -116,6 +134,7 @@ local function pick_lair(region)
 		end
 	end
 	plog("lairs near here: %d", #list)
+	-- in random order, a few at most: not every lair has somewhere friendly to gather
 	local out = {}
 	for _ = 1, math.min(#list, 5) do
 		local pick = table.remove(list, math.random(#list))
@@ -125,10 +144,14 @@ local function pick_lair(region)
 	return out
 end
 
+-- ---------------------------------------------------------------------------
+-- who goes
+-- ---------------------------------------------------------------------------
 local function may_join(se, allowed)
 	if not ( se and IsStalker(se) and se:alive() ) or se.online then return false end
 	if se.m_story_id ~= nil and se.m_story_id ~= NONE_SID and se.m_story_id ~= NONE_CL_SID then return false end
 	if olr_trader_runs.has_story_name(se) then return false end
+	-- only those with no written part: scripted camps (bar_dolg_bunker, dsc_dolg_sniper, Bes and Seryi) stay out
 	if string.sub(se:section_name(), 1, 4) ~= "olr_" and not string.find(se:name(), "_respawn", 1, true) then return false end
 	if olr_trader_runs.on_run(se.id) or olr_protected.is_no_offline_alife_obj(se:name()) then return false end
 	if se:rank() < config().patrol_min_rank or se:health() < config().patrol_min_health then return false end
@@ -174,6 +197,7 @@ local function pick_squad(t)
 	return out
 end
 
+-- people who would shoot a party on sight: a soldiers' post is no place to gather or to bed down
 local function enemies_around(smart, lvl)
 	local sim = alife()
 	for _, comm in ipairs({ "military", "bandit", "killer", "monolith", "zombied" }) do
@@ -194,6 +218,8 @@ local function mutants_around(smart, lvl)
 	return false
 end
 
+-- binds him to the nearest smart here that will have him, from "from" metres out; nil if none will.
+-- A place to gather (from given) has no mutants around it
 local function bind_near(se, lvl, x, z, from)
 	local min2 = ( from or 0 ) * ( from or 0 )
 	for _, rec in ipairs(olr_smart_index.smarts_near(lvl, x, z)) do
@@ -211,6 +237,7 @@ local function send_home(id, m)
 	local se = alife():object(id)
 	if not ( se and IsStalker(se) and se:alive() ) then return end
 	if m.spawned then
+		-- he stays in the Zone, a stalker like any other
 		xrs_utils.clear_smart_terrain(se)
 		se:brain():can_choose_alife_tasks(true)
 		plog("%s id=%d is on his own now", se:name(), id)
@@ -224,6 +251,7 @@ local function send_home(id, m)
 	olr_trader_runs.haul_ready_now(id)
 end
 
+-- news reacts to parties here; on_olr_event is absent until the news overhaul lands
 local function notify(event, p, result)
 	if p.kind == "test" or not news_main.on_olr_event then return end
 	local n = 0
@@ -235,6 +263,7 @@ local function finish(p, result)
 	notify("party_end", p, result)
 	plog("%s party on %s over: %s", p.kind, p.level, result)
 	if p.kind ~= "test" then
+		-- those who came back with fewer men say it differently; plain lines if there are none
 		local line = "olr_patrol_" .. result .. "_" .. p.kind .. "_"
 		local hurt = "olr_patrol_" .. result .. "_hurt_" .. p.kind .. "_"
 		if ( p.deaths or 0 ) > 0 and olr_trader_runs.line_total(hurt) > 0 then line = hurt end
@@ -252,6 +281,7 @@ local function finish(p, result)
 	lag_since, goal_cache, stall = {}, {}, {}
 end
 
+-- a friendly place to gather; the reasons others were passed over go to the log
 local function find_rally(t)
 	local c = config()
 	local min2 = c.patrol_rally_dist * c.patrol_rally_dist
@@ -275,6 +305,7 @@ local function find_rally(t)
 	return nil
 end
 
+-- a new man at this spot: no smart, no brain of his own until the party is over
 local function spawn_man(comm, pos, lv, gv)
 	local list = SECTIONS[comm]
 	local section = list[math.random(#list)]
@@ -322,6 +353,7 @@ local function start(t)
 	local rally = find_rally(t)
 	if not rally then return false end
 	t.rally, t.rx, t.ry, t.rz, t.rlv = rally:name(), rally.position.x, rally.position.y, rally.position.z, rally.m_level_vertex_id
+	-- is_member must hold before the smart is asked, so that it takes them as travellers
 	state().p = t
 	local sim = alife()
 	local idx = 0
@@ -340,6 +372,7 @@ local function start(t)
 			t.members[key] = nil
 		end
 	end
+	-- the rest are new faces: the Zone has few to spare, so a party stays a rare sight
 	local half = math.ceil(c.patrol_size / 2)
 	while idx < c.patrol_size do
 		local comm = duty < half and "dolg" or "stalker"
@@ -377,6 +410,9 @@ function try_start(kind)
 	return false
 end
 
+-- ---------------------------------------------------------------------------
+-- on foot
+-- ---------------------------------------------------------------------------
 local function parts_on(npc)
 	local n = 0
 	npc:iterate_inventory(function(_, item)
@@ -385,6 +421,7 @@ local function parts_on(npc)
 	return n
 end
 
+-- every member as he is now
 function watch()
 	local p = state().p
 	if not p then
@@ -414,6 +451,8 @@ function watch()
 	end
 end
 
+-- the leader's goal, with a way round: a vertex can be closed (anomaly on it) or cut off, and then the path never comes.
+-- Stood still while walking: steps toward the target by any open direction; still nothing, the party gives up.
 local function leader_goal(npc, p)
 	local t = time_global()
 	local pos = npc:position()
@@ -457,6 +496,7 @@ local function leader_goal(npc, p)
 	return stall.step or p.lv
 end
 
+-- olr_group_walk asks: a vertex and a pace, or nil if this NPC has nowhere to go with the group
 function walk_goal(npc)
 	if not db.actor then return nil end
 	local p = state().p
@@ -464,6 +504,7 @@ function walk_goal(npc)
 	local id = npc:id()
 	local m = p.members[tostring(id)]
 	if not m then return nil end
+	-- two planner goals that each wait for the other leave him with no plan at all
 	if olr_trader_runs.on_run(id) then return nil end
 	if config().patrol_trace == 1 and time_global() >= trace_next then
 		trace_next = time_global() + 5000
@@ -497,6 +538,7 @@ function walk_goal(npc)
 		end
 		return id == p.leader and leader_goal(npc, p) or p.lv, "walk"
 	end
+	-- in his wake: rows of two behind him
 	local back = leader:direction()
 	local row = math.floor(m.idx / 2) + 1
 	local side = m.idx % 2 == 0 and 1 or -1
@@ -510,6 +552,9 @@ function walk_goal(npc)
 	return lvid, "walk"
 end
 
+-- ---------------------------------------------------------------------------
+-- how it ends if nobody sees it
+-- ---------------------------------------------------------------------------
 local function take_prey_part(p, se, winner)
 	local part = monster_parts.get_monster_part(se:section_name())
 	if part and part ~= "" and winner then
@@ -534,6 +579,7 @@ local function lair_mutants(p)
 	return out
 end
 
+-- whatever is alive around the target, online or not
 function prey_near(p)
 	local sim = alife()
 	local here = vector():set(p.x, p.y, p.z)
@@ -563,6 +609,7 @@ local function resolve(p)
 	local hard, prey
 	if p.kind == "alpha" then
 		prey = sim:object(p.alpha)
+		-- what makes it an alpha: it has beaten men before, a party is no sure thing
 		hard = ( HARDNESS[p.prey_kind] or 5 ) * c.patrol_alpha_hard
 	else
 		local list = lair_mutants(p)
@@ -573,6 +620,7 @@ local function resolve(p)
 	if not prey then return finish(p, "won") end
 	local chance = math.max(c.patrol_chance_min, math.min(c.patrol_chance_max, 100 * power / ( power + hard )))
 	local won = math.random(100) <= chance
+	-- not won: most often beaten with losses, sometimes driven off with hardly a scratch on either side
 	local driven_off = not won and p.kind == "alpha" and math.random(100) <= c.patrol_driven_off
 	local losses = won and math.random(0, 1) or driven_off and math.random(0, 1) or math.random(1, 2)
 	plog("%s on %s decided unseen: %d men, power %.1f against %.1f, chance %.0f, won=%s, losses %d", p.kind, p.level, #alive, power, hard, chance, tostring(won), losses)
@@ -602,6 +650,7 @@ local function resolve(p)
 	finish(p, won and "won" or driven_off and "driven" or "lost")
 end
 
+-- who killed a member, and an anomaly on the way home ends the march: the rest would follow him in
 function on_npc_death(npc, who)
 	local p = db.actor and state().p
 	if not ( p and npc and p.members[tostring(npc:id())] ) then return end
@@ -689,6 +738,7 @@ local function hunt_tick(p, n)
 		local a = sim:object(p.alpha)
 		if not p.clear then
 			if not ( a and IsMonster(a) and a:alive() ) then
+				-- as after a raid: they see to the body, then go back together
 				p.clear = now()
 				plog("'%s' is dead, they see to the body and hold together", tostring(p.prey_name))
 			elseif olr_smart_index.object_level(a) ~= p.level then
@@ -715,6 +765,7 @@ local function hunt_tick(p, n)
 		end
 	end
 	if p.kind == "test" and p.reached and now() - p.reached >= 120 then return finish(p, "done") end
+	-- looting comes before the walk in the planner, so holding them does not stop it
 	if p.clear and not p.returning and now() - p.clear >= config().patrol_linger_h * 3600 then
 		p.returning = true
 		p.x, p.y, p.z, p.lv = p.rx, p.ry, p.rz, p.rlv
@@ -755,6 +806,9 @@ function update()
 	end
 end
 
+-- ---------------------------------------------------------------------------
+-- test helpers
+-- ---------------------------------------------------------------------------
 function report()
 	local st = state()
 	local n = now()
@@ -770,10 +824,12 @@ function report()
 	end
 end
 
+-- an alpha for test_here: one already on this level, or a new one in the most open direction
 local function alpha_here()
 	local here = level.name()
 	local t = pick_alpha({ [here] = true })
 	if t then return t end
+	-- at a place with no people, far enough for a walk
 	local pos = db.actor:position()
 	local spot = nil
 	local camps = olr_cfg.camp_list()
@@ -885,6 +941,7 @@ function go()
 	end
 end
 
+-- the farthest of eight directions, up to dist: walls stop vertex_in_direction short
 local function open_vertex(dist)
 	local a0 = db.actor:level_vertex_id()
 	local here = db.actor:position()

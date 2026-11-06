@@ -1,3 +1,17 @@
+-- [HE-PORT] Shared population count, docs/ALIFE_DESIGN.md section 10 batch 11: one count per level of every live
+-- creature there now; rats, tushkanos and dormant event NPCs apart. Monsters placed by the level itself are counted
+-- apart (p): the target is for what lairs and OLR add (m), as the old ceiling was.
+-- Native lairs fill a fair share of a chapter target, OLR seeds open levels the player has not seen yet, native
+-- monsters in free smarts migrate, and steering reads its over and under from here. Nothing is ever removed: a level
+-- over its target only waits. Config: [population], [seed_exclude], [seed_exclude_levels] in olr_alife.ltx.
+-- Log: [olr_pop].
+-- fl olr_population.report()                    capacity, target, count and verdict per level
+-- fl olr_population.lairs("k01_darkscape")      every monster lair of a level: share, own, and whether it may spawn now
+-- fl olr_population.seed_check()                the seeding exclusions: which smarts exist, where, and what covers them
+-- fl olr_population.force_seed("l02_garbage")   one seeding squad there now, past the timer and the limit (test save)
+-- fl olr_population.who("marsh")               who is counted on a level: origin, community, smart
+-- A native lair's new monster stays on the lair's level: the engine would give it the best smart in the whole Zone.
+-- Quest NPCs (olr_protected) take quest_npc_monster_damage of what mutants deal them.
 
 local INI_PATH = "misc\\olr_alife.ltx"
 local AMK_PATH = "scripts\\amk\\amk_respawns.ltx"
@@ -7,10 +21,11 @@ local cfg = nil
 local cache = nil
 local amk_lairs = nil
 
+-- refreshed every pop_count_ttl s, counted up between: counts[lvl] = { h, m }, lair_rows[lvl] = { list, cap, amk }
 local counts = nil
 local lair_rows = nil
 local owner = nil
-local counts_until = 0
+local counts_until = 0 -- 0 forces the next recount
 local counts_game = 0
 local counts_real = 0
 local smart_level = {}
@@ -43,6 +58,7 @@ function active()
 	return olr_cfg.on("population")
 end
 
+-- [seed_exclude] smarts: quest scenes and camps nobody seeds; olr_amk_offline and olr_alpha keep away from them too
 function is_scene_smart(name)
 	return config().exclude[name or ""] ~= nil
 end
@@ -51,6 +67,8 @@ local function get_state()
 	if not cache then
 		local saved = get_value(KEY)
 		cache = saved or {}
+		-- a save from before the ledger (or from a preset without it) past its second day: which levels the player saw
+		-- is unknown, so none is seeded
 		if not saved and timers.Get_Game_Seconds() > 48 * 3600 then cache.old_save = true end
 	end
 	cache.visited = cache.visited or {}
@@ -71,6 +89,7 @@ local function only_vermin(sections)
 	return true
 end
 
+-- the AMK lairs of every level from their config: they exist as respawners only from the first visit on
 local function amk_config()
 	if amk_lairs then return amk_lairs end
 	amk_lairs = {}
@@ -82,7 +101,7 @@ local function amk_config()
 	for i = 0, ini:line_count("amk_respawns") - 1 do
 		local _, name, value = ini:r_line("amk_respawns", i, "", "")
 		local lvl = string.match(value or "", "[%w_]+")
-		if lvl == "false" or lvl == "true" then lvl = nil end
+		if lvl == "false" or lvl == "true" then lvl = nil end -- switched off in the AMK list
 		if name and lvl and ini:section_exist(name) and ini:line_exist(name, "respawn_section") then
 			local secs, weighted, monster = {}, {}, true
 			for tok in string.gmatch(ini:r_string(name, "respawn_section"), "[^,%s]+") do
@@ -116,6 +135,7 @@ local function lair_max(max)
 	return max
 end
 
+-- vermin, rule and kept lairs: counted, never waiting
 local function is_free(resp)
 	return only_vermin(resp.respawn_section) or olr_respawn_rules.governs(resp) or he_random_fauna.is_kept(resp:name())
 end
@@ -129,7 +149,7 @@ local function build_lairs()
 		for _, v in ipairs(resp.respawn_section or {}) do ours[v.section] = true end
 		he_random_fauna.add_sections(resp, ours)
 		for _, id in ipairs(resp.spawned_obj) do
-			local o = alife():object(id)
+			local o = alife():object(id) -- an old save's id may belong to another creature by now
 			if o and ours[o:section_name()] then own[id] = resp end
 		end
 		if lvl and resp.he_monster_respawn and not resp.spawn_once and not resp.item_spawn then
@@ -155,8 +175,10 @@ local function build_lairs()
 	return out, own
 end
 
+-- where a creature lives: the level of the smart it is bound to (a migrant on the road already belongs where he goes),
+-- or where it stands when it has no smart
 local function home_level(se)
-	if olr_trader_runs.on_run(se.id) then return olr_smart_index.object_level(se) end
+	if olr_trader_runs.on_run(se.id) then return olr_smart_index.object_level(se) end -- a visitor on the road, not a resident
 	local sid = se:smart_terrain_id()
 	if sid and sid ~= BAD_OBJ_ID then
 		local lvl = smart_level[sid]
@@ -182,7 +204,7 @@ local function recount()
 			local human = IsStalker(se)
 			if ( human or IsMonster(se) ) and se:alive()
 				and ( human or not he_random_fauna.is_vermin(se:section_name()) )
-				and not ( human and se:community() == "zombied" )
+				and not ( human and se:community() == "zombied" ) -- hordes are not people the human target is for
 				and not olr_census.is_dormant_creature(se, human)
 			then
 				local lvl = home_level(se)
@@ -209,6 +231,7 @@ local function recount()
 			end
 		end
 	end
+	-- the human base: the highest count of a level's first game day (one look could catch a camp half out on jobs)
 	local st = get_state()
 	st.hbase_t = st.hbase_t or {}
 	local new_base = false
@@ -231,6 +254,8 @@ local function recount()
 end
 
 local function fresh()
+	-- stale after pop_count_ttl wall-clock seconds, or a game hour but at most every 3 s of wall clock (time_global
+	-- runs faster with time_factor, os.time does not)
 	local game_now = timers.Get_Game_Seconds()
 	local real_now = os.time()
 	local stale = counts_until == 0 or real_now - counts_real >= config().pop_count_ttl
@@ -276,6 +301,7 @@ function target_of(lvl, kind)
 	return math.max(base * ( 1 + c.pop_human_margin ), base + c.pop_human_min)
 end
 
+-- "over" at the target, "under" below pop_under x it, nil in between or with no target
 function verdict(lvl, human)
 	local kind = human and "h" or "m"
 	local target = target_of(lvl, kind)
@@ -286,6 +312,7 @@ function verdict(lvl, human)
 	return nil
 end
 
+-- kind 1 humans, 2 monsters: the surface levels under their target (undergrounds and labs never open)
 function open_levels(kind)
 	local k = kind == 1 and "h" or "m"
 	local out = {}
@@ -317,6 +344,7 @@ local function share_of(lvl, max)
 	return math.min(target * max / cap, target * config().pop_lair_cap)
 end
 
+-- the reason a monster lair waits now, nil when it may spawn one more
 local function lair_waits(resp)
 	if is_free(resp) then return nil end
 	local lvl = resp.level_name
@@ -330,6 +358,7 @@ local function lair_waits(resp)
 		if math.random() < share - own then return nil end
 		return string.format("share %.2f (own %d), the %.0f%% roll for one more lost", share, own, ( share - own ) * 100), true
 	end
+	-- past the share: one more a respawn cycle, while the level is low, never past the lair cap
 	if now >= target * config().pop_over_fill then
 		return string.format("share %.1f reached (own %d), level %d/%.1f", share, own, now, target)
 	end
@@ -351,12 +380,16 @@ local function log_turn(resp, why)
 	if why then plog("%s on %s waits: %s", resp.amk_name or resp:name(), tostring(resp.level_name), why) end
 end
 
+-- se_respawn re-arms its whole cycle (days) before it spawns: a lair the ledger stops looks again in 1-3 game hours,
+-- so a level that lost its mutants does not wait a week for room it has now. A lost share roll keeps the cycle (the
+-- roll is once a cycle).
 local function retry_soon(resp)
 	local t = game.CTime()
 	t:setHMSms(math.random(1, 3), math.random(0, 59), 0, 0)
 	resp.respawn_time = game.get_game_time() + t
 end
 
+-- se_respawn ceiling_reached: true while this respawner must wait
 function respawn_blocked(resp)
 	if resp.spawn_once or resp.item_spawn or not resp.level_name then return false end
 	if resp.he_monster_respawn then
@@ -365,6 +398,7 @@ function respawn_blocked(resp)
 		if why and not rolled then retry_soon(resp) end
 		return why ~= nil
 	end
+	-- zombie hordes are authored like lairs: counted, never waiting
 	local zombied = true
 	for _, v in ipairs(resp.respawn_section) do
 		local props = resp.sectSpawnProps[v.section]
@@ -383,6 +417,7 @@ function respawn_blocked(resp)
 	return true
 end
 
+-- se_respawn:create, once an object exists
 function note_spawn(resp, obj)
 	if not ( counts and obj and resp.level_name ) then return end
 	local human = IsStalker(obj)
@@ -396,6 +431,10 @@ function note_spawn(resp, obj)
 	end
 end
 
+-- se_respawn:create, right after the engine gave a new creature its smart and before it is counted or announced (it weighs free jobs Zone-wide, so lairs fed
+-- every level, even ones the story has not opened). Monsters: their own level, else an open neighbour under target,
+-- else false (the caller drops it and the lair tries again next cycle). Humans: the engine's pick while that level is
+-- under its target, else home, else a neighbour, else the engine's pick after all.
 local function smart_name_level(sid)
 	local smart = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
 	if not smart then return nil, nil, nil end
@@ -411,6 +450,9 @@ local function place(obj, comm, levels, exclude)
 	return target
 end
 
+-- a lair whose level has no free monster smart: the newborn stays at the lair with no smart, as AMK's own lairs do
+-- (offline it stands there, online it roams around it). Settling next door filled Cordon, Agroprom and Garbage with
+-- Marsh and Darkscape offspring while those two stayed nearly empty.
 local function stay_at_lair(resp, obj, why)
 	smart_terrain.unregister_npc(obj)
 	local pk = get_netpk(obj)
@@ -424,6 +466,8 @@ local function stay_at_lair(resp, obj, why)
 	return "smartless"
 end
 
+-- se_respawn:create, true to keep the creature as the engine bound it, "smartless" for one kept at its lair with no
+-- smart, false to drop it
 function keep_home(resp, obj)
 	if not ( active() and resp.level_name ) then return true end
 	local human = IsStalker(obj)
@@ -466,16 +510,20 @@ function keep_home(resp, obj)
 	return false
 end
 
+-- olr_alpha: the name of the lair that bred this creature, nil for others
 function lair_of(id)
 	fresh()
 	local resp = owner and owner[id]
 	return resp and ( resp.amk_name or resp:name() ) or nil
 end
 
+-- olr_squads, olr_monster_squads: OLR people placed on a level
 function note_olr(lvl, human, n)
 	bump(lvl, human and "h" or "m", n)
 end
 
+-- olr_offline_task.monster_migration: the chance a native monster in a free smart moves on this pass, nil when it
+-- stays; dt_h is the game hours since the last pass, so the rate follows game time (and time_factor)
 function native_chance(se, dt_h)
 	if not ( active() and olr_cfg.on("native_migration") ) then return nil end
 	local lvl = olr_smart_index.object_level(se)
@@ -494,6 +542,7 @@ function native_max_per_pass()
 	return config().native_max_per_pass
 end
 
+-- olr_offline_task.migrate_stalker: a human leaves one level for another
 function on_migrated_human(from_lvl, to_smart)
 	local to_lvl = olr_smart_index.get_level(to_smart)
 	if from_lvl ~= to_lvl then
@@ -504,13 +553,14 @@ end
 
 function on_migrated(se, from_lvl, to_smart)
 	local to_lvl = olr_smart_index.get_level(to_smart)
-	if from_lvl ~= to_lvl and owner and owner[se.id] then
+	if from_lvl ~= to_lvl and owner and owner[se.id] then -- placed ones are counted apart wherever they go
 		bump(from_lvl, "m", -1)
 		bump(to_lvl, "m", 1)
 	end
 	plog("native %s %s: %s -> %s (%s)", se:section_name(), tostring(se.id), tostring(from_lvl), tostring(to_smart), tostring(to_lvl))
 end
 
+------------------------------------------------------------------------------------------------ seeding
 
 local function visited(lvl)
 	local st = get_state()
@@ -520,6 +570,7 @@ local function visited(lvl)
 	return row ~= nil and row.amk
 end
 
+-- quest NPCs on a level: no seeding near them
 local function guards_on(lvl)
 	local out = {}
 	for _, se in alife():objects() do
@@ -547,6 +598,7 @@ local function seed_limit(lvl)
 	return target * config().seed_share - count_of(lvl, "m")
 end
 
+-- a level whose fauna lives in AMK lairs (no monster smarts): a few of a lair's own kind at its spot, on its home path
 local function lair_kind_ok(sections)
 	local kinds = config().seed_lair_species
 	for _, v in ipairs(sections) do
@@ -651,6 +703,7 @@ end
 
 local native_t = nil
 
+-- native monster migration on game time: a pass every half game hour or more (every update under time_factor)
 local function native_tick()
 	if not olr_cfg.on("native_migration") then return end
 	local now = timers.Get_Game_Seconds()
@@ -697,6 +750,7 @@ function on_first_update()
 	counts_until = 0
 end
 
+-- on_npc_before_hit: quest NPCs (olr_protected) stand up to mutants, so lairs and seeding can live near them
 function on_npc_before_hit(npc, hit_data)
 	if not ( hit_data and active() ) or hit_data.ignore_hit then return end
 	local id = hit_data.who_id
@@ -707,7 +761,9 @@ function on_npc_before_hit(npc, hit_data)
 	hit_data.power = ( hit_data.power or 0 ) * config().quest_npc_monster_damage
 end
 
+------------------------------------------------------------------------------------------------ test helpers
 
+-- fl olr_population.quest_bound("l02_garbage")  the stalkers OLR leaves in place there, and why
 function quest_bound(lvl)
 	lvl = lvl or level.name()
 	local n, why = 0, {}
@@ -824,7 +880,7 @@ function who(lvl, kind)
 			local human = IsStalker(se)
 			if ( human or IsMonster(se) ) and se:alive() and ( kind == nil or ( kind == "h" ) == human )
 				and ( human or not he_random_fauna.is_vermin(se:section_name()) )
-				and not ( human and se:community() == "zombied" )
+				and not ( human and se:community() == "zombied" ) -- not counted, as in recount
 				and not olr_census.is_dormant_creature(se, human) and home_level(se) == lvl
 			then
 				local resp = owner[se.id]

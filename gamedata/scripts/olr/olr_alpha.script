@@ -1,3 +1,9 @@
+-- [HE-PORT] Alpha mutants, docs/ALIFE_DESIGN.md 5a: a mutant that keeps killing people earns a name,
+-- takes less damage, hits harder, does not panic and leaves a trophy. An encounter template can make one too.
+-- One per level at most; pack, hunter and night species, chimeras and burers. Log: [olr_alpha].
+-- fl olr_alpha.report()              the alphas alive, the kill counters
+-- fl olr_alpha.force()               the nearest allowed mutant becomes one; or force(12345)
+-- fl olr_alpha.force_kills(12345, 3) as if that mutant had killed so many
 
 local INI_PATH = "misc\\olr_alife.ltx"
 local KEY = "nlc.olr_alpha"
@@ -54,12 +60,14 @@ local function pick_name(kind)
 	return key and game.translate_string(key) or kind
 end
 
+-- why this mutant cannot become one, nil if it can
 local function refusal(st, se, forced)
 	if not ( se and IsMonster(se) and se:alive() ) then return "not_alive_monster" end
 	if st.alphas[tostring(se.id)] then return "already" end
 	if not kind_of(se:section_name()) then return "species" end
 	if olr_protected.is_protected_monster(se) then return "protected" end
 	if forced then return nil end
+	-- [HE-PORT] never in front of the player (its kills stay counted, so it rises once it is offline), never at a quest scene
 	if se.online then return "online" end
 	local sid = se:smart_terrain_id()
 	local smart = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
@@ -74,6 +82,7 @@ local function refusal(st, se, forced)
 	return nil
 end
 
+-- [HE-PORT] game seconds until the Zone makes the next alpha itself (alpha_every_days min,max)
 function next_gap()
 	local a, b = string.match(tostring(config().alpha_every_days), "([%d%.]+)%s*,%s*([%d%.]+)")
 	a, b = tonumber(a) or 5, tonumber(b) or 8
@@ -86,7 +95,7 @@ local function promote(st, se, why, name)
 	name = name or pick_name(kind)
 	st.alphas[tostring(se.id)] = { sec = se:section_name(), name = name, kind = kind, level = lvl }
 	st.kills[tostring(se.id)] = nil
-	st.next_alpha = timers.Get_Game_Seconds() + next_gap()
+	st.next_alpha = timers.Get_Game_Seconds() + next_gap() -- the next one counts from this one
 	alog("%s id=%d on %s is now the alpha '%s' (%s)", se:section_name(), se.id, tostring(lvl), name, why)
 	local region = olr_smart_index.region_levels()
 	if region and region[lvl] and he_pda_model.get_pda() then
@@ -94,6 +103,7 @@ local function promote(st, se, why, name)
 	end
 end
 
+-- for encounter templates: spawned, offline or not
 function make(id, name)
 	if not olr_cfg.on("alpha") then return false end
 	local st = get_state()
@@ -108,6 +118,7 @@ function make(id, name)
 	return true
 end
 
+-- [HE-PORT] the pack a mutant hunts with: its smart, else the lair that bred it; nil for a loner
 local function pack_of(se)
 	local sid = se:smart_terrain_id()
 	if sid and sid ~= BAD_OBJ_ID then return "s" .. sid end
@@ -115,6 +126,7 @@ local function pack_of(se)
 	return lair and ( "r" .. lair ) or nil
 end
 
+-- the first of a pack to kill carries its mark: the pack's later kills are his, so one of them can become the alpha
 local function marked(st, se)
 	local pack = pack_of(se)
 	if not pack then return se end
@@ -169,6 +181,7 @@ end
 
 function on_monster_before_hit(obj, hit_data)
 	if not ( obj and hit_data ) or hit_data.ignore_hit or not alpha_of(obj:id()) then return end
+	-- tougher still against stalkers: four men with grenade launchers would never lose to it otherwise
 	local id = hit_data.who_id or ( hit_data.who and hit_data.who:id() )
 	local by_actor = id ~= nil and db.actor ~= nil and id == db.actor:id()
 	hit_data.power = ( hit_data.power or 0 ) * ( by_actor and config().alpha_tough or config().alpha_tough_npc )
@@ -191,6 +204,7 @@ function on_npc_before_hit(npc, hit_data)
 	outgoing(hit_data)
 end
 
+-- for olr_patrols
 function list()
 	local out = {}
 	for key, rec in pairs(get_state().alphas) do
@@ -199,6 +213,7 @@ function list()
 	return out
 end
 
+-- a party got it where nobody saw; the caller releases the mutant
 function killed_offline(id, by_actor)
 	local st = get_state()
 	local key = tostring(id)
@@ -231,6 +246,7 @@ function on_monster_death(monster, who)
 	put_state(st)
 	local by_actor = monster_parts.credited_to_actor(id, who)
 	monster_parts.note_alpha(id, rec.name)
+	-- an alpha always has its part to carve
 	local part = monster_parts.get_monster_part(rec.sec)
 	local added = false
 	if part and part ~= "" and monster:object_count() == 0 then
@@ -247,6 +263,9 @@ function on_monster_death(monster, who)
 		tostring(part), tostring(added), ( due - timers.Get_Game_Seconds() ) / 3600)
 end
 
+-- applies to the alphas that are online, forgets the ones whose id is no longer theirs
+-- [HE-PORT] when no alpha came of kills for alpha_every_days: the one with most kills, else a pack's marked one,
+-- else any pack mutant of an alpha kind on an open surface level away from the player
 local function zone_pick(st)
 	local sim = alife()
 	local best, best_n = nil, 0
@@ -273,6 +292,7 @@ local function zone_pick(st)
 		end
 	end
 	if #pool == 0 then return nil end
+	-- weighted by kind (alpha_kind_weights), so the rare strong ones are not drowned by the common packs
 	local weights = {}
 	for k, w in string.gmatch(tostring(config().alpha_kind_weights), "([%w_]+):([%d%.]+)") do weights[k] = tonumber(w) end
 	local sum = 0
@@ -374,6 +394,7 @@ function force(id)
 		end
 	end
 	if not se and not id then
+		-- nobody suitable online: the nearest offline on this level
 		local here, best = db.actor:position(), 99999
 		for _, oid in ipairs(olr_offline_task.cached_monsters()) do
 			local o = sim:object(oid)
