@@ -965,7 +965,7 @@ bool CMissile::UpdateHUDSounds() {
 
     dwUpdateSounds_Frame = Device.dwFrame;
 
-    const Fvector& play_pos = Device.vCameraPosition;
+    const Fvector& play_pos = GetHUDmode() ? Device.vCameraPosition : Position();
 
     if (sndPlaying.playing())
         sndPlaying.set_position(play_pos);

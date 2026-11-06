@@ -198,7 +198,7 @@ bool CBolt::UpdateHUDSounds() {
      
     if (inherited::UpdateHUDSounds())
     {
-        const Fvector& play_pos = Device.vCameraPosition;
+        const Fvector& play_pos = GetHUDmode() ? Device.vCameraPosition : Position();
         if (sndQuickThrowStart.playing())
             sndQuickThrowStart.set_position(play_pos);
         if (sndQuickThrow.playing())
