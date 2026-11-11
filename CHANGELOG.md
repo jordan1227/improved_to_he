@@ -1,6 +1,2278 @@
-<!-- nlc-changelog-head: c05c7d2699eb32afe3979aeca3e98c8217a65f05 -->
+<!-- nlc-changelog-head: a6818764761a4fa91dfcc390e145b85f533a67b8 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: a6818764761a4fa91dfcc390e145b85f533a67b8 -->
+## 11.11.26 12:48 МСК - Polish mutant AI and combat behaviors
+
+Commit: [a681876](https://github.com/jordan1227/improved_to_he/commit/a6818764761a4fa91dfcc390e145b85f533a67b8)
+
+### Description
+
+Add bloodsucker evasion, group tactics, and anomaly-aware lunges; expand burer pressure and disarm behavior, controller grenade disruption, and stalker responses. Update creature configs, scripts, engine changelog, and the engine binary.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/game_relations.ltx
+- M gamedata/config/creatures/m_bloodsucker.ltx
+- M gamedata/config/creatures/m_burer.ltx
+- M gamedata/config/creatures/m_controller.ltx
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/params/params.script
+- M gamedata/scripts/sivol/sivol_controller_psy.script
+- M gamedata/scripts/sivol/sivol_melee.script
+- M gamedata/scripts/sivol/sivol_rout.script
+- M gamedata/scripts/sivol/sivol_tactics.script
+- M gamedata/scripts/xr/xr_conditions.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/anomaly_detector.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/anomaly_detector.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_evade.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_siege.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_startup.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.h
+- A engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_polish.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker_tactics.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer_nlc.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer_nlc5.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_path_builder.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_path_builder.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_run_attack.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_run_attack.h
+- M engine/ogsr_engine/xrGame/ai/monsters/monster_enemy_memory.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/states/monster_state_attack_run_inline.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker_fire.cpp
+- M engine/ogsr_engine/xrGame/nlc_mutant_aim.h
+- M engine/ogsr_engine/xrGame/script_game_object4.cpp
+- M engine/ogsr_engine/xrGame/visual_memory_manager.cpp
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+
+<!-- nlc-changelog-commit: 15f045fb7b9eb7da6a2917933b95e4c319c310a5 -->
+## 09.11.26 23:50 МСК - Квест Глузова
+
+Commit: [15f045f](https://github.com/jordan1227/improved_to_he/commit/15f045fb7b9eb7da6a2917933b95e4c319c310a5)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/info_sak_way.xml
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/scripts/kotovod.script
+
+<!-- nlc-changelog-commit: c20c646a04235094f2db26b4d953059d1c626ccf -->
+## 08.11.26 22:50 МСК - Глузов в защиту алайфа
+
+Commit: [c20c646](https://github.com/jordan1227/improved_to_he/commit/c20c646a04235094f2db26b4d953059d1c626ccf)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/olr_alife.ltx
+- M gamedata/scripts/olr/olr_protected.script
+
+<!-- nlc-changelog-commit: 9c65eb6630e93ee3fa44c110e972234383aeac24 -->
+## 08.11.26 16:51 МСК - Текст в ПДА
+
+Commit: [9c65eb6](https://github.com/jordan1227/improved_to_he/commit/9c65eb6630e93ee3fa44c110e972234383aeac24)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/ui/ui_cheat_pda.script
+
+<!-- nlc-changelog-commit: 9998171f842833130e4145dc8c6fa547c255df85 -->
+## 08.11.26 16:43 МСК - Конт лешего
+
+Commit: [9998171](https://github.com/jordan1227/improved_to_he/commit/9998171f842833130e4145dc8c6fa547c255df85)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: 939398fbba379185ffa2b5e65b19730a25c29284 -->
+## 08.11.26 14:36 МСК - Включил в пресету защиту квестовиков
+
+Commit: [939398f](https://github.com/jordan1227/improved_to_he/commit/939398fbba379185ffa2b5e65b19730a25c29284)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/olr_alife.ltx
+
+<!-- nlc-changelog-commit: 8e55c836520a5ba3b50e480567cbd98582ad2847 -->
+## 07.11.26 13:15 МСК - Иконка Лешего
+
+Commit: [8e55c83](https://github.com/jordan1227/improved_to_he/commit/8e55c836520a5ba3b50e480567cbd98582ad2847)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/amk/amk.script
+
+<!-- nlc-changelog-commit: f10907cc13dd6a757df433cfa9397fd55fb7cbb0 -->
+## 06.11.26 19:41 МСК - Звук чеки/гранат ГГ не слышит на расстоянии
+
+Commit: [f10907c](https://github.com/jordan1227/improved_to_he/commit/f10907cc13dd6a757df433cfa9397fd55fb7cbb0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+
+### Other repository files changed
+
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Bolt.cpp
+- M engine/ogsr_engine/xrGame/Missile.cpp
+
+<!-- nlc-changelog-commit: 8f5289f94dabe47b6e5cdeeef168eeb6bc6f0327 -->
+## 06.11.26 19:12 МСК - комменты
+
+Commit: [8f5289f](https://github.com/jordan1227/improved_to_he/commit/8f5289f94dabe47b6e5cdeeef168eeb6bc6f0327)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_alpha.script
+- M gamedata/scripts/olr/olr_amk_offline.script
+- M gamedata/scripts/olr/olr_camp_law.script
+- M gamedata/scripts/olr/olr_census.script
+- M gamedata/scripts/olr/olr_cfg.script
+- M gamedata/scripts/olr/olr_faction_policy.script
+- M gamedata/scripts/olr/olr_glut.script
+- M gamedata/scripts/olr/olr_group_walk.script
+- M gamedata/scripts/olr/olr_init.script
+- M gamedata/scripts/olr/olr_lab_giants.script
+- M gamedata/scripts/olr/olr_monster_squads.script
+- M gamedata/scripts/olr/olr_night.script
+- M gamedata/scripts/olr/olr_offline_hunts.script
+- M gamedata/scripts/olr/olr_offline_task.script
+- M gamedata/scripts/olr/olr_offline_walk.script
+- M gamedata/scripts/olr/olr_online_depart.script
+- M gamedata/scripts/olr/olr_patrols.script
+- M gamedata/scripts/olr/olr_population.script
+- M gamedata/scripts/olr/olr_protected.script
+- M gamedata/scripts/olr/olr_raids.script
+- M gamedata/scripts/olr/olr_reactive.script
+- M gamedata/scripts/olr/olr_relations.script
+- M gamedata/scripts/olr/olr_respawn_rules.script
+- M gamedata/scripts/olr/olr_smart_index.script
+- M gamedata/scripts/olr/olr_squads.script
+- M gamedata/scripts/olr/olr_steering.script
+- M gamedata/scripts/olr/olr_trader_runs.script
+- M gamedata/scripts/olr/olr_trader_visit.script
+- M gamedata/scripts/olr/olr_underground.script
+
+<!-- nlc-changelog-commit: 9fa5f58b59ffac4e8cb90c85d78bff8bfe7dc686 -->
+## 05.11.26 20:43 МСК - Дырка в заборе на болотах
+
+Commit: [9fa5f58](https://github.com/jordan1227/improved_to_he/commit/9fa5f58b59ffac4e8cb90c85d78bff8bfe7dc686)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/levels/marsh/level.cform
+- M gamedata/levels/marsh/level.geom
+
+<!-- nlc-changelog-commit: 34cbd977e4a10bd8fa1c2528303f7c3d1ae9a99d -->
+## 05.11.26 15:01 МСК - Ковальчук застревал у костра
+
+Commit: [34cbd97](https://github.com/jordan1227/improved_to_he/commit/34cbd977e4a10bd8fa1c2528303f7c3d1ae9a99d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l01_escape.ltx
+
+<!-- nlc-changelog-commit: 793a38e8ac6a07d39d16d7ca19dc1e679d988b41 -->
+## 05.11.26 14:36 МСК - x2
+
+Commit: [793a38e](https://github.com/jordan1227/improved_to_he/commit/793a38e8ac6a07d39d16d7ca19dc1e679d988b41)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_trader_visit.script
+
+<!-- nlc-changelog-commit: 6670724d68e22645185a8164fdef8458e0a9490f -->
+## 05.11.26 14:33 МСК - Убрал отладку
+
+Commit: [6670724](https://github.com/jordan1227/improved_to_he/commit/6670724d68e22645185a8164fdef8458e0a9490f)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_trader_door.script
+- M gamedata/scripts/olr/olr_trader_visit.script
+
+<!-- nlc-changelog-commit: ef191c92eafbaa1706b8258d0df0bc05e513cfc1 -->
+## 05.11.26 14:27 МСК - Разрешил нпс входить в бункер, путь в бункер
+
+Commit: [ef191c9](https://github.com/jordan1227/improved_to_he/commit/ef191c92eafbaa1706b8258d0df0bc05e513cfc1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/olr_alife.ltx
+- A gamedata/scripts/olr/olr_trader_door.script
+- M gamedata/scripts/olr/olr_trader_runs.script
+- M gamedata/scripts/olr/olr_trader_visit.script
+
+<!-- nlc-changelog-commit: 350c191251611755017e487e3d1d79b65acad95d -->
+## 05.11.26 01:36 МСК - Описание опции алайфа
+
+Commit: [350c191](https://github.com/jordan1227/improved_to_he/commit/350c191251611755017e487e3d1d79b65acad95d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/rus/ui_st_mm.xml
+
+<!-- nlc-changelog-commit: 539aad2c2d5bc442a607b8b0ed5457e86caba0c6 -->
+## 05.11.26 01:33 МСК - Переключение алайфа в настройках
+
+Commit: [539aad2](https://github.com/jordan1227/improved_to_he/commit/539aad2c2d5bc442a607b8b0ed5457e86caba0c6)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/olr/olr_cfg.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+
+<!-- nlc-changelog-commit: ca55bde42601c60e7a6161b084618e254f3c40f9 -->
+## 05.11.26 01:33 МСК - Сталкеры ливают с зоны только для "расширенной" версии
+
+Commit: [ca55bde](https://github.com/jordan1227/improved_to_he/commit/ca55bde42601c60e7a6161b084618e254f3c40f9)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/olr_alife.ltx
+- M gamedata/config/text/eng/string_table_olr_alife.xml
+- M gamedata/config/text/rus/string_table_olr_alife.xml
+- M gamedata/scripts/amk/amk_offline_alife.script
+- M gamedata/scripts/olr/olr_trader_runs.script
+
+<!-- nlc-changelog-commit: 7e35328a6c9088c1e4e3b1556010f8efd57077a2 -->
+## 05.11.26 01:23 МСК - Выбор алайфа на старте
+
+Commit: [7e35328](https://github.com/jordan1227/improved_to_he/commit/7e35328a6c9088c1e4e3b1556010f8efd57077a2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/olr_alife.ltx
+- M gamedata/config/text/eng/string_table_olr_alife.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/string_table_olr_alife.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/message_box.xml
+- M gamedata/scripts/amk/amk_offline_alife.script
+- M gamedata/scripts/kotovod/game_options.script
+- M gamedata/scripts/olr/olr_alpha.script
+- M gamedata/scripts/olr/olr_amk_offline.script
+- M gamedata/scripts/olr/olr_camp_law.script
+- M gamedata/scripts/olr/olr_census.script
+- M gamedata/scripts/olr/olr_cfg.script
+- M gamedata/scripts/olr/olr_faction_policy.script
+- M gamedata/scripts/olr/olr_glut.script
+- M gamedata/scripts/olr/olr_group_walk.script
+- M gamedata/scripts/olr/olr_init.script
+- M gamedata/scripts/olr/olr_lab_giants.script
+- M gamedata/scripts/olr/olr_monster_squads.script
+- M gamedata/scripts/olr/olr_night.script
+- M gamedata/scripts/olr/olr_offline_hunts.script
+- M gamedata/scripts/olr/olr_offline_task.script
+- M gamedata/scripts/olr/olr_offline_walk.script
+- M gamedata/scripts/olr/olr_online_depart.script
+- M gamedata/scripts/olr/olr_patrols.script
+- M gamedata/scripts/olr/olr_population.script
+- M gamedata/scripts/olr/olr_post_watch.script
+- M gamedata/scripts/olr/olr_protected.script
+- M gamedata/scripts/olr/olr_raids.script
+- M gamedata/scripts/olr/olr_reactive.script
+- M gamedata/scripts/olr/olr_relations.script
+- M gamedata/scripts/olr/olr_respawn_rules.script
+- M gamedata/scripts/olr/olr_smart_index.script
+- M gamedata/scripts/olr/olr_squads.script
+- M gamedata/scripts/olr/olr_steering.script
+- M gamedata/scripts/olr/olr_trader_runs.script
+- M gamedata/scripts/olr/olr_trader_visit.script
+- M gamedata/scripts/olr/olr_underground.script
+- M gamedata/scripts/ui/ui_main_menu.script
+
+<!-- nlc-changelog-commit: 988efef30527698f1ff00e1d123f8d3655eae6cc -->
+## 05.11.26 01:08 МСК - манифест
+
+Commit: [988efef](https://github.com/jordan1227/improved_to_he/commit/988efef30527698f1ff00e1d123f8d3655eae6cc)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 6ac7e0fb84ab38dc0a05017dda3f4ef1d88fe106 -->
+## 05.11.26 01:07 МСК - Remove stray Cordon specnaz on load
+
+Commit: [6ac7e0f](https://github.com/jordan1227/improved_to_he/commit/6ac7e0fb84ab38dc0a05017dda3f4ef1d88fe106)
+
+### Description
+
+Register an addon that releases living esc_specnaz1–6 soldiers during late initialization, preserving bodies of soldiers already killed.
+
+### Game files changed
+
+- A gamedata/scripts/he_esc_specnaz.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+
+<!-- nlc-changelog-commit: be741a56117073c286c57c451209e8e590aeb4dc -->
+## 04.11.26 23:39 МСК - манифест
+
+Commit: [be741a5](https://github.com/jordan1227/improved_to_he/commit/be741a56117073c286c57c451209e8e590aeb4dc)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: c78f0b7e35310a45abe415aedc20b20d09e5cf7e -->
+## 04.11.26 23:38 МСК - Schedule OLR chapter news and north access
+
+Commit: [c78f0b7](https://github.com/jordan1227/improved_to_he/commit/c78f0b7e35310a45abe415aedc20b20d09e5cf7e)
+
+### Description
+
+Delay chapter waves until their configured news windows, open the north and send the expedition at the chapter-four milestone, and preserve Monolith access before that point. Account for the X-6 coma in chapter timing and PDA battery use.
+
+### Game files changed
+
+- M gamedata/config/misc/olr_alife.ltx
+- M gamedata/scripts/olr/olr_cfg.script
+- M gamedata/scripts/olr/olr_faction_policy.script
+- M gamedata/scripts/olr/olr_reactive.script
+- M gamedata/scripts/olr/olr_smart_index.script
+- M gamedata/scripts/olr/olr_squads.script
+- M gamedata/scripts/pda_battery.script
+
+<!-- nlc-changelog-commit: f2c5824ebfad58b4b77eb15dc56038069ac6fa27 -->
+## 04.11.26 22:52 МСК - манифест
+
+Commit: [f2c5824](https://github.com/jordan1227/improved_to_he/commit/f2c5824ebfad58b4b77eb15dc56038069ac6fa27)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 2ee4d11b80233446d7928a86a09ea1584aa60723 -->
+## 04.11.26 22:51 МСК - Refine underground oxygen protection behavior
+
+Commit: [2ee4d11](https://github.com/jordan1227/improved_to_he/commit/2ee4d11b80233446d7928a86a09ea1584aa60723)
+
+### Description
+
+Add safe-zone protection for lab poison damage, tune mask-off damage and warnings, and replace the persistent tank-removal HUD label with a one-time inventory tip. Also restore safe-zone state after loading and guard the container menu during actor death.
+
+### Game files changed
+
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/scripts/kotovod/ui_arc_container_menu.script
+- M gamedata/scripts/kotovod/undergrounds_hits.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/vergas/vergas_masks.script
+
+<!-- nlc-changelog-commit: 7bb26fe9004e5fe5b220250579cdb94324cebe67 -->
+## 04.11.26 20:05 МСК - манифест
+
+Commit: [7bb26fe](https://github.com/jordan1227/improved_to_he/commit/7bb26fe9004e5fe5b220250579cdb94324cebe67)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: e163b9488f2b939de526ad75a4350953d37deb44 -->
+## 04.11.26 20:05 МСК - Fix container item flight updates
+
+Commit: [e163b94](https://github.com/jordan1227/improved_to_he/commit/e163b9488f2b939de526ad75a4350953d37deb44)
+
+### Description
+
+Remove detached buttons from the flying list and advance animations using elapsed time since the previous update, preventing stale-window access and overly fast movement.
+
+### Game files changed
+
+- M gamedata/scripts/kotovod/ui_arc_container_menu.script
+
+<!-- nlc-changelog-commit: 73f72d277c741e2e6230bc0cd48bc560fac394b6 -->
+## 04.11.26 04:10 МСК - манифест
+
+Commit: [73f72d2](https://github.com/jordan1227/improved_to_he/commit/73f72d277c741e2e6230bc0cd48bc560fac394b6)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 8bac887114d0fb1cd2fcbe33ea03c47d542eec7f -->
+## 04.11.26 04:10 МСК - Update const.script
+
+Commit: [8bac887](https://github.com/jordan1227/improved_to_he/commit/8bac887114d0fb1cd2fcbe33ea03c47d542eec7f)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/alpet/const.script
+
+<!-- nlc-changelog-commit: f45c017b227cd38f56d8cd7799e1855746fcaf80 -->
+## 04.11.26 02:59 МСК - манифест
+
+Commit: [f45c017](https://github.com/jordan1227/improved_to_he/commit/f45c017b227cd38f56d8cd7799e1855746fcaf80)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: de1fe15fa0958c4d5b7997474a912b21afb73a54 -->
+## 04.11.26 02:52 МСК - Алайф. ИИ.
+
+Commit: [de1fe15](https://github.com/jordan1227/improved_to_he/commit/de1fe15fa0958c4d5b7997474a912b21afb73a54)
+
+### Description
+
+# A-life: живая Зона - население, офлайн-жизнь, торговые ходки, отряды, альфы (скрипты и конфиги, 31.10-03.11.26)
+
+Большая переработка «жизни Зоны» (OLR, AMK и респавнеры). Новый движок не нужен. Старые сохранения работают, но честнее всего судить по новой игре. Всё настраивается в `config/misc/olr_alife.ltx`. Пресеты там же: `quiet`, `default`, `lively`, а `legacy` возвращает поведение «как было до переработки». У каждой системы свой лог (`[olr_pop]`, `[olr_amk]`, `[olr_trader_runs]` и т. д.); логи пока включены специально, присылайте их. В логах указаны игровой день и время (`day N HH:MM`).
+
+Общее для проверки: `fl olr_census.kit()` - сводка по всем системам сразу. Ускорять время лучше `time_factor 50` или сном, а не `time_factor 1000`: часть систем работает по реальным секундам.
+
+## Население
+
+1. **Один счёт населения на всю Зону.** Раньше родные респавнеры (логова) и OLR-спавн работали независимо и вместе переполняли уровни (на 7-й день бывало под 1000 мутантов). Теперь у каждого уровня есть цель. Для мутантов это доля вместимости его логов, растущая по сюжету: 50% в начале, 80% в конце. Для людей - сколько их было в первый игровой день, плюс 25%. Логово ждёт, пока уровень полон, и пробует снова через 1-3 игровых часа, а не через неделю. Расставленные картой мутанты считаются отдельно и логовам не мешают. Зомби не считаются людьми. Проверка: `fl olr_population.report()`, `fl olr_population.lairs("l02_garbage")`, `fl olr_population.who("l02_garbage","m")`.
+2. **Мутанты остаются дома.** Движок раньше мог отправить нового мутанта из логова Кордона на любой уровень Зоны. Теперь он селится у себя; если свободного места в логове уровня нет, он живёт прямо у своего логова (как мутанты AMK), а не уходит на соседний уровень. Раньше потомство с Болот и Тёмной стороны заполняло Кордон, Агропром и Свалку, а сами Болота пустели. Родные мутанты иногда сами переходят на соседний незаполненный уровень (проверка раз в полчаса игрового времени, не на вашем уровне).
+3. **Заселение при первом визите.** Уровень без логов AMK при первом посещении получает часть своей цели стаями. Не рядом с квестовыми NPC и не в сюжетных местах (деревня кровососов, усадьба на Тёмной стороне, Бар, госпиталь). Проверка: `fl olr_population.seed_check()`.
+4. **Квестовые NPC крепче против мутантов** (урон от мутантов x0.35), чтобы случайная собака не ломала квест.
+5. **Сюжетные люди и сюжетные лагеря никуда не уходят.** Пока квест не пройден, A-life не уводит, не переназначает и не втягивает в офлайн-бои NPC с сюжетным ID, с собственным именем или своей логикой, и людей из сюжетных точек (заложник Юрик и люди Ореха на Свалке, лагеря и посты). После квеста они свободны. Проверка: `fl olr_population.quest_bound("l02_garbage")` - кто на уровне защищён и почему. Если сюжетный персонаж всё же пропал со своего места, пришлите лог и сохранение. Гарнизоны фракций стоят на месте; переходят между уровнями только одиночки и OLR-сталкеры, и только на соседний уровень своей территории.
+6. **Ранг по уровню.** OLR не создаёт мастеров на Кордоне: новые сталкеры и мигранты подходят по рангу под уровень. Проверка: `fl olr_census.report("l01_escape")` (нарушители перечислены).
+7. **Тихий Кордон в начале.** Первые 20 игровых часов на Кордон почти не приходят чужие отряды и случайная фауна. После документов с Агропрома на Кордоне появляются более сильные мутанты, как и задумано в NLC.
+8. **Никто не кружит у вас на глазах.** Сталкер, которому надо на другой уровень, уходит офлайн (не ближе 100 м от вас) вместо того, чтобы ходить кругами у перехода.
+9. **Монолит только после Выжигателя** и только на Радаре, в Припяти и Мёртвом городе.
+10. **Логова по сюжету и календарю.** Некоторые логова включаются или меняются по главам и дням. Проверка: `fl olr_respawn_rules.report()`.
+11. **Псевдогиганты в лабораториях** изредка появляются после прохождения их сюжета, не на вашем уровне. Проверка: `fl olr_lab_giants.report()`.
+
+## Офлайн-жизнь сталкеров (AMK)
+
+12. **Офлайн-жизнь снова работает.** С августа у сталкеров вдали от вас «зрение» было 0: они не видели мутантов, врагов, трупов, оружия и артефактов, а только торговали. Теперь видят (50-80 м) и выбирают одно дело по весу: охота на мутантов, бой с врагами, обыск трупов и ящиков (только если там что-то есть), подбор оружия, артефакты. Если сталкер ничего не видит, он торгует лишь иногда, а ход достаётся следующему сталкеру, так что бои и находки случаются чаще. Проверка: `fl olr_amk_offline.force(40)`, затем `fl olr_amk_offline.report()`.
+13. **Артефакты надо заработать.** Сталкер берёт свободный артефакт в 60 м, только если сначала перебил мутантов рядом с ним (40 м). Иногда об этом приходит новость в КПК. Сюжетные артефакты не трогаются. Проверка: `fl olr_amk_offline.arts("l02_garbage")`.
+14. **Враги встречаются в дороге.** Раз в 30 игровых минут сталкеры в пути (не в своём лагере) могут наткнуться на врагов: Долг и Свобода, военные и одиночки, бандиты и Долг (только те, кто стреляет друг в друга и онлайн). Не больше двух стычек за раз и никогда на вашем уровне. Охрана лагеря целью не становится, так что лагеря не вырезают друг друга. Проверка: `fl olr_amk_offline.roads()`, `fl olr_amk_offline.enemies("l05_bar")`.
+15. **Увидеть дорожный бой своими глазами:** `fl olr_amk_offline.watch_next()`, дождаться в логе `road meeting held for you`, затем `fl olr_amk_offline.go()` - вас перенесёт к месту встречи. Телепорт к любому NPC: `fl olr_amk_offline.go_to("имя_или_id")`.
+16. **Офлайн-охоты.** Несколько раз в игровые сутки сталкеры вдали от вас охотятся на мутантов поблизости; добыча (части) может достаться товарищу. Проверка: `fl olr_offline_hunts.force()`.
+17. **Раненые выздоравливают, ранг не растёт бесконечно.** После офлайн-боя раненые понемногу лечатся. Ранг победителя не поднимается выше потолка для его фракции на этом уровне.
+18. **Сюжетные NPC вступают в офлайн-бой только союзниками** (например, Чучело может помочь соседям). Их ранят, но не убивают и не обирают.
+19. **Ничего не происходит у вас на глазах.** На вашем уровне офлайн-жизнь не трогает ничего ближе 230 м от вас и ни одного существа, которое уже онлайн.
+
+## Ходки к торговцам и уход из Зоны
+
+20. **Сталкеры сами носят хабар торговцам.** Дорогой артефакт или набор частей мутантов сталкер не продаёт «на месте», а идёт к подходящему торговцу в пределах двух уровней (Бармен, Сидорович, Сахаров, Сильвестр на Болоте берёт оружие, Проша и Дэн берут части). Выбор зависит от дороги, цены и того, чего ему самому не хватает (у Дэна патроны к дробовику, у Пахома аптечки). Ночью не выходит. Онлайн он подходит к торговцу и стоит у прилавка. Проверка: `fl olr_trader_runs.report()`, `fl olr_trader_runs.force_run()`, `fl olr_trader_runs.force_run(nil,"part")`.
+21. **Проданное появляется на полке.** Иногда проданный сталкером артефакт или часть мутанта на 1-3 дня появляется в продаже у этого торговца (дороже). Иногда об этом намекает новость в КПК. Проверка: `fl olr_trader_runs.force_shelf("sidor","af_medusa_dyn2d")`.
+22. **Проша.** В свои «выходные» он не торгует; пришедший сталкер садится к костру и ждёт до утра. Проверка: `fl olr_trader_runs.test_prosha_out(true)`.
+23. **Уход из Зоны.** Не чаще раза в 3 игровых дня одиночка, хорошо заработавший на ходках, идёт на Кордон и уходит из Зоны (может погибнуть по дороге). Потом на Кордон приходит новичок. Сталкер прощается в КПК, иногда с разговором. Проверка: `fl olr_trader_runs.force_leave()`, `fl olr_trader_runs.say_leave("talk")`.
+24. **Цены от спроса.** Если торговцу много продают одного и того же, он платит меньше (до -25%), если у него много покупают - дороже (до +15%); со временем цены возвращаются. Проверка: `fl olr_glut.report()`.
+
+## Поручения и реакция Зоны
+
+25. **Бензин для генератора возят живые сталкеры.** Когда у генератора кончается топливо и вы не привезли его за 6-12 часов, двое одиночек бегут на заправку у Кишки за канистрой и несут её к генератору; кто первый, тот и получает. Проверка: `fl olr_trader_runs.force_fuel("fuel_bar")`, `fl olr_trader_runs.fuel_state()`.
+26. **Награду за наводку забирает убийца.** Если цель заказа убил сталкер, он сам идёт к заказчику за деньгами. Проверка: `fl olr_trader_runs.force_claim("bar_barman")`.
+27. **Расследование.** Если в одном месте за сутки погибли двое из одной группировки, туда идут разобраться до трёх их товарищей.
+28. **Падальщики.** Ночью к телам вдали от вас стягиваются плоти, тушканы и крысы.
+29. **Слухи.** Иногда в КПК сообщают, кто пришёл на ваш уровень.
+30. **События глав.** При продвижении по сюжету приходят новости; после Выжигателя группа одиночек идёт на Радар. До Выжигателя одиночки с Армейских складов иногда уходят к нему и пропадают, а на Радаре появляется зомби. Проверка: `fl olr_reactive.report()`.
+31. **Засады и заражения** (встречи по дороге) включены в `default` и `lively`.
+32. **Закон лагеря.** Первое попадание по мирному NPC в чужом лагере даёт предупреждение и минус к отношению хозяев; убийство - большой минус. На Баре не действует: там свои правила. Проверка: `fl olr_camp_law.report()`.
+
+## Мутанты
+
+33. **Альфа-мутанты.** Мутант, убивший троих, или «меченый» вожак стаи становится альфой: крепче, сильнее бьёт, не паникует, даёт больше частей; о нём и о его смерти ходят слухи. Если долго никто не заслужил, альфа появляется сама не реже раза в 5-8 игровых дней (химеры, кровососы, псевдособаки, теперь и псевдогиганты; коты - нет). Не у вас на глазах и не в сюжетной точке. Проверка: `fl olr_alpha.report()`, `fl olr_alpha.force()`.
+34. **Ночные инстинкты.** В сумерках кровососы, снорки, псевдособаки, химеры и бюреры выходят на охоту подальше от логова и от лагерей, на рассвете возвращаются. Проверка: `fl olr_night.report()`, `fl olr_night.force_dusk()`.
+35. **Подземелья.** Бюреры (иногда кровосос) днём уходят под землю и выходят в сумерках. Проверка: `fl olr_underground.report()`.
+
+## Отряды
+
+36. **Охотничьи отряды.** Раз в 3-5 игровых дней Долг и охотники собирают отряд на альфу или большое логово: сбор в одном месте, марш строем, бой, возвращение и продажа частей. Проверка: `fl olr_patrols.report()`, `fl olr_patrols.force("alpha")`, `fl olr_patrols.go()`, отряд рядом с вами: `fl olr_patrols.test_here()`.
+37. **Зона живёт и пока вы спите.**
+
+## Известные особенности
+
+- Сталкеры всё ещё часто торгуют (так устроен AMK), это будет пересмотрено.
+- Сталкеры могут подобрать вещь, которую вы бросили далеко от себя: так задумано.
+- Офлайн-смерти не оставляют трупа (так было и раньше).
+- Пока уровень заполнен меньше чем наполовину, сталкеры там не охотятся на мутантов (первые дни новой игры почти везде так).
+- Уровни заполняются постепенно, за несколько игровых дней: логова спавнят по своему расписанию.
+- В начале игры мутантов на уровнях заметно меньше, чем раньше (цель 50% вместимости в первой главе): напишите, если кажется пусто.
+- Ещё не сделано: обмен снаряжением между сталкерами, ремонт у техников, отдых у костра.
+
+## Как сообщать
+
+Пришлите лог целиком (или строки `[olr_...]` рядом с моментом) и сохранение, если уровень явно пустой или переполненный, или если пропал кто-то из сюжетных персонажей. Укажите день и время из строки лога.
+
+# PDA-новости: характер сталкеров, тон по ситуации, реакции на ваши убийства (скрипты и конфиги, 03.11.26)
+
+Переписана система новостей в КПК. Раньше любой убитый мутант (хоть тушкан) подавался как «еле-еле отбился»; погода почти не работала; болтали случайные имена. Теперь строка зависит от того, что на самом деле произошло, и от того, кто говорит: у каждой фракции и ранга свой язык. Новый движок не нужен, достаточно перезапустить игру (новая игра не нужна). Новый конфиг: `config/misc/he_news.ltx`, весь текст в `string_table_he_news.xml` (русский и английский).
+
+1. **Сложность боя считается, а не выдумывается.** Учитываются сила мутанта (тушкан - собака - псевдособака, кровосос, снорк - бюрер, контролёр, химера, псевдогигант), слабая/сильная разновидность (`_weak`, `_strong`), размер стаи, ранг и здоровье убийцы. Тушкан никогда не «тяжёлый бой»; контролёр, бюрер, химера и псевдогигант всегда тяжёлые. Убийства рядом (100 м, 6 игровых минут) склеиваются в одну новость: «пару тушканов», «с десяток собак».
+2. **Голоса фракций.** Одиночки, бандиты (лексика с «фени», только 55% рассказывают), Долг, Свобода, военные (5%, почти не пользуются сетью), учёные. Наёмники в общую сеть не пишут. Свои обороты и у новичков, и у ветеранов. Пишут реальные сталкеры рядом с вами (если есть), иначе сгенерированное имя с голосом, подходящим уровню. Говорящий - случайный реальный сталкер: про погоду своего уровня - с вашего уровня; про время суток, ответы и комментарии к патрулям и рейдам - в 75% случаев с другого уровня (КПК-сеть общая); местные реплики про место - только от жителя этого места.
+3. **Время реакции.** Чем страшнее была схватка, тем позже сталкер напишет об этом: лёгкая - через пару минут, тяжёлая - через 7-25 игровых минут. Один и тот же сталкер не говорит чаще раза в 60 игровых минут.
+4. **Погода и время суток.** Раньше погодные новости не срабатывали вообще (движок называет погоду `default_np_clear...`, а таблицы ждали `clear`). Теперь: ясно, пасмурно (и туман), дождь, гроза; день, ночь, рассвет и закат отдельно; после Выброса - свои реплики, и в первое утро после него тоже. Раз в 2.5 игровых часа не чаще, одна и та же погода не чаще раза в 6 часов. Утро, вечер и ночь: раз в окно, а не раз в 4 часа «наугад» (раньше окна часто пропускались). Местные реплики про Кордон, Свалку, Агропром, Тёмную долину, Бар, Росток, Армейские склады, Янтарь, Болото.
+5. **Раненые зовут на помощь голосом фракции.** Имя называет только Долг (по уставу), остальным и так видно, кто писал.
+6. **Ответы и комментарии.** Иногда другой сталкер отвечает на новость через 14 реальных секунд. Когда A-life-патруль или рейд выходит, с шансом 40% кто-то один (не бандит) пожелает удачи или усомнится; когда заканчивается, 1-2 сталкера прокомментируют исход (победили без потерь / с потерями / разгромлены / ничего не вышло); у каждой фракции свои слова.
+7. **Сталкеры замечают ваши убийства.** Если вы убили заметного мутанта, а рядом были сталкеры:
+   - **видели** (линия видимости): сообщают с описанием. Новичка называют «какой-то одиночка» или грубее («косорылый» у бандитов); дальше узнают по одежде («парень в экзоскелете», «в научнике», «в вольной куртке»), по делам, а ветеран изредка и мастер чаще называют вас по имени, **Меченый**;
+   - **слышали** (до 70 м, но не видели): «стрельба, потом тихо»;
+   - **никто не видел**: через 1-4 игровых часа какой-то сталкер находит тела и пишет о них без имён;
+   - **вы в маске или респираторе**: личность скрыта;
+   - **вы убили сталкера бандитов/Долга/Свободы/армии/учёных**: сообщает только его фракция, с тревогой.
+8. **Известность.** Растёт с каждым замеченным убийством (отдельно для каждой фракции), убывает с половинным периодом 3 игровых дня. Узнаваемость = ранг (50%) + репутация (20%) + известность (30%). Лёгкий мутант (тушкан) сам по себе не считается заметным.
+9. **Лимиты.** Отчёты об убийствах - 3 в игровой час, погода и время - 2, ответы и комментарии - 4. Первые 120 реальных секунд после загрузки погодные новости игнорируются (игра сообщает текущую погоду при загрузке).
+
+## Что проверять (консоль)
+
+- `fl news_voice.check()` - все тексты на месте (в логе `235 pools, 0 missing`).
+- `fl news_voice.kill("tushkano",1,"loner",0,1.0)`, `("dog",1,"loner",0,0.9)`, `("pseudodog",1,"loner",0,0.7)`, `("chimera",2,"duty",1,0.5)`, `("tushkano",8,"bandit",0,1.0)` - тон по зверю, никаких «еле-еле» про тушканов.
+- `fl news_voice.weather_test("rain","night","bandit")`, `fl news_voice.time_test("night","bandit")` - несколько раз подряд: строки не должны повторяться.
+- `fl news_voice.wound_test("duty")`, `"bandit"`, `"freedom"`.
+- `fl news_voice.event_test("party_end",{result="won",deaths=0})`, `{result="won",deaths=2}`, `{result="lost",deaths=4}`, `{result="trail",deaths=0}` - один-два комментария от разных сталкеров, исход понятен.
+- `fl news_voice.plr_test("bloodsucker",1,"bandit",0)` до `3`; последним аргументом можно `"named"`, `"heard"`, `"found"`, `"own"`.
+- `fl news_voice.standing()` - как вас сейчас воспринимают фракции; `fl news_voice.status()` - лимиты, кулдауны, известность.
+- В игре: убейте нескольких кровососов или котов при сталкерах, затем `fl news_voice.flush_now()` и `fl news_voice.status()`. В логе будет `player kill ... -> seen/heard/found` либо `drop ...: причина`, известность должна вырасти.
+
+## Известные особенности
+
+- Текст размещения (достопримечательности) написан по памяти оригинальной игры, часть деталей могла не совпасть с вашей картой: если реплика не про то место, пришлите её.
+- Реплики для военных и учёных короткие и сухие намеренно.
+- Мутант-«слабый/сильный» определяется по названию секции спавна.
+- Перед отчётом в КПК проходит случайная пауза, так что результат `fl`-команд без `_test` появится не сразу.
+
+## Как сообщать
+
+Скопируйте строку из КПК и строку `[news_voice] ...` из лога рядом. Нужны любые странные склонения («с пару...»), двусмысленные фразы, повторы и реплики, которые не подходят ситуации.
+
+# Бой NPC: мораль и бегство, ближний бой, удар в спину, запасной пистолет, хромота и лечение (движок nlc-3.589.169-3.589.173, скрипты и конфиги, 01-02.11.26)
+
+Большая переработка поведения сталкеров в бою. У фракций появился характер, раненые и напуганные NPC отступают, в ближнем бою бьют прикладом и ножом, после боя не расслабляются сразу, а раненые хромают и лечатся. Нужен **новый xrEngine.exe (nlc-3.589.172)** и перезапуск игры; новая игра не нужна, формат сохранений не менялся. Почти всё настраивается в конфигах и из консоли без пересборки движка.
+
+1. **Свой ранг вместо вашего.** Раньше, если вы выше рангом, NPC-цель подтягивалась до вашего ранга: меткость и реакция росли вместе с вами. Теперь NPC стреляет по своему рангу. Первый выстрел по новой цели-человеку (вы или другой сталкер) не мгновенный: новичок целится 0.5 с, опытный 0.35, ветеран 0.22, мастер 0.12.
+2. **Характер фракций** (`config/misc/he_faction_character.ltx`, одна строка на фракцию). Для каждой задано: как охотно лезет вперёд под огнём, как долго ждёт перед поиском потерянного врага, как долго держит укрытие, как быстро ломается, добивает ли раненых.
+   - Монолит прёт вперёд, ждать не любит и с поля боя не бежит.
+   - Военные и Долг дольше держат укрытие и стойкие; Долг ещё и терпеливее всех.
+   - Бандиты ломаются раньше всех, зато чаще лезут в рукопашную.
+   - Учёные прячутся, раненых не добивают и единственные убегают от мутантов.
+   - Если враг перезаряжается, сталкер может рвануть на него (ветераны и мастера - охотнее).
+   - Зомбированные, торговцы и арена не затронуты.
+3. **Выбор цели.** Пока рядом есть другие враги, игрок притягивает меньше внимания. Тот, кто только что попал в NPC, получает приоритет на 4 с. NPC реже перескакивает с цели на цель.
+4. **Мораль и бегство.** Ранение, потери среди друзей за последние полминуты, перевес врагов, пустые патроны и убегающий рядом друг копят страх; фракция и ранг меняют порог (новичков ломает раньше, мастеров позже).
+   - Сломавшийся NPC сначала уходит в укрытие, скрытое от врага, потом в панике бежит (быстрый панический бег) к ближайшей базе своих или к своей и остаётся там. Друзья рядом об этом узнают.
+   - Бег кончается, когда враг потерян, NPC добежал, его загнали в угол, он ранен или вышло время; после этого он 3-6 с стоит настороже.
+   - Не бегут: сюжетные и квестовые NPC, спутники, караваны. Пока NPC бежит, он не бросает гранаты и не стреляет из подствольника.
+   - Выключается пресетом `legacy` в `olr_alife.ltx` (ключ `tactics_rout`).
+5. **Настороженность после боя.** Бой длился дольше 4 с и врагов не осталось: NPC не расслабляется. Он идёт к месту, где был враг (до 12 м, первые 6 с), и стоит в стойке 6-10 / 10-16 / 14-22 / 18-28 с (новичок / опытный / ветеран / мастер). Прерывается, если в него попали, рядом стреляют или слышен мутант, или виден враг (до 60 м). Заодно исправлено: стоящий NPC раньше не реагировал на шаги мутанта за спиной.
+6. **Подавление огнём.** Рикошет или выстрел от стрелка, которого NPC не видит: он прячется в укрытие на 3.5 / 2.5 / 1.5 / 0.9 с по рангу. Монолит не прячется.
+7. **Ближний бой.**
+   - **Приклад.** Вплотную (до 1.8 м) NPC может ударить прикладом: шанс зависит от ранга и фракции, во время перезарядки выше. По вам - лёгкий толчок камеры.
+   - **Удар ножом в спину.** Если вы (или другой сталкер) его не заметили и до вас 4-22 м, он подкрадывается: издалека идёт, ближе - бегом пригнувшись, у самой цели - крадётся, шаги тише. Нож появляется на время удара и пропадает, в вещах его нет.
+     - Сталкера бьёт сильно, а потом может добить: шанс 60 / 75 / 90 / 100 % по рангу; не вышло - второй удар.
+     - Вас ранит, но не добивает: урон 1.6, нападает примерно вдвое реже, чем на сталкеров; если успели обернуться, урон в 2.5 раза меньше.
+   - **Зомби.** Лежащего зомби и зомби, занятого другим, NPC обходит и режет ножом.
+   - **Отход.** От зомби, плоти, кабана, собаки и псевдособаки, бегущих на него, NPC отходит назад, не переставая стрелять.
+8. **Запасной пистолет.** Раньше ни у одного набора NPC не было сразу винтовки и пистолета. Теперь при первом бое (в том числе у уже живущих в старом сохранении) NPC с винтовкой получает изношенный пистолет (состояние 0.6-0.7) и 16 патронов: новичок - ПМ, остальные - Форт-12; Монолит не получает. Если магазин винтовки пуст, а враг ближе 12 м, достаёт пистолет. Пистолет остаётся у NPC и может попасть в лут.
+9. **Раненые хромают.** Ниже 40% здоровья сталкер ходит и бегает на анимациях раненого (ноги и верх тела), а скорость падает: бег до 0.7, шаг до 0.85 от обычной. Хромота кончается при здоровье 55% и выше. При прицеливании, стрельбе и перезарядке корпус прежний; при паническом беге - особая раненая анимация.
+10. **Лечение и восстановление.** Раньше бинт у NPC только останавливал кровь, а здоровье не возвращалось вовсе: аптечка есть примерно у каждого пятого. Теперь:
+    - Бинт у NPC возвращает 20% здоровья, но не выше 80%. Бинт игрока по-прежнему здоровье не лечит.
+    - Бинт из набора NPC использует ниже 60% здоровья. Если бинта нет, он получает бесплатный: первый примерно через 30 / 25 / 20 / 15 с после того, как бинт ему нужен (новичок / опытный / ветеран / мастер), следующие через 120 / 105 / 90 / 75 с. Бесплатный бинт используется ниже 75% здоровья, так что все раненые со временем доходят до 80%.
+    - Лечатся только вне боя и после настороженности. Аптечка по-прежнему лечит полностью.
+    - Вне боя здоровье выше порога лечения медленно растёт само: 4% в минуту, до 100%.
+11. **Исправлено по ходу.** Микрофриз на каждом выстреле NPC с пистолетом (звук гильзы грузился заново). NPC, которого бил зомби, стоял на месте в укрытии - теперь отходит.
+
+## Что проверять
+
+- Бой двух групп: `fl sivol_tactics.fight("olr_bandit_master", 2, "olr_stalker_general", 2, 25)`. Кто и когда ломается и бежит, не бросают ли сломавшиеся гранаты, держат ли укрытие Долг и военные дольше бандитов.
+- После боя: подходят ли к месту, стоят ли в стойке, прерывает ли стойку выстрел рядом.
+- Приклад: `fl sivol_tactics.fight("olr_bandit_master", 2, nil, 0, 25)` и подойти вплотную.
+- Удар в спину: `fl sivol_tactics.sneak_duel(35)` несколько раз (см. консоль ниже) и по себе: встать спиной к бандиту-одиночке. Сколько ударов убивает, виден ли нож, слышны ли шаги.
+- Пистолет: `fl sivol_tactics.empty(ID)` у NPC, когда враг ближе 12 м. В логе `is given a wpn_fort` и `draws the pistol (rifle empty)`.
+- Хромота: `fl sivol_tactics.hurt(ID, 0.7)`. Как выглядят ноги и верх тела, скорость, скольжение ног при беге, паническом беге и в стойке настороженности.
+- Лечение: `fl sivol_tactics.hurt(ID, 0.7)` и ждать. Строки `[rx_bandage] ... dressed: hp 0.30 -> 0.50`, потом ещё два бинта примерно через две минуты, на втором хромота кончается; потом `regenerated to full health`.
+- Старое сохранение: NPC, уже живые, получают пистолет при первом бое.
+
+Узнать ID NPC рядом: `fl olr_census.near(20)`. Список бойцов рядом с их целями и страхом: `fl sivol_tactics.who(60)`. Принудительно сломать NPC: `fl sivol_tactics.break_npc(ID)`. Бинт в вещи: `fl sivol_tactics.give_bandage(ID)`, аптечка и бинт: `fl sivol_tactics.heal_kit(ID)`.
+
+После `sneak_duel`: `fl sivol_tactics.clear()`, `fl sivol_tactics.invisible(false)`, `g_loadstring sivol_melee.test_instant = false`, `g_loadstring sivol_stealth_test.release()`.
+
+Настройка: `fl sivol_tactics.set_limp(3)` - убрать хромой верх тела в бою (3 = ноги и верх тела в покое, 15 = всё); `fl sivol_tactics.set_limp_speed(0.7, 0.85)`; `fl sivol_tactics.set_limp_health(0.4, 0.55)`. Выключатели: `g_loadstring sivol_tactics.enabled = false` (таблица фракций), `g_loadstring sivol_rout.vigil_enabled = false` (настороженность), `g_loadstring sivol_melee.enabled = false` (ближний бой), `g_loadstring xrs_battle_ai.nlc_rank_follows_actor = true` (старый ранг). Бинты, их время по рангам и восстановление: `config/misc/rx_bandage.ltx` (`regen_rate = 0` отключает восстановление).
+
+Если что-то странное, пришлите лог: нужны строки `[sivol_tactics]`, `[sivol_rout]`, `[sivol_melee]`, `[rx_bandage]`, `[xrs_tgt]`. Если в логе есть `this exe has no nlc_limp_mode` - запущен старый движок.
+
+## Части мутантов: кто убил, тот и режет (02.11.26, движок nlc-3.589.173)
+
+Сталкеры больше не уничтожают части убитых ими мутантов. Часть теперь принадлежит тому, кто убил, и забрать её просто так - значит поссориться на словах. Репутацию и отношения это не трогает. Сохранение можно старое. Настройки: `config/misc/he_part_claim.ltx`.
+
+1. **Одинаковый дроп.** С мутанта падает то же, кто бы его ни убил. Лут NPC - 100%, но части в рюкзаке NPC гниют и при 15% выбрасываются.
+2. **Чья добыча.** Ваша, если вы сняли 20% полоски здоровья мутанта, даже если добил другой. Иначе - убившего NPC. Пока добыча свежая, сталкеры ждут хозяина, а вашу не трогают тем дольше, чем выше ваш ранг относительно них (10 / 25 / 60 с; новичка не уважают).
+3. **Реакция зависит** от ранга NPC, цены части, разницы рангов, фракции и характера: махнёт рукой, попросит, потребует, а если вы сильно выше - будет упрашивать. Бандиты на ранг не смотрят. За редким и дорогим сталкер может бежать, а иногда и нестись к туше.
+4. **Предупреждение.** Навели на тушу нож на секунду или нажали "использовать" - NPC подаст голос. Повторное нажатие (не раньше чем через секунду) режет уже без спроса.
+5. **Разговор.** С хозяином можно поговорить до и после разделки: поделиться, договориться резать за плату, отдать, уступить, сторговаться. Кто рядом и требует, сам подойдёт и остановит вас; с оружием в руках сначала попросит его убрать. Фракции различаются: бандит не делится, наёмник не берёт часть из рук, учёный покупает образцы, Свобода берёт за бутылку.
+6. **Цены на ваших репликах.** В скобках: `[2000 руб., 64%]` - платите, `[+2000 руб.]` - получаете, `~` - примерно (до разделки состояние неизвестно), `[64%]` - состояние при передаче. Открытый разговор числа не обновляет, это нормально. Для скобок нужен новый exe.
+7. **NPC забрал вашу часть.** Можно попросить вернуть, выкупить или отпустить за долю; NPC, забравший добычу другого, продаст её. Слухи идут в КПК через 90-180 с настоящего времени, не больше 3 в день, с вашим именем тем чаще, чем выше ранг.
+8. **Память о сделке.** NPC 3 игровых дня помнит последнюю сделку с вами и начинает разговор с неё. Помнит отказ - платите на 25% больше, получаете на 25% меньше. Новая сделка заменяет память.
+9. **Экзоскелет** считается за +1 к вашему рангу в этих спорах: любой, включая бандитский.
+10. **Нападение (выключено).** `attack_enabled = false`. Если включить: после отказа на требование NPC, рядом с которым на 40 м никого нет, может редко открыть огонь: фраза и через 3 с стрельба. Убийство такого NPC ничего не стоит по репутации.
+11. **Трупы и NPC.** `corpses_collision_actor_only = true` в `external.ltx`: игрок толкает трупы, живые NPC и мутанты проходят сквозь них и не застревают.
+
+### Что проверять
+
+- Сцена: `fl sivol_part_claim.scene('gigant_normal')` рядом со сталкером (ваша добыча: `scene('dog_weak', 'actor')`). Все команды: `fl sivol_part_claim.help()`.
+- Реплика "махнул рукой" (часть слабая, NPC спокоен) - только текст сверху, без анимации и голоса. У Пети Медведя (`dsc_green_dom1`) с памятью о сделке она в логе отправлена, а на экране не появилась: причина не найдена. Пришлите, если повторится; проверка: `fl sivol_part_claim.set_memory(nil)` и та же сцена.
+- Оплатили или получили "режь" - NPC не должен забрать часть, пока вы не срежете (исправлено после ревью).
+- Память через загрузку: сделка, сохранение, загрузка, новая туша рядом с тем же NPC. `fl sivol_part_claim.set_memory('refused')` задаёт память вручную. Сравните цены в скобках с `'paid'`.
+- Нападение: `fl sivol_part_claim.set_attack(100)`, требование от одиночки, срезать, отказать. Убить его: репутация и отношения не меняются. То же с загрузкой до убийства: он остаётся врагом. То же со вторым сталкером в 40 м: нападения нет. Потом `set_attack(nil)`.
+- Экзоскелет: `set_player_rank(2)`, в логе `gap` на 1 больше в экзоскелете.
+- **Важно:** NPC из спавнера после загрузки уходит в оффлайн и пропадает (`fl sivol_part_claim.where(ID)` покажет `can_online=false`). Это особенность тестового спавна. Тесты с загрузкой делайте на обычных NPC.
+
+Если что-то странное, пришлите лог: строки `[part_claim]`.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/external.ltx
+- M gamedata/config/gameplay/dialogs_all_npces.xml
+- A gamedata/config/gameplay/dialogs_part_claim.xml
+- A gamedata/config/misc/he_faction_character.ltx
+- A gamedata/config/misc/he_news.ltx
+- M gamedata/config/misc/he_npc_wardrobe.ltx
+- A gamedata/config/misc/he_part_claim.ltx
+- M gamedata/config/misc/he_random_fauna.ltx
+- A gamedata/config/misc/he_rumours.ltx
+- A gamedata/config/misc/he_zone_encounters.ltx
+- A gamedata/config/misc/olr_alife.ltx
+- M gamedata/config/misc/rx_bandage.ltx
+- M gamedata/config/misc/shop_barman/barman_trade.ltx
+- A gamedata/config/misc/shop_barman/olr_echo.ltx
+- M gamedata/config/misc/shop_barman/trade_barman.ltx
+- A gamedata/config/misc/shop_pahom/olr_echo.ltx
+- M gamedata/config/misc/shop_pahom/pahom_trade.ltx
+- M gamedata/config/misc/shop_pahom/trade_pahom.ltx
+- A gamedata/config/misc/shop_sakharov/olr_echo.ltx
+- M gamedata/config/misc/shop_sakharov/trade_sakharov.ltx
+- A gamedata/config/misc/shop_sidor/olr_echo.ltx
+- M gamedata/config/misc/shop_sidor/trade_sidor.ltx
+- M gamedata/config/misc/smart_terrain_presets.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_exp.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_mas.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_nov.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_vet.ltx
+- M gamedata/config/system.ltx
+- A gamedata/config/text/eng/string_table_he_news.xml
+- A gamedata/config/text/eng/string_table_he_part_claim.xml
+- A gamedata/config/text/eng/string_table_olr_alife.xml
+- A gamedata/config/text/rus/string_table_he_news.xml
+- A gamedata/config/text/rus/string_table_he_part_claim.xml
+- A gamedata/config/text/rus/string_table_olr_alife.xml
+- M gamedata/scripts/ai_additions/rx_ai.script
+- M gamedata/scripts/ai_additions/rx_bandage.script
+- M gamedata/scripts/ai_additions/rx_ff.script
+- M gamedata/scripts/ai_additions/rx_gl.script
+- M gamedata/scripts/alpet/const.script
+- M gamedata/scripts/amk/amk_offline_alife.script
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/engine_callbacks.script
+- M gamedata/scripts/he_guest_kill.script
+- M gamedata/scripts/he_npc_wardrobe.script
+- M gamedata/scripts/he_random_fauna.script
+- M gamedata/scripts/kotovod.script
+- A gamedata/scripts/kotovod/monster_news.script
+- M gamedata/scripts/kotovod/monster_parts.script
+- M gamedata/scripts/kotovod/parts_decay.script
+- M gamedata/scripts/kotovod/spawner.script
+- M gamedata/scripts/kotovod/trade_arts_news.script
+- M gamedata/scripts/logic/smart_terrain.script
+- M gamedata/scripts/modules.script
+- M gamedata/scripts/news/news_data.script
+- A gamedata/scripts/news/news_encounters.script
+- M gamedata/scripts/news/news_main.script
+- A gamedata/scripts/news/news_rumours.script
+- A gamedata/scripts/news/news_voice.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/ogse_critical_hit.script
+- D gamedata/scripts/olr/olr_ai_tasks.script
+- A gamedata/scripts/olr/olr_alpha.script
+- A gamedata/scripts/olr/olr_amk_offline.script
+- A gamedata/scripts/olr/olr_camp_law.script
+- A gamedata/scripts/olr/olr_census.script
+- A gamedata/scripts/olr/olr_cfg.script
+- M gamedata/scripts/olr/olr_faction_policy.script
+- A gamedata/scripts/olr/olr_glut.script
+- A gamedata/scripts/olr/olr_group_walk.script
+- M gamedata/scripts/olr/olr_init.script
+- A gamedata/scripts/olr/olr_lab_giants.script
+- M gamedata/scripts/olr/olr_monster_squads.script
+- A gamedata/scripts/olr/olr_night.script
+- A gamedata/scripts/olr/olr_offline_hunts.script
+- M gamedata/scripts/olr/olr_offline_task.script
+- M gamedata/scripts/olr/olr_offline_walk.script
+- M gamedata/scripts/olr/olr_online_depart.script
+- A gamedata/scripts/olr/olr_patrols.script
+- A gamedata/scripts/olr/olr_population.script
+- M gamedata/scripts/olr/olr_post_watch.script
+- M gamedata/scripts/olr/olr_protected.script
+- M gamedata/scripts/olr/olr_raids.script
+- A gamedata/scripts/olr/olr_reactive.script
+- M gamedata/scripts/olr/olr_relations.script
+- A gamedata/scripts/olr/olr_respawn_rules.script
+- M gamedata/scripts/olr/olr_smart_index.script
+- M gamedata/scripts/olr/olr_squads.script
+- A gamedata/scripts/olr/olr_steering.script
+- A gamedata/scripts/olr/olr_trader_runs.script
+- A gamedata/scripts/olr/olr_trader_visit.script
+- A gamedata/scripts/olr/olr_underground.script
+- M gamedata/scripts/sak/sak_off_corpses.script
+- M gamedata/scripts/se/se_respawn.script
+- M gamedata/scripts/se/se_stalker.script
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+- A gamedata/scripts/sivol/sivol_melee.script
+- A gamedata/scripts/sivol/sivol_part_claim.script
+- A gamedata/scripts/sivol/sivol_rout.script
+- M gamedata/scripts/sivol/sivol_shell_sounds.script
+- M gamedata/scripts/sivol/sivol_stealth_suspicion.script
+- A gamedata/scripts/sivol/sivol_tactics.script
+- M gamedata/scripts/thirst.script
+- M gamedata/scripts/treasure_manager.script
+- M gamedata/scripts/watcher_act.script
+- M gamedata/scripts/xr/xr_companion.script
+- M gamedata/scripts/xr/xr_logic.script
+- M gamedata/scripts/xr/xr_motivator.script
+- M gamedata/scripts/xrs/xrs_battle_ai.script
+- M gamedata/scripts/xrs/xrs_grenade.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrCore/xrCore.h
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/CharacterPhysicsSupport.cpp
+- M engine/ogsr_engine/xrGame/Entity.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/bloodsucker/bloodsucker.h
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/burer/burer.h
+- M engine/ogsr_engine/xrGame/ai/monsters/controller/controller.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/controller/controller.h
+- M engine/ogsr_engine/xrGame/ai/monsters/poltergeist/poltergeist.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/poltergeist/poltergeist.h
+- M engine/ogsr_engine/xrGame/ai/stalker/ai_stalker.h
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/script_game_object.h
+- M engine/ogsr_engine/xrGame/script_game_object4.cpp
+- M engine/ogsr_engine/xrGame/script_game_object_script2.cpp
+- M engine/ogsr_engine/xrGame/script_game_object_script4.cpp
+- M engine/ogsr_engine/xrGame/script_game_object_use2.cpp
+- M engine/ogsr_engine/xrGame/space_restriction_holder.cpp
+- M engine/ogsr_engine/xrGame/space_restriction_shape.cpp
+- M engine/ogsr_engine/xrGame/space_restriction_shape.h
+- M engine/ogsr_engine/xrGame/stalker_animation_legs.cpp
+- M engine/ogsr_engine/xrGame/stalker_animation_manager.h
+- M engine/ogsr_engine/xrGame/stalker_animation_manager_update.cpp
+- M engine/ogsr_engine/xrGame/stalker_animation_torso.cpp
+- M engine/ogsr_engine/xrGame/ui/UITalkWnd.cpp
+- M engine/ogsr_engine/xr_3da/x_ray.cpp
+
+<!-- nlc-changelog-commit: 7164483ab432ac94ea419881d3bac08f3bac282d -->
+## 04.11.26 02:51 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [7164483](https://github.com/jordan1227/improved_to_he/commit/7164483ab432ac94ea419881d3bac08f3bac282d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/mike_dialogs_new_story.xml
+- M gamedata/config/misc/gulag_escape.ltx
+- M gamedata/config/misc/gulag_military.ltx
+- M gamedata/config/scripts/labx10/labx10_rubilnik_rychag.ltx
+- M gamedata/config/scripts/labx10/labx10_rubilnik_x12.ltx
+- M gamedata/config/text/eng/stable_game_credits.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/eng/ui_st_pda.xml
+- M gamedata/config/text/rus/stable_game_credits.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_pda.xml
+- M gamedata/scripts/gulag/gulag_military.script
+- M gamedata/scripts/gulag/gulag_radar.script
+- M gamedata/scripts/level_weathers.script
+- M gamedata/scripts/mike.script
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/ogse/ogse_campfire.script
+- M gamedata/scripts/olr/olr_protected.script
+- M gamedata/scripts/olr/olr_smart_index.script
+- M gamedata/scripts/ph/ph_button.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sivol/sivol_belt.script
+- M gamedata/scripts/vergas/vergas_masks.script
+- M bin_x64/xrEngine.exe
+- M gamedata/config/external.ltx
+- A gamedata/config/misc/inventory_layout.ltx
+- M gamedata/config/system.ltx
+- M gamedata/config/text/eng/ui_st_inventory.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_inventory.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/carbody_new.xml
+- M gamedata/config/ui/carbody_new_16.xml
+- M gamedata/config/ui/inventory_new.xml
+- M gamedata/config/ui/inventory_new_16.xml
+- M gamedata/config/ui/trade.xml
+- M gamedata/config/ui/trade_16.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/alpet/nlc_container.script
+- M gamedata/scripts/engine_callbacks.script
+- M gamedata/scripts/he_pda_3d.script
+- M gamedata/scripts/kotovod/on_body_item_drop.script
+- M gamedata/scripts/sivol/sivol_trade_ammo.script
+- M gamedata/scripts/ui/ui_cheat_pda.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_pda_notes.script
+- M gamedata/scripts/vergas/inv_buttons_use.script
+- M gamedata/scripts/vergas/vergas_lib.script
+- A gamedata/textures/ui/ui_inv_layout.dds
+
+### Other repository files changed
+
+- M manifest.txt
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorInput.cpp
+- M engine/ogsr_engine/xrGame/Level_network.cpp
+- M engine/ogsr_engine/xrGame/WeaponAmmo.cpp
+- M engine/ogsr_engine/xrGame/WeaponAmmo.h
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.h
+- M engine/ogsr_engine/xrGame/alife_storage_manager.cpp
+- M engine/ogsr_engine/xrGame/console_commands.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/script_vars_storage.cpp
+- M engine/ogsr_engine/xrGame/script_vars_storage.h
+- M engine/ogsr_engine/xrGame/trade.h
+- M engine/ogsr_engine/xrGame/trade2.cpp
+- M engine/ogsr_engine/xrGame/ui/UICarBodyWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UICarBodyWnd.h
+- M engine/ogsr_engine/xrGame/ui/UICellCustomItems.cpp
+- M engine/ogsr_engine/xrGame/ui/UICellCustomItems.h
+- M engine/ogsr_engine/xrGame/ui/UICellItem.cpp
+- M engine/ogsr_engine/xrGame/ui/UICellItem.h
+- M engine/ogsr_engine/xrGame/ui/UIDragDropListEx.cpp
+- M engine/ogsr_engine/xrGame/ui/UIDragDropListEx.h
+- A engine/ogsr_engine/xrGame/ui/UIInventoryLayout.cpp
+- A engine/ogsr_engine/xrGame/ui/UIInventoryLayout.h
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd.h
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd3.cpp
+- M engine/ogsr_engine/xrGame/ui/UIListBox.cpp
+- M engine/ogsr_engine/xrGame/ui/UIListBox.h
+- M engine/ogsr_engine/xrGame/ui/UIListBoxItem.cpp
+- M engine/ogsr_engine/xrGame/ui/UIListBoxItem.h
+- M engine/ogsr_engine/xrGame/ui/UIMessages.h
+- M engine/ogsr_engine/xrGame/ui/UIPropertiesBox.cpp
+- M engine/ogsr_engine/xrGame/ui/UIPropertiesBox.h
+- M engine/ogsr_engine/xrGame/ui/UIStatic.cpp
+- M engine/ogsr_engine/xrGame/ui/UIStatic.h
+- M engine/ogsr_engine/xrGame/ui/UITradeWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UITradeWnd.h
+- M engine/ogsr_engine/xrGame/ui/uiinventorywnd2.cpp
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+
+<!-- nlc-changelog-commit: 7e8c9d31f66b02f6636302b0ee2b122fdc138f00 -->
+## 03.11.26 02:19 МСК - Fix keyboard focus in PDA interfaces
+
+Commit: [7e8c9d3](https://github.com/jordan1227/improved_to_he/commit/7e8c9d31f66b02f6636302b0ee2b122fdc138f00)
+
+### Description
+
+Capture keyboard input for the cheat PDA so game key bindings do not override raw-key handling. Release editor focus when closing the PDA or switching notes.
+
+### Game files changed
+
+- M gamedata/scripts/he_pda_3d.script
+- M gamedata/scripts/ui/ui_cheat_pda.script
+- M gamedata/scripts/ui/ui_pda_notes.script
+
+<!-- nlc-changelog-commit: ff97774969052565b40d184f1f5b593107d2c4a5 -->
+## 31.10.26 17:07 МСК - Add manual inventory layouts and drag controls
+
+Commit: [ff97774](https://github.com/jordan1227/improved_to_he/commit/ff97774969052565b40d184f1f5b593107d2c4a5)
+
+### Description
+
+Add persistent item layouts for backpacks and boxes, with rotation, drag previews, and configurable sorting across inventory, trade, and looting windows. Also add partial-ammo trading with preserved deal contents and exact pricing, scope swapping, and backpack-free looting support. Update the engine build to nlc-3.589.168.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/external.ltx
+- A gamedata/config/misc/inventory_layout.ltx
+- M gamedata/config/system.ltx
+- M gamedata/config/text/eng/ui_st_inventory.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_inventory.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/carbody_new.xml
+- M gamedata/config/ui/carbody_new_16.xml
+- M gamedata/config/ui/inventory_new.xml
+- M gamedata/config/ui/inventory_new_16.xml
+- M gamedata/config/ui/trade.xml
+- M gamedata/config/ui/trade_16.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/alpet/nlc_container.script
+- M gamedata/scripts/engine_callbacks.script
+- M gamedata/scripts/kotovod/on_body_item_drop.script
+- M gamedata/scripts/sivol/sivol_trade_ammo.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/vergas/inv_buttons_use.script
+- M gamedata/scripts/vergas/vergas_lib.script
+- A gamedata/textures/ui/ui_inv_layout.dds
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorInput.cpp
+- M engine/ogsr_engine/xrGame/Level_network.cpp
+- M engine/ogsr_engine/xrGame/WeaponAmmo.cpp
+- M engine/ogsr_engine/xrGame/WeaponAmmo.h
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.h
+- M engine/ogsr_engine/xrGame/alife_storage_manager.cpp
+- M engine/ogsr_engine/xrGame/console_commands.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/script_vars_storage.cpp
+- M engine/ogsr_engine/xrGame/script_vars_storage.h
+- M engine/ogsr_engine/xrGame/trade.h
+- M engine/ogsr_engine/xrGame/trade2.cpp
+- M engine/ogsr_engine/xrGame/ui/UICarBodyWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UICarBodyWnd.h
+- M engine/ogsr_engine/xrGame/ui/UICellCustomItems.cpp
+- M engine/ogsr_engine/xrGame/ui/UICellCustomItems.h
+- M engine/ogsr_engine/xrGame/ui/UICellItem.cpp
+- M engine/ogsr_engine/xrGame/ui/UICellItem.h
+- M engine/ogsr_engine/xrGame/ui/UIDragDropListEx.cpp
+- M engine/ogsr_engine/xrGame/ui/UIDragDropListEx.h
+- A engine/ogsr_engine/xrGame/ui/UIInventoryLayout.cpp
+- A engine/ogsr_engine/xrGame/ui/UIInventoryLayout.h
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd.h
+- M engine/ogsr_engine/xrGame/ui/UIInventoryWnd3.cpp
+- M engine/ogsr_engine/xrGame/ui/UIListBox.cpp
+- M engine/ogsr_engine/xrGame/ui/UIListBox.h
+- M engine/ogsr_engine/xrGame/ui/UIListBoxItem.cpp
+- M engine/ogsr_engine/xrGame/ui/UIListBoxItem.h
+- M engine/ogsr_engine/xrGame/ui/UIMessages.h
+- M engine/ogsr_engine/xrGame/ui/UIPropertiesBox.cpp
+- M engine/ogsr_engine/xrGame/ui/UIPropertiesBox.h
+- M engine/ogsr_engine/xrGame/ui/UIStatic.cpp
+- M engine/ogsr_engine/xrGame/ui/UIStatic.h
+- M engine/ogsr_engine/xrGame/ui/UITradeWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UITradeWnd.h
+- M engine/ogsr_engine/xrGame/ui/uiinventorywnd2.cpp
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj
+- M engine/ogsr_engine/xrGame/xrGame.vcxproj.filters
+
+<!-- nlc-changelog-commit: aa3aa921b90c85dfcff1ffd00e103634662c46ab -->
+## 31.10.26 15:37 МСК - Телепорт на ЧАЭС на тесле
+
+Commit: [aa3aa92](https://github.com/jordan1227/improved_to_he/commit/aa3aa921b90c85dfcff1ffd00e103634662c46ab)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/amk/amk_mod.script
+
+<!-- nlc-changelog-commit: adb05aee4846906e7825400456e246e9166900bf -->
+## 31.10.26 15:05 МСК - Поправил секцию в тайнике призрака на чаэс
+
+Commit: [adb05ae](https://github.com/jordan1227/improved_to_he/commit/adb05aee4846906e7825400456e246e9166900bf)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: e9485911924209feda00290db0faa14fbcf8e44c -->
+## 31.10.26 01:45 МСК - Улучшения квеста Юрика на МП5 Add Yurik's MP5 quest and tunnel hazards
+
+Commit: [e948591](https://github.com/jordan1227/improved_to_he/commit/e9485911924209feda00290db0faa14fbcf8e44c)
+
+### Description
+
+Add condition-aware MP5 handover dialogue, a timed keep-the-gun branch, and a tunnel monster pack. Introduce green-fog damage and breathing feedback, and update tunnel anomaly and monster behavior.
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_garbage.xml
+- M gamedata/config/gameplay/game_tasks.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/config/scripts/amk/anoms/anoms.ltx
+- M gamedata/config/scripts/gar/gar_monster_tonel_zone.ltx
+- M gamedata/config/scripts/gar/gar_monsters_tonel.ltx
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/config/waypoints.ltx
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sivol/sivol_anom_effects.script
+- A gamedata/scripts/sivol/sivol_gar_mp5.script
+
+<!-- nlc-changelog-commit: c3c15ea791a1c788a5f312fdc548421435752586 -->
+## 30.10.26 22:37 МСК - Фикс вылета в диалоге Ивара
+
+Commit: [c3c15ea](https://github.com/jordan1227/improved_to_he/commit/c3c15ea791a1c788a5f312fdc548421435752586)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: 9e3801785673f74589af19bae8cc6c4ce9991881 -->
+## 30.10.26 22:25 МСК - манифест
+
+Commit: [9e38017](https://github.com/jordan1227/improved_to_he/commit/9e3801785673f74589af19bae8cc6c4ce9991881)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: b513c80e8805b2d9f3b99fd2fe263a28446d8e30 -->
+## 30.10.26 22:24 МСК - Пара новых диалогов Кроту Add Mole hub dialogues and tune weapon wear
+
+Commit: [b513c80](https://github.com/jordan1227/improved_to_he/commit/b513c80e8805b2d9f3b99fd2fe263a28446d8e30)
+
+### Description
+
+Adds one-time dialogues with Mole about Agroprom hazards, Red, and Swamp armor treatment, with matching info portions and translations. Revises related opening dialogue text and slightly increases weapon condition degradation in the Fruit Punch aura.
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/dialogs_agroprom.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/text/eng/stable_dialogs_agroprom.xml
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/stable_dialogs_agroprom.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/scripts/sivol/sivol_anom_effects.script
+
+<!-- nlc-changelog-commit: 5fd36ecf2550311dc7c19859b686209f9e9e583c -->
+## 30.10.26 22:16 МСК - Убрал телепорт в Припять в РЦ
+
+Commit: [5fd36ec](https://github.com/jordan1227/improved_to_he/commit/5fd36ecf2550311dc7c19859b686209f9e9e583c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_deadcity.ltx
+
+<!-- nlc-changelog-commit: e2469d64992a0918f925bfae76b21ee9693c5adb -->
+## 30.10.26 21:28 МСК - Вернул старый универсальный код для дверей
+
+Commit: [e2469d6](https://github.com/jordan1227/improved_to_he/commit/e2469d64992a0918f925bfae76b21ee9693c5adb)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/agr/agr_codedoor_key_0001.ltx
+- M gamedata/config/scripts/av_peshera/av_peshera_physic_object_0002.ltx
+- M gamedata/config/scripts/av_peshera/av_peshera_physic_object_0004.ltx
+- M gamedata/config/scripts/av_peshera/av_peshera_physic_object_0006.ltx
+- M gamedata/config/scripts/cit/dead_codedoor_key_01.ltx
+- M gamedata/config/scripts/dar/x18_codedoor_key_0007.ltx
+- M gamedata/config/scripts/dar/x18_codedoor_key_control_room_in.ltx
+- M gamedata/config/scripts/gen/gen_codedoor_key.ltx
+- M gamedata/config/scripts/gen/gen_codedoor_key_2.ltx
+- M gamedata/config/scripts/labx10/labx10_codedoor_key_0002.ltx
+- M gamedata/config/scripts/labx10/labx10_codedoor_key_0004.ltx
+- M gamedata/config/scripts/labx10/labx10_codedoor_key_0005.ltx
+- M gamedata/config/scripts/labx10/labx10_codedoor_key_0006.ltx
+- M gamedata/config/scripts/labx12/bun_codedoor_key_0002.ltx
+- M gamedata/config/scripts/labx12/bun_codedoor_key_0004.ltx
+- M gamedata/config/scripts/labx12/bun_codedoor_key_0005.ltx
+- M gamedata/config/scripts/labx12/bun_codedoor_key_0008.ltx
+- M gamedata/config/scripts/labx8/labx8_codedoor_key_01.ltx
+- M gamedata/config/scripts/lim/lim_codedoor_key_0001.ltx
+- M gamedata/config/scripts/rad/rad_codedoor_key_01.ltx
+- M gamedata/config/scripts/rad/rad_codedoor_key_x7.ltx
+- M gamedata/config/scripts/red_forest/red_codedoor_key_0001.ltx
+- M gamedata/config/scripts/warlab/war_codedoor_key_0000.ltx
+- M gamedata/scripts/ph/ph_code.script
+- M gamedata/scripts/vergas/vergas_decoder.script
+
+<!-- nlc-changelog-commit: 56de52600ed8a42f6a417e3ecd7f9683e8c0eefd -->
+## 30.10.26 21:23 МСК - манифест
+
+Commit: [56de526](https://github.com/jordan1227/improved_to_he/commit/56de52600ed8a42f6a417e3ecd7f9683e8c0eefd)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 97da65f4659fca2d8504447140c37440d950f51b -->
+## 30.10.26 21:23 МСК - Resolve PDA recipe tokens on first read
+
+Commit: [97da65f](https://github.com/jordan1227/improved_to_he/commit/97da65f4659fca2d8504447140c37440d950f51b)
+
+### Description
+
+Store recipe tiers in unread PDAs and choose an unknown recipe when the message is first read, with stash or chatter fallbacks. Refactor recipe selection, add PDA debug helpers, tune PDA drop and stash probabilities, and remove automatic PDA stash generation inside treasure stashes.
+
+### Game files changed
+
+- M gamedata/config/misc/death_items_by_communities.ltx
+- M gamedata/config/misc/vergas_pda.ltx
+- M gamedata/scripts/death_manager.script
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/sivol/sivol_pda_debug.script
+- M gamedata/scripts/treasure_manager.script
+- M gamedata/scripts/ui/ui_cheat_pda.script
+- M gamedata/scripts/vergas/vergas_pda.script
+
+<!-- nlc-changelog-commit: 439587a287de726b1aa24ae47104eb10456d666d -->
+## 30.10.26 21:02 МСК - Блоки в x8, поставил на другой поршень
+
+Commit: [439587a](https://github.com/jordan1227/improved_to_he/commit/439587a287de726b1aa24ae47104eb10456d666d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/scripts/labx8/labx8_energopult_0001.ltx
+- M gamedata/config/scripts/labx8/labx8_energopult_0002.ltx
+- M gamedata/config/scripts/labx8/labx8_energopult_0003.ltx
+- M gamedata/config/scripts/labx8/labx8_energopult_0004.ltx
+- M gamedata/config/scripts/labx8/labx8_energopult_0005.ltx
+
+<!-- nlc-changelog-commit: 8c9401e9513b8603d8e1d8fd22bf809173a5766d -->
+## 30.10.26 19:15 МСК - манифест
+
+Commit: [8c9401e](https://github.com/jordan1227/improved_to_he/commit/8c9401e9513b8603d8e1d8fd22bf809173a5766d)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 491efbb4f8a095b13a811f3257b9bcf2112dd0d1 -->
+## 30.10.26 18:59 МСК - манифест
+
+Commit: [491efbb](https://github.com/jordan1227/improved_to_he/commit/491efbb4f8a095b13a811f3257b9bcf2112dd0d1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: db278637cd7cf12383a8c72d92849b77dd0ae361 -->
+## 30.10.26 18:58 МСК - Update treasure_manager.script
+
+Commit: [db27863](https://github.com/jordan1227/improved_to_he/commit/db278637cd7cf12383a8c72d92849b77dd0ae361)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/treasure_manager.script
+
+<!-- nlc-changelog-commit: 3c2c56da3921c3896c723a06882840ce131ca75c -->
+## 30.10.26 18:56 МСК - Update keybindings and harden item use
+
+Commit: [3c2c56d](https://github.com/jordan1227/improved_to_he/commit/3c2c56da3921c3896c723a06882840ce131ca75c)
+
+### Description
+
+Remove the unused flashlight-mode binding, add emergency-bag and accumulator commands, and clarify keybinding labels. Mark obsolete localization entries and make item-use handling safer when config values or client objects are missing.
+
+### Game files changed
+
+- M gamedata/config/localization.ltx
+- M gamedata/config/text/eng/ui_st_keybinding.xml
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_keybinding.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+- M gamedata/config/ui/ui_keybinding.xml
+- M gamedata/scripts/allcore_hide.script
+
+<!-- nlc-changelog-commit: 27340b1ec82a64a80daaaffbd3bf9612e14c3533 -->
+## 30.10.26 18:28 МСК - Фиксы ПДА продолжение  Refine PDA handling and map updates
+
+Commit: [27340b1](https://github.com/jordan1227/improved_to_he/commit/27340b1ec82a64a80daaaffbd3bf9612e14c3533)
+
+### Description
+
+Update the engine to nlc-3.589.163 and keep the map's centre-on-me button in sync while open. Improve found-PDA reader layering, hand-PDA restoration, cracker charge checks, and notes scrolling; cache discovered campfires and reduce stash PDA chance to 30%.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/scripts/he_camp_map.script
+- M gamedata/scripts/he_pda_3d.script
+- M gamedata/scripts/he_pda_cracker.script
+- M gamedata/scripts/he_pda_layers.script
+- M gamedata/scripts/he_pda_model.script
+- M gamedata/scripts/ui/ui_pda_notes.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ui/UIMapWnd.cpp
+
+<!-- nlc-changelog-commit: 2d4f3fcab142cbef4c0d15277824a6300f455725 -->
+## 30.10.26 17:36 МСК - манифест
+
+Commit: [2d4f3fc](https://github.com/jordan1227/improved_to_he/commit/2d4f3fcab142cbef4c0d15277824a6300f455725)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: e2442cb6ccde2d85eac83d2ebb7d87c89dba6fd8 -->
+## 30.10.26 17:35 МСК - Update ui_common.dds
+
+Commit: [e2442cb](https://github.com/jordan1227/improved_to_he/commit/e2442cb6ccde2d85eac83d2ebb7d87c89dba6fd8)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/textures/ui/ui_common.dds
+
+<!-- nlc-changelog-commit: 6b33db2583c2ee43a36c45745fe3c9d0e94c2e77 -->
+## 30.10.26 17:35 МСК - Expand PDA upgrades and psy effects
+
+Commit: [6b33db2](https://github.com/jordan1227/improved_to_he/commit/6b33db2583c2ee43a36c45745fe3c9d0e94c2e77)
+
+### Description
+
+Add upgraded-PDA map layers, campfire and stash tracking, Notes reminders, signal indicators, and a password cracker. Extend psy vision with stress, directional waves, colour loss, configurable intensity, and HUD hand tremors; update engine APIs and version.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/dialogs_he_pda_access.xml
+- M gamedata/config/gameplay/info_sak_way.xml
+- M gamedata/config/system.ltx
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/eng/st_pda_he.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/config/text/rus/st_pda_he.xml
+- M gamedata/config/ui/map_spots.xml
+- A gamedata/config/ui/ui_pda_layers.xml
+- M gamedata/config/ui/ui_pda_notes.xml
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/engine_callbacks.script
+- A gamedata/scripts/he_camp_map.script
+- M gamedata/scripts/he_pda_3d.script
+- M gamedata/scripts/he_pda_access.script
+- A gamedata/scripts/he_pda_cracker.script
+- A gamedata/scripts/he_pda_layers.script
+- A gamedata/scripts/he_pda_reminders.script
+- A gamedata/scripts/he_pda_signal.script
+- A gamedata/scripts/he_pda_stash_log.script
+- M gamedata/scripts/kotovod/game_options.script
+- M gamedata/scripts/ogse/ogse_campfire.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/pda_battery.script
+- M gamedata/scripts/sivol/sivol_controller_psy.script
+- M gamedata/scripts/sivol/sivol_fuzz_recoil.script
+- M gamedata/scripts/sivol/sivol_psy_vision.script
+- M gamedata/scripts/treasure_manager.script
+- M gamedata/scripts/ui/ui_cheat_pda.script
+- M gamedata/scripts/ui/ui_pda_addons.script
+- M gamedata/scripts/ui/ui_pda_notes.script
+- M gamedata/scripts/vergas/vergas_masks.script
+- M gamedata/shaders/r3/combine_2_naa.ps
+- M gamedata/shaders/r3/nlc_psy_vision.h
+- M gamedata/textures/ui/ui_common.dds
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor.h
+- M engine/ogsr_engine/xrGame/HudItem.cpp
+- M engine/ogsr_engine/xrGame/HudItem.h
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/map_location.cpp
+- M engine/ogsr_engine/xrGame/map_location.h
+- M engine/ogsr_engine/xrGame/map_manager.cpp
+- M engine/ogsr_engine/xrGame/player_hud.cpp
+- M engine/ogsr_engine/xrGame/ui/UIMapWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIPdaWnd.cpp
+- M engine/ogsr_engine/xrGame/ui/UIPdaWnd.h
+
+<!-- nlc-changelog-commit: 1fdb960f895344ae02c564cef8199d310082ffb5 -->
+## 29.10.26 21:38 МСК - Обвесы на оружии не пропадают в платной нычке
+
+Commit: [1fdb960](https://github.com/jordan1227/improved_to_he/commit/1fdb960f895344ae02c564cef8199d310082ffb5)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_magic_box.script
+- M gamedata/scripts/se/se_item.script
+
+<!-- nlc-changelog-commit: 3c5ebbd1d80ed688157736b39847b4f361f7d315 -->
+## 29.10.26 21:17 МСК - Фото гармонизатора у Ботана
+
+Commit: [3c5ebbd](https://github.com/jordan1227/improved_to_he/commit/3c5ebbd1d80ed688157736b39847b4f361f7d315)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/encyclopedia_sak_way.xml
+- M gamedata/textures/ui/ui_sak.dds
+
+<!-- nlc-changelog-commit: bd427fc1d2a21480559c2b0df30fafdb9929b421 -->
+## 29.10.26 20:44 МСК - Пашка уходит в алайф, если ГГ торговался с Бесом или уже получил награду от него
+
+Commit: [bd427fc](https://github.com/jordan1227/improved_to_he/commit/bd427fc1d2a21480559c2b0df30fafdb9929b421)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_post_watch.script
+- M gamedata/scripts/olr/olr_protected.script
+- M gamedata/scripts/olr/olr_smart_index.script
+
+<!-- nlc-changelog-commit: bebb7f8428bb9358987de73755a26c1c97282b7b -->
+## 29.10.26 20:32 МСК - Контейнер не исчезает при использовании
+
+Commit: [bebb7f8](https://github.com/jordan1227/improved_to_he/commit/bebb7f8428bb9358987de73755a26c1c97282b7b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/vergas/vergas_lib.script
+
+<!-- nlc-changelog-commit: 079b0bddeece1b596af5b9f5d3af15aec093346b -->
+## 29.10.26 20:27 МСК - Иконка для "неизвестного контейнера"
+
+Commit: [079b0bd](https://github.com/jordan1227/improved_to_he/commit/079b0bddeece1b596af5b9f5d3af15aec093346b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/arc.ltx
+- M gamedata/textures/ui/ui_icon_equipment_6.dds
+
+<!-- nlc-changelog-commit: 68ebada47394b41b3ebda4502bf58d1b282bedea -->
+## 29.10.26 20:02 МСК - Федотов в исключения
+
+Commit: [68ebada](https://github.com/jordan1227/improved_to_he/commit/68ebada47394b41b3ebda4502bf58d1b282bedea)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_protected.script
+
+<!-- nlc-changelog-commit: 56d875377266ac228f3d238cee176cf7e21234bd -->
+## 28.10.26 18:46 МСК - Бартер Доктора
+
+Commit: [56d8753](https://github.com/jordan1227/improved_to_he/commit/56d875377266ac228f3d238cee176cf7e21234bd)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_stor.script
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/kotovod/spawner.script
+- M gamedata/scripts/ui/ui_barter.script
+- M gamedata/scripts/vergas/vergas_pda.script
+
+<!-- nlc-changelog-commit: 91381677270089fcd9a25d84af0730486a21563b -->
+## 28.10.26 18:46 МСК - Платные нычки
+
+Commit: [9138167](https://github.com/jordan1227/improved_to_he/commit/91381677270089fcd9a25d84af0730486a21563b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_magic_box.script
+
+<!-- nlc-changelog-commit: b182b6a230b6b0e71b0b36e1f0a98dae3c33cf00 -->
+## 27.10.26 22:20 МСК - Вылет на записке Призрака в х10
+
+Commit: [b182b6a](https://github.com/jordan1227/improved_to_he/commit/b182b6a230b6b0e71b0b36e1f0a98dae3c33cf00)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+
+<!-- nlc-changelog-commit: ca99f176b193a78b14932ee609840a38d15ee34b -->
+## 27.10.26 22:17 МСК - Модули памяти в х10 без квеста
+
+Commit: [ca99f17](https://github.com/jordan1227/improved_to_he/commit/ca99f176b193a78b14932ee609840a38d15ee34b)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+
+<!-- nlc-changelog-commit: adbabf821a3ab8d305af4d1b152c95a8b5ef8fbb -->
+## 27.10.26 22:21 МСК - манифест
+
+Commit: [adbabf8](https://github.com/jordan1227/improved_to_he/commit/adbabf821a3ab8d305af4d1b152c95a8b5ef8fbb)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 390f74517e95a8f744d5829891befd0d66d437da -->
+## 27.10.26 22:19 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [390f745](https://github.com/jordan1227/improved_to_he/commit/390f74517e95a8f744d5829891befd0d66d437da)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/scripts/amk/darkvalley.ltx
+- M gamedata/config/scripts/amk/escape.ltx
+- M gamedata/config/scripts/amk/pripyat.ltx
+- M gamedata/config/scripts/amk/rostok.ltx
+- M gamedata/config/scripts/amk/yantar.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0000.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0001.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0002.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0003.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0004.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0005.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0006.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0007.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0008.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0009.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0010.ltx
+- M gamedata/config/scripts/labx10/labx10_komp_blok_0011.ltx
+- M gamedata/config/scripts/labx10/x10_hard_disk.ltx
+- M gamedata/scripts/amk/amk_mod.script
+- M gamedata/scripts/doc.script
+- M gamedata/scripts/kotovod_restrictors.script
+- M gamedata/scripts/machines/heli_func.script
+- M gamedata/scripts/olr/olr_protected.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/scripts/sak/sak_off_corpses.script
+- M gamedata/scripts/sak/sak_spawn.script
+- A gamedata/sounds/scripts/hdd_out_1.ogg
+- A gamedata/sounds/scripts/hdd_out_2.ogg
+- A gamedata/sounds/scripts/hdd_out_3.ogg
+- A gamedata/sounds/scripts/hdd_out_4.ogg
+- A gamedata/sounds/scripts/hdd_out_5.ogg
+- A gamedata/sounds/scripts/inv_vodka.ogg
+- M bin_x64/xrEngine.exe
+- M gamedata/config/misc/effectors.ltx
+- M gamedata/config/misc/postprocess.ltx
+- M gamedata/config/system.ltx
+- M gamedata/meshes/sm/actor_legs/exo_monolith_outfit.ogf
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/params/wpn_params.script
+- M gamedata/scripts/sivol/sivol_controller_psy.script
+- M gamedata/scripts/sivol/sivol_mask_audio.script
+- A gamedata/scripts/sivol/sivol_psy_vision.script
+- M gamedata/scripts/sr/sr_psy_antenna.script
+- M gamedata/scripts/vergas/vergas_masks.script
+- M gamedata/shaders/r3/combine_2_naa.ps
+- A gamedata/shaders/r3/nlc_psy_vision.h
+- A gamedata/textures/act/act_st_exoskel_tank_monolit.dds
+- A gamedata/textures/act/act_st_exoskel_tank_monolit.thm
+
+### Other repository files changed
+
+- M manifest.txt
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor.h
+- M engine/ogsr_engine/xrGame/HudItem.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrSound/Sound.h
+- M engine/ogsr_engine/xrSound/SoundRender_Core.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Core.h
+- M engine/ogsr_engine/xrSound/SoundRender_CoreA.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Core_Processor.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter.h
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter_StartStop.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_TargetA.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_TargetA.h
+
+<!-- nlc-changelog-commit: c3bfd36d21c603ccd4dbee84d182331c961ea43c -->
+## 27.10.26 22:19 МСК - Add unified psy vision and hearing effects
+
+Commit: [c3bfd36](https://github.com/jordan1227/improved_to_he/commit/c3bfd36d21c603ccd4dbee84d182331c961ea43c)
+
+### Description
+
+Route low psy health, psy auras, antenna zones, and bursts through a shared vision shader with gameplay effects and mask sway. Add engine support for psy-filtered audio, chorus, pitch warble, and hand shake, and update the engine build to nlc-3.589.161.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/misc/effectors.ltx
+- M gamedata/config/misc/postprocess.ltx
+- M gamedata/config/system.ltx
+- M gamedata/scripts/binders/bind_monster.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/params/wpn_params.script
+- M gamedata/scripts/sivol/sivol_controller_psy.script
+- M gamedata/scripts/sivol/sivol_mask_audio.script
+- A gamedata/scripts/sivol/sivol_psy_vision.script
+- M gamedata/scripts/sr/sr_psy_antenna.script
+- M gamedata/scripts/vergas/vergas_masks.script
+- M gamedata/shaders/r3/combine_2_naa.ps
+- A gamedata/shaders/r3/nlc_psy_vision.h
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor.h
+- M engine/ogsr_engine/xrGame/HudItem.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrSound/Sound.h
+- M engine/ogsr_engine/xrSound/SoundRender_Core.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Core.h
+- M engine/ogsr_engine/xrSound/SoundRender_CoreA.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Core_Processor.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter.h
+- M engine/ogsr_engine/xrSound/SoundRender_Emitter_StartStop.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_TargetA.cpp
+- M engine/ogsr_engine/xrSound/SoundRender_TargetA.h
+
+<!-- nlc-changelog-commit: e165298b7e097e467135d483fdb33bd592c50ef0 -->
+## 27.10.26 22:18 МСК - Экза монолита
+
+Commit: [e165298](https://github.com/jordan1227/improved_to_he/commit/e165298b7e097e467135d483fdb33bd592c50ef0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/meshes/sm/actor_legs/exo_monolith_outfit.ogf
+- A gamedata/textures/act/act_st_exoskel_tank_monolit.dds
+- A gamedata/textures/act/act_st_exoskel_tank_monolit.thm
+
+<!-- nlc-changelog-commit: 4801be457ab9f9aa101e2589792b178c88afd92c -->
+## 27.10.26 17:39 МСК - манифест
+
+Commit: [4801be4](https://github.com/jordan1227/improved_to_he/commit/4801be457ab9f9aa101e2589792b178c88afd92c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: e3119fc005807941195687af706278014275093a -->
+## 27.10.26 17:38 МСК - Сейвскам, ПДА
+
+Commit: [e3119fc](https://github.com/jordan1227/improved_to_he/commit/e3119fc005807941195687af706278014275093a)
+
+### Description
+
+# Лут без сейвскама, торговля патронами, ПДА фракций (скрипты и конфиги, 27.10.26)
+
+Добыча с трупов, ПДА, тайники и награды больше не "перебрасываются" загрузкой сохранения. Сталкеры
+продают патроны иначе, у ПДА появились тексты военных, Монолита, наёмников и много новых записей.
+Нужен перезапуск игры; новая игра не нужна. Исключение - новый комплект патронов у Прута (см. ниже).
+
+## Было и стало: лут и награды
+
+| | Было | Стало |
+| --- | --- | --- |
+| Лут с трупа | Сохранился перед убийством, загрузился, убил снова - другой лут. Так выбивали ПДА с тайником и артефакты | Лут определяется самим НПС: сколько ни перезагружайся, с того же сталкера выпадет то же самое (вещи, состояние оружия и еды, ПДА, артефакты). Порядок убийств тоже не важен |
+| ПДА с трупа | Содержимое (хозяин, пароль, записи, тайник) менялось при перезагрузке | Тот же ПДА каждый раз. Если сохраниться сразу после убийства - данные ПДА не теряются |
+| Тайник в ПДА | Два случайных броска по 35% подряд (ошибка порта), итого ~12% ПДА с тайником | Один бросок, зависящий от ранга хозяина: новичок 40%, опытный 35%, ветеран 32%, мастер 29%. У разбитых ПДА тайника нет никогда |
+| Уровень тайника | Новичок мог получить тайник ветерана/мастера (Радар, Припять) - условие по рангу работало наоборот | Тайник по рангу хозяина, с небольшим шансом соседнего уровня (~10-15%) |
+| ПДА в тайнике, тайник за водку | Перебрасывались загрузкой | Стабильны. "Час тайника" у сталкера за водку сохраняется, а не выбирается заново при каждой загрузке (и больше не ломается после ~12 тайников) |
+| Кругов, обмен артефактов | Качество (_dyn) выдаваемых артефактов перебрасывалось | Стабильно для каждого обмена |
+| Ворон, Игнат | Список артефактов Ворона "усыхал" за долгую игровую сессию, заказы выходили неполными; срок ожидания перебрасывался | Список не усыхает; сроки стабильны. Шансы самих заказов не менялись |
+| Лечение раненого аптечкой | Кирпич (Агропром) мог дать наводку на тайник | Кирпич наводку не даёт (так задумано ещё в старом HE, но проверка не работала) |
+
+## Было и стало: Пахом и "Холодец"
+
+За 2 банки "Холодца" Пахом теперь спрашивает, чем наградить: **медициной** или **припасами**.
+
+| | Медицина | Припасы |
+| --- | --- | --- |
+| Основа (всегда) | научная аптечка, или армейская + обычная, или 3 обычных (поровну) | 2 сухпайка (40%), 3 консервы (35%), 2 консервы + водка (25%) |
+| Добавка | 3-5 штук: бинты, энергетик, антирад, аптечка, изредка снотворное | 4-6 штук: хлеб, колбаса, энергетик, водка, консервы |
+
+Раньше было 3-5 случайных предметов без выбора, и мог выпасть один хлеб с колбасой.
+
+## Было и стало: торговля патронами
+
+| | Было | Стало |
+| --- | --- | --- |
+| Кто продаёт | Любой опытный/ветеран/мастер-одиночка продавал полные пачки (30 патронов 5.45 и т.д.) | Продаёт только примерно каждый 10-й (новичок 7.5%, опытный 10%, ветеран 12.5%, мастер 15%). Теперь и сталкеры Долга, Свободы, бандиты, Чистое Небо. Военные и экологи патроны не продают |
+| Что продают | Включая бронебойные, 9x39, 11.43 | Только FMJ: опытный - 5.45, дробь, картечь; ветеран - + 5.56, пуля 12x76; мастер - + 7.62x39. Пистолетные 9x18/9x19 FMJ - только под пистолет, который есть у самого сталкера |
+| Сколько | Полная пачка | Небольшая "партия" из одной пачки: винтовочные 4-10 / 8-15 / 13-19 (опытный / ветеран / мастер), дробовые 1-6, пистолетные 13-38. Купил - до следующего игрового дня этот калибр у него не будет. Не купил - пачка после закрытия торговли снова полная |
+| Цена | 5.45 около 50 руб. за патрон | 5.45 около 104 руб. за патрон у опытного (по-дружески), дробь ~141, картечь ~293, пуля ~520 |
+| "Мерк" патроны у НПС | Не продавались | При разговоре с продавцом превращаются в обычные FMJ того же калибра |
+
+**Особые НПС** - Шустрый, Иван Небов, Прут и ещё ~45 сюжетных/известных НПС (Волк, Фанат, Лис, Проводник,
+Серый, Крот, Боров, Рябой и др.; список в docs/LOOT_RNG_DESIGN.md 10.2): продают свои патроны полными
+пачками, разово, по старым ценам Old HE - пачка 5.45 около 2000, 9x18 около 370. Торговцы со своим
+меню (Дэн, Отшельник, Петренко и т.п.) не затронуты. Прут получил 2 пачки 5.45 БП - только у нового Прута;
+в текущем сохранении: стоя рядом с ним, `fl sivol_trade_ammo.debug_give_ammo("ammo_5.45x39_ap", 2)`.
+
+## Было и стало: ПДА фракций
+
+| | Было | Стало |
+| --- | --- | --- |
+| Военные, Монолит | ПДА не выпадали | ПДА выпадают: военные 5%, Монолит 10% (у сталкеров по-прежнему 30%) |
+| Тексты | У наёмников, зомби и т.п. - случайные тексты сталкеров/бандитов/Долга/Свободы; таблица наёмников не использовалась | Свои тексты: военные (рапорты, приказы, жалобы на сталкеров), Монолит (обрывочные, "молитвенные"), наёмники. У Долга, Свободы и экологов +20 новых записей, включая переписки |
+| Повторы | Одни и те же записи часто повторялись | Записи из уже прочитанных ПДА не повторяются, пока у фракции не кончатся новые |
+| Заголовок тайника | Всегда "Схрон:" | Разные по фракции: "Изъято при досмотре:" у военных, свои у бандитов, Долга, Монолита и т.д. У Монолита тайники только на северных уровнях |
+| Пароли | Короткий список слов | Расширенные списки слов для паролей по рангу и фракции |
+| ПДА от Борзого | Фракция выбиралась поровну из четырёх | Взвешенно по фракции и рангу; шанс тайника тот же |
+
+## Что проверять
+
+- Перезагрузка перед убийством 2-3 раза: тот же лут, тот же ПДА (хозяин, пароль, записи, тайник).
+- Сохранение сразу после убийства и загрузка: ПДА читается нормально, не пустой.
+- Разбитые ПДА: тайника нет. Тайники примерно у трети рабочих/разряженных ПДА; уровень тайника
+  соответствует хозяину (новичок - юг, мастер - север).
+- ПДА военных, Монолита, наёмников, Долга, Свободы, экологов: тексты читаются, нет пустых строк
+  или "сырых" id, переписки показываются целиком.
+- Пахом: оба варианта, награда не кажется слишком маленькой за дорогу и вес банок.
+- Торговля: продавцы встречаются редко, у них одна пачка калибра с небольшим числом патронов;
+  цена разумная; после закрытия торговли пачка у сталкера снова полная; после покупки до
+  следующего дня этого калибра нет. Особые НПС - полные пачки по старой цене.
+- Водка со сталкером (тайник), лечение раненых (тайник/деньги), обмен у Кругова - работают как раньше.
+
+## Консоль
+
+- `fl sivol_trade_ammo.debug_npc()` - во время разговора: профиль торговли, продаёт ли патроны,
+  что из его патронов может попасть в продажу и почему нет.
+- `fl sivol_trade_ammo.debug_force_seller(true)` - все обычные сталкеры становятся продавцами
+  (только для проверки, до перезапуска).
+- `fl sivol_pahom_reward.debug_preview("med")` / `("sup")` - какая будет следующая награда Пахома.
+- `fl sivol_pda_debug.spawn("military", "veteran", 3, 1)` - выдать рабочие ПДА фракции/ранга.
+- `fl sivol_pda_debug.sim(200, "stalker")` - статистика шанса и уровня тайников в лог (`[pda_debug]`).
+- `fl new_quests.voron_arts_end()` - сразу выдать заказ Ворона (сохраниться перед этим: после
+  загрузки заказ должен быть тем же).
+- `fl sivol_seeded_rng.debug_uid()` - номер кампании для стабильных бросков.
+- Откат: `LEGACY_RANDOM = true` в начале `sivol_seeded_rng.script` возвращает старую случайность
+  (для сравнения).
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/sak_dalogs_lim_atp.xml
+- M gamedata/config/misc/death_items_by_communities.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_bnd.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_dlg.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_frd.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_grn.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_exp.ltx
+- A gamedata/config/misc/trade_logic/trade_generic_stl_exp_legacy.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_mas.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_nov.ltx
+- M gamedata/config/misc/trade_logic/trade_generic_stl_vet.ltx
+- M gamedata/config/misc/treasure_manager.ltx
+- M gamedata/config/misc/vergas_pda.ltx
+- M gamedata/config/text/eng/sak_strings_six2.xml
+- M gamedata/config/text/eng/string_table_pda_dolg.xml
+- M gamedata/config/text/eng/string_table_pda_ecolog.xml
+- M gamedata/config/text/eng/string_table_pda_freedom.xml
+- A gamedata/config/text/eng/string_table_pda_headers.xml
+- M gamedata/config/text/eng/string_table_pda_killer.xml
+- A gamedata/config/text/eng/string_table_pda_military.xml
+- A gamedata/config/text/eng/string_table_pda_monolith.xml
+- M gamedata/config/text/eng/string_table_vergas.xml
+- M gamedata/config/text/rus/sak_strings_six2.xml
+- M gamedata/config/text/rus/string_table_pda_dolg.xml
+- M gamedata/config/text/rus/string_table_pda_ecolog.xml
+- M gamedata/config/text/rus/string_table_pda_freedom.xml
+- A gamedata/config/text/rus/string_table_pda_headers.xml
+- M gamedata/config/text/rus/string_table_pda_killer.xml
+- A gamedata/config/text/rus/string_table_pda_military.xml
+- A gamedata/config/text/rus/string_table_pda_monolith.xml
+- M gamedata/config/text/rus/string_table_vergas.xml
+- M gamedata/config/text/rus/ui_st_keybinding.xml
+- M gamedata/config/ui/ui_cheat_pda_msg.xml
+- M gamedata/scripts/death_manager.script
+- M gamedata/scripts/dialogs/dialog_manager.script
+- M gamedata/scripts/engine_callbacks.script
+- M gamedata/scripts/he_npc_wardrobe.script
+- M gamedata/scripts/mike.script
+- M gamedata/scripts/new_quests.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/scripts/sak/sak_rand_nagrad.script
+- A gamedata/scripts/sivol/sivol_pahom_reward.script
+- A gamedata/scripts/sivol/sivol_pda_debug.script
+- A gamedata/scripts/sivol/sivol_seeded_rng.script
+- A gamedata/scripts/sivol/sivol_trade_ammo.script
+- M gamedata/scripts/trade_manager.script
+- M gamedata/scripts/treasure_manager.script
+- M gamedata/scripts/ui/ui_cheat_pda.script
+- M gamedata/scripts/vergas/vergas_pda.script
+- M gamedata/scripts/vergas/vergas_scrambling.script
+- M gamedata/scripts/xr/xr_logic.script
+
+<!-- nlc-changelog-commit: b8e93328319eea19c0a4e57b801ede37cd35c084 -->
+## 27.10.26 11:00 МСК - Update ui_st_keybinding.xml
+
+Commit: [b8e9332](https://github.com/jordan1227/improved_to_he/commit/b8e93328319eea19c0a4e57b801ede37cd35c084)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_keybinding.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_keybinding.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/scripts/sivol/sivol_hit_log.script
+
+<!-- nlc-changelog-commit: 5a5d5134379fcf929fdf62507a3f1f98436382e4 -->
+## 26.10.26 22:04 МСК - Фикс вылета
+
+Commit: [5a5d513](https://github.com/jordan1227/improved_to_he/commit/5a5d5134379fcf929fdf62507a3f1f98436382e4)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/scripts/sivol/sivol_paper.script
+
+### Other repository files changed
+
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/player_hud.cpp
+
+<!-- nlc-changelog-commit: 63f9ef0bf3cdfcaa2415ebee27fbd600074b07bd -->
+## 26.10.26 21:19 МСК - Вылет из-за ассортимента Сахарова
+
+Commit: [63f9ef0](https://github.com/jordan1227/improved_to_he/commit/63f9ef0bf3cdfcaa2415ebee27fbd600074b07bd)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/shop_sakharov/trade_sakharov.ltx
+
+<!-- nlc-changelog-commit: 37c7fc3876152bc009142b8464fef012f802f0bd -->
+## 26.10.26 18:08 МСК - Закрываем диалог с Волком, если у игрока есть арты
+
+Commit: [37c7fc3](https://github.com/jordan1227/improved_to_he/commit/37c7fc3876152bc009142b8464fef012f802f0bd)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- A gamedata/scripts/he_yurik_volk.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+
+<!-- nlc-changelog-commit: b63a97fd0018826c442cce9d4ccb34794c93c404 -->
+## 26.10.26 17:44 МСК - Поправил позицию после отмены у второй двери
+
+Commit: [b63a97f](https://github.com/jordan1227/improved_to_he/commit/b63a97fd0018826c442cce9d4ccb34794c93c404)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/nlc_fixes.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/alife_l04_darkvalley.ltx
+- M all.spawn.improved_3.9.1_ogsr/unpacked/way_l04_darkvalley.ltx
+
+<!-- nlc-changelog-commit: 42e4c9fa58430860e3fe97a164b0c195d074a5b7 -->
+## 26.10.26 17:44 МСК - Фляжки в нычках
+
+Commit: [42e4c9f](https://github.com/jordan1227/improved_to_he/commit/42e4c9fa58430860e3fe97a164b0c195d074a5b7)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/he_magic_box.script
+- M gamedata/scripts/ui/ui_he_magic_box.script
+
+<!-- nlc-changelog-commit: 9454fcafaaa134c52172c287f799b1c358663714 -->
+## 26.10.26 17:44 МСК - Пофиксил позицию после отмены перехода в x10
+
+Commit: [9454fca](https://github.com/jordan1227/improved_to_he/commit/9454fcafaaa134c52172c287f799b1c358663714)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/spawns/all.spawn
+
+### Other repository files changed
+
+- M all.spawn.improved_3.9.1_ogsr/unpacked/way_l04_darkvalley.ltx
+
+<!-- nlc-changelog-commit: b92a5936b25cf277a31817b33f67e163396fcc33 -->
+## 26.10.26 16:19 МСК - манифест
+
+Commit: [b92a593](https://github.com/jordan1227/improved_to_he/commit/b92a5936b25cf277a31817b33f67e163396fcc33)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: ff6e2ec1884977e3976408f0491bc1beeddf3885 -->
+## 26.10.26 16:11 МСК - Add dark-lab NVD and patrol safeguards
+
+Commit: [ff6e2ec](https://github.com/jordan1227/improved_to_he/commit/ff6e2ec1884977e3976408f0491bc1beeddf3885)
+
+### Description
+
+Tune underground lighting and NVD behavior, including hanging-lamp light sampling and starvation effects. Prevent anomaly restrictions from stranding monster patrols, with accessible-point fallback and diagnostics.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/environment/dynamic_weather_graphs.ltx
+- A gamedata/config/environment/weathers/indoor_dark.ltx
+- M gamedata/config/game_maps_single.ltx
+- M gamedata/config/misc/items.ltx
+- A gamedata/levels/l03u_agr_underground/level.env_mod.ltx
+- A gamedata/levels/l04u_labx18/level.env_mod.ltx
+- A gamedata/levels/l08u_brainlab/level.env_mod.ltx
+- A gamedata/levels/l10u_bunker/level.env_mod.ltx
+- A gamedata/levels/labx10/level.env_mod.ltx
+- A gamedata/levels/labx8/level.env_mod.ltx
+- M gamedata/scripts/level_weathers.script
+- M gamedata/scripts/params/nvd_params.script
+- M gamedata/scripts/sivol/sivol_stealth_nvd.script
+- M gamedata/scripts/sr/sr_light.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/anomaly_detector.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/anomaly_detector.h
+- M engine/ogsr_engine/xrGame/nlc_stealth.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.h
+- M engine/ogsr_engine/xrGame/patrol_path_manager.cpp
+- M engine/ogsr_engine/xrGame/space_restriction_shape.cpp
+
+<!-- nlc-changelog-commit: cbf3c27d6ed2ac1a04dc33c31bbfc2c4072b7118 -->
+## 26.10.26 14:29 МСК - Overhaul NVD controls and presets
+
+Commit: [cbf3c27](https://github.com/jordan1227/improved_to_he/commit/cbf3c27d6ed2ac1a04dc33c31bbfc2c4072b7118)
+
+### Description
+
+Add low/high-gain device presets, automatic brightness control, weighted battery drain, and updated EMP behavior. Integrate NVD switching with held-item and empty-hand animations, including sprint transitions, and update the engine build to support standalone NVD-slot switching.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/misc/items.ltx
+- M gamedata/config/text/eng/string_table_enc_equipment.xml
+- M gamedata/config/text/rus/string_table_enc_equipment.xml
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/kotovod/nlc_torch.script
+- M gamedata/scripts/params/nvd_params.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/HudItem.h
+- M engine/ogsr_engine/xrGame/Missile.cpp
+- M engine/ogsr_engine/xrGame/Torch.cpp
+- M engine/ogsr_engine/xrGame/Torch.h
+- M engine/ogsr_engine/xrGame/WeaponKnife.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.cpp
+
+<!-- nlc-changelog-commit: 473054d54d7e5c610505ca063a105979b43b76d8 -->
+## 26.10.26 03:34 МСК - Отключаем васянский зум в маске. Показываем маску при открытии секций инвентаря
+
+Commit: [473054d](https://github.com/jordan1227/improved_to_he/commit/473054d54d7e5c610505ca063a105979b43b76d8)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/vergas/vergas_masks.script
+
+<!-- nlc-changelog-commit: 5fb7dab088a8adf79e24f90045ca98874913c930 -->
+## 26.10.26 02:33 МСК - манифест
+
+Commit: [5fb7dab](https://github.com/jordan1227/improved_to_he/commit/5fb7dab088a8adf79e24f90045ca98874913c930)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 5833e4fab1579d161d4e575463917922b5c4d17b -->
+## 26.10.26 02:29 МСК - Expand Yurik outcome dialogue branches
+
+Commit: [5833e4f](https://github.com/jordan1227/improved_to_he/commit/5833e4fab1579d161d4e575463917922b5c4d17b)
+
+### Description
+
+Add separate Wolf follow-ups based on Yurik's fate and the backpack artifact, and track Yurik's death and deal refusal for one-time bandit dialogue.
+
+### Game files changed
+
+- M gamedata/config/gameplay/doc_dialogs_new.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/config/misc/gulag_garbage.ltx
+- M gamedata/config/text/eng/doc_dialogs.xml
+- M gamedata/config/text/rus/doc_dialogs.xml
+- M gamedata/scripts/xr/xr_effects.script
+
+<!-- nlc-changelog-commit: 8bdbbcac2527cd4c9d601bd9ad9ce7409375eea1 -->
+## 26.10.26 00:36 МСК - Манифест
+
+Commit: [8bdbbca](https://github.com/jordan1227/improved_to_he/commit/8bdbbcac2527cd4c9d601bd9ad9ce7409375eea1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: c05c7d2699eb32afe3979aeca3e98c8217a65f05 -->
 ## 26.10.26 00:33 МСК - Restore Yurik's timed rescue storyline
