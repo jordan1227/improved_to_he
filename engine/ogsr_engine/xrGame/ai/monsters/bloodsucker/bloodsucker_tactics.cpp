@@ -38,6 +38,8 @@
 #include "../../../movement_manager.h"
 #include "../../../nlc_stealth.h"
 #include "../../../restricted_object.h"
+#include "../../../detail_path_manager.h"
+#include "../anomaly_detector.h"
 #include "../../../sound_player.h"
 #include "level_graph.h"
 
@@ -517,7 +519,8 @@ bool CAI_Bloodsucker::nlc_cloak_override(visibility_t& state)
     if (!m_nlc_on || m_nlc_b.cloak_xray_radius <= 0.f)
         return ruled;
     const CEntityAlive* enemy = EnemyMan.get_enemy();
-    if (!enemy || enemy->Position().distance_to(Position()) > m_nlc_b.cloak_xray_radius)
+    // polish pass 4: against a stalker it stays fully cloaked up to the strike (x-ray is seen from 25 m)
+    if (!enemy || enemy->Position().distance_to(Position()) > m_nlc_b.cloak_xray_radius || nlc_npc_strike_cloaked(enemy))
         return ruled;
     if (!ruled)
         return false; // the stock rule: full within full_visibility_radius, else partial
@@ -608,7 +611,9 @@ bool CAI_Bloodsucker::nlc_cloak_rules(visibility_t& state)
         const CEntityAlive* enemy = EnemyMan.get_enemy();
         if (!enemy)
             return false;
-        float reveal = b.cloak_cooldown_radius;
+        // polish pass 4: against a stalker no tell and no close-range reveal: the lunge or the first swing reveals it
+        const bool npc_cloaked = nlc_npc_strike_cloaked(enemy);
+        float reveal = npc_cloaked ? 0.f : b.cloak_cooldown_radius;
         float strike_reveal = 0.f; // > 0: a ready strike reveals within this
         float h = 0.f;
         const bool perch_enemy = nlc_enemy_perched(enemy, h);
@@ -626,7 +631,7 @@ bool CAI_Bloodsucker::nlc_cloak_rules(visibility_t& state)
             to.y = 0.f;
             charging = fwd.square_magnitude() > EPS_L && to.square_magnitude() > EPS_L && angle_between_vectors(fwd, to) < deg2rad(45.f);
         }
-        if (charging && !blocked)
+        if (charging && !blocked && !npc_cloaked)
         {
             // no lunge at a perched enemy (it cannot reach it) nor during a siege
             if (!perch && !perch_enemy && b.run_attack_decloak && ra && !ra->is_active() && now >= ra->time_next_attack())
@@ -685,7 +690,7 @@ bool CAI_Bloodsucker::nlc_cloak_rules(visibility_t& state)
 }
 
 // faint steps while cloaked (the actor's step callback keeps the original power)
-float CAI_Bloodsucker::step_volume_k() { return (m_nlc_on && state_invisible) ? m_nlc_b.cloak_step_volume : 1.f; }
+float CAI_Bloodsucker::step_volume_k() { return (m_nlc_on && state_invisible) ? m_nlc_b.cloak_step_volume * nlc_mask_step_k() : 1.f; }
 
 // the slow sneak gait while cloaked: close to an unseen enemy, near the edge of its view
 bool CAI_Bloodsucker::nlc_cloak_keeps_gait()
@@ -875,6 +880,7 @@ void CAI_Bloodsucker::nlc_backhit_update()
 
 bool CAI_Bloodsucker::nlc_run_target_override(Fvector& position, u32& vertex)
 {
+    m_nlc_s2.run_polled = Device.dwTimeGlobal;
     // a dodge step while charging in (nlc_melee_dodge_update) wins over the flank charge
     if (m_nlc_dodge_active)
     {
@@ -892,38 +898,83 @@ bool CAI_Bloodsucker::nlc_run_target_override(Fvector& position, u32& vertex)
         return false;
     };
     const CEntityAlive* enemy = EnemyMan.get_enemy();
-    if (!enemy || !smart_cast<const CActor*>(enemy) || nlc_siege_active() || nlc_siege_wanted() || m_nlc_grab_intent)
+    if (!enemy || nlc_siege_active() || nlc_siege_wanted() || m_nlc_grab_intent)
         return stop("no target");
-    if (nlc_threat() & eThreatWatched)
-        return stop("watched"); // watched: straight in (side guard)
-    Fvector eye, view;
-    if (!nlc_enemy_eye(enemy, eye, view))
-        return stop("no view");
-    view.y = 0.f;
-    if (view.square_magnitude() < EPS_L)
-        return stop("no view");
-    view.normalize();
+    // NLC polish pass: in a group the approach keeps the target between it and the other guns; an NPC target is
+    // flanked like the player (its body direction is its view)
+    Fvector shield{};
+    const bool grp = nlc_grp_shield_dir(enemy, shield);
+    const bool is_actor = smart_cast<const CActor*>(enemy) != nullptr;
+    if (!is_actor && !grp && !(m_nlc_p2.npc_flank && nlc_enemy_stalker(enemy)))
+        return stop("no target");
 
     const Fvector ep = enemy->Position();
-    const Fvector r = flat_dir(ep, Position()); // player -> monster
+    const Fvector r = flat_dir(ep, Position()); // enemy -> monster
     const float dist = ep.distance_to_xz(Position());
-    if (r.square_magnitude() < EPS_L || dist < b.charge_flank_dist.x || dist > b.charge_flank_dist.y)
+    // polish pass 4: around a stalker the arc goes on to npc_flank_min_dist and to npc_flank_angle (it ended at 8 m,
+    // inside the 12 m a stalker sees the cloak from, and at the flank); 5 m of hysteresis on the outer bound
+    const bool npc_arc = !is_actor && !grp;
+    const float dmin = npc_arc && m_nlc_p2.npc_flank_min_dist > 0.f ? std::min(m_nlc_p2.npc_flank_min_dist, b.charge_flank_dist.x) : b.charge_flank_dist.x;
+    const float dmax = b.charge_flank_dist.y + (m_nlc_flank_on ? 5.f : 0.f);
+    const float goal = npc_arc ? std::max(m_nlc_p2.npc_flank_angle, b.charge_flank_angle) : b.charge_flank_angle;
+    if (r.square_magnitude() < EPS_L || dist < dmin || dist > dmax)
         return stop("distance");
-    const float phi = angle_between_vectors(view, r); // 0 in front of the player, 180 behind
-    if (phi >= b.charge_flank_angle - deg2rad(10.f))
-        return stop("at the flank");
-
-    // the side the monster is on (held 2 s, a turning player would flip it every frame)
     const u32 now = Device.dwTimeGlobal;
-    if (!m_nlc_flank_side || now >= m_nlc_flank_side_until)
+
+    Fvector w;
+    float phi;
+    if (grp)
     {
-        m_nlc_flank_side = (view.x * r.z - view.z * r.x) >= 0.f ? 1 : -1;
-        m_nlc_flank_side_until = now + 2000;
+        phi = angle_between_vectors(shield, r); // 0: the target stands between it and the others
+        if (phi < deg2rad(20.f))
+            return stop("in the shield line");
+        const float step = std::min(b.charge_flank_step, phi);
+        if (!m_nlc_flank_side || now >= m_nlc_flank_side_until)
+        {
+            const Fvector w1 = rotate_y(r, step), w2 = rotate_y(r, -step);
+            m_nlc_flank_side = angle_between_vectors(shield, w1) <= angle_between_vectors(shield, w2) ? 1 : -1;
+            m_nlc_flank_side_until = now + 2000;
+        }
+        w = rotate_y(r, float(m_nlc_flank_side) * step);
     }
-    // a waypoint on a ring around the player, charge_flank_step farther around toward the flank, a bit closer each time
-    const float step = std::min(b.charge_flank_step, b.charge_flank_angle - phi);
-    const Fvector w = rotate_y(r, float(m_nlc_flank_side) * step);
-    const float radius = std::max(dist * 0.85f, b.charge_flank_dist.x);
+    else
+    {
+        // glance tolerance, the sweep freeze and the "being tracked" reversal (bloodsucker_polish.cpp)
+        const int watch = nlc_flank_watch(enemy, dist);
+        if (watch == 1)
+        {
+            stop("watched");
+            // polish pass 5: watched by the player: oblique legs / the orbit instead of straight in
+            return is_actor && nlc_watched_approach(enemy, r, dist, position, vertex);
+        }
+        if (watch == 2)
+        {
+            position = Position();
+            vertex = ai_location().level_vertex_id();
+            return true; // stands still, cloaked
+        }
+        Fvector eye, view;
+        if (!nlc_enemy_eye(enemy, eye, view))
+            return stop("no view");
+        view.y = 0.f;
+        if (view.square_magnitude() < EPS_L)
+            return stop("no view");
+        view.normalize();
+        phi = angle_between_vectors(view, r); // 0 in front of the enemy, 180 behind
+        if (phi >= goal - deg2rad(10.f))
+            return stop("at the flank");
+        // the side the monster is on (held 2 s, a turning player would flip it every frame)
+        if (!m_nlc_flank_side || now >= m_nlc_flank_side_until)
+        {
+            m_nlc_flank_side = (view.x * r.z - view.z * r.x) >= 0.f ? 1 : -1;
+            m_nlc_flank_side_until = now + 2000;
+        }
+        // a waypoint on a ring around the enemy, charge_flank_step farther around toward the flank, a bit closer each time
+        const float step = std::min(b.charge_flank_step, goal - phi);
+        w = rotate_y(r, float(m_nlc_flank_side) * step);
+        nlc_mask_creep(enemy, dist);
+    }
+    const float radius = std::max(dist * 0.85f, dmin);
     Fvector pt;
     pt.set(ep.x + w.x * radius, Position().y, ep.z + w.z * radius);
     if (!ai().level_graph().valid_vertex_position(pt))
@@ -937,7 +988,11 @@ bool CAI_Bloodsucker::nlc_run_target_override(Fvector& position, u32& vertex)
     if (!m_nlc_flank_on)
     {
         m_nlc_flank_on = true;
-        TAC_LOG("~ [evade] [%s]: flank charge %s: %.0f deg off the view, %.1f m", cName().c_str(), m_nlc_flank_side > 0 ? "right" : "left", rad2deg(phi), dist);
+        if (grp)
+            TAC_LOG("~ [evade] [%s]: shield approach %s: %.0f deg off the line behind [%s], %.1f m", cName().c_str(), m_nlc_flank_side > 0 ? "right" : "left", rad2deg(phi),
+                enemy->cName().c_str(), dist);
+        else
+            TAC_LOG("~ [evade] [%s]: flank charge %s: %.0f deg off the view, %.1f m", cName().c_str(), m_nlc_flank_side > 0 ? "right" : "left", rad2deg(phi), dist);
     }
     position = pt;
     vertex = n;
@@ -993,7 +1048,9 @@ void CAI_Bloodsucker::nlc_pounce_update()
     }
 
     // with strike_reveal_margin the pounce comes from full visibility after the tell; else (legacy) from the cloak
-    if (b.strike_reveal_margin > 0.f ? !nlc_strike_tell_done() : !state_invisible)
+    // polish pass 4: against a stalker there is no tell (legacy rule: from the cloak)
+    const bool tell = b.strike_reveal_margin > 0.f && !nlc_npc_strike_cloaked(EnemyMan.get_enemy());
+    if (tell ? !nlc_strike_tell_done() : !state_invisible)
         return;
     if (now < m_nlc_next_pounce || !nlc_pounce_ready())
         return;
@@ -1106,6 +1163,13 @@ void CAI_Bloodsucker::nlc_pounce_update()
     {
         m_nlc_pounce_hit = false;
         m_nlc_pouncing = true;
+        // NLC polish pass 9: a committed pounce: wherever it lands, it can walk out (see CAnomalyDetector::nlc_suspend)
+        if (anomaly_detector().nlc_avoided() && !anomaly_detector().nlc_suspended() && ::Random.randF() < nlc_lunge_anomaly_commit())
+        {
+            anomaly_detector().nlc_suspend();
+            m_nlc_s2.anom_susp = now;
+            TAC_LOG("~ [evade] [%s]: committed pounce: the noticed anomalies are ignored until it is out of them", cName().c_str());
+        }
         m_nlc_perch_unseen = 0;
         if (blind)
             TAC_LOG("~ [evade] [%s]: perch pounce blind (not seen for %u ms)", cName().c_str(), b.pounce_perch_blind_ms);
@@ -1162,6 +1226,7 @@ void CAI_Bloodsucker::nlc_tac_finish(const char* reason)
     SNlcTactic& t = m_nlc_tac;
     if (t.mode != eTacNone)
         TAC_LOG("~ [evade] [%s]: tactic %s end (%s) after %.1f s", cName().c_str(), mode_name(t.mode), reason, float(Device.dwTimeGlobal - t.mode_start) / 1000.f);
+    nlc_grp_break_end();
     t.mode = eTacNone;
     t.want = false;
     t.moving = false;
@@ -1351,7 +1416,11 @@ void CAI_Bloodsucker::nlc_tactic_update()
     const u16 eid = enemy ? enemy->ID() : u16(-1);
     if (eid != t.enemy_id)
     {
-        if (t.mode != eTacNone)
+        // NLC polish pass 3: a retreat goes on when the target changes (in a group it flipped every few seconds and
+        // each flip sent it back into the guns)
+        if (t.mode == eTacRecover && enemy)
+            TAC_LOG("~ [evade] [%s]: recover goes on, the target is now [%s]", cName().c_str(), enemy->cName().c_str());
+        else if (t.mode != eTacNone)
             nlc_tac_finish(enemy ? "enemy changed" : "enemy lost");
         t.enemy_id = eid;
         t.rolled_grab = false;
@@ -1361,6 +1430,7 @@ void CAI_Bloodsucker::nlc_tactic_update()
         t.burned = u32(-1);
         t.bias_stage = 0;
     }
+    nlc_grp_update(enemy); // NLC polish pass: who is around the target
     if (!enemy)
     {
         m_nlc_grab_intent = false;
@@ -1571,14 +1641,26 @@ void CAI_Bloodsucker::nlc_tac_try_enter(const CEntityAlive* enemy, bool actor_en
     // 1. recover (hit and run): hurt, the enemy not at arm's length; bolder with bloodsucker mates near
     const float max_h0 = conditions().GetMaxHealth();
     const float hp_now = max_h0 > 0.f ? conditions().GetHealth() / max_h0 : 1.f;
-    const float rec_health = std::max(b.tac_recover_health - b.tac_recover_pack_k * float(b.tac_recover_pack_k > 0.f ? nlc_tac_mates_near(b.tac_recover_pack_dist) : 0u),
+    float rec_health = std::max(b.tac_recover_health - b.tac_recover_pack_k * float(b.tac_recover_pack_k > 0.f ? nlc_tac_mates_near(b.tac_recover_pack_dist) : 0u),
         std::min(b.tac_recover_pack_min, b.tac_recover_health));
-    if (b.tac_recover_enabled && now >= t.recover_cd)
+    // NLC polish pass: among several guns it retreats earlier, and breaks off after a few swings whatever its health
+    if (nlc_grp_active())
+        rec_health += m_nlc_p2.grp_recover_add;
+    // pass 3: the threshold follows the scarred ceiling; under scar_floor it neither retreats nor breaks off
+    rec_health *= m_nlc_s2.cap;
+    const bool scarred_out = m_nlc_s2.cap <= m_nlc_p2.scar_floor;
+    const bool grp_break = !scarred_out && nlc_grp_break_due();
+    if (b.tac_recover_enabled && (now >= t.recover_cd || grp_break))
     {
         const float hp = hp_now;
         // cornered (closer than tac_recover_min_dist) it fights, unless below tac_recover_break_health (it kept fighting
         // at point blank down to 10-20% health)
-        if (hp < rec_health && (dist > b.tac_recover_min_dist || hp < b.tac_recover_break_health))
+        // NLC polish pass 2: the "cornered fights" rule (no retreat inside tac_recover_min_dist) holds only against the
+        // solo player: a normal one stood at point blank from 0.55 to 0.21 health in front of a stalker with an AK-74.
+        // Scars: once the ceiling is down at the threshold there is nothing to retreat for.
+        const bool close_ok = dist > b.tac_recover_min_dist || hp < b.tac_recover_break_health || !actor_enemy || nlc_grp_active();
+
+        if (grp_break || (hp < rec_health && now >= t.recover_cd && close_ok && !scarred_out))
         {
             const Fvector away = flat_dir(EnemyMan.get_enemy_position(), Position());
             Fvector pos{};
@@ -1626,12 +1708,26 @@ void CAI_Bloodsucker::nlc_tac_try_enter(const CEntityAlive* enemy, bool actor_en
             }
             if (r == eTacPickNone)
             {
-                t.recover_cd = now + 3000;
+                t.recover_cd = std::max(t.recover_cd, now + 3000);
+                m_nlc_s2.break_cd = now + 3000;
                 TAC_LOG("~ [evade] [%s]: recover: no point to break away to (ring, cover, ai-map walk, radial)", cName().c_str());
                 return;
             }
             nlc_tac_enter(eTacRecover, pos, node);
             TAC_LOG("~ [evade] [%s]: recover: point from %s, threshold %.2f", cName().c_str(), src, rec_health);
+            if (!(grp_break && !(hp < rec_health)) && m_nlc_p2.scar_heal_k < 1.f && now >= m_nlc_s2.scar_next && hp < m_nlc_s2.cap - 0.05f)
+            {
+                m_nlc_s2.scar_next = now + 8000; // one scar per retreat (a re-entry within seconds is the same retreat)
+                const float cap0 = m_nlc_s2.cap;
+                m_nlc_s2.cap = std::max(cap0 - std::max(cap0 - hp, 0.f) * (1.f - m_nlc_p2.scar_heal_k), 0.1f);
+                TAC_LOG("~ [evade] [%s]: scar: health ceiling %.2f -> %.2f (retreat at %.2f, heals back %.0f%%)", cName().c_str(), cap0, m_nlc_s2.cap, hp,
+                    m_nlc_p2.scar_heal_k * 100.f);
+            }
+            if (grp_break && !(hp < rec_health))
+            {
+                t.regen_v = 0.f; // a break is no retreat: no extra regeneration
+                nlc_grp_break_begin();
+            }
             return;
         }
     }
@@ -1748,12 +1844,16 @@ void CAI_Bloodsucker::nlc_tac_continue(const CEntityAlive* enemy, bool actor_ene
         }
         const float max_h = conditions().GetMaxHealth();
         // NLC: tac_recover_min_time: with fast regeneration the hide would last only seconds
-        const bool healed = max_h > 0.f && conditions().GetHealth() / max_h >= b.tac_recover_until && now >= t.mode_start + b.tac_recover_min_time;
-        if (healed || now >= t.mode_start + b.tac_recover_max_time)
+        const bool healed = max_h > 0.f && conditions().GetHealth() / max_h >= b.tac_recover_until * m_nlc_s2.cap && now >= t.mode_start + b.tac_recover_min_time;
+        const bool was_break = m_nlc_s2.breaking;
+        const bool brk = nlc_grp_break_over();
+        if (brk || (!was_break && healed) || now >= t.mode_start + b.tac_recover_max_time)
         {
+            nlc_grp_break_end();
             t.left_dir = flat_dir(enemy->Position(), Position());
-            t.recover_cd = now + b.tac_recover_cooldown + (b.tac_recover_cooldown_rand ? u32(::Random.randI(int(b.tac_recover_cooldown_rand) + 1)) : 0u);
-            to_stalk(t.left_dir, b.tac_return_angle, healed ? "recovered" : "recover time");
+            if (!was_break)
+                t.recover_cd = now + b.tac_recover_cooldown + (b.tac_recover_cooldown_rand ? u32(::Random.randI(int(b.tac_recover_cooldown_rand) + 1)) : 0u);
+            to_stalk(t.left_dir, b.tac_return_angle, was_break ? "group break over" : (healed ? "recovered" : "recover time"));
         }
         break;
     }
@@ -2405,21 +2505,25 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
     const u32 now = Device.dwTimeGlobal;
     const CEntityAlive* enemy = EnemyMan.get_enemy();
     CActor* actor = enemy ? smart_cast<CActor*>(const_cast<CEntityAlive*>(enemy)) : nullptr;
+    // NLC polish pass: an aiming stalker is dodged too (melee_dodge_npc)
+    const bool human = actor || nlc_dodge_target_npc(enemy);
 
-    // the player's sideways speed across the line to the monster (strafe reading)
-    if (actor)
+    // the enemy's sideways speed across the line to the monster (strafe reading), and its speed away from it
+    if (human)
     {
         if (m_nlc_enemy_last_t && now > m_nlc_enemy_last_t)
         {
             const float dt = float(now - m_nlc_enemy_last_t) / 1000.f;
             Fvector v;
-            v.sub(actor->Position(), m_nlc_enemy_last).div(std::max(dt, 0.001f));
-            const Fvector r0 = flat_dir(actor->Position(), Position());
+            v.sub(enemy->Position(), m_nlc_enemy_last).div(std::max(dt, 0.001f));
+            const Fvector r0 = flat_dir(enemy->Position(), Position());
             const Fvector side = rotate_y(r0, PI_DIV_2);
             const float lat = v.x * side.x + v.z * side.z;
             m_nlc_enemy_lat_v = 0.8f * m_nlc_enemy_lat_v + 0.2f * lat;
+            m_nlc_s2.away_v = 0.8f * m_nlc_s2.away_v + 0.2f * -(v.x * r0.x + v.z * r0.z);
+            m_nlc_s2.enemy_speed = 0.8f * m_nlc_s2.enemy_speed + 0.2f * _sqrt(v.x * v.x + v.z * v.z);
         }
-        m_nlc_enemy_last = actor->Position();
+        m_nlc_enemy_last = enemy->Position();
         m_nlc_enemy_last_t = now;
     }
 
@@ -2439,8 +2543,9 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
                 enemy->Position().distance_to_xz(Position()));
         }
     };
-    if (!actor || !in_melee || busy)
+    if (!human || !in_melee || busy)
     {
+        nlc_backoff_update(enemy, 0.f, false, true);
         if (m_nlc_dodge_active)
         {
             end_step(busy ? "busy" : "state");
@@ -2451,6 +2556,7 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
     }
 
     const float dist = enemy->Position().distance_to_xz(Position());
+    nlc_backoff_update(enemy, dist, in_melee, busy); // NLC polish pass: backing straight off invites the lunge
     if (m_nlc_dodge_active)
     {
         // a swing animation cannot be replaced before it ends (CControlAnimationBase::select_animation): the step's clock,
@@ -2470,6 +2576,7 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
             }
             TAC_LOG("~ [evade] [%s]: dodge waited %u ms for the swing", cName().c_str(), now - m_nlc_dodge_wait);
             m_nlc_dodge_wait = 0;
+            m_nlc_s2.dodge_checked = false;
             m_nlc_dodge_start = now;
             m_nlc_dodge_until = now + m_nlc_dodge_dur;
             m_nlc_dodge_from = Position();
@@ -2483,17 +2590,51 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
             m_nlc_dodge_boosted = true;
             nlc_set_dodge(b.melee_dodge_speed_k, m_nlc_dodge_until > now ? m_nlc_dodge_until - now : 50);
         }
+        // polish pass 5: a step that stands (no path) or runs straight on at the player by half its time is cut and
+        // its charge handed back (it stood 1.5 s in front of the gun through three such steps)
+        // (pass 6: charge steps only and not before 300 ms: a melee step from standstill has moved 0.3-0.4 m by half
+        // its time and was cut every time)
+        if (!m_nlc_s2.dodge_checked && st == eStateAttack_Run && !m_nlc_dodge_closing && now >= m_nlc_dodge_start + std::max(m_nlc_dodge_dur / 2, 300u))
+        {
+            m_nlc_s2.dodge_checked = true;
+            const float moved = Position().distance_to_xz(m_nlc_dodge_from);
+            const float turned = _abs(angle_difference(flat_dir(enemy->Position(), Position()).getH(), m_nlc_dodge_bearing0));
+            const bool straight = st == eStateAttack_Run && !m_nlc_dodge_closing && moved > 1.5f && turned < deg2rad(5.f);
+            if (moved < 0.5f || straight)
+            {
+                if (nlc_evade_debug())
+                {
+                    const auto& dp = control().path_builder().detail().path();
+                    Fvector face = Direction(), go;
+                    face.y = 0.f;
+                    go.sub(m_nlc_dodge_target, m_nlc_dodge_from);
+                    go.y = 0.f;
+                    Msg("~ [evade] [%s]: stalled step: path %u points, %s, ends %.1f m from the step point; heading %.0f deg off the step, step point %.1f m away, speed %.1f m/s",
+                        cName().c_str(), u32(dp.size()), control().path_builder().detail().actual() ? "actual" : "not actual",
+                        dp.empty() ? -1.f : dp.back().position.distance_to_xz(m_nlc_dodge_target), rad2deg(angle_between_vectors(face, go)),
+                        Position().distance_to_xz(m_nlc_dodge_target), movement().speed());
+                }
+                end_step(straight ? "stalled: straight on" : "stalled: no move");
+                if (m_nlc_p2.dodge_budget > 0 && !m_nlc_s2.approach)
+                    m_nlc_s2.charges = std::min(float(m_nlc_p2.dodge_budget), m_nlc_s2.charges + 1.f);
+                m_nlc_dodge_left = 0;
+                m_nlc_dodge_cd = now + 400;
+                nlc_clear_dodge();
+                return;
+            }
+        }
         const bool reached = now >= m_nlc_dodge_start + b.melee_dodge_min_ms && Position().distance_to_xz(m_nlc_dodge_target) < 0.5f;
         if (reached || now >= m_nlc_dodge_until)
         {
             end_step(reached ? "reached" : "time");
             if (m_nlc_dodge_left > 0)
-                m_nlc_dodge_next = now + b.melee_dodge_gap_ms;
+                m_nlc_dodge_next = now + (m_nlc_s2.behind ? 0u : (m_nlc_p2.dodge_gap.y > 0.f ? u32(::Random.randF(m_nlc_p2.dodge_gap.x, m_nlc_p2.dodge_gap.y)) : b.melee_dodge_gap_ms));
             else
             {
-                m_nlc_dodge_cd = now + (m_nlc_dodge_closing ? b.melee_dodge_close_cd : b.melee_dodge_cd);
-                // counter-strike: the lunge may start at once (the swing follows anyway in melee range)
-                m_nlc_dodge_counter = b.melee_dodge_counter > 0.f && ::Random.randF() < b.melee_dodge_counter;
+                m_nlc_dodge_cd = now + (m_nlc_dodge_closing ? b.melee_dodge_close_cd : (m_nlc_p2.dodge_budget > 0 ? m_nlc_p2.dodge_budget_cd : b.melee_dodge_cd));
+                // counter-strike: the lunge may start at once (the swing follows anyway in melee range); always after a pass behind
+                m_nlc_dodge_counter = m_nlc_s2.behind || (b.melee_dodge_counter > 0.f && ::Random.randF() < b.melee_dodge_counter);
+                m_nlc_s2.behind = false;
                 if (m_nlc_dodge_counter)
                     TAC_LOG("~ [evade] [%s]: dodge: counter-strike", cName().c_str());
             }
@@ -2502,9 +2643,20 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
     }
     if (now < m_nlc_dodge_cd || now < m_nlc_dodge_next)
         return;
-    if (dist > b.melee_dodge_range)
+    // polish pass 5: while charging at the player the steps start farther out (before the lunge band)
+    const float dodge_range = (st == eStateAttack_Run && actor) ? std::max(b.melee_dodge_range, m_nlc_p2.dodge_charge_range) : b.melee_dodge_range;
+    if (dist > dodge_range)
     {
         m_nlc_dodge_left = 0;
+        return;
+    }
+    // polish pass 7: a charge step is only read by the plain attack run state. With another movement owning the path
+    // (a tactic point, another approach substate: the state type still says "attack run") the step ran straight on,
+    // boosted (stalled steps logged a valid path ending 7-39 m from the step point).
+    if (st == eStateAttack_Run && now > m_nlc_s2.run_polled + 200)
+    {
+        m_nlc_dodge_left = 0;
+        m_nlc_dodge_next = now + 200;
         return;
     }
 
@@ -2512,20 +2664,24 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
     // range (or while the player reloads) a closing step instead
     const u8 th = nlc_threat();
     bool ads = false;
-    if ((th & eThreatWatched) && (th & eThreatArmed))
+    if (actor && (th & eThreatWatched) && (th & eThreatArmed))
         if (CWeapon* w = smart_cast<CWeapon*>(actor->inventory().ActiveItem()))
             ads = w->IsZoomed();
     const bool shot = HitMemory.get_last_hit_object() == enemy && now < HitMemory.get_last_hit_time() + 500;
     bool reloading = false;
-    if (PIItem item = actor->inventory().ActiveItem())
-        if (CHudItem* hi = item->cast_hud_item())
-            reloading = hi->GetState() == CHUDState::eReload;
-    const bool aimed = ads || (th & eThreatLocked) || shot;
+    if (const CInventoryOwner* owner = smart_cast<const CInventoryOwner*>(enemy))
+        if (PIItem item = owner->inventory().ActiveItem())
+            if (CHudItem* hi = item->cast_hud_item())
+                reloading = hi->GetState() == CHUDState::eReload;
+    // NLC polish pass: a slow gun between its shots is an opening like a reload; a shot this way (a missed hip shot
+    // too) and an aiming stalker are triggers
+    reloading = reloading || nlc_dodge_cycle_opening();
+    const bool aimed = ads || (th & eThreatLocked) || shot || (!actor && (th & eThreatAimed)) || nlc_dodge_fire_trigger(th);
     const float melee_min = MeleeChecker.get_min_distance();
     const bool gap = dist > melee_min && dist <= b.melee_dodge_close_range;
     const bool closing = gap && (reloading || !aimed || m_nlc_dodge_left > 0);
 
-    if (m_nlc_dodge_left > 0 && !aimed && !closing)
+    if (m_nlc_dodge_left > 0 && !aimed && !closing && !m_nlc_s2.behind)
     {
         // the player stopped aiming: the burst ends
         m_nlc_dodge_left = 0;
@@ -2537,11 +2693,46 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
     {
         if (!aimed && !gap)
             return;
-        m_nlc_dodge_left = closing && !aimed ? 1 : b.melee_dodge_steps;
+        // polish pass 5: a target that stands inside the lunge band with the lunge ready gets the lunge (the step
+        // always came first and blocked it)
+        if (st == eStateAttack_Run && actor && !gap && m_nlc_p2.lunge_still_speed > 0.f && m_nlc_s2.enemy_speed < m_nlc_p2.lunge_still_speed && ra &&
+            now >= ra->time_next_attack() && dist >= ra->nlc_dist_min() - 0.3f && dist <= ra->nlc_dist_max() + 0.7f && !m_nlc_grab_intent)
+        {
+            if (now > m_nlc_s2.still_log + 1500)
+            {
+                m_nlc_s2.still_log = now;
+                TAC_LOG("~ [evade] [%s]: the target stands (%.1f m/s) at %.1f m with the lunge ready: no charge step", cName().c_str(), m_nlc_s2.enemy_speed, dist);
+            }
+            return;
+        }
+        // NLC polish pass: a burst spends dodge charges (melee_dodge_budget); a closing step is free
+        const bool approach = closing && !aimed;
+        int burst = approach ? 1 : nlc_dodge_burst_size(b.melee_dodge_steps);
+        if (burst <= 0)
+        {
+            m_nlc_dodge_next = now + 200;
+            return;
+        }
+        m_nlc_s2.approach = approach;
+        m_nlc_s2.behind = false;
+        if (!approach && actor && burst >= 2 && m_nlc_p2.dodge_behind > 0.f && dist <= b.melee_dodge_dist + 0.7f && ::Random.randF() < m_nlc_p2.dodge_behind)
+        {
+            m_nlc_s2.behind = true;
+            burst = 2;
+            TAC_LOG("~ [evade] [%s]: dodge: pass behind", cName().c_str());
+        }
+        m_nlc_dodge_left = burst;
         m_nlc_dodge_counter = false;
-        // side: against the player's strafe (stays out of the swinging aim), else random
-        if (_abs(m_nlc_enemy_lat_v) > 1.f)
+        // side: off the crosshair (against its sweep, else away from it), else against the strafe, else random
+        m_nlc_s2.side_why = "";
+        const int aim_side = nlc_dodge_aim_side(enemy, flat_dir(enemy->Position(), Position()), m_nlc_s2.side_why);
+        if (aim_side)
+            m_nlc_dodge_side = aim_side;
+        else if (_abs(m_nlc_enemy_lat_v) > 1.f)
+        {
             m_nlc_dodge_side = m_nlc_enemy_lat_v > 0.f ? -1 : 1;
+            m_nlc_s2.side_why = ", against the strafe";
+        }
         else
             m_nlc_dodge_side = ::Random.randI(2) ? 1 : -1;
         if (b.melee_dodge_sound)
@@ -2562,8 +2753,9 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
         radius = std::max(dist - 1.f, b.melee_dodge_dist);
     else if (melee_step)
         radius = std::clamp(dist, 1.2f, b.melee_dodge_dist);
-    const float step_len = ::Random.randF(b.melee_dodge_step.x, b.melee_dodge_step.y);
-    const float max_a = deg2rad(b.melee_dodge_angle.y);
+    const bool behind = m_nlc_s2.behind && !closing;
+    const float step_len = behind ? 3.2f : ::Random.randF(b.melee_dodge_step.x, b.melee_dodge_step.y);
+    const float max_a = deg2rad(behind ? 85.f : b.melee_dodge_angle.y);
     const float base_a = std::min(2.f * std::asin(std::min(1.f, step_len / (2.f * std::max(radius, 0.5f)))), max_a);
     const u32 mine = ai_location().level_vertex_id();
     // both sides; the preferred one unless it is blocked (a wall cut steps short)
@@ -2610,10 +2802,15 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
         return;
     }
     --m_nlc_dodge_left;
-    m_nlc_dodge_side = b.melee_dodge_alternate ? -used : used;
+    if (m_nlc_p2.dodge_budget > 0 && !m_nlc_s2.approach)
+        m_nlc_s2.charges = std::max(m_nlc_s2.charges - 1.f, 0.f);
+    const bool flip = b.melee_dodge_alternate ||
+        (!m_nlc_s2.behind && m_nlc_dodge_left > 0 && m_nlc_p2.dodge_doubleback > 0.f && ::Random.randF() < m_nlc_p2.dodge_doubleback);
+    m_nlc_dodge_side = flip ? -used : used;
     m_nlc_dodge_prev = used;
     m_nlc_dodge_closing = closing;
     m_nlc_dodge_active = true;
+    m_nlc_s2.dodge_checked = false;
     m_nlc_dodge_boosted = false;
     m_nlc_dodge_target = pos;
     m_nlc_dodge_node = node;
@@ -2629,8 +2826,9 @@ void CAI_Bloodsucker::nlc_melee_dodge_update()
     nlc_set_dodge(b.melee_dodge_start_k, 150);
     nlc_set_turn_boost(b.melee_dodge_turn_k, (m_nlc_dodge_until - now) + 300);
     path().prepare_builder();
-    TAC_LOG("~ [evade] [%s]: %s dodge %s, %.1f m step to %.1f m from the player, %u ms%s%s (%d left)", cName().c_str(), closing ? "closing" : (st == eStateAttack_Run ? "charge" : "melee"),
-        used > 0 ? "right" : "left", len, radius, m_nlc_dodge_until - now, _abs(m_nlc_enemy_lat_v) > 1.f ? ", against the strafe" : "", reversed ? ", reversal, backs off" : "", m_nlc_dodge_left);
+    TAC_LOG("~ [evade] [%s]: %s dodge %s, %.1f m step to %.1f m from [%s], %u ms%s%s (%d left, %.1f charges)", cName().c_str(),
+        closing ? "closing" : (behind ? "behind" : (st == eStateAttack_Run ? "charge" : "melee")), used > 0 ? "right" : "left", len, radius, enemy->cName().c_str(),
+        m_nlc_dodge_until - now, m_nlc_s2.side_why, reversed ? ", reversal, backs off" : "", m_nlc_dodge_left, m_nlc_s2.charges);
 }
 
 bool CAI_Bloodsucker::nlc_melee_override()

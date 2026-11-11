@@ -450,6 +450,15 @@ void CBaseMonster::Hit(SHit* pHDS)
     // NLC: health actually lost (after immunities), per attacker, for damage-weighted target selection
     const float health_before = conditions().GetHealth();
 
+    // NLC polish pass 6: claws against a hide tuned for the player's knife (boar / flesh wound_immunity 0.01-0.1) made
+    // monster fights endless: a wound hit from another monster counts at monster_wound_floor at least
+    if (s_nlc_wound_floor > 0.f && HDS.hit_type == ALife::eHitTypeWound && HDS.who && HDS.who != this && smart_cast<CBaseMonster*>(HDS.who))
+    {
+        const float k = conditions().GetHitImmunity(ALife::eHitTypeWound);
+        if (k > 0.0001f && k < s_nlc_wound_floor)
+            HDS.power *= s_nlc_wound_floor / k;
+    }
+
     //	inherited::Hit(P,dir,who,element,p_in_object_space,impulse,hit_type);
     inherited::Hit(&HDS);
 

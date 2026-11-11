@@ -150,6 +150,11 @@ public:
         float lag_jit{1.f};
         u32 lag_reroll{};
         float lag_used{};
+        // polish pass: a cloaked bloodsucker beyond cloak_blind_dist is aimed at this point (where it was last made out)
+        Fvector blind_pos{};
+        u32 blind_time{};
+        bool blind_on{};
+        u32 blind_fire_until{}, blind_fire_next{};
         // last shot at a mutant
         u16 shot_target{u16(-1)};
         float dist{}, ang_rate{}, side_speed{}, err_head{}, err_stale{}, err_shot{}, eye_age{};
@@ -189,6 +194,7 @@ public:
     void nlc_mut_on_shot(CWeapon* weapon);
     void nlc_mut_on_hit(const CBaseMonster* monster);
     void nlc_mut_engage_event(const CEntityAlive* monster, float dist, int rule);
+    bool nlc_mut_blind_fire_ok(const CEntityAlive* enemy); // pass 3: short bursts at a cloaked bloodsucker it cannot make out
     void nlc_mut_set_gate(int code)
     {
         m_nlc_mut.gate = code;

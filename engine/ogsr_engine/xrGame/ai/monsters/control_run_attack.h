@@ -15,6 +15,9 @@ class CControlRunAttack : public CControl_ComCustom<>
 
     // -1 = not checked yet, 0 = the visual has no run-attack cycle, 1 = usable
     s8 m_cycle_state{-1};
+    bool m_nlc_anomaly_commit{}; // NLC: this lunge lifted the anomaly restrictions (restored on release)
+    u32 m_nlc_force_until{};
+    float m_nlc_force_min{2.f};
 
 public:
     virtual void load(LPCSTR section);
@@ -27,6 +30,12 @@ public:
 
     // NLC: bloodsucker tactics (lunge ready) and cloak radius; the same floors as check_start_conditions
     u32 time_next_attack() const { return m_time_next_attack; }
+    // NLC polish pass: until `until` the lunge ignores its cooldown and the moving test, and may start from `dmin`
+    void nlc_force(u32 until, float dmin)
+    {
+        m_nlc_force_until = until;
+        m_nlc_force_min = dmin;
+    }
     float nlc_dist_min() const { return m_min_dist < 2.5f ? 2.5f : m_min_dist; }
     float nlc_dist_max() const
     {

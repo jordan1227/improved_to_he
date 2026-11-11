@@ -229,6 +229,10 @@ void CBaseMonster::nlc_siege_load(LPCSTR section)
     p.growl_interval = siege_v2(section, "elev_growl_interval", Fvector2().set(8000.f, 15000.f));
     p.lock_radius = std::max(siege_f(section, "elev_lock_radius", 10.f), 1.f);
     p.patience = std::max(siege_ms(section, "elev_patience", 75000), 1000u);
+    p.third_ms = siege_ms(section, "elev_third_ms", 0);
+    p.third_target_k = std::clamp(siege_f(section, "elev_third_target_k", 0.3f), 0.01f, 1.f);
+    p.third_shooter_k = std::clamp(siege_f(section, "elev_third_shooter_k", 2.f), 1.f, 10.f);
+    p.other_dist = std::max(siege_f(section, "elev_other_dist", 0.f), 0.f);
     p.faint_patience = std::min(siege_ms(section, "elev_faint_patience", 30000), p.patience);
     p.distract_after = siege_ms(section, "elev_distract_after", 10000);
     p.retreat_dist = std::max(siege_f(section, "elev_retreat_dist", 28.f), 5.f);
@@ -375,6 +379,64 @@ void CBaseMonster::nlc_siege_track()
             s.ground_since = now;
     }
 
+    // NLC polish pass: the siege is a solo-target behaviour. Shot by someone else while its enemy is out of reach, it is
+    // suspended for elev_third_ms and the shooter gets the attention (nlc_enemy_danger_k); it stood cloaked under fire.
+    if (p.third_ms && (elevated || s.active))
+    {
+        const u32 hit_time = HitMemory.get_last_hit_time();
+        if (hit_time > s.third_seen)
+        {
+            s.third_seen = hit_time;
+            const CEntityAlive* who = smart_cast<const CEntityAlive*>(HitMemory.get_last_hit_object());
+            if (who && who != enemy && who != this && who->g_Alive() && now < hit_time + 3000)
+            {
+                if (now >= s.third_until)
+                    SIEGE_LOG("~ [siege] [%s]: shot by [%s] while [%s] is out of reach: siege suspended %u s", cName().c_str(), who->cName().c_str(), enemy->cName().c_str(),
+                        p.third_ms / 1000);
+                s.third_until = now + p.third_ms;
+                s.third_id = who->ID();
+                s.third_from = enemy->ID();
+            }
+        }
+    }
+    // pass 3: a remembered enemy on the ground within elev_other_dist does the same without a hit (stalkers stop
+    // shooting once a cloak hides the monster, and it sat out a 90 s siege under the player with them next to it)
+    if (p.third_ms && p.other_dist > 0.f && (elevated || s.active) && now >= s.other_next)
+    {
+        s.other_next = now + 1000;
+        const CEntityAlive* best = nullptr;
+        float best_d = p.other_dist;
+        for (const auto& it : EnemyMemory.get_memory())
+        {
+            const CEntityAlive* e = it.first;
+            if (!e || e == enemy || !e->g_Alive() || e->getDestroy())
+                continue;
+            const float d = e->Position().distance_to(Position());
+            if (d >= best_d)
+                continue;
+            const u32 v = e->ai_location().level_vertex_id();
+            if (!ai().level_graph().valid_vertex_id(v) || _abs(e->Position().y - ai().level_graph().vertex_position(v).y) > 1.5f)
+                continue; // it is up somewhere too
+            best = e;
+            best_d = d;
+        }
+        if (best)
+        {
+            if (now >= s.third_until)
+                SIEGE_LOG("~ [siege] [%s]: [%s] is %.1f m away on the ground while [%s] is out of reach: siege suspended %u s", cName().c_str(), best->cName().c_str(), best_d,
+                    enemy->cName().c_str(), p.third_ms / 1000);
+            s.third_until = now + p.third_ms;
+            s.third_id = best->ID();
+            s.third_from = enemy->ID();
+        }
+    }
+    if (now < s.third_until && s.third_from == enemy->ID())
+    {
+        if (s.active)
+            s.end_reason = "third party";
+        return;
+    }
+
     if (!s.active)
     {
         const u32 grace = s.toggles ? p.grace_repeat : p.grace_first;
@@ -408,6 +470,18 @@ void CBaseMonster::nlc_siege_track()
     }
 
     s.want = true;
+}
+
+float CBaseMonster::nlc_enemy_danger_k(const CEntityAlive* e)
+{
+    const SNlcSiege& s = m_nlc_siege;
+    if (!e || Device.dwTimeGlobal >= s.third_until)
+        return 1.f;
+    if (e->ID() == s.third_from)
+        return m_nlc_siege_p.third_target_k;
+    if (e->ID() == s.third_id)
+        return m_nlc_siege_p.third_shooter_k;
+    return 1.f;
 }
 
 //////////////////////////////////////////////////////////////////////////

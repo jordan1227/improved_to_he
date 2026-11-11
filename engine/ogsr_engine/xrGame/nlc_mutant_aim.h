@@ -18,6 +18,10 @@ struct SNlcMutantAim
     float snap_dist{8.f};
     float cloak_cone_deg{1.5f}; // A3: extra dispersion against a cloaked bloodsucker
     float xray_cone_deg{0.75f}; // ... against one in x-ray
+    float cloak_blind_dist{0.f}; // polish pass: a cloaked bloodsucker farther than this is aimed at where it was last made out (0 = off)
+    float cloak_track_speed{2.f}; // ... that point follows it at this speed, m/s
+    float blind_burst_ms{0.f}; // pass 3: firing at that point comes in bursts this long (0 = no limit)
+    float blind_pause_ms{3000.f}; // ... with this pause between them (+- 30 %)
     float spread_deg{0.f};      // A5: extra dispersion against any mutant (0 = off)
     float psy_cone_deg{3.f};    // psy pressure: extra dispersion against mutants, full at psy health psy_cone_full
     float psy_cone_full{0.25f}; // (linear from psy 1; psy 0 counts as unaffected, see GetWeaponAccuracy)
@@ -73,6 +77,10 @@ inline SNlcMutantAim& nlc_mutant_aim()
             r.snap_dist = READ_IF_EXISTS(pSettings, r_float, sect, "snap_dist", r.snap_dist);
             r.cloak_cone_deg = READ_IF_EXISTS(pSettings, r_float, sect, "cloak_cone_deg", r.cloak_cone_deg);
             r.xray_cone_deg = READ_IF_EXISTS(pSettings, r_float, sect, "xray_cone_deg", r.xray_cone_deg);
+            r.cloak_blind_dist = READ_IF_EXISTS(pSettings, r_float, sect, "cloak_blind_dist", r.cloak_blind_dist);
+            r.cloak_track_speed = READ_IF_EXISTS(pSettings, r_float, sect, "cloak_track_speed", r.cloak_track_speed);
+            r.blind_burst_ms = READ_IF_EXISTS(pSettings, r_float, sect, "blind_burst_ms", r.blind_burst_ms);
+            r.blind_pause_ms = READ_IF_EXISTS(pSettings, r_float, sect, "blind_pause_ms", r.blind_pause_ms);
             r.spread_deg = READ_IF_EXISTS(pSettings, r_float, sect, "spread_deg", r.spread_deg);
             r.psy_cone_deg = READ_IF_EXISTS(pSettings, r_float, sect, "psy_cone_deg", r.psy_cone_deg);
             r.psy_cone_full = READ_IF_EXISTS(pSettings, r_float, sect, "psy_cone_full", r.psy_cone_full);
@@ -127,6 +135,14 @@ inline bool nlc_mutant_aim_field(LPCSTR name, float** f, bool** b)
         *f = &r.cloak_cone_deg;
     else if (!xr_strcmp(name, "xray_cone_deg"))
         *f = &r.xray_cone_deg;
+    else if (!xr_strcmp(name, "cloak_blind_dist"))
+        *f = &r.cloak_blind_dist;
+    else if (!xr_strcmp(name, "cloak_track_speed"))
+        *f = &r.cloak_track_speed;
+    else if (!xr_strcmp(name, "blind_burst_ms"))
+        *f = &r.blind_burst_ms;
+    else if (!xr_strcmp(name, "blind_pause_ms"))
+        *f = &r.blind_pause_ms;
     else if (!xr_strcmp(name, "spread_deg"))
         *f = &r.spread_deg;
     else if (!xr_strcmp(name, "psy_cone_deg"))

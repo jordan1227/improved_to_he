@@ -9,6 +9,8 @@
 #include "../../ai_space.h"
 #include "../../movement_manager_space.h"
 #include "../../level_path_manager.h"
+#include "../../level_path_builder.h"
+#include "../../detail_path_builder.h"
 #include "../../actor.h"
 #include "../../Actor_Memory.h"
 #include "../../visual_memory_manager.h"
@@ -132,6 +134,7 @@ void CControlPathBuilder::on_build_path() { m_man->notify(ControlCom::eventPathB
 //////////////////////////////////////////////////////////////////////////
 bool CControlPathBuilder::build_special(const Fvector& target, u32 node, u32 vel_mask)
 {
+    m_nlc_special_fail = 1;
     if (!accessible(target))
         return false;
 
@@ -142,6 +145,7 @@ bool CControlPathBuilder::build_special(const Fvector& target, u32 node, u32 vel
         node = ai().level_graph().check_position_in_direction(object().ai_location().level_vertex_id(), object().Position(), target);
         restrictions().remove_border();
 
+        m_nlc_special_fail = ai().level_graph().valid_vertex_id(node) ? 3 : 2;
         if (!ai().level_graph().valid_vertex_id(node) || !accessible(node))
             return false;
     }
@@ -160,12 +164,24 @@ bool CControlPathBuilder::build_special(const Fvector& target, u32 node, u32 vel
     detail().set_dest_position(target);
     set_level_dest_vertex(node);
 
+    // NLC polish pass 7: a background path build of the chase still pending made update_path() return at once: the
+    // line was "not built", the lunge ended and its clip played in place. The pending build is dropped (as
+    // on_restrictions_change does); this line is built at once.
+    if (wait_for_distributed_computation())
+    {
+        level_path_builder().remove();
+        detail_path_builder().remove();
+    }
     set_build_path_at_once();
     update_path();
 
     // check if path built successfully
+    m_nlc_special_fail = 4;
     if (!path_completed() && (detail().time_path_built() >= Device.dwTimeGlobal))
+    {
+        m_nlc_special_fail = 0;
         return true;
+    }
 
     return false;
 }

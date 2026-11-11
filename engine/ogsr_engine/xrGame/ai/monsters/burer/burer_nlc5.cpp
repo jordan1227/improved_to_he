@@ -156,6 +156,7 @@ void CBurer::nlc_load_pass5(LPCSTR section)
     m_nlc_gaze_passive_cap = READ_IF_EXISTS(pSettings, r_float, section, "nlc_gaze_passive_cap", 0.5f);
     m_nlc_gaze_loss = READ_IF_EXISTS(pSettings, r_float, section, "nlc_gaze_loss", 0.5f);
     m_nlc_gaze_drain = READ_IF_EXISTS(pSettings, r_float, section, "nlc_gaze_drain", 0.15f);
+    m_nlc_gaze_drain_start = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "nlc_gaze_drain_start", 0.5f), 0.f, 0.95f);
     m_nlc_gaze_seize_stamina = READ_IF_EXISTS(pSettings, r_float, section, "nlc_gaze_seize_stamina", 0.5f);
     m_nlc_gaze_window_min = READ_IF_EXISTS(pSettings, r_u32, section, "nlc_gaze_window_min", 2000);
     m_nlc_gaze_window_max = _max(READ_IF_EXISTS(pSettings, r_u32, section, "nlc_gaze_window_max", 3000), m_nlc_gaze_window_min);
@@ -1048,8 +1049,8 @@ void CBurer::nlc_gaze_update()
     }
 
     // a gentle stamina drain past the half
-    if (actor && actor->g_Alive() && m_nlc_gaze_level > 0.5f && m_nlc_gaze_drain > 0.f)
-        actor->conditions().PowerHit(m_nlc_gaze_drain * (m_nlc_gaze_level - 0.5f) * 2.f * dt, false);
+    if (actor && actor->g_Alive() && m_nlc_gaze_level > m_nlc_gaze_drain_start && m_nlc_gaze_drain > 0.f)
+        actor->conditions().PowerHit(m_nlc_gaze_drain * (m_nlc_gaze_level - m_nlc_gaze_drain_start) / (1.f - m_nlc_gaze_drain_start) * dt, false);
 
     if (window && m_nlc_gaze_level >= 1.f)
         nlc_gaze_seize();

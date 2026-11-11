@@ -101,6 +101,10 @@ float CAI_Stalker::GetWeaponAccuracy() const
         const SNlcMutantAim& c = nlc_mutant_aim();
         if (c.enabled && c.spread_deg > 0.f)
             cone += deg2rad(c.spread_deg);
+        // polish pass 2: a psy presence (controller) spoils the aim inside its threat distance, whatever the psy health
+        if (c.enabled && mutant->nlc_npc_aim_cone() > 0.f &&
+            (mutant->nlc_npc_threat_dist() <= 0.f || Position().distance_to(mutant->Position()) <= mutant->nlc_npc_threat_dist()))
+            cone += deg2rad(mutant->nlc_npc_aim_cone());
         // psy pressure (controller domination, psy fields): psy_k above only scales the ~0.01 deg stance spread
         if (c.enabled && c.psy_cone_deg > 0.f && psy > 0.f && psy < 1.f)
             cone += deg2rad(c.psy_cone_deg) * std::clamp((1.f - psy) / std::max(0.05f, 1.f - c.psy_cone_full), 0.f, 1.f);
@@ -213,11 +217,59 @@ float CAI_Stalker::nlc_mut_lag_ms(const CBaseMonster* monster)
     return std::clamp(lag, 0.f, c.lag_max_ms);
 }
 
+// NLC polish pass 3: at a cloaked bloodsucker beyond cloak_blind_dist (aimed at where it was) the stalker fires a short
+// burst, then holds for a while: suppression, not a magazine into the air
+bool CAI_Stalker::nlc_mut_blind_fire_ok(const CEntityAlive* enemy)
+{
+    const SNlcMutantAim& c = nlc_mutant_aim();
+    SNlcMutState& s = m_nlc_mut;
+    const u32 now = Device.dwTimeGlobal;
+    if (!c.enabled || c.blind_burst_ms <= 0.f || !enemy || !s.blind_on || s.target != enemy->ID() || now > s.blind_time + 600)
+        return true;
+    if (now < s.blind_fire_until)
+        return true;
+    if (now < s.blind_fire_next)
+        return false;
+    s.blind_fire_until = now + u32(c.blind_burst_ms);
+    s.blind_fire_next = s.blind_fire_until + u32(c.blind_pause_ms * ::Random.randF(0.7f, 1.3f));
+    return true;
+}
+
 // NLC mutant aim A2: keeps a short history of the aim point and returns where the mutant was lag ms ago
-Fvector CAI_Stalker::nlc_mut_aim_point(const CBaseMonster* monster, const Fvector& look_pos)
+Fvector CAI_Stalker::nlc_mut_aim_point(const CBaseMonster* monster, const Fvector& look_pos_real)
 {
     SNlcMutState& s = m_nlc_mut;
     const u32 now = Device.dwTimeGlobal;
+    // NLC polish pass: a cloaked bloodsucker beyond cloak_blind_dist: the stalker shoots where it last made it out; the
+    // point drifts after it at cloak_track_speed (a guess, not a lock)
+    Fvector look_pos = look_pos_real;
+    {
+        const SNlcMutantAim& cb = nlc_mutant_aim();
+        const CAI_Bloodsucker* bs = smart_cast<const CAI_Bloodsucker*>(monster);
+        const bool blind = cb.enabled && cb.cloak_blind_dist > 0.f && bs && bs->get_visibility_state() == CAI_Bloodsucker::no_visibility &&
+            Position().distance_to(monster->Position()) > cb.cloak_blind_dist;
+        if (blind && s.target == monster->ID() && s.blind_time && now - s.blind_time < 1000)
+        {
+            const float max_step = cb.cloak_track_speed * float(now - s.blind_time) / 1000.f;
+            Fvector d;
+            d.sub(look_pos_real, s.blind_pos);
+            const float len = d.magnitude();
+            if (len > max_step && len > EPS_L)
+                s.blind_pos.mad(d, max_step / len);
+            else
+                s.blind_pos = look_pos_real;
+            look_pos = s.blind_pos;
+            if (!s.blind_on && CBaseMonster::nlc_evade_debug())
+                Msg("~ [evade] [%s]: [%s] cloaked at %.1f m: aims at where it was", cName().c_str(), monster->cName().c_str(), Position().distance_to(monster->Position()));
+            s.blind_on = true;
+        }
+        else
+        {
+            s.blind_pos = look_pos_real;
+            s.blind_on = false;
+        }
+        s.blind_time = now;
+    }
     const u32 last = (s.hist_head + SNlcMutState::HIST - 1) % SNlcMutState::HIST;
     if (s.target != monster->ID() || (s.hist_n && now - s.hist[last].time > 500))
     {

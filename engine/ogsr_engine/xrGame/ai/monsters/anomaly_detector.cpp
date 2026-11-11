@@ -36,6 +36,7 @@ void CAnomalyDetector::reinit()
 
     m_active = false;
     m_forced = false;
+    m_nlc_suspended = false;
 }
 
 void CAnomalyDetector::update_schedule()
@@ -56,8 +57,33 @@ void CAnomalyDetector::update_schedule()
     {
         if (it->time_registered == 0)
         {
-            temp_in_restrictors.push_back(it->id);
             it->time_registered = time();
+            if (m_nlc_suspended)
+                it->held = true; // NLC: noticed during a committed lunge: avoided from its end on
+            else
+                temp_in_restrictors.push_back(it->id);
+        }
+        else if (it->held && !m_nlc_suspended)
+        {
+            // NLC: the lunge is over: avoided again once the monster is outside it
+            CCustomZone* zone = smart_cast<CCustomZone*>(Level().Objects.net_Find(it->id));
+            Fsphere sphere;
+            sphere.set(m_object->Position(), 1.f);
+            if (zone && !zone->getDestroy() && zone->inside(sphere))
+            {
+                it->time_registered = time(); // still in it: stays remembered
+                continue;
+            }
+            it->held = false;
+            it->time_registered = time();
+            if (zone && !zone->getDestroy())
+            {
+                temp_in_restrictors.push_back(it->id);
+                if (CBaseMonster::nlc_evade_debug())
+                    Msg("~ [evade] [%s]: anomaly [%s] avoided again", m_object->cName().c_str(), zone->cName().c_str());
+            }
+            else
+                it->ignored = true; // gone: forgotten by the timer, nothing to remove
         }
     }
     m_object->movement().restrictions().add_restrictions(temp_out_restrictors, temp_in_restrictors);
@@ -66,7 +92,7 @@ void CAnomalyDetector::update_schedule()
     temp_in_restrictors.clear();
     for (ANOMALY_INFO_VEC_IT it = m_storage.begin(); it != m_storage.end(); it++)
     {
-        if (it->time_registered + m_time_to_rememeber < time() && !it->ignored)
+        if (it->time_registered + m_time_to_rememeber < time() && !it->ignored && !it->held)
         {
             temp_in_restrictors.push_back(it->id);
         }
@@ -193,7 +219,8 @@ void CAnomalyDetector::remove_all_restrictions()
 
     temp_in_restrictors.reserve(m_storage.size());
     for (ANOMALY_INFO_VEC_IT it = m_storage.begin(); it != m_storage.end(); it++)
-        temp_in_restrictors.push_back(it->id);
+        if (!it->held) // NLC: a held one has no restriction now
+            temp_in_restrictors.push_back(it->id);
     m_object->movement().restrictions().remove_restrictions(temp_out_restrictors, temp_in_restrictors);
     m_storage.clear();
 }
@@ -206,8 +233,61 @@ void CAnomalyDetector::remove_restriction(u16 id)
     {
         xr_vector<u16> temp_out_restrictors;
         xr_vector<u16> temp_in_restrictors;
-        temp_in_restrictors.push_back(it->id);
+        if (!it->held) // NLC
+            temp_in_restrictors.push_back(it->id);
         m_object->movement().restrictions().remove_restrictions(temp_out_restrictors, temp_in_restrictors);
         m_storage.erase(it);
     }
+}
+
+// NLC polish pass 9: restrictions in force now (noticed, not ignored, not held)
+u32 CAnomalyDetector::nlc_avoided() const
+{
+    u32 n = 0;
+    for (const SAnomalyInfo& it : m_storage)
+        if (it.time_registered != 0 && !it.ignored && !it.held)
+            ++n;
+    return n;
+}
+
+void CAnomalyDetector::nlc_suspend()
+{
+    m_nlc_suspended = true;
+    xr_vector<u16> temp_out_restrictors;
+    xr_vector<u16> temp_in_restrictors;
+    for (SAnomalyInfo& it : m_storage)
+        if (it.time_registered != 0 && !it.ignored && !it.held)
+        {
+            it.held = true;
+            temp_in_restrictors.push_back(it.id);
+        }
+    if (!temp_in_restrictors.empty())
+        m_object->movement().restrictions().remove_restrictions(temp_out_restrictors, temp_in_restrictors);
+}
+
+// NLC polish pass 10: is the straight way from..to clear of the volumes of the anomalies avoided now? The volume itself,
+// not the restriction around it: a target standing at the edge of an anomaly is inside the restriction margin, and the
+// path test refused the line to it (no committed lunge, often no lunge line at all).
+bool CAnomalyDetector::nlc_segment_clear(const Fvector& from, const Fvector& to) const
+{
+    const float len = from.distance_to(to);
+    const u32 steps = u32(len / 0.5f) + 1;
+    for (const SAnomalyInfo& it : m_storage)
+    {
+        if (it.time_registered == 0 || it.ignored || it.held)
+            continue;
+        CCustomZone* zone = smart_cast<CCustomZone*>(Level().Objects.net_Find(it.id));
+        if (!zone || zone->getDestroy())
+            continue;
+        for (u32 i = 0; i <= steps; ++i)
+        {
+            Fsphere sphere;
+            sphere.P.lerp(from, to, float(i) / float(steps));
+            sphere.P.y += 0.5f;
+            sphere.R = 0.4f;
+            if (zone->inside(sphere))
+                return false;
+        }
+    }
+    return true;
 }

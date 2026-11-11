@@ -32,6 +32,7 @@
 #include "holder_custom.h"
 #include "inventory.h"
 #include "torch.h"
+#include "ai/monsters/bloodsucker/bloodsucker.h" // NLC: cloak hides it from stalkers
 #include "nlc_stealth.h" // NLC: stealth diagnostics and tuning
 
 #ifndef MASTER_GOLD
@@ -410,6 +411,14 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
     if (game_object->getDestroy())
         return (false);
 
+    // NLC polish pass 2: a cloaked bloodsucker is not seen by stalkers beyond npc_see_cloaked / npc_see_xray
+    if (m_stalker)
+        if (const CAI_Bloodsucker* bs = smart_cast<const CAI_Bloodsucker*>(game_object))
+        {
+            const float see = bs->nlc_npc_see_dist();
+            if (see > 0.f && m_stalker->Position().distance_to(bs->Position()) > see)
+                return (false);
+        }
 
     float object_distance, distance = object_visible_distance(game_object, object_distance);
 

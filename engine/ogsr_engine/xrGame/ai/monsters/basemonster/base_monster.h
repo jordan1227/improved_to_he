@@ -275,6 +275,8 @@ public:
     // NLC: stalkers do not ignore this monster inside this distance (nlc_npc_threat_dist, 0 = the stalker's
     // max_ignore_distance only); docs/damage_model/DESIGN_npc_aim_vs_mutants.md 6 B1
     float m_nlc_npc_threat_dist{};
+    float m_nlc_npc_aim_cone{}; // nlc_npc_aim_cone, degrees: extra stalker dispersion against this monster inside its threat distance
+    float nlc_npc_aim_cone() const { return m_nlc_npc_aim_cone; }
     float nlc_npc_threat_dist() const { return m_nlc_npc_threat_dist; }
     // --------------------------------------------------------------------------------------
 
@@ -481,6 +483,9 @@ public:
     void nlc_force_damaged(u32 time_ms) { m_nlc_damaged_until = Device.dwTimeGlobal + time_ms; }
     // attack run substate: path to this point instead of the enemy (e.g. a locked charge line)
     virtual bool nlc_run_target_override(Fvector& position, u32& vertex) { return false; }
+    // NLC polish pass 5: the override point is a short manoeuvre: go exactly there (no cover point in its place, the
+    // path rebuilt at once)
+    virtual bool nlc_run_override_exact() const { return false; }
 
 private:
     u32 m_nlc_damaged_until{};
@@ -773,6 +778,10 @@ private:
         Fvector2 growl_interval{8000.f, 15000.f};
         float lock_radius{10.f};
         u32 patience{75000};
+        u32 third_ms{}; // elev_third_ms: shot by someone else, the siege is suspended this long (0 = off)
+        float third_target_k{0.3f}; // target weight of the besieged enemy meanwhile
+        float third_shooter_k{2.f}; // ... and of the shooter
+        float other_dist{}; // elev_other_dist: a reachable enemy this close also suspends the siege (0 = off)
         u32 faint_patience{30000};
         u32 distract_after{10000};
         float retreat_dist{28.f};
@@ -790,6 +799,10 @@ private:
         u16 enemy_id{u16(-1)};
         bool want{};
         bool owns{}; // elevation case handled by the siege: stock enemy_accessible() stays true
+        u32 third_until{}; // suspended: someone else shoots it
+        u32 third_seen{};
+        u16 third_id{u16(-1)}, third_from{u16(-1)};
+        u32 other_next{};
         u32 elev_since{};
         u32 ground_since{};
         u32 reach_since{};
@@ -869,6 +882,8 @@ public:
 
     // flags above, recomputed at most every 200 ms; 0 without an enemy or with evade_enabled off
     u8 nlc_threat();
+    // NLC polish pass 4: > 0: this enemy cannot be watching it from farther than this (a cloaked bloodsucker and a stalker)
+    virtual float nlc_watch_limit(const CEntityAlive* enemy) const { return 0.f; }
     // eye position and view direction of an enemy (actor camera, NPC head and Direction())
     bool nlc_enemy_eye(const CEntityAlive* enemy, Fvector& eye, Fvector& view) const;
     // active item is a CWeapon, not a knife or binoculars
@@ -902,8 +917,12 @@ public:
     float nlc_turn_boost_k() const { return Device.dwTimeGlobal < m_nlc_evade.turn_end ? m_nlc_evade.turn_k : 1.f; }
     // NLC: the melee substate hands movement to the species this frame (bloodsucker dodge steps)
     virtual bool nlc_melee_override() { return false; }
+    // NLC polish pass: per-enemy factor on the target choice (CMonsterEnemyMemory::update): a third party shooting a
+    // besieging monster; species add their own (bloodsucker group weights)
+    virtual float nlc_enemy_danger_k(const CEntityAlive* e);
     void nlc_impact_hit(float lost); // impact slow bookkeeping (CBaseMonster::Hit)
     float nlc_run_attack_haste_k() const { return m_nlc_evade_p.enabled ? m_nlc_evade_p.run_attack_haste_k : 1.f; }
+    float nlc_lunge_anomaly_commit() const { return m_nlc_evade_p.enabled ? m_nlc_evade_p.lunge_anomaly_commit : 0.f; }
 
     bool nlc_evade_enabled() const { return m_nlc_evade_p.enabled; }
     bool nlc_side_guard_on() const { return m_nlc_evade_p.enabled && m_nlc_evade_p.side_guard; }
@@ -956,6 +975,7 @@ private:
         float side_guard_angle{deg2rad(30.f)};
         float side_guard_short{3.f};
         float run_attack_haste_k{1.f};
+        float lunge_anomaly_commit{}; // chance a lunge / pounce ignores the noticed anomalies past its target (0 = never)
     };
 
     struct SNlcEvade
@@ -1007,6 +1027,7 @@ private:
     SNlcEvadeParams m_nlc_evade_p;
     SNlcEvade m_nlc_evade;
     static bool s_nlc_evade_debug;
+    static float s_nlc_wound_floor; // [monster_evasion] monster_wound_floor: least wound-hit share one monster takes from another (0 = off)
 };
 
 #include "base_monster_inline.h"

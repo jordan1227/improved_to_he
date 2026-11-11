@@ -59,6 +59,13 @@ public:
     static u32 find_nearest_vertex(const u32& level_vertex_id, const Fvector& target_position, const float& range);
 
     bool is_path_built();
+    // NLC polish pass 6: why the last build_special failed (0 = built)
+    u8 m_nlc_special_fail{};
+    const char* nlc_special_fail_text() const
+    {
+        static const char* const t[] = {"built", "target not accessible (restriction)", "no straight line on the ai-map", "line end node not accessible", "detail path not built"};
+        return t[m_nlc_special_fail < 5 ? m_nlc_special_fail : 0];
+    }
 
 private:
     bool build_special(const Fvector& target, u32 node, u32 vel_mask);

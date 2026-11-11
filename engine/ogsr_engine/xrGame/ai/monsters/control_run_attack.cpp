@@ -6,6 +6,7 @@
 #include "control_animation_base.h"
 #include "control_direction_base.h"
 #include "control_movement_base.h"
+#include "anomaly_detector.h"
 
 void CControlRunAttack::load(LPCSTR section)
 {
@@ -20,6 +21,8 @@ void CControlRunAttack::reinit()
     CControl_ComCustom<>::reinit();
 
     m_time_next_attack = 0;
+    m_nlc_force_until = 0;
+    m_nlc_anomaly_commit = false;
     m_cycle_state = -1; // the visual may change on respawn
 }
 
@@ -29,6 +32,7 @@ void CControlRunAttack::activate()
     // species gate (CBaseMonster::check_start_conditions) could refuse, so a refused lunge locked the control out for 2.2 s.
     // A charge that ends early must still not re-lock at once.
     m_time_next_attack = Device.dwTimeGlobal + m_cooldown;
+    m_nlc_force_until = 0;
 
     // NLC: lunge speed (run_attack_haste_k, evasion pass; 1 = stock)
     if (m_object->nlc_run_attack_haste_k() > 1.f)
@@ -59,6 +63,11 @@ void CControlRunAttack::activate()
 
 void CControlRunAttack::on_release()
 {
+    if (m_nlc_anomaly_commit)
+    {
+        m_nlc_anomaly_commit = false;
+        m_object->anomaly_detector().nlc_resume(); // NLC: each anomaly is avoided again once it is out of it
+    }
     if (m_object->nlc_run_attack_haste_k() > 1.f)
         m_object->nlc_clear_dodge(); // NLC
 
@@ -107,7 +116,8 @@ bool CControlRunAttack::check_start_conditions()
     }
 
     const u32 now = Device.dwTimeGlobal;
-    if (m_time_next_attack > now)
+    const bool forced = now < m_nlc_force_until; // NLC polish pass (bloodsucker back-off lunge)
+    if (m_time_next_attack > now && !forced)
     {
         fl_hook::boar_result(fl_hook::eBoarCooldown);
         return false;
@@ -127,6 +137,8 @@ bool CControlRunAttack::check_start_conditions()
         dmax = dmin + 3.0f;
     if (dmax > 10.0f)
         dmax = 10.0f;
+    if (forced)
+        dmin = std::min(dmin, m_nlc_force_min);
     if (dist < dmin || dist > dmax)
     {
         fl_hook::boar_result(fl_hook::eBoarDistance);
@@ -147,7 +159,7 @@ bool CControlRunAttack::check_start_conditions()
     // real movement required, so standing combat stays on eAnimAttack (paws)
     const float vcur = m_man->movement().velocity_current();
     fl_hook::boar_last_vel = vcur;
-    if (vcur < 2.0f)
+    if (vcur < 2.0f && !forced)
     {
         fl_hook::boar_result(fl_hook::eBoarStanding);
         return false;
@@ -176,6 +188,8 @@ void CControlRunAttack::on_event(ControlCom::EEventType type, ControlCom::IEvent
         VERIFY(blend);
         if (!blend || !m_object->EnemyMan.get_enemy())
         {
+            if (CBaseMonster::nlc_evade_debug())
+                Msg("~ [run_attack] [%s]: lunge ends at its start: %s", m_object->cName().c_str(), blend ? "no enemy" : "no animation blend");
             m_man->notify(ControlCom::eventRunAttackEnd, 0);
             break;
         }
@@ -201,11 +215,80 @@ void CControlRunAttack::on_event(ControlCom::EEventType type, ControlCom::IEvent
         if (m_overshoot >= 0.f)
             path_dist = std::min(path_dist, std::max(m_object->EnemyMan.get_enemy()->Position().distance_to(m_object->Position()) + m_overshoot, 1.f));
 
-        Fvector target_position;
-        target_position.mad(m_object->Position(), dir, path_dist);
-
-        if (!m_man->build_path_line(this, target_position, u32(-1), velocity_mask | MonsterMovement::eVelocityParameterStand))
+        // NLC polish pass 4 / 8: a refused line (an obstacle, a restriction or the ai-map edge past the enemy) ended the
+        // lunge while its clip went on playing in place. The line is flat with its height following the slope to the
+        // enemy (along the 3D direction its end lay 2-3 m under or over the ground on a slope), and it is shortened in
+        // steps: the longest line that fits is taken, so the run matches the clip as far as the ground allows.
+        const u32 line_mask = velocity_mask | MonsterMovement::eVelocityParameterStand;
+        const Fvector me = m_object->Position();
+        const Fvector ep = m_object->EnemyMan.get_enemy()->Position();
+        Fvector flat = dir;
+        flat.y = 0.f;
+        if (flat.square_magnitude() > EPS_L)
+            flat.normalize();
+        else
+            flat = dir;
+        const float to_enemy = me.distance_to_xz(ep);
+        auto line_end = [&](float d) {
+            Fvector pt;
+            pt.mad(me, flat, d);
+            pt.y = me.y + (ep.y - me.y) * (to_enemy > 0.1f ? std::min(d / to_enemy, 1.f) : 1.f);
+            return pt;
+        };
+        const float full = path_dist;
+        float lens[12];
+        u32 n = 0;
+        lens[n++] = full;
+        for (float d = full - 1.5f; d > to_enemy + 1.f && n < 9; d -= 1.5f)
+            lens[n++] = d;
+        if (to_enemy < full - 0.1f)
+            lens[n++] = to_enemy;
+        lens[n++] = 0.5f * std::min(full, to_enemy);
+        // NLC polish pass 9: a committed lunge. With the way to the target clear of the anomalies it has noticed, it
+        // may ignore them for the rest of the line (lunge_anomaly_commit): a sidestep sends it on into one. Only past
+        // the target: an anomaly between it and the target still stops the lunge short. (Pass 10: "clear" is tested
+        // against the anomaly volumes, not by a path line: a target at the edge of one is inside its restriction margin.)
+        const u32 avoided = m_object->anomaly_detector().nlc_avoided();
+        if (avoided && !m_nlc_anomaly_commit && m_object->nlc_lunge_anomaly_commit() > 0.f && to_enemy >= 0.7f && to_enemy < full &&
+            m_object->anomaly_detector().nlc_segment_clear(me, line_end(to_enemy)) && ::Random.randF() < m_object->nlc_lunge_anomaly_commit())
         {
+            const bool blocked = !m_man->build_path_line(this, line_end(full), u32(-1), line_mask);
+            m_object->anomaly_detector().nlc_suspend();
+            m_nlc_anomaly_commit = true;
+            if (CBaseMonster::nlc_evade_debug())
+                Msg("~ [run_attack] [%s]: committed lunge: %u noticed anomalies ignored past the target (the full line was %s)", m_object->cName().c_str(), avoided,
+                    blocked ? m_man->path_builder().nlc_special_fail_text() : "clear anyway");
+        }
+        bool built = false;
+        const char* first_fail = "";
+        for (u32 i = 0; i < n && !built; ++i)
+        {
+            if (lens[i] < 0.7f)
+                break;
+            built = m_man->build_path_line(this, line_end(lens[i]), u32(-1), line_mask);
+            if (!built && i == 0)
+                first_fail = m_man->path_builder().nlc_special_fail_text();
+            if (built && CBaseMonster::nlc_evade_debug())
+            {
+                if (i == 0)
+                    Msg("~ [run_attack] [%s]: lunge line %.1f m (full), enemy at %.1f m", m_object->cName().c_str(), full, to_enemy);
+                else
+                    Msg("~ [run_attack] [%s]: lunge line %.1f m of %.1f m (try %u), enemy at %.1f m; the full line: %s", m_object->cName().c_str(), lens[i], full, i + 1,
+                        to_enemy, first_fail);
+            }
+        }
+        if (!built && CBaseMonster::nlc_evade_debug())
+        {
+            Fvector fwd = m_object->Direction();
+            fwd.y = 0.f;
+            Msg("~ [run_attack] [%s]: every lunge line refused (%.1f m: %s; shortest: %s); heading %.0f deg off the line, speed %.1f m/s, enemy at %.1f m, %.1f m %s",
+                m_object->cName().c_str(), full, first_fail, m_man->path_builder().nlc_special_fail_text(), rad2deg(angle_between_vectors(fwd, flat)),
+                m_man->movement().velocity_current(), to_enemy, _abs(ep.y - me.y), ep.y > me.y ? "up" : "down");
+        }
+        if (!built)
+        {
+            if (CBaseMonster::nlc_evade_debug())
+                Msg("~ [run_attack] [%s]: no lunge line at all, the lunge ends", m_object->cName().c_str());
             m_man->notify(ControlCom::eventRunAttackEnd, 0);
         }
         else

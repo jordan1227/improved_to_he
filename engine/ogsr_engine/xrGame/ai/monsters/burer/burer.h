@@ -226,6 +226,20 @@ public:
     bool m_nlc_wrench{};
     u32 m_nlc_wrench_cooldown{15000};
     u32 m_nlc_wrench_next{};
+    // tug (mutant polish pass): threat full with the shield recharging: a small aim jerk and a stamina hit, the gun
+    // drops when stamina is low (the stamina attack weight rule)
+    float m_nlc_threat_shot{}; // nlc_threat_shot: a shot of the actor that hits it (or its shield) adds this to the threat meter
+    u32 m_nlc_threat_shot_frame{};
+    u32 m_nlc_puppet_seen_ms{}; // nlc_puppet_seen_ms: the puppet gun also fires while the target was seen within this long
+    u32 m_nlc_puppet_gate_log{};
+    bool m_nlc_tug{};
+    u32 m_nlc_tug_cooldown{4000};
+    u32 m_nlc_tug_next{};
+    float m_nlc_tug_stamina{0.2f};
+    float m_nlc_tug_yaw_min{10.f}, m_nlc_tug_yaw_max{22.f};
+    bool m_nlc_tug_drop{true};
+    float m_nlc_gaze_drain_start{0.5f}; // the gaze drains stamina above this meter level
+    bool nlc_drop_actor_weapon(float stamina_hit, float power_before, LPCSTR why); // the weight rule + the shared disarm grace
     float m_nlc_wrench_min{90.f}, m_nlc_wrench_max{180.f}; // degrees
     float m_nlc_wrench_pitch{15.f}; // degrees, random sign
     u32 m_nlc_wrench_ms_min{250}, m_nlc_wrench_ms_max{450};

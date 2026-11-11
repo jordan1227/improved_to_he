@@ -5,6 +5,103 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.186 (2026-11-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `95EED2A5998C44CBC68AFB6DAC56DCC40B1E13BC6FC311080651E74F11CDB6CD` (archived with its PDB in `nlc_tools/builds/20261111_103710_95eed2a5`).
+- **Status:** runtime pending. Built on `nlc-3.589.185`. Mutant polish pass, round 10.
+- Committed lunge: the "way to the target is clear" test is `CAnomalyDetector::nlc_segment_clear` (the segment sampled every 0.5 m against the volumes of the avoided anomalies) instead of a path line with the restrictions on. A target at the edge of an anomaly is inside its restriction margin: the line to it was refused, so no commit and often no lunge line at all (7 static lunges in the `.185` log, all `shortest: target not accessible (restriction)`).
+- **Required game data:** none.
+
+## nlc-3.589.185 (2026-11-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `389E51ADFD26DFDACD88E07A984BD655391CBCE67A4CF3F48B9443713D9B99C0` (archived with its PDB in `nlc_tools/builds/20261111_101908_389e51ad`).
+- **Status:** runtime pending. Built on `nlc-3.589.184`. Mutant polish pass, round 9: committed lunges.
+- `CAnomalyDetector::nlc_suspend` / `nlc_resume` / `nlc_avoided`, `SAnomalyInfo::held`: the restrictions of the noticed anomalies are lifted and each comes back (in `update_schedule`) once the monster is outside that anomaly (1 m sphere); anomalies noticed meanwhile are held the same way; held entries do not expire and are skipped by `remove_all_restrictions` / `remove_restriction`.
+- `CControlRunAttack` (all species): with noticed anomalies in force, the line to the target clear of them and a roll of `lunge_anomaly_commit` (`[monster_evasion]`, per monster section too), the lunge suspends them for its line past the target and resumes on release. Log `committed lunge: N noticed anomalies ignored past the target (the full line was ...)`, `anomaly [x] avoided again`.
+- Bloodsucker pounce: the same roll suspends them for the jump (the jump itself only tests its target point); resumed after landing.
+- `.184` result: 125 of 126 boar lunges took the full line (the slope fix).
+- **Required game data:** `game_relations.ltx` (`lunge_anomaly_commit = 1.0`), `m_bloodsucker.ltx` (0.5).
+
+## nlc-3.589.184 (2026-11-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `8BA63472BC6E209B0559EB58014DE77A129CCB9F28514A3607EE4187741FDCCF` (archived with its PDB in `nlc_tools/builds/20261111_095809_8ba63472`).
+- **Status:** runtime pending. Built on `nlc-3.589.183`. Mutant polish pass, round 8.
+- Lunge line (`CControlRunAttack`, all species): the line is flat and its end height follows the slope to the enemy (along the 3D direction the end lay 2-3 m under or over the ground on a slope: a hypothesis for the `restriction` / `no straight line` refusals); a refused line is shortened in 1.5 m steps down to the enemy's distance + 1 m, then to the enemy, then half (it jumped from 12 m straight to 3-5 m: the run was much shorter than the clip). Log: `lunge line X m (full)`, `lunge line X m of Y m (try N) ...`, `every lunge line refused ...`.
+- `.183` result: `detail path not built` was down to one retry line in the session (the dropped background build works).
+- **Required game data:** none.
+
+## nlc-3.589.183 (2026-11-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `9281B662A8E30FEC251375F362BB43755925E920DD60652AD6822640D148178D` (archived with its PDB in `nlc_tools/builds/20261111_094442_9281b662`).
+- **Status:** runtime pending. Built on `nlc-3.589.182`. Mutant polish pass, round 7 (after the `.182` test log).
+- `CControlPathBuilder::build_special` (lunge line, all species; also every other caller of `build_path_line`): a pending background path build (`wait_for_distributed_computation`) is dropped before the line is built at once. `update_path()` returned without building while one was pending: the `.182` log named `detail path not built` for 6 of 8 refused lunge lines, on flat ground, for boars and bloodsuckers (the lunge clip then played in place). Hypothesis until tested.
+- Bloodsucker: a charge dodge step starts only while the attack run state has asked for the override point within 200 ms (stalled steps logged a valid path ending 7-39 m from the step point: another movement owned the path).
+- **Required game data:** none.
+
+## nlc-3.589.182 (2026-11-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `829EB2BFEEF06FA1490F026698C7C719E496230217F638DD8BFE14DDF26A1D45` (archived with its PDB in `nlc_tools/builds/20261111_092403_829eb2bf`).
+- **Status:** runtime pending. Built on `nlc-3.589.181`. Mutant polish pass, round 6 (after the `.181` test log).
+- All monsters: `[monster_evasion]` `monster_wound_floor`: a wound hit from another monster counts at this share at least (the hit power is scaled by floor / wound_immunity before the immunity applies). Player and stalker hits are untouched.
+- Lunge diagnostics (all species): `CControlPathBuilder::m_nlc_special_fail` names why `build_special` refused a line (restriction, no straight line on the ai-map, end node not accessible, detail path not built); logged with the heading error, speed and height difference.
+- Bloodsucker: the stall check of `.181` only for charge steps and not before 300 ms (it cut every melee step); a stalled step logs its path state; a standing player gets the lunge without the 300 ms tell (`lunge_still_speed`); orbit: no "opening" exit in the first second, 3 m of slack on the ring's outer edge.
+- **Required game data:** `game_relations.ltx` (`monster_wound_floor = 0.3`).
+
+## nlc-3.589.181 (2026-11-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `D080FD4CF6185F94D20768AC710BDD399B571BA4BD663373C772C3B76017B4CE` (archived with its PDB in `nlc_tools/builds/20261111_084801_d080fd4c`).
+- **Status:** runtime pending. Built on `nlc-3.589.180`. Mutant polish pass, round 5 (after the `.180` test log).
+- Attack run state (all species): `CBaseMonster::nlc_run_override_exact` (virtual): an override point that is a short manoeuvre is pathed to exactly (no cover point in its place, rebuild 100 ms, 0.3 m to the end). Only the bloodsucker returns true (dodge step, oblique leg).
+- Bloodsucker dodge: a charge step that stands or runs straight on by half its time is cut and its charge refunded (`dodge end (stalled: ...)`); `melee_dodge_charge_range`: charge steps against the player start farther out; `lunge_still_speed`: a standing player inside the lunge band with the lunge ready gets no charge step (the lunge follows).
+- Bloodsucker watched approach (player only): `watched_oblique_angle` / `_close_k` / `_leg_ms`: oblique legs instead of straight in; `watched_orbit_ms` / `_dist` / `_cd`: circles cloaked at 12-16 m until a reload or a slow gun's cycle. The flank sweep freeze no longer reacts to a stalker beyond its cloak sight limit.
+- **Required game data:** `m_bloodsucker.ltx` (also `pounce_perch_max_h` 2.8, normal `tac_feint_chance` 0.35).
+
+## nlc-3.589.180 (2026-11-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `1FAEBAAFA57C71625FC2FA817B5BBC2FD5EDA36EA534FDCFBF7267A56C5192BA` (archived with its PDB in `nlc_tools/builds/20261111_051401_1faebaaf`).
+- **Status:** runtime pending. Built on `nlc-3.589.179`. Mutant polish pass, round 4 (after the `.179` test log).
+- Bloodsucker against a stalker: `CBaseMonster::nlc_watch_limit` (virtual): a stalker beyond its sight limit for the cloak (`npc_see_cloaked` / `npc_see_xray`) no longer counts as watching it (its body direction ended every flank arc); `npc_flank_min_dist` / `npc_flank_angle`: the arc goes on to 4 m and to 160 degrees off its view; `npc_strike_cloaked`: no strike tell, no close-range or x-ray reveal, the lunge or the first swing reveals it; 5 m of hysteresis on the outer flank bound.
+- Lunge (`CControlRunAttack`, all species): a refused path line is retried up to the enemy, then at half of that; every failure branch is logged (`[run_attack]`, with `evade_debug_log`).
+- **Required game data:** `m_bloodsucker.ltx`, `game_relations.ltx` (`cloak_track_speed = 0`); script of the same pass: `sivol_controller_psy.script`.
+
+## nlc-3.589.179 (2026-11-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `8EFA3FA21B2FA24084003E523F382F26A3E0B04D6181F758A4E963A7A541BA83` (archived with its PDB in `nlc_tools/builds/20261111_043659_8efa3fa2`).
+- **Status:** runtime pending. Built on `nlc-3.589.178`. Mutant polish pass, round 3 (after the `.178` test log).
+- Bloodsucker fixes: a retreat goes on when the target changes (it ended every 1-4 s in a group); one scar per retreat (re-entries scarred again); the retreat threshold follows the ceiling and `scar_floor` stops retreats and group breaks; grudge (`npc_grudge_ms`: a stalker that hit it stays pinned in memory outside the tactics and the siege).
+- Siege, all species: `elev_other_dist`: a remembered enemy on the ground within it suspends the siege like a third-party hit, and the unreachable enemy keeps the lower target weight meanwhile.
+- Stalkers: `[nlc_npc_mutant_aim]` `blind_burst_ms` / `blind_pause_ms`: at a cloaked bloodsucker they cannot make out they fire short bursts with pauses (`can_fire_to_enemy` gate code -5).
+- **Required game data:** `m_bloodsucker.ltx`, `game_relations.ltx`; scripts of the same pass: `sivol_controller_psy.script`, `xr_conditions.script`, `sivol_rout.script`.
+
+## nlc-3.589.178 (2026-11-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `1B1037A5814E3FD7D9B0C2A684B3321E8EEC757CDF0A14762C77448BF1DD6A5C` (archived with its PDB in `nlc_tools/builds/20261111_035024_1b1037a5`).
+- **Status:** runtime pending. Built on `nlc-3.589.177`. Mutant polish pass, round 2 (after the `.177` test logs).
+- Burer: the puppet gun also fires while the burer saw the target within `nlc_puppet_seen_ms` (it held a loaded gun 8 s without a shot from its peek moves; the gate is logged now); a player shot that hits it or its shield adds `nlc_threat_shot` to the threat meter.
+- Bloodsucker: stalkers do not see it cloaked beyond `npc_see_cloaked` / in x-ray beyond `npc_see_xray` (`CVisualMemoryManager::visible`; the cloak never hid it from them); group latch `grp_latch_ms`; scars (`scar_heal_k`: a retreat heals back only that share of the loss, cumulative; regeneration stops at the ceiling, the retreat ends relative to it, and no retreat once the ceiling is at the threshold); damage taken while cloaked / in x-ray by shooter (`cloak_damage_k_actor`, `xray_damage_k_actor`, `cloak_damage_k_npc`, `xray_damage_k_npc`; stock 0.5); the "cornered fights" rule (no retreat inside `tac_recover_min_dist`) only against the solo player.
+- All monsters: `nlc_npc_aim_cone` (degrees of extra stalker dispersion inside `nlc_npc_threat_dist`; set for controllers).
+- **Required game data:** `m_burer.ltx`, `m_bloodsucker.ltx`, `m_controller.ltx`, `scripts/binders/bind_monster.script` (bloodsucker aura per variant: `aura_range`, `aura_chance`, `aura_interval`).
+
+## nlc-3.589.177 (2026-11-11)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `3F16D13B0F3A272161ABAD07521AE0906FBE7E8B8ADDA3FADCA63D2555D3ABCD` (archived with its PDB in `nlc_tools/builds/20261111_020627_3f16d13b`).
+- **Status:** runtime pending. Built on `nlc-3.589.176`. Mutant polish pass (burer, bloodsucker, siege; the controller part is script only).
+- Burer: tug (`nlc_tug*`): threat meter full while neither the shield nor the wrench is available: a small aim jerk, a stamina hit, and the gun drops by the weight rule (`CBurer::nlc_drop_actor_weapon`, shared with the stamina attack). `nlc_gaze_drain_start` replaces the fixed 0.5 start of the gaze stamina drain.
+- Bloodsucker (new `bloodsucker_polish.cpp`): dodge charges (`melee_dodge_budget`), step side from the crosshair, shot-timed bursts, pass behind, double-back, dodge against aiming stalkers; back-off lunge (`backoff_lunge_*`, `CControlRunAttack::nlc_force`); flank charge glance tolerance, sweep freeze and tracked reversal (`charge_flank_glance_ms`, `_sweep_s`, `_tracked_n`); noise masking (`noise_mask_*`); group tactics (`grp_*`: target weights, shield approach, timed break); flank charge, zigzag and a back-hit bonus against stalkers (`npc_flank`, `npc_backhit_k`).
+- All monsters: `CBaseMonster::nlc_enemy_danger_k` (per-enemy factor in `CMonsterEnemyMemory::update`); siege third party (`elev_third_ms`): hit by someone other than the besieged enemy, the siege is suspended and the shooter is preferred. Zigzag gate 3 accepts an NPC aim cone (only with `zz_vs_npc`).
+- Stalkers: `[nlc_npc_mutant_aim]` `cloak_blind_dist` / `cloak_track_speed`: a cloaked bloodsucker beyond that distance is aimed at where it was last made out.
+- **Required game data:** `m_burer.ltx`, `m_bloodsucker.ltx`, `game_relations.ltx`, `m_controller.ltx`, `scripts/binders/bind_monster.script` (every key defaults to the old behaviour without them).
+
 ## nlc-3.589.175 (2026-11-02)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

@@ -67,6 +67,13 @@ local SHAKE_WINDOW_MS = 5000 -- presses further apart than this start the count 
 local COME_TO_SHAKE_MS = 2000 -- each press cuts the coming-to episode short by this much
 local SNAP_GUARD_MS = 20000 -- after a snap the controller's pressure on that stalker builds slower for a while
 local SNAP_RATE_K = 0.3
+-- polish pass 3: a stun that cannot end in a domination (the variant takes no thralls, or its cap is used) ends in
+-- a panic run; after a snap, a flight or a release the stalker is left alone for IMMUNE_MS
+local STUN_MAX_MS = 20000
+local FLEE_MS = 12000
+local IMMUNE_MS = 30000
+local immune = {} -- npc id -> no pressure before this time
+local gate_logged = {} -- npc id -> next time a "no pressure because ..." line may be written
 local voice_at = {} -- npc id -> time of the last psy voice played by a shake
 local psy_refresh = {} -- npc id -> { target, since }: xr_wounded must re-read psy once the delta is applied
 local PSY_REFRESH_MAX_MS = 3000
@@ -178,6 +185,12 @@ end
 ---------------------------------------------------------------------------------------------------
 -- Domination
 ---------------------------------------------------------------------------------------------------
+local function gate_log(npc, now, why, dist)
+	if now < (gate_logged[npc:id()] or 0) then return end
+	gate_logged[npc:id()] = now + 5000
+	log("no pressure on npc=%s: %s (dist=%.1f)", npc:name(), why, dist)
+end
+
 local function count_dominated(controller_id)
 	local n = 0
 	for _, d in pairs(dominated) do
@@ -318,6 +331,7 @@ end
 local function release(npc_id, why)
 	local d = dominated[npc_id]
 	dominated[npc_id] = nil
+	immune[npc_id] = time_global() + IMMUNE_MS
 	guards[npc_id] = nil
 	pressure[npc_id] = nil
 	local npc = level.object_by_id(npc_id)
@@ -369,7 +383,11 @@ local function press(controller, c, now, dt, engaged)
 		if npc and not dominated[npc_id] then
 			local p = pressure[npc_id]
 			local dist = npc:position():distance_to(cpos)
-			local in_range = dist < c.radius and eligible(npc)
+			local is_immune = immune[npc_id] ~= nil and now < immune[npc_id]
+			local in_range = dist < c.radius and not is_immune and eligible(npc)
+			if p and p.controller_id == cid and not in_range and c.debug then
+				gate_log(npc, now, is_immune and "immune after a snap, flight or release" or (dist >= c.radius and "out of the radius" or "not eligible"), dist)
+			end
 			if in_range and (p and (p.controller_id == cid or p.value <= 0) or not p and engaged) then
 				local resist = resistance(npc)
 				if not p then
@@ -414,9 +432,24 @@ local function press(controller, c, now, dt, engaged)
 				-- range, even if it has retreated out of sight (it used to stall for over a minute in cover)
 				if p.stun_since and now - p.stun_since >= STUN_MIN_MS and c.max > 0 and count_dominated(cid) < c.max then
 					dominate(npc, controller, c, now)
+				elseif p.stun_since and now - p.stun_since >= STUN_MAX_MS then
+					-- no domination possible: he breaks and runs (he sat stunned for 84 s in the 2026-11-11 test)
+					p.value = AWARE_AT
+					p.stun_since = nil
+					p.shakes = 0
+					p.panic_until = now + FLEE_MS
+					p.flee = true -- polish pass 4: the raised panic threshold alone did not make him run; sivol_rout does
+					p.flee_next = now + 500
+					immune[npc_id] = now + FLEE_MS + IMMUNE_MS
+					psy_set_at[npc_id] = nil
+					set_psy(npc, 1 - AWARE_AT * PSY_PER_PRESSURE)
+					unmute(npc)
+					npc:set_custom_panic_threshold(1)
+					log("flees npc=%s (stunned %d s, no domination: max=%d dominated=%d)", npc:name(), STUN_MAX_MS / 1000, c.max, count_dominated(cid))
 				end
 			elseif p and p.controller_id == cid then
-				p.value = p.value - DECAY * dt
+				-- a fleeing stalker keeps its pressure entry (it holds the panic) until the run is over
+				if not (p.panic_until and now < p.panic_until) then p.value = p.value - DECAY * dt end
 				if p.value <= 0 then
 					restore_npc_state(npc)
 					unmute(npc)
@@ -451,7 +484,18 @@ local function update_panic_and_release(now)
 				forget_actor_unless_hostile(npc)
 			end
 			pressure[npc_id] = nil
+		elseif p.flee and p.panic_until and now < p.panic_until then
+			-- the run itself: the rout action (forced: it ignores the A-life preset and the morale score). He may still
+			-- count as wounded for a moment after the stun, so it is asked again until the rout holds him.
+			if now >= (p.flee_next or 0) then
+				p.flee_next = now + 1000
+				if sivol_rout and sivol_rout.force and not string.find(sivol_rout.status(npc_id), "^ROUT") then
+					local ok = sivol_rout.force(npc_id)
+					log("flee: rout asked for npc=%s -> %s", npc:name(), tostring(ok))
+				end
+			end
 		elseif p.panic_until and now >= p.panic_until then
+			p.flee = nil
 			p.panic_until = nil
 			pcall(function() npc:set_default_panic_threshold() end)
 		end
@@ -843,6 +887,13 @@ local function update_decoy_tells(now)
 end
 
 -- xr_wounded re-enables talk on every tick of its action; it asks here first (dominated stalkers stay mute)
+-- xr_conditions.best_pistol asks here: a stalker stunned by a controller (or coming to) kneels in psy pain whatever
+-- he carries; the stock rule made pistol users stand (psy_armed)
+function forces_kneel(npc_id)
+	local p = pressure[npc_id]
+	return (p ~= nil and p.stun_since ~= nil) or coming_to[npc_id] ~= nil
+end
+
 function is_muted(npc_id)
 	return muted[npc_id] ~= nil
 end
@@ -861,6 +912,7 @@ local function snap_out(npc, p, now)
 	p.panic_until = nil
 	p.shakes = 0
 	p.snapped_until = now + SNAP_GUARD_MS
+	immune[npc:id()] = now + IMMUNE_MS
 	pcall(function() npc:set_default_panic_threshold() end)
 	psy_set_at[npc:id()] = nil
 	set_psy(npc, 1 - AWARE_AT * PSY_PER_PRESSURE)

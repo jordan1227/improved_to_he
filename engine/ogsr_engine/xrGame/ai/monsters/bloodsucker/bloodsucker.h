@@ -44,6 +44,7 @@ public:
     virtual bool nlc_cloak_keeps_gait(); // NLC: edge sneak
     void HitEntity(const CEntity* pEntity, float fDamage, float impulse, Fvector& dir, ALife::EHitType hit_type = ALife::eHitTypeWound, bool draw_hit_marks = true) override;
     virtual bool nlc_run_target_override(Fvector& position, u32& vertex); // NLC: flank charge while unwatched
+    virtual bool nlc_run_override_exact() const;
 
     //--------------------------------------------------------------------
     // Utils
@@ -385,6 +386,7 @@ public:
     virtual void nlc_siege_perch_shot();
     virtual bool nlc_siege_cloak_hidden(const Fvector& feet, const CEntityAlive* enemy) const;
     virtual bool nlc_melee_override(); // NLC: melee dodge steps
+    virtual float nlc_enemy_danger_k(const CEntityAlive* e); // NLC polish pass: group target weights
     float nlc_npc_disp_k() const; // NLC: NPC weapon dispersion factor against this bloodsucker (cloak)
     virtual u32 nlc_jump_bounce_grace() const { return m_nlc_on ? m_nlc_b.pounce_bounce_grace_ms : 0; }
     virtual float nlc_jump_min_vy() const { return m_nlc_on ? m_nlc_b.pounce_min_vy : 0.f; }
@@ -585,6 +587,156 @@ private:
     bool nlc_tac_bait_point(const CEntityAlive* enemy, Fvector& pos, u32& node);
     void nlc_tac_move(const Fvector& target, u32 node, EAction act);
     void nlc_tac_hold(const CEntityAlive* enemy);
+
+    //-------------------------------------------------------------------
+    // NLC: mutant polish pass, 2026-11 (bloodsucker_polish.cpp). Keys in the monster section, defaults = before the pass.
+    //-------------------------------------------------------------------
+public:
+    struct SNlcBs2Params
+    {
+        // melee dodge
+        int dodge_budget{}; // melee_dodge_budget: charges (0 = the fixed step count and cooldown)
+        u32 dodge_regen_ms{2000}; // one charge back per this long
+        u32 dodge_budget_cd{700}; // between bursts with the budget on
+        Fvector2 dodge_gap{}; // melee_dodge_gap: random gap between the steps of a burst (y = 0: melee_dodge_gap_ms)
+        bool dodge_aim_side{}; // the step side comes from the crosshair: against its sweep, else away from it
+        float dodge_sweep_rate{0.8f}; // rad/s of view turn that counts as a sweep
+        float dodge_aim_offset{deg2rad(2.f)};
+        bool dodge_on_fire{}; // a shot in its direction triggers a burst; a slow gun between shots is an opening
+        float dodge_behind{}; // chance of a pass behind the enemy (two long steps, no gap, then a strike)
+        float dodge_doubleback{}; // chance the next step of a burst switches sides
+        bool dodge_npc{}; // dodge steps against an aiming stalker
+        // back-off lunge
+        float backoff_chance{}; // the enemy backs straight off: chance of an immediate lunge
+        float backoff_speed{1.8f};
+        u32 backoff_ms{350};
+        u32 backoff_cd{5000};
+        u32 backoff_window_ms{1500};
+        float backoff_min_dist{2.f};
+        // flank charge
+        u32 flank_glance_ms{}; // watched for less than this: the arc goes on
+        float flank_sweep_s{}; // the view reaches it within this long: freeze
+        u32 flank_freeze_ms{1200};
+        u32 flank_tracked_n{}; // this many looks that find it cloaked within the window: reverse the arc
+        u32 flank_tracked_window{12000};
+        u32 flank_tracked_hold{4000};
+        // noise masking
+        float mask_dist{}; // cloaked and unwatched within this of a quiet enemy: creeps (0 = off)
+        float mask_quiet_speed{1.5f};
+        u32 mask_quiet_ms{1000};
+        float mask_speed_k{0.6f};
+        float mask_step_k{0.4f};
+        // group
+        bool grp{};
+        float grp_radius{18.f};
+        u32 grp_hit_ms{10000};
+        u32 grp_melee_ms{2500};
+        Fvector2 grp_break_ms{3000.f, 5000.f};
+        float grp_recover_add{0.15f};
+        bool grp_shield{};
+        float grp_w_isolated{1.5f}, grp_w_unaware{1.3f}, grp_w_reload{1.4f}, grp_w_wounded{1.3f};
+        float grp_isolated_dist{8.f};
+        // NPC targets
+        bool npc_flank{};
+        float npc_backhit_k{1.f};
+        float npc_backhit_angle{deg2rad(110.f)};
+        // pass 4
+        float npc_flank_min_dist{}; // the arc around a stalker goes on down to this distance (0 = charge_flank_dist.x)
+        float npc_flank_angle{}; // ... and ends at this bearing off its view (0 = charge_flank_angle)
+        bool npc_strike_cloaked{}; // against a stalker: no strike tell, no close-range reveal; the lunge or the first swing reveals it
+        // pass 2
+        float npc_see_cloaked{}; // stalkers do not see it cloaked beyond this (0 = stock: the cloak does not hide it from them)
+        float npc_see_xray{}; // ... in x-ray
+        u32 grp_latch_ms{5000}; // a group stays a group this long after its count drops
+        float scar_heal_k{1.f}; // a retreat heals back only this share of the health lost (1 = all: off)
+        float dmg_cloak_actor{0.5f}, dmg_xray_actor{0.5f}, dmg_cloak_npc{0.5f}, dmg_xray_npc{0.5f}; // damage taken while cloaked / in x-ray (stock 0.5)
+        // pass 3
+        float scar_floor{0.45f}; // ceiling at or under this: no more retreats or group breaks
+        u32 npc_grudge_ms{}; // a stalker that hit it stays in its memory this long (0 = off)
+        // pass 5
+        float dodge_charge_range{}; // charge steps start within this (0 = melee_dodge_range)
+        float lunge_still_speed{}; // a target slower than this inside the lunge band gets the lunge, not a charge step (0 = off)
+        float obl_angle{}; // watched approach: each leg aims this far around the player (0 = straight in)
+        float obl_close_k{0.7f}; // ... at this share of the distance
+        Fvector2 obl_leg_ms{1000.f, 1500.f}; // ... switching sides after this long, or on a hit
+        u32 orbit_ms{}; // watched and cloaked inside orbit_dist: circles this long at most, waiting for an opening (0 = off)
+        Fvector2 orbit_dist{12.f, 16.f};
+        u32 orbit_cd{12000};
+    };
+    struct SNlcBs2State
+    {
+        float charges{};
+        bool behind{}; // the current burst is a pass behind
+        bool approach{}; // the current burst is a single closing step (no charge)
+        const char* side_why{""};
+        Fvector view_prev{};
+        u32 view_t{};
+        u16 view_enemy{u16(-1)};
+        float sweep{}; // signed view turn rate, rad/s
+        u32 fire_last{};
+        float fire_interval{};
+        float away_v{}; // the enemy speed away from it, m/s
+        float enemy_speed{};
+        u32 backoff_since{}, backoff_cd{}, backoff_until{};
+        u32 watch_since{};
+        u32 looks[4]{};
+        u32 looks_i{};
+        u32 freeze_until{}, freeze_block{}, side_forced_until{};
+        u32 quiet_since{};
+        bool creeping{};
+        u32 creep_until{};
+        u16 grp_ids[6]{};
+        u8 grp_n{};
+        Fvector grp_others{};
+        bool grp_have_others{};
+        u32 grp_next{}, grp_t{};
+        u32 melee_ms{};
+        bool breaking{};
+        u32 break_until{}, break_cd{};
+        u32 shield_log{};
+        u32 grp_latch{};
+        float cap{1.f}; // health ceiling left by earlier retreats (scar_heal_k)
+        u32 scar_next{}; // one scar per retreat: not again before this
+        u32 grudge_seen{}, grudge_until{};
+        u16 grudge_id{u16(-1)};
+        bool dodge_checked{}; // the stall check of the current step is done
+        u32 anom_susp{}; // a pounce lifted the anomaly restrictions at this time (0 = no)
+        u32 run_polled{}; // the attack run state last asked for the override point (it is the only reader of a charge step)
+        u32 still_log{};
+        u32 obl_last{}, obl_switch{}, obl_shot_block{}, obl_hit_seen{};
+        int obl_side{1};
+        u32 orbit_until{}, orbit_cd{};
+    };
+    SNlcBs2Params m_nlc_p2;
+    SNlcBs2State m_nlc_s2;
+
+    void nlc_p2_load(LPCSTR section);
+    void nlc_p2_frame();
+    bool nlc_grp_active() const;
+    float nlc_npc_see_dist() const; // > 0: a stalker farther than this does not see it now
+    virtual float nlc_watch_limit(const CEntityAlive* enemy) const;
+    bool nlc_npc_strike_cloaked(const CEntityAlive* enemy) const;
+    float nlc_cloak_damage_k(const CObject* who) const;
+
+private:
+    int nlc_dodge_burst_size(int steps) const;
+    int nlc_dodge_aim_side(const CEntityAlive* enemy, const Fvector& r, const char*& why) const;
+    bool nlc_dodge_fire_trigger(u8 threat) const;
+    bool nlc_dodge_cycle_opening() const;
+    bool nlc_dodge_target_npc(const CEntityAlive* enemy) const;
+    bool nlc_enemy_stalker(const CEntityAlive* enemy) const;
+    void nlc_backoff_update(const CEntityAlive* enemy, float dist, bool in_melee, bool busy);
+    int nlc_flank_watch(const CEntityAlive* enemy, float dist);
+    bool nlc_watched_approach(const CEntityAlive* enemy, const Fvector& r, float dist, Fvector& position, u32& vertex);
+    bool nlc_mask_creep(const CEntityAlive* enemy, float dist);
+    float nlc_mask_step_k() const;
+    void nlc_grp_update(const CEntityAlive* enemy);
+    bool nlc_grp_shield_dir(const CEntityAlive* enemy, Fvector& dir) const;
+    bool nlc_grp_break_due() const;
+    void nlc_grp_break_begin();
+    bool nlc_grp_break_over();
+    void nlc_grp_break_end();
+    float nlc_npc_backhit_k(const CEntity* entity) const;
 
     DECLARE_SCRIPT_REGISTER_FUNCTION
 };

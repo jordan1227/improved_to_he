@@ -43,6 +43,14 @@ void CStateMonsterAttackRunAbstract::execute()
     object->path().set_try_min_time(false);
     object->set_state_sound(MonsterSound::eMonsterSoundAggressive);
     object->path().extrapolate_path(true);
+    // NLC polish pass 5: a dodge step or an oblique leg while charging. With covers on the path builder put a cover point
+    // in place of the step target and the step ran on down the old line (straight at the crosshair, boosted).
+    if (nlc_override && object->nlc_run_override_exact())
+    {
+        object->path().set_rebuild_time(100);
+        object->path().set_use_covers(false);
+        object->path().set_distance_to_end(0.3f);
+    }
 
     // обработать squad инфо
     object->path().set_use_dest_orient(false);

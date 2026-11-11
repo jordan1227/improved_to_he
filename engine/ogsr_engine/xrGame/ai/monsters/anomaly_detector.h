@@ -23,6 +23,7 @@ private:
         u16 id;
         bool ignored;
         u32 time_registered;
+        bool held{}; // NLC: noticed, but its restriction is lifted (a committed lunge) until the monster is outside it
     };
 
     struct remove_predicate
@@ -30,7 +31,7 @@ private:
         u32 time_remember;
         remove_predicate(u32 time) : time_remember(time) {}
 
-        IC bool operator()(const SAnomalyInfo& info) { return (info.time_registered + time_remember < Device.dwTimeGlobal); }
+        IC bool operator()(const SAnomalyInfo& info) { return (!info.held && info.time_registered + time_remember < Device.dwTimeGlobal); }
     };
 
     using ANOMALY_INFO_VEC = xr_vector<SAnomalyInfo>;
@@ -54,4 +55,15 @@ public:
     void deactivate(bool = false);
     void remove_all_restrictions();
     void remove_restriction(u16);
+
+    // NLC polish pass 9: a committed lunge / pounce ignores the noticed anomalies; each restriction comes back once
+    // the monster is outside that anomaly (it could not path out of a restriction it stands in)
+    void nlc_suspend();
+    void nlc_resume() { m_nlc_suspended = false; }
+    bool nlc_suspended() const { return m_nlc_suspended; }
+    u32 nlc_avoided() const;
+    bool nlc_segment_clear(const Fvector& from, const Fvector& to) const; // no avoided anomaly volume on the segment
+
+private:
+    bool m_nlc_suspended{};
 };

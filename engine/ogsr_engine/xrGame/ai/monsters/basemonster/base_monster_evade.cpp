@@ -34,6 +34,7 @@
 #include "../state_defs.h"
 
 bool CBaseMonster::s_nlc_evade_debug = false;
+float CBaseMonster::s_nlc_wound_floor = 0.f;
 
 #define EVADE_LOG(...) \
     do \
@@ -136,8 +137,10 @@ void CBaseMonster::nlc_evade_load(LPCSTR section)
     p.side_guard_angle = deg2rad(std::clamp(evade_f(section, "side_guard_angle", 30.f), 5.f, 85.f));
     p.side_guard_short = std::max(evade_f(section, "side_guard_short", 3.f), 0.f);
     p.run_attack_haste_k = std::clamp(evade_f(section, "run_attack_haste_k", 1.f), 1.f, 2.f);
+    p.lunge_anomaly_commit = std::clamp(evade_f(section, "lunge_anomaly_commit", 0.f), 0.f, 1.f);
 
     s_nlc_evade_debug = !!READ_IF_EXISTS(pSettings, r_bool, EVADE_SECTION, "evade_debug_log", false);
+    s_nlc_wound_floor = std::clamp(READ_IF_EXISTS(pSettings, r_float, EVADE_SECTION, "monster_wound_floor", 0.f), 0.f, 1.f);
 }
 
 void CBaseMonster::nlc_evade_reset() { m_nlc_evade = SNlcEvade{}; }
@@ -231,7 +234,8 @@ u8 CBaseMonster::nlc_threat()
         to.sub(c, eye);
         const float range = to.magnitude();
         const float ang = angle_between_vectors(view, to);
-        if (ang < p.watch_cone)
+        const float limit = nlc_watch_limit(enemy);
+        if (ang < p.watch_cone && !(limit > 0.f && range > limit))
         {
             bool clear = range < EPS_L;
             if (!clear)
@@ -361,6 +365,12 @@ bool CBaseMonster::nlc_zz_target(Fvector& pos, u32& node)
         case 3:
         {
             // aiming down sights at it (watched, armed, the weapon zoomed) or the crosshair ray on it
+            // NLC polish pass: an NPC has neither; its aim cone counts (only reached with zz_vs_npc)
+            if (!smart_cast<const CActor*>(enemy))
+            {
+                ok = (th & eThreatAimed) != 0;
+                break;
+            }
             bool ads = false;
             if ((th & eThreatWatched) && (th & eThreatArmed))
                 if (const CInventoryOwner* owner = smart_cast<const CInventoryOwner*>(enemy))

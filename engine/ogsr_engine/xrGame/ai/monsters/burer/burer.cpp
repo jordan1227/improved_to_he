@@ -323,38 +323,37 @@ void CBurer::StaminaHit()
     float const stamina_hit = weight * m_weight_to_stamina_hit;
 
     const float power_before = Actor()->conditions().GetPower();
-    bool do_weapon_drop = power_before < stamina_hit * m_weapon_drop_stamina_k;
-
     Actor()->conditions().PowerHit(stamina_hit, false);
+    const bool dropped = nlc_drop_actor_weapon(stamina_hit, power_before, "anti_aim");
+    nlc_log("anti-aim stamina hit weapon=%s weight=%.1f power=%.2f hit=%.2f drop=%d", active_weapon->cNameSect().c_str(), weight, power_before, stamina_hit, dropped ? 1 : 0);
+}
 
-    // NLC: one disarm grace period shared by every burer and the script stare (docs/BURER_REDESIGN.md 5.2)
+// NLC: the weapon leaves the actor hands when stamina is below stamina_hit x weapon_drop_stamina_k (heavier guns go
+// easier); one disarm grace period shared by every burer (docs/BURER_REDESIGN.md 5.2). Used by the stamina attack and the tug.
+bool CBurer::nlc_drop_actor_weapon(float stamina_hit, float power_before, LPCSTR why)
+{
+    CActor* actor = Actor();
+    if (!actor || !actor->inventory().ActiveItem() || power_before >= stamina_hit * m_weapon_drop_stamina_k)
+        return false;
     luabind::functor<bool> func_disarm_allowed;
-    if (do_weapon_drop && ai().script_engine().functor("bind_monster.burer_disarm_allowed", func_disarm_allowed) && !func_disarm_allowed())
+    if (ai().script_engine().functor("bind_monster.burer_disarm_allowed", func_disarm_allowed) && !func_disarm_allowed())
     {
-        do_weapon_drop = false;
-        nlc_log("anti-aim drop blocked by the disarm grace");
+        nlc_log("%s drop blocked by the disarm grace", why);
+        return false;
     }
-    nlc_log("anti-aim stamina hit weapon=%s weight=%.1f power=%.2f hit=%.2f drop=%d", active_weapon->cNameSect().c_str(), weight, power_before, stamina_hit, do_weapon_drop ? 1 : 0);
-
-    if (do_weapon_drop)
-    {
-        Fvector dir = Actor()->Direction();
-        if (dir.y < 0.f)
-        {
-            dir.y = -dir.y;
-        }
-        auto item = smart_cast<CPhysicsShellHolder*>(Actor()->inventory().ActiveItem());
-        item->SetActivationSpeedOverride(normalize(dir) * m_weapon_drop_velocity);
-
-        if (!Actor()->inventory().Action((u16)kDROP, CMD_STOP))
-        {
-            Actor()->g_PerformDrop();
-        }
-
-        luabind::functor<void> func_on_disarm;
-        if (ai().script_engine().functor("bind_monster.burer_on_disarm", func_on_disarm))
-            func_on_disarm(m_nlc_disarm_grace, "anti_aim");
-    }
+    auto item = smart_cast<CPhysicsShellHolder*>(actor->inventory().ActiveItem());
+    if (!item)
+        return false;
+    Fvector dir = actor->Direction();
+    if (dir.y < 0.f)
+        dir.y = -dir.y;
+    item->SetActivationSpeedOverride(normalize(dir) * m_weapon_drop_velocity);
+    if (!actor->inventory().Action((u16)kDROP, CMD_STOP))
+        actor->g_PerformDrop();
+    luabind::functor<void> func_on_disarm;
+    if (ai().script_engine().functor("bind_monster.burer_on_disarm", func_on_disarm))
+        func_on_disarm(m_nlc_disarm_grace, why);
+    return true;
 }
 
 void CBurer::UpdateGraviObject()
@@ -557,6 +556,13 @@ void CBurer::StopTeleObjectParticle(CGameObject* pO)
 
 void CBurer::Hit(SHit* pHDS)
 {
+    // NLC polish pass 2: the actor shooting it (body, shield or a deflected round) feeds the threat meter, once per frame
+    if (m_nlc_threat_shot > 0.f && pHDS->hit_type == ALife::eHitTypeFireWound && pHDS->who && pHDS->who == Actor() && Device.dwFrame != m_nlc_threat_shot_frame)
+    {
+        m_nlc_threat_shot_frame = Device.dwFrame;
+        m_nlc_threat = _min(m_nlc_threat + m_nlc_threat_shot, 1.2f);
+    }
+
     // NLC: the passive field turns some bullets away while the burer is not busy
     if (!m_shield_active && nlc_try_deflect(pHDS))
     {

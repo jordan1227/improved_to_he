@@ -912,6 +912,12 @@ bool CScriptGameObject::can_fire_to_enemy(const CScriptGameObject* obj)
     // NLC mutant aim D1: the result and its reason go to the stalker's mutant-aim record (gate codes:
     // 1 on the fire line, 2 visible and the ray reaches far enough, -1 not visible and off the line,
     // -2 head turned more than PI/8 away, -3 ray blocked within 2.5 m, -4 ray stops short of the enemy)
+    // pass 3: -5 holding fire between suppression bursts at a cloaked bloodsucker it cannot make out
+    if (!stalker->nlc_mut_blind_fire_ok(enemy))
+    {
+        stalker->nlc_mut_set_gate(-5);
+        return false;
+    }
     bool can_kill = stalker->can_kill_enemy();
     bool vis = stalker->memory().visual().visible_right_now(enemy);
     if (!(vis || can_kill))

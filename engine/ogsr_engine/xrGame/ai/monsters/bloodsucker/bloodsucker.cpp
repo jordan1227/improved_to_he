@@ -204,6 +204,7 @@ void CAI_Bloodsucker::Load(LPCSTR section)
     m_visibility_state_last_changed_time = 0;
 
     nlc_bs_load(section); // NLC: evasion pass keys
+    nlc_p2_load(section); // NLC: mutant polish pass keys
 
     PostLoad(section);
 }
@@ -234,6 +235,8 @@ void CAI_Bloodsucker::reinit()
     m_nlc_pouncing = false;
     m_nlc_perched_last = 0;
     m_nlc_dodge_active = false;
+    m_nlc_s2 = SNlcBs2State{};
+    m_nlc_s2.charges = float(m_nlc_p2.dodge_budget);
     m_nlc_dodge_until = m_nlc_dodge_next = m_nlc_dodge_cd = 0;
     m_nlc_dodge_left = 0;
     m_nlc_dodge_prev = 0;
@@ -572,6 +575,7 @@ void CAI_Bloodsucker::UpdateCL()
         nlc_pounce_update(); // NLC
         nlc_backhit_update(); // NLC
         nlc_pounce_hit_update(); // NLC
+        nlc_p2_frame(); // NLC polish pass: dodge charges, view sweep, enemy fire and noise
         nlc_melee_dodge_update(); // NLC
         nlc_breath_update(); // NLC
     }
@@ -633,7 +637,9 @@ bool CAI_Bloodsucker::check_start_conditions(ControlCom::EControlType type)
         if (m_nlc_grab_intent)
             return false;
         // NLC: no lunge right after a dodge step (the turn finishes first)
-        if (nlc_dodge_recent())
+        // NLC polish pass: the back-off lunge (the enemy backs straight out of swing range) skips the pause and the tell
+        const bool punish = m_nlc_on && Device.dwTimeGlobal < m_nlc_s2.backoff_until;
+        if (nlc_dodge_recent() && !punish)
             return false;
         // NLC: no lunge during a siege or at a perched enemy: it cannot reach it (it lunged at once at a perch-strike
         // spot, then stood visible, nlc-3.589.35)
@@ -643,7 +649,11 @@ bool CAI_Bloodsucker::check_start_conditions(ControlCom::EControlType type)
             if (nlc_siege_active() || nlc_siege_wanted() || (EnemyMan.get_enemy() && nlc_enemy_perched(EnemyMan.get_enemy(), h)))
                 return false;
         }
-        if (m_nlc_on && !nlc_strike_tell_done())
+        // NLC polish pass 6: a player who stands gets the lunge without the tell (out of a stalk it ran through the
+        // whole lunge band before the 300 ms were over); the lunge reveals it at its start
+        const bool still = m_nlc_on && m_nlc_p2.lunge_still_speed > 0.f && EnemyMan.get_enemy() && smart_cast<const CActor*>(EnemyMan.get_enemy()) &&
+            m_nlc_s2.enemy_speed < m_nlc_p2.lunge_still_speed;
+        if (m_nlc_on && !punish && !still && !nlc_npc_strike_cloaked(EnemyMan.get_enemy()) && !nlc_strike_tell_done())
             return false; // strike_reveal_margin: fully visible for strike_reveal_ms first (the tell)
         if (state_invisible && !m_nlc_b.run_attack_decloak)
             return false;
@@ -652,7 +662,7 @@ bool CAI_Bloodsucker::check_start_conditions(ControlCom::EControlType type)
         if (m_nlc_on && m_nlc_b.run_attack_decloak)
             nlc_strike_reveal("lunge", false);
         if (m_nlc_on && nlc_evade_debug() && EnemyMan.get_enemy())
-            Msg("~ [evade] [%s]: lunge at %.1f m", cName().c_str(), EnemyMan.get_enemy()->Position().distance_to(Position()));
+            Msg("~ [evade] [%s]: lunge at %.1f m%s", cName().c_str(), EnemyMan.get_enemy()->Position().distance_to(Position()), punish ? " (back-off)" : (still && !nlc_strike_tell_done() ? " (standing target, no tell)" : ""));
         return true;
     }
 
@@ -664,7 +674,10 @@ void CAI_Bloodsucker::on_activate_control(ControlCom::EControlType type)
     inherited::on_activate_control(type);
 
     if (type == ControlCom::eControlRunAttack && m_nlc_on)
+    {
         m_nlc_tac.rolled_grab = false; // NLC: a lunge re-opens the grab roll
+        m_nlc_s2.backoff_until = 0;
+    }
 }
 
 void CAI_Bloodsucker::HitEntityInJump(const CEntity* pEntity)
@@ -746,6 +759,7 @@ void CAI_Bloodsucker::HitEntity(const CEntity* pEntity, float fDamage, float imp
     // }
 
     // NLC: a hit from behind may turn into the grab (vampire_backhit_chance)
+    fDamage *= nlc_npc_backhit_k(pEntity); // NLC polish pass: a strike into a stalker back
     if (nlc_backhit_try(pEntity, fDamage, impulse, dir, hit_type, draw_hit_marks))
         return;
     inherited::HitEntity(pEntity, fDamage, impulse, dir, hit_type, draw_hit_marks); // NLC: pass the hit type and marks on
@@ -758,8 +772,9 @@ void CAI_Bloodsucker::Hit(SHit* pHDS)
     SHit HDS = *pHDS;
     if (HDS.hit_type != ALife::eHitTypeExplosion && m_visibility_state <= partial_visibility)
     {
-        HDS.power *= 0.5f;
-        HDS.impulse *= 0.5f;
+        const float k = nlc_cloak_damage_k(pHDS->who); // NLC polish pass 2: by who shoots (stock 0.5)
+        HDS.power *= k;
+        HDS.impulse *= k;
     }
 
     if (!collision_hit_off)

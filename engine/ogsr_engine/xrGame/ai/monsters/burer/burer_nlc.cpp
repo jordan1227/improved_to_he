@@ -83,6 +83,14 @@ void CBurer::nlc_load_pass2(LPCSTR section)
     m_nlc_wrench_pitch = READ_IF_EXISTS(pSettings, r_float, section, "nlc_wrench_pitch", 15.f);
     m_nlc_wrench_ms_min = _max(READ_IF_EXISTS(pSettings, r_u32, section, "nlc_wrench_ms_min", 250), u32(80));
     m_nlc_wrench_ms_max = _max(READ_IF_EXISTS(pSettings, r_u32, section, "nlc_wrench_ms_max", 450), m_nlc_wrench_ms_min);
+    m_nlc_tug = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_tug", false);
+    m_nlc_threat_shot = READ_IF_EXISTS(pSettings, r_float, section, "nlc_threat_shot", 0.f);
+    m_nlc_puppet_seen_ms = READ_IF_EXISTS(pSettings, r_u32, section, "nlc_puppet_seen_ms", 0);
+    m_nlc_tug_cooldown = READ_IF_EXISTS(pSettings, r_u32, section, "nlc_tug_cooldown", 4000);
+    m_nlc_tug_stamina = READ_IF_EXISTS(pSettings, r_float, section, "nlc_tug_stamina", 0.2f);
+    m_nlc_tug_yaw_min = READ_IF_EXISTS(pSettings, r_float, section, "nlc_tug_yaw_min", 10.f);
+    m_nlc_tug_yaw_max = _max(READ_IF_EXISTS(pSettings, r_float, section, "nlc_tug_yaw_max", 22.f), m_nlc_tug_yaw_min);
+    m_nlc_tug_drop = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_tug_drop", true);
 
     // barricade
     m_nlc_barricade = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_barricade", false);
@@ -159,6 +167,7 @@ void CBurer::nlc_reinit_pass2()
     m_nlc_overlay_shield_until = 0;
     m_nlc_shield_strain = 0.f;
     m_nlc_wrench_next = 0;
+    m_nlc_tug_next = 0;
     m_nlc_wr = NlcWrench();
     m_nlc_puppet = NlcPuppet();
     m_nlc_puppet_next = 0;
@@ -318,6 +327,37 @@ void CBurer::nlc_defense_update()
             ::Sound->play_at_pos(sound_scan, 0, actor->Position());
             actor->Cameras().AddPPEffector(xr_new<CMonsterEffector>(m_nlc_scan_ppi, 1.5f, 0.1f, 0.8f));
         }
+        return;
+    }
+
+    // tug: every tier, while neither the shield nor the wrench is available (weak and normal had no answer here)
+    if (m_nlc_tug && actor && actor->g_Alive() && EnemyMan.get_enemy() == actor && now >= m_nlc_tug_next && !m_nlc_wr.active && !m_shield_active &&
+        memory().visual().visible_now(actor))
+    {
+        m_nlc_tug_next = now + m_nlc_tug_cooldown;
+        m_nlc_threat = 0.3f;
+        if (GodMode())
+        {
+            nlc_log("tug skipped: god mode");
+            return;
+        }
+        if (m_nlc_glass)
+        {
+            nlc_log("tug blocked by af_glass_new");
+            return;
+        }
+        const float yaw = ::Random.randF(m_nlc_tug_yaw_min, m_nlc_tug_yaw_max) * (::Random.randI(2) ? 1.f : -1.f);
+        const float pitch = ::Random.randF(0.3f, 0.6f) * m_nlc_tug_yaw_min * (::Random.randI(2) ? 1.f : -1.f);
+        nlc_start_wrench(yaw, pitch, 180, 1.5f, "tug");
+        const float power_before = actor->conditions().GetPower();
+        const float hit = m_nlc_tug_stamina * nlc_phase_k(1.f, 1.2f, 1.4f);
+        actor->conditions().PowerHit(hit, false);
+        CWeapon* weapon = smart_cast<CWeapon*>(actor->inventory().ActiveItem());
+        bool dropped = false;
+        if (m_nlc_tug_drop && weapon && !smart_cast<CWeaponKnife*>(weapon))
+            dropped = nlc_drop_actor_weapon(weapon->Weight() * m_weight_to_stamina_hit, power_before - hit, "tug");
+        nlc_log("tug: stamina %.2f -> %.2f (hit %.2f), weapon=%s drop=%d", power_before, actor->conditions().GetPower(), hit,
+            weapon ? weapon->cNameSect().c_str() : "-", dropped ? 1 : 0);
     }
 }
 
@@ -897,8 +937,18 @@ void CBurer::nlc_puppet_update()
     const bool sees = EnemyMan.see_enemy_now();
     const CVisualMemoryManager::NlcSense& sense = memory().visual().m_nlc_sense;
     const bool sensed = enemy == Actor() && sense.notice > 0.f && sense.level >= sense.notice;
-    if (!sees && !sensed)
+    // NLC polish pass 2: from cover it also fires while it saw the target a moment ago (the gun has the line of fire;
+    // the blind penalty below applies). It held a loaded gun 8 s without a shot while it walked its peek moves.
+    const bool seen_recently = m_nlc_puppet_seen_ms && EnemyMan.get_enemy_time_last_seen() + m_nlc_puppet_seen_ms > now;
+    if (!sees && !sensed && !seen_recently)
+    {
+        if (now >= m_nlc_puppet_gate_log)
+        {
+            m_nlc_puppet_gate_log = now + 2000;
+            nlc_log("puppet holds fire: the burer neither sees nor senses the target (last seen %u ms ago)", now - EnemyMan.get_enemy_time_last_seen());
+        }
         return;
+    }
 
     // no friendly fire: a living thing other than the target in the line holds the burst
     collide::rq_result rq;

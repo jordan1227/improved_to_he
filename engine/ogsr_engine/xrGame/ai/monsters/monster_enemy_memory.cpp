@@ -192,6 +192,7 @@ void CMonsterEnemyMemory::update()
         }
 
         danger *= damage_threat_multiplier(it->first);
+        danger *= monster->nlc_enemy_danger_k(it->first); // NLC polish pass: siege third party, bloodsucker group weights
 
         if (current_target && it->first == current_target)
             danger *= m_target_stickiness;

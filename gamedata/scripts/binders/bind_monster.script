@@ -271,6 +271,10 @@ local function controller_kit( controller )
 		retaliate_scramble = kit_read( ini, section, "nlc_ctrl_kit_retaliate_scramble", 0 ),
 		inert_max = kit_read( ini, section, "nlc_ctrl_kit_inert_max", 0 ),
 		inert_range = kit_read( ini, section, "nlc_ctrl_kit_inert_range", 30 ),
+		throw = kit_read( ini, section, "nlc_ctrl_kit_throw", 0 ),
+		throw_cooldown = kit_read( ini, section, "nlc_ctrl_kit_throw_cooldown", 4000 ),
+		throw_fumble = kit_read( ini, section, "nlc_ctrl_kit_throw_fumble", 0 ),
+		throw_cone = kit_read( ini, section, "nlc_ctrl_kit_throw_cone", 30 ),
 		w = {}, phase = {}, phantom_phase = {},
 	}
 	for _, a in ipairs( CONTROLLER_KIT_ABILITIES ) do
@@ -665,12 +669,133 @@ function update_controller_reticle_pressure()
 	end
 end
 
+-- Throw wrench (mutant polish pass 2026-11): a hand grenade, an underbarrel round or a launcher is lobbed with the
+-- crosshair off the controller, so the reticle reactions above never saw it. A fire press with one of those in the
+-- hands, the view within nlc_ctrl_kit_throw_cone of a controller that sees the actor: chance nlc_ctrl_kit_throw
+-- x psy protection x mask to wrench the camera aside before the release. A share of the procs
+-- (nlc_ctrl_kit_throw_fumble) is a fumble instead: the aim is dragged down for a short throw (hand grenades only).
+-- A launcher press is consumed (the round stays in the tube). No line of sight, no wrench: breaking its sight
+-- first keeps the grenade a valid answer to a controller in cover.
+local function controller_lob_kind( item )
+	if not item then return nil end
+	local section = item:section()
+	local class = string.upper( get_string( section, "class", "" ) or "" )
+	if string.sub( class, 1, 2 ) == "G_" then return "grenade" end
+	if string.find( class, "RG6", 1, true ) or string.find( class, "RPG7", 1, true ) then return "launcher" end
+	local ok_gl, has_gl = pcall( item.is_weapon_gl, item )
+	if ok_gl and has_gl and ogse_wpn_utils and type( ogse_wpn_utils.get_gl_mode ) == "function" then
+		local ok_mode, mode = pcall( ogse_wpn_utils.get_gl_mode, item )
+		if ok_mode and mode == true then return "launcher" end
+	end
+	return nil
+end
+
+local function controller_try_throw_wrench( actor, now )
+	local item = actor:active_item()
+	local kind = controller_lob_kind( item )
+	if not kind then return nil end
+	local dev = device()
+	if not dev or not dev.cam_dir then return nil end
+	local view = vector():set( dev.cam_dir.x, 0, dev.cam_dir.z )
+	if view:magnitude() < 0.01 then return nil end
+	view:normalize()
+
+	local best, best_runtime, best_kit, best_dist, best_angle
+	for controller_id, runtime in pairs( controller_runtime ) do
+		local controller = level.object_by_id( controller_id )
+		if controller and controller:alive() and runtime.binder and now - ( runtime.last_seen or 0 ) <= 1500
+			and not controller_is_decoy( controller )
+		then
+			local kit = controller_kit( controller )
+			local enemy = controller:get_enemy()
+			local dist = actor:position():distance_to( controller:position() )
+			if kit.throw > 0 and enemy and enemy:id() == actor:id() and dist <= ( runtime.range or kit.range )
+				and now >= ( runtime.throw_ready or 0 ) and ( not best_dist or dist < best_dist )
+			then
+				local to = vector():sub( controller:position(), actor:position() )
+				to.y = 0
+				if to:magnitude() > 0.5 then
+					to:normalize()
+					local angle = math.deg( math.acos( clamp( view:dotproduct( to ), -1, 1 ) ) )
+					if angle <= kit.throw_cone then
+						-- the kit's own line-of-sight test (three rays, as the target pool); controller:see() is its visual
+						-- memory and failed in the open whenever it faced away or sat in a cover phase
+						local _, target_los = controller_cover_sample( runtime.binder, controller, actor )
+						if target_los then
+							best, best_runtime, best_kit, best_dist, best_angle = controller, runtime, kit, dist, angle
+						else
+							diagnostic_log( "controller_throw_" .. controller_id, 1000,
+								"controller id=%d throw-wrench result=blocked reason=no_line_of_sight kind=%s dist=%.1f",
+								controller_id, kind, dist )
+						end
+					end
+				end
+			end
+		end
+	end
+	if not best then return nil end
+
+	local id = best:id()
+	best_runtime.throw_ready = now + best_kit.throw_cooldown
+	local defense = get_psy_defense_context()
+	local mask = get_cached_mask_k()
+	local chance = clamp( best_kit.throw * defense.manipulation_factor * mask, 0, 1 )
+	if lua_random() >= chance then
+		diagnostic_log( "controller_throw_" .. id, 0,
+			"controller id=%d throw-wrench result=miss chance=%.3f base=%.2f manip=%.3f mask_k=%.3f kind=%s dist=%.1f angle=%.0f",
+			id, chance, best_kit.throw, defense.manipulation_factor, mask, kind, best_dist, best_angle )
+		return nil
+	end
+
+	local fumble = kind == "grenade" and lua_random() < best_kit.throw_fumble
+	local dh, dp
+	if fumble then
+		-- dragged down for a short throw; never steeper than about 30 degrees below the horizon (not at the feet)
+		local pitch_now = math.deg( math.asin( clamp( dev.cam_dir.y, -1, 1 ) ) )
+		local down = clamp( pitch_now + 30, 0, 28 )
+		dh = ( lua_random() < 0.5 and -1 or 1 ) * math.rad( 6 + 10 * lua_random() )
+		dp = -math.rad( down ) -- camera pitch: positive looks up
+	else
+		dh = ( lua_random() < 0.5 and -1 or 1 ) * math.rad( 40 + 50 * lua_random() )
+		dp = ( 0.5 - lua_random() ) * math.rad( 20 )
+	end
+	if sivol_weapon and sivol_weapon.start_psy_divert then
+		sivol_weapon.start_psy_divert( dh, dp, 180 )
+		-- a grenade is held through its wind-up: two more pushes the same way while it is still in the hands
+		if kind == "grenade" and not fumble then
+			local item_id = item:id()
+			for _, delay in ipairs( { 350, 700 } ) do
+				dsh.timeout( delay, function()
+					local a = db.actor
+					local it = a and a:alive() and a:active_item()
+					if it and it:id() == item_id then
+						sivol_weapon.start_psy_divert( dh * 0.4, dp * 0.4, 150 )
+					end
+				end )
+			end
+		end
+	end
+	if sivol_weapon and sivol_weapon.release_manual_hold_breath then
+		sivol_weapon.release_manual_hold_breath( "controller throw wrench", false, true, true )
+	end
+	controller_play_psy_trigger_sound()
+	controller_actor_lockout_until = now + 600
+	diagnostic_log( "controller_throw_" .. id, 0,
+		"controller id=%d throw-wrench result=%s chance=%.3f base=%.2f manip=%.3f mask_k=%.3f kind=%s dist=%.1f angle=%.0f dh=%.2f dp=%.2f consumed=%s",
+		id, fumble and "fumble" or "proc", chance, best_kit.throw, defense.manipulation_factor, mask, kind, best_dist, best_angle,
+		dh, dp, tostring( kind == "launcher" ) )
+	-- a launcher press is consumed (the caller eats the key); a grenade throw goes on with the camera turned
+	return kind == "launcher"
+end
+
 -- Event-driven targeting reaction. Called only for a real kWPN_FIRE press by
 -- sivol_weapon; all controller ownership, balance and cooldown state stays here.
 function on_actor_fire_pressed( key )
 	local actor = db.actor
 	if not actor or not actor:alive() then return false end
 	local now = time_global()
+	local lob = controller_try_throw_wrench( actor, now )
+	if lob ~= nil then return lob end
 	local ok, rq = pcall( function() return level.get_current_ray_query() end )
 	local controller = ok and rq and rq.object
 	if not controller or not controller:alive() or controller:clsid() ~= CLID_CONTROLLER then
@@ -1487,6 +1612,34 @@ function generic_object_binder:update( delta )
 		end
 	end
 
+	-- bloodsucker aura (polish pass 2): per-variant range, chance and interval from the monster section; it was one
+	-- 50% roll per 3 s within 15 m for every variant
+	if classid == CLID_BLOODSUCKER and not scripted_psy_phantom and sfobj:alive() and sfobj.health > 0.05
+		and ( self.bs_aura_timer or 0 ) < time_global()
+	then
+		local sect = sfobj:section()
+		local ini = system_ini()
+		local interval = ini:line_exist( sect, "aura_interval" ) and ini:r_float( sect, "aura_interval" ) or 3000
+		self.bs_aura_timer = time_global() + interval
+		local range = ini:line_exist( sect, "aura_range" ) and ini:r_float( sect, "aura_range" ) or 15
+		local chance = ini:line_exist( sect, "aura_chance" ) and ini:r_float( sect, "aura_chance" ) or 0.5
+		local npc = sfobj:get_enemy()
+		if npc and npc:id() == actor:id() and dist_to_actor < range and sfobj:see( npc ) and lua_random() < chance then
+			local sound = "monsters\\bloodsucker\\bloodsucker_attack"
+			local snd_obj = xr_sound.get_safe_sound_object( sound )
+			snd_obj:play_no_feedback( npc, sound_object.s2d, 0, vector(), 5.0 )
+			local h = hit()
+			h.type = 7
+			h.direction = vector():set( 0, 0, 0 )
+			h.power = 0.035 + ( 0.02 * game_difficulty )
+			h.impulse = 0
+			h.draftsman = npc
+			npc:hit( h )
+			h.type = 3
+			npc:hit( h )
+		end
+	end
+
 	if self.chtime<time_global() then
 		self.chtime=time_global()+3000
 			
@@ -1552,25 +1705,7 @@ function generic_object_binder:update( delta )
 		end
 
 		if classid==CLID_BLOODSUCKER and not scripted_psy_phantom and sfobj:alive() and sfobj.health>0.05 then
-			local npc=sfobj:get_enemy()
-			if npc and npc:id()==actor:id() then
-				if sfobj:see(npc) and dist_to_actor<15 and lua_random()<0.5 then
-					local snd_obj
-					local sound="monsters\\bloodsucker\\bloodsucker_attack"
-					snd_obj=xr_sound.get_safe_sound_object(sound)
-					snd_obj:play_no_feedback(npc, sound_object.s2d, 0, vector(), 5.0)
-					local h = hit()
-					h.type = 7
-					h.direction = vector():set(0,0,0)
-					h.power = 0.035+(0.02*game_difficulty)
-					-- old_HE reference: h.power = 0.05 + ( 0.02 * game_difficulty )
-					h.impulse = 0
-					h.draftsman = npc
-					npc:hit(h)
-					h.type = 3
-					npc:hit(h)
-				end
-			end
+			-- the aura moved to its own timer above (per-variant aura_range / aura_chance / aura_interval)
 			return
 		end
 			
