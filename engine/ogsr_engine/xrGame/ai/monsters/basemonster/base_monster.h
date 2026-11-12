@@ -465,6 +465,9 @@ private:
     float m_nlc_slow_k{};
     u32 m_nlc_slow_start{};
     u32 m_nlc_slow_end{};
+    float m_nlc_slow_recover{0.25f}; // share of the slow time spent recovering
+    float m_nlc_time_k{1.f}; // NLC flytrap: playback factor of the natural-speed clips (attacks, idles) until m_nlc_time_end
+    u32 m_nlc_time_end{};
     float m_nlc_speed_base{1.f}; // section key move_speed_k (movement + clip speed together)
     float m_nlc_speed_bonus{1.f}; // persistent multiplier (pseudogiant rage)
     float m_nlc_haste_k{1.f}; // temporary multiplier (pseudogiant charge)
@@ -506,8 +509,15 @@ private:
 
 public:
     // k = fraction of speed removed (0..0.9), fades out over the last quarter of time_ms
-    void nlc_apply_move_slow(float k, u32 time_ms);
+    void nlc_apply_move_slow(float k, u32 time_ms, float hold = 0.75f); // hold: share of the time at full strength, the rest recovers linearly
     float nlc_move_speed_k() const;
+    // NLC flytrap: every natural-speed clip (not only the movement ones) plays at k for time_ms; renewed by the zone
+    void nlc_set_time_k(float k, u32 time_ms)
+    {
+        m_nlc_time_k = k;
+        m_nlc_time_end = Device.dwTimeGlobal + time_ms;
+    }
+    float nlc_time_k() const { return Device.dwTimeGlobal < m_nlc_time_end ? m_nlc_time_k : 1.f; }
 
     // threaten (stomp) control hooks: skip the facing check / scale the animation speed
     virtual bool threaten_skip_facing() { return false; }
@@ -971,6 +981,7 @@ private:
         float impact_k{0.3f}; // slow at impact_damage; impact_k2 at twice that
         float impact_k2{0.5f};
         u32 impact_ms{400};
+        float impact_hold{0.75f}; // share of impact_ms at full strength
         bool side_guard{};
         float side_guard_angle{deg2rad(30.f)};
         float side_guard_short{3.f};

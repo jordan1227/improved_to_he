@@ -253,6 +253,8 @@ void CBaseGraviZone ::PlayTeleParticles(CGameObject* pObject)
     }
 
     PP->StartParticles(particle_str, Fvector().set(0, 1, 0), ID());
+    if (m_nlc_particles_log)
+        Msg("~ [zone_particles] [%s]: tele [%s] started on [%s]", cName().c_str(), particle_str.c_str(), pObject->cName().c_str());
 }
 void CBaseGraviZone ::StopTeleParticles(CGameObject* pObject)
 {
@@ -276,7 +278,9 @@ void CBaseGraviZone ::StopTeleParticles(CGameObject* pObject)
     }
 
     //остановить партиклы
-    PP->StopParticles(particle_str, BI_NONE, true);
+    PP->StopParticles(particle_str, BI_NONE, !m_nlc_soft_object_particles); // NLC: object_particles_soft_stop
+    if (m_nlc_particles_log)
+        Msg("~ [zone_particles] [%s]: tele [%s] stopped on [%s] (soft %d)", cName().c_str(), particle_str.c_str(), pObject->cName().c_str(), m_nlc_soft_object_particles);
 }
 
 float CBaseGraviZone ::RelativePower(float dist)

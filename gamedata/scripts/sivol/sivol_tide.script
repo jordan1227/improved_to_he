@@ -1,0 +1,394 @@
+-- sivol_tide.script
+-- Tide fields (docs/ANOMALY_DESIGN.md 16): a small share of the random anomalies switches off and on again on a clock,
+-- so a memorised route is not always safe or always blocked.
+--
+-- Which anomaly is tidal, its cycle length and its phase come from its id and spawn position, so they survive a
+-- save / load, and a new anomaly set (after an emission) brings a new choice. The state is a function of the game
+-- clock: nothing is saved.
+--
+-- Rules:
+--  * only amk_anoms random anomalies whose amk status is "on" (custom data dyn_anom.status), of the types in
+--    cfg.types; never quest / unique ones (amk_anoms unique_sections, anomaly_detector.excluded_anom), teleports, the
+--    greedy, radioactive fields, flytraps or silence zones;
+--  * amk_anoms owns the status: its "off" / "del" (emission, deletion) always wins, and its "on" hands the anomaly back
+--    to the clock (hook in amk_anoms.set_online_anomaly_status). The tide never writes the custom data;
+--  * dormant = obj:disable_anomaly() (no particles, sound, light or hits). It shows a faint flicker of its own idle
+--    particles now and then, so a dormant spot is not an invisible trap;
+--  * cfg.warn_min game minutes before it wakes, the flicker gets frequent and stronger and its idle sound plays;
+--  * it never switches on while the actor, a stalker or a mutant stands in it (plus cfg.occupied_margin): it waits;
+--  * while dormant it is out of amk_anoms' anomaly list and the anomaly scripts' caches (auras, PDA noise): the
+--    signals on_anomaly_net_destroy / on_anomaly_spawn are re-sent with binder = nil and a third argument "tide".
+--
+-- Console:
+--   fl sivol_tide.status()             counts on this level
+--   fl sivol_tide.near(60)             tidal anomalies within 60 m of the actor: state, phase, time to the next switch
+--   fl sivol_tide.force(id, "off")     hold one dormant ("on" = awake, "warn" = waking tell, nil = back to the clock)
+--   fl sivol_tide.force_near("off")    the same for the nearest tidal anomaly
+--   fl sivol_tide.set_enabled(false)   master switch (every tidal anomaly wakes at once, occupancy still respected)
+--   fl sivol_tide.set_log(true)
+
+local cfg = {
+	enabled = true,
+	log = true,                 -- "[sivol_tide]" lines (testing)
+	share_pct = 12,             -- % of the eligible anomalies that are tidal
+	cycle_min = 75,             -- game minutes, mean length of one awake + dormant cycle
+	cycle_var = 0.35,           -- +- share of the cycle, per anomaly
+	awake_share = 0.6,          -- share of the cycle it is on
+	warn_min = 4,               -- game minutes of telegraphed waking before it switches on (capped at half the dormant time)
+	occupied_margin = 1.0,      -- m beyond the radius: a live creature this close keeps it dormant
+	poll_ms = 500,
+	tell_range = 40,            -- m: dormant and waking tells play only this close to the actor
+	dormant_gap_ms = { 8000, 14000 },
+	dormant_flash_ms = 350,
+	wake_gap_ms = { 900, 2400 },
+	wake_flash_ms = 900,
+	wake_sound = true,
+	fallback_particle = [[anomaly2\gravity_entrance_small]], -- a type with no idle particles of its own
+	types = {                   -- section prefixes (amk_anoms anom_prefix .. anoms_sections name)
+		"amk_zone_witches_galantine",
+		"amk_zone_mosquito_bald",
+		"amk_zone_mincer",
+		"amk_zone_gravi_zone",
+		"amk_zone_buzz",
+		"amk_zone_sakbuzz",
+		"amk_zone_zharka_static",
+		"amk_zone_breathe",
+	},
+	never = { "teleport", "greedy", "radioactive", "flytrap", "silence", "_noart", "_killing" },
+}
+
+local zones = {}      -- [id] = { id, sec, pos, r, cycle_s, offset_s, awake_s, applied, forced, ... }
+local live_fx = {}    -- { stop_time, particle }
+local base_time
+local emitting = false
+
+local function log(fmt, ...)
+	if cfg.log then log2("[sivol_tide] " .. fmt, ...) end
+end
+
+function set_log(v)
+	cfg.log = v and true or false
+end
+
+-- deterministic hash of the id, the spawn position and a salt (Park-Miller steps, exact in doubles)
+local function hash(id, pos, salt)
+	local x = math.floor(pos.x * 4)
+	local z = math.floor(pos.z * 4)
+	local h = (id * 7919 + x * 104729 + z * 1299709 + salt * 15485863) % 2147483647
+	if h <= 0 then h = h + 2147483646 end
+	h = (h * 48271) % 2147483647
+	h = (h * 48271) % 2147483647
+	return h
+end
+
+local function game_sec()
+	if not base_time then base_time = misc.base_time() end
+	return game.get_game_time():diffSec(base_time)
+end
+
+local function first_token(s)
+	if type(s) ~= "string" then return nil end
+	s = string.match(s, "^%s*([^;,]+)")
+	if not s then return nil end
+	s = string.gsub(s, "%s+$", "")
+	if s == "" then return nil end
+	return s
+end
+
+local function is_type(sec)
+	for _, p in ipairs(cfg.never) do
+		if string.find(sec, p, 1, true) then return false end
+	end
+	for _, p in ipairs(cfg.types) do
+		if string.find(sec, p, 1, true) == 1 then return true end
+	end
+	return false
+end
+
+local function amk_status(id)
+	local sobj = alife() and alife():object(id)
+	if not sobj then return "" end
+	return amk_anoms.get_anomaly_status(sobj)
+end
+
+-- phase of a zone now: "awake", "warn" (dormant, waking soon) or "dormant"; t = seconds into the cycle
+local function phase_of(z, now)
+	if z.forced then return z.forced, 0 end
+	if not cfg.enabled then return "awake", 0 end
+	local t = (now + z.offset_s) % z.cycle_s
+	if t < z.awake_s then return "awake", t end
+	local warn_s = math.min(cfg.warn_min * 60, (z.cycle_s - z.awake_s) * 0.5)
+	if t >= z.cycle_s - warn_s then return "warn", t end
+	return "dormant", t
+end
+
+local function signal(name, obj)
+	emitting = true
+	ogse_signals.get_mgr():call(name, obj, nil, "tide")
+	emitting = false
+end
+
+local function particle_of(sec)
+	return first_token(get_string(sec, "idle_particles", ""))
+		or first_token(get_string(sec, "blowout_particles", ""))
+		or cfg.fallback_particle
+end
+
+local function sound_of(sec)
+	return first_token(get_string(sec, "idle_sound", ""))
+		or first_token(get_string(sec, "blowout_sound", ""))
+end
+
+local function register(obj, why)
+	if not obj then return end
+	local id = obj:id()
+	if zones[id] then return end
+	local sec = obj:section()
+	if not is_type(sec) then return end
+	if anomaly_detector.excluded_anom(obj:name()) then return end
+	local pos = obj:position()
+	if hash(id, pos, 1) % 100 >= cfg.share_pct then return end
+	if amk_status(id) ~= "on" then return end
+
+	local ok, r = pcall(obj.get_shape_radius, obj)
+	r = ok and tonumber(r) or 0
+	if r <= 0 then r = 3 end
+	local cycle_s = cfg.cycle_min * 60 * (1 + cfg.cycle_var * ((hash(id, pos, 2) % 2001) / 1000 - 1))
+	local z = {
+		id = id,
+		sec = sec,
+		name = obj:name(),
+		pos = pos,
+		r = r,
+		cycle_s = cycle_s,
+		offset_s = (hash(id, pos, 3) % 100000) / 100000 * cycle_s,
+		awake_s = cycle_s * cfg.awake_share,
+		applied = nil, -- "on" / "off" as last set by the tide; nil = not yet (spawn enabled it)
+		particle = particle_of(sec),
+		sound = sound_of(sec),
+		next_fx = 0,
+	}
+	zones[id] = z
+	log("tidal %s id=%d r=%.1f cycle=%.0f min awake=%.0f min (%s)", z.name, id, r, cycle_s / 60, z.awake_s / 60, why)
+end
+
+local function forget(id)
+	zones[id] = nil
+end
+
+local function occupied(z)
+	local actor = db.actor
+	local rr = z.r + cfg.occupied_margin
+	if actor and actor:alive() and actor:position():distance_to(z.pos) <= rr then return "actor" end
+	local who
+	level.iterate_nearest(z.pos, rr, function(o)
+		if who or not o or o:id() == z.id then return end
+		if (IsStalker(o) or IsMonster(o)) and o:alive() and o:position():distance_to(z.pos) <= rr then
+			who = o:name()
+		end
+	end)
+	return who
+end
+
+local function set_on(z, obj)
+	obj:enable_anomaly()
+	amk_anoms.add_anomaly(z.id, z.pos, 3)
+	if z.applied == "off" then signal("on_anomaly_spawn", obj) end
+	z.applied = "on"
+end
+
+local function set_off(z, obj)
+	obj:disable_anomaly()
+	amk_anoms.remove_anomaly(z.id)
+	signal("on_anomaly_net_destroy", obj)
+	z.applied = "off"
+end
+
+local function flash(z, ms, with_sound)
+	local p = particles_object(z.particle)
+	local pos = vector():set(z.pos.x, z.pos.y, z.pos.z)
+	p:play_at_pos(pos)
+	table.insert(live_fx, { stop_time = time_global() + ms, particle = p })
+	if with_sound and cfg.wake_sound and z.sound then
+		local snd = xr_sound.get_safe_sound_object(z.sound)
+		if snd and not snd:playing() then
+			snd:play_no_feedback(db.actor, sound_object.s3d, 0, pos, 1.0) -- no feedback: the AI does not hear it as the actor
+		end
+	end
+end
+
+local function tells(z, ph, now_ms, apos)
+	if not apos or apos:distance_to(z.pos) > cfg.tell_range then
+		z.next_fx = 0
+		return
+	end
+	if ph == "awake" or z.applied ~= "off" then return end
+	if z.next_fx == 0 then
+		local g = ph == "warn" and cfg.wake_gap_ms or cfg.dormant_gap_ms
+		z.next_fx = now_ms + lua_random(0, g[1])
+		return
+	end
+	if now_ms < z.next_fx then return end
+	if ph == "warn" then
+		flash(z, cfg.wake_flash_ms, true)
+		z.next_fx = now_ms + lua_random(cfg.wake_gap_ms[1], cfg.wake_gap_ms[2])
+	else
+		flash(z, cfg.dormant_flash_ms, false)
+		z.next_fx = now_ms + lua_random(cfg.dormant_gap_ms[1], cfg.dormant_gap_ms[2])
+	end
+end
+
+local function update()
+	ogse_signals.get_mgr():reschedule(cfg.poll_ms)
+	local now_ms = time_global()
+	for n = #live_fx, 1, -1 do
+		if now_ms >= live_fx[n].stop_time then
+			live_fx[n].particle:stop()
+			table.remove(live_fx, n)
+		end
+	end
+	if not db.actor then return end
+	local apos = db.actor:position()
+	local now = game_sec()
+	for id, z in pairs(zones) do
+		local obj = level.object_by_id(id)
+		if not obj then
+			zones[id] = nil
+		else
+			local ph = phase_of(z, now)
+			if ph == "awake" then
+				if z.applied ~= "on" then
+					local who = z.applied == "off" and occupied(z) or nil
+					if who then
+						if z.held_by ~= who then log("%s stays dormant: %s inside", z.name, who) end
+						z.held_by = who
+						ph = "warn" -- keep the waking tell going
+					else
+						if z.applied == "off" then log("%s wakes", z.name) end
+						z.held_by = nil
+						set_on(z, obj)
+					end
+				end
+			elseif z.applied ~= "off" then
+				log("%s goes dormant", z.name)
+				set_off(z, obj)
+			end
+			tells(z, ph, now_ms, apos)
+		end
+	end
+end
+
+-- signals ---------------------------------------------------------------------------------------------------------
+
+local function on_anomaly_spawn(obj, binder, tag)
+	if emitting or tag == "tide" then return end
+	register(obj, "spawn")
+	local z = obj and zones[obj:id()]
+	if z and phase_of(z, game_sec()) ~= "awake" then
+		-- a dormant anomaly must not hit for a moment after a load: off at once. The next poll switches it off again
+		-- (amk_anoms re-disables in its first binder update for the same reason) and sends the signal, outside this
+		-- spawn signal, so every cache that takes the spawn has taken it before it is told the zone is gone.
+		obj:disable_anomaly()
+		amk_anoms.remove_anomaly(z.id)
+	end
+end
+
+local function on_anomaly_net_destroy(obj, binder, tag)
+	if emitting or tag == "tide" or not obj then return end
+	forget(obj:id())
+end
+
+-- amk_anoms.set_online_anomaly_status: amk's own on / off / del always wins
+function on_amk_status(id, status)
+	if status == "on" then
+		local obj = level.object_by_id(id)
+		if obj then register(obj, "amk on") end
+	elseif zones[id] then
+		log("%s released: amk status %s", zones[id].name, tostring(status))
+		forget(id)
+	end
+end
+
+-- console ---------------------------------------------------------------------------------------------------------
+
+function set_enabled(v)
+	cfg.enabled = v and true or false
+	log("enabled = %s", tostring(cfg.enabled))
+end
+
+function status()
+	local n, off, held = 0, 0, 0
+	for _, z in pairs(zones) do
+		n = n + 1
+		if z.applied == "off" then off = off + 1 end
+		if z.held_by then held = held + 1 end
+	end
+	log2("[sivol_tide] enabled=%s tidal=%d dormant=%d held_by_occupant=%d share=%d%%", tostring(cfg.enabled), n, off, held, cfg.share_pct)
+end
+
+function near(range)
+	range = tonumber(range) or 60
+	if not db.actor then return end
+	local apos = db.actor:position()
+	local now = game_sec()
+	local list = {}
+	for _, z in pairs(zones) do
+		local d = apos:distance_to(z.pos)
+		if d <= range then table.insert(list, { z = z, d = d }) end
+	end
+	table.sort(list, function(a, b) return a.d < b.d end)
+	log2("[sivol_tide] %d tidal anomalies within %.0f m", #list, range)
+	for _, e in ipairs(list) do
+		local z = e.z
+		local ph, t = phase_of(z, now)
+		local to_next
+		if z.forced then
+			to_next = -1
+		elseif ph == "awake" then
+			to_next = z.awake_s - t
+		else
+			to_next = z.cycle_s - t
+		end
+		log2("[sivol_tide]   id=%d %s %.0f m: %s (applied %s%s%s), next switch in %.1f game min, cycle %.0f min",
+			z.id, z.name, e.d, ph, tostring(z.applied), z.forced and ", forced" or "", z.held_by and (", held by " .. z.held_by) or "",
+			to_next / 60, z.cycle_s / 60)
+	end
+end
+
+function force(id, state)
+	id = tonumber(id)
+	local z = id and zones[id]
+	if not z then
+		log2("[sivol_tide] force: %s is not a tidal anomaly on this level", tostring(id))
+		return
+	end
+	if state == "off" then state = "dormant" elseif state == "on" then state = "awake" end
+	if state ~= nil and state ~= "dormant" and state ~= "warn" and state ~= "awake" then
+		log2("[sivol_tide] force: state must be \"on\", \"off\", \"warn\" or nil")
+		return
+	end
+	z.forced = state
+	z.next_fx = 0
+	log2("[sivol_tide] %s forced %s", z.name, tostring(state))
+end
+
+function force_near(state)
+	if not db.actor then return end
+	local apos = db.actor:position()
+	local best, bd
+	for _, z in pairs(zones) do
+		local d = apos:distance_to(z.pos)
+		if not bd or d < bd then best, bd = z, d end
+	end
+	if not best then
+		log2("[sivol_tide] force_near: no tidal anomaly on this level")
+		return
+	end
+	force(best.id, state)
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = update })
+	sm:subscribe({ signal = "on_anomaly_spawn", fun = on_anomaly_spawn })
+	sm:subscribe({ signal = "on_anomaly_net_destroy", fun = on_anomaly_net_destroy })
+end

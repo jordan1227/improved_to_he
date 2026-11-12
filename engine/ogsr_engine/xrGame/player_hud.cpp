@@ -595,7 +595,7 @@ void attachable_hud_item::load(const shared_str& sect_name)
 // arm injury, docs/damage_model/DESIGN_actor_damage_model.md 18.3; later e.g. an artifact bonus; total clamped 0.3..2).
 // Kinds: reload (magazine / grenade-launcher reloads, shotgun tube loading) and draw (show / hide).
 // Applied to the actor weapon's HUD motions, their state timing and their sounds (HudSound.cpp).
-float g_nlc_hud_speed_k[NLC_SPEED_KINDS] = {1.f, 1.f, 1.f};
+float g_nlc_hud_speed_k[NLC_SPEED_KINDS] = {1.f, 1.f, 1.f, 1.f, 1.f};
 static xr_map<shared_str, float> g_nlc_hud_factors[NLC_SPEED_KINDS];
 
 void nlc_set_hud_speed_factor(u8 kind, LPCSTR name, float k)
@@ -634,6 +634,16 @@ u8 nlc_actor_motion_kind(const CHudItem* item, LPCSTR anm_name)
     return NLC_SPEED_NONE;
 }
 
+// NLC flytrap: the reload / draw factor of a weapon motion, times the field factor that covers every motion of any item
+// in the actor's hands (knife strikes, grenade and bolt throws, binoculars)
+float nlc_actor_motion_speed_k(const CHudItem* item, LPCSTR anm_name)
+{
+    float k = nlc_hud_speed_k(nlc_actor_motion_kind(item, anm_name));
+    if (item && item->object().H_Parent() == Actor())
+        k *= nlc_hud_speed_k(NLC_SPEED_FIELD);
+    return k;
+}
+
 u32 attachable_hud_item::anim_play(const shared_str& anm_name_b, BOOL bMixIn, const CMotionDef*& md, bool randomAnim, float speed)
 {
     R_ASSERT(strstr(anm_name_b.c_str(), "anm_") == anm_name_b.c_str() || strstr(anm_name_b.c_str(), "anim_") == anm_name_b.c_str());
@@ -656,7 +666,7 @@ u32 attachable_hud_item::anim_play(const shared_str& anm_name_b, BOOL bMixIn, co
         speed = anm->params.speed_k;
 
     // NLC: handling speed factors (reload, draw); the returned length follows, so weapon states stay in sync
-    speed *= nlc_hud_speed_k(nlc_actor_motion_kind(m_parent_hud_item, anm_name_b.c_str()));
+    speed *= nlc_actor_motion_speed_k(m_parent_hud_item, anm_name_b.c_str());
 
     IKinematicsAnimated* ka = m_model->dcast_PKinematicsAnimated();
     u32 ret = g_player_hud->anim_play(m_attach_place_idx, anm->params, M, bMixIn, md, speed, m_has_separated_hands, ka);

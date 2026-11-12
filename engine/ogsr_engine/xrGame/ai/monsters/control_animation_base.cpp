@@ -604,6 +604,17 @@ void CControlAnimationBase::set_animation_speed()
         if (skel)
             speed = skel->LL_GetMotionDef(ctrl_data->global.get_motion())->Speed() * k;
     }
+    else if (speed <= 0.f && ctrl_data->global.get_motion().valid())
+    {
+        // NLC flytrap: inside a stasis field the other natural-speed clips (attacks, idles, turns) slow down too
+        const float tk = m_object->nlc_time_k();
+        if (tk < 0.999f)
+        {
+            IKinematicsAnimated* skel = smart_cast<IKinematicsAnimated*>(m_object->Visual());
+            if (skel)
+                speed = skel->LL_GetMotionDef(ctrl_data->global.get_motion())->Speed() * tk;
+        }
+    }
 
     ctrl_data->set_speed(speed);
 }

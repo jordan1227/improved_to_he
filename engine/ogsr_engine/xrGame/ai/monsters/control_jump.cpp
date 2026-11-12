@@ -584,7 +584,9 @@ void CControlJump::on_event(ControlCom::EEventType type, ControlCom::IEventData*
             ctrl_data_dir->linear_dependency = false;
             //---------------------------------------------------------------------------------
 
-            ctrl_data->set_speed(m_man->animation().current_blend()->timeTotal / m_man->animation().current_blend()->speed / m_jump_time);
+            // NLC flytrap: the glide clip is timed to the jump, so the stasis factor is applied here (an explicit speed
+            // is not scaled in CControlAnimation::play)
+            ctrl_data->set_speed(m_man->animation().current_blend()->timeTotal / m_man->animation().current_blend()->speed / m_jump_time * m_object->nlc_time_k());
         }
         else
             ctrl_data->set_speed(-1.f);

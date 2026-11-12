@@ -62,6 +62,10 @@ struct SBullet
 
     bool m_on_bullet_hit;
 
+    // NLC flytrap (docs/ANOMALY_DESIGN.md 3.3): > 0 while the bullet is inside a stasis field: it advances at this speed,
+    // "speed" keeps the true one (hit power, pierce and impulse are unchanged)
+    float nlc_stasis_speed{};
+
 public:
     SBullet();
     ~SBullet();
@@ -180,6 +184,23 @@ public:
     SBullet& AddBullet(const Fvector& position, const Fvector& direction, float starting_speed, float power, float impulse, u16 sender_id, u16 sendersweapon_id,
                        ALife::EHitType e_hit_type, float maximum_distance, const CCartridge& cartridge, bool SendHit, bool AimBullet = false);
 
+    // NLC flytrap: stasis fields (spheres) registered by the flytrap zones; bullets inside advance at "cap" m/s
+    struct SNlcStasis
+    {
+        u16 id;
+        Fvector center;
+        float radius;
+        float cap; // m/s inside, past the ramp
+        float ramp; // m from the surface over which the speed eases to the cap
+    };
+    static void nlc_stasis_set(u16 id, const Fvector& center, float radius, float cap, float ramp);
+    static void nlc_stasis_remove(u16 id);
+    static void nlc_stasis_clear();
+
+private:
+    xr_vector<SNlcStasis> m_nlc_stasis; // this update's copy of the registered fields
+
+public:
     void CommitEvents(); // @ the start of frame
     void CommitRenderSet(); // @ the end of frame
     void Render();

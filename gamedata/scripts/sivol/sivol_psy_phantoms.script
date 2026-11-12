@@ -140,6 +140,18 @@ local AMBIENT_MAX_CHANCE = 0.30
 local AMBIENT_COOLDOWN_MIN_MS = 60000
 local AMBIENT_COOLDOWN_SPAN_MS = 90000
 local AMBIENT_COOLDOWN_JITTER_MS = 30000
+-- Matrix (psi_field) aura spawns: proximity trigger, no psy_health gate. The aura itself deals
+-- no hit; phantoms keep their normal converted telepathic attacks.
+local ZONE_CHECK_MS = 15000
+local ZONE_INITIAL_DELAY_MS = 20000
+local ZONE_MAX_CHANCE = 0.35
+local ZONE_RETRY_MS = 30000
+local ZONE_COOLDOWN_MIN_MS = 45000
+local ZONE_COOLDOWN_SPAN_MS = 45000
+local ZONE_TIER_CHANCE = { weak = 0.6, average = 1.0, strong = 1.4 }
+local ZONE_TIER_BASE = { weak = 1, average = 2, strong = 3 } -- 1 mild, 2 mid, 3 severe roster
+local ZONE_SHIFT_UP_MASK_K = 0.95 -- bare head or badly worn mask: roster one step worse
+local ZONE_SHIFT_DOWN_MASK_K = 0.60 -- science / military suits: roster one step milder
 local MIN_SPAWN_DISTANCE = 12
 local MAX_SPAWN_DISTANCE = 18
 local MAX_ACTIVE = 4
@@ -167,6 +179,13 @@ local ambient_next_check = 0
 local ambient_next_spawn_time = 0
 local ambient_last_skip_reason = nil
 local ambient_force_next_spawn = false
+local zone_enabled = true
+local zone_diagnostics = false
+local zone_initialized = false
+local zone_next_check = 0
+local zone_cooldowns = {}
+local zone_force_next = false
+local zone_last_skip_reason = nil
 
 local function log(fmt, ...)
 	log2("[sivol_psy_phantoms] " .. fmt, ...)
@@ -651,10 +670,14 @@ local function choose_weighted_variant(roster)
 	return roster[#roster], roll
 end
 
-local function ambient_safe_reason(actor)
-	if not ambient_enabled then return "disabled" end
+local function ambient_safe_reason(actor, zone_mode)
+	if zone_mode then
+		if not zone_enabled then return "disabled" end
+	elseif not ambient_enabled then
+		return "disabled"
+	end
 	if not actor or not actor:alive() then return "actor_unavailable" end
-	if actor.psy_health >= AMBIENT_PSY_THRESHOLD then return "psy_above_threshold" end
+	if not zone_mode and actor.psy_health >= AMBIENT_PSY_THRESHOLD then return "psy_above_threshold" end
 	if entry_count(nil) > 0 then return "real_phantom_active" end
 	if phantom_manager and phantom_manager.phantom_count
 		and phantom_manager.phantom_count() > 0 then return "classic_phantom_active" end
@@ -744,6 +767,123 @@ local function ambient_update(now)
 	end
 end
 
+local function zone_roster(tier_name, mask_k)
+	local index = ZONE_TIER_BASE[tier_name] or 2
+	local shift = 0
+	if mask_k >= ZONE_SHIFT_UP_MASK_K then
+		shift = 1
+	elseif mask_k <= ZONE_SHIFT_DOWN_MASK_K then
+		shift = -1
+	end
+	index = math.max(1, math.min(3, index + shift))
+	if index == 1 then return AMBIENT_VARIANTS_MILD, "mild", shift end
+	if index == 2 then return AMBIENT_VARIANTS_MID, "mid", shift end
+	return AMBIENT_VARIANTS_SEVERE, "severe", shift
+end
+
+-- Phantoms near a Matrix (psi_field). The source id is deliberately nil: the update loop treats
+-- a source whose server object is not alive() as gone, and an anomaly server object is not.
+local function zone_update(now)
+	if not zone_initialized then
+		zone_initialized = true
+		zone_next_check = now + ZONE_INITIAL_DELAY_MS
+		return
+	end
+	if now < zone_next_check then return end
+	zone_next_check = now + ZONE_CHECK_MS
+
+	if not (sivol_anom_effects and sivol_anom_effects.get_best_psi) then return end
+	local actor = db.actor
+	if not actor or not actor:alive() then return end
+	local zone = sivol_anom_effects.get_best_psi(actor:position())
+	if not zone then
+		zone_last_skip_reason = nil
+		return
+	end
+	local forced = zone_force_next
+	if not forced and (zone_cooldowns[zone.id] or 0) > now then return end
+
+	local reason = ambient_safe_reason(actor, true)
+	if reason then
+		if zone_diagnostics and reason ~= zone_last_skip_reason then
+			log("zone skipped reason=%s zone=%s tier=%s proximity=%.2f", reason,
+				tostring(zone.id), zone.tier_name, zone.proximity)
+		end
+		zone_last_skip_reason = reason
+		return
+	end
+	zone_last_skip_reason = nil
+
+	local mask_k = get_mask_psy_k()
+	-- Same rate shape as ambient: a mask removes half of its protection from the frequency.
+	local frequency_mult = math.max(0.5, math.min(1.25, 0.5 + 0.5 * mask_k))
+	local tier_chance = ZONE_TIER_CHANCE[zone.tier_name] or 1.0
+	local chance = math.min(1, ZONE_MAX_CHANCE * zone.proximity * tier_chance * frequency_mult)
+	local chance_roll = lua_random()
+	if not forced and chance_roll >= chance then
+		if zone_diagnostics then
+			log("zone attempt result=miss zone=%s tier=%s proximity=%.2f mask_k=%.3f frequency_mult=%.3f chance=%.3f roll=%.3f",
+				tostring(zone.id), zone.tier_name, zone.proximity, mask_k, frequency_mult, chance, chance_roll)
+		end
+		return
+	end
+	zone_force_next = false
+
+	local roster, tier, shift = zone_roster(zone.tier_name, mask_k)
+	local choice, roster_roll = choose_weighted_variant(roster)
+	local id
+	if choice.kind == "npc" then
+		id = spawn_stalker(nil, "matrix_aura", choice.key)
+	else
+		id = spawn_mutant(nil, "matrix_aura", choice.key)
+	end
+	if id then
+		local cooldown = math.floor(ZONE_COOLDOWN_MIN_MS + lua_random(0, ZONE_COOLDOWN_SPAN_MS))
+		zone_cooldowns[zone.id] = now + cooldown
+		log("zone spawned id=%s zone=%s section=%s tier=%s roster=%s shift=%d kind=%s variant=%s forced=%s proximity=%.2f mask_k=%.3f frequency_mult=%.3f chance=%.3f chance_roll=%.3f roster_roll=%d cooldown_ms=%d",
+			tostring(id), tostring(zone.id), tostring(zone.section), zone.tier_name, tier, shift,
+			choice.kind, choice.key, tostring(forced), zone.proximity, mask_k, frequency_mult, chance,
+			chance_roll, roster_roll, cooldown)
+	else
+		zone_cooldowns[zone.id] = now + ZONE_RETRY_MS
+		log("zone spawn failed zone=%s tier=%s kind=%s variant=%s retry_ms=%d",
+			tostring(zone.id), zone.tier_name, choice.kind, choice.key, ZONE_RETRY_MS)
+	end
+end
+
+function set_zone_enabled(value)
+	zone_enabled = value == true
+	log("zone enabled=%s", tostring(zone_enabled))
+end
+
+function set_zone_diagnostics(value)
+	zone_diagnostics = value == true
+	log("zone diagnostics=%s", tostring(zone_diagnostics))
+end
+
+-- Console: fl sivol_psy_phantoms.trigger_zone_spawn()
+-- Skips the cooldown and the chance roll; still needs the player inside a Matrix aura and a safe moment.
+function trigger_zone_spawn()
+	zone_initialized = true
+	zone_force_next = true
+	zone_next_check = 0
+	log("zone spawn forced; waiting for an eligible update inside a Matrix aura")
+end
+
+-- Console: fl sivol_psy_phantoms.zone_status()
+function zone_status()
+	local actor = db.actor
+	local zone = actor and sivol_anom_effects and sivol_anom_effects.get_best_psi
+		and sivol_anom_effects.get_best_psi(actor:position())
+	local mask_k = get_mask_psy_k()
+	log("zone status enabled=%s diagnostics=%s mask_k=%.3f active=%d next_check_ms=%d zone=%s",
+		tostring(zone_enabled), tostring(zone_diagnostics), mask_k, entry_count(nil),
+		math.max(0, zone_next_check - time_global()),
+		zone and string.format("id=%s tier=%s distance=%.1f proximity=%.2f cooldown_ms=%d",
+			tostring(zone.id), zone.tier_name, zone.distance, zone.proximity,
+			math.max(0, (zone_cooldowns[zone.id] or 0) - time_global())) or "none in aura")
+end
+
 function set_ambient_enabled(value)
 	ambient_enabled = value == true
 	log("ambient enabled=%s", tostring(ambient_enabled))
@@ -786,6 +926,11 @@ local function reset_ambient()
 	ambient_next_spawn_time = 0
 	ambient_last_skip_reason = nil
 	ambient_force_next_spawn = false
+	zone_initialized = false
+	zone_next_check = 0
+	zone_cooldowns = {}
+	zone_force_next = false
+	zone_last_skip_reason = nil
 end
 
 function is_phantom(obj_or_id)
@@ -830,6 +975,7 @@ local function on_update()
 	local now = time_global()
 	local releases = {}
 	ambient_update(now)
+	zone_update(now)
 	for id, power in pairs(pending_psy_hits) do
 		pending_psy_hits[id] = nil
 		local actor = db.actor

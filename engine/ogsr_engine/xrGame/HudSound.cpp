@@ -105,7 +105,7 @@ void HUD_SOUND::PlaySound(HUD_SOUND& hud_snd, const Fvector& position, const COb
     float freq = hud_snd.m_activeSnd->freq;
     float delay = hud_snd.m_activeSnd->delay;
     // NLC: the actor's reload / draw sounds play at the animation speed (pitch follows), delays scale with it
-    const float nlc_k = nlc_hud_speed_k(hud_snd.m_nlc_speed_kind);
+    const float nlc_k = nlc_hud_speed_k(hud_snd.m_nlc_speed_kind) * nlc_hud_speed_k(NLC_SPEED_FIELD); // field: the clip has it too (nlc_actor_motion_speed_k)
     if (hud_snd.m_nlc_speed_kind != NLC_SPEED_NONE && parent && parent == Actor() && !fsimilar(nlc_k, 1.f))
     {
         freq *= nlc_k;

@@ -273,6 +273,12 @@ u32 CMissile::nlc_fuse_pause()
 
 void CMissile::nlc_fuse_resume(u32 remaining) { m_dwDestroyTime = Level().timeServer() + _max(remaining, u32(1)); }
 
+void CMissile::nlc_fuse_delay(u32 ms)
+{
+    if (m_dwDestroyTime != 0xffffffff && m_dwDestroyTime != 0)
+        m_dwDestroyTime += ms;
+}
+
 void CMissile::shedule_Update(u32 dt)
 {
     inherited::shedule_Update(dt);

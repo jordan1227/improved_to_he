@@ -1247,6 +1247,13 @@ void CLevel::script_register(lua_State* L)
             }),
             def("nlc_get_draw_speed_factor", [](LPCSTR name) { return nlc_get_hud_speed_factor(NLC_SPEED_DRAW, name); }),
             def("nlc_get_draw_speed_k", [] { return nlc_hud_speed_k(NLC_SPEED_DRAW); }),
+            def("nlc_set_field_speed_factor", [](LPCSTR name, float k) { nlc_set_hud_speed_factor(NLC_SPEED_FIELD, name, k); }), // every motion of the actor's item
+            def("nlc_set_ads_speed_factor", [](LPCSTR name, float k) { nlc_set_hud_speed_factor(NLC_SPEED_ADS, name, k); }), // aim-in / aim-out speed
+            def("nlc_set_actor_field_speed", [](float k) { g_nlc_actor_field_speed_k = std::clamp(k, 0.1f, 1.f); }), // NLC flytrap: actor movement factor
+            // NLC silence anomaly (xr_3da/xr_area.cpp): zones registered now, AI sound deliveries weakened since the level started,
+            // share of a sound kept between two points (1 = no silence zone involved)
+            def("nlc_silence_zones", [] { return nlc_silence_zones(); }), def("nlc_silence_muted", [] { return nlc_silence_muted(); }),
+            def("nlc_silence_pair_k", [](const Fvector& source, const Fvector& listener) { return nlc_silence_pair_k(source, listener); }),
             def("nlc_set_reload_speed_k", [](float k) { nlc_set_hud_speed_factor(NLC_SPEED_RELOAD, "injury", k); }), // .102 name, = "injury" factor
             def("get_target_dist", &GetTargetDist), def("get_target_obj", &GetTargetObj), def("get_current_ray_query", &GetCurrentRayQuery),
             //

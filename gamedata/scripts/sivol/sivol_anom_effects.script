@@ -209,6 +209,11 @@ local los_state = {
 local zharka_cache = {}
 local gravity_cache = {}
 local buzz_cache = {}
+-- Matrix (psi_field) zones. Spawn aura for sivol_psy_phantoms only: no hit, no screen effect.
+-- Radius is measured from the zone shape edge, metres.
+local psi_cache = {}
+local psi_result = {}
+local PSI_AURA_RADIUS = { weak = 10.0, average = 16.0, strong = 24.0 }
 -- Reused result objects avoid creating short-lived tables every rendered frame.
 local thermal_result = {}
 local buzz_result = {}
@@ -501,6 +506,21 @@ local function try_cache_anomaly(obj)
         )
     end
 
+    if string.find(sec, "psi_field", 1, true) then
+        local tier_name = get_tier(sec)
+        psi_cache[id] = {
+            x = pos.x, y = pos.y, z = pos.z,
+            shape_radius = shape_radius,
+            section = sec,
+            tier_name = tier_name,
+            radius = PSI_AURA_RADIUS[tier_name] or PSI_AURA_RADIUS.average,
+        }
+        log2(
+            "[sivol_anom_effects] cached Matrix: section=%s id=%d tier=%s shape_radius=%.2f aura_radius=%.2f",
+            sec, id, tier_name, shape_radius, psi_cache[id].radius
+        )
+    end
+
     if is_gravity_anomaly(sec, obj:clsid()) then
         local tier_name = get_tier(sec)
         gravity_cache[id] = {
@@ -536,6 +556,13 @@ local function on_anomaly_net_destroy(obj, binder)
             buzz_cache[id].section, id
         )
         buzz_cache[id] = nil
+    end
+    if psi_cache[id] then
+        log2(
+            "[sivol_anom_effects] removed cached Matrix: section=%s id=%d",
+            psi_cache[id].section, id
+        )
+        psi_cache[id] = nil
     end
     if gravity_cache[id] then
         log2(
@@ -795,6 +822,51 @@ local function get_best_gravity_cached(pos)
         end
     end
     return best, best_tier
+end
+
+-- Nearest Matrix (psi_field) aura, for sivol_psy_phantoms. Returns a shared table
+-- { id, section, tier_name, distance, proximity, inside } or nil outside every aura.
+-- proximity is 1 at the zone edge and 0 at the aura edge. pos defaults to the actor position.
+function get_best_psi(pos)
+    if not pos then
+        local actor = db.actor
+        if not actor then return nil end
+        pos = actor:position()
+    end
+    local best = 0
+    local found = false
+    for id, z in pairs(psi_cache) do
+        local dx = pos.x - z.x
+        local dy = pos.y - z.y
+        local dz = pos.z - z.z
+        local center_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        local distance = math.max(0, center_distance - z.shape_radius)
+        local proximity = clamp01(1 - distance / z.radius)
+        if proximity > best then
+            found = true
+            best = proximity
+            psi_result.id = id
+            psi_result.section = z.section
+            psi_result.tier_name = z.tier_name
+            psi_result.distance = distance
+            psi_result.proximity = proximity
+            psi_result.inside = distance <= 0
+        end
+    end
+    return found and psi_result or nil
+end
+
+-- Console: fl sivol_anom_effects.psi_status()
+function psi_status()
+    local count = 0
+    for _ in pairs(psi_cache) do count = count + 1 end
+    local best = get_best_psi()
+    log2(
+        "[sivol_anom_effects] Matrix status: cached=%d nearest=%s",
+        count,
+        best and string.format("id=%d section=%s tier=%s distance=%.1f proximity=%.2f",
+            best.id, best.section, best.tier_name, best.distance, best.proximity) or "none in aura"
+    )
 end
 
 local function get_best_proximities()

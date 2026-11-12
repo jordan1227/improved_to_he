@@ -96,3 +96,13 @@ public:
 
 //-----------------------------------------------------------------------------------------------------------
 extern ENGINE_API IGame_Level* g_pGameLevel;
+
+// NLC silence anomaly (docs/ANOMALY_DESIGN.md 16): spheres registered by the silence zones (CCustomZone, key nlc_silence).
+// A sound event made inside one, or heard by a listener inside one, reaches the AI (Feel::Sound) weaker or not at all.
+// rim / core: share of the sound power removed at the edge and past ramp_k of the radius.
+ENGINE_API void nlc_silence_set(u16 id, const Fvector& center, float radius, float rim, float core, float ramp_k);
+ENGINE_API void nlc_silence_remove(u16 id);
+ENGINE_API void nlc_silence_clear();
+ENGINE_API float nlc_silence_pair_k(const Fvector& source, const Fvector& listener); // 1 = no silence zone involved
+ENGINE_API u32 nlc_silence_zones(); // registered now
+ENGINE_API u32 nlc_silence_muted(); // AI sound deliveries weakened by a silence zone since the level started

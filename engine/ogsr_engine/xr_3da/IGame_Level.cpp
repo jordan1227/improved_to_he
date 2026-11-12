@@ -55,6 +55,8 @@ IGame_Level::~IGame_Level()
 
     g_pGameLevel = nullptr;
 
+    nlc_silence_clear(); // NLC: the silence zones of the next level register again
+
     xr_delete(g_hud);
 }
 

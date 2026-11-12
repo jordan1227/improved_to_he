@@ -21,6 +21,38 @@
 
 float CBulletManager::m_fMinBulletSpeed = 2.f;
 
+// NLC flytrap: the zones register from the main thread, the bullets may be updated in parallel
+static std::mutex s_nlc_stasis_lock;
+static xr_vector<CBulletManager::SNlcStasis> s_nlc_stasis;
+static const float s_nlc_stasis_tracer = 0.45f; // m, tracer length of a bullet inside a field
+
+void CBulletManager::nlc_stasis_set(u16 id, const Fvector& center, float radius, float cap, float ramp)
+{
+    std::scoped_lock lock(s_nlc_stasis_lock);
+    for (SNlcStasis& it : s_nlc_stasis)
+        if (it.id == id)
+        {
+            it.center = center;
+            it.radius = radius;
+            it.cap = cap;
+            it.ramp = ramp;
+            return;
+        }
+    s_nlc_stasis.push_back({id, center, radius, cap, ramp});
+}
+
+void CBulletManager::nlc_stasis_remove(u16 id)
+{
+    std::scoped_lock lock(s_nlc_stasis_lock);
+    s_nlc_stasis.erase(std::remove_if(s_nlc_stasis.begin(), s_nlc_stasis.end(), [id](const SNlcStasis& it) { return it.id == id; }), s_nlc_stasis.end());
+}
+
+void CBulletManager::nlc_stasis_clear()
+{
+    std::scoped_lock lock(s_nlc_stasis_lock);
+    s_nlc_stasis.clear();
+}
+
 SBullet::SBullet() : m_on_bullet_hit(false) {}
 
 SBullet::~SBullet() {}
@@ -141,6 +173,7 @@ void CBulletManager::Clear() //Вызывается при загрузке и �
 {
     m_Bullets.clear();
     m_Events.clear();
+    nlc_stasis_clear(); // NLC: the zones of the next level register again
 }
 
 SBullet& CBulletManager::AddBullet(const Fvector& position, const Fvector& direction, float starting_speed, float power, float impulse, u16 sender_id, u16 sendersweapon_id,
@@ -165,6 +198,11 @@ void CBulletManager::UpdateWorkload()
 
     rq_storage.r_clear();
     rq_spatial.clear();
+
+    {
+        std::scoped_lock lock(s_nlc_stasis_lock); // NLC flytrap
+        m_nlc_stasis = s_nlc_stasis;
+    }
 
     int k = m_Bullets.size() - 1;
 
@@ -203,6 +241,47 @@ bool CBulletManager::CalcBullet(collide::rq_results& rq_storage, xr_vector<ISpat
 
     float delta_time_sec = float(delta_time) / 1000.f;
     float range = bullet->speed * delta_time_sec;
+
+    // NLC flytrap (docs/ANOMALY_DESIGN.md 3.3): inside a stasis field the bullet advances at the field's cap, eased in and
+    // out over "ramp" metres from the surface; a step from outside stops just inside the surface so a fast bullet cannot
+    // skip the field. bullet->speed is not touched: the hit keeps its power
+    bullet->nlc_stasis_speed = 0.f;
+    if (!m_nlc_stasis.empty())
+    {
+        float enter = range;
+        for (const SNlcStasis& z : m_nlc_stasis)
+        {
+            Fvector d;
+            d.sub(bullet->pos, z.center);
+            const float dist2 = d.square_magnitude();
+            if (dist2 < z.radius * z.radius)
+            {
+                if (bullet->speed > z.cap)
+                {
+                    const float depth = z.radius - _sqrt(dist2);
+                    const float k = z.ramp > EPS_L ? std::clamp(depth / z.ramp, 0.f, 1.f) : 1.f;
+                    const float move = z.cap + (bullet->speed - z.cap) * (1.f - k) * (1.f - k);
+                    range = move * delta_time_sec;
+                    if (k < 1.f)
+                        range = std::min(range, std::max(z.cap * delta_time_sec, (z.ramp - depth) * 0.5f));
+                    bullet->nlc_stasis_speed = range / delta_time_sec;
+                }
+                enter = range;
+                break;
+            }
+            const float b = d.dotproduct(bullet->dir);
+            if (b >= 0.f)
+                continue; // flying away from it
+            const float disc = b * b - (dist2 - z.radius * z.radius);
+            if (disc <= 0.f)
+                continue;
+            const float t = -b - _sqrt(disc);
+            if (t < enter)
+                enter = t + 0.02f;
+        }
+        if (enter < range)
+            range = enter;
+    }
 
     float max_range = bullet->max_dist - bullet->fly_dist;
     if (range > max_range)
@@ -283,12 +362,15 @@ bool CBulletManager::CalcBullet(collide::rq_results& rq_storage, xr_vector<ISpat
         //с учетом гравитации
         bullet->dir.mul(bullet->speed);
 
-        Fvector air_resistance = bullet->dir;
-        air_resistance.mul(-bullet->air_resistance * delta_time_sec);
-        ///		Msg("Speed - %f; ar - %f, %f", bullet->dir.magnitude(), air_resistance.magnitude(), air_resistance.magnitude()/bullet->dir.magnitude()*100);
+        if (bullet->nlc_stasis_speed <= 0.f) // NLC flytrap: no drag and no drop inside a stasis field
+        {
+            Fvector air_resistance = bullet->dir;
+            air_resistance.mul(-bullet->air_resistance * delta_time_sec);
+            ///		Msg("Speed - %f; ar - %f, %f", bullet->dir.magnitude(), air_resistance.magnitude(), air_resistance.magnitude()/bullet->dir.magnitude()*100);
 
-        bullet->dir.add(air_resistance);
-        bullet->dir.y -= m_fGravityConst * delta_time_sec;
+            bullet->dir.add(air_resistance);
+            bullet->dir.y -= m_fGravityConst * delta_time_sec;
+        }
 
         bullet->speed = bullet->dir.magnitude();
         VERIFY(_valid(bullet->speed));
@@ -367,14 +449,17 @@ void CBulletManager::Render()
 
     for (auto& bullet : m_BulletsRendered)
     {
-        if (!bullet.flags.allow_tracer)
+        const bool stasis = bullet.nlc_stasis_speed > 0.f; // NLC flytrap: every bullet inside a stasis field shows, as a short streak
+        if (!bullet.flags.allow_tracer && !stasis)
             continue;
         if (!bullet.flags.skipped_frame)
             continue;
 
         float length = bullet.speed * float(m_dwStepTime) / 1000.f; // dist.magnitude();
 
-        if (length < m_fTracerLengthMin)
+        if (stasis)
+            length = s_nlc_stasis_tracer;
+        else if (length < m_fTracerLengthMin)
             continue;
 
         if (length > m_fTracerLengthMax)

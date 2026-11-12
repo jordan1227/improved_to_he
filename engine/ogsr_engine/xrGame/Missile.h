@@ -145,5 +145,6 @@ public:
     u32 nlc_fuse_remaining() const;
     u32 nlc_fuse_pause();
     void nlc_fuse_resume(u32 remaining);
+    void nlc_fuse_delay(u32 ms); // NLC flytrap: a running fuse ends this much later
     static void ExitContactCallback(bool& do_colide, bool bo1, dContact& c, SGameMtl* /*material_1*/, SGameMtl* /*material_2*/);
 };

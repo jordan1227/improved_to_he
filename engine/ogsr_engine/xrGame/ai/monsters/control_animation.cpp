@@ -101,7 +101,8 @@ void CControlAnimation::play()
         }
         else
         {
-            m_data.global.blend->speed = m_saved_global_speed;
+            // NLC flytrap: the clips of the other controls (jump, run attack, attack on the move) slow down too
+            m_data.global.blend->speed = m_saved_global_speed * m_object->nlc_time_k();
         }
     }
 }

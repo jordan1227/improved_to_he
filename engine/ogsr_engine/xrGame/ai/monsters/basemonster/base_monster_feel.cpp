@@ -468,7 +468,7 @@ void CBaseMonster::nlc_update_stagger_repeat()
         m_nlc_stagger_left = 0; // no usable clip, or it could not start in time (a late stagger looks random)
 }
 
-void CBaseMonster::nlc_apply_move_slow(float k, u32 time_ms)
+void CBaseMonster::nlc_apply_move_slow(float k, u32 time_ms, float hold)
 {
     clamp(k, 0.f, 0.9f);
     if (fis_zero(k) || !time_ms)
@@ -479,10 +479,11 @@ void CBaseMonster::nlc_apply_move_slow(float k, u32 time_ms)
     if (now < m_nlc_slow_end && m_nlc_slow_end > m_nlc_slow_start)
     {
         const float left = float(m_nlc_slow_end - now) / float(m_nlc_slow_end - m_nlc_slow_start);
-        if (m_nlc_slow_k * std::min(1.f, left / 0.25f) >= k)
+        if (m_nlc_slow_k * std::min(1.f, left / m_nlc_slow_recover) >= k)
             return;
     }
 
+    m_nlc_slow_recover = std::clamp(1.f - hold, 0.01f, 1.f);
     m_nlc_slow_k = k;
     m_nlc_slow_start = Device.dwTimeGlobal;
     m_nlc_slow_end = Device.dwTimeGlobal + time_ms;
@@ -501,5 +502,5 @@ float CBaseMonster::nlc_move_speed_k() const
         return k;
 
     const float left = float(m_nlc_slow_end - now) / float(m_nlc_slow_end - m_nlc_slow_start);
-    return k * (1.f - m_nlc_slow_k * std::min(1.f, left / 0.25f));
+    return k * (1.f - m_nlc_slow_k * std::min(1.f, left / m_nlc_slow_recover));
 }

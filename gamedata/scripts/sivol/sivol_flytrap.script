@@ -1,0 +1,225 @@
+-- sivol_flytrap.script
+-- Flytrap ("Muholovka") stasis anomaly, the player's side (docs/ANOMALY_DESIGN.md 3).
+-- The engine (nlc-3.589.187, CCustomZone flytrap mode, config/misc/zone_flytrap.ltx) slows
+-- monsters, bullets, loose objects and grenade fuses, and plays the zone's screen effect.
+-- This script slows the actor's movement by depth and drains stamina while he moves inside.
+--
+-- Which zones the actor stands in comes from the zones' own enter / exit callbacks, so a
+-- zone switched off (amk_anoms status, emission) releases him at once.
+--
+-- Console:
+--   fl sivol_flytrap.spawn()                 average tier, 8 m ahead, radius 5.5
+--   fl sivol_flytrap.spawn("strong", 10, 6)  tier, distance, radius
+--   fl sivol_flytrap.status()                zones known, zones the actor is in, current factor
+--   fl sivol_flytrap.set_log(true)
+
+local SMOOTH_PER_S = 3.0   -- how fast the movement factor follows the depth
+local MOVE_EPS     = 0.6   -- m/s: slower than this is not "moving" for the stamina drain
+
+local zones  = {}          -- [id] = { r, rim, core, power, ramp_k, section }
+local inside = {}          -- [id] = true while the zone reports the actor inside
+local factor = 1.0         -- current movement factor sent to the engine
+local sent   = 1.0
+local last_time = 0
+local last_pos
+local log_on = false
+local last_fx_zone -- the zone whose screen values are used while the effect fades out
+
+local function log(fmt, ...)
+	if log_on then log2("[sivol_flytrap] " .. fmt, ...) end
+end
+
+function set_log(v)
+	log_on = v and true or false
+end
+
+local function is_flytrap(sec)
+	return sec ~= nil and string.find(sec, "flytrap", 1, true) ~= nil
+		and get_bool(sec, "nlc_flytrap", false)
+end
+
+local function send(k)
+	if k ~= sent then
+		level.nlc_set_actor_field_speed(k)
+		sent = k
+	end
+end
+
+-- screen effect (shaders/r3/nlc_flytrap.h) and weapon handling (reload, draw / holster, aiming): by depth
+local fx, fx_sent = 0, -1
+local handling_sent = -1
+local function send_fx(strength, z)
+	if strength < 0.002 then strength = 0 end
+	if strength ~= fx_sent then
+		if z and strength > 0 then
+			shader_set_custom_param("m_nlc_flytrap", strength, z.fx_fringe, z.fx_lens, z.fx_breathe)
+		else
+			shader_set_custom_param("m_nlc_flytrap", 0, 0, 0, 0)
+		end
+		fx_sent = strength
+	end
+end
+local function send_handling(k)
+	k = math.floor(k * 50 + 0.5) / 50
+	if k ~= handling_sent then
+		-- engine nlc-3.589.190: the field factor covers every motion of the item in the hands (reload, draw, knife,
+		-- grenade and bolt throws, binoculars); aiming is a transition, not a clip, and has its own factor
+		if level.nlc_set_field_speed_factor then
+			level.nlc_set_field_speed_factor("flytrap", k)
+		else
+			if level.nlc_set_reload_speed_factor then level.nlc_set_reload_speed_factor("flytrap", k) end
+			if level.nlc_set_draw_speed_factor then level.nlc_set_draw_speed_factor("flytrap", k) end
+		end
+		if level.nlc_set_ads_speed_factor then level.nlc_set_ads_speed_factor("flytrap", k) end
+		handling_sent = k
+	end
+end
+
+local function on_enter(zone, obj)
+	if not (zone and obj and db.actor and obj:id() == db.actor:id()) then return end
+	inside[zone:id()] = true
+	log("actor entered %s", zone:name())
+end
+
+local function on_exit(zone, obj)
+	if not (zone and obj and db.actor and obj:id() == db.actor:id()) then return end
+	inside[zone:id()] = nil
+	log("actor left %s", zone:name())
+end
+
+local function register(obj)
+	if not obj then return end
+	local sec = obj:section()
+	if not is_flytrap(sec) then return end
+	local id = obj:id()
+	local ok, r = pcall(obj.get_shape_radius, obj)
+	r = ok and tonumber(r) or 0
+	if r <= 0 then r = 5.5 end
+	zones[id] = {
+		r      = r,
+		rim    = get_float(sec, "flytrap_actor_slow_rim", 0.15),
+		core   = get_float(sec, "flytrap_actor_slow_core", 0.5),
+		power  = get_float(sec, "flytrap_actor_power", 0.03),
+		ramp_k = get_float(sec, "flytrap_ramp_k", 0.6),
+		handling = get_float(sec, "flytrap_actor_handling", 0.45),
+		fx_fringe = get_float(sec, "flytrap_fx_fringe", 0.006),
+		fx_lens = get_float(sec, "flytrap_fx_lens", 0.10),
+		fx_breathe = get_float(sec, "flytrap_fx_breathe", 1.0),
+		section = sec,
+	}
+	obj:set_callback(callback.zone_enter, on_enter)
+	obj:set_callback(callback.zone_exit, on_exit)
+	log("registered %s id=%d r=%.1f", sec, id, r)
+end
+
+-- amk_anoms.set_online_anomaly_status: a zone that spawned switched off was enabled later
+function on_zone_enabled(obj)
+	register(obj)
+end
+
+local function on_anomaly_spawn(obj, binder)
+	register(obj)
+end
+
+local function on_anomaly_net_destroy(obj, binder)
+	if not obj then return end
+	local id = obj:id()
+	if zones[id] then
+		obj:set_callback(callback.zone_enter, nil)
+		obj:set_callback(callback.zone_exit, nil)
+		zones[id] = nil
+		inside[id] = nil
+	end
+end
+
+local function reset()
+	zones, inside = {}, {}
+	factor = 1.0
+	last_pos = nil
+	sent = -1 -- force the engine value back to 1 (it survives a level change)
+	send(1.0)
+	fx, fx_sent, handling_sent = 0, -1, -1
+	last_fx_zone = nil
+	send_fx(0)
+	send_handling(1.0)
+end
+
+local function update()
+	local actor = db.actor
+	local now = time_global()
+	local dt = (now - last_time) / 1000
+	last_time = now
+	if dt > 1 or dt < 0 then dt = 0 end
+
+	if not actor or not actor:alive() then
+		factor = 1.0
+		send(1.0)
+		fx = 0
+		send_fx(0)
+		send_handling(1.0)
+		return
+	end
+
+	local pos = actor:position()
+	local slow, power = 0, 0
+	local depth_k, deep_zone = 0, nil
+	for id in pairs(inside) do
+		local z = zones[id]
+		local obj = z and level.object_by_id(id)
+		if not obj then
+			inside[id] = nil
+		else
+			local depth = z.r - pos:distance_to(obj:position())
+			local k = math.max(0, math.min(1, depth / math.max(0.1, z.r * z.ramp_k)))
+			local s = z.rim + (z.core - z.rim) * k
+			if s > slow then
+				slow = s
+				power = z.power * k
+			end
+			if k >= depth_k then
+				depth_k, deep_zone = k, z
+			end
+		end
+	end
+
+	local target = 1.0 - slow
+	factor = factor + (target - factor) * math.min(1, dt * SMOOTH_PER_S)
+	if math.abs(factor - target) < 0.005 then factor = target end
+	send(factor)
+
+	-- inside at all = a faint effect already, full strength in the core
+	local fx_target = deep_zone and (0.25 + 0.75 * depth_k) or 0
+	fx = fx + (fx_target - fx) * math.min(1, dt * SMOOTH_PER_S)
+	last_fx_zone = deep_zone or last_fx_zone
+	send_fx(fx, last_fx_zone)
+	send_handling(deep_zone and (1.0 - deep_zone.handling * depth_k) or 1.0)
+
+	if power > 0 and dt > 0 and last_pos then
+		local speed = pos:distance_to(last_pos) / dt
+		if speed > MOVE_EPS then
+			actor.power = -power * dt -- the power setter is a delta
+		end
+	end
+	last_pos = pos
+end
+
+function spawn(tier, distance, radius)
+	tier = tier or "average"
+	local sec = "zone_flytrap_" .. tier
+	if not sivol.spawn_anomaly_near then return end
+	return sivol.spawn_anomaly_near(sec, distance or 8, radius or 5.5)
+end
+
+function status()
+	local n, m = 0, 0
+	for _ in pairs(zones) do n = n + 1 end
+	for _ in pairs(inside) do m = m + 1 end
+	log2("[sivol_flytrap] zones=%d inside=%d factor=%.2f", n, m, factor)
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_update", fun = update })
+	sm:subscribe({ signal = "on_anomaly_spawn", fun = on_anomaly_spawn })
+	sm:subscribe({ signal = "on_anomaly_net_destroy", fun = on_anomaly_net_destroy })
+	sm:subscribe({ signal = "on_spawn", fun = reset })
+end

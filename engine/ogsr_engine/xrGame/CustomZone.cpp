@@ -19,6 +19,16 @@
 #include "script_callback_ex.h"
 #include "game_object_space.h"
 #include "script_game_object.h"
+#include "Level_Bullet_Manager.h" // NLC flytrap
+#include "PhysicsShell.h"
+#include "PhysicsShellHolder.h"
+#include "Missile.h"
+#include "entity_alive.h"
+#include "ai/monsters/basemonster/base_monster.h"
+#include "ai/monsters/anomaly_detector.h"
+#include "PHMovementControl.h"
+#include "CharacterPhysicsSupport.h"
+#include "player_hud.h" // g_nlc_actor_field_speed_k
 
 //////////////////////////////////////////////////////////////////////////
 #define PREFETCHED_ARTEFACTS_NUM 1 //количество предварительно проспавненых артефактов
@@ -94,6 +104,38 @@ void CCustomZone::Load(LPCSTR section)
     IgnoreSmall = pSettings->r_bool(section, "ignore_small");
     IgnoreArtefact = pSettings->r_bool(section, "ignore_artefacts");
     VisibleDetector = pSettings->r_bool(section, "visible_by_detector");
+
+    // NLC flytrap (docs/ANOMALY_DESIGN.md 3)
+    m_nlc_detect_k = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "monster_detect_k", 1.f), 0.f, 1.f);
+    m_nlc_follow_enemy = READ_IF_EXISTS(pSettings, r_bool, section, "monster_follow_enemy", false);
+    m_nlc_soft_object_particles = READ_IF_EXISTS(pSettings, r_bool, section, "object_particles_soft_stop", false);
+    m_nlc_particles_log = READ_IF_EXISTS(pSettings, r_bool, section, "object_particles_log", false);
+    m_nlc_flytrap = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_flytrap", false);
+    if (m_nlc_flytrap)
+    {
+        m_nlc_ft_bullet_cap = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_bullet_speed", 8.f), 1.f);
+        m_nlc_ft_bullet_ramp = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_bullet_ramp", 1.5f), 0.f);
+        m_nlc_ft_slow_rim = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_slow_rim", 0.3f), 0.f, 0.9f);
+        m_nlc_ft_slow_core = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_slow_core", 0.7f), 0.f, 0.9f);
+        m_nlc_ft_ramp_k = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_ramp_k", 0.6f), 0.05f, 1.f);
+        m_nlc_ft_object_cap = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_object_speed", 1.2f), 0.1f);
+        m_nlc_ft_monster_cap_rim = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_monster_speed_rim", 4.5f), 0.3f);
+        m_nlc_ft_monster_cap_core = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_monster_speed_core", 1.8f), 0.3f);
+        m_nlc_ft_actor_air = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_actor_air_speed", 5.f), 0.5f);
+        m_nlc_ft_fuse_k = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_fuse_k", 4.f), 1.f);
+        m_nlc_ft_learn_radius = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_learn_radius", 25.f), 0.f);
+        m_nlc_ft_learn_ms = READ_IF_EXISTS(pSettings, r_u32, section, "flytrap_learn_ms", 700);
+        m_nlc_ft_log = READ_IF_EXISTS(pSettings, r_bool, section, "flytrap_log", false);
+    }
+    // NLC silence (docs/ANOMALY_DESIGN.md 16)
+    m_nlc_silence = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_silence", false);
+    if (m_nlc_silence)
+    {
+        m_nlc_silence_rim = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "silence_ai_rim", 0.7f), 0.f, 1.f);
+        m_nlc_silence_core = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "silence_ai_core", 1.f), 0.f, 1.f);
+        m_nlc_silence_ramp_k = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "silence_ramp_k", 0.5f), 0.05f, 1.f);
+        m_nlc_silence_log = READ_IF_EXISTS(pSettings, r_bool, section, "silence_log", false);
+    }
 
     // bak
     BirthOnNonAlive = READ_IF_EXISTS(pSettings, r_bool, section, "birth_on_nonalive", false);
@@ -459,6 +501,9 @@ BOOL CCustomZone::net_Spawn(CSE_Abstract* DC)
 
 void CCustomZone::net_Destroy()
 {
+    nlc_flytrap_stasis(false); // NLC
+    nlc_silence_register(false); // NLC
+
     StopIdleParticles();
 
     inherited::net_Destroy();
@@ -525,6 +570,11 @@ void CCustomZone::UpdateWorkload(u32 dt)
 {
     m_iPreviousStateTime = m_iStateTime;
     m_iStateTime += (int)dt;
+
+    if (m_nlc_flytrap)
+        nlc_flytrap_update(dt); // NLC
+    if (m_nlc_silence)
+        nlc_silence_register(IsEnabled()); // NLC: every update (the registry is cleared with the level)
 
     if (!IsEnabled())
     {
@@ -1040,7 +1090,10 @@ void CCustomZone::StopObjectIdleParticles(CGameObject* pObject)
         particle_str = m_sIdleObjectParticlesBig;
     }
 
-    PP->StopParticles(particle_str, BI_NONE, true);
+    // NLC: object_particles_soft_stop lets the emitted particles live out instead of vanishing with the emitter
+    PP->StopParticles(particle_str, BI_NONE, !m_nlc_soft_object_particles);
+    if (m_nlc_particles_log)
+        Msg("~ [zone_particles] [%s]: idle [%s] stopped on [%s] (soft %d)", cName().c_str(), particle_str.c_str(), pObject->cName().c_str(), m_nlc_soft_object_particles);
 }
 
 void CCustomZone::Hit(SHit* pHDS)
@@ -1279,6 +1332,8 @@ bool CCustomZone::Enable()
 
 bool CCustomZone::Disable()
 {
+    nlc_silence_register(false); // NLC: a disabled zone may get no further update (slow mode)
+
     if (!IsEnabled())
         return false;
 
@@ -1521,8 +1576,188 @@ void CCustomZone::net_Relcase(CObject* O)
 
 void CCustomZone::enter_Zone(SZoneObjectInfo& io) { callback(GameObject::eZoneEnter)(lua_game_object(), io.object->lua_game_object()); }
 
+// NLC flytrap: loose physics objects (items, bolts, grenades, ragdolls) hang inside; live creatures keep their gravity
+void CCustomZone::nlc_flytrap_float(SZoneObjectInfo& io, bool on)
+{
+    if (!io.object || io.object->getDestroy())
+        return;
+    CEntityAlive* ea = smart_cast<CEntityAlive*>(io.object);
+    if (ea && ea->g_Alive())
+        return;
+    CPhysicsShellHolder* sh = smart_cast<CPhysicsShellHolder*>(io.object);
+    if (!sh || sh->H_Parent() || sh->hasFixedBones())
+        return;
+    CPhysicsShell* shell = sh->PPhysicsShell();
+    if (shell && shell->isActive())
+        shell->set_ApplyByGravity(!on);
+}
+
+void CCustomZone::nlc_flytrap_stasis(bool on)
+{
+    if (!m_nlc_flytrap)
+        return;
+    if (on)
+    {
+        Fvector P;
+        XFORM().transform_tiny(P, CFORM()->getSphere().P);
+        // every update: the registry is cleared with the level
+        CBulletManager::nlc_stasis_set(ID(), P, CFORM()->getSphere().R, m_nlc_ft_bullet_cap, m_nlc_ft_bullet_ramp);
+        m_nlc_stasis_on = true;
+    }
+    else if (m_nlc_stasis_on)
+    {
+        CBulletManager::nlc_stasis_remove(ID());
+        m_nlc_stasis_on = false;
+    }
+}
+
+// NLC flytrap (docs/ANOMALY_DESIGN.md 3): called from UpdateWorkload (every frame near the camera, else per schedule)
+void CCustomZone::nlc_flytrap_update(u32 dt)
+{
+    if (!IsEnabled())
+    {
+        nlc_flytrap_stasis(false);
+        return;
+    }
+    nlc_flytrap_stasis(true);
+
+    Fvector P;
+    XFORM().transform_tiny(P, CFORM()->getSphere().P);
+    const float R = CFORM()->getSphere().R;
+    const float ramp = std::max(R * m_nlc_ft_ramp_k, 0.1f);
+    const float dt_sec = float(dt) / 1000.f;
+
+    for (SZoneObjectInfo& io : m_ObjectInfoMap)
+    {
+        CGameObject* obj = io.object;
+        if (!obj || obj->getDestroy())
+            continue;
+
+        CEntityAlive* ea = smart_cast<CEntityAlive*>(obj);
+        if (ea && ea->g_Alive())
+        {
+            CBaseMonster* monster = smart_cast<CBaseMonster*>(obj);
+            if (!monster)
+            {
+                // the actor's side is scripted (sivol_flytrap.script) except the air: a jump keeps its launch speed
+                // otherwise. Stalkers are kept out, not slowed.
+                if (obj == Actor())
+                {
+                    CPHMovementControl* mc = ea->character_physics_support()->movement();
+                    if (mc && mc->Environment() != CPHMovementControl::peOnGround)
+                    {
+                        const float cap = m_nlc_ft_actor_air * g_nlc_actor_field_speed_k;
+                        Fvector v = mc->GetVelocity();
+                        const float speed = v.magnitude();
+                        if (speed > cap)
+                        {
+                            v.mul(std::max(cap / speed, expf(-dt_sec / 0.15f)));
+                            mc->SetVelocity(v);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            const float depth_k = std::clamp((R - P.distance_to(monster->Position())) / ramp, 0.f, 1.f);
+            const float slow = m_nlc_ft_slow_rim + (m_nlc_ft_slow_core - m_nlc_ft_slow_rim) * depth_k;
+            monster->nlc_apply_move_slow(slow, 500, 0.4f);
+            monster->nlc_set_time_k(1.f - slow, 300); // attacks and the other natural-speed clips
+
+            // the physical limit: whatever drives the body (a jump, a charge, a fall) cannot go faster than this.
+            // The path movement sets its own limit every step and a jump adds to it once, so it is only ever lowered.
+            if (CPHMovementControl* mc = monster->character_physics_support()->movement())
+            {
+                const float cap = m_nlc_ft_monster_cap_rim + (m_nlc_ft_monster_cap_core - m_nlc_ft_monster_cap_rim) * depth_k;
+                if (mc->VelocityLimit() > cap)
+                    mc->SetVelocityLimit(cap);
+                // a jump or a fall: the character has no control then and its limit is not used
+                Fvector v = mc->GetVelocity();
+                const float speed = v.magnitude();
+                if (speed > cap * 1.15f)
+                {
+                    v.mul(std::max(cap / speed, expf(-dt_sec / 0.15f)));
+                    mc->SetVelocity(v);
+                }
+            }
+
+            // it understands where it is after a moment, and so do the mates of its kind around
+            if (!io.hit_num && io.time_in_zone >= m_nlc_ft_learn_ms)
+            {
+                io.hit_num = 1;
+                monster->anomaly_detector().nlc_learn(this);
+                u32 mates = 0;
+                if (m_nlc_ft_learn_radius > 0.f)
+                {
+                    xr_vector<CObject*> nearest;
+                    Level().ObjectSpace.GetNearest(nearest, P, m_nlc_ft_learn_radius, NULL);
+                    for (CObject* it : nearest)
+                    {
+                        CBaseMonster* mate = smart_cast<CBaseMonster*>(it);
+                        if (!mate || mate == monster || !mate->g_Alive() || mate->CLS_ID != monster->CLS_ID)
+                            continue;
+                        mate->anomaly_detector().nlc_learn(this);
+                        ++mates;
+                    }
+                }
+                if (m_nlc_ft_log)
+                    Msg("~ [flytrap] [%s]: [%s] trapped, %u mates learned the zone", cName().c_str(), monster->cName().c_str(), mates);
+            }
+            continue;
+        }
+
+        // loose physics objects: no gravity, speed eased down to the cap
+        CPhysicsShellHolder* sh = smart_cast<CPhysicsShellHolder*>(obj);
+        if (!sh || sh->H_Parent() || sh->hasFixedBones())
+            continue;
+        CPhysicsShell* shell = sh->PPhysicsShell();
+        if (!shell || !shell->isActive())
+            continue;
+        shell->set_ApplyByGravity(false);
+        Fvector v;
+        shell->get_LinearVel(v);
+        const float speed = v.magnitude();
+        if (speed > m_nlc_ft_object_cap)
+        {
+            v.mul(std::max(m_nlc_ft_object_cap / speed, expf(-dt_sec / 0.12f)));
+            shell->set_LinearVel(v);
+        }
+
+        if (m_nlc_ft_fuse_k > 1.f)
+            if (CMissile* missile = smart_cast<CMissile*>(obj))
+                missile->nlc_fuse_delay(u32(float(dt) * (1.f - 1.f / m_nlc_ft_fuse_k)));
+    }
+}
+
+// NLC silence (docs/ANOMALY_DESIGN.md 16): the zone's sphere in the AI hearing registry (xr_3da/xr_area.cpp)
+void CCustomZone::nlc_silence_register(bool on)
+{
+    if (!m_nlc_silence)
+        return;
+    if (on && !getDestroy())
+    {
+        Fvector P;
+        XFORM().transform_tiny(P, CFORM()->getSphere().P);
+        nlc_silence_set(ID(), P, CFORM()->getSphere().R, m_nlc_silence_rim, m_nlc_silence_core, m_nlc_silence_ramp_k);
+        if (!m_nlc_silence_on && m_nlc_silence_log)
+            Msg("~ [silence] [%s]: on, r=%.1f at %.1f,%.1f,%.1f (ai rim %.2f core %.2f)", cName().c_str(), CFORM()->getSphere().R, P.x, P.y, P.z, m_nlc_silence_rim,
+                m_nlc_silence_core);
+        m_nlc_silence_on = true;
+    }
+    else if (m_nlc_silence_on)
+    {
+        nlc_silence_remove(ID());
+        m_nlc_silence_on = false;
+        if (m_nlc_silence_log)
+            Msg("~ [silence] [%s]: off (%u sound deliveries weakened on this level so far)", cName().c_str(), nlc_silence_muted());
+    }
+}
+
 void CCustomZone::exit_Zone(SZoneObjectInfo& io)
 {
+    if (m_nlc_flytrap)
+        nlc_flytrap_float(io, false); // NLC
+
     StopObjectIdleParticles(io.object);
     if (!getDestroy())
         callback(GameObject::eZoneExit)(lua_game_object(), io.object->lua_game_object());

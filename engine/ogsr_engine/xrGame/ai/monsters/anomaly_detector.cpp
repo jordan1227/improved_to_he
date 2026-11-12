@@ -52,9 +52,52 @@ void CAnomalyDetector::update_schedule()
 
     temp_in_restrictors.reserve(m_storage.size());
 
+    // NLC flytrap: the enemy (monsters only) for the zones entered while it is inside them
+    const CEntityAlive* nlc_enemy = nullptr;
+    if (CBaseMonster* monster = smart_cast<CBaseMonster*>(m_object))
+        nlc_enemy = monster->EnemyMan.get_enemy();
+
     // add new restrictions
     for (ANOMALY_INFO_VEC_IT it = m_storage.begin(); it != m_storage.end(); it++)
     {
+        // NLC flytrap: a zone with monster_follow_enemy is not avoided while the enemy stands in it
+        bool enemy_inside = false;
+        if (nlc_enemy && !it->ignored)
+        {
+            CCustomZone* zone = smart_cast<CCustomZone*>(Level().Objects.net_Find(it->id));
+            if (zone && !zone->getDestroy() && zone->nlc_follow_enemy())
+            {
+                Fsphere sphere;
+                sphere.set(nlc_enemy->Position(), 0.5f);
+                enemy_inside = !!zone->inside(sphere);
+            }
+        }
+        if (enemy_inside && !it->held)
+        {
+            if (it->time_registered != 0)
+            {
+                xr_vector<u16> lifted{it->id};
+                m_object->movement().restrictions().remove_restrictions(temp_out_restrictors, lifted);
+            }
+            it->held = true;
+            it->follow = true;
+            it->time_registered = time();
+            if (CBaseMonster::nlc_evade_debug())
+                Msg("~ [evade] [%s]: anomaly [%u] entered after the enemy", m_object->cName().c_str(), it->id);
+            continue;
+        }
+        if (enemy_inside && it->held)
+            it->follow = true; // learned or suspended meanwhile: it stays lifted for the enemy's sake
+        if (it->follow)
+        {
+            if (enemy_inside)
+            {
+                it->time_registered = time();
+                continue;
+            }
+            it->follow = false; // back to the ordinary held entry: avoided again once the monster is outside it
+        }
+
         if (it->time_registered == 0)
         {
             it->time_registered = time();
@@ -148,7 +191,11 @@ void CAnomalyDetector::on_contact(CObject* obj)
 
     SAnomalyInfo info;
     info.id = obj->ID();
-    if (Random.randF() >= m_detect_probability && !fsimilar(m_detect_probability, 1.f))
+    // NLC flytrap: a zone can be harder for monsters to notice (zone key monster_detect_k); stalkers always see it
+    float probability = m_detect_probability;
+    if (smart_cast<CBaseMonster*>(m_object))
+        probability *= custom_zone->nlc_detect_k();
+    if (!fsimilar(probability, 1.f) && Random.randF() >= probability)
     {
         info.ignored = true;
         info.time_registered = time();
@@ -248,6 +295,40 @@ u32 CAnomalyDetector::nlc_avoided() const
         if (it.time_registered != 0 && !it.ignored && !it.held)
             ++n;
     return n;
+}
+
+// NLC flytrap: a monster trapped in a zone it did not notice (and its mates around) now know it. One standing in it gets
+// a held entry: the restriction comes when it is outside.
+void CAnomalyDetector::nlc_learn(CCustomZone* zone)
+{
+    if (!zone || zone->getDestroy() || zone->restrictor_type() == RestrictionSpace::eRestrictorTypeNone || !zone->IsEnabled())
+        return;
+    if (!patrol_survives(zone))
+        return;
+
+    Fsphere sphere;
+    sphere.set(m_object->Position(), 1.f);
+    const bool in_it = !!zone->inside(sphere);
+
+    const u16 id = zone->ID();
+    auto it = std::find_if(m_storage.begin(), m_storage.end(), [id](const SAnomalyInfo& info) { return info.id == id; });
+    if (it == m_storage.end())
+    {
+        if (Level().space_restriction_manager().restriction_presented(m_object->movement().restrictions().in_restrictions(), zone->cName()))
+            return;
+        SAnomalyInfo info;
+        info.id = id;
+        info.ignored = false;
+        info.held = in_it;
+        info.time_registered = in_it ? time() : 0;
+        m_storage.emplace_back(std::move(info));
+        return;
+    }
+    if (!it->ignored)
+        return; // known already
+    it->ignored = false;
+    it->held = in_it;
+    it->time_registered = in_it ? time() : 0;
 }
 
 void CAnomalyDetector::nlc_suspend()

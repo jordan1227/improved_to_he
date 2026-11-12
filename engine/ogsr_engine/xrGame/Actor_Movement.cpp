@@ -29,6 +29,8 @@
 #include "game_object_space.h"
 #include "script_game_object.h"
 
+float g_nlc_actor_field_speed_k = 1.f; // NLC flytrap
+
 static const float s_fLandingTime1 = 0.1f; // через сколько снять флаг Landing1 (т.е. включить следующую анимацию)
 static const float s_fLandingTime2 = 0.3f; // через сколько снять флаг Landing2 (т.е. включить следующую анимацию)
 static const float s_fJumpTime = 0.3f;
@@ -252,6 +254,7 @@ void CActor::g_cl_CheckControls(u32 mstate_wf, Fvector& vControlAccel, float& Ju
             {
                 float jump_k = conditions().GetPower() / load_k;
                 jump_k = jump_k >= 0.3f ? std::min(jump_k, 1.5f) : 0.3f;
+                jump_k *= g_nlc_actor_field_speed_k; // NLC flytrap
                 character_physics_support()->movement()->SetJumpUpVelocity(jump_k * m_fJumpSpeed);
 
                 mstate_real |= mcJump;
@@ -408,6 +411,7 @@ void CActor::g_cl_CheckControls(u32 mstate_wf, Fvector& vControlAccel, float& Ju
                     scale *= m_fMovementSpeedMultiplier;
 
                 scale *= conditions().body().LegsSpeedK(!!bAccelerated, !!(mstate_real & mcSprint)); // NLC: legs health
+                scale *= g_nlc_actor_field_speed_k; // NLC flytrap: set from Lua, level.nlc_set_actor_field_speed
 
                 vControlAccel.mul(scale);
                 cam_eff_factor = scale;

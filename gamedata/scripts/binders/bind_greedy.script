@@ -52,7 +52,7 @@ function actor_update()
 						end	
 						-------------									
 					
-						alife():release(alife():object(drop_items[n]), true)
+						if not this.greedy_keep(drop_items[n]) then alife():release(alife():object(drop_items[n]), true) end -- sivol: eaten items stay
 					end
 				end	
 			end
@@ -60,7 +60,7 @@ function actor_update()
 		end
 		-- Проверяем все жадинки
 		for i, v in pairs(greedy_binders) do
-			greedy_act = v.parametrs
+			greedy_act = v.parametrs this.greedy_check_sated(i, v) -- sivol: fed state
 			local obj = client_obj(i)
 			if obj~=nil and greedy_act.activity then
 				-- Пороверим не забрел-ли актер в жадинку
@@ -70,7 +70,7 @@ function actor_update()
 					-- Актер в зоне действия жадинки, запускаю процесс обеда
 					actor_pos_old = db.actor:position()
 					greedy_act["greedy"] = true
-					greedy_act["weight"] = 1
+					greedy_act["weight"] = rnd_weight() -- sivol: appetite by level again (was a flat 1 kg)
 					--greedy_act["weight"] = rnd_weight()		--вес предметов для кормления
                    ------------------------
                     a=greedy_act["weight"]
@@ -125,7 +125,7 @@ function actor_update()
 			    if wnd then level.start_stop_menu(wnd, false) end
 			end
 			greedy_act.activity = false
-			vergas_lib.s_play([[anomaly\greedy_end]],1)
+			vergas_lib.s_play([[anomaly\greedy_end]],1) this.greedy_set_sated(greedy_act.id) -- sivol: fed state
 			--Выбрасываю ГГ из аномалии
 			if vergas_rucksack.have() then
 				db.actor:set_actor_position(set_vector_greedy(actor_pos_old.x,actor_pos_old.y+3,actor_pos_old.z))
@@ -286,7 +286,7 @@ function restrictor_greedy:net_spawn(data)
 		end
 		
 		--активирую жадинку
-		self.parametrs["activity"] = true
+		self.parametrs["activity"] = true this.greedy_load_sated(self) -- sivol: fed state
 		-- Запомним позицию что-бы каждый раз не считать
 		local s_obj = alife():object(self.object:id())
 		if s_obj~=nil then
@@ -348,4 +348,129 @@ function transmutation_greedy( name, cond )
 		s = string.format( "%s", game.translate_string( "trans_finished_title" ) )
 	end
 	amk.send_tip( s )	
+end
+
+--------------------------------------------------
+-- sivol: fed state (docs/ANOMALY_DESIGN.md 5)
+-- What the greedy ate is no longer deleted: it stays where it was dropped, weapons and
+-- outfits worn down. The fed greedy goes dormant (no particles, no sound, no light) for
+-- SATED_MINUTES of game time: while it is dormant it grabs nobody and the items can be
+-- taken back. Then it wakes up. The state is kept in the object's custom data.
+-- Console: fl bind_greedy.greedy_status()   fl bind_greedy.greedy_wake_all()
+--------------------------------------------------
+local SATED_MINUTES      = 180
+local DIGEST_CONDITION_K = 0.75
+local SATED_LOG          = true
+
+local function sated_log(fmt, ...)
+	if SATED_LOG then log2("[bind_greedy] " .. fmt, ...) end
+end
+
+local function is_transmute_name(a)
+	return strposx( a, "af_medusa_dyn5d" ) and ( has_info( "info_green_medusa" ) or has_info( "info_fake_green_medusa" ) )
+		or strposx( a, "af_vyvert_dyn5d" ) and ( has_info( "info_green_vyvert" ) or has_info( "info_fake_green_vyvert" ) )
+		or strposx( a, "af_blood_dyn5d"  ) and ( has_info( "info_green_blood"  ) or has_info( "info_fake_green_blood"  ) )
+end
+
+-- true: the eaten item stays in the world (the caller does not release it)
+function greedy_keep(id)
+	local sobj = alife():object(id)
+	if not sobj then return true end
+	if is_transmute_name(sobj:name()) then return false end -- cooked into a green artefact
+	-- only what can wear comes back (weapons, outfits), worn down; the rest is digested for good
+	local obj = level.object_by_id(id)
+	if not obj then return false end
+	local cls = get_string(obj:section(), "class", "")
+	if not (string.find(cls, "WP_", 1, true) == 1 or string.find(cls, "E_STLK", 1, true) or string.find(cls, "EQU_", 1, true)) then
+		sated_log("digested %s", sobj:name())
+		return false
+	end
+	local ok, cond = pcall(obj.condition, obj)
+	if ok and tonumber(cond) then
+		obj:set_condition(math.max(0.05, cond * DIGEST_CONDITION_K))
+	end
+	sated_log("kept eaten item %s", sobj:name())
+	return true
+end
+
+local function write_sated(id, value)
+	local sobj = alife():object(id)
+	if not sobj then return end
+	local pk = get_netpk(sobj)
+	if not pk then return end
+	local data = pk:get()
+	local cd = amk.parse_custom_data(data.custom_data) or {}
+	if value then
+		cd.greedy_fed = { sated_until = value }
+	else
+		cd.greedy_fed = nil
+	end
+	data.custom_data = amk.gen_custom_data(cd)
+	pk:set(data)
+end
+
+local function read_sated(id)
+	local sobj = alife():object(id)
+	if not sobj then return nil end
+	local pk = get_netpk(sobj)
+	if not pk then return nil end
+	local cd = amk.parse_custom_data(pk:get().custom_data)
+	return cd and cd.greedy_fed and tonumber(cd.greedy_fed.sated_until) or nil
+end
+
+function greedy_set_sated(id)
+	local binder = id and greedy_binders[id]
+	if not (binder and binder.parametrs) then return end
+	local till = misc.game_time_minutes() + SATED_MINUTES
+	binder.parametrs.sated_until = till
+	binder.parametrs.sated_hidden = false
+	write_sated(id, till)
+	sated_log("greedy %d fed, dormant for %d game minutes", id, SATED_MINUTES)
+end
+
+-- net_spawn: a greedy saved while dormant stays dormant
+function greedy_load_sated(binder)
+	local ok, till = pcall(read_sated, binder.object:id())
+	if ok and till and till > misc.game_time_minutes() then
+		binder.parametrs.activity = false
+		binder.parametrs.sated_until = till
+		binder.parametrs.sated_hidden = false
+	end
+end
+
+-- every actor update, per greedy: hide a dormant one, wake it when its time is over
+function greedy_check_sated(id, binder)
+	local p = binder.parametrs
+	if not (p and p.sated_until) then return end
+	local obj = client_obj(id)
+	if misc.game_time_minutes() >= p.sated_until then
+		p.sated_until = nil
+		p.sated_hidden = nil
+		p.activity = true
+		if obj then obj:enable_anomaly() end
+		write_sated(id, nil)
+		sated_log("greedy %d is hungry again", id)
+		return
+	end
+	p.activity = false
+	if obj and not p.sated_hidden then
+		obj:disable_anomaly()
+		p.sated_hidden = true
+	end
+end
+
+function greedy_status()
+	local now = misc.game_time_minutes()
+	for id, binder in pairs(greedy_binders) do
+		local p = binder.parametrs or {}
+		log2("[bind_greedy] greedy %d: active=%s dormant_left=%s min", id, tostring(p.activity), tostring(p.sated_until and (p.sated_until - now) or 0))
+	end
+end
+
+function greedy_wake_all()
+	for id, binder in pairs(greedy_binders) do
+		if binder.parametrs and binder.parametrs.sated_until then
+			binder.parametrs.sated_until = 0
+		end
+	end
 end

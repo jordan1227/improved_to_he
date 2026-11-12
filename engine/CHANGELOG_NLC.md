@@ -5,6 +5,57 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.191 (2026-11-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `678E09CCC4EAAA251854DEC66D50C6202AEA4BDD1FAF9CE6F2B47C0ED2D8FED2` (archived with its PDB in `nlc_tools/builds/20261112_134857_678e09cc`).
+- **Status:** runtime pending. Built on `nlc-3.589.190`. Anomaly batch 2 (`docs/ANOMALY_DESIGN.md` 16) and the two source fixes pending from the `.190` test (section 14).
+- Silence anomaly: zone key `nlc_silence` (`silence_ai_rim`, `silence_ai_core`, `silence_ramp_k`, `silence_log`). An enabled zone registers its sphere every update (`CCustomZone::nlc_silence_register`; removed in `Disable()` and `net_Destroy()`). `IGame_Level::SoundEvent_Register` (xr_3da) multiplies the power of each AI sound event by the share kept at the source and at the listener (per zone the smaller one), after occlusion, so sounds made inside or heard from inside reach stalkers, mutants and the actor's noise meter weaker or not at all. Registry in `xr_area.cpp`, locked, cleared in `IGame_Level::~IGame_Level`. Lua: `level.nlc_silence_zones()`, `level.nlc_silence_muted()`, `level.nlc_silence_pair_k(a, b)`.
+- Reload / draw sound: the `HudSound` pitch factor includes `NLC_SPEED_FIELD`, so the sound follows a clip slowed by a Flytrap.
+- Jump glide: `CControlJump` multiplies the glide clip's explicit speed by `nlc_time_k`.
+- **Required game data:** `zone_silence.ltx` (new), `zones.ltx`, `sivol_silence.script` (new), `sivol_mask_audio.script` (`set_contribution`), `amk_anoms.script`, `ogse_signals_addons_list.script`. Tide fields (`sivol_tide.script`, new) are script only.
+
+## nlc-3.589.190 (2026-11-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `76E89094684D7F1A938DA033AD1BD3308EE7B9EC78E898E6BF67E942A0868B70` (archived with its PDB in `nlc_tools/builds/20261112_131517_76e89094`).
+- **Status:** runtime pending. Built on `nlc-3.589.189`. Anomaly batch 1d (`docs/ANOMALY_DESIGN.md` 13), after the `.189` test (boar charge and melee accepted; jumps, the player's jump and the knife / throw clips were not slowed).
+- Flytrap, bodies in the air: `CPHSimpleCharacter` uses its own velocity limit only while the character has control, so a jump or a fall ignored the lowered limit. The zone now eases the body velocity itself toward the limit (`CPHMovementControl::SetVelocity`) for a live monster above 1.15 x its limit, and for the actor off the ground above `flytrap_actor_air_speed` x the actor field factor.
+- Actor jump: the jump-up velocity is multiplied by the actor field factor (`level.nlc_set_actor_field_speed`).
+- HUD motions: `NLC_SPEED_FIELD`, Lua `level.nlc_set_field_speed_factor(name, k)`: every motion of the item in the actor's hands (knife, grenades, bolt, binoculars as well as weapons), on top of the reload / draw factor (`nlc_actor_motion_speed_k`).
+- **Required game data:** `zone_flytrap.ltx` (`flytrap_actor_air_speed`), `sivol_flytrap.script` (uses the field factor instead of the reload and draw factors).
+
+## nlc-3.589.189 (2026-11-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F4C9B5AD0BA9F55E0F49BB06C93D5063EC3949C89B10838E262337AC0266EE08` (archived with its PDB in `nlc_tools/builds/20261112_125709_f4c9b5ad`).
+- **Status:** runtime pending. Built on `nlc-3.589.188`. Anomaly batch 1c (`docs/ANOMALY_DESIGN.md` 12), after the `.188` test: jumps, the boar charge and the bloodsucker attack on the move were not slowed in a Flytrap.
+- Flytrap: a live monster's physical speed limit is lowered every zone update to `flytrap_monster_speed_rim` .. `_core` by depth (`CPHMovementControl::SetVelocityLimit`, only ever lowered: the path movement sets its own limit each step, a jump adds to it once). `CControlAnimation::play` multiplies the natural speed of the global clip by `nlc_time_k`, so the clips of the jump, run attack and attack-on-the-move controls slow down as well.
+- ADS speed factor: `NLC_SPEED_ADS`, Lua `level.nlc_set_ads_speed_factor(name, k)`; scales the aim transition and its spring in `CHudItem` (named factors, product clamped 0.3..2 like reload and draw).
+- `object_particles_soft_stop` also covers the telekinesis particles of gravity zones (`CBaseGraviZone::StopTeleParticles`). Zone key `object_particles_log`: `~ [zone_particles]` lines for the idle stop and the tele start / stop.
+- **Required game data:** `zone_flytrap.ltx` (speed keys), `sivol_flytrap.script` (ADS factor), `zone_breathe.ltx`.
+
+## nlc-3.589.188 (2026-11-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `2F47A272A99A88797B3B68DC02335F6CCE787FA9F612836DDD6E17C71CF9DEBD` (archived with its PDB in `nlc_tools/builds/20261112_123715_2f47a272`).
+- **Status:** runtime pending. Built on `nlc-3.589.187`. Anomaly batch 1b (`docs/ANOMALY_DESIGN.md` 11).
+- Flytrap: monsters inside play their natural-speed clips that are not the moving ones (attacks, idles, turns) slowed as well: `CBaseMonster::nlc_set_time_k` (renewed by the zone), applied in `CControlAnimationBase::set_animation_speed`. Clips with an explicit speed and clips owned by other controls (jumps, run attack) are not touched.
+- Zone key `object_particles_soft_stop`: `StopObjectIdleParticles` stops the particles on an object without destroying them, so the emitted ones live out (`zone_breathe.ltx`).
+- **Required game data:** `zone_breathe.ltx`; for the Flytrap screen effect `shaders/r3/nlc_flytrap.h`, `combine_2_naa.ps`, `system.ltx` (`m_nlc_flytrap` in `[shader_params_export]`), `zone_flytrap.ltx`, `sivol_flytrap.script`.
+
+## nlc-3.589.187 (2026-11-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `711E329E652127B797412DBBA68E1E15274320210911044F5CBC2394CED4E55C` (archived with its PDB in `nlc_tools/builds/20261112_114857_711e329e`).
+- **Status:** runtime pending. Built on `nlc-3.589.186`. Anomaly batch 1 (`docs/ANOMALY_DESIGN.md`): the Flytrap stasis anomaly and the impact slow envelope.
+- Flytrap zone mode (`CCustomZone`, section key `nlc_flytrap`, any zone class; `zone_flytrap.ltx` uses `ZS_MBALD` with `ignore_any`): monsters inside are slowed by depth (`flytrap_slow_rim` / `_core` / `flytrap_ramp_k`, through `nlc_apply_move_slow`); loose physics objects (items, bolts, grenades, ragdolls) lose gravity and ease down to `flytrap_object_speed`; a grenade fuse runs `flytrap_fuse_k` times longer (`CMissile::nlc_fuse_delay`). Live creatures keep their gravity. Log `~ [flytrap]` with `flytrap_log`.
+- Bullets (`CBulletManager`): the zones register stasis spheres (`nlc_stasis_set` / `_remove`, re-sent every zone update, cleared with the level; a mutex guards the list because bullets may update in parallel). A bullet inside advances at `flytrap_bullet_speed`, eased over `flytrap_bullet_ramp` metres from the surface on the way in and out; a step from outside stops just inside the surface. `SBullet::speed` is untouched, so hit power, pierce and impulse are the same; no drag and no drop inside. Every bullet inside draws a 0.45 m tracer whatever its cartridge.
+- Anomaly detector: zone key `monster_detect_k` multiplies a monster's `Anomaly_Detect_Probability` for that zone (stalkers are not affected); `nlc_learn` makes a zone known and avoided for a monster trapped in it for `flytrap_learn_ms` and for the monsters of its class within `flytrap_learn_radius`; zone key `monster_follow_enemy` lifts the restriction while the monster's enemy stands in the zone (`SAnomalyInfo::follow`).
+- Monster slow envelope: `nlc_apply_move_slow(k, ms, hold)`; `hold` is the share of the time at full strength, the rest recovers linearly (default 0.75 as before). `[monster_evasion] impact_slow_hold`; `impact_slow_ms` upper limit 5000.
+- Lua `level.nlc_set_actor_field_speed(k)` (0.1..1): actor movement factor, applied after the legs factor (`sivol_flytrap.script`).
+- **Required game data:** `zone_flytrap.ltx`, `zones.ltx`, `postprocess.ltx`, `particles/nlc/flytrap_*`, `sivol_flytrap.script`, `ogse_signals_addons_list.script`, `amk_anoms.script`, `game_relations.ltx` (`impact_slow_*`).
+
 ## nlc-3.589.186 (2026-11-11)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

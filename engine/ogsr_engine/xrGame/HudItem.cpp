@@ -482,7 +482,7 @@ u32 CHudItem::PlayHUDMotion_noCB(const shared_str& motion_name, const bool bMixI
     {
         const u32 length = g_player_hud->motion_length(motion_name, HudSection(), m_current_motion_def, speed);
         // NLC: no HUD model (third-person view): reload / draw states keep the handling speed factors too
-        return iFloor(length / nlc_hud_speed_k(nlc_actor_motion_kind(this, motion_name.c_str())));
+        return iFloor(length / nlc_actor_motion_speed_k(this, motion_name.c_str()));
     }
 }
 
@@ -976,7 +976,8 @@ void CHudItem::UpdateHudAdditional(Fmatrix& trans, const bool need_update_collis
 
     //============= Поворот ствола во время аима =============//
     {
-        const float factor = Device.fTimeDelta / m_fZoomRotateTime;
+        const float nlc_ads_k = nlc_hud_speed_k(NLC_SPEED_ADS); // NLC: Lua level.nlc_set_ads_speed_factor (flytrap)
+        const float factor = Device.fTimeDelta / m_fZoomRotateTime * nlc_ads_k;
 
         // I AM DEAD - Dirty hack from delayed exit from aim
         if (IsZoomed())
@@ -990,7 +991,7 @@ void CHudItem::UpdateHudAdditional(Fmatrix& trans, const bool need_update_collis
         {
             if (nlc_step)
             {
-                float omega = nlc_gunplay::param(nlc_gunplay::eAdsOmegaK) / _max(m_fZoomRotateTime, 0.05f) * nlc_gunplay::motion_freq_k();
+                float omega = nlc_gunplay::param(nlc_gunplay::eAdsOmegaK) / _max(m_fZoomRotateTime, 0.05f) * nlc_gunplay::motion_freq_k() * nlc_ads_k;
                 clamp(omega, 4.f, 40.f);
                 nlc_gunplay::spring_step(current_difference[0], m_nlc_ads_v[0], zr_offs, omega, m_nlc_ads_damping, Device.fTimeDelta);
                 nlc_gunplay::spring_step(current_difference[1], m_nlc_ads_v[1], zr_rot, omega, m_nlc_ads_damping, Device.fTimeDelta);

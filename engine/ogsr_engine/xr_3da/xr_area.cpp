@@ -13,6 +13,83 @@ using namespace collide;
 
 void nlc_snd_occlusion_load();
 
+// NLC silence anomaly (docs/ANOMALY_DESIGN.md 16). Zones register from their update (game thread); sound events are
+// registered from the sound callback, so the list is locked.
+#include <mutex>
+#include <atomic>
+namespace
+{
+struct SNlcSilence
+{
+    u16 id;
+    Fvector center;
+    float radius;
+    float rim;
+    float core;
+    float ramp_k;
+};
+std::mutex s_nlc_silence_lock;
+xr_vector<SNlcSilence> s_nlc_silence;
+std::atomic<u32> s_nlc_silence_count{0};
+std::atomic<u32> s_nlc_silence_muted{0};
+
+// share of a sound kept at this point for one zone: 1 outside, 1 - rim at the edge, 1 - core past ramp_k of the radius
+float nlc_silence_point_k(const SNlcSilence& z, const Fvector& p)
+{
+    const float d = p.distance_to(z.center);
+    if (d >= z.radius)
+        return 1.f;
+    const float depth_k = std::clamp((z.radius - d) / std::max(z.radius * z.ramp_k, 0.1f), 0.f, 1.f);
+    return 1.f - (z.rim + (z.core - z.rim) * depth_k);
+}
+} // namespace
+
+void nlc_silence_set(u16 id, const Fvector& center, float radius, float rim, float core, float ramp_k)
+{
+    std::scoped_lock lock(s_nlc_silence_lock);
+    for (SNlcSilence& it : s_nlc_silence)
+        if (it.id == id)
+        {
+            it.center = center;
+            it.radius = radius;
+            it.rim = rim;
+            it.core = core;
+            it.ramp_k = ramp_k;
+            return;
+        }
+    s_nlc_silence.push_back({id, center, radius, rim, core, ramp_k});
+    s_nlc_silence_count = u32(s_nlc_silence.size());
+}
+
+void nlc_silence_remove(u16 id)
+{
+    std::scoped_lock lock(s_nlc_silence_lock);
+    s_nlc_silence.erase(std::remove_if(s_nlc_silence.begin(), s_nlc_silence.end(), [id](const SNlcSilence& it) { return it.id == id; }), s_nlc_silence.end());
+    s_nlc_silence_count = u32(s_nlc_silence.size());
+}
+
+void nlc_silence_clear()
+{
+    std::scoped_lock lock(s_nlc_silence_lock);
+    s_nlc_silence.clear();
+    s_nlc_silence_count = 0;
+    s_nlc_silence_muted = 0;
+}
+
+float nlc_silence_pair_k(const Fvector& source, const Fvector& listener)
+{
+    if (s_nlc_silence_count == 0)
+        return 1.f;
+    std::scoped_lock lock(s_nlc_silence_lock);
+    float k = 1.f;
+    for (const SNlcSilence& z : s_nlc_silence)
+        k *= std::clamp(std::min(nlc_silence_point_k(z, source), nlc_silence_point_k(z, listener)), 0.f, 1.f);
+    return k;
+}
+
+u32 nlc_silence_zones() { return s_nlc_silence_count; }
+u32 nlc_silence_muted() { return s_nlc_silence_muted; }
+
 extern BOOL g_bLoaded;
 
 void IGame_Level::SoundEvent_Register(ref_sound_data_ptr S, float range)
@@ -77,6 +154,16 @@ void IGame_Level::SoundEvent_Register(ref_sound_data_ptr S, float range)
             const float occ = Sound->get_occlusion_to((*it)->spatial.sphere.P, snd_position);
             VERIFY(_valid(occ));
             Power *= occ;
+            // NLC silence anomaly: made inside a silence zone or heard from inside one
+            if (Power > EPS_S && s_nlc_silence_count != 0)
+            {
+                const float silence_k = nlc_silence_pair_k(snd_position, (*it)->spatial.sphere.P);
+                if (silence_k < 1.f)
+                {
+                    Power *= silence_k;
+                    ++s_nlc_silence_muted;
+                }
+            }
             if (Power > EPS_S)
             {
                 _esound_delegate D = {L, S, Power};

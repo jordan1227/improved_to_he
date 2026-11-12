@@ -29,7 +29,7 @@ end
 
 function actor_update()
 	local i,v,acter_poz,s
-	acter_poz = db.actor:position()
+	acter_poz = db.actor:position() this.exit_hint_update(acter_poz) -- sivol: exit hint
 	for i, v in pairs(teleport_binders) do
 		s = v.parametrs
 		local obj = client_obj(i)
@@ -54,7 +54,7 @@ function actor_update()
 							return
 						end
 					end
-				s.teleporte = true
+				s.teleporte = true this.exit_turn(s) -- sivol
 				s.time = time_global() + 1000
 				level.add_pp_effector("teleport.ppe", 50, false)
 			end
@@ -92,7 +92,7 @@ function restrictor_teleport:net_spawn(data)
 		self.parametrs["y"] = tonumber(s_obj.position.y);
 		self.parametrs["z"] = tonumber(s_obj.position.z);
 
-		local rand=lua_random(1,4),number
+		local rand=(self.object:id() % 4) + 1 -- sivol: fixed for the life of the object, a reload does not change the exit (was lua_random(1,4))
 		self.parametrs["poz_x"] = tonumber(char_ini:r_string(self.section, "poz_x"..rand))
 		self.parametrs["poz_y"] = tonumber(char_ini:r_string(self.section, "poz_y"..rand))
 		self.parametrs["poz_z"] = tonumber(char_ini:r_string(self.section, "poz_z"..rand))
@@ -120,3 +120,103 @@ function restrictor_teleport:reload(section)
 end
 
 
+
+
+-- ************************************************
+-- sivol: exit hint (docs/ANOMALY_DESIGN.md 5)
+-- The exit of a teleport is fixed for the life of the object (chosen from its id, so a
+-- reload does not change it; a new set of anomalies after an emission does). Now and
+-- then a short run of puffs leaves the teleport toward its exit, for a player who watches.
+-- Console: fl bind_mteleport.exit_hint_now()   fl bind_mteleport.set_exit_hint(false)
+-- ************************************************
+local HINT_ENABLED   = true
+local HINT_PARTICLE  = [[anomaly2\teleport_damage_smoke_00]]
+local HINT_RANGE     = 30      -- m: only teleports this close to the actor
+local HINT_GAP_MS    = { 6000, 11000 }
+local HINT_STEPS     = { 1.2, 2.4, 3.6 }  -- m from the centre, toward the exit
+local HINT_STEP_MS   = 200
+local HINT_LIFE_MS   = 1400
+local HINT_HEIGHT    = 1.0
+
+local hint_next  = {}   -- [teleport id] = time_global of its next hint
+local hint_queue = {}   -- { time, pos }
+local hint_live  = {}   -- { stop_time, particle }
+
+function set_exit_hint(v)
+	HINT_ENABLED = v and true or false
+end
+
+local function hint_emit(s, now)
+	local dx, dz = s.poz_x - s.x, s.poz_z - s.z
+	local len = math.sqrt(dx * dx + dz * dz)
+	if len < 1 then return end
+	dx, dz = dx / len, dz / len
+	for n, d in ipairs(HINT_STEPS) do
+		table.insert(hint_queue, {
+			time = now + (n - 1) * HINT_STEP_MS,
+			pos = vector():set(s.x + dx * d, s.y + HINT_HEIGHT, s.z + dz * d),
+		})
+	end
+end
+
+function exit_hint_now()
+	local now = time_global()
+	for id, v in pairs(teleport_binders) do
+		if v.parametrs and v.parametrs.poz_x then hint_emit(v.parametrs, now) end
+	end
+end
+
+function exit_hint_update(actor_pos)
+	local now = time_global()
+
+	for n = #hint_live, 1, -1 do
+		if now >= hint_live[n].stop_time then
+			hint_live[n].particle:stop()
+			table.remove(hint_live, n)
+		end
+	end
+	for n = #hint_queue, 1, -1 do
+		local q = hint_queue[n]
+		if now >= q.time then
+			local p = particles_object(HINT_PARTICLE)
+			p:play_at_pos(q.pos)
+			table.insert(hint_live, { stop_time = now + HINT_LIFE_MS, particle = p })
+			table.remove(hint_queue, n)
+		end
+	end
+
+	if not HINT_ENABLED then return end
+	for id, v in pairs(teleport_binders) do
+		local s = v.parametrs
+		if s and s.poz_x and s.x then
+			local dx, dz = s.x - actor_pos.x, s.z - actor_pos.z
+			if dx * dx + dz * dz < HINT_RANGE * HINT_RANGE and math.abs(s.y - actor_pos.y) < 10 then
+				if not hint_next[id] then
+					hint_next[id] = now + lua_random(HINT_GAP_MS[1], HINT_GAP_MS[2])
+				elseif now >= hint_next[id] then
+					hint_next[id] = now + lua_random(HINT_GAP_MS[1], HINT_GAP_MS[2])
+					hint_emit(s, now)
+				end
+			else
+				hint_next[id] = nil
+			end
+		end
+	end
+end
+
+-- sivol: the view turns toward the exit as the corridor effect starts (toggle; the puffs are the main hint)
+-- Console: fl bind_mteleport.set_exit_turn(false)   fl bind_mteleport.set_exit_turn(true, 1)  (the sign flips the side)
+local TURN_ENABLED = true
+local TURN_SIGN    = -1
+
+function set_exit_turn(v, sign)
+	TURN_ENABLED = v and true or false
+	if sign then TURN_SIGN = sign end
+end
+
+function exit_turn(s)
+	if not (TURN_ENABLED and s and s.poz_x and s.x) then return end
+	local dx, dz = s.poz_x - s.x, s.poz_z - s.z
+	if dx * dx + dz * dz < 1 then return end
+	db.actor:set_actor_direction(TURN_SIGN * math.atan2(dx, dz))
+end

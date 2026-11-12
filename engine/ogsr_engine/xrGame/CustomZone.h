@@ -398,6 +398,46 @@ public:
     virtual u32 ef_weapon_type() const;
     virtual bool register_schedule() const { return true; }
 
+    // NLC flytrap (docs/ANOMALY_DESIGN.md 3): a stasis field. Section key nlc_flytrap; no damage of its own.
+public:
+    bool nlc_flytrap() const { return m_nlc_flytrap; }
+    float nlc_detect_k() const { return m_nlc_detect_k; } // multiplies a monster's Anomaly_Detect_Probability for this zone
+    bool nlc_follow_enemy() const { return m_nlc_follow_enemy; } // monsters enter it while their enemy is inside
+
+protected:
+    bool m_nlc_soft_object_particles{}; // NLC: section key object_particles_soft_stop
+    bool m_nlc_flytrap{};
+    bool m_nlc_follow_enemy{};
+    bool m_nlc_stasis_on{};
+    bool m_nlc_ft_log{};
+    float m_nlc_detect_k{1.f};
+    float m_nlc_ft_bullet_cap{8.f}; // m/s
+    float m_nlc_ft_bullet_ramp{1.5f}; // m
+    float m_nlc_ft_slow_rim{0.3f}; // monster speed removed at the edge
+    float m_nlc_ft_slow_core{0.7f}; // and past ramp_k of the radius
+    float m_nlc_ft_ramp_k{0.6f};
+    float m_nlc_ft_object_cap{1.2f}; // m/s, loose physics objects
+    float m_nlc_ft_monster_cap_rim{4.5f}; // m/s, the physical speed limit of a live monster at the edge
+    float m_nlc_ft_monster_cap_core{1.8f}; // ... and in the core (jumps, charges and falls included)
+    bool m_nlc_particles_log{}; // section key object_particles_log
+    float m_nlc_ft_actor_air{5.f}; // m/s x the actor field factor: the actor's speed limit off the ground
+    float m_nlc_ft_fuse_k{4.f}; // a grenade fuse runs this many times longer inside
+    float m_nlc_ft_learn_radius{25.f}; // m, mates of a trapped monster that learn the zone
+    u32 m_nlc_ft_learn_ms{700}; // ms inside before a monster understands
+    void nlc_flytrap_update(u32 dt);
+    void nlc_flytrap_float(SZoneObjectInfo& io, bool on);
+    void nlc_flytrap_stasis(bool on);
+
+    // NLC silence (docs/ANOMALY_DESIGN.md 16): sounds made or heard inside do not reach the AI. Section key nlc_silence;
+    // the actor's own hearing is scripted (sivol_silence.script).
+    bool m_nlc_silence{};
+    bool m_nlc_silence_on{};
+    bool m_nlc_silence_log{};
+    float m_nlc_silence_rim{0.7f}; // share of a sound's power removed at the edge
+    float m_nlc_silence_core{1.f}; // ... and past ramp_k of the radius
+    float m_nlc_silence_ramp_k{0.5f};
+    void nlc_silence_register(bool on);
+
     // optimization FAST/SLOW mode
 public:
     bool o_fastmode;

@@ -459,9 +459,11 @@ private:
 extern player_hud* g_player_hud;
 
 // NLC: actor weapon handling speed factors (player_hud.cpp)
-enum : u8 { NLC_SPEED_NONE, NLC_SPEED_RELOAD, NLC_SPEED_DRAW, NLC_SPEED_KINDS };
+enum : u8 { NLC_SPEED_NONE, NLC_SPEED_RELOAD, NLC_SPEED_DRAW, NLC_SPEED_ADS, NLC_SPEED_FIELD, NLC_SPEED_KINDS }; // ADS: the aim transition (HudItem.cpp), not a clip; FIELD: every motion of the actor's item
 extern float g_nlc_hud_speed_k[NLC_SPEED_KINDS];
+extern float g_nlc_actor_field_speed_k; // NLC flytrap: actor movement factor (Actor_Movement.cpp), Lua level.nlc_set_actor_field_speed
 inline float nlc_hud_speed_k(u8 kind) { return kind < NLC_SPEED_KINDS ? g_nlc_hud_speed_k[kind] : 1.f; }
 void nlc_set_hud_speed_factor(u8 kind, LPCSTR name, float k);
 float nlc_get_hud_speed_factor(u8 kind, LPCSTR name);
 u8 nlc_actor_motion_kind(const CHudItem* item, LPCSTR anm_name);
+float nlc_actor_motion_speed_k(const CHudItem* item, LPCSTR anm_name); // kind factor x field factor

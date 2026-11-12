@@ -132,7 +132,8 @@ void CBaseMonster::nlc_evade_load(LPCSTR section)
     p.impact_window = u32(std::clamp(evade_f(section, "impact_slow_window_ms", 500.f), 50.f, 3000.f));
     p.impact_k = std::clamp(evade_f(section, "impact_slow_k", 0.3f), 0.f, 0.9f);
     p.impact_k2 = std::clamp(evade_f(section, "impact_slow_k2", 0.5f), 0.f, 0.9f);
-    p.impact_ms = u32(std::clamp(evade_f(section, "impact_slow_ms", 400.f), 0.f, 3000.f));
+    p.impact_ms = u32(std::clamp(evade_f(section, "impact_slow_ms", 400.f), 0.f, 5000.f));
+    p.impact_hold = std::clamp(evade_f(section, "impact_slow_hold", 0.75f), 0.f, 1.f);
     p.side_guard = evade_b(section, "side_guard", false);
     p.side_guard_angle = deg2rad(std::clamp(evade_f(section, "side_guard_angle", 30.f), 5.f, 85.f));
     p.side_guard_short = std::max(evade_f(section, "side_guard_short", 3.f), 0.f);
@@ -642,7 +643,7 @@ void CBaseMonster::nlc_impact_hit(float lost)
         k = p.impact_k;
     if (k > 0.f)
     {
-        nlc_apply_move_slow(k, p.impact_ms);
+        nlc_apply_move_slow(k, p.impact_ms, p.impact_hold);
         EVADE_LOG("~ [evade] [%s]: impact: %.2f health in %u ms, slowed %.0f%%", cName().c_str(), e.impact_sum, now - e.impact_start, k * 100.f);
     }
 }

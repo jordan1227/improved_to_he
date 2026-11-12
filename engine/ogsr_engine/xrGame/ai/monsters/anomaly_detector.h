@@ -24,6 +24,7 @@ private:
         bool ignored;
         u32 time_registered;
         bool held{}; // NLC: noticed, but its restriction is lifted (a committed lunge) until the monster is outside it
+        bool follow{}; // NLC flytrap: held because the enemy is inside it (zone key monster_follow_enemy)
     };
 
     struct remove_predicate
@@ -63,6 +64,7 @@ public:
     bool nlc_suspended() const { return m_nlc_suspended; }
     u32 nlc_avoided() const;
     bool nlc_segment_clear(const Fvector& from, const Fvector& to) const; // no avoided anomaly volume on the segment
+    void nlc_learn(CCustomZone* zone); // NLC flytrap: the zone becomes known and avoided, whatever the detection roll said
 
 private:
     bool m_nlc_suspended{};
