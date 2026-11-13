@@ -8,6 +8,7 @@
 #include "PHMovementControl.h"
 #include "../Include/xrRender/Kinematics.h"
 #include "../xr_3da/bone.h"
+#include "CustomZone.h" // NLC: anomaly hit profiles
 
 namespace body_part
 {
@@ -114,6 +115,7 @@ void CActorBodyHealth::Load(LPCSTR condition_section)
     m_legs_min_speed = READ_IF_EXISTS(pSettings, r_float, sect, "legs_min_speed", 0.1f);
     m_green_base = READ_IF_EXISTS(pSettings, r_float, sect, "green_convert_base", 0.05f);
     m_green_factor = READ_IF_EXISTS(pSettings, r_float, sect, "green_convert_factor", 0.15f);
+    m_limb_overflow_k = READ_IF_EXISTS(pSettings, r_float, sect, "limb_overflow_k", 1.f);
     if (fis_zero(m_blood_parts_coef))
         m_blood_parts_coef = 1.f;
     if (m_fracture_threshold > 0.999f)
@@ -479,27 +481,38 @@ void CActorBodyHealth::AddGreen(float value)
     }
     float budget = value * 6.f;
     auto room = [&](u8 i) { return std::max(0.f, PartMaxHealth(i) - m_health[i] - m_green[i]); };
-    for (int pass = 0; pass < 8 && budget > 1e-7f; ++pass)
+    // NLC: by level (white + green), the lowest parts first, each up to its own max: a fractured limb (lower
+    // max) is no longer served last (it used to be ranked by room)
+    for (int pass = 0; pass < 16 && budget > 1e-7f; ++pass)
     {
-        // the parts with the most room share the step that brings them down to the next largest room
-        float top = 0.f, next = 0.f;
+        float low = 10.f;
         for (u8 i = head; i < count; ++i)
-            top = std::max(top, room(i));
-        if (top <= 1e-7f)
-            break;
+            if (room(i) > 1e-6f)
+                low = std::min(low, m_health[i] + m_green[i]);
+        if (low > 9.f)
+            break; // every part is full
+        // the lowest parts share the step up to the next level or to the first max among them
+        bool lowest[count]{};
         u8 n = 0;
+        float target = 10.f;
         for (u8 i = head; i < count; ++i)
         {
-            const float r = room(i);
-            if (r >= top - 1e-6f)
+            if (room(i) <= 1e-6f)
+                continue;
+            const float lv = m_health[i] + m_green[i];
+            if (lv <= low + 1e-6f)
+            {
+                lowest[i] = true;
                 ++n;
+                target = std::min(target, PartMaxHealth(i));
+            }
             else
-                next = std::max(next, r);
+                target = std::min(target, lv);
         }
-        const float step = std::min(budget / n, top - next);
+        const float step = std::min(budget / n, std::max(target - low, 1e-6f));
         for (u8 i = head; i < count; ++i)
-            if (room(i) >= top - 1e-6f)
-                m_green[i] += step;
+            if (lowest[i])
+                m_green[i] += std::min(step, room(i));
         budget -= step * n;
     }
     // NLC: the overflow (every part topped off) turns green white, evenly over the parts that hold green
@@ -690,6 +703,9 @@ void CActorBodyHealth::OnRadiation(float lost)
 
 void CActorBodyHealth::OnHit(SHit* hit, float lost)
 {
+    // NLC: anomaly hit profile (BeginZoneHit), valid for this hit only
+    const bool zone_hit = m_zone_hit;
+    m_zone_hit = false;
     if (lost <= 0.f)
         return;
 
@@ -720,7 +736,15 @@ void CActorBodyHealth::OnHit(SHit* hit, float lost)
         part = PartByBone(hit->boneID);
 
     const bool guard = GuardHitType(hit->hit_type);
-    if (part == none)
+    // NLC: anomaly hit profile (BeginZoneHit): the loss is divided over the parts by the resolved weights
+    if (zone_hit)
+    {
+        part = m_zone_main;
+        for (u8 i = head; i < count; ++i)
+            if (m_zone_w[i] > 0.f)
+                Damage(i, lost * m_zone_w[i] * m_hit_k[i], guard);
+    }
+    else if (part == none)
     {
         for (u8 i = head; i < count; ++i)
             Damage(i, lost * m_spread_hit_k, guard);
@@ -739,6 +763,86 @@ void CActorBodyHealth::OnHit(SHit* hit, float lost)
     Clamp();
 }
 
+u16 CActorBodyHealth::BeginZoneHit(SHit* hit)
+{
+    m_zone_hit = false;
+    m_zone_profile = "";
+    if (!m_enabled || !hit) // the option being off still moves the wound and tells scripts (single health pool)
+        return BI_NONE;
+    // the zone is the hit's weapon (CCustomZone::CreateHit); `who` may be the zone's owner
+    CObject* zone = Level().Objects.net_Find(hit->weaponID);
+    if (!zone || !smart_cast<CCustomZone*>(zone))
+        return BI_NONE;
+    LPCSTR profile = READ_IF_EXISTS(pSettings, r_string, zone->cNameSect(), "actor_hit_profile", nullptr);
+    if (!profile || !*profile)
+        return BI_NONE;
+    if (!pSettings->section_exist(profile))
+    {
+        Msg("! [body_health] zone [%s]: actor_hit_profile [%s] is not a section, the hit goes to the torso", zone->cNameSect().c_str(), profile);
+        return BI_NONE;
+    }
+
+    float sum = 0.f;
+    for (u8 i = head; i < count; ++i)
+    {
+        m_zone_w[i] = std::max(0.f, READ_IF_EXISTS(pSettings, r_float, profile, name(i), 0.f));
+        sum += m_zone_w[i];
+    }
+    if (sum <= 0.f)
+    {
+        Msg("! [body_health] actor_hit_profile [%s] has no part weights, the hit goes to the torso", profile);
+        return BI_NONE;
+    }
+    for (u8 i = head; i < count; ++i)
+        m_zone_w[i] /= sum;
+
+    LPCSTR mode = READ_IF_EXISTS(pSettings, r_string, profile, "mode", "split");
+    u8 main_part = torso;
+    if (!xr_strcmp(mode, "roll"))
+    {
+        float r = ::Random.randF();
+        main_part = none;
+        for (u8 i = head; i < count; ++i)
+        {
+            if (m_zone_w[i] <= 0.f)
+                continue;
+            main_part = i; // the last part with a weight takes a rounding remainder
+            if (r < m_zone_w[i])
+                break;
+            r -= m_zone_w[i];
+        }
+        for (u8 i = head; i < count; ++i)
+            m_zone_w[i] = i == main_part ? 1.f : 0.f;
+    }
+    else
+    {
+        // the heaviest part holds the wound; equal ones (both legs) take turns at random
+        float best = 0.f;
+        u8 ties = 0;
+        for (u8 i = head; i < count; ++i)
+        {
+            if (m_zone_w[i] > best + 1e-4f)
+            {
+                best = m_zone_w[i];
+                main_part = i;
+                ties = 1;
+            }
+            else if (m_zone_w[i] > best - 1e-4f && best > 0.f && ::Random.randI(++ties) == 0)
+                main_part = i;
+        }
+    }
+    m_zone_main = main_part;
+    m_zone_hit = Enabled(); // OnHit runs only with the option on
+    m_zone_profile = profile;
+
+    static LPCSTR bones[count] = {"", "bip01_head", "bip01_spine1", "bip01_l_forearm", "bip01_r_forearm", "bip01_l_calf", "bip01_r_calf"};
+    IKinematics* K = m_owner->object().Visual() ? smart_cast<IKinematics*>(m_owner->object().Visual()) : nullptr;
+    const u16 bone = K ? K->LL_BoneID(bones[main_part]) : BI_NONE;
+    if (bone == BI_NONE)
+        Msg("! [body_health] actor_hit_profile [%s]: bone [%s] not found, the wound stays on the hit bone", profile, bones[main_part]);
+    return bone;
+}
+
 // the one-shot guard works on white + green; the damage takes green first
 void CActorBodyHealth::Damage(u8 part, float amount, bool guard)
 {
@@ -748,6 +852,46 @@ void CActorBodyHealth::Damage(u8 part, float amount, bool guard)
     const float g = std::min(m_green[part], std::max(0.f, d));
     m_green[part] -= g;
     m_health[part] -= d - g;
+    // NLC: a limb at its floor cannot absorb more, the rest goes to the torso (it used to be lost, so a hit on a
+    // dead limb cost nothing); the torso keeps its one-shot guard
+    if (part >= left_arm && part < count && m_health[part] < PART_MIN_HEALTH)
+    {
+        const float over = (PART_MIN_HEALTH - m_health[part]) * m_limb_overflow_k;
+        m_health[part] = PART_MIN_HEALTH;
+        if (over > 0.f)
+            Damage(torso, over, guard);
+    }
+}
+
+// NLC: a rise of the total health that names no part (food, sleep, satiety regeneration, scripts): `value` of
+// total health (6 x value in part units) goes to the parts with room first, so the total gains the full value
+// (every part used to get +value, and full parts lost it: up to 6 times weaker with one damaged part). What no
+// part has room for is added as white on top of green (Clamp trims the green), as before.
+void CActorBodyHealth::HealSpread(float value)
+{
+    if (value <= 0.f)
+        return;
+    float budget = value * 6.f;
+    float mx[count]{};
+    for (u8 i = head; i < count; ++i)
+        mx[i] = PartMaxHealth(i);
+    float left = budget;
+    {
+        float before = 0.f;
+        for (u8 i = head; i < count; ++i)
+            before += m_health[i];
+        spread_heal(m_health, m_green, mx, all, budget);
+        float after = 0.f;
+        for (u8 i = head; i < count; ++i)
+            after += m_health[i];
+        left = budget - (after - before);
+    }
+    if (left > 1e-6f)
+    {
+        float zero[count]{};
+        spread_heal(m_health, zero, mx, all, left);
+    }
+    Clamp();
 }
 
 float CActorBodyHealth::Guard(u8 part, float before, float after)
@@ -856,8 +1000,7 @@ void CActorBodyHealth::Update(float dt)
         m_rad_deficit = std::max(0.f, m_rad_deficit - diff);
     }
     if (diff > 0.f)
-        for (u8 i = head; i < count; ++i)
-            m_health[i] += diff;
+        HealSpread(diff);
     else if (diff < 0.f) // bleeding, hunger...: green first, as hits
         for (u8 i = head; i < count; ++i)
         {
@@ -951,10 +1094,19 @@ float CActorBodyHealth::PartDamage(u8 part, u8 mask) const
     float d = 0.f;
     if (mask & heal_health)
         d = std::max(d, PartMaxHealth(part) - PartHealth(part));
-    if (mask & heal_bleeding)
-        d = std::max(d, std::min(1.f, Bleeding(part)));
     if (mask & heal_fracture)
         d = std::max(d, Fracture(part));
+    // NLC: an item that also heals health or fractures ranks the parts by those, bleeding only breaks ties
+    // (a bleeding limb used to outrank a dying torso); a bleeding-only item ranks by the real bleeding
+    // (it was capped at 1, so two heavy bleeders tied and the first part won)
+    if (mask & heal_bleeding)
+    {
+        const float b = Bleeding(part);
+        if (mask & (heal_health | heal_fracture))
+            d += 0.01f * std::min(1.f, b);
+        else
+            d = std::max(d, b);
+    }
     return d;
 }
 
@@ -1016,9 +1168,24 @@ void CActorBodyHealth::UseItem(LPCSTR section, u8 part)
             AddGreenPart(gp, eat_green);
     }
 
-    const float wounds = READ_IF_EXISTS(pSettings, r_float, section, "wounds_heal_perc", 0.f);
+    // NLC: body_wounds_heal_perc is the wound closing with the skeleton on (a bandage: enough to close every
+    // wound of the part, so one bandage per bleeding part; wounds_heal_perc stays the skeleton-off value);
+    // wounds_heal_all applies it to every wound of the body, undivided (medkits)
+    const float wounds = READ_IF_EXISTS(pSettings, r_float, section, "body_wounds_heal_perc", READ_IF_EXISTS(pSettings, r_float, section, "wounds_heal_perc", 0.f));
     if (wounds > 0.f)
-        ChangeBleeding(part, wounds);
+    {
+        if (READ_IF_EXISTS(pSettings, r_bool, section, "wounds_heal_all", false))
+        {
+            for (CWound* w : m_owner->wounds())
+            {
+                w->Incarnation(wounds, m_owner->m_fMinWoundSize);
+                if (0 == w->TotalSize())
+                    w->SetDestroy(true);
+            }
+        }
+        else
+            ChangeBleeding(part, wounds);
+    }
 
     const float fracture = READ_IF_EXISTS(pSettings, r_float, section, "fracture_heal_perc", 0.f);
     if (fracture > 0.f)

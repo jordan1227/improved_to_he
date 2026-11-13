@@ -72,6 +72,7 @@ public:
         float armour{};
         bool bullet_model{};
         bool guarded{};
+        shared_str zone_profile; // NLC: actor_hit_profile section of an anomaly hit ("" otherwise)
     };
     const SNlcLastHit& nlc_last_hit() const { return m_nlc_last_hit; }
     // NLC: share of a bullet (power, ap) the worn outfit absorbs on a bone, -1 without the bullet model

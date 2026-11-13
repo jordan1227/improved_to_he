@@ -1,0 +1,329 @@
+-- sivol: screen layout of the found-PDA reader (ui/ui_cheat_pda.script), drawn on the 3D PDA.
+-- The classic look is a picture of a whole device with a baked keyboard (ui\ui_pda_ok); this one
+-- uses only the LCD part of that picture and builds the screen from statics: header (owner, serial,
+-- entry counter, signal, battery), body, footer (key hints, clock). game_options.PdaReaderClassic
+-- switches back to the classic look. This file stays ASCII; all player text is in st_pda_he.xml.
+--
+-- Only about x 140..885, y 50..690 of the 1024x768 reader window is visible on the 3D PDA at 16:9
+-- (measured from a screenshot of the classic layout), so everything below stays inside that box.
+
+local TEX = "ui\\ui_pda_ok"
+local TEX_OFF = "ui\\ui_pda_off"
+-- pixels of ui_pda_ok / ui_pda_off (1190x722): plain LCD area and the lighter band under it
+local LCD = { 156, 96, 768, 400 }
+local BAND = { 154, 512, 206, 112 }
+
+local X, W = 156, 716 -- visible column
+local HEAD_Y, HEAD_H = 52, 44
+local FOOT_Y = 602
+local BODY_Y = 106
+local BODY_H = FOOT_Y - BODY_Y - 10
+local ROW1_Y, ROW2_Y = FOOT_Y + 6, FOOT_Y + 32
+local CLOCK_W = 170
+
+local INK = { 255, 28, 28, 28 }
+local INK_SOFT = { 255, 60, 70, 60 }
+local INK_WARN = { 255, 120, 24, 24 }
+
+local DENIED_MS = 1800
+local NOTE_TITLE_MAX = 48
+local NOTE_BODY_MAX = 3000
+local HINT_GAP = "     "
+
+-- ui_cheat_pda_msg.xml showed these two entries with another stash's text; kept as it was.
+local MSG_ALIAS = {
+	treasure_1053_1 = "treasure_1051_3",
+	treasure_1353_1 = "treasure_1351_3",
+}
+
+local function tr(id) return game.translate_string(id) end
+
+function classic()
+	return game_options ~= nil and game_options.PdaReaderClassic == true
+end
+
+-- console: fl sivol_pda_reader.set_classic(1) / (0); applies to the next PDA opened
+function set_classic(on)
+	game_options.PdaReaderClassic = tonumber(on) == 1 or on == true
+	game_options.save_game_options()
+	log2("[pda_reader] classic look: %s", tostring(game_options.PdaReaderClassic))
+end
+
+local function add(w, s, x, y, wd, h)
+	s:SetAutoDelete(true)
+	w:AttachChild(s)
+	s:SetWndRect(x, y, wd, h)
+	table.insert(w.rd.list, s)
+	return s
+end
+
+local function picture(w, x, y, wd, h, tex, rect)
+	local s = add(w, CUIStatic(), x, y, wd, h)
+	s:SetStretchTexture(true)
+	s:InitTexture(tex)
+	if rect then s:SetOriginalRect(rect[1], rect[2], rect[3], rect[4]) end
+	return s
+end
+
+local function label(w, x, y, wd, h, font, ink, align)
+	local s = add(w, CUIStatic(), x, y, wd, h)
+	s:SetFont(font)
+	s:SetTextColor(ink[1], ink[2], ink[3], ink[4])
+	if align then s:SetTextAlign(align) end
+	return s
+end
+
+local function two(n)
+	n = tonumber(n) or 0
+	return string.format("%02d", n % 100)
+end
+
+local function clock_text()
+	local t = vergas_lib.return_time
+	return two(t(4)) .. ":" .. two(t(5)) .. "  " .. two(t(3)) .. "/" .. two(t(2)) .. "/" .. two(t(1))
+end
+
+local function signal_tex()
+	local n = lua_random(1, 6)
+	return "ui_pda_sig_" .. (n == 6 and "0" or tostring(n))
+end
+
+-- typed letters, "_" for every position still unknown
+local function slots(w)
+	local len = string.len(w.tbl_info[2] or "")
+	local p = w.v_pass or ""
+	local out = {}
+	for i = 1, len do
+		local c = string.sub(p, i, i)
+		if c == "" or c == "*" then c = "_" end
+		out[#out + 1] = c
+	end
+	return table.concat(out, " ")
+end
+
+local function several_pdas()
+	return vergas_pda.get_tbl_sn_count() > 1
+end
+
+-- footer: row 1 holds the extra keys (full width), row 2 the main keys (the clock sits at its right end)
+local function set_hints(w, extra, main)
+	w.rd.hint1:SetText(table.concat(extra, HINT_GAP))
+	w.rd.hint2:SetText(table.concat(main, HINT_GAP))
+end
+
+local function password_hints(w)
+	local extra = {}
+	if db.actor and db.actor:object("anagramm_flash") then extra[#extra + 1] = tr("pda_reader_hint_flash") end
+	if he_pda_cracker.installed() then extra[#extra + 1] = tr("pda_reader_hint_cracker") end
+	if several_pdas() then extra[#extra + 1] = tr("pda_reader_hint_switch_pass") end
+	set_hints(w, extra, { tr("pda_reader_hint_enter"), tr("pda_reader_hint_erase"), tr("pda_reader_hint_close") })
+end
+
+local function read_hints(w)
+	local extra, main = {}, {}
+	if he_pda_access.has_notes() then extra[#extra + 1] = tr("pda_reader_hint_note") end
+	if several_pdas() then extra[#extra + 1] = tr("pda_reader_hint_switch") end
+	if w.tbl_msg and #w.tbl_msg > 1 and not w.navigation_locked then main[#main + 1] = tr("pda_reader_hint_page") end
+	main[#main + 1] = tr("pda_reader_hint_close")
+	set_hints(w, extra, main)
+end
+
+function build(w)
+	local rd = { list = {}, shown = {}, saved = {} }
+	w.rd = rd
+
+	picture(w, 0, 0, 1024, 768, TEX, LCD)
+	picture(w, 0, 0, 1024, HEAD_Y + HEAD_H, TEX, BAND)
+	picture(w, 0, FOOT_Y, 1024, 768 - FOOT_Y, TEX, BAND)
+
+	-- With the cursor on (zoomed PDA) the engine gives the wheel to the window under the cursor and
+	-- the actor's wheel callback never fires. An empty scroll view takes it; poll_wheel reads how far
+	-- it moved. Its scrollbar lies right of the screen (the view is wider than the window).
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_cheat_pda_npc.xml")
+	rd.wheel = xml:InitScrollView("wheel_catch", w)
+	if rd.wheel then
+		table.insert(rd.list, rd.wheel)
+		xml:InitStatic("wheel_pad", rd.wheel)
+		rd.wheel:ForceUpdate()
+	end
+
+	rd.name = label(w, X, HEAD_Y + 2, 330, 22, GetFontLetterica18Russian(), INK)
+	rd.name:SetText(tostring(w.tbl_info[3] or ""))
+	rd.sn = label(w, X, HEAD_Y + 24, 330, 18, GetFontLetterica16Russian(), INK_SOFT)
+	rd.sn:SetText(string.format(tr("pda_reader_sn"), tostring(w.tbl_info[4] or "?")))
+
+	rd.counter = label(w, X + 340, HEAD_Y + 10, 240, 22, GetFontLetterica18Russian(), INK, CGameFont.alRight)
+	rd.signal = picture(w, X + W - 122, HEAD_Y + 8, 56, 28, signal_tex())
+	rd.batt = picture(w, X + W - 58, HEAD_Y + 8, 56, 28, "ui_pda_batt_" .. tostring(lua_random(1, 4)))
+
+	rd.login = label(w, X + 150, 250, 420, 30, GetFontLetterica18Russian(), INK)
+	rd.login:SetText(tr("st_login") .. ": " .. tostring(w.tbl_info[1] or ""))
+	rd.pass = label(w, X + 150, 300, 560, 30, GetFontLetterica18Russian(), INK)
+	rd.status = label(w, X + 150, 350, 560, 30, GetFontLetterica18Russian(), INK_WARN)
+
+	-- the entry text; owned as wnd_sms so the reader's own code (stash header, del_windows) finds it
+	local body = CUIStatic()
+	body:SetAutoDelete(true)
+	w:AttachChild(body)
+	body:SetWndRect(X, BODY_Y, W, BODY_H)
+	body:SetTextComplexMode(true)
+	body:SetTextAlign(CGameFont.alLeft)
+	body:SetVTextAlign(0)
+	body:SetFont(GetFontLetterica25())
+	body:SetTextColor(INK[1], INK[2], INK[3], INK[4])
+	w.wnd_sms = body
+
+	rd.hint1 = label(w, X, ROW1_Y, W, 22, GetFontLetterica18Russian(), INK_SOFT)
+	rd.hint2 = label(w, X, ROW2_Y, W - CLOCK_W, 22, GetFontLetterica18Russian(), INK)
+	rd.clock = label(w, X + W - CLOCK_W, ROW2_Y, CLOCK_W, 22, GetFontLetterica18Russian(), INK, CGameFont.alRight)
+	rd.clock:SetText(clock_text())
+
+	password_hints(w)
+	set_ps(w)
+	he_pda_cracker.on_open()
+end
+
+function set_ps(w)
+	if not w.rd then return end
+	w.rd.pass:SetText(tr("st_password") .. ": " .. slots(w))
+end
+
+-- wrong password: a line under the field that clears itself
+function denied(w)
+	local rd = w.rd
+	if not rd then return end
+	rd.status:SetText(tr("pda_reader_denied"))
+	rd.denied_at = time_global()
+	dsh.timeout(DENIED_MS, function()
+		if ui_cheat_pda.cheat_instance ~= w or w.rd ~= rd then return end
+		if time_global() - rd.denied_at >= DENIED_MS - 50 then rd.status:SetText("") end
+	end)
+end
+
+-- "text_<string id>" as the classic layout addressed its xml statics -> the text itself
+function msg_text(txt_msg)
+	local id = string.sub(txt_msg, 6)
+	return tr(MSG_ALIAS[id] or id)
+end
+
+function set_body(w, text)
+	local rd = w.rd
+	if not rd or not w.wnd_sms then return end
+	if not rd.reading then
+		rd.reading = true
+		rd.login:Show(false)
+		rd.pass:Show(false)
+		rd.status:Show(false)
+	end
+	rd.text = text or ""
+	w.wnd_sms:SetText(rd.text)
+end
+
+function set_counter(w)
+	local rd = w.rd
+	if not rd then return end
+	read_hints(w)
+	if w.navigation_locked or not w.tbl_msg then
+		rd.counter:SetText("")
+		return
+	end
+	local n = w.number_msg or 1
+	local text = tostring(n) .. " / " .. tostring(#w.tbl_msg)
+	-- first look at this entry on a PDA that was not read through before
+	if not rd.shown[n] and not w.was_read_on_open then
+		text = tr("pda_reader_new") .. "   " .. text
+	end
+	rd.shown[n] = true
+	rd.counter:SetText(text)
+end
+
+function tick(w)
+	local rd = w.rd
+	if not rd then return end
+	rd.signal:InitTexture(signal_tex())
+	rd.clock:SetText(clock_text())
+end
+
+-- every frame (cheat:Update): turn a move of the wheel catcher into a wheel event
+function poll_wheel(w)
+	local rd = w.rd
+	local sv = rd and rd.wheel
+	if not sv then return end
+	if not rd.wheel_mid then
+		if sv:GetMaxScrollPos() <= 0 then return end
+		sv:SetScrollPos(math.floor(sv:GetMaxScrollPos() / 2))
+		rd.wheel_mid = sv:GetCurrentScrollPos()
+		return
+	end
+	local pos = sv:GetCurrentScrollPos()
+	if pos == rd.wheel_mid then return end
+	local vol = pos > rd.wheel_mid and -1 or 1 -- scrolled down = wheel down
+	sv:SetScrollPos(rd.wheel_mid)
+	rd.wheel_mid = sv:GetCurrentScrollPos()
+	he_pda_3d.on_wheel_rotation(vol)
+end
+
+function cleanup(w)
+	local rd = w.rd
+	if not rd then return end
+	w.rd = nil
+	for _, s in ipairs(rd.list) do w:DetachChild(s) end
+end
+
+-- The "switched off" and "battery discharged" screens of ui_cheat_pda_menu: same device pictures,
+-- cut down to their LCD so they fit the 3D PDA's screen. bg is that menu's background static.
+function menu_screen(bg, mode)
+	bg:SetWndRect(0, 0, 1024, 768)
+	if mode == 1 then
+		bg:InitTexture(TEX_OFF)
+		bg:SetOriginalRect(LCD[1], LCD[2], LCD[3], 520)
+		return
+	end
+	bg:InitTexture(TEX)
+	bg:SetOriginalRect(LCD[1], LCD[2], LCD[3], LCD[4])
+
+	local icon = CUIStatic()
+	icon:SetAutoDelete(true)
+	bg:AttachChild(icon)
+	icon:SetWndRect(X, HEAD_Y + 8, 56, 28)
+	icon:SetStretchTexture(true)
+	icon:InitTexture("ui_pda_batt_1")
+
+	local text = CUIStatic()
+	text:SetAutoDelete(true)
+	bg:AttachChild(text)
+	text:SetWndRect(X, 330, W, 40)
+	text:SetFont(GetFontGraffiti19Russian())
+	text:SetTextColor(INK[1], INK[2], INK[3], INK[4])
+	text:SetTextAlign(CGameFont.alCenter)
+	text:SetText(tr("pda_reader_battery_dead"))
+end
+
+local function tip(id, color)
+	sak.send_tip_local(tr(id), tr("pda_reader_note_caption"), 0, 5, "pribor", "no", color or "yellow")
+end
+
+-- N while reading: copy the entry on screen into the player's PDA notes
+function save_note(w)
+	local rd = w.rd
+	if not rd or not rd.reading or w.navigation_locked then return end
+	local text = rd.text
+	if not text or text == "" then return end
+	if not he_pda_access.has_notes() then return tip("pda_reader_note_no_module", "red") end
+	local n = w.number_msg or 1
+	if rd.saved[n] then return tip("pda_reader_note_dup") end
+
+	text = string.gsub(text, "%%c%[[^%]]*%]", "")
+	text = string.gsub(text, "\\n", "\n")
+	local title = string.sub(string.format(tr("pda_reader_note_title"), tostring(w.tbl_info[3] or "")), 1, NOTE_TITLE_MAX)
+	local note = ui_pda_notes.add_text_note(title, string.sub(text, 1, NOTE_BODY_MAX))
+	log2("[pda_reader] save note: entry %s, %s chars, %s", tostring(n), tostring(string.len(text)), note and "saved" or "notes full")
+	if note then
+		rd.saved[n] = true
+		vergas_lib.s_play(vergas_lib.set_pr_from_config_str("list_sounds_pda", "snd_klik_pda"), 1)
+		tip("pda_reader_note_saved", "green")
+	else
+		tip("pda_reader_note_full", "red")
+	end
+end

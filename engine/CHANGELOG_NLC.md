@@ -5,6 +5,20 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.192 (2026-11-12)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E484312F734180C080605E41A3FEC3038D8D8FA78E6B9509E70A18797D6BC23F` (archived with its PDB in `nlc_tools/builds/20261112_223337_e484312f`).
+- **Status:** runtime pending. Built on `nlc-3.589.191`. Skeleton / injury batch (`docs/damage_model/DESIGN_recovery_and_body_status.md` 37, `docs/ANOMALY_DESIGN.md` 16.5).
+- Bandages: item key `body_wounds_heal_perc` is the wound closing with the skeleton on (falls back to `wounds_heal_perc`, which stays the skeleton-off value). Item key `wounds_heal_all = true` applies the closing to every wound of the body, undivided (medkits). `CActorBodyHealth::UseItem`.
+- Auto-target (`CActorBodyHealth::PartDamage`): an item that heals health or fractures ranks the parts by those, bleeding only breaks ties; a bleeding-only item ranks by the real bleeding (it was capped at 1).
+- `CActorBodyHealth::AddGreen`: artifact regeneration fills by level (white + green), the lowest parts first, each up to its own max. It ranked by room, so a fractured limb (lower max) was served last.
+- `CActorBodyHealth::Damage`: damage a limb at its floor cannot take goes to the torso (`[actor_body_health] limb_overflow_k`, default 1.0), with the torso's one-shot guard. It was lost, so a hit on a dead limb cost nothing.
+- `CActorBodyHealth::HealSpread`: a rise of the total health that names no part (food, sleep, satiety regeneration, script `actor.health = +x`) goes to the parts with room first, so the total gains the full value. Every part got the value before and full parts lost it (up to 6 times weaker with one damaged part).
+- Anomaly hit profiles: zone key `actor_hit_profile` names a section with part weights (`head`, `body`, `left_arm`, `right_arm`, `left_leg`, `right_leg`) and `mode = split | roll`. `CActorBodyHealth::BeginZoneHit` (called from `CActorCondition::ConditionHit`; the zone is found by the hit's `weaponID`) divides the health loss over the parts and moves the hit bone, and so the wound, to a bone of the main part (calf, forearm, spine1, head). With the skeleton off only the bone moves. Hits made by scripts carry no zone `weaponID` and are not affected.
+- Lua: `actor:nlc_last_hit_zone()` returns the profile section of the last hit, "" when it had none.
+- **Required game data:** `misc/zone_hit_profiles.ltx` (new), `misc/zones.ltx` (include), `zone_gravi.ltx`, `zone_mincer.ltx`, `zone_mosquitobald.ltx`, `zone_buzz.ltx`, `zone_sakbuzz.ltx`, `zone_zharka_static.ltx`, `zone_witchesgalantine.ltx`, `misc/items.ltx`, `creatures/actor.ltx`, `sivol_actor_crit.script`.
+
 ## nlc-3.589.191 (2026-11-12)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

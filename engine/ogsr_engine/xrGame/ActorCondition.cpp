@@ -470,6 +470,15 @@ CWound* CActorCondition::ConditionHit(SHit* pHDS)
     if (Fvector2 v; nlc_bullet_bone(pHDS, v) && v.y >= 0.f)
         m_fWoundBoneScale = v.y;
 
+    // NLC: anomaly hit profile (docs/ANOMALY_DESIGN.md 16.5): the zone's hit is divided over body parts and its
+    // wound goes on a bone of the main part (zones hit bone 0, so everything used to land on the torso)
+    if (const u16 zone_bone = m_body->BeginZoneHit(pHDS); zone_bone != BI_NONE)
+    {
+        pHDS->boneID = zone_bone;
+        m_nlc_last_hit.bone = pHDS->boneID;
+    }
+    m_nlc_last_hit.zone_profile = m_body->ZoneProfile();
+
     // NLC: health lost by a hit goes to the body part, the total is their average
     const float delta_before = m_fDeltaHealth;
     CWound* wound = inherited::ConditionHit(pHDS);

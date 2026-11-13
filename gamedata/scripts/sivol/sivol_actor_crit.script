@@ -559,11 +559,104 @@ local function torso_impact(info)
 	end
 end
 
--- health of the zone: both arms / both legs with body health on, else the total health
-local function limb_health(zone)
+-------------------------------------------------------------------------------
+-- belt artifacts that help injuries heal (DESIGN_recovery_and_body_status.md 37). Keys in the artifact section:
+--   injury_green_cure   true: temporary (green) health counts toward CURE_LIMB of a light injury
+--   injury_light_bonus  speeds the time cure of a light injury
+--   injury_bone_bonus   speeds a splint's knitting and the self-setting of an untreated severe injury
+-- The bonus is the artifact's own property, not its regeneration: it is scaled by AF_COND_MIN + (1 - AF_COND_MIN)
+-- x condition (off at condition 0, as every artifact effect). Several artifacts: per effect the strongest
+-- counts in full, each next one AF_STACK of the one before; speed = 1 + the sum, at most AF_SPEED_MAX.
+-------------------------------------------------------------------------------
+local AF_COND_MIN = 0.5
+local AF_STACK = 0.5
+local AF_SPEED_MAX = 3.0
+local AF_POLL_MS = 2000
+local af_state = { t = 0, green = false, light = 1, bone = 1 }
+
+local function ini_num(sect, key)
+	local ini = system_ini()
+	if ini:section_exist(sect) and ini:line_exist(sect, key) then return ini:r_float(sect, key) end
+	return 0
+end
+
+local function ini_flag(sect, key)
+	local ini = system_ini()
+	return ini:section_exist(sect) and ini:line_exist(sect, key) and ini:r_bool(sect, key) or false
+end
+
+local function af_cond_k(cond)
+	if cond <= 0 then return 0 end
+	return AF_COND_MIN + (1 - AF_COND_MIN) * clamp(cond, 0, 1)
+end
+
+local function af_speed(list)
+	table.sort(list, function(a, b) return a > b end)
+	local sum, w = 0, 1
+	for _, v in ipairs(list) do
+		sum = sum + v * w
+		w = w * AF_STACK
+	end
+	return math.min(AF_SPEED_MAX, 1 + sum)
+end
+
+-- { green, light, bone }: light / bone are speed factors (1 = no artifact)
+local function belt_injury()
+	local now = time_global()
+	if now < af_state.t then return af_state end
+	af_state.t = now + AF_POLL_MS
+	local green, lights, bones = false, {}, {}
+	for i = 0, db.actor:belt_count() - 1 do
+		local item = db.actor:item_on_belt(i)
+		if item then
+			local sect = item:section()
+			local k = af_cond_k(item:condition())
+			if k > 0 then
+				local l, b = ini_num(sect, "injury_light_bonus"), ini_num(sect, "injury_bone_bonus")
+				if l > 0 then table.insert(lights, l * k) end
+				if b > 0 then table.insert(bones, b * k) end
+				if ini_flag(sect, "injury_green_cure") then green = true end
+			end
+		end
+	end
+	af_state.green, af_state.light, af_state.bone = green, af_speed(lights), af_speed(bones)
+	return af_state
+end
+
+-- rows { icon, label, value } for the artifact description (ui_inv_descr.ShowAfParams); empty with the option off
+function artifact_rows(sect, cond)
+	local rows = {}
+	if not ENABLED or game_options.AdditionalMobHits == false then return rows end
+	local k = af_cond_k(tonumber(cond) or 1)
+	local l, b = ini_num(sect, "injury_light_bonus") * k, ini_num(sect, "injury_bone_bonus") * k
+	local function tr(key) return game.translate_string("st_body_hint_" .. key) end
+	if l > 0 then
+		table.insert(rows, { "ui_inv_icon_health_restore_speed_hd", tr("af_light"), string.format("%%c[green]x%.2f%%c[default]", 1 + l) })
+	end
+	if b > 0 then
+		table.insert(rows, { "ui_inv_icon_health_restore_speed_hd", tr("af_bone"), string.format("%%c[green]x%.2f%%c[default]", 1 + b) })
+	end
+	if k > 0 and ini_flag(sect, "injury_green_cure") then
+		table.insert(rows, { "ui_inv_icon_health_restore_speed_hd", tr("af_green"), "%c[green]" .. tr("af_green_v") .. "%c[default]" })
+	end
+	return rows
+end
+
+-- current speed factors, for tests: fl sivol_actor_crit.artifact_state()
+function artifact_state()
+	af_state.t = 0
+	local s = belt_injury()
+	log2("[sivol_actor_crit] belt artifacts: green cure %s, light x%.2f, bone x%.2f", tostring(s.green), s.light, s.bone)
+	return s.green, s.light, s.bone
+end
+
+-- health of the zone: both arms / both legs with body health on, else the total health; with_green: white +
+-- temporary (an artifact with injury_green_cure on the belt)
+local function limb_health(zone, with_green)
 	if body_on() then
 		local p = PARTS[zone]
-		return (body_health.part_health(p[1]) + body_health.part_health(p[2])) * 0.5
+		local f = with_green and body_health.total or body_health.part_health
+		return (f(p[1]) + f(p[2])) * 0.5
 	end
 	return db.actor.health
 end
@@ -571,7 +664,32 @@ end
 -- time cure of a light injury: it has lasted long enough and the limb is healed enough
 local function healed(zone)
 	if game_min() - since_of[zone] < (CURE_MIN_MIN[level_of[zone]] or 0) then return false end
-	return limb_health(zone) >= CURE_LIMB
+	return limb_health(zone, belt_injury().green) >= CURE_LIMB
+end
+
+-- the artifact bonus moves the timers forward by (speed - 1) x the game minutes that passed
+local last_bonus_min = nil
+local function artifact_bonus(m)
+	local dm = last_bonus_min and (m - last_bonus_min) or 0
+	last_bonus_min = m
+	if dm <= 0 or dm > 2880 then return end
+	local s = belt_injury()
+	for z, lv in pairs(level_of) do
+		if splinted(z) then
+			if s.bone > 1 then
+				splint_end[z] = splint_end[z] - dm * (s.bone - 1)
+				set_value(SAVE_S[z], splint_end[z])
+			end
+		elseif lv == 2 then
+			if s.bone > 1 then
+				since_of[z] = since_of[z] - dm * (s.bone - 1)
+				set_value(SAVE_T[z], since_of[z])
+			end
+		elseif lv == 1 and s.light > 1 then
+			since_of[z] = since_of[z] - dm * (s.light - 1)
+			set_value(SAVE_T[z], since_of[z])
+		end
+	end
 end
 
 local function update_injuries()
@@ -597,6 +715,7 @@ local function update_injuries()
 	if applied_body ~= body_on() then apply_levels() end -- body health option switched
 	push_injuries()
 	local m = game_min()
+	artifact_bonus(m)
 	for z, lv in pairs(level_of) do
 		if splinted(z) then
 			if m >= splint_end[z] then set_level(z, 0) end
@@ -743,6 +862,22 @@ local function on_actor_hit(obj, amount, local_dir, who, bone_index)
 		add_charge("leg", dealt * BLAST_LIMB)
 	end
 
+	-- anomaly hit with a profile (engine nlc-3.589.192, misc\zone_hit_profiles.ltx): the engine put the hit on a
+	-- part; a strike (gravi, mincer) on an arm or leg charges its injury by the profile's injury_k. No hit camera
+	-- or belt wear: the anomaly has its own effects.
+	local zone_profile = db.actor.nlc_last_hit_zone and db.actor:nlc_last_hit_zone() or ""
+	if zone_profile ~= "" then
+		local z = info.zone
+		if htype == hit.strike and (z == "arm" or z == "leg") then
+			local k = ini_num(zone_profile, "injury_k")
+			if k > 0 then
+				if DEBUG then log2("[sivol_actor_crit] anomaly %s %s dealt=%.3f k=%.2f", zone_profile, z, dealt, k) end
+				add_charge(z, dealt * k, limb, ini_flag(zone_profile, "injury_heavy"))
+			end
+		end
+		return
+	end
+
 	if not (info.mutant or (who and (who:is_stalker() or who:is_actor()))) and htype ~= hit.fire_wound then return end
 
 	camera(info)
@@ -848,6 +983,7 @@ local function on_spawn()
 	splint_end.arm = level_of.arm == 2 and tonumber(get_value(SAVE_S.arm, 0)) or 0
 	splint_end.leg = level_of.leg == 2 and tonumber(get_value(SAVE_S.leg, 0)) or 0
 	heavy_of.arm, heavy_of.leg = false, false
+	last_bonus_min, af_state.t = nil, 0
 	last_decay_t = time_global()
 	apply_levels()
 	last_cov, last_arm = -1, -1

@@ -1055,6 +1055,12 @@ bool CScriptGameObject::nlc_last_hit_bullet_model()
     CActorCondition* c = nlc_actor_condition(object());
     return c && c->nlc_last_hit().bullet_model;
 }
+LPCSTR CScriptGameObject::nlc_last_hit_zone()
+{
+    CActorCondition* c = nlc_actor_condition(object());
+    LPCSTR s = c ? c->nlc_last_hit().zone_profile.c_str() : nullptr;
+    return s ? s : "";
+}
 void CScriptGameObject::nlc_set_head_cover(float cov, float armour)
 {
     if (CActorCondition* c = nlc_actor_condition(object()))

@@ -661,6 +661,7 @@ public:
     u32 nlc_last_hit_time();
     bool nlc_last_hit_guarded();
     bool nlc_last_hit_bullet_model();
+    LPCSTR nlc_last_hit_zone(); // NLC: actor_hit_profile section of an anomaly hit, "" otherwise
     void nlc_set_head_cover(float cov, float armour);
     float nlc_head_cover();
     // NLC: god-mode time-to-kill estimate (ActorCondition.h SNlcSim)

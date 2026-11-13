@@ -53,6 +53,14 @@ public:
     void SetUserEnabled(bool on);
 
     void OnHit(SHit* hit, float health_lost);
+    // NLC: anomaly hit profile (docs/ANOMALY_DESIGN.md 16.5). A zone section names a profile section in
+    // "actor_hit_profile": part weights (head, body, left_arm, right_arm, left_leg, right_leg) and
+    // "mode = split | roll" (split: every hit is divided by the weights; roll: one part per hit, picked by
+    // the weights). BeginZoneHit resolves the weights for the next OnHit and returns the bone of the main
+    // part for the wound (BI_NONE: no profile, the hit stays as it is).
+    u16 BeginZoneHit(SHit* hit);
+    // the profile section of the last BeginZoneHit ("" when the hit had none); scripts read their own keys from it
+    const shared_str& ZoneProfile() const { return m_zone_profile; }
     // NLC: one-shot guard (docs/damage_model/DESIGN_actor_damage_model.md A4, 15.1). Returns the guarded health
     // of a part (body_part::all = the single health pool when the system is off).
     bool GuardHitType(u32 hit_type) const { return hit_type < 32 && (m_guard_types & (1u << hit_type)); }
@@ -143,7 +151,8 @@ private:
     };
 
     void Clamp();
-    void Damage(u8 part, float amount, bool guard); // green first, then white
+    void Damage(u8 part, float amount, bool guard); // green first, then white; a limb's overflow goes to the torso
+    void HealSpread(float value); // a rise of the total health (food, sleep, scripts): the damaged parts first
     void UpdateGreen(float dt);
     void UpdatePain(float dt);
     void UpdateBoosts(float dt);
@@ -197,6 +206,12 @@ private:
     float m_legs_sprint_k{0.5f};
     float m_legs_min_speed{0.1f};
     bool m_bars_always{};
+    float m_limb_overflow_k{1.f}; // share of the damage a limb at its floor cannot take that goes to the torso
+    // anomaly hit profile of the hit being processed (BeginZoneHit -> OnHit)
+    bool m_zone_hit{};
+    u8 m_zone_main{body_part::torso};
+    float m_zone_w[body_part::count]{};
+    shared_str m_zone_profile;
 
     // one-shot guard: a part above m_guard_above when a hit window opens cannot be taken below its
     // floor by the hits of that window (m_guard_window_ms, so the pellets of one shot count as one)

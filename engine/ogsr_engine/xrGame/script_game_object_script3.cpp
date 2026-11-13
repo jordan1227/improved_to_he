@@ -282,6 +282,7 @@ class_<CScriptGameObject> script_register_game_object2(class_<CScriptGameObject>
         .def("nlc_last_hit_time", &CScriptGameObject::nlc_last_hit_time)
         .def("nlc_last_hit_guarded", &CScriptGameObject::nlc_last_hit_guarded)
         .def("nlc_last_hit_bullet_model", &CScriptGameObject::nlc_last_hit_bullet_model)
+        .def("nlc_last_hit_zone", &CScriptGameObject::nlc_last_hit_zone)
         .def("nlc_set_head_cover", &CScriptGameObject::nlc_set_head_cover)
         .def("nlc_head_cover", &CScriptGameObject::nlc_head_cover)
         .def("nlc_sim_part", &CScriptGameObject::nlc_sim_part)
