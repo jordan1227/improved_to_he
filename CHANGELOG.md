@@ -1,6 +1,503 @@
-<!-- nlc-changelog-head: a6818764761a4fa91dfcc390e145b85f533a67b8 -->
+<!-- nlc-changelog-head: 1119e68d63deceeced8c4e243f3c9159bef8c815 -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 1119e68d63deceeced8c4e243f3c9159bef8c815 -->
+## 13.11.26 07:33 МСК - алайф патч 2
+
+Commit: [1119e68](https://github.com/jordan1227/improved_to_he/commit/1119e68d63deceeced8c4e243f3c9159bef8c815)
+
+### Description
+
+## A-life, этап 2: цели в жизни, дневные вылазки, экономика сталкеров, отряды и экспедиции (скрипты и конфиги, 09-12.11.26)
+
+Продолжение большой переработки A-life. Новый движок не нужен. Всё работает только в «Расширенном» A-life (в «Классическом» выключено) и настраивается в `config/misc/olr_alife.ltx`. Честнее всего судить по новой игре: многое копится с первого дня. Логи по-прежнему включены (`[olr_lives]`, `[olr_trips]`, `[olr_patrols]`, `[olr_hunts]`, `[olr_gear]`, `[olr_trader_runs]` и т. д.) - присылайте их. Для экономики удобно `time_factor 250-1000`, для всего, что смотрите своими глазами (сталкеры у торговца, у костра) - только `time_factor 1`.
+
+Общая сводка: `fl olr_trader_runs.economy()` - заработки по рангам за игровой день, продажи артефактов, торговля в лагерях, аптечки, прогресс денежных целей.
+Быстрая проверка поздних глав: `fl olr_cfg.test_chapter(2)` (или 3, 4) - A-life ведёт себя так, будто сюжет на этой главе; сюжетные инфопоршни не выдаются.
+
+### 1. Цели в жизни
+
+**1.1. У сталкеров есть цели**
+Одиночки, Долг, Свобода и учёные получают цель: заработать и уйти из Зоны, турист (обойти 3–4 уровня и уйти), «найти себя», уйти к Монолиту, остаться на Янтаре; у Долга - зачистка и вахта, у Свободы - артефакты и вольная жизнь, у учёных - образцы и контракт.
+О начале, повороте и конце цели иногда пишут в КПК, о гибели пишет друг. Цели с дорогой ведут сталкера по соседним уровням (раз в сутки, днём).
+
+Проверка: `fl olr_lives.report()`, `fl olr_lives.say(id, "obit")`.
+
+**1.2. Денежная цель зарабатывается**
+Считается только то, что сталкер заработал после получения цели (продажи торговцам и товарищам в лагере).
+Сталкер с денежной целью раз в день уходит «на работу»: обыскать место или поохотиться (до 1300 м от лагеря). Если там пусто - на соседний открытый уровень (не ваш) на 6–10 часов с ночёвкой.
+Отряды охотников охотнее берут его к себе: части с победы идут ему. Набрал сумму - идёт на Кордон и уходит из Зоны.
+
+Проверка: строки `cash work:` в логе, `fl olr_lives.report()`.
+
+### 2. Дневные вылазки и находки
+
+**2.1. Сталкеры днём выходят из лагеря**
+С 08:00 до 16:00 одиночки, новички, учёные, а также бандиты и наёмники (только охота и обыск) уходят на 2–6 часов: обыскать пустое место, поохотиться на мутантов рядом, навестить другой лагерь своих. Не больше пятой части лагеря сразу. Онлайн они идут пешком - за ними можно проследить.
+
+Проверка: `fl olr_daytrips.report()`, `fl olr_daytrips.force(id)`.
+
+**2.2. Находки артефактов**
+При обыске сталкер может найти артефакт 1-го класса (35 %), опытный и выше - иногда 2-го. Всегда разновидности `_dynNd` (не базовые), чаще средние (`dyn2`–`dyn4`), крайности редко. Состояние 65–95 %.
+Артефакты в мире офлайн не создаются - находка сразу в рюкзаке. С находкой идёт к торговцу, если тот в досягаемости.
+Цены: лучшая «Медуза» 13 000, «Ломоть мяса» 22 000–30 000 - удачная находка закрывает цель новичка.
+
+**2.3. После Выброса**
+Несколько часов после Выброса сталкеры чаще выходят и чаще находят. Из свежих артефактов на вашем уровне берут один, и только пока на земле лежат хотя бы два: если выпал один - он ваш.
+
+**2.4. Красный лес и Лиманск**
+Уровень из списка фронтира открывается для A-life, как только вы на нём побывали (в логе `is open to OLR from now on`), даже до нужной главы.
+
+### 3. Торговля и экономика
+
+**3.1. Торговля в лагере**
+Сталкер с частями мутантов или простыми артефактами продаёт их товарищу по лагерю, который сам ходит к торговцам (цена 62 %). Купленное держится для торговца 3 дня и не перепродаётся. Два сталкера больше не гоняют одну вещь туда-сюда.
+
+Проверка: `fl olr_gear.report()` (там же видно, почему товарищи отказались покупать).
+
+**3.2. После торговца - домой**
+После ходки к торговцу или поручения сталкер возвращается в свой лагерь; если места нет - в ближайший соседний. У прилавка соблюдается очередь: следующий ждёт у костра или в стороне.
+
+**3.3. Аптечки**
+Единственный расходник с реальной пользой для NPC (бинты бесплатные, патроны бесконечные).
+На ходке к торговцу покупает аптечку, если у него меньше двух:
+- Сидорович, Бармен, Сильвестр - обычная;
+- Сахаров - армейская опытным и выше;
+- Пахом - научная ветеранам и мастерам, остальным обычная, всем за полцены (бесплатную с оплатой больше не даёт).
+
+Раненый вдали от вас ниже 50 % здоровья использует аптечку и полностью лечится. Лишнюю продают товарищу, у которого нет ни одной. С трупа купленная аптечка достаётся вам только в 10 % случаев.
+
+Проверка: строка `medkits` в `fl olr_trader_runs.economy()`, строки `medkit:` в логе.
+
+**3.4. Ремонт и патроны у техников**
+Раз в 3–6 дней сталкеры ходят к техникам (Вергас, Лисапед, Шуруп, человек на Арене), стоят 25–35 минут и платят.
+
+Проверка: `fl olr_services.report()`, `fl olr_services.force_near("vergas")`.
+
+### 4. Отряды, охоты, экспедиции
+
+**4.1. Охотничьи отряды чаще и шире**
+Раз в 36–60 игровых часов Долг и охотники собирают отряд на альфу или логово на любом открытом уровне. Логово выбирается по добыче и по настоящим артефактам рядом. Если на уровне собираться негде - на соседнем (например, Армейские склады для Красного леса).
+В отряд теперь действительно берут живых сталкеров (раньше всегда создавались новые). После победы выжившие подбирают артефакты у логова, иногда (30 %) один находит артефакт, и идут к торговцу, потом в свои лагеря. Ветераны и мастера попадают охотнее. Иногда отряд идёт на слишком сильное логово и теряет людей - так задумано.
+
+Проверка: `fl olr_patrols.report()`, `fl olr_patrols.force("raid")`, `fl olr_patrols.force("alpha")`, `fl olr_patrols.go()`.
+
+**4.2. Охоты и проверки логов**
+Сталкер в пути охотится в 150 м, у лагеря - только на мутантов в 60 м. Группа из лагеря иногда идёт проверить логово в 300 м. Перед боем прикидывают шансы и могут отступить (тогда предупреждают других).
+Добыча с офлайн-охоты: часть мутанта в 60 % случаев, труп уже разделан.
+
+Проверка: `fl olr_offline_hunts.force()`, `fl olr_offline_hunts.force_lair()`, `fl olr_offline_hunts.go_last()`.
+
+**4.3. Экспедиции**
+Два раза в сутки сильная группа (3+ опытных и выше) идёт к стае в 300–900 м от лагеря, туда, куда обычные системы не достают (внутренние логова Красного леса). После победы подбирают артефакты рядом, иногда (30 %) находят свой. Чаще ведут ветераны и мастера.
+
+Проверка: `fl olr_offline_hunts.force_expedition("red_forest")`, затем `fl olr_offline_hunts.go_last()`.
+
+### 5. Бандиты и дороги
+
+**5.1. Офлайн-ограбления**
+Бандиты из засад и лагерей грабят одиночку, у которого рядом меньше друзей: он платит 40–70 % денег и отдаёт лучшие вещи, или отбивается. Ограбленный с друзьями может отомстить. У главаря грабителей в рюкзаке долларовые купюры (подберёте - получите деньги).
+
+Проверка: `fl olr_robbery.report()`, `fl olr_robbery.pass()`.
+
+**5.2. Дорожные дозоры бандитов**
+Днём 2–4 бандита из лагеря встают на дороге или между двумя лагерями сталкеров на 2–4 часа. Не рядом с вами.
+
+Проверка: `fl olr_roadwatch.report()`.
+
+**5.3. Поборы на дорогах**
+Диалог и точки сделаны, но выключены до правки движка (вылет в разговоре).
+
+### 6. Лагерь, ночь, отряды
+
+**6.1. Ночь у костра**
+В сумерках новички из почти пустых лагерей уходят к большому костру своих в 400 м, на рассвете возвращаются.
+
+Проверка: `fl olr_rest.report()`.
+
+**6.2. Одиночка ищет своих**
+Если сталкер 12 часов один в лагере, он переходит к своим или к союзникам (одиночки - с Долгом, Свободой и учёными; Долг и Свобода друг к другу никогда). Ушедшие на вылазку или к торговцу считаются в лагере.
+
+Проверка: `fl olr_regroup.report()`.
+
+**6.3. Друзья не воюют за чужих**
+В офлайн-бою на стороне сталкера встают только те, кто враждебен его противнику. Долг и Свобода не попадают в лагеря друг друга и в лагеря с врагом.
+
+**6.4. Падальщики**
+Ночью к телам после боёв стягиваются плоти, тушканы и собаки; иногда об этом сообщают.
+
+Проверка: `fl olr_reactive.carrion()`.
+
+**6.5. Кража из тайника**
+Сталкер может унести что-то из вашего рюкзака-тайника или ящика с меткой. Вор с вашими вещами откликается на разговор в 30 м: можно потребовать, выкупить, пригрозить.
+
+Проверка: `fl olr_stash.report()`, `fl olr_stash.suspects()`.
+
+### 7. Новости и КПК
+
+**7.1. Утренняя сводка**
+Около 7:00 «Новости Зоны» коротко сообщают, что было ночью в вашем районе: кто ушёл из Зоны, кого ограбили, удачные и неудачные охоты, альфы, гибели.
+
+Проверка: `fl olr_digest.report()`, `fl olr_digest.force()`.
+
+**7.2. Новости честнее**
+- «Не вернулся» пишут только о погибших;
+- в сводке назван тот, кто на самом деле погиб;
+- логово с живыми мутантами не «зачищено»;
+- говорят только несюжетные персонажи;
+- ответ на реплику даёт кто-то дружественный первому (Долг больше не отвечает бандиту);
+- места без описания называются «где-то там»;
+- Семецкий умирает только на открытых уровнях;
+- портрет у сообщения соответствует автору (Бармен, Волк, Сидорович и т. д.).
+
+### 8. Исправления
+
+**8.1. Сюжет**
+Апостол на Свалке больше не проходит сцену без вас: NPC-лекари его не лечат, диалог учитывает, кто его вылечил. Банда с фабрики на Кордоне больше не уходит на Свалку. Сюжетные люди, чья работа в лагере закреплена по имени, остаются на месте.
+
+**8.2. Подтормаживания при долгой игре**
+Найдена и устранена утечка памяти от таймеров фонариков NPC (десятки тысяч за долгую игру). Данные A-life больше не копируются при каждом обращении. Пики до 0,5 с бывают только на `time_factor 250–1000`.
+
+**8.3. Офлайн-торговля снова продаёт**
+AMK читал таблицу цен из файла, которого нет в сборке, и не продавал ничего. Теперь продаются части мутантов, простые артефакты и (только на ходке к оружейнику) оружие; еда, медицина, патроны, костюмы и модификаты - нет.
+
+### Что проверять
+
+- `fl olr_trader_runs.economy()` на 8-й день: заработки по рангам, сколько денежных целей сдвинулось, сколько аптечек куплено и использовано.
+- Отряды: в логе `joins at ...` (живые сталкеры в отряде), после боя `goes back to / goes to a camp near it`, а не `left as he is`.
+- Красный лес: побывать там → экспедиция → `fl olr_offline_hunts.go_last()`.
+- На `time_factor 1`: сталкеры идут к торговцу и обратно домой, очередь у прилавка, дневные вылазки рядом с вами.
+- Не пропадают ли сюжетные персонажи и не появляются ли люди там, где не должны.
+
+### Как сообщать
+
+Лог целиком и сохранение; день и время из строки лога (`day N HH:MM`).
+
+### Game files changed
+
+- M gamedata/config/creatures/game_relations.ltx
+- A gamedata/config/gameplay/dialogs_stash.xml
+- A gamedata/config/gameplay/dialogs_toll.xml
+- M gamedata/config/gameplay/info_sak_way.xml
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/config/misc/he_zone_encounters.ltx
+- M gamedata/config/misc/olr_alife.ltx
+- M gamedata/config/misc/rx_help_wounded.ltx
+- M gamedata/config/system.ltx
+- M gamedata/config/text/eng/sak_strings_six2.xml
+- M gamedata/config/text/eng/string_table_he_news.xml
+- M gamedata/config/text/eng/string_table_olr_alife.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/sak_strings_six2.xml
+- M gamedata/config/text/rus/string_table_he_news.xml
+- M gamedata/config/text/rus/string_table_olr_alife.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/message_box.xml
+- A gamedata/config/ui/textures_descr/ui_nlc_hint.xml
+- A gamedata/config/ui/ui_mm_alife_preset.xml
+- A gamedata/config/ui/ui_mm_alife_preset_16.xml
+- A gamedata/config/ui/ui_mm_opt_hint.xml
+- A gamedata/config/ui/ui_mm_opt_hint_16.xml
+- M gamedata/scripts/amk/amk.script
+- M gamedata/scripts/amk/amk_anoms.script
+- M gamedata/scripts/amk/amk_mod.script
+- M gamedata/scripts/amk/amk_offline_alife.script
+- M gamedata/scripts/common/_g.script
+- M gamedata/scripts/dialogs/dialogs.script
+- M gamedata/scripts/dsh_enemies.script
+- M gamedata/scripts/gulag/gulag_escape.script
+- M gamedata/scripts/he_pda_news.script
+- M gamedata/scripts/hud_animation_session.script
+- M gamedata/scripts/kotovod/game_options.script
+- M gamedata/scripts/kotovod/monster_parts.script
+- M gamedata/scripts/kotovod/spawner.script
+- M gamedata/scripts/news/news_encounters.script
+- M gamedata/scripts/news/news_main.script
+- M gamedata/scripts/news/news_manager.script
+- M gamedata/scripts/news/news_voice.script
+- M gamedata/scripts/olr/olr_alpha.script
+- M gamedata/scripts/olr/olr_amk_offline.script
+- M gamedata/scripts/olr/olr_census.script
+- M gamedata/scripts/olr/olr_cfg.script
+- A gamedata/scripts/olr/olr_daytrips.script
+- A gamedata/scripts/olr/olr_digest.script
+- M gamedata/scripts/olr/olr_faction_policy.script
+- A gamedata/scripts/olr/olr_gear.script
+- M gamedata/scripts/olr/olr_glut.script
+- M gamedata/scripts/olr/olr_init.script
+- M gamedata/scripts/olr/olr_lab_giants.script
+- A gamedata/scripts/olr/olr_lives.script
+- M gamedata/scripts/olr/olr_night.script
+- M gamedata/scripts/olr/olr_offline_hunts.script
+- M gamedata/scripts/olr/olr_offline_task.script
+- M gamedata/scripts/olr/olr_online_depart.script
+- M gamedata/scripts/olr/olr_patrols.script
+- M gamedata/scripts/olr/olr_population.script
+- M gamedata/scripts/olr/olr_protected.script
+- M gamedata/scripts/olr/olr_reactive.script
+- A gamedata/scripts/olr/olr_regroup.script
+- A gamedata/scripts/olr/olr_rest.script
+- A gamedata/scripts/olr/olr_roadwatch.script
+- A gamedata/scripts/olr/olr_robbery.script
+- A gamedata/scripts/olr/olr_services.script
+- M gamedata/scripts/olr/olr_smart_index.script
+- M gamedata/scripts/olr/olr_squads.script
+- A gamedata/scripts/olr/olr_stash.script
+- M gamedata/scripts/olr/olr_steering.script
+- A gamedata/scripts/olr/olr_store.script
+- A gamedata/scripts/olr/olr_toll.script
+- M gamedata/scripts/olr/olr_trader_runs.script
+- M gamedata/scripts/olr/olr_trader_visit.script
+- M gamedata/scripts/olr/olr_underground.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/scripts/sak/sak_off_corpses.script
+- M gamedata/scripts/sr/sr_light.script
+- M gamedata/scripts/ui/ui_main_menu.script
+- A gamedata/scripts/ui/ui_mm_alife_preset.script
+- M gamedata/scripts/ui/ui_mm_opt_controls.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_shaders.script
+- M gamedata/scripts/ui/ui_mm_opt_sound.script
+- M gamedata/scripts/ui/ui_mm_opt_video.script
+- M gamedata/scripts/ui/ui_mm_opt_video_adv.script
+- M gamedata/scripts/watcher_act.script
+- M gamedata/scripts/xr/xr_kamp.script
+
+<!-- nlc-changelog-commit: a92b682aac6347e0e7e6949c380b1f4085fe5e24 -->
+## 13.11.26 05:54 МСК - Expand body damage and found-PDA systems
+
+Commit: [a92b682](https://github.com/jordan1227/improved_to_he/commit/a92b682aac6347e0e7e6949c380b1f4085fe5e24)
+
+### Description
+
+Update the engine and game data with body-health fixes, anomaly hit profiles, and artifact-assisted injury healing. Add an optional redesigned found-PDA reader with entry navigation and note saving, plus related UI, localization, and engine build updates.
+
++
+
+## Скелет и травмы: бинты, аномалии по конечностям, артефакты и травмы (движок nlc-3.589.192, 12.11.26)
+
+Нужны обе опции: "Скелет и части тела" и "Дополнительные эффекты попаданий". Нужна новая версия движка (в главном меню nlc-3.589.192).
+
+**1. Один бинт на одну часть тела.** Раньше со скелетом бинт снимал фиксированную долю кровотечения только с одной части, и после тяжёлой драки уходило 10 и больше бинтов. Теперь бинт полностью закрывает все раны выбранной части тела. Кровоточат три части - нужно три бинта. Без скелета бинт работает как раньше.
+
+**2. Аптечки останавливают кровь по всему телу.** Речь только о кровотечении: слабая остановка крови у аптечек раньше шла на одну часть тела, теперь на все раны сразу. С травмами всё по-прежнему: обычная аптечка снимает все лёгкие травмы, армейская ещё накладывает одну шину, научная две. Описания бинта и аптечек переписаны. Автовыбор части для аптечки теперь смотрит на здоровье, а не на кровотечение: аптечка идёт туда, где хуже всего, а не в кровоточащую ногу при умирающем торсе.
+
+**3. Попадание по "мёртвой" конечности больше не бесплатное.** Если рука или нога уже на нуле, лишний урон уходит в торс. Раньше он пропадал.
+
+**4. Еда, сон и обычное восстановление лечат как положено.** Раньше при одной повреждённой части тела такое лечение было до 6 раз слабее. Теперь оно идёт в повреждённые части.
+
+**5. Артефакты регенерации лечат самую низкую часть.** Раньше конечность с переломом (у неё ниже максимум) обслуживалась последней. Теперь считается уровень здоровья: две ноги по 72% растут вместе.
+
+**6. Аномалии бьют по частям тела.** Раньше любая аномалия била только в торс.
+- Холодец: ноги.
+- Жарка: в основном ноги, часть в торс и руки.
+- Электра: в основном ноги, заметная часть в торс.
+- Воронка, карусель, трамплин: торс или случайная конечность. Удар по руке или ноге может дать травму, средняя аномалия может сломать конечность.
+- Сильные аномалии по-прежнему бьют в торс.
+- Кровотечение теперь на той части, куда пришёлся удар.
+
+**7. Артефакты помогают травмам заживать.** Свойство не зависит от силы регенерации и слабеет с износом только наполовину (при 10% состояния работает на 55%). Показано в описании артефакта.
+- "Кровь камня": лёгкие травмы заживают в 1.5 раза быстрее.
+- "Ломоть мяса": лёгкие в 2 раза, переломы и шины в 1.5 раза.
+- "Душа": лёгкие и переломы в 2 раза.
+- Артефакты семейства "Дух": от 2.15 / 1.6 до 2.6 / 2.4 раза.
+- Артефакты против кровотечения (слизь, слизняк, слюда): небольшой бонус к обоим.
+- С такими артефактами (кроме анти-кровотечения) лёгкая травма проходит и на временном (зелёном) здоровье.
+- Несколько артефактов складываются с убыванием: сильнейший целиком, второй наполовину, третий на четверть; не больше чем в 3 раза.
+
+**Что проверять**
+- Сколько бинтов уходит после драки с собаками, кабаном, кровососом.
+- Не слишком ли легко стало останавливать кровь; не слишком ли опасны бои с "мёртвыми" конечностями.
+- Слабые и средние аномалии: куда приходит урон, появляются ли травмы от воронки и карусели, не убивает ли слабая аномалия слишком быстро или слишком медленно.
+- Время заживления травм с артефактами и без.
+
+---
+
+## Аномалии: Мухоловка, Тишина, приливы, жадинка, телепорты (движок nlc-3.589.187-3.589.191, 12.11.26)
+
+Цель: меньше аномалий, после которых остаётся только загрузить сейв, и больше таких, которые меняют бой. Нужна новая игра или выброс, чтобы новые аномалии появились на уровнях сами; для проверки их можно поставить консолью (команды внизу).
+
+1. **Новая аномалия "Мухоловка"**
+   - Редкая зона радиусом около 5,5 м, в которой время идёт медленнее. Сама урона не наносит. Выглядит как лёгкий приземный туман, детектор её не показывает.
+   - Мутанты внутри замедляются целиком: бег, атаки, прыжки (прыгун "тонет" в воздухе и падает внутри), рывок кабана, атака кровососа на ходу. Чем глубже, тем сильнее.
+   - Пули внутри ползут со скоростью 5-14 м/с (зависит от силы аномалии), их видно, а на выходе они бьют в полную силу. За Мухоловкой можно успеть уйти с линии огня, но стрелять сквозь неё тоже приходится с упреждением.
+   - Болты, гранаты, предметы и трупы внутри повисают и медленно плывут. Запал гранаты горит в несколько раз дольше.
+   - Мутанты почти не замечают Мухоловку. Но если один попался, остальные того же вида рядом запоминают место и обходят. Если вы стоите внутри, мутанты заходят за вами.
+   - Игрок внутри: медленнее ходит и прыгает (выпрыгнуть одним прыжком нельзя), быстрее тратит выносливость при движении, медленнее перезаряжается, достаёт оружие, целится, бьёт ножом и бросает. По краям экрана - лёгкая линза и цветная кайма.
+   - Сталкеры Мухоловку видят и обходят.
+   - На что смотреть: мутанты не застревают на краю; прыжки не выглядят сломанными; звук перезарядки совпадает с замедленной анимацией; эффект на экране не мешает и нормально сочетается с ПНВ и пси-эффектами.
+2. **Новая аномалия "Тишина"**
+   - Редкая зона радиусом около 6 м, в которой не распространяется звук. Урона нет. Мир глохнет уже на подходе, внутри почти полная тишина, слышно только себя. При входе - короткое "моргание".
+   - Звуки изнутри (шаги, выстрелы) снаружи не слышны ни мутантам, ни сталкерам. Тот, кто стоит внутри, не слышит ничего снаружи. Это касается и вас: подошедшего мутанта вы не услышите.
+   - Мутанты ходят сквозь неё, сталкеры обходят. Заметить можно по траве, которая медленно клонится к центру.
+   - На что смотреть: сталкеры в 30 м не реагируют на выстрел изнутри; мутант, идущий мимо, не слышит вас; с противогазом и без звук меняется ожидаемо.
+3. **Приливы: аномалии, которые засыпают**
+   - Примерно каждая восьмая обычная аномалия (электра, трамплин, воронка, карусель, холодец, кисель, жарка, "выдох") теперь работает по часам: около 45 игровых минут активна, потом около 30 спит. У каждой свой ритм, после загрузки он тот же, после выброса - новый.
+   - Спящая аномалия не бьёт, сквозь неё можно пройти. Раз в 8-14 секунд она коротко мерцает. За несколько игровых минут до пробуждения мерцает часто и шумит.
+   - Аномалия не проснётся, пока в ней кто-то стоит (вы, сталкер или мутант).
+   - На что смотреть: аура жарки или холодца не остаётся над спящей аномалией и появляется у проснувшейся; никто не получает удар "из ниоткуда"; после выброса всё работает.
+4. **Жадинка**
+   - Съеденное больше не исчезает целиком: оружие и броня остаются лежать в жадинке, но теряют четверть состояния. Всё остальное она переваривает насовсем.
+   - Аппетит снова зависит от локации: на Кордоне 1-2 кг, дальше больше, на севере до 9 кг.
+   - Накормленная жадинка засыпает на 3 игровых часа: гаснет, замолкает и никого не хватает. В это время можно забрать оружие и броню. Состояние сохраняется в сейве.
+   - На что смотреть: контейнеры, бинты и прочее действительно пропадают; оружие остаётся и изношено; после сна жадинка снова загорается и хватает.
+5. **Телепорты**
+   - Выход телепорта больше не меняется при загрузке сейва: он постоянный, пока аномалию не сменит выброс.
+   - Рядом с телепортом (до 30 м) раз в 6-11 секунд от него в сторону выхода уходят три дымка. При срабатывании взгляд поворачивается в сторону выхода.
+6. **Мелочи**
+   - Сильное попадание по мутанту теперь даёт резкое заметное замедление, которое плавно проходит примерно за секунду.
+   - Аномалия "Выдох" (редкая карусель с необычной анимацией): пыль и мусор от брошенного болта больше не исчезают рывком, а рассеиваются.
+   - Аномалия "Матрица": нахождение рядом с ними теперь иногда создаёт пси-фантомов в зависимости от силы аномалии и дистанции до игрока. Помогает параметр пси-экранизации на шлеме.
+
+Команды для проверки (консоль):
+
+- `fl sivol_flytrap.spawn("average", 8, 5.5)` - Мухоловка в 8 м впереди; вместо `average` можно `weak` или `strong`.
+- `fl sivol_silence.spawn("average", 8, 6)` - Тишина в 8 м впереди; `fl sivol_silence.status()` - счётчик заглушённых звуков.
+- `fl sivol_tide.near(60)` - приливные аномалии рядом; `fl sivol_tide.force_near("off")` / `("warn")` / `("on")` - усыпить, включить предупреждение, разбудить ближайшую (только для проверки, после загрузки сбрасывается).
+- `fl bind_greedy.greedy_status()` и `fl bind_greedy.greedy_wake_all()` - состояние жадинок и разбудить всех.
+- `fl bind_mteleport.exit_hint_now()` - показать дымки сразу; `fl bind_mteleport.set_exit_turn(false)` - выключить поворот взгляда.
+- Телепорт для проверки на Кордоне: `g_loadstring !sivol.spawn_anomaly_near("amk_zone_teleport_esc_average")`.
+
+---
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/actor.ltx
+- M gamedata/config/misc/artefacts.ltx
+- M gamedata/config/misc/artefacts_amk_mod.ltx
+- M gamedata/config/misc/artefacts_mayatnik.ltx
+- M gamedata/config/misc/items.ltx
+- M gamedata/config/misc/zone_buzz.ltx
+- M gamedata/config/misc/zone_gravi.ltx
+- A gamedata/config/misc/zone_hit_profiles.ltx
+- M gamedata/config/misc/zone_mincer.ltx
+- M gamedata/config/misc/zone_mosquitobald.ltx
+- M gamedata/config/misc/zone_sakbuzz.ltx
+- M gamedata/config/misc/zone_witchesgalantine.ltx
+- M gamedata/config/misc/zone_zharka_static.ltx
+- M gamedata/config/misc/zones.ltx
+- M gamedata/config/text/eng/st_body_health.xml
+- M gamedata/config/text/eng/st_pda_he.xml
+- M gamedata/config/text/eng/string_table_enc_equipment.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/st_body_health.xml
+- M gamedata/config/text/rus/st_pda_he.xml
+- M gamedata/config/text/rus/string_table_enc_equipment.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_cheat_pda_npc.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/he_pda_3d.script
+- M gamedata/scripts/he_pda_stash_log.script
+- M gamedata/scripts/params/nvd_params.script
+- M gamedata/scripts/sivol/sivol_actor_crit.script
+- A gamedata/scripts/sivol/sivol_pda_reader.script
+- M gamedata/scripts/ui/ui_cheat_pda.script
+- M gamedata/scripts/ui/ui_cheat_pda_menu.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+- M gamedata/scripts/ui/ui_mm_opt_gameplay.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_pda_notes.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.cpp
+- M engine/ogsr_engine/xrGame/ActorCondition.h
+- M engine/ogsr_engine/xrGame/nlc_body_health.cpp
+- M engine/ogsr_engine/xrGame/nlc_body_health.h
+- M engine/ogsr_engine/xrGame/script_game_object.h
+- M engine/ogsr_engine/xrGame/script_game_object4.cpp
+- M engine/ogsr_engine/xrGame/script_game_object_script3.cpp
+
+<!-- nlc-changelog-commit: 1118be66bcccb0cbb1b947874097b3d67ec8982c -->
+## 12.11.26 16:39 МСК - Новые аномалии. Add anomaly systems and update engine to 3.589.191
+
+Commit: [1118be6](https://github.com/jordan1227/improved_to_he/commit/1118be66bcccb0cbb1b947874097b3d67ec8982c)
+
+### Description
+
+Add Flytrap stasis, Silence audio effects, and timed anomaly tides, with supporting engine, script, particle, and shader changes. Also update greedy feeding and teleport hints.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/misc/postprocess.ltx
+- M gamedata/config/misc/zone_breathe.ltx
+- A gamedata/config/misc/zone_flytrap.ltx
+- A gamedata/config/misc/zone_silence.ltx
+- M gamedata/config/misc/zones.ltx
+- A gamedata/particles/nlc/breathe_dust.pe
+- A gamedata/particles/nlc/breathe_shield.pg
+- A gamedata/particles/nlc/breathe_shield_1.pe
+- A gamedata/particles/nlc/flytrap_fog.pe
+- A gamedata/particles/nlc/flytrap_idle.pg
+- M gamedata/scripts/amk/amk_anoms.script
+- M gamedata/scripts/binders/bind_greedy.script
+- M gamedata/scripts/binders/bind_mteleport.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sivol/sivol_anom_effects.script
+- A gamedata/scripts/sivol/sivol_flytrap.script
+- M gamedata/scripts/sivol/sivol_mask_audio.script
+- M gamedata/scripts/sivol/sivol_psy_phantoms.script
+- A gamedata/scripts/sivol/sivol_silence.script
+- A gamedata/scripts/sivol/sivol_tide.script
+- M gamedata/shaders/r3/combine_2_naa.ps
+- A gamedata/shaders/r3/nlc_flytrap.h
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor_Movement.cpp
+- M engine/ogsr_engine/xrGame/CustomZone.cpp
+- M engine/ogsr_engine/xrGame/CustomZone.h
+- M engine/ogsr_engine/xrGame/GraviZone.cpp
+- M engine/ogsr_engine/xrGame/HudItem.cpp
+- M engine/ogsr_engine/xrGame/HudSound.cpp
+- M engine/ogsr_engine/xrGame/Level_Bullet_Manager.cpp
+- M engine/ogsr_engine/xrGame/Level_Bullet_Manager.h
+- M engine/ogsr_engine/xrGame/Missile.cpp
+- M engine/ogsr_engine/xrGame/Missile.h
+- M engine/ogsr_engine/xrGame/ai/monsters/anomaly_detector.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/anomaly_detector.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_evade.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_feel.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation_base.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/player_hud.cpp
+- M engine/ogsr_engine/xrGame/player_hud.h
+- M engine/ogsr_engine/xr_3da/IGame_Level.cpp
+- M engine/ogsr_engine/xr_3da/IGame_Level.h
+- M engine/ogsr_engine/xr_3da/xr_area.cpp
+
+<!-- nlc-changelog-commit: 999368d9e480eb18057d74f469e0198e416ad776 -->
+## 11.11.26 12:58 МСК - манифест
+
+Commit: [999368d](https://github.com/jordan1227/improved_to_he/commit/999368d9e480eb18057d74f469e0198e416ad776)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: a6818764761a4fa91dfcc390e145b85f533a67b8 -->
 ## 11.11.26 12:48 МСК - Polish mutant AI and combat behaviors
