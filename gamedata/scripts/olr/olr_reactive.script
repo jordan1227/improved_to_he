@@ -9,6 +9,8 @@
 -- fl olr_reactive.force_pending(4) / force_due(4)   schedule a chapter's delayed wave / make it due now
 -- fl olr_reactive.force_scorcher()                  someone sets off for the Scorcher now
 -- fl olr_reactive.scorcher_finish()                 and is lost now
+-- fl olr_reactive.carrion()                          the carrion sites: weight, age, and whether each would be used now
+-- fl olr_reactive.force_carrion("l02_garbage")       scavengers go to the heaviest site on that level now, day or night
 
 local INI_PATH = "misc\\olr_alife.ltx"
 local KEY = "nlc.olr_reactive"
@@ -41,11 +43,11 @@ local function now()
 end
 
 local function get_state()
-	return get_value(KEY) or { deaths = {}, smart_cd = {}, scav_cd = {} }
+	return olr_store.get(KEY) or { deaths = {}, smart_cd = {}, scav_cd = {} }
 end
 
 local function put_state(st)
-	set_value(KEY, st)
+	olr_store.put(KEY, st)
 end
 
 local function say(key, who, delay, subs)
@@ -67,7 +69,7 @@ local function say_line(prefix, who, delay, subs)
 end
 
 local function where_of(smart)
-	return news_main.localized_where(olr_smart_index.object_level(smart), smart.position)
+	return news_main.where_text(olr_smart_index.object_level(smart), smart.position)
 end
 
 local function heard_here(lvl)
@@ -211,8 +213,267 @@ end
 -- ---------------------------------------------------------------------------
 -- deaths, online from the signal and offline from news_main
 -- ---------------------------------------------------------------------------
-local function on_death(se)
+-- ---------------------------------------------------------------------------
+-- carrion: docs/ALIFE_NEXT_DESIGN.md 5.2 (preset key carrion). Every death feeds a ledger of sites; at dusk and every
+-- carrion_every_h of the night the heaviest unseen site of each level in the player's region draws scavengers from
+-- around it, and dawn sends them home (the olr_night ledger). Parts on a body they reached are spoiled.
+-- ---------------------------------------------------------------------------
+local CARRION_KEY = "nlc.olr_carrion"
+local carrion_why = {}
+local carrion_moves = 0
+
+local function carrion_state()
+	return olr_store.get(CARRION_KEY) or { sites = {}, gnawed = {} }
+end
+
+local function carrion_weight(se)
+	if IsStalker(se) then return 2 end
+	local sec = se:section_name()
+	if string.find(sec, "gigant", 1, true) then return 4 end
+	if string.sub(sec, 1, 8) == "tushkano" or string.sub(sec, 1, 3) == "rat" then return 0 end
+	if string.sub(sec, 1, 3) == "dog" then return 1 end
+	return 2
+end
+
+-- fresh bodies of any death the ledger saw stay in the world for carrion_keep_h (sak_off_corpses releases far corpses at
+-- every level change), so the player can find what happened
+local FRESH_KEY = "nlc.olr_fresh_bodies"
+
+local function fresh_t(v)
+	return type(v) == "table" and v.t or v
+end
+
+-- cap: the best a part cut from this body can be (a mutant that died offline, nobody tended it)
+local function note_fresh(id, cap)
+	local t = olr_store.get(FRESH_KEY) or {}
+	local n = now()
+	local keep = config().carrion_keep_h * 3600
+	for k, v in pairs(t) do
+		if n - fresh_t(v) > keep then t[k] = nil end
+	end
+	t[tostring(id)] = cap and { t = n, cap = cap } or n
+	olr_store.put(FRESH_KEY, t)
+end
+
+-- an offline death: about half of what he carried is lost (broken, scattered), so offline fights are no loot fountain
+local function thin_loot(se)
+	local c = config()
+	local items = amk_offline_alife.items[se.id]
+	if not items then return end
+	local sim = alife()
+	local kept, lost = 0, {}
+	for k, rec in pairs(items) do
+		local it = rec and sim:object(rec.id)
+		if it and it.parent_id == se.id and it:name() == rec.name then
+			local sec = it:section_name()
+			if not get_bool(sec, "quest_item", false) and math.random(100) > c.offline_loot_keep then
+				table.insert(lost, sec)
+				amk_offline_alife.forget_item(se.id, rec.id)
+				misc.release_obj(rec.id, "olr_reactive.thin_loot")
+			else
+				kept = kept + 1
+			end
+		end
+	end
+	if #lost > 0 then rlog("offline death of %s id=%d: %d things lost, %d left: %s", se:name(), se.id, #lost, kept, table.concat(lost, ",")) end
+end
+
+-- sak_off_corpses: true keeps this corpse for now
+function keeps_corpse(id)
+	if not ( db.actor and olr_cfg.on("carrion") ) then return false end
+	local v = ( olr_store.get(FRESH_KEY) or {} )[tostring(id)]
+	return v ~= nil and now() - fresh_t(v) <= config().carrion_keep_h * 3600
+end
+
+local function note_carrion(se, offline)
+	if not ( se and se.position and ( IsStalker(se) or IsMonster(se) ) ) then return end
+	local cap = nil
+	if offline and IsMonster(se) then
+		local a, b = string.match(tostring(config().offline_part_cap), "([%d%.]+)%s*,%s*([%d%.]+)")
+		cap = tonumber(a) + math.random() * ( tonumber(b) - tonumber(a) )
+	end
+	note_fresh(se.id, cap)
+	if offline and IsStalker(se) and se.id ~= 0 then thin_loot(se) end
+	local lvl = olr_smart_index.object_level(se)
+	if not lvl then return end
+	local w = carrion_weight(se)
+	local cs = carrion_state()
+	local n = now()
+	for _, site in ipairs(cs.sites) do
+		if site.lvl == lvl and not site.fed and vector():set(site.x, site.y, site.z):distance_to(se.position) < 25 then
+			site.w, site.t = site.w + w, n
+			if IsMonster(se) and #site.ids < 8 then table.insert(site.ids, se.id) end
+			olr_store.put(CARRION_KEY, cs)
+			return
+		end
+	end
+	if w <= 0 then return end
+	table.insert(cs.sites, { x = se.position.x, y = se.position.y, z = se.position.z, lv = se.m_level_vertex_id, gv = se.m_game_vertex_id,
+		lvl = lvl, t = n, w = w, ids = IsMonster(se) and { se.id } or {} })
+	while #cs.sites > 24 do table.remove(cs.sites, 1) end
+	olr_store.put(CARRION_KEY, cs)
+end
+
+local function carrion_species(when)
+	local list = {}
+	for name in string.gmatch(config()[when == "day" and "carrion_species_day" or "carrion_species_night"], "[%w_]+") do table.insert(list, name) end
+	return list
+end
+
+local function site_pos(site)
+	return vector():set(site.x, site.y, site.z)
+end
+
+-- why this site is not used now, nil if it is fine
+local function site_refusal(site, when, camps)
+	local c = config()
+	if site.fed then return "fed" end
+	if now() - site.t > c.carrion_h * 3600 then return "old" end
+	if when == "day" and site.w < c.carrion_day_weight then return "light_for_day" end
+	local pos = site_pos(site)
+	local _, outer = olr_cfg.switch_radii()
+	if site.lvl == level.name() and pos:distance_to(db.actor:position()) <= outer + c.carrion_unseen_margin then return "player_near" end
+	for _, cp in ipairs(camps) do
+		if cp:distance_to(pos) < c.carrion_camp_dist then return "camp" end
+	end
+	return nil
+end
+
+local function carrion_pool(site, when)
+	local c = config()
+	local pos = site_pos(site)
+	local kept = news_encounters.tracked_ids()
+	local species = carrion_species(when)
+	local out = {}
+	local sim = alife()
+	for _, id in ipairs(olr_offline_task.cached_monsters()) do
+		local se = sim:object(id)
+		if se and IsMonster(se) and se:alive() and not se.online and not kept[id] and not olr_night.is_out(id)
+			and olr_smart_index.object_level(se) == site.lvl and not olr_protected.is_protected_monster(se)
+		then
+			local sec = se:section_name()
+			local ok = false
+			for _, prefix in ipairs(species) do
+				if string.sub(sec, 1, #prefix) == prefix then ok = true end
+			end
+			local d = ok and se.position:distance_to(pos)
+			if d and d <= c.carrion_radius and d > 15 then table.insert(out, { se = se, d = d }) end
+		end
+	end
+	table.sort(out, function(a, b) return a.d < b.d end)
+	return out
+end
+
+local function feed_site(cs, site, when, forced)
+	local c = config()
+	local want = math.min(c.carrion_max, c.scavenge_max + math.floor(math.max(0, site.w - 2) / 2))
+	local pool = carrion_pool(site, when)
+	local pos = site_pos(site)
+	-- they stay to feed for carrion_stay_h whatever the hour (a night move would otherwise go home at the first daylight tick)
+	local back_at = now() + c.carrion_stay_h * 3600
+	local moved = 0
+	for _, rec in ipairs(pool) do
+		if moved >= want then break end
+		olr_night.note_out(rec.se, "carrion", back_at)
+		alife():teleport_object(rec.se.id, pos, site.lv, site.gv)
+		moved = moved + 1
+		rlog("carrion: %s id=%d comes %.0f m to the bodies on %s", rec.se:section_name(), rec.se.id, rec.d, site.lvl)
+	end
+	carrion_moves = carrion_moves + moved
+	rlog("carrion on %s (%s%s): site weight %d, %.1f h old, %d scavengers in %d m, %d wanted, %d came", site.lvl, when, forced and ", forced" or "",
+		site.w, ( now() - site.t ) / 3600, #pool, c.carrion_radius, want, moved)
+	if moved == 0 then
+		carrion_why.nobody_near = ( carrion_why.nobody_near or 0 ) + 1
+		return 0
+	end
+	site.fed = now()
+	olr_digest.note("carrion", site.lvl, { pos = pos }) -- [HE-PORT]
+	if c.carrion_spoils > 0 then
+		for _, id in ipairs(site.ids) do cs.gnawed[tostring(id)] = now() end
+	end
+	if heard_here(site.lvl) and math.random(100) <= c.carrion_news_chance then
+		say_line("olr_carrion_", nil, 0, { where = news_main.where_text(site.lvl, pos) })
+	end
+	return moved
+end
+
+-- the heaviest usable site on a level
+local function feed_level(cs, lvl, when, forced)
+	local camps = olr_night.camp_points(lvl)
+	local best = nil
+	for _, site in ipairs(cs.sites) do
+		if site.lvl == lvl then
+			local why = site_refusal(site, when, camps)
+			if why then
+				if not site.fed then carrion_why[why] = ( carrion_why[why] or 0 ) + 1 end
+			elseif not best or site.w > best.w then
+				best = site
+			end
+		end
+	end
+	if best then return feed_site(cs, best, when, forced) end
+	if forced then rlog("carrion on %s: no usable site", lvl) end
+	return 0
+end
+
+local function carrion_tick()
+	local c = config()
+	local cs = carrion_state()
+	local n = now()
+	local kept = {}
+	for _, site in ipairs(cs.sites) do
+		if n - site.t <= c.carrion_h * 3600 then table.insert(kept, site) end
+	end
+	cs.sites = kept
+	for key, t in pairs(cs.gnawed) do
+		if n - t > 72 * 3600 then cs.gnawed[key] = nil end
+	end
+	if olr_cfg.grace_active() then
+		olr_store.put(CARRION_KEY, cs)
+		return
+	end
+	local when = nil
+	local h = level.get_time_hours()
+	if is_night() then
+		if n >= ( cs.next or 0 ) then
+			cs.next = n + c.carrion_every_h * 3600
+			when = "night"
+		end
+	elseif h >= 12 and h < 14 and cs.noon ~= level.get_time_days() then
+		cs.noon = level.get_time_days()
+		when = "day"
+	end
+	if when then
+		olr_smart_index.ensure()
+		for lvl in pairs(olr_smart_index.region_levels() or {}) do feed_level(cs, lvl, when) end
+	end
+	olr_store.put(CARRION_KEY, cs)
+end
+
+-- monster_parts harvest: a part from a body the scavengers reached comes out worse
+function carrion_spoil(id, cond)
+	if not ( db.actor and olr_cfg.on("carrion") ) then return cond end
+	local out = cond
+	local f = ( olr_store.get(FRESH_KEY) or {} )[tostring(id)]
+	if type(f) == "table" and f.cap and out > f.cap then
+		rlog("the body id=%d died offline, nobody cut it in time: part %.2f -> %.2f", id, out, f.cap)
+		out = f.cap
+	end
+	if carrion_state().gnawed[tostring(id)] then
+		local g = math.max(0.1, out - config().carrion_spoils)
+		rlog("carrion: the body id=%d was gnawed, part %.2f -> %.2f", id, out, g)
+		out = g
+	end
+	return out
+end
+
+function on_monster_death(monster)
+	if monster and db.actor and olr_cfg.on("reactive") and olr_cfg.on("carrion") then note_carrion(alife():object(monster:id())) end
+end
+
+local function on_death(se, offline)
 	if not ( se and db.actor and olr_cfg.on("reactive") ) then return end
+	if olr_cfg.on("carrion") and se.id ~= db.actor:id() then note_carrion(se, offline) end
 	if se.id == db.actor:id() or not IsStalker(se) then return end
 	local sid = se:smart_terrain_id()
 	local smart = sid ~= BAD_OBJ_ID and alife():object(sid)
@@ -224,7 +485,7 @@ local function on_death(se)
 	olr_smart_index.ensure()
 	local st = get_state()
 	if olr_cfg.on("investigate") then note_investigate(st, name, se:community()) end
-	if olr_cfg.on("scavenge") then note_scavenge(st, name, se, olr_smart_index.get_level(name)) end
+	if olr_cfg.on("scavenge") and not olr_cfg.on("carrion") then note_scavenge(st, name, se, olr_smart_index.get_level(name)) end
 	put_state(st)
 end
 
@@ -233,7 +494,7 @@ function on_npc_death(npc)
 end
 
 function on_offline_death(victim)
-	on_death(victim)
+	on_death(victim, true)
 end
 
 -- ---------------------------------------------------------------------------
@@ -492,6 +753,7 @@ function update()
 	if olr_cfg.on("chapter_events") then chapter_tick(st) end
 	if olr_cfg.on("scorcher_losses") then scorcher_tick(st) end
 	put_state(st)
+	if olr_cfg.on("carrion") then carrion_tick() end
 end
 
 -- ---------------------------------------------------------------------------
@@ -518,6 +780,31 @@ function report()
 	if st.scorch then rlog("scorcher pending: %s id=%d, lost in %.1f h", st.scorch.who, st.scorch.id, ( st.scorch.due - n ) / 3600) end
 end
 
+function carrion()
+	local cs = carrion_state()
+	local n = now()
+	local why = {}
+	for k, v in pairs(carrion_why) do table.insert(why, k .. "=" .. v) end
+	local gn = 0
+	for _ in pairs(cs.gnawed) do gn = gn + 1 end
+	rlog("carrion on=%s spoils=%.2f: %d sites, %d gnawed bodies, %d moves this session, next night pass in %.1f h; refused %s",
+		tostring(olr_cfg.on("carrion")), config().carrion_spoils, #cs.sites, gn, carrion_moves, ( ( cs.next or n ) - n ) / 3600, table.concat(why, " "))
+	local camps = {}
+	for _, site in ipairs(cs.sites) do
+		camps[site.lvl] = camps[site.lvl] or olr_night.camp_points(site.lvl)
+		rlog("  %s %.0f,%.0f weight %d, %.1f h old, %d mutant bodies%s: %s", site.lvl, site.x, site.z, site.w, ( n - site.t ) / 3600, #site.ids,
+			site.fed and string.format(", fed %.1f h ago", ( n - site.fed ) / 3600) or "", site_refusal(site, is_night() and "night" or "day", camps[site.lvl]) or "usable")
+	end
+	for key in pairs(cs.gnawed) do rlog("  gnawed body id=%s", key) end
+end
+
+function force_carrion(lvl)
+	olr_smart_index.ensure()
+	local cs = carrion_state()
+	feed_level(cs, lvl or level.name(), "night", true)
+	olr_store.put(CARRION_KEY, cs)
+end
+
 function force_investigate(name, comm)
 	send_group(name, comm or "stalker")
 end
@@ -533,7 +820,7 @@ function force_scavenge(name)
 end
 
 function force_gossip(comm)
-	local key = say_line("olr_gossip_" .. ( comm or "stalker" ) .. "_", nil, 0, { where = news_main.localized_where(level.name(), db.actor:position()) })
+	local key = say_line("olr_gossip_" .. ( comm or "stalker" ) .. "_", nil, 0, { where = news_main.where_text(level.name(), db.actor:position()) })
 	rlog("force_gossip: line %s", tostring(key))
 end
 

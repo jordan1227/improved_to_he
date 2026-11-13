@@ -1,0 +1,965 @@
+-- [HE-PORT] Life goals, docs/ALIFE_NEXT_DESIGN.md 2 (phase A; preset key life_goals). A nameless stalker gets a reason
+-- to be in the Zone the first time a scan or an event sees him: loners and hunters from the old olr_ai_tasks names
+-- (cash, tourism, find_himself, find_monolit, reason_zone, escape_in_zone), Duty, Freedom and ecologs from their own
+-- sets. A goal tilts what he does offline (AMK weights, odds, trade, which trader) and decides how he leaves:
+-- cash at a personal sum, tourism after some days, find_himself turns into another goal; Duty tours and ecolog
+-- contracts end in a rotation; escape_in_zone, find_monolit and reason_zone never leave (travel is phase B).
+-- Exits replace leave_earned: olr_trader_runs.leave_tick takes exit_candidate() every exit_cooldown_h.
+-- Endings (out, dead, rotated, turned) go to a ring of the last 20. Config [lives], [lives_weights]. Log: [olr_lives].
+-- fl olr_lives.report()                counts by goal and stage, nearest to an exit, last endings
+-- fl olr_lives.who("l02_garbage")      every record on a level (no argument: this level)
+-- fl olr_lives.show(12345)             one record in full
+-- fl olr_lives.set(12345, "cash")      give him that goal now
+-- fl olr_lives.advance(12345)          his goal is due now (cash reached, days over), checked at once
+-- fl olr_lives.finish(12345, "dead")   end his record as "out", "dead" or "rotated" (only the record and the news)
+-- fl olr_lives.fill()                  every cached stalker who can have a goal gets one now (an old save)
+-- fl olr_lives.say(12345, "obit")      the line of that kind for him now: start, near, quit, turn, end, obit
+-- fl olr_lives.step(12345)             one travel step now (phase B), logged in full
+-- Phase B (preset key goal_travel): tourists visit tour_levels levels and stay tour_stay_h on each, then go home;
+-- find_monolit steps north along north_order as far as the story and his rank let him, and at Pripyat he is gone
+-- (monolith_return_chance % a Monolith man turns up there); reason_zone goes to Yantar and stays. One neighbour level a
+-- step, every lives_stay_h at most, by day, through olr_smart_index (one smart on the next level that takes him).
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_lives"
+local PAST_KEY = "nlc.olr_lives_past"
+local ROT_KEY = "nlc.olr_lives_rot"
+local EARNED_KEY = "nlc.olr_earned"
+local COMMS = { "stalker", "green", "dolg", "freedom", "ecolog" }
+local CASH_TIERS = { novice = true, experienced = true, veteran = true, master = true }
+
+-- w: AMK weight factors; courage: points more (careful) or less (bold) he asks of the odds; trade: points on the
+-- weighted trade chance; trader: score added to a trader by key (lower is preferred); exit: walks out through Cordon;
+-- rotate: released where he is when his time is up; timed: the days key that sets his deadline
+local GOALS = {
+	cash = { w = { artefacts = 1.5, boxes = 1.3, corpses = 1.3, monsters = 0.7 }, courage = 10, trade = 15, exit = true },
+	tourism = { w = { monsters = 0.5, enemies = 0.5 }, courage = 10, trade = 0, exit = true, timed = "tour_days" },
+	find_himself = { w = {}, courage = 0, trade = 0, timed = "fh_days" },
+	find_monolit = { w = { monsters = 1.2 }, courage = -5, trade = 0 },
+	reason_zone = { w = { artefacts = 1.3 }, courage = 0, trade = 0, trader = { sakharov = -1 } },
+	escape_in_zone = { w = { enemies = 0.5 }, courage = 0, trade = -5, trader = { sidor = 9 } },
+	duty_purge = { w = { monsters = 1.6, enemies = 1.2 }, courage = -10, trade = -5 },
+	duty_tour = { w = { monsters = 1.2 }, courage = 0, trade = 0, rotate = true, timed = "contract_days" },
+	free_arts = { w = { artefacts = 1.6, boxes = 1.2 }, courage = 0, trade = 10 },
+	free_live = { w = { enemies = 0.7 }, courage = 5, trade = 5 },
+	eco_samples = { w = { artefacts = 1.5, corpses = 1.3, monsters = 0.8 }, courage = 10, trade = 0, trader = { sakharov = -2 } },
+	eco_contract = { w = {}, courage = 15, trade = 0, rotate = true, timed = "contract_days" },
+}
+
+local cfg = nil
+local scan_comm, scan_index = 1, 0
+local news_next = 0
+local refused = {}
+
+local function config()
+	if cfg then return cfg end
+	cfg = { rows = {} }
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("lives") - 1 do
+		local _, k, v = ini:r_line("lives", i, "", "")
+		cfg[k] = tonumber(v) or v
+	end
+	for _, k in ipairs({ "lives_max", "lives_scan", "lives_scan_h", "lives_scan_max", "lives_news_cd_h", "start_news_chance", "obit_chance", "cash_novice", "cash_experienced",
+		"cash_veteran", "cash_master", "tour_days", "fh_days", "contract_days", "tour_wound", "cash_quit_week_chance", "exit_cooldown_h",
+		"rotate_cd_h", "near_share", "lives_stay_h", "lives_steps_per_tick", "north_order", "tour_levels", "tour_stay_h",
+		"monolith_return_chance" })
+	do
+		if cfg[k] == nil then abort("olr_lives: no key '%s' in [lives]", k) end
+	end
+	for i = 0, ini:line_count("lives_weights") - 1 do
+		local _, k, v = ini:r_line("lives_weights", i, "", "")
+		local row = {}
+		for g, w in string.gmatch(v, "([%w_]+)%s*:%s*(%d+)") do
+			if not GOALS[g] then abort("olr_lives: [lives_weights] %s names an unknown goal '%s'", k, g) end
+			row[g] = tonumber(w)
+		end
+		cfg.rows[k] = row
+	end
+	return cfg
+end
+
+local function llog(fmt, ...)
+	log2("[olr_lives] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+local function now()
+	return timers.Get_Game_Seconds()
+end
+
+function active()
+	return db.actor ~= nil and olr_cfg.on("life_goals")
+end
+
+-- xvars keeps a copy: every get_value returns a new table, so two readers in one call (update, then touch) would
+-- overwrite each other. One table per game load, written back after each change; a new db.actor means a new load.
+local cache, cache_actor = nil, nil
+
+local function records()
+	if not cache or cache_actor ~= db.actor then
+		cache, cache_actor = olr_store.get(KEY) or {}, db.actor
+	end
+	return cache
+end
+
+local function save(t)
+	olr_store.put(KEY, t)
+end
+
+local function range_of(key)
+	local a, b = string.match(tostring(config()[key]), "([%d%.]+)%s*,%s*([%d%.]+)")
+	a, b = tonumber(a), tonumber(b)
+	if not a then abort("olr_lives: [lives] %s is not a min,max pair", key) end
+	return a, b
+end
+
+local function roll_range(key)
+	local a, b = range_of(key)
+	return a + math.random() * ( b - a )
+end
+
+local function earned_of(id)
+	return ( olr_store.get(EARNED_KEY) or {} )[tostring(id)] or 0
+end
+
+local function money_now(id)
+	local se = alife():object(id)
+	local pk = se and get_netpk(se)
+	local data = pk and pk:get()
+	return data and data.money or 0
+end
+
+-- what a cash goal holder has gained since he got the goal: his money now against then (sales, runs, rewards, a
+-- robbery), or what the trade ledger counted, whichever is more. Offline sales alone were too rare to count on.
+local function gained(id, rec)
+	if not rec.m0 then rec.m0 = money_now(id) end
+	return math.max(earned_of(id) - ( rec.base or 0 ), money_now(id) - rec.m0)
+end
+
+local function name_of(se)
+	return olr_trader_runs.display_name(se) or se:name()
+end
+
+-- the record of a living stalker, nil if none; a record whose id now belongs to someone else is dropped
+local function rec_of(se, t)
+	t = t or records()
+	local rec = se and t[tostring(se.id)]
+	if not rec then return nil end
+	if rec.n ~= se:name() then
+		llog("id=%d is %s now, not %s: record dropped", se.id, se:name(), rec.n)
+		t[tostring(se.id)] = nil
+		save(t)
+		return nil
+	end
+	return rec
+end
+
+local function goal_of(se)
+	if not active() or not se then return nil end
+	local rec = rec_of(se)
+	if not rec then return nil end
+	return GOALS[rec.g], rec
+end
+
+-- ---------------------------------------------------------------------------
+-- news
+-- ---------------------------------------------------------------------------
+local function heard(lvl)
+	local region = olr_smart_index.region_levels()
+	return lvl and region and region[lvl] and he_pda_model.get_pda() ~= nil
+end
+
+-- prefix N runs from 1 until a key has no text; nil when there is none (logged)
+local function say_line(prefix, who, subs, forced)
+	if not forced and now() < news_next then return nil end
+	local key = olr_trader_runs.pick_line(prefix)
+	if not key then
+		llog("no text for %s", prefix)
+		return nil
+	end
+	local text = game.translate_string(key)
+	for k, v in pairs(subs or {}) do
+		text = string.gsub(text, "%$" .. k, function() return v end)
+	end
+	sak.send_tip(text, who or olr_trader_runs.other_name(), 0, 15, "default", "pda_news", "gray")
+	news_next = now() + config().lives_news_cd_h * 3600
+	llog("line %s", key)
+	return key
+end
+
+local function push_past(rec, how, lvl)
+	local past = olr_store.get(PAST_KEY) or {}
+	table.insert(past, { n = rec.who or rec.n, g = rec.g, how = how, day = math.floor(now() / 86400) + 1, lvl = lvl })
+	while #past > 20 do table.remove(past, 1) end
+	olr_store.put(PAST_KEY, past)
+end
+
+-- ---------------------------------------------------------------------------
+-- assignment
+-- ---------------------------------------------------------------------------
+local function can_have(se)
+	if not ( se and IsStalker(se) and se.id ~= 0 and se:alive() ) then return false, "not_alive_stalker" end
+	if se.m_story_id ~= nil and se.m_story_id ~= NONE_SID and se.m_story_id ~= NONE_CL_SID then return false, "story_id" end
+	if olr_trader_runs.has_story_name(se) then return false, "story_name" end
+	local comm = se:community()
+	if comm ~= "stalker" and comm ~= "green" and comm ~= "dolg" and comm ~= "freedom" and comm ~= "ecolog" then return false, "community" end
+	if olr_protected.is_no_offline_alife_obj(se:name()) then return false, "protected" end
+	if olr_protected.is_quest_bound(se) then return false, "quest_bound" end
+	return true
+end
+
+local function row_for(se, origin)
+	local c = config()
+	local comm = se:community()
+	if comm == "dolg" or comm == "freedom" or comm == "ecolog" then return c.rows[comm] end
+	local tier = olr_amk_offline.tier_of(se)
+	if origin == "rookie" then tier = "novice" end
+	local row = {}
+	for g, w in pairs(c.rows[tier] or {}) do row[g] = w end
+	if origin == "rookie" and row.tourism then row.tourism = row.tourism * 2 end
+	if comm == "green" and row.cash then row.cash = row.cash * 2 end
+	return row
+end
+
+local function pick_goal(row)
+	local sum = 0
+	for _, w in pairs(row or {}) do sum = sum + w end
+	if sum <= 0 then return nil end
+	local r = math.random() * sum
+	for g, w in pairs(row) do
+		r = r - w
+		if r <= 0 then return g end
+	end
+	return nil
+end
+
+local function start(se, rec, goal, why)
+	local c = config()
+	local tier = olr_amk_offline.tier_of(se)
+	rec.g, rec.s, rec.a = goal, "go", now()
+	rec.base = earned_of(se.id)
+	rec.m0 = money_now(se.id)
+	rec.tg, rec.d, rec.near, rec.wk = nil, nil, nil, nil
+	rec.tl, rec.ti, rec.arr, rec.stay, rec.st = nil, nil, nil, nil, nil
+	if goal == "cash" then
+		local key = CASH_TIERS[tier] and "cash_" .. tier or "cash_novice"
+		rec.tg = math.floor(roll_range(key) / 500) * 500
+	end
+	local g = GOALS[goal]
+	if g.timed then rec.d = now() + roll_range(g.timed) * 86400 end
+	llog("%s id=%d (%s, %s, %s) on %s: %s%s%s, %s", se:name(), se.id, rec.who, se:community(), tier, tostring(olr_smart_index.object_level(se)), goal,
+		rec.tg and string.format(", target %d over the %d he has earned", rec.tg, rec.base) or "",
+		rec.d and string.format(", due in %.1f days", ( rec.d - now() ) / 86400) or "", why)
+end
+
+-- the record of this stalker, made now if he can have one; nil if not
+function touch(se, origin)
+	if not active() then return nil end
+	local t = records()
+	local rec = rec_of(se, t)
+	if rec then return rec end
+	local ok, why = can_have(se)
+	if not ok then
+		refused[why] = ( refused[why] or 0 ) + 1
+		return nil
+	end
+	local n = 0
+	for _ in pairs(t) do n = n + 1 end
+	if n >= config().lives_max then
+		refused.full = ( refused.full or 0 ) + 1
+		return nil
+	end
+	local goal = pick_goal(row_for(se, origin))
+	if not goal then
+		refused.no_row = ( refused.no_row or 0 ) + 1
+		return nil
+	end
+	rec = { n = se:name(), who = name_of(se), o = origin or "scan" }
+	start(se, rec, goal, "origin " .. ( origin or "scan" ))
+	t[tostring(se.id)] = rec
+	save(t)
+	if heard(olr_smart_index.object_level(se)) and math.random(100) <= config().start_news_chance then
+		say_line("olr_goal_" .. goal .. "_start_", rec.who)
+	end
+	return rec
+end
+
+-- ---------------------------------------------------------------------------
+-- stages
+-- ---------------------------------------------------------------------------
+local function to_exit(se, rec, why)
+	rec.s, rec.ex = "exit", now()
+	llog("%s id=%d (%s): %s, wants out (%s)", se:name(), se.id, rec.who, rec.g, why)
+end
+
+local function turn(se, rec, goal, why)
+	local old = rec.g
+	push_past(rec, "turned:" .. goal, olr_smart_index.object_level(se))
+	start(se, rec, goal, "was " .. old .. ", " .. why)
+	-- [HE-PORT] truth audit B6: turning tourist means nothing came of it, the "found something to do" lines do not fit
+	if goal ~= "tourism" and heard(olr_smart_index.object_level(se)) then say_line("olr_goal_" .. old .. "_turn_", rec.who) end
+end
+
+local function check(se, rec, t)
+	if rec.s ~= "go" then return end
+	local c = config()
+	local g = rec.g
+	local n = now()
+	local lvl = olr_smart_index.object_level(se)
+	if g == "cash" then
+		local got = gained(se.id, rec)
+		if got >= rec.tg then
+			to_exit(se, rec, string.format("earned %d of %d", got, rec.tg))
+		elseif not rec.near and got >= rec.tg * c.near_share then
+			rec.near = true
+			llog("%s id=%d (%s): %d of %d earned, close", se:name(), se.id, rec.who, got, rec.tg)
+			if heard(lvl) then say_line("olr_goal_cash_near_", rec.who) end
+		else
+			-- past veteran, a man may stop counting: once a week, cash_quit_week_chance %
+			local week = math.floor(( n - rec.a ) / ( 7 * 86400 ))
+			local tier = olr_amk_offline.tier_of(se)
+			if week > ( rec.wk or 0 ) then
+				rec.wk = week
+				if ( tier == "veteran" or tier == "master" ) and math.random(100) <= c.cash_quit_week_chance then
+					turn(se, rec, "escape_in_zone", "stopped counting")
+				end
+			end
+		end
+	elseif g == "tourism" then
+		if se:health() < c.tour_wound then
+			to_exit(se, rec, string.format("wounded, health %.2f", se:health()))
+			if heard(lvl) then say_line("olr_goal_tourism_quit_", rec.who) end
+		elseif n >= rec.d and not olr_cfg.on("goal_travel") then
+			to_exit(se, rec, "seen enough")
+		end
+	elseif g == "find_himself" then
+		if n >= rec.d then
+			local got = gained(se.id, rec)
+			if got > 5000 then turn(se, rec, "cash", string.format("earned %d", got))
+			elseif se:health() < 0.5 then
+				if math.random(2) == 1 then
+					rec.g = "tourism"
+					to_exit(se, rec, "hurt, had enough")
+					if heard(lvl) then say_line("olr_goal_find_himself_quit_", rec.who) end
+				else
+					turn(se, rec, "escape_in_zone", "hurt, stays")
+				end
+			else
+				turn(se, rec, "tourism", "nothing came of it")
+			end
+		end
+	elseif GOALS[g] and GOALS[g].rotate and n >= rec.d then
+		to_exit(se, rec, "time is up")
+	end
+end
+
+-- a Duty tour or an ecolog contract is over: he is released where he stands, unseen, one per rotate_cd_h
+local function rotate(se, rec, t)
+	local c = config()
+	local n = now()
+	if n < ( olr_store.get(ROT_KEY) or 0 ) then return end
+	if se.online or ( olr_smart_index.object_level(se) == level.name() and se.position:distance_to(db.actor:position()) < 150 ) then return end
+	if olr_protected.is_quest_bound(se) or olr_trader_runs.on_run(se.id) or olr_patrols.is_member(se.id) then return end
+	local sid = se:smart_terrain_id()
+	local smart = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
+	if smart and not olr_smart_index.can_release(smart:name()) then return end
+	local lvl = olr_smart_index.object_level(se)
+	olr_store.put(ROT_KEY, n + c.rotate_cd_h * 3600)
+	t[tostring(se.id)] = nil
+	push_past(rec, "rotated", lvl)
+	llog("%s id=%d (%s, %s) rotates out from %s: released", se:name(), se.id, rec.who, rec.g, tostring(lvl))
+	olr_digest.note("exit", lvl, { se = se, name = rec.who })
+	if heard(lvl) then say_line("olr_goal_" .. rec.g .. "_end_", rec.who) end
+	alife():release(se, true)
+end
+
+-- ---------------------------------------------------------------------------
+-- hooks
+-- ---------------------------------------------------------------------------
+function weight(se, kind)
+	local g = goal_of(se)
+	return g and g.w[kind] or 1
+end
+
+function courage(se)
+	local g = goal_of(se)
+	return g and g.courage or 0
+end
+
+function trade_bonus(se)
+	local g = goal_of(se)
+	return g and g.trade or 0
+end
+
+-- [HE-PORT] olr_daytrips: his goal's key, nil without one
+function goal_name(se)
+	local _, rec = goal_of(se)
+	return rec and rec.g or nil
+end
+
+function trader_bias(se, key)
+	local g = goal_of(se)
+	return g and g.trader and g.trader[key] or 0
+end
+
+-- olr_trader_runs.note_earned: a cash goal may be reached now
+function on_earned(se)
+	if not active() then return end
+	local t = records()
+	local rec = rec_of(se, t)
+	if rec and rec.g == "cash" then
+		check(se, rec, t)
+		save(t)
+	end
+end
+
+-- olr_robbery: he lost money; a man saving for home has that much more to earn, and one on his way out turns back
+function on_robbed(se, took)
+	if not active() then return end
+	local t = records()
+	local rec = rec_of(se, t)
+	if not ( rec and rec.g == "cash" ) then return end
+	-- his money is lower now, which is what the cash goal counts
+	if rec.s == "exit" and not olr_trader_runs.on_run(se.id) then
+		rec.s, rec.ex = "go", nil
+		llog("%s id=%d (%s) was robbed of %d on his way out: back to earning, target now %d", se:name(), se.id, rec.who, took, rec.tg)
+	else
+		llog("%s id=%d (%s) was robbed of %d: target now %d", se:name(), se.id, rec.who, took, rec.tg)
+	end
+	save(t)
+end
+
+-- olr_trader_runs.leave_tick: the one longest in stage exit who can walk out now (rotations are not walked)
+function exit_candidate()
+	if not active() then return nil end
+	local t = records()
+	local sim = alife()
+	local best, best_t = nil, nil
+	for key, rec in pairs(t) do
+		if type(rec) == "table" and rec.s == "exit" and GOALS[rec.g] and not GOALS[rec.g].rotate then
+			local se = sim:object(tonumber(key))
+			if se and IsStalker(se) and se:name() == rec.n and se:alive() and not olr_trader_runs.on_run(se.id) then
+				local ok, why = olr_trader_runs.may_travel(se)
+				if ok and ( not best_t or rec.ex < best_t ) then best, best_t = se, rec.ex
+				elseif not ok then rec.why = why end
+			end
+		end
+	end
+	if best then llog("exit: %s id=%d (%s, %s) sets off for the Cordon", best:name(), best.id, t[tostring(best.id)].who, t[tostring(best.id)].g) end
+	return best
+end
+
+function uses_exits()
+	return active()
+end
+
+function exit_cooldown_h()
+	return config().exit_cooldown_h
+end
+
+-- olr_trader_runs: he walked out (how "out"), or his record ends some other way
+function ended(id, how)
+	if not active() then return end
+	local t = records()
+	local rec = t[tostring(id)]
+	if type(rec) ~= "table" then return end
+	t[tostring(id)] = nil
+	save(t)
+	push_past(rec, how, nil)
+	llog("id=%d (%s, %s): %s", id, rec.who, rec.g, how)
+end
+
+-- a death, offline (news_main) or online (signal): the record ends, a friend may say something
+function on_death(se)
+	if se and IsStalker(se) and se.id ~= 0 then olr_trader_runs.medkit_death(se) end -- [HE-PORT] 8.37
+	if not ( active() and se and IsStalker(se) and se.id ~= 0 ) then return end
+	local t = records()
+	local rec = t[tostring(se.id)]
+	if type(rec) ~= "table" or rec.n ~= se:name() then return end
+	t[tostring(se.id)] = nil
+	save(t)
+	local lvl = olr_smart_index.object_level(se)
+	push_past(rec, "dead", lvl)
+	local left = nil
+	if rec.g == "cash" and rec.tg then left = math.max(0, rec.tg - ( gained(se.id, rec) )) end
+	llog("%s id=%d (%s, %s, stage %s) died on %s%s", se:name(), se.id, rec.who, rec.g, rec.s, tostring(lvl),
+		left and string.format(", %d short of his sum", left) or "")
+	-- a man on his way out has his own line (olr_leave_dead_)
+	if rec.s == "go" and heard(lvl) and math.random(100) <= config().obit_chance then
+		say_line("olr_goal_obit_" .. rec.g .. "_", nil, { name = rec.who, left = left and tostring(math.floor(left / 500 + 0.5) * 500) or "" })
+	end
+end
+
+function on_npc_death(npc)
+	if npc then on_death(alife():object(npc:id())) end
+end
+
+-- ---------------------------------------------------------------------------
+-- travel with a purpose (phase B)
+-- ---------------------------------------------------------------------------
+local step_keys, step_index = {}, 0
+local travel_why = {}
+
+local function surface(lvl)
+	return not ( lvl == "hospital" or lvl == "labx8" or lvl == "warlab" or string.find(lvl, "^l%d+u_") or string.find(lvl, "underground", 1, true) )
+end
+
+local function open_level(lvl, se)
+	local front = olr_cfg.frontier_levels()
+	if front and not front[lvl] then return false, "frontier" end
+	if olr_cfg.level_closed(lvl) then return false, "closed" end
+	if not olr_smart_index.level_rank_fits(lvl, se:community(), se:rank()) then return false, "rank" end
+	return true
+end
+
+-- the first hop from one level toward another over the level graph (breadth first), nil if there is no way
+local function first_hop(from, to)
+	if not from or from == to then return nil end
+	local prev = { [from] = from }
+	local queue = { from }
+	local i = 1
+	while queue[i] do
+		local cur = queue[i]
+		i = i + 1
+		for nb in pairs(olr_smart_index.neighbour_levels(cur)) do
+			if not prev[nb] then
+				prev[nb] = cur
+				if nb == to then
+					local hop = nb
+					while prev[hop] ~= from do hop = prev[hop] end
+					return hop
+				end
+				table.insert(queue, nb)
+			end
+		end
+	end
+	return nil
+end
+
+local function north_target(se)
+	local best = nil
+	for lvl in string.gmatch(config().north_order, "[%w_]+") do
+		local ok = open_level(lvl, se)
+		if ok and ( ( lvl ~= "l10_radar" and lvl ~= "l11_pripyat" ) or olr_cfg.flag_is_set("north_open") ) then best = lvl else break end
+	end
+	return best
+end
+
+-- three or four surface levels open to him within three hops, not where he is
+local function tour_list(se)
+	local here = olr_smart_index.object_level(se)
+	local seen, ring, list = { [here or ""] = true }, { here }, {}
+	for _ = 1, 3 do
+		local nxt = {}
+		for _, lvl in ipairs(ring) do
+			for nb in pairs(olr_smart_index.neighbour_levels(lvl)) do
+				if not seen[nb] then
+					seen[nb] = true
+					table.insert(nxt, nb)
+					if surface(nb) and open_level(nb, se) then table.insert(list, nb) end
+				end
+			end
+		end
+		ring = nxt
+	end
+	local a, b = range_of("tour_levels")
+	local want = math.random(a, b)
+	local out = {}
+	while #list > 0 and #out < want do table.insert(out, table.remove(list, math.random(#list))) end
+	return table.concat(out, ",")
+end
+
+local function target_of(se, rec)
+	if rec.g == "find_monolit" then return north_target(se) end
+	if rec.g == "reason_zone" then return open_level("l08_yantar", se) and "l08_yantar" or nil end
+	if rec.g == "tourism" then
+		rec.tl = rec.tl or tour_list(se)
+		rec.ti = rec.ti or 1
+		local i = 0
+		for lvl in string.gmatch(rec.tl, "[%w_]+") do
+			i = i + 1
+			if i == rec.ti then return lvl end
+		end
+	end
+	return nil
+end
+
+local function refuse(se, why, forced)
+	travel_why[why] = ( travel_why[why] or 0 ) + 1
+	if forced then llog("step %s id=%d: no step, %s", se:name(), se.id, why) end
+	return false
+end
+
+-- at Pripyat a man who went for the Monolith is gone; now and then one of theirs turns up
+local function gone_north(se, rec, t)
+	if not ( se and not se.online ) then return end
+	local name = rec.who
+	t[tostring(se.id)] = nil
+	push_past(rec, "north", "l11_pripyat")
+	llog("%s id=%d (%s) reached Pripyat: gone to the Monolith", se:name(), se.id, name)
+	alife():release(se, true)
+	if math.random(100) <= config().monolith_return_chance then
+		local smart_name = olr_smart_index.any_on_level("l11_pripyat")
+		local smart = smart_name and olr_smart_index.get_obj(smart_name)
+		local obj = smart and alife():create("olr_monolith_regular", smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+		if obj then
+			local pk = get_netpk(obj)
+			local data = pk:get()
+			data.custom_data = "[smart_terrains]\n" .. smart_name .. " = true\n"
+			pk:set(data)
+			llog("%s: a Monolith man id=%d turns up at %s", name, obj.id, smart_name)
+		end
+	end
+	if heard("l11_pripyat") then say_line("olr_goal_north_gone_", nil, { name = name }) end
+end
+
+local function travel_step(se, rec, t, forced)
+	local c = config()
+	local n = now()
+	local here = olr_smart_index.object_level(se)
+	local target = target_of(se, rec)
+	if not target then
+		-- [HE-PORT] a tourist with an empty tour list would wait forever (no day limit with goal_travel on)
+		if rec.g == "tourism" and rec.tl == "" and rec.s ~= "exit" then to_exit(se, rec, "nowhere open to tour") end
+		return refuse(se, "no target open", forced)
+	end
+	if here == target then
+		if rec.g == "find_monolit" and here == "l11_pripyat" then
+			gone_north(se, rec, t)
+		elseif rec.g == "tourism" then
+			if not rec.arr then
+				rec.arr, rec.stay = n, roll_range("tour_stay_h") * 3600
+				llog("%s id=%d (%s, tourist) arrives on %s, stays %.0f h", se:name(), se.id, rec.who, here, rec.stay / 3600)
+				if heard(here) and math.random(100) <= 25 then
+					say_line("olr_goal_tour_seen_", rec.who, { where = news_main.where_text(here, se.position) })
+				end
+			elseif n - rec.arr >= rec.stay then
+				rec.ti, rec.arr = rec.ti + 1, nil
+				if not target_of(se, rec) then to_exit(se, rec, "toured " .. rec.tl) end
+			end
+		elseif not rec.arr then
+			rec.arr = n
+			llog("%s id=%d (%s, %s) has reached %s", se:name(), se.id, rec.who, rec.g, here)
+		end
+		return false
+	end
+	if not forced then
+		local a = range_of("lives_stay_h")
+		if n - ( rec.st or rec.a ) < a * 3600 then return false end
+		local h = level.get_time_hours()
+		if h < 6 or h >= 20 then return false end
+	end
+	local ok, why = olr_trader_runs.may_travel(se)
+	if not ok then return refuse(se, why, forced) end
+	if olr_trader_runs.on_run(se.id) or olr_patrols.is_member(se.id) then return refuse(se, "busy", forced) end
+	if se.online and db.actor and se.position:distance_to(db.actor:position()) < 150 then return refuse(se, "in view", forced) end
+	local hop = first_hop(here, target)
+	if not hop then return refuse(se, "no way to " .. target, forced) end
+	local open, why2 = open_level(hop, se)
+	if not open then return refuse(se, why2, forced) end
+	local smart = olr_smart_index.pick_name(se:community(), nil, nil, { [hop] = true }, { no_territory = true, rank = se:rank(), se = se })
+	if not ( smart and olr_smart_index.move_or_stay(se, smart) ) then return refuse(se, "no smart on " .. hop, forced) end
+	rec.st, rec.arr = n, nil
+	olr_population.on_migrated_human(here, smart)
+	llog("%s id=%d (%s, %s) steps %s -> %s (%s), heading for %s", se:name(), se.id, rec.who, rec.g, tostring(here), hop, smart, target)
+	if rec.g == "find_monolit" and heard(here) and math.random(100) <= 30 then say_line("olr_goal_north_step_", rec.who) end
+	return true
+end
+
+local TRAVELLERS = { tourism = true, find_monolit = true, reason_zone = true }
+
+local function step_tick(t)
+	if #step_keys == 0 or step_index >= #step_keys then
+		step_keys, step_index = {}, 0
+		for key, rec in pairs(t) do
+			if type(rec) == "table" and rec.s == "go" and TRAVELLERS[rec.g] then table.insert(step_keys, key) end
+		end
+	end
+	local sim = alife()
+	for _ = 1, config().lives_steps_per_tick do
+		step_index = step_index + 1
+		local key = step_keys[step_index]
+		if not key then break end
+		local se = sim:object(tonumber(key))
+		local rec = se and IsStalker(se) and se:alive() and rec_of(se, t)
+		if rec and rec.s == "go" and TRAVELLERS[rec.g] then travel_step(se, rec, t) end
+	end
+end
+
+-- [HE-PORT] olr_regroup: he is on his way somewhere for his goal (a tourist, a man going north)
+function is_travelling(se)
+	local _, rec = goal_of(se)
+	return rec ~= nil and rec.s == "go" and TRAVELLERS[rec.g] ~= nil
+end
+
+function step(id)
+	local se = alife():object(id)
+	local t = records()
+	local rec = se and rec_of(se, t)
+	if not rec then
+		llog("step %s: no record", tostring(id))
+		return
+	end
+	llog("step %s id=%d (%s): goal %s, target %s, tour %s (stop %s)", se:name(), id, rec.who, rec.g, tostring(target_of(se, rec)), tostring(rec.tl), tostring(rec.ti))
+	travel_step(se, rec, t, true)
+	save(t)
+end
+
+-- ---------------------------------------------------------------------------
+-- tick
+-- ---------------------------------------------------------------------------
+-- [HE-PORT] records of men who died without a killer, or were released by another system, never reach on_death:
+-- a few keys a tick from a snapshot of the keys (next() on a live key that another call removed would be fatal)
+local sweep_keys, sweep_i = {}, 0
+local function sweep(t)
+	if sweep_i >= #sweep_keys then
+		sweep_keys, sweep_i = {}, 0
+		for k, rec in pairs(t) do
+			if type(rec) == "table" then table.insert(sweep_keys, k) end
+		end
+		return
+	end
+	local sim = alife()
+	for _ = 1, 5 do
+		sweep_i = sweep_i + 1
+		local k = sweep_keys[sweep_i]
+		if not k then return end
+		local rec = t[k]
+		local se = type(rec) == "table" and tonumber(k) and sim:object(tonumber(k))
+		if type(rec) == "table" and not ( se and IsStalker(se) and se:alive() and se:name() == rec.n ) then
+			llog("record id=%s %s (%s) dropped: %s", k, tostring(rec.n), tostring(rec.g),
+				not se and "gone" or se:name() ~= rec.n and "another man has the id" or "dead")
+			t[k] = nil
+		end
+	end
+end
+
+-- [HE-PORT] 8.38: every cash_work_h game hours each man saving up who is in camp goes out to work (olr_daytrips.work_trip)
+local WORK_KEY = "nlc.olr_cash_work"
+function cash_work(t)
+	local n = now()
+	local due = olr_store.get(WORK_KEY)
+	if due and n < due then return end
+	olr_store.put(WORK_KEY, n + config().cash_work_h * 3600)
+	if not due or not olr_daytrips.work_trip then return end
+	local sim = alife()
+	local sent, why = 0, {}
+	for key, rec in pairs(t) do
+		if type(rec) == "table" and rec.g == "cash" and rec.s == "go" then
+			local se = sim:object(tonumber(key))
+			if se and IsStalker(se) and se:alive() and se:name() == rec.n then
+				local ok, w = olr_daytrips.work_trip(se)
+				if ok then sent = sent + 1 else why[w] = ( why[w] or 0 ) + 1 end
+			end
+		end
+	end
+	local parts = {}
+	for w, k in pairs(why) do table.insert(parts, w .. "=" .. k) end
+	llog("cash work: %d out to work; not sent: %s", sent, #parts > 0 and table.concat(parts, " ") or "none")
+end
+
+function update()
+	if not active() or olr_cfg.sleep_paused() then return end
+	local c = config()
+	local sim = alife()
+	local t = records()
+	for _ = 1, olr_cfg.budget("lives", c.lives_scan_h, c.lives_scan, c.lives_scan_max) do
+		local ids = olr_offline_task.cached_stalkers(COMMS[scan_comm])
+		scan_index = scan_index + 1
+		if scan_index > #ids then
+			scan_index = 0
+			scan_comm = scan_comm % #COMMS + 1
+		else
+			local se = sim:object(ids[scan_index])
+			if se and IsStalker(se) and se:alive() then
+				local rec = rec_of(se, t) or touch(se, "scan")
+				if rec then
+					check(se, rec, t)
+					if rec.s == "exit" and GOALS[rec.g] and GOALS[rec.g].rotate then rotate(se, rec, t) end
+				end
+			end
+		end
+	end
+	if olr_cfg.on("goal_travel") then step_tick(t) end
+	cash_work(t) -- [HE-PORT] 8.38
+	sweep(t)
+	save(t)
+end
+
+-- ---------------------------------------------------------------------------
+-- helpers
+-- ---------------------------------------------------------------------------
+local function line_of(key, rec, se)
+	local n = now()
+	local lvl = se and olr_smart_index.object_level(se) or "?"
+	local extra = ""
+	if rec.g == "cash" then extra = string.format(" earned %d of %d", gained(tonumber(key), rec), rec.tg or 0) end
+	if rec.d then extra = extra .. string.format(" due in %.1f d", ( rec.d - n ) / 86400) end
+	if rec.why then extra = extra .. " (cannot leave: " .. rec.why .. ")" end
+	return string.format("id=%s %s (%s) %s on %s: %s, stage %s, %.1f d old, origin %s%s", key, rec.n, rec.who or "?", se and se:community() or "?",
+		tostring(lvl), rec.g, rec.s, ( n - rec.a ) / 86400, rec.o or "?", extra)
+end
+
+function report()
+	local t = records()
+	local sim = alife()
+	local by, total, exits = {}, 0, {}
+	for key, rec in pairs(t) do
+		if type(rec) == "table" then
+			total = total + 1
+			local k = rec.g .. "/" .. rec.s
+			by[k] = ( by[k] or 0 ) + 1
+			if rec.g == "cash" and rec.s == "go" then
+				table.insert(exits, { key = key, rec = rec, left = ( rec.tg or 0 ) - ( gained(tonumber(key), rec) ) })
+			end
+		end
+	end
+	local list = {}
+	for k, v in pairs(by) do table.insert(list, k .. "=" .. v) end
+	table.sort(list)
+	llog("on=%s records=%d: %s", tostring(active()), total, table.concat(list, " "))
+	local why = {}
+	for k, v in pairs(refused) do table.insert(why, k .. "=" .. v) end
+	llog("not given a goal this session: %s", table.concat(why, " "))
+	local tw = {}
+	for k, v in pairs(travel_why) do table.insert(tw, k .. "=" .. v) end
+	llog("travel %s; steps refused this session: %s", tostring(olr_cfg.on("goal_travel")), table.concat(tw, " "))
+	table.sort(exits, function(a, b) return a.left < b.left end)
+	for i = 1, math.min(5, #exits) do
+		llog("  closest cash: %s", line_of(exits[i].key, exits[i].rec, sim:object(tonumber(exits[i].key))))
+	end
+	for key, rec in pairs(t) do
+		if type(rec) == "table" and rec.s == "exit" then llog("  wants out: %s", line_of(key, rec, sim:object(tonumber(key)))) end
+	end
+	local nxt = olr_store.get("nlc.olr_next_leave")
+	if nxt then llog("next exit try in %.1f h (every %d h)", ( nxt - now() ) / 3600, config().exit_cooldown_h) end
+	for _, p in ipairs(olr_store.get(PAST_KEY) or {}) do
+		llog("  ended day %d: %s, %s, %s on %s", p.day, tostring(p.n), p.g, p.how, tostring(p.lvl))
+	end
+end
+
+-- [HE-PORT] olr_trader_runs.economy(), docs/ALIFE_NEXT_DESIGN.md 8.24: how far the cash goal holders are, by rank tier
+function cash_progress()
+	local sim = alife()
+	local by = {}
+	for key, rec in pairs(records()) do
+		if type(rec) == "table" and rec.g == "cash" and rec.s == "go" and ( rec.tg or 0 ) > 0 then
+			local se = sim:object(tonumber(key))
+			local tier = se and IsStalker(se) and olr_amk_offline.tier_of(se) or "?"
+			local b = by[tier] or { n = 0, share = 0, half = 0, near = 0, tg = 0 }
+			local s = gained(tonumber(key), rec) / rec.tg
+			b.n, b.share, b.tg = b.n + 1, b.share + s, b.tg + rec.tg
+			if s >= 0.5 then b.half = b.half + 1 end
+			if s >= config().near_share then b.near = b.near + 1 end
+			by[tier] = b
+		end
+	end
+	for _, tier in ipairs({ "novice", "experienced", "veteran", "master", "?" }) do
+		local b = by[tier]
+		if b then
+			llog("cash goals, %s: %d holders, target %.0f on average, %.0f%% of it earned on average, %d past half, %d close", tier, b.n,
+				b.tg / b.n, 100 * b.share / b.n, b.half, b.near)
+		end
+	end
+end
+
+function who(lvl)
+	lvl = lvl or level.name()
+	local sim = alife()
+	local n = 0
+	for key, rec in pairs(records()) do
+		local se = type(rec) == "table" and sim:object(tonumber(key))
+		if se and olr_smart_index.object_level(se) == lvl then
+			n = n + 1
+			llog("  %s", line_of(key, rec, se))
+		end
+	end
+	llog("who on %s: %d records", lvl, n)
+end
+
+function show(id)
+	local rec = records()[tostring(id)]
+	if type(rec) ~= "table" then
+		llog("show %s: no record", tostring(id))
+		return
+	end
+	llog("show %s", line_of(tostring(id), rec, alife():object(id)))
+	for k, v in pairs(rec) do llog("    %s = %s", k, tostring(v)) end
+end
+
+function set(id, goal)
+	if not GOALS[goal] then
+		llog("set: no goal '%s'", tostring(goal))
+		return
+	end
+	local se = alife():object(id)
+	local ok, why = can_have(se)
+	if not ok then
+		llog("set %s: he cannot have a goal (%s)", tostring(id), tostring(why))
+		return
+	end
+	local t = records()
+	local rec = rec_of(se, t) or { n = se:name(), who = name_of(se), o = "set" }
+	start(se, rec, goal, "set by hand")
+	t[tostring(id)] = rec
+	save(t)
+end
+
+function advance(id)
+	local se = alife():object(id)
+	local t = records()
+	local rec = se and rec_of(se, t)
+	if not rec then
+		llog("advance %s: no record", tostring(id))
+		return
+	end
+	if rec.g == "cash" then
+		rec.base = earned_of(id) - ( rec.tg or 0 )
+		rec.m0 = money_now(id) - ( rec.tg or 0 )
+	end
+	if rec.d then rec.d = now() end
+	check(se, rec, t)
+	save(t)
+	show(id)
+end
+
+function finish(id, how)
+	how = how or "out"
+	local se = alife():object(id)
+	if how == "dead" and se then
+		on_death(se)
+		return
+	end
+	ended(id, how)
+end
+
+function fill()
+	if not active() then
+		llog("fill: life_goals is off in this preset")
+		return
+	end
+	local sim = alife()
+	local before = 0
+	for _ in pairs(records()) do before = before + 1 end
+	for _, comm in ipairs(COMMS) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local se = sim:object(id)
+			if se and IsStalker(se) and se:alive() then touch(se, "fill") end
+		end
+	end
+	local after = 0
+	for _ in pairs(records()) do after = after + 1 end
+	llog("fill: %d records before, %d now", before, after)
+	report()
+end
+
+function say(id, kind)
+	local se = alife():object(id)
+	local rec = se and rec_of(se)
+	if not rec then
+		llog("say %s: no record", tostring(id))
+		return
+	end
+	local prefix = kind == "near" and "olr_goal_cash_near_" or kind == "obit" and "olr_goal_obit_" .. rec.g .. "_" or "olr_goal_" .. rec.g .. "_" .. ( kind or "start" ) .. "_"
+	llog("say %s: %s lines for %s", tostring(id), tostring(olr_trader_runs.line_total(prefix)), prefix)
+	say_line(prefix, kind == "obit" and nil or rec.who, { name = rec.who, left = "5000" }, true)
+end

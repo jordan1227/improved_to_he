@@ -96,6 +96,7 @@ local function load_templates()
 				anchor = read_str(ini, id, "anchor", nil),
 				corpses = split(read_str(ini, id, "corpses", "")),
 				alpha = read_str(ini, id, "alpha", nil),
+				hold = read_str(ini, id, "hold", "") == "true",
 			}
 			local a = split(read_str(ini, id, "anchor_spawn", ""))
 			t.anchor_section, t.anchor_count = a[1], tonumber(a[2])
@@ -244,6 +245,19 @@ local function sections_awake(t)
 end
 
 -- [HE-PORT] nil when the template may fire, otherwise why not
+-- [HE-PORT] docs/ALIFE_NEXT_DESIGN.md 8.26: an ambush anchored at a smart the story keeps closed, or whose own people
+-- are not in the world yet (the Garbage bandit post sleeps for most of the game), would report bandits that are not
+-- there. Nil if the place is awake
+local function anchor_asleep(name)
+	if not olr_smart_index.is_story_open(name) then return "anchor closed" end
+	local smart = g_sim:object(name)
+	for id in pairs(smart and smart.npc_info or {}) do
+		local se = g_sim:object(id)
+		if se and IsStalker(se) and olr_census.is_dormant_creature(se, true) then return "anchor people asleep" end
+	end
+	return nil
+end
+
 local function blocked_by(t, st, forced)
 	local time_now = now()
 	if not forced then
@@ -262,6 +276,10 @@ local function blocked_by(t, st, forced)
 			local open = olr_cfg.frontier_levels()
 			if open and not open[t.level] then return "frontier" end
 		end
+	end
+	if not forced and t.anchor and g_sim:object(t.anchor) then
+		local asleep = anchor_asleep(t.anchor)
+		if asleep then return asleep end
 	end
 	local problem = giver_problem(t)
 	if problem then return problem end
@@ -311,14 +329,18 @@ local function bind_monster(obj, anchor)
 end
 
 -- [HE-PORT] ambush branch; a rolled rank outside the anchor smart's band is released at once
-local function bind_npc(obj, anchor)
+-- [HE-PORT] hold = true (olr_toll spots): no smart, and a remark scheme that keeps him standing where he was spawned,
+-- watching the player; olr_toll puts an offline member back on the spot
+local HOLD_LOGIC = "[logic]\nactive = remark@hold\n[remark@hold]\nanim = guard\ntarget = actor\n"
+
+local function bind_npc(obj, anchor, hold)
 	if anchor and not olr_smart_index.rank_fits(anchor, obj:community(), obj:rank()) then
 		alife():release(obj, true)
 		return false
 	end
 	local pk = get_netpk(obj)
 	local data = pk:get()
-	data.custom_data = "[smart_terrains]\n" .. (anchor or "none") .. " = true\n"
+	data.custom_data = "[smart_terrains]\n" .. (anchor or "none") .. " = true\n" .. ( hold and HOLD_LOGIC or "" )
 	pk:set(data)
 	return true
 end
@@ -332,7 +354,7 @@ local function spawn_all(t, points)
 			if IsMonster(obj) then
 				bind_monster(obj, t.anchor)
 				table.insert(members, { id = obj.id, sec = p.section })
-			elseif bind_npc(obj, t.anchor) then
+			elseif bind_npc(obj, t.anchor, t.hold) then
 				table.insert(members, { id = obj.id, sec = p.section })
 			end
 		end
@@ -581,6 +603,60 @@ function tracked_ids()
 	local out = {}
 	for _, m in ipairs(get_state().tracked or {}) do out[m.id] = true end
 	return out
+end
+
+-- [HE-PORT] olr_toll: an encounter group and its template
+function members_of(tid)
+	local out = {}
+	for _, m in ipairs(get_state().tracked or {}) do
+		if m.tid == tid and not m.corpse then table.insert(out, m.id) end
+	end
+	return out
+end
+
+function template_tier(tid)
+	load_templates()
+	return templates[tid] and templates[tid].tier
+end
+
+function template_level(tid)
+	load_templates()
+	return templates[tid] and templates[tid].level
+end
+
+-- the first spawn point: { section, count, pos = {x,y,z}, lv, gv }
+function template_spot(tid)
+	load_templates()
+	return templates[tid] and templates[tid].spawn[1]
+end
+
+function template_anchor(tid)
+	load_templates()
+	return templates[tid] and templates[tid].anchor
+end
+
+-- a spot the player cleared stays quiet longer
+function extend_cooldown(tid, minutes)
+	local st = get_state()
+	st.cool[tid] = math.max(st.cool[tid] or 0, now() + minutes)
+	put_state(st)
+end
+
+-- a member moves to another template's group, or leaves the encounter for good (no ttl release)
+function retag(id, tid)
+	local st = get_state()
+	for _, m in ipairs(st.tracked) do
+		if m.id == id then m.tid = tid end
+	end
+	put_state(st)
+end
+
+function untrack(id)
+	local st = get_state()
+	for i = #st.tracked, 1, -1 do
+		if st.tracked[i].id == id then table.remove(st.tracked, i) end
+	end
+	put_state(st)
 end
 
 -- [HE-PORT] news_main.on_offline_death: the name for the giver's line; the tick sees the death itself

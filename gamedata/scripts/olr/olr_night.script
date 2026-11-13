@@ -29,11 +29,11 @@ local function nlog(fmt, ...)
 end
 
 local function get_state()
-	return get_value(KEY) or { out = {}, done = {} }
+	return olr_store.get(KEY) or { out = {}, done = {} }
 end
 
 local function put_state(st)
-	set_value(KEY, st)
+	olr_store.put(KEY, st)
 end
 
 local function is_night()
@@ -76,6 +76,19 @@ local function hunters(st, lvl)
 	return out, skipped
 end
 
+-- [HE-PORT] the carrion ledger (olr_reactive) sends mutants out too: is this one out, and record one going out
+function is_out(id)
+	return get_state().out[tostring(id)] ~= nil
+end
+
+-- back_at: game seconds before which he stays (a daytime move); nil goes home at dawn with the rest
+function note_out(se, to, back_at)
+	local st = get_state()
+	local pos = se.position
+	st.out[tostring(se.id)] = { sec = se:section_name(), to = to, x = pos.x, y = pos.y, z = pos.z, lv = se.m_level_vertex_id, gv = se.m_game_vertex_id, back_at = back_at }
+	put_state(st)
+end
+
 local function camps_on(lvl)
 	local list = {}
 	-- the camp list only has the hubs: wherever people are is a camp tonight
@@ -91,6 +104,10 @@ local function camps_on(lvl)
 		if smart then table.insert(list, smart.position) end
 	end
 	return list
+end
+
+function camp_points(lvl)
+	return camps_on(lvl)
 end
 
 -- smarts near this lair that are not a camp, or close to one
@@ -124,7 +141,7 @@ local function say_night(st, lvl, smart)
 		return
 	end
 	st.news_next = n + c.night_news_cd_h * 3600
-	local where = news_main.localized_where(lvl, smart.position)
+	local where = news_main.where_text(lvl, smart.position)
 	local text = string.gsub(game.translate_string(key), "%$where", function() return where end)
 	sak.send_tip(text, olr_trader_runs.other_name(), 0, 15, "default", "pda_news", "gray")
 	nlog("line %s, %s", key, where)
@@ -182,7 +199,9 @@ local function go_home(st, limit)
 	for key, rec in pairs(st.out) do
 		if done >= limit then break end
 		local se = sim:object(tonumber(key))
-		if not ( se and IsMonster(se) and se:alive() and se:section_name() == rec.sec ) or not rec.x then
+		if rec.back_at and timers.Get_Game_Seconds() < rec.back_at then
+			-- a daytime carrion move: not yet
+		elseif not ( se and IsMonster(se) and se:alive() and se:section_name() == rec.sec ) or not rec.x then
 			nlog("id=%s %s did not see the morning", key, rec.sec)
 			st.out[key] = nil
 		elseif not se.online then
@@ -200,9 +219,18 @@ local function go_home(st, limit)
 end
 
 function update()
-	if not ( db.actor and olr_cfg.on("night_instincts") ) then return end
+	-- [HE-PORT] carrion movers (olr_reactive) come home through go_home too, so it runs with either key on
+	local nights = olr_cfg.on("night_instincts")
+	if not ( db.actor and ( nights or olr_cfg.on("carrion") ) ) then return end
 	olr_smart_index.ensure()
 	local st = get_state()
+	if not nights then
+		if next(st.out) then
+			go_home(st, config().night_home_per_tick)
+			put_state(st)
+		end
+		return
+	end
 	if not is_night() then
 		if next(st.out) then
 			go_home(st, config().night_home_per_tick)

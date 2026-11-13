@@ -55,12 +55,12 @@ local function now()
 end
 
 local function state()
-	if not cur then cur = get_value(KEY) or {} end
+	if not cur then cur = olr_store.get(KEY) or {} end
 	return cur
 end
 
 local function save()
-	set_value(KEY, cur)
+	olr_store.put(KEY, cur)
 end
 
 function is_member(id)
@@ -77,7 +77,7 @@ local function say(prefix, p, who)
 		plog("no text for %s", prefix)
 		return
 	end
-	local where = news_main.localized_where(p.level, vector():set(p.x, p.y, p.z))
+	local where = news_main.where_text(p.level, vector():set(p.x, p.y, p.z))
 	local text = game.translate_string(key)
 	text = string.gsub(text, "%$where", function() return where end)
 	text = string.gsub(text, "%$name", function() return p.prey_name or "" end)
@@ -129,15 +129,27 @@ local function pick_lair(region)
 				for _, pos in ipairs(spots) do
 					if pos:distance_to(smart.position) <= c.patrol_lair_dist then n = n + 1 end
 				end
-				if n >= c.patrol_lair_min then table.insert(list, { name = rec.name, level = lvl, smart = smart, n = n }) end
+				if n >= c.patrol_lair_min then
+					-- [HE-PORT] 8.35: a lair with real loose artefacts near it is worth more of a walk
+					local arts = olr_offline_hunts.arts_near and olr_offline_hunts.arts_near(lvl, smart.position) or 0
+					table.insert(list, { name = rec.name, level = lvl, smart = smart, n = n, arts = arts, w = n + c.patrol_art_weight * arts })
+				end
 			end
 		end
 	end
 	plog("lairs near here: %d", #list)
-	-- in random order, a few at most: not every lair has somewhere friendly to gather
+	-- weighted by prey and artefacts, a few at most: not every lair has somewhere friendly to gather
 	local out = {}
 	for _ = 1, math.min(#list, 5) do
-		local pick = table.remove(list, math.random(#list))
+		local sum = 0
+		for _, l in ipairs(list) do sum = sum + l.w end
+		local r, k = math.random() * sum, #list
+		for i, l in ipairs(list) do
+			r = r - l.w
+			if r <= 0 then k = i break end
+		end
+		local pick = table.remove(list, k)
+		plog("lair %s on %s: %d prey, %d artefacts near", pick.name, pick.level, pick.n, pick.arts)
 		local pos = pick.smart.position
 		table.insert(out, { kind = "raid", lair = pick.name, level = pick.level, x = pos.x, y = pos.y, z = pos.z, lv = pick.smart.m_level_vertex_id, count = pick.n })
 	end
@@ -154,6 +166,7 @@ local function may_join(se, allowed)
 	-- only those with no written part: scripted camps (bar_dolg_bunker, dsc_dolg_sniper, Bes and Seryi) stay out
 	if string.sub(se:section_name(), 1, 4) ~= "olr_" and not string.find(se:name(), "_respawn", 1, true) then return false end
 	if olr_trader_runs.on_run(se.id) or olr_protected.is_no_offline_alife_obj(se:name()) then return false end
+	if olr_daytrips.is_out and olr_daytrips.is_out(se.id) then return false end -- [HE-PORT] review 8.43 R2
 	if se:rank() < config().patrol_min_rank or se:health() < config().patrol_min_health then return false end
 	if not allowed[olr_smart_index.object_level(se)] then return false end
 	local sid = se:smart_terrain_id()
@@ -170,7 +183,10 @@ local function pick_from(comms, allowed, want, x, z)
 			local se = sim:object(id)
 			if may_join(se, allowed) then
 				local dx, dz = se.position.x - x, se.position.z - z
-				table.insert(list, { se = se, score = math.sqrt(dx * dx + dz * dz) - se:rank() * 0.2 + math.random(200) })
+				local saver = olr_lives.goal_name and olr_lives.goal_name(se) == "cash" and config().patrol_cash_pref or 0 -- [HE-PORT] 8.38
+				local vet = olr_amk_offline.tier_of(se)
+				vet = ( vet == "veteran" or vet == "master" ) and config().patrol_vet_pref or 0 -- [HE-PORT] 8.42
+				table.insert(list, { se = se, score = math.sqrt(dx * dx + dz * dz) - se:rank() * 0.2 + math.random(200) - saver - vet })
 			end
 		end
 	end
@@ -243,10 +259,16 @@ local function send_home(id, m)
 		plog("%s id=%d is on his own now", se:name(), id)
 		return
 	end
+	if m.moved then se:brain():can_choose_alife_tasks(true) end -- [HE-PORT] 8.36
 	if m.home and olr_smart_index.attach_checked(se, m.home) then
 		plog("%s id=%d goes back to %s", se:name(), id, m.home)
+	elseif m.home and olr_trader_runs.party_home(se, m.home) then
+		-- [HE-PORT] 8.38: a camp next to his own (the soak left three men at the target with no smart)
+		plog("%s id=%d: %s will not have him back, he goes to a camp near it", se:name(), id, m.home)
 	else
-		plog("%s id=%d: %s will not have him back, left as he is", se:name(), id, tostring(m.home))
+		local lvl = olr_smart_index.object_level(se)
+		local name = lvl and bind_near(se, lvl, se.position.x, se.position.z)
+		plog("%s id=%d: %s will not have him back, nearest camp here on %s: %s", se:name(), id, tostring(m.home), tostring(lvl), tostring(name or "none, the game picks one"))
 	end
 	olr_trader_runs.haul_ready_now(id)
 end
@@ -260,20 +282,47 @@ local function notify(event, p, result)
 end
 
 local function finish(p, result)
+	local sellers = {} -- [HE-PORT] review 8.43 R1
 	notify("party_end", p, result)
 	plog("%s party on %s over: %s", p.kind, p.level, result)
+	-- [HE-PORT] 8.35: after a win the survivors pick up the real loose artefacts near where they fought (offline only)
+	if result == "won" and p.lx and olr_offline_hunts.loot_near then
+		local takers = {}
+		for key in pairs(p.members) do
+			local se = alife():object(tonumber(key))
+			if se and IsStalker(se) and se:alive() and not se.online and olr_smart_index.object_level(se) == p.level then table.insert(takers, se) end
+		end
+		local got = olr_offline_hunts.loot_near(p.level, vector():set(p.lx, p.ly, p.lz), takers)
+		-- [HE-PORT] 8.41: a won party rolls a find too, given to one of the survivors (into his bag)
+		if #takers > 0 and olr_daytrips.find_art and math.random(100) <= config().patrol_find_chance then
+			local who = takers[math.random(#takers)]
+			local sec = olr_daytrips.find_art(who, config().patrol_second_chance)
+			if sec then table.insert(got, { who = who, sec = sec }) end
+		end
+		local names = {}
+		for _, g in ipairs(got) do table.insert(names, g.who:name() .. " " .. g.sec) end
+		plog("loot: %s", #names > 0 and table.concat(names, ", ") or "no loose artefacts near, or nobody offline to take them")
+		for _, g in ipairs(got) do table.insert(sellers, g.who) end
+	end
 	if p.kind ~= "test" then
 		-- those who came back with fewer men say it differently; plain lines if there are none
 		local line = "olr_patrol_" .. result .. "_" .. p.kind .. "_"
 		local hurt = "olr_patrol_" .. result .. "_hurt_" .. p.kind .. "_"
 		if ( p.deaths or 0 ) > 0 and olr_trader_runs.line_total(hurt) > 0 then line = hurt end
-		plog("%d men lost, line set %s", p.deaths or 0, line)
-		say(line, p)
+		-- [HE-PORT] truth audit E3: "gone" = the prey was dead or gone before they fought it. Without its own lines an
+		-- empty lair still reads as cleared; an alpha someone else killed gets no line
+		if result == "gone" and olr_trader_runs.line_total(line) == 0 then
+			line = p.kind == "raid" and ( "olr_patrol_won_" .. p.kind .. "_" ) or nil
+		end
+		plog("%d men lost, line set %s", p.deaths or 0, tostring(line))
+		if line then say(line, p) end
 	end
 	local members = p.members
 	state().p = nil
 	if p.kind ~= "test" then
 		for key, m in pairs(members) do send_home(tonumber(key), m) end
+		-- [HE-PORT] review 8.43 R1: no longer members, so a run is allowed now
+		for _, who in ipairs(sellers) do olr_trader_runs.after_buy(who) end
 		local c = config()
 		cur.next = now() + math.random(c.patrol_cd_min_h, c.patrol_cd_max_h) * 3600
 	end
@@ -282,26 +331,27 @@ local function finish(p, result)
 end
 
 -- a friendly place to gather; the reasons others were passed over go to the log
-local function find_rally(t)
+local function find_rally(t, lvl)
 	local c = config()
-	local min2 = c.patrol_rally_dist * c.patrol_rally_dist
+	lvl = lvl or t.level
+	local min2 = lvl == t.level and c.patrol_rally_dist * c.patrol_rally_dist or 0
 	local why = { close = 0, lair = 0, closed = 0, enemies = 0, mutants = 0, you = 0 }
-	for _, rec in ipairs(olr_smart_index.smarts_near(t.level, t.x, t.z)) do
+	for _, rec in ipairs(olr_smart_index.smarts_near(lvl, t.x, t.z)) do
 		local smart = olr_smart_index.get_obj(rec.name)
 		if smart then
 			if rec.d < min2 then why.close = why.close + 1
 			elseif string.find(rec.name, "lair", 1, true) then why.lair = why.lair + 1
 			elseif not olr_smart_index.is_story_open(rec.name) or olr_smart_index.is_locked(rec.name) then why.closed = why.closed + 1
-			elseif t.level == level.name() and smart.position:distance_to(db.actor:position()) <= NEAR_ACTOR then why.you = why.you + 1
-			elseif enemies_around(smart, t.level) then why.enemies = why.enemies + 1
-			elseif mutants_around(smart, t.level) then why.mutants = why.mutants + 1
+			elseif lvl == level.name() and smart.position:distance_to(db.actor:position()) <= NEAR_ACTOR then why.you = why.you + 1
+			elseif enemies_around(smart, lvl) then why.enemies = why.enemies + 1
+			elseif mutants_around(smart, lvl) then why.mutants = why.mutants + 1
 			else
 				plog("gathering at %s; passed over: %d too close, %d lairs, %d closed, %d near you, %d with enemies, %d with mutants", rec.name, why.close, why.lair, why.closed, why.you, why.enemies, why.mutants)
 				return smart
 			end
 		end
 	end
-	plog("nowhere to gather on %s: %d too close, %d lairs, %d closed, %d near you, %d with enemies, %d with mutants", t.level, why.close, why.lair, why.closed, why.you, why.enemies, why.mutants)
+	plog("nowhere to gather on %s: %d too close, %d lairs, %d closed, %d near you, %d with enemies, %d with mutants", lvl, why.close, why.lair, why.closed, why.you, why.enemies, why.mutants)
 	return nil
 end
 
@@ -328,6 +378,20 @@ local function spawn_man(comm, pos, lv, gv)
 	return se
 end
 
+-- [HE-PORT] 8.36: why a rally smart turned a recruit down (every soak so far: all of them, so every party was spawned men)
+local function why_not(smart, se)
+	if smart.disabled then return "disabled" end
+	if not smart:is_gulag_available() then return "no gulag" end
+	if smart.population_locked then return "population locked" end
+	if smart:obj_accepts_smart_terrain(se) == 0 then return "his smart conditions" end
+	if he_mil_dolg_base.denies(smart, se) then return "base denies" end
+	if smart.gulag:get_non_exclusive_population() >= smart.gulag.capacity_non_exclusive then
+		return string.format("full %d/%d", smart.gulag:get_non_exclusive_population(), smart.gulag.capacity_non_exclusive)
+	end
+	if not smart.gulag:is_there_any_suitable_job(smart:fill_npc_info(se), false) then return "no job for him" end
+	return "community, rank or level rules"
+end
+
 local function add_spawned(t, comm, pos, lv, gv, idx)
 	local se = spawn_man(comm, pos, lv, gv)
 	if not se then return nil end
@@ -351,8 +415,23 @@ local function start(t)
 	t.due = n + c.patrol_gather_h * 3600
 	t.deadline = n + c.patrol_deadline_h * 3600
 	local rally = find_rally(t)
+	t.rlevel = t.level
+	if not rally then
+		-- [HE-PORT] 8.35: one hop at most, e.g. gather at the army warehouses for a Red Forest raid
+		local front = olr_cfg.frontier_levels()
+		for nl in pairs(olr_smart_index.neighbour_levels(t.level)) do
+			if ( not front or front[nl] ) and not olr_cfg.level_closed(nl) then
+				rally = find_rally(t, nl)
+				if rally then
+					t.rlevel = nl
+					break
+				end
+			end
+		end
+	end
 	if not rally then return false end
 	t.rally, t.rx, t.ry, t.rz, t.rlv = rally:name(), rally.position.x, rally.position.y, rally.position.z, rally.m_level_vertex_id
+	t.lx, t.ly, t.lz = t.x, t.y, t.z -- [HE-PORT] 8.35: where the loot is looked for after a win
 	-- is_member must hold before the smart is asked, so that it takes them as travellers
 	state().p = t
 	local sim = alife()
@@ -367,8 +446,18 @@ local function start(t)
 			idx = idx + 1
 			if se:community() == "dolg" then duty = duty + 1 else hunters = hunters + 1 end
 			plog("%s id=%d rank=%d %s from %s heads for %s", se:name(), se.id, se:rank(), se:community(), home and home:name() or "no smart", t.rally)
+		elseif not se.online then
+			-- [HE-PORT] 8.36: the smart will not take him; he joins without one, at the rally (unseen, he is offline)
+			local why = why_not(rally, se)
+			xrs_utils.clear_smart_terrain(se)
+			se:brain():can_choose_alife_tasks(false)
+			alife():teleport_object(se.id, rally.position, rally.m_level_vertex_id, rally.m_game_vertex_id)
+			t.members[key].moved = true
+			idx = idx + 1
+			if se:community() == "dolg" then duty = duty + 1 else hunters = hunters + 1 end
+			plog("%s id=%d rank=%d %s from %s joins at %s without its smart (%s)", se:name(), se.id, se:rank(), se:community(), home and home:name() or "no smart", t.rally, why)
 		else
-			plog("%s id=%d: %s will not have him, he stays out", se:name(), se.id, t.rally)
+			plog("%s id=%d: %s will not have him (%s), he stays out", se:name(), se.id, t.rally, why_not(rally, se))
 			t.members[key] = nil
 		end
 	end
@@ -389,14 +478,15 @@ local function start(t)
 	end
 	best_leader(t)
 	save()
-	plog("%s party gathers at %s on %s, %d men (%d Duty, %d hunters), leader id=%d, target %.0f,%.0f", t.kind, t.rally, t.level, idx, duty, hunters, t.leader, t.x, t.z)
+	plog("%s party gathers at %s on %s, %d men (%d Duty, %d hunters), leader id=%d, target on %s %.0f,%.0f", t.kind, t.rally, t.rlevel, idx, duty, hunters, t.leader, t.level, t.x, t.z)
 	notify("party_start", t)
 	say("olr_patrol_start_" .. t.kind .. "_", t, t.members[tostring(t.leader)].who)
 	return true
 end
 
 function try_start(kind)
-	local region = olr_smart_index.region_levels()
+	-- [HE-PORT] 8.35: every open party level, not only the player's and its neighbours (lairs elsewhere count too)
+	local region = olr_cfg.frontier_levels() or olr_smart_index.region_levels()
 	if not region then return false end
 	local t = nil
 	if kind ~= "raid" and ( kind == "alpha" or math.random(100) <= config().patrol_alpha_chance ) then t = pick_alpha(region) end
@@ -615,9 +705,9 @@ local function resolve(p)
 		local list = lair_mutants(p)
 		prey = list[1]
 		hard = #list * 1.2
-		if #list == 0 then return finish(p, "won") end
+		if #list == 0 then return finish(p, "gone") end
 	end
-	if not prey then return finish(p, "won") end
+	if not prey then return finish(p, "gone") end
 	local chance = math.max(c.patrol_chance_min, math.min(c.patrol_chance_max, 100 * power / ( power + hard )))
 	local won = math.random(100) <= chance
 	-- not won: most often beaten with losses, sometimes driven off with hardly a scratch on either side
@@ -665,6 +755,8 @@ end
 local function begin_hunt(p)
 	local n = now()
 	local c = config()
+	-- [HE-PORT] everyone was already at the rally point: the gathering line went out a moment ago, so no second line
+	local quick = p.stage == "gather" and p.due ~= nil and p.due - n > ( c.patrol_gather_h - 1 ) * 3600
 	p.stage = "hunt"
 	p.due = n + c.patrol_hunt_h * 3600
 	p.deadline = n + c.patrol_deadline_h * 3600
@@ -680,7 +772,11 @@ local function begin_hunt(p)
 	end
 	save()
 	plog("%s party moves out with %d men", p.kind, idx)
-	say("olr_patrol_out_" .. p.kind .. "_", p, p.members[tostring(p.leader)] and p.members[tostring(p.leader)].who)
+	if quick then
+		plog("they were all at the rally point already: no move-out line")
+	else
+		say("olr_patrol_out_" .. p.kind .. "_", p, p.members[tostring(p.leader)] and p.members[tostring(p.leader)].who)
+	end
 end
 
 local function drop_dead(p)
@@ -711,7 +807,7 @@ local function gather_tick(p, n)
 	for key in pairs(p.members) do
 		local se = sim:object(tonumber(key))
 		total = total + 1
-		if se and olr_smart_index.object_level(se) == p.level and se.position:distance_to(rally) <= config().patrol_arrive_dist then
+		if se and olr_smart_index.object_level(se) == ( p.rlevel or p.level ) and se.position:distance_to(rally) <= config().patrol_arrive_dist then
 			here = here + 1
 		end
 	end
@@ -720,7 +816,7 @@ local function gather_tick(p, n)
 	if here < 2 then return finish(p, "called") end
 	for key, m in pairs(p.members) do
 		local se = sim:object(tonumber(key))
-		if se and not ( olr_smart_index.object_level(se) == p.level and se.position:distance_to(rally) <= config().patrol_arrive_dist ) then
+		if se and not ( olr_smart_index.object_level(se) == ( p.rlevel or p.level ) and se.position:distance_to(rally) <= config().patrol_arrive_dist ) then
 			plog("%s id=%s did not make it", se:name(), key)
 			p.members[key] = nil
 			if tonumber(key) == p.leader then p.leader = nil end
@@ -740,7 +836,21 @@ local function hunt_tick(p, n)
 			if not ( a and IsMonster(a) and a:alive() ) then
 				-- as after a raid: they see to the body, then go back together
 				p.clear = now()
-				plog("'%s' is dead, they see to the body and hold together", tostring(p.prey_name))
+				-- [HE-PORT] truth audit E3: dead before the party got there means someone else killed it
+				p.clear_by = p.reached and "party" or "other"
+				p.lx, p.ly, p.lz = p.x, p.y, p.z -- [HE-PORT] 8.35: loot where it fell
+				-- [HE-PORT] review 8.30 R9: online, they shoot it from range before the leader is within reach
+				if p.clear_by == "other" then
+					local at = vector():set(p.x, p.y, p.z)
+					for key in pairs(p.members) do
+						local m = sim:object(tonumber(key))
+						if m and m.online and m.position:distance_to(at) <= 60 then
+							p.clear_by = "party"
+							break
+						end
+					end
+				end
+				plog("'%s' is dead (%s), they see to the body and hold together", tostring(p.prey_name), p.clear_by == "party" and "they were there" or "before they got there")
 			elseif olr_smart_index.object_level(a) ~= p.level then
 				return finish(p, "trail")
 			else
@@ -765,6 +875,10 @@ local function hunt_tick(p, n)
 		end
 	end
 	if p.kind == "test" and p.reached and now() - p.reached >= 120 then return finish(p, "done") end
+	-- [HE-PORT] 8.35: they gathered on another level; no walk back across, everyone goes home from here
+	if p.clear and p.rlevel and p.rlevel ~= p.level and now() - p.clear >= config().patrol_linger_h * 3600 then
+		return finish(p, p.clear_by == "other" and "gone" or "won")
+	end
 	-- looting comes before the walk in the planner, so holding them does not stop it
 	if p.clear and not p.returning and now() - p.clear >= config().patrol_linger_h * 3600 then
 		p.returning = true
@@ -774,10 +888,11 @@ local function hunt_tick(p, n)
 		plog("they walk back to the gathering place together")
 		save()
 	end
-	if p.returning and ( p.reached or p.spooked ) then return finish(p, "won") end
+	local back = p.clear_by == "other" and "gone" or "won"
+	if p.returning and ( p.reached or p.spooked ) then return finish(p, back) end
 	if n >= p.deadline then return finish(p, "trail") end
 	if online or n < p.due then return end
-	if p.returning then return finish(p, "won") end
+	if p.returning then return finish(p, back) end
 	if p.level == level.name() and vector():set(p.x, p.y, p.z):distance_to(db.actor:position()) <= NEAR_ACTOR then return end
 	resolve(p)
 end

@@ -4,13 +4,22 @@
 -- Deaths reach news, reactive life and the alpha counters from there. Log: [olr_hunts].
 -- fl olr_offline_hunts.report()          when the next one is due, counts so far this session
 -- fl olr_offline_hunts.force()           one fight now on any level but this one, logged in full
+-- fl olr_offline_hunts.go_last()         teleport to where the last hunt was fought (bodies and loot are there)
+-- fl olr_offline_hunts.force_lair()      a camp group checks a lair near it now (any level but this one)
+-- Who hunts: a stalker on the move (40 m or more from his smart, or with none) goes for mutants within hunt_radius, the
+-- fight closing in to hunt_engage_m; a man at his camp only fights what comes within hunt_camp_radius of him. Camp people
+-- go out instead as a lair check: lair_per_day times a day a camp group of two or more looks at mutants within
+-- lair_radius, weighs the odds, goes there (unseen) and fights, and the survivors walk home lair_back_h later.
 
 local INI_PATH = "misc\\olr_alife.ltx"
 local KEY = "nlc.olr_hunt_next"
 local WOUNDED_KEY = "nlc.olr_hunt_wounded"
+local LAIR_KEY = "nlc.olr_lair_next"
+local OUT_KEY = "nlc.olr_lair_out"
 local COMMS = { "stalker", "green", "dolg", "freedom", "ecolog", "killer", "bandit" }
 
 local cfg = nil
+local last = nil
 local fights, dead_stalkers, dead_mutants = 0, 0, 0
 
 local function config()
@@ -40,13 +49,13 @@ local function usable(se)
 	return not ( olr_protected.is_no_offline_alife_obj(se:name()) or he_quest_target_lock.is_locked_id(se.id) )
 end
 
-local function mutants_near(se, lvl, kept)
+local function mutants_near(se, lvl, kept, radius)
 	local c = config()
 	local sim = alife()
 	local out = {}
 	for _, id in ipairs(olr_offline_task.cached_monsters()) do
 		local m = sim:object(id)
-		if m and IsMonster(m) and m:alive() and not m.online and not kept[id] and not string.find(m:section_name(), c.hunt_skip, 1, true) and m.position:distance_to(se.position) <= c.hunt_radius
+		if m and IsMonster(m) and m:alive() and not m.online and not kept[id] and not string.find(m:section_name(), c.hunt_skip, 1, true) and m.position:distance_to(se.position) <= ( radius or c.hunt_radius )
 			and olr_smart_index.object_level(m) == lvl and m:can_switch_online() and not olr_protected.is_protected_monster(m)
 		then
 			table.insert(out, { id = id, name = m:name() })
@@ -70,6 +79,32 @@ local function friends_near(se, lvl)
 	return out
 end
 
+-- [HE-PORT] the part a hunter carves from an offline kill: into his bag and AMK's list of it (process_trade sells
+-- only what is on that list), at a random condition. The corpse is marked stripped in the part-claim ledger, so the
+-- player cannot carve the same body again (monster_parts.strip_foreign_parts).
+local function carve(monster, taker, why)
+	if olr_protected.is_protected_monster(monster) then return nil end
+	local part = monster_parts.get_monster_part(monster:section_name())
+	if not ( part and part ~= "" and system_ini():section_exist(part) ) then return nil end
+	local it = misc.spawn_to(part, taker)
+	misc.process_spawn()
+	if not it then return nil end
+	local a, b = string.match(tostring(config().hunt_part_cond), "([%d%.]+)%s*,%s*([%d%.]+)")
+	a, b = tonumber(a) or 0.4, tonumber(b) or 0.9
+	local cond = a + math.random() * ( b - a )
+	params.post_cond_check(it.id, cond)
+	local list = amk_offline_alife.items[taker.id]
+	if not list then
+		list = {}
+		amk_offline_alife.items[taker.id] = list
+	end
+	table.insert(list, { id = it.id, name = it:name() })
+	monster_parts.set_claim(monster.id, { o = "npc", k = taker.id, n = taker:name(), c = taker:community(),
+		t = timers.Get_Game_Seconds(), ps = part, strip = true, cn = monster:name() })
+	hlog("%s id=%d carves %s (%.2f) from %s id=%d (%s)", taker:name(), taker.id, part, cond, monster:section_name(), monster.id, why)
+	return it
+end
+
 -- amk_offline_alife calls this at each mutant's death: who gets what it carried
 function on_kill(monster, killer, team)
 	local taker = killer
@@ -85,9 +120,10 @@ function on_kill(monster, killer, team)
 		local carried = amk_offline_alife.items[monster.id]
 		local part = monster_parts.get_monster_part(monster:section_name())
 		if not ( carried and next(carried) ) and part and part ~= "" then
-			misc.spawn_to(part, taker)
-			misc.process_spawn()
+			carve(monster, taker, "alpha")
 		end
+	elseif math.random(100) <= config().hunt_part_chance then
+		carve(monster, taker, "hunt")
 	end
 	hlog("%s id=%d killed by %s id=%d, %s takes what it had", monster:section_name(), monster.id, killer:name(), killer.id, taker:name())
 	return taker
@@ -95,25 +131,43 @@ end
 
 -- nothing heals a stalker offline: those a fight left hurt get better a little at each hunt tick
 function note_wounded(se, friends)
-	local list = get_value(WOUNDED_KEY) or {}
+	local list = olr_store.get(WOUNDED_KEY) or {}
 	list[tostring(se.id)] = true
 	for _, f in ipairs(friends) do list[tostring(f.id)] = true end
-	set_value(WOUNDED_KEY, list)
+	olr_store.put(WOUNDED_KEY, list)
 end
 
 local function heal_tick()
-	local list = get_value(WOUNDED_KEY)
+	local list = olr_store.get(WOUNDED_KEY)
 	if not list then return end
 	local sim = alife()
 	for key in pairs(list) do
 		local se = sim:object(tonumber(key))
 		if not ( se and IsStalker(se) and se:alive() ) or se:health() >= 1 then
 			list[key] = nil
-		elseif not se.online then
+		elseif not se.online and not olr_trader_runs.use_medkit(se) then -- [HE-PORT] 8.37: a medkit first, if he has one
 			amk_offline_alife.set_npc_health(se, math.min(1, se:health() + config().hunt_heal))
 		end
 	end
-	set_value(WOUNDED_KEY, list)
+	olr_store.put(WOUNDED_KEY, list)
+end
+
+-- [HE-PORT] truth audit C6/C7: who was in the fight, by id, so "$name did not come back" names one who fell
+local function names_of(se, friends)
+	local out = { [se.id] = olr_trader_runs.display_name(se) or se:name() }
+	for _, f in ipairs(friends or {}) do
+		local o = f.id and alife():object(f.id)
+		if o then out[f.id] = olr_trader_runs.display_name(o) or o:name() end
+	end
+	return out
+end
+
+local function fallen_of(names)
+	for id, nm in pairs(names) do
+		local o = alife():object(id)
+		if not ( o and IsStalker(o) and o:alive() ) then return nm end
+	end
+	return nil
 end
 
 local function fight(forced)
@@ -129,16 +183,28 @@ local function fight(forced)
 			tried = tried + 1
 			local lvl = olr_smart_index.object_level(se)
 			if lvl and lvl ~= here then
-				local monsters = mutants_near(se, lvl, kept)
-				if #monsters > 0 then
-					local friends = friends_near(se, lvl)
-					local size_a, died_a, size_b, died_b = amk_offline_alife.on_monsters_found(se, { hunt = true, damage_k = c.hunt_damage_k, friends = friends, monsters = monsters })
+				local moving = olr_amk_offline.is_on_the_move(se)
+				local engage = moving and c.hunt_engage_m or nil
+				local monsters = mutants_near(se, lvl, kept, moving and c.hunt_radius or c.hunt_camp_radius)
+				local friends = #monsters > 0 and friends_near(se, lvl)
+				local ka, kb = olr_amk_offline.fight_k(c.hunt_damage_k)
+				if friends and not olr_amk_offline.weigh_fight(se, friends, monsters, ka, moving and "hunt" or "camp", kb, engage) then
+					hlog("%s id=%d on %s (%s) backs off from %d mutants", se:name(), se.id, lvl, moving and "on the move" or "at his camp", #monsters)
+				elseif friends then
+					local names = names_of(se, friends)
+					local size_a, died_a, size_b, died_b = amk_offline_alife.on_monsters_found(se, { hunt = true, damage_k = ka, monster_k = kb, engage_m = engage, friends = friends, monsters = monsters })
 					fights = fights + 1
+					local m1 = sim:object(monsters[1].id)
+					local at = m1 or se
+					last = { lvl = lvl, lv = at.m_level_vertex_id, gv = at.m_game_vertex_id, pos = vector():set(at.position.x, at.position.y, at.position.z) }
 					note_wounded(se, friends)
 					dead_stalkers = dead_stalkers + ( died_a or 0 )
 					dead_mutants = dead_mutants + ( died_b or 0 )
 					hlog("fight on %s: %s id=%d rank=%d with %d friends vs %d mutants: %s of %s stalkers dead, %s of %s mutants dead", lvl, se:name(), se.id, se:rank(), #friends, #monsters,
 						tostring(died_a), tostring(size_a), tostring(died_b), tostring(size_b))
+					local fallen = ( died_a or 0 ) > 0 and fallen_of(names) or nil
+					olr_digest.note("hunt", lvl, { se = se, name = fallen, pos = last.pos, bad = ( died_a or 0 ) > 0 }) -- [HE-PORT]
+					olr_trader_runs.after_hunt(se) -- [HE-PORT] parts to a trader now, if worth it
 					return true
 				end
 			end
@@ -148,21 +214,317 @@ local function fight(forced)
 	return false
 end
 
+-- ---------------------------------------------------------------------------
+-- lair checks: a camp group goes out to a lair near it, unseen, and comes home later
+-- ---------------------------------------------------------------------------
+local function unseen(se)
+	if se.online then return false end
+	if olr_smart_index.object_level(se) ~= level.name() then return true end
+	local _, outer = olr_cfg.switch_radii()
+	return se.position:distance_to(db.actor:position()) > outer
+end
+
+local function lair_check(forced)
+	local c = config()
+	local sim = alife()
+	local here = level.name()
+	local kept = news_encounters.tracked_ids()
+	local looked = 0
+	for _ = 1, c.hunt_tries do
+		local ids = olr_offline_task.cached_stalkers(COMMS[math.random(#COMMS)])
+		local se = #ids > 0 and sim:object(ids[math.random(#ids)])
+		local lvl = se and usable(se) and not olr_amk_offline.is_on_the_move(se) and olr_smart_index.object_level(se)
+		if lvl and lvl ~= here then
+			local mates = friends_near(se, lvl)
+			if #mates >= c.lair_min_mates then
+				local monsters = mutants_near(se, lvl, kept, c.lair_radius)
+				looked = looked + 1
+				if #monsters >= c.lair_min_mutants then
+					local ka, kb = olr_amk_offline.fight_k(c.hunt_damage_k)
+					if not olr_amk_offline.weigh_fight(se, mates, monsters, ka, "lair", kb, c.hunt_engage_m) then
+						hlog("lair check on %s: %s id=%d and %d mates look at %d mutants and leave them be", lvl, se:name(), se.id, #mates, #monsters)
+						return false
+					end
+					local m = sim:object(monsters[1].id)
+					local out = olr_store.get(OUT_KEY) or {}
+					local due = timers.Get_Game_Seconds() + c.lair_back_h * 3600
+					local group = { { id = se.id } }
+					for _, f in ipairs(mates) do table.insert(group, f) end
+					for _, g in ipairs(group) do
+						local o = sim:object(g.id)
+						if o then
+							out[tostring(g.id)] = { n = o:name(), x = o.position.x, y = o.position.y, z = o.position.z, lv = o.m_level_vertex_id, gv = o.m_game_vertex_id, due = due, sm = o:smart_terrain_id() }
+							sim:teleport_object(g.id, m.position, m.m_level_vertex_id, m.m_game_vertex_id)
+						end
+					end
+					olr_store.put(OUT_KEY, out)
+					local names = names_of(se, mates)
+					local size_a, died_a, size_b, died_b = amk_offline_alife.on_monsters_found(se, { hunt = true, damage_k = ka, monster_k = kb, engage_m = c.hunt_engage_m, friends = mates, monsters = monsters })
+					fights = fights + 1
+					note_wounded(se, mates)
+					dead_stalkers = dead_stalkers + ( died_a or 0 )
+					dead_mutants = dead_mutants + ( died_b or 0 )
+					last = { lvl = lvl, lv = m.m_level_vertex_id, gv = m.m_game_vertex_id, pos = vector():set(m.position.x, m.position.y, m.position.z) }
+					hlog("lair check on %s: %s id=%d and %d mates went out to %d mutants: %s of %s stalkers dead, %s of %s mutants dead; home in %d h",
+						lvl, se:name(), se.id, #mates, #monsters, tostring(died_a), tostring(size_a), tostring(died_b), tostring(size_b), c.lair_back_h)
+					local fallen = ( died_a or 0 ) > 0 and fallen_of(names) or nil
+					local cleared = ( size_b or 0 ) > 0 and ( died_b or 0 ) >= size_b
+					olr_digest.note("lair", lvl, { se = se, name = fallen, pos = last.pos, bad = ( died_a or 0 ) > 0, sub = cleared and "cleared" or "open" }) -- [HE-PORT]
+					return true
+				end
+			end
+		end
+	end
+	if forced then hlog("lair check: no camp group with mutants in reach (%d camps looked)", looked) end
+	return false
+end
+
+-- ---------------------------------------------------------------------------
+-- [HE-PORT] expeditions, docs/ALIFE_NEXT_DESIGN.md 8.33: a strong camp group goes to a lair beyond a lair check's
+-- reach (the Red Forest's inner lairs: no smart there takes people, so nothing else sends anyone in). Fought as a lair
+-- check. After a win they pick up the real loose artefacts lying near it (AMK's list, offline, at most exp_art_max),
+-- and walk home exp_back_h later; finds and parts go to a trader when one is in reach.
+-- ---------------------------------------------------------------------------
+local EXP_KEY = "nlc.olr_exp_next"
+local EXP_COMMS = { "stalker", "dolg", "freedom", "killer" }
+local TIER_N = { novice = 1, experienced = 2, veteran = 3, master = 4 }
+local expeditions = { sent = 0, backed_off = 0, won = 0, arts = 0 }
+
+local function strong(se)
+	return ( TIER_N[olr_amk_offline.tier_of(se)] or 1 ) >= config().exp_min_tier
+end
+
+-- [HE-PORT] 8.42: veterans and masters lead expeditions more often; an experienced leader is passed over exp_vet_bias %
+local function leads(se)
+	return ( TIER_N[olr_amk_offline.tier_of(se)] or 1 ) >= 3 or math.random(100) > config().exp_vet_bias
+end
+
+-- every mutant of his level between lair_radius and exp_radius of him
+local function far_mutants(se, lvl, kept)
+	local c = config()
+	local sim = alife()
+	local out = {}
+	for _, id in ipairs(olr_offline_task.cached_monsters()) do
+		local m = sim:object(id)
+		if m and IsMonster(m) and m:alive() and not m.online and not kept[id] and not string.find(m:section_name(), c.hunt_skip, 1, true)
+			and olr_smart_index.object_level(m) == lvl and m:can_switch_online() and not olr_protected.is_protected_monster(m)
+		then
+			local d = m.position:distance_to(se.position)
+			if d > c.lair_radius and d <= c.exp_radius then table.insert(out, m) end
+		end
+	end
+	return out
+end
+
+-- the real loose artefacts near a point, taken by the survivors in turn
+local function loot_arts(lvl, pos, takers)
+	local c = config()
+	local sim = alife()
+	local got = {}
+	if #takers == 0 then return got end
+	local list = amk_offline_alife.off_npcs[lvl] and amk_offline_alife.off_npcs[lvl].artefacts or {}
+	local i = 0
+	for _, rec in pairs(list) do
+		if #got >= c.exp_art_max then break end
+		local art = rec and sim:object(rec.id)
+		if art and art:name() == rec.name and art.parent_id == 65535 and not art.online and art.position:distance_to(pos) <= c.exp_art_radius then
+			i = i % #takers + 1
+			local taker = takers[i]
+			local sec = art:section_name()
+			if amk_offline_alife.pick_item(taker, art) then table.insert(got, { who = taker, sec = sec }) end
+		end
+	end
+	return got
+end
+
+-- [HE-PORT] 8.35 olr_patrols: a won raid picks up the real loose artefacts near the lair the same way
+function loot_near(lvl, pos, takers)
+	return loot_arts(lvl, pos, takers)
+end
+
+-- [HE-PORT] 8.35 olr_patrols: how many real loose artefacts lie within exp_art_radius of a point
+function arts_near(lvl, pos)
+	local c = config()
+	local sim = alife()
+	local n = 0
+	for _, rec in pairs(amk_offline_alife.off_npcs[lvl] and amk_offline_alife.off_npcs[lvl].artefacts or {}) do
+		local art = rec and sim:object(rec.id)
+		if art and art:name() == rec.name and art.parent_id == 65535 and art.position:distance_to(pos) <= c.exp_art_radius then n = n + 1 end
+	end
+	return n
+end
+
+local function expedition(forced, only_lvl)
+	local c = config()
+	local sim = alife()
+	local here = level.name()
+	local kept = news_encounters.tracked_ids()
+	local front = olr_cfg.frontier_levels()
+	local looked = 0
+	for _ = 1, c.hunt_tries do
+		local ids = olr_offline_task.cached_stalkers(EXP_COMMS[math.random(#EXP_COMMS)])
+		local se = #ids > 0 and sim:object(ids[math.random(#ids)])
+		local lvl = se and usable(se) and strong(se) and leads(se) and not olr_amk_offline.is_on_the_move(se) and olr_smart_index.object_level(se)
+		if lvl and lvl ~= here and ( not front or front[lvl] or only_lvl ) and ( not only_lvl or lvl == only_lvl ) then
+			local mates = {}
+			for _, f in ipairs(friends_near(se, lvl)) do
+				local o = sim:object(f.id)
+				if o and strong(o) then table.insert(mates, f) end
+			end
+			if #mates + 1 >= c.exp_min_group then
+				looked = looked + 1
+				local far = far_mutants(se, lvl, kept)
+				if #far > 0 then
+					local anchor = far[math.random(#far)]
+					local monsters = {}
+					for _, m in ipairs(far) do
+						if m.position:distance_to(anchor.position) <= c.exp_pack_radius and #monsters < c.exp_max_monsters then
+							table.insert(monsters, { id = m.id, name = m:name() })
+						end
+					end
+					if #monsters >= c.lair_min_mutants then
+						local ka, kb = olr_amk_offline.fight_k(c.hunt_damage_k)
+						local d = anchor.position:distance_to(se.position)
+						if not olr_amk_offline.weigh_fight(se, mates, monsters, ka, "expedition", kb, c.hunt_engage_m) then
+							expeditions.backed_off = expeditions.backed_off + 1
+							hlog("expedition on %s: %s id=%d and %d mates look at %d mutants %.0f m out (%s) and stay home", lvl, se:name(), se.id,
+								#mates, #monsters, d, anchor:section_name())
+							return false
+						end
+						local pos = vector():set(anchor.position.x, anchor.position.y, anchor.position.z)
+						local out = olr_store.get(OUT_KEY) or {}
+						local due = timers.Get_Game_Seconds() + c.exp_back_h * 3600
+						local group = { { id = se.id } }
+						for _, f in ipairs(mates) do table.insert(group, f) end
+						for _, g in ipairs(group) do
+							local o = sim:object(g.id)
+							if o then
+								out[tostring(g.id)] = { n = o:name(), x = o.position.x, y = o.position.y, z = o.position.z, lv = o.m_level_vertex_id, gv = o.m_game_vertex_id, due = due, sm = o:smart_terrain_id() }
+								sim:teleport_object(g.id, anchor.position, anchor.m_level_vertex_id, anchor.m_game_vertex_id)
+							end
+						end
+						olr_store.put(OUT_KEY, out)
+						local names = names_of(se, mates)
+						local size_a, died_a, size_b, died_b = amk_offline_alife.on_monsters_found(se, { hunt = true, damage_k = ka, monster_k = kb, engage_m = c.hunt_engage_m, friends = mates, monsters = monsters })
+						fights = fights + 1
+						expeditions.sent = expeditions.sent + 1
+						note_wounded(se, mates)
+						dead_stalkers = dead_stalkers + ( died_a or 0 )
+						dead_mutants = dead_mutants + ( died_b or 0 )
+						last = { lvl = lvl, lv = anchor.m_level_vertex_id, gv = anchor.m_game_vertex_id, pos = pos }
+						local cleared = ( size_b or 0 ) > 0 and ( died_b or 0 ) >= size_b
+						local survivors = {}
+						for _, g in ipairs(group) do
+							local o = sim:object(g.id)
+							if o and IsStalker(o) and o:alive() then table.insert(survivors, o) end
+						end
+						local got = cleared and loot_arts(lvl, pos, survivors) or {}
+						-- [HE-PORT] 8.41: a won expedition rolls a find too (into a bag; world artefacts exist only where the player has been)
+						if cleared and #survivors > 0 and olr_daytrips.find_art and math.random(100) <= c.exp_find_chance then
+							local who = survivors[math.random(#survivors)]
+							local sec = olr_daytrips.find_art(who, c.exp_second_chance)
+							if sec then table.insert(got, { who = who, sec = sec }) end
+						end
+						local finds = {}
+						for _, g in ipairs(got) do table.insert(finds, g.who:name() .. " " .. g.sec) end
+						if cleared then expeditions.won = expeditions.won + 1 end
+						expeditions.arts = expeditions.arts + #got
+						hlog("expedition on %s: %s id=%d and %d mates went %.0f m out to %d mutants (%s): %s of %s stalkers dead, %s of %s mutants dead%s; home in %d h",
+							lvl, se:name(), se.id, #mates, d, #monsters, anchor:section_name(), tostring(died_a), tostring(size_a), tostring(died_b), tostring(size_b),
+							#finds > 0 and ( "; artefacts: " .. table.concat(finds, ", ") ) or ( cleared and "; no artefacts there" or "" ), c.exp_back_h)
+						local fallen = ( died_a or 0 ) > 0 and fallen_of(names) or nil
+						olr_digest.note("lair", lvl, { se = se, name = fallen, pos = pos, bad = ( died_a or 0 ) > 0, sub = cleared and "cleared" or "open" })
+						for _, o in ipairs(survivors) do olr_trader_runs.after_buy(o) end
+						return true
+					end
+				end
+			end
+		end
+	end
+	if forced then hlog("expedition%s: no strong camp group with a lair in reach (%d groups looked)", only_lvl and ( " on " .. only_lvl ) or "", looked) end
+	return false
+end
+
+-- the survivors of a lair check walk home, unseen
+local function lair_home()
+	local out = olr_store.get(OUT_KEY)
+	if not ( out and next(out) ) then return end
+	local n = timers.Get_Game_Seconds()
+	local sim = alife()
+	for key, r in pairs(out) do
+		local se = sim:object(tonumber(key))
+		if not ( se and IsStalker(se) and se:name() == r.n and se:alive() ) then
+			out[key] = nil
+		elseif olr_trader_runs.on_run(se.id) or olr_patrols.is_member(se.id) or olr_protected.is_quest_bound(se)
+			or ( r.sm and se:smart_terrain_id() ~= r.sm )
+		then
+			-- [HE-PORT] a run, a party, a quest or a goal step took him on: not teleported back
+			hlog("lair check: %s id=%d went on to something else, not sent home", r.n, se.id)
+			out[key] = nil
+		elseif n >= r.due and unseen(se) then
+			sim:teleport_object(se.id, vector():set(r.x, r.y, r.z), r.lv, r.gv)
+			hlog("lair check: %s id=%d is home again", r.n, se.id)
+			out[key] = nil
+		end
+	end
+	olr_store.put(OUT_KEY, out)
+end
+
+function force_lair()
+	hlog("force_lair: %s", tostring(lair_check(true)))
+end
+
+-- fl olr_offline_hunts.force_expedition()              a strong camp group goes after a far lair now (any level but this one)
+-- fl olr_offline_hunts.force_expedition("red_forest")  only a group camped on that level (frontier ignored)
+function force_expedition(lvl)
+	local ok = false
+	-- a group is drawn at random: try a few times when a level is named
+	for _ = 1, lvl and 10 or 1 do
+		ok = expedition(true, lvl)
+		if ok then break end
+	end
+	hlog("force_expedition%s: %s", lvl and ( " " .. lvl ) or "", tostring(ok))
+end
+
 function update()
 	-- [HE-PORT] AMK fights wound people too: the healing runs whenever either is on
 	local hunts = olr_cfg.on("offline_hunts")
 	if not ( db.actor and ( hunts or olr_amk_offline.active() ) ) then return end
 	local n = timers.Get_Game_Seconds()
-	local nxt = get_value(KEY)
+	local nxt = olr_store.get(KEY)
 	if nxt and n < nxt then return end
-	set_value(KEY, n + 24 * 3600 / config().hunt_per_day)
+	olr_store.put(KEY, n + 24 * 3600 / config().hunt_per_day)
 	heal_tick()
 	if nxt and hunts then fight() end
+	if hunts then
+		lair_home()
+		local ln = olr_store.get(LAIR_KEY)
+		if not ln or n >= ln then
+			olr_store.put(LAIR_KEY, n + 24 * 3600 / config().lair_per_day)
+			if ln then lair_check() end
+		end
+		-- [HE-PORT] 8.33
+		local en = olr_store.get(EXP_KEY)
+		if not en or n >= en then
+			olr_store.put(EXP_KEY, n + 24 * 3600 / config().exp_per_day)
+			if en then expedition() end
+		end
+	end
 end
 
 function report()
 	local n = timers.Get_Game_Seconds()
-	hlog("on=%s next in %.1f h; this session %d fights, %d stalkers and %d mutants dead", tostring(olr_cfg.on("offline_hunts")), ( ( get_value(KEY) or n ) - n ) / 3600, fights, dead_stalkers, dead_mutants)
+	hlog("on=%s next in %.1f h; this session %d fights, %d stalkers and %d mutants dead", tostring(olr_cfg.on("offline_hunts")), ( ( olr_store.get(KEY) or n ) - n ) / 3600, fights, dead_stalkers, dead_mutants)
+	hlog("expeditions: %d sent, %d stayed home, %d lairs cleared, %d artefacts found", expeditions.sent, expeditions.backed_off, expeditions.won, expeditions.arts)
+end
+
+function go_last()
+	if not last then
+		hlog("go_last: no hunt this session")
+		return
+	end
+	hlog("go_last: to %s %.0f,%.0f", last.lvl, last.pos.x, last.pos.z)
+	olr_amk_offline.go_spot(last.lvl, last.lv, last.gv, last.pos)
 end
 
 function force()

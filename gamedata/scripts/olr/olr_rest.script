@@ -1,0 +1,246 @@
+-- [HE-PORT] Camp rest by rank, docs/ALIFE_NEXT_DESIGN.md 3.4 (preset key camp_rest). olr_night turned around: at dusk the
+-- timid (novices; experienced men on even ids) of the player's region who sit at a near-empty smart, or none, go to the
+-- nearest smart of their level with rest_min_people people of their own side, and at dawn back home if it still takes
+-- them. Veterans and masters dare the night. Generic people only (OLR's own and respawned), never quest-bound, never on a
+-- run or in a party; same level only, so the population count does not change. Config [rest]. Log: [olr_rest].
+-- fl olr_rest.report()              who is resting away from home tonight
+-- fl olr_rest.force_dusk("l01_escape")  that level goes to the fires now; no argument: this level
+-- fl olr_rest.force_dawn()          everyone goes home now
+-- fl olr_rest.who("l01_escape")     the smarts of a level with their people, and who would go where
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_rest"
+local SIDES = { stalker = { stalker = true, green = true }, green = { stalker = true, green = true } }
+
+local cfg = nil
+local moves = 0
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("rest") - 1 do
+		local _, k, v = ini:r_line("rest", i, "", "")
+		cfg[k] = tonumber(v) or v
+	end
+	for _, k in ipairs({ "dusk_h", "dawn_h", "rest_min_people", "rest_max_dist", "rest_per_tick", "rest_news_chance", "rest_near_player" }) do
+		if cfg[k] == nil then abort("olr_rest: no key '%s' in [rest]", k) end
+	end
+	return cfg
+end
+
+local function rlog(fmt, ...)
+	log2("[olr_rest] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+function active()
+	return db.actor ~= nil and olr_cfg.on("camp_rest")
+end
+
+local function state()
+	local st = olr_store.get(KEY) or {}
+	st.out = st.out or {}
+	st.done = st.done or {}
+	return st
+end
+
+-- [HE-PORT] olr_daytrips: is he away resting tonight
+-- [HE-PORT] 8.29 P2 (olr_regroup): id -> home smart of everyone spending the night at another fire
+function away_homes(out)
+	local st = olr_store.get(KEY)
+	for key, r in pairs(st and st.out or {}) do
+		if r.home and r.home ~= "" then out[key] = r.home end
+	end
+end
+
+function is_out(id)
+	local st = olr_store.get(KEY)
+	return st ~= nil and st.out ~= nil and st.out[tostring(id)] ~= nil
+end
+
+local function is_night()
+	local c, h = config(), level.get_time_hours()
+	return h >= c.dusk_h or h < c.dawn_h
+end
+
+local function night_number()
+	return math.floor(( timers.Get_Game_Seconds() - config().dawn_h * 3600 ) / 86400)
+end
+
+local function generic(se)
+	local name, sec = se:name(), se:section_name()
+	if not ( string.sub(sec, 1, 4) == "olr_" or string.find(name, "_respawn", 1, true) ) then return false end
+	if olr_protected.is_quest_bound(se) or olr_protected.is_no_offline_alife_obj(name) then return false end
+	-- [HE-PORT] review 8.43 R2: not a man out on a day trip (a far trip stays the night on another level)
+	return not ( olr_trader_runs.on_run(se.id) or olr_patrols.is_member(se.id) or ( olr_daytrips.is_out and olr_daytrips.is_out(se.id) ) )
+end
+
+local function timid(se)
+	local tier = olr_amk_offline.tier_of(se)
+	return tier == "novice" or ( tier == "experienced" and se.id % 2 == 0 )
+end
+
+local function movable(se)
+	if not se.online then return true end
+	return db.actor and se.position:distance_to(db.actor:position()) > config().rest_near_player
+end
+
+-- people per smart on a level, by side
+local function census(lvl)
+	local sim = alife()
+	local by = {}
+	for comm in pairs(SIDES.stalker) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local se = sim:object(id)
+			local sid = se and IsStalker(se) and se:alive() and olr_smart_index.object_level(se) == lvl and se:smart_terrain_id()
+			if sid and sid ~= BAD_OBJ_ID then by[sid] = ( by[sid] or 0 ) + 1 end
+		end
+	end
+	return by
+end
+
+local function fire_for(se, by)
+	local c = config()
+	local best, bd = nil, nil
+	for sid, n in pairs(by) do
+		local smart = n >= c.rest_min_people and sid ~= se:smart_terrain_id() and alife():object(sid)
+		if smart and not olr_population.is_scene_smart(smart:name()) then
+			local d = smart.position:distance_to(se.position)
+			if d <= c.rest_max_dist and ( not bd or d < bd ) then best, bd = smart, d end
+		end
+	end
+	return best, bd
+end
+
+local night_names = {} -- [HE-PORT] truth audit G11: who moved to a fire at the last dusk, the night line's speakers
+
+local function dusk(st, lvl, forced)
+	night_names = {}
+	local c = config()
+	local sim = alife()
+	local by = census(lvl)
+	local sent, seen = 0, 0
+	for comm in pairs(SIDES.stalker) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			if sent >= c.rest_per_tick and not forced then break end
+			local se = sim:object(id)
+			if se and IsStalker(se) and se:alive() and not st.out[tostring(id)] and olr_smart_index.object_level(se) == lvl
+				and timid(se) and generic(se) and movable(se)
+			then
+				local sid = se:smart_terrain_id()
+				local home = sid and sid ~= BAD_OBJ_ID and sim:object(sid)
+				if not home or ( by[sid] or 0 ) < c.rest_min_people then
+					seen = seen + 1
+					local smart, d = fire_for(se, by)
+					if smart and olr_smart_index.move_or_stay(se, smart:name()) then
+						st.out[tostring(id)] = { n = se:name(), home = home and home:name() or "", at = smart:name() }
+						by[smart.id] = ( by[smart.id] or 0 ) + 1
+						sent = sent + 1
+						moves = moves + 1
+						table.insert(night_names, olr_trader_runs.display_name(se) or se:name())
+						rlog("%s id=%d (%s) goes from %s to the people at %s, %.0f m", se:name(), id, olr_amk_offline.tier_of(se),
+							home and home:name() or "nowhere", smart:name(), d)
+					end
+				end
+			end
+		end
+	end
+	if sent > 0 or forced then rlog("dusk on %s: %d alone or nearly, %d went to a fire", lvl, seen, sent) end
+	return sent
+end
+
+local function dawn(st, limit)
+	local sim = alife()
+	local n = 0
+	for key, r in pairs(st.out) do
+		if n >= limit then break end
+		local se = sim:object(tonumber(key))
+		local sid = se and se:smart_terrain_id()
+		local now_at = sid and sid ~= BAD_OBJ_ID and sim:object(sid)
+		if not ( se and IsStalker(se) and se:name() == r.n and se:alive() ) then
+			st.out[key] = nil
+		elseif olr_trader_runs.on_run(se.id) or olr_patrols.is_member(se.id) or olr_protected.is_quest_bound(se)
+			or ( r.at and not ( now_at and now_at:name() == r.at ) )
+		then
+			-- [HE-PORT] a run, a party, a quest or a goal step took him from the fire: not ours to undo
+			rlog("%s id=%s left the fire for something else (now at %s), not sent home", r.n, key, now_at and now_at:name() or "none")
+			st.out[key] = nil
+		elseif movable(se) then
+			if r.home ~= "" and olr_smart_index.move_or_stay(se, r.home) then
+				rlog("%s id=%s goes home to %s", r.n, key, r.home)
+			else
+				rlog("%s id=%s stays where he spent the night (home %s would not have him)", r.n, key, r.home ~= "" and r.home or "none")
+			end
+			st.out[key] = nil
+			n = n + 1
+		end
+	end
+	return n
+end
+
+local function say_night(lvl)
+	local region = olr_smart_index.region_levels()
+	if not ( region and region[lvl] and he_pda_model.get_pda() ) or math.random(100) > config().rest_news_chance then return end
+	local key = olr_trader_runs.pick_line("olr_camp_night_")
+	if not key then
+		rlog("no text for olr_camp_night_")
+		return
+	end
+	if #night_names == 0 then return end
+	sak.send_tip(game.translate_string(key), night_names[math.random(#night_names)], 0, 15, "default", "pda_news", "gray")
+end
+
+function update()
+	if not active() or olr_cfg.sleep_paused() then return end
+	local st = state()
+	if not is_night() then
+		if next(st.out) then
+			dawn(st, config().rest_per_tick)
+			olr_store.put(KEY, st)
+		end
+		return
+	end
+	local tonight = night_number()
+	for lvl in pairs(olr_smart_index.region_levels() or {}) do
+		if st.done[lvl] ~= tonight then
+			st.done[lvl] = tonight
+			if dusk(st, lvl) > 0 then say_night(lvl) end
+			olr_store.put(KEY, st)
+			return -- one level a tick
+		end
+	end
+end
+
+function report()
+	local st = state()
+	local n = 0
+	for key, r in pairs(st.out) do
+		n = n + 1
+		local se = alife():object(tonumber(key))
+		local sid = se and se:smart_terrain_id()
+		local smart = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
+		rlog("  %s id=%s at %s tonight, home %s", r.n, key, smart and smart:name() or "?", r.home ~= "" and r.home or "none")
+	end
+	rlog("on=%s night=%s, %d resting away from home, %d moves this session", tostring(active()), tostring(is_night()), n, moves)
+end
+
+function force_dusk(lvl)
+	local st = state()
+	dusk(st, lvl or level.name(), true)
+	olr_store.put(KEY, st)
+end
+
+function force_dawn()
+	local st = state()
+	rlog("force_dawn: %d went home", dawn(st, 999))
+	olr_store.put(KEY, st)
+end
+
+function who(lvl)
+	lvl = lvl or level.name()
+	local by = census(lvl)
+	for sid, n in pairs(by) do
+		local smart = alife():object(sid)
+		rlog("  %s: %d people", smart and smart:name() or tostring(sid), n)
+	end
+end

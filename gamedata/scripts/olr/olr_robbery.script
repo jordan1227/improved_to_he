@@ -1,0 +1,474 @@
+-- [HE-PORT] Offline robbery, docs/ALIFE_NEXT_DESIGN.md 4.1 (preset key rob_offline). Bandits (the members of an ambush
+-- encounter, and bandits bound to a smart at half the chance) rob a lone or outnumbered loner, hunter or ecolog off the
+-- player's sight: he fights if he believes his side would win, otherwise he pays. Paying moves part of his money to the
+-- leader (and dollar notes worth rob_dollars_k of it, which pay the player on pickup) and his rob_items most valuable
+-- things (pick_item: nothing is created); the goods are held from sale for rob_hold_h, so clearing the gang finds them.
+-- The victim may want revenge: later he and two or more friends go after the leader (an AMK fight at engage_m).
+-- Nobody's goodwill changes. Config [robbery] in olr_alife.ltx. Log: [olr_rob].
+-- fl olr_robbery.report()                 passes, robberies, fights, revenge records, held goods
+-- fl olr_robbery.pass()                   one pass now (normal rules, ignoring the hourly clock and the daily cap)
+-- fl olr_robbery.force(victim_id, robber_id)  this robber robs this victim now, wherever they are (no fight roll)
+-- fl olr_robbery.go_last()                teleport to the last robbery or revenge fight
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_rob"
+local DOLLARS = { { 50, "dollars50" }, { 25, "dollars25" }, { 10, "dollars10" }, { 5, "dollars5" }, { 3, "dollars3" }, { 1, "dollars1" } }
+
+local cfg = nil
+local counts = {}
+local last = nil
+
+local function config()
+	if cfg then return cfg end
+	cfg = { victims = {}, robbers = {} }
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("robbery") - 1 do
+		local _, k, v = ini:r_line("robbery", i, "", "")
+		cfg[k] = tonumber(v) or v
+	end
+	for _, k in ipairs({ "rob_every_min", "rob_max_per_day", "rob_radius", "rob_group_radius", "rob_money_share", "rob_items",
+		"rob_beat_chance", "rob_hold_h", "rob_dollars_k", "rob_bound_chance", "rob_victim_comms", "rob_robber_comms", "rob_fight_noise",
+		"rob_news_chance", "rob_victim_cd_h", "revenge_chance", "revenge_chance_vet", "revenge_days", "revenge_friends", "engage_m" })
+	do
+		if cfg[k] == nil then abort("olr_robbery: no key '%s' in [robbery]", k) end
+	end
+	for c in string.gmatch(cfg.rob_victim_comms, "[%w_]+") do cfg.victims[c] = true end
+	for c in string.gmatch(cfg.rob_robber_comms, "[%w_]+") do cfg.robbers[c] = true end
+	return cfg
+end
+
+local function rlog(fmt, ...)
+	log2("[olr_rob] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+local function note(k)
+	counts[k] = ( counts[k] or 0 ) + 1
+end
+
+local function now()
+	return timers.Get_Game_Seconds()
+end
+
+function active()
+	return db.actor ~= nil and olr_cfg.on("rob_offline")
+end
+
+local function state()
+	local st = olr_store.get(KEY) or {}
+	st.held = st.held or {}
+	st.revenge = st.revenge or {}
+	return st
+end
+
+local function money_of(se)
+	local pk = get_netpk(se)
+	local data = pk and pk:get()
+	return data and data.money or 0
+end
+
+local function add_money(se, delta)
+	local pk = get_netpk(se)
+	local data = pk:get()
+	data.money = math.max(0, data.money + delta)
+	pk:set(data)
+end
+
+local function name_of(se)
+	return olr_trader_runs.display_name(se) or se:name()
+end
+
+-- unseen: another level, or beyond player_clear on his
+local function unseen(se)
+	if se.online then return false end
+	local lvl = olr_smart_index.object_level(se)
+	if lvl ~= level.name() then return true end
+	return se.position:distance_to(db.actor:position()) > olr_amk_offline.player_clear()
+end
+
+local function at_post(se)
+	local sid = se:smart_terrain_id()
+	if not sid or sid == BAD_OBJ_ID then return false end
+	local smart = alife():object(sid)
+	return smart ~= nil and smart.position:distance_to(se.position) < 40
+end
+
+-- side strength as AMK would weigh it: firepower, rank, health
+local function strength(list)
+	local a = amk_offline_alife
+	local s = 0
+	for _, v in ipairs(list) do
+		local o = alife():object(v.id)
+		if o and IsStalker(o) and o:alive() then
+			s = s + ( a.get_weapon_firepower(a.get_npc_weapon(o)) / 1000 + o:rank() / 400 + 1 ) * o:health()
+		end
+	end
+	return s
+end
+
+local function near_of(se, comms, radius, skip, pred)
+	local out = {}
+	local sim = alife()
+	local lvl = olr_smart_index.object_level(se)
+	for comm in pairs(comms) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local o = id ~= se.id and not ( skip and skip[id] ) and sim:object(id)
+			if o and IsStalker(o) and o:alive() and not o.online and o:health() > 0.2 and olr_smart_index.object_level(o) == lvl
+				and o.position:distance_to(se.position) <= radius and olr_amk_offline.usable(o) and ( not pred or pred(o) )
+			then
+				table.insert(out, { id = id, name = o:name() })
+			end
+		end
+	end
+	return out
+end
+
+local function say(prefix, who, lvl, pos, subs)
+	local region = olr_smart_index.region_levels()
+	if not ( region and region[lvl] and he_pda_model.get_pda() ) then return end
+	if math.random(100) > config().rob_news_chance then return end
+	local key = olr_trader_runs.pick_line(prefix)
+	if not key then
+		rlog("no text for %s", prefix)
+		return
+	end
+	local text = game.translate_string(key)
+	local all = { where = news_main.where_text(lvl, pos) }
+	for k, v in pairs(subs or {}) do all[k] = v end
+	for k, v in pairs(all) do text = string.gsub(text, "%$" .. k, function() return v end) end
+	sak.send_tip(text, who, 0, 15, "default", "pda_news", "gray")
+	rlog("line %s", key)
+end
+
+local function remember(se)
+	last = { lvl = olr_smart_index.object_level(se), lv = se.m_level_vertex_id, gv = se.m_game_vertex_id,
+		pos = vector():set(se.position.x, se.position.y, se.position.z) }
+end
+
+-- dollar notes worth about `sum` (each pays 15-75 x its face on pickup, about 45 x), at most 6 notes
+local function give_dollars(se, sum)
+	local units = math.floor(sum / 45)
+	local made = {}
+	for _, d in ipairs(DOLLARS) do
+		while units >= d[1] and #made < 6 do
+			local it = misc.spawn_to(d[2], se)
+			misc.process_spawn()
+			if not it then break end
+			units = units - d[1]
+			table.insert(made, it)
+		end
+	end
+	return made
+end
+
+-- the victim's most valuable things a robber wants: artefacts and parts first, then the rest by cost
+local function loot_of(victim, n)
+	local a = amk_offline_alife
+	local list = {}
+	for _, rec in pairs(a.items[victim.id] or {}) do
+		local it = rec and alife():object(rec.id)
+		if it and it.parent_id == victim.id and it:name() == rec.name and not get_bool(it:section_name(), "quest_item", false)
+			and a.is_valuable(it) and not isWeapon(it) and not string.find(it:section_name(), "_outfit", 1, true)
+		then
+			local kind = olr_trader_runs.kind_of(it)
+			table.insert(list, { it = it, cost = a.get_item_cost(it) * ( ( kind == "art" or kind == "part" ) and 10 or 1 ) })
+		end
+	end
+	table.sort(list, function(x, y) return x.cost > y.cost end)
+	local out = {}
+	for i = 1, math.min(n, #list) do table.insert(out, list[i].it) end
+	return out
+end
+
+local function hold(st, item, who)
+	st.held[tostring(item.id)] = { until_t = now() + config().rob_hold_h * 3600, sec = item:section_name(), who = who }
+end
+
+-- the victim pays: money, dollars on the leader, his best things
+local function rob(victim, leader, st)
+	local c = config()
+	local a, b = string.match(tostring(c.rob_money_share), "(%d+)%s*,%s*(%d+)")
+	local share = ( tonumber(a) + math.random() * ( tonumber(b) - tonumber(a) ) ) / 100
+	local money = money_of(victim)
+	local took = math.floor(money * share)
+	add_money(victim, -took)
+	add_money(leader, took)
+	local notes = give_dollars(leader, took * c.rob_dollars_k)
+	for _, it in ipairs(notes) do hold(st, it, leader:name()) end
+	local goods = {}
+	for _, it in ipairs(loot_of(victim, c.rob_items)) do
+		local sec = it:section_name()
+		local new = amk_offline_alife.pick_item(leader, it)
+		if new then
+			hold(st, new, leader:name())
+			table.insert(goods, sec)
+		end
+	end
+	local beaten = false
+	if math.random(100) <= c.rob_beat_chance then
+		local h = 0.3 + math.random() * 0.3
+		if victim:health() > h then
+			amk_offline_alife.set_npc_health(victim, h)
+			olr_offline_hunts.note_wounded(victim, {})
+			beaten = true
+		end
+	end
+	olr_lives.on_robbed(victim, took)
+	return took, goods, #notes, beaten
+end
+
+local function offer_revenge(victim, leader, st, why)
+	local c = config()
+	local tier = olr_amk_offline.tier_of(victim)
+	local chance = ( tier == "veteran" or tier == "master" ) and c.revenge_chance_vet or c.revenge_chance
+	if math.random(100) > chance then return end
+	st.revenge[tostring(victim.id)] = { n = victim:name(), t = leader.id, tn = leader:name(), until_t = now() + c.revenge_days * 86400 }
+	rlog("%s id=%d wants revenge on %s id=%d (%s)", victim:name(), victim.id, leader:name(), leader.id, why)
+end
+
+-- one meeting: the victim weighs both sides and fights or pays
+local robbed_at = {}   -- victim id -> game seconds of his last robbery (memory: a reload may allow one more)
+
+local function meet(victim, leader, robbers, st, forced)
+	local c = config()
+	local lvl = olr_smart_index.object_level(victim)
+	local friends = near_of(victim, { [victim:community()] = true }, 50, nil)
+	local mine = { { id = victim.id } }
+	for _, f in ipairs(friends) do table.insert(mine, f) end
+	local s_a, s_b = strength(mine), strength(robbers)
+	local tier = olr_amk_offline.tier_of(victim)
+	local noise = c.rob_fight_noise * ( tier == "novice" and 2 or tier == "experienced" and 1.5 or 1 ) / 100
+	local believed = s_a * ( 1 + ( math.random() * 2 - 1 ) * noise )
+	remember(victim)
+	if not forced and believed > s_b then
+		local before = #robbers
+		amk_offline_alife.on_enemies_found(victim, { friends = friends, enemies = robbers, engage_m = c.engage_m })
+		local alive = 0
+		for _, r in ipairs(robbers) do
+			local o = alife():object(r.id)
+			if o and o:alive() then alive = alive + 1 end
+		end
+		note("fights")
+		rlog("%s id=%d (%s, strength %.1f with %d friends) fights %d robbers (strength %.1f) on %s: %s, %d of them left",
+			victim:name(), victim.id, tier, s_a, #friends, before, s_b, tostring(lvl), victim:alive() and "he lives" or "he died", alive)
+		olr_digest.note("robbery", lvl, { se = victim, bad = not victim:alive() })
+		if victim:alive() then
+			say("olr_rob_fight_", name_of(victim), lvl, victim.position)
+		else
+			say("olr_rob_lost_", olr_trader_runs.other_name(), lvl, victim.position, { name = name_of(victim) })
+		end
+		return
+	end
+	local took, goods, notes, beaten = rob(victim, leader, st)
+	robbed_at[victim.id] = now()
+	note("robbed")
+	rlog("%s id=%d (%s, strength %.1f with %d friends) pays %s id=%d (%d robbers, strength %.1f) on %s: %d money (%d dollar notes on him), %s%s",
+		victim:name(), victim.id, tier, s_a, #friends, leader:name(), leader.id, #robbers, s_b, tostring(lvl), took, notes,
+		#goods > 0 and table.concat(goods, ",") or "no goods", beaten and ", beaten" or "")
+	olr_digest.note("robbery", lvl, { se = victim })
+	say("olr_rob_victim_", name_of(victim), lvl, victim.position)
+	offer_revenge(victim, leader, st, "robbed")
+end
+
+local function robber_ok(se)
+	return se and IsStalker(se) and se:alive() and config().robbers[se:community()] and se:health() > 0.3 and olr_amk_offline.usable(se) and unseen(se)
+end
+
+
+local function victim_ok(o)
+	-- [HE-PORT] a man on a day trip or walking somewhere is fair game even near his camp
+	local moving = olr_daytrips.is_out(o.id) or olr_amk_offline.is_on_the_move(o)
+	return ( moving or not at_post(o) ) and unseen(o) and now() - ( robbed_at[o.id] or -1e9 ) >= config().rob_victim_cd_h * 3600
+end
+
+-- the robbers to try this pass: ambush members first, then bound bandits at rob_bound_chance
+local function robber_pool()
+	local c = config()
+	local sim = alife()
+	local out, seen = {}, {}
+	-- [HE-PORT] road watchers first (olr_roadwatch)
+	for comm in pairs(c.robbers) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local se = not seen[id] and olr_roadwatch.is_watcher(id) and sim:object(id)
+			if se and robber_ok(se) then
+				table.insert(out, 1, se)
+				seen[id] = true
+			end
+		end
+	end
+	for id in pairs(news_encounters.tracked_ids()) do
+		local se = sim:object(id)
+		if robber_ok(se) then
+			table.insert(out, se)
+			seen[id] = true
+		end
+	end
+	for comm in pairs(c.robbers) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local se = not seen[id] and sim:object(id)
+			if se and math.random(100) <= c.rob_bound_chance and robber_ok(se) then table.insert(out, se) end
+		end
+	end
+	for i = #out, 2, -1 do
+		local j = math.random(i)
+		out[i], out[j] = out[j], out[i]
+	end
+	return out
+end
+
+local function try_rob(st)
+	local c = config()
+	local pool = robber_pool()
+	local with_victims = 0
+	local watchers = 0
+	for _, se in ipairs(pool) do
+		local road = olr_roadwatch.is_watcher(se.id)
+		if road then watchers = watchers + 1 end
+		local victims = near_of(se, c.victims, road and c.rob_road_radius or c.rob_radius, nil, victim_ok)
+		if #victims > 0 then
+			with_victims = with_victims + 1
+			local robbers = near_of(se, { [se:community()] = true }, c.rob_group_radius, nil)
+			table.insert(robbers, 1, { id = se.id, name = se:name() })
+			local v = alife():object(victims[math.random(#victims)].id)
+			local friends = near_of(v, { [v:community()] = true }, 50, nil)
+			if #friends + 1 < #robbers then
+				-- the leader is the highest rank among them
+				local leader, best = se, se:rank()
+				for _, r in ipairs(robbers) do
+					local o = alife():object(r.id)
+					if o and o:rank() > best then leader, best = o, o:rank() end
+				end
+				meet(v, leader, robbers, st)
+				return true
+			end
+			note("victim_not_alone")
+		end
+	end
+	-- [HE-PORT] why a pass robbed nobody (two soaks had none)
+	rlog("pass: %d robbers free (%d on road watch), %d with a victim within %d m (road %d m), none outnumbering him", #pool, watchers,
+		with_victims, c.rob_radius, c.rob_road_radius)
+	note(#pool == 0 and "no_robbers" or with_victims == 0 and "no_victim_near" or "victims_had_friends")
+	return false
+end
+
+-- a revenge holder with friends goes after the leader who robbed him
+local function try_revenge(st)
+	local c = config()
+	local sim = alife()
+	for key, r in pairs(st.revenge) do
+		local v = sim:object(tonumber(key))
+		local t = sim:object(r.t)
+		if not ( v and IsStalker(v) and v:name() == r.n and v:alive() ) then
+			st.revenge[key] = nil
+		elseif not ( t and IsStalker(t) and t:name() == r.tn and t:alive() ) then
+			-- [HE-PORT] truth audit D5: a leader released or gone from the Zone was not killed
+			if t and IsStalker(t) and t:name() == r.tn then
+				rlog("%s's revenge on %s: someone was faster", r.n, r.tn)
+				say("olr_rob_late_", name_of(v), olr_smart_index.object_level(v), v.position)
+			else
+				rlog("%s's revenge on %s: the bandit is gone, no line", r.n, r.tn)
+			end
+			st.revenge[key] = nil
+		elseif now() > r.until_t then
+			rlog("%s's revenge on %s: cooled down", r.n, r.tn)
+			st.revenge[key] = nil
+		elseif olr_amk_offline.usable(v) and unseen(v) and unseen(t) and olr_smart_index.object_level(v) == olr_smart_index.object_level(t) then
+			local friends = near_of(v, { [v:community()] = true }, 50, nil)
+			if #friends >= c.revenge_friends then
+				local enemies = near_of(t, { [t:community()] = true }, c.rob_group_radius, nil)
+				table.insert(enemies, 1, { id = t.id, name = t:name() })
+				remember(t)
+				amk_offline_alife.on_enemies_found(v, { friends = friends, enemies = enemies, engage_m = c.engage_m })
+				local done = not t:alive()
+				note(done and "revenge_done" or "revenge_failed")
+				rlog("%s id=%d and %d friends went after %s id=%d (%d with him): %s, avenger %s", r.n, v.id, #friends, r.tn, t.id, #enemies - 1,
+					done and "he is dead" or "he lives", v:alive() and "lives" or "died")
+				if done and v:alive() then
+					olr_digest.note("revenge", olr_smart_index.object_level(v), { se = v })
+					say("olr_rob_back_", name_of(v), olr_smart_index.object_level(v), v.position)
+				end
+				st.revenge[key] = nil
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- olr_trader_runs.take_haul (inside AMK's process_trade): robbed goods stay on the robber for rob_hold_h
+function hold_out(npc, sell_list)
+	if not active() then return sell_list end
+	local held = state().held
+	if not next(held) then return sell_list end
+	local rest = {}
+	for _, item in pairs(sell_list) do
+		local h = held[tostring(item.id)]
+		if not ( h and now() < h.until_t ) then table.insert(rest, item) end
+	end
+	return rest
+end
+
+local function run_pass(st, forced)
+	local c = config()
+	if not forced then
+		local day = math.floor(now() / 86400)
+		if st.day ~= day then st.day, st.today = day, 0 end
+		if ( st.today or 0 ) >= c.rob_max_per_day then return end
+	end
+	if try_rob(st) then st.today = ( st.today or 0 ) + 1 end
+	try_revenge(st)
+	for key, h in pairs(st.held) do
+		if now() >= h.until_t then st.held[key] = nil end
+	end
+end
+
+function update()
+	if not active() or olr_cfg.sleep_paused() or olr_cfg.grace_active() then return end
+	local st = state()
+	local n = now()
+	if n < ( st.next or 0 ) then return end
+	st.next = n + config().rob_every_min * 60
+	note("passes")
+	run_pass(st)
+	olr_store.put(KEY, st)
+end
+
+function report()
+	local st = state()
+	local list = {}
+	for k, v in pairs(counts) do table.insert(list, k .. "=" .. v) end
+	rlog("on=%s today %d of %d, next pass in %.1f h; this session %s", tostring(active()), st.today or 0, config().rob_max_per_day,
+		( ( st.next or now() ) - now() ) / 3600, table.concat(list, " "))
+	for key, r in pairs(st.revenge) do rlog("  revenge: %s id=%s on %s id=%d, %.1f days left", r.n, key, r.tn, r.t, ( r.until_t - now() ) / 86400) end
+	for key, h in pairs(st.held) do rlog("  held: %s id=%s on %s, %.1f h left", h.sec, key, h.who, ( h.until_t - now() ) / 3600) end
+end
+
+function pass()
+	local st = state()
+	note("passes")
+	rlog("pass: robbed or fought %s", tostring(try_rob(st)))
+	try_revenge(st)
+	olr_store.put(KEY, st)
+	report()
+end
+
+function force(victim_id, robber_id)
+	local v, r = alife():object(victim_id), alife():object(robber_id)
+	if not ( v and IsStalker(v) and v:alive() and r and IsStalker(r) and r:alive() ) then
+		rlog("force: need a living victim and robber (%s, %s)", tostring(victim_id), tostring(robber_id))
+		return
+	end
+	local st = state()
+	local robbers = near_of(r, { [r:community()] = true }, config().rob_group_radius, nil)
+	table.insert(robbers, 1, { id = r.id, name = r:name() })
+	meet(v, r, robbers, st, true)
+	olr_store.put(KEY, st)
+	report()
+end
+
+function go_last()
+	if not last then
+		rlog("go_last: nothing this session")
+		return
+	end
+	olr_amk_offline.go_spot(last.lvl, last.lv, last.gv, last.pos)
+end

@@ -4,10 +4,12 @@ items           = {}
 relation_matrix = {}
 tables_ready    = false
 
-ini_trade_generic = ini_file( "misc\\trade_generic.ltx" )
+ini_trade_generic = ini_file( "misc\\trade_npc\\trade_generic.ltx" ) -- [HE-PORT] was misc\\trade_generic.ltx, which this build does not have
 ini_death_generic = ini_file( "misc\\death_generic.ltx" )
 
 local sell_table       = {}
+local art_sell         = {} -- [HE-PORT] plain artefacts offline stalkers may sell
+local art_lvl          = {} -- [HE-PORT] their class: 1, 2, 3 or "u" (unknown), for the economy report
 local item_dependence  = {}
 local always_keep_item = {}
 local sini             = system_ini()
@@ -307,25 +309,44 @@ function build_tables()
             end
         end
     end
+    -- [HE-PORT] what offline stalkers may sell: mutant parts and weapons from trade_npc\trade_generic.ltx, and
+    -- artefacts by class (process_trade). The AMK code read [trader] sell_condition of a misc\trade_generic.ltx this
+    -- build does not have, so nothing was ever sold. Food, medicine, ammo, outfits (very expensive by cost), addons
+    -- (bought from their traders only), devices, modificats and containers are not sold. Weapons only go to a trader
+    -- who buys guns, on a run (olr_trader_runs.take_haul), never on the spot.
     sell_table = {}
     local trade_ini = ini_trade_generic
-    local cfg_sell = utils.cfg_get_string( trade_ini, "trader", "sell_condition", npc, false, false, "" )
-    if trade_ini and trade_ini:section_exist( cfg_sell ) then
-        local result, id, value = nil, nil, nil
-        for a = 0, trade_ini:line_count( cfg_sell ) - 1 do
-            result, id, value = trade_ini:r_line( cfg_sell, a, "", "" )
-            if
-                id ~= nil
-                and amk.trim( id ) ~= ""
-                and amk.trim( id ) ~= nil
-                and amk.trim( value ) ~= ""
-                and amk.trim( value ) ~= nil
-            then
-                -- Добавим в таблицу, что можно продавать.
-                sell_table[ id ] = true
+    local n_sell = 0
+    for _, sect in ipairs( { "mutant_parts", "weapons" } ) do
+        if trade_ini:section_exist( sect ) then
+            for a = 0, trade_ini:line_count( sect ) - 1 do
+                local _, id = trade_ini:r_line( sect, a, "", "" )
+                id = id and amk.trim( id )
+                if id and id ~= "" and not sell_table[ id ] then
+                    sell_table[ id ] = true
+                    n_sell = n_sell + 1
+                end
             end
         end
     end
+    -- [HE-PORT] artefacts he may sell: the plain ones of [first_lvl] [second_lvl] [third_lvl] [unknown]; not modificats,
+    -- accumulators, uniques or capsules (user decision)
+    art_sell = {}
+    art_lvl = {}
+    local lvl_of = { first_lvl = 1, second_lvl = 2, third_lvl = 3, unknown = "u" }
+    for _, sect in ipairs( { "first_lvl", "second_lvl", "third_lvl", "unknown" } ) do
+        if trade_ini:section_exist( sect ) then
+            for a = 0, trade_ini:line_count( sect ) - 1 do
+                local _, id = trade_ini:r_line( sect, a, "", "" )
+                id = id and amk.trim( id )
+                if id and id ~= "" then
+                    art_sell[ id ] = true
+                    art_lvl[ id ] = lvl_of[ sect ]
+                end
+            end
+        end
+    end
+    log2( "[olr_amk] offline sell table: %d items", n_sell )
     local death_ini = ini_death_generic
         --' Заполняем таблицу зависимостей
     item_dependence = {}
@@ -666,6 +687,23 @@ function collect_info( victim, map )
     return vdata
 end
 
+-- [HE-PORT] docs/ALIFE_NEXT_DESIGN.md 8.29: relations between communities as the offline fights read them.
+-- comm_relation(a, b) is a's attitude to b; friends both ways (or one side), hostile either way
+function comm_relation( a, b )
+    local r = relation_matrix[ a ]
+    return r and r[ b ] or 0
+end
+
+function comm_friends( a, b )
+    local f = rel_friend or 1000
+    return a == b or ( comm_relation( a, b ) >= f and comm_relation( b, a ) >= f )
+end
+
+function comm_hostile( a, b )
+    local t = olr_amk_offline.enemy_goodwill( rel_enemy or -1000 )
+    return a ~= b and ( comm_relation( a, b ) <= t or comm_relation( b, a ) <= t )
+end
+
 function relation_check( victim, opponent )
     if
             relation_matrix[ opponent:community() ]
@@ -679,6 +717,7 @@ end
 
 function on_enemies_found( victim, vdata )
     if victim == nil or vdata == nil then return end
+    olr_amk_offline.loyal_sides( victim, vdata ) -- [HE-PORT] 8.29 D1: each fights only those he is hostile to
     local obj, v_obj
     local team_A    = {}
     local team_B    = {}
@@ -747,6 +786,7 @@ function on_enemies_found( victim, vdata )
             distances[ to.id ] = distances[ to.id ] or {} -- [HE-PORT] was wiped for each stalker
             if ( from and to and from.id and to.id ) then
                 local dist = math.max( 1, math.floor( from.position:distance_to( to.position ) ) ) -- [HE-PORT] 0 m gave inf
+                if vdata.engage_m and dist > vdata.engage_m then dist = vdata.engage_m end -- [HE-PORT] olr_robbery closes in
                 local fp_A = math.floor( team_A[ a ].firepower / ( dist / dist_coeff ) )
                 local fp_B = math.floor( team_B[ b ].firepower / ( dist / dist_coeff ) )
                 local item = { distance = dist, fpA = fp_A, fpB = fp_B }
@@ -1040,8 +1080,9 @@ function on_monsters_found( victim, vdata )
             distances[ to.id ] = distances[ to.id ] or {} -- [HE-PORT] was wiped for each stalker
             if from and to and from.id and to.id then
                 local dist = math.floor( from.position:distance_to( to.position ) )
+                if vdata.engage_m and dist > vdata.engage_m then dist = vdata.engage_m end -- [HE-PORT] a hunt closes in first
                 local fp_A = math.floor( team_A[ a ].firepower / ( dist / dist_coeff ) )
-                local fp_B = math.floor( team_B[ b ].firepower )
+                local fp_B = math.floor( team_B[ b ].firepower * olr_amk_offline.monster_k( team_B[ b ].player, vdata ) ) -- [HE-PORT]
                 local item = { distance = dist, fpA = fp_A, fpB = fp_B }
                 distances[ from.id ][ to.id ] = { distance = dist, fp = fp_A }
                 distances[ to.id ][ from.id ] = { distance = dist, fp = fp_B }
@@ -2319,7 +2360,8 @@ function process_trade( npc, vdata )
             if obj and obj:name() == ov.name then
                 if
                     always_keep_item[ obj:section_name() ]
-                    or sell_table[ obj:section_name() ] == nil
+                    or ( sell_table[ obj:section_name() ] == nil and not art_sell[ obj:section_name() ] and string.sub( obj:section_name(), 1, 7 ) ~= "mutant_" ) -- [HE-PORT] plain artefacts, any mutant_ part
+                    or get_bool( obj:section_name(), "quest_item", false ) -- [HE-PORT] never a quest item
                 then
                     --ODS("[~T]. #DBG: Process_trade: "..npc:name().." ["..m_comm.."] filtered "..obj:section_name().." ["..obj:name().."]")
                 else
@@ -2329,6 +2371,7 @@ function process_trade( npc, vdata )
                 end
             end
         end
+        log2( "[olr_amk] trade %s id=%d (%s): %d tradeable things", npc:name(), npc.id, m_comm, #item_list ) -- [HE-PORT]
         if item_list and #item_list > 0 then
             --ODS("[~T]. #DBG: Process_trade: "..npc:name().." ["..m_comm.."] have "..tostring(table.getn(item_list)).." items.")
             table.sort( item_list, function( a, b ) return get_item_cost( a ) > get_item_cost( b ) end )
@@ -2380,7 +2423,7 @@ function process_trade( npc, vdata )
                     end
                 elseif isArt( v ) then
                     cnt_arts = cnt_arts + 1
-                    if cnt_arts > 2 then table.insert( sell_list, v ) end
+                    if cnt_arts > olr_amk_offline.keep_of( "arts", 2 ) then table.insert( sell_list, v ) end -- [HE-PORT] was 2
                 elseif isOutfit( v ) then
                     cnt_outfits = cnt_outfits + 1
                     if cnt_outfits > 1 then table.insert( sell_list, v ) end
@@ -2511,6 +2554,7 @@ function process_trade( npc, vdata )
                     end
                 )
                 local zz = sell_list[ 1 ]
+                if zz and isWeapon( zz ) then zz = nil end -- [HE-PORT] a gun waits for a trader run, no ad for it
                 if
                     zz and b_stalker == true
                     and get_item_cost( zz ) >= sell_limit
@@ -2523,10 +2567,13 @@ function process_trade( npc, vdata )
             end
             sell_list = olr_trader_runs.take_haul( npc, sell_list, mparts, ad_id ) -- [HE-PORT]
             local money = 0
+            local n_sold = 0 -- [HE-PORT] what was really sold (a gun in the list stays with him)
             for kk, vv in pairs( sell_list ) do
                 --ODS("[~T]. #DBG: Process_trade: final pass - "..npc:name().." ["..m_comm.."] sells "..vv:section_name().." ["..vv:name().."]")
                 local cost = get_item_cost( vv )
-                if cost > 0 then
+                if cost > 0 and not isWeapon( vv ) then -- [HE-PORT] a gun is sold only at a trader (take_haul), it stays in his bag
+                    n_sold = n_sold + 1 -- [HE-PORT]
+                    olr_trader_runs.note_sale( vv:section_name(), "spot" ) -- [HE-PORT] economy report
                     s_name = utils.cfg_get_string( sini, vv:section_name(), "inv_name", vv, false, "", "" )
                     if s_name == nil then s_name = "" end
                     s_name = game.translate_string( s_name )
@@ -2543,6 +2590,7 @@ function process_trade( npc, vdata )
                     misc.release_obj( vv.id, 'amk_offline_alife.Process_trade' )
                 end
             end
+            log2( "[olr_amk] trade %s id=%d (%s): %d parts in the bag, sold %d things for %d", npc:name(), npc.id, m_comm, #mparts, n_sold, money ) -- [HE-PORT]
             if money > 0 then
                 local pk   = get_netpk( npc )
                 local data = pk:get()
@@ -2552,6 +2600,17 @@ function process_trade( npc, vdata )
             end
         end
     end
+end
+
+-- [HE-PORT] olr_gear camp trade: a plain artefact an offline stalker may sell (not a modificat, accumulator,
+-- unique or capsule)
+function is_plain_art( section )
+    return art_sell[ section ] == true
+end
+
+-- [HE-PORT] its class for the economy report: 1, 2, 3, "u" or nil
+function art_level( section )
+    return art_lvl[ section ]
 end
 
 function get_monster_params( obj )

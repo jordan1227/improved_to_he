@@ -357,10 +357,15 @@ end
 -- that fits the level. scope "level": stalkers of the player's level. scope "world": usually (speaker_world_chance
 -- percent) a stalker of ANOTHER level, since the PDA network does not care where the player stands.
 -- want_voice (tests) accepts only a stalker of that voice. Returns name, id, voice, level.
-local function speaker(exclude_id, st, want_voice, scope)
+local function speaker(exclude_id, st, want_voice, scope, peer_id)
 	local c = load_cfg()
 	local cur = level.name()
 	local now = gm()
+	-- [HE-PORT] docs/ALIFE_NEXT_DESIGN.md 8.31: a reply or a second comment comes from someone friendly to the first
+	-- speaker (a Duty man does not answer a bandit's time-of-day call)
+	local peer = peer_id and alife():object(peer_id)
+	local peer_comm = peer and IsStalker(peer) and news_main.get_npc_community(peer) or nil
+	local peer_voice = peer_comm and voice_of(peer) or nil
 	local others, all = {}, {}
 	for lname, rec in pairs(amk_offline_alife.off_npcs) do
 		if rec.stalkers and #rec.stalkers > 0 then
@@ -388,7 +393,9 @@ local function speaker(exclude_id, st, want_voice, scope)
 			if #pool == 0 then break end
 			local e = table.remove(pool, lua_random(#pool))
 			local o = alife():object(e[1])
-			if o and e[1] ~= exclude_id and o.alive and o:alive() == true then
+			if o and e[1] ~= exclude_id and o.alive and o:alive() == true and news_main.may_speak(o) -- [HE-PORT] truth audit X2
+				and ( not peer_comm or amk_offline_alife.comm_friends(news_main.get_npc_community(o), peer_comm) ) -- [HE-PORT] 8.31
+			then
 				local v = voice_of(o)
 				-- voice_prob also thins out who may speak on the network (soldiers hardly use it)
 				if v and (want_voice == nil or v == want_voice) and (want_voice ~= nil or lua_random(100) <= (c.voice_prob[v] or 0)) then
@@ -402,8 +409,8 @@ local function speaker(exclude_id, st, want_voice, scope)
 			end
 		end
 	end
-	local v = want_voice or c.level_voice[cur]
-	if want_voice == nil and (v == nil or lua_random(100) > 50) then v = weighted_voice() end
+	local v = want_voice or peer_voice or c.level_voice[cur]
+	if want_voice == nil and peer_voice == nil and (v == nil or lua_random(100) > 50) then v = weighted_voice() end
 	local n1, n2 = amk_names_lists.get_strings()
 	log2("[news_voice] speaker %s %s (%s): generated name", n1, n2, v)
 	return n1 .. " " .. n2, nil, v, nil
@@ -434,7 +441,7 @@ function after_show(text)
 	if not is_enabled() then return end
 	local st = state()
 	local c = load_cfg().num
-	local name, id, v = speaker(r.author, st, nil, "world")
+	local name, id, v = speaker(r.author, st, nil, "world", r.author)
 	local line = pick({ "reply_" .. r.tone .. "_" .. v, "reply_" .. r.tone .. "_any" }, st, "reply")
 	if line == nil then return end
 	st.last.reply = gm()
@@ -490,7 +497,7 @@ local function emit_kill(b, st, force)
 		if lua_random(100) > c.kill_chance then return false, "chance" end
 	end
 	if not b.name or b.name == "" then return false, "no name" end
-	local where = news_main.localized_where(b.level, b.pos)
+	local where = news_main.where_text(b.level, b.pos)
 	if where == "" then return false, "no place" end
 	local d, score = danger(b.kind, b.count, b.rank, b.hp, b.shift)
 	local rg = rank_group(b.rank)
@@ -636,7 +643,7 @@ end
 
 -- builds and queues the text of one witnessed kill; tier_force and voice_force are for tests
 local function emit_plr(b, rep, st, force, tier_force, voice_force)
-	local where = news_main.localized_where(b.level, b.pos)
+	local where = news_main.where_text(b.level, b.pos)
 	if where == "" then return false end
 	local text, group
 	local sender = rep.sender
@@ -944,8 +951,10 @@ local function on_party(kind, ctx)
 	if ctx.force or (lua_random(100) <= c.party_chance and budget_ok(st, "react")) then
 		local comments = 1
 		if ctx.force or lua_random(100) <= c.party_second_chance then comments = 2 end
+		local first_id = nil -- [HE-PORT] 8.31: the second comment answers the first
 		for k = 1, comments do
-			local name, id, v = speaker(nil, st, nil, "world")
+			local name, id, v = speaker(first_id, st, nil, "world", first_id)
+			first_id = first_id or id
 			local line = pick({ "party_" .. outcome .. "_" .. v, "party_" .. outcome .. "_any" }, st, "party")
 			if line ~= nil then
 				news_main.show_news(line, name, c.reply_delay + 12 + (k - 1) * 30, 10, "default")
@@ -967,7 +976,7 @@ function on_olr_event(kind, ctx)
 	local st = state()
 	if not ctx.force and (not ready(st, "olr", c.olr_cd) or not budget_ok(st, "react")) then return false end
 	local pos = ctx.pos or db.actor:position()
-	local where = news_main.localized_where(ctx.level, pos)
+	local where = news_main.where_text(ctx.level, pos)
 	if where == "" then return false end
 	local voice = ctx.voice or "any"
 	local line = pick({ "olr_" .. kind .. "_" .. voice, "olr_" .. kind .. "_any" }, st, "olr")
@@ -1079,7 +1088,7 @@ function wound_test(voice)
 	local line = pick({ "wound_" .. voice }, st, "wound")
 	if line then
 		local name = speaker(nil, st, voice)
-		news_main.show_news(fill(line, { name = name, where = news_main.localized_where(level.name(), db.actor:position()) }), name, 0, 10, "default")
+		news_main.show_news(fill(line, { name = name, where = news_main.where_text(level.name(), db.actor:position()) }), name, 0, 10, "default")
 	end
 	save(st)
 end

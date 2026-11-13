@@ -157,6 +157,23 @@ function mypGObject(npc,st)
 	return st.grabitemid~=nil and obj_owner[st.grabitemid]~=nil and obj_owner[st.grabitemid]==npc:id()
 end
 
+-- [HE-PORT] docs/ALIFE_ONLINE_ISSUES.md 1.3 A1: a loose item's real vertex. AMK spawns emission artefacts with
+-- used_ai_locations(false), so the engine never moves their level vertex (GameObject.cpp validate_ai_locations): a
+-- pushed or thrown artefact kept its spawn vertex and NPCs measured, pathed and checked reach against that.
+function item_vertex(obj)
+	local lv = obj:level_vertex_id()
+	local pos = obj:position()
+	if level.valid_vertex_id(lv) and level.vertex_position(lv):distance_to_sqr(pos) < 4 then return lv end
+	local nv = level.valid_vertex_id(lv) and level.vertex_id(lv, pos) or level.vertex_id(pos)
+	if level.valid_vertex_id(nv) then return nv end
+	return lv
+end
+
+local function item_lvid(obj)
+	if IsStalker(obj) or IsMonster(obj) then return obj:level_vertex_id() end
+	return item_vertex(obj)
+end
+
 class "ev_see_stuff"(property_evaluator)
 
 function ev_see_stuff:__init(st,name) super(nil, name)
@@ -218,7 +235,7 @@ function ev_see_stuff:evaluate()
 				local claimed_corpse = IsMonster(obj) and obj:alive()==false -- [HE-PORT] docs/PART_LOOT_DESIGN.md
 				if claimed_corpse and not sivol_part_claim.may_approach(npc, obj) then return false end
 				if (self.st.disabled_objects[obj:id()]~=true) and (obj:parent()==nil or obj_owner[obj:id()]==BAD_OBJ_ID or not IsStalker(obj:parent())) and 
-					(obj_owner[obj:id()]==nil or obj_owner[obj:id()]==BAD_OBJ_ID or obj_owner[obj:id()]==npc:id()) and npc:accessible(obj:level_vertex_id()) and
+					(obj_owner[obj:id()]==nil or obj_owner[obj:id()]==BAD_OBJ_ID or obj_owner[obj:id()]==npc:id()) and npc:accessible(item_lvid(obj)) and
 					(db.actor==nil or db.actor:alive()==false or db.actor:position():distance_to_sqr(obj:position())>6
 						or (claimed_corpse and sivol_part_claim.is_owner(npc, obj))) then
 					local valuable,corpse=isValuable(npc, obj)
@@ -234,7 +251,7 @@ function ev_see_stuff:evaluate()
 							if busy and not (claimed_corpse and sivol_part_claim.is_owner(npc, obj)) then
 								max_dist=max_dist/5
 							end
-							local dist=level.vertex_position(obj:level_vertex_id()):distance_to(npc:position())
+							local dist=level.vertex_position(item_lvid(obj)):distance_to(npc:position())
 							local corrected_dist=dist
 							if dist>5 then
 								corrected_dist=5+(dist-5)/math.sqrt(value)
@@ -276,7 +293,7 @@ function ev_near_stuff:evaluate()
 		if self.st.dest_lvid then
 			return npc:level_vertex_id()==self.st.dest_lvid
 		end
-		return level.vertex_position(gi:level_vertex_id()):distance_to_sqr(npc:position())<1
+		return level.vertex_position(item_lvid(gi)):distance_to_sqr(npc:position())<1
 	end
 	return false
 end
@@ -331,7 +348,7 @@ function act_grab_item:initialize()
 			self.tt=time_global()+3931
 		else
 			self.tt=time_global()+1927
-			utils.send_to_nearest_accessible_vertex(npc,gi:level_vertex_id())
+			utils.send_to_nearest_accessible_vertex(npc,item_lvid(gi))
 		end
 		
 	end
@@ -347,6 +364,11 @@ function act_grab_item:execute()
 		return
 	end
 	if self.tt<time_global() then
+		-- [HE-PORT] docs/ALIFE_ONLINE_ISSUES.md 1.3 A2: only an item within reach; otherwise free it and look again
+		if gi and gi:parent()==nil and not ( IsStalker(gi) or IsMonster(gi) ) and gi:position():distance_to(npc:position()) > 2.5 then
+			freeGObject(self.st)
+			return
+		end
 		if gi and gi:parent()==nil then
 			gi:transfer_item(gi,npc)
 			npc:enable_memory_object(gi,false)
@@ -464,7 +486,7 @@ function correct_position(gi,npc)
 		diff:add(diffp)
 		return npc:vertex_in_direction(gi:level_vertex_id(),diff,len)
 	else
-		return gi:level_vertex_id()
+		return item_vertex(gi)
 	end
 end
 
@@ -481,7 +503,7 @@ function act_reach_item:initialize()
 	self.st.dest_lvid=nil
 	self.tgt_lvid=0
 	if gi then
-		if npc:accessible(gi:level_vertex_id()) then
+		if npc:accessible(item_lvid(gi)) then
 			npc:set_detail_path_type(move.curve)
 			npc:set_path_type(game_object.level_path)
 			npc:set_body_state(move.standing)
@@ -496,7 +518,7 @@ function act_reach_item:initialize()
 			npc:movement_enabled(true)
 			npc:set_sight(look.danger,nil,0)
 			self.st.dest_lvid=correct_position(gi,npc) --gi:level_vertex_id()
-			self.tgt_lvid=gi:level_vertex_id()
+			self.tgt_lvid=item_lvid(gi)
 			npc:set_dest_level_vertex_id(self.st.dest_lvid)
 		else
 			freeGObject(self.st)
@@ -545,8 +567,8 @@ function act_reach_item:execute()
 			self.clvid=npc:level_vertex_id()
 			self.ct=time_global()
 		end
-		if self.tgt_lvid~=gi:level_vertex_id() then
-			self.tgt_lvid=gi:level_vertex_id()
+		if self.tgt_lvid~=item_lvid(gi) then
+			self.tgt_lvid=item_lvid(gi)
 			self.st.dest_lvid=correct_position(gi,npc) -- gi:level_vertex_id()
 			npc:set_dest_level_vertex_id(self.st.dest_lvid)
 		end

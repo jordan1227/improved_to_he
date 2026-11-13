@@ -1,0 +1,549 @@
+-- [HE-PORT] The player's stashes and offline thieves, docs/ALIFE_NEXT_DESIGN.md 8.1 (preset key stash_theft).
+-- AMK already lets an offline stalker loot a box (amk_offline_alife.on_inv_boxes_found) and sell most of it on the
+-- spot. For a stash of the player's (a rucksack box, or any box with a GPS marker, amk_metka, in it) this adds:
+-- - the marker goes with the thief stash_gps_chance % of the time, and gps_habar then shows him on the map (its own
+--   stalker label and tip); otherwise it is thrown away;
+-- - he keeps the stash_keep most valuable pieces he can fence (artefacts, guns, parts) and sells them to a trader
+--   12-36 game hours later, where one may sit on the shelf for a while (shelf echo, stolen_shelf_chance %).
+-- No trail, no news: getting a stash back stays hard. Config [stash] in olr_alife.ltx. Log: [olr_stash].
+-- fl olr_stash.report()                     thefts so far, held goods, when each is fenced
+-- fl olr_stash.near()                       boxes within 30 m of the player: id, name, what is in them, player's stash or not
+-- fl olr_stash.force()                      the nearest offline stalker loots the box nearest to the player now (within 30 m);
+--                                           or force(box_id), force(box_id, thief_id); force(box_id, nil, true) he keeps the marker
+-- fl olr_stash.fence_now()                  every held piece is fenced now
+-- fl olr_stash.suspects()                   thieves the player can confront (carrying his marker or a kept piece), and where
+-- Confronting: walk up to a thief who carries the marker or a piece he kept and talk to him (use): within offer_dist his
+-- start dialogue is he_stash_dlg: demand it back (by rank against his), buy it back (cost x buyback_k), threaten (he turns
+-- on the player alone), leave. Nobody stops the player; beyond release_dist his own dialogue comes back.
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_stash"
+local RUCKSACKS = { m_inventory_box = true, rucksack = true, rukzak_inventory_box = true }
+local BOXES = { inventory_box = true, m_inventory_box = true, rucksack = true, rukzak_inventory_box = true }
+local METKA = "amk_metka"
+
+local cfg = nil
+local pending = {}
+local force_gps = false
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("stash") - 1 do
+		local _, k, v = ini:r_line("stash", i, "", "")
+		cfg[k] = tonumber(v) or v
+	end
+	for _, k in ipairs({ "stash_gps_chance", "stash_keep", "fence_min_h", "fence_max_h", "fence_tries", "stolen_shelf_chance", "offer_dist", "release_dist",
+		"buyback_k", "demand_base", "demand_per_tier" }) do
+		if cfg[k] == nil then abort("olr_stash: no key '%s' in [stash]", k) end
+	end
+	return cfg
+end
+
+local function slog(fmt, ...)
+	log2("[olr_stash] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+local function now()
+	return timers.Get_Game_Seconds()
+end
+
+local function state()
+	return olr_store.get(KEY) or { thefts = {}, held = {} }
+end
+
+local function active()
+	return db.actor ~= nil and olr_cfg.on("stash_theft")
+end
+
+local function box_items(box_id)
+	local out = {}
+	local sim = alife()
+	for _, rec in pairs(amk_offline_alife.items[box_id] or {}) do
+		local it = rec and sim:object(rec.id)
+		if it and it.parent_id == box_id and it:name() == rec.name then table.insert(out, it) end
+	end
+	return out
+end
+
+function is_player_stash(box)
+	if not box then return false end
+	if RUCKSACKS[box:section_name()] then return true end
+	for _, it in ipairs(box_items(box.id)) do
+		if it:section_name() == METKA then return true end
+	end
+	return false
+end
+
+-- olr_amk_offline.act, before AMK loots the boxes he saw: what the player's stashes hold, and what he will keep
+function before_loot(victim, vdata)
+	if not ( active() and vdata and vdata.inv_boxes ) then return nil end
+	local c = config()
+	local snaps = {}
+	local keep = {}
+	for _, b in ipairs(vdata.inv_boxes) do
+		local box = alife():object(b.id)
+		if box and box:name() == b.name and is_player_stash(box) then
+			local snap = { id = box.id, name = box:name(), sec = box:section_name(), items = {}, metka = false }
+			local goods = {}
+			for _, it in ipairs(box_items(box.id)) do
+				local sec = it:section_name()
+				snap.items[it.id] = sec
+				if sec == METKA then
+					snap.metka = true
+				elseif olr_trader_runs.kind_of(it) then
+					table.insert(goods, { sec = sec, cost = amk_offline_alife.get_item_cost(it) })
+				end
+			end
+			table.sort(goods, function(x, y) return x.cost > y.cost end)
+			for i = 1, math.min(c.stash_keep, #goods) do keep[goods[i].sec] = ( keep[goods[i].sec] or 0 ) + 1 end
+			snap.gps = snap.metka and ( force_gps or math.random(100) <= c.stash_gps_chance )
+			table.insert(snaps, snap)
+		end
+	end
+	if #snaps == 0 then return nil end
+	local bag = {}
+	for _, it in ipairs(box_items(victim.id)) do bag[it.id] = true end
+	pending[victim.id] = { keep = keep, held = {} }
+	return { snaps = snaps, bag = bag }
+end
+
+-- olr_trader_runs.take_haul, inside AMK's process_trade: what he keeps is taken off the list he sells on the spot
+function hold_out(npc, sell_list)
+	if not active() then return sell_list end
+	local p = pending[npc.id]
+	local held = state().held
+	local rest = {}
+	for _, item in pairs(sell_list) do
+		local sec = item:section_name()
+		if held[tostring(item.id)] then
+			-- fenced later
+		elseif p and ( p.keep[sec] or 0 ) > 0 then
+			p.keep[sec] = p.keep[sec] - 1
+			table.insert(p.held, item.id)
+		else
+			table.insert(rest, item)
+		end
+	end
+	return rest
+end
+
+-- [HE-PORT] olr_gear camp trade: is this item from a stash he robbed, kept to fence (no side effects)
+function keeps(npc, item)
+	if not active() then return false end
+	if state().held[tostring(item.id)] then return true end
+	local p = pending[npc.id]
+	return p ~= nil and ( p.keep[item:section_name()] or 0 ) > 0
+end
+
+-- after AMK looted: what left each stash, the marker, the pieces he keeps
+function after_loot(victim, snap)
+	if not snap then return end
+	local p = pending[victim.id]
+	pending[victim.id] = nil
+	local c = config()
+	local sim = alife()
+	local st = state()
+	for _, s in ipairs(snap.snaps) do
+		local taken, total = {}, 0
+		for id, sec in pairs(s.items) do
+			total = total + 1
+			local it = sim:object(id)
+			if not ( it and it.parent_id == s.id ) then
+				table.insert(taken, sec)
+				gps_habar.remove_item(s.id, { id = id })
+			end
+		end
+		if #taken > 0 then
+			gps_habar.update_gps(nil, nil, s.id)
+			local lvl = olr_smart_index.object_level(victim)
+			table.insert(st.thefts, { t = now(), box = s.name, thief = victim.id, who = victim:name(), comm = victim:community(), lvl = lvl,
+				n = #taken, gps = s.metka and s.gps or false })
+			while #st.thefts > 20 do table.remove(st.thefts, 1) end
+			slog("%s (%s) on %s looted the player's stash %s (%s): %d of %d things gone: %s", victim:name(), victim:community(), tostring(lvl),
+				s.name, s.sec, #taken, total, table.concat(taken, ","))
+		else
+			slog("%s found nothing he wanted in the player's stash %s (or it was trapped)", victim:name(), s.name)
+		end
+	end
+	-- the marker: AMK never takes it (always kept), so it goes with him only on the stash_gps_chance roll, moved here;
+	-- otherwise it stays in the stash, which still shows on the player's map
+	for _, s in ipairs(snap.snaps) do
+		if s.gps and victim:alive() then
+			for id, sec in pairs(s.items) do
+				local it = sec == METKA and sim:object(id)
+				if it and it.parent_id == s.id then
+					local new = amk_offline_alife.pick_item(victim, it)
+					if new then
+						gps_habar.remove_item(s.id, { id = id })
+						gps_habar.update_gps(nil, nil, s.id)
+						gps_habar.insert_item(victim.id, new)
+						gps_habar.update_gps(nil, nil, victim.id)
+						slog("%s pockets the GPS marker (id=%d now): the player's map shows him", victim:name(), new.id)
+						st.marked = st.marked or {}
+						st.marked[tostring(new.id)] = { thief = victim.id, who = victim:name() }
+					else
+						slog("%s could not take the GPS marker id=%d", victim:name(), id)
+					end
+					break
+				end
+			end
+		elseif s.metka then
+			slog("%s leaves the GPS marker in %s", victim:name(), s.name)
+		end
+	end
+	if p then
+		for _, id in ipairs(p.held) do
+			local it = sim:object(id)
+			if it and it.parent_id == victim.id then
+				local due = now() + math.random(c.fence_min_h, c.fence_max_h) * 3600
+				st.held[tostring(id)] = { thief = victim.id, who = victim:name(), sec = it:section_name(), due = due, tries = 0 }
+				slog("%s keeps %s id=%d to fence in %.0f h", victim:name(), it:section_name(), id, ( due - now() ) / 3600)
+			end
+		end
+	end
+	olr_store.put(KEY, st)
+end
+
+local function fence_one(st, key, rec, forced)
+	local sim = alife()
+	local id = tonumber(key)
+	local it = sim:object(id)
+	local se = sim:object(rec.thief)
+	if not ( it and se and IsStalker(se) and se:name() == rec.who and it.parent_id == se.id ) then
+		slog("%s id=%s: no longer with %s (%s)", rec.sec, key, rec.who, se and IsStalker(se) and se:alive() and "sold or lost" or "dead: on his body")
+		st.held[key] = nil
+		return
+	end
+	if not se:alive() then
+		slog("%s id=%s: %s is dead, it stays on his body", rec.sec, key, rec.who)
+		st.held[key] = nil
+		return
+	end
+	if se.online and not forced then return end
+	local where = olr_trader_runs.fence(se, { id })
+	if where then
+		slog("%s fenced %s id=%s at %s", rec.who, rec.sec, key, where)
+		st.held[key] = nil
+		return
+	end
+	rec.tries = rec.tries + 1
+	if rec.tries >= config().fence_tries then
+		slog("%s found no trader for %s id=%s after %d tries: it stays in his bag, AMK may sell it", rec.who, rec.sec, key, rec.tries)
+		st.held[key] = nil
+	else
+		rec.due = now() + 12 * 3600
+		slog("%s found no trader for %s id=%s, tries again in 12 h", rec.who, rec.sec, key)
+	end
+end
+
+-- ---------------------------------------------------------------------------
+-- confronting a thief
+-- ---------------------------------------------------------------------------
+local DIALOG = "he_stash_dlg"
+local talk = nil          -- { id, items = { item ids still with him }, price, ok }
+local done_with = {}      -- npc id -> true once settled this session
+local stale_cleared = false
+
+-- what of the player's he still carries: the marker and the pieces he kept
+local function loot_on(npc_id)
+	local st = state()
+	local out = {}
+	local sim = alife()
+	for key, rec in pairs(st.held) do
+		local it = rec.thief == npc_id and sim:object(tonumber(key))
+		if it and it.parent_id == npc_id then table.insert(out, it.id) end
+	end
+	for key, rec in pairs(st.marked or {}) do
+		local it = rec.thief == npc_id and sim:object(tonumber(key))
+		if it and it.parent_id == npc_id then table.insert(out, it.id) end
+	end
+	return out
+end
+
+local function thief_ids()
+	local st = state()
+	local ids = {}
+	for _, rec in pairs(st.held) do ids[rec.thief] = true end
+	for _, rec in pairs(st.marked or {}) do ids[rec.thief] = true end
+	return ids
+end
+
+function suspects()
+	for id in pairs(thief_ids()) do
+		local se = alife():object(id)
+		slog("suspect id=%d %s on %s, carries %d of the player's things, online=%s", id, se and se:name() or "gone",
+			se and tostring(olr_smart_index.object_level(se)) or "?", #loot_on(id), se and tostring(se.online) or "?")
+	end
+end
+
+local function price_of(ids)
+	local sum = 0
+	for _, id in ipairs(ids) do
+		local it = alife():object(id)
+		if it then sum = sum + amk_offline_alife.get_item_cost(it) end
+	end
+	return math.max(300, math.floor(sum * config().buyback_k / 50) * 50)
+end
+
+-- olr_init, every 0.5 s: a thief near the player has he_stash_dlg as his start dialogue (the player talks to him with
+-- use); far away again, his own dialogue comes back
+local offered = {}
+
+function talk_update()
+	if not active() then return end
+	if db.actor:is_talking() or level.main_input_receiver() ~= nil then return end
+	if not stale_cleared then
+		-- offers live in memory: the saved npc_targets entries of the last session go
+		stale_cleared = true
+		local targets = sak_dialog.load_npc_targets()
+		for i = #targets, 1, -1 do
+			local tip = targets[i].tips
+			if type(tip) == "string" and string.sub(tip, 1, 6) == "stash_" then
+				sak_dialog.remove_npc_from_npc_targets(tip)
+				slog("removed stale talk entry %s", tip)
+			end
+		end
+	end
+	local c = config()
+	for id in pairs(thief_ids()) do
+		local npc = not done_with[id] and level.object_by_id(id)
+		local tip = "stash_" .. id
+		local d = npc and npc:alive() and npc:relation(db.actor) ~= game_object.enemy and npc:position():distance_to(db.actor:position())
+		if d and d <= c.offer_dist and not offered[id] then
+			if #loot_on(id) == 0 then
+				done_with[id] = true
+			else
+				sak_dialog.remove_npc_from_npc_targets(tip)
+				sak_dialog.add_npc_id_to_npc_targets(id, DIALOG, tip)
+				offered[id] = true
+				slog("%s id=%d carries the player's things: talking to him opens the stash talk", npc:name(), id)
+			end
+		elseif offered[id] and not ( d and d <= c.release_dist ) then
+			sak_dialog.remove_npc_from_npc_targets(tip)
+			offered[id] = nil
+		end
+	end
+end
+
+-- the offer for the stalker the player talks to (built when the talk opens: the player starts it)
+local function cur(a, b)
+	local npc = nil
+	for _, o in ipairs({ a, b }) do
+		if o and o.id and o:id() ~= db.actor:id() then npc = o end
+	end
+	if not npc then return talk end
+	if not ( talk and talk.id == npc:id() ) then
+		local items = loot_on(npc:id())
+		talk = { id = npc:id(), items = items, price = price_of(items) }
+		slog("the player confronts %s id=%d, he carries %d of his things, buyback %d", npc:name(), talk.id, #items, talk.price)
+	end
+	return talk
+end
+
+local function settle(why)
+	if not talk then return end
+	done_with[talk.id] = true
+	offered[talk.id] = nil
+	sak_dialog.remove_npc_from_npc_targets("stash_" .. talk.id)
+	local se = alife():object(talk.id)
+	slog("%s id=%d: %s", se and se:name() or "?", talk.id, why)
+end
+
+local function give_back()
+	local npc = level.object_by_id(talk.id)
+	if not npc then return 0 end
+	local n = 0
+	local st = state()
+	for _, id in ipairs(talk.items) do
+		local it = level.object_by_id(id)
+		if it and it:parent() and it:parent():id() == talk.id then
+			local sec = it:section()
+			npc:transfer_item(it, db.actor)
+			news_manager.relocate_item(db.actor, "in", sec)
+			st.held[tostring(id)] = nil
+			if st.marked then st.marked[tostring(id)] = nil end
+			amk_offline_alife.forget_item(talk.id, id)
+			n = n + 1
+		end
+	end
+	olr_store.put(KEY, st)
+	return n
+end
+
+local function tier_n(rank_name)
+	return rank_name == "master" and 4 or rank_name == "veteran" and 3 or rank_name == "experienced" and 2 or 1
+end
+
+-- the player's option shows the price (the NLC engine honours script_text on player phrases)
+function dlg_t_buy()
+	local text = game.translate_string("he_stash_dlg_buy")
+	return string.gsub(text, "%$sum", function() return tostring(talk and talk.price or 0) end)
+end
+
+local refused = {} -- [HE-PORT] thief id -> true once he refused a demand (memory only: a reload allows one more try)
+
+function dlg_demand(a, b)
+	cur(a, b)
+	if not ( talk and #talk.items > 0 ) then return end
+	if refused[talk.id] then
+		talk.ok = false
+		slog("demand: he already refused once, refuses again")
+		return
+	end
+	local npc = level.object_by_id(talk.id)
+	local gap = npc and ( tier_n(ranks.get_obj_rank_name(db.actor)) - tier_n(ranks.get_obj_rank_name(npc)) ) or 0
+	local chance = math.max(5, math.min(90, config().demand_base + config().demand_per_tier * gap))
+	talk.ok = math.random(100) <= chance
+	slog("demand: rank gap %d, chance %d%%: %s", gap, chance, talk.ok and "he hands it over" or "he refuses")
+	if talk.ok then
+		local n = give_back()
+		settle(string.format("gave back %d things", n))
+	else
+		refused[talk.id] = true
+	end
+end
+
+function dlg_demand_ok(a, b) cur(a, b) return talk ~= nil and talk.ok == true end
+-- the fallback reply: a talk opened without an offer (a stale entry after a load) still has one answer
+function dlg_demand_no(a, b) cur(a, b) return not ( talk ~= nil and talk.ok == true ) end
+function dlg_can_buy(a, b)
+	cur(a, b)
+	return talk ~= nil and #talk.items > 0 and db.actor:money() >= talk.price
+end
+
+function dlg_buy(a, b)
+	cur(a, b)
+	if not talk then return end
+	local npc = level.object_by_id(talk.id)
+	if npc then dialogs.relocate_money(npc, talk.price, "out") end
+	local n = give_back()
+	settle(string.format("sold back %d things for %d", n, talk.price))
+end
+
+function dlg_threat(a, b)
+	cur(a, b)
+	if not talk then return end
+	local npc = level.object_by_id(talk.id)
+	if npc then npc:set_relation(game_object.enemy, db.actor) end
+	settle("threatened: he turns on the player")
+end
+
+function dlg_leave(a, b)
+	cur(a, b)
+	settle("the player let it go")
+end
+
+function update()
+	if not active() or olr_cfg.sleep_paused() then return end
+	local st = state()
+	if not next(st.held) then return end
+	local n = now()
+	local changed = false
+	for key, rec in pairs(st.held) do
+		if n >= rec.due then
+			fence_one(st, key, rec)
+			changed = true
+		end
+	end
+	if changed then olr_store.put(KEY, st) end
+end
+
+function report()
+	local st = state()
+	local n = now()
+	slog("on=%s, %d thefts on record, gps chance %d%%, keeps %d", tostring(active()), #st.thefts, config().stash_gps_chance, config().stash_keep)
+	for _, t in ipairs(st.thefts) do
+		slog("  %.1f h ago: %s (%s) took %d things from %s on %s%s", ( n - t.t ) / 3600, t.who, t.comm, t.n, t.box, tostring(t.lvl), t.gps and ", kept the marker" or "")
+	end
+	for key, rec in pairs(st.held) do
+		slog("  held %s id=%s by %s, fenced in %.1f h (try %d)", rec.sec, key, rec.who, ( rec.due - n ) / 3600, rec.tries)
+	end
+end
+
+function fence_now()
+	local st = state()
+	for key, rec in pairs(st.held) do fence_one(st, key, rec, true) end
+	olr_store.put(KEY, st)
+end
+
+-- the box's AMK item list from the objects themselves (AMK rebuilds it only on a level load)
+local function rebuild_box(box)
+	local list = {}
+	for _, o in alife():objects() do
+		if o.parent_id == box.id then table.insert(list, { id = o.id, name = o:name() }) end
+	end
+	amk_offline_alife.items[box.id] = list
+	return #list
+end
+
+local function boxes_near(r)
+	local out = {}
+	local here = db.actor:position()
+	for _, o in alife():objects() do
+		if BOXES[o:section_name()] and ( o.parent_id == nil or o.parent_id == BAD_OBJ_ID ) then
+			local d = o.position:distance_to(here)
+			if d <= r then table.insert(out, { o = o, d = d }) end
+		end
+	end
+	table.sort(out, function(a, b) return a.d < b.d end)
+	return out
+end
+
+function near(r)
+	local list = boxes_near(r or 30)
+	slog("boxes within %d m: %d", r or 30, #list)
+	for _, rec in ipairs(list) do
+		local secs = {}
+		for _, o in alife():objects() do
+			if o.parent_id == rec.o.id then table.insert(secs, o:section_name()) end
+		end
+		amk_offline_alife.items[rec.o.id] = amk_offline_alife.items[rec.o.id] or {}
+		slog("  id=%d %s (%s) %.0f m: %d things%s: %s", rec.o.id, rec.o:name(), rec.o:section_name(), rec.d, #secs,
+			RUCKSACKS[rec.o:section_name()] and ", a rucksack" or "", table.concat(secs, ","))
+	end
+end
+
+function force(box_ref, thief_id, gps)
+	local sim = alife()
+	local box = nil
+	if box_ref then
+		box = sim:object(tonumber(box_ref) or box_ref)
+	else
+		local list = boxes_near(30)
+		box = list[1] and list[1].o
+	end
+	if not ( box and BOXES[box:section_name()] ) then
+		slog("force: %s is not a box (fl olr_stash.near() lists the boxes around you)", box and ( box:name() .. ", " .. box:section_name() ) or tostring(box_ref or "nothing within 30 m"))
+		return
+	end
+	local n_items = rebuild_box(box)
+	local lvl = olr_smart_index.object_level(box)
+	local thief = thief_id and sim:object(thief_id)
+	if not thief then
+		local best = nil
+		for _, comm in ipairs({ "stalker", "green", "bandit", "freedom", "dolg", "killer" }) do
+			for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+				local se = sim:object(id)
+				if se and IsStalker(se) and se:alive() and not se.online and olr_smart_index.object_level(se) == lvl and olr_amk_offline.usable(se) then
+					local d = se.position:distance_to(box.position)
+					if not best or d < best then thief, best = se, d end
+				end
+			end
+		end
+	end
+	if not thief then
+		slog("force: no offline stalker on %s with an AMK item list", tostring(lvl))
+		return
+	end
+	slog("force: %s (%s) loots %s (%s, %d things, player's stash %s)", thief:name(), thief:community(), box:name(), box:section_name(), n_items,
+		tostring(is_player_stash(box)))
+	local vdata = { inv_boxes = { { id = box.id, name = box:name() } }, friends = {}, enemies = {}, monsters = {}, artefacts = {},
+		corpses = { stalkers = {}, monsters = {} }, weapons = { seen = {} } }
+	force_gps = gps == true
+	local snap = before_loot(thief, vdata)
+	force_gps = false
+	amk_offline_alife.on_inv_boxes_found(thief, vdata)
+	after_loot(thief, snap)
+end

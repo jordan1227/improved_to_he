@@ -1,0 +1,667 @@
+-- [HE-PORT] Toll points, docs/ALIFE_NEXT_DESIGN.md 4.2 (preset key tolls). A bandit ambush of news_encounters whose
+-- template is listed in [tolls] templates talks before it shoots: while the group is waiting, hailed or paid it ignores
+-- the player (dsh_enemies.actor_ignored asks ignores_actor). Seen by a member within warn_radius of the leader, the
+-- player is hailed; within force_dist the leader opens he_toll_dlg (pay, pay in kind, nothing to take, stare down,
+-- refuse). A hit or a kill by the player breaks it for the whole group. All road gangs are freelancers (no Borov).
+-- After losses: the leader dead and 2+ left, they move to another toll spot on the level under a new leader; one left,
+-- he joins the nearest bandit camp; none left, that spot stays quiet for quiet_days. No goodwill is written.
+-- No toll during the Cordon grace, an emission, with a companion, or in the quests of docs/ALIFE_NEXT_DESIGN.md 8.2a.
+-- Config [tolls] in olr_alife.ltx, dialogue config\gameplay\dialogs_toll.xml. Log: [olr_toll].
+-- fl olr_toll.report()                   groups, states, prices, toll reputation, why a toll would not happen now
+-- fl olr_toll.fire("amb_gar_post")       fire that ambush now (news_encounters.fire), then fl olr_toll.go()
+-- fl olr_toll.go()                       teleport to the leader of the nearest toll group (he hails at once)
+-- fl olr_toll.force_state("amb_gar_post", "waiting")   waiting, hailed, paid, broke
+-- fl olr_toll.set_rep(-4)                the toll reputation
+-- fl olr_toll.mark("gar_road_south")     log where the player stands as a ready template for he_zone_encounters.ltx
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_toll"
+local DIALOG = "he_toll_dlg"
+
+local cfg = nil
+local groups = {}        -- tid -> { state, leader, hail_t, offer, lost, leader_dead, settled }
+local stale_cleared = false
+local talk = nil         -- the open offer while the dialogue runs: { tid, price, kind_item, stare_ok, letgo }
+local last_upd = 0
+local last_hold = 0
+
+local function config()
+	if cfg then return cfg end
+	cfg = { tpl = {} }
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("tolls") - 1 do
+		local _, k, v = ini:r_line("tolls", i, "", "")
+		cfg[k] = tonumber(v) or v
+	end
+	for _, k in ipairs({ "templates", "warn_radius", "leave_radius", "force_dist", "hail_s", "share_1", "min_1", "max_1", "share_2",
+		"min_2", "max_2", "rep_step", "rep_max", "rep_feared", "stare_base", "stare_per_tier", "stare_per_bandit", "letgo_bump",
+		"quiet_days", "companion_dist" })
+	do
+		if cfg[k] == nil then abort("olr_toll: no key '%s' in [tolls]", k) end
+	end
+	for id in string.gmatch(tostring(cfg.templates or ""), "[%w_]+") do cfg.tpl[id] = true end
+	return cfg
+end
+
+local function tlog(fmt, ...)
+	log2("[olr_toll] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+function active()
+	return db.actor ~= nil and olr_cfg.on("tolls")
+end
+
+local function saved()
+	local st = olr_store.get(KEY) or {}
+	st.paid = st.paid or {}
+	st.bump = st.bump or {}
+	st.rep = st.rep or 0
+	return st
+end
+
+local function line(prefix, subs)
+	local key = olr_trader_runs.pick_line(prefix)
+	if not key then
+		tlog("no text for %s", prefix)
+		return nil
+	end
+	local text = game.translate_string(key)
+	for k, v in pairs(subs or {}) do text = string.gsub(text, "%$" .. k, function() return v end) end
+	return text
+end
+
+local function bark(npc, prefix, subs)
+	local text = line(prefix, subs)
+	if text then sak.send_tip_local(text, npc:character_name(), 0, 8, "default", "no", "gray") end
+	tlog("%s says %s", npc:name(), prefix)
+end
+
+local function tier_n(rank_name)
+	return rank_name == "master" and 4 or rank_name == "veteran" and 3 or rank_name == "experienced" and 2 or 1
+end
+
+local function actor_tier()
+	return tier_n(ranks.get_obj_rank_name(db.actor))
+end
+
+-- ---------------------------------------------------------------------------
+-- when no toll happens
+-- ---------------------------------------------------------------------------
+local QUESTS = {
+	{ on = { "gar_dm_bandits_yurik_timer", "gar_dm_novice_kill_pending" }, off = { "gar_dm_novice_rescued", "gar_dm_bandits_hostile", "gar_dm_bandits_timer_failed" } },
+	{ on = { "gar_dm_novice_help_start" }, off = { "gar_dm_novice_help_done" } },
+	{ on = { "val_escort_start" }, off = { "val_escort_got_reward", "val_escort_captive_dead" } },
+	{ on = { "val_chase_start" }, off = { "bar_darklab_document_done" } },
+	{ on = { "convoy_north_tesla", "convoy_north_limansk", "convoy_ambush_set" }, off = { "convoy_lost", "convoy_ambush_done" } },
+}
+
+local function any(list)
+	for _, i in ipairs(list) do
+		if has_alife_info(i) then return i end
+	end
+	return nil
+end
+
+local function has_companion()
+	local r = config().companion_dist
+	for id in pairs(db.storage) do
+		local npc = id ~= db.actor:id() and level.object_by_id(id)
+		if npc and IsStalker(npc) and npc:alive() and npc:position():distance_to(db.actor:position()) <= r and sivol_part_claim.is_companion(npc) then
+			return npc:name()
+		end
+	end
+	return nil
+end
+
+-- why no toll now, nil if one may happen
+function suppressed()
+	if olr_cfg.grace_active() then return "grace" end
+	if db.blowout_active == true then return "emission" end
+	for _, q in ipairs(QUESTS) do
+		local on = any(q.on)
+		if on and not any(q.off) then return "quest " .. on end
+	end
+	local c = has_companion()
+	if c then return "companion " .. c end
+	return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- groups
+-- ---------------------------------------------------------------------------
+local function members(tid)
+	local out = {}
+	local sim = alife()
+	for _, id in ipairs(news_encounters.members_of(tid)) do
+		local se = sim:object(id)
+		if se and IsStalker(se) and se:alive() then table.insert(out, se) end
+	end
+	return out
+end
+
+local function leader_of(list)
+	local best = nil
+	for _, se in ipairs(list) do
+		if not best or se:rank() > best:rank() then best = se end
+	end
+	return best
+end
+
+local function group_of_id(id)
+	for tid, g in pairs(groups) do
+		if g.ids and g.ids[id] then return tid, g end
+	end
+	return nil
+end
+
+local function set_state(tid, g, s, why)
+	if g.state == s then return end
+	tlog("%s: %s -> %s (%s)", tid, tostring(g.state), s, why)
+	g.state = s
+	if s == "broke" then
+		for id in pairs(g.ids or {}) do
+			local npc = level.object_by_id(id)
+			if npc and npc:alive() then
+				-- the engine's own relation does the rest; nudge the ones in view so they turn now
+				npc:set_relation(game_object.enemy, db.actor)
+			end
+		end
+		if g.tip then sak_dialog.remove_npc_from_npc_targets(g.tip) g.tip = nil end
+	end
+end
+
+-- dsh_enemies.actor_ignored: true while this NPC's toll group is talking or paid
+function ignores_actor(obj)
+	if not active() then return false end
+	local _, g = group_of_id(obj:id())
+	return g ~= nil and ( g.state == "waiting" or g.state == "hailed" or g.state == "paid" or g.state == "declined" )
+end
+
+-- the price for this group now
+local function price_of(tid)
+	local c = config()
+	local st = saved()
+	local t = news_encounters.template_tier(tid) or 1
+	local money = db.actor:money()
+	local p = math.floor(money * c["share_" .. ( t >= 2 and 2 or 1 )] / 100)
+	p = math.max(c["min_" .. ( t >= 2 and 2 or 1 )], math.min(c["max_" .. ( t >= 2 and 2 or 1 )], p))
+	p = p * ( 1 + math.max(0, st.rep) * c.rep_step / 100 ) * ( st.bump[tid] or 1 )
+	return math.floor(p / 50) * 50
+end
+
+-- the most valuable artefact or part of the player's worth the price or more
+local function kind_item(price)
+	local best, cost = nil, 0
+	db.actor:iterate_inventory(function(_, item)
+		local sec = item:section()
+		if ( string.sub(sec, 1, 3) == "af_" or string.sub(sec, 1, 7) == "mutant_" ) and not get_bool(sec, "quest_item", false) then
+			local c = math.floor(( system_ini():line_exist(sec, "cost") and system_ini():r_float(sec, "cost") or 0 ) * item:condition())
+			if c >= price and ( not best or c < cost ) then best, cost = item, c end
+		end
+	end, nil)
+	return best, cost
+end
+
+local function refresh_groups()
+	local c = config()
+	local here = level.name()
+	for tid in pairs(c.tpl) do
+		local list = members(tid)
+		local g = groups[tid]
+		if #list == 0 then
+			if g then
+				tlog("%s: group gone", tid)
+				groups[tid] = nil
+			end
+			on_group_gone(tid)
+		else
+			if not g then
+				g = { state = saved().paid[tid] and "paid" or "waiting", ids = {}, lost = 0, size = #list }
+				groups[tid] = g
+				tlog("%s: group of %d, state %s", tid, #list, g.state)
+			end
+			g.ids = {}
+			for _, se in ipairs(list) do g.ids[se.id] = true end
+			local ld = leader_of(list)
+			g.leader = ld and ld.id
+			g.level = olr_smart_index.object_level(list[1])
+			if g.level ~= here and g.state == "hailed" then g.state = "waiting" end
+		end
+	end
+end
+
+-- ---------------------------------------------------------------------------
+-- losses: a new leader and a new spot, one man left, or a quiet spot
+-- ---------------------------------------------------------------------------
+function on_npc_death(npc, who)
+	if not ( active() and npc ) then return end
+	local tid, g = group_of_id(npc:id())
+	if not tid then return end
+	g.lost = g.lost + 1
+	if npc:id() == g.leader then g.leader_dead = true end
+	if who and who:id() == db.actor:id() then set_state(tid, g, "broke", "the player killed " .. npc:name()) end
+	tlog("%s: %s dead (%d lost, leader dead %s)", tid, npc:name(), g.lost, tostring(g.leader_dead == true))
+end
+
+function on_npc_before_hit(npc, hit_data)
+	if not ( active() and npc and hit_data and db.actor ) or hit_data.ignore_hit then return end
+	local who = hit_data.who
+	if not who and hit_data.who_id then who = level.object_by_id(hit_data.who_id) end
+	if not ( who and who:id() == db.actor:id() ) then return end
+	local tid, g = group_of_id(npc:id())
+	if tid and g.state ~= "broke" then set_state(tid, g, "broke", "the player hit " .. npc:name()) end
+end
+
+local function settle(tid, g)
+	if g.settled or g.lost == 0 then return end
+	-- only once nobody of them is fighting and the player is well away
+	for id in pairs(g.ids) do
+		local npc = level.object_by_id(id)
+		if npc and npc:best_enemy() then return end
+	end
+	g.settled = true
+	local list = members(tid)
+	local c = config()
+	if #list == 0 then
+		news_encounters.extend_cooldown(tid, c.quiet_days * 24 * 60)
+		tlog("%s: wiped out, the spot stays quiet %d days", tid, c.quiet_days)
+		local t = line("he_toll_gossip_wiped_")
+		if t then sak.send_tip(t, olr_trader_runs.other_name(), 0, 15, "default", "pda_news", "gray") end
+		local st = saved()
+		st.rep = st.rep - 2
+		olr_store.put(KEY, st)
+	elseif #list == 1 then
+		local se = list[1]
+		local camp = olr_smart_index.pick_name("bandit", nil, nil, { [olr_smart_index.object_level(se)] = true }, { rank = se:rank() })
+		news_encounters.untrack(se.id)
+		if camp then olr_smart_index.attach_checked(se, camp) end
+		tlog("%s: %s is the last one, joins %s", tid, se:name(), tostring(camp))
+	elseif g.leader_dead then
+		-- another toll template on this level takes them, under the highest rank left
+		local to = nil
+		for other in pairs(c.tpl) do
+			if other ~= tid and news_encounters.template_level(other) == g.level and not groups[other] then to = other end
+		end
+		if to then
+			local anchor = news_encounters.template_anchor(to)
+			for _, se in ipairs(list) do
+				news_encounters.retag(se.id, to)
+				if anchor then olr_smart_index.attach_checked(se, anchor) end
+			end
+			groups[tid] = nil
+			tlog("%s: leader dead, %d left move to %s (%s) under %s", tid, #list, to, tostring(anchor), leader_of(list):name())
+			local t = line("he_toll_gossip_moved_")
+			if t then sak.send_tip(t, olr_trader_runs.other_name(), 0, 15, "default", "pda_news", "gray") end
+		else
+			tlog("%s: leader dead, %d left, no other spot on %s: they stay", tid, #list, tostring(g.level))
+		end
+	end
+end
+
+-- ---------------------------------------------------------------------------
+-- the hail and the talk
+-- ---------------------------------------------------------------------------
+local function can_open_talk(npc)
+	if hud_animation_owner and hud_animation_owner.busy and hud_animation_owner.busy() then return false end
+	if level.main_input_receiver() ~= nil or db.actor:is_talking() or npc:is_talking() then return false end
+	return npc:get_start_dialog() == DIALOG
+end
+
+local function step(tid, g, now)
+	local c = config()
+	local npc = g.leader and level.object_by_id(g.leader)
+	if not npc or g.state == "broke" then return end
+	local d = npc:position():distance_to(db.actor:position())
+	if g.state == "paid" then
+		-- one line each time he walks by
+		if d <= c.force_dist * 2 and not g.pass_said then
+			g.pass_said = true
+			bark(npc, "he_toll_bark_pass_")
+		elseif d > c.leave_radius then
+			g.pass_said = nil
+		end
+		return
+	end
+	if g.state == "declined" then
+		if d > c.leave_radius then
+			set_state(tid, g, "waiting", "he went the long way round")
+			g.back_said = nil
+		elseif d <= c.force_dist * 2 and not g.back_said then
+			g.back_said = now
+			bark(npc, "he_toll_bark_back_")
+		elseif g.back_said and now - g.back_said > 8000 and d <= c.force_dist * 2 then
+			set_state(tid, g, "broke", "he declined and still came through")
+		end
+		return
+	end
+	if g.state == "waiting" then
+		if d > c.warn_radius then return end
+		local seen = false
+		for id in pairs(g.ids) do
+			local m = level.object_by_id(id)
+			if m and m:alive() and m:see(db.actor) then seen = true end
+		end
+		if not seen then return end
+		local why = suppressed()
+		if why then
+			if g.quiet_why ~= why then tlog("%s: no toll now (%s), they let him pass", tid, why) end
+			g.quiet_why = why
+			return
+		end
+		set_state(tid, g, "hailed", string.format("seen at %.0f m", d))
+		g.hail_t = now
+		g.tip = "toll_" .. g.leader
+		sak_dialog.remove_npc_from_npc_targets(g.tip)
+		sak_dialog.add_npc_id_to_npc_targets(g.leader, DIALOG, g.tip)
+		bark(npc, "he_toll_bark_stop_")
+		return
+	end
+	-- hailed
+	if d > c.leave_radius then
+		set_state(tid, g, "waiting", string.format("he backed off to %.0f m", d))
+		sak_dialog.remove_npc_from_npc_targets(g.tip)
+		g.tip = nil
+		return
+	end
+	if d <= c.force_dist and can_open_talk(npc) then
+		-- run_talk_dialog toggles the talk window (CUIGameSP::StartTalk): a second call while it opens closes it again and
+		-- leaves the player locked with a cursor, so one call per try and a pause before the next
+		if now < ( g.talk_try or 0 ) then return end
+		if npc:is_talk_enabled() then
+			g.talk_try = now + 8000
+			talk = { tid = tid, price = price_of(tid) }
+			talk.kind, talk.kind_cost = kind_item(talk.price)
+			tlog("%s: %s stops the player, price %d, money %d, kind %s", tid, npc:name(), talk.price, db.actor:money(), talk.kind and talk.kind:section() or "-")
+			db.actor:run_talk_dialog(npc)
+		elseif now > ( g.weapon_t or 0 ) then
+			g.weapon_t = now + 60000
+			bark(npc, "he_toll_bark_weapon_")
+		end
+	elseif now - g.hail_t > c.hail_s * 1000 and d <= c.force_dist * 2 and not g.last_said then
+		g.last_said = true
+		bark(npc, "he_toll_bark_last_")
+	elseif g.last_said and now - g.hail_t > ( c.hail_s + 10 ) * 1000 and d <= c.force_dist * 2 then
+		set_state(tid, g, "broke", "he walked past without talking")
+	end
+end
+
+-- a toll gang has no smart: offline it would drift over the map, so a member away from his spot goes back while unseen
+function hold_spots()
+	local _, outer = olr_cfg.switch_radii()
+	for tid, g in pairs(groups) do
+		local spot = news_encounters.template_spot(tid)
+		if spot then
+			local pos = vector():set(spot.pos[1], spot.pos[2], spot.pos[3])
+			for id in pairs(g.ids) do
+				local se = alife():object(id)
+				if se and se:alive() and not se.online and se.position:distance_to(pos) > 20
+					and ( olr_smart_index.object_level(se) ~= level.name() or se.position:distance_to(db.actor:position()) > outer )
+				then
+					alife():teleport_object(id, pos, spot.lv, spot.gv)
+					tlog("%s: %s id=%d back on the spot", tid, se:name(), id)
+				end
+			end
+		end
+	end
+end
+
+function update()
+	if not active() then return end
+	local now = time_global()
+	if now - last_upd < 500 then return end
+	last_upd = now
+	if not stale_cleared then
+		stale_cleared = true
+		local targets = sak_dialog.load_npc_targets()
+		for i = #targets, 1, -1 do
+			local tip = targets[i].tips
+			if type(tip) == "string" and string.sub(tip, 1, 5) == "toll_" then
+				sak_dialog.remove_npc_from_npc_targets(tip)
+				tlog("removed stale talk entry %s", tip)
+			end
+		end
+	end
+	after_talk()
+	refresh_groups()
+	if now - last_hold > 10000 then
+		last_hold = now
+		hold_spots()
+	end
+	local st = saved()
+	for tid, g in pairs(groups) do
+		if g.state == "paid" and not st.paid[tid] then g.state = "waiting" end
+		if g.level == level.name() and not db.actor:is_talking() then step(tid, g, now) end
+		settle(tid, g)
+	end
+end
+
+-- ---------------------------------------------------------------------------
+-- dialogue (config\gameplay\dialogs_toll.xml)
+-- ---------------------------------------------------------------------------
+local function g_of_talk()
+	return talk and groups[talk.tid]
+end
+
+function dlg_t_open()
+	return line("he_toll_dlg_open_", { sum = talk and tostring(talk.price) or "?" }) or game.translate_string("he_toll_dlg_open")
+end
+
+function dlg_t_kind()
+	return line("he_toll_dlg_kind_ask_", { item = talk and talk.kind and game.translate_string(system_ini():r_string(talk.kind:section(), "inv_name")) or "?" })
+		or game.translate_string("he_toll_dlg_kind_ask")
+end
+
+function dlg_can_pay() return talk ~= nil and db.actor:money() >= talk.price end
+function dlg_can_kind() return talk ~= nil and db.actor:money() < talk.price and talk.kind ~= nil end
+function dlg_is_poor() return talk ~= nil and db.actor:money() < talk.price and talk.kind == nil end
+function dlg_can_stare()
+	if not talk then return false end
+	local npc = g_of_talk() and level.object_by_id(g_of_talk().leader)
+	return npc ~= nil and ( actor_tier() > tier_n(ranks.get_obj_rank_name(npc)) or saved().rep <= config().rep_feared )
+end
+
+local function paid(why)
+	local g = g_of_talk()
+	if not g then return end
+	local st = saved()
+	st.paid[talk.tid] = true
+	olr_store.put(KEY, st)
+	set_state(talk.tid, g, "paid", why)
+	sak_dialog.remove_npc_from_npc_targets(g.tip or "")
+	g.tip = nil
+end
+
+function dlg_pay()
+	if not talk then return end
+	local npc = g_of_talk() and level.object_by_id(g_of_talk().leader)
+	if npc then dialogs.relocate_money(npc, talk.price, "out") else db.actor:give_money(-talk.price) end
+	local st = saved()
+	st.rep = math.min(config().rep_max, st.rep + 1)
+	olr_store.put(KEY, st)
+	tlog("%s: the player pays %d (toll reputation %d)", talk.tid, talk.price, st.rep)
+	paid("paid")
+end
+
+function dlg_pay_kind(a, b)
+	if not ( talk and talk.kind ) then return end
+	local npc = g_of_talk() and level.object_by_id(g_of_talk().leader)
+	local sec = talk.kind:section()
+	if npc then
+		db.actor:transfer_item(talk.kind, npc)
+		news_manager.relocate_item(db.actor, "out", sec)
+	end
+	tlog("%s: the player pays in kind, %s worth %d", talk.tid, talk.kind:section(), talk.kind_cost or 0)
+	paid("paid in kind")
+end
+
+function dlg_poor()
+	if not talk then return end
+	tlog("%s: nothing to take, waved through", talk.tid)
+	paid("nothing to take")
+end
+
+function dlg_stare()
+	if not talk then return end
+	local c = config()
+	local g = g_of_talk()
+	local npc = g and level.object_by_id(g.leader)
+	local gap = npc and ( actor_tier() - tier_n(ranks.get_obj_rank_name(npc)) ) or 0
+	local alive = g and #members(talk.tid) or 3
+	local chance = math.max(5, math.min(90, c.stare_base + c.stare_per_tier * gap - c.stare_per_bandit * math.max(0, alive - 2)))
+	talk.stare_ok = math.random(100) <= chance
+	tlog("%s: stare down, gap %d, %d of them, chance %d%%: %s", talk.tid, gap, alive, chance, talk.stare_ok and "they step aside" or "it failed")
+	if talk.stare_ok then paid("stared down") end
+end
+
+function dlg_stare_ok() return talk ~= nil and talk.stare_ok == true end
+function dlg_stare_fail() return not ( talk ~= nil and talk.stare_ok == true ) end
+
+function dlg_refuse()
+	if not talk then return end
+	local c = config()
+	local g = g_of_talk()
+	local npc = g and level.object_by_id(g.leader)
+	local alive = g and #members(talk.tid) or 3
+	talk.letgo = alive <= 2 and npc ~= nil and actor_tier() > tier_n(ranks.get_obj_rank_name(npc))
+	tlog("%s: the player refuses, %d of them: %s", talk.tid, alive, talk.letgo and "they let him go, the price goes up" or "they attack")
+	if talk.letgo then
+		local st = saved()
+		st.bump[talk.tid] = ( st.bump[talk.tid] or 1 ) * c.letgo_bump
+		olr_store.put(KEY, st)
+	end
+end
+
+-- "I'll go round": no fight while he keeps away; coming through anyway after the warning breaks it
+function dlg_decline()
+	local g = g_of_talk()
+	if not g then return end
+	set_state(talk.tid, g, "declined", "he will go round")
+	sak_dialog.remove_npc_from_npc_targets(g.tip or "")
+	g.tip = nil
+end
+
+function dlg_refuse_letgo() return talk ~= nil and talk.letgo == true end
+function dlg_refuse_attack() return not ( talk ~= nil and talk.letgo == true ) end
+
+-- the last NPC phrase: a failed stare or a refusal turns them hostile once the talk closes
+function dlg_break()
+	local g = g_of_talk()
+	if g and talk then
+		g.state = "hailed"
+		g.break_after_talk = true
+	end
+end
+
+function dlg_letgo()
+	local g = g_of_talk()
+	if g then
+		set_state(talk.tid, g, "waiting", "let him go")
+		sak_dialog.remove_npc_from_npc_targets(g.tip or "")
+		g.tip = nil
+	end
+end
+
+-- called every update: a talk that ended in a break turns them hostile now
+function after_talk()
+	if not talk or db.actor:is_talking() then return end
+	local g = groups[talk.tid]
+	if g and g.break_after_talk then
+		g.break_after_talk = nil
+		set_state(talk.tid, g, "broke", "the talk ended in a fight")
+	elseif g and g.state == "hailed" then
+		-- Esc: the offer stands, he is hailed again in a while
+		g.hail_t = time_global()
+		g.last_said = nil
+	end
+	talk = nil
+end
+
+-- ---------------------------------------------------------------------------
+-- helpers
+-- ---------------------------------------------------------------------------
+function report()
+	refresh_groups()
+	local st = saved()
+	tlog("on=%s toll reputation %d, suppressed now: %s", tostring(active()), st.rep, tostring(suppressed() or "no"))
+	for tid in pairs(config().tpl) do
+		local g = groups[tid]
+		local ld = g and g.leader and alife():object(g.leader)
+		tlog("  %s on %s: %s%s, leader %s, lost %d, price now %d%s", tid, tostring(news_encounters.template_level(tid)),
+			g and g.state or "no group", st.paid[tid] and " (paid)" or "", ld and ( ld:name() .. " id=" .. ld.id ) or "-", g and g.lost or 0,
+			price_of(tid), st.bump[tid] and string.format(", bumped x%.2f", st.bump[tid]) or "")
+	end
+end
+
+function fire(tid)
+	news_encounters.fire(tid)
+	refresh_groups()
+	report()
+end
+
+function go()
+	refresh_groups()
+	local best, bd = nil, nil
+	for tid, g in pairs(groups) do
+		local se = g.leader and alife():object(g.leader)
+		if se then
+			local d = olr_smart_index.object_level(se) == level.name() and se.position:distance_to(db.actor:position()) or 99999
+			if not bd or d < bd then best, bd = se, d end
+		end
+	end
+	if not best then
+		tlog("go: no toll group")
+		return
+	end
+	olr_amk_offline.go_spot(olr_smart_index.object_level(best), best.m_level_vertex_id, best.m_game_vertex_id, best.position)
+	tlog("go: to %s id=%d", best:name(), best.id)
+end
+
+function force_state(tid, s)
+	local g = groups[tid]
+	if not g then
+		tlog("set_state: no group %s", tostring(tid))
+		return
+	end
+	local st = saved()
+	st.paid[tid] = s == "paid" or nil
+	olr_store.put(KEY, st)
+	g.state = s
+	tlog("%s set to %s", tid, s)
+end
+
+-- a toll spot where the player stands: a [toll_<name>] template to paste into he_zone_encounters.ltx (and its id into
+-- the [he_zone_encounters] list and into [tolls] templates); gates, chapter and quest infos are filled in by hand
+function mark(name)
+	local p = db.actor:position()
+	local lv, gv = db.actor:level_vertex_id(), db.actor:game_vertex_id()
+	local id = "toll_" .. tostring(name or "spot")
+	log2("[olr_toll] mark %s on %s:", id, level.name())
+	log2("[%s]", id)
+	log2("kind = ambush")
+	log2("level = %s", level.name())
+	log2("tier = 1")
+	log2("spawn1 = olr_bandit_general,3,%.2f,%.2f,%.2f,%d,%d", p.x, p.y, p.z, lv, gv)
+	log2("min_chapter = 0")
+	log2("max_chapter = 4")
+	log2("; no_info = <quest infos that must keep this spot free>")
+	log2("cooldown = 96")
+	log2("ttl = 24")
+	log2("sender = nearest")
+	log2("text = he_enc_amb_gar_road_1")
+end
+
+function set_rep(n)
+	local st = saved()
+	st.rep = n
+	olr_store.put(KEY, st)
+	tlog("toll reputation %d", n)
+end
+
+-- a paid toll lasts until the group goes (news_encounters ttl); forget paid marks of groups that are gone
+function on_group_gone(tid)
+	local st = saved()
+	if st.paid[tid] or st.bump[tid] then
+		st.paid[tid], st.bump[tid] = nil, nil
+		olr_store.put(KEY, st)
+	end
+end

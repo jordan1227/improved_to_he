@@ -18,7 +18,7 @@ end
 function cancel(st, reason)
     if not st or st.cancelled then return end
     st.cancelled = true
-    for timer in pairs(st.timers) do
+    for _, timer in pairs(st.timers) do -- [HE-PORT] key -> timer (a timer must not hold itself)
         if not timer:stopped() then timer:stop() end
     end
     st.timers = {}
@@ -46,14 +46,14 @@ function after(st, ms, fn)
         invalid(st, "invalid duration")
         return
     end
-    local timer
-    timer = dsh.timeout(ms, function()
+    local key = {} -- [HE-PORT] the callback holds this key, never the timer: a luabind timer held by its own callback is never freed
+    local timer = dsh.timeout(ms, function()
         -- quick_timer stops itself AFTER calling us. Do not stop it twice if
         -- this callback completes/cancels the whole session.
-        st.timers[timer] = nil
+        st.timers[key] = nil
         invoke(st, fn)
     end)
-    st.timers[timer] = true
+    st.timers[key] = timer
     return timer
 end
 
@@ -61,8 +61,8 @@ function wait(st, predicate, fn, timeout_ms)
     if not valid(st) then invalid(st, "actor unavailable"); return end
     local deadline = time_global() + (timeout_ms or 10000)
     local ready = false
-    local timer
-    timer = dsh.wait_condition(function()
+    local key = {} -- [HE-PORT] as in after()
+    local timer = dsh.wait_condition(function()
         if not valid(st) then return true end
         local ok, result = pcall(predicate)
         if not ok then
@@ -73,7 +73,7 @@ function wait(st, predicate, fn, timeout_ms)
         ready = result and true or false
         return ready or time_global() >= deadline
     end, function()
-        st.timers[timer] = nil
+        st.timers[key] = nil
         if not valid(st) then invalid(st, "actor unavailable"); return end
         if st.wait_error then
             local err = st.wait_error
@@ -85,6 +85,6 @@ function wait(st, predicate, fn, timeout_ms)
             invalid(st, "wait timeout")
         end
     end)
-    st.timers[timer] = true
+    st.timers[key] = timer
     return timer
 end

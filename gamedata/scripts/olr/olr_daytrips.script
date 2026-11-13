@@ -1,0 +1,712 @@
+-- [HE-PORT] Day trips, docs/ALIFE_NEXT_DESIGN.md 9.1 (preset key day_trips). In daytime a loner, novice or ecolog leaves
+-- his camp for a few hours to a place on his own level and comes back: scavenge (an empty smart: a small chance of a
+-- cheap artefact, a small risk of getting hurt), prowl (the smart nearest to some mutants: hunts prefer men on the move)
+-- or visit (a camp of his own side: a gear swap there if he lacks something). Online men go too; the player can follow
+-- them. Generic people only (OLR's own and respawned), never quest-bound, on a run, in a party, resting or out at night.
+-- Config [daytrips]. Log: [olr_trips].
+-- fl olr_daytrips.report()            who is out now, trips this session
+-- fl olr_daytrips.force(12345, "scavenge")  he goes now (scavenge, prowl, visit; no kind: his own pick)
+-- fl olr_daytrips.force_back()        everyone comes home now
+-- fl olr_daytrips.force_emission()    as if an emission just ended on this level: the scavenge boost starts
+--
+-- [HE-PORT] docs/ALIFE_NEXT_DESIGN.md 8.24: after an emission (amk_mod phase 4 calls on_emission) the next boost_h
+-- daytime hours bring more trips and more scavenging; a scavenger finds more, and sometimes a second class artefact.
+-- The artefacts the emission spawned on the player's level (amk_anoms calls note_fresh) are real targets: a scavenger
+-- of that level goes to the smart nearest one and takes it if it still lies there out of sight, at most
+-- fresh_take_max an emission and never while fewer than fresh_leave + 1 of them still lie loose, so an emission of one
+-- artefact is always the player's. Other levels get theirs only when the player comes (sak.script), so there the find
+-- stays a roll: the boosted find is spawned into the scavenger's bag, it never lies in the world.
+-- Trips only start between trip_start_h and trip_end_h - 2: an emission at night starts the boost in the morning.
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_trips"
+local COMMS = { "stalker", "green", "ecolog", "bandit", "killer" }
+local SIDE = { stalker = { stalker = true, green = true }, green = { stalker = true, green = true }, ecolog = { ecolog = true },
+	bandit = { bandit = true }, killer = { killer = true } }
+-- [HE-PORT] docs/ALIFE_NEXT_DESIGN.md 8.27: bandits and mercs go out too, to prowl and scavenge only (no camp visits),
+-- at rough_trip_chance instead of trip_chance
+local ROUGH = { bandit = true, killer = true }
+-- a life goal leans the pick: points added to that purpose's weight
+local GOAL_LEAN = {
+	cash = { scavenge = 40 }, free_arts = { scavenge = 40 }, reason_zone = { scavenge = 30 }, eco_samples = { scavenge = 40 },
+	duty_purge = { prowl = 40 }, find_monolit = { prowl = 20 }, tourism = { visit = 40 }, free_live = { visit = 20 },
+}
+
+local cfg = nil
+local arts = nil
+local arts2 = nil
+local scan_index, scan_comm = 0, 1
+local counts = {}
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("daytrips") - 1 do
+		local _, k, v = ini:r_line("daytrips", i, "", "")
+		cfg[k] = tonumber(v) or v
+	end
+	for _, k in ipairs({ "trip_start_h", "trip_end_h", "trip_scan", "trip_chance", "trip_share", "trip_h", "trip_max_dist",
+		"trip_min_health", "w_scavenge", "w_prowl", "w_visit", "scavenge_art_chance", "scavenge_hurt_chance", "scavenge_hurt",
+		"trip_back_per_tick", "trip_scan_h", "trip_scan_max", "boost_h", "boost_trip_chance", "boost_scavenge_w", "boost_art_chance",
+		"boost_second_chance", "fresh_take_max", "fresh_leave", "rough_trip_chance", "scavenge_max_side", "scavenge_second_chance",
+		"cash_trip_bonus" })
+	do
+		if cfg[k] == nil then abort("olr_daytrips: no key '%s' in [daytrips]", k) end
+	end
+	return cfg
+end
+
+local function tlog(fmt, ...)
+	log2("[olr_trips] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+local function note(k)
+	counts[k] = ( counts[k] or 0 ) + 1
+end
+
+local function now()
+	return timers.Get_Game_Seconds()
+end
+
+function active()
+	return db.actor ~= nil and olr_cfg.on("day_trips")
+end
+
+local function state()
+	local st = olr_store.get(KEY)
+	if not st then
+		st = { out = {}, last = {} }
+		olr_store.put(KEY, st)
+	end
+	st.out = st.out or {}
+	st.last = st.last or {}
+	st.fresh = st.fresh or {}
+	return st
+end
+
+-- the scavenge boost after an emission is on now
+local function boosting(st)
+	local t = now()
+	return st.boost ~= nil and t >= ( st.boost_from or 0 ) and t < st.boost
+end
+
+-- olr_census.mark("trips"): ids of the men out now
+function out_ids()
+	local out = {}
+	for key in pairs(state().out) do out[tonumber(key)] = true end
+	return out
+end
+
+-- [HE-PORT] 8.29 P2 (olr_regroup): id -> home smart of everyone out on a trip; P1 (olr_trader_runs): his home
+function away_homes(out)
+	local st = olr_store.get(KEY)
+	for key, r in pairs(st and st.out or {}) do
+		if r.home and r.home ~= "" then out[key] = r.home end
+	end
+end
+
+function home_of(id)
+	local st = olr_store.get(KEY)
+	local r = st and st.out and st.out[tostring(id)]
+	return r and r.home or nil
+end
+
+function is_out(id)
+	local st = olr_store.get(KEY)
+	return st ~= nil and st.out ~= nil and st.out[tostring(id)] ~= nil
+end
+
+local function range(key)
+	local a, b = string.match(tostring(config()[key]), "([%d%.]+)%s*,%s*([%d%.]+)")
+	return tonumber(a) or 2, tonumber(b) or 6
+end
+
+local function daytime()
+	local h = level.get_time_hours()
+	return h >= config().trip_start_h and h < config().trip_end_h
+end
+
+local function generic(se)
+	local name, sec = se:name(), se:section_name()
+	if not ( string.sub(sec, 1, 4) == "olr_" or string.find(name, "_respawn", 1, true) ) then return false end
+	if olr_protected.is_quest_bound(se) or olr_protected.is_no_offline_alife_obj(name) then return false end
+	if olr_census.is_dormant_creature(se, true) then return false end
+	return true
+end
+
+-- is someone else moving him (a run, a party, the night, a rest, a goal step) or is he out already
+local function busy(se)
+	if olr_trader_runs.on_run(se.id) or olr_patrols.is_member(se.id) then return "busy" end
+	if olr_night.is_out and olr_night.is_out(se.id) then return "night" end
+	if olr_rest.is_out and olr_rest.is_out(se.id) then return "rest" end
+	if olr_roadwatch.is_watcher and olr_roadwatch.is_watcher(se.id) then return "road watch" end
+	return nil
+end
+
+-- people of his side per smart on a level
+-- [HE-PORT] review 8.30 R5: kept 3 real seconds, one per level and side
+local census_cache, census_rt = {}, -1
+
+local function census(lvl, side)
+	if time_global() - census_rt >= 3000 then census_cache, census_rt = {}, time_global() end
+	local keys = {}
+	for comm in pairs(side) do table.insert(keys, comm) end
+	table.sort(keys)
+	local ck = lvl .. "|" .. table.concat(keys, ",")
+	if census_cache[ck] then return census_cache[ck] end
+	local sim = alife()
+	local by = {}
+	for comm in pairs(side) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local se = sim:object(id)
+			local sid = se and IsStalker(se) and se:alive() and olr_smart_index.object_level(se) == lvl and se:smart_terrain_id()
+			if sid and sid ~= BAD_OBJ_ID then by[sid] = ( by[sid] or 0 ) + 1 end
+		end
+	end
+	census_cache[ck] = by
+	return by
+end
+
+local function out_from(st, home_name)
+	local n = 0
+	for _, r in pairs(st.out) do
+		if r.home == home_name then n = n + 1 end
+	end
+	return n
+end
+
+-- smarts of his level within trip_max_dist of a point, nearest first, not his home, not a scene
+local function smarts_around(lvl, x, z, home_name, comm, rank, se, maxd)
+	maxd = maxd or config().trip_max_dist
+	local out = {}
+	for _, rec in ipairs(olr_smart_index.smarts_near(lvl, x, z)) do
+		if rec.d > maxd * maxd then break end
+		-- [HE-PORT] 8.26: only a smart that would take him (most refusals were lairs and other sides' bases)
+		if rec.name ~= home_name and not olr_population.is_scene_smart(rec.name) then
+			local ok, why = true, nil
+			if comm then ok, why = olr_smart_index.may_take(rec.name, comm, rank, se) end
+			if ok then
+				table.insert(out, rec.name)
+			else
+				note("skip_" .. tostring(why)) -- [HE-PORT] 8.31: why places were passed over
+			end
+		end
+	end
+	return out
+end
+
+local function pick_purpose(se, st)
+	local c = config()
+	local w = { scavenge = c.w_scavenge, prowl = c.w_prowl, visit = c.w_visit }
+	if st and boosting(st) then w.scavenge = w.scavenge + c.boost_scavenge_w end
+	if ROUGH[se:community()] then w.visit = 0 end
+	local g = olr_lives.goal_name and olr_lives.goal_name(se)
+	for k, v in pairs(g and GOAL_LEAN[g] or {}) do w[k] = w[k] + v end
+	local sum = w.scavenge + w.prowl + w.visit
+	local r = math.random() * sum
+	if r < w.scavenge then return "scavenge" end
+	if r < w.scavenge + w.prowl then return "prowl" end
+	return "visit"
+end
+
+-- the emission's artefacts on this level still lying loose
+local function loose_fresh(st, lvl)
+	local n = 0
+	for key, rec in pairs(st.fresh) do
+		local art = rec.lvl == lvl and alife():object(tonumber(key))
+		if art and art:name() == rec.n and art.parent_id == 65535 then n = n + 1 end
+	end
+	return n
+end
+
+-- the nearest fresh emission artefact on his level within reach of his camp that nobody else is out for
+local function fresh_target(st, lvl, home)
+	if not boosting(st) or ( st.fresh_taken or 0 ) >= config().fresh_take_max then return nil end
+	if loose_fresh(st, lvl) <= config().fresh_leave then return nil end
+	local taken = {}
+	for _, r in pairs(st.out) do
+		if r.art then taken[r.art] = true end
+	end
+	local best, best_d = nil, config().trip_max_dist
+	for key, rec in pairs(st.fresh) do
+		local art = rec.lvl == lvl and not taken[tonumber(key)] and alife():object(tonumber(key))
+		if art and art:name() == rec.n and art.parent_id == 65535 then
+			local d = art.position:distance_to(home.position)
+			if d <= best_d then best, best_d = art, d end
+		end
+	end
+	return best
+end
+
+local function destination(se, purpose, home, st, far)
+	local lvl = olr_smart_index.object_level(se)
+	-- [HE-PORT] 8.40: a work trip (cash goal) looks further (work_trip_dist) and tries several mutants
+	local maxd = far and config().work_trip_dist or config().trip_max_dist
+	local side = SIDE[se:community()] or { [se:community()] = true }
+	if purpose == "scavenge" and st then
+		local art = fresh_target(st, lvl, home)
+		if art then
+			local near = smarts_around(lvl, art.position.x, art.position.z, home:name(), se:community(), se:rank(), se)
+			if near[1] then return near[1], nil, art.id end
+		end
+	end
+	if purpose == "prowl" then
+		local c = config()
+		local list = {}
+		for _, m in pairs(amk_offline_alife.off_npcs[lvl] and amk_offline_alife.off_npcs[lvl].monsters or {}) do
+			local o = alife():object(m.id)
+			if o and o:name() == m.name and IsMonster(o) and o:alive() and not olr_protected.is_protected_monster(o)
+				and o.position:distance_to(home.position) <= maxd
+			then
+				table.insert(list, o)
+			end
+		end
+		if #list == 0 then return nil, "no mutants in reach" end
+		for _ = 1, far and 5 or 1 do
+			if #list == 0 then break end
+			local m = table.remove(list, math.random(#list))
+			local near = smarts_around(lvl, m.position.x, m.position.z, home:name(), se:community(), se:rank(), se)
+			if near[1] then return near[1], nil end
+		end
+		return nil, "no smart near the mutants"
+	end
+	local by = census(lvl, side)
+	local cands = {}
+	for _, name in ipairs(smarts_around(lvl, home.position.x, home.position.z, home:name(), se:community(), se:rank(), se, maxd)) do
+		local smart = alife():object(name)
+		local n = smart and by[smart.id] or 0
+		-- [HE-PORT] 8.31: scavenge where at most one of his side is, visit any camp of his side (were 0 and 2 or more)
+		if ( purpose == "scavenge" and n <= config().scavenge_max_side ) or ( purpose == "visit" and n >= 1 ) then table.insert(cands, name) end
+	end
+	if #cands == 0 then return nil, "no " .. ( purpose == "visit" and "camp to visit" or "empty place" ) .. " in reach" end
+	return cands[math.random(#cands)], nil
+end
+
+-- [HE-PORT] 8.41: a work trip with nothing in reach on his level goes to an open neighbour level (not the player's)
+local function far_destination(se, purpose)
+	local here = olr_smart_index.object_level(se)
+	local front = olr_cfg.frontier_levels()
+	local plv = level.name()
+	local comm, rank = se:community(), se:rank()
+	for nl in pairs(olr_smart_index.neighbour_levels(here)) do
+		if nl ~= plv and ( not front or front[nl] ) and not olr_cfg.level_closed(nl) then
+			if purpose == "prowl" then
+				local list = {}
+				for _, m in pairs(amk_offline_alife.off_npcs[nl] and amk_offline_alife.off_npcs[nl].monsters or {}) do
+					local o = alife():object(m.id)
+					if o and o:name() == m.name and IsMonster(o) and o:alive() and not olr_protected.is_protected_monster(o) then table.insert(list, o) end
+				end
+				for _ = 1, 5 do
+					if #list == 0 then break end
+					local m = table.remove(list, math.random(#list))
+					local near = smarts_around(nl, m.position.x, m.position.z, "", comm, rank, se)
+					if near[1] then return near[1], nil, nl end
+				end
+			else
+				local by = census(nl, SIDE[comm] or { [comm] = true })
+				local cands = {}
+				for _, name in ipairs(smarts_around(nl, 0, 0, "", comm, rank, se, 1e6)) do
+					local smart = alife():object(name)
+					if smart and ( by[smart.id] or 0 ) <= config().scavenge_max_side then table.insert(cands, name) end
+				end
+				if #cands > 0 then return cands[math.random(#cands)], nil, nl end
+			end
+		end
+	end
+	return nil, "nothing on the neighbour levels either"
+end
+
+local function start(st, se, purpose, forced, far)
+	local c = config()
+	local sid = se:smart_terrain_id()
+	local home = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
+	if not home then
+		note("no_home")
+		if forced then tlog("force: %s id=%d has no smart to leave from", se:name(), se.id) end
+		return false, "no home" -- [HE-PORT] 8.41
+	end
+	purpose = purpose or pick_purpose(se, st)
+	local dest, why, art = destination(se, purpose, home, st, far)
+	local nl = nil
+	if not dest and far then
+		local d2, w2, l2 = far_destination(se, purpose)
+		if d2 then dest, nl = d2, l2 else why = tostring(why) .. "; " .. tostring(w2) end
+	end
+	if not dest then
+		note("no_" .. purpose)
+		if forced then tlog("force: %s id=%d, %s: %s", se:name(), se.id, purpose, why) end
+		return false, why
+	end
+	if not olr_smart_index.move_or_stay(se, dest) then
+		note("refused")
+		if forced then tlog("force: %s id=%d, %s: %s would not have him", se:name(), se.id, purpose, dest) end
+		return false, "refused at " .. dest
+	end
+	local a, b = range(nl and "work_far_h" or "trip_h")
+	local hours = a + math.random() * ( b - a )
+	st.out[tostring(se.id)] = { n = se:name(), home = home:name(), at = dest, p = purpose, back = now() + hours * 3600, art = art, far = nl }
+	st.last[tostring(se.id)] = math.floor(now() / 86400)
+	st.went = st.went or {} -- [HE-PORT] 8.39: the day he really went (the scan marks last on every man it looks at)
+	st.went[tostring(se.id)] = st.last[tostring(se.id)]
+	note(purpose)
+	if ROUGH[se:community()] then note(se:community() .. "_" .. purpose) end
+	if boosting(st) then note("boosted") end
+	local d = alife():object(dest)
+	local a = art and alife():object(art)
+	tlog("%s id=%d (%s, %s%s) leaves %s to %s at %s, %.0f m, back in %.1f h%s", se:name(), se.id, se:community(),
+		olr_amk_offline.tier_of(se), se.online and ", online" or "", home:name(), purpose .. ( nl and ( " on " .. nl ) or "" ), dest,
+		d and d.position:distance_to(home.position) or -1, hours,
+		a and string.format(", after the emission's %s id=%d (%.0f m from the smart)", a:section_name(), art, d and a.position:distance_to(d.position) or -1) or "")
+	return true
+end
+
+-- what the trip brought, then home
+local function finish(st, key, r, se)
+	local c = config()
+	local got = ""
+	local fresh_why = nil
+	if r.p == "scavenge" and r.art then
+		local rec = st.fresh[tostring(r.art)]
+		local art = alife():object(r.art)
+		if not ( rec and art and art:name() == rec.n and art.parent_id == 65535 ) then
+			fresh_why = "somebody took it first"
+		elseif art.online or se.online or ( rec.lvl == level.name() and art.position:distance_to(db.actor:position()) <= olr_amk_offline.player_clear() ) then
+			fresh_why = "in sight of the player"
+		elseif ( st.fresh_taken or 0 ) >= c.fresh_take_max then
+			fresh_why = "the emission's share is taken"
+		elseif loose_fresh(st, rec.lvl) <= c.fresh_leave then
+			fresh_why = "the rest is left for the player"
+		else
+			local sec = art:section_name()
+			if amk_offline_alife.pick_item(se, art) then
+				st.fresh[tostring(r.art)] = nil
+				st.fresh_taken = ( st.fresh_taken or 0 ) + 1
+				got = ", took the emission's " .. sec
+				note("took_fresh")
+			else
+				fresh_why = "could not pick it up"
+			end
+		end
+		if fresh_why then
+			got = ", the emission's artefact: " .. fresh_why
+			note("fresh_missed")
+		end
+	end
+	if r.p == "scavenge" and got ~= "" and not fresh_why then
+		-- he has his find
+	elseif r.p == "scavenge" then
+		local art_chance = c.scavenge_art_chance + ( boosting(st) and c.boost_art_chance or 0 )
+		if not se.online and math.random(100) <= c.scavenge_hurt_chance then
+			amk_offline_alife.set_npc_health(se, math.max(0.2, se:health() - c.scavenge_hurt))
+			got = got .. ", got hurt in an anomaly"
+			note("hurt")
+		elseif not se.online and arts and #arts > 0 and math.random(100) <= art_chance then
+			-- [HE-PORT] 8.32: an experienced man or better sometimes finds a second class one; the boost adds to that
+			local second = ( olr_amk_offline.tier_of(se) ~= "novice" and c.scavenge_second_chance or 0 ) + ( boosting(st) and c.boost_second_chance or 0 )
+			local sec, cond = find_art(se, second)
+			if sec then
+				got = got .. string.format(", found %s (%.0f%%)", sec, cond * 100)
+				note("found")
+				r.sell = true -- [HE-PORT] 8.32: once home, he takes it to a trader if one is in reach
+			end
+		end
+	elseif r.p == "visit" and not se.online and olr_gear.visit then
+		if olr_gear.visit(se) then
+			got = ", swapped gear there"
+			note("swapped")
+		end
+	end
+	local ok = olr_smart_index.move_or_stay(se, r.home)
+	if r.sell and olr_trader_runs.after_buy then olr_trader_runs.after_buy(se) end
+	tlog("%s id=%s back from %s at %s%s: %s", r.n, key, r.p, r.at, got, ok and ( "home to " .. r.home ) or "his home would not have him, stays")
+	st.out[key] = nil
+end
+
+local function back_pass(st, limit)
+	local sim = alife()
+	local n, t = 0, now()
+	local late = not daytime()
+	for key, r in pairs(st.out) do
+		if n >= limit then break end
+		local se = sim:object(tonumber(key))
+		local sid = se and se:smart_terrain_id()
+		local now_at = sid and sid ~= BAD_OBJ_ID and sim:object(sid)
+		if not ( se and IsStalker(se) and se:name() == r.n and se:alive() ) then
+			st.out[key] = nil
+		elseif busy(se) or olr_protected.is_quest_bound(se) or not ( now_at and now_at:name() == r.at ) then
+			tlog("%s id=%s left his trip for something else (now at %s)", r.n, key, now_at and now_at:name() or "none")
+			st.out[key] = nil
+			note("taken_over")
+		elseif ( t >= r.back and not ( late and r.far ) ) or ( late and not r.far ) or se:health() < config().trip_min_health then
+			finish(st, key, r, se)
+			n = n + 1
+		end
+	end
+	return n
+end
+
+local function load_list(ini, sect)
+	local out = {}
+	if ini:section_exist(sect) then
+		for i = 0, ini:line_count(sect) - 1 do
+			local _, id = ini:r_line(sect, i, "", "")
+			id = id and amk.trim(id)
+			if id and id ~= "" and system_ini():section_exist(id) then table.insert(out, id) end
+		end
+	end
+	return out
+end
+
+local function load_arts()
+	if arts then return end
+	local ini = ini_file("misc\\trade_npc\\trade_generic.ltx")
+	arts = load_list(ini, "first_lvl")
+	arts2 = load_list(ini, "second_lvl")
+end
+
+-- [HE-PORT] 8.41: a find rolled into his bag (never into the world: world artefacts exist only where the player has been).
+-- The pools are trade_generic.ltx [first_lvl] and [second_lvl], tiered _dynNd variants only (no base sections).
+-- Condition find_cond_min..find_cond_max %. Used by scavenge trips, expeditions and won hunting parties.
+function find_art(se, second)
+	load_arts()
+	if not ( arts and #arts > 0 ) then return nil end
+	local c = config()
+	local pool = arts
+	if arts2 and #arts2 > 0 and math.random(100) <= ( second or 0 ) then pool = arts2 end
+	-- [HE-PORT] 8.42: the middle variants are common, the edges rare (find_variant_w by dynN, 1 to 6)
+	local w = {}
+	for n in string.gmatch(tostring(c.find_variant_w), "[%d%.]+") do table.insert(w, tonumber(n)) end
+	local sum = 0
+	for _, s in ipairs(pool) do sum = sum + ( w[tonumber(string.match(s, "_dyn(%d)d$") or 0)] or 1 ) end
+	local r, sec = math.random() * sum, pool[#pool]
+	for _, s in ipairs(pool) do
+		r = r - ( w[tonumber(string.match(s, "_dyn(%d)d$") or 0)] or 1 )
+		if r <= 0 then sec = s break end
+	end
+	local it = misc.spawn_to(sec, se)
+	misc.process_spawn()
+	if not it then return nil end
+	local cond = ( c.find_cond_min + math.random() * ( c.find_cond_max - c.find_cond_min ) ) / 100
+	local pk = get_netpk(it, 1)
+	local data = pk and pk:get()
+	if data then
+		data.condition = cond
+		pk:set(data)
+	end
+	local list = amk_offline_alife.items[se.id]
+	if not list then
+		list = {}
+		amk_offline_alife.items[se.id] = list
+	end
+	table.insert(list, { id = it.id, name = it:name() })
+	return sec, cond
+end
+
+-- [HE-PORT] 8.38 olr_lives cash work: a man saving up goes out to scavenge or prowl, not waiting for the scan to reach him
+-- (the soak: 14 of 15 cash holders earned nothing in six days, having nothing to sell). Once a game day like any trip.
+function work_trip(se)
+	if not active() or not daytime() then return false, "night" end
+	local c = config()
+	if level.get_time_hours() >= c.trip_end_h - 2 then return false, "late" end
+	local st = state()
+	local key = tostring(se.id)
+	if st.out[key] then return false, "out" end
+	if st.went and st.went[key] == math.floor(now() / 86400) then return false, "today" end
+	if st.wtry and st.wtry[key] == math.floor(now() / 86400) then return false, "tried today" end -- [HE-PORT] review 8.43 R5
+	if se.online or se:health() < c.trip_min_health then return false, "online or hurt" end
+	if not generic(se) then return false, "not generic" end
+	local b = busy(se)
+	if b then return false, b end
+	local purpose = math.random(100) <= c.work_prowl_chance and "prowl" or "scavenge"
+	local ok, why1 = start(st, se, purpose, nil, true)
+	local why2 = nil
+	if not ok then
+		purpose = purpose == "prowl" and "scavenge" or "prowl"
+		ok, why2 = start(st, se, purpose, nil, true)
+	end
+	st.last[key] = math.floor(now() / 86400)
+	st.wtry = st.wtry or {}
+	st.wtry[key] = st.last[key]
+	olr_store.put(KEY, st)
+	if ok then note("work") end
+	-- [HE-PORT] 8.40: the reason for both tries, for the cash work line
+	return ok, ok and purpose or ( tostring(why1) .. " / " .. tostring(why2) )
+end
+
+-- [HE-PORT] 8.32: a man saving up (cash, free_arts) goes out more often
+local function goal_bonus(se)
+	local g = olr_lives.goal_name and olr_lives.goal_name(se)
+	if g == "cash" or g == "free_arts" then return config().cash_trip_bonus end
+	return 0
+end
+
+function update()
+	if not active() or olr_cfg.sleep_paused() then return end
+	local c = config()
+	load_arts()
+	local st = state()
+	local changed = false
+	if next(st.out) then changed = back_pass(st, c.trip_back_per_tick) > 0 or changed end
+	if daytime() and level.get_time_hours() < c.trip_end_h - 2 then
+		local sim = alife()
+		local today = math.floor(now() / 86400)
+		local chance = c.trip_chance + ( boosting(st) and c.boost_trip_chance or 0 )
+		for _ = 1, olr_cfg.budget("daytrips", c.trip_scan_h, c.trip_scan, c.trip_scan_max) do
+			local ids = olr_offline_task.cached_stalkers(COMMS[scan_comm])
+			scan_index = scan_index + 1
+			if scan_index > #ids then
+				scan_index = 0
+				scan_comm = scan_comm % #COMMS + 1
+			else
+				local se = sim:object(ids[scan_index])
+				local key = se and tostring(se.id)
+				if se and IsStalker(se) and se:alive() and not st.out[key] and st.last[key] ~= today and se:health() >= c.trip_min_health
+					and generic(se) and not busy(se)
+				then
+					st.last[key] = today
+					changed = true
+					local sid = se:smart_terrain_id()
+					local home = sid and sid ~= BAD_OBJ_ID and sim:object(sid)
+					if home and math.random(100) <= ( ROUGH[se:community()] and ( c.rough_trip_chance + chance - c.trip_chance ) or chance + goal_bonus(se) ) then
+						local camp = census(olr_smart_index.object_level(se), SIDE[se:community()] or { [se:community()] = true })[sid] or 1
+						if out_from(st, home:name()) < math.max(1, math.floor(camp * c.trip_share / 100)) then
+							start(st, se)
+						else
+							note("camp_share")
+						end
+					end
+				end
+			end
+		end
+	end
+	-- the boost is over: its artefacts are no longer targets
+	if st.boost and now() >= st.boost then
+		tlog("the scavenge boost after the emission is over: %d of its artefacts taken", st.fresh_taken or 0)
+		st.boost, st.boost_from, st.fresh, st.fresh_taken = nil, nil, {}, nil
+		changed = true
+	end
+	-- forget yesterday's marks now and then
+	if math.random(50) == 1 then
+		local today = math.floor(now() / 86400)
+		for k, d in pairs(st.last) do
+			if d < today then st.last[k] = nil end
+		end
+		-- [HE-PORT] review 8.43 R6
+		for _, t in ipairs({ st.went or {}, st.wtry or {} }) do
+			for k, d in pairs(t) do
+				if d < today then t[k] = nil end
+			end
+		end
+	end
+	if changed then olr_store.put(KEY, st) end
+end
+
+function report()
+	local st = state()
+	local n = 0
+	for key, r in pairs(st.out) do
+		n = n + 1
+		tlog("  %s id=%s out to %s at %s, home %s, back in %.1f h", r.n, key, r.p, r.at, r.home, ( r.back - now() ) / 3600)
+	end
+	local list = {}
+	for k, v in pairs(counts) do table.insert(list, k .. "=" .. v) end
+	table.sort(list)
+	tlog("on=%s daytime=%s, %d out now; this session %s", tostring(active()), tostring(daytime()), n, table.concat(list, " "))
+	if st.boost then
+		local nf = 0
+		for _ in pairs(st.fresh) do nf = nf + 1 end
+		tlog("scavenge boost %s, %.1f h left; %d fresh artefacts listed, %d taken", boosting(st) and "on" or "waits for the morning",
+			( st.boost - now() ) / 3600, nf, st.fresh_taken or 0)
+	end
+end
+
+-- [HE-PORT] amk_mod, phase 4 of an emission on lname, before its artefacts spawn: the boost starts now in daytime,
+-- else at the next trip_start_h, and lasts boost_h hours; everyone may be asked again today
+function on_emission(lname)
+	if not active() then return end
+	local c = config()
+	local st = state()
+	local h = level.get_time_hours() + level.get_time_minutes() / 60
+	local wait = 0
+	if h < c.trip_start_h then
+		wait = c.trip_start_h - h
+	elseif h >= c.trip_end_h - 2 then
+		wait = 24 - h + c.trip_start_h
+	end
+	st.boost_from = now() + wait * 3600
+	st.boost = st.boost_from + c.boost_h * 3600
+	st.fresh, st.fresh_taken = {}, 0
+	st.last = {}
+	olr_store.put(KEY, st)
+	tlog("emission on %s is over: the scavenge boost %s for %.0f h", tostring(lname), wait > 0 and string.format("starts in %.1f h", wait) or "starts now", c.boost_h)
+end
+
+-- [HE-PORT] amk_anoms.generate_arts: the artefacts that just spawned on lname. Targets only while a boost is set
+function note_fresh(lname, ids)
+	if not active() then return end
+	local st = state()
+	if not st.boost then return end
+	local n = 0
+	for _, id in ipairs(ids) do
+		local se = alife():object(id)
+		if se then
+			st.fresh[tostring(id)] = { n = se:name(), lvl = lname }
+			n = n + 1
+		end
+	end
+	olr_store.put(KEY, st)
+	tlog("%d fresh artefacts on %s are scavenge targets", n, tostring(lname))
+end
+
+function force_emission()
+	on_emission(level.name())
+	local st = state()
+	st.boost_from = now()
+	st.boost = now() + config().boost_h * 3600
+	olr_store.put(KEY, st)
+	-- this level's loose artefacts out of the player's sight stand in for the emission's own
+	local ids = {}
+	for _, rec in pairs(amk_offline_alife.off_npcs[level.name()] and amk_offline_alife.off_npcs[level.name()].artefacts or {}) do
+		if rec and rec.id then table.insert(ids, rec.id) end
+	end
+	note_fresh(level.name(), ids)
+	tlog("force_emission: %d loose artefacts known to AMK on %s", #ids, level.name())
+end
+
+function force(id, purpose)
+	local se = alife():object(id)
+	if not ( se and IsStalker(se) and se:alive() ) then
+		tlog("force: no living stalker id=%s", tostring(id))
+		return
+	end
+	load_arts()
+	local st = state()
+	if st.out[tostring(id)] then
+		tlog("force: %s id=%d is out already", se:name(), id)
+		return
+	end
+	if not generic(se) or busy(se) then
+		-- [HE-PORT] a guard or quest man has his own job logic, which pulls him back (Duty at a post did a few steps)
+		tlog("force: %s id=%d is not a free generic stalker (%s): his own logic may pull him back", se:name(), id, busy(se) or "scripted, guard or quest")
+	end
+	start(st, se, purpose, true)
+	olr_store.put(KEY, st)
+end
+
+function force_back()
+	local st = state()
+	local sim = alife()
+	local n = 0
+	for key, r in pairs(st.out) do
+		local se = sim:object(tonumber(key))
+		if se and IsStalker(se) and se:name() == r.n and se:alive() then
+			finish(st, key, r, se)
+			n = n + 1
+		else
+			st.out[key] = nil
+		end
+	end
+	olr_store.put(KEY, st)
+	tlog("force_back: %d came home", n)
+end

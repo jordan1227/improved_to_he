@@ -1,0 +1,64 @@
+-- [HE-PORT] The OLR saved tables, live in Lua (docs/ALIFE_NEXT_DESIGN.md 8.16). The engine store behind get_value and
+-- set_value (script_vars_storage.cpp) turns a Lua table into its own copy on every write and builds a new Lua table on
+-- every read, so a module that read and wrote its state each tick paid the whole table's size each time: frame hitches
+-- of 15-80 ms and memory that grew until a long collection. Here each key is read from the store once per loaded game,
+-- changed in place, and written back only before a save (olr_init: on_before_save_game -> flush).
+-- get(key, default): the live table or value (default when there is none; the default is not stored)
+-- put(key, value): set it (nil drops it); written to the store at the next flush
+-- drop(key): put(key, nil)
+-- fl olr_store.report()   keys held, and how many are waiting for the save
+
+local cache, dirty, owner = {}, {}, nil
+local NONE = {}
+
+local function own()
+	if owner ~= db.actor then
+		cache, dirty, owner = {}, {}, db.actor
+	end
+end
+
+function get(key, default)
+	own()
+	local v = cache[key]
+	if v == nil then
+		v = get_value(key)
+		if v == nil then v = NONE end
+		cache[key] = v
+	end
+	if v == NONE then return default end
+	return v
+end
+
+function put(key, value)
+	own()
+	if value == nil then cache[key] = NONE else cache[key] = value end
+	dirty[key] = true
+end
+
+function drop(key)
+	put(key, nil)
+end
+
+-- every key read or set this game goes back to the store: a module may change its live table in place without put
+function flush()
+	own()
+	local n = 0
+	for key, v in pairs(cache) do
+		if v == NONE then
+			if dirty[key] then remove_value(key) end
+		else
+			set_value(key, v)
+			n = n + 1
+		end
+	end
+	dirty = {}
+	return n
+end
+
+function report()
+	own()
+	local held, waiting = 0, 0
+	for _ in pairs(cache) do held = held + 1 end
+	for _ in pairs(dirty) do waiting = waiting + 1 end
+	log2("[olr_store] %d keys held, %d changed since the last save", held, waiting)
+end

@@ -1,0 +1,290 @@
+-- [HE-PORT] Road watch, docs/ALIFE_NEXT_DESIGN.md 9.2 (preset key road_watch). In daytime a few bandits of a free camp go
+-- to a spot by a road on their level and sit there a few hours; olr_robbery looks for victims around them in a wider
+-- radius (rob_road_radius). Spots: the user's recorded toll_* spots ([tolls] templates) where the level has one, else
+-- an automatic one: the empty smart nearest to the middle of two stalker camps. Each start says which kind. They are
+-- moved unseen (teleport) and held there (no alife tasks) until the watch ends, then walk home. Online they go back to
+-- their own logic. Config [roadwatch]. Log: [olr_roadwatch].
+-- fl olr_roadwatch.report()          watches now and this session's counts by spot kind
+-- fl olr_roadwatch.force("l01_escape", "recorded")  a watch on that level now ("auto" or "recorded"; none: any)
+-- fl olr_roadwatch.spots("l01_escape")  the recorded and automatic spots of a level
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_roadwatch"
+local ROBBERS = { bandit = true }
+
+local cfg = nil
+local recorded = nil
+local counts = {}
+local watcher = {}   -- id -> true for the current watches (rebuilt from the state)
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("roadwatch") - 1 do
+		local _, k, v = ini:r_line("roadwatch", i, "", "")
+		cfg[k] = tonumber(v) or v
+	end
+	for _, k in ipairs({ "watch_start_h", "watch_end_h", "watch_every_h", "watch_size", "watch_h", "watch_max", "watch_recorded_chance",
+		"watch_group_radius", "watch_camp_min" })
+	do
+		if cfg[k] == nil then abort("olr_roadwatch: no key '%s' in [roadwatch]", k) end
+	end
+	return cfg
+end
+
+local function wlog(fmt, ...)
+	log2("[olr_roadwatch] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+local function note(k)
+	counts[k] = ( counts[k] or 0 ) + 1
+end
+
+local function now()
+	return timers.Get_Game_Seconds()
+end
+
+function active()
+	return db.actor ~= nil and olr_cfg.on("road_watch")
+end
+
+local function state()
+	local st = olr_store.get(KEY)
+	if not st then
+		st = { w = {} }
+		olr_store.put(KEY, st)
+	end
+	st.w = st.w or {}
+	return st
+end
+
+local function range(key)
+	local a, b = string.match(tostring(config()[key]), "([%d%.]+)%s*,%s*([%d%.]+)")
+	return tonumber(a) or 2, tonumber(b) or 4
+end
+
+-- the user's spots: spawn1 of each toll_* template, by level
+local function load_recorded()
+	if recorded then return recorded end
+	recorded = {}
+	local ini = ini_file(INI_PATH)
+	local list = ini:section_exist("tolls") and ini:line_exist("tolls", "templates") and ini:r_string("tolls", "templates") or ""
+	local enc = ini_file("misc\\he_zone_encounters.ltx")
+	for name in string.gmatch(list, "[%w_]+") do
+		if enc:section_exist(name) and enc:line_exist(name, "level") and enc:line_exist(name, "spawn1") then
+			local lvl = enc:r_string(name, "level")
+			local t = {}
+			for v in string.gmatch(enc:r_string(name, "spawn1"), "[^,%s]+") do table.insert(t, v) end
+			local x, y, z, lv, gv = tonumber(t[3]), tonumber(t[4]), tonumber(t[5]), tonumber(t[6]), tonumber(t[7])
+			if x and lv and gv then
+				recorded[lvl] = recorded[lvl] or {}
+				table.insert(recorded[lvl], { name = name, pos = vector():set(x, y, z), lv = lv, gv = gv })
+			end
+		end
+	end
+	return recorded
+end
+
+local function rebuild_watchers(st)
+	watcher = {}
+	for _, w in pairs(st.w) do
+		for id in pairs(w.ids) do watcher[tonumber(id)] = true end
+	end
+end
+
+-- olr_census.mark("watch"): ids on road watch now
+function watcher_ids()
+	rebuild_watchers(state())
+	return watcher
+end
+
+function is_watcher(id)
+	return watcher[id] == true
+end
+
+local function unseen(se)
+	if se.online then return false end
+	if olr_smart_index.object_level(se) ~= level.name() then return true end
+	return se.position:distance_to(db.actor:position()) > olr_amk_offline.player_clear()
+end
+
+local function free_bandit(se)
+	return se and IsStalker(se) and se:alive() and ROBBERS[se:community()] and se:health() > 0.5 and not watcher[se.id]
+		and olr_amk_offline.usable(se) and unseen(se)
+		-- [HE-PORT] review 8.30 R2: not one out on a day trip, a night at another fire or a goal journey
+		and not ( olr_daytrips.is_out and olr_daytrips.is_out(se.id) ) and not ( olr_rest.is_out and olr_rest.is_out(se.id) )
+		and not ( olr_lives.is_travelling and olr_lives.is_travelling(se) )
+end
+
+-- an automatic spot: the smart with no stalkers nearest to the middle of two stalker camps of the level
+local function auto_spot(lvl)
+	local sim = alife()
+	local camps = {}
+	local by = {}
+	for _, comm in ipairs({ "stalker", "green" }) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local se = sim:object(id)
+			local sid = se and IsStalker(se) and se:alive() and olr_smart_index.object_level(se) == lvl and se:smart_terrain_id()
+			if sid and sid ~= BAD_OBJ_ID then by[sid] = ( by[sid] or 0 ) + 1 end
+		end
+	end
+	for sid, n in pairs(by) do
+		local smart = n >= config().watch_camp_min and sim:object(sid)
+		if smart then table.insert(camps, smart) end
+	end
+	if #camps < 2 then return nil, "fewer than two stalker camps" end
+	local a = table.remove(camps, math.random(#camps))
+	local b = camps[math.random(#camps)]
+	local mx, mz = ( a.position.x + b.position.x ) / 2, ( a.position.z + b.position.z ) / 2
+	for _, rec in ipairs(olr_smart_index.smarts_near(lvl, mx, mz)) do
+		local smart = sim:object(rec.name)
+		-- [HE-PORT] 8.33: one bandits may use; a lair (the soak put a bandit at red_smart_pseudodogs02) is not
+		if smart and not by[smart.id] and not olr_population.is_scene_smart(rec.name) and olr_smart_index.may_take(rec.name, "bandit") then
+			return { name = rec.name .. " (between " .. a:name() .. " and " .. b:name() .. ")", pos = smart.position,
+				lv = smart.m_level_vertex_id, gv = smart.m_game_vertex_id }, nil
+		end
+	end
+	return nil, "no empty smart between the camps"
+end
+
+local function hold(se, on)
+	if se.brain then se:brain():can_choose_alife_tasks(not on) end
+end
+
+local function start(st, lvl, kind, forced)
+	local c = config()
+	local sim = alife()
+	-- a free bandit of that level, and his camp mates
+	local leaders = {}
+	for comm in pairs(ROBBERS) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local se = sim:object(id)
+			if free_bandit(se) and olr_smart_index.object_level(se) == lvl then table.insert(leaders, se) end
+		end
+	end
+	if #leaders == 0 then
+		note("no_bandits")
+		if forced then wlog("force: no free bandit on %s", lvl) end
+		return false
+	end
+	local leader = leaders[math.random(#leaders)]
+	local a, b = range("watch_size")
+	local want = math.random(a, b)
+	local group = { leader }
+	for _, se in ipairs(leaders) do
+		if #group >= want then break end
+		if se.id ~= leader.id and se:community() == leader:community() and se.position:distance_to(leader.position) <= c.watch_group_radius then
+			table.insert(group, se)
+		end
+	end
+	local rec = load_recorded()[lvl]
+	if not kind then kind = ( rec and #rec > 0 and math.random(100) <= c.watch_recorded_chance ) and "recorded" or "auto" end
+	local spot, why
+	if kind == "recorded" then
+		if rec and #rec > 0 then spot = rec[math.random(#rec)] else why = "no recorded spot on this level" end
+	else
+		spot, why = auto_spot(lvl)
+	end
+	if not spot then
+		note("no_spot_" .. kind)
+		if forced then wlog("force: %s on %s: %s", kind, lvl, why) end
+		return false
+	end
+	-- [HE-PORT] review 8.30 R3: nobody pops into view
+	if lvl == level.name() and spot.pos:distance_to(db.actor:position()) <= olr_amk_offline.player_clear() then
+		note("no_spot_near_player")
+		if forced then wlog("force: %s on %s: the spot %s is near you", kind, lvl, tostring(spot.name)) end
+		return false
+	end
+	local wa, wb = range("watch_h")
+	local hours = wa + math.random() * ( wb - wa )
+	local w = { lvl = lvl, kind = kind, spot = spot.name, x = spot.pos.x, y = spot.pos.y, z = spot.pos.z, ids = {}, until_t = now() + hours * 3600 }
+	local names = {}
+	for _, se in ipairs(group) do
+		sim:teleport_object(se.id, spot.pos, spot.lv, spot.gv)
+		hold(se, true)
+		w.ids[tostring(se.id)] = se:name()
+		watcher[se.id] = true
+		table.insert(names, se:name())
+	end
+	table.insert(st.w, w)
+	note(kind)
+	wlog("%d bandits watch the road on %s at %s spot %s for %.1f h: %s", #group, lvl, kind, spot.name, hours, table.concat(names, ", "))
+	return true
+end
+
+local function stop(st, i, why)
+	local w = st.w[i]
+	local sim = alife()
+	local alive = 0
+	for id, name in pairs(w.ids) do
+		local se = sim:object(tonumber(id))
+		if se and se:name() == name and se:alive() then
+			hold(se, false)
+			alive = alive + 1
+		end
+		watcher[tonumber(id)] = nil
+	end
+	wlog("road watch on %s at %s spot %s ends (%s), %d of them walk home", w.lvl, w.kind, w.spot, why, alive)
+	table.remove(st.w, i)
+end
+
+function update()
+	if not active() or olr_cfg.sleep_paused() or olr_cfg.grace_active() then return end
+	local c = config()
+	local st = state()
+	if not next(watcher) and #st.w > 0 then rebuild_watchers(st) end
+	local h = level.get_time_hours()
+	local day = h >= c.watch_start_h and h < c.watch_end_h
+	local changed = false
+	for i = #st.w, 1, -1 do
+		if now() >= st.w[i].until_t or not day then
+			stop(st, i, day and "time is up" or "evening")
+			changed = true
+		end
+	end
+	if day and #st.w < c.watch_max and now() >= ( st.next or 0 ) then
+		st.next = now() + c.watch_every_h * 3600
+		changed = true
+		-- a level of the region with free bandits, else any level with them
+		local lv = {}
+		for comm in pairs(ROBBERS) do
+			for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+				local se = alife():object(id)
+				if free_bandit(se) then lv[olr_smart_index.object_level(se)] = true end
+			end
+		end
+		local list = {}
+		for l in pairs(lv) do table.insert(list, l) end
+		if #list > 0 then start(st, list[math.random(#list)]) else note("no_bandits") end
+	end
+	if changed then olr_store.put(KEY, st) end
+end
+
+function report()
+	local st = state()
+	rebuild_watchers(st)
+	for _, w in ipairs(st.w) do
+		local n = 0
+		for _ in pairs(w.ids) do n = n + 1 end
+		wlog("  %s spot %s on %s: %d bandits, %.1f h left", w.kind, w.spot, w.lvl, n, ( w.until_t - now() ) / 3600)
+	end
+	local list = {}
+	for k, v in pairs(counts) do table.insert(list, k .. "=" .. v) end
+	table.sort(list)
+	wlog("on=%s, %d watches now; this session %s", tostring(active()), #st.w, table.concat(list, " "))
+end
+
+function force(lvl, kind)
+	local st = state()
+	rebuild_watchers(st)
+	if start(st, lvl or level.name(), kind, true) then olr_store.put(KEY, st) end
+end
+
+function spots(lvl)
+	lvl = lvl or level.name()
+	for _, s in ipairs(load_recorded()[lvl] or {}) do wlog("  recorded %s at %.0f,%.0f,%.0f", s.name, s.pos.x, s.pos.y, s.pos.z) end
+	local s, why = auto_spot(lvl)
+	wlog("  auto (one random pick): %s", s and s.name or tostring(why))
+end

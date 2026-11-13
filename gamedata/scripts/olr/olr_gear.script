@@ -1,0 +1,487 @@
+-- [HE-PORT] Gear exchange between stalkers, docs/ALIFE_NEXT_DESIGN.md 3.1 and 8.24, offline step (preset key gear_exchange).
+-- Camp trade: a stalker with plain artefacts or mutant parts sells them to a runner in the same camp, a man of his side
+-- who goes to traders himself (olr_trader_runs.may_travel) and outranks him, or anyone who travels when he cannot.
+-- The runner pays camp_buy_k of the cost and takes them to a trader at full price (olr_trader_runs.after_buy); the
+-- seller's cash goal counts what he got, the runner's only the margin. Items move (pick_item), nothing is created.
+-- Need swaps (need_swaps = 1, off by default): ammo for his best gun, a medkit or bandage from a man who has two;
+-- NPCs fight with endless ammo and get free bandages online, so these rarely matter.
+-- Offline only, never in sight of the player. Config [gear]. Log: [olr_gear].
+-- fl olr_gear.report()               trades and swaps this session, and why there were not more
+-- fl olr_gear.wares(12345)           what he could sell and who in his camp would buy it
+-- fl olr_gear.force_sale(12345)      he sells to a runner in his camp now (any level, the player's too)
+-- fl olr_gear.needs(12345)           what he lacks and who near him could give it
+-- fl olr_gear.force_swap(12345)      he asks the nearest giver now (any level, the player's too)
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local COMMS = { "stalker", "green", "dolg", "freedom", "ecolog" }
+local SIDE = { stalker = { "stalker", "green" }, green = { "stalker", "green" } }
+local TIER_N = { novice = 1, experienced = 2, veteran = 3, master = 4 }
+
+local cfg = nil
+local swaps, gifts = 0, 0
+local seen_n, need_ammo, need_med, no_giver = 0, 0, 0, 0 -- [HE-PORT] why there are no swaps
+local asked = {}   -- id -> game seconds of his last swap
+local sold_at = {} -- id -> game seconds of his last camp sale
+local sold_to = {} -- [HE-PORT] 8.36: seller id -> { b = buyer id, t = game seconds }; the soak had two guards passing a tail back and forth
+local camp = { looked = 0, wares = 0, no_buyer = 0, deals = 0, items = 0, money = 0, arts = 0, parts = 0, cooldown = 0, why = {} }
+local warned_text = false
+-- [HE-PORT] 8.28: items a runner bought, kept for a trader. The tf250 soak had two masters selling the same two tails
+-- back and forth six times, each pass counted as income. Store key: item id -> game seconds it stops being held
+local BOUGHT_KEY = "nlc.olr_camp_bought"
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("gear") - 1 do
+		local _, k, v = ini:r_line("gear", i, "", "")
+		cfg[k] = tonumber(v) or v
+	end
+	for _, k in ipairs({ "gear_scan", "gear_radius", "gear_cd_h", "gift_money", "swap_price_k", "swap_news_chance", "trade_scan_h",
+		"trade_scan_max", "camp_buy_k", "camp_buy_max", "camp_keep_money", "camp_deals_tick", "camp_cd_h", "camp_news_chance",
+		"need_swaps", "camp_hold_h" })
+	do
+		if cfg[k] == nil then abort("olr_gear: no key '%s' in [gear]", k) end
+	end
+	return cfg
+end
+
+local function glog(fmt, ...)
+	log2("[olr_gear] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+function active()
+	return db.actor ~= nil and olr_cfg.on("gear_exchange")
+end
+
+local function bag(se)
+	local out = {}
+	for _, rec in pairs(amk_offline_alife.items[se.id] or {}) do
+		local it = rec and alife():object(rec.id)
+		if it and it.parent_id == se.id and it:name() == rec.name then table.insert(out, it) end
+	end
+	return out
+end
+
+local function is_med(sec)
+	return string.find(sec, "medkit", 1, true) or string.find(sec, "bandage", 1, true)
+end
+
+-- what he lacks: { kind = "ammo", classes = { sec = true } } or { kind = "med" }, nil if nothing
+local function need_of(se)
+	local a = amk_offline_alife
+	local items = bag(se)
+	local wpn = a.get_npc_weapon(se)
+	if wpn then
+		local classes, has = {}, false
+		for sec in string.gmatch(a.get_weapon_ammo(wpn) or "", "[^,%s]+") do classes[sec] = true end
+		for _, it in ipairs(items) do
+			if classes[it:section_name()] then has = true end
+		end
+		if next(classes) and not has then return { kind = "ammo", classes = classes, gun = wpn:section_name() } end
+	end
+	for _, it in ipairs(items) do
+		if is_med(it:section_name()) then return nil end
+	end
+	return { kind = "med" }
+end
+
+-- the item a giver can spare for this need: two or more of it in his bag
+local function spare(giver, need)
+	local count, pick = {}, {}
+	for _, it in ipairs(bag(giver)) do
+		local sec = it:section_name()
+		local fits = ( need.kind == "ammo" and need.classes[sec] ) or ( need.kind == "med" and is_med(sec) )
+		if fits then
+			count[sec] = ( count[sec] or 0 ) + 1
+			pick[sec] = it
+		end
+	end
+	for sec, n in pairs(count) do
+		if n >= 2 then return pick[sec] end
+	end
+	return nil
+end
+
+local function unseen(se)
+	if se.online then return false end
+	if olr_smart_index.object_level(se) ~= level.name() then return true end
+	return se.position:distance_to(db.actor:position()) > olr_amk_offline.player_clear()
+end
+
+local function givers_of(se, need, check_seen)
+	local out = {}
+	local lvl = olr_smart_index.object_level(se)
+	for _, comm in ipairs({ se:community() }) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local g = id ~= se.id and alife():object(id)
+			if g and IsStalker(g) and g:alive() and olr_smart_index.object_level(g) == lvl and g.position:distance_to(se.position) <= config().gear_radius
+				and olr_amk_offline.usable(g) and ( not check_seen or unseen(g) )
+			then
+				local it = spare(g, need)
+				if it then table.insert(out, { g = g, it = it }) end
+			end
+		end
+	end
+	return out
+end
+
+local function money_of(se)
+	local pk = get_netpk(se)
+	local data = pk and pk:get()
+	return data and data.money or 0
+end
+
+local function add_money(se, delta)
+	local pk = get_netpk(se)
+	local data = pk:get()
+	data.money = math.max(0, data.money + delta)
+	pk:set(data)
+end
+
+local function item_name(sec)
+	return game.translate_string(system_ini():r_string(sec, "inv_name"))
+end
+
+local function swap(taker, giver, item)
+	local c = config()
+	local sec = item:section_name()
+	local cost = math.floor(amk_offline_alife.get_item_cost(item) * c.swap_price_k)
+	local gt = olr_amk_offline.tier_of(giver)
+	local gift = olr_amk_offline.tier_of(taker) == "novice" and money_of(taker) < c.gift_money and ( gt == "veteran" or gt == "master" )
+	local new = amk_offline_alife.pick_item(taker, item)
+	if not new then
+		glog("%s could not take %s from %s", taker:name(), sec, giver:name())
+		return false
+	end
+	if not gift then
+		local pay = math.min(cost, money_of(taker))
+		add_money(taker, -pay)
+		add_money(giver, pay)
+	end
+	asked[taker.id] = timers.Get_Game_Seconds()
+	swaps = swaps + 1
+	if gift then gifts = gifts + 1 end
+	glog("%s id=%d (%s) gets %s from %s id=%d (%s)%s", taker:name(), taker.id, olr_amk_offline.tier_of(taker), sec, giver:name(), giver.id, gt,
+		gift and ", a gift" or string.format(", pays %d", cost))
+	local lvl = olr_smart_index.object_level(taker)
+	local region = olr_smart_index.region_levels()
+	if region and region[lvl] and he_pda_model.get_pda() and math.random(100) <= c.swap_news_chance then
+		local key = olr_trader_runs.pick_line(gift and "olr_swap_gift_" or "olr_swap_thanks_")
+		if key then
+			local text = string.gsub(game.translate_string(key), "%$name", function() return olr_trader_runs.display_name(giver) or giver:name() end)
+			text = string.gsub(text, "%$item", function() return item_name(sec) end)
+			sak.send_tip(text, olr_trader_runs.display_name(taker) or taker:name(), 0, 15, "default", "pda_news", "gray")
+		else
+			glog("no text for %s", gift and "olr_swap_gift_" or "olr_swap_thanks_")
+		end
+	end
+	return true
+end
+
+local function try_swap(se)
+	local need = need_of(se)
+	if not need then return false end
+	if need.kind == "ammo" then need_ammo = need_ammo + 1 else need_med = need_med + 1 end
+	local list = givers_of(se, need, true)
+	if #list == 0 then
+		no_giver = no_giver + 1
+		return false
+	end
+	local pick = list[math.random(#list)]
+	return swap(se, pick.g, pick.it)
+end
+
+-- ---------------------------------------------------------------------------
+-- camp trade
+-- ---------------------------------------------------------------------------
+
+-- [HE-PORT] review 8.30 R8: { u = until, n = item name }, so a released id that comes back as another item is free
+function held_for_trader(it)
+	local t = olr_store.get(BOUGHT_KEY)
+	local h = t and t[tostring(it.id)]
+	return type(h) == "table" and h.n == it:name() and timers.Get_Game_Seconds() < h.u
+end
+
+local function hold_for_trader(items)
+	local t = olr_store.get(BOUGHT_KEY) or {}
+	local n = timers.Get_Game_Seconds()
+	for k, v in pairs(t) do
+		if type(v) ~= "table" or v.u <= n then t[k] = nil end
+	end
+	for _, it in ipairs(items) do t[tostring(it.id)] = { u = n + config().camp_hold_h * 3600, n = it:name() } end
+	olr_store.put(BOUGHT_KEY, t)
+end
+
+-- what he could sell a campmate: plain artefacts and mutant parts, not what he keeps from a stash or a robbery
+local function wares_of(se)
+	local out = {}
+	for _, it in ipairs(bag(se)) do
+		local sec = it:section_name()
+		local kind = olr_trader_runs.kind_of(it)
+		if ( ( kind == "art" and amk_offline_alife.is_plain_art(sec) ) or kind == "part" )
+			and amk_offline_alife.get_item_cost(it) > 0 and not olr_stash.keeps(se, it) and not held_for_trader(it)
+		then
+			table.insert(out, it)
+		end
+	end
+	out = olr_robbery.hold_out(se, out)
+	table.sort(out, function(a, b) return amk_offline_alife.get_item_cost(a) > amk_offline_alife.get_item_cost(b) end)
+	return out
+end
+
+-- the runner in his camp who would buy: his side, at the same smart, one who goes to traders (may_buy), with money,
+-- of his rank or above, or anyone who travels when he himself cannot. The highest rank wins, then the richest.
+-- [HE-PORT] 8.26: was "strictly above him" and may_travel: 930 of 939 sellers found nobody in the tf250 soak
+local function buyer_for(se, sid, why_out)
+	local c = config()
+	local st = TIER_N[olr_amk_offline.tier_of(se)] or 1
+	local seller_travels = olr_trader_runs.may_travel(se)
+	local best, best_t, best_m = nil, -1, -1
+	local sim = alife()
+	local mates = 0
+	for _, comm in ipairs(SIDE[se:community()] or { se:community() }) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local b = id ~= se.id and sim:object(id)
+			if b and IsStalker(b) and b:alive() and b:smart_terrain_id() == sid then
+				mates = mates + 1
+				local bt = TIER_N[olr_amk_offline.tier_of(b)] or 1
+				local m = money_of(b)
+				local why = nil
+				if olr_trader_runs.on_run(id) then why = "on a run"
+				elseif not olr_trader_runs.may_buy(b) then
+					local _, r = olr_trader_runs.may_buy(b)
+					why = "does not travel (" .. tostring(r) .. ")" -- [HE-PORT] 8.31
+				elseif not ( olr_amk_offline.usable(b) and unseen(b) ) then why = "in sight or busy"
+				elseif seller_travels and bt < st then why = "below him"
+				elseif sold_to[id] and sold_to[id].b == se.id and timers.Get_Game_Seconds() - sold_to[id].t < c.camp_hold_h * 3600 then why = "sold to him lately"
+				elseif m <= c.camp_keep_money then why = "no money"
+				end
+				if why_out then table.insert(why_out, string.format("%s id=%d (%s, %d): %s", b:name(), id, olr_amk_offline.tier_of(b), m, why or "would buy")) end
+				if not why and ( bt > best_t or ( bt == best_t and m > best_m ) ) then best, best_t, best_m = b, bt, m end
+				if why and not why_out then camp.why[why] = ( camp.why[why] or 0 ) + 1 end
+			end
+		end
+	end
+	if mates == 0 and not why_out then camp.why["nobody else at his smart"] = ( camp.why["nobody else at his smart"] or 0 ) + 1 end
+	return best
+end
+
+local function say_sale(seller, buyer, sec, n)
+	local c = config()
+	local lvl = olr_smart_index.object_level(buyer)
+	local region = olr_smart_index.region_levels()
+	if not ( region and region[lvl] and he_pda_model.get_pda() and math.random(100) <= c.camp_news_chance ) then return end
+	local key = olr_trader_runs.pick_line("olr_camp_sale_")
+	if not key then
+		if not warned_text then glog("no text for olr_camp_sale_ yet") end
+		warned_text = true
+		return
+	end
+	local text = string.gsub(game.translate_string(key), "%$name", function() return olr_trader_runs.display_name(seller) or seller:name() end)
+	text = string.gsub(text, "%$item", function() return item_name(sec) end)
+	text = string.gsub(text, "%$count", function() return tostring(n) end)
+	sak.send_tip(text, olr_trader_runs.display_name(buyer) or buyer:name(), 0, 15, "default", "pda_news", "gray")
+end
+
+local function deal(seller, buyer, list)
+	local c = config()
+	local n, paid, names, top = 0, 0, {}, nil
+	local new_ids = {}
+	for _, it in ipairs(list) do
+		if n >= c.camp_buy_max then break end
+		local price = math.floor(amk_offline_alife.get_item_cost(it) * c.camp_buy_k)
+		if price > 0 and money_of(buyer) - price >= c.camp_keep_money then
+			local sec = it:section_name()
+			local kind = olr_trader_runs.kind_of(it)
+			local new = amk_offline_alife.pick_item(buyer, it)
+			if new then
+				table.insert(new_ids, new)
+				add_money(buyer, -price)
+				add_money(seller, price)
+				n, paid = n + 1, paid + price
+				top = top or sec
+				table.insert(names, string.format("%s %d", sec, price))
+				if kind == "art" then camp.arts = camp.arts + 1 else camp.parts = camp.parts + 1 end
+			end
+		end
+	end
+	if n == 0 then
+		glog("%s id=%d: %s id=%d cannot afford anything of his", seller:name(), seller.id, buyer:name(), buyer.id)
+		return false
+	end
+	sold_at[seller.id] = timers.Get_Game_Seconds()
+	sold_to[seller.id] = { b = buyer.id, t = sold_at[seller.id] }
+	hold_for_trader(new_ids)
+	camp.deals, camp.items, camp.money = camp.deals + 1, camp.items + n, camp.money + paid
+	local sid = seller:smart_terrain_id()
+	local smart = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
+	glog("camp trade at %s (%s): %s id=%d (%s) sells %d to %s id=%d (%s) for %d: %s", smart and smart:name() or "?",
+		tostring(olr_smart_index.object_level(seller)), seller:name(), seller.id, olr_amk_offline.tier_of(seller), n,
+		buyer:name(), buyer.id, olr_amk_offline.tier_of(buyer), paid, table.concat(names, ", "))
+	olr_trader_runs.note_earned(seller, paid)
+	olr_trader_runs.note_spent(buyer, paid)
+	olr_trader_runs.after_buy(buyer)
+	say_sale(seller, buyer, top, n)
+	return true
+end
+
+-- [HE-PORT] 8.37: a man with two medkits or more sells one to a campmate of his side with none (any rank: a novice needs it most)
+local function camp_medkit(se, sid)
+	if not olr_trader_runs.med_on() then return false end
+	local mine = olr_trader_runs.medkits_of(se)
+	if #mine < 2 then return false end
+	local c = config()
+	local it = mine[#mine]
+	local price = math.floor(amk_offline_alife.get_item_cost(it) * c.camp_buy_k)
+	local sim = alife()
+	for _, comm in ipairs(SIDE[se:community()] or { se:community() }) do
+		for _, id in ipairs(olr_offline_task.cached_stalkers(comm)) do
+			local b = id ~= se.id and sim:object(id)
+			if b and IsStalker(b) and b:alive() and not b.online and b:smart_terrain_id() == sid and olr_amk_offline.usable(b) and unseen(b)
+				and not olr_trader_runs.on_run(id) and #olr_trader_runs.medkits_of(b) == 0 and money_of(b) - price >= c.camp_keep_money
+			then
+				local sec = it:section_name()
+				local new = amk_offline_alife.pick_item(b, it)
+				if not new then return false end
+				olr_trader_runs.med_track(new, b)
+				add_money(b, -price)
+				add_money(se, price)
+				olr_trader_runs.note_earned(se, price)
+				olr_trader_runs.note_spent(b, price)
+				olr_trader_runs.med_note("camp")
+				glog("camp medkit: %s id=%d sells %s to %s id=%d (%s, had none) for %d", se:name(), se.id, sec, b:name(), id, olr_amk_offline.tier_of(b), price)
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- he sells to a runner at his smart if there is one; forced skips the cooldown
+local function camp_sale(se, forced)
+	local c = config()
+	local sid = se:smart_terrain_id()
+	-- money moves through the server object, which an online man does not read
+	if se.online or not sid or sid == BAD_OBJ_ID or olr_trader_runs.on_run(se.id) then return false end
+	if not forced and timers.Get_Game_Seconds() - ( sold_at[se.id] or -1e9 ) < c.camp_cd_h * 3600 then
+		camp.cooldown = camp.cooldown + 1
+		return false
+	end
+	camp_medkit(se, sid) -- [HE-PORT] 8.37
+	local list = wares_of(se)
+	if #list == 0 then return false end
+	camp.wares = camp.wares + 1
+	local b = buyer_for(se, sid)
+	if not b then
+		camp.no_buyer = camp.no_buyer + 1
+		return false
+	end
+	return deal(se, b, list)
+end
+
+-- [HE-PORT] olr_daytrips: he visits a camp and sells his finds there; with need swaps on, he may also get what he lacks
+function visit(se)
+	if not active() then return false end
+	if camp_sale(se) then return true end
+	if config().need_swaps == 1 then return try_swap(se) end
+	return false
+end
+
+function update()
+	if not active() or olr_cfg.sleep_paused() then return end
+	local c = config()
+	local sim = alife()
+	local n = timers.Get_Game_Seconds()
+	local deals = 0
+	for _ = 1, olr_cfg.budget("gear", c.trade_scan_h, c.gear_scan, c.trade_scan_max) do
+		local ids = olr_offline_task.cached_stalkers(COMMS[math.random(#COMMS)])
+		local se = #ids > 0 and sim:object(ids[math.random(#ids)])
+		if se and IsStalker(se) and se:alive() and olr_amk_offline.usable(se) and unseen(se) then
+			camp.looked = camp.looked + 1
+			if camp_sale(se) then deals = deals + 1 end
+			if c.need_swaps == 1 and n - ( asked[se.id] or -1e9 ) >= c.gear_cd_h * 3600 then
+				seen_n = seen_n + 1
+				if try_swap(se) then deals = deals + 1 end
+			end
+			if deals >= c.camp_deals_tick then return end
+		end
+	end
+end
+
+-- olr_trader_runs.economy(): the camp trade counters
+function camp_stats()
+	return camp
+end
+
+function report()
+	glog("on=%s, camp trade: looked at %d stalkers, %d had something to sell, %d of those found no buyer in camp, %d on cooldown",
+		tostring(active()), camp.looked, camp.wares, camp.no_buyer, camp.cooldown)
+	glog("  %d deals, %d things (%d artefacts, %d parts) for %d money", camp.deals, camp.items, camp.arts, camp.parts, camp.money)
+	local why = {}
+	for k, v in pairs(camp.why) do table.insert(why, k .. "=" .. v) end
+	table.sort(why)
+	glog("  campmates turned down as buyers: %s", #why > 0 and table.concat(why, ", ") or "none")
+	glog("  need swaps %s: %d swaps, %d of them gifts; checked %d: %d short of ammo, %d without a medkit or bandage, %d found nobody near",
+		config().need_swaps == 1 and "on" or "off", swaps, gifts, seen_n, need_ammo, need_med, no_giver)
+end
+
+function wares(id)
+	local se = alife():object(id)
+	if not ( se and IsStalker(se) ) then
+		glog("wares %s: no stalker", tostring(id))
+		return
+	end
+	local list = wares_of(se)
+	local names = {}
+	for _, it in ipairs(list) do table.insert(names, string.format("%s %d", it:section_name(), amk_offline_alife.get_item_cost(it))) end
+	local sid = se:smart_terrain_id()
+	local smart = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
+	glog("wares %s id=%d (%s, %s, travels=%s) at %s: %s", se:name(), id, se:community(), olr_amk_offline.tier_of(se),
+		tostring(olr_trader_runs.may_travel(se)), smart and smart:name() or "no smart", #names > 0 and table.concat(names, ", ") or "nothing to sell")
+	if not smart then return end
+	local why = {}
+	local b = buyer_for(se, sid, why)
+	for _, line in ipairs(why) do glog("  %s", line) end
+	glog("  buyer: %s", b and string.format("%s id=%d", b:name(), b.id) or "none")
+end
+
+function force_sale(id)
+	local se = alife():object(id)
+	if not ( se and IsStalker(se) and se:alive() ) then
+		glog("force_sale %s: no living stalker", tostring(id))
+		return
+	end
+	if not camp_sale(se, true) then glog("force_sale %s id=%d: no sale (see olr_gear.wares(%d))", se:name(), id, id) end
+end
+
+function needs(id)
+	local se = alife():object(id)
+	if not ( se and IsStalker(se) ) then
+		glog("needs %s: no stalker", tostring(id))
+		return
+	end
+	local need = need_of(se)
+	if not need then
+		glog("needs %s id=%d: nothing", se:name(), id)
+		return
+	end
+	local list = givers_of(se, need, false)
+	glog("needs %s id=%d: %s%s, %d could give", se:name(), id, need.kind, need.gun and ( " for " .. need.gun ) or "", #list)
+	for _, g in ipairs(list) do glog("  %s id=%d has %s to spare", g.g:name(), g.g.id, g.it:section_name()) end
+end
+
+function force_swap(id)
+	local se = alife():object(id)
+	local need = se and IsStalker(se) and need_of(se)
+	if not need then
+		glog("force_swap %s: he needs nothing", tostring(id))
+		return
+	end
+	local list = givers_of(se, need, false)
+	if #list == 0 then
+		glog("force_swap %s: nobody near him can give it", tostring(id))
+		return
+	end
+	swap(se, list[1].g, list[1].it)
+end

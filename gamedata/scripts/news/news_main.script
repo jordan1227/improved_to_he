@@ -221,7 +221,9 @@ function on_stalker_death(victim_, killer_)
 		else
 			killer = get_obj(killer_.id)
 		end
-		if (_g.IsMonster(killer)) then
+		if killer == nil or ( victim and killer:id() == victim:id() ) then
+			m_killer_str = news_data.strings.cause_zone -- [HE-PORT] no killer left, or a scripted kill of himself
+		elseif (_g.IsMonster(killer)) then
 			m_killer = format_death_by_monster(killer)
 			m_killer_str = get_monster_name(killer, 2)
 		elseif (IsAnomaly(killer)) then
@@ -257,12 +259,12 @@ function on_stalker_death(victim_, killer_)
 			m_killer_str = news_data.strings.grenade_self
 			m_killer = format_death_by_stalker(killer)
 		else
-			m_killer_str = news_data.strings.cause_unknown
+			m_killer_str = news_data.strings.cause_zone -- [HE-PORT] was cause_unknown
 			m_killer = ""
 		end
 	end
 	if (m_killer_str==nil or m_killer_str=="") then 
-	m_killer_str = news_data.strings.cause_unknown end
+	m_killer_str = news_data.strings.cause_zone end -- [HE-PORT] was cause_unknown
 	local m_string = m_name..". "..m_level..", "..m_killer_str.."."
 	do_news(m_string, news_data.strings.death_header, lua_random(timer_stalker_death, timer_stalker_death*3), 10, "death", nil, 1) 
 
@@ -1504,6 +1506,21 @@ function localized_where(lname, point)
 	return m_s
 end
 
+-- [HE-PORT] truth audit X1: a place for a generated PDA line. Where the description is hidden (Pripyat, X-10 and the
+-- NPP before the Scorcher is off) a vague "somewhere in the Zone" (he_where_somewhere) instead of an empty slot
+function where_text(lname, point)
+	local w = localized_where(lname, point)
+	if w ~= "" then return w end
+	local s = game.translate_string("he_where_somewhere")
+	if s == "he_where_somewhere" then return "" end
+	return s
+end
+
+-- [HE-PORT] truth audit X2: quest-bound and story people do not lend their names to generated chatter
+function may_speak(se)
+	return not ( olr_protected.is_quest_bound(se) or olr_trader_runs.has_story_name(se) )
+end
+
 function isGameObject(obj)
 	local bResult = false
 	if (obj and obj.fov) then
@@ -2057,7 +2074,11 @@ function do_eternal_stalker()
 		local sect = kotovod.rnd_rec_art_info( kotovod.tbl_arts, 5, 5 )
 		nlc_vars.semeckiy_art = sect
 
-		local m_level = news_data.levels[ dsh.get_next_random( "news_main.do_eternal_stalker", #news_data.levels - 2 ) ]	
+		-- [HE-PORT] truth audit I12: he dies (and his artefact waits) only on a level the story has opened
+		local front = olr_cfg.frontier_levels and olr_cfg.frontier_levels() or nil
+		local m_level
+		for _ = 1, 12 do
+		m_level = news_data.levels[ dsh.get_next_random( "news_main.do_eternal_stalker", #news_data.levels - 2 ) ]
 		local b_indoor = news_data.levels_types[ m_level ]
 		if b_indoor == 1 then 
 			m_level = "aver" 
@@ -2067,6 +2088,14 @@ function do_eternal_stalker()
 			m_level = "l11_pripyat"
 		elseif m_level == "l05_bar" then 
 			m_level = "l06_rostok"
+		end
+		if not front or front[ m_level ] then break end
+		end
+		if front and not front[ m_level ] then
+			log2( "[news] Semetsky: no open level found in 12 tries, no death this time" )
+			timer_eternal_stalker = game_minutes()
+			nlc_vars.semeckiy_art = nil
+			return
 		end
 		nlc_vars.semeckiy_lvl = m_level
 		m_level = news_data.level_name[ m_level ][ 2 ]		
@@ -2286,8 +2315,16 @@ function game_minutes()
 end
 
 -- [HE-PORT] amk_offline_alife calls these when an NPC picks something up
+-- [HE-PORT] scripted NPCs who stand somewhere the player should not hear from yet (Radar before its chapter):
+-- no offline finds, corpse or trade news from them
+local quiet_senders = { rad_ivar_drug = true }
+local function quiet(who)
+	return who ~= nil and quiet_senders[who:name()] == true
+end
+
 local function offline_find_news(who, object, templates, chance)
 	if not (who and object and olr_cfg.on("news_finds")) or lua_random() >= chance then return end
+	if quiet(who) then return end
 	local m_level = get_point_description(get_object_levelname(who), get_object_position(who))
 	if m_level == "" then return end
 	local m_name = get_npc_name(who)
@@ -2330,6 +2367,8 @@ function on_offline_death(victim, killer, weapon)
 		end
 		olr_reactive.on_offline_death(victim) -- [HE-PORT]
 		olr_alpha.on_offline_death(victim, killer) -- [HE-PORT]
+		olr_lives.on_death(victim) -- [HE-PORT] life goals end
+		olr_digest.on_offline_death(victim) -- [HE-PORT] morning digest
 		if (_g.IsStalker(victim)) then
 			if (IsNpcStalker(victim)) then
 				on_offline_stalker_death(victim, killer, weapon)
@@ -2405,7 +2444,7 @@ function on_offline_stalker_death(victim_, killer_, weapon_)
 			end
 			m_killer = format_death_by_weapon(weapon_)
 		else
-			m_killer_str = news_data.strings.cause_unset
+			m_killer_str = news_data.strings.cause_zone -- [HE-PORT] was cause_unset
 			m_killer = ""
 		end
 	end
@@ -2508,8 +2547,20 @@ function on_offline_wound(victim)
 	end
 end
 
+-- [HE-PORT] a body is reported again only after this many game hours (memory only: a reload may allow one more)
+local corpse_reported = {}
+local CORPSE_REPEAT_H = 12
+
 function on_offline_corpse_found(who, object)
 	if (who and object) then
+		if quiet(who) then return end
+		local lvl = olr_smart_index.object_level(object)
+		local t = timers.Get_Game_Seconds()
+		local rec = corpse_reported[object.id]
+		if rec and rec.n == object:name() and t - rec.t < CORPSE_REPEAT_H * 3600 then return end
+		corpse_reported[object.id] = { n = object:name(), t = t }
+		log2("[news] corpse report: %s id=%d (%s) on %s finds %s id=%d", who:name(), who.id, tostring(who.community and who:community()),
+			tostring(lvl), object:section_name(), object.id)
 		if (_g.IsStalker(who) and IsNpcStalker(who)) then
 			local s_corpse = ""
 			if (_g.IsMonster(object)) then
@@ -2531,6 +2582,7 @@ function on_offline_corpse_found(who, object)
 end
 
 function on_offline_trade(npc, item)
+	if quiet(npc) then return end
 	if (npc and item and lua_random() < 0.25) then
 		local m_from = get_npc_name( npc )
 		local m_str = news_data.trade_templates[lua_random(table.getn(news_data.trade_templates))]
@@ -2662,7 +2714,7 @@ function random_sender_name( map )
 	for i = 1, 8 do
 		local v = list[ lua_random( #list ) ]
 		local stalker = v and alife():object( v.id )
-		if stalker and friends_comm[ get_npc_community( stalker ) ] and stalker:alive() and not stalker.force_offline then
+		if stalker and friends_comm[ get_npc_community( stalker ) ] and stalker:alive() and not stalker.force_offline and may_speak( stalker ) then
 			local name = get_npc_name( stalker )
 			if name and name ~= "" then return name end
 		end

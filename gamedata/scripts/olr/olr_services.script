@@ -1,0 +1,300 @@
+-- [HE-PORT] Service errands, docs/ALIFE_NEXT_DESIGN.md 3.3 and 3.6 (preset key service_errands). Flavour, no wear model
+-- (the user's decision): a stalker who earned enough since his last visit walks to a technician in reach and pays a
+-- share of it (a money sink against getting rich); one whose best gun has no ammo in his bag goes to the arena man and
+-- buys a couple of boxes. Uses the errand machine of olr_trader_runs (walk, stand at the spot, deadline, death on the
+-- way); the technicians and their spots are [technicians] and [trader_spots] in olr_alife.ltx. Log: [olr_services].
+-- fl olr_services.report()                      technicians found, visits so far, who is on the way
+-- fl olr_services.force(12345, "vergas")        he goes to that technician now (offline or online); "arena" for ammo
+-- fl olr_services.force_near("vergas")          the nearest online loner here goes, to watch the walk
+-- fl olr_services.needs(12345)                  what he would go for now, and why not
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_services"
+
+local cfg = nil
+local scan_index = 0
+local done = {}
+
+local function config()
+	if cfg then return cfg end
+	cfg = {}
+	local ini = ini_file(INI_PATH)
+	for i = 0, ini:line_count("services") - 1 do
+		local _, k, v = ini:r_line("services", i, "", "")
+		cfg[k] = tonumber(v) or v
+	end
+	for _, k in ipairs({ "service_scan", "service_scan_h", "service_scan_max", "service_every_d", "service_first_d", "repair_min_earned", "repair_share", "repair_min_pay", "repair_max_pay",
+		"ammo_boxes", "ammo_price_k", "service_news_chance", "service_per_tech" })
+	do
+		if cfg[k] == nil then abort("olr_services: no key '%s' in [services]", k) end
+	end
+	return cfg
+end
+
+local function vlog(fmt, ...)
+	log2("[olr_services] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+local function now()
+	return timers.Get_Game_Seconds()
+end
+
+function active()
+	return db.actor ~= nil and olr_cfg.on("service_errands") and olr_cfg.on("trader_runs")
+end
+
+local function state()
+	return olr_store.get(KEY) or {}
+end
+
+local function money_of(se)
+	local npc = se.online and level.object_by_id(se.id)
+	if npc then return npc:money() end
+	local pk = get_netpk(se)
+	local data = pk and pk:get()
+	return data and data.money or 0
+end
+
+local function take_money(se, amount)
+	if amount <= 0 then return end
+	local npc = se.online and level.object_by_id(se.id)
+	if npc then
+		npc:give_money(-amount)
+	else
+		local pk = get_netpk(se)
+		local data = pk:get()
+		data.money = math.max(0, data.money - amount)
+		pk:set(data)
+	end
+end
+
+local function earned_of(id)
+	return ( olr_store.get("nlc.olr_earned") or {} )[tostring(id)] or 0
+end
+
+-- the ammo of his best gun he lacks, nil if he has some (or no gun)
+local function ammo_need(se)
+	local a = amk_offline_alife
+	local wpn = a.get_npc_weapon(se)
+	if not wpn then return nil end
+	local classes = a.get_weapon_ammo(wpn)
+	if not classes or classes == "" then return nil end
+	local first = nil
+	for sec in string.gmatch(classes, "[^,%s]+") do
+		first = first or sec
+		for _, rec in pairs(a.items[se.id] or {}) do
+			local it = rec and alife():object(rec.id)
+			if it and it.parent_id == se.id and it:section_name() == sec then return nil end
+		end
+	end
+	return first, wpn:section_name()
+end
+
+-- what he would go for now: kind, technician key, and the reason when nothing
+function need_of(se, st)
+	local c = config()
+	local ok, why = olr_trader_runs.errand_free(se)
+	if not ok then return nil, nil, why end
+	local rec = st[tostring(se.id)]
+	if rec and now() < rec.next then return nil, nil, string.format("next visit in %.1f d", ( rec.next - now() ) / 86400) end
+	local ammo, gun = ammo_need(se)
+	if ammo then
+		local key, why2 = olr_trader_runs.service_pick(se, "ammo")
+		if key then return "ammo", key, ammo end
+		return nil, nil, "no ammo seller in reach: " .. tostring(why2) .. " (" .. tostring(gun) .. ")"
+	end
+	local got = earned_of(se.id) - ( rec and rec.e or 0 )
+	if got < c.repair_min_earned then return nil, nil, string.format("earned %d since his last visit, needs %d", got, c.repair_min_earned) end
+	local key, why3 = olr_trader_runs.service_pick(se, "repair")
+	if key then return "repair", key, got end
+	return nil, nil, "no technician in reach: " .. tostring(why3)
+end
+
+local function schedule(st, se, first)
+	local a, b = string.match(tostring(config()[first and "service_first_d" or "service_every_d"]), "([%d%.]+)%s*,%s*([%d%.]+)")
+	a, b = tonumber(a) or 4, tonumber(b) or 8
+	local rec = st[tostring(se.id)] or {}
+	rec.n, rec.next, rec.e = se:name(), now() + ( a + math.random() * ( b - a ) ) * 86400, rec.e or earned_of(se.id)
+	st[tostring(se.id)] = rec
+end
+
+local function send(se, kind, key, info, st, forced)
+	local c = config()
+	local spec = { kind = kind }
+	if kind == "repair" then
+		local got = earned_of(se.id) - ( st[tostring(se.id)] and st[tostring(se.id)].e or 0 )
+		spec.charge = math.max(c.repair_min_pay, math.min(c.repair_max_pay, math.floor(got * c.repair_share / 100 / 50) * 50))
+	else
+		spec.ammo = info
+		local ini = system_ini()
+		local cost = ini:section_exist(info) and ini:line_exist(info, "cost") and ini:r_float(info, "cost") or 0
+		spec.charge = math.floor(cost * c.ammo_boxes * c.ammo_price_k)
+	end
+	if money_of(se) < spec.charge then
+		if kind == "ammo" then spec.charge = money_of(se) else spec.charge = math.floor(money_of(se) / 2) end
+	end
+	local ok = olr_trader_runs.start_service(se, key, spec)
+	vlog("%s id=%d (%s, money %d) %s to %s for %s, charge %d%s: %s", se:name(), se.id, se:community(), money_of(se), forced and "sent" or "goes",
+		key, kind == "ammo" and info or "repairs", spec.charge, se.online and ", online" or "", ok and "on the way" or "no smart would have him")
+	if ok then
+		done[kind .. "_sent"] = ( done[kind .. "_sent"] or 0 ) + 1
+		schedule(st, se)
+		st[tostring(se.id)].e = earned_of(se.id)
+	end
+	return ok
+end
+
+-- olr_trader_runs.finish_errand: he is there (offline arrival or the online walk ended)
+function done_at(id, run)
+	local se = alife():object(id)
+	if not ( se and IsStalker(se) and se:alive() ) then return end
+	local pay = math.min(run.charge or 0, money_of(se))
+	take_money(se, pay)
+	local got = ""
+	if run.service == "ammo" and run.ammo and pay > 0 then
+		local boxes = math.max(1, math.min(config().ammo_boxes, math.floor(pay / math.max(1, ( run.charge or pay ) / config().ammo_boxes))))
+		for _ = 1, boxes do
+			local it = misc.spawn_to(run.ammo, se)
+			misc.process_spawn()
+			if it and amk_offline_alife.items[id] then table.insert(amk_offline_alife.items[id], { id = it.id, name = it:name() }) end
+		end
+		got = string.format(", bought %d x %s", boxes, run.ammo)
+	end
+	done[run.service .. "_done"] = ( done[run.service .. "_done"] or 0 ) + 1
+	vlog("%s id=%d at %s: paid %d%s", se:name(), id, run.errand, pay, got)
+	local region = olr_smart_index.region_levels()
+	-- [HE-PORT] truth audit G10: nothing paid, nothing bought, nothing to tell
+	if pay > 0 and region and region[run.level] and he_pda_model.get_pda() and math.random(100) <= config().service_news_chance then
+		local key = olr_trader_runs.pick_line("olr_" .. run.service .. "_done_")
+		if key then
+			local text = string.gsub(game.translate_string(key), "%$tech", function() return game.translate_string("olr_tech_" .. run.errand) end)
+			sak.send_tip(text, run.who, 0, 15, "default", "pda_news", "gray")
+		else
+			vlog("no text for olr_%s_done_", run.service)
+		end
+	end
+end
+
+-- [HE-PORT] the visit clock and the earnings ledger forget dead and gone stalkers, a few keys a call
+local prune_keys, prune_i = {}, 0
+local function prune(st)
+	if prune_i >= #prune_keys then
+		prune_keys, prune_i = {}, 0
+		for k in pairs(st) do table.insert(prune_keys, k) end
+		return false
+	end
+	local sim = alife()
+	local changed = false
+	for _ = 1, 10 do
+		prune_i = prune_i + 1
+		local k = prune_keys[prune_i]
+		if not k then break end
+		local rec = st[k]
+		local se = rec and tonumber(k) and sim:object(tonumber(k))
+		if rec and not ( se and IsStalker(se) and se:alive() and se:name() == rec.n ) then
+			st[k] = nil
+			changed = true
+		end
+	end
+	olr_trader_runs.prune_earned(10)
+	return changed
+end
+
+function update()
+	if not active() or olr_cfg.sleep_paused() then return end
+	local h = level.get_time_hours()
+	if h < 7 or h >= 19 then return end
+	local c = config()
+	local st = state()
+	local sim = alife()
+	local ids = olr_offline_task.cached_stalkers("stalker")
+	local green = olr_offline_task.cached_stalkers("green")
+	local total = #ids + #green
+	if total == 0 then return end
+	local changed = prune(st)
+	for _ = 1, olr_cfg.budget("services", c.service_scan_h, c.service_scan, c.service_scan_max) do
+		scan_index = scan_index % total + 1
+		local id = scan_index <= #ids and ids[scan_index] or green[scan_index - #ids]
+		local se = id and sim:object(id)
+		if se and IsStalker(se) and se:alive() then
+			local key_s = tostring(id)
+			if not st[key_s] or st[key_s].n ~= se:name() then
+				-- first sight: his first visit is some days off, counted from what he has earned so far
+				st[key_s] = nil
+				schedule(st, se, true)
+				changed = true
+			else
+				local kind, key, info = need_of(se, st)
+				if kind then
+					send(se, kind, key, info, st)
+					changed = true
+				end
+			end
+		end
+	end
+	if changed then olr_store.put(KEY, st) end
+end
+
+function report()
+	local st = state()
+	local list = {}
+	for k, v in pairs(done) do table.insert(list, k .. "=" .. v) end
+	local n = 0
+	for _ in pairs(st) do n = n + 1 end
+	vlog("on=%s, %d stalkers on the visit clock; this session %s", tostring(active()), n, table.concat(list, " "))
+	olr_trader_runs.service_report()
+end
+
+local function pick(id)
+	local se = alife():object(id)
+	if not ( se and IsStalker(se) and se:alive() ) then
+		vlog("no living stalker id=%s", tostring(id))
+		return nil
+	end
+	return se
+end
+
+function needs(id)
+	local se = pick(id)
+	if not se then return end
+	local kind, key, info = need_of(se, state())
+	vlog("needs %s id=%d: %s", se:name(), id, kind and string.format("%s at %s (%s)", kind, key, tostring(info)) or ( "nothing: " .. tostring(info) ))
+end
+
+function force(id, key)
+	local se = pick(id)
+	if not se then return end
+	local kind = olr_trader_runs.service_kind(key)
+	if not kind then
+		vlog("force: no technician '%s'", tostring(key))
+		return
+	end
+	local st = state()
+	local info = nil
+	if kind == "ammo" then
+		info = ammo_need(se)
+		if not info then
+			local wpn = amk_offline_alife.get_npc_weapon(se)
+			info = wpn and string.match(amk_offline_alife.get_weapon_ammo(wpn) or "", "[^,%s]+") or "ammo_9x18_fmj"
+		end
+	end
+	send(se, kind, key, info, st, true)
+	olr_store.put(KEY, st)
+end
+
+function force_near(key)
+	local best, d = nil, nil
+	for oid in pairs(db.storage) do
+		local npc = oid ~= db.actor:id() and level.object_by_id(oid)
+		if npc and IsStalker(npc) and npc:alive() and ( npc:character_community() == "stalker" or npc:character_community() == "green" ) then
+			local se = alife():object(oid)
+			local dd = npc:position():distance_to(db.actor:position())
+			if se and olr_trader_runs.errand_free(se) and ( not d or dd < d ) then best, d = se, dd end
+		end
+	end
+	if not best then
+		vlog("force_near: no online loner free for an errand")
+		return
+	end
+	force(best.id, key)
+end

@@ -11,6 +11,10 @@
 -- fl olr_amk_offline.roads()        one road-encounter pass now (stalkers on the move meeting enemies)
 -- fl olr_amk_offline.enemies("l02_garbage")  the nearest enemy of each offline stalker there, and how far
 -- fl olr_amk_offline.arts("l02_garbage")  the loose artefacts AMK knows on a level, nearest offline stalker, guards
+-- fl olr_amk_offline.odds_test(4306)  the odds he would see against the mutants in his sight now (id or object name)
+-- fl olr_amk_offline.odds_table()   a lone stalker of each tier with a PM, a shotgun and an AK against 1-15 mutants;
+--                                    odds_table(nil, nil, 0.8, 0.5) with other stalker and mutant damage factors
+-- fl olr_amk_offline.trade_test(4306)  his weighted trade chance, term by term (id or object name)
 
 local INI_PATH = "misc\\olr_alife.ltx"
 
@@ -30,6 +34,14 @@ local function config()
 	return cfg
 end
 
+-- [HE-PORT] how many of a kind a stalker keeps when he trades offline: trade_keep_<kind> with weighted trade on, else
+-- AMK's own number. Artefacts are what loners live on, so with the default 0 they all go: sold on the spot, or carried
+-- to a trader when a run is possible (olr_trader_runs.take_haul).
+function keep_of(kind, default)
+	local v = olr_cfg.on("amk_trade_weighted") and tonumber(config()["trade_keep_" .. kind]) or nil
+	return v or default
+end
+
 local function alog(fmt, ...)
 	if olr_cfg.log_census() then log2("[olr_amk] %s " .. fmt, olr_cfg.stamp(), ...) end
 end
@@ -40,6 +52,11 @@ end
 
 function active()
 	return olr_cfg.on("amk_sight")
+end
+
+-- on the player's level nothing offline happens within this many metres of him
+function player_clear()
+	return config().player_clear
 end
 
 -- collect_info: weapon, friend, enemy, corpse, monster, artefact sight in metres (all 0 with amk_sight off, as before)
@@ -259,6 +276,229 @@ function pick_level(maps)
 	return lvl
 end
 
+-- [HE-PORT] docs/ALIFE_NEXT_DESIGN.md 3.2: the odds before a mutant fight (preset key amk_odds). A dry run of
+-- amk_offline_alife.on_monsters_found on plain tables, nothing touched. KEEP IN STEP with that function: max_rounds 10,
+-- base_fp 1400, dist_coeff 8, health_wound 0.1, the hit chance and damage formulas below; odds_table() shows drift.
+local ODDS_ROUNDS, ODDS_BASE_FP, ODDS_DIST, ODDS_WOUND = 10, 1400, 8, 0.1
+local TIERS = { novice = true, experienced = true, veteran = true, master = true }
+local warn_next = 0
+local trade_rolls, trade_sum = 0, 0
+
+-- the stalker and mutant damage factors of an offline fight: with amk_odds (Extended) odds_stalker_k and odds_monster_k,
+-- tuned so a lone stalker beats one weak mutant and loses to a pack; otherwise the old factor and AMK's mutant damage
+function fight_k(old_k)
+	if olr_cfg.on("amk_odds") then return config().odds_stalker_k, config().odds_monster_k end
+	return old_k, 1
+end
+
+-- [odds_monster_k]: the mutant damage factor by species (longest matching part of the section name), times the
+-- preset-wide factor; 1 when the fight carries none (classic)
+local species_k = nil
+
+local function k_of_section(sec)
+	if not species_k then
+		species_k = {}
+		local ini = ini_file(INI_PATH)
+		for i = 0, ini:line_count("odds_monster_k") - 1 do
+			local _, k, v = ini:r_line("odds_monster_k", i, "", "")
+			table.insert(species_k, { key = k, k = tonumber(v) or 1 })
+		end
+		table.sort(species_k, function(a, b) return #a.key > #b.key end)
+	end
+	for _, rec in ipairs(species_k) do
+		if string.find(sec, rec.key, 1, true) then return rec.k end
+	end
+	return 1
+end
+
+function monster_k(obj, vdata)
+	if not ( vdata and vdata.monster_k and obj ) then return 1 end
+	return vdata.monster_k * k_of_section(obj:section_name())
+end
+
+function tier_of(se)
+	local t = se and ranks.get_obj_rank_name(se)
+	return TIERS[t] and t or "novice"
+end
+
+local function money_of(se)
+	local pk = get_netpk(se)
+	local data = pk and pk:get()
+	return data and data.money or 0
+end
+
+-- one fight on plain tables: true if the first of side A is still standing when side B is all down
+local function sim_once(A0, B0, dist, k, kb)
+	local A, B = {}, {}
+	for _, a in ipairs(A0) do table.insert(A, { r = a, h = a.h }) end
+	for _, b in ipairs(B0) do table.insert(B, { r = b, h = b.h }) end
+	local dead_a, dead_b, lead = 0, 0, true
+	for i = 1, ODDS_ROUNDS do
+		if #A == 0 or #B == 0 then break end
+		for j = 1, math.max(#A, #B) do
+			local at, df = A[j], B[math.random(#B)]
+			if at and df and at.h > 0 and df.h > 0 then
+				local moved = dist[at.r.i][df.r.i] - df.r.speed * i * 5
+				local dii = math.floor(moved)
+				if dii <= 8 then dii = 45 end
+				if math.random() * 100 < 100 - math.floor(dii / 1.5) + math.floor(( at.r.rank - df.r.rank ) / 50) then
+					local hit = math.floor(k * at.r.fp / ( math.max(moved, ODDS_DIST) / ODDS_DIST ))
+					if math.floor(hit * df.r.imm) >= ODDS_BASE_FP then df.h = 0
+					else df.h = math.max(0, df.h - hit / ODDS_BASE_FP * df.r.imm) end
+				end
+			end
+			local mb, da = B[j], A[math.random(#A)]
+			if mb and da and mb.h > 0 and da.h > 0 and dist[da.r.i][mb.r.i] - mb.r.speed * i * 5 < mb.r.adist then
+				if math.random() * 100 < 100 + math.floor(( mb.r.rank - da.r.rank ) / 50) then
+					local fpb = math.floor(mb.r.fp * kb * ( mb.r.k or 1 ))
+					if fpb >= ODDS_BASE_FP then da.h = 0 else da.h = math.max(0, da.h - fpb / ODDS_BASE_FP) end
+				end
+			end
+		end
+		local keep_a, keep_b = {}, {}
+		for _, v in ipairs(A) do
+			if v.h <= 0 then dead_a = dead_a + 1 end
+			if v.h > ODDS_WOUND then table.insert(keep_a, v) elseif v.r.lead then lead = false end
+		end
+		for _, v in ipairs(B) do
+			if v.h <= 0 then dead_b = dead_b + 1 end
+			if v.h > ODDS_WOUND then table.insert(keep_b, v) end
+		end
+		A, B = keep_a, keep_b
+	end
+	return lead and #B == 0, dead_a, dead_b
+end
+
+-- side A and B as plain tables: { fp, rank, h, i } and { fp, speed, adist, imm, rank, h, i }; pos for the distances
+function odds(A, B, k, trials, kb, engage_m)
+	local dist = {}
+	for _, a in ipairs(A) do
+		dist[a.i] = {}
+		for _, b in ipairs(B) do
+			local d = math.floor(a.pos:distance_to(b.pos))
+			if engage_m and d > engage_m then d = engage_m end
+			dist[a.i][b.i] = d
+		end
+	end
+	local wins, da, db = 0, 0, 0
+	for _ = 1, trials do
+		local won, x, y = sim_once(A, B, dist, k, kb or 1)
+		if won then wins = wins + 1 end
+		da, db = da + x, db + y
+	end
+	return wins / trials, da / trials, db / trials
+end
+
+local function stalker_side(victim, friends)
+	local a = amk_offline_alife
+	local out = {}
+	local list = { { id = victim.id } }
+	for _, f in ipairs(friends or {}) do table.insert(list, f) end
+	for n, v in ipairs(list) do
+		local o = alife():object(v.id)
+		if o and IsStalker(o) and o:alive() and ( n == 1 or o:name() == v.name ) then
+			table.insert(out, { i = n, lead = n == 1, fp = a.get_weapon_firepower(a.get_npc_weapon(o)), rank = o:rank(), h = o:health(), pos = o.position })
+		end
+	end
+	return out
+end
+
+local function mutant_side(monsters)
+	local out = {}
+	for n, v in ipairs(monsters or {}) do
+		local o = alife():object(v.id)
+		local pr = o and o:name() == v.name and amk_offline_alife.get_monster_params(o)
+		if pr then
+			table.insert(out, { i = 100 + n, fp = math.floor(pr.attack * ODDS_BASE_FP), speed = pr.speed, adist = pr.dist, imm = pr.immunity, rank = o:rank(), h = o:health(), pos = o.position,
+				k = olr_cfg.on("amk_odds") and k_of_section(o:section_name()) or 1, sec = o:section_name() })
+		end
+	end
+	return out
+end
+
+local function warn_pack(victim, B)
+	local c = config()
+	local lvl = olr_smart_index.object_level(victim)
+	local region = olr_smart_index.region_levels()
+	if not ( lvl and region and region[lvl] and he_pda_model.get_pda() ) then return end
+	local n = timers.Get_Game_Seconds()
+	if n < warn_next or math.random(100) > c.backoff_news_chance then return end
+	local key = olr_trader_runs.pick_line("olr_pack_warn_")
+	if not key then
+		alog("no text for olr_pack_warn_")
+		return
+	end
+	warn_next = n + c.backoff_news_cd_h * 3600
+	local where = news_main.where_text(lvl, B[1].pos)
+	local text = string.gsub(game.translate_string(key), "%$where", function() return where end)
+	sak.send_tip(text, olr_trader_runs.display_name(victim) or olr_trader_runs.other_name(), 0, 15, "default", "pda_news", "gray")
+	alog("warns the net: %s, %s", key, where)
+end
+
+-- true: he fights; false: he backs off. ctx names the caller in the log
+function weigh_fight(victim, friends, monsters, k, ctx, kb, engage_m)
+	if not olr_cfg.on("amk_odds") then return true end
+	local c = config()
+	local A, B = stalker_side(victim, friends), mutant_side(monsters)
+	if #A == 0 or #B == 0 then return true end
+	for _, b in ipairs(B) do
+		local d = b.pos:distance_to(victim.position)
+		if d < c.odds_cornered_m and not engage_m then
+			note("cornered")
+			alog("odds %s: %s cornered, a mutant %.0f m away, fights whatever the odds", ctx, victim:name(), d)
+			return true
+		end
+	end
+	local win, dead = odds(A, B, k, c.odds_trials, kb, engage_m)
+	local tier = tier_of(victim)
+	local courage = olr_lives.courage(victim)
+	local need = c["odds_need_" .. tier] + courage
+	local noise = c["odds_noise_" .. tier]
+	local believed = win * 100 + ( math.random() * 2 - 1 ) * noise
+	local go = believed >= need
+	local kinds, order = {}, {}
+	for _, b in ipairs(B) do
+		if not kinds[b.sec] then table.insert(order, b.sec) end
+		kinds[b.sec] = ( kinds[b.sec] or 0 ) + 1
+	end
+	for n2, sec in ipairs(order) do order[n2] = kinds[sec] > 1 and ( sec .. " x" .. kinds[sec] ) or sec end
+	alog("odds %s: %s id=%d (%s) with %d friends vs %d mutants (%s): wins %.0f%% (%.1f of his side die), he reckons %.0f%%, needs %d%s: %s",
+		ctx, victim:name(), victim.id, tier, #A - 1, #B, table.concat(order, ", "), win * 100, dead, believed, need, courage ~= 0 and string.format(" (goal %+d)", courage) or "",
+		go and "fights" or "backs off")
+	if go then
+		note(win < 0.5 and "fights_long_odds" or "fights")
+	else
+		note("backed_off")
+		olr_digest.note("backoff", olr_smart_index.object_level(victim), { se = victim, pos = B[1].pos, sub = B[1].sec })
+		warn_pack(victim, B)
+	end
+	return go
+end
+
+-- [HE-PORT] 3.5: how likely a stalker with nothing in sight sells on the spot (preset key amk_trade_weighted)
+function trade_chance(victim, verbose)
+	local c = config()
+	if not olr_cfg.on("amk_trade_weighted") then return c.trade_chance end
+	local a = amk_offline_alife
+	local bag = 0
+	for _, rec in pairs(a.items[victim.id] or {}) do
+		local it = rec and alife():object(rec.id)
+		if it and it.parent_id == victim.id and it:name() == rec.name then bag = bag + a.get_item_cost(it) end
+	end
+	local t_bag = math.min(c.trade_bag_max, math.max(0, math.floor(( bag - c.trade_bag_floor ) / 500)))
+	local money = money_of(victim)
+	local t_money = money < c.trade_poor_money and c.trade_poor_bonus or money > c.trade_rich_money and -c.trade_rich_malus or 0
+	local tier = tier_of(victim)
+	local t_rank = tier == "novice" and c.trade_novice_bonus or tier == "master" and -c.trade_master_malus or 0
+	local t_goal = olr_lives.trade_bonus(victim)
+	local p = math.max(c.trade_min, math.min(c.trade_max, c.trade_base + t_bag + t_money + t_rank + t_goal))
+	if verbose then
+		log2("[olr_amk] trade %s: base %d + bag %d (%d worth) + money %d (%d) + rank %d (%s) + goal %d = %d%%", victim:name(), c.trade_base,
+			t_bag, bag, t_money, money, t_rank, tier, t_goal, p)
+	end
+	return p
+end
+
 -- a box is worth a look only with something in it (AMK lists every unowned box in 140 m, empty or not)
 local function full_boxes(vdata)
 	local out = {}
@@ -283,6 +523,13 @@ end
 local function found(vdata, map)
 	-- a level under its target keeps its mutants (hunts and lairs already work on it)
 	if olr_population.active() and olr_population.verdict(map, false) == "under" then vdata.monsters = {} end
+	-- [HE-PORT] quest mutants are the player's (olr_protected.is_protected_monster)
+	local mons = {}
+	for _, m in ipairs(vdata.monsters) do
+		local o = alife():object(m.id)
+		if not ( o and olr_protected.is_protected_monster(o) ) then table.insert(mons, m) end
+	end
+	vdata.monsters = mons
 	vdata.inv_boxes = full_boxes(vdata)
 	vdata.corpses.stalkers = with_loot(vdata.corpses.stalkers)
 	vdata.corpses.monsters = with_loot(vdata.corpses.monsters)
@@ -296,17 +543,22 @@ local function found(vdata, map)
 	}
 end
 
-local function roll(have)
+-- [HE-PORT] each weight times what his life goal makes of it (olr_lives.weight, 1 with life_goals off)
+local function roll(have, victim)
 	local c = config()
+	local w = {}
 	local sum = 0
 	for kind, n in pairs(have) do
-		if n > 0 then sum = sum + ( c["w_" .. kind] or 0 ) end
+		if n > 0 then
+			w[kind] = ( c["w_" .. kind] or 0 ) * olr_lives.weight(victim, kind)
+			sum = sum + w[kind]
+		end
 	end
 	if sum <= 0 then return nil end
 	local r = math.random() * sum
 	for kind, n in pairs(have) do
 		if n > 0 then
-			r = r - ( c["w_" .. kind] or 0 )
+			r = r - w[kind]
 			if r <= 0 then return kind end
 		end
 	end
@@ -345,7 +597,13 @@ local function earn(victim, vdata, map)
 		alog("%s on %s takes %s, nobody guarding it", victim:name(), map, sec)
 		return
 	end
-	local fight = { friends = vdata.friends, monsters = guards, damage_k = config().amk_damage_k }
+	local ka, kb = fight_k(config().amk_damage_k)
+	if not weigh_fight(victim, vdata.friends, guards, ka, "artefact", kb) then
+		note("artefacts_declined")
+		alog("%s on %s leaves %s alone: %d guards", victim:name(), map, sec, #guards)
+		return
+	end
+	local fight = { friends = vdata.friends, monsters = guards, damage_k = ka, monster_k = kb }
 	local list = fighters(victim, vdata)
 	local before = ranks_of(list)
 	local size_a, died_a, size_b, died_b = amk_offline_alife.on_monsters_found(victim, fight)
@@ -365,15 +623,25 @@ local function earn(victim, vdata, map)
 	end
 end
 
+local function trade_roll(victim)
+	local p = trade_chance(victim)
+	trade_rolls, trade_sum = trade_rolls + 1, trade_sum + p
+	return p
+end
+
 -- offline_alife, in place of the fixed order: true once the stalker did something (false: the call tries another)
 function act(victim, vdata, map)
 	local have = found(vdata, map)
-	local kind = roll(have)
+	local kind = roll(have, victim)
 	local a = amk_offline_alife
 	local list = fighters(victim, vdata)
 	local before = ( kind == "monsters" or kind == "enemies" ) and ranks_of(list) or nil
+	local ka, kb = fight_k(config().amk_damage_k)
+	if kind == "monsters" and not weigh_fight(victim, vdata.friends, vdata.monsters, ka, "amk", kb) then
+		return false
+	end
 	if kind == "monsters" then
-		vdata.damage_k = config().amk_damage_k
+		vdata.damage_k, vdata.monster_k = ka, kb
 		local size_a, died_a, size_b, died_b = a.on_monsters_found(victim, vdata)
 		alog("%s on %s vs %d mutants: %s of %s stalkers dead, %s of %s mutants dead", victim:name(), map, have.monsters,
 			tostring(died_a), tostring(size_a), tostring(died_b), tostring(size_b))
@@ -385,11 +653,13 @@ function act(victim, vdata, map)
 	elseif kind == "weapons" then
 		a.on_weapons_found(victim, vdata)
 	elseif kind == "boxes" then
+		local snap = olr_stash.before_loot(victim, vdata) -- [HE-PORT] the player's stashes
 		a.on_inv_boxes_found(victim, vdata)
+		olr_stash.after_loot(victim, snap)
 	elseif kind == "artefacts" then
 		earn(victim, vdata, map)
 		return true
-	elseif a.items[victim.id] and #a.items[victim.id] > 0 and math.random(100) <= config().trade_chance then
+	elseif a.items[victim.id] and #a.items[victim.id] > 0 and math.random(100) <= trade_roll(victim) then
 		a.process_trade(victim, vdata)
 		kind = "trade"
 	else
@@ -424,6 +694,122 @@ function report()
 	for k, n in pairs(done) do table.insert(list, k .. "=" .. n) end
 	table.sort(list)
 	log2("[olr_amk] this session: %s", table.concat(list, " "))
+	log2("[olr_amk] odds=%s (need %d/%d/%d/%d%%, noise %d/%d/%d/%d, cornered %d m) trade_weighted=%s: %d rolls, mean %.1f%%",
+		tostring(olr_cfg.on("amk_odds")), c.odds_need_novice, c.odds_need_experienced, c.odds_need_veteran, c.odds_need_master,
+		c.odds_noise_novice, c.odds_noise_experienced, c.odds_noise_veteran, c.odds_noise_master, c.odds_cornered_m,
+		tostring(olr_cfg.on("amk_trade_weighted")), trade_rolls, trade_rolls > 0 and trade_sum / trade_rolls or 0)
+end
+
+local function find_listed(name)
+	for m, t in pairs(amk_offline_alife.off_npcs) do
+		for _, st in ipairs(t.stalkers or {}) do
+			if st.name == name or st.id == tonumber(name) then return alife():object(st.id), m end
+		end
+	end
+	return nil, nil
+end
+
+-- the odds he would see now against what is in his sight (on any level, the player's too)
+function odds_test(name)
+	local se, map = find_listed(name)
+	if not se then
+		log2("[olr_amk] odds_test %s: not on any AMK stalker list", tostring(name))
+		return
+	end
+	local vdata = amk_offline_alife.collect_info(se, map)
+	log2("[olr_amk] odds_test %s (%s, %s, rank %d) on %s: %d mutants, %d friends in sight", se:name(), se:community(), tier_of(se), se:rank(), map,
+		#vdata.monsters, #vdata.friends)
+	for _, m in ipairs(vdata.monsters) do
+		local o = alife():object(m.id)
+		local pr = o and amk_offline_alife.get_monster_params(o)
+		if pr then
+			log2("[olr_amk]   %s %.0f m: attack %.2f speed %.1f reach %.1f immunity %.2f health %.2f", o:section_name(), o.position:distance_to(se.position),
+				pr.attack, pr.speed, pr.dist, pr.immunity, o:health())
+		end
+	end
+	local wpn = amk_offline_alife.get_npc_weapon(se)
+	log2("[olr_amk]   his weapon %s, firepower %d", wpn and wpn:section_name() or "none", amk_offline_alife.get_weapon_firepower(wpn))
+	if #vdata.monsters > 0 then
+		local old = olr_cfg.on("amk_odds")
+		local ka, kb = fight_k(config().amk_damage_k)
+		log2("[olr_amk]   decision: %s%s", tostring(weigh_fight(se, vdata.friends, vdata.monsters, ka, "test", kb)),
+			old and "" or " (amk_odds is off: he would fight anyway)")
+	end
+end
+
+-- section-based mirror of load_weapon_params / get_monster_params, for the table only
+local function wpn_fp_of(sec)
+	local ini = system_ini()
+	local p = ini:line_exist(sec, "ef_weapon_type") and ini:r_float(sec, "ef_weapon_type") or 1
+	local p2 = ini:line_exist(sec, "ef_main_weapon_type") and ini:r_float(sec, "ef_main_weapon_type") or 0
+	if p > 1 and p2 > 0 then p = p + p2 end
+	return math.ceil(p * 1000) - 5000
+end
+
+local function mon_of(sec)
+	local ini = system_ini()
+	local function num(s2, k, d) return ( s2 ~= "" and ini:section_exist(s2) and ini:line_exist(s2, k) ) and ini:r_float(s2, k) or d end
+	local imm = ini:line_exist(sec, "immunities_sect") and ini:r_string(sec, "immunities_sect") or ""
+	local att = ini:line_exist(sec, "attack_params") and ini:r_string(sec, "attack_params") or ""
+	local attack = 0
+	if att ~= "" and ini:section_exist(att) then
+		for n = 0, ini:line_count(att) - 1 do
+			local _, _, v = ini:r_line(att, n, "", "")
+			local parts = {}
+			for x in string.gmatch(v or "", "[^,]+") do table.insert(parts, x) end
+			local a2 = tonumber(parts[2] or "")
+			if a2 and a2 > attack then attack = a2 end
+		end
+	end
+	return { speed = num(sec, "MaxSpeed", 5), adist = num(sec, "MaxAttackDist", 3), imm = num(imm, "fire_wound_immunity", 1), attack = attack }
+end
+
+function odds_table(guns, mutants, k, kb)
+	local c = config()
+	local ka0, kb0 = fight_k(c.amk_damage_k)
+	k, kb = k or ka0, kb or kb0
+	guns = guns or { "wpn_pm", "wpn_toz34", "wpn_ak74" }
+	mutants = mutants or { "dog_weak", "pseudodog_weak", "boar_weak", "flesh_weak", "snork_weak", "bloodsucker_weak" }
+	local ranks_of_tier = { novice = 100, experienced = 400, veteran = 800, master = 1200 }
+	local base = db.actor:position()
+	log2("[olr_amk] odds_table: a lone stalker, mutants at 40 m, %d trials, stalker damage %.2f, mutant damage %.2f; win %% per count 1,3,6,10,15",
+		c.odds_trials, k, kb)
+	for _, sec in ipairs(mutants) do
+		if system_ini():section_exist(sec) then
+			local m = mon_of(sec)
+			for _, gun in ipairs(guns) do
+				if system_ini():section_exist(gun) then
+					local fp = wpn_fp_of(gun)
+					local row = {}
+					for _, tier in ipairs({ "novice", "experienced", "veteran", "master" }) do
+						local cells = {}
+						for _, count in ipairs({ 1, 3, 6, 10, 15 }) do
+							local A = { { i = 1, lead = true, fp = fp, rank = ranks_of_tier[tier], h = 1, pos = base } }
+							local B = {}
+							for n = 1, count do
+								local a = n * 2 * math.pi / count
+								table.insert(B, { i = 100 + n, fp = math.floor(m.attack * ODDS_BASE_FP), speed = m.speed, adist = m.adist, imm = m.imm, rank = 0, h = 1, k = k_of_section(sec),
+									pos = vector():set(base.x + 40 * math.cos(a), base.y, base.z + 40 * math.sin(a)) })
+							end
+							local win = odds(A, B, k, c.odds_trials, kb)
+							table.insert(cells, string.format("%3.0f", win * 100))
+						end
+						table.insert(row, tier .. " " .. table.concat(cells, "/"))
+					end
+					log2("[olr_amk]   %s vs %s (fp %d; att %.2f x%.2f sp %.1f imm %.2f): %s", gun, sec, fp, m.attack, k_of_section(sec), m.speed, m.imm, table.concat(row, "  "))
+				end
+			end
+		end
+	end
+end
+
+function trade_test(name)
+	local se = find_listed(name)
+	if not se then
+		log2("[olr_amk] trade_test %s: not on any AMK stalker list", tostring(name))
+		return
+	end
+	trade_chance(se, true)
 end
 
 -- the loose artefacts AMK has on its list for a level (lists are rebuilt on every level load) and the nearest offline
@@ -520,6 +906,76 @@ local function on_the_move(se, sim)
 	return not smart or smart.position:distance_to(se.position) >= config().road_far
 end
 
+-- olr_offline_hunts: a stalker away from his smart (or with none) hunts; one at it only defends his camp
+-- [HE-PORT] docs/ALIFE_NEXT_DESIGN.md 8.29 D1: AMK puts everyone friendly to the scanned man on his side and only his
+-- direct enemies on the other, so a loner friendly to both Duty and Freedom fought for whichever of them was scanned,
+-- even against his own campmate. Now a friend joins only if he is hostile to one of the enemies himself, and the
+-- enemies' own friends nearby who are hostile to the scanned man join them (at most loyal_max).
+function loyal_sides(victim, vdata)
+	if not active() or not vdata.enemies or #vdata.enemies == 0 then return end
+	local a = amk_offline_alife
+	local sim = alife()
+	local enemies, taken = {}, { [victim.id] = true }
+	for _, e in ipairs(vdata.enemies) do
+		local o = sim:object(e.id)
+		if o and o:name() == e.name then
+			table.insert(enemies, o)
+			taken[o.id] = true
+		end
+	end
+	if #enemies == 0 then return end
+	local kept, out = {}, 0
+	for _, f in ipairs(vdata.friends or {}) do
+		local o = sim:object(f.id)
+		local fights = false
+		if o and o:name() == f.name then
+			for _, e in ipairs(enemies) do
+				if a.comm_hostile(o:community(), e:community()) then
+					fights = true
+					break
+				end
+			end
+		end
+		if fights then
+			table.insert(kept, f)
+			taken[o.id] = true
+		else
+			out = out + 1
+		end
+	end
+	vdata.friends = kept
+	local joined = 0
+	local _, r_friend = radii()
+	if not r_friend or r_friend <= 0 then r_friend = config().loyal_radius end
+	local lvl = olr_smart_index.object_level(enemies[1])
+	local list = lvl and a.off_npcs[lvl] and a.off_npcs[lvl].stalkers or {}
+	for _, rec in pairs(list) do
+		if joined >= config().loyal_max then break end
+		local o = rec and not taken[rec.id] and sim:object(rec.id)
+		-- [HE-PORT] review 8.30 R1: offline, really on this level, not a camp guard at his post, not in a peaceful smart
+		if o and o:name() == rec.name and IsStalker(o) and o:alive() and usable(o) and not o.online
+			and olr_smart_index.object_level(o) == lvl and not at_post(o, sim) and not a.npc_smart_is_peaceful(o)
+			and a.comm_hostile(o:community(), victim:community())
+		then
+			for _, e in ipairs(enemies) do
+				if o.position:distance_to(e.position) <= r_friend and a.comm_friends(o:community(), e:community()) then
+					table.insert(vdata.enemies, { id = o.id, name = o:name() })
+					taken[o.id] = true
+					joined = joined + 1
+					break
+				end
+			end
+		end
+	end
+	if out > 0 or joined > 0 then
+		alog("fight sides for %s (%s): %d of his friends sit it out, %d friends of the enemy join them", victim:name(), victim:community(), out, joined)
+	end
+end
+
+function is_on_the_move(se)
+	return on_the_move(se, alife())
+end
+
 -- watch mode: the next road meeting is not settled offline but held, so the player can go and see it online
 local watch = false
 local held = nil
@@ -554,12 +1010,20 @@ function go_to(who)
 		return
 	end
 	local map = olr_smart_index.object_level(se)
-	local pos = vector():set(se.position.x + 20, se.position.y, se.position.z + 20)
+	if IsStalker(se) and olr_census.is_dormant_creature(se, true) then
+		alog("go_to: %s is dormant (kept out of the world until his scene), not going", se:name())
+		return
+	end
 	alog("go_to: %s on %s", se:name(), tostring(map))
+	go_spot(map, se.m_level_vertex_id, se.m_game_vertex_id, se.position)
+end
+
+-- to a spot: on this level the nav vertex itself (an object's own position can be off the mesh), else a level change
+function go_spot(map, lv, gv, pos)
 	if map == level.name() then
-		db.actor:set_actor_position(pos)
+		db.actor:set_actor_position(lv and lv < 4294967295 and level.vertex_position(lv) or pos)
 	else
-		new_compass_tp.create_level_changer(se.m_level_vertex_id, se.m_game_vertex_id, pos)
+		new_compass_tp.create_level_changer(lv, gv, pos)
 	end
 end
 

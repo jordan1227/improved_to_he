@@ -1,0 +1,355 @@
+-- [HE-PORT] Morning digest, docs/ALIFE_NEXT_DESIGN.md 6 item 1 and 8.6 (preset key digest). Once a game morning a camp
+-- radio man sends one PDA message that folds the day before into two or three vague lines. The other OLR modules call
+-- note(kind, level, subs) where they already log an event; this module keeps the day ledger in the save and, at
+-- digest_hour, picks the kinds with the highest priority (plus a little jitter, each with its own chance) among the
+-- player's region levels (olr_smart_index.region_levels) and sends their lines as one tip. Config [digest].
+-- Log: [olr_digest].
+-- kinds: exit, rookie, robbery, revenge, backoff, hunt, lair, alpha, death, carrion
+-- text:  olr_digest_<kind>_N (hunt and lair: olr_digest_<kind>_good_N / _bad_N first; alpha: olr_digest_alpha_<kind>_N
+--        first), optional olr_digest_open_N, olr_digest_quiet_N, sender olr_digest_sender_<level> / olr_digest_sender.
+-- fl olr_digest.report()      the last digest's ledger, today's ledger, and what would be said now
+-- fl olr_digest.force()       send a digest now from today's ledger (no chance rolls; the ledger stays)
+-- fl olr_digest.note_test()   fill today's ledger with one sample of every kind on the player's region levels
+-- fl olr_digest.roll()        what update() does at the digest hour: send and start a new day
+
+local INI_PATH = "misc\\olr_alife.ltx"
+local KEY = "nlc.olr_digest"
+local KINDS = { "exit", "rookie", "robbery", "revenge", "backoff", "hunt", "lair", "alpha", "death", "carrion" }
+local SPLIT = { hunt = true, lair = true } -- good_ / bad_ families first
+
+local cfg = nil
+local st, st_owner = nil, nil
+
+local function dlog(fmt, ...)
+	log2("[olr_digest] %s " .. fmt, olr_cfg.stamp(), ...)
+end
+
+local function config()
+	if cfg then return cfg end
+	cfg = { prio = {}, chance = {} }
+	local ini = ini_file(INI_PATH)
+	if not ini:section_exist("digest") then abort("olr_digest: no [digest] in %s", INI_PATH) end
+	for i = 0, ini:line_count("digest") - 1 do
+		local _, k, v = ini:r_line("digest", i, "", "")
+		local p, ch = string.match(tostring(v), "^%s*(%d+)%s*,%s*(%d+)%s*$")
+		if string.sub(k, 1, 5) == "kind_" and p then
+			cfg.prio[string.sub(k, 6)] = tonumber(p)
+			cfg.chance[string.sub(k, 6)] = tonumber(ch)
+		else
+			cfg[k] = tonumber(v) or v
+		end
+	end
+	for _, k in ipairs({ "digest_hour", "digest_late_h", "digest_max_lines", "digest_jitter", "digest_quiet_chance", "digest_open_chance", "digest_fuzz_min" }) do
+		if cfg[k] == nil then abort("olr_digest: no key '%s' in [digest]", k) end
+	end
+	for _, kind in ipairs(KINDS) do
+		if not cfg.prio[kind] then abort("olr_digest: no key 'kind_%s' (priority,chance) in [digest]", kind) end
+	end
+	return cfg
+end
+
+function active()
+	return db.actor ~= nil and olr_cfg.on("digest")
+end
+
+-- one table per game load (xvars hands out a copy on every read)
+local function state()
+	if st and st_owner == db.actor then return st end
+	st = olr_store.get(KEY) or {}
+	st_owner = db.actor
+	st.cur = st.cur or {}
+	st.prev = st.prev or {}
+	return st
+end
+
+local function save()
+	olr_store.put(KEY, st)
+end
+
+-- the game calendar day (changes at midnight) and the hour
+local function day_now()
+	local h, m = level.get_time_hours(), level.get_time_minutes()
+	local start = math.floor(( timers.Get_Game_Seconds() - h * 3600 - m * 60 ) / 3600 + 0.5)
+	return math.floor(start / 24), h
+end
+
+-- ---------------------------------------------------------------------------
+-- the ledger
+-- ---------------------------------------------------------------------------
+-- subs: se (the man or creature it is about: name and position), name, pos (vector), bad (true: it went badly), sub
+function note(kind, lvl, subs)
+	if not ( lvl and active() ) then return end
+	subs = subs or {}
+	local s = state()
+	local by = s.cur[kind] or {}
+	s.cur[kind] = by
+	local e = by[lvl] or { n = 0, b = 0 }
+	by[lvl] = e
+	e.n = e.n + 1
+	if subs.bad then e.b = e.b + 1 end
+	e.t = timers.Get_Game_Seconds()
+	local se = subs.se
+	local name = subs.name or ( se and olr_trader_runs.display_name(se) )
+	if name then e.nm = name end
+	local pos = subs.pos or ( se and se.position )
+	if pos then e.x, e.y, e.z = math.floor(pos.x), math.floor(pos.y), math.floor(pos.z) end
+	if subs.sub then e.sub = subs.sub end
+	save()
+	dlog("note %s on %s%s%s (%d today there)", kind, lvl, name and ( ": " .. name ) or "", subs.bad and ", bad" or "", e.n)
+end
+
+-- news_main.on_offline_death: a stalker died where the player is not
+function on_offline_death(se)
+	if not ( se and IsStalker(se) and se.id ~= 0 and active() ) then return end
+	note("death", olr_smart_index.object_level(se), { se = se })
+end
+
+-- ---------------------------------------------------------------------------
+-- composing
+-- ---------------------------------------------------------------------------
+local function has_text(key)
+	return game.translate_string(key) ~= key
+end
+
+local function gather(ledger, kind, region)
+	local by = ledger[kind]
+	if not by then return nil end
+	local total, bad, best, best_lvl = 0, 0, nil, nil
+	for lvl, e in pairs(by) do
+		if region[lvl] then
+			total = total + e.n
+			bad = bad + ( e.b or 0 )
+			if not best or e.n > best.n or ( e.n == best.n and ( e.t or 0 ) > ( best.t or 0 ) ) then best, best_lvl = e, lvl end
+		end
+	end
+	if total == 0 then return nil end
+	return { kind = kind, n = total, bad = bad, lvl = best_lvl, e = best }
+end
+
+-- the key families to try for a kind, most specific first
+local function families(g)
+	local base = "olr_digest_" .. g.kind .. "_"
+	-- [HE-PORT] truth audit C7: the good_/bad_ lair lines say "cleared"; a lair with mutants left gets the plain ones
+	if g.kind == "lair" and g.e.sub == "open" then return { base } end
+	if SPLIT[g.kind] then return { base .. ( g.bad > 0 and "bad_" or "good_" ), base } end
+	if g.kind == "alpha" and g.e.sub then return { base .. g.e.sub .. "_", base } end
+	return { base }
+end
+
+local function fill(key, g)
+	local text = game.translate_string(key)
+	local e = g and g.e
+	local pos = e and e.x and vector():set(e.x, e.y, e.z) or nil
+	local all = {
+		where = g and news_main.where_text(g.lvl, pos) or "",
+		name = e and e.nm or "",
+		n = g and tostring(g.n) or "",
+	}
+	for k, v in pairs(all) do text = string.gsub(text, "%$" .. k, function() return v end) end
+	return text
+end
+
+-- returns the lines (each { kind, key, text }) and why each kind was or was not used
+local function compose(ledger, forced)
+	local c = config()
+	local region = olr_smart_index.region_levels() or {}
+	local cands, why = {}, {}
+	for _, kind in ipairs(KINDS) do
+		local g = gather(ledger, kind, region)
+		if not g then
+			-- nothing in the region
+		elseif not forced and math.random(100) > c.chance[kind] then
+			table.insert(why, kind .. ": lost the roll")
+		else
+			g.score = c.prio[kind] + math.random(0, c.digest_jitter)
+			table.insert(cands, g)
+		end
+	end
+	table.sort(cands, function(a, b) return a.score > b.score end)
+	local lines = {}
+	for _, g in ipairs(cands) do
+		if #lines >= c.digest_max_lines then
+			table.insert(why, g.kind .. ": no room")
+		else
+			local key, tried = nil, families(g)
+			for _, prefix in ipairs(tried) do
+				key = olr_trader_runs.pick_line(prefix)
+				if key then break end
+			end
+			if key then
+				table.insert(lines, { kind = g.kind, key = key, text = fill(key, g) })
+				table.insert(why, string.format("%s: %s (%d, %d bad, most on %s)", g.kind, key, g.n, g.bad, g.lvl))
+			else
+				dlog("no text for %s", tried[1])
+				table.insert(why, g.kind .. ": no text")
+			end
+		end
+	end
+	if #lines == 0 and ( forced or math.random(100) <= c.digest_quiet_chance ) then
+		local key = olr_trader_runs.pick_line("olr_digest_quiet_")
+		if key then
+			table.insert(lines, { kind = "quiet", key = key, text = fill(key, nil) })
+		else
+			table.insert(why, "quiet: no text")
+		end
+	end
+	return lines, why
+end
+
+local function sender()
+	-- digest_senders: string ids of the radio voices, one picked at random each morning (the Barman, Docent)
+	local list = {}
+	for id in string.gmatch(tostring(config().digest_senders or ""), "[%w_]+") do
+		if has_text(id) then table.insert(list, id) end
+	end
+	if #list > 0 then return game.translate_string(list[math.random(#list)]) end
+	local lvl = level.name()
+	if has_text("olr_digest_sender_" .. lvl) then return game.translate_string("olr_digest_sender_" .. lvl) end
+	if has_text("olr_digest_sender") then return game.translate_string("olr_digest_sender") end
+	return olr_trader_runs.other_name()
+end
+
+local function send(ledger, forced)
+	if not he_pda_model.get_pda() then
+		dlog("no PDA on the player: no digest")
+		return false
+	end
+	local lines, why = compose(ledger, forced)
+	dlog("compose%s: %s", forced and " (forced)" or "", #why > 0 and table.concat(why, "; ") or "nothing in the region")
+	local real = 0
+	for _, l in ipairs(lines) do if l.kind ~= "quiet" then real = real + 1 end end
+	if #lines == 0 then
+		dlog("nothing to say this morning")
+		return false
+	end
+	local texts = {}
+	if real > 0 and ( forced or math.random(100) <= config().digest_open_chance ) then
+		local key = olr_trader_runs.pick_line("olr_digest_open_")
+		if key then table.insert(texts, fill(key, nil)) end
+	end
+	for _, l in ipairs(lines) do table.insert(texts, l.text) end
+	local who = sender()
+	sak.send_tip(table.concat(texts, "\\n"), who, 0, 15, "default", "pda_news", "gray")
+	local keys = {}
+	for _, l in ipairs(lines) do table.insert(keys, l.key) end
+	dlog("sent by %s: %s", tostring(who), table.concat(keys, ", "))
+	return true
+end
+
+-- the morning: send from the day's ledger, keep it as the last one, start a new day
+local function roll_day(s, day, h, forced)
+	local c = config()
+	if forced or h < c.digest_hour + c.digest_late_h then
+		send(s.cur, false)
+	else
+		dlog("day %d: morning missed (now %02d h, digest_late_h %d), the ledger rolls unsaid", day, h, c.digest_late_h)
+	end
+	s.prev = s.cur
+	s.cur = {}
+	s.sent = day
+	save()
+end
+
+function update()
+	if not active() or olr_cfg.sleep_paused() then return end
+	local c = config()
+	local s = state()
+	local day, h = day_now()
+	if s.sent == nil then
+		-- first run on this save: today's morning counts only if it is still ahead
+		s.sent = h >= c.digest_hour and day or day - 1
+		save()
+		dlog("first run: day %d, next digest %s", day, s.sent == day and "tomorrow" or "this morning")
+		return
+	end
+	if s.sent >= day then return end
+	-- the radio man is not a clock: each morning a time within digest_fuzz_min minutes of digest_hour
+	if s.at_day ~= day then
+		s.at_day, s.at = day, c.digest_hour * 60 + math.random(-c.digest_fuzz_min, c.digest_fuzz_min)
+		save()
+	end
+	if h * 60 + level.get_time_minutes() < s.at then return end
+	roll_day(s, day, h, false)
+end
+
+-- ---------------------------------------------------------------------------
+-- helpers
+-- ---------------------------------------------------------------------------
+local function dump(title, ledger)
+	local any = false
+	for _, kind in ipairs(KINDS) do
+		for lvl, e in pairs(ledger[kind] or {}) do
+			any = true
+			dlog("  %s %s on %s: %d (%d bad)%s%s", title, kind, lvl, e.n, e.b or 0, e.nm and ( ", last " .. e.nm ) or "",
+				e.sub and ( ", " .. e.sub ) or "")
+		end
+	end
+	if not any then dlog("  %s: empty", title) end
+end
+
+function report()
+	if not db.actor then return end
+	local c = config()
+	local s = state()
+	local day, h = day_now()
+	local region = olr_smart_index.region_levels() or {}
+	local rl = {}
+	for lvl in pairs(region) do table.insert(rl, lvl) end
+	dlog("on=%s day %d %02d h, last digest day %s, next at %02d h (late after %02d h); PDA %s; region %s", tostring(active()), day, h,
+		tostring(s.sent), c.digest_hour, c.digest_hour + c.digest_late_h, tostring(he_pda_model.get_pda() ~= nil), table.concat(rl, ","))
+	dump("last", s.prev)
+	dump("today", s.cur)
+	local lines, why = compose(s.cur, false)
+	dlog("would say now (one roll): %s", #lines > 0 and "" or "nothing")
+	for _, l in ipairs(lines) do dlog("  %s", l.text) end
+	if #why > 0 then dlog("  why: %s", table.concat(why, "; ")) end
+	local counts = {}
+	for _, kind in ipairs(KINDS) do
+		local p = "olr_digest_" .. kind .. "_"
+		local n = olr_trader_runs.line_total(p)
+		if SPLIT[kind] then
+			n = string.format("%d+%d/%d", n, olr_trader_runs.line_total(p .. "good_"), olr_trader_runs.line_total(p .. "bad_"))
+		end
+		table.insert(counts, kind .. "=" .. tostring(n))
+	end
+	dlog("lines: %s open=%d quiet=%d sender=%s", table.concat(counts, " "), olr_trader_runs.line_total("olr_digest_open_"),
+		olr_trader_runs.line_total("olr_digest_quiet_"), tostring(has_text("olr_digest_sender")))
+end
+
+function force()
+	if not db.actor then return end
+	if not olr_cfg.on("digest") then dlog("force: digest is off in this preset") end
+	send(state().cur, true)
+end
+
+function roll()
+	if not db.actor then return end
+	local day, h = day_now()
+	roll_day(state(), day, h, true)
+end
+
+function note_test()
+	if not db.actor then return end
+	if not olr_cfg.on("digest") then
+		dlog("note_test: digest is off in this preset")
+		return
+	end
+	local here = level.name()
+	local pos = db.actor:position()
+	local other = here
+	for lvl in pairs(olr_smart_index.region_levels() or {}) do
+		if lvl ~= here then other = lvl break end
+	end
+	note("exit", other, { name = "Test Leaver" })
+	note("rookie", other, {})
+	note("robbery", here, { name = "Test Victim", pos = pos })
+	note("revenge", here, { name = "Test Avenger", pos = pos })
+	note("backoff", here, { name = "Test Coward", pos = pos })
+	note("hunt", other, { name = "Test Hunter", bad = true })
+	note("lair", here, { name = "Test Camper", pos = pos })
+	note("alpha", here, { name = "Test Alpha", pos = pos, sub = "boar" })
+	note("death", other, { name = "Test Corpse" })
+	note("death", other, { name = "Test Corpse 2" })
+	note("carrion", here, { pos = pos })
+	dlog("note_test: sample ledger on %s and %s; fl olr_digest.report() or force()", here, other)
+end

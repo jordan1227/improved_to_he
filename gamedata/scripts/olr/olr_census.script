@@ -371,6 +371,263 @@ function fauna_roll(name, count)
 	end
 end
 
+-- [HE-PORT] debug marks on the PDA map of this level (or the level named):
+-- fl olr_census.mark("stalker")   a community; "humans", "monsters", "trips" (out on a day trip), "watch" (road watch)
+-- fl olr_census.mark("stalker", "all")  the same on every level (the PDA's global map shows the other levels)
+-- fl olr_census.unmark()          removes them
+-- green: loners, novices, ecologs; blue: Duty, Freedom; red: everyone else; yellow flag: mutants. The hint says who.
+local marked = {}
+local SPOT = { stalker = "green_location", green = "green_location", ecolog = "green_location", dolg = "blue_location",
+	freedom = "blue_location" }
+
+function unmark()
+	for id, spot in pairs(marked) do level.map_remove_object_spot(id, spot) end
+	marked = {}
+end
+
+function mark(what, lvl)
+	unmark()
+	lvl = lvl or level.name()
+	what = what or "humans"
+	local only = what == "trips" and olr_daytrips.out_ids() or what == "watch" and olr_roadwatch.watcher_ids() or nil
+	local n = 0
+	for _, se in alife():objects() do
+		local human = IsStalker(se)
+		local monster = not human and IsMonster(se)
+		local here = olr_smart_index.object_level(se)
+		if ( human or monster ) and se.id ~= 0 and se:alive() and ( lvl == "all" or here == lvl ) then
+			local comm = human and se:community() or nil
+			local hit
+			if only then hit = only[se.id] == true
+			elseif what == "humans" then hit = human
+			elseif what == "monsters" then hit = monster
+			else hit = comm == what end
+			if hit then
+				local spot = monster and "yellow_flag_location" or SPOT[comm] or "red_location"
+				local sid = se:smart_terrain_id()
+				local smart = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
+				local hint = string.format("%s id=%d %s, smart %s%s%s", se:name(), se.id, comm or se:section_name(),
+					smart and smart:name() or "none", se.online and ", online" or "", lvl == "all" and ( ", " .. tostring(here) ) or "")
+				level.map_add_object_spot_ser(se.id, spot, hint)
+				marked[se.id] = spot
+				n = n + 1
+			end
+		end
+	end
+	log2("[olr_census] mark %s on %s: %d on the PDA map (fl olr_census.unmark() removes them)", what, lvl, n)
+end
+
+-- [HE-PORT] where the Lua heap goes: every loaded script module's tables, by the number of entries reached under each
+-- top-level field (shared tables are counted once, at the first field that reaches them). Heavy: a debug tool only.
+-- fl olr_census.heap()      the 30 biggest module fields and the heap size
+-- fl olr_census.heap(60)    the 60 biggest
+heap_prev, heap_prev_kb, heap_shapes = nil, 0, nil
+
+function heap(top)
+	top = tonumber(top) or 30
+	collectgarbage("collect")
+	local kb = collectgarbage("count")
+	local seen = {}
+	local bytes = 0
+	local function walk(t, depth)
+		if seen[t] then return 0 end
+		seen[t] = true
+		local n = 0
+		for k, v in pairs(t) do
+			n = n + 1
+			if type(v) == "string" then bytes = bytes + #v end
+			if type(k) == "string" then bytes = bytes + #k end
+			if type(v) == "table" and depth < 12 then n = n + walk(v, depth + 1) end
+			if type(k) == "table" and depth < 12 then n = n + walk(k, depth + 1) end
+		end
+		return n
+	end
+	local function measure(v)
+		bytes = 0
+		local n = walk(v, 1)
+		return n, bytes
+	end
+	-- the global namespace and the module tables themselves are not counted as fields
+	seen[_G] = true
+	local mods = {}
+	for name, m in pairs(_G) do
+		if type(m) == "table" and m ~= _G and not seen[m] then table.insert(mods, { name = name, m = m }) end
+	end
+	for _, rec in ipairs(mods) do seen[rec.m] = true end
+	local rows = {}
+	local getup = debug and debug.getupvalue
+	for _, rec in ipairs(mods) do
+		for k, v in pairs(rec.m) do
+			if type(v) == "table" then
+				local n, sb = measure(v)
+				if n >= 200 or sb >= 100000 then table.insert(rows, { key = rec.name .. "." .. tostring(k), n = n, b = sb }) end
+			elseif type(v) == "function" and getup then
+				-- file-local tables (local cache = {}) are reached through the upvalues of the module's functions
+				local i = 1
+				while true do
+					local uname, uv = getup(v, i)
+					if not uname then break end
+					if type(uv) == "table" then
+						local n, sb = measure(uv)
+						if n >= 200 or sb >= 100000 then table.insert(rows, { key = rec.name .. ".local " .. uname, n = n, b = sb }) end
+					end
+					i = i + 1
+				end
+			end
+		end
+	end
+	-- what only the registry holds (luabind objects, engine callbacks, binders): walked after the modules, so what a
+	-- module already reached is not counted again. Kind of each registry entry: its key type and value type.
+	local reg = debug and debug.getregistry and debug.getregistry()
+	if reg then
+		local kinds = {}
+		local cnt = 0
+		for k, v in pairs(reg) do
+			cnt = cnt + 1
+			local kind = "reg " .. type(k) .. "->" .. type(v)
+			if type(v) == "table" then
+				local n2, sb = measure(v)
+				local r = kinds[kind] or { n = 0, b = 0, c = 0 }
+				r.n, r.b, r.c = r.n + n2, r.b + sb, r.c + 1
+				kinds[kind] = r
+			else
+				local r = kinds[kind] or { n = 0, b = 0, c = 0 }
+				r.c = r.c + 1
+				kinds[kind] = r
+			end
+		end
+		for kind, r in pairs(kinds) do
+			table.insert(rows, { key = string.format("%s (%d registry slots)", kind, r.c), n = r.n + r.c, b = r.b })
+		end
+		log2("[olr_census] registry: %d slots", cnt)
+		-- what the registry's tables are: by the string keys they hold (a class instance shows its fields), with
+		-- the 12 most common shapes and their growth since the last call
+		local shapes = {}
+		for k, v in pairs(reg) do
+			if type(k) == "number" and type(v) == "table" then
+				local keys = {}
+				for kk in pairs(v) do
+					if type(kk) == "string" then table.insert(keys, kk) end
+					if #keys >= 40 then break end
+				end
+				table.sort(keys)
+				local sig = table.concat(keys, ",", 1, math.min(6, #keys))
+				if sig == "" then sig = "(no string keys)" end
+				shapes[sig] = ( shapes[sig] or 0 ) + 1
+			end
+		end
+		local prev_shapes = heap_shapes or {}
+		local list = {}
+		for sig, c in pairs(shapes) do table.insert(list, { sig = sig, c = c, d = c - ( prev_shapes[sig] or 0 ) }) end
+		table.sort(list, function(a, x) return a.d > x.d end)
+		for i = 1, math.min(12, #list) do
+			log2("[olr_census]   shape %6d %+6d  %s", list[i].c, heap_shapes and list[i].d or 0, string.sub(list[i].sig, 1, 150))
+		end
+		heap_shapes = shapes
+	end
+	-- growth since the previous call: the first call is the baseline (sorted by size), later ones sort by growth
+	local first = heap_prev == nil
+	local prev = heap_prev or {}
+	local snap = {}
+	for _, r in ipairs(rows) do
+		local id = string.gsub(r.key, " %(%d+ registry slots%)", "")
+		snap[id] = r.n
+		r.d = r.n - ( prev[id] or 0 )
+	end
+	table.sort(rows, function(a, b)
+		if first then return a.n > b.n end
+		return a.d > b.d
+	end)
+	log2("[olr_census] heap: %.0f MB after a full collection (%s); %d module fields with 200+ entries or 100 KB of strings:",
+		kb / 1024, first and "baseline" or string.format("%+.0f MB since the last heap()", ( kb - heap_prev_kb ) / 1024), #rows)
+	heap_prev, heap_prev_kb = snap, kb
+	log2("[olr_census]   %9s %9s %8s  %s", "entries", "growth", "str KB", "field")
+	for i = 1, math.min(top, #rows) do
+		local r = rows[i]
+		log2("[olr_census]   %9d %+9d %8.0f  %s", r.n, first and 0 or r.d, r.b / 1024, r.key)
+	end
+end
+
+-- [HE-PORT] fl olr_census.signals(): how many slots each ogse_signals signal holds, normal and scheduled, by the script
+-- that subscribed them (quick timers record their creator in script_name). Subscribe and unsubscribe scan a queue
+-- linearly, so a queue of tens of thousands makes every timer start and stop slow.
+function signals(top)
+	top = tonumber(top) or 20
+	local mgr = ogse_signals.get_mgr()
+	local rows = {}
+	local total = 0
+	for signal, t in pairs(mgr.signals or {}) do
+		for _, qn in ipairs({ "normal", "scheduled" }) do
+			local by = {}
+			for _, slot in ipairs(t[qn] or {}) do
+				local src = tostring(slot.script_name or "?")
+				src = string.match(src, "([^/" .. string.char(92) .. "]+)$") or src
+				if slot.unsubscribed then src = src .. " (unsubscribed)" end
+				by[src] = ( by[src] or 0 ) + 1
+				total = total + 1
+			end
+			for src, c in pairs(by) do table.insert(rows, { key = signal .. " " .. qn .. " " .. src, c = c }) end
+		end
+	end
+	table.sort(rows, function(a, x) return a.c > x.c end)
+	log2("[olr_census] signals: %d slots in all; the biggest groups:", total)
+	for i = 1, math.min(top, #rows) do log2("[olr_census]   %7d  %s", rows[i].c, rows[i].key) end
+end
+
+-- [HE-PORT] fl olr_census.timers(): the quick timers (dsh.timeout and the like) the registry still holds, by the script
+-- that created them, and whether they are finished; then memory after one and after a second full collection (a
+-- luabind object's table is freed only one collection after its finalizer released it)
+function timers(top)
+	top = tonumber(top) or 20
+	local reg = debug and debug.getregistry and debug.getregistry()
+	if not reg then
+		log2("[olr_census] timers: no debug.getregistry")
+		return
+	end
+	collectgarbage("collect")
+	local kb1 = collectgarbage("count")
+	local by, total = {}, 0
+	for k, v in pairs(reg) do
+		if type(k) == "number" and type(v) == "table" and v.start_time ~= nil and v.sm ~= nil then
+			local src = tostring(v.script_name or "?")
+			src = string.match(src, "([^/" .. string.char(92) .. "]+)$") or src
+			local key = src .. ( v.slot_desc and " (running)" or " (finished)" )
+			by[key] = ( by[key] or 0 ) + 1
+			total = total + 1
+		end
+	end
+	local rows = {}
+	for key, c in pairs(by) do table.insert(rows, { key = key, c = c }) end
+	table.sort(rows, function(a, x) return a.c > x.c end)
+	collectgarbage("collect")
+	local kb2 = collectgarbage("count")
+	log2("[olr_census] timers: %d quick timers held; heap %.0f MB after one full collection, %.0f MB after a second", total,
+		kb1 / 1024, kb2 / 1024)
+	for i = 1, math.min(top, #rows) do log2("[olr_census]   %7d  %s", rows[i].c, rows[i].key) end
+end
+
+-- [HE-PORT] fl olr_census.respawners_all("bandit"): every respawner of the Zone whose name or sections have that word
+function respawners_all(word)
+	local now = game.get_game_time()
+	local n = 0
+	for _, se in alife():objects() do
+		if se.spawned_obj and se.item_spawn == false then
+			local secs = {}
+			for _, entry in pairs(se.respawn_section) do table.insert(secs, entry.section) end
+			local name = se.amk_name or se:name()
+			local all = name .. " " .. table.concat(secs, " ")
+			if not word or string.find(all, word, 1, true) then
+				local left = 0
+				if now < se.respawn_time then left = se.respawn_time:diffSec(now) / 3600 end
+				n = n + 1
+				log2("[olr_census]   %s on %s idle=%.0f-%.0f h next_in=%.1f h alive=%d [%s]", name, tostring(olr_smart_index.object_level(se)),
+					se.idle_spawn_min / 3600, se.idle_spawn_max / 3600, left, #se.spawned_obj, table.concat(secs, " "))
+			end
+		end
+	end
+	log2("[olr_census] respawners_all(%s): %d", tostring(word), n)
+end
+
 function respawners(level_name)
 	level_name = level_name or level.name()
 	local now = game.get_game_time()

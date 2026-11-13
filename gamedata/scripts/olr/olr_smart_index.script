@@ -146,6 +146,44 @@ function is_story_open(name)
 	return story_open(name)
 end
 
+-- [HE-PORT] docs/ALIFE_NEXT_DESIGN.md 8.26: would this smart take a man of this community now? Its community lists
+-- (the index), its story gate and room left. Day trips and regroup ask before a move: the tf250 soak had 195 trips
+-- refused by smart:enabled() (lairs, other sides' bases, full camps). Returns true, or false and why
+-- [HE-PORT] 8.28: and his rank against the smart's preset (check_preset), and the non-exclusive room it counts
+-- [HE-PORT] 8.29 D2: someone registered at this smart that se is hostile to, or who is hostile to him; nil if none
+function enemy_at(name, se)
+	local smart = live(name)
+	if not ( smart and se ) then return nil end
+	local sim = alife()
+	local mine = se:community()
+	for id in pairs(smart.npc_info or {}) do
+		local o = id ~= se.id and sim:object(id)
+		if o and IsStalker(o) and o:alive() and amk_offline_alife.comm_hostile(mine, o:community()) then return o end
+	end
+	return nil
+end
+
+local accept_sets = {}
+function may_take(name, community, rank, se)
+	local list = get_names(community)
+	local s = accept_sets[community]
+	if not s or s.list ~= list then
+		s = { list = list, names = {} }
+		for i = 1, #list do s.names[list[i]] = true end
+		accept_sets[community] = s
+	end
+	if not s.names[name] then return false, "community" end
+	if not story_open(name) then return false, "closed" end
+	if rank and not rank_fits(name, community, rank) then return false, "rank" end
+	if se and enemy_at(name, se) then return false, "enemy there" end
+	local smart = live(name)
+	local g = smart and smart.gulag
+	if g and g.capacity_non_exclusive and g.get_non_exclusive_population and g:get_non_exclusive_population() >= g.capacity_non_exclusive then
+		return false, "full"
+	end
+	return true
+end
+
 function rank_fits(name, community, rank)
 	return band_fits(name_to_level[name], smart_preset(name), community, rank)
 end
@@ -389,13 +427,16 @@ local function pick_from(list, exclude_name)
 end
 
 -- [HE-PORT]
-local function pick_story_open(list, exclude_name, community, rank)
+local function pick_story_open(list, exclude_name, community, rank, se)
 	local n = #list
 	if n == 0 then return nil end
 	local start = math.random(n)
 	for i = 0, n - 1 do
 		local name = list[(start + i - 1) % n + 1]
-		if name ~= exclude_name and story_open(name) and not ( rank and not rank_fits(name, community, rank) ) then
+		-- [HE-PORT] 8.29 D2: a migrant never picks a smart holding an enemy of his
+		if name ~= exclude_name and story_open(name) and not ( rank and not rank_fits(name, community, rank) )
+			and not ( se and enemy_at(name, se) )
+		then
 			return name
 		end
 	end
@@ -478,7 +519,7 @@ function pick_name(community, exclude_name, exclude_level, only_levels, opts)
 		list = keep_levels( list, quiet, true )
 	end
 	if not home then list = drop_near_actor( list ) end
-	if olr_cfg.on("story_gates") then return pick_story_open(list, exclude_name, community, opts and opts.rank) end
+	if olr_cfg.on("story_gates") then return pick_story_open(list, exclude_name, community, opts and opts.rank, opts and opts.se) end
 	return pick_from(list, exclude_name)
 end
 
@@ -507,7 +548,7 @@ function pick_migration(se, community, exclude_name)
 		end
 	end
 	allowed = olr_steering.steer_levels(allowed, here, human) -- [HE-PORT]
-	return pick_name(community, exclude_name, nil, allowed, { no_territory = true, rank = se:rank() })
+	return pick_name(community, exclude_name, nil, allowed, { no_territory = true, rank = se:rank(), se = se })
 end
 
 -- [HE-PORT] test helper: what a pick for this community could choose on a level right now
@@ -673,13 +714,32 @@ end
 -- [HE-PORT] a smart that refuses him leaves him with none, and a stalker with none wanders the whole map
 function attach_checked(sobj, smart_name)
 	local smart = alife():object(smart_name)
-	if not ( smart and attach_to(sobj, smart_name) ) then return false end
-	if smart:enabled(sobj) then return true end
+	local from = object_level(sobj)
+	-- [HE-PORT] the move is reported (olr_reactive.on_move) only once the smart has taken him
+	if not ( smart and attach_to(sobj, smart_name, true) ) then return false end
+	if smart:enabled(sobj) then
+		olr_reactive.on_move(sobj, smart_name, from)
+		return true
+	end
 	xrs_utils.clear_smart_terrain(sobj)
 	return false
 end
 
-function attach_to(sobj, smart_name)
+-- [HE-PORT] attach_checked, and on a refusal back to the smart he had: attach_checked alone leaves him with none
+-- (he would wander the whole map)
+function move_or_stay(sobj, smart_name)
+	local sid = sobj:smart_terrain_id()
+	local old = sid and sid ~= BAD_OBJ_ID and alife():object(sid)
+	local old_name = old and old:name()
+	if attach_checked(sobj, smart_name) then return true end
+	if old_name and old_name ~= smart_name and not attach_checked(sobj, old_name) then
+		log2("[olr_smart_index] %s id=%d: %s would not have him, nor %s again; he has no smart now", sobj:name(), sobj.id,
+			smart_name, old_name)
+	end
+	return false
+end
+
+function attach_to(sobj, smart_name, quiet)
 	if not (sobj and smart_name) then return false end
 	local from = object_level(sobj) -- [HE-PORT]
 	xrs_utils.clear_smart_terrain(sobj)
@@ -692,7 +752,7 @@ function attach_to(sobj, smart_name)
 		sobj:brain():can_choose_alife_tasks(true)
 		sobj:brain():update(true)
 	end
-	olr_reactive.on_move(sobj, smart_name, from) -- [HE-PORT]
+	if not quiet then olr_reactive.on_move(sobj, smart_name, from) end -- [HE-PORT] attach_checked reports it itself
 	return true
 end
 
