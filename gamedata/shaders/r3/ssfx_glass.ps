@@ -13,6 +13,9 @@
 
 #include "common.h"
 #include "settings_screenspace_GLASS.h"
+#ifdef SSFX_FOG
+#include "ssfx_fog_atmo.h" // NLC: fog redesign ( docs/FOG_DESIGN.md ); s_fog_sky0 / 1 bound in Blender_Model_EbB.cpp
+#endif
 
 struct v2p
 {
@@ -22,6 +25,7 @@ struct v2p
     float3 P : TEXCOORD2;
     float3 v2point : TEXCOORD3;
     float3 nor : TEXCOORD4;
+    float3 Pw : TEXCOORD5;
     float fog : FOG;
     float4 hpos : SV_Position;
 };
@@ -39,10 +43,22 @@ float4 main(v2p I) : SV_Target
 
     float3 base = lerp(t_env.rgb, t_base.rgb, t_base.a);
 
+    // NLC: fog redesign ( forward shader: camera sky openness only ); the old fog from the VS otherwise
+    float fogv = I.fog;
+    float3 fog_col = fog_color.rgb;
+#ifdef SSFX_FOG
+    [branch] if (ssfx_fog_new(I.hpos.x))
+    {
+        ssfx_fog_res fr = ssfx_fog_eval(I.Pw, -1.0f);
+        fogv = 1.0f - fr.amount;
+        fog_col = fr.colour;
+    }
+#endif
+
     // OGSR model_env_lq colour
-    float3 old = lerp(fog_color, I.c0 * base * 2, I.fog);
+    float3 old = lerp(fog_col, I.c0 * base * 2, fogv);
     if (ssfx_compare.x > 0)
-        return float4(old, t_base.a * I.fog * I.fog);
+        return float4(old, t_base.a * fogv * fogv);
 
     float2 tc_screen = I.hpos.xy * screen_res.zw;
     float2 pixelsize = screen_res.zw * 2.0f;
@@ -80,11 +96,11 @@ float4 main(v2p I) : SV_Target
     screen.b = s_screen.SampleLevel(smp_rtlinear, (tc_screen - pixelsize.xx) + tc_offset, 0).b;
 
     // Glass colour over the refracted scene by its opacity ( = the old alpha blend when nothing is refracted )
-    float3 final = lerp(screen, old, t_base.a * I.fog * I.fog);
+    float3 final = lerp(screen, old, t_base.a * fogv * fogv);
 
     // Fresnel
     final += fresnel.xxx * SSFX_GLASS_FRESNEL * float3(0.9f, 1.0f, 0.9f) * acc;
 
     // Opaque output: the scene behind is already in 'screen'. Far glass fades to the unrefracted scene.
-    return float4(final, I.fog * I.fog);
+    return float4(final, fogv * fogv);
 }

@@ -21,6 +21,7 @@ struct vf
     float3 P : TEXCOORD2; // object space position ( triplanar glass normal )
     float3 v2point : TEXCOORD3;
     float3 nor : TEXCOORD4;
+    float3 Pw : TEXCOORD5; // NLC: world position for the fog redesign ( ssfx_fog_atmo.h )
     float fog : FOG;
     float4 hpos : SV_Position;
 };
@@ -42,9 +43,10 @@ vf _main(v_model v, float3 psp)
 
     o.fog = saturate(calc_fogging(float4(pos_w, 1)));
 #ifdef SSFX_FOG
-    o.fog = SSFX_FOGGING(1.0 - o.fog, pos_w.y);
+    o.fog = SSFX_FOGGING_LEGACY(1.0 - o.fog, pos_w.y); // NLC: old fog; the PS evaluates the new one
 #endif
 
+    o.Pw = pos_w;
     o.v2point = normalize(pos_w - eye_position);
     o.nor = norm_w;
     o.P = all(psp) ? psp : pos.xyz; // skinned: bind-pose position, so the pattern does not swim

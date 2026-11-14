@@ -5,6 +5,62 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.205 (2026-11-14)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `49C54E9601AC363C3F69C8E72F888EC5BC5411E2BBC00F515EA6F14BBC326BB5` (archived with its PDB in `nlc_tools/builds/20261114_202756_49c54e96`).
+- **Status:** runtime pending. Built on `nlc-3.589.204`. Fog review fixes (`docs/FOG_DESIGN.md` 14) and anomaly haze review fixes 1, 2, 4 (`docs/ANOMALY_HAZE_DESIGN.md` 18).
+- Fog: empty `[ssfx_fog_levels]` value no longer crashes ( `r_string` check ); camera ray caches reset on level load; rain map export without the D3D9 half-texel offset, texel size in metres in `ssfx_fog_map.z`; defaults `ssfx_fog_interior_density 0.8`, `ssfx_fog_interior_dim 0.4`.
+- Haze: `CCustomZone::OnStateSwitch` updates the haze ( a zone switched off far away loses its haze ); haze profile resolved by name after `ssfx_haze_reload`.
+- **Required game data:** `ssfx_fog_atmo.h`, `ssfx_water.ps`, `rspec_default/high/extreme/maximum.ltx`, Shaders tab fog rows ( `ui_mm_opt.xml`, `ui_mm_opt_shaders.script`, `ui_mm_opt_main.script`, eng / rus `ui_st_mm.xml` ).
+## nlc-3.589.204 (2026-11-14)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0F6ACE7DAA32AF861643FC519914EFE1B77F6844FCEF57F4F6E9D71B84923A69` (archived with its PDB in `nlc_tools/builds/20261114_163753_0f6ace7d`).
+- **Status:** runtime pending. Built on `nlc-3.589.203`. Anomaly haze phase 2a (`docs/ANOMALY_HAZE_DESIGN.md` 16).
+- Zone key `nlc_haze_idle_particles`: while the haze is drawn the zone plays that idle set instead of `idle_particles` (swapped back when the haze is off).
+- **Required game data:** `particles/anomaly2/studen_idle_bottom_haze.pg`, `config/misc/zone_buzz.ltx`.
+
+## nlc-3.589.203 (2026-11-14)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `BCBA92FC19C8AE5CA3743EC4E7AF7881CFE5B18E394C941AD44BE8CAA8E39D6C` (archived with its PDB in `nlc_tools/builds/20261114_161813_bcba92fc`).
+- **Status:** runtime pending. Built on `nlc-3.589.202`. Anomaly haze after the first test (`docs/ANOMALY_HAZE_DESIGN.md` 15.1).
+- Haze blinking: the zone passes its base idle light range instead of the per-update random one, and the registry smooths light colour and range (~0.15 s).
+- Stable draw order (distance to the centre, neighbours within 0.5 m keep last frame's order).
+- Profile keys `light_range_k`, `ambient_k`, `sun_k`, `light_k`, `emissive_k`, `blowout_density`, `blowout_light`, `blowout_time`; blowout pulse from `CCustomZone::OnStateSwitch` (`nlc_haze_pulse`).
+- **Required game data:** `ssfx_haze.h`, `config/environment/anomaly_haze.ltx`.
+
+## nlc-3.589.202 (2026-11-14)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `1E57A7FAF4BE9D7C16A5814B062F110F102F9A1E361ADAA55012F96F2A9CC35B` (archived with its PDB in `nlc_tools/builds/20261114_154242_1e57a7fa`).
+- **Status:** runtime pending. Built on `nlc-3.589.201`. Anomaly haze (`docs/ANOMALY_HAZE_DESIGN.md` 13-14) plus the two queued fixes below.
+- **Anomaly haze:** zone registry and profiles in `xr_3da/Environment` (`config/environment/anomaly_haze.ltx`), zone key `nlc_haze` (`CCustomZone`: enabled state, idle / blowout light colour, sun ray, volumetric flag off while hazed), R4 pass `phase_ssfx_haze` (one scissored screen triangle per volume, far to near, after the forward pass by default). Console `ssfx_haze`, `ssfx_haze_density`, `_dist`, `_max`, `_samples`, `_light`, session `_split`, `_order`, `_debug`, `_particles`, commands `ssfx_haze_reload`, `ssfx_haze_info`. `ssfx_fog_split` also splits the haze.
+- **Actor shadow with a torch / weapon flashlight:** `CHUDManager::Render_Actor_Shadow` skipped the actor model in every shadow pass while either light was on, so the sun shadow vanished. It now skips the actor only in the shadow map of that light (`R_dsgraph_structure::smap_light`, set around `build_subspace` in `render_lights_shadowed_one`; `CCustomHUD::Render_SMAP(context_id, smap_light)`; `CWeapon::nlc_flashlight_light`).
+- **Visible-body puppet collision:** `nlc_set_npc_transform` marks the puppet's character (`nlc_stealth::is_visible_body`) as not colliding with characters, dynamic objects and ragdolls (`CPHCollideValidator`), re-set each call since `CPHSimpleCharacter::Create` resets the class. Its capsule stopped or stuttered the actor's fall when the view turned, and blocked bolts, grenades and corpses.
+- **Required game data:** `ssfx_haze.h`, `ssfx_haze.ps`, `ssfx_haze.s`, `config/environment/anomaly_haze.ltx`, `config/misc/zone_buzz.ltx`, `rspec_low.ltx`, `rspec_minimum.ltx` (the queued fixes need none).
+
+## nlc-3.589.201 (2026-11-14)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F335CBBCD5FF1CF317900872F06C06F9857F3209B4183E82D29AFE5F8B23DCB2` (archived with its PDB in `nlc_tools/builds/20261114_143029_f335cbbc`).
+- **Status:** runtime pending. Built on `nlc-3.589.200`. Fog gate mode 2 (`docs/FOG_DESIGN.md` 13).
+- `render_rain` also renders the top-down depth map for the fog ( `nlc_fog` ): far 100 m and no `draw_rain` when it is not raining; `nlc_fog_map_export()` -> binders `ssfx_fog_map_xf`, `ssfx_fog_map`.
+- Console `ssfx_fog_gate_mode` 0 / 1 / 2 ( default 2 ); `ssfx_fog_info` prints the mode and the map state.
+- Glass binds `s_fog_map` ( `$user$smap_rain` ).
+- **Required game data:** `ssfx_fog_atmo.h`, `ssfx_water.ps`, `combine.s`, `ssfx_fog_scattering.s`, `effects_water_puddles.s`.
+## nlc-3.589.200 (2026-11-14)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `32721620B32725B7DE9F98C9DFDD771D8EA7833B6F484A55E528D88067ACAB67` (archived with its PDB in `nlc_tools/builds/20261114_133855_32721620`).
+- **Status:** runtime pending. Built on `nlc-3.589.199`. Fog redesign (`docs/FOG_DESIGN.md` 12).
+- `CEnvironment` camera sky openness: 21 static ray tests above the camera ( 3 per frame, all after a level load or a 5 m jump, 0.35 s smoothing ) -> shader `ssfx_fog_gate.y`.
+- Per-level height fog base at level load: `[ssfx_fog_levels]` in `config/environment/ssfx_fog_levels.ltx`, else the median AI-node height; log `~ [SSFX fog] level [..] height base ..`.
+- Weather key `fog_sky_blend` (default 1, lerped).
+- Console: `ssfx_fog_mode`, `ssfx_fog_sky`, `ssfx_fog_gate`, `ssfx_fog_interior`, `ssfx_fog_interior_density`, `ssfx_fog_interior_dim`, `ssfx_fog_hemi_lo/hi` (saved); `ssfx_fog_split`, `ssfx_fog_debug`, `ssfx_fog_base` (session); `ssfx_fog_base_auto`, `ssfx_fog_info`.
+- Binders `ssfx_fog_atmo`, `ssfx_fog_gate`, `ssfx_fog_gate2`, `ssfx_fog_sky`, `ssfx_fog_sky2`; glass binds `s_fog_sky0/1`.
+- **Required game data:** the fog shaders in `gamedata/shaders/r3` (`ssfx_fog_atmo.h`, `ssfx_fog_params.h`, `screenspace_fog.h`, combine, scattering, water, glass, puddles), `config/environment/ssfx_fog_levels.ltx`, `rspec_low/minimum.ltx`.
 ## nlc-3.589.199 (2026-11-13)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

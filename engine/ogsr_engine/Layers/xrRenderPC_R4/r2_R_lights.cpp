@@ -41,7 +41,9 @@ void CRender::render_lights_shadowed_one(light_ctx& task)
 
         dsgraph.max_render_distance = std::max(30.f, L->get_range() + 20.f);
 
+        dsgraph.smap_light = L;
         dsgraph.build_subspace(L->spatial.sector_id, view_frustum, L->X.S.combine, L->position, TRUE);
+        dsgraph.smap_light = nullptr;
 
         const bool bNormal = dsgraph.mapNormalCount > 0 || dsgraph.mapMatrixCount > 0;
         if (bNormal)

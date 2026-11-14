@@ -99,6 +99,18 @@ extern int ps_ssfx_ssr_res; // SSS 23 SSR resolution divider ( 1 / 2 )
 extern float ps_ssfx_cloud_shadows;
 extern int ps_ssfx_debug_clouds;
 extern float ps_ssfx_ao_direct, ps_ssfx_ground_mist;
+// NLC: fog redesign ( docs/FOG_DESIGN.md )
+extern int ps_ssfx_fog_mode, ps_ssfx_fog_split, ps_ssfx_fog_debug, ps_ssfx_fog_interior;
+extern float ps_ssfx_fog_sky, ps_ssfx_fog_gate, ps_ssfx_fog_interior_density, ps_ssfx_fog_interior_dim, ps_ssfx_fog_hemi_lo, ps_ssfx_fog_hemi_hi;
+extern int ps_ssfx_fog_gate_mode;
+// NLC: anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md )
+extern float ps_ssfx_haze_density, ps_ssfx_haze_dist;
+extern int ps_ssfx_haze_max, ps_ssfx_haze_samples, ps_ssfx_haze_split, ps_ssfx_haze_order, ps_ssfx_haze_debug;
+extern Fvector4 ps_ssfx_haze_light;
+extern u32 ps_ssfx_haze_stat_drawn;
+extern float ps_ssfx_haze_stat_cover;
+extern Fmatrix ps_ssfx_fog_map_xform;
+extern Fvector4 ps_ssfx_fog_map_params;
 extern u32 ps_ssfx_look;
 extern int ps_ssfx_settings_version;
 extern float ps_ssfx_terrain_grass_slope;

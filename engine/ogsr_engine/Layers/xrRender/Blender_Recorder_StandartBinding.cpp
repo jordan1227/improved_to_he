@@ -721,6 +721,76 @@ static class ssfx_extra2 final : public R_constant_setup
     }
 } ssfx_extra2;
 
+// NLC: fog redesign ( ssfx_fog_params.h, docs/FOG_DESIGN.md ). x: mode ( 0 = old fog, also while ssfx_compare ), y: split
+// view, z: debug view, w: sky colour strength ( ssfx_fog_sky x weather fog_sky_blend )
+static class ssfx_fog_atmo final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        const auto* env = g_pGamePersistent->Environment().CurrentEnv;
+        const float sky = ps_ssfx_fog_sky * (env ? env->fog_sky_blend : 1.f);
+        cmd_list.set_c(C, ps_ssfx_compare ? 0.f : float(ps_ssfx_fog_mode), float(ps_ssfx_fog_split), float(ps_ssfx_fog_debug), sky);
+    }
+} ssfx_fog_atmo;
+
+// x: gate strength, y: camera sky openness, z: interior mode, w: interior density
+static class ssfx_fog_gate final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        cmd_list.set_c(C, ps_ssfx_fog_gate_mode > 0 ? ps_ssfx_fog_gate : 0.f, g_pGamePersistent->Environment().fog_sky_open, float(ps_ssfx_fog_interior),
+                       ps_ssfx_fog_interior_density);
+    }
+} ssfx_fog_gate;
+
+// .201: rain depth map for the view-ray gate ( ssfx_fog_gate_mode 2 ). x: map valid this frame, y: depth per metre,
+// z: map texel size in metres ( .205 )
+static class ssfx_fog_map final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_fog_map_params.x, ps_ssfx_fog_map_params.y, ps_ssfx_fog_map_params.z, 0.f); }
+} ssfx_fog_map;
+
+// world -> rain map ( uv, depth )
+static class ssfx_fog_map_xf final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_fog_map_xform); }
+} ssfx_fog_map_xf;
+
+// x / y: hemi remap low / high, z: interior colour scale, w: height base ( world Y )
+static class ssfx_fog_gate2 final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        cmd_list.set_c(C, ps_ssfx_fog_hemi_lo, std::max(ps_ssfx_fog_hemi_hi, ps_ssfx_fog_hemi_lo + 0.01f), ps_ssfx_fog_interior_dim, g_pGamePersistent->Environment().fog_base);
+    }
+} ssfx_fog_gate2;
+
+// Sky as skybox.vs / .ps draws it: rgb = sky_color x 1.7 ( vertex colour, so clamped to 0..1 first ), w = sky0 / sky1 weight
+static class ssfx_fog_sky final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        const auto* env = g_pGamePersistent->Environment().CurrentEnv;
+        if (!env)
+        {
+            cmd_list.set_c(C, 0.f, 0.f, 0.f, 0.f);
+            return;
+        }
+        cmd_list.set_c(C, clampr(env->sky_color.x, 0.f, 1.f) * 1.7f, clampr(env->sky_color.y, 0.f, 1.f) * 1.7f, clampr(env->sky_color.z, 0.f, 1.f) * 1.7f,
+                       clampr(env->weight, 0.f, 1.f));
+    }
+} ssfx_fog_sky;
+
+// x: sky rotation, y: underground level ( ssfx_is_underground )
+static class ssfx_fog_sky2 final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        const auto* env = g_pGamePersistent->Environment().CurrentEnv;
+        cmd_list.set_c(C, env ? env->sky_rotation : 0.f, ps_ssfx_is_underground ? 1.f : 0.f, 0.f, 0.f);
+    }
+} ssfx_fog_sky2;
+
 // NLC .85: look presets ( img_corrections.h ), x: preset 0..3, y: contrast; ssfx_color_balance: r, g, b. Neutral while
 // ssfx_compare
 static class ssfx_look final : public R_constant_setup
@@ -1080,6 +1150,13 @@ void CBlender_Compile::SetMapping() const
     r_Constant("ssfx_clouds", &ssfx_clouds); // NLC
     r_Constant("ssfx_torch", &ssfx_torch); // NLC
     r_Constant("ssfx_extra2", &ssfx_extra2); // NLC
+    r_Constant("ssfx_fog_atmo", &ssfx_fog_atmo); // NLC: fog redesign
+    r_Constant("ssfx_fog_gate", &ssfx_fog_gate);
+    r_Constant("ssfx_fog_gate2", &ssfx_fog_gate2);
+    r_Constant("ssfx_fog_sky", &ssfx_fog_sky);
+    r_Constant("ssfx_fog_sky2", &ssfx_fog_sky2);
+    r_Constant("ssfx_fog_map", &ssfx_fog_map); // .201
+    r_Constant("ssfx_fog_map_xf", &ssfx_fog_map_xf);
     r_Constant("ssfx_look", &ssfx_look); // NLC
     r_Constant("ssfx_color_balance", &ssfx_color_balance); // NLC
     r_Constant("ssfx_steps", &ssfx_steps); // NLC

@@ -44,6 +44,9 @@
 #include "ai/monsters/control_manager.h"
 #include "ai/monsters/control_direction.h"
 #include "ai/monsters/control_direction_base.h"
+#include "PHCharacter.h" // NLC: nlc_set_npc_transform (before PHCollideValidator.h: its inline checks need CPHObject)
+#include "PHCollideValidator.h"
+#include "nlc_stealth.h"
 
 void CScriptGameObject::explode(u32 level_time)
 {
@@ -453,8 +456,20 @@ void CScriptGameObject::nlc_set_npc_transform(Fvector pos, Fvector dir)
 
     if (obj->character_physics_support()->movement()->CharacterExist())
     {
-        obj->character_physics_support()->movement()->SetPosition(F.c);
-        obj->character_physics_support()->movement()->SetVelocity(0.f, 0.f, 0.f);
+        CPHMovementControl* mc = obj->character_physics_support()->movement();
+        // NLC: the visible-body puppet's capsule sits inside / behind the actor's. As a character it collided with the
+        // actor (a fall stopped or stuttered when the view turned and the capsule swung through the actor's), and it
+        // blocked bolts, grenades and corpses. It now collides with static geometry only. The bits are reset when the
+        // character is recreated (CPHSimpleCharacter::Create), so they are re-set on every call; the call is cheap.
+        if (nlc_stealth::is_visible_body(obj) && mc->PHCharacter())
+        {
+            CPHObject& ph = *mc->PHCharacter();
+            CPHCollideValidator::SetCharacterClassNotCollide(ph);
+            CPHCollideValidator::SetDynamicNotCollide(ph);
+            CPHCollideValidator::SetRagDollClassNotCollide(ph);
+        }
+        mc->SetPosition(F.c);
+        mc->SetVelocity(0.f, 0.f, 0.f);
     }
 
     obj->movement().detail().make_inactual();

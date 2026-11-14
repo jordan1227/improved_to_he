@@ -114,6 +114,11 @@ void ssfx_il(float2 tc, float2 pos2d, float3 P, float3 N, inout float3 color, ui
 	// Same as SSFX_FOGGING but multiplied * 2
 	float fog_height = smoothstep(G_FOG_HEIGHT, -G_FOG_HEIGHT, WorldP.y) * G_FOG_HEIGHT_INTENSITY;
 	float fog_extra = saturate(Fog + fog_height * (Fog * G_FOG_HEIGHT_DENSITY));
+#ifdef SSFX_FOG_ATMO_H
+	// NLC .205b: new fog ( mode 1 ): the gated amount, height from the level base ( a clear room keeps its IL )
+	[branch] if (ssfx_fog_atmo.x > 0.5f)
+		fog_extra = ssfx_fog_amount(WorldP, -1.0f);
+#endif
 	float Fade = 1.0f - saturate(fog_extra * 2.0f);
 #else
 	// Vanilla fog calc multiplied * 2

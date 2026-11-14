@@ -795,7 +795,7 @@ void R_dsgraph_structure::build_subspace(const IRender_Sector::sector_id_t& star
         {
             if (phase != CRender::PHASE_NORMAL)
             {
-                g_hud->Render_SMAP(context_id);
+                g_hud->Render_SMAP(context_id, smap_light);
             }
         }
     }

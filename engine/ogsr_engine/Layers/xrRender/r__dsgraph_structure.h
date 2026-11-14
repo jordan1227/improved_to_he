@@ -37,6 +37,8 @@ public:
     Fvector render_position{};
     float max_render_distance{-1.f};
 
+    const IRender_Light* smap_light{}; // NLC: spot light of the current PHASE_SMAP_LIGHTS build_subspace (CCustomHUD::Render_SMAP)
+
 public:
     // Dynamic scene graph
     u32 mapNormalCount{};

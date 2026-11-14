@@ -8,6 +8,7 @@ function element_0(shader, t_base, t_second, t_detail)
 	shader:dx10texture("s_image", "$user$generic0")
 	shader:dx10texture("s_fog_blur", "$user$ssfx_fog_2")
 	shader:dx10texture("s_position", "$user$position")
+	shader:dx10texture("s_fog_map", "$user$smap_rain") -- NLC .201: view-ray sky-access gate
 	shader:dx10sampler("smp_nofilter")
 	shader:dx10sampler("smp_rtlinear")
 end

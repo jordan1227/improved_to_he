@@ -41,7 +41,8 @@ public:
 
     virtual void Load() { }
 
-    virtual void Render_SMAP(u32 context_id) {}
+    // NLC: smap_light = the spot light whose shadow map is being built, nullptr for the sun / rain phases
+    virtual void Render_SMAP(u32 context_id, const class IRender_Light* smap_light) {}
     virtual bool SMAP_Skip(const class IRenderable* renderable) { return false; } // NLC: keep an object out of the shadow-pass scene traversal
     virtual void Render_MAIN(u32 context_id) {}
 

@@ -95,6 +95,11 @@ struct render_rain : public i_render_phase
 
     light RainLight;
     u32 context_id{CHW::INVALID_CONTEXT_ID};
+
+    // NLC: the top-down depth map also serves the fog sky-access gate ( docs/FOG_DESIGN.md 13 )
+    bool nlc_wet{}; // wet surfaces this frame ( rain ): map + draw_rain
+    bool nlc_fog{}; // fog gate this frame: map only ( smaller radius when not raining )
+    void nlc_fog_map_export();
 };
 
 struct render_sun : public i_render_phase

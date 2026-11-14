@@ -671,6 +671,7 @@ public:
         return true;
     }
     inline bool IsFlashlightOn() const { return m_flagsAddOnState & CSE_ALifeItemWeapon::eWeaponAddonFlashlightOn; }
+    IRender_Light* nlc_flashlight_light() const { return flashlight_render._get(); } // NLC: CHUDManager::Render_Actor_Shadow
 
     void SwitchMisfire(bool on)
     {

@@ -317,6 +317,8 @@ public:
     void phase_ssfx_water(CBackend& cmd_list); // water reflection prepass ( before the forward pass )
     void phase_ssfx_rain(CBackend& cmd_list); // NLC .85: rain refraction buffer ( before the forward pass )
     void phase_ssfx_fog_scattering(CBackend& cmd_list); // HDR, after volumetrics, before bloom
+    ref_shader s_ssfx_haze; // NLC anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md )
+    bool phase_ssfx_haze(CBackend& cmd_list); // into rt_Generic_0; true when something was drawn ( render targets changed )
     bool phase_ssfx_ssr(CBackend& cmd_list); // SSS 23 SSR; false = use the OGSR SSR pass
     bool ssfx_volumetric_reduced() const { return rt_ssfx_vol_sun && !ps_ssfx_compare; } // volumetrics into the reduced targets
     void ssfx_volumetric_restore_viewport(CBackend& cmd_list) const;

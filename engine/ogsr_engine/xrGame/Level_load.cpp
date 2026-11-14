@@ -11,6 +11,60 @@
 #include "PhysicsCommon.h"
 #include "level_sounds.h"
 #include "GamePersistent.h"
+#include "level_graph.h"
+
+// NLC: height fog base of the level ( docs/FOG_DESIGN.md ): [ssfx_fog_levels] <level> = <world Y> in
+// config\environment\ssfx_fog_levels.ltx, otherwise the median height of the AI nodes ( the walkable ground ).
+// Also re-arms the camera sky openness rays. The render reads CEnvironment::fog_base ( ssfx_fog_gate2.w ).
+static void nlc_fog_level_base(const shared_str& level_name)
+{
+    CEnvironment& E = g_pGamePersistent->Environment();
+    E.fog_sky_reset = true;
+    E.fog_base_console = false;
+    E.fog_base_level = 0.f;
+    E.fog_base_src = 0;
+
+    string_path fn;
+    if (FS.exist(fn, "$game_config$", "environment\\ssfx_fog_levels.ltx"))
+    {
+        CInifile ini(fn);
+        if (ini.section_exist("ssfx_fog_levels") && ini.line_exist("ssfx_fog_levels", level_name.c_str()))
+        {
+            // an empty value is stored as nullptr ( r_float would atof( nullptr ) )
+            LPCSTR v = ini.r_string("ssfx_fog_levels", level_name.c_str());
+            if (v && v[0])
+            {
+                E.fog_base_level = float(atof(v));
+                E.fog_base_src = 2;
+            }
+            else
+                Msg("! [SSFX fog] [ssfx_fog_levels] %s has no value, using the automatic base", level_name.c_str());
+        }
+    }
+
+    u32 nodes = 0;
+    if (E.fog_base_src == 0 && ai().get_level_graph())
+    {
+        const CLevelGraph& G = ai().level_graph();
+        nodes = G.header().vertex_count();
+        if (nodes)
+        {
+            const u32 step = std::max(1u, nodes / 65536u);
+            xr_vector<float> ys;
+            ys.reserve(nodes / step + 1);
+            for (u32 i = 0; i < nodes; i += step)
+                ys.push_back(G.vertex_position(i).y);
+            const auto mid = ys.begin() + ys.size() / 2;
+            std::nth_element(ys.begin(), mid, ys.end());
+            E.fog_base_level = *mid;
+            E.fog_base_src = 1;
+        }
+    }
+
+    E.fog_base = E.fog_base_level;
+    Msg("~ [SSFX fog] level [%s] height base %.2f ( %s, %u AI nodes )", level_name.c_str(), E.fog_base,
+        E.fog_base_src == 2 ? "config" : (E.fog_base_src == 1 ? "auto" : "none"), nodes);
+}
 
 BOOL CLevel::Load_GameSpecific_Before()
 {
@@ -114,6 +168,8 @@ BOOL CLevel::Load_GameSpecific_After()
     g_pGamePersistent->Environment().wetness_reset_pending = true;
     Msg("~ [wetness] level load: reset pending ( wetness %.3f, weather [%s] )", g_pGamePersistent->Environment().wetness_factor, g_pGamePersistent->Environment().GetWeather().c_str());
     g_pGamePersistent->Environment().wetness_reset_window = Device.fTimeGlobal + 120.f;
+
+    nlc_fog_level_base(name()); // NLC: height fog base, camera sky rays
 
     return TRUE;
 }

@@ -12,14 +12,21 @@
 
 #include "screenspace_reflections.h"
 #include "ssfx_temporal.h"
+#ifdef SSFX_FOG
+#include "ssfx_fog_atmo.h" // NLC .205b: fades by the gated fog ( docs/FOG_DESIGN.md 14, finding 7 )
+#endif
 
 Texture2D s_ssfx_ssr_history; // $user$ssfx_ssr_hist
 
 uniform float4 ssfx_ssr_setup; // x: strength ( 1 wet, ssfx_ssr_dry otherwise ), y: blur
 
 // SSFX_ScreenSpaceReflections ( screenspace_reflections.h, SSS 18 ) with the hit depth as output
-void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, inout float4 color, out float hit_depth, out float2 hit_tc)
+// NLC .205b: hemi ( G-buffer ) and screen_x ( full-resolution pixel x, split view ) for the new fog fades
+void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, float hemi, float screen_x, inout float4 color, out float hit_depth, out float2 hit_tc)
 {
+#ifdef SSFX_FOG
+    bool fog_new = ssfx_fog_new(screen_x);
+#endif
     bool m_terrain = abs(P.w - 0.95f) <= 0.02f;
     bool m_flora = abs(P.w - MAT_FLORA) <= 0.04f;
 
@@ -59,6 +66,14 @@ void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, inout float4 col
         hit_tc = hit_uv.xy;
 
         float refl_fog = 1.0 - saturate((length(float3(inVec.x, inVec.y, hit_uv.z)) * fog_params.w + fog_params.x));
+#ifdef SSFX_FOG
+        [branch] if (fog_new)
+        {
+            // NLC .205b: fog of the reflected point by the gated fog ( a clear room keeps its reflections )
+            float3 Hv = float3(hit_uv.z * (hit_uv.xy * screen_res.xy * pos_decompression_params.zw - pos_decompression_params.xy), hit_uv.z);
+            refl_fog = 1.0f - ssfx_fog_amount_dist(mul(m_inv_V, float4(Hv, 1.0f)).xyz, -1.0f);
+        }
+#endif
         float HitFade = saturate(hit_uv.y * refl_fog * refl_fog * G_SSR_VERTICAL_SCREENFADE);
 
         reflection = lerp(reflection, refl_ray, HitFade);
@@ -84,6 +99,10 @@ void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, inout float4 col
     refl_power *= ray_fade;
 
     float fog = 1.0 - saturate((length(P.xyz) * fog_params.w + fog_params.x));
+#ifdef SSFX_FOG
+    [branch] if (fog_new)
+        fog = 1.0f - ssfx_fog_amount_dist(mul(m_inv_V, float4(P.xyz, 1.0f)).xyz, hemi); // NLC .205b
+#endif
 
     color = float4(reflection, refl_power * fog * fog);
 }
@@ -103,7 +122,7 @@ float4 main(p_screen I) : SV_Target
     float4 ssr_result = 0;
     float hit_depth = 0;
     float2 hit_tc = 0;
-    ssfx_ssr_shade(tc, float4(P, mtl), N, gloss, ssr_result, hit_depth, hit_tc);
+    ssfx_ssr_shade(tc, float4(P, mtl), N, gloss, gbuf_unpack_hemi(Pos.w), pix.x, ssr_result, hit_depth, hit_tc);
 
     // NLC: the reflected image lies behind the mirror at ray length |P| + |H - P| along this pixel's ray ( was the
     // hit's own depth on this ray: hits nearer than the surface reprojected in front of it and smeared when strafing ).

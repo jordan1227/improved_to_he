@@ -23,6 +23,10 @@ uniform float4 fakescope;
 #include "ssfx_mist.h" // NLC .84: ground mist ( inside ssfx_height_fog_sun with sun fog )
 #endif
 
+#ifdef SSFX_FOG
+#include "ssfx_fog_atmo.h" // NLC: fog redesign ( docs/FOG_DESIGN.md ), the code below stays for ssfx_fog_mode 0
+#endif
+
 #if defined(SSFX_INDIRECT_LIGHT) && !defined(SSFX_IL_PASS)
 #include "screenspace_il.h"
 #endif
@@ -175,14 +179,34 @@ float4 main(p_screen I) : SV_Target
 
 #ifdef SSFX_FOG
     float3 WorldP = mul(m_inv_V, float4(P.xyz, 1));
+    float skyblend;
+    [branch] if (ssfx_fog_new(I.hpos.x))
+    {
+        // NLC: fog redesign ( ssfx_fog_atmo.h ): sky colour, sky-access gate ( hemi ), level height base
+        ssfx_fog_core_t fc = ssfx_fog_core(WorldP, N.w);
+        ssfx_fog_res fr = ssfx_fog_eval_core(fc);
+        [branch] if (ssfx_fog_atmo.z > 0.5f)
+            return float4(ssfx_fog_debug_view(fc, fr), 0.0f);
+
+        color = lerp(color, fr.colour, fr.amount);
+        skyblend = fr.sky_alpha;
+    }
+    else
+    {
 #ifdef SSFX_FOG_SUN
-    float fog = ssfx_height_fog_sun(P.xyz, WorldP.y, color);
+        float fog = ssfx_height_fog_sun(P.xyz, WorldP.y, color);
 #else
-    float fog = SSFX_HEIGHT_FOG(P.xyz, WorldP.y, color);
+        float fog = SSFX_HEIGHT_FOG(P.xyz, WorldP.y, color);
 #ifdef SSFX_GROUND_MIST
-    color = lerp(color, fog_color, ssfx_mist(WorldP, length(P.xyz), smoothstep(G_FOG_HEIGHT, -G_FOG_HEIGHT, WorldP.y) * G_FOG_HEIGHT_INTENSITY));
+        color = lerp(color, fog_color, ssfx_mist(WorldP, length(P.xyz), smoothstep(G_FOG_HEIGHT, -G_FOG_HEIGHT, WorldP.y) * G_FOG_HEIGHT_INTENSITY));
 #endif
 #endif
+        skyblend = saturate(pow(fog, 3.0)); //float skyblend = saturate(fog * fog);
+    }
+
+    // NLC: split view divider
+    [branch] if (ssfx_fog_atmo.y > 0.5f && abs(I.hpos.x - screen_res.x * 0.5f) < 1.0f)
+        return float4(1.0f, 1.0f, 1.0f, 0.0f);
 #else
     float3 pos = P.xyz;
     float distance = length(pos);
@@ -192,9 +216,9 @@ float4 main(p_screen I) : SV_Target
 #else
     color = lerp(color, fog_color, fog);
 #endif
-#endif
 
     float skyblend = saturate(pow(fog, 3.0)); //float skyblend = saturate(fog * fog);
+#endif
 
 #if NLC_DEBUG_HEMI
     // NLC: debug view of the baked hemi ( sky visibility ) for the IL hemi gate, 10 hard bands:

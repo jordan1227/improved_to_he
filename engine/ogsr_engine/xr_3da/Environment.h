@@ -176,6 +176,8 @@ public:
     float bloom_exposure{};
     float bloom_sky_intensity{};
 
+    float fog_sky_blend{1.f}; // NLC: weather key fog_sky_blend, x ssfx_fog_sky ( docs/FOG_DESIGN.md )
+
     //	int					lens_flare_id;
     //	int					tb_id;
     shared_str lens_flare_id;
@@ -287,6 +289,16 @@ public:
 	float wetness_factor;
     bool wetness_reset_pending{true}; // NLC: set from the current weather on the next update ( level / save load )
     float wetness_reset_window{}; // NLC: Device.fTimeGlobal until which a forced weather set re-arms the reset
+
+    // NLC: fog ( docs/FOG_DESIGN.md )
+    float fog_sky_open{1.f}; // smoothed sky openness above the camera, 0 enclosed .. 1 open ( static ray tests )
+    float fog_sky_open_raw{1.f}; // last full ray result, unsmoothed
+    bool fog_sky_reset{true}; // next update casts every ray and snaps ( level load, teleport )
+    float fog_base{}; // active height fog base ( world Y )
+    float fog_base_level{}; // base computed or configured for the current level
+    int fog_base_src{}; // source of fog_base_level: 0 none, 1 auto ( AI nodes ), 2 config [ssfx_fog_levels]
+    bool fog_base_console{}; // fog_base set by the ssfx_fog_base command ( until the next level load )
+    void nlc_update_fog_sky_open();
 
     Fvector3 wind_anim{}, wind_anim_old{};
 
@@ -418,3 +430,73 @@ ENGINE_API extern float psVisDistance;
 extern ENGINE_API float ps_r_sunshafts_intensity;
 extern ENGINE_API float ps_ssfx_sunshafts;
 extern ENGINE_API BOOL ps_ssfx_effects_off; // NLC: Shaders tab master switch
+
+// NLC anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md ): local volumetric haze around anomaly zones. Zones ( xrGame
+// CCustomZone, section key nlc_haze = <profile> ) register here from their update on the main thread; the R4 haze pass
+// ( phase_ssfx_haze ) reads the registry during render, which runs after the frame update on the same thread.
+// Profiles: config\environment\anomaly_haze.ltx, re-read by ssfx_haze_reload.
+struct ENGINE_API SNlcHazeProfile
+{
+    shared_str name;
+    int shape{1}; // 0 sphere, 1 ground ( density thins upwards from the zone centre )
+    float radius_k{1.f}; // x zone CFORM sphere radius
+    float height{1.f}; // m, ground shape: e-folding height
+    float density{0.3f}; // extinction per metre at the core
+    float falloff{1.5f}; // radial edge exponent
+    Fvector albedo{0.6f, 0.6f, 0.6f};
+    Fvector emissive{};
+    float light_scatter{1.f}; // zone light ( idle + blowout ) scattered by the haze
+    float sun_g{0.4f}; // Henyey-Greenstein anisotropy
+    float noise_scale{0.7f}; // 1/m
+    Fvector noise_drift{0.1f, 0.3f, 0.08f}; // m/s
+    float noise_amount{0.7f};
+    float fade_time{1.5f}; // s
+    float light_range_k{1.6f}; // x the zone light's range inside the haze
+    float ambient_k{1.f}, sun_k{1.f}, light_k{1.f}, emissive_k{1.f}; // per-profile light term multipliers ( x ssfx_haze_light )
+    float blowout_density{2.f}; // x density at a blowout, decaying
+    float blowout_light{3.f}; // x zone light at a blowout, decaying
+    float blowout_time{1.5f}; // s, decay time of the blowout pulse
+    bool keep_volumetric_light{}; // zone light keeps its volumetric flag while hazed
+    xr_vector<shared_str> levels; // empty = every level
+};
+
+// One registered zone, as the haze pass sees it
+struct ENGINE_API SNlcHazeZone
+{
+    u16 id{};
+    shared_str zone_name;
+    shared_str profile_name;
+    int profile{-1};
+    Fvector centre{};
+    float radius{}; // zone CFORM sphere radius ( profile radius_k not applied )
+    float k{}; // fade 0..1
+    float target{}; // fade target 0 / 1
+    Fvector light_pos{};
+    Fvector light_col{}; // smoothed ( ~0.15 s ), 0 = no light
+    float light_range{}; // smoothed
+    Fvector light_col_target{}; // as the zone set it this update
+    float light_range_target{};
+    float pulse{}; // blowout pulse 1 .. 0 ( exponential decay over the profile's blowout_time )
+    float sun_vis{1.f}; // smoothed
+    float sun_vis_target{1.f};
+    float dist{}; // camera distance minus radius, set by nlc_haze_collect
+};
+
+ENGINE_API extern int ps_ssfx_haze; // master switch ( saved ): 0 = pass skipped, zone lights keep their volumetric flag
+ENGINE_API extern int ps_ssfx_haze_particles; // session: 0 = idle particles of hazed zones hidden
+
+ENGINE_API int nlc_haze_profile_find(LPCSTR name); // -1 = unknown ( logged once )
+ENGINE_API const SNlcHazeProfile* nlc_haze_profile_get(int idx);
+ENGINE_API bool nlc_haze_profile_level_ok(int idx, LPCSTR level); // counts filtered zones
+ENGINE_API void nlc_haze_reload(); // re-read the profiles file, re-resolve registered zones
+// profile is applied only when the zone is not registered yet; afterwards the registry keeps its own ( reload-safe ) index
+ENGINE_API void nlc_haze_set(u16 id, LPCSTR zone_name, LPCSTR profile, const Fvector& centre, float radius, bool on); // profile by name
+ENGINE_API int nlc_haze_zone_profile(u16 id); // -1 = not registered
+ENGINE_API void nlc_haze_light(u16 id, const Fvector& pos, const Fvector& colour, float range);
+ENGINE_API void nlc_haze_sun(u16 id, float vis);
+ENGINE_API void nlc_haze_pulse(u16 id); // blowout: density and zone light boost, decaying
+ENGINE_API void nlc_haze_remove(u16 id);
+ENGINE_API void nlc_haze_clear(); // level change
+// Advances fades by dt, drops faded-out zones, returns the zones within max_dist of the camera ( nearest first )
+ENGINE_API const xr_vector<SNlcHazeZone*>& nlc_haze_collect(float dt, float max_dist);
+ENGINE_API void nlc_haze_dump(); // ssfx_haze_info

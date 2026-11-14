@@ -59,7 +59,7 @@ public:
 
     virtual void Load();
 
-    void Render_SMAP(u32 context_id) override;
+    void Render_SMAP(u32 context_id, const IRender_Light* smap_light) override;
     bool SMAP_Skip(const IRenderable* renderable) override; // NLC: visible-body puppet (HUDManager.cpp)
     void Render_MAIN(u32 context_id) override;
 
@@ -92,6 +92,6 @@ public:
     CHUDTarget* GetTarget() const { return m_pHUDTarget; }
 
 private:
-    void Render_Actor_Shadow(u32 context_id);
+    void Render_Actor_Shadow(u32 context_id, const IRender_Light* smap_light);
     // void Render_Actor_FirstPersonBody(u32 context_id);
 };

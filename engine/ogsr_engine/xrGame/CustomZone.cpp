@@ -136,6 +136,13 @@ void CCustomZone::Load(LPCSTR section)
         m_nlc_ft_learn_ms = READ_IF_EXISTS(pSettings, r_u32, section, "flytrap_learn_ms", 700);
         m_nlc_ft_log = READ_IF_EXISTS(pSettings, r_bool, section, "flytrap_log", false);
     }
+    // NLC anomaly haze (docs/ANOMALY_HAZE_DESIGN.md); an empty value ( nlc_haze = ) switches it off for a child section
+    {
+        LPCSTR haze = pSettings->line_exist(section, "nlc_haze") ? pSettings->r_string(section, "nlc_haze") : nullptr;
+        m_nlc_haze_name = (haze && *haze) ? haze : "";
+        LPCSTR ptcl = pSettings->line_exist(section, "nlc_haze_idle_particles") ? pSettings->r_string(section, "nlc_haze_idle_particles") : nullptr;
+        m_nlc_haze_ptcl = (ptcl && *ptcl) ? ptcl : ""; // must name an existing group, as idle_particles ( R_ASSERT in CreateParticles )
+    }
     // NLC silence (docs/ANOMALY_DESIGN.md 16)
     m_nlc_silence = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_silence", false);
     if (m_nlc_silence)
@@ -505,6 +512,18 @@ BOOL CCustomZone::net_Spawn(CSE_Abstract* DC)
     {
         m_b_always_fastmode = spawn_ini()->r_bool("fast_mode", "always_fast");
     }
+
+    // NLC anomaly haze: profile and its levels list
+    m_nlc_haze = -1;
+    m_nlc_haze_on = m_nlc_haze_vol_off = m_nlc_haze_ptcl_hidden = m_nlc_haze_ptcl_swapped = false;
+    m_nlc_haze_ptcl_orig = m_sIdleParticles;
+    m_nlc_haze_sun_next = 0;
+    if (m_nlc_haze_name.size())
+    {
+        m_nlc_haze = nlc_haze_profile_find(m_nlc_haze_name.c_str());
+        if (m_nlc_haze >= 0 && !nlc_haze_profile_level_ok(m_nlc_haze, Level().name().c_str()))
+            m_nlc_haze = -1;
+    }
     return (TRUE);
 }
 
@@ -512,6 +531,9 @@ void CCustomZone::net_Destroy()
 {
     nlc_flytrap_stasis(false); // NLC
     nlc_silence_register(false); // NLC
+    if (m_nlc_haze_on || m_nlc_haze >= 0)
+        nlc_haze_remove(ID()); // NLC anomaly haze
+    m_nlc_haze_on = false;
 
     StopIdleParticles();
 
@@ -584,6 +606,8 @@ void CCustomZone::UpdateWorkload(u32 dt)
         nlc_flytrap_update(dt); // NLC
     if (m_nlc_silence)
         nlc_silence_register(IsEnabled()); // NLC: every update (the registry is cleared with the level)
+    if (m_nlc_haze >= 0)
+        nlc_haze_update(); // NLC anomaly haze
 
     if (!IsEnabled())
     {
@@ -909,6 +933,8 @@ void CCustomZone::UpdateIdleLight()
     float range = m_fIdleLightRange + m_fIdleLightRangeDelta * ::Random.randF(-1.f, 1.f);
     m_pIdleLight->set_range(range);
     m_pIdleLight->set_color(fclr);
+    m_nlc_haze_idle_col.set(fclr.r, fclr.g, fclr.b); // NLC anomaly haze ( the base range: the random flicker made the haze blink )
+    m_nlc_haze_idle_range = m_fIdleLightRange;
 
     Fvector pos = Position();
     pos.y += m_fIdleLightHeight;
@@ -1310,8 +1336,16 @@ void CCustomZone::OnStateSwitch(EZoneState new_state)
     if (new_state == eZoneStateAwaking)
         PlayAwakingParticles();
 
+    if (new_state == eZoneStateBlowout && m_nlc_haze_on)
+        nlc_haze_pulse(ID()); // NLC anomaly haze: density and light boost, decaying ( profile blowout_* )
+
     m_eZoneState = new_state;
     m_iPreviousStateTime = m_iStateTime = 0;
+
+    // NLC anomaly haze: a zone switched off in slow mode gets no further UpdateWorkload, so switch the haze, the
+    // volumetric flag and the particle swap / hide state now ( after m_eZoneState: nlc_haze_update reads IsEnabled )
+    if (m_nlc_haze >= 0)
+        nlc_haze_update();
 };
 
 void CCustomZone::SwitchZoneState(EZoneState new_state)
@@ -1908,6 +1942,117 @@ void CCustomZone::nlc_silence_register(bool on)
         m_nlc_silence_on = false;
         if (m_nlc_silence_log)
             Msg("~ [silence] [%s]: off (%u sound deliveries weakened on this level so far)", cName().c_str(), nlc_silence_muted());
+    }
+}
+
+// NLC anomaly haze (docs/ANOMALY_HAZE_DESIGN.md 3.3, 3.5, 13): registry entry, zone light, sun visibility, volumetric
+// flag of the zone lights, ssfx_haze_particles. Called from UpdateWorkload ( every frame in fast mode, else per schedule ).
+void CCustomZone::nlc_haze_volumetric(bool off)
+{
+    if (off == m_nlc_haze_vol_off)
+        return;
+    m_nlc_haze_vol_off = off;
+    if (m_pIdleLight && IdleLightVolumetric)
+        m_pIdleLight->set_volumetric(!off);
+    if (m_pLight && BlowLightVolumetric)
+        m_pLight->set_volumetric(!off);
+}
+
+void CCustomZone::nlc_haze_play_idle_particles()
+{
+    if (!*m_sIdleParticles)
+        return;
+    if (!m_pIdleParticles)
+        m_pIdleParticles = CParticlesObject::Create(*m_sIdleParticles, FALSE);
+    m_pIdleParticles->UpdateParent(XFORM(), {});
+    m_pIdleParticles->Play(false);
+}
+
+// Swaps idle_particles for nlc_haze_idle_particles while hazed ( the big glow puffs are dropped: the haze replaces them )
+void CCustomZone::nlc_haze_swap_particles(bool haze)
+{
+    if (!m_nlc_haze_ptcl.size() || haze == m_nlc_haze_ptcl_swapped)
+        return;
+    m_nlc_haze_ptcl_swapped = haze;
+    m_sIdleParticles = haze ? m_nlc_haze_ptcl : m_nlc_haze_ptcl_orig;
+    const bool playing = m_pIdleParticles && m_pIdleParticles->IsPlaying();
+    if (m_pIdleParticles)
+    {
+        m_pIdleParticles->Stop(FALSE);
+        CParticlesObject::Destroy(m_pIdleParticles);
+    }
+    if (playing)
+        nlc_haze_play_idle_particles();
+}
+
+void CCustomZone::nlc_haze_update()
+{
+    const bool on = IsEnabled() && !getDestroy();
+    const Fsphere& s = CFORM()->getSphere();
+    Fvector P;
+    XFORM().transform_tiny(P, s.P);
+    if (on || m_nlc_haze_on)
+        nlc_haze_set(ID(), cName().c_str(), m_nlc_haze_name.c_str(), P, s.R, on); // off: the registry fades it out and drops it
+    m_nlc_haze_on = on;
+
+    const SNlcHazeProfile* p = nlc_haze_profile_get(nlc_haze_zone_profile(ID()));
+    const bool active = on && p && ps_ssfx_haze;
+
+    nlc_haze_volumetric(active && !p->keep_volumetric_light);
+
+    // phase 2: the trimmed idle particle set while the haze is drawn, the section's set otherwise
+    nlc_haze_swap_particles(active);
+
+    // idle particles hidden for the haze-only comparison; Disable / Enable stop and start them on their own
+    if (!on)
+        m_nlc_haze_ptcl_hidden = false;
+    else
+    {
+        const bool hide = active && !ps_ssfx_haze_particles;
+        if (hide && !m_nlc_haze_ptcl_hidden && m_pIdleParticles)
+            m_pIdleParticles->Stop(FALSE);
+        else if (!hide && m_nlc_haze_ptcl_hidden)
+            nlc_haze_play_idle_particles();
+        m_nlc_haze_ptcl_hidden = hide;
+    }
+
+    if (!active)
+        return;
+
+    // zone lights: the idle light ( animated colour from UpdateIdleLight ) plus the blowout flash while it fades
+    Fvector col{}, pos = Position();
+    float range = 0.f;
+    if (m_pIdleLight && m_pIdleLight->get_active())
+    {
+        col = m_nlc_haze_idle_col;
+        range = m_nlc_haze_idle_range;
+        pos.y += m_fIdleLightHeight;
+    }
+    if (m_pLight && m_pLight->get_active() && m_fLightTime > 0.f)
+    {
+        const float scale = powf(std::clamp(m_fLightTimeLeft / m_fLightTime, 0.f, 1.f) + EPS_L, 0.15f);
+        col.add(Fvector().set(m_LightColor.r * scale, m_LightColor.g * scale, m_LightColor.b * scale));
+        range = std::max(range, m_fLightRange * scale);
+        pos = Position();
+        pos.y += m_fLightHeight;
+    }
+    nlc_haze_light(ID(), pos, col, range);
+
+    // sun visibility: one static ray from inside the haze towards the sun every 0.5 s, only near the camera
+    if (Device.dwTimeGlobal >= m_nlc_haze_sun_next && Device.vCameraPosition.distance_to(P) < 150.f)
+    {
+        m_nlc_haze_sun_next = Device.dwTimeGlobal + 500 + (ID() % 7) * 20;
+        Fvector dir = g_pGamePersistent->Environment().CurrentEnv->sun_dir;
+        dir.invert();
+        float vis = 0.f;
+        if (dir.y > 0.02f)
+        {
+            dir.normalize();
+            Fvector start = P;
+            start.y += std::min(p->height, s.R * p->radius_k) * 0.5f + 0.2f;
+            vis = Level().ObjectSpace.RayTest(start, dir, 100.f, collide::rqtStatic, nullptr, this) ? 0.f : 1.f;
+        }
+        nlc_haze_sun(ID(), vis);
     }
 }
 

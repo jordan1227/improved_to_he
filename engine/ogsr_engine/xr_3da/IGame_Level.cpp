@@ -56,6 +56,7 @@ IGame_Level::~IGame_Level()
     g_pGameLevel = nullptr;
 
     nlc_silence_clear(); // NLC: the silence zones of the next level register again
+    nlc_haze_clear(); // NLC: anomaly haze zones ( Environment.h, igame_persistent.h includes it )
 
     xr_delete(g_hud);
 }

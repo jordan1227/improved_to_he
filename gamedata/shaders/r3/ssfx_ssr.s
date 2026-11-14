@@ -17,6 +17,7 @@ function element_0(shader, t_base, t_second, t_detail)
 	shader:dx10texture("s_ssfx_zbuffer", "$user$zbuffer")
 	shader:dx10texture("s_prev_pos", "$user$ssfx_prev_pos")
 	shader:dx10texture("s_ssfx_ssr_history", "$user$ssfx_ssr_hist")
+	shader:dx10texture("s_fog_map", "$user$smap_rain") -- NLC .205b: fog fades by the view-ray gate
 	shader:dx10sampler("smp_base")
 	shader:dx10sampler("smp_nofilter")
 	shader:dx10sampler("smp_linear")

@@ -156,6 +156,31 @@ float ps_ssfx_step_ripples{1.0f};
 BOOL ps_ssfx_spec_aa{TRUE};
 BOOL ps_ssfx_mblur_objects{FALSE};
 
+// NLC: fog redesign ( docs/FOG_DESIGN.md ), live uniforms; the new fog needs ssfx_height_fog ( SSFX_FOG )
+int ps_ssfx_fog_mode{1}; // 0 = the fog before the redesign
+int ps_ssfx_fog_split{}; // session: left half old fog, right half new fog
+int ps_ssfx_fog_debug{}; // session: 1 amount, 2 sky access, 3 height bands, 4 fog colour, 5 sky lookup
+float ps_ssfx_fog_sky{0.6f}; // fog colour towards the sky near the horizon ( x weather fog_sky_blend )
+float ps_ssfx_fog_gate{1.f}; // sky-access gate strength
+int ps_ssfx_fog_interior{1}; // 0 no fog indoors, 1 dark residual fog
+float ps_ssfx_fog_interior_density{0.8f}; // .205: 0.5 -> 0.8 ( user test 2026-11-14 )
+float ps_ssfx_fog_interior_dim{0.4f}; // .205: 0.2 -> 0.4
+float ps_ssfx_fog_hemi_lo{0.10f}, ps_ssfx_fog_hemi_hi{0.35f};
+int ps_ssfx_fog_gate_mode{2}; // 0 off, 1 camera rays + surface hemi, 2 view ray through the rain depth map
+// NLC: anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md ); ssfx_haze / ssfx_haze_particles live in xr_3da ( Environment.h )
+float ps_ssfx_haze_density{1.f}; // global density multiplier
+float ps_ssfx_haze_dist{60.f}; // m from the volume edge
+int ps_ssfx_haze_max{12}; // volumes drawn per frame
+int ps_ssfx_haze_samples{8}; // samples per volume ray
+int ps_ssfx_haze_split{}; // session: no haze on the left half ( ssfx_fog_split also )
+int ps_ssfx_haze_order{1}; // session: 0 before forward rendering, 1 after
+int ps_ssfx_haze_debug{}; // session: 1 scissor rects, 2 optical depth, 3 flat shapes, 4 zone light term only
+Fvector4 ps_ssfx_haze_light{1.f, 1.f, 1.f, 1.f}; // x ambient, y sun, z zone light, w emissive
+u32 ps_ssfx_haze_stat_drawn{}; // last frame
+float ps_ssfx_haze_stat_cover{}; // last frame, share of the screen covered by scissor rects ( sum )
+Fmatrix ps_ssfx_fog_map_xform{Fidentity}; // world -> rain map ( uv, depth ), render_rain::nlc_fog_map_export
+Fvector4 ps_ssfx_fog_map_params{}; // x: map valid this frame, y: depth per metre
+
 u32 ps_r_ao_quality = 0;
 constexpr xr_token qssao_token[] = {{"st_opt_off", 0},
                                     {"st_opt_low", 1},
@@ -776,6 +801,114 @@ public:
     }
 };
 
+// NLC: fog redesign ( docs/FOG_DESIGN.md ). Compare and debug switches are session only.
+class CCC_SsfxSessionInt final : public CCC_Integer
+{
+public:
+    CCC_SsfxSessionInt(LPCSTR N, int* V, int _min, int _max) : CCC_Integer(N, V, _min, _max) { SetCanSave(false); }
+};
+
+#include "../../xr_3da/igame_persistent.h"
+#include "../../xr_3da/environment.h"
+#include "../../xr_3da/IGame_Level.h"
+
+namespace
+{
+const char* nlc_fog_base_src_name(const CEnvironment& E)
+{
+    if (E.fog_base_console)
+        return "console";
+    return E.fog_base_src == 2 ? "config" : (E.fog_base_src == 1 ? "auto" : "none");
+}
+} // namespace
+
+// Height fog base ( world Y ) for this level until the next level load; ssfx_fog_base_auto restores the level value
+class CCC_SsfxFogBase final : public IConsole_Command
+{
+public:
+    CCC_SsfxFogBase(LPCSTR N) : IConsole_Command(N) { SetCanSave(false); }
+
+    void Execute(LPCSTR args) override
+    {
+        if (!g_pGamePersistent)
+            return;
+        float v{};
+        if (1 != sscanf(args, "%f", &v))
+        {
+            InvalidSyntax();
+            return;
+        }
+        CEnvironment& E = g_pGamePersistent->Environment();
+        E.fog_base = v;
+        E.fog_base_console = true;
+        Msg("~ [SSFX fog] height base %.2f ( console; level value %.2f, %s )", v, E.fog_base_level,
+            E.fog_base_src == 2 ? "config" : (E.fog_base_src == 1 ? "auto" : "none"));
+    }
+    void Status(TStatus& S) override { xr_sprintf(S, "%.2f", g_pGamePersistent ? g_pGamePersistent->Environment().fog_base : 0.f); }
+    void Info(TInfo& I) override { xr_strcpy(I, "world Y of the height fog layer, this level only"); }
+};
+
+class CCC_SsfxFogBaseAuto final : public IConsole_Command
+{
+public:
+    CCC_SsfxFogBaseAuto(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; }
+
+    void Execute(LPCSTR) override
+    {
+        if (!g_pGamePersistent)
+            return;
+        CEnvironment& E = g_pGamePersistent->Environment();
+        E.fog_base = E.fog_base_level;
+        E.fog_base_console = false;
+        Msg("~ [SSFX fog] height base %.2f ( %s )", E.fog_base, nlc_fog_base_src_name(E));
+    }
+};
+
+class CCC_SsfxFogInfo final : public IConsole_Command
+{
+public:
+    CCC_SsfxFogInfo(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; }
+
+    void Execute(LPCSTR) override
+    {
+        if (!g_pGamePersistent)
+            return;
+        const CEnvironment& E = g_pGamePersistent->Environment();
+        const float sky_blend = E.CurrentEnv ? E.CurrentEnv->fog_sky_blend : 1.f;
+        Msg("~ [SSFX fog] level [%s], weather [%s], height fog %s ( restart applies ), underground %d, compare %d", g_pGameLevel ? g_pGameLevel->name().c_str() : "-",
+            E.GetWeather().c_str(), ps_r2_ls_flags.test(R2FLAG_SSFX_HEIGHT_FOG) ? "on" : "off", ps_ssfx_is_underground, ps_ssfx_compare);
+        Msg("~ [SSFX fog] base %.2f ( %s ), level value %.2f ( %s ), camera Y %.2f ( %.2f above the base )", E.fog_base, nlc_fog_base_src_name(E), E.fog_base_level,
+            E.fog_base_src == 2 ? "config" : (E.fog_base_src == 1 ? "auto" : "none"), Device.vCameraPosition.y, Device.vCameraPosition.y - E.fog_base);
+        Msg("~ [SSFX fog] camera sky openness %.2f ( raw %.2f ), mode %d, split %d, debug %d", E.fog_sky_open, E.fog_sky_open_raw, ps_ssfx_fog_mode, ps_ssfx_fog_split,
+            ps_ssfx_fog_debug);
+        Msg("~ [SSFX fog] gate mode %d, rain depth map %s ( %.6f depth per metre )", ps_ssfx_fog_gate_mode, ps_ssfx_fog_map_params.x > 0.5f ? "valid" : "not rendered",
+            ps_ssfx_fog_map_params.y);
+        Msg("~ [SSFX fog] sky %.2f x weather fog_sky_blend %.2f, gate %.2f, interior %d ( density %.2f, dim %.2f ), hemi %.2f .. %.2f", ps_ssfx_fog_sky, sky_blend,
+            ps_ssfx_fog_gate, ps_ssfx_fog_interior, ps_ssfx_fog_interior_density, ps_ssfx_fog_interior_dim, ps_ssfx_fog_hemi_lo, ps_ssfx_fog_hemi_hi);
+    }
+};
+
+// NLC: anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md )
+class CCC_SsfxHazeInfo final : public IConsole_Command
+{
+public:
+    CCC_SsfxHazeInfo(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; }
+    void Execute(LPCSTR) override
+    {
+        nlc_haze_dump();
+        Msg("~ [haze] last frame: %u volumes drawn, scissor cover %.0f %% of the screen; dist %.0f, max %d, samples %d, density %.2f, order %d, debug %d, light %.2f,%.2f,%.2f,%.2f",
+            ps_ssfx_haze_stat_drawn, ps_ssfx_haze_stat_cover * 100.f, ps_ssfx_haze_dist, ps_ssfx_haze_max, ps_ssfx_haze_samples, ps_ssfx_haze_density, ps_ssfx_haze_order,
+            ps_ssfx_haze_debug, ps_ssfx_haze_light.x, ps_ssfx_haze_light.y, ps_ssfx_haze_light.z, ps_ssfx_haze_light.w);
+    }
+};
+
+class CCC_SsfxHazeReload final : public IConsole_Command
+{
+public:
+    CCC_SsfxHazeReload(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; }
+    void Execute(LPCSTR) override { nlc_haze_reload(); }
+};
+
 void xrRender_initconsole()
 {
     if (!FS.path_exist(fsgame::game_weathers))
@@ -1139,6 +1272,36 @@ void xrRender_initconsole()
     CMD4(CCC_Float, "ssfx_step_ripples", &ps_ssfx_step_ripples, 0.f, 2.f); // 0 = off ( from 0: game restart )
     CMD2(CCC_Bool, "ssfx_spec_aa", &ps_ssfx_spec_aa); // game restart
     CMD2(CCC_Bool, "ssfx_mblur_objects", &ps_ssfx_mblur_objects); // with r2_mblur_enable, game restart
+
+    // NLC: fog redesign ( docs/FOG_DESIGN.md ), all live; the new fog needs ssfx_height_fog ( game restart )
+    CMD4(CCC_Integer, "ssfx_fog_mode", &ps_ssfx_fog_mode, 0, 1); // 0 = the fog before the redesign
+    CMD4(CCC_SsfxSessionInt, "ssfx_fog_split", &ps_ssfx_fog_split, 0, 1); // left half old, right half new
+    CMD4(CCC_SsfxSessionInt, "ssfx_fog_debug", &ps_ssfx_fog_debug, 0, 5);
+    CMD4(CCC_Float, "ssfx_fog_sky", &ps_ssfx_fog_sky, 0.f, 1.f);
+    CMD4(CCC_Float, "ssfx_fog_gate", &ps_ssfx_fog_gate, 0.f, 1.f);
+    CMD4(CCC_Integer, "ssfx_fog_gate_mode", &ps_ssfx_fog_gate_mode, 0, 2); // 2 = rain depth map ( .201 )
+    CMD4(CCC_Integer, "ssfx_fog_interior", &ps_ssfx_fog_interior, 0, 1);
+    CMD4(CCC_Float, "ssfx_fog_interior_density", &ps_ssfx_fog_interior_density, 0.f, 1.f);
+    CMD4(CCC_Float, "ssfx_fog_interior_dim", &ps_ssfx_fog_interior_dim, 0.f, 1.f);
+    CMD4(CCC_Float, "ssfx_fog_hemi_lo", &ps_ssfx_fog_hemi_lo, 0.f, 1.f);
+    CMD4(CCC_Float, "ssfx_fog_hemi_hi", &ps_ssfx_fog_hemi_hi, 0.f, 1.f);
+    CMD1(CCC_SsfxFogBase, "ssfx_fog_base");
+    CMD1(CCC_SsfxFogBaseAuto, "ssfx_fog_base_auto");
+    CMD1(CCC_SsfxFogInfo, "ssfx_fog_info");
+
+    // NLC: anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md ), all live
+    CMD4(CCC_Integer, "ssfx_haze", &ps_ssfx_haze, 0, 1);
+    CMD4(CCC_SsfxSessionInt, "ssfx_haze_particles", &ps_ssfx_haze_particles, 0, 1); // 0 = idle particles of hazed zones hidden
+    CMD4(CCC_Float, "ssfx_haze_density", &ps_ssfx_haze_density, 0.f, 4.f);
+    CMD4(CCC_Float, "ssfx_haze_dist", &ps_ssfx_haze_dist, 10.f, 150.f);
+    CMD4(CCC_Integer, "ssfx_haze_max", &ps_ssfx_haze_max, 1, 16);
+    CMD4(CCC_Integer, "ssfx_haze_samples", &ps_ssfx_haze_samples, 4, 16);
+    CMD4(CCC_SsfxSessionInt, "ssfx_haze_split", &ps_ssfx_haze_split, 0, 1);
+    CMD4(CCC_SsfxSessionInt, "ssfx_haze_order", &ps_ssfx_haze_order, 0, 1);
+    CMD4(CCC_SsfxSessionInt, "ssfx_haze_debug", &ps_ssfx_haze_debug, 0, 4);
+    CMD4(CCC_Vector4, "ssfx_haze_light", &ps_ssfx_haze_light, (Fvector4{0, 0, 0, 0}), (Fvector4{4, 4, 4, 4}));
+    CMD1(CCC_SsfxHazeReload, "ssfx_haze_reload");
+    CMD1(CCC_SsfxHazeInfo, "ssfx_haze_info");
 
     CMD4(CCC_Integer, "ssfx_bloom_use_presets", &ps_ssfx_bloom_use_presets, 0, 1);
     CMD4(CCC_Vector4, "ssfx_bloom_1", &ps_ssfx_bloom_1, (Fvector4{1, 1, 0, 0}), (Fvector4{10, 100, 100, 10}));

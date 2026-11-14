@@ -110,6 +110,7 @@ void CRenderTarget::ssfx_create_targets(const u32 w, const u32 h)
     rt_ssfx_fog_4.create(r2_RT_ssfx_fog_4, std::max(1u, w / 4), std::max(1u, h / 4), DXGI_FORMAT_R16G16B16A16_FLOAT);
     rt_ssfx_fog_2.create(r2_RT_ssfx_fog_2, std::max(1u, w / 2), std::max(1u, h / 2), DXGI_FORMAT_R16G16B16A16_FLOAT);
     s_ssfx_fog.create("ssfx_fog_scattering");
+    s_ssfx_haze.create("ssfx_haze"); // NLC anomaly haze, live switch
 
     if (ps_ssfx_volumetric_res > 1)
     {
@@ -533,6 +534,157 @@ void CRenderTarget::phase_ssfx_fog_scattering(CBackend& cmd_list)
     // Scattering: blurred scene mixed in where the fog is dense
     RenderScreenTriangle(cmd_list, rt_Generic_scene_scratch, s_ssfx_fog->E[0], [&]() { cmd_list.set_c("ssfx_scattering_setup", ps_ssfx_fog_scattering, 0.f, 0.f, 0.f); });
     HW.get_context(cmd_list.context_id)->CopyResource(rt_Generic_0->pSurface, rt_Generic_scene_scratch->pSurface);
+}
+
+// NLC anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md 3 ): registered zone volumes ( Environment.h ) nearest first, culled by
+// the view frustum, then drawn far to near, each as a screen triangle scissored to the projected bounding sphere.
+bool CRenderTarget::phase_ssfx_haze(CBackend& cmd_list)
+{
+    ps_ssfx_haze_stat_drawn = 0;
+    ps_ssfx_haze_stat_cover = 0.f;
+
+    if (!ps_ssfx_haze || ps_ssfx_compare || !g_pGameLevel || !s_ssfx_haze)
+        return false;
+
+    // fades advance once per frame even if the scene renders twice
+    static u32 last_frame = u32(-1);
+    const float dt = last_frame != Device.dwFrame ? Device.fTimeDelta : 0.f;
+    last_frame = Device.dwFrame;
+
+    const xr_vector<SNlcHazeZone*>& zones = nlc_haze_collect(dt, ps_ssfx_haze_dist);
+    if (zones.empty())
+        return false;
+
+    struct Item
+    {
+        const SNlcHazeZone* z;
+        const SNlcHazeProfile* p;
+        float R;
+        Irect rect;
+        float key; // distance from the camera to the centre
+        int rank; // position in last frame's draw order, -1 = new
+    };
+    xr_vector<Item> items;
+    items.reserve(zones.size());
+
+    const float W = static_cast<float>(rt_Generic_0->dwWidth), H = static_cast<float>(rt_Generic_0->dwHeight);
+    const Fmatrix& M = Device.mFullTransform;
+    const Fvector& cam = Device.vCameraPosition;
+
+    for (const SNlcHazeZone* z : zones)
+    {
+        if (int(items.size()) >= ps_ssfx_haze_max)
+            break;
+        const SNlcHazeProfile* p = nlc_haze_profile_get(z->profile);
+        const float R = z->radius * p->radius_k;
+        if (R <= 0.01f || !RImplementation.ViewBase.testSphere_dirty(z->centre, R))
+            continue;
+
+        // screen rectangle of the sphere's bounding box; camera inside or a corner behind the camera: full screen
+        Irect rc{0, 0, int(W), int(H)};
+        if (cam.distance_to(z->centre) > R + 0.5f)
+        {
+            float x0 = flt_max, y0 = flt_max, x1 = -flt_max, y1 = -flt_max;
+            bool behind = false;
+            for (u32 i = 0; i < 8 && !behind; ++i)
+            {
+                const Fvector v{z->centre.x + ((i & 1) ? R : -R), z->centre.y + ((i & 2) ? R : -R), z->centre.z + ((i & 4) ? R : -R)};
+                const float cx = v.x * M._11 + v.y * M._21 + v.z * M._31 + M._41;
+                const float cy = v.x * M._12 + v.y * M._22 + v.z * M._32 + M._42;
+                const float cw = v.x * M._14 + v.y * M._24 + v.z * M._34 + M._44;
+                if (cw <= 0.05f)
+                {
+                    behind = true;
+                    break;
+                }
+                const float sx = (cx / cw * 0.5f + 0.5f) * W, sy = (0.5f - cy / cw * 0.5f) * H;
+                x0 = std::min(x0, sx);
+                x1 = std::max(x1, sx);
+                y0 = std::min(y0, sy);
+                y1 = std::max(y1, sy);
+            }
+            if (!behind)
+            {
+                rc.x1 = std::clamp(int(x0) - 2, 0, int(W));
+                rc.y1 = std::clamp(int(y0) - 2, 0, int(H));
+                rc.x2 = std::clamp(int(x1) + 3, 0, int(W));
+                rc.y2 = std::clamp(int(y1) + 3, 0, int(H));
+            }
+        }
+        if (rc.x2 <= rc.x1 || rc.y2 <= rc.y1)
+            continue;
+        items.push_back({z, p, R, rc, cam.distance_to(z->centre), -1});
+    }
+    if (items.empty())
+        return false;
+
+    // Draw order far to near by the distance to the centre. Volumes within 0.5 m of each other in that distance keep
+    // last frame's order: the blend is order dependent and camera bob swapped overlapping volumes every frame ( E2 )
+    static xr_vector<u16> prev_order; // far to near
+    for (Item& it : items)
+    {
+        const auto pos = std::find(prev_order.begin(), prev_order.end(), it.z->id);
+        it.rank = pos == prev_order.end() ? -1 : int(pos - prev_order.begin());
+    }
+    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.key > b.key; });
+    for (u32 pass = 0; pass < 2; ++pass)
+        for (u32 i = 0; i + 1 < items.size(); ++i)
+        {
+            Item& a = items[i];
+            Item& b = items[i + 1];
+            if (a.key - b.key < 0.5f && a.rank >= 0 && b.rank >= 0 && b.rank < a.rank)
+                std::swap(a, b);
+        }
+    prev_order.clear();
+    for (const Item& it : items)
+        prev_order.push_back(it.z->id);
+
+    PIX_EVENT_CTX(cmd_list, ssfx_haze);
+
+    // light shared by all volumes ( weather ): ambient = hemi + ambient, sun colour and direction
+    const CEnvDescriptorMixer& env = *g_pGamePersistent->Environment().CurrentEnv;
+    const Fvector amb{env.hemi_color.x + env.ambient.x, env.hemi_color.y + env.ambient.y, env.hemi_color.z + env.ambient.z};
+    Fvector to_sun = env.sun_dir;
+    to_sun.invert().normalize_safe();
+    const float sun_k = ps_ssfx_is_underground ? 0.f : 1.f;
+    const Fvector4& LK = ps_ssfx_haze_light;
+    const float split = (ps_ssfx_haze_split || ps_ssfx_fog_split) ? 1.f : 0.f;
+    const float time = std::fmod(Device.fTimeGlobal, 3600.f);
+    const float frame = float(Device.dwFrame % 64);
+
+    for (auto it = items.begin(); it != items.end(); ++it)
+    {
+        const SNlcHazeZone& z = *it->z;
+        const SNlcHazeProfile& p = *it->p;
+        Irect rc = it->rect;
+        const Fvector& a = p.albedo;
+        const float sun_vis = z.sun_vis * sun_k;
+        // per-profile multipliers ( E5 ), blowout pulse ( E4 )
+        const float k_amb = LK.x * p.ambient_k, k_sun = LK.y * p.sun_k, k_em = LK.w * p.emissive_k;
+        const float dens = p.density * z.k * ps_ssfx_haze_density * (1.f + (p.blowout_density - 1.f) * z.pulse);
+        const float ls = p.light_scatter * LK.z * p.light_k * (1.f + (p.blowout_light - 1.f) * z.pulse);
+        const float lrange = z.light_col.magnitude() > 0.001f ? z.light_range * p.light_range_k : 0.f;
+
+        RenderScreenTriangle(cmd_list, rt_Generic_0, s_ssfx_haze->E[0], [&]() {
+            cmd_list.set_Scissor(&rc);
+            cmd_list.set_c("haze_p0", z.centre.x, z.centre.y, z.centre.z, it->R);
+            cmd_list.set_c("haze_p1", p.height, dens, p.falloff, p.noise_amount);
+            cmd_list.set_c("haze_p2", amb.x * a.x * k_amb, amb.y * a.y * k_amb, amb.z * a.z * k_amb, float(p.shape));
+            cmd_list.set_c("haze_p3", env.sun_color.x * a.x * sun_vis * k_sun, env.sun_color.y * a.y * sun_vis * k_sun, env.sun_color.z * a.z * sun_vis * k_sun, p.sun_g);
+            cmd_list.set_c("haze_p4", p.noise_scale, p.noise_drift.x, p.noise_drift.y, p.noise_drift.z);
+            cmd_list.set_c("haze_p5", p.emissive.x * k_em, p.emissive.y * k_em, p.emissive.z * k_em, float(ps_ssfx_haze_samples));
+            cmd_list.set_c("haze_p6", z.light_pos.x, z.light_pos.y, z.light_pos.z, lrange);
+            cmd_list.set_c("haze_p7", z.light_col.x * a.x * ls, z.light_col.y * a.y * ls, z.light_col.z * a.z * ls, float(ps_ssfx_haze_debug));
+            cmd_list.set_c("haze_p8", to_sun.x, to_sun.y, to_sun.z, 0.f);
+            cmd_list.set_c("haze_p9", time, frame, split, 0.f);
+        });
+
+        ps_ssfx_haze_stat_cover += float((rc.x2 - rc.x1) * (rc.y2 - rc.y1)) / (W * H);
+        ++ps_ssfx_haze_stat_drawn;
+    }
+
+    cmd_list.set_Scissor(nullptr);
+    return true;
 }
 
 bool CRenderTarget::phase_ssfx_ssr(CBackend& cmd_list)

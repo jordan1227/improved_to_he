@@ -95,6 +95,9 @@ void CBlender_Model_EbB::Compile(CBlender_Compile& C)
                 C.r_dx10Texture("s_screen", "$user$generic_temp");
                 C.r_dx10Texture("s_position", "$user$position"); // NLC: refraction only from behind the glass
                 C.r_dx10Texture("s_glass", "fx\\ssfx_glass_normal");
+                C.r_dx10Texture("s_fog_sky0", "$user$sky0"); // NLC: fog colour from the sky ( ssfx_fog_atmo.h )
+                C.r_dx10Texture("s_fog_sky1", "$user$sky1");
+                C.r_dx10Texture("s_fog_map", "$user$smap_rain"); // NLC .201: view-ray sky-access gate
                 C.r_dx10Sampler("smp_nofilter");
             }
 

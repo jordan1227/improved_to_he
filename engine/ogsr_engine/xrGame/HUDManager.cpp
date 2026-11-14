@@ -238,7 +238,7 @@ bool need_render_hud()
     return true;
 }
 
-void CHUDManager::Render_SMAP(u32 context_id) { Render_Actor_Shadow(context_id); }
+void CHUDManager::Render_SMAP(u32 context_id, const IRender_Light* smap_light) { Render_Actor_Shadow(context_id, smap_light); }
 
 void CHUDManager::Render_MAIN(u32 context_id)
 {
@@ -279,7 +279,7 @@ void nlc_visible_body_set(bool active, u16 id)
 
 bool CHUDManager::SMAP_Skip(const IRenderable* renderable) { return renderable && renderable == g_nlc_puppet_renderable; }
 
-void CHUDManager::Render_Actor_Shadow(u32 context_id) // added by KD
+void CHUDManager::Render_Actor_Shadow(u32 context_id, const IRender_Light* smap_light) // added by KD
 {
     if (!psActorFlags.test(AF_ACTOR_SHADOW))
         return;
@@ -304,13 +304,18 @@ void CHUDManager::Render_Actor_Shadow(u32 context_id) // added by KD
     if (flashlight && flashlight->torch_active())
         return;
 */
-    const auto torch = smart_cast<CTorch*>(A->inventory().ItemFromSlot(TORCH_SLOT));
-    if (torch && torch->torch_active())
-        return;
+    // NLC: the actor model is skipped only in the shadow map of its own torch / weapon flashlight (the light sits inside
+    // the body). Stock code skipped it in every shadow pass while either was on, so the sun shadow vanished with the torch.
+    if (smap_light)
+    {
+        const auto torch = smart_cast<CTorch*>(A->inventory().ItemFromSlot(TORCH_SLOT));
+        if (torch && torch->GetLight(0) == smap_light)
+            return;
 
-    const auto wpn = smart_cast<CWeapon*>(A->inventory().ActiveItem());
-    if (wpn && (wpn->IsFlashlightOn()))
-        return;
+        const auto wpn = smart_cast<CWeapon*>(A->inventory().ActiveItem());
+        if (wpn && wpn->nlc_flashlight_light() == smap_light)
+            return;
+    }
 
     std::scoped_lock slock(render_lock);
     O->renderable_Render(context_id, O->H_Root());

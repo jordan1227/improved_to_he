@@ -470,6 +470,8 @@ void CEnvDescriptor::load(CEnvironment& environment, CInifile& config)
 	bloom_threshold = config.line_exist(m_identifier.c_str(), "bloom_threshold") ? config.r_float(m_identifier.c_str(), "bloom_threshold") : 3.5f;
     bloom_exposure = config.line_exist(m_identifier.c_str(), "bloom_exposure") ? config.r_float(m_identifier.c_str(), "bloom_exposure") : 3.0f;
     bloom_sky_intensity = config.line_exist(m_identifier.c_str(), "bloom_sky_intensity") ? config.r_float(m_identifier.c_str(), "bloom_sky_intensity") : 0.6f;
+    // NLC: fog colour towards the sky, x ssfx_fog_sky ( docs/FOG_DESIGN.md ); 1 when absent
+    fog_sky_blend = config.line_exist(m_identifier.c_str(), "fog_sky_blend") ? clampr(config.r_float(m_identifier.c_str(), "fog_sky_blend"), 0.f, 2.f) : 1.f;
 
     C_CHECK(clouds_color);
     C_CHECK(sky_color);
@@ -636,6 +638,7 @@ void CEnvDescriptorMixer::lerp(CEnvironment* env, CEnvDescriptor& A, CEnvDescrip
     bloom_threshold = fi * A.bloom_threshold + f * B.bloom_threshold;
     bloom_exposure = fi * A.bloom_exposure + f * B.bloom_exposure;
     bloom_sky_intensity = fi * A.bloom_sky_intensity + f * B.bloom_sky_intensity;
+    fog_sky_blend = fi * A.fog_sky_blend + f * B.fog_sky_blend; // NLC
 
     // colors
     sky_color.lerp(A.sky_color, B.sky_color, f);

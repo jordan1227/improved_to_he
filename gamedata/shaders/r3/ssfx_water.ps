@@ -13,6 +13,12 @@
  *        ( ssfx_water_regular / _ryaska / _studen / _underground ).
  */
 
+// NLC .205: the upstream water.ps ( OGSR water, and ssfx_water_old for ssfx_compare ) passes a camera-relative height
+// to SSFX_FOGGING; keep it on the old function, the level height base ( screenspace_fog.h ) is world space
+#include "common.h"
+#include "screenspace_fog.h"
+#define SSFX_FOGGING SSFX_FOGGING_LEGACY
+
 #ifndef SSFX_WATER_PASS
 
 #include "water.ps"
@@ -31,6 +37,14 @@
 #endif
 #ifdef SSFX_FOG_SUN
 #include "ssfx_fog_sun.h" // NLC: same fog colour as the terrain behind the water
+#endif
+#ifdef SSFX_FOG
+// NLC: fog redesign ( docs/FOG_DESIGN.md ). Water is at the 16 pixel-texture limit: the sky cubes it already binds
+// ( sky_s0 / sky_s1 = $user$sky0 / $user$sky1, screenspace_common.h ) serve the fog sky lookup
+#define SSFX_FOG_SKY0 sky_s0
+#define SSFX_FOG_SKY1 sky_s1
+#define SSFX_FOG_NO_MAP // .201: no slot for the rain depth map either: camera sky openness gate
+#include "ssfx_fog_atmo.h"
 #endif
 
 #ifdef SSFX_STEP_RIPPLES
@@ -265,18 +279,36 @@ float4 main(vf I) : SV_Target
 
     // Fogging
 #ifdef SSFX_FOG
-    float fogging = SSFX_FOGGING(1.0 - I.fog, w_s.y + eye_position.y); // w_s has no translation: world height
+    float fogging;
+    float3 fog_col;
+    [branch] if (ssfx_fog_new(I.hpos.x))
+    {
+        // NLC: fog redesign ( ssfx_fog_atmo.h ): forward shader, camera sky openness only
+        ssfx_fog_res fr = ssfx_fog_eval(w_s + eye_position, -1.0f);
+        fogging = 1.0f - fr.amount;
+        fog_col = fr.colour;
+    }
+    else
+    {
+        fogging = SSFX_FOGGING_LEGACY(1.0 - I.fog, w_s.y + eye_position.y); // w_s has no translation: world height
 #ifdef SSFX_GROUND_MIST
-    // NLC .84: ground mist over the water, as combine
-    fogging = saturate(fogging - ssfx_mist(w_s + eye_position, length(w_s), smoothstep(G_FOG_HEIGHT, -G_FOG_HEIGHT, w_s.y + eye_position.y) * G_FOG_HEIGHT_INTENSITY));
+        // NLC .84: ground mist over the water, as combine
+        fogging = saturate(fogging - ssfx_mist(w_s + eye_position, length(w_s), smoothstep(G_FOG_HEIGHT, -G_FOG_HEIGHT, w_s.y + eye_position.y) * G_FOG_HEIGHT_INTENSITY));
 #endif
+#ifdef SSFX_FOG_SUN
+        fog_col = ssfx_fog_color_sun(normalize(I.v2point_w));
+#else
+        fog_col = fog_color.rgb;
+#endif
+    }
+    acc = lerp(fog_col, acc, fogging);
 #else
     float fogging = I.fog;
-#endif
 #ifdef SSFX_FOG_SUN
     acc = lerp(ssfx_fog_color_sun(normalize(I.v2point_w)), acc, fogging);
 #else
     acc = lerp(fog_color, acc, fogging);
+#endif
 #endif
 
     // Far water fades into the scene behind it ( as the OGSR water alpha )

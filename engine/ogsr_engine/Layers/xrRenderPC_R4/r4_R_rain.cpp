@@ -34,7 +34,14 @@ void render_rain::init()
     else
         rain_factor = g_pGamePersistent->Environment().wetness_factor;
 
-    o.active = ps_r2_ls_flags.test(R3FLAG_DYN_WET_SURF) && !fis_zero(rain_factor, EPS_L);
+    nlc_wet = ps_r2_ls_flags.test(R3FLAG_DYN_WET_SURF) && !fis_zero(rain_factor, EPS_L);
+
+    // NLC: fog sky-access gate ( ssfx_fog_gate_mode 2 ) needs the map in every weather
+    nlc_fog = ps_r2_ls_flags.test(R2FLAG_SSFX_HEIGHT_FOG) && ps_ssfx_fog_mode > 0 && !ps_ssfx_compare && ps_ssfx_fog_gate > 0.f && ps_ssfx_fog_gate_mode == 2 &&
+        !ps_ssfx_is_underground;
+    ps_ssfx_fog_map_params.x = 0.f; // valid only after calculate()
+
+    o.active = nlc_wet || nlc_fog;
 
     if (!o.active)
         return;
@@ -63,6 +70,8 @@ void render_rain::calculate()
         float fRainFar = 250.f;
         if (ps_ssfx_gloss_method == 0)
             fRainFar = ps_r3_dyn_wet_surf_far;
+        if (!nlc_wet)
+            fRainFar = 100.f; // NLC: fog-only map: smaller radius, finer texels
 
         ex_project.build_projection(deg2rad(Device.fFOV /* * Device.fASPECT*/), Device.fASPECT, VIEWPORT_NEAR, fRainFar);
         ex_full.mul(ex_project, Device.mView);
@@ -220,6 +229,35 @@ void render_rain::calculate()
 
     // Finalize & Cleanup
     RainLight.X.D[0].combine = cull_xform;
+
+    if (nlc_fog)
+        nlc_fog_map_export();
+}
+
+// NLC: world -> map ( uv, depth ) for the fog shaders ( ssfx_fog_map_xf ), the texel adjust of draw_rain without the
+// bias and without the D3D9 half-texel offset ( it shifted the shader's 2x2 gather off centre ); depth grows downwards
+// ( the map looks down from above the camera ). ps_ssfx_fog_map_params: y = depth per metre, z = texel size in metres
+void render_rain::nlc_fog_map_export()
+{
+    const float smapsize = static_cast<float>(RImplementation.o.rain_smapsize);
+    const float view_dim = float(RainLight.X.D[0].maxX - RainLight.X.D[0].minX) / smapsize;
+    const float view_sx = float(RainLight.X.D[0].minX) / smapsize;
+    const float view_sy = float(RainLight.X.D[0].minY) / smapsize;
+
+    const Fmatrix texel_adjust = {view_dim / 2.f, 0.0f, 0.0f, 0.0f, 0.0f, -view_dim / 2.f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                  view_dim / 2.f + view_sx, view_dim / 2.f + view_sy, 0.0f, 1.0f};
+    ps_ssfx_fog_map_xform.mul(texel_adjust, RainLight.X.D[0].combine);
+
+    Fvector p0 = Device.vCameraPosition, p1 = Device.vCameraPosition, p2 = Device.vCameraPosition;
+    p1.y -= 1.f;
+    p2.x += 1.f;
+    Fvector d0, d1, d2;
+    ps_ssfx_fog_map_xform.transform_tiny(d0, p0);
+    ps_ssfx_fog_map_xform.transform_tiny(d1, p1);
+    ps_ssfx_fog_map_xform.transform_tiny(d2, p2);
+    const float uv_per_metre = _sqrt((d2.x - d0.x) * (d2.x - d0.x) + (d2.y - d0.y) * (d2.y - d0.y));
+    const float texel_m = uv_per_metre > EPS ? 1.f / (uv_per_metre * smapsize) : 1.f;
+    ps_ssfx_fog_map_params.set(1.f, d1.z - d0.z, texel_m, 0.f);
 }
 
 void render_rain::render()
@@ -267,7 +305,7 @@ void render_rain::flush()
     cmd_list_imm.set_xform_project(Device.mProject);
 
     // Accumulate
-    if (o.active)
+    if (o.active && nlc_wet) // NLC: not for a fog-only map
     {
         PIX_EVENT_CTX(cmd_list_imm, RainApply);
 

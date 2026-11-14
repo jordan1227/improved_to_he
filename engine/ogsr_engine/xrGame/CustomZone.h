@@ -448,6 +448,24 @@ protected:
     float m_nlc_silence_ramp_k{0.5f};
     void nlc_silence_register(bool on);
 
+    // NLC anomaly haze (docs/ANOMALY_HAZE_DESIGN.md): section key nlc_haze = <profile> ( config\environment\anomaly_haze.ltx ).
+    // Registered while the zone is enabled; the zone lights feed the haze and lose their volumetric flag meanwhile.
+    shared_str m_nlc_haze_name;
+    int m_nlc_haze{-1}; // profile index at spawn, -1 = none or filtered out by the profile's levels list
+    bool m_nlc_haze_on{};
+    bool m_nlc_haze_vol_off{}; // the zone lights' volumetric flag is switched off by the haze
+    bool m_nlc_haze_ptcl_hidden{}; // idle particles stopped by ssfx_haze_particles 0
+    u32 m_nlc_haze_sun_next{};
+    shared_str m_nlc_haze_ptcl; // key nlc_haze_idle_particles: idle particles while hazed ( trimmed set ), empty = keep
+    shared_str m_nlc_haze_ptcl_orig; // the section's idle_particles
+    bool m_nlc_haze_ptcl_swapped{};
+    void nlc_haze_swap_particles(bool haze);
+    void nlc_haze_play_idle_particles();
+    Fvector m_nlc_haze_idle_col{}; // last idle light colour ( UpdateIdleLight )
+    float m_nlc_haze_idle_range{};
+    void nlc_haze_update();
+    void nlc_haze_volumetric(bool off);
+
     // optimization FAST/SLOW mode
 public:
     bool o_fastmode;

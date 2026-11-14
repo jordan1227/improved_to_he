@@ -12,6 +12,10 @@ function element_0(shader, t_base, t_second, t_detail)
 	shader:dx10texture("env_s1", "$user$env_s1")
 	shader:dx10texture("sky_s0", "$user$sky0")
 	shader:dx10texture("sky_s1", "$user$sky1")
+	-- NLC: fog colour from the sky ( ssfx_fog_atmo.h )
+	shader:dx10texture("s_fog_sky0", "$user$sky0")
+	shader:dx10texture("s_fog_sky1", "$user$sky1")
+	shader:dx10texture("s_fog_map", "$user$smap_rain") -- NLC .201: view-ray sky-access gate
 	-- NLC: SSS 23 temporal AO / IL results ( ignored when the shader does not use them )
 	shader:dx10texture("s_ssfx_ao", "$user$ssfx_ao_a")
 	shader:dx10texture("s_ssfx_il", "$user$ssfx_il_a")
@@ -57,6 +61,7 @@ function element_3(shader, t_base, t_second, t_detail)
 		:zb(false, false)
 	shader:dx10texture("s_mblur_velocity", "$user$velocity") -- NLC: per-object motion blur
 	shader:dx10texture("s_position", "$user$position")
+	shader:dx10texture("s_fog_map", "$user$smap_rain") -- NLC .205b: old IL fade by the view-ray fog gate
 	shader:dx10texture("s_image", "$user$postprocess0")
 	shader:dx10texture("s_bloom", "$user$bloom1")
 	shader:dx10texture("s_ssfx_bloom", "$user$ssfx_bloom1")

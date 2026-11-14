@@ -144,6 +144,10 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
     // NLC .85: rain refraction buffer ( no-op when off or dry )
     phase_ssfx_rain(cmd_list);
 
+    // NLC anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md ): ssfx_haze_order 0 = before the forward pass
+    if (ps_ssfx_haze_order == 0)
+        phase_ssfx_haze(cmd_list);
+
     // Forward rendering
     {
         PIX_EVENT(render_forward);
@@ -155,6 +159,16 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
         cmd_list.set_ColorWriteEnable();
 
         RImplementation.render_forward();
+    }
+
+    // NLC anomaly haze, default order 1: after the forward pass ( the anomaly's own particles are hazed too ); the
+    // forward targets are set again for the HUD UI below
+    if (ps_ssfx_haze_order == 1 && phase_ssfx_haze(cmd_list))
+    {
+        u_setrt(cmd_list, rt_Generic_0, rt_heat, nullptr, nullptr, rt_Base_Depth->pZRT[cmd_list.context_id]);
+        cmd_list.set_CullMode(CULL_CCW);
+        cmd_list.set_Stencil(FALSE);
+        cmd_list.set_ColorWriteEnable();
     }
 
     auto& dsgraph = RImplementation.get_imm_context();
