@@ -418,6 +418,12 @@ public:
     IKinematicsAnimated* script_anim_item_model{};
     xr_vector<script_layer*> m_script_layers;
 
+    // NLC flytrap (docs/ANOMALY_DESIGN.md 25): the field factor the hands' running blends play at; rescaled once per frame
+    // here (not per CHudItem: a weapon and a detector both running a motion scaled the hands twice)
+    float m_nlc_hands_field_k{1.f};
+    u32 m_nlc_hands_field_frame{};
+    void nlc_follow_field_factor();
+
     // Movement animation layers: 0 = aim_walk, 1 = aim_crouch, 2 = crouch, 3 = walk, 4 = run, 5 = sprint
     xr_vector<movement_layer*> m_movement_layers;
 
@@ -462,8 +468,11 @@ extern player_hud* g_player_hud;
 enum : u8 { NLC_SPEED_NONE, NLC_SPEED_RELOAD, NLC_SPEED_DRAW, NLC_SPEED_ADS, NLC_SPEED_FIELD, NLC_SPEED_KINDS }; // ADS: the aim transition (HudItem.cpp), not a clip; FIELD: every motion of the actor's item
 extern float g_nlc_hud_speed_k[NLC_SPEED_KINDS];
 extern float g_nlc_actor_field_speed_k; // NLC flytrap: actor movement factor (Actor_Movement.cpp), Lua level.nlc_set_actor_field_speed
+extern float g_nlc_actor_look_k; // NLC flytrap: mouse look factor (ActorInput.cpp), Lua level.nlc_set_look_factor
 inline float nlc_hud_speed_k(u8 kind) { return kind < NLC_SPEED_KINDS ? g_nlc_hud_speed_k[kind] : 1.f; }
 void nlc_set_hud_speed_factor(u8 kind, LPCSTR name, float k);
 float nlc_get_hud_speed_factor(u8 kind, LPCSTR name);
 u8 nlc_actor_motion_kind(const CHudItem* item, LPCSTR anm_name);
 float nlc_actor_motion_speed_k(const CHudItem* item, LPCSTR anm_name); // kind factor x field factor
+float nlc_actor_fire_interval_k(const CHudItem* item); // NLC flytrap: shot interval x this for the actor's weapon (1 / field factor)
+void nlc_scale_running_blends(IKinematicsAnimated* ka, float ratio); // NLC flytrap: speed of every running blend x ratio

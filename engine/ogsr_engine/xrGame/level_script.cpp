@@ -1250,6 +1250,7 @@ void CLevel::script_register(lua_State* L)
             def("nlc_set_field_speed_factor", [](LPCSTR name, float k) { nlc_set_hud_speed_factor(NLC_SPEED_FIELD, name, k); }), // every motion of the actor's item
             def("nlc_set_ads_speed_factor", [](LPCSTR name, float k) { nlc_set_hud_speed_factor(NLC_SPEED_ADS, name, k); }), // aim-in / aim-out speed
             def("nlc_set_actor_field_speed", [](float k) { g_nlc_actor_field_speed_k = std::clamp(k, 0.1f, 1.f); }), // NLC flytrap: actor movement factor
+            def("nlc_set_look_factor", [](float k) { g_nlc_actor_look_k = std::clamp(k, 0.1f, 1.f); }), // NLC flytrap: mouse look factor
             // NLC silence anomaly (xr_3da/xr_area.cpp): zones registered now, AI sound deliveries weakened since the level started,
             // share of a sound kept between two points (1 = no silence zone involved)
             def("nlc_silence_zones", [] { return nlc_silence_zones(); }), def("nlc_silence_muted", [] { return nlc_silence_muted(); }),

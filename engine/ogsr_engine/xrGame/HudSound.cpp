@@ -106,10 +106,20 @@ void HUD_SOUND::PlaySound(HUD_SOUND& hud_snd, const Fvector& position, const COb
     float delay = hud_snd.m_activeSnd->delay;
     // NLC: the actor's reload / draw sounds play at the animation speed (pitch follows), delays scale with it
     const float nlc_k = nlc_hud_speed_k(hud_snd.m_nlc_speed_kind) * nlc_hud_speed_k(NLC_SPEED_FIELD); // field: the clip has it too (nlc_actor_motion_speed_k)
-    if (hud_snd.m_nlc_speed_kind != NLC_SPEED_NONE && parent && parent == Actor() && !fsimilar(nlc_k, 1.f))
+    // the actor's own sounds: the detectors pass themselves as the parent, the others the actor (H_Root)
+    const bool nlc_actor = parent && Actor() && parent->H_Root() == Actor();
+    if (hud_snd.m_nlc_speed_kind != NLC_SPEED_NONE && nlc_actor && !fsimilar(nlc_k, 1.f))
     {
         freq *= nlc_k;
         delay /= nlc_k;
+    }
+    else if (hud_snd.m_nlc_speed_kind == NLC_SPEED_NONE && nlc_actor)
+    {
+        // NLC flytrap (docs/ANOMALY_DESIGN.md 23): the actor's other item sounds (shots, empty clicks) are pitched down by
+        // the square root of the field factor (a full factor sounded broken on shots)
+        const float field = nlc_hud_speed_k(NLC_SPEED_FIELD);
+        if (field < 0.999f)
+            freq *= _sqrt(std::max(field, 0.1f));
     }
     Fvector pos = (flags & sm_2D) ? Fvector{} : position;
 

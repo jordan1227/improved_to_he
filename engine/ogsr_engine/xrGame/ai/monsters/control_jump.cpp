@@ -92,6 +92,10 @@ void CControlJump::activate()
 
 void CControlJump::on_release()
 {
+    // NLC flytrap: a jump cut short (another control took over, death) must not leave the zone undoing gravity
+    if (m_object->m_nlc_jump_k < 0.999f)
+        nlc_jump_done("released");
+
     // NLC: owner-safe (a later control may have taken some of the captures; nlc-3.589.32 crash here)
     m_man->unlock_owned(this, ControlCom::eControlPath);
 
@@ -333,7 +337,7 @@ void CControlJump::update_frame()
         ++m_nlc_relaunch;
         m_jump_start_pos = m_object->Position();
         calculate_jump_time(m_target_position, true);
-        m_object->character_physics_support()->movement()->Jump(m_target_position, m_jump_time);
+        nlc_launch();
         m_time_started = time();
         m_time_next_allowed = m_time_started + m_delay_after_jump;
         if (CBaseMonster::nlc_evade_debug())
@@ -384,6 +388,44 @@ void CControlJump::update_frame()
     }
 }
 
+// NLC flytrap (docs/ANOMALY_DESIGN.md 22): a jump inside a Flytrap is the normal jump in slowed time. The launch velocity
+// for the planned time is multiplied by k, the zone makes gravity k^2 g while the body is in the air (CCustomZone, monster
+// branch) and the jump time is stretched by 1 / k, so the arc is the same, only slower; the glide clip, the landing test and
+// the relaunch check follow the stretched time.
+void CControlJump::nlc_launch()
+{
+    CPHMovementControl* mc = m_object->character_physics_support()->movement();
+    const float tk = m_object->nlc_time_k();
+    m_nlc_planned_time = m_jump_time;
+    if (tk < 0.999f && m_jump_time > EPS_L)
+    {
+        Fvector v;
+        v.sub(m_target_position, m_object->Position());
+        TransferenceToThrowVel(v, m_jump_time, ph_world->Gravity());
+        const float speed = v.magnitude();
+        v.mul(tk);
+        mc->JumpV(v);
+        m_jump_time /= tk;
+        m_object->m_nlc_jump_k = tk;
+        if (Device.dwTimeGlobal < m_object->m_nlc_time_log_end)
+            Msg("~ [flytrap_jump] [%s] launch k %.2f: speed %.1f -> %.1f m/s, time %.2f -> %.2f s, %.1f m to the target", m_object->cName().c_str(), tk, speed,
+                speed * tk, m_nlc_planned_time, m_jump_time, m_target_position.distance_to(m_object->Position()));
+    }
+    else
+    {
+        mc->Jump(m_target_position, m_jump_time);
+        m_object->m_nlc_jump_k = 1.f;
+    }
+}
+
+void CControlJump::nlc_jump_done(LPCSTR why)
+{
+    if (m_object->m_nlc_jump_k < 0.999f && Device.dwTimeGlobal < m_object->m_nlc_time_log_end)
+        Msg("~ [flytrap_jump] [%s] %s after %.2f s (stretched %.2f, planned %.2f), %.1f m from the target", m_object->cName().c_str(), why,
+            m_time_started ? float(time() - m_time_started) / 1000.f : 0.f, m_jump_time, m_nlc_planned_time, m_target_position.distance_to(m_object->Position()));
+    m_object->m_nlc_jump_k = 1.f;
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Trace ground to check if we have already landed
 //////////////////////////////////////////////////////////////////////////
@@ -392,7 +434,15 @@ bool CControlJump::is_on_the_ground()
     if (m_time_started == 0)
         return false;
     if (m_time_started + (m_jump_time * 1000) > time())
-        return false;
+    {
+        // NLC flytrap: a slow-motion jump waits for the stretched time; once it left the zone (normal gravity back) or
+        // hit something it comes down sooner, so past the planned time a descending body may land on the ray test
+        if (m_object->m_nlc_jump_k >= 0.999f || m_time_started + (m_nlc_planned_time * 1000) > time())
+            return false;
+        CPHMovementControl* mc = m_object->character_physics_support()->movement();
+        if (!mc || mc->GetVelocity().y > 0.1f)
+            return false;
+    }
 
     Fvector direction;
     direction.set(0.f, -1.f, 0.f);
@@ -444,6 +494,7 @@ void CControlJump::grounding()
         // lock dir
         m_man->dir_stop(this);
 
+        nlc_jump_done("landed"); // NLC flytrap
         m_time_started = 0;
         m_jump_time = 0;
         m_anim_state_current = eStateGround;
@@ -453,6 +504,7 @@ void CControlJump::grounding()
 
 void CControlJump::stop()
 {
+    nlc_jump_done("ended"); // NLC flytrap
     // NLC: evasion pass diagnostics: where an upward jump ended, relative to the ai-map under it
     if (CBaseMonster::nlc_evade_debug() && (m_target_position.y - m_jump_start_pos.y > 1.f || m_object->nlc_jump_bounce_grace()))
     {
@@ -564,7 +616,7 @@ void CControlJump::on_event(ControlCom::EEventType type, ControlCom::IEventData*
             // получить время физ.прыжка
             calculate_jump_time(m_target_position, true);
 
-            m_object->character_physics_support()->movement()->Jump(m_target_position, m_jump_time);
+            nlc_launch(); // NLC flytrap: may stretch m_jump_time by 1 / k
             m_time_started = time();
             m_time_next_allowed = m_time_started + m_delay_after_jump;
             //---------------------------------------------------------------------------------
@@ -584,9 +636,15 @@ void CControlJump::on_event(ControlCom::EEventType type, ControlCom::IEventData*
             ctrl_data_dir->linear_dependency = false;
             //---------------------------------------------------------------------------------
 
-            // NLC flytrap: the glide clip is timed to the jump, so the stasis factor is applied here (an explicit speed
-            // is not scaled in CControlAnimation::play)
-            ctrl_data->set_speed(m_man->animation().current_blend()->timeTotal / m_man->animation().current_blend()->speed / m_jump_time * m_object->nlc_time_k());
+            // NLC flytrap: the glide clip is timed to the jump. In a Flytrap m_jump_time is already the slowed flight
+            // (nlc_launch), so no extra factor here (an explicit speed is not scaled in CControlAnimation::play). The
+            // clip's own speed comes from its motion def: the blend's may already be slowed by play() (docs 21, 22)
+            CBlend* glide = m_man->animation().current_blend();
+            float natural = glide->speed;
+            if (IKinematicsAnimated* ka = smart_cast<IKinematicsAnimated*>(m_object->Visual()))
+                if (CMotionDef* def = ka->LL_GetMotionDef(glide->motionID))
+                    natural = def->Speed();
+            ctrl_data->set_speed(glide->timeTotal / std::max(natural, 0.01f) / m_jump_time);
         }
         else
             ctrl_data->set_speed(-1.f);

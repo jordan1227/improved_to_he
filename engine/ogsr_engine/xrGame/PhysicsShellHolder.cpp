@@ -85,7 +85,7 @@ void CPhysicsShellHolder::PHHit(SHit& H)
 {
     if (H.impulse > 0)
         if (m_pPhysicsShell)
-            m_pPhysicsShell->applyHit(H.p_in_bone_space, H.dir, H.impulse, H.boneID, H.type());
+            m_pPhysicsShell->applyHit(H.p_in_bone_space, H.dir, H.impulse * m_nlc_ph_hit_k, H.boneID, H.type()); // NLC flytrap: slowed time
 }
 
 // void	CPhysicsShellHolder::Hit(float P, Fvector &dir, CObject* who, s16 element,

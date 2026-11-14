@@ -5,6 +5,77 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.199 (2026-11-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `D8A6EF317B496F3AEA8808B5AA3BF77027AA5B294AF3C9E4566F7381DE405C2C` (archived with its PDB in `nlc_tools/builds/20261113_124145_d8a6ef31`).
+- **Status:** runtime pending. Built on `nlc-3.589.198`. Flytrap review fixes (`docs/ANOMALY_DESIGN.md` 25).
+- Hands field-factor rescale once per frame in `player_hud::nlc_follow_field_factor` (also the scripted motion's end time and item model); `CHudItem` rescales only its own item model, end time, marks, sound.
+- `CControlJump`: `on_release` resets `m_nlc_jump_k`; `is_on_the_ground` lets a descending slow-motion jump land after its planned time.
+- Monster airborne anti-gravity once per frame; zone gravity dt clamp 0.5 s (was 0.1 s).
+- `CControlAnimation::freeze` saves the global speed without the time factor (`m_nlc_applied_tk`); capturer lookup only while slowed or logging.
+- Haste / dodge above 1 kept inside a Flytrap (`CBaseMonster::nlc_move_speed_k_unslowed`).
+- `CWeaponMagazinedWGrenade` fire loop follows `nlc_actor_fire_interval_k`; detector sounds pitch with the actor's item sounds (`H_Root` test).
+- **Required game data:** none new for the engine; the same batch deploys `amk_anoms.script` (spawn shares) and the Aver time scripts (`sak`, `sleep_manager`, `sak_dialog`, `sivol_exo`, `kotovod`, `bind_bubble`).
+## nlc-3.589.198 (2026-11-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `80C6A6CE60DB229A6F2471698E89226163936E9A38A7AF3F361685A51FA19A60` (archived with its PDB in `nlc_tools/builds/20261113_104151_80c6a6ce`).
+- **Status:** runtime pending. Built on `nlc-3.589.197`. Flytrap batch 23 (`docs/ANOMALY_DESIGN.md` 23).
+- HUD motion marks run on clip time (real time x the motion's speed factor), so a slowed reload refills the magazine when the clip gets there (also the injury reload factor).
+- Field factor follow also rescales the separated hands model (`Model2`).
+- The actor's fire rate follows the field factor (`nlc_actor_fire_interval_k`: `CWeaponMagazined`, `CWeaponShotgun`).
+- The actor's item sounds without a handling kind (shots, clicks) pitch by sqrt(field factor).
+- **Required game data:** `misc/zone_flytrap.ltx` (actor tuning), `sivol_flytrap.script`, `allcore_hide.script`, `vergas_masks.script`, `vergas_flask.script`.
+## nlc-3.589.197 (2026-11-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `4E221FDFCB5CACC52F2192FCAA9505581F63464F6C6940854E7008738D5FE202` (archived with its PDB in `nlc_tools/builds/20261113_101700_4e221fdf`).
+- **Status:** runtime pending. Built on `nlc-3.589.196`. Flytrap batch 22 (`docs/ANOMALY_DESIGN.md` 22).
+- Flytrap hits: zone key `flytrap_object_hit_k_exp`; hits on objects inside are x k^exp (`CPhysicsShellHolder::m_nlc_ph_hit_k`).
+- Monster jump in a Flytrap: `CControlJump::nlc_launch` launches at k x the velocity and stretches the jump time by 1 / k; the zone applies gravity k^2 g to that monster in the air (`CBaseMonster::m_nlc_jump_k`) instead of braking it. Log `~ [flytrap_jump]`.
+- Actor item motions follow a field factor change mid-motion (`CHudItem::nlc_follow_field_factor`: blends, end time, sound pitch).
+- `player_hud::script_anim_play` multiplies the scripted hands motion speed by the field factor.
+- Mouse look factor `g_nlc_actor_look_k`, Lua `level.nlc_set_look_factor(k)`.
+- **Required game data:** `misc/zone_flytrap.ltx` (`flytrap_object_hit_k_exp`, `flytrap_actor_look`, `flytrap_actor_snd_*`), `sivol_flytrap.script`.
+## nlc-3.589.196 (2026-11-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F3B443C7F859E72BE8A6773B0CB3EDF5063D6733DA7703624FCCE479C4D875AE` (archived with its PDB in `nlc_tools/builds/20261113_094833_f3b443c7`).
+- **Status:** runtime pending. Built on `nlc-3.589.195`. Flytrap batch 21 (`docs/ANOMALY_DESIGN.md` 21).
+- Monster clips in a Flytrap: the own speed used to pick and time a movement clip is at most the path speed; `CControlMovement::real_velocity()` falls back to the path speed x `nlc_move_speed_k` (it returned the unslowed path speed when the character body was not enabled, so slowed dogs ran their clips at natural speed).
+- Jump glide clip: timed from the motion def's own speed instead of the current blend speed (already slowed by `play()`, which cancelled the time factor).
+- Grenades: `nlc_bullet_detonate_radius` default 0.12 m; a burer-held grenade is listed for bullet proximity detonation too.
+- Explosions: explosive keys `nlc_blast_body_speed` (m/s at 1 m, 0 = stock), `nlc_blast_body_falloff`, `nlc_blast_body_speed_max` set the push on corpses as a speed (impulse = speed x shell mass / parts^0.75, shielding from one ray); `nlc_blast_live_impulse_k` scales the stock push on living creatures; `nlc_blast_log` writes `~ [blast]` lines.
+- **Required game data:** `weapons/w_grenades.ltx` (F1, RGD-5 keys), `misc/zone_flytrap.ltx` (`flytrap_ragdoll_exit_speed` 12).
+## nlc-3.589.195 (2026-11-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E8D7E90DA728D03820B6A736ED7BFF3F5592D3C006A65EB14E5A15E2BD9CFD02` (archived with its PDB in `nlc_tools/builds/20261113_092101_e8d7e90d`).
+- **Status:** runtime pending. Built on `nlc-3.589.194`. Flytrap batch 20 (`docs/ANOMALY_DESIGN.md` 20).
+- Monster clips in a Flytrap: the time factor is applied once, in `CControlAnimation::play` (explicit speeds from the base animation control, and speed -1 clips); `set_animation_speed` takes the Flytrap's share out of the movement factor and loses its separate time-factor branch; `SelectVelocities` no longer multiplies. Log `~ [flytrap_anim]` under the zone's `flytrap_log` (`CBaseMonster::nlc_set_time_k(k, ms, log)`).
+- Flytrap objects: own ramp `flytrap_object_ramp` (m, default 1.0; 0 = the monsters' ramp) with geometric interpolation between `flytrap_object_time_rim` and `_core`.
+- Grenades: an armed thrown grenade registers a sphere (`nlc_bullet_detonate_radius`, default 0.25 m) with `CBulletManager`; a fire-wound bullet step through it detonates the grenade from `CommitEvents` (`CGrenade::nlc_bullet_detonate`).
+- **Required game data:** `misc/zone_flytrap.ltx` (`flytrap_object_ramp`).
+## nlc-3.589.194 (2026-11-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `8B4B9E2533CFE067EF05678A83F5D32E1724A62D72C990C9AF9880616B218323` (archived with its PDB in `nlc_tools/builds/20261113_084405_8b4b9e25`).
+- **Status:** runtime pending. Built on `nlc-3.589.193`. Flytrap batch 19 (`docs/ANOMALY_DESIGN.md` 19).
+- Monster movement clips in a Flytrap: clips chosen by velocity (accel chains) are picked by the real speed / `nlc_time_k` and played at `nlc_time_k` after the 0.5 floor (`control_animation_base_update.cpp`). A slowed run stayed a normal-speed walk before.
+- Actor in the air inside a Flytrap: gravity becomes f^2 g (the zone adds g x (1 - f^2) upward per frame, once per frame), f = the actor field factor; the jump speed was already x f, so the jump keeps its height and lasts 1 / f longer. `flytrap_actor_air_speed` x f limits the horizontal speed and falling only.
+- Object release: `flytrap_ragdoll_exit_speed` (8 m/s) for bodies of several elements, `flytrap_object_exit_spin` (20 rad/s). `flytrap_object_time_rim` / `_core` floor lowered to 0.01.
+- **Required game data:** `misc/zone_flytrap.ltx` (object factors per tier).
+## nlc-3.589.193 (2026-11-13)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `3AF703E6E671DD7C36711CB04736DACB966918602613E8C1549B0F6C6E780F4F` (archived with its PDB in `nlc_tools/builds/20261113_081206_3af703e6`).
+- **Status:** runtime pending. Built on `nlc-3.589.192`. Flytrap crash fix and slowed time for objects (`docs/ANOMALY_DESIGN.md` 18).
+- Crash: `CCustomZone::nlc_flytrap_update` called `CPhysicsShellHolder::hasFixedBones()` on an object without a physics shell (FATAL c0000005, e.g. a creature that died inside before its ragdoll existed); the exit path had the same pattern. The shell is checked first.
+- Flytrap objects (items, bolts, grenades, corpses): slowed time instead of the 1.2 m/s cap with no gravity. Factor k by depth (`flytrap_object_time_rim` / `_core`, default 1 - `flytrap_slow_rim` / `_core`); every element's velocity and spin are kept at k x their own, gravity is g x k^2 x `flytrap_object_gravity_k`, a grenade fuse runs at k, hit impulses are x k (`CPhysicsShellHolder::PHHit`, `CCharacterPhysicsSupport::in_Hit`, new `CPhysicsShellHolder::m_nlc_ph_time_k` / `m_nlc_ph_time_zone`). On exit, zone `Disable()` or `net_Destroy` the own velocity comes back (limit `flytrap_object_exit_speed`), gravity is restored and the body is woken. One Flytrap owns a body at a time. Bodies dragged by the actor are left alone. Log lines `caught` / `released` under `flytrap_log`.
+- `Disable()` of a Flytrap also removes its bullet stasis entry.
+- Removed keys: `flytrap_object_speed`, `flytrap_fuse_k`.
+- **Required game data:** `misc/zone_flytrap.ltx`.
 ## nlc-3.589.192 (2026-11-12)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

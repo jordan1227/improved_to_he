@@ -20,6 +20,9 @@
 #include "Actor.h"
 #include "CharacterPhysicsSupport.h"
 #include "PHMovementControl.h"
+#include "HudSound.h" // NLC flytrap: field factor follow
+#include "../Include/xrRender/KinematicsAnimated.h"
+#include "../Include/xrRender/animation_blend.h"
 
 ENGINE_API extern float psHUD_FOV_def;
 
@@ -214,7 +217,40 @@ void CHudItem::Load(LPCSTR section)
     //--#SM+# End--
 }
 
-void CHudItem::PlaySound(HUD_SOUND& hud_snd, const Fvector& position, bool overlap) { HUD_SOUND::PlaySound(hud_snd, position, object().H_Root(), !!GetHUDmode(), false, overlap); }
+void CHudItem::PlaySound(HUD_SOUND& hud_snd, const Fvector& position, bool overlap)
+{
+    HUD_SOUND::PlaySound(hud_snd, position, object().H_Root(), !!GetHUDmode(), false, overlap);
+    if (hud_snd.m_nlc_speed_kind != NLC_SPEED_NONE && !overlap)
+        m_nlc_motion_snd = &hud_snd; // NLC flytrap: its pitch follows a field factor change (nlc_follow_field_factor)
+}
+
+// NLC flytrap (docs/ANOMALY_DESIGN.md 22, 25): the field factor is applied when a motion starts (clip speed, end time, sound
+// pitch); walking out of (or into) a Flytrap mid-motion rescales what is already running. The hands are rescaled once per
+// frame by player_hud::nlc_follow_field_factor; here only this item's own model, end time, marks and sound.
+void CHudItem::nlc_follow_field_factor()
+{
+    if (object().H_Parent() != Actor() || m_nlc_field_k_start <= 0.f)
+        return;
+    const float cur = nlc_hud_speed_k(NLC_SPEED_FIELD);
+    if (_abs(cur - m_nlc_field_k_start) < 0.005f * m_nlc_field_k_start)
+        return;
+    const float ratio = cur / m_nlc_field_k_start;
+    m_nlc_field_k_start = cur;
+
+    // the item model's idle loops carry the factor too (anim_play), so it follows whether a motion runs or not
+    if (HudItemData() && HudItemData()->m_model)
+        nlc_scale_running_blends(HudItemData()->m_model->dcast_PKinematicsAnimated(), ratio);
+
+    if (!m_bStopAtEndAnimIsRunning)
+        return;
+    m_nlc_mark_k *= ratio;
+    const u32 now = Device.dwTimeGlobal;
+    if (m_dwMotionEndTm > now)
+        m_dwMotionEndTm = now + iFloor(float(m_dwMotionEndTm - now) / ratio);
+
+    if (m_nlc_motion_snd && m_nlc_motion_snd->m_activeSnd && m_nlc_motion_snd->m_activeSnd->snd._feedback())
+        m_nlc_motion_snd->m_activeSnd->snd.set_frequency(m_nlc_motion_snd->m_activeSnd->freq * nlc_hud_speed_k(m_nlc_motion_snd->m_nlc_speed_kind) * cur);
+}
 
 void CHudItem::net_Destroy() { m_dwStateTime = 0; }
 
@@ -309,6 +345,7 @@ void CHudItem::Deactivate(bool now)
 void CHudItem::UpdateCL()
 {
     m_dwStateTime += Device.dwTimeDelta;
+    nlc_follow_field_factor(); // NLC flytrap
 
     if (m_current_motion_def)
     {
@@ -317,8 +354,11 @@ void CHudItem::UpdateCL()
             const xr_vector<motion_marks>& marks = m_current_motion_def->marks;
             if (!marks.empty())
             {
-                float motion_prev_time = ((float)m_dwMotionCurrTm - (float)m_dwMotionStartTm) / 1000.0f;
-                float motion_curr_time = ((float)Device.dwTimeGlobal - (float)m_dwMotionStartTm) / 1000.0f;
+                // NLC: clip time (real time x the reload / draw / field factor the clip plays at), not real time: a slowed
+                // reload refilled the magazine before the hand brought it (docs/ANOMALY_DESIGN.md 23)
+                float motion_prev_time = m_nlc_mark_time;
+                m_nlc_mark_time += float(Device.dwTimeGlobal - m_dwMotionCurrTm) / 1000.0f * m_nlc_mark_k;
+                float motion_curr_time = m_nlc_mark_time;
 
                 xr_vector<motion_marks>::const_iterator it = marks.begin();
                 xr_vector<motion_marks>::const_iterator it_e = marks.end();
@@ -447,6 +487,10 @@ u32 CHudItem::PlayHUDMotion_base(const char* M, const bool bMixIn, const u32 sta
         m_dwMotionCurrTm = m_dwMotionStartTm;
         m_dwMotionEndTm = m_dwMotionStartTm + anim_time;
         m_startedMotionState = state;
+        m_nlc_field_k_start = object().H_Parent() == Actor() ? nlc_hud_speed_k(NLC_SPEED_FIELD) : 1.f; // NLC flytrap
+        // NLC (docs/ANOMALY_DESIGN.md 23): motion marks (reload refill, visible rounds) follow the clip, not real time
+        m_nlc_mark_time = 0.f;
+        m_nlc_mark_k = nlc_actor_motion_speed_k(this, M);
     }
     else
         m_bStopAtEndAnimIsRunning = false;

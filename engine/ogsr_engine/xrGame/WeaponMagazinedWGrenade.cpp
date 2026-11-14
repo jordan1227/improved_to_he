@@ -300,7 +300,7 @@ void CWeaponMagazinedWGrenade::state_Fire(float dt)
 
         while (fTime <= 0 && (iAmmoElapsed > 0) && (IsWorking() || m_bFireSingleShot))
         {
-            fTime += fTimeToFire;
+            fTime += fTimeToFire * nlc_actor_fire_interval_k(this); // NLC flytrap: the launcher too (docs/ANOMALY_DESIGN.md 25)
 
             ++m_iShotNum;
             OnShot();

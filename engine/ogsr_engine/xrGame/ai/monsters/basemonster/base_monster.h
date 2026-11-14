@@ -511,12 +511,18 @@ public:
     // k = fraction of speed removed (0..0.9), fades out over the last quarter of time_ms
     void nlc_apply_move_slow(float k, u32 time_ms, float hold = 0.75f); // hold: share of the time at full strength, the rest recovers linearly
     float nlc_move_speed_k() const;
+    float nlc_move_speed_k_unslowed() const; // NLC flytrap: the same without the timed slow (haste, rage, dodge only)
     // NLC flytrap: every natural-speed clip (not only the movement ones) plays at k for time_ms; renewed by the zone
-    void nlc_set_time_k(float k, u32 time_ms)
+    void nlc_set_time_k(float k, u32 time_ms, bool log = false)
     {
         m_nlc_time_k = k;
         m_nlc_time_end = Device.dwTimeGlobal + time_ms;
+        if (log)
+            m_nlc_time_log_end = Device.dwTimeGlobal + 3000; // longer than the factor: gaps in the renewal show as k 1.00
     }
+    u32 m_nlc_time_log_end{}; // NLC flytrap: CControlAnimation::play writes [flytrap_anim] lines until then
+    float m_nlc_jump_k{1.f}; // NLC flytrap: time factor of the jump in flight (CControlJump::nlc_launch); the zone sets gravity k^2 g
+    u32 m_nlc_jump_air_frame{u32(-1)}; // NLC flytrap: the frame the airborne gravity was last undone (overlapping zones: once)
     float nlc_time_k() const { return Device.dwTimeGlobal < m_nlc_time_end ? m_nlc_time_k : 1.f; }
 
     // threaten (stomp) control hooks: skip the facing check / scale the animation speed

@@ -11,6 +11,7 @@
 #include "Weapon.h"
 #include "mt_config.h"
 #include "nlc_stealth.h" // NLC: near-miss concern
+#include "Grenade.h" // NLC: bullet proximity detonation
 
 #ifdef DEBUG
 #include "debug_renderer.h"
@@ -24,6 +25,7 @@ float CBulletManager::m_fMinBulletSpeed = 2.f;
 // NLC flytrap: the zones register from the main thread, the bullets may be updated in parallel
 static std::mutex s_nlc_stasis_lock;
 static xr_vector<CBulletManager::SNlcStasis> s_nlc_stasis;
+static xr_vector<CBulletManager::SNlcFuse> s_nlc_fuses;
 static const float s_nlc_stasis_tracer = 0.45f; // m, tracer length of a bullet inside a field
 
 void CBulletManager::nlc_stasis_set(u16 id, const Fvector& center, float radius, float cap, float ramp)
@@ -51,6 +53,27 @@ void CBulletManager::nlc_stasis_clear()
 {
     std::scoped_lock lock(s_nlc_stasis_lock);
     s_nlc_stasis.clear();
+    s_nlc_fuses.clear();
+}
+
+// NLC: armed thrown grenades (docs/ANOMALY_DESIGN.md 20), same lock as the stasis fields
+void CBulletManager::nlc_fuse_set(u16 id, const Fvector& center, float radius)
+{
+    std::scoped_lock lock(s_nlc_stasis_lock);
+    for (SNlcFuse& it : s_nlc_fuses)
+        if (it.id == id)
+        {
+            it.center = center;
+            it.radius = radius;
+            return;
+        }
+    s_nlc_fuses.push_back({id, center, radius});
+}
+
+void CBulletManager::nlc_fuse_remove(u16 id)
+{
+    std::scoped_lock lock(s_nlc_stasis_lock);
+    s_nlc_fuses.erase(std::remove_if(s_nlc_fuses.begin(), s_nlc_fuses.end(), [id](const SNlcFuse& it) { return it.id == id; }), s_nlc_fuses.end());
 }
 
 SBullet::SBullet() : m_on_bullet_hit(false) {}
@@ -202,6 +225,7 @@ void CBulletManager::UpdateWorkload()
     {
         std::scoped_lock lock(s_nlc_stasis_lock); // NLC flytrap
         m_nlc_stasis = s_nlc_stasis;
+        m_nlc_fuses = s_nlc_fuses;
     }
 
     int k = m_Bullets.size() - 1;
@@ -334,6 +358,25 @@ bool CBulletManager::CalcBullet(collide::rq_results& rq_storage, xr_vector<ISpat
             Sound->play_no_feedback(bullet->m_whine_snd, nullptr, 0, 0.f, &pt, &vol);
             if (psSoundOccLog[0] && (psSoundOccLog[0] == '*' || strstr("whine", psSoundOccLog)))
                 Msg("[snd_whine] near miss d=%.1f at %.1f,%.1f,%.1f", d, pt.x, pt.y, pt.z);
+        }
+    }
+
+    // NLC (docs/ANOMALY_DESIGN.md 20): a bullet step passing within an armed grenade's sphere detonates it; the bullet flies on
+    if (!m_nlc_fuses.empty() && bullet->hit_type == ALife::eHitTypeFireWound)
+    {
+        for (auto it = m_nlc_fuses.begin(); it != m_nlc_fuses.end(); ++it)
+        {
+            Fvector to;
+            to.sub(it->center, bullet->pos);
+            const float t = clampr(to.dotproduct(cur_dir), 0.f, range);
+            Fvector pt;
+            pt.mad(bullet->pos, cur_dir, t);
+            if (pt.distance_to_sqr(it->center) < it->radius * it->radius)
+            {
+                m_nlc_fuse_hits.emplace_back(it->id, bullet->parent_id);
+                m_nlc_fuses.erase(it); // once per grenade
+                break;
+            }
         }
     }
 
@@ -552,6 +595,12 @@ void CBulletManager::CommitEvents() // @ the start of frame
         }
     }
     m_Events.clear();
+
+    // NLC: grenades detonated by a passing bullet (docs/ANOMALY_DESIGN.md 20)
+    for (const auto& h : m_nlc_fuse_hits)
+        if (CGrenade* grenade = smart_cast<CGrenade*>(Level().Objects.net_Find(h.first)))
+            grenade->nlc_bullet_detonate(h.second);
+    m_nlc_fuse_hits.clear();
 
     if (m_Bullets.empty())
         m_dwTimeRemainder = 0;

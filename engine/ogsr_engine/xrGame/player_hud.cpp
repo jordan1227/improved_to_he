@@ -644,6 +644,61 @@ float nlc_actor_motion_speed_k(const CHudItem* item, LPCSTR anm_name)
     return k;
 }
 
+// NLC flytrap (docs/ANOMALY_DESIGN.md 23): the actor's fire rate follows the field factor like the shot clips do
+float nlc_actor_fire_interval_k(const CHudItem* item)
+{
+    if (!item || item->object().H_Parent() != Actor())
+        return 1.f;
+    return 1.f / std::max(nlc_hud_speed_k(NLC_SPEED_FIELD), 0.1f);
+}
+
+namespace
+{
+struct nlc_scale_blends : public IterateBlendsCallback
+{
+    float ratio;
+    void operator()(CBlend& B) override
+    {
+        if (B.blend_state() != CBlend::eFREE_SLOT && B.speed > 0.f)
+            B.speed *= ratio;
+    }
+};
+} // namespace
+
+void nlc_scale_running_blends(IKinematicsAnimated* ka, float ratio)
+{
+    if (!ka)
+        return;
+    nlc_scale_blends scale;
+    scale.ratio = ratio;
+    ka->LL_IterateBlends(scale);
+}
+
+// NLC flytrap (docs/ANOMALY_DESIGN.md 25): every hands motion starts at the field factor of its moment (anim_play,
+// script_anim_play); walking into or out of a Flytrap rescales what already runs. Once per frame for the hands and the
+// scripted motion (its item model and end time); each CHudItem rescales only its own item model, end time and marks.
+void player_hud::nlc_follow_field_factor()
+{
+    if (m_nlc_hands_field_frame == Device.dwFrame)
+        return;
+    m_nlc_hands_field_frame = Device.dwFrame;
+    const float cur = nlc_hud_speed_k(NLC_SPEED_FIELD);
+    if (m_nlc_hands_field_k <= 0.f || _abs(cur - m_nlc_hands_field_k) < 0.005f * m_nlc_hands_field_k)
+        return;
+    const float ratio = cur / m_nlc_hands_field_k;
+    m_nlc_hands_field_k = cur;
+
+    nlc_scale_running_blends(m_model, ratio);
+    if (m_model_2 && m_model_2 != m_model) // separated hands
+        nlc_scale_running_blends(m_model_2, ratio);
+    if (script_anim_item_model)
+        nlc_scale_running_blends(script_anim_item_model, ratio);
+
+    const u32 now = Device.dwTimeGlobal;
+    if (script_anim_part != u8(-1) && m_bStopAtEndAnimIsRunning && script_anim_end > now)
+        script_anim_end = now + iFloor(float(script_anim_end - now) / ratio);
+}
+
 u32 attachable_hud_item::anim_play(const shared_str& anm_name_b, BOOL bMixIn, const CMotionDef*& md, bool randomAnim, float speed)
 {
     R_ASSERT(strstr(anm_name_b.c_str(), "anm_") == anm_name_b.c_str() || strstr(anm_name_b.c_str(), "anim_") == anm_name_b.c_str());
@@ -1011,6 +1066,8 @@ void player_hud::update(const Fmatrix& cam_trans)
 {
     //Костыли для правильной работы системы коллизии худа. Это всё плохо и надо будет как-то переделать в будущем. Здесь два апдейта худа подряд делаются для того, чтобы менеджер
     //коллизи мог получить координаты ствола в обычном режиме, из которых уже будет делаться рейтрейс. skip_updated_frame тоже к этому относится.
+    nlc_follow_field_factor(); // NLC flytrap (frame-guarded: this function calls itself once more)
+
     static bool need_update_collision{};
     need_update_collision = !need_update_collision;
     bool need_update_collision_local = need_update_collision;
@@ -1693,6 +1750,9 @@ void player_hud::load_script(LPCSTR section)
 
 u32 player_hud::script_anim_play(u8 hand, LPCSTR hud_section, LPCSTR anm_name, bool bMixIn, float speed, bool bOverride_item)
 {
+    // NLC flytrap (docs/ANOMALY_DESIGN.md 22): every scripted hands motion (consumables, masks, flask, torch...) is slowed with
+    // the actor's item motions; the returned duration follows (motion_length uses the speed)
+    speed *= nlc_hud_speed_k(NLC_SPEED_FIELD);
     if (!pSettings->section_exist(hud_section))
     {
         Msg("! script motion section [%s] does not exist", hud_section);

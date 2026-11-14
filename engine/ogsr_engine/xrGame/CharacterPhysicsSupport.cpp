@@ -491,7 +491,7 @@ void CCharacterPhysicsSupport::in_Hit(SHit& H, bool is_killing)
 #endif // USE_SMART_HITS
     }
     else
-        m_pPhysicsShell->applyHit(H.p_in_bone_space, H.dir, H.impulse, H.boneID, H.type());
+        m_pPhysicsShell->applyHit(H.p_in_bone_space, H.dir, H.impulse * m_EntityAlife.m_nlc_ph_hit_k, H.boneID, H.type()); // NLC flytrap: slowed time
 }
 
 IC void CCharacterPhysicsSupport::UpdateDeathAnims()

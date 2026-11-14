@@ -829,10 +829,10 @@ void CWeaponMagazined::state_Fire(float dt)
         // Alundaio: Cycle down RPM after two shots; used for Abakan/AN-94
         if (GetCurrentFireMode() == 2 || (bCycleDown == true && m_iShotNum < 1))
         {
-            fTime += fTimeToFire2;
+            fTime += fTimeToFire2 * nlc_actor_fire_interval_k(this); // NLC flytrap
         }
         else
-            fTime += fTimeToFire;
+            fTime += fTimeToFire * nlc_actor_fire_interval_k(this);
         // Alundaio: END
 
         ++m_iShotNum;
@@ -898,9 +898,9 @@ void CWeaponMagazined::PerformForcedShot()
     {
         m_bFireSingleShot = false;
         if (GetCurrentFireMode() == 2 || (bCycleDown && m_iShotNum < 1))
-            fTime += fTimeToFire2;
+            fTime += fTimeToFire2 * nlc_actor_fire_interval_k(this); // NLC flytrap
         else
-            fTime += fTimeToFire;
+            fTime += fTimeToFire * nlc_actor_fire_interval_k(this);
 
         ++m_iShotNum;
 

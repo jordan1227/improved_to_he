@@ -7,6 +7,7 @@ class CLAItem;
 class CArtefact;
 class CParticlesObject;
 class CZoneEffector;
+class CPhysicsShellHolder;
 
 #define SMALL_OBJECT_RADIUS 0.6f
 
@@ -416,16 +417,25 @@ protected:
     float m_nlc_ft_slow_rim{0.3f}; // monster speed removed at the edge
     float m_nlc_ft_slow_core{0.7f}; // and past ramp_k of the radius
     float m_nlc_ft_ramp_k{0.6f};
-    float m_nlc_ft_object_cap{1.2f}; // m/s, loose physics objects
+    // loose physics objects (items, bolts, grenades, corpses): slowed time (docs/ANOMALY_DESIGN.md 18)
+    float m_nlc_ft_obj_time_rim{0.7f}; // time factor at the edge (velocity, spin, fuse, hit impulse)
+    float m_nlc_ft_obj_time_core{0.3f}; // ... and past ramp_k of the radius
+    float m_nlc_ft_obj_hit_exp{1.f}; // hit impulses inside x k ^ this (flytrap_object_hit_k_exp)
+    float m_nlc_ft_obj_ramp{1.f}; // m from the surface to the core factor (geometric); 0 = R x flytrap_ramp_k
+    float m_nlc_ft_obj_gravity_k{1.f}; // gravity inside = g x k^2 x this
+    float m_nlc_ft_obj_exit_speed{20.f}; // m/s, own speed limit given back on release
+    float m_nlc_ft_ragdoll_exit_speed{8.f}; // m/s, the same for bodies of several elements (corpses)
+    float m_nlc_ft_obj_exit_spin{20.f}; // rad/s, own spin limit given back on release
     float m_nlc_ft_monster_cap_rim{4.5f}; // m/s, the physical speed limit of a live monster at the edge
     float m_nlc_ft_monster_cap_core{1.8f}; // ... and in the core (jumps, charges and falls included)
     bool m_nlc_particles_log{}; // section key object_particles_log
     float m_nlc_ft_actor_air{5.f}; // m/s x the actor field factor: the actor's speed limit off the ground
-    float m_nlc_ft_fuse_k{4.f}; // a grenade fuse runs this many times longer inside
     float m_nlc_ft_learn_radius{25.f}; // m, mates of a trapped monster that learn the zone
     u32 m_nlc_ft_learn_ms{700}; // ms inside before a monster understands
     void nlc_flytrap_update(u32 dt);
-    void nlc_flytrap_float(SZoneObjectInfo& io, bool on);
+    void nlc_flytrap_object(CPhysicsShellHolder* sh, const Fvector& P, float R, float ramp, u32 dt);
+    void nlc_flytrap_release(CGameObject* obj);
+    void nlc_flytrap_release_all();
     void nlc_flytrap_stasis(bool on);
 
     // NLC silence (docs/ANOMALY_DESIGN.md 16): sounds made or heard inside do not reach the AI. Section key nlc_silence;

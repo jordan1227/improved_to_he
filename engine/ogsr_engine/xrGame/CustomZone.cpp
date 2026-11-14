@@ -29,6 +29,8 @@
 #include "PHMovementControl.h"
 #include "CharacterPhysicsSupport.h"
 #include "player_hud.h" // g_nlc_actor_field_speed_k
+#include "PHCapture.h" // NLC flytrap
+#include "PHWorld.h"
 
 //////////////////////////////////////////////////////////////////////////
 #define PREFETCHED_ARTEFACTS_NUM 1 //количество предварительно проспавненых артефактов
@@ -118,11 +120,18 @@ void CCustomZone::Load(LPCSTR section)
         m_nlc_ft_slow_rim = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_slow_rim", 0.3f), 0.f, 0.9f);
         m_nlc_ft_slow_core = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_slow_core", 0.7f), 0.f, 0.9f);
         m_nlc_ft_ramp_k = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_ramp_k", 0.6f), 0.05f, 1.f);
-        m_nlc_ft_object_cap = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_object_speed", 1.2f), 0.1f);
+        // objects: by default the same time factor as the monsters' clips (1 - slow)
+        m_nlc_ft_obj_time_rim = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_object_time_rim", 1.f - m_nlc_ft_slow_rim), 0.01f, 1.f);
+        m_nlc_ft_obj_time_core = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_object_time_core", 1.f - m_nlc_ft_slow_core), 0.01f, 1.f);
+        m_nlc_ft_obj_hit_exp = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_object_hit_k_exp", 1.f), 0.f, 1.f);
+        m_nlc_ft_obj_ramp = READ_IF_EXISTS(pSettings, r_float, section, "flytrap_object_ramp", 1.f); // m; 0 = the monsters' ramp
+        m_nlc_ft_obj_gravity_k = std::clamp(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_object_gravity_k", 1.f), 0.f, 4.f);
+        m_nlc_ft_obj_exit_speed = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_object_exit_speed", 20.f), 1.f);
+        m_nlc_ft_ragdoll_exit_speed = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_ragdoll_exit_speed", 8.f), 0.5f);
+        m_nlc_ft_obj_exit_spin = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_object_exit_spin", 20.f), 1.f);
         m_nlc_ft_monster_cap_rim = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_monster_speed_rim", 4.5f), 0.3f);
         m_nlc_ft_monster_cap_core = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_monster_speed_core", 1.8f), 0.3f);
         m_nlc_ft_actor_air = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_actor_air_speed", 5.f), 0.5f);
-        m_nlc_ft_fuse_k = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_fuse_k", 4.f), 1.f);
         m_nlc_ft_learn_radius = std::max(READ_IF_EXISTS(pSettings, r_float, section, "flytrap_learn_radius", 25.f), 0.f);
         m_nlc_ft_learn_ms = READ_IF_EXISTS(pSettings, r_u32, section, "flytrap_learn_ms", 700);
         m_nlc_ft_log = READ_IF_EXISTS(pSettings, r_bool, section, "flytrap_log", false);
@@ -1333,6 +1342,12 @@ bool CCustomZone::Enable()
 bool CCustomZone::Disable()
 {
     nlc_silence_register(false); // NLC: a disabled zone may get no further update (slow mode)
+    if (m_nlc_flytrap)
+    {
+        // NLC flytrap: the same, and a disabled zone never sees its objects leave: give them their time back now
+        nlc_flytrap_stasis(false);
+        nlc_flytrap_release_all();
+    }
 
     if (!IsEnabled())
         return false;
@@ -1576,20 +1591,140 @@ void CCustomZone::net_Relcase(CObject* O)
 
 void CCustomZone::enter_Zone(SZoneObjectInfo& io) { callback(GameObject::eZoneEnter)(lua_game_object(), io.object->lua_game_object()); }
 
-// NLC flytrap: loose physics objects (items, bolts, grenades, ragdolls) hang inside; live creatures keep their gravity
-void CCustomZone::nlc_flytrap_float(SZoneObjectInfo& io, bool on)
+// NLC flytrap (docs/ANOMALY_DESIGN.md 18): loose physics objects (items, bolts, grenades, corpses) live in slowed time.
+// Every element's velocity and spin are kept at k x their own, gravity is g x k^2 (so friction and falls stay
+// consistent), hit impulses are x k (CPhysicsShellHolder::PHHit, CCharacterPhysicsSupport::in_Hit) and a fuse runs at k.
+// The own velocity comes back on release. One zone owns a body at a time (overlapping Flytraps do not stack).
+static bool nlc_flytrap_held_by_actor(CPhysicsShellHolder* sh)
 {
-    if (!io.object || io.object->getDestroy())
+    CActor* actor = Actor();
+    if (!actor || !actor->character_physics_support())
+        return false;
+    CPHMovementControl* mc = actor->character_physics_support()->movement();
+    CPHCapture* capture = mc ? mc->PHCapture() : nullptr;
+    return capture && capture->taget_object() == sh;
+}
+
+void CCustomZone::nlc_flytrap_release(CGameObject* obj)
+{
+    CPhysicsShellHolder* sh = smart_cast<CPhysicsShellHolder*>(obj);
+    if (!sh || sh->m_nlc_ph_time_zone != ID())
         return;
-    CEntityAlive* ea = smart_cast<CEntityAlive*>(io.object);
-    if (ea && ea->g_Alive())
-        return;
-    CPhysicsShellHolder* sh = smart_cast<CPhysicsShellHolder*>(io.object);
-    if (!sh || sh->H_Parent() || sh->hasFixedBones())
+    const float k = sh->m_nlc_ph_time_k;
+    sh->m_nlc_ph_time_k = 1.f;
+    sh->m_nlc_ph_hit_k = 1.f;
+    sh->m_nlc_ph_time_zone = u16(-1);
+    if (sh->getDestroy() || sh->H_Parent())
         return;
     CPhysicsShell* shell = sh->PPhysicsShell();
-    if (shell && shell->isActive())
-        shell->set_ApplyByGravity(!on);
+    if (!shell || !shell->isActive())
+        return;
+
+    float out = 0.f;
+    bool clamped = false;
+    const float ratio = k > 0.f ? 1.f / k : 1.f;
+    const u16 n = shell->get_ElementsNumber();
+    // a ragdoll's joints correct their errors in real time: that jitter is multiplied by 1 / k here, so lower limits
+    const float speed_max = n > 1 ? std::min(m_nlc_ft_obj_exit_speed, m_nlc_ft_ragdoll_exit_speed) : m_nlc_ft_obj_exit_speed;
+    for (u16 i = 0; i < n; ++i)
+    {
+        CPhysicsElement* e = shell->get_ElementByStoreOrder(i);
+        if (e->isFixed())
+            continue;
+        Fvector v, w;
+        e->get_LinearVel(v);
+        e->get_AngularVel(w);
+        v.mul(ratio);
+        w.mul(ratio);
+        const float speed = v.magnitude();
+        if (speed > speed_max)
+        {
+            // something set this body's velocity from outside the slowed time (a telekinetic throw, a drag), or jitter
+            v.mul(speed_max / speed);
+            clamped = true;
+        }
+        const float spin = w.magnitude();
+        if (spin > m_nlc_ft_obj_exit_spin)
+        {
+            w.mul(m_nlc_ft_obj_exit_spin / spin);
+            clamped = true;
+        }
+        out = std::max(out, v.magnitude());
+        e->set_LinearVel(v);
+        e->set_AngularVel(w);
+    }
+    shell->set_ApplyByGravity(true);
+    shell->Enable(); // a body that fell asleep weightless would hang in the air
+    if (m_nlc_ft_log)
+        Msg("~ [flytrap] [%s]: released [%s], k %.2f -> own speed %.1f m/s%s", cName().c_str(), sh->cName().c_str(), k, out, clamped ? " (clamped)" : "");
+}
+
+void CCustomZone::nlc_flytrap_release_all()
+{
+    for (SZoneObjectInfo& io : m_ObjectInfoMap)
+        nlc_flytrap_release(io.object);
+}
+
+void CCustomZone::nlc_flytrap_object(CPhysicsShellHolder* sh, const Fvector& P, float R, float ramp, u32 dt)
+{
+    CPhysicsShell* shell = sh->PPhysicsShell();
+    // no shell yet (a creature that just died, before its ragdoll exists) or one the zone must not move
+    if (!shell || !shell->isActive() || sh->H_Parent() || sh->hasFixedBones() || nlc_flytrap_held_by_actor(sh))
+    {
+        nlc_flytrap_release(sh);
+        return;
+    }
+    if (sh->m_nlc_ph_time_zone != u16(-1) && sh->m_nlc_ph_time_zone != ID())
+        return; // another Flytrap has it
+
+    const float depth = R - P.distance_to(sh->Position());
+    if (depth < -0.5f)
+    {
+        nlc_flytrap_release(sh); // outside (the object list is not updated while the zone is off)
+        return;
+    }
+    // objects have their own short ramp (a thrown grenade must hang where it enters the dome, not fall through a 3 m
+    // edge), and the factor falls geometrically: each part of the ramp divides time by the same amount
+    const float obj_ramp = m_nlc_ft_obj_ramp > 0.f ? m_nlc_ft_obj_ramp : ramp;
+    const float depth_k = std::clamp(depth / obj_ramp, 0.f, 1.f);
+    const float k = m_nlc_ft_obj_time_rim * powf(m_nlc_ft_obj_time_core / m_nlc_ft_obj_time_rim, depth_k);
+    const bool first = sh->m_nlc_ph_time_zone != ID();
+    const float ratio = k / sh->m_nlc_ph_time_k;
+    sh->m_nlc_ph_time_zone = ID();
+    sh->m_nlc_ph_time_k = k;
+    // a hit is k^exp: 1 = fully slowed, lower = a blast shows inside (the rest of the own speed comes out on exit, limited)
+    sh->m_nlc_ph_hit_k = powf(k, m_nlc_ft_obj_hit_exp);
+
+    shell->set_ApplyByGravity(false);
+    const float dt_sec = std::min(float(dt) / 1000.f, 0.5f); // the zone's update interval (see nlc_flytrap_update)
+    const float fall = ph_world ? ph_world->Gravity() * k * k * m_nlc_ft_obj_gravity_k * dt_sec : 0.f;
+    const bool rescale = !fsimilar(ratio, 1.f, EPS_L);
+    float speed = 0.f;
+    for (u16 i = 0, n = shell->get_ElementsNumber(); i < n; ++i)
+    {
+        CPhysicsElement* e = shell->get_ElementByStoreOrder(i);
+        if (e->isFixed() || !e->isEnabled())
+            continue; // a sleeping body keeps no velocity to scale and must not store a fall
+        Fvector v;
+        e->get_LinearVel(v);
+        if (rescale)
+        {
+            Fvector w;
+            e->get_AngularVel(w);
+            v.mul(ratio);
+            w.mul(ratio);
+            e->set_AngularVel(w);
+        }
+        v.y -= fall;
+        e->set_LinearVel(v);
+        speed = std::max(speed, v.magnitude());
+    }
+
+    if (CMissile* missile = smart_cast<CMissile*>(sh))
+        missile->nlc_fuse_delay(u32(float(dt) * (1.f - k)));
+
+    if (first && m_nlc_ft_log)
+        Msg("~ [flytrap] [%s]: caught [%s], k %.2f, speed %.1f m/s (own %.1f)", cName().c_str(), sh->cName().c_str(), k, speed, speed / k);
 }
 
 void CCustomZone::nlc_flytrap_stasis(bool on)
@@ -1626,6 +1761,9 @@ void CCustomZone::nlc_flytrap_update(u32 dt)
     const float R = CFORM()->getSphere().R;
     const float ramp = std::max(R * m_nlc_ft_ramp_k, 0.1f);
     const float dt_sec = float(dt) / 1000.f;
+    // gravity undone per update covers the whole interval: a zone away from the camera updates on its schedule (a few
+    // hundred ms), and the old 0.1 s clamp left most of g there (bodies fell fast); the clamp only stops a load hitch
+    const float g_dt = std::min(dt_sec, 0.5f);
 
     for (SZoneObjectInfo& io : m_ObjectInfoMap)
     {
@@ -1639,21 +1777,41 @@ void CCustomZone::nlc_flytrap_update(u32 dt)
             CBaseMonster* monster = smart_cast<CBaseMonster*>(obj);
             if (!monster)
             {
-                // the actor's side is scripted (sivol_flytrap.script) except the air: a jump keeps its launch speed
-                // otherwise. Stalkers are kept out, not slowed.
-                if (obj == Actor())
+                // the actor's side is scripted (sivol_flytrap.script) except the air. Stalkers are kept out, not slowed.
+                // In the air (docs/ANOMALY_DESIGN.md 19): slowed time with the movement factor f. The jump speed is
+                // already x f (Actor_Movement.cpp), gravity becomes f^2 g, so a jump keeps its height and lasts 1 / f
+                // longer. The horizontal speed and a fall from above are still limited (a jump does not carry him out).
+                static u32 s_nlc_actor_air_frame = u32(-1); // overlapping Flytraps: once per frame
+                if (obj == Actor() && s_nlc_actor_air_frame != Device.dwFrame)
                 {
                     CPHMovementControl* mc = ea->character_physics_support()->movement();
                     if (mc && mc->Environment() != CPHMovementControl::peOnGround)
                     {
-                        const float cap = m_nlc_ft_actor_air * g_nlc_actor_field_speed_k;
+                        s_nlc_actor_air_frame = Device.dwFrame;
+                        const float f = g_nlc_actor_field_speed_k;
+                        const float cap = m_nlc_ft_actor_air * f;
                         Fvector v = mc->GetVelocity();
-                        const float speed = v.magnitude();
-                        if (speed > cap)
+                        bool changed = false;
+                        const float horiz = _sqrt(v.x * v.x + v.z * v.z);
+                        if (horiz > cap)
                         {
-                            v.mul(std::max(cap / speed, expf(-dt_sec / 0.15f)));
-                            mc->SetVelocity(v);
+                            const float m = std::max(cap / horiz, expf(-dt_sec / 0.15f));
+                            v.x *= m;
+                            v.z *= m;
+                            changed = true;
                         }
+                        if (v.y < -cap)
+                        {
+                            v.y *= std::max(cap / -v.y, expf(-dt_sec / 0.15f));
+                            changed = true;
+                        }
+                        if (f < 0.999f && ph_world)
+                        {
+                            v.y += ph_world->Gravity() * (1.f - f * f) * g_dt; // the rest of g is undone
+                            changed = true;
+                        }
+                        if (changed)
+                            mc->SetVelocity(v);
                     }
                 }
                 continue;
@@ -1662,7 +1820,7 @@ void CCustomZone::nlc_flytrap_update(u32 dt)
             const float depth_k = std::clamp((R - P.distance_to(monster->Position())) / ramp, 0.f, 1.f);
             const float slow = m_nlc_ft_slow_rim + (m_nlc_ft_slow_core - m_nlc_ft_slow_rim) * depth_k;
             monster->nlc_apply_move_slow(slow, 500, 0.4f);
-            monster->nlc_set_time_k(1.f - slow, 300); // attacks and the other natural-speed clips
+            monster->nlc_set_time_k(1.f - slow, 300, m_nlc_ft_log); // every clip (CControlAnimation::play); log: [flytrap_anim]
 
             // the physical limit: whatever drives the body (a jump, a charge, a fall) cannot go faster than this.
             // The path movement sets its own limit every step and a jump adds to it once, so it is only ever lowered.
@@ -1673,11 +1831,26 @@ void CCustomZone::nlc_flytrap_update(u32 dt)
                     mc->SetVelocityLimit(cap);
                 // a jump or a fall: the character has no control then and its limit is not used
                 Fvector v = mc->GetVelocity();
-                const float speed = v.magnitude();
-                if (speed > cap * 1.15f)
+                const float jk = monster->m_nlc_jump_k;
+                if (jk < 0.999f && mc->Environment() != CPHMovementControl::peOnGround)
                 {
-                    v.mul(std::max(cap / speed, expf(-dt_sec / 0.15f)));
-                    mc->SetVelocity(v);
+                    // a slow-motion jump (CControlJump::nlc_launch): launched at k x speed, gravity k^2 g, not braked.
+                    // Once per frame (overlapping Flytraps would undo gravity twice)
+                    if (ph_world && monster->m_nlc_jump_air_frame != Device.dwFrame)
+                    {
+                        monster->m_nlc_jump_air_frame = Device.dwFrame;
+                        v.y += ph_world->Gravity() * (1.f - jk * jk) * g_dt;
+                        mc->SetVelocity(v);
+                    }
+                }
+                else
+                {
+                    const float speed = v.magnitude();
+                    if (speed > cap * 1.15f)
+                    {
+                        v.mul(std::max(cap / speed, expf(-dt_sec / 0.15f)));
+                        mc->SetVelocity(v);
+                    }
                 }
             }
 
@@ -1706,26 +1879,11 @@ void CCustomZone::nlc_flytrap_update(u32 dt)
             continue;
         }
 
-        // loose physics objects: no gravity, speed eased down to the cap
-        CPhysicsShellHolder* sh = smart_cast<CPhysicsShellHolder*>(obj);
-        if (!sh || sh->H_Parent() || sh->hasFixedBones())
+        // loose physics objects and corpses: slowed time
+        if (obj == Actor())
             continue;
-        CPhysicsShell* shell = sh->PPhysicsShell();
-        if (!shell || !shell->isActive())
-            continue;
-        shell->set_ApplyByGravity(false);
-        Fvector v;
-        shell->get_LinearVel(v);
-        const float speed = v.magnitude();
-        if (speed > m_nlc_ft_object_cap)
-        {
-            v.mul(std::max(m_nlc_ft_object_cap / speed, expf(-dt_sec / 0.12f)));
-            shell->set_LinearVel(v);
-        }
-
-        if (m_nlc_ft_fuse_k > 1.f)
-            if (CMissile* missile = smart_cast<CMissile*>(obj))
-                missile->nlc_fuse_delay(u32(float(dt) * (1.f - 1.f / m_nlc_ft_fuse_k)));
+        if (CPhysicsShellHolder* sh = smart_cast<CPhysicsShellHolder*>(obj))
+            nlc_flytrap_object(sh, P, R, ramp, dt);
     }
 }
 
@@ -1756,7 +1914,7 @@ void CCustomZone::nlc_silence_register(bool on)
 void CCustomZone::exit_Zone(SZoneObjectInfo& io)
 {
     if (m_nlc_flytrap)
-        nlc_flytrap_float(io, false); // NLC
+        nlc_flytrap_release(io.object); // NLC
 
     StopObjectIdleParticles(io.object);
     if (!getDestroy())

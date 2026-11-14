@@ -70,6 +70,8 @@ class CControlAnimation : public CControl_ComPure<SControlAnimationData>
 
     bool m_freeze{};
     float m_saved_global_speed{};
+    u32 m_nlc_anim_log_next{}; // NLC flytrap: [flytrap_anim] diagnostics, throttled
+    float m_nlc_applied_tk{1.f}; // NLC flytrap: the time factor play() last applied to the global blend (freeze saves without it)
     float m_saved_legs_speed{};
     float m_saved_torso_speed{};
 

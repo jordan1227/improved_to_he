@@ -222,7 +222,15 @@ void CControlAnimationBase::SelectVelocities()
         EMotionAnim new_anim;
         float a_speed;
 
-        if (accel_chain_get(m_man->movement().real_velocity(), cur_anim_info().get_motion(), new_anim, a_speed))
+        // NLC flytrap (docs/ANOMALY_DESIGN.md 19, 20): in slowed time the clip is chosen and timed by the speed the body
+        // would have outside (a slowed run stays a run, not a normal walk); CControlAnimation::play applies the factor
+        const float nlc_tk = m_object->nlc_time_k();
+        float nlc_vel = m_man->movement().real_velocity();
+        if (nlc_tk < 0.999f) // never above the path speed (x haste / dodge): real_velocity() can return it unslowed (character not enabled)
+            nlc_vel = std::min(nlc_vel / std::max(nlc_tk, 0.05f),
+                               std::max(m_man->movement().velocity_current() * std::max(1.f, m_object->nlc_move_speed_k_unslowed()), nlc_vel));
+
+        if (accel_chain_get(nlc_vel, cur_anim_info().get_motion(), new_anim, a_speed))
         {
             cur_anim_info().set_motion(new_anim);
 

@@ -597,23 +597,17 @@ void CControlAnimationBase::set_animation_speed()
 
     // NLC: movement clips without an accel chain (natural speed, target -1) follow the monster's speed multiplier
     // (haste / rage / stomp slow) so the feet do not slide; accel-chain clips already follow the real velocity
-    const float k = m_object->nlc_move_speed_k();
+    // NLC flytrap (docs/ANOMALY_DESIGN.md 20): CControlAnimation::play multiplies by the time factor, so the Flytrap's
+    // share of the movement slow (1 - time factor) is taken out here; the other clips are left at -1 for play
+    float k = m_object->nlc_move_speed_k();
+    const float tk = m_object->nlc_time_k();
+    if (tk < 0.999f) // capped at the creature's own factor (haste / dodge above 1 kept): the slow eases in behind tk
+        k = std::min(k / std::max(tk, 0.05f), std::max(1.f, m_object->nlc_move_speed_k_unslowed()));
     if (speed <= 0.f && !fsimilar(k, 1.f) && m_man->movement().velocity_current() > 0.5f && ctrl_data->global.get_motion().valid())
     {
         IKinematicsAnimated* skel = smart_cast<IKinematicsAnimated*>(m_object->Visual());
         if (skel)
             speed = skel->LL_GetMotionDef(ctrl_data->global.get_motion())->Speed() * k;
-    }
-    else if (speed <= 0.f && ctrl_data->global.get_motion().valid())
-    {
-        // NLC flytrap: inside a stasis field the other natural-speed clips (attacks, idles, turns) slow down too
-        const float tk = m_object->nlc_time_k();
-        if (tk < 0.999f)
-        {
-            IKinematicsAnimated* skel = smart_cast<IKinematicsAnimated*>(m_object->Visual());
-            if (skel)
-                speed = skel->LL_GetMotionDef(ctrl_data->global.get_motion())->Speed() * tk;
-        }
     }
 
     ctrl_data->set_speed(speed);

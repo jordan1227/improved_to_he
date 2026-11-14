@@ -42,6 +42,7 @@ public:
     void PutNextToSlot();
     void nlc_finish_thrown(); // NLC: the eThrowEnd cleanup, also used for an interrupted throw
     void nlc_snatch_arm(u16 initiator); // NLC burer snatch: the pin of a dropped grenade is pulled (sound, fuse)
+    void nlc_bullet_detonate(u16 shooter); // NLC: a bullet passed within nlc_bullet_detonate_radius (Level_Bullet_Manager)
 
     virtual void Deactivate(bool = false);
     virtual void GetBriefInfo(xr_string& str_name, xr_string& icon_sect_name, xr_string& str_count);
@@ -59,6 +60,9 @@ private:
     float m_grenade_detonation_threshold_hit{};
     bool m_nlc_detonate_by_bullet{true}; // NLC: a bullet detonates a parentless grenade
     float m_nlc_detonation_explosion_hit{5.f}; // NLC: explosion hit power that detonates a parentless grenade
+    float m_nlc_bullet_radius{0.12f}; // NLC: m, a bullet passing this close to an armed thrown grenade detonates it
+    bool m_nlc_fuse_registered{};
+    void nlc_fuse_register(bool on);
     bool m_thrown{};
 
 protected:

@@ -46,5 +46,6 @@ float CControlMovement::real_velocity()
         return tmp;
     }
 
-    return m_velocity_current;
+    // NLC: the speed the path is actually given (update_frame), so a temporary slow (stomp, Flytrap) is seen here too
+    return m_velocity_current * m_object->nlc_move_speed_k();
 }

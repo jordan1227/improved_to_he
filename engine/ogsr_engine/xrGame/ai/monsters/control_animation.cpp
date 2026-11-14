@@ -2,6 +2,9 @@
 #include "control_animation.h"
 #include "BaseMonster/base_monster.h"
 #include "control_manager.h"
+#include "control_animation_base.h" // NLC flytrap
+#include "control_movement.h"
+#include <typeinfo>
 
 
 //#ifdef DEBUG
@@ -95,14 +98,33 @@ void CControlAnimation::play()
     // speed only for global
     if (m_data.global.blend)
     {
+        // NLC flytrap (docs/ANOMALY_DESIGN.md 20): the time factor is applied here, the last writer before playback.
+        // An explicit speed from the base animation control (movement clips timed to the body, attacks, idles) is
+        // given in the creature's own time; other controls that set one (jump glide) scale it themselves.
+        const float tk = m_object->nlc_time_k();
+        const bool log = Device.dwTimeGlobal < m_object->m_nlc_time_log_end && Device.dwTimeGlobal >= m_nlc_anim_log_next;
+        // the capturer is only needed while slowed (or logging): no smart_cast per monster per frame outside a Flytrap
+        CControl_Com* capturer = (tk < 0.999f || log) ? m_man->get_capturer(ControlCom::eControlAnimation) : nullptr;
+        const bool base_owns = capturer && smart_cast<CControlAnimationBase*>(capturer);
         if (m_data.get_speed() > 0)
         {
-            m_data.global.blend->speed = m_data.get_speed(); // TODO: make factor
+            m_nlc_applied_tk = base_owns ? tk : 1.f;
+            m_data.global.blend->speed = m_data.get_speed() * m_nlc_applied_tk; // TODO: make factor
         }
         else
         {
             // NLC flytrap: the clips of the other controls (jump, run attack, attack on the move) slow down too
-            m_data.global.blend->speed = m_saved_global_speed * m_object->nlc_time_k();
+            m_nlc_applied_tk = tk;
+            m_data.global.blend->speed = m_saved_global_speed * tk;
+        }
+
+        if (log)
+        {
+            m_nlc_anim_log_next = Device.dwTimeGlobal + 500;
+            Msg("~ [flytrap_anim] [%s] anim [%s] owner [%s] k %.2f move_k %.2f vel %.2f (path %.2f) set %.2f natural %.2f -> blend %.2f",
+                m_object->cName().c_str(), m_object->anim().cur_anim_info().name.c_str(), capturer ? typeid(*capturer).name() : "none", tk,
+                m_object->nlc_move_speed_k(), m_man->movement().real_velocity(), m_man->movement().velocity_current(), m_data.get_speed(),
+                m_saved_global_speed, m_data.global.blend->speed);
         }
     }
 }
@@ -263,7 +285,8 @@ void CControlAnimation::freeze()
 
     if (m_data.global.blend)
     {
-        m_saved_global_speed = m_data.global.blend->speed;
+        // NLC flytrap: saved in the creature's own time; play() applies the time factor again (it was k^2 after unfreeze)
+        m_saved_global_speed = m_data.global.blend->speed / std::max(m_nlc_applied_tk, 0.01f);
         m_data.global.blend->speed = 0.f;
     }
     if (m_data.legs.blend)

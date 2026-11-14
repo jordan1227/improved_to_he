@@ -1,13 +1,16 @@
 -- sivol_tide.script
--- Tide fields (docs/ANOMALY_DESIGN.md 16): a small share of the random anomalies switches off and on again on a clock,
--- so a memorised route is not always safe or always blocked.
+-- Tide fields (docs/ANOMALY_DESIGN.md 16, 28): before an emission a share of the random anomalies switches off and on
+-- again on a clock, so a memorised route is not always safe or always blocked, and a Zone that starts to "breathe"
+-- warns of the coming emission. The share grows as the emission nears (cfg.stages); after it there are none.
 --
 -- Which anomaly is tidal, its cycle length and its phase come from its id and spawn position, so they survive a
--- save / load, and a new anomaly set (after an emission) brings a new choice. The state is a function of the game
--- clock: nothing is saved.
+-- save / load, and a new anomaly set (after an emission) brings a new choice. Every stage compares the same hash
+-- with a larger share, so the anomalies of an earlier stage stay tidal in the next one. The state is a function of
+-- the game clock and the emission timer (amk_mod blow_shift): nothing is saved.
 --
 -- Rules:
---  * only amk_anoms random anomalies whose amk status is "on" (custom data dyn_anom.status), of the types in
+--  * only anomalies of amk_anoms' random sets (custom data dyn_anom.gen, amk_anoms.is_generated: never a scripted
+--    one, even with an amk status) whose amk status is "on" (custom data dyn_anom.status), of the types in
 --    cfg.types; never quest / unique ones (amk_anoms unique_sections, anomaly_detector.excluded_anom), teleports, the
 --    greedy, radioactive fields, flytraps or silence zones;
 --  * amk_anoms owns the status: its "off" / "del" (emission, deletion) always wins, and its "on" hands the anomaly back
@@ -30,7 +33,14 @@
 local cfg = {
 	enabled = true,
 	log = true,                 -- "[sivol_tide]" lines (testing)
-	share_pct = 12,             -- % of the eligible anomalies that are tidal
+	-- % of the eligible anomalies that are tidal, by game minutes left to the next emission: { minutes left <=, % }
+	-- (more than the first entry: 0). An emission is about 3 days apart (amk_mod.start_blow_timer)
+	stages = {
+		{ 2 * 1440, 5 },        -- 2 days before
+		{ 1440, 12 },           -- the last day
+		{ 360, 17 },            -- the last 6 hours
+	},
+	emission_reread_min = 60,   -- game minutes: the timer is read again at least this often (warlab and wake-up restart it)
 	cycle_min = 75,             -- game minutes, mean length of one awake + dormant cycle
 	cycle_var = 0.35,           -- +- share of the cycle, per anomaly
 	awake_share = 0.6,          -- share of the cycle it is on
@@ -57,10 +67,51 @@ local cfg = {
 	never = { "teleport", "greedy", "radioactive", "flytrap", "silence", "_noart", "_killing" },
 }
 
-local zones = {}      -- [id] = { id, sec, pos, r, cycle_s, offset_s, awake_s, applied, forced, ... }
+local zones = {}      -- [id] = { id, sec, pos, r, pick, cycle_s, offset_s, awake_s, applied, forced, member, ... }
 local live_fx = {}    -- { stop_time, particle }
 local base_time
 local emitting = false
+
+-- the next emission as game minutes (timers.Get_Game_Minutes); nil = none scheduled (or emissions off)
+local emission_at
+local emission_read_at = -1
+local cur_share, cur_left = 0, nil
+
+local function read_emission(now_min)
+	emission_read_at = now_min
+	emission_at = nil
+	local ini = system_ini()
+	if ini:section_exist("blowout_period") and ini:line_exist("blowout_period", "enabled")
+		and ini:r_float("blowout_period", "enabled") == 0 then
+		return
+	end
+	local found, delay = timers.check_timer("blow_shift", "amk_mod.Run_Blowout_pp()")
+	if found and delay and delay > 0 then
+		emission_at = now_min + delay
+	elseif found then
+		-- 0: a stopped entry (stop_timer leaves it with p = "" until the timers' next pass, and check_timer may find it
+		-- before the new one: warlab) or a timer due this minute. Not "no emission": read again in 2 game minutes
+		emission_read_at = now_min - cfg.emission_reread_min + 2
+	end
+end
+
+-- the tidal share now (and the game minutes left to the emission); the timer is re-read on load, after an emission,
+-- once the stored time has passed and every cfg.emission_reread_min (it can be restarted outside an emission)
+local function refresh_share()
+	-- the timers live in the save's storage: never read (initialize) them before the game has begun after a load
+	if not (sak and sak.game_began) then return end
+	local now_min = timers.Get_Game_Minutes()
+	if emission_read_at < 0 or now_min < emission_read_at or now_min - emission_read_at >= cfg.emission_reread_min
+		or (emission_at and now_min >= emission_at) then
+		read_emission(now_min)
+	end
+	cur_share, cur_left = 0, nil
+	if not emission_at then return end
+	cur_left = emission_at - now_min
+	for _, s in ipairs(cfg.stages) do
+		if cur_left <= s[1] then cur_share = s[2] end
+	end
+end
 
 local function log(fmt, ...)
 	if cfg.log then log2("[sivol_tide] " .. fmt, ...) end
@@ -115,6 +166,7 @@ end
 local function phase_of(z, now)
 	if z.forced then return z.forced, 0 end
 	if not cfg.enabled then return "awake", 0 end
+	if z.pick >= cur_share then return "awake", 0 end -- not tidal at this stage
 	local t = (now + z.offset_s) % z.cycle_s
 	if t < z.awake_s then return "awake", t end
 	local warn_s = math.min(cfg.warn_min * 60, (z.cycle_s - z.awake_s) * 0.5)
@@ -147,8 +199,14 @@ local function register(obj, why)
 	if not is_type(sec) then return end
 	if anomaly_detector.excluded_anom(obj:name()) then return end
 	local pos = obj:position()
-	if hash(id, pos, 1) % 100 >= cfg.share_pct then return end
+	-- every eligible anomaly is known; it is tidal while pick < the stage's share (refresh_share)
+	local pick = hash(id, pos, 1) % 100
+	local top = 0
+	for _, s in ipairs(cfg.stages) do top = math.max(top, s[2]) end
+	if pick >= top then return end -- never tidal at any stage
 	if amk_status(id) ~= "on" then return end
+	-- only the random sets: a scripted anomaly (quest, labyrinth, all.spawn) can carry an amk status too (docs 32)
+	if not (amk_anoms.is_generated and amk_anoms.is_generated(alife():object(id))) then return end
 
 	local ok, r = pcall(obj.get_shape_radius, obj)
 	r = ok and tonumber(r) or 0
@@ -160,6 +218,7 @@ local function register(obj, why)
 		name = obj:name(),
 		pos = pos,
 		r = r,
+		pick = pick,
 		cycle_s = cycle_s,
 		offset_s = (hash(id, pos, 3) % 100000) / 100000 * cycle_s,
 		awake_s = cycle_s * cfg.awake_share,
@@ -169,7 +228,7 @@ local function register(obj, why)
 		next_fx = 0,
 	}
 	zones[id] = z
-	log("tidal %s id=%d r=%.1f cycle=%.0f min awake=%.0f min (%s)", z.name, id, r, cycle_s / 60, z.awake_s / 60, why)
+	log("eligible %s id=%d pick=%d r=%.1f cycle=%.0f min awake=%.0f min (%s)", z.name, id, pick, r, cycle_s / 60, z.awake_s / 60, why)
 end
 
 local function forget(id)
@@ -250,11 +309,22 @@ local function update()
 	if not db.actor then return end
 	local apos = db.actor:position()
 	local now = game_sec()
+	local share_was = cur_share
+	refresh_share()
+	if emission_read_at < 0 then return end -- not known yet (loading): the candidates stay off (on_anomaly_spawn)
+	if cur_share ~= share_was then
+		log("stage: %d%% tidal, %s to the emission", cur_share, cur_left and string.format("%.1f h", cur_left / 60) or "none scheduled")
+	end
 	for id, z in pairs(zones) do
 		local obj = level.object_by_id(id)
 		if not obj then
 			zones[id] = nil
 		else
+			local member = z.pick < cur_share
+			if member ~= (z.member or false) then
+				log("%s %s the tide", z.name, member and "joins" or "leaves")
+				z.member = member
+			end
 			local ph = phase_of(z, now)
 			if ph == "awake" then
 				if z.applied ~= "on" then
@@ -284,10 +354,13 @@ local function on_anomaly_spawn(obj, binder, tag)
 	if emitting or tag == "tide" then return end
 	register(obj, "spawn")
 	local z = obj and zones[obj:id()]
-	if z and phase_of(z, game_sec()) ~= "awake" then
+	if z then
 		-- a dormant anomaly must not hit for a moment after a load: off at once. The next poll switches it off again
 		-- (amk_anoms re-disables in its first binder update for the same reason) and sends the signal, outside this
 		-- spawn signal, so every cache that takes the spawn has taken it before it is told the zone is gone.
+		-- docs 28: the stage is not trusted here (the emission timer may not be readable yet, or be another save's), so
+		-- every candidate (one that some stage makes tidal) starts off; the next poll wakes those that are not tidal now
+		-- (applied is still nil: no signal) and keeps the dormant ones off.
 		obj:disable_anomaly()
 		amk_anoms.remove_anomaly(z.id)
 	end
@@ -317,13 +390,15 @@ function set_enabled(v)
 end
 
 function status()
-	local n, off, held = 0, 0, 0
+	local n, off, held, tidal = 0, 0, 0, 0
 	for _, z in pairs(zones) do
 		n = n + 1
+		if z.pick < cur_share then tidal = tidal + 1 end
 		if z.applied == "off" then off = off + 1 end
 		if z.held_by then held = held + 1 end
 	end
-	log2("[sivol_tide] enabled=%s tidal=%d dormant=%d held_by_occupant=%d share=%d%%", tostring(cfg.enabled), n, off, held, cfg.share_pct)
+	log2("[sivol_tide] enabled=%s candidates=%d tidal=%d dormant=%d held_by_occupant=%d share=%d%% emission in %s", tostring(cfg.enabled), n,
+		tidal, off, held, cur_share, cur_left and string.format("%.1f game h", cur_left / 60) or "(none scheduled / not read yet)")
 end
 
 function near(range)
@@ -334,7 +409,7 @@ function near(range)
 	local list = {}
 	for _, z in pairs(zones) do
 		local d = apos:distance_to(z.pos)
-		if d <= range then table.insert(list, { z = z, d = d }) end
+		if d <= range and (z.forced or z.pick < cur_share) then table.insert(list, { z = z, d = d }) end
 	end
 	table.sort(list, function(a, b) return a.d < b.d end)
 	log2("[sivol_tide] %d tidal anomalies within %.0f m", #list, range)
@@ -387,7 +462,14 @@ function force_near(state)
 	force(best.id, state)
 end
 
+-- read the emission timer again: a load may be another save, an emission restarts it
+local function reread_emission()
+	emission_read_at = -1
+end
+
 function attach(sm)
+	sm:subscribe({ signal = "on_spawn", fun = reread_emission })
+	sm:subscribe({ signal = "on_after_blowout", fun = reread_emission })
 	sm:subscribe({ signal = "on_update", fun = update })
 	sm:subscribe({ signal = "on_anomaly_spawn", fun = on_anomaly_spawn })
 	sm:subscribe({ signal = "on_anomaly_net_destroy", fun = on_anomaly_net_destroy })

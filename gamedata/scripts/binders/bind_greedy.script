@@ -62,7 +62,11 @@ function actor_update()
 		for i, v in pairs(greedy_binders) do
 			greedy_act = v.parametrs this.greedy_check_sated(i, v) -- sivol: fed state
 			local obj = client_obj(i)
-			if obj~=nil and greedy_act.activity then
+			if obj~=nil and greedy_act.amk_off and not greedy_act.amk_hidden then
+				obj:disable_anomaly() -- sivol: the waiting set stays dark too (amk disables only through its own status calls)
+				greedy_act.amk_hidden = true
+			end
+			if obj~=nil and greedy_act.activity and not greedy_act.amk_off then
 				-- Пороверим не забрел-ли актер в жадинку
 				if (bind_mteleport.abs_comp(greedy_act.x, actor_pos.x)< v.parametrs.radius	and
 						bind_mteleport.abs_comp(greedy_act.z, actor_pos.z)< v.parametrs.radius	and
@@ -287,6 +291,8 @@ function restrictor_greedy:net_spawn(data)
 		
 		--активирую жадинку
 		self.parametrs["activity"] = true this.greedy_load_sated(self) -- sivol: fed state
+		-- sivol (docs/ANOMALY_DESIGN.md 33): a greedy of amk's waiting set does not grab until the emission switches it on
+		self.parametrs["amk_off"] = this.amk_off_status(amk_anoms and amk_anoms.get_anomaly_status and amk_anoms.get_anomaly_status(alife():object(self.object:id())))
 		-- Запомним позицию что-бы каждый раз не считать
 		local s_obj = alife():object(self.object:id())
 		if s_obj~=nil then
@@ -447,7 +453,7 @@ function greedy_check_sated(id, binder)
 		p.sated_until = nil
 		p.sated_hidden = nil
 		p.activity = true
-		if obj then obj:enable_anomaly() end
+		if obj and not p.amk_off then obj:enable_anomaly() end -- sivol: not a waiting-set greedy
 		write_sated(id, nil)
 		sated_log("greedy %d is hungry again", id)
 		return
@@ -459,12 +465,66 @@ function greedy_check_sated(id, binder)
 	end
 end
 
+-- sivol (docs 33): the amk status of a greedy ("off" / "del" = not active); amk_anoms.set_online_anomaly_status calls
+-- on_amk_status when the emission switches it
+function amk_off_status(st)
+	return st == "off" or st == "del"
+end
+
+function on_amk_status(id, status)
+	local b = greedy_binders[id]
+	if not (b and b.parametrs) then return end
+	local p = b.parametrs
+	p.amk_off = amk_off_status(status)
+	p.amk_hidden = nil
+	if not p.amk_off and p.sated_until then p.sated_hidden = false end -- amk enabled it: a fed greedy hides again
+end
+
 function greedy_status()
 	local now = misc.game_time_minutes()
+	local apos = db.actor and db.actor:position()
 	for id, binder in pairs(greedy_binders) do
 		local p = binder.parametrs or {}
-		log2("[bind_greedy] greedy %d: active=%s dormant_left=%s min", id, tostring(p.activity), tostring(p.sated_until and (p.sated_until - now) or 0))
+		local sobj = alife():object(id)
+		log2("[bind_greedy] greedy %d %s: active=%s amk=%s dormant_left=%s min, %.0f m", id, sobj and sobj:name() or "?",
+			tostring(p.activity), p.amk_off and "waiting set" or "on", tostring(p.sated_until and (p.sated_until - now) or 0),
+			(apos and sobj) and apos:distance_to(sobj.position) or -1)
 	end
+end
+
+-- console (testing, docs/ANOMALY_DESIGN.md 33): teleport next to the nearest amk greedy of this level.
+--   fl bind_greedy.greedy_goto()        nearest active one (status "on")
+--   fl bind_greedy.greedy_goto("off")   nearest of the waiting set (dark, should not grab)
+--   fl bind_greedy.greedy_goto("any")   nearest of any status; a second number skips that many nearer ones
+function greedy_goto(which, skip)
+	which = which or "on"
+	skip = tonumber(skip) or 0
+	if not db.actor then return end
+	local lname = level.name()
+	local apos = db.actor:position()
+	local list = {}
+	for id, sobj in alife():objects() do
+		if sobj.level_name == lname and string.find(sobj:section_name(), "amk_zone_greedy", 1, true) == 1 then
+			local st = amk_anoms.get_anomaly_status(sobj)
+			if which == "any" or st == which then
+				table.insert(list, { sobj = sobj, st = st, d = apos:distance_to(sobj.position) })
+			end
+		end
+	end
+	table.sort(list, function(a, b) return a.d < b.d end)
+	local e = list[skip + 1]
+	if not e then
+		log2("[bind_greedy] greedy_goto: no %s greedy on %s (%d found)", which, lname, #list)
+		return
+	end
+	local sobj = e.sobj
+	local r = 2
+	if system_ini():line_exist(sobj:section_name(), "radius") then r = tonumber(system_ini():r_string(sobj:section_name(), "radius")) or 2 end
+	-- a level vertex a few metres outside the grab radius
+	local lv = level.vertex_in_direction(sobj.m_level_vertex_id, vector():set(1, 0, 0), r + 3)
+	local p = level.vertex_position(lv)
+	bind_mteleport.teleportate(p.x, p.y, p.z)
+	log2("[bind_greedy] greedy_goto: %s (%s), status %s, was %.0f m away; %d %s greedies on the level", sobj:name(), sobj:section_name(), e.st, e.d, #list, which)
 end
 
 function greedy_wake_all()

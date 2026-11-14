@@ -197,8 +197,21 @@ public:
     static void nlc_stasis_remove(u16 id);
     static void nlc_stasis_clear();
 
+    // NLC (docs/ANOMALY_DESIGN.md 20): armed thrown grenades register a sphere; a bullet whose step passes through one
+    // detonates that grenade (its own mesh is about 10 cm). Registered from the main thread, read by the bullet update.
+    struct SNlcFuse
+    {
+        u16 id;
+        Fvector center;
+        float radius;
+    };
+    static void nlc_fuse_set(u16 id, const Fvector& center, float radius);
+    static void nlc_fuse_remove(u16 id);
+
 private:
     xr_vector<SNlcStasis> m_nlc_stasis; // this update's copy of the registered fields
+    xr_vector<SNlcFuse> m_nlc_fuses; // this update's copy of the armed grenades
+    xr_vector<std::pair<u16, u16>> m_nlc_fuse_hits; // grenade, shooter: detonated in CommitEvents (main thread)
 
 public:
     void CommitEvents(); // @ the start of frame

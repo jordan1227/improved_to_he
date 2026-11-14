@@ -90,6 +90,13 @@ protected: //чтоб нельзя было вызвать на прямую
     u32 m_dwMotionCurrTm;
     u32 m_dwMotionStartTm;
     u32 m_dwMotionEndTm;
+    // NLC flytrap (docs/ANOMALY_DESIGN.md 22): the field factor the running motion was started with; when it changes
+    // (the actor walks out mid-reload) the playing clips, the end time and the motion sound follow
+    float m_nlc_field_k_start{1.f};
+    float m_nlc_mark_time{}; // clip seconds of the running motion, for its marks
+    float m_nlc_mark_k{1.f}; // the motion's speed factor (nlc_actor_motion_speed_k), follows a field factor change
+    struct HUD_SOUND* m_nlc_motion_snd{};
+    void nlc_follow_field_factor();
     u32 m_startedMotionState;
 
     bool m_bStopAtEndAnimIsRunning{};

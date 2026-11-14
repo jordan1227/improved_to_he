@@ -10,6 +10,7 @@
 #include "script_callback_ex.h"
 #include "script_game_object.h"
 #include "../xr_3da/x_ray.h"
+#include "player_hud.h" // NLC flytrap: nlc_actor_fire_interval_k
 
 CWeaponShotgun::CWeaponShotgun(void) : CWeaponCustomPistol("TOZ34")
 {
@@ -234,7 +235,7 @@ void CWeaponShotgun::switch2_Fire2()
         //выстрел из обоих стволов
         FireTrace(p1, d);
         FireTrace(p1, d);
-        fTime += fTimeToFire * 2.f;
+        fTime += fTimeToFire * 2.f * nlc_actor_fire_interval_k(this); // NLC flytrap
 
         // Patch for "previous frame position" :)))
         dwFP_Frame = 0xffffffff;

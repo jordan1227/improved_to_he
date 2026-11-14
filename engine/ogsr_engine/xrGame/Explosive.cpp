@@ -8,6 +8,7 @@
 
 #include "PhysicsShell.h"
 #include "entity.h"
+#include "entity_alive.h" // NLC: corpse blast speed
 //#include "PSObject.h"
 #include "ParticlesObject.h"
 
@@ -107,6 +108,13 @@ void CExplosive::Load(CInifile* ini, LPCSTR section)
     m_eHitTypeFrag = ALife::g_tfString2HitType(ini->r_string(section, "hit_type_frag"));
 
     m_fUpThrowFactor = ini->r_float(section, "up_throw_factor");
+
+    // NLC (docs/ANOMALY_DESIGN.md 21)
+    m_nlc_body_speed = READ_IF_EXISTS(ini, r_float, section, "nlc_blast_body_speed", 0.f);
+    m_nlc_body_falloff = READ_IF_EXISTS(ini, r_float, section, "nlc_blast_body_falloff", 1.3f);
+    m_nlc_body_speed_max = READ_IF_EXISTS(ini, r_float, section, "nlc_blast_body_speed_max", 12.f);
+    m_nlc_live_impulse_k = READ_IF_EXISTS(ini, r_float, section, "nlc_blast_live_impulse_k", 1.f);
+    m_nlc_blast_log = READ_IF_EXISTS(ini, r_bool, section, "nlc_blast_log", false);
 
     fWallmarkSize = ini->r_float(section, "wm_size");
     R_ASSERT(fWallmarkSize > 0);
@@ -731,6 +739,49 @@ void CExplosive::ExplodeWaveProcessObject(collide::rq_results& storage, CPhysics
     float l_effect = ExplosionEffect(storage, this, l_pGO, m_vExplodePos, m_fBlastRadius);
     float l_impuls = m_fBlastHitImpulse * l_effect;
     float l_hit = m_fBlastHit * l_effect;
+
+    // NLC (docs/ANOMALY_DESIGN.md 21): corpses get a set speed; living creatures a scaled stock impulse
+    {
+        const float dist = l_goPos.distance_to(m_vExplodePos);
+        CEntityAlive* ea = smart_cast<CEntityAlive*>(l_pGO);
+        CPhysicsShell* shell = l_pGO->PPhysicsShell();
+        const char* kind = "object";
+        float dv = 0.f, mass = 0.f;
+        u16 parts = 0;
+        if (ea && ea->g_Alive())
+        {
+            kind = "alive";
+            l_impuls *= m_nlc_live_impulse_k;
+        }
+        else if (ea && m_nlc_body_speed > 0.f && shell && shell->isActive())
+        {
+            kind = "corpse";
+            mass = shell->getMass();
+            parts = shell->get_ElementsNumber();
+            // a ragdoll explosion hit gives each part impulse / parts^0.25 (CPHShell::ExplosionHit): parts^0.75 in all
+            const float gain = parts > 1 ? powf(float(parts), 0.75f) : 1.f;
+            // shielding from one ray (the stock effect also folds in the body's area, which is the speed's business here).
+            // TestPassEffect's RayQuery refills `storage`; ExplosionEffect above already folded its results into l_effect
+            // and nothing reads them afterwards, so the buffer is reused on purpose
+            Fvector dir;
+            dir.sub(l_goPos, m_vExplodePos);
+            float shield = 1.f;
+            if (dist > EPS_L)
+            {
+                dir.mul(1.f / dist);
+                const float sq_r = m_fBlastRadius * m_fBlastRadius;
+                const float dist_factor = sq_r / (dist * dist * (exp_dist_extinction_factor - 1.f) + sq_r);
+                shield = dist_factor > EPS_L ? std::clamp(TestPassEffect(m_vExplodePos, dir, dist, m_fBlastRadius, storage, l_pGO) / dist_factor, 0.f, 1.f) : 0.f;
+            }
+            dv = std::min(m_nlc_body_speed * powf(std::max(dist, 0.5f), -m_nlc_body_falloff), m_nlc_body_speed_max) * shield;
+            if (dist > m_fBlastRadius)
+                dv = 0.f;
+            l_impuls = dv * mass / gain;
+        }
+        if (m_nlc_blast_log && (l_impuls > .001f || l_hit > 0.001f))
+            Msg("~ [blast] %s -> [%s] %s dist %.1f effect %.2f impulse %.1f hit %.2f%s", cast_game_object()->cName().c_str(), l_pGO->cName().c_str(), kind, dist, l_effect,
+                l_impuls, l_hit, mass > 0.f ? make_string(" (mass %.0f, %u parts, speed %.1f m/s)", mass, parts, dv).c_str() : "");
+    }
 
     if (l_impuls > .001f || l_hit > 0.001)
     {

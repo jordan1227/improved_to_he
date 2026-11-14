@@ -489,7 +489,7 @@ void CBaseMonster::nlc_apply_move_slow(float k, u32 time_ms, float hold)
     m_nlc_slow_end = Device.dwTimeGlobal + time_ms;
 }
 
-float CBaseMonster::nlc_move_speed_k() const
+float CBaseMonster::nlc_move_speed_k_unslowed() const
 {
     const u32 now = Device.dwTimeGlobal;
     float k = m_nlc_speed_base * m_nlc_speed_bonus;
@@ -497,6 +497,13 @@ float CBaseMonster::nlc_move_speed_k() const
         k *= m_nlc_haste_k;
     if (now < m_nlc_evade.dodge_end)
         k *= m_nlc_evade.dodge_k; // NLC: zigzag legs, lunge
+    return k;
+}
+
+float CBaseMonster::nlc_move_speed_k() const
+{
+    const u32 now = Device.dwTimeGlobal;
+    const float k = nlc_move_speed_k_unslowed();
 
     if (now >= m_nlc_slow_end || m_nlc_slow_end <= m_nlc_slow_start)
         return k;

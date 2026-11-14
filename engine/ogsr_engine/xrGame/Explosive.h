@@ -111,6 +111,14 @@ protected:
     //фактор подпроса предмета вверх взрывной волной
     float m_fUpThrowFactor;
 
+    // NLC (docs/ANOMALY_DESIGN.md 21): the blast push on corpses as a speed, set in the explosive's section, instead of
+    // blast_impulse spread over a ragdoll's parts (which grows with the part count). 0 = stock blast_impulse.
+    float m_nlc_body_speed{}; // nlc_blast_body_speed: m/s given to an unshielded corpse 1 m from the blast
+    float m_nlc_body_falloff{1.3f}; // nlc_blast_body_falloff: speed ~ distance ^ -this (closer than 0.5 m counts as 0.5 m)
+    float m_nlc_body_speed_max{12.f}; // nlc_blast_body_speed_max: m/s
+    float m_nlc_live_impulse_k{1.f}; // nlc_blast_live_impulse_k: x blast_impulse for creatures still alive
+    bool m_nlc_blast_log{}; // nlc_blast_log: "~ [blast]" line per object hit by the wave
+
     //список пораженных объектов
     BLASTED_OBJECTS_V m_blasted_objects;
 

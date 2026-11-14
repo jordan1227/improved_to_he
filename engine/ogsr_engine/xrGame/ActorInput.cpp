@@ -30,6 +30,8 @@
 #include "HudItem.h"
 #include "WeaponMagazined.h"
 #include "../xr_3da/xr_input.h"
+
+float g_nlc_actor_look_k = 1.f; // NLC flytrap (docs/ANOMALY_DESIGN.md 22)
 #include "CustomDetector.h"
 #include "WeaponKnife.h"
 #include "Missile.h"
@@ -398,6 +400,7 @@ void CActor::IR_OnMouseMove(int dx, int dy)
 
     CCameraBase* C = cameras[cam_active];
     float scale = (C->f_fov / g_fov) * psMouseSens * psMouseSensScale / 50.f / LookFactor;
+    scale *= g_nlc_actor_look_k; // NLC flytrap: level.nlc_set_look_factor (docs/ANOMALY_DESIGN.md 22)
 
     // NLC: in the 3D scope lens mode the camera FOV covers only part of the magnification; slow the mouse by the
     // lens part too, so aiming through the lens feels like the full-screen zoom (g_3dss_lens_sens 0..1).

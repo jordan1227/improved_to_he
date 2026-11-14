@@ -13,6 +13,7 @@
 #include "game_object_space.h"
 #include "script_callback_ex.h"
 #include "script_game_object.h"
+#include "Level_Bullet_Manager.h" // NLC: bullet proximity detonation
 
 CGrenade::CGrenade(void)
 {
@@ -32,6 +33,39 @@ void CGrenade::Load(LPCSTR section)
     m_grenade_detonation_threshold_hit = READ_IF_EXISTS(pSettings, r_float, section, "detonation_threshold_hit", 100);
     m_nlc_detonate_by_bullet = READ_IF_EXISTS(pSettings, r_bool, section, "nlc_detonate_by_bullet", true);
     m_nlc_detonation_explosion_hit = READ_IF_EXISTS(pSettings, r_float, section, "nlc_detonation_explosion_hit", 5.f);
+    m_nlc_bullet_radius = READ_IF_EXISTS(pSettings, r_float, section, "nlc_bullet_detonate_radius", 0.12f);
+}
+
+// NLC (docs/ANOMALY_DESIGN.md 20): an armed thrown grenade is listed for the bullets with a sphere bigger than its mesh
+void CGrenade::nlc_fuse_register(bool on)
+{
+    if (on)
+    {
+        Fvector C;
+        Center(C);
+        CBulletManager::nlc_fuse_set(ID(), C, m_nlc_bullet_radius);
+        m_nlc_fuse_registered = true;
+    }
+    else if (m_nlc_fuse_registered)
+    {
+        CBulletManager::nlc_fuse_remove(ID());
+        m_nlc_fuse_registered = false;
+    }
+}
+
+void CGrenade::nlc_bullet_detonate(u16 shooter)
+{
+    if (H_Parent() || !CExplosive::Useful() || getDestroy() || !m_nlc_detonate_by_bullet)
+        return;
+    nlc_fuse_register(false);
+    const bool held = m_nlc_tele_held;
+    m_nlc_tele_held = false;
+    CObject* who = Level().Objects.net_Find(shooter);
+    if (who)
+        CExplosive::SetCurrentParentID(CExplosive::nlc_blame(who));
+    Msg("~ [grenade] %s [%d]%s detonated by a bullet passing within %.2f m, from [%s]", cNameSect().c_str(), ID(), held ? " (burer-held)" : "", m_nlc_bullet_radius,
+        who ? who->cName().c_str() : "?");
+    Destroy();
 }
 
 void CGrenade::Hit(SHit* pHDS)
@@ -69,6 +103,7 @@ BOOL CGrenade::net_Spawn(CSE_Abstract* DC)
 
 void CGrenade::net_Destroy()
 {
+    nlc_fuse_register(false); // NLC
     if (m_destroy_callback)
     {
         m_destroy_callback(this);
@@ -326,6 +361,11 @@ void CGrenade::UpdateCL()
 {
     inherited::UpdateCL();
     CExplosive::UpdateCL();
+
+    // NLC: armed and thrown, or held by a burer (armed or not), not exploding yet: listed for bullet proximity detonation
+    const bool live = (m_dwDestroyTime != 0xffffffff && m_dwDestroyTime != 0) || m_nlc_tele_held;
+    const bool armed = m_nlc_detonate_by_bullet && m_nlc_bullet_radius > 0.f && !H_Parent() && !getDestroy() && live && m_pPhysicsShell && CExplosive::Useful();
+    nlc_fuse_register(armed);
 }
 
 bool CGrenade::Action(s32 cmd, u32 flags)

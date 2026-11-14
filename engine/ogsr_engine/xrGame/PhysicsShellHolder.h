@@ -47,6 +47,12 @@ public:
 
     CPhysicsShell* m_pPhysicsShell;
 
+    // NLC flytrap (docs/ANOMALY_DESIGN.md 18): the time factor a Flytrap applies to this body. Its velocities are
+    // kept at k x the "own" velocity and hit impulses are scaled by k; 1 and no zone outside. Not saved.
+    float m_nlc_ph_time_k{1.f};
+    float m_nlc_ph_hit_k{1.f}; // hit impulses x this: k ^ flytrap_object_hit_k_exp (docs/ANOMALY_DESIGN.md 22)
+    u16 m_nlc_ph_time_zone{u16(-1)};
+
     CPhysicsShellHolder();
     ~CPhysicsShellHolder() override;
 
