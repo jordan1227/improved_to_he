@@ -88,6 +88,10 @@ local function is_hostile_to_actor(npc)
 	return false
 end
 
+-- [HE-PORT] pacified[npc_id] = { [target_id] = true } for every NPC target that got a
+-- personal goodwill from this guest. restore() clears only those: the engine's
+-- ClearGoodwill FATALs (clear_reverse_personal) on a pair that was never set, and
+-- pcall cannot catch an engine FATAL.
 local function pacify(npc, targets)
 	-- [HE-PORT]
 	if is_hostile_to_actor(npc) then
@@ -95,16 +99,30 @@ local function pacify(npc, targets)
 	else
 		pcall(function() npc:set_goodwill(GOODWILL_ACTOR, db.actor) end)
 	end
+	local set = pacified[npc:id()]
+	if type(set) ~= "table" then
+		set = {}
+		pacified[npc:id()] = set
+	end
 	for i = 1, #targets do
-		pcall(function() npc:set_goodwill(GOODWILL_NPC, targets[i]) end)
+		local tgt = targets[i]
+		local ok = pcall(function() npc:set_goodwill(GOODWILL_NPC, tgt) end)
+		if ok then set[tgt:id()] = true end
 	end
 end
 
-local function restore(npc, targets)
+local function restore(npc)
 	local id = npc:id()
 	pcall(function() relation_registry.clear_personal_goodwill(id, db.actor:id()) end)
-	for i = 1, #targets do
-		pcall(function() relation_registry.clear_personal_goodwill(id, targets[i]:id()) end)
+	local set = pacified[id]
+	if type(set) ~= "table" then return end
+	for tid, _ in pairs(set) do
+		-- the pair may be gone already (target released: ClearRelations dropped it, and
+		-- its id may be reused); get_personal_goodwill returns 0 for an unset pair
+		local okg, gw = pcall(relation_registry.get_personal_goodwill, id, tid)
+		if okg and gw and gw ~= 0 then
+			pcall(function() relation_registry.clear_personal_goodwill(id, tid) end)
+		end
 	end
 end
 
@@ -118,7 +136,7 @@ function update()
 	if not olr_cfg.on("military_guests") then
 		for id, _ in pairs(pacified) do
 			local npc = level.object_by_id(id)
-			if npc then restore(npc, {}) end
+			if npc then restore(npc) end
 			pacified[id] = nil
 			guest_of[id] = nil
 		end
@@ -167,7 +185,6 @@ function update()
 
 	for i = 1, #guests do
 		pacify(guests[i], targets)
-		pacified[guests[i]:id()] = true
 	end
 
 	-- [HE-PORT]
@@ -175,14 +192,13 @@ function update()
 		local npc = strays[i]
 		if is_near_guest_spot(npc) then
 			pacify(npc, targets)
-			pacified[npc:id()] = true
 		elseif pacified[npc:id()] then
 			table.insert(leavers, npc)
 		end
 	end
 
 	for i = 1, #leavers do
-		restore(leavers[i], targets)
+		restore(leavers[i])
 		pacified[leavers[i]:id()] = nil
 		guest_of[leavers[i]:id()] = nil
 	end
