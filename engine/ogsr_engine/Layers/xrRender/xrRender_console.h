@@ -116,6 +116,10 @@ extern int ps_ssfx_settings_version;
 extern float ps_ssfx_terrain_grass_slope;
 extern float ps_ssfx_contrast, ps_ssfx_color_r, ps_ssfx_color_g, ps_ssfx_color_b;
 extern float ps_ssfx_il_flashlight;
+extern float ps_ssfx_il_local, ps_ssfx_il_distance; // NLC: local-light bounce strength, IL distance
+extern float ps_ssfx_il_lights; // NLC .207: known-light fill strength
+extern int ps_ssfx_il_lights_debug, ps_ssfx_il_lights_info; // NLC .207: debug mode, one-shot log request
+extern float ps_ssfx_il_lights_reach, ps_ssfx_il_lights_thick, ps_ssfx_il_lights_floor; // NLC .208: session tuning
 extern float ps_ssfx_step_ripples;
 extern BOOL ps_ssfx_spec_aa; // specular anti-aliasing in the G-buffer ( SSFX_SPEC_AA )
 extern BOOL ps_ssfx_mblur_objects; // motion blur from the velocity buffer ( SSFX_MBLUR_OBJECTS ) // ripples around moving feet in water and puddles ( SSFX_STEP_RIPPLES when > 0 at game start ) // shadows of the weather's clouds ( SSFX_CLOUD_SHADOWS when > 0 at game start )

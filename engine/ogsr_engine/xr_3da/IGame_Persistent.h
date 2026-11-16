@@ -68,6 +68,7 @@ public:
     {
         u32 frame{}; // Device.dwFrame of the last update ( stale = off )
         Fvector pos{}, dir{}, color{};
+        Fvector omni_pos{}; // NLC .208: the torch's small omni light ( kept out of the IL known-light fill )
         float range{}, cone{}; // cone: full angle, radians
     } actor_torch;
 

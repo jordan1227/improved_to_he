@@ -811,7 +811,9 @@ HRESULT CRender::shader_compile(LPCSTR name, DWORD const* pSrcData, UINT SrcData
 
     appendShaderOption(ps_r2_ls_flags.test(R2FLAG_SSFX_SKY_DEBANDING), "SSFX_DEBAND", "1");
 
-    appendShaderOption(ps_r2_ls_flags.test(R2FLAG_SSFX_INDIRECT_LIGHT), "SSFX_INDIRECT_LIGHT", "1");
+    // NLC: not under the master switch ( ssfx_effects_off ): without SSFX_IL_PASS the old SSS 14.5 IL in combine_2_naa
+    // would compile in and run at full resolution
+    appendShaderOption(ps_r2_ls_flags.test(R2FLAG_SSFX_INDIRECT_LIGHT) && !ps_ssfx_effects_off, "SSFX_INDIRECT_LIGHT", "1");
 
     appendShaderOption(ps_r2_ls_flags.test(R2FLAG_SSFX_BLOOM), "SSFX_BLOOM", "1");
 

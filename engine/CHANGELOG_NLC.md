@@ -5,6 +5,34 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.208 (2026-11-16)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `85B761492793461F6540392C1836A96BA63D9EE8D747A9B731B4F73903920AFF` (archived with its PDB in `nlc_tools/builds/20261116_013030_85b76149`).
+- **Status:** runtime pending. Built on `nlc-3.589.207`. IL code-review batch (`docs/IL_DESIGN.md` 4.4).
+- Known lights: also lights within 16 m in sectors reached by this frame's portal traversal ( source behind the player ); fill reach in the engine ( `ssfx_il_light_fill`, spot centre at most 1.5 m along the axis ); slots whose fill misses the frustum skipped; 16 slots; lights within 0.3 m ( was 1.5 m ) and the torch omni ( `actor_torch.omni_pos`, `Torch.cpp` ) skipped; slots cleared on history reset; `ssfx_il_lights_info` answers when the pass is off.
+- New session console: `ssfx_il_lights_reach` ( 0.5 ~ 2 ), `ssfx_il_lights_thick` ( 0.2 ~ 1.5 ), `ssfx_il_lights_floor` ( 0 ~ 1 ).
+- **Required game data:** `ssfx_il.ps` ( `.208` ), Shaders tab row "Light fill out of view" ( `ui_mm_opt.xml`, `ui_mm_opt_shaders.script`, `ui_mm_opt_main.script`, eng / rus `ui_st_mm.xml` ).
+
+## nlc-3.589.207 (2026-11-14)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `2DF448138428AF4E9A292609238E03FA03C1E0278E720E48CC329CD4D8463E61` (archived with its PDB in `nlc_tools/builds/20261114_224415_2df44813`).
+- **Status:** runtime pending. Built on `nlc-3.589.206`. IL analytic fill of known lights (`docs/IL_DESIGN.md` 4.3).
+- `CRenderTarget::ssfx_il_collect_lights`: best 8 point / spot lights of `LP_normal` ( OMNIPART pieces by `ssfx_parent`, player torch and HUD lights skipped, shadowed lights x `get_LOD` ), 0.25 s fade per light, hysteresis; uploaded as `ssfx_il_lights[24]`.
+- New console: `ssfx_il_lights` ( 0 ~ 2, default 1, live ), `ssfx_il_lights_debug` ( session, 1 analytic only, 2 screen-space only ), `ssfx_il_lights_info` ( logs the slots ).
+- **Required game data:** `ssfx_il.ps` ( `.207` known-light fill ).
+
+## nlc-3.589.206 (2026-11-14)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `65514DB7F3347B2D644122DA9ADE1FCE1CB5AC8F2D97920E97FBE27E9B60408C` (archived with its PDB in `nlc_tools/builds/20261114_212833_65514db7`).
+- **Status:** runtime pending. Built on `nlc-3.589.205`. Indirect light rework (`docs/IL_DESIGN.md` 2).
+- IL: accumulator snapshot before `render_lights` ( `$user$ssfx_accum_pre` ); second IL output ( `$user$ssfx_il_local*` ) for the additive bounce of point / spot lights and emissive surfaces; MRT draw `RenderScreenTriangle2`.
+- New console: `ssfx_il_local` ( 0 ~ 2, default 1 ), `ssfx_il_distance` ( 50 ~ 300, default 150 ). `ssfx_il_combine.z` = `ssfx_il_local`.
+- Master switch: `SSFX_INDIRECT_LIGHT` is not defined under `ssfx_effects_off` ( the old 14.5 IL no longer runs ).
+- **Required game data:** `ssfx_il.ps`, `ssfx_il_blur.ps`, `ssfx_il.s`, `combine_1.ps`, `combine.s`, `ssfx_upsample.h`; Shaders tab row ( `ui_mm_opt.xml`, `ui_mm_opt_shaders.script`, `ui_mm_opt_main.script`, eng / rus `ui_st_mm.xml` ). Without the new `ssfx_il.s` / `ssfx_il.ps` the IL pass draws into a target the shader does not write.
+
 ## nlc-3.589.205 (2026-11-14)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

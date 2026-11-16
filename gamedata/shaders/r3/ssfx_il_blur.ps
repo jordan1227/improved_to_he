@@ -2,21 +2,29 @@
  * @ Description: Indirect light - blur ( IL resolution )
  * @ Based on: SCREEN SPACE SHADERS - UPDATE 21 ssfx_il_blur.ps ( https://www.moddb.com/members/ascii1457 )
  * @ NLC: 2026-10-12 - runs at the IL target size, so no subrect clamping is needed.
+ * @ NLC .206: blurs both IL outputs ( ambient + torch, local-light bounce ) with the same taps.
  */
 
 #include "common.h"
 
 #ifndef G_IL_BLUR_SAMPLES
-#define G_IL_BLUR_SAMPLES 4
+#define G_IL_BLUR_SAMPLES 6 // NLC .206c: 4 -> 6, a leftover spike spreads as a soft blob, not a tap triangle
 #endif
 
 uniform float4 blur_setup; // x: res divider, y: radius, zw: IL target size
 
 Texture2D ao_image;
+Texture2D ao_image2; // NLC .206: local-light bounce
 
 static const float2x2 ssfx_il_rotation = {-0.666276f, 0.745705f, -0.745705f, -0.666276f};
 
-float4 main(p_screen I) : SV_Target
+struct ssfx_il_blur_out
+{
+    float4 il : SV_Target0;
+    float4 local : SV_Target1;
+};
+
+ssfx_il_blur_out main(p_screen I)
 {
     float2 tc = I.tc0.xy;
 
@@ -29,6 +37,7 @@ float4 main(p_screen I) : SV_Target
     float z0 = s_position.SampleLevel(smp_nofilter, tc, 0).z;
 
     float4 blur = ao_image.SampleLevel(smp_rtlinear, tc, 0) * 0.25f; // NLC: alpha = flashlight bounce
+    float4 blur2 = ao_image2.SampleLevel(smp_rtlinear, tc, 0) * 0.25f;
     float wsum = 0.25f;
     float r = 2.0f;
 
@@ -42,9 +51,12 @@ float4 main(p_screen I) : SV_Target
         float z = s_position.SampleLevel(smp_nofilter, tap, 0).z;
         float w = exp2(-abs(1.0f - z / max(z0, 0.0001f)) * 16.0f);
         blur += ao_image.SampleLevel(smp_rtlinear, tap, 0) * w;
+        blur2 += ao_image2.SampleLevel(smp_rtlinear, tap, 0) * w;
         wsum += w;
     }
-    blur /= wsum;
 
-    return blur;
+    ssfx_il_blur_out O;
+    O.il = blur / wsum;
+    O.local = blur2 / wsum;
+    return O;
 }

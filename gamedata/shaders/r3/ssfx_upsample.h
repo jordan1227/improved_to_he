@@ -30,4 +30,30 @@ float4 ssfx_upsample(Texture2D t, float2 tc, float z0)
     return sum / max(wsum, 0.00001f);
 }
 
+// NLC .206: two textures of the same size with the same weights ( IL ambient + local bounce )
+void ssfx_upsample2(Texture2D t0, Texture2D t1, float2 tc, float z0, out float4 r0, out float4 r1)
+{
+    float2 size;
+    t0.GetDimensions(size.x, size.y);
+    float2 f = tc * size - 0.5f;
+    float2 base = floor(f);
+    float2 fr = f - base;
+
+    float4 sum0 = 0, sum1 = 0;
+    float wsum = 0;
+    [unroll] for (int i = 0; i < 4; i++)
+    {
+        float2 o = float2(i & 1, i >> 1);
+        float2 uv = (base + o + 0.5f) / size;
+        float z = s_position.SampleLevel(smp_nofilter, uv, 0).z;
+        float wb = (o.x ? fr.x : 1.0f - fr.x) * (o.y ? fr.y : 1.0f - fr.y);
+        float w = wb * exp2(-abs(1.0f - z / max(z0, 0.0001f)) * 16.0f) + 0.0001f * wb;
+        sum0 += t0.SampleLevel(smp_nofilter, uv, 0) * w;
+        sum1 += t1.SampleLevel(smp_nofilter, uv, 0) * w;
+        wsum += w;
+    }
+    r0 = sum0 / max(wsum, 0.00001f);
+    r1 = sum1 / max(wsum, 0.00001f);
+}
+
 #endif // SSFX_UPSAMPLE_H

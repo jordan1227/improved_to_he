@@ -431,7 +431,7 @@ void CTorch::UpdateCL()
                     angle_inertion_var(m_prev_hp.y, -actor->cam_FirstEye()->pitch, TORCH_INERTION_SPEED_MIN, TORCH_INERTION_SPEED_MAX, TORCH_INERTION_CLAMP, Device.fTimeDelta);
             }
 
-            Fvector dir, pos, right, up, spot_pos;
+            Fvector dir, pos, right, up, spot_pos, omni_pos;
             if (m_bind_to_camera && actor->active_cam() == eacFirstEye)
             {
                 float target_dist = HUD().GetTarget()->GetRealDist();
@@ -454,6 +454,7 @@ void CTorch::UpdateCL()
                 offset.mad(up, m_camera_omni_offset.y);
                 offset.mad(dir, m_camera_omni_offset.z - target_dist);
                 light_omni->set_position(offset);
+                omni_pos = offset;
             }
             else
             {
@@ -471,6 +472,7 @@ void CTorch::UpdateCL()
                 offset.mad(M.j, OMNI_OFFSET.y);
                 offset.mad(M.k, OMNI_OFFSET.z);
                 light_omni->set_position(offset);
+                omni_pos = offset;
             }
 
 			light_render->set_rotation( dir, right );
@@ -482,6 +484,7 @@ void CTorch::UpdateCL()
                 auto& T = g_pGamePersistent->actor_torch;
                 T.frame = Device.dwFrame;
                 T.pos = spot_pos;
+                T.omni_pos = omni_pos; // NLC .208
                 T.dir = dir;
                 T.range = light_render->get_range();
                 T.cone = m_spot_cone;

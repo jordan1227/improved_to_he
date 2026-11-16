@@ -3,7 +3,14 @@
  * @ Based on: SCREEN SPACE SHADERS - UPDATE 21 ssfx_il.ps ( https://www.moddb.com/members/ascii1457 )
  * @ NLC: 2026-10-12 - OGSR G-buffer / velocity, shared reprojection helpers; sample positions on their
  *        own view ray. Bounces come from the current frame light accumulator ( linear, as with ES ).
- *        Output: rgb = indirect light
+ * @ NLC .206: two outputs. The accumulator is split with the snapshot taken before the point / spot lights
+ *        ( $user$ssfx_accum_pre ): sun + emissive keep modulating the ambient ( SV_Target0 ), the local lights
+ *        ( anomalies, lamps, campfires ) and the self-illumination ( accumulator alpha x albedo ) bounce as added
+ *        light ( SV_Target1 ), so they also work where there is no ambient ( night, undergrounds, dark env_mod
+ *        zones ). Compression keeps the hue ( scaled by the brightest channel, was per channel ) and the gather is
+ *        a plain mean ( the old gain chain kept mostly the first valid sample, and 32 samples were half as bright
+ *        as 16 ).
+ *        Output 0: rgb = ambient IL, a = flashlight bounce. Output 1: rgb = local-light bounce
  */
 
 #include "common.h"
@@ -14,14 +21,59 @@
 #define SSFX_IL_QUALITY 32
 #endif
 
-uniform float4 ssfx_il_params; // Res divider, intensity, vibrance, distance
-uniform float4 ssfx_il_params2; // HUD intensity, flora intensity, -, -
+#define G_IL_SUN_SCALE 10.0f // sun / emissive radiance -> ambient IL sample ( clipped at 1 by the brightest channel )
+#define G_IL_LOCAL_GAIN 50.0f // local-light bounce gain ( mean of the samples ). .206b: 2.5 -> 100, the debug view showed ~4e-4;
+                              // .206d: 100 -> 50, user test: 0.5 of .206c looked right, so ssfx_il_local 1 = that
+                               // ( ~40x below a physical floor-to-wall bounce: the mean counts missed samples and three falloffs )
+#define G_IL_LOCAL_CAP 0.5f // soft cap of the local bounce: x / ( 1 + x * cap )
+#define G_IL_EMISSIVE 0.0015f // self-illumination ( accumulator alpha, 16 on emissive shaders ) x albedo -> local light
+                              // ( .206b: 0.06 -> 0.0015 with the gain change, same emissive bounce as .206 )
+
+// .208: the reach is set by the engine ( ssfx_il_light_fill: 1.275 range + 0.85 m = the .207h shader value
+// 0.85 x ( 1.5 range + 1 ), spot centre at most 1.5 m along the axis ) x ssfx_il_lights_reach
+#define G_IL_LIGHTS_K 0.6f // NLC .207: known-light fill level. .207h: 0.71 -> 0.6, same level at ~2 m with reach 0.85. .207f: 0.53 -> 0.71 keeps the matched level at ~2 m
+                            // with the shorter reach. .207b: 0.08 -> 0.8, user test: debug 1 ( fill only ) far
+                            // weaker than debug 2 ( screen-space ) near a fruit punch. .207c: boxes matched at
+                            // ssfx_il_lights 0.6 -> baked ( 0.8 x 0.6 / 0.9 for the tighter wrap ), default 1 = that
+#define G_IL_LIGHTS_STEPS 8 // .207d: depth-buffer occlusion steps per light ( corner leaks ); .207f: 6 -> 8 ( columns )
+// .207g occluder thickness: up to k x the ray length in front of the ray blocks, clamped 0.75 - 3 m ( fixed 1.5 m let
+// thick rock walls leak; fixed 4 m took a door frame between the camera and a box as a wall ). .208: k is
+// ssfx_il_params2.w ( ssfx_il_lights_thick, default 0.6 ). .207c floor factor: ssfx_il_params2.x ( ssfx_il_lights_floor,
+// default 0.25 ), the fill kept on up-facing surfaces ( the lit floor does not bounce onto the floor )
+#define G_IL_LIGHTS_ALBEDO 0.3f // assumed albedo of the ( possibly off-screen ) surfaces a known light lights
+#define G_IL_LIGHTS_ONSCREEN 1.0f // hand-over: 1 = the fill is off while its centre is visible on screen
+#define SSFX_IL_LIGHTS_MAX 16 // CRenderTarget::SSFX_IL_LIGHTS_MAX ( .208: 12 -> 16 )
+
+uniform float4 ssfx_il_params; // Res divider, known-light count, known-light strength, distance
+uniform float4 ssfx_il_params2; // fill floor factor, flora intensity, known-light debug ( 1 analytic only, 2 screen-space only ), occluder thickness k
+uniform float4 ssfx_il_lights[SSFX_IL_LIGHTS_MAX * 2]; // NLC .207, view space: [0] fill centre / reach, [1] raw colour x LOD / fade
 
 Texture2D ssfx_il_history; // $user$ssfx_il
+Texture2D ssfx_il_local_history; // NLC: $user$ssfx_il_local
+Texture2D s_accum_pre; // NLC: $user$ssfx_accum_pre, accumulator before the point / spot lights
 uniform float4 ssfx_torch[3]; // NLC: player torch, view space: pos / inv range^2, dir / cos half cone, colour x ( multiplier - 1 ) / active
 
-float4 main(p_screen I) : SV_Target
+struct ssfx_il_out
 {
+    float4 il : SV_Target0;
+    float4 local : SV_Target1;
+};
+
+float ssfx_il_max3(float3 v) { return max(max(v.r, v.g), v.b); }
+
+// NLC: scale a colour so its brightest channel follows a new value ( keeps the hue )
+float3 ssfx_il_rescale(float3 c, float m_new)
+{
+    float m = ssfx_il_max3(c);
+    return c * (m_new / max(m, 0.0001f));
+}
+
+ssfx_il_out main(p_screen I)
+{
+    ssfx_il_out O;
+    O.il = 0;
+    O.local = 0;
+
     float2 tc = I.tc0.xy;
 
     gbuffer_data gbd = gbuffer_load_data(tc, tc * render_res.xy);
@@ -29,7 +81,7 @@ float4 main(p_screen I) : SV_Target
     float3 N = gbd.N;
 
     if (P.z >= ssfx_il_params.w || P.z <= SKY_EPS)
-        return float4(0, 0, 0, 0);
+        return O;
 
     bool mat_flora = abs(gbd.mtl - MAT_FLORA) <= 0.04f;
 
@@ -39,8 +91,8 @@ float4 main(p_screen I) : SV_Target
     float3 ao_noise = ssfx_hash33(float3(tc * 100.0f, timers.x * 100.0f));
 
     float3 il = 0;
+    float3 local = 0; // NLC: point / spot lights + emissive
     float torch_il = 0; // NLC: flashlight bounce ( alpha )
-    float3 gain = 1.0f;
     float Seed = 0.04f;
     float radius = 3.0f;
 
@@ -67,8 +119,10 @@ float4 main(p_screen I) : SV_Target
             float dP = max(length(toP), 0.0001f);
             toP /= dP;
 
+            float3 sample_N = gbuf_unpack_normal(sample_raw.xy);
+
             float il_intensity = saturate(1.0f - dP / (radius * 2.0f)); // falloff by the real distance
-            il_intensity *= saturate(dot(gbuf_unpack_normal(sample_raw.xy), toP)); // emitter faces the receiver
+            il_intensity *= saturate(dot(sample_N, toP)); // emitter faces the receiver
             il_intensity *= saturate(dot(normalize(N), -toP)); // emitter is in the receiver's hemisphere
 
             // NLC: hemi gate - a much more open ( sky-visible ) emitter adds little bounce to an enclosed receiver.
@@ -78,12 +132,16 @@ float4 main(p_screen I) : SV_Target
             bool IsFlora = (abs(gbuf_unpack_mtl(sample_raw.w) - MAT_FLORA) <= 0.04f) || mat_flora;
             il_intensity *= 1.0f - saturate(IsFlora - ssfx_il_params2.y);
 
-            float3 L = saturate(s_accumulator.SampleLevel(smp_nofilter, occ_uv, 0).rgb * 10.0f);
+            float4 accum = s_accumulator.SampleLevel(smp_nofilter, occ_uv, 0);
+            float4 pre = s_accum_pre.SampleLevel(smp_nofilter, occ_uv, 0);
 
             // NLC: flashlight indirect light ( ssfx_il_flashlight ). The torch's light at the sample surface is rebuilt
             // from its cone and range and gathered on its own ( alpha ): combine adds it as light, so it also works
             // where there is no ambient to modulate ( undergrounds ) and keeps the torch colour ( not the sky's ).
-            [branch] if (ssfx_torch[2].w > 0.0f)
+            // .206: also the mask of the torch-lit samples, kept out of the local bounce ( no double count, and
+            // ssfx_il_flashlight stays the torch's only control ). [0].w > 0 = torch on, whatever the slider
+            float torch_mask = 0.0f;
+            [branch] if (ssfx_torch[0].w > 0.0f)
             {
                 float3 Lv = ssfx_torch[0].xyz - S;
                 // NLC .84: inverse-square-like falloff with a soft 5 m limit ( the torch range is 30 - 50 m: far walls
@@ -91,21 +149,126 @@ float4 main(p_screen I) : SV_Target
                 float d2 = dot(Lv, Lv);
                 float att = (1.0f / (1.0f + d2 * 0.25f)) * (1.0f - smoothstep(9.0f, 25.0f, d2));
                 float3 Ld = Lv * rsqrt(max(d2, 1e-4f)); // .90: no NaN at the torch position
-                float cone = smoothstep(ssfx_torch[1].w, lerp(ssfx_torch[1].w, 1.0f, 0.4f), dot(-Ld, ssfx_torch[1].xyz));
-                float ndl = saturate(dot(gbuf_unpack_normal(sample_raw.xy), Ld));
+                float cos_a = dot(-Ld, ssfx_torch[1].xyz);
+                float cone = smoothstep(ssfx_torch[1].w, lerp(ssfx_torch[1].w, 1.0f, 0.4f), cos_a);
+                float ndl = saturate(dot(sample_N, Ld));
                 torch_il += att * cone * ndl * il_intensity;
+
+                // the whole cone, slightly wider than the bounce one, within the torch range
+                torch_mask = smoothstep(ssfx_torch[1].w * 0.97f, lerp(ssfx_torch[1].w, 1.0f, 0.15f), cos_a) * saturate((1.0f - d2 * ssfx_torch[0].w) * 4.0f);
             }
 
-            il += L * gain * il_intensity * 300.0f;
-            gain *= 1.0f / (1.0f + il);
+            // Ambient IL: sun + emissive colour ( the snapshot ), clipped by the brightest channel ( was per channel:
+            // any sunlit surface became white and a coloured light lost its hue )
+            float3 L = pre.rgb * G_IL_SUN_SCALE;
+            L /= max(1.0f, ssfx_il_max3(L));
+            il += L * il_intensity;
+
+            // NLC .206: local lights ( accumulator minus the snapshot ) + self-illumination, added as light in combine
+            float3 Ll = max(accum.rgb - pre.rgb, 0.0f) * (1.0f - torch_mask);
+            Ll *= ssfx_il_params2.z > 0.5f && ssfx_il_params2.z < 1.5f ? 0.0f : 1.0f; // .207 debug 1: known-light fill only
+            [branch] if (pre.a > 0.0f) // .208: albedo fetch only on emissive surfaces
+                Ll += pre.a * G_IL_EMISSIVE * SRGBToLinear(s_diffuse.SampleLevel(smp_nofilter, occ_uv, 0).rgb);
+            // .206c: tonemapped average ( Karis ): a small bright patch hit by a few samples made per-frame spikes
+            // that the blur spread into flickering triangles; uniform areas keep their level after the inverse below
+            float3 v = Ll * (il_intensity * G_IL_LOCAL_GAIN);
+            local += v / (1.0f + ssfx_il_max3(v));
         }
     }
 
-    il /= SSFX_IL_QUALITY;
+    // NLC .206: mean of the samples, then one hue-keeping compression. The curve matches the old gain chain for
+    // ~40 % sample coverage ( 0.05 sqrt( M ) + M / 16 ), so the overall brightness stays close to the accepted one
+    il *= 300.0f / SSFX_IL_QUALITY;
+    il = ssfx_il_rescale(il, saturate(0.05f * sqrt(ssfx_il_max3(il)) + ssfx_il_max3(il) / 16.0f));
+
+    local /= SSFX_IL_QUALITY;
+    float local_t = min(ssfx_il_max3(local), 0.95f);
+    local = ssfx_il_rescale(local, local_t / (1.0f - local_t)); // inverse of x / ( 1 + x )
+
+    // NLC .207: analytic fill of known lights ( docs/IL_DESIGN.md 4.3 ). A soft bounce around each light's lit area
+    // that does not need the lit surfaces on screen; while the fill centre is visible on screen the screen-space bounce
+    // above carries it ( hand-over by os ). Debug 1 = this only ( no hand-over ), 2 = screen-space only
+    int il_lights = (int)ssfx_il_params.y;
+    [branch] if (il_lights > 0 && ssfx_il_params2.z < 1.5f)
+    {
+        float3 Nn = normalize(N);
+        // .207c: up-facing receivers ( floor, ground ) get little of the fill, as with a real floor bounce
+        float floorness = saturate(dot(Nn, normalize(mul((float3x3)m_V, float3(0.0f, 1.0f, 0.0f)))));
+        float fill_shape = lerp(1.0f, ssfx_il_params2.x, floorness * floorness);
+        bool no_handover = ssfx_il_params2.z > 0.5f;
+        [loop] for (int li = 0; li < il_lights; li++)
+        {
+            float4 cr = ssfx_il_lights[li * 2];
+            float4 cc = ssfx_il_lights[li * 2 + 1];
+
+            float3 Cp = cr.xyz - P;
+            float d2 = dot(Cp, Cp);
+            float reach2 = cr.w * cr.w;
+            [branch] if (d2 < reach2)
+            {
+                float x2 = d2 / reach2;
+                float g = (1.0f - x2) * (1.0f - x2);
+                float wrap = saturate(0.2f + 0.8f * dot(Nn, Cp * rsqrt(max(d2, 1e-4f)))) * fill_shape; // .207c: 0.4 + 0.6 -> 0.2 + 0.8
+
+                // on-screen factor of the centre: in front, not hidden by a surface more than 1 m in front of it ( sky
+                // behind = visible ). .208: full inside the frame, ramping to 0 over a band 30 % of the screen outside it
+                // ( a lamp just above the top edge with its lit wall on screen ); outside the frame there is no depth
+                // to test, and the weapon ( HUD ) in front of the centre does not count as an occluder
+                float os = 0.0f;
+                if (!no_handover && cr.z > 0.2f)
+                {
+                    float2 cuv = SSFX_view_to_uv(cr.xyz);
+                    float2 e = smoothstep(-0.3f, 0.0f, cuv) * smoothstep(-0.3f, 0.0f, 1.0f - cuv);
+                    if (e.x * e.y > 0.0f)
+                    {
+                        float vis = 1.0f;
+                        if (SSFX_is_valid_uv(cuv) && ssfx_hud_mask(cuv) <= 0.0f)
+                        {
+                            float sz = s_position.SampleLevel(smp_nofilter, cuv, 0).z;
+                            vis = sz <= SKY_EPS ? 1.0f : saturate(sz - (cr.z - 1.0f));
+                        }
+                        os = e.x * e.y * vis;
+                    }
+                }
+
+                // .207d: occlusion march receiver -> centre through the depth buffer ( 6 jittered steps ). A surface in
+                // front of the ray by 0.15 - 1.5 m blocks the fill ( a wall or corner between them ); the part of the ray
+                // off screen or behind the camera is unknown and counts as clear
+                float fill_vis = 1.0f;
+                float thick = clamp(ssfx_il_params2.w * sqrt(d2), 0.75f, 3.0f);
+                float jit = frac(ao_noise.x * 0.5f + 0.5f + li * 0.618f);
+                [loop] for (int st = 0; st < G_IL_LIGHTS_STEPS; st++)
+                {
+                    float t = lerp(0.08f, 0.92f, (st + jit) / G_IL_LIGHTS_STEPS);
+                    float3 Q = P + Cp * t;
+                    if (Q.z <= 0.2f)
+                        break;
+                    float2 quv = SSFX_view_to_uv(Q);
+                    if (!SSFX_is_valid_uv(quv))
+                        break;
+                    if (ssfx_hud_mask(quv) > 0.0f)
+                        continue; // .208: the weapon is not a wall between the receiver and the light
+                    float qz = s_position.SampleLevel(smp_nofilter, quv, 0).z;
+                    if (qz > SKY_EPS && qz < Q.z - 0.15f && qz > Q.z - thick)
+                    {
+                        fill_vis = 0.0f;
+                        break;
+                    }
+                }
+
+                local += SRGBToLinear(cc.rgb) * (cc.a * G_IL_LIGHTS_ALBEDO * G_IL_LIGHTS_K * ssfx_il_params.z * g * wrap * fill_vis * (1.0f - os * G_IL_LIGHTS_ONSCREEN));
+            }
+        }
+    }
+
+    local /= 1.0f + ssfx_il_max3(local) * G_IL_LOCAL_CAP;
+
     torch_il /= SSFX_IL_QUALITY;
 
     // Distance fade
-    il *= 1.0f - smoothstep(ssfx_il_params.w * 0.7f, ssfx_il_params.w, P.z);
+    float dist_fade = 1.0f - smoothstep(ssfx_il_params.w * 0.7f, ssfx_il_params.w, P.z);
+    il *= dist_fade;
+    local *= dist_fade;
 
     // Temporal accumulation -------------------------------------------------------------
 
@@ -116,6 +279,7 @@ float4 main(p_screen I) : SV_Target
     float vel = HudMask > 0 ? 0.0f : length(mv);
 
     float4 prev = ssfx_il_history.SampleLevel(smp_linear, saturate(prev_tc), 0);
+    float3 prev_local = ssfx_il_local_history.SampleLevel(smp_linear, saturate(prev_tc), 0).rgb;
 
     float outoffsrc = ssfx_offscreen(prev_tc);
     float docc = ssfx_disocclusion(P.z, prev_tc);
@@ -130,9 +294,17 @@ float4 main(p_screen I) : SV_Target
 
     float weight = saturate(0.97f - vel - outoffsrc - docc - obj_motion * 0.7f);
 
-    il = saturate(il - 0.01f); // Small decay
+    // Small decay ( NLC .206: on the brightest channel, keeps the hue )
+    il = ssfx_il_rescale(il, saturate(ssfx_il_max3(il) - 0.01f));
+    local = ssfx_il_rescale(local, max(ssfx_il_max3(local) - 0.002f, 0.0f));
+
     il = lerp(il, prev.rgb, weight);
     torch_il = lerp(torch_il, prev.a, weight);
+    local = lerp(local, prev_local, weight);
 
-    return saturate(float4(il, torch_il));
+    O.il = saturate(float4(il, torch_il));
+    // .208: NaN / overflow guard before the history: D3D min / max return the non-NaN operand and saturate maps NaN to 0,
+    // so one bad sample cannot stay in the temporal history and spread through the blur
+    O.local = float4(min(max(local, 0.0f), 16.0f), 0.0f);
+    return O;
 }

@@ -99,6 +99,25 @@ public:
     ref_rt rt_ssfx_sss_ext, rt_ssfx_sss_ext2;
     ref_rt rt_ssfx_ao, rt_ssfx_ao_a, rt_ssfx_ao_b;
     ref_rt rt_ssfx_il, rt_ssfx_il_a, rt_ssfx_il_b;
+    ref_rt rt_ssfx_il_local, rt_ssfx_il_local_a, rt_ssfx_il_local_b; // NLC: local-light bounce ( second IL output )
+    ref_rt rt_ssfx_accum_pre; // NLC: accumulator snapshot before render_lights ( local light = accum - this )
+
+    // NLC .207: analytic bounce of known lights ( docs/IL_DESIGN.md 4.3 ). The best SSFX_IL_LIGHTS_TOP lights of the
+    // light package and ( .208 ) of the lights near the camera in sectors seen this frame, plus slots still fading out. Values are copied: a slot's key is only compared, never dereferenced.
+    static constexpr u32 SSFX_IL_LIGHTS_TOP = 8;
+    static constexpr u32 SSFX_IL_LIGHTS_MAX = 16; // must match ssfx_il_lights[] in ssfx_il.ps ( 2 x float4 per slot ); .208: 12 -> 16
+    struct ssfx_il_light_slot
+    {
+        const void* key{}; // light pointer ( the omni light for OMNIPART pieces )
+        Fvector pos{}, dir{}; // world
+        Fvector col{}; // raw colour x LOD
+        float range{}, fade{};
+        bool spot{};
+    };
+    ssfx_il_light_slot ssfx_il_slots[SSFX_IL_LIGHTS_MAX]{};
+    u32 ssfx_il_slot_count{};
+    void ssfx_il_collect_lights(const light_Package& LP);
+
     ref_shader s_ssfx_sss, s_ssfx_ao, s_ssfx_il;
     // Build B
     ref_rt rt_ssfx_water, rt_ssfx_water_a, rt_ssfx_water_b, rt_ssfx_water_waves;
@@ -313,6 +332,7 @@ public:
     void phase_ssfx_sss_lights(CBackend& cmd_list, light_Package& LP); // up to 8 point/spot lights
     void phase_ssfx_ao(CBackend& cmd_list); // AO ( start of combine )
     void phase_ssfx_il(CBackend& cmd_list); // IL ( start of combine )
+    void phase_ssfx_il_snapshot(CBackend& cmd_list, const light_Package& LP); // NLC: copy the accumulator before the point / spot lights, pick the IL lights
     void ssfx_end_frame(CBackend& cmd_list); // save position buffer for the next frame
     void phase_ssfx_water(CBackend& cmd_list); // water reflection prepass ( before the forward pass )
     void phase_ssfx_rain(CBackend& cmd_list); // NLC .85: rain refraction buffer ( before the forward pass )
@@ -386,6 +406,8 @@ public:
 
 private:
     void RenderScreenTriangle(CBackend& cmd_list, const ref_rt& rt, ref_selement& sh, const std::function<void()>& lambda = dummy);
+    // NLC: two render targets of the same size ( SV_Target0 / SV_Target1 )
+    void RenderScreenTriangle2(CBackend& cmd_list, const ref_rt& rt0, const ref_rt& rt1, ref_selement& sh, const std::function<void()>& lambda = dummy);
     void RenderScreenQuad(CBackend& cmd_list, const u32 w, u32 const h, const ref_rt& rt, ref_selement& sh, const std::function<void()>& lambda = dummy);
 
     // Anti Aliasing

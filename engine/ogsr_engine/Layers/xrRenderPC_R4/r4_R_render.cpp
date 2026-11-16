@@ -528,6 +528,7 @@ void CRender::Render()
         Target->phase_ssfx_sss_lights(cmd_list, LP_normal_copy); // NLC: light screen-space shadows ( slots read by accum_base )
 
         Target->phase_accumulator(cmd_list); // init accum here
+        Target->phase_ssfx_il_snapshot(cmd_list, LP_normal_copy); // NLC: sun + emissive, before the point / spot lights ( IL local bounce ); IL lights picked here ( render_lights empties the package )
         render_lights(LP_normal_copy);
     }
 

@@ -16,6 +16,23 @@ void CRenderTarget::RenderScreenTriangle(CBackend& cmd_list, const ref_rt& rt, r
     cmd_list.Render(D3DPT_TRIANGLELIST, 0, 0, 3, 0, 1);
 }
 
+// NLC: SSS 23 IL ( ambient + local bounce ): two targets of the same size in one draw
+void CRenderTarget::RenderScreenTriangle2(CBackend& cmd_list, const ref_rt& rt0, const ref_rt& rt1, ref_selement& sh, const std::function<void()>& lambda)
+{
+    u_setrt(cmd_list, rt0->dwWidth, rt0->dwHeight, rt0->pRT, rt1->pRT, nullptr, nullptr);
+    cmd_list.SetViewport({0.f, 0.f, static_cast<float>(rt0->dwWidth), static_cast<float>(rt0->dwHeight), 0.f, 1.f});
+
+    cmd_list.set_CullMode(CULL_NONE);
+    cmd_list.set_Stencil(FALSE);
+
+    cmd_list.set_Element(sh);
+
+    lambda();
+
+    cmd_list.set_Geometry(TriangleGeom);
+    cmd_list.Render(D3DPT_TRIANGLELIST, 0, 0, 3, 0, 1);
+}
+
 void CRenderTarget::RenderScreenQuad(CBackend& cmd_list, const u32 w, const u32 h, const ref_rt& rt, ref_selement& sh, const std::function<void()>& lambda)
 {
     u32 Offset = 0;

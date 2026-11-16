@@ -1,6 +1,7 @@
 #include "common.h"
 
 #define NLC_DEBUG_HEMI 0 // NLC: 1 = show the baked hemi bands instead of the scene ( IL hemi gate tuning )
+#define NLC_DEBUG_IL_LOCAL 0 // NLC .206: 1 = show the local-light bounce buffer x 50 ( x ssfx_il_local ) instead of the scene
 
 uniform float4 fakescope;
 
@@ -40,7 +41,8 @@ Texture2D s_ssfx_ao; // $user$ssfx_ao_a, .w = occlusion
 #endif
 #ifdef SSFX_IL_PASS
 Texture2D s_ssfx_il; // $user$ssfx_il_a, .rgb = indirect light
-uniform float4 ssfx_il_combine; // x: intensity, y: vibrance
+Texture2D s_ssfx_il_local; // NLC .206: $user$ssfx_il_local_a, .rgb = local-light / emissive bounce ( added light )
+uniform float4 ssfx_il_combine; // x: intensity, y: vibrance, z: local-light bounce ( ssfx_il_local )
 uniform float4 ssfx_torch[3]; // NLC: [2].rgb = torch colour x ssfx_il_flashlight, .w = active
 #endif
 
@@ -129,9 +131,10 @@ float4 main(p_screen I) : SV_Target
 
     // NLC: SSS 23 indirect light ( Enhanced Shaders path of SSS 23 combine_1 )
 #ifdef SSFX_IL_PASS
-    float4 IL_full = ssfx_upsample(s_ssfx_il, I.tc0, P.z);
+    float4 IL_full, IL_local;
+    ssfx_upsample2(s_ssfx_il, s_ssfx_il_local, I.tc0, P.z, IL_full, IL_local);
     float3 IL_sample = IL_full.rgb;
-    IL_sample *= 1.0f / (1.0f + IL_sample); // Lower highs, higher lows
+    IL_sample *= 1.0f / (1.0f + max(max(IL_sample.r, IL_sample.g), IL_sample.b)); // Lower highs, higher lows ( NLC .206: by the brightest channel, keeps the hue )
     IL_sample = vibrance(IL_sample, ssfx_il_combine.y);
     hdiffuse *= lerp(1.0f, IL_sample * (30.0f * ssfx_il_combine.x), IL_sample * (1.0f - ssfx_compare.x));
 
@@ -139,6 +142,15 @@ float4 main(p_screen I) : SV_Target
     // x ssfx_il_flashlight; added after the AO, which only half-occludes it ( bounce light fills contact shadows )
     // .84: x0.05 ( even 0.1 lit a dark room ), slight warm bias ( bounce off concrete / wood )
     float3 torch_bounce = ssfx_torch[2].rgb * float3(1.0f, 0.95f, 0.85f) * (IL_full.a * ssfx_torch[2].w * 0.05f) * SRGBToLinear(D.rgb) * (1.0f - ssfx_compare.x);
+
+    // NLC .206: bounce of point / spot lights and emissive surfaces ( anomalies, lamps, campfires ) on the surface
+    // albedo, x ssfx_il_local; same AO handling as the torch bounce. Independent of the ambient, so it works at
+    // night, underground and in dark env_mod zones
+    torch_bounce += IL_local.rgb * SRGBToLinear(D.rgb) * (ssfx_il_combine.z * (1.0f - ssfx_compare.x));
+#if NLC_DEBUG_IL_LOCAL
+    // NLC .206 debug: black = no local bounce gathered; set NLC_DEBUG_IL_LOCAL 0 and restart to leave
+    return float4(LinearTosRGB(saturate(IL_local.rgb * (50.0f * ssfx_il_combine.z))), 0.0f);
+#endif
 #endif
 
     // AO implementation

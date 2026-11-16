@@ -19,6 +19,7 @@ function element_0(shader, t_base, t_second, t_detail)
 	-- NLC: SSS 23 temporal AO / IL results ( ignored when the shader does not use them )
 	shader:dx10texture("s_ssfx_ao", "$user$ssfx_ao_a")
 	shader:dx10texture("s_ssfx_il", "$user$ssfx_il_a")
+	shader:dx10texture("s_ssfx_il_local", "$user$ssfx_il_local_a") -- NLC .206: local-light bounce
 
 	jitter.jitter(shader)
 

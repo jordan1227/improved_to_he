@@ -703,10 +703,10 @@ static class ssfx_steps final : public R_constant_setup
     }
 } ssfx_steps;
 
-// NLC: SSS 23 indirect light combine ( combine_1.ps ), x = intensity, y = vibrance
+// NLC: SSS 23 indirect light combine ( combine_1.ps ), x = intensity, y = vibrance, z = local-light bounce ( ssfx_il_local )
 static class ssfx_il_combine final : public R_constant_setup
 {
-    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_il_intensity, 1.f, 0.f, 0.f); }
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_il_intensity, 1.f, ps_ssfx_il_local, 0.f); }
 } ssfx_il_combine;
 
 // NLC .84: ssfx_extra2 ( ssfx_extra.h ), x: AO on direct light, y: ground mist; 0 while ssfx_compare

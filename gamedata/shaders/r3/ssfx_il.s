@@ -1,4 +1,5 @@
 -- NLC: SSS 23 temporal indirect light ( r4_rendertarget_phase_ssfx.cpp )
+-- NLC .206: two outputs ( ambient + torch, local-light bounce ), each with its own history
 
 -- IL + temporal accumulation
 function element_0(shader, t_base, t_second, t_detail)
@@ -6,12 +7,14 @@ function element_0(shader, t_base, t_second, t_detail)
 		:fog(false)
 		:zb(false, false)
 	shader:dx10texture("s_position", "$user$position")
-	shader:dx10texture("s_diffuse", "$user$albedo")
+	shader:dx10texture("s_diffuse", "$user$albedo") -- NLC .206: emissive bounce ( albedo x accumulator alpha )
 	shader:dx10texture("s_accumulator", "$user$accum")
+	shader:dx10texture("s_accum_pre", "$user$ssfx_accum_pre") -- NLC .206: accumulator before the point / spot lights
 	shader:dx10texture("s_ssfx_velocity", "$user$velocity")
 	shader:dx10texture("s_ssfx_zbuffer", "$user$zbuffer")
 	shader:dx10texture("s_prev_pos", "$user$ssfx_prev_pos")
 	shader:dx10texture("ssfx_il_history", "$user$ssfx_il")
+	shader:dx10texture("ssfx_il_local_history", "$user$ssfx_il_local")
 	shader:dx10sampler("smp_nofilter")
 	shader:dx10sampler("smp_rtlinear")
 	shader:dx10sampler("smp_linear")
@@ -23,6 +26,7 @@ function element_1(shader, t_base, t_second, t_detail)
 		:fog(false)
 		:zb(false, false)
 	shader:dx10texture("ao_image", "$user$ssfx_il_a")
+	shader:dx10texture("ao_image2", "$user$ssfx_il_local_a")
 	shader:dx10texture("s_position", "$user$position") -- NLC: depth-aware blur
 	shader:dx10sampler("smp_rtlinear")
 	shader:dx10sampler("smp_nofilter")
@@ -34,6 +38,7 @@ function element_2(shader, t_base, t_second, t_detail)
 		:fog(false)
 		:zb(false, false)
 	shader:dx10texture("ao_image", "$user$ssfx_il_b")
+	shader:dx10texture("ao_image2", "$user$ssfx_il_local_b")
 	shader:dx10texture("s_position", "$user$position") -- NLC: depth-aware blur
 	shader:dx10sampler("smp_rtlinear")
 	shader:dx10sampler("smp_nofilter")

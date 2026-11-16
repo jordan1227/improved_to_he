@@ -116,6 +116,14 @@ int ps_ssfx_il_res{6};
 int ps_ssfx_il_quality{3};
 float ps_ssfx_il_intensity{1.0f};
 float ps_ssfx_il_flashlight{1.0f}; // NLC: indirect light multiplier of the player's torch only
+float ps_ssfx_il_local{1.0f}; // NLC: additive bounce of point / spot lights and emissive surfaces ( anomalies, lamps, fires )
+float ps_ssfx_il_distance{150.f}; // NLC: IL fade-out distance, m
+float ps_ssfx_il_lights{1.0f}; // NLC .207: analytic bounce of known lights ( off-screen sources ), 0 = off
+int ps_ssfx_il_lights_debug{}; // NLC .207, session: 1 = analytic only, 2 = screen-space only
+int ps_ssfx_il_lights_info{}; // NLC .207: set by ssfx_il_lights_info, the light pick logs once and clears it
+float ps_ssfx_il_lights_reach{1.f}; // NLC .208, session: x the known-light fill reach
+float ps_ssfx_il_lights_thick{0.6f}; // NLC .208, session: occluder thickness, x the ray length ( 0.75 - 3 m )
+float ps_ssfx_il_lights_floor{0.25f}; // NLC .208, session: fill kept on up-facing surfaces
 int ps_ssfx_sss_quality{2};
 int ps_ssfx_sss_lights{1};
 float ps_ssfx_sss_length{1.0f};
@@ -808,6 +816,13 @@ public:
     CCC_SsfxSessionInt(LPCSTR N, int* V, int _min, int _max) : CCC_Integer(N, V, _min, _max) { SetCanSave(false); }
 };
 
+// NLC .208: session-only float ( live tuning values that must not stick in user.ltx )
+class CCC_SsfxSessionFloat final : public CCC_Float
+{
+public:
+    CCC_SsfxSessionFloat(LPCSTR N, float* V, float _min, float _max) : CCC_Float(N, V, _min, _max) { SetCanSave(false); }
+};
+
 #include "../../xr_3da/igame_persistent.h"
 #include "../../xr_3da/environment.h"
 #include "../../xr_3da/IGame_Level.h"
@@ -900,6 +915,14 @@ public:
             ps_ssfx_haze_stat_drawn, ps_ssfx_haze_stat_cover * 100.f, ps_ssfx_haze_dist, ps_ssfx_haze_max, ps_ssfx_haze_samples, ps_ssfx_haze_density, ps_ssfx_haze_order,
             ps_ssfx_haze_debug, ps_ssfx_haze_light.x, ps_ssfx_haze_light.y, ps_ssfx_haze_light.z, ps_ssfx_haze_light.w);
     }
+};
+
+// NLC .207: log the known lights of the IL fill on the next frame ( r4_rendertarget_phase_ssfx.cpp )
+class CCC_SsfxIlLightsInfo final : public IConsole_Command
+{
+public:
+    CCC_SsfxIlLightsInfo(LPCSTR N) : IConsole_Command(N) { bEmptyArgsHandled = TRUE; }
+    void Execute(LPCSTR) override { ps_ssfx_il_lights_info = 1; }
 };
 
 class CCC_SsfxHazeReload final : public IConsole_Command
@@ -1229,6 +1252,14 @@ void xrRender_initconsole()
     CMD4(CCC_Integer, "ssfx_il_quality", &ps_ssfx_il_quality, 1, 3);
     CMD4(CCC_Float, "ssfx_il_intensity", &ps_ssfx_il_intensity, 0.f, 2.f);
     CMD4(CCC_Float, "ssfx_il_flashlight", &ps_ssfx_il_flashlight, 0.f, 2.f); // NLC: flashlight bounce strength, 0 = none
+    CMD4(CCC_Float, "ssfx_il_local", &ps_ssfx_il_local, 0.f, 2.f); // NLC: local-light / emissive bounce strength, 0 = none ( live )
+    CMD4(CCC_Float, "ssfx_il_distance", &ps_ssfx_il_distance, 50.f, 300.f); // NLC: IL fade-out distance ( live )
+    CMD4(CCC_Float, "ssfx_il_lights", &ps_ssfx_il_lights, 0.f, 2.f); // NLC .207: known-light fill strength ( live ), 0 = off
+    CMD4(CCC_SsfxSessionInt, "ssfx_il_lights_debug", &ps_ssfx_il_lights_debug, 0, 2); // 1 = analytic only, 2 = screen-space only
+    CMD1(CCC_SsfxIlLightsInfo, "ssfx_il_lights_info");
+    CMD4(CCC_SsfxSessionFloat, "ssfx_il_lights_reach", &ps_ssfx_il_lights_reach, 0.5f, 2.f); // NLC .208 tuning, live
+    CMD4(CCC_SsfxSessionFloat, "ssfx_il_lights_thick", &ps_ssfx_il_lights_thick, 0.2f, 1.5f);
+    CMD4(CCC_SsfxSessionFloat, "ssfx_il_lights_floor", &ps_ssfx_il_lights_floor, 0.f, 1.f);
     CMD4(CCC_Integer, "ssfx_sss_quality", &ps_ssfx_sss_quality, 1, 3);
     CMD4(CCC_Integer, "ssfx_sss_lights", &ps_ssfx_sss_lights, 0, 1);
     CMD4(CCC_Float, "ssfx_sss_length", &ps_ssfx_sss_length, 0.f, 2.f); // 0 = no contact shadows

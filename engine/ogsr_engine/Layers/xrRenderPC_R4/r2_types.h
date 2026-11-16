@@ -100,6 +100,10 @@
 #define r2_RT_ssfx_il "$user$ssfx_il" // IL history ( reduced res )
 #define r2_RT_ssfx_il_a "$user$ssfx_il_a" // IL result after blur
 #define r2_RT_ssfx_il_b "$user$ssfx_il_b"
+#define r2_RT_ssfx_il_local "$user$ssfx_il_local" // NLC: IL bounce of local lights + emissive, history ( additive, reduced res )
+#define r2_RT_ssfx_il_local_a "$user$ssfx_il_local_a" // NLC: local IL result after blur
+#define r2_RT_ssfx_il_local_b "$user$ssfx_il_local_b"
+#define r2_RT_ssfx_accum_pre "$user$ssfx_accum_pre" // NLC: accumulator before the point / spot lights ( sun + emissive )
 #define r2_RT_ssfx_water "$user$ssfx_water" // Water reflection history ( unblurred, reduced res )
 #define r2_RT_ssfx_water_a "$user$ssfx_water_a" // Water reflection, blurred result
 #define r2_RT_ssfx_water_b "$user$ssfx_water_b"

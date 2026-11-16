@@ -84,6 +84,13 @@ void CRenderTarget::ssfx_create_targets(const u32 w, const u32 h)
         rt_ssfx_il_a.create(r2_RT_ssfx_il_a, iw, ih, DXGI_FORMAT_R16G16B16A16_FLOAT);
         rt_ssfx_il_b.create(r2_RT_ssfx_il_b, iw, ih, DXGI_FORMAT_R16G16B16A16_FLOAT);
 
+        // NLC: local-light bounce ( additive ) and the accumulator snapshot it is derived from ( same size and
+        // format as rt_Accumulator, for CopyResource )
+        rt_ssfx_il_local.create(r2_RT_ssfx_il_local, iw, ih, DXGI_FORMAT_R16G16B16A16_FLOAT);
+        rt_ssfx_il_local_a.create(r2_RT_ssfx_il_local_a, iw, ih, DXGI_FORMAT_R16G16B16A16_FLOAT);
+        rt_ssfx_il_local_b.create(r2_RT_ssfx_il_local_b, iw, ih, DXGI_FORMAT_R16G16B16A16_FLOAT);
+        rt_ssfx_accum_pre.create(r2_RT_ssfx_accum_pre, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
+
         s_ssfx_il.create("ssfx_il");
     }
 
@@ -178,6 +185,8 @@ void CRenderTarget::ssfx_begin_frame()
 
     if (!ssfx_history_valid)
     {
+        ssfx_il_slot_count = 0; // NLC .208: no known-light slots from the previous level / before the reset
+
         // First frame after ( re )creation: neutral history, no reprojection from garbage
         auto& cmd_list = RImplementation.get_imm_context().cmd_list;
 
@@ -205,6 +214,9 @@ void CRenderTarget::ssfx_begin_frame()
             cmd_list.ClearRT(rt_ssfx_il, ssfx_clear_zero);
             cmd_list.ClearRT(rt_ssfx_il_a, ssfx_clear_zero);
             cmd_list.ClearRT(rt_ssfx_il_b, ssfx_clear_zero);
+            cmd_list.ClearRT(rt_ssfx_il_local, ssfx_clear_zero);
+            cmd_list.ClearRT(rt_ssfx_il_local_a, ssfx_clear_zero);
+            cmd_list.ClearRT(rt_ssfx_il_local_b, ssfx_clear_zero);
         }
         if (rt_ssfx_water)
         {
@@ -422,6 +434,22 @@ void CRenderTarget::phase_ssfx_ao(CBackend& cmd_list)
     cmd_list.SetViewport({0.f, 0.f, static_cast<float>(GetRenderWidth()), static_cast<float>(GetRenderHeight()), 0.f, 1.f});
 }
 
+// NLC .208: fill centre ( world ) and reach of a known light ( docs/IL_DESIGN.md 4.3 / 4.4 ). Point light: centre at the
+// light, reach 1.275 range + 0.85 m ( the .207h shader-tuned value, 4.7 m for a fruit punch ). Spot: centre along the
+// axis at half the range but at most 1.5 m ( a 12 m ceiling spot no longer puts it under the floor ), reach
+// 0.64 range + 0.85 m. Both x ssfx_il_lights_reach, at most 12 m.
+static float ssfx_il_light_fill(const Fvector& pos, const Fvector& dir, float range, bool spot, Fvector& centre)
+{
+    centre = pos;
+    float reach = 1.275f * range + 0.85f;
+    if (spot)
+    {
+        centre.mad(dir, std::min(0.5f * range, 1.5f));
+        reach = 0.64f * range + 0.85f;
+    }
+    return std::min(reach * ps_ssfx_il_lights_reach, 12.f);
+}
+
 void CRenderTarget::phase_ssfx_il(CBackend& cmd_list)
 {
     if (!rt_ssfx_il || ps_ssfx_compare)
@@ -432,23 +460,216 @@ void CRenderTarget::phase_ssfx_il(CBackend& cmd_list)
     const float res = static_cast<float>(std::clamp(ps_ssfx_il_res, 2, 8));
     const float iw = static_cast<float>(rt_ssfx_il->dwWidth), ih = static_cast<float>(rt_ssfx_il->dwHeight);
 
-    const Fvector4 params{res, ps_ssfx_il_intensity, 1.f, 150.f}; // res, intensity, vibrance, distance
-    const Fvector4 params2{1.f, 0.5f, 0.f, 0.f}; // HUD int, flora int, -, -
+    // NLC: intensity and vibrance are applied in combine_1 ( ssfx_il_combine ); only the distance is read here.
+    // .207: y = known-light slot count, z = their strength ( ssfx_il_lights ), params2.z = ssfx_il_lights_debug
+    // .208: params2.x = floor factor ( ssfx_il_lights_floor ), .w = occluder thickness k ( ssfx_il_lights_thick )
+    const Fvector4 params2{ps_ssfx_il_lights_floor, 0.5f, static_cast<float>(ps_ssfx_il_lights_debug), ps_ssfx_il_lights_thick}; // floor, flora int, light debug, thickness
 
-    RenderScreenTriangle(cmd_list, rt_ssfx_il_a, s_ssfx_il->E[0], [&]() {
+    // NLC .207: known lights in view space. [0] fill centre / reach, [1] raw colour x LOD / fade ( ssfx_il_light_fill ).
+    // .208: slots whose fill sphere misses the view frustum are not uploaded ( no visible pixel can receive them )
+    Fvector4 il_lights[SSFX_IL_LIGHTS_MAX * 2]{};
+    u32 light_count = 0;
+    for (u32 i = 0; i < ssfx_il_slot_count && ps_ssfx_il_lights > 0.f; ++i)
+    {
+        const auto& S = ssfx_il_slots[i];
+        Fvector c;
+        const float reach = ssfx_il_light_fill(S.pos, S.dir, S.range, S.spot, c);
+        if (!RImplementation.ViewBase.testSphere_dirty(c, reach))
+            continue;
+        Fvector cv;
+        Device.mView.transform_tiny(cv, c);
+        il_lights[light_count * 2].set(cv.x, cv.y, cv.z, reach);
+        il_lights[light_count * 2 + 1].set(S.col.x, S.col.y, S.col.z, S.fade);
+        ++light_count;
+    }
+    const Fvector4 params{res, static_cast<float>(light_count), ps_ssfx_il_lights, ps_ssfx_il_distance}; // res, light count, light strength, distance
+
+    // NLC: SV_Target0 = ambient IL ( rgb ) + torch bounce ( a ), SV_Target1 = local-light / emissive bounce ( rgb )
+    RenderScreenTriangle2(cmd_list, rt_ssfx_il_a, rt_ssfx_il_local_a, s_ssfx_il->E[0], [&]() {
         cmd_list.set_c("m_current", ssfx_m_current);
         cmd_list.set_c("m_previous", ssfx_m_previous);
         cmd_list.set_c("ssfx_il_params", params);
         cmd_list.set_c("ssfx_il_params2", params2);
+        for (u32 i = 0; i < light_count * 2; ++i)
+            cmd_list.set_ca("ssfx_il_lights", i, il_lights[i]);
     });
 
     HW.get_context(cmd_list.context_id)->CopyResource(rt_ssfx_il->pSurface, rt_ssfx_il_a->pSurface);
+    HW.get_context(cmd_list.context_id)->CopyResource(rt_ssfx_il_local->pSurface, rt_ssfx_il_local_a->pSurface);
 
-    RenderScreenTriangle(cmd_list, rt_ssfx_il_b, s_ssfx_il->E[1], [&]() { cmd_list.set_c("blur_setup", res, 0.5f, iw, ih); });
-    RenderScreenTriangle(cmd_list, rt_ssfx_il_a, s_ssfx_il->E[2], [&]() { cmd_list.set_c("blur_setup", res, 1.0f, iw, ih); });
+    RenderScreenTriangle2(cmd_list, rt_ssfx_il_b, rt_ssfx_il_local_b, s_ssfx_il->E[1], [&]() { cmd_list.set_c("blur_setup", res, 0.5f, iw, ih); });
+    RenderScreenTriangle2(cmd_list, rt_ssfx_il_a, rt_ssfx_il_local_a, s_ssfx_il->E[2], [&]() { cmd_list.set_c("blur_setup", res, 1.0f, iw, ih); });
 
     // Reduced-size pass: restore the full render-size viewport for the combine draws
     cmd_list.SetViewport({0.f, 0.f, static_cast<float>(GetRenderWidth()), static_cast<float>(GetRenderHeight()), 0.f, 1.f});
+}
+
+// NLC: the accumulator holds sun + emissive here ( r4_R_render.cpp, right before render_lights ). ssfx_il.ps takes
+// ( accum - snapshot ) as the light of point / spot lights ( anomalies, lamps, campfires ) for the additive bounce.
+void CRenderTarget::phase_ssfx_il_snapshot(CBackend& cmd_list, const light_Package& LP)
+{
+    if (!rt_ssfx_accum_pre || ps_ssfx_compare)
+    {
+        if (ps_ssfx_il_lights_info) // .208: answer the request instead of keeping it latched
+        {
+            ps_ssfx_il_lights_info = 0;
+            Msg("~ [il lights] IL pass %s: no known lights", rt_ssfx_accum_pre ? "skipped ( ssfx_compare )" : "off ( ssfx_indirect_light / ssfx_effects_off )");
+        }
+        return;
+    }
+
+    PIX_EVENT_CTX(cmd_list, ssfx_il_snapshot);
+    HW.get_context(cmd_list.context_id)->CopyResource(rt_ssfx_accum_pre->pSurface, rt_Accumulator->pSurface);
+
+    ssfx_il_collect_lights(LP);
+}
+
+// NLC .207: pick the known lights for the analytic IL fill ( docs/IL_DESIGN.md 4.3 ). Runs on the render thread right
+// before render_lights, which empties the package. Shadowed point lights come as 6 OMNIPART pieces: counted once by
+// their omni light ( ssfx_parent ).
+void CRenderTarget::ssfx_il_collect_lights(const light_Package& LP)
+{
+    struct cand
+    {
+        const light* L;
+        float score;
+    };
+    xr_vector<cand> cands;
+    cands.reserve(LP.v_point.size() + LP.v_spot.size() + LP.v_shadowed.size() / 4 + 16);
+
+    const auto& T = g_pGamePersistent->actor_torch;
+    const bool torch_on = T.range > 0.f && T.frame + 1 >= Device.dwFrame && T.frame <= Device.dwFrame;
+    const float fade_step = Device.fTimeDelta / 0.25f; // fade in / out over 0.25 s
+
+    auto was_selected = [this](const void* key) {
+        for (u32 i = 0; i < ssfx_il_slot_count; ++i)
+            if (ssfx_il_slots[i].key == key && ssfx_il_slots[i].fade > 0.f)
+                return true;
+        return false;
+    };
+
+    // light: a live light of this frame ( from the package or the spatial DB ), never an old slot's key
+    auto consider = [&](const light* L) {
+        if ((L->flags.type != IRender_Light::POINT && L->flags.type != IRender_Light::SPOT) || L->flags.bHudMode || L->range < 0.5f)
+            return;
+        for (const auto& c : cands)
+            if (c.L == L)
+                return; // another OMNIPART piece of the same omni light, or found by both sources
+        const float cam_d2 = Device.vCameraPosition.distance_to_sqr(L->position);
+        if (cam_d2 < 0.3f * 0.3f)
+            return; // .208: lights at the camera ( was 1.5 m: standing at a fruit punch dropped its fill )
+        if (torch_on && (L->position.distance_to_sqr(T.pos) < 0.05f * 0.05f || L->position.distance_to_sqr(T.omni_pos) < 0.05f * 0.05f))
+            return; // the player's torch spot and omni: the spot has the analytic torch bounce
+        const float lod = L->flags.bShadow ? L->get_LOD() : 1.f;
+        const float lum = (0.3f * L->color.r + 0.59f * L->color.g + 0.11f * L->color.b) * lod;
+        if (lum < 0.01f)
+            return;
+        Fvector c;
+        const float reach = ssfx_il_light_fill(L->position, L->direction, L->range, L->flags.type == IRender_Light::SPOT, c);
+        if (!RImplementation.ViewBase.testSphere_dirty(c, reach))
+            return; // .208: its fill cannot reach a visible pixel
+        float score = lum * L->range / (1.f + cam_d2 / 100.f);
+        if (was_selected(L))
+            score *= 1.25f; // hysteresis: a light in the list keeps its slot against a close rival
+        cands.push_back({L, score});
+    };
+
+    // 1. The render's light package: lights whose range sphere is in a visible sector and the frustum ( HOM-culled )
+    auto consider_piece = [&](const light* piece) {
+        if (!piece || !piece->vis.visible)
+            return;
+        consider((piece->flags.type == IRender_Light::OMNIPART && piece->ssfx_parent) ? piece->ssfx_parent : piece);
+    };
+    for (const light* L : LP.v_point)
+        consider_piece(L);
+    for (const light* L : LP.v_spot)
+        consider_piece(L);
+    for (const light* L : LP.v_shadowed)
+        consider_piece(L);
+
+    // 2. .208: lights within 16 m whose range sphere left the frustum ( source behind the player ) but whose fill
+    // still reaches the view, while their sector is reached by this frame's portal traversal ( no rooms behind walls )
+    {
+        auto& dsgraph = RImplementation.get_imm_context();
+        if (dsgraph.PortalTraverser.frame() == Device.dwFrame)
+        {
+            static xr_vector<ISpatial*> near_lights;
+            near_lights.clear();
+            g_SpatialSpace->q_sphere(near_lights, 0, STYPE_LIGHTSOURCE, Device.vCameraPosition, 16.f);
+            for (ISpatial* spatial : near_lights)
+            {
+                const auto sector_id = spatial->spatial.sector_id;
+                if (sector_id == IRender_Sector::INVALID_SECTOR_ID || sector_id >= dsgraph.sector_portals_structure.Sectors.size())
+                    continue;
+                if (dsgraph.PortalTraverser.marker() != dsgraph.sector_portals_structure.Sectors[sector_id]->r_marker)
+                    continue; // sector not seen this frame
+                const light* L = smart_cast<light*>(spatial->dcast_Light());
+                if (L && L->flags.type != IRender_Light::OMNIPART)
+                    consider(L);
+            }
+        }
+    }
+
+    const size_t top = std::min<size_t>(cands.size(), SSFX_IL_LIGHTS_TOP);
+    std::partial_sort(cands.begin(), cands.begin() + top, cands.end(), [](const cand& a, const cand& b) { return a.score > b.score; });
+
+    ssfx_il_light_slot next[SSFX_IL_LIGHTS_MAX]{};
+    u32 n = 0;
+
+    // Selected lights: values from this frame, fade carried over from the previous slot of the same light
+    for (size_t i = 0; i < top; ++i)
+    {
+        const light* L = cands[i].L;
+        auto& S = next[n++];
+        S.key = L;
+        S.pos = L->position;
+        S.dir = L->direction;
+        S.spot = L->flags.type == IRender_Light::SPOT;
+        S.range = L->range;
+        const float lod = L->flags.bShadow ? L->get_LOD() : 1.f;
+        S.col.set(L->color.r * lod, L->color.g * lod, L->color.b * lod);
+        S.fade = fade_step;
+        for (u32 j = 0; j < ssfx_il_slot_count; ++j)
+            if (ssfx_il_slots[j].key == L)
+            {
+                S.fade = ssfx_il_slots[j].fade + fade_step;
+                break;
+            }
+        S.fade = std::min(S.fade, 1.f);
+    }
+
+    // Lights that left the list fade out with their last values ( never dereferenced: they may be gone )
+    for (u32 j = 0; j < ssfx_il_slot_count && n < SSFX_IL_LIGHTS_MAX; ++j)
+    {
+        const auto& O = ssfx_il_slots[j];
+        bool kept = false;
+        for (u32 i = 0; i < n; ++i)
+            if (next[i].key == O.key)
+            {
+                kept = true;
+                break;
+            }
+        if (kept || O.fade - fade_step <= 0.f)
+            continue;
+        next[n] = O;
+        next[n].fade = O.fade - fade_step;
+        ++n;
+    }
+
+    std::copy(std::begin(next), std::end(next), std::begin(ssfx_il_slots));
+    ssfx_il_slot_count = n;
+
+    if (ps_ssfx_il_lights_info)
+    {
+        ps_ssfx_il_lights_info = 0;
+        Msg("~ [il lights] %u slots ( %u candidates ), strength %.2f, debug %d", n, static_cast<u32>(cands.size()), ps_ssfx_il_lights, ps_ssfx_il_lights_debug);
+        for (u32 i = 0; i < n; ++i)
+        {
+            const auto& S = ssfx_il_slots[i];
+            Msg("~ [il lights] %u: %p %s pos %.1f,%.1f,%.1f range %.2f colour x LOD %.2f,%.2f,%.2f fade %.2f, %.1f m", i, S.key, S.spot ? "spot" : "point", S.pos.x, S.pos.y, S.pos.z,
+                S.range, S.col.x, S.col.y, S.col.z, S.fade, Device.vCameraPosition.distance_to(S.pos));
+        }
+    }
 }
 
 void CRenderTarget::phase_ssfx_water(CBackend& cmd_list)
