@@ -19,6 +19,35 @@
 
 uniform float4 ssfx_wetsurfaces_1; // Ripples [ Size, Speed, Min Speed, Int ]
 uniform float4 ssfx_wetsurfaces_2; // FallWater [ Size, Speed, Min Speed, Int ]
+uniform float4 ssfx_puddle_ripples; // NLC .216 A/B: z 1 = rain rings on terrain too ( old )
+
+// NLC .216: the rain depth map as plain depth ( rain.s ), for the height of the cover ( soft dry edge )
+uniform float4 ssfx_fog_map; // y: map depth per metre, w: map valid
+uniform float4x4 ssfx_fog_map_xf; // world -> map ( uv, depth )
+Texture2D s_fog_map;
+
+float nlc_cover_height(float3 Pv)
+{
+    float4 p = mul(ssfx_fog_map_xf, float4(mul(m_inv_V, float4(Pv, 1.0f)).xyz, 1.0f));
+    p.xyz /= p.w;
+    float4 d4 = s_fog_map.GatherRed(smp_nofilter, saturate(p.xy));
+    return ssfx_fog_map.w > 0.5f ? max(0.0f, p.z - min(min(d4.x, d4.y), min(d4.z, d4.w))) / max(ssfx_fog_map.y, 1e-6f) : 0.0f;
+}
+
+// NLC .217: open from above at a world point ( 2x2 texels, bilinear ), 1 outside the map
+uniform float4 ssfx_rain_slant; // xz: upwind offset per metre of cover height, w: valid ( r3_rain_slant_mode 0 )
+float nlc_map_open_w(float3 Pw)
+{
+    float4 p = mul(ssfx_fog_map_xf, float4(Pw, 1.0f));
+    p.xyz /= p.w;
+    float2 size;
+    s_fog_map.GetDimensions(size.x, size.y);
+    float2 uv = saturate(p.xy);
+    float2 f = frac(uv * size - 0.5f);
+    float4 o = step(p.z - max(0.3f, ssfx_fog_map.z) * ssfx_fog_map.y, s_fog_map.GatherRed(smp_nofilter, uv));
+    float open = lerp(lerp(o.w, o.z, f.x), lerp(o.x, o.y, f.x), f.y);
+    return (all(p.xy > 0.0f) && all(p.xy < 1.0f)) ? open : 1.0f;
+}
 
 Texture2D s_water;
 Texture2D s_waterFall;
@@ -96,7 +125,8 @@ float3 GetWaterFall(Texture2D s_texture, float2 tc)
     // col_tc.x += sin((tc_ori.y + col_offset) * 20) * 0.5f + 0.5f;
 
     // Base Bump. Columns UVs, scale and apply offset.
-    float3 water = s_texture.Sample(smp_base, (col_tc * float2(col_scale, 1.0f) + float2(col_scale * col_id, col_offset)));
+    float2 wf_uv = col_tc * float2(col_scale, 1.0f) + float2(col_scale * col_id, col_offset);
+    float3 water = s_texture.Sample(smp_base, wf_uv);
 
     // Bump to -1.0 ~ 1.0
     water.xyz = water.xzy * 2.0f - 1.0f;
@@ -117,12 +147,44 @@ float4 main(float2 tc : TEXCOORD0, float2 tcJ : TEXCOORD1, float4 Color : COLOR,
     float3 _D = gbd.C;
     float _M = gbd.mtl;
 
-    float4 PS = mul(m_shadow, _P);
+    // NLC .209i: cover looked up 0.6 m off the surface along its normal. At the surface itself a wall or the side
+    // of a car read the top of the same object in the rain map as cover: no wet gloss, no running water there
+    // .209l: 0.6 -> 1.2 m and 0.3 m up ( test: an open brick wall still read as covered at 0.6 m: eaves, map texel
+    // and PCF kernel together are wider than that )
+    float4 PS = mul(m_shadow, float4(_P.xyz + _N * 1.2f + mul((float3x3)m_V, float3(0.0f, 0.3f, 0.0f)), 1.0f));
     float3 WorldP = mul(m_sunmask, _P);
     float3 WorldN = mul(m_sunmask, _N.xyz);
 
 #ifdef INDOOR_LEAKS_FIX
-    float Cover = shadow_hw(PS) * saturate(gbd.hemi * 10.0f);
+    float Cover = shadow_hw(PS);
+    // .214b: thin occluders ( trunks, posts ) are not cover: 4 points 0.6 m around ( world x / z ), open when most are
+    // .216: the 4 points spread with the height of the cover ( 0.3 x, 0.6 ~ 2 m ): a soft dry edge under high cover
+    // ( truck body, roof edge in slanted rain ) instead of a hard rectangle; the average ramps 0.1 ~ 0.9
+    float3 Pc = _P.xyz + _N * 1.2f + mul((float3x3)m_V, float3(0.0f, 0.3f, 0.0f));
+    float cover_h = 0.0f;
+    [branch] if (Cover < 0.99f)
+    {
+        cover_h = nlc_cover_height(Pc);
+        float r = clamp(cover_h * 0.3f, 0.6f, 2.0f);
+        float3 ox = mul((float3x3)m_V, float3(r, 0.0f, 0.0f));
+        float3 oz = mul((float3x3)m_V, float3(0.0f, 0.0f, r));
+        float wide = 0.25f * (shadow_hw(mul(m_shadow, float4(Pc + ox, 1.0f))) + shadow_hw(mul(m_shadow, float4(Pc - ox, 1.0f))) +
+                              shadow_hw(mul(m_shadow, float4(Pc + oz, 1.0f))) + shadow_hw(mul(m_shadow, float4(Pc - oz, 1.0f))));
+        Cover = max(Cover, smoothstep(0.1f, 0.9f, wide));
+    }
+    // .217: the map is straight down ( r3_rain_slant_mode 0 ); slanted rain reaches a covered point when the point
+    // cover height x tan( lean ) upwind is open ( windward edges under eaves ). Only adds wetness; hemi keeps closed
+    // rooms dry ( a windward wall is not in the map ), cover above ~6 m fades out
+    [branch] if (Cover < 0.99f && ssfx_rain_slant.w > 0.5f)
+    {
+        float3 Pw = mul(m_inv_V, float4(Pc, 1.0f)).xyz + float3(ssfx_rain_slant.x, 0.0f, ssfx_rain_slant.z) * min(cover_h, 6.0f);
+        // .218: hemi 0.05 ~ 0.25 -> 0.25 ~ 0.5 ( sheds and rooms with a door or window to the wind got wet floors )
+        Cover = max(Cover, nlc_map_open_w(Pw) * smoothstep(0.25f, 0.5f, gbd.hemi) * saturate((8.0f - cover_h) * 0.25f));
+    }
+    Cover *= saturate(gbd.hemi * 10.0f);
+    // NLC .211: outside the rain map ( r3_rain_map_radius ) the hemi alone ( the sampler clamped to the edge texels )
+    float2 ps_uv = PS.xy / PS.w;
+    Cover = (any(ps_uv < 0.0f) || any(ps_uv > 1.0f)) ? saturate(gbd.hemi * 10.0f) : Cover;
 #else
     // Read rain projection with some jetter. Also adding pixel normal
     // factor to jitter to make rain strips more realistic.
@@ -152,6 +214,10 @@ float4 main(float2 tc : TEXCOORD0, float2 tcJ : TEXCOORD1, float4 Color : COLOR,
     float3 waterFallX = GetWaterFall(s_waterFall, WorldP.zy);
     float3 waterFallZ = GetWaterFall(s_waterFall, WorldP.xy);
 
+    // NLC .216: no rain rings on terrain ( the terrain shader draws its own in the puddles; these were on dry and damp
+    // ground too and doubled in the puddles ). ssfx_puddle_ripples.z 1 = old
+    waterSplash *= (is_terrain && ssfx_puddle_ripples.z < 0.5f) ? 0.0f : 1.0f;
+
     // Base bump - Splahes
     float3 water = waterSplash * smoothstep(0.75f, 0.8f, weights.y);
 
@@ -178,21 +244,35 @@ float4 main(float2 tc : TEXCOORD0, float2 tcJ : TEXCOORD1, float4 Color : COLOR,
     // [ GLOSS ] ------------------------------------------
     float Gloss = (0.15f + saturate(RainInt) * 0.05) * Wetness; // Wetness
 
+    // NLC .209j: objects ( not terrain, not flora ): 0.15 ~ 0.2 was below anything the SSR or the specular shows, so
+    // cars, walls and metal never looked wet and the running-water normals had nothing to show on. Gloss by the
+    // albedo brightness as the old rain patch ( dark 0.18, mid grey ~0.35, bright ~0.5 ), less on porous
+    // ( green / brown: wood, cloth, bark ) surfaces
+    bool is_object = !is_terrain && !is_flora;
+    if (is_object)
+        Gloss = (0.18f + 0.35f * saturate(dot(_D, 0.333f) * 2.0f)) * lerp(1.0f, 0.45f, saturate((_D.g - _D.b) * 6.0f)) * Wetness;
+
     // Fade to full cover. ( RainFallof.y = far shadow rain rendering )
     Cover += smoothstep(RainFallof.y - 20, RainFallof.y, _P.z);
 
     // If gloss is high, remove cover factor
-    Gloss *= HUD_Attenuation * saturate(Cover + (gbd.gloss > 0.3f));
+    // NLC .209j: objects need the cover itself ( glossy floors and metal indoors got the rain gloss )
+    Gloss *= HUD_Attenuation * saturate(Cover + (is_object ? 0.0f : (gbd.gloss > 0.3f)));
 
     // Limit gloss on terrain ( Puddles )
     Gloss = (is_terrain && gbd.gloss > 0.3f) ? 0.15f : Gloss;
 
     // NLC 2026-10-13: earth and grass terrain ( green / brown texels ) get less rain gloss than asphalt or concrete,
     // the terrain shader already makes them damp ( deffer_terrain_high_flat.ps )
-    Gloss *= is_terrain ? lerp(1.0f, 0.4f, saturate((_D.g - _D.b) * 6.0f)) : 1.0f;
+    // .212d: terrain without the colour test ( the G-buffer albedo of terrain is the level colour map: blocky squares );
+    // soft ground already gets its damp look from deffer_terrain_high_flat.ps
+    // .212f: none - terrain wetness is the terrain shader's ( a rain gloss on top gave wet earth a sun glint after rain )
+    Gloss *= is_terrain ? 0.0f : 1.0f;
 
     // Remove rain gloss from bottom surfaces
-    Gloss *= saturate(weights.y * 1.5f);
+    // NLC .209j: on objects vertical surfaces keep half of it ( walls had none: the water running down them was
+    // only a normal, with no gloss to show it )
+    Gloss *= is_object ? saturate(0.5f + weights.y * 1.5f) : saturate(weights.y * 1.5f);
 
     //	Apply distance falloff
     Gloss *= smoothstep(250, 200, p_len);
@@ -200,7 +280,7 @@ float4 main(float2 tc : TEXCOORD0, float2 tcJ : TEXCOORD1, float4 Color : COLOR,
     // NLC .84: porous surfaces ( earth, wood, cloth: green / brown albedo, not already glossy ) darken when wet. The
     // porosity rides in the integer part of the alpha ( 0..7 ) for rain_apply_gloss.ps, which cannot read the albedo
     // it blends into; the gloss stays the fraction ( < 1 ). The accumulator is a float target.
-    float porous = saturate((_D.g - _D.b) * 6.0f) * (gbd.gloss <= 0.3f ? 1.0f : 0.0f);
+    float porous = is_terrain ? 0.0f : saturate((_D.g - _D.b) * 6.0f) * (gbd.gloss <= 0.3f ? 1.0f : 0.0f); // .212d: not terrain
 
     float packed_out = (min(saturate(Gloss), 0.9f) + round(porous * 7.0f)); // .90: fraction <= 0.9 survives FP16 at 4..8 ( 1/256 steps )
     return float4(_N.xyz, packed_out);

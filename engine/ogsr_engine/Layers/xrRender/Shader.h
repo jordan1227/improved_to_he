@@ -122,6 +122,7 @@ public:
         u32 iScopeLense : 1;
         u32 iScopePass : 1;
         u32 bTreeBranch : 1 {};
+        u32 bTreeTrunk : 1 {}; // NLC .215: tree trunk / bark shadow element ( Blender_tree.cpp ), left out of the rain map
         u32 isWater : 1 {}; // NLC: SSS 23 water reflection prepass ( effects_water*.s, not puddles )
     };
 

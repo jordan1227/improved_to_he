@@ -11,7 +11,7 @@ extern float ps_r__LOD_k;
 
 using namespace R_dsgraph;
 
-void R_dsgraph_structure::r_dsgraph_render_graph_static(const u32 _priority, const bool skip_tree_branches)
+void R_dsgraph_structure::r_dsgraph_render_graph_static(const u32 _priority, const bool skip_tree_branches, const bool skip_tree_trunks)
 {
     Device.Statistic->RenderDUMP.Begin();
 
@@ -121,6 +121,8 @@ void R_dsgraph_structure::r_dsgraph_render_graph_static(const u32 _priority, con
 
                             if (skip_tree_branches && tree.second.pVisual->GetShaderFlags(SE_R2_SHADOW).bTreeBranch)
                                 continue;
+                            if (skip_tree_trunks && tree.second.pVisual->GetShaderFlags(SE_R2_SHADOW).bTreeTrunk) // NLC .215
+                                continue;
 
                             tree.second.pVisual->RenderInstanced(cmd_list, tree.second.data);
                         }
@@ -198,11 +200,11 @@ void R_dsgraph_structure::r_dsgraph_render_graph_dynamic(u32 _priority)
     Device.Statistic->RenderDUMP.End();
 }
 
-void R_dsgraph_structure::r_dsgraph_render_graph(const u32 _priority, const bool skip_tree_branches)
+void R_dsgraph_structure::r_dsgraph_render_graph(const u32 _priority, const bool skip_tree_branches, const bool skip_tree_trunks)
 {    
     PIX_EVENT_CTX(cmd_list, dsgraph_render_graph);
 
-    r_dsgraph_render_graph_static(_priority, skip_tree_branches);
+    r_dsgraph_render_graph_static(_priority, skip_tree_branches, skip_tree_trunks);
     r_dsgraph_render_graph_dynamic(_priority);
 }
 

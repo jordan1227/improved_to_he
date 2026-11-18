@@ -7,6 +7,110 @@
 #include "uber_deffer.h"
 #include "blender_BmmD.h"
 
+#include <mutex>
+
+// NLC .212f: how soft ( porous, earth / grass ) each terrain detail texture is when wet, for deffer_terrain_high_flat.ps
+// ( puddle shape, damp look, wet sheen ). Read from config\environment\terrain_wet.ltx: [terrain_wet_textures] exact
+// names, else the longest matching key of [terrain_wet_keywords]; unknown textures keep the shader's colour test.
+// The shader gets softness + 1 per splat channel ( ssfx_terrain_soft; 0 = unknown, also with an older exe ).
+namespace
+{
+class nlc_terrain_soft_setup final : public R_constant_setup
+{
+public:
+    Fvector4 v{};
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, v); }
+};
+
+std::mutex nlc_terrain_soft_lock;
+CInifile* nlc_terrain_soft_ini{};
+bool nlc_terrain_soft_loaded{};
+struct nlc_terrain_wet_pair
+{
+    nlc_terrain_soft_setup* soft;
+    nlc_terrain_soft_setup* puddles;
+};
+
+xr_map<xr_string, nlc_terrain_wet_pair> nlc_terrain_soft_setups; // kept for the shaders' lifetime
+
+// "softness[, puddles]" -> ( softness, puddles ); -1 = unknown / not given
+Fvector2 nlc_terrain_wet_parse(LPCSTR val)
+{
+    if (!val || !val[0]) // a key without a value
+        return {-1.f, -1.f};
+    Fvector2 r{std::clamp(static_cast<float>(atof(val)), 0.f, 1.f), -1.f};
+    if (LPCSTR comma = strchr(val, ','))
+        r.y = std::clamp(static_cast<float>(atof(comma + 1)), 0.f, 1.f);
+    return r;
+}
+
+Fvector2 nlc_terrain_wet_lookup(LPCSTR tex) // ( softness, puddles ), -1 = unknown
+{
+    if (!nlc_terrain_soft_ini || !tex || !tex[0])
+        return {-1.f, -1.f};
+
+    xr_string name = tex;
+    for (char& c : name)
+        c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+
+    if (nlc_terrain_soft_ini->section_exist("terrain_wet_textures"))
+        for (const auto& [key, val] : nlc_terrain_soft_ini->r_section("terrain_wet_textures").Ordered_Data)
+        {
+            xr_string k = key.c_str();
+            for (char& c : k)
+                c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+            if (k == name)
+                return nlc_terrain_wet_parse(val.c_str());
+        }
+
+    Fvector2 best{-1.f, -1.f};
+    size_t best_len = 0;
+    if (nlc_terrain_soft_ini->section_exist("terrain_wet_keywords"))
+        for (const auto& [key, val] : nlc_terrain_soft_ini->r_section("terrain_wet_keywords").Ordered_Data)
+        {
+            xr_string k = key.c_str();
+            for (char& c : k)
+                c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+            if (!k.empty() && k.size() > best_len && name.find(k) != xr_string::npos)
+            {
+                best = nlc_terrain_wet_parse(val.c_str());
+                best_len = k.size();
+            }
+        }
+    return best;
+}
+
+// .213b: second value per texture = puddle amount ( 0 none, 1 full; grass soaks it up ), ssfx_terrain_puddle
+nlc_terrain_wet_pair nlc_terrain_soft_get(LPCSTR r, LPCSTR g, LPCSTR b, LPCSTR a)
+{
+    std::scoped_lock lock(nlc_terrain_soft_lock);
+
+    if (!nlc_terrain_soft_loaded)
+    {
+        nlc_terrain_soft_loaded = true;
+        string_path fn;
+        if (FS.exist(fn, "$game_config$", "environment\\terrain_wet.ltx"))
+            nlc_terrain_soft_ini = xr_new<CInifile>(fn, TRUE, TRUE, FALSE);
+        else
+            Msg("! [nlc_terrain_wet] config\\environment\\terrain_wet.ltx not found: colour test only");
+    }
+
+    xr_string key = xr_string(r) + "|" + g + "|" + b + "|" + a;
+    auto it = nlc_terrain_soft_setups.find(key);
+    if (it != nlc_terrain_soft_setups.end())
+        return it->second;
+
+    const Fvector2 s[4]{nlc_terrain_wet_lookup(r), nlc_terrain_wet_lookup(g), nlc_terrain_wet_lookup(b), nlc_terrain_wet_lookup(a)};
+    nlc_terrain_wet_pair p{xr_new<nlc_terrain_soft_setup>(), xr_new<nlc_terrain_soft_setup>()};
+    p.soft->v.set(s[0].x + 1.f, s[1].x + 1.f, s[2].x + 1.f, s[3].x + 1.f); // -1 ( unknown ) -> 0
+    p.puddles->v.set(s[0].y + 1.f, s[1].y + 1.f, s[2].y + 1.f, s[3].y + 1.f);
+    nlc_terrain_soft_setups.emplace(key, p);
+    Msg("~ [nlc_terrain_wet] %s=%.2f,%.2f %s=%.2f,%.2f %s=%.2f,%.2f %s=%.2f,%.2f ( softness,puddles; -1 = shader default )", r, s[0].x, s[0].y, g,
+        s[1].x, s[1].y, b, s[2].x, s[2].y, a, s[3].x, s[3].y);
+    return p;
+}
+} // namespace
+
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
 //////////////////////////////////////////////////////////////////////
@@ -116,6 +220,11 @@ void CBlender_BmmD::Compile(CBlender_Compile& C)
         C.r_dx10Texture("s_puddles_perlin", "fx\\puddles_perlin");
         C.r_dx10Texture("s_puddles_normal", "fx\\water_normal");
         C.r_dx10Texture("s_rainsplash", "fx\\water_sbumpvolume");
+        {
+            const auto wet = nlc_terrain_soft_get(oR_Name, oG_Name, oB_Name, oA_Name); // NLC .212f / .213b
+            C.r_Constant("ssfx_terrain_soft", wet.soft);
+            C.r_Constant("ssfx_terrain_puddle", wet.puddles);
+        }
 
         C.r_dx10Sampler("smp_base");
         C.r_dx10Sampler("smp_linear");

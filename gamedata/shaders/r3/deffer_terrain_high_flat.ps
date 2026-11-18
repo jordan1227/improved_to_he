@@ -22,6 +22,12 @@
 #ifdef SSFX_STEP_RIPPLES
 #include "ssfx_step_ripples.h"
 #endif
+#include "nlc_ripples.h" // NLC .216: impact rings, rain ring density, A/B ssfx_puddle_ripples
+
+uniform float4 wind_params; // NLC .216: x direction, y velocity ( wind streaks on puddles )
+
+uniform float4 ssfx_terrain_soft; // NLC .212f: softness + 1 per splat channel ( r g b a ), 0 = unknown ( Blender_BmmD.cpp )
+uniform float4 ssfx_terrain_puddle; // NLC .213b: puddle amount + 1 per splat channel, 0 = unknown ( full )
 
 // Puddles textures
 #ifdef SSFX_PUDDLES
@@ -246,6 +252,7 @@ f_deffer main(p_bumped I)
 // Puddles slope mask and height ----------------------------------
 #ifdef SSFX_PUDDLES
     float puddles = 0.0f;
+    float soft_t = 0.0f; // NLC .215: softness from the wet table ( channels without an entry: 0 ), for the early shaping
     float3 ripplesNormal = 0;
 
     // Wetness factor
@@ -308,7 +315,28 @@ f_deffer main(p_bumped I)
     puddles += puddles_old_style;
 #endif
 
+    // NLC .215: puddle amount, wetness gate and soft-ground shaping here, before the ripples ( were after the textures:
+    // the step ripples and the refraction read the uncut value, and large areas of "invisible water" showed only as
+    // ripples ). .213b: amount per detail texture ( terrain_wet.ltx second value; grass 0: soaks in, earth 0.4:
+    // sparse ); less than 1 keeps only the stronger puddle cores ( raised threshold, rescaled ). .215: cut 0.7 -> 0.85
+    float4 pud4 = ssfx_terrain_puddle < 0.5f ? 1.0f.xxxx : saturate(ssfx_terrain_puddle - 1.0f);
+    float pud = saturate(dot(mask, pud4));
+    float pud_cut = (1.0f - pud) * 0.75f; // .216: 0.85 -> 0.75 ( no earth puddles were found )
+    puddles = saturate((saturate(puddles) - pud_cut) / max(1.0f - pud_cut, 0.05f)) * step(0.01f, pud);
+    puddles *= smoothstep(0.5f, 0.8f, rain_params.y);
+
+    // .215: soft ground keeps its puddles in the hollows of the splat height, without the old x 0.6 cap ( the table sets
+    // the amount ), with sharp edges: the weak values left over were too faint for the mud tint, gloss and normal
+    soft_t = saturate(dot(mask, saturate(ssfx_terrain_soft - 1.0f)));
+    puddles *= lerp(1.0f, saturate(1.0f - PixelHeight * 3.0f), soft_t);
+    puddles = lerp(puddles, smoothstep(0.05f, 0.35f, puddles), soft_t);
+
     // Puddles Ripples ------------------------------------------------
+
+    // NLC .216: world position ( ripple UVs, steps, impacts ) and metres per pixel ( impact ring anti-aliasing )
+    float3 Wpos = mul(m_inv_V, float4(I.position.xyz, 1.0f)).xyz;
+    float px_m = I.position.z * 2.0f / (screen_res.y * m_P._22);
+    bool rip_old = ssfx_puddle_ripples.x > 0.5f;
 
 #ifdef G_PUDDLES_RIPPLES
     if (rain_params.x > 0.0f && I.position.z < TERRAIN_PUDDLES_RIPPLES_RANGE)
@@ -321,18 +349,30 @@ f_deffer main(p_bumped I)
 
     // Base ripples scale
     float ripples_scale = 140 / G_PUDDLES_RIPPLES_SCALE;
+    // NLC .216: world-space UVs ( ~7 m tile ): the level-wide tcdh made the ring size differ per level size
+    float2 rip_uv = rip_old ? I.tcdh * ripples_scale : Wpos.xz * (0.14f / G_PUDDLES_RIPPLES_SCALE);
 
     // Base ripples Normal
-    float3 WN0 = s_puddles_normal.Sample(smp_base, I.tcdh * ripples_scale + float2(0, ripples_anim));
-    float3 WN1 = s_puddles_normal.Sample(smp_base, I.tcdh * ripples_scale - float2(0.33f, ripples_anim));
-    ripplesNormal = normalize(float3(WN0.xy + WN1.xy, WN0.z * WN1.z)) * 2.0f - 1.0f; //((WN0 + WN1) * 0.5f) * 2.0f - 1.0f;
+    float3 WN0 = s_puddles_normal.Sample(smp_base, rip_uv + float2(0, ripples_anim));
+    float3 WN1 = s_puddles_normal.Sample(smp_base, rip_uv - float2(0.33f, ripples_anim));
+    // .216: unpacked before the normalize ( packed 0 ~ 1 values gave a constant tilt )
+    if (rip_old)
+        ripplesNormal = normalize(float3(WN0.xy + WN1.xy, WN0.z * WN1.z)) * 2.0f - 1.0f; //((WN0 + WN1) * 0.5f) * 2.0f - 1.0f;
+    else
+    {
+        float3 n0 = WN0 * 2.0f - 1.0f, n1 = WN1 * 2.0f - 1.0f;
+        ripplesNormal = normalize(float3(n0.xy + n1.xy, n0.z * n1.z));
+    }
 
     // Rain Ripples
-    float2 ripplesUV = I.tcdh * ripples_scale * 1.3f / G_PUDDLES_RAIN_RIPPLES_SCALE;
-    float2 rainRipples = ssfx_rain_ripples(s_rainsplash, ripplesUV, float3(0.85f, 1.0f, 10.0f), I.position.z);
+    float2 ripplesUV = rip_uv * 1.3f / G_PUDDLES_RAIN_RIPPLES_SCALE;
+    // .216: light rain gives fewer rings, not only fainter ones ( ssfx_puddle_ripples.y 1 = all rings, strength by rain )
+    bool dens_old = ssfx_puddle_ripples.y > 0.5f;
+    float ring_density = dens_old ? 1.0f : saturate(0.15f + rain_params.x * 1.1f);
+    float2 rainRipples = nlc_rain_ripples(s_rainsplash, ripplesUV, float3(0.85f, 1.0f, 10.0f), I.position.z, ring_density);
 
     // Rain ripples intensity... ( Rain intensity * Depth fadeout * Intensity )
-    rainRipples *= rain_params.x * G_PUDDLES_RAIN_RIPPLES_INTENSITY;
+    rainRipples *= (dens_old ? rain_params.x : saturate(0.5f + rain_params.x * 0.5f)) * G_PUDDLES_RAIN_RIPPLES_INTENSITY;
 
     // Base ripples Intensity
     ripplesNormal *= saturate(0.05f + rain_int * G_PUDDLES_RIPPLES_RAINING_INT * G_PUDDLES_RIPPLES_INTENSITY);
@@ -343,11 +383,33 @@ f_deffer main(p_bumped I)
     }
 #endif
 
+    // NLC .216: wind on puddles, also without rain: gust patches drifting downwind ( perlin ) roughen a layer of small
+    // wavelets stretched across the wind ( ssfx_puddle_ripples.w 1 = off )
+    float wind_int = saturate(wind_params.y * 0.001f);
+    if (ssfx_puddle_ripples.w < 0.5f && wind_int > 0.02f && I.position.z < TERRAIN_PUDDLES_RIPPLES_RANGE)
+    {
+        // .217: downwind ( the ssfx_water angle + pi/2 pointed upwind: the patches came from where the rain blows ),
+        // ~70 m patches ( were 20 m ), drifting 0.3 ~ 1.2 m/s ( were 0.5 ~ 2.5 ), softer edges, weaker wavelets
+        float wa = wind_params.x + 1.57079f;
+        float2 wdir = -float2(cos(wa), sin(wa));
+        float2 wper = float2(-wdir.y, wdir.x);
+        float2 q = float2(dot(Wpos.xz, wdir), dot(Wpos.xz, wper));
+        float gust = s_puddles_perlin.Sample(smp_base, (Wpos.xz - wdir * timers.x * (0.3f + 0.9f * wind_int)) * 0.014f).r;
+        gust = smoothstep(0.25f, 0.85f, gust) * wind_int;
+        float3 S = s_puddles_normal.Sample(smp_base, float2(q.x * 0.6f - timers.x * (0.1f + 0.3f * wind_int), q.y * 0.25f)).xyz * 2.0f - 1.0f;
+        ripplesNormal.xy += (S.x * wdir + S.y * wper) * (gust * 0.2f);
+    }
+
 #ifdef SSFX_STEP_RIPPLES
     // NLC: footstep ripples in puddles
-    [branch] if (I.position.z < 30.0f && puddles > 0.0f)
-        ripplesNormal.xy += ssfx_step_ripples(mul(m_inv_V, float4(I.position.xyz, 1.0f)).xyz) * saturate(puddles * 2.0f) * 2.0f;
+    // .215: only where a puddle is drawn ( > 0.05, full from 0.3 )
+    [branch] if (I.position.z < 30.0f && puddles > 0.05f)
+        ripplesNormal.xy += ssfx_step_ripples(Wpos) * smoothstep(0.05f, 0.3f, puddles) * 2.0f;
 #endif
+
+    // NLC .216: rings from impacts ( bullets, bolts, explosions, footfalls ) where a puddle is drawn
+    [branch] if (ssfx_impacts_n.x > 0.5f && I.position.z < 40.0f && puddles > 0.05f) // .217: 30 -> 40 m
+        ripplesNormal.xy += nlc_impact_ripples(Wpos, px_m) * smoothstep(0.05f, 0.3f, puddles);
 
     // Refraction Normal
     N_refra = ripplesNormal.xy;
@@ -375,7 +437,8 @@ f_deffer main(p_bumped I)
     float3 Ne = normalize(mul(float3x3(I.M1, I.M2, I.M3), Sr.normal.rgb + Sg.normal.rgb + Sb.normal.rgb + Sa.normal.rgb));
 
     // Color
-    C.rgb = (Sr.base.rgb + Sg.base.rgb + Sb.base.rgb + Sa.base.rgb) * C.rgb * 2.0;
+    float3 C_detail = Sr.base.rgb + Sg.base.rgb + Sb.base.rgb + Sa.base.rgb; // .212d: soft / hard ground test below
+    C.rgb = C_detail * C.rgb * 2.0;
 
     // Gloss
     float G = Sr.gloss + Sg.gloss + Sb.gloss + Sa.gloss;
@@ -387,9 +450,31 @@ f_deffer main(p_bumped I)
     // NLC 2026-10-13: material-aware wetness. Earth and grass texels ( green / brown: g > b ) are soft ground,
     // asphalt and concrete stay grey. Mirror puddles need real wetness ( dry first ) and on soft ground only form in
     // the hollows of the splat height; soft ground otherwise gets damp ( darker, low gloss ) instead of a mirror.
-    float soft = saturate((C.g - C.b) * 6.0f);
+    // .209i: relative to brightness ( ( g - b ) / max 0.12 ~ 0.30; was ( g - b ) * 6, bright warm asphalt read as
+    // half soft ). The same test is in ssfx_ssr.ps
+    // .212f: softness per detail texture from the engine ( config\environment\terrain_wet.ltx, ssfx_terrain_soft =
+    // softness + 1 per splat channel, 0 = unknown ), mixed by the splat mask. Unknown channels: the colour test on the
+    // detail textures x the level colour map averaged over 4 taps 2 texels apart ( the map is metres per texel and may
+    // have no mips: the marsh map is one level, its colour blocks flipped the test in squares )
+    float4 soft4 = ssfx_terrain_soft - 1.0f;
+    [branch] if (any(ssfx_terrain_soft < 0.5f))
+    {
+        float2 bsz;
+        s_base.GetDimensions(bsz.x, bsz.y);
+        float2 bo = 2.0f / bsz;
+        float3 Cmap = 0.25f * (s_base.Sample(smp_base, I.tcdh.xy + bo).rgb + s_base.Sample(smp_base, I.tcdh.xy - bo).rgb +
+                               s_base.Sample(smp_base, I.tcdh.xy + float2(bo.x, -bo.y)).rgb + s_base.Sample(smp_base, I.tcdh.xy + float2(-bo.x, bo.y)).rgb);
+        float3 C_soft = C_detail * Cmap;
+        float soft_c = saturate((C_soft.g - C_soft.b) / max(max(C_soft.r, max(C_soft.g, C_soft.b)), 0.02f) * 5.5f - 0.65f);
+        soft4 = ssfx_terrain_soft < 0.5f ? soft_c.xxxx : soft4;
+    }
+    float soft = saturate(dot(mask, saturate(soft4)));
     float wet = saturate(rain_params.y * 2.0f);
-    puddles *= smoothstep(0.5f, 0.8f, rain_params.y) * lerp(1.0f, saturate(1.0f - PixelHeight * 3.0f) * 0.6f, soft);
+    // .215: amount, wetness gate and the table part of the soft-ground shaping are applied before the ripples ( above );
+    // here only the softness of channels without a table entry ( colour test )
+    float soft_u = saturate(soft - soft_t);
+    puddles *= lerp(1.0f, saturate(1.0f - PixelHeight * 3.0f), soft_u);
+    puddles = lerp(puddles, smoothstep(0.05f, 0.35f, puddles), soft_u);
 
     // Normal Up and ripples for puddles
     float3 PuddlesNormal = mul(m_V, float3(ripplesNormal.x, 1, ripplesNormal.y));
@@ -399,15 +484,26 @@ f_deffer main(p_bumped I)
 
     // Puddles Color
     C.rgb = lerp(C.rgb, C.rgb * G_PUDDLES_TINT, puddles);
-    C.rgb = lerp(C.rgb, C.rgb * float3(0.7f, 0.6f, 0.45f), puddles * soft); // NLC .80: muddy water on soft ground
+    // .214b: muddier ( 0.7, 0.6, 0.45 -> 0.55, 0.45, 0.32 ): earth puddles in clear weather looked like clear water
+    C.rgb = lerp(C.rgb, C.rgb * float3(0.55f, 0.45f, 0.32f), puddles * soft); // NLC .80: muddy water on soft ground
 
     // Puddles Gloss
-    G = lerp(G, lerp(0.95f, 0.45f, soft), puddles); // NLC .80 / .82: earth puddles less mirror-like ( muddy sheen )
+    // .209: soft 0.45 -> 0.6, the SSR terrain curve ( ssfx_ssr.ps ) ignores damp-level gloss
+    // .214b: soft 0.6 -> 0.78 ( full on the SSR curve ): grass has no puddles since the wet table, the sparse earth puddles
+    // read as water again
+    G = lerp(G, lerp(0.95f, 0.78f, soft), puddles); // NLC .80 / .82: earth puddles less mirror-like ( muddy sheen )
 
     // NLC: damp soft ground outside the puddles
     float damp = wet * soft * (1.0f - puddles);
     C.rgb *= 1.0f - 0.2f * damp;
-    G = lerp(G, max(G, 0.3f), damp);
+    // .214b: the damp sheen only while it rains ( 0.3 ), 0.15 after: wet earth in clear weather showed a sun glint
+    G = lerp(G, max(G, lerp(0.15f, 0.3f, saturate(rain_params.x * 4.0f))), damp);
+
+    // .209c / .209j: wet hard ground ( asphalt, concrete ) outside the puddles gets a sheen. .209i had removed it
+    // with the SSR curve, but the wet asphalt the user saw at ssfx_ssr_terrain 0 was this gloss, not the base one
+    // .212e: 0.62 -> 0.7, at the top of the SSR terrain curve ( 0.4 ~ 0.7 ), which now applies to all terrain ( the rain
+    // pass adds no terrain gloss since .213 )
+    G = lerp(G, max(G, 0.7f), saturate(rain_params.y * 4.0f) * (1.0f - soft) * (1.0f - puddles));
 
     }
 #endif

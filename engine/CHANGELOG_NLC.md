@@ -5,6 +5,105 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.218 (2026-11-18)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `62B3004566D03F710816EB91B19127C866016E5CF465A823D6D7622344E8E38A` (archived with its PDB in `nlc_tools/builds/20261118_232231_62b30045`).
+- **Status:** runtime pending. Built on `nlc-3.589.217`; final review fixes (`docs/REFLECTIONS_AO_DESIGN.md` 4.31 / 4.32).
+- Rain: surplus drops ( after the rain eased ) are removed once expired; they were drawn flying on through roofs and fired stale splashes every frame ( `dxRainRender::Calculate` ).
+- Impacts: physics contacts gated by the speed into the surface ( > 2 m/s ) instead of the particle gate ( bolts thrown far gave no rings ); buffer cleared on level change ( `nlc_impact_clear` ); footfall ring life 0.8 s.
+- Anomaly haze: the profile list is kept apart from the chosen profile ( `m_nlc_haze_list` ).
+- **Required game data:** `ssfx_ssr.ps` ( debug views removed, puddle Fresnel blend fixed at 0.5, cover gate independent of `ssfx_ssr_terrain` ), `rain_patch_normal.ps`, `ssfx_haze.ps`.
+
+## nlc-3.589.217 (2026-11-18)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `B038568F918718D17C76ABECC26D7B7DF24BE758EBEAE1BA4BF35A6B3AAF9732` (archived with its PDB in `nlc_tools/builds/20261118_225018_b038568f`).
+- **Status:** runtime pending. Built on `nlc-3.589.216` (`docs/REFLECTIONS_AO_DESIGN.md` 4.30).
+- Rain map straight down again by default ( `r3_rain_slant_mode` 0; 1 = the .212 slanted map ). The lean is exported as `ssfx_rain_slant` ( xz upwind offset per metre of cover height ): shaders test a covered point once more upwind, so slanted rain only adds wetness ( no dry rain shadow beside trucks and walls ).
+- Footfall impacts: not the actor's own while the visible-body puppet is active ( `nlc_visible_body_active`, HUDManager.cpp ). Impact ripples range 30 -> 40 m.
+- **Required game data:** `ssfx_ssr.ps`, `rain_patch_normal.ps`, `nlc_ripples.h`, `deffer_terrain_high_flat.ps`, `ssfx_water.ps`, `config/environment/terrain_wet.ltx`, `config/misc/zone_buzz.ltx`.
+
+## nlc-3.589.216 (2026-11-18)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0FBEAD3DEA2A99397031E7B15AC6596559B836E0BFA6C90EBD8F3BBB1EFE22B6` (archived with its PDB in `nlc_tools/builds/20261118_221723_0fbead3d`).
+- **Status:** runtime pending. Built on `nlc-3.589.215` (`docs/REFLECTIONS_AO_DESIGN.md` 4.28).
+- Rain drops wrap by their landing column ( P along D to eye height ), not their position: slanted drops born upwind were wrapped at once to the downwind side ( `dxRainRender::Calculate` ).
+- Impact events ( `nlc_impact_add` / `nlc_impacts_copy`, xr_3da, locked ring of 32 ): static bullet hits ( `FireShotmark` ), physics contacts ( `TContactShotMark`, bolts / grenades / bodies ), explosions ( `CExplosive::Explode` ), footfalls ( `CStepManager::update` ). Binders `ssfx_impacts`, `ssfx_impacts_p`, `ssfx_impacts_n` ( 16 nearest within 30 m ) and `ssfx_puddle_ripples`. Puddle splash per fresh impact ( `dxRainRender::render_impacts`, shader `effects
+lc_impact_splash`, gated in the pixel shader by the G-buffer at the impact point ).
+- Console: `ssfx_impact_ripples` ( 0 ~ 2, default 1 ), `ssfx_impact_splash` ( 0 ~ 2, default 1 ), `ssfx_puddle_ripples` ( A/B vector, 0 = new ).
+- Anomaly haze: `nlc_haze` may list profiles ( `haze_buzz,haze_buzz_weak` ), the first allowed on the level is used.
+- **Required game data:** `nlc_ripples.h` ( new ), `nlc_impact_splash.ps` ( new ), `effects_nlc_impact_splash.s` ( new ), `deffer_terrain_high_flat.ps`, `ssfx_water.ps`, `ssfx_ssr.ps`, `rain_patch_normal.ps`, `rain.s`, `config/environment/anomaly_haze.ltx`, `config/misc/zone_buzz.ltx`.
+
+## nlc-3.589.215 (2026-11-18)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `5780F5E1980A5EDC4882B49E11BA936B3B628EE17B2CA47A1FC69C7D108473FD` (archived with its PDB in `nlc_tools/builds/20261118_210617_5780f5e1`).
+- **Status:** runtime pending. Built on `nlc-3.589.214` (`docs/REFLECTIONS_AO_DESIGN.md` 4.25).
+- Rain depth map without tree trunks: `CBlender_Tree` flags its non-blended shadow element `bTreeTrunk` ( not object LODs ), `render_rain::render` skips it as it skipped `bTreeBranch`. No rain shadow / fog shaft of trees with the wind-slanted map; roofs, cars, rocks and other MU models stay in. Console `r3_rain_map_trees` ( 0 default, 1 = old ). `ShaderElement::equal` compares both tree flags.
+- Rain drop gusts: console `rain_gust` ( 0 ~ 2, default 0.3, old 2 ) and `rain_gust_speed` ( 0.01 ~ 1, default 0.15, old 0.3 ) in `CEffect_Rain::Prepare`.
+- **Required game data:** `deffer_terrain_high_flat.ps` ( earth puddles: amount and soft shaping before the ripples, no x 0.6 cap, sharp edges ).
+
+## nlc-3.589.214 (2026-11-18)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `525C9FFBB18D6F80EABB42BC18D993C4CEF74B939A2A50251349FDCBAF78748E` (archived with its PDB in `nlc_tools/builds/20261118_193505_525c9ffb`).
+- **Status:** runtime pending. Built on `nlc-3.589.213` (`docs/REFLECTIONS_AO_DESIGN.md` 4.22).
+- SSR hit thickness from the ray's step ( + 0.25 m + 2 % ), also in the binary step; no miss fallback after passing behind an occluder ( trunks / foliage as dark bands in puddles ).
+- Terrain wet table: second value per texture = puddle amount ( `ssfx_terrain_puddle`, + 1 per splat channel ); log line shows `softness,puddles`.
+- Rain: `nlc_rain_raw` keeps the weather file density ( 0 ~ 3; `rain_density` stays clamped to 1 for every other consumer ). Streak alpha 0.3 ~ 1.5 ( vertex colour alpha / 2 ), length up to x1.3, heavy rain up to ~60 % more drops ( capped at 3800, quad index buffer 4096 ), splash chance 0.3 x density. Defaults `ssfx_rain_1` width 0.05, `ssfx_rain_2` alpha 0.8 / brightness 0.2, `ssfx_rain_3` splash alpha 0.35.
+- **Required game data:** `effects_rain.vs` ( new ), `effects_rain.ps`, `deffer_terrain_high_flat.ps`, `ssfx_ssr.ps`, `config/environment/terrain_wet.ltx` ( `softness, puddles` ). Tree crowns were already out of the rain map ( `r_dsgraph_render_graph( 0, true )` skips tree branches ).
+
+## nlc-3.589.213 (2026-11-18)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `D65E889993C0A5EB7BA15422821003847694E35B08F5EF2C43D9FD23D726CD6F` (archived with its PDB in `nlc_tools/builds/20261118_183648_d65e8899`).
+- **Status:** runtime pending. Built on `nlc-3.589.212` (`docs/REFLECTIONS_AO_DESIGN.md` 4.20).
+- Terrain wet softness per detail texture: `CBlender_BmmD` ( parallax terrain ) reads `config\environment	errain_wet.ltx` ( exact names, else the longest matching keyword ) and gives each terrain shader `ssfx_terrain_soft` ( softness + 1 per splat channel, 0 = unknown ). Logged per terrain material as `[nlc_terrain_wet]`.
+- **Required game data:** `config/environment/terrain_wet.ltx` ( new ), `deffer_terrain_high_flat.ps`, `rain_patch_normal.ps`.
+
+## nlc-3.589.212 (2026-11-18)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0D5080707B4D072766A3C0F519E263FB94F466936CA2A14064B56D94C97BBB31` (archived with its PDB in `nlc_tools/builds/20261118_170535_0d508070`).
+- **Status:** runtime pending. Built on `nlc-3.589.211` (`docs/REFLECTIONS_AO_DESIGN.md` 4.15 - 4.17).
+- Wind-slanted rain map: in rain `RainLight.direction` follows the rain's lean ( `wind_direction`, `wind_velocity`, as `CEffect_Rain::Prepare` without the gust ), pitch capped 30 degrees, smoothed and stepped; new `r3_rain_wind_slant` ( 0 ~ 1, default 1, live ). The fog-only map stays vertical.
+- Removed: `ssfx_haze_reflect` and the haze scissor extension ( `.211`; the shader side was taken out in `.211c` ).
+- **Required game data:** none new ( `ssfx_haze.ps` `.211c` ).
+
+## nlc-3.589.211 (2026-11-18)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E308213662D73B6E4325ED654B7B62BD60A7107212F5FF8A51B4E05BFFE8D9FD` (archived with its PDB in `nlc_tools/builds/20261118_163419_e3082136`).
+- **Status:** runtime pending. Built on `nlc-3.589.210` (`docs/REFLECTIONS_AO_DESIGN.md` 4.13 / 4.14).
+- Rain depth map: `r3_rain_map_radius` ( 0 ~ 1000 m, default 100, live; 0 = the old frustum fit ) caps the map square, centred half a radius ahead. The fit was ~500 m and more ( ~1 m texels at 1024 ): blocky, shimmering cover edges in the wet surfaces, SSR cover tests and the fog gate.
+- Anomaly haze in puddles: `haze_p9.w` = `ssfx_haze_reflect` ( 0 ~ 2, default 1, live ) while the ground is wet; the scissor box reaches 2 R further down for the mirror image.
+- **Required game data:** `ssfx_haze.ps`, `ssfx_haze.s`, `rain_patch_normal.ps`.
+
+## nlc-3.589.210 (2026-11-18)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `4567AF15E7E165786863E92A1F6AB369ECF1D316FF557636F8A5C508159BFD01` (archived with its PDB in `nlc_tools/builds/20261118_155758_4567af15`).
+- **Status:** runtime pending. Built on `nlc-3.589.209`. Reflections / AO / wet surfaces follow-up (`docs/REFLECTIONS_AO_DESIGN.md` 4.12) and the IL visibility maps (`docs/IL_DESIGN.md` 4.6).
+- World AO without the weapon: `ssfx_copy_pos_world` copies the position buffer right before the HUD is drawn to `$user$ssfx_pos_world` ( AO pass on ); the AO gets `ssfx_ao_params3.x` = copy valid. The same copy has the normals before `draw_rain`.
+- `draw_rain`: full-screen triangle kept inside the far plane ( `d_Z <= 0.99999` ); in rain weathers with `r3_dynamic_wet_surfaces_far` beyond the far plane the whole wet-surface pass never drew.
+- Rain map for the SSR cover tests: exported whenever it is rendered ( rain or fog gate mode 2 ); `ssfx_fog_map.w` = map valid, `.x` stays the fog gate flag.
+- SSR: `ssfx_ssr_setup.w` = `ssfx_ssr_dry` ( reflection strength under cover while it rains ); scene copy for reflections only on frames with an SSR or water pass.
+- `ssfx_wetsurfaces_2` default intensity 0.7 -> 1.0.
+- IL ( from `docs/IL_DESIGN.md` 4.6, another session ): beam-hit spot fill ( `ssfx_il_light_fill_traced` ) and per-light visibility maps ( `ssfx_il_vis`, `ssfx_il_vis_update` ), `ssfx_il_params.x` negative as the signal.
+- **Required game data:** `ssfx_ao.ps`, `ssfx_ao.s`, `ssfx_ssr.ps`, `ssfx_ssr.s`, `ssfx_fog_atmo.h`, `rain.s`, `nlc_rain_notransform_2uv.vs`, `rain_patch_normal.ps`, `rain_apply_gloss.ps`, `deffer_terrain_high_flat.ps`, `ssfx_il.ps`.
+
+## nlc-3.589.209 (2026-11-16)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `EAF344C44BB3D373DDB97E76769DCCD75329121633ABC62F1961905835FC69A3` (archived with its PDB in `nlc_tools/builds/20261116_022439_eaf344c4`).
+- **Status:** runtime pending. Built on `nlc-3.589.208`. Reflections and AO review (`docs/REFLECTIONS_AO_DESIGN.md` 3).
+- Reflection source: `phase_ssfx_scene_prev` copies the finished scene ( after forward pass, haze, volumetrics, distortion; before fog scattering and bloom ) to `$user$ssfx_scene_prev`; SSR and the water prepass get `ssfx_scene_prev_k` ( strength, 0 without a valid previous frame ).
+- `SSFX_SSR_QUALITY` is now defined for the SSS 23 SSR ( was never set: always 24 steps ); `ssfx_ssr_setup.z` = terrain fix; AO `ssfx_ao_params2` .y flora strength, .w radius fix.
+- New console: `ssfx_ssr_forward` ( 0 ~ 1, default 1, live ), `ssfx_ssr_terrain` ( 0 / 1, default 1, live ), `ssfx_ssr_quality` ( 1 ~ 3, default 2, game restart ), `ssfx_ao_radius_fix` ( 0 / 1, default 0, live ), `ssfx_ao_flora` ( 0 ~ 1, default 1, live ).
+- **Required game data:** `ssfx_scene_prev.h` ( new ), `ssfx_ssr.ps`, `ssfx_ssr.s`, `ssfx_ssr_combine.ps`, `ssfx_water_ssr.ps`, `ssfx_water_pass.s`, `ssfx_ao.ps`, `ssfx_ao_blur.ps`, `combine_1.ps`, `deffer_terrain_high_flat.ps`; `rspec_*.ltx`, `ui_mm_opt_shaders.script` ( defaults ).
+
 ## nlc-3.589.208 (2026-11-16)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

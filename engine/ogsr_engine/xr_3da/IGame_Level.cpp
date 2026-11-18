@@ -57,6 +57,7 @@ IGame_Level::~IGame_Level()
 
     nlc_silence_clear(); // NLC: the silence zones of the next level register again
     nlc_haze_clear(); // NLC: anomaly haze zones ( Environment.h, igame_persistent.h includes it )
+    nlc_impact_clear(); // NLC .218: puddle ripple events
 
     xr_delete(g_hud);
 }

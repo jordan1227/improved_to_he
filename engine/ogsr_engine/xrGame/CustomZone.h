@@ -451,6 +451,7 @@ protected:
     // NLC anomaly haze (docs/ANOMALY_HAZE_DESIGN.md): section key nlc_haze = <profile> ( config\environment\anomaly_haze.ltx ).
     // Registered while the zone is enabled; the zone lights feed the haze and lose their volumetric flag meanwhile.
     shared_str m_nlc_haze_name;
+    shared_str m_nlc_haze_list; // NLC .218: the section's profile list ( m_nlc_haze_name is the one chosen at spawn )
     int m_nlc_haze{-1}; // profile index at spawn, -1 = none or filtered out by the profile's levels list
     bool m_nlc_haze_on{};
     bool m_nlc_haze_vol_off{}; // the zone lights' volumetric flag is switched off by the haze

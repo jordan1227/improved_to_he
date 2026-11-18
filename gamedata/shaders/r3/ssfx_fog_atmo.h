@@ -34,7 +34,8 @@ TextureCube s_fog_sky1; // $user$sky1
 #define SSFX_FOG_SKY1 s_fog_sky1
 #endif
 
-uniform float4 ssfx_fog_map; // x: map rendered this frame ( gate mode 2 ), y: map depth per metre, z: map texel size in metres
+uniform float4 ssfx_fog_map; // x: map rendered this frame ( gate mode 2 ), y: map depth per metre, z: map texel size in metres,
+                             // w: map valid for the SSR cover tests ( rain or gate mode 2, engine .210 )
 
 #ifndef SSFX_FOG_NO_MAP
 uniform float4x4 ssfx_fog_map_xf; // world -> map ( uv, depth )

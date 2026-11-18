@@ -10,7 +10,55 @@
 #include "igame_level.h"
 #include "xr_object.h"
 
+#include <mutex>
+
+// NLC .216: impact events ( Environment.h )
+namespace
+{
+std::mutex nlc_impact_mx;
+SNlcImpact nlc_impact_buf[NLC_IMPACT_MAX];
+u32 nlc_impact_head{};
+} // namespace
+
+void nlc_impact_add(const Fvector& pos, float normal_y, u32 kind, float strength)
+{
+    if (normal_y < 0.7f || strength <= 0.f || pos.distance_to_sqr(Device.vCameraPosition) > _sqr(40.f))
+        return;
+    const float now = Device.fTimeGlobal;
+    std::scoped_lock lock(nlc_impact_mx);
+    for (const SNlcImpact& e : nlc_impact_buf)
+        if (e.strength > 0.f && e.kind == kind && now - e.t0 >= 0.f && now - e.t0 < 0.2f && e.pos.distance_to_sqr(pos) < _sqr(0.25f))
+            return;
+    nlc_impact_buf[nlc_impact_head] = SNlcImpact{pos, now, std::min(strength, 2.f), kind};
+    nlc_impact_head = (nlc_impact_head + 1) % NLC_IMPACT_MAX;
+}
+
+void nlc_impact_clear()
+{
+    std::scoped_lock lock(nlc_impact_mx);
+    for (SNlcImpact& e : nlc_impact_buf)
+        e = SNlcImpact{};
+    nlc_impact_head = 0;
+}
+
+u32 nlc_impacts_copy(SNlcImpact* out, u32 max)
+{
+    const float now = Device.fTimeGlobal;
+    std::scoped_lock lock(nlc_impact_mx);
+    u32 n = 0;
+    for (const SNlcImpact& e : nlc_impact_buf)
+        if (e.strength > 0.f && now - e.t0 >= 0.f && now - e.t0 < 3.f && n < max)
+            out[n++] = e;
+    return n;
+}
+
 CPerlinNoise1D* RainPerlin;
+
+// NLC .215: wind gust of the drops ( was 2 x Perlin at 0.3 / s added to the 0 ~ 1 weather wind: the drops swung between
+// straight down and 35 degrees with their spawn point up to ~28 m upwind every ~3 s, read as waves of heavy rain and
+// then little from the wind side ). Console rain_gust / rain_gust_speed; the old look is 2 / 0.3
+float ps_rain_gust{0.3f};
+float ps_rain_gust_speed{0.15f};
 
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
@@ -40,7 +88,7 @@ CEffect_Rain::~CEffect_Rain()
 void CEffect_Rain::Prepare(Fvector2& offset, Fvector3& axis, float W_Velocity, float W_Direction)
 {
     // Wind gust, to add variation.
-    float Wind_Gust = RainPerlin->GetContinious(Device.fTimeGlobal * 0.3f) * 2.0f;
+    float Wind_Gust = RainPerlin->GetContinious(Device.fTimeGlobal * ps_rain_gust_speed) * ps_rain_gust; // NLC .215
     // Wind velocity [ 0 ~ 1 ]
     float Wind_Velocity = W_Velocity + Wind_Gust; // g_pGamePersistent->Environment().CurrentEnv->wind_velocity * 0.001f
     clamp(Wind_Velocity, 0.0f, 1.0f);
@@ -213,7 +261,9 @@ void CEffect_Rain::Calculate()
 // startup _new_ particle system
 void CEffect_Rain::Hit(Fvector& pos)
 {
-    if (::Random.randF() > 0.2f)
+    // NLC .213b: splash chance 0.2 -> 0.3, scaled by the weather density ( heavy rain ~0.45 )
+    const float raw = std::clamp(g_pGamePersistent->Environment().CurrentEnv->nlc_rain_raw, 0.f, 3.f);
+    if (::Random.randF() > 0.3f * std::clamp(0.4f + 0.6f * raw, 0.4f, 1.6f))
         return;
 
     Particle* P = p_allocate();

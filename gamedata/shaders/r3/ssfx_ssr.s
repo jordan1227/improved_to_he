@@ -8,7 +8,6 @@ function element_0(shader, t_base, t_second, t_detail)
 	shader:dx10texture("s_position", "$user$position")
 	shader:dx10texture("s_diffuse", "$user$albedo")
 	shader:dx10texture("s_rimage", "$user$generic_temp")
-	shader:dx10texture("s_vollight", "$user$generic2")
 	shader:dx10texture("env_s0", "$user$env_s0")
 	shader:dx10texture("env_s1", "$user$env_s1")
 	shader:dx10texture("sky_s0", "$user$sky0")
@@ -18,6 +17,7 @@ function element_0(shader, t_base, t_second, t_detail)
 	shader:dx10texture("s_prev_pos", "$user$ssfx_prev_pos")
 	shader:dx10texture("s_ssfx_ssr_history", "$user$ssfx_ssr_hist")
 	shader:dx10texture("s_fog_map", "$user$smap_rain") -- NLC .205b: fog fades by the view-ray gate
+	shader:dx10texture("s_ssfx_scene_prev", "$user$ssfx_scene_prev") -- NLC .209: last frame's finished scene
 	shader:dx10sampler("smp_base")
 	shader:dx10sampler("smp_nofilter")
 	shader:dx10sampler("smp_linear")
@@ -56,6 +56,7 @@ function element_3(shader, t_base, t_second, t_detail)
 		:blend(true, blend.one, blend.invsrcalpha) -- NLC .84: blended into the scene ( premultiplied ), no copy
 	shader:dx10texture("ssr_image", "$user$ssfx_ssr")
 	shader:dx10texture("s_position", "$user$position") -- NLC: depth-aware upsample
+	shader:dx10texture("s_ssfx_ao", "$user$ssfx_ao_a") -- NLC .209: reflections occluded by the AO ( SSFX_AO_PASS )
 	shader:dx10sampler("smp_nofilter")
 	shader:dx10sampler("smp_rtlinear")
 end

@@ -1,0 +1,41 @@
+/**
+ * @ Description: NLC .216 splash on impacts in puddles ( dxRainRender::render_impacts, effects_nlc_impact_splash.s ).
+ *   effects_rain_splash.ps ( refracted scene through the splash normal map ) gated by the G-buffer at the impact point:
+ *   terrain ( material 0.95 ), puddle gloss ( > ~0.75, earth puddles 0.78, asphalt 0.95, wet ground 0.7 at most ) and
+ *   that point really visible there ( within 0.6 m ). One draw per splash, nlc_impact_origin per draw
+ */
+
+#include "screenspace_common.h"
+
+struct p_Rain
+{
+    float2 Tex0 : TEXCOORD0;
+    float4 tc : TEXCOORD1;
+    float rain_a : TEXCOORD2; // 1 -> 0 over the splash life ( vertex colour alpha x 2, effects_rain.vs )
+};
+
+float4 ssfx_rain_setup; // x: splash alpha, y: refraction ( ssfx_rain_3 )
+uniform float4 nlc_impact_origin; // xyz: world impact point
+
+float4 main(p_Rain I) : SV_Target
+{
+    float4 hp = mul(m_VP, float4(nlc_impact_origin.xyz, 1.0f));
+    float2 uv = hp.xy / max(hp.w, 0.01f) * float2(0.5f, -0.5f) + 0.5f;
+    if (hp.w < 0.05f || any(uv < 0.0f) || any(uv > 1.0f))
+        discard;
+
+    gbuffer_data g = gbuffer_load_data(uv, uv * screen_res.xy);
+    float3 Ov = mul(m_V, float4(nlc_impact_origin.xyz, 1.0f)).xyz;
+    float gate = step(length(g.P - Ov), 0.6f) * step(abs(g.mtl - 0.95f), 0.04f) * smoothstep(0.72f, 0.78f, g.gloss);
+    if (gate <= 0.0f)
+        discard;
+
+    float2 PosTc = I.tc.xy / I.tc.w;
+    float4 N0 = s_base.Sample(smp_base, I.Tex0);
+    N0.xy = N0.xy * 2.0f - 1.0f;
+    N0.xy = normalize(float3(N0.xy * 0.05f * ssfx_rain_setup.y, 1.0f)).xy;
+    float3 Screen = SSFX_get_image(saturate(PosTc + N0.xy), 0);
+
+    // a little lighter than the scene behind: the spray catches the sky
+    return float4(Screen * 1.1f + 0.03f, saturate(N0.w * ssfx_rain_setup.x * 2.0f * I.rain_a * gate));
+}

@@ -2,6 +2,8 @@
  * @ Description: Ambient occlusion - depth-aware blur ( AO resolution )
  * @ Based on: SCREEN SPACE SHADERS - UPDATE 21 ssfx_ao_blur.ps ( https://www.moddb.com/members/ascii1457 )
  * @ NLC: 2026-10-12 - runs at the AO target size ( OGSR creates reduced targets, no viewport subrect ).
+ *        .209: also keeps the centre value across normal edges ( the normal is in the same position texel ): the AO of
+ *        a wall no longer bleeds onto the floor at the same depth. Not on flora ( its normals vary per blade ).
  */
 
 #include "common.h"
@@ -21,7 +23,10 @@ float4 main(p_screen I) : SV_Target
     float2 tc = I.tc0.xy;
 
     float4 base_image = ao_image.SampleLevel(smp_nofilter, tc, 0);
-    float Depth = s_position.SampleLevel(smp_nofilter, tc, 0).z;
+    float4 pos0 = s_position.SampleLevel(smp_nofilter, tc, 0);
+    float Depth = pos0.z;
+    float3 N0 = gbuf_unpack_normal(pos0.xy);
+    bool flora0 = abs(gbuf_unpack_mtl(pos0.w) - MAT_FLORA) <= 0.04f;
 
     float2 buffer_pixel_size = 1.0f / blur_setup.zw;
     float2 offset = blur_setup.yy;
@@ -38,11 +43,18 @@ float4 main(p_screen I) : SV_Target
         float2 blur_tc = saturate(tc + offset * (r - 1.0f) * buffer_pixel_size);
 
         float SampleAO = ao_image.SampleLevel(smp_rtlinear, blur_tc, 0).a;
-        float SDepth = s_position.SampleLevel(smp_nofilter, blur_tc, 0).z;
+        float4 spos = s_position.SampleLevel(smp_nofilter, blur_tc, 0);
+        float SDepth = spos.z;
 
         // Keep the centre value across depth edges. NLC: relative depth ( as ssfx_upsample ); 0.1 m absolute meant
         // AO noise was never blurred beyond ~20 m on sloped ground
-        blur += lerp(SampleAO, base_image.a, saturate(abs(1.0f - SDepth / max(Depth, 0.0001f)) * 10.0f));
+        float edge = saturate(abs(1.0f - SDepth / max(Depth, 0.0001f)) * 10.0f);
+
+        // .209: normals more than ~25 degrees apart start to count as an edge, 60 degrees = full ( bump detail stays blurred )
+        float n_edge = 1.0f - smoothstep(0.5f, 0.9f, dot(N0, gbuf_unpack_normal(spos.xy)));
+        edge = max(edge, flora0 ? 0.0f : n_edge);
+
+        blur += lerp(SampleAO, base_image.a, edge);
     }
     blur /= G_SSDO_AO_BLUR_SAMPLES;
 

@@ -19,6 +19,7 @@ struct ssfx_feature_state
     bool water{}, glass{}, ssr{}, foliage{}, flora_variation{};
     bool gusts{}, fog_sun{}, cloud_shadows{}, step_ripples{}, spec_aa{}, mblur_objects{}, ground_mist{}, rain_beams{};
     int water_quality{}, water_parallax{}; // SSFX_WATER_QUALITY ( q_steps index 1..3 ), SSFX_WATER_PARALLAX 0..3
+    int ssr_quality{}; // NLC .209: SSFX_SSR_QUALITY ( q_ssr_steps index 2..4: 24 / 32 / 48 steps )
 };
 
 inline const ssfx_feature_state& ssfx_features()
@@ -51,6 +52,7 @@ inline const ssfx_feature_state& ssfx_features()
         s.spec_aa = !!ps_ssfx_spec_aa;
         s.mblur_objects = !!ps_ssfx_mblur_objects;
         s.ssr = ps_ssfx_ssr_enable && ps_r2_ls_flags_ext.test(R2FLAGEXT_SSLR); // the SSR pass itself is r_sslr_enable
+        s.ssr_quality = std::clamp(ps_ssfx_ssr_quality, 1, 3) + 1;
 
         // NLC: master switch ( ssfx_effects_off ): every pass and shader feature compiled out, the settings themselves kept
         if (ps_ssfx_effects_off)
@@ -63,7 +65,7 @@ inline const ssfx_feature_state& ssfx_features()
 
         Msg("* [SSFX] session state: AO %d ( %d ), IL %d ( %d ), SSS %d ( %d ), light SSS %d ( %d ), water %d ( %d / %d ), glass %d, SSR %d, foliage %d, gusts %d, sun fog %d, cloud shadows %d, step ripples %d, spec AA %d, object blur %d, flora variation %d, ground mist %d, rain beams %d", s.ao,
             s.ao_samples, s.il, s.il_samples, s.sss, s.sss_dir_samples, s.sss_lights, s.sss_omni_samples, s.water, s.water_quality, s.water_parallax,
-            s.glass, s.ssr, s.foliage, s.gusts, s.fog_sun, s.cloud_shadows, s.step_ripples, s.spec_aa, s.mblur_objects, s.flora_variation, s.ground_mist, s.rain_beams);
+            s.glass, s.ssr ? s.ssr_quality : 0, s.foliage, s.gusts, s.fog_sun, s.cloud_shadows, s.step_ripples, s.spec_aa, s.mblur_objects, s.flora_variation, s.ground_mist, s.rain_beams);
         return s;
     }();
     return state;

@@ -11,6 +11,7 @@ function element_0(shader, t_base, t_second, t_detail)
 	shader:dx10texture("s_ssfx_zbuffer", "$user$zbuffer")
 	shader:dx10texture("s_prev_pos", "$user$ssfx_prev_pos")
 	shader:dx10texture("ssfx_ao_history", "$user$ssfx_ao")
+	shader:dx10texture("s_ssfx_pos_world", "$user$ssfx_pos_world") -- NLC .210: position buffer before the HUD and the rain pass
 	shader:dx10sampler("smp_nofilter")
 	shader:dx10sampler("smp_rtlinear")
 	shader:dx10sampler("smp_linear")

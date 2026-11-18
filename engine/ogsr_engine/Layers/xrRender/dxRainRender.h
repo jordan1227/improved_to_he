@@ -23,4 +23,7 @@ private:
     IRender_DetailModel* DM_Drop;
     ref_geom hGeom_Drops;
     ref_shader SH_Splash;
+    ref_shader SH_Impact; // NLC .216: splash on impacts in puddles ( effects_nlc_impact_splash.s )
+
+    void render_impacts(CBackend& cmd_list); // NLC .216
 };

@@ -599,6 +599,11 @@ void CCC_Register()
     CMD3(CCC_Mask, "mouse_invert", &psMouseInvert, 1);
     CMD4(CCC_Float, "mouse_sens", &psMouseSens, 0.001f, 0.6f);
 
+    // NLC .215: rain drop gusts ( Rain.cpp )
+    extern float ps_rain_gust, ps_rain_gust_speed;
+    CMD4(CCC_Float, "rain_gust", &ps_rain_gust, 0.0f, 2.0f);
+    CMD4(CCC_Float, "rain_gust_speed", &ps_rain_gust_speed, 0.01f, 1.0f);
+
     // Camera
     CMD4(CCC_Float, "cam_inert", &psCamInert, 0.0f, 0.99f);
     CMD4(CCC_Float, "cam_inert_sprint", &psSprintCamInert, 0.0f, 0.99f);

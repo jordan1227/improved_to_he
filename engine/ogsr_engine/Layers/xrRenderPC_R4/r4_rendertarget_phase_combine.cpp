@@ -201,6 +201,9 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
         }
     }
 
+    // NLC .209: finished scene for the next frame's reflections ( no-op without SSR / water passes )
+    phase_ssfx_scene_prev(cmd_list);
+
     // NLC: SSS 23 fog scattering ( HDR, before bloom; no-op at strength 0 )
     phase_ssfx_fog_scattering(cmd_list);
 

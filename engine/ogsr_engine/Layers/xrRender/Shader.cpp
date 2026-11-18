@@ -114,6 +114,8 @@ BOOL ShaderElement::equal(ShaderElement& S)
         return FALSE;
     if (flags.isWater != S.flags.isWater)
         return FALSE;
+    if (flags.bTreeBranch != S.flags.bTreeBranch || flags.bTreeTrunk != S.flags.bTreeTrunk) // NLC .215
+        return FALSE;
     if (passes.size() != S.passes.size())
         return FALSE;
     for (u32 p = 0; p < passes.size(); p++)

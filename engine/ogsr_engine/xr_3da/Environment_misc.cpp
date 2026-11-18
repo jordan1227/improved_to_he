@@ -423,6 +423,7 @@ void CEnvDescriptor::load(CEnvironment& environment, CInifile& config)
     fog_density = config.r_float(m_identifier.c_str(), "fog_density");
     fog_distance = config.r_float(m_identifier.c_str(), "fog_distance");
     rain_density = config.r_float(m_identifier.c_str(), "rain_density");
+    nlc_rain_raw = std::clamp(rain_density, 0.f, 3.f); // NLC .213b
     clamp(rain_density, 0.f, 1.f);
     rain_color = config.r_fvector3(m_identifier.c_str(), "rain_color");
     wind_velocity = config.r_float(m_identifier.c_str(), "wind_velocity");
@@ -525,6 +526,7 @@ void CEnvDescriptor::load_shoc(float exec_tm, LPCSTR S, CEnvironment& environmen
     fog_density = pSettings->r_float(m_identifier.c_str(), "fog_density");
     fog_distance = pSettings->r_float(m_identifier.c_str(), "fog_distance");
     rain_density = pSettings->r_float(m_identifier.c_str(), "rain_density");
+    nlc_rain_raw = std::clamp(rain_density, 0.f, 3.f); // NLC .213b
     clamp(rain_density, 0.f, 1.f);
     rain_color = pSettings->r_fvector3(m_identifier.c_str(), "rain_color");
     wind_velocity = pSettings->r_float(m_identifier.c_str(), "wind_velocity");
@@ -619,6 +621,7 @@ void CEnvDescriptorMixer::lerp(CEnvironment* env, CEnvDescriptor& A, CEnvDescrip
     fog_far = 0.99f * fog_distance;
 
     rain_density = fi * A.rain_density + f * B.rain_density;
+    nlc_rain_raw = fi * A.nlc_rain_raw + f * B.nlc_rain_raw; // NLC .213b
     rain_color.lerp(A.rain_color, B.rain_color, f);
     bolt_period = fi * A.bolt_period + f * B.bolt_period;
     bolt_duration = fi * A.bolt_duration + f * B.bolt_duration;

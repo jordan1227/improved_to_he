@@ -203,6 +203,13 @@ void TContactShotMark(CDB::TRI* T, dContactGeom* c)
             ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
             if (square_cam_dist < SQUARE_PARTICLE_EFFECT_DIST)
             {
+                // NLC .216: puddle / water ripples and splash ( bolts, grenades, falling bodies ); either normal sign.
+                // .218: own gate on the speed into the surface ( > 2 m/s ): the particle gate ( speed x sqrt( mass ) > 15 )
+                // let a light bolt through only when thrown down near the feet
+                const float nlc_vn = float(dFabs(dDOT(vel, c->normal)));
+                if (nlc_vn > 2.f)
+                    nlc_impact_add(cast_fv(c->pos), _abs(float(c->normal[1])), 2, std::clamp(nlc_vn / 8.f, 0.3f, 1.5f));
+
                 if (vel_cret > Pars::vel_cret_particles && !mtl_pair->CollideParticles.empty())
                 {
                     LPCSTR ps_name = *mtl_pair->CollideParticles[::Random.randI(0, mtl_pair->CollideParticles.size())];

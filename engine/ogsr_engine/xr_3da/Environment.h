@@ -156,6 +156,7 @@ public:
     float fog_distance;
 
     float rain_density;
+    float nlc_rain_raw{}; // NLC .213b: rain_density as in the weather file ( 0 ~ 3; rain_density is clamped to 1 ): rain visuals only
     Fvector3 rain_color;
 
     float bolt_period;
@@ -500,3 +501,19 @@ ENGINE_API void nlc_haze_clear(); // level change
 // Advances fades by dt, drops faded-out zones, returns the zones within max_dist of the camera ( nearest first )
 ENGINE_API const xr_vector<SNlcHazeZone*>& nlc_haze_collect(float dt, float max_dist);
 ENGINE_API void nlc_haze_dump(); // ssfx_haze_info
+
+// NLC .216: impact events for puddle / water ripples ( ssfx_impacts binder ) and puddle splashes ( dxRainRender ): bullet
+// hits on static geometry, physics contacts ( bolts, grenades, falling bodies ), explosions, footfalls. Any thread
+// ( locked ). kind: 0 footfall, 1 bullet, 2 object, 3 explosion. Surfaces steeper than normal_y 0.7 and events further
+// than 40 m from the camera are dropped; the same kind within 0.25 m and 0.2 s is merged ( rolling, bursts )
+struct SNlcImpact
+{
+    Fvector pos{};
+    float t0{}; // Device.fTimeGlobal
+    float strength{}; // 0 = empty slot
+    u32 kind{};
+};
+constexpr u32 NLC_IMPACT_MAX = 32;
+ENGINE_API void nlc_impact_add(const Fvector& pos, float normal_y, u32 kind, float strength);
+ENGINE_API u32 nlc_impacts_copy(SNlcImpact* out, u32 max); // events younger than 3 s
+ENGINE_API void nlc_impact_clear(); // .218: level change

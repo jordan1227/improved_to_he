@@ -40,6 +40,8 @@ void render_rain::init()
     nlc_fog = ps_r2_ls_flags.test(R2FLAG_SSFX_HEIGHT_FOG) && ps_ssfx_fog_mode > 0 && !ps_ssfx_compare && ps_ssfx_fog_gate > 0.f && ps_ssfx_fog_gate_mode == 2 &&
         !ps_ssfx_is_underground;
     ps_ssfx_fog_map_params.x = 0.f; // valid only after calculate()
+    ps_ssfx_fog_map_params.w = 0.f; // NLC .210: map valid for the SSR cover tests ( fog gate or rain )
+    ps_ssfx_rain_slant.set(0.f, 0.f, 0.f, 0.f); // NLC .217: set by calculate() in rain
 
     o.active = nlc_wet || nlc_fog;
 
@@ -60,7 +62,37 @@ void render_rain::calculate()
 
     constexpr float source_offset = 10000.f;
     RainLight.direction.set(0.0f, -1.0f, 0.0f);
-    RainLight.position.set(Device.vCameraPosition.x, Device.vCameraPosition.y + source_offset, Device.vCameraPosition.z);
+
+    // NLC .212: in rain the map looks along the rain, which leans with the wind as the drops do ( CEffect_Rain::Prepare,
+    // without the gust ): the lee side under eaves stays dry, rain reaches in under the windward edge. Pitch capped at
+    // 30 degrees ( r3_rain_wind_slant scales it ), smoothed over ~2 s and applied in steps ( > 1 degree or every 0.5 s ),
+    // so the texel grid does not crawl. Every consumer reads the map through its matrices.
+    if (nlc_wet && ps_r3_rain_wind_slant > 0.f)
+    {
+        static Fvector dir_smooth{0.f, -1.f, 0.f}, dir_used{0.f, -1.f, 0.f};
+        static float t_used{};
+        const CEnvDescriptorMixer& env = *g_pGamePersistent->Environment().CurrentEnv;
+        const float vel = std::clamp(env.wind_velocity * 0.001f, 0.f, 1.f);
+        const float pitch = std::min(deg2rad(35.f) * vel * ps_r3_rain_wind_slant, deg2rad(30.f));
+        Fvector target;
+        target.setHP(-env.wind_direction, pitch - PI_DIV_2);
+        dir_smooth.lerp(dir_smooth, target, std::clamp(Device.fTimeDelta * 0.5f, 0.f, 1.f));
+        dir_smooth.normalize_safe();
+        if (dir_used.dotproduct(dir_smooth) < 0.99985f || Device.fTimeGlobal - t_used > 0.5f || Device.fTimeGlobal < t_used)
+        {
+            dir_used.set(dir_smooth);
+            t_used = Device.fTimeGlobal;
+        }
+        // NLC .217: the slanted map ( mode 1 ) also made dry "rain shadows" beside trucks and walls that read as sun
+        // shadows. Mode 0: the map stays straight down ( any point open to the sky is wet ) and the shaders test a covered
+        // point once more, offset upwind by the cover's height x tan( lean ): slanted rain only adds wetness ( windward
+        // edges under eaves ), never dryness
+        if (ps_r3_rain_slant_mode == 1)
+            RainLight.direction.set(dir_used);
+        else if (dir_used.y < -0.5f)
+            ps_ssfx_rain_slant.set(dir_used.x / dir_used.y, 0.f, dir_used.z / dir_used.y, 1.f);
+    }
+    RainLight.position.mad(Device.vCameraPosition, RainLight.direction, -source_offset);
 
     float fBoundingSphereRadius = 0;
 
@@ -170,11 +202,17 @@ void render_rain::calculate()
         // bb.vMax.y = 50;
 
         //	Offset RainLight position to center rain shadowmap
-        Fvector3 vRectOffset = {fBoundingSphereRadius * Device.vCameraDirection.x, 0, fBoundingSphereRadius * Device.vCameraDirection.z};
-        bb.min.x = -fBoundingSphereRadius + vRectOffset.x;
-        bb.max.x = fBoundingSphereRadius + vRectOffset.x;
-        bb.min.y = -fBoundingSphereRadius + vRectOffset.z;
-        bb.max.y = fBoundingSphereRadius + vRectOffset.z;
+        // NLC .211: the frustum bounding sphere is ~500 m and more ( 250 m view, grows steeply with the FOV ): ~1 m map
+        // texels, blocky cover edges in the wet surfaces, SSR cover and fog gate. r3_rain_map_radius caps the square
+        // ( 100 m: ~0.2 m texels at 1024 ), centred half a radius ahead; outside the map the consumers treat points as open
+        const bool nlc_r = ps_r3_rain_map_radius > 0.f && ps_r3_rain_map_radius < fBoundingSphereRadius;
+        const float map_r = nlc_r ? ps_r3_rain_map_radius : fBoundingSphereRadius;
+        const float map_off = nlc_r ? 0.5f * map_r : fBoundingSphereRadius;
+        Fvector3 vRectOffset = {map_off * Device.vCameraDirection.x, 0, map_off * Device.vCameraDirection.z};
+        bb.min.x = -map_r + vRectOffset.x;
+        bb.max.x = map_r + vRectOffset.x;
+        bb.min.y = -map_r + vRectOffset.z;
+        bb.max.y = map_r + vRectOffset.z;
 
         XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(&mdir_Project),
                         XMMatrixOrthographicOffCenterLH(bb.min.x, bb.max.x, bb.min.y, bb.max.y, bb.min.z - tweak_rain_ortho_xform_initial_offs, bb.min.z + 2 * tweak_rain_ortho_xform_initial_offs));
@@ -230,7 +268,7 @@ void render_rain::calculate()
     // Finalize & Cleanup
     RainLight.X.D[0].combine = cull_xform;
 
-    if (nlc_fog)
+    if (nlc_fog || nlc_wet) // NLC .210: the SSR cover tests use the map in rain in any fog gate mode
         nlc_fog_map_export();
 }
 
@@ -257,7 +295,7 @@ void render_rain::nlc_fog_map_export()
     ps_ssfx_fog_map_xform.transform_tiny(d2, p2);
     const float uv_per_metre = _sqrt((d2.x - d0.x) * (d2.x - d0.x) + (d2.y - d0.y) * (d2.y - d0.y));
     const float texel_m = uv_per_metre > EPS ? 1.f / (uv_per_metre * smapsize) : 1.f;
-    ps_ssfx_fog_map_params.set(1.f, d1.z - d0.z, texel_m, 0.f);
+    ps_ssfx_fog_map_params.set(nlc_fog ? 1.f : 0.f, d1.z - d0.z, texel_m, 1.f); // x: fog gate, w: map valid ( .210 )
 }
 
 void render_rain::render()
@@ -277,7 +315,9 @@ void render_rain::render()
                 dsgraph.cmd_list.set_xform_world(Fidentity);
                 dsgraph.cmd_list.set_xform_view(Fidentity);
                 dsgraph.cmd_list.set_xform_project(RainLight.X.D[0].combine);
-                dsgraph.r_dsgraph_render_graph(0, true);
+                // NLC .215: tree trunks out too ( r3_rain_map_trees 0 ); the crowns' leaves never were in. Rain drips
+                // through trees: roofs, cars and rocks keep their cover
+                dsgraph.r_dsgraph_render_graph(0, true, ps_r3_rain_map_trees == 0);
             }
         }
     }

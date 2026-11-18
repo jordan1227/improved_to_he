@@ -113,9 +113,30 @@ public:
         Fvector col{}; // raw colour x LOD
         float range{}, fade{};
         bool spot{};
+        // NLC .210 ( docs/IL_DESIGN.md 4.6 )
+        Fvector centre{}; // fill centre, world ( spot: just in front of the point its beam hits )
+        float reach{}; // before ssfx_il_lights_reach and the 12 m cap
+        int vis{-1}; // index into ssfx_il_vis, -1 = none
     };
     ssfx_il_light_slot ssfx_il_slots[SSFX_IL_LIGHTS_MAX]{};
     u32 ssfx_il_slot_count{};
+
+    // NLC .210: view-independent visibility of a slot's fill. An octahedral map of the distance to the static
+    // geometry around the fill centre, traced on the CPU a few texels per frame and uploaded as shader constants
+    // ( ssfx_il_vis[] in ssfx_il.ps ). Replaces the depth-buffer march for long rays: that one changed with the camera
+    static constexpr u32 SSFX_IL_VIS_N = 16; // texels per side; must match SSFX_IL_VIS_N in ssfx_il.ps
+    struct ssfx_il_vis_map
+    {
+        const void* key{}; // light pointer, only compared
+        u32 used_frame{}; // last frame a slot referred to it
+        bool valid{}, building{};
+        Fvector origin{}, b_origin{}; // centre the map / the map in progress was traced from
+        u32 b_next{}; // next texel of the map in progress
+        float dist[SSFX_IL_VIS_N * SSFX_IL_VIS_N]{}, b_dist[SSFX_IL_VIS_N * SSFX_IL_VIS_N]{};
+    };
+    ssfx_il_vis_map ssfx_il_vis[SSFX_IL_LIGHTS_MAX]{};
+    int ssfx_il_vis_acquire(const void* key);
+    void ssfx_il_vis_update(u32 live_slots);
     void ssfx_il_collect_lights(const light_Package& LP);
 
     ref_shader s_ssfx_sss, s_ssfx_ao, s_ssfx_il;
@@ -124,6 +145,10 @@ public:
     ref_rt rt_ssfx_fog_4, rt_ssfx_fog_2;
     ref_rt rt_ssfx_vol_sun; // reduced-size volumetric target, sun + spot ( ssfx_volumetric_resolution > 1 )
     ref_rt rt_ssfx_ssr, rt_ssfx_ssr_b, rt_ssfx_ssr_hist;
+    ref_rt rt_ssfx_scene_prev; // NLC .209: last frame's finished scene for SSR / water reflections ( ssfx_scene_prev.h )
+    u32 ssfx_scene_prev_frame{}; // frame of the copy, 0 = none
+    ref_rt rt_ssfx_pos_world; // NLC .210: position buffer before the HUD and the rain pass, read by the AO
+    u32 ssfx_pos_world_frame{}; // frame of the copy, 0 = none
     ref_rt rt_ssfx_rain; // NLC .85
     ref_shader s_ssfx_rain;
     ref_shader s_ssfx_water, s_ssfx_fog, s_ssfx_volumetric, s_ssfx_ssr;
@@ -340,6 +365,9 @@ public:
     ref_shader s_ssfx_haze; // NLC anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md )
     bool phase_ssfx_haze(CBackend& cmd_list); // into rt_Generic_0; true when something was drawn ( render targets changed )
     bool phase_ssfx_ssr(CBackend& cmd_list); // SSS 23 SSR; false = use the OGSR SSR pass
+    void ssfx_copy_pos_world(CBackend& cmd_list); // NLC .210: world G-buffer for the AO ( before the HUD )
+    void phase_ssfx_scene_prev(CBackend& cmd_list); // NLC .209: keep the finished scene for the next frame's reflections
+    float ssfx_scene_prev_strength() const; // ssfx_ssr_forward while last frame's copy exists, else 0
     bool ssfx_volumetric_reduced() const { return rt_ssfx_vol_sun && !ps_ssfx_compare; } // volumetrics into the reduced targets
     void ssfx_volumetric_restore_viewport(CBackend& cmd_list) const;
 

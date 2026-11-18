@@ -8,17 +8,203 @@
  *        reprojected at the reflected point, rejected on disocclusion and HUD pixels, kept in 16-bit float
  *        ( the OGSR pass blended at the same UV in an 8-bit target ). x of ssfx_ssr_setup scales the strength
  *        ( dry surfaces ).
+ * @ NLC: 2026-11-16 ( .209, docs/REFLECTIONS_AO_DESIGN.md ) - terrain: reflection only from puddle-level gloss and the
+ *        sky fallback only with sky access ( damp grass mirrored the open sky, the "plastic sheet" ); ray start
+ *        jittered per frame ( the history averages the steps ); hits read last frame's finished scene
+ *        ( ssfx_scene_prev.h: haze, particles, beams ).
+ *        .209b - white trails indoors: a pixel without a reflection wrote the sky colour into the history ( only its
+ *        alpha was 0 ), and the next frame with a hit blended it in at full strength; the history now only takes and
+ *        gives colour where there is a reflection. Under cover ( no sky access ) the sky colour is not used and wet
+ *        weather does not switch the SSR on: rain does not wet the floor of a room ( strength ssfx_ssr_setup.w there ).
  */
 
 #include "screenspace_reflections.h"
 #include "ssfx_temporal.h"
+#include "ssfx_scene_prev.h"
 #ifdef SSFX_FOG
 #include "ssfx_fog_atmo.h" // NLC .205b: fades by the gated fog ( docs/FOG_DESIGN.md 14, finding 7 )
 #endif
 
 Texture2D s_ssfx_ssr_history; // $user$ssfx_ssr_hist
 
-uniform float4 ssfx_ssr_setup; // x: strength ( 1 wet, ssfx_ssr_dry otherwise ), y: blur
+uniform float4 ssfx_ssr_setup; // x: strength ( 1 wet, ssfx_ssr_dry otherwise ), y: blur, z: terrain fix ( ssfx_ssr_terrain ), w: strength under cover while wet ( ssfx_ssr_dry, engine .210 )
+
+// NLC .209: terrain mirrors only above damp-ground gloss ( damp soil 0.3 ~ 0.4, muddy puddles 0.6, asphalt puddles 0.95 )
+#define G_SSR_TERRAIN_GLOSS_LO 0.4f
+#define G_SSR_TERRAIN_GLOSS_HI 0.7f
+
+// SSFX_ssr_fast_ray ( screenspace_reflections.h ) with the first step jittered ( 0.5 ~ 1.5 steps, per pixel and frame )
+// instead of the unused s_vollight noise: the steps of a 24 ~ 48 step ray are far apart, the history blends them
+float4 ssfx_ssr_ray(float3 ray_start_vs, float3 ray_dir_vs, float jitter)
+{
+    float2 sky_tc = 0;
+    float2 behind_hit = 0;
+
+    RayTrace ssr_ray = SSFX_ray_init(ray_start_vs, ray_dir_vs, 150, q_ssr_steps[SSFX_SSR_QUALITY].x, jitter);
+
+    float ray_depthstart = SSFX_get_depth(ssr_ray.r_start, 0);
+
+    float2 ray_check = 0;
+    float ray_prev = ssr_ray.z_start; // .213b: depth of the ray at the previous step
+
+    [unroll(q_ssr_steps[SSFX_SSR_QUALITY].x)] for (int i = 0; i < q_ssr_steps[SSFX_SSR_QUALITY].x; i++)
+    {
+        // Ray out of screen
+        if (ssr_ray.r_pos.y < 0.0f || ssr_ray.r_pos.y > 1.0f)
+            return 0;
+
+        // Horizontal out of bounds: mirror at the border of the screen
+        if (ssr_ray.r_pos.x < 0.0f || ssr_ray.r_pos.x > 1.0f)
+        {
+            ssr_ray.r_pos -= ssr_ray.r_step;
+            ssr_ray.r_step.x = -ssr_ray.r_step.x;
+            ssr_ray.r_pos += ssr_ray.r_step;
+        }
+
+        ray_check = SSFX_ray_intersect(ssr_ray, 0).xy;
+
+        // .213b: thickness of what the ray may have hit - the depth the ray moved in this step ( it can jump through a
+        // surface ) + 0.25 m + 2 %. A ray further behind passes behind a thin foreground object ( tree, post, plank ):
+        // the fixed q_ssr_steps.y ( 18 / 5 / 1 m by quality ) made trunks and foliage reflect as dark bands in puddles
+        float ray_d = ray_check.x + ray_check.y;
+        float thick = clamp(abs(ray_d - ray_prev) * 1.5f + 0.25f + ray_d * 0.02f, 0.5f, q_ssr_steps[SSFX_SSR_QUALITY].y);
+        ray_prev = ray_d;
+
+        // Sampled depth is not weapon or sky
+        bool NoWpnSky = ray_check.y > 1.3f;
+        ray_check.x *= NoWpnSky;
+
+        if (ray_check.x > 0)
+        {
+            if (ray_check.x <= thick)
+                return float4(ssr_ray.r_pos, ray_check.y, 0);
+
+            behind_hit = 0; // .213b ( review ): passed behind an occluder - the last in-front position lies on it
+
+#if SSFX_SSR_QUALITY > 2 // one binary search step
+            float4 prev_step = 0;
+            prev_step.xy = ssr_ray.r_pos;
+            prev_step.zw = ssr_ray.r_step;
+
+            ssr_ray.r_step *= -0.5f;
+            ssr_ray.r_pos += ssr_ray.r_step;
+
+            ray_check = SSFX_ray_intersect(ssr_ray, 0).xy;
+
+            if (abs(ray_check.x) <= min(thick, 1.25f)) // .213b ( review ): bounded by the thickness too
+                return float4(ssr_ray.r_pos, ray_check.y, 0);
+
+            ssr_ray.r_pos = prev_step.xy;
+            ssr_ray.r_step = prev_step.zw;
+#endif
+        }
+        else
+        {
+            if (ray_check.y <= SKY_EPS)
+                sky_tc = ssr_ray.r_pos;
+
+            // .213b: the fallback hit only where the ray runs close in front of the surface ( it was any last in-front
+            // position: the colour of whatever foreground object the ray's screen path crossed )
+            behind_hit = ssr_ray.r_pos;
+            behind_hit *= (ray_depthstart - 2.0f < ray_check.y) && NoWpnSky && (-ray_check.x <= thick * 2.0f);
+        }
+
+        ssr_ray.r_pos += ssr_ray.r_step;
+    }
+
+    return float4(behind_hit, ray_check.y, sky_tc.y);
+}
+
+#ifdef SSFX_FOG
+// .209g: ssfx_fog_map_open with the 2x2 texels weighted bilinearly. The plain average changed in steps of 0.25 each
+// time the sample crossed a texel, and the map follows the camera: cover edges ( roof line, walls ) blinked while moving
+float ssfx_ssr_map_open_1(float3 Pw)
+{
+    float4 p = mul(ssfx_fog_map_xf, float4(Pw, 1.0f));
+    p.xyz /= p.w;
+    float2 size;
+    s_fog_map.GetDimensions(size.x, size.y);
+    float2 uv = saturate(p.xy);
+    float2 f = frac(uv * size - 0.5f);
+    float4 o = step(p.z - max(0.3f, ssfx_fog_map.z) * ssfx_fog_map.y, s_fog_map.GatherRed(smp_nofilter, uv));
+    float open = lerp(lerp(o.w, o.z, f.x), lerp(o.x, o.y, f.x), f.y);
+    bool inside = all(p.xy > 0.0f) && all(p.xy < 1.0f);
+    return inside ? open : 1.0f;
+}
+
+// .216: height of the cover above Pw along the rain, metres ( 0 = open ), the highest of the 2x2 texels
+float ssfx_ssr_map_occ_h(float3 Pw)
+{
+    float4 p = mul(ssfx_fog_map_xf, float4(Pw, 1.0f));
+    p.xyz /= p.w;
+    float4 d4 = s_fog_map.GatherRed(smp_nofilter, saturate(p.xy));
+    return max(0.0f, p.z - min(min(d4.x, d4.y), min(d4.z, d4.w))) / max(ssfx_fog_map.y, 1e-6f);
+}
+
+// .214b: thin occluders ( trunks, posts, poles ) do not count as cover: also 4 points 0.6 m around, and open when most of
+// them are. With the wind-slanted map ( .212 ) a trunk cast a long dry "rain shadow" across wet ground, growing with
+// the rain's lean as the weather changed. Roofs and canopies cover all 5 points
+// .216: the 4 points spread with the height of the cover ( 0.3 x, 0.6 ~ 2 m ): a soft dry edge ( penumbra ) under high
+// cover such as a truck body or a roof edge in slanted rain, instead of a hard rectangle; the average ramps 0.1 ~ 0.9
+uniform float4 ssfx_rain_slant; // .217: xz upwind offset per metre of cover height, w: valid ( r3_rain_slant_mode 0 )
+
+// .217: hemi gates the slanted-rain test ( closed rooms: a wall on the windward side is not in the straight-down map )
+float ssfx_ssr_map_open(float3 Pw, float hemi)
+{
+    float near_open = ssfx_ssr_map_open_1(Pw);
+    [branch] if (near_open > 0.99f)
+        return near_open;
+    float h = ssfx_ssr_map_occ_h(Pw);
+    float r = clamp(h * 0.3f, 0.6f, 2.0f);
+    float wide = 0.25f * (ssfx_ssr_map_open_1(Pw + float3(r, 0.0f, 0.0f)) + ssfx_ssr_map_open_1(Pw - float3(r, 0.0f, 0.0f)) +
+                          ssfx_ssr_map_open_1(Pw + float3(0.0f, 0.0f, r)) + ssfx_ssr_map_open_1(Pw - float3(0.0f, 0.0f, r)));
+    float open = max(near_open, smoothstep(0.1f, 0.9f, wide));
+    // .217: the map is straight down; slanted rain reaches a covered point when the point h x tan( lean ) upwind is open
+    // ( windward edges under eaves ). It only adds wetness: no dry "rain shadow" beside trucks and walls any more.
+    // Cover higher than ~6 m fades out of this test
+    [branch] if (ssfx_rain_slant.w > 0.5f && open < 0.99f)
+        open = max(open, ssfx_ssr_map_open_1(Pw + float3(ssfx_rain_slant.x, 0.0f, ssfx_rain_slant.z) * min(h, 6.0f)) *
+                             smoothstep(0.25f, 0.5f, hemi) * saturate((8.0f - h) * 0.25f)); // .218: hemi 0.05 ~ 0.25 -> 0.25 ~ 0.5
+    return open;
+}
+#endif
+
+// Sky access of a terrain point for the sky fallback: G-buffer hemi with the fog gate thresholds, and no cover above
+// the point or 4 m along the reflected ray in the rain depth map ( canopy, roofs ). 1 without SSFX_FOG ( no gate data )
+float ssfx_ssr_sky_open(float3 Pv, float3 reflect_w, float hemi)
+{
+    float open = 1.0f;
+#ifdef SSFX_FOG
+    // .212c: the map alone when it is valid ( as ssfx_ssr_cover_open since .209c ). The terrain hemi comes from the level
+    // lightmap, metres per texel: around the gate thresholds ( swamp water, reeds, fog ) it cut the sky reflection into
+    // blocky squares
+    [branch] if (ssfx_fog_map.w > 0.5f) // .210: map valid in rain or fog gate mode 2 ( was .x: gate mode 2 only )
+    {
+        float3 Pw = mul(m_inv_V, float4(Pv, 1.0f)).xyz + float3(0.0f, 0.5f, 0.0f);
+        open = 0.5f * (ssfx_ssr_map_open(Pw, hemi) + ssfx_ssr_map_open(Pw + reflect_w * 4.0f, hemi));
+    }
+    else
+        open = smoothstep(ssfx_fog_gate2.x, ssfx_fog_gate2.y, hemi);
+#endif
+    return open;
+}
+
+// .209b: sky access of any surface point ( rain reaches it, the sky can be reflected ): no cover above it in the rain
+// depth map. .209c: the map alone when it is valid ( as the fog gate mode 2 ) - with the hemi term outdoor asphalt and
+// metal lost their wet reflections ( object and wall hemi is often below the gate thresholds ); hemi only without a map
+// .209d ( review ): tested 1.5 map texels off the surface along its normal - straight above a point on a wall, a car
+// side or a trunk the map holds the object's own top, which read as cover
+float ssfx_ssr_cover_open(float3 Pv, float3 Nw, float hemi)
+{
+    float open = 1.0f;
+#ifdef SSFX_FOG
+    [branch] if (ssfx_fog_map.w > 0.5f) // .210
+        open = ssfx_ssr_map_open(mul(m_inv_V, float4(Pv, 1.0f)).xyz + Nw * max(0.5f, ssfx_fog_map.z * 1.5f) + float3(0.0f, 0.5f, 0.0f), hemi);
+    else
+        open = smoothstep(ssfx_fog_gate2.x, ssfx_fog_gate2.y, hemi);
+#endif
+    return open;
+}
 
 // SSFX_ScreenSpaceReflections ( screenspace_reflections.h, SSS 18 ) with the hit depth as output
 // NLC .205b: hemi ( G-buffer ) and screen_x ( full-resolution pixel x, split view ) for the new fog fades
@@ -41,11 +227,37 @@ void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, float hemi, floa
 
     float fresnel = saturate(dot(v2reflect, v2point));
     float fresnel_amount = pow(fresnel, 3);
+
+    // .212b: mirror puddles take half of the water Fresnel ( Schlick, F0 0.02 ): dot( R, V )^3 alone gives ~0.65 at a 15
+    // degree view where water reflects ~0.25, and the reflection covered the lit ground under it ( the fruit punch glow
+    // ended in a line at puddles ). Halfway between the two ( user A/B, .218 fixed ). .216: the weight ramps in over
+    // gloss 0.7 ~ 0.85 ( a hard 0.75 step drew a seam where asphalt water ( 0.95 ) meets earth water ( 0.78 ) )
+    [flatten] if (gloss > 0.7f)
+        fresnel_amount = lerp(fresnel_amount, 0.02f + 0.98f * pow(1.0f - saturate(dot(-v2point, nw)), 5.0f), 0.5f * smoothstep(0.7f, 0.85f, gloss));
     refl_power *= fresnel_amount;
+
+    // NLC .209: terrain gloss below puddle level does not mirror; where it does, the sky needs sky access
+    bool terrain_fix = m_terrain && ssfx_ssr_setup.z > 0.5f;
+    // .209i: the curve only on soft ground ( earth, grass ). Hard ground ( asphalt, concrete ) mirrors by its gloss
+    // as before .209: its gloss never got over the curve, and with ssfx_ssr_terrain 0 it had the wet look
+    // .212d: the curve again for all terrain - the terrain shader now lifts wet hard ground above it ( 0.72 ) and decides
+    // soft / hard from its detail textures; the soft test here read the G-buffer albedo ( level colour map: squares )
+    float terrain_k = terrain_fix ? smoothstep(G_SSR_TERRAIN_GLOSS_LO, G_SSR_TERRAIN_GLOSS_HI, gloss) : 1.0f;
+    refl_power *= terrain_k;
 
     float4 hit_uv = 0;
     if (refl_power > 0.02f)
-        hit_uv = SSFX_ssr_fast_ray(P.xyz, reVec, tc);
+        hit_uv = ssfx_ssr_ray(P.xyz, reVec, 0.5f + ssfx_hash12(tc * screen_res.xy + frac(timers.x * 7.31f) * 251.0f));
+
+    float terrain_sky = m_terrain ? 1.0f : 0.0f;
+    [branch] if (terrain_fix && refl_power > 0.02f)
+        terrain_sky = ssfx_ssr_sky_open(P.xyz, v2reflect, hemi);
+
+    // .209b: sky access of this point ( not the weapon: its hemi follows the player ). .218: for every surface also with
+    // ssfx_ssr_terrain 0 ( that switch is for the terrain gloss curve and sky gate only )
+    float open_here = 1.0f;
+    [branch] if (refl_power > 0.02f && length(P.xyz) > G_SSR_WEAPON_MAX_LENGTH)
+        open_here = ssfx_ssr_cover_open(P.xyz, normalize(nw), hemi);
 
     float3 reflection = 0;
     float2 uvcoor = 0;
@@ -57,10 +269,26 @@ void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, float hemi, floa
 #else
     reflection = SSFX_calc_sky(v2reflect) * ssfx_ssr_2.y * !ssfx_is_underground.x;
 #endif
+    reflection *= open_here; // .209b: no sky colour in a room
+
+    // .210b: a ray that leaves the screen into the sky reflects the sky as last frame's finished scene shows it in that
+    // direction, when it is on screen and sky there: haze, smoke and particles in front of the sky ( a fruit punch's
+    // haze over a puddle ) were only reflected by rays that hit geometry behind them. Far point, mirror reflections only
+    [branch] if (ssfx_scene_prev_k.x > 0.0f && open_here > 0.0f && gloss > 0.5f)
+    {
+        float3 Fv = P.xyz + reVec * 1000.0f;
+        float2 suv = SSFX_view_to_uv(Fv);
+        if (Fv.z > 1.0f && all(suv > 0.0f) && all(suv < 1.0f) && is_sky(s_position.SampleLevel(smp_nofilter, suv, 0).z) > 0.5f)
+        {
+            float2 puv = suv - ssfx_camera_motion_uv(Fv);
+            float3 seen = min(max(s_ssfx_scene_prev.SampleLevel(smp_rtlinear, saturate(puv), 0).rgb, 0.0f), 64.0f);
+            reflection = lerp(reflection, seen * ssfx_ssr_2.y * open_here, saturate(ssfx_scene_prev_k.x) * (1.0f - ssfx_offscreen(puv)));
+        }
+    }
 
     if (all(hit_uv.xy))
     {
-        float3 refl_ray = SSFX_get_image(hit_uv.xy, 0);
+        float3 refl_ray = ssfx_reflect_image(hit_uv.xy, SSFX_get_image(hit_uv.xy, 0));
         uvcoor = hit_uv.xy;
         hit_depth = hit_uv.z;
         hit_tc = hit_uv.xy;
@@ -80,11 +308,11 @@ void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, float hemi, floa
     }
     else
     {
-        refl_power = gloss * fresnel_amount;
+        refl_power = gloss * fresnel_amount * terrain_k;
         uvcoor = float2(0, hit_uv.w);
     }
 
-    float ray_fade = saturate(saturate(uvcoor.y * G_SSR_VERTICAL_SCREENFADE) + 1.0f * m_terrain);
+    float ray_fade = saturate(saturate(uvcoor.y * G_SSR_VERTICAL_SCREENFADE) + terrain_sky);
 
     refl_power *= m_flora ? G_SSR_FLORA_INTENSITY : 1.0f;
 
@@ -104,7 +332,10 @@ void ssfx_ssr_shade(float2 tc, float4 P, float3 N, float gloss, float hemi, floa
         fog = 1.0f - ssfx_fog_amount_dist(mul(m_inv_V, float4(P.xyz, 1.0f)).xyz, hemi); // NLC .205b
 #endif
 
-    color = float4(reflection, refl_power * fog * fog);
+    // .209b: wet weather turns the SSR on for every glossy surface; under cover the surface is not wet
+    float wet_k = rain_params.y > 0.0f ? lerp(ssfx_ssr_setup.w, 1.0f, open_here) : 1.0f;
+
+    color = float4(reflection, refl_power * fog * fog * wet_k);
 }
 
 float4 main(p_screen I) : SV_Target
@@ -113,7 +344,8 @@ float4 main(p_screen I) : SV_Target
     float2 pix = tc * screen_res.xy; // full-resolution pixel position ( the target may be half size, ssfx_ssr_resolution )
 
     float4 Pos = s_position.Sample(smp_nofilter, tc);
-    float gloss = s_diffuse.Sample(smp_nofilter, tc).a;
+    float4 albedo = s_diffuse.Sample(smp_nofilter, tc);
+    float gloss = albedo.a;
 
     float3 P = float3(Pos.z * (pix * pos_decompression_params.zw - pos_decompression_params.xy), Pos.z);
     float3 N = gbuf_unpack_normal(Pos.xy);
@@ -147,9 +379,72 @@ float4 main(p_screen I) : SV_Target
     float hud = ssfx_hud_mask(tc);
     float sky_weight = hit_depth <= SKY_EPS ? 0.2f : 0.0f;
 
-    float weight = saturate(0.8f - (ssfx_offscreen(prev_tc) + docc + sky_weight + hud + object_motion));
+    // .210 ( puddle lag on a jump ): the history is read where the reflected image was, the surface itself moved
+    // elsewhere. With vertical camera motion near ground and a far image move very differently ( parallax ): less
+    // history the larger that gap ( 25 px = none )
+    float2 par_uv = ssfx_camera_motion_uv(P) - ssfx_camera_motion_uv(Hit_Pv);
+    float parallax = saturate(length(par_uv * screen_res.xy) * 0.04f);
 
-    float3 prev = s_ssfx_ssr_history.SampleLevel(smp_rtlinear, prev_tc, 0).rgb;
+    // .209: 0.8 -> 0.88, the jittered ray needs a few more frames
+    float weight = saturate(0.88f - (ssfx_offscreen(prev_tc) + docc + sky_weight + hud + object_motion + parallax));
 
-    return float4(lerp(ssr_result.rgb, prev, weight), ssr_result.a * ssfx_ssr_setup.x);
+    // .209b: the colour of a pixel without a reflection ( alpha 0: sky base colour of a missed ray ) is not data.
+    // .209d ( review ): the history is read as 4 texels, each weighted by bilinear weight x "has a reflection"
+    // ( a plain bilinear fetch still mixed the colour of alpha-0 texels into edge pixels ); a pixel without a
+    // reflection writes black, so the blur and the upsample cannot pick a colour up from it either.
+    float2 hsize;
+    s_ssfx_ssr_history.GetDimensions(hsize.x, hsize.y);
+    float2 hf = prev_tc * hsize - 0.5f;
+    float2 hbase = floor(hf);
+    float2 hfr = hf - hbase;
+    float3 prev = 0;
+    float prev_w = 0;
+    float prev_a = 0;
+    [unroll] for (int t = 0; t < 4; t++)
+    {
+        float2 o = float2(t & 1, t >> 1);
+        float4 h = s_ssfx_ssr_history.SampleLevel(smp_nofilter, (hbase + o + 0.5f) / hsize, 0);
+        // .209e: min( max() ) drops a NaN / Inf ( D3D: the other operand ), and a texel is selected, not multiplied
+        // by 0 ( Inf x 0 = NaN ). One bad texel in the history reached all 4 neighbours each frame at any weight and
+        // grew into a black mass over the screen.
+        float ha = min(max(h.a, 0.0f), 4.0f);
+        float b = (o.x ? hfr.x : 1.0f - hfr.x) * (o.y ? hfr.y : 1.0f - hfr.y);
+        float w = ha >= 0.002f ? b : 0.0f;
+        prev += w > 0.0f ? min(max(h.rgb, 0.0f), 64.0f) * w : 0.0f;
+        prev_w += w;
+        prev_a += ha * b;
+    }
+    prev /= max(prev_w, 0.0001f);
+
+    // .210: the reflection strength ( the puddle mask ) belongs to the surface: also read where this surface point was
+    // last frame, and the smaller value kept. Read only at the reflected image's position, the mask stayed behind on
+    // the road during a jump and painted a fading reflection where the puddle no longer is
+    float2 sf = (tc - ssfx_motion_uv(tc)) * hsize - 0.5f;
+    float2 sbase = floor(sf);
+    float2 sfr = sf - sbase;
+    float a_surf = 0;
+    [unroll] for (int u = 0; u < 4; u++)
+    {
+        float2 o = float2(u & 1, u >> 1);
+        float ha = min(max(s_ssfx_ssr_history.SampleLevel(smp_nofilter, (sbase + o + 0.5f) / hsize, 0).a, 0.0f), 4.0f);
+        a_surf += ha * (o.x ? sfr.x : 1.0f - sfr.x) * (o.y ? sfr.y : 1.0f - sfr.y);
+    }
+    prev_a = min(prev_a, a_surf);
+
+    // .209g: the strength is accumulated too. It was this frame's alone: under cover a jittered ray that hits has a
+    // strength and one that misses has none, and the cover value changes as the rain map moves with the camera -
+    // both blinked. Colour still only comes from frames that have a reflection.
+    float alpha_cur = min(max(ssr_result.a * ssfx_ssr_setup.x, 0.0f), 4.0f);
+    weight = min(max(weight, 0.0f), 1.0f);
+    float alpha = lerp(alpha_cur, prev_a, weight);
+
+    bool cur_ok = alpha_cur >= 0.002f;
+    bool prev_ok = prev_w > 0.001f && a_surf >= 0.002f; // .210: and this surface had a reflection last frame
+    float wc = cur_ok ? weight * saturate(prev_w * 4.0f) : (prev_ok ? 1.0f : 0.0f); // little or no reflection in the history: this frame's colour
+    bool valid = alpha >= 0.002f && (cur_ok || prev_ok);
+
+    float3 cur = min(max(ssr_result.rgb, 0.0f), 64.0f);
+    float3 result = valid ? min(max(lerp(cur, prev, wc), 0.0f), 64.0f) : 0.0f;
+
+    return float4(result, valid ? alpha : 0.0f);
 }

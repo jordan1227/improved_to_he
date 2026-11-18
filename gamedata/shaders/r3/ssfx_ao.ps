@@ -5,7 +5,20 @@
  *        Fixes: the inner ring loop advanced the outer index ( `for (j...; i++)` ), so the second
  *        sample ring never ran; sample positions are now taken on their own view ray instead of
  *        the centre pixel ray.
- *        Output: r = disocclusion mask, g = offscreen, b = object motion, a = occlusion ( 1 = none )
+ *        .209: ssfx_ao_radius_fix ( params2.w ): kernel mirrored at a unit noise vector, so ssfx_ao_radius is a
+ *        radius ( outer ring = 0.4 m x radius ); the old kernel scaled the noise by the radius ( reach ~ radius^2,
+ *        most samples beyond the 1.5 m cutoff ). Flora strength from ssfx_ao_flora ( params2.y ).
+ *        .209b: samples that land on the weapon ( or, for the weapon, on the world ) are left out of the average
+ *        instead of counting as open: moving the weapon lightened the world AO behind it.
+ *        .209f: the history of another surface ( the weapon that covered this pixel last frame ) no longer hands
+ *        over its motion / offscreen marks: a weapon moving out of the way left "moving" in the history, and the
+ *        uncovered wall took ~30 frames to start accumulating ( AO seen building up again after leaving ADS ).
+ *        r is now the number of accumulated frames ( / 32; nothing read the old disocclusion mask ): the first frames
+ *        after a reset are averaged ( 1/2, 2/3, 3/4 ... ) instead of holding on to the first noisy frame at 0.92.
+ *        .210: world pixels sample the position buffer copied before the HUD ( s_ssfx_pos_world, engine nlc-3.589.210,
+ *        ssfx_ao_params3.x ): the weapon no longer hides the geometry around it, and the normals are those before the
+ *        rain pass bends them. Without the copy ( older exe ) the .209b-d HUD handling stays.
+ *        Output: r = accumulated frames / 32, g = offscreen, b = object motion, a = occlusion ( 1 = none )
  */
 
 #include "common.h"
@@ -17,9 +30,11 @@
 #endif
 
 uniform float4 ssfx_ao_params; // Res divider, intensity, radius, distance
-uniform float4 ssfx_ao_params2; // HUD intensity, flora intensity, max occlusion, -
+uniform float4 ssfx_ao_params2; // HUD intensity, flora intensity, max occlusion, radius fix ( ssfx_ao_radius_fix )
 
 Texture2D ssfx_ao_history; // $user$ssfx_ao
+Texture2D s_ssfx_pos_world; // $user$ssfx_pos_world ( .210 )
+uniform float4 ssfx_ao_params3; // x: s_ssfx_pos_world holds this frame ( .210 )
 
 float4 main(p_screen I) : SV_Target
 {
@@ -35,11 +50,17 @@ float4 main(p_screen I) : SV_Target
     bool mat_flora = abs(gbd.mtl - MAT_FLORA) <= 0.04f;
 
     float WeaponFactor = ssfx_hud_mask(tc);
+
+    // .210: world pixel with the world copy: normal before the rain pass, samples without the weapon
+    bool world_copy = ssfx_ao_params3.x > 0.5f && WeaponFactor <= 0;
+    [branch] if (world_copy)
+        N = gbuf_unpack_normal(s_ssfx_pos_world.SampleLevel(smp_nofilter, tc, 0).xy);
     float HUD_Multiply = clamp(1.0f - WeaponFactor, ssfx_ao_params2.x, 1.0f);
 
     float3 ao_noise = ssfx_hash33(float3(tc * 100.0f, timers.x * 100.0f));
 
     float occ = 0;
+    float occ_count = SSFX_AO_QUALITY * 2;
     float Seed = 0.04f;
 
     // Sample radius ( smaller on the HUD )
@@ -58,11 +79,19 @@ float4 main(p_screen I) : SV_Target
             float3 sample_ray = reflect(ssfx_hemisphere[i], ao_noise * ssfx_ao_params.z) + N;
             float3 occ_pos = P + sample_ray * radius * j;
 
+            [flatten] if (ssfx_ao_params2.w > 0.5f)
+            {
+                // .209: kernel vector ( length kept ) mirrored at a unit vector, turned into the normal's hemisphere
+                float3 dir = reflect(ssfx_hemisphere[i], normalize(ao_noise + 0.0001f));
+                dir *= dot(dir, N) < 0.0f ? -1.0f : 1.0f;
+                occ_pos = P + (dir + N * 0.1f) * (radius * 2.0f * ssfx_ao_params.z * j);
+            }
+
             float2 occ_uv = SSFX_view_to_uv(occ_pos);
 
             if (SSFX_is_valid_uv(occ_uv))
             {
-                float4 sample_raw = s_position.SampleLevel(smp_nofilter, occ_uv, 0);
+                float4 sample_raw = world_copy ? s_ssfx_pos_world.SampleLevel(smp_nofilter, occ_uv, 0) : s_position.SampleLevel(smp_nofilter, occ_uv, 0);
                 float sample_z = sample_raw.z;
 
                 // Surface point on the sample's own view ray, relative to the probe point
@@ -83,8 +112,10 @@ float4 main(p_screen I) : SV_Target
 
                 AO *= !is_sky(sample_z);
 
-                // No AO from the HUD onto the world or the other way round
-                AO *= (WeaponFactor > 0) == (ssfx_hud_mask(occ_uv) > 0);
+                // No AO from the HUD onto the world or the other way round: the sample is unknown, not open
+                bool same_layer = world_copy || ((WeaponFactor > 0) == (ssfx_hud_mask(occ_uv) > 0)); // .210: the copy has no HUD
+                AO *= same_layer;
+                occ_count -= same_layer ? 0.0f : 1.0f;
 
                 occ += AO * HUD_Multiply;
             }
@@ -95,7 +126,7 @@ float4 main(p_screen I) : SV_Target
         }
     }
 
-    occ /= SSFX_AO_QUALITY * 2;
+    occ /= max(occ_count, SSFX_AO_QUALITY * 1.0f); // .209d: at least half the samples ( one retained sample is not an average )
     occ = saturate(1.0f - occ * 2.0f);
     occ = pow(max(occ, 0.0001f), max(ssfx_ao_params.y * 10.0f, 0.001f)); // NLC: pow( 0, 0 ) = NaN at intensity 0
 
@@ -117,19 +148,30 @@ float4 main(p_screen I) : SV_Target
 
     float4 prev = ssfx_ao_history.SampleLevel(smp_rtlinear, saturate(Rep_Tc), 0);
 
-    float outoffsrc = lerp(ssfx_offscreen(Rep_Tc), prev.g, 0.9f);
-
     float docc = ssfx_disocclusion(P.z, Rep_Tc) * (1.0f + WeaponFactor);
 
     // NLC: a depth step above ~2% ( looser far away ) is another surface: drop the history. Not on flora
     float docc_reset = mat_flora ? docc : max(docc, saturate((docc - (0.02f + P.z * 0.002f)) * 20.0f));
 
-    float weight = saturate(0.92f - (vel + outoffsrc + docc_reset + prev.b));
+    // .209f: nothing of another surface's history is kept ( not on flora: its depth flickers in the wind )
+    float same = mat_flora ? 1.0f : 1.0f - saturate(docc_reset * 2.0f);
+    float prev_b = prev.b * same;
+    float frames = prev.r * 32.0f * same * (1.0f - ssfx_offscreen(Rep_Tc));
+
+    float outoffsrc = lerp(ssfx_offscreen(Rep_Tc), prev.g * same, 0.9f);
+
+    float weight = saturate(0.92f - (vel + outoffsrc + docc_reset + prev_b));
+
+    // .209c: world pixel with many samples hidden by the weapon: its history ( from before the weapon moved in front
+    // of its surroundings ) knows more than this frame; keep it while it is the same surface
+    float unknown = 1.0f - occ_count / (SSFX_AO_QUALITY * 2);
+    weight = lerp(weight, saturate(0.98f - (outoffsrc + docc_reset)), WeaponFactor > 0 ? 0.0f : saturate(unknown * 2.0f));
+
+    // .209f: running mean over the first frames of a new history
+    weight = min(weight, frames / (frames + 1.0f));
 
     occ = lerp(occ, prev.a, weight);
     occ = clamp(occ, ssfx_ao_params2.z, 1.0f);
 
-    float docc_mask = lerp((docc + vel + outoffsrc) * 10.0f, prev.r, 0.95f);
-
-    return saturate(float4(docc_mask, outoffsrc, lerp(vel_history, saturate(prev.b - 0.001f), 0.92f), occ));
+    return saturate(float4((frames + 1.0f) / 32.0f, outoffsrc, lerp(vel_history, saturate(prev_b - 0.001f), 0.92f), occ));
 }

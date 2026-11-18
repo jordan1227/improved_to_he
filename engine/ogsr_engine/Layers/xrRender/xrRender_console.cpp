@@ -145,6 +145,12 @@ BOOL ps_ssfx_glass_enable{TRUE};
 BOOL ps_ssfx_ssr_enable{TRUE};
 float ps_ssfx_ssr_dry{0.0f};
 float ps_ssfx_ssr_blur{0.5f};
+// NLC .209
+float ps_ssfx_ssr_forward{1.0f};
+int ps_ssfx_ssr_terrain{1};
+int ps_ssfx_ssr_quality{2};
+int ps_ssfx_ao_radius_fix{0};
+float ps_ssfx_ao_flora{1.0f};
 
 // NLC: SSS 23 Build C
 float ps_ssfx_wind_gusts{0.5f};
@@ -161,6 +167,9 @@ float ps_ssfx_contrast{1.f}, ps_ssfx_color_r{1.f}, ps_ssfx_color_g{1.f}, ps_ssfx
 constexpr xr_token ssfx_look_token[] = {{"st_ssfx_look_neutral", 0}, {"st_ssfx_look_nlc", 1}, {"st_ssfx_look_cold", 2}, {"st_ssfx_look_classic", 3}, {nullptr, 0}};
 float ps_ssfx_ground_mist{0.5f}; // NLC .84: ground mist ( from 0: game restart )
 float ps_ssfx_step_ripples{1.0f};
+float ps_ssfx_impact_ripples{1.f}; // NLC .216: rings from impacts in puddles / water ( 0 = off )
+float ps_ssfx_impact_splash{1.f}; // NLC .216: splashes on impacts in puddles ( 0 = off )
+Fvector4 ps_ssfx_puddle_ripples{}; // NLC .216 A/B ( 1 = old ): x level-wide ripple UVs, y rain ring density, z rain pass rings on terrain, w no wind streaks
 BOOL ps_ssfx_spec_aa{TRUE};
 BOOL ps_ssfx_mblur_objects{FALSE};
 
@@ -177,6 +186,9 @@ float ps_ssfx_fog_hemi_lo{0.10f}, ps_ssfx_fog_hemi_hi{0.35f};
 int ps_ssfx_fog_gate_mode{2}; // 0 off, 1 camera rays + surface hemi, 2 view ray through the rain depth map
 // NLC: anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md ); ssfx_haze / ssfx_haze_particles live in xr_3da ( Environment.h )
 float ps_ssfx_haze_density{1.f}; // global density multiplier
+float ps_r3_rain_wind_slant{1.f}; // NLC .212: the rain's lean for the cover tests ( 0 = straight down, 1 = as the drops, capped 30 deg ): .217 mode 0 the upwind test, mode 1 the map
+int ps_r3_rain_map_trees{}; // NLC .215: tree trunks in the rain depth map ( 0 = left out: no rain shadow of trees )
+float ps_r3_rain_map_radius{100.f}; // NLC .211: rain depth map radius in metres ( 0 = the old frustum fit, ~1 m texels )
 float ps_ssfx_haze_dist{60.f}; // m from the volume edge
 int ps_ssfx_haze_max{12}; // volumes drawn per frame
 int ps_ssfx_haze_samples{8}; // samples per volume ray
@@ -188,6 +200,8 @@ u32 ps_ssfx_haze_stat_drawn{}; // last frame
 float ps_ssfx_haze_stat_cover{}; // last frame, share of the screen covered by scissor rects ( sum )
 Fmatrix ps_ssfx_fog_map_xform{Fidentity}; // world -> rain map ( uv, depth ), render_rain::nlc_fog_map_export
 Fvector4 ps_ssfx_fog_map_params{}; // x: map valid this frame, y: depth per metre
+Fvector4 ps_ssfx_rain_slant{}; // NLC .217: xz upwind offset per metre of cover height ( tan of the rain's lean ), w: valid
+int ps_r3_rain_slant_mode{}; // NLC .217: 0 = straight-down map + upwind test ( slant only adds wetness ), 1 = slanted map ( .212 )
 
 u32 ps_r_ao_quality = 0;
 constexpr xr_token qssao_token[] = {{"st_opt_off", 0},
@@ -354,7 +368,9 @@ Fvector4 ps_ssfx_lightsetup_1{0.35f, 0.5f, 1.0f, 1.0f}; // intensity of specular
 float ps_ssfx_gloss_factor{}; //Управляется из IGame_Persistent::UpdateRainGloss()
 
 Fvector4 ps_ssfx_wetsurfaces_1_cfg{1.5f, 1.4f, 0.7f, 1.25f}; //ripples_size, ripples_speed, ripples_min_speed, ripples_intensity
-Fvector4 ps_ssfx_wetsurfaces_2_cfg{1.2f, 1.5f, 0.2f, 0.7f}; // waterfall_size, waterfall_speed, waterfall_min_speed, waterfall_intensity
+// waterfall_size, waterfall_speed, waterfall_min_speed, waterfall_intensity. NLC .210: intensity 0.7 -> 1.0 ( running water
+// was hardly visible head-on )
+Fvector4 ps_ssfx_wetsurfaces_2_cfg{1.2f, 1.5f, 0.2f, 1.0f};
 Fvector4 ps_ssfx_wetsurfaces_1{}, ps_ssfx_wetsurfaces_2{}; // Управляется из IGame_Persistent::UpdateRainGloss()
 
 Fvector4 ps_ssfx_hud_drops_1_cfg{3.0f, 1.f, 1.f, 50.f}; // Quantity of drops, Refrelction intensity, Refraction intensity, Speed of the drops animation
@@ -363,9 +379,9 @@ Fvector4 ps_ssfx_hud_drops_1{}, ps_ssfx_hud_drops_2{}; // Значениями �
 
 Fvector4 ps_ssfx_blood_decals{0.6f, 0.6f, 0.f, 0.f};
 
-Fvector4 ps_ssfx_rain_1{6.0f, 0.025f, 0.6f, 2.f}; // Len, Width, Speed, Quality
-Fvector4 ps_ssfx_rain_2{0.7f, 0.1f, 1.0f, 0.5f}; // Alpha, Brigthness, Refraction, Reflection
-Fvector4 ps_ssfx_rain_3{0.15f, 1.f, 0.0f, 0.0f}; // Alpha, Refraction ( Splashes )
+Fvector4 ps_ssfx_rain_1{6.0f, 0.05f, 0.6f, 2.f}; // Len, Width, Speed, Quality ( NLC .213b: width 0.025 -> 0.05 )
+Fvector4 ps_ssfx_rain_2{0.8f, 0.2f, 1.0f, 0.5f}; // Alpha, Brigthness, Refraction, Reflection ( NLC .213b: 0.7, 0.1 -> 0.8, 0.2 )
+Fvector4 ps_ssfx_rain_3{0.35f, 1.f, 0.0f, 0.0f}; // Alpha, Refraction ( Splashes ) ( NLC .213b: 0.15 -> 0.35 )
 
 Fvector3 ps_ssfx_shadow_cascades{25.f, 60.f, 160.f};
 Fvector4 ps_ssfx_grass_shadows = {0.0f, 0.0f, 50.0f, 0.0f}; // X - каскады на которых будут рендериться тени (0 - на первом, 1 - на первом и втором, 2 - на всех трёх), Y - устарело и более не используется, Z - дальность на которой будут рендериться тени от источников света (НЕ СОЛНЦА)
@@ -1142,6 +1158,10 @@ void xrRender_initconsole()
     CMD3(CCC_Mask64, "r3_dynamic_wet_surfaces", &ps_r2_ls_flags, R3FLAG_DYN_WET_SURF);
     CMD4(CCC_Float, "r3_dynamic_wet_surfaces_near", &ps_r3_dyn_wet_surf_near, 5, 70);
     CMD4(CCC_Float, "r3_dynamic_wet_surfaces_far", &ps_r3_dyn_wet_surf_far, 30, 279);
+    CMD4(CCC_Float, "r3_rain_map_radius", &ps_r3_rain_map_radius, 0.f, 1000.f); // NLC .211
+    CMD4(CCC_Float, "r3_rain_wind_slant", &ps_r3_rain_wind_slant, 0.f, 1.f); // NLC .212
+    CMD4(CCC_Integer, "r3_rain_map_trees", &ps_r3_rain_map_trees, 0, 1); // NLC .215
+    CMD4(CCC_Integer, "r3_rain_slant_mode", &ps_r3_rain_slant_mode, 0, 1); // NLC .217
 
     CMD3(CCC_Mask64, "r3_volumetric_smoke", &ps_r2_ls_flags, R3FLAG_VOLUMETRIC_SMOKE);
 
@@ -1282,6 +1302,12 @@ void xrRender_initconsole()
     CMD2(CCC_Bool, "ssfx_ssr_enable", &ps_ssfx_ssr_enable);
     CMD4(CCC_Float, "ssfx_ssr_dry", &ps_ssfx_ssr_dry, 0.f, 1.f);
     CMD4(CCC_Float, "ssfx_ssr_blur", &ps_ssfx_ssr_blur, 0.f, 1.f);
+    // NLC .209: reflections / AO review ( docs/REFLECTIONS_AO_DESIGN.md )
+    CMD4(CCC_Float, "ssfx_ssr_forward", &ps_ssfx_ssr_forward, 0.f, 1.f); // live
+    CMD4(CCC_Integer, "ssfx_ssr_terrain", &ps_ssfx_ssr_terrain, 0, 1); // live
+    CMD4(CCC_Integer, "ssfx_ssr_quality", &ps_ssfx_ssr_quality, 1, 3); // game restart
+    CMD4(CCC_Integer, "ssfx_ao_radius_fix", &ps_ssfx_ao_radius_fix, 0, 1); // live
+    CMD4(CCC_Float, "ssfx_ao_flora", &ps_ssfx_ao_flora, 0.f, 1.f); // live
 
     // NLC: SSS 23 Build C. Gusts and sun fog: turning them on from 0 needs a game restart ( shader macros ).
     CMD4(CCC_Float, "ssfx_wind_gusts", &ps_ssfx_wind_gusts, 0.f, 1.f);
@@ -1301,6 +1327,9 @@ void xrRender_initconsole()
     CMD4(CCC_Float, "ssfx_ground_mist", &ps_ssfx_ground_mist, 0.f, 1.f);
     CMD4(CCC_Integer, "ssfx_debug_clouds", &ps_ssfx_debug_clouds, 0, 1); // r = cloud opacity, g = sun up, b = weather clouds
     CMD4(CCC_Float, "ssfx_step_ripples", &ps_ssfx_step_ripples, 0.f, 2.f); // 0 = off ( from 0: game restart )
+    CMD4(CCC_Float, "ssfx_impact_ripples", &ps_ssfx_impact_ripples, 0.f, 2.f); // NLC .216
+    CMD4(CCC_Float, "ssfx_impact_splash", &ps_ssfx_impact_splash, 0.f, 2.f); // NLC .216
+    CMD4(CCC_Vector4, "ssfx_puddle_ripples", &ps_ssfx_puddle_ripples, (Fvector4{0.f, 0.f, 0.f, 0.f}), (Fvector4{1.f, 1.f, 1.f, 1.f})); // NLC .216
     CMD2(CCC_Bool, "ssfx_spec_aa", &ps_ssfx_spec_aa); // game restart
     CMD2(CCC_Bool, "ssfx_mblur_objects", &ps_ssfx_mblur_objects); // with r2_mblur_enable, game restart
 

@@ -408,6 +408,7 @@ void CRender::Render()
                 HW.get_context(cmd_list.context_id)->CopyResource(Target->rt_tempzb->pSurface, res);
                 _RELEASE(res);
             }
+            Target->ssfx_copy_pos_world(cmd_list); // NLC .210: world G-buffer for the AO, before the HUD and the rain pass
             dsgraph.r_dsgraph_render_hud();
             {
                 PIX_EVENT(copy_zbuffer_scope_depth);

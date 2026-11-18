@@ -719,6 +719,7 @@ HRESULT CRender::shader_compile(LPCSTR name, DWORD const* pSrcData, UINT SrcData
     char c_ssfx_sss_omni_quality[10]{};
     char c_ssfx_water_quality[10]{};
     char c_ssfx_water_parallax[10]{};
+    char c_ssfx_ssr_quality[10]{};
 
     {
         sprintf_s(c_smapsize, "%d", m_SMAPSize);
@@ -855,6 +856,12 @@ HRESULT CRender::shader_compile(LPCSTR name, DWORD const* pSrcData, UINT SrcData
     }
     appendShaderOption(ssfx_glass_enabled(), "SSFX_GLASS_PASS", "1");
     appendShaderOption(ssfx_ssr_enabled(), "SSFX_SSR_PASS", "1");
+    if (ssfx_ssr_enabled())
+    {
+        // NLC .209: ray steps of the SSS 23 SSR ( screenspace_reflections.h, was never set: always 24 )
+        sprintf_s(c_ssfx_ssr_quality, "%d", ssfx_features().ssr_quality);
+        defines.emplace_back("SSFX_SSR_QUALITY", c_ssfx_ssr_quality);
+    }
     appendShaderOption(ssfx_foliage_enabled(), "SSFX_FOLIAGE_PASS", "1");
     appendShaderOption(ssfx_features().flora_variation, "SSFX_FLORA_VARIATION", "1");
     appendShaderOption(ssfx_features().ground_mist, "SSFX_GROUND_MIST", "1");

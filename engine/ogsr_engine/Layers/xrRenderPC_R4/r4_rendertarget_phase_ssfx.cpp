@@ -71,6 +71,8 @@ void CRenderTarget::ssfx_create_targets(const u32 w, const u32 h)
         rt_ssfx_ao.create(r2_RT_ssfx_ao, aw, ah, DXGI_FORMAT_R16G16B16A16_FLOAT);
         rt_ssfx_ao_a.create(r2_RT_ssfx_ao_a, aw, ah, DXGI_FORMAT_R16G16B16A16_FLOAT);
         rt_ssfx_ao_b.create(r2_RT_ssfx_ao_b, aw, ah, DXGI_FORMAT_R16G16B16A16_FLOAT);
+        rt_ssfx_pos_world.create(r2_RT_ssfx_pos_world, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT); // NLC .210: as rt_Position
+        ssfx_pos_world_frame = 0;
 
         s_ssfx_ao.create("ssfx_ao");
     }
@@ -146,6 +148,11 @@ void CRenderTarget::ssfx_create_targets(const u32 w, const u32 h)
 
         s_ssfx_ssr.create("ssfx_ssr");
     }
+
+    // NLC .209: reflections of the forward pass ( haze, particles, beams ): same size and format as rt_Generic_0
+    ssfx_scene_prev_frame = 0;
+    if (ssfx_ssr_enabled() || ssfx_water_enabled())
+        rt_ssfx_scene_prev.create(r2_RT_ssfx_scene_prev, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
 }
 
 void CRenderTarget::ssfx_begin_frame()
@@ -186,6 +193,12 @@ void CRenderTarget::ssfx_begin_frame()
     if (!ssfx_history_valid)
     {
         ssfx_il_slot_count = 0; // NLC .208: no known-light slots from the previous level / before the reset
+        for (auto& M : ssfx_il_vis) // NLC .210: nor their visibility maps ( light addresses are reused )
+        {
+            M.key = nullptr;
+            M.valid = M.building = false;
+        }
+        ssfx_scene_prev_frame = 0; // NLC .209: last frame's scene is from another view
 
         // First frame after ( re )creation: neutral history, no reprojection from garbage
         auto& cmd_list = RImplementation.get_imm_context().cmd_list;
@@ -240,6 +253,18 @@ void CRenderTarget::ssfx_end_frame(CBackend& cmd_list)
         return;
 
     HW.get_context(cmd_list.context_id)->CopyResource(rt_ssfx_prev_pos->pSurface, rt_Position->pSurface);
+}
+
+// NLC .210: the position buffer with all world geometry and nothing else, copied right before the HUD is drawn. The AO
+// samples it for world pixels: the weapon no longer hides the geometry behind it ( AO on cover popped as the barrel
+// moved ), and the normals are those before draw_rain bends them ( running water lightened the AO under cars ).
+void CRenderTarget::ssfx_copy_pos_world(CBackend& cmd_list)
+{
+    if (!rt_ssfx_pos_world || ps_ssfx_compare)
+        return;
+
+    HW.get_context(cmd_list.context_id)->CopyResource(rt_ssfx_pos_world->pSurface, rt_Position->pSurface);
+    ssfx_pos_world_frame = Device.dwFrame;
 }
 
 void CRenderTarget::phase_ssfx_sss(CBackend& cmd_list)
@@ -414,13 +439,15 @@ void CRenderTarget::phase_ssfx_ao(CBackend& cmd_list)
     const float aw = static_cast<float>(rt_ssfx_ao->dwWidth), ah = static_cast<float>(rt_ssfx_ao->dwHeight);
 
     const Fvector4 params{res, 5.f * ps_ssfx_ao_intensity, ps_ssfx_ao_radius, 150.f}; // res, intensity, radius, distance
-    const Fvector4 params2{1.f, 1.f, 0.f, 0.f}; // HUD int, flora int, max occlusion, -
+    const Fvector4 params2{1.f, ps_ssfx_ao_flora, 0.f, ps_ssfx_ao_radius_fix ? 1.f : 0.f}; // HUD int, flora int, max occlusion, radius fix
 
     RenderScreenTriangle(cmd_list, rt_ssfx_ao_a, s_ssfx_ao->E[0], [&]() {
         cmd_list.set_c("m_current", ssfx_m_current);
         cmd_list.set_c("m_previous", ssfx_m_previous);
         cmd_list.set_c("ssfx_ao_params", params);
         cmd_list.set_c("ssfx_ao_params2", params2);
+        // NLC .210: x = the world copy of this frame exists ( samples see through the weapon, normals before the rain pass )
+        cmd_list.set_c("ssfx_ao_params3", rt_ssfx_pos_world && ssfx_pos_world_frame == Device.dwFrame ? 1.f : 0.f, 0.f, 0.f, 0.f);
     });
 
     // Unblurred, accumulated AO is the history
@@ -447,7 +474,142 @@ static float ssfx_il_light_fill(const Fvector& pos, const Fvector& dir, float ra
         centre.mad(dir, std::min(0.5f * range, 1.5f));
         reach = 0.64f * range + 0.85f;
     }
-    return std::min(reach * ps_ssfx_il_lights_reach, 12.f);
+    return reach; // .210: the base value; ssfx_il_reach applies the cvar and the cap
+}
+
+static float ssfx_il_reach(float base) { return std::min(base * ps_ssfx_il_lights_reach, 12.f); }
+
+// NLC .210 ( docs/IL_DESIGN.md 4.6 ): a spot bounces where its beam lands, not around the lamp. One static ray along
+// the axis: the centre sits just in front of the hit, the reach follows the beam radius there ( the same 1.275 r + 0.85
+// as a point light of that radius ), att is the light's falloff at the hit. A beam that hits nothing within its range
+// has no bounce ( att 0 ). Point lights are as before. A 30 m spot used to get a 12 m glow around the lamp head.
+static float ssfx_il_light_fill_traced(const Fvector& pos, const Fvector& dir, float range, float cone, bool spot, Fvector& centre, float& att)
+{
+    att = 1.f;
+    const float base = ssfx_il_light_fill(pos, dir, range, spot, centre);
+    if (!spot || !g_pGameLevel || range < 0.5f)
+        return base;
+
+    collide::rq_result RQ;
+    g_pGameLevel->ObjectSpace.RayPick(pos, dir, range, collide::rqtStatic, RQ, nullptr);
+    const float h = RQ.range;
+    if (h >= range - 0.01f)
+    {
+        att = 0.f;
+        return base;
+    }
+    centre.mad(pos, dir, std::max(h - 0.4f, h * 0.5f));
+    const float r = std::min(h * tanf(std::min(cone * 0.5f, deg2rad(60.f))), range);
+    const float k = h / range;
+    att = 1.f - k * k;
+    return 1.275f * r + 0.85f;
+}
+
+// NLC .210: unit direction of a point of the octahedral map, u / v 0 .. 1. Matches ssfx_il_oct_uv in ssfx_il.ps
+static Fvector ssfx_il_oct_dir(float u, float v)
+{
+    const float fx = u * 2.f - 1.f, fy = v * 2.f - 1.f;
+    Fvector n{fx, fy, 1.f - _abs(fx) - _abs(fy)};
+    const float t = std::max(-n.z, 0.f);
+    n.x += n.x >= 0.f ? -t : t;
+    n.y += n.y >= 0.f ? -t : t;
+    n.normalize();
+    return n;
+}
+
+// NLC .210: the map of this light, or a free one ( not referred to by any slot this frame ) reset for it; -1 = none
+// free this frame ( the light waits with fade 0 and asks again next frame )
+int CRenderTarget::ssfx_il_vis_acquire(const void* key)
+{
+    int free_id = -1;
+    for (u32 i = 0; i < SSFX_IL_LIGHTS_MAX; ++i)
+    {
+        auto& M = ssfx_il_vis[i];
+        if (M.key == key)
+        {
+            M.used_frame = Device.dwFrame;
+            return int(i);
+        }
+        if (M.used_frame != Device.dwFrame && (free_id < 0 || (!M.valid && ssfx_il_vis[free_id].valid)))
+            free_id = int(i);
+    }
+    if (free_id >= 0)
+    {
+        auto& M = ssfx_il_vis[free_id];
+        M.key = key;
+        M.used_frame = Device.dwFrame;
+        M.valid = M.building = false;
+    }
+    return free_id;
+}
+
+// NLC .210: trace the visibility maps of the first live_slots slots ( the lights picked this frame; fading slots keep
+// the map they have ). A map is rebuilt when its light's fill centre moved 0.5 m ( NPC torches ); the finished map
+// replaces the old one in one step. Budget: 128 texels a frame while a light waits for its first map, else 48;
+// 4 static rays per texel, the farthest hit is kept ( a texel is ~13 degrees wide: light leaks rather than
+// false shadow on surfaces seen at a slant ).
+void CRenderTarget::ssfx_il_vis_update(u32 live_slots)
+{
+    if (!g_pGameLevel)
+        return;
+
+    constexpr u32 N = SSFX_IL_VIS_N, total = N * N;
+    constexpr float start_off = 0.2f, max_range = 13.f; // the reach is at most 12 m
+
+    bool waiting = false;
+    for (u32 i = 0; i < live_slots; ++i)
+    {
+        const auto& S = ssfx_il_slots[i];
+        if (S.vis < 0)
+            continue;
+        auto& M = ssfx_il_vis[S.vis];
+        if (M.valid && M.origin.distance_to_sqr(S.centre) > 3.f * 3.f)
+            M.valid = false; // a jump: another light at a recycled address, or a teleported one
+        if (M.building && M.b_origin.distance_to_sqr(S.centre) > 3.f * 3.f)
+            M.building = false;
+        if (!M.building && (!M.valid || M.origin.distance_to_sqr(S.centre) > 0.5f * 0.5f))
+        {
+            M.building = true;
+            M.b_origin = S.centre;
+            M.b_next = 0;
+        }
+        waiting = waiting || !M.valid;
+    }
+
+    u32 budget = waiting ? 128 : 48;
+    for (u32 pass = 0; pass < 2 && budget; ++pass) // first the lights without a map, then the refreshes
+        for (u32 i = 0; i < live_slots && budget; ++i)
+        {
+            const auto& S = ssfx_il_slots[i];
+            if (S.vis < 0)
+                continue;
+            auto& M = ssfx_il_vis[S.vis];
+            if (!M.building || (pass == 0 && M.valid))
+                continue;
+            while (M.b_next < total && budget)
+            {
+                const u32 tx = M.b_next % N, ty = M.b_next / N;
+                float best = 0.f;
+                for (u32 s = 0; s < 4; ++s)
+                {
+                    const Fvector d = ssfx_il_oct_dir((float(tx) + ((s & 1) ? 0.75f : 0.25f)) / float(N), (float(ty) + ((s & 2) ? 0.75f : 0.25f)) / float(N));
+                    Fvector start;
+                    start.mad(M.b_origin, d, start_off);
+                    collide::rq_result RQ;
+                    g_pGameLevel->ObjectSpace.RayPick(start, d, max_range, collide::rqtStatic, RQ, nullptr);
+                    best = std::max(best, start_off + RQ.range);
+                }
+                M.b_dist[M.b_next++] = best;
+                --budget;
+            }
+            if (M.b_next >= total)
+            {
+                std::copy(std::begin(M.b_dist), std::end(M.b_dist), std::begin(M.dist));
+                M.origin = M.b_origin;
+                M.valid = true;
+                M.building = false;
+            }
+        }
 }
 
 void CRenderTarget::phase_ssfx_il(CBackend& cmd_list)
@@ -467,22 +629,29 @@ void CRenderTarget::phase_ssfx_il(CBackend& cmd_list)
 
     // NLC .207: known lights in view space. [0] fill centre / reach, [1] raw colour x LOD / fade ( ssfx_il_light_fill ).
     // .208: slots whose fill sphere misses the view frustum are not uploaded ( no visible pixel can receive them )
+    // .210: only slots with a finished visibility map are uploaded, at the centre the map was traced from
     Fvector4 il_lights[SSFX_IL_LIGHTS_MAX * 2]{};
+    const ssfx_il_vis_map* il_maps[SSFX_IL_LIGHTS_MAX]{};
     u32 light_count = 0;
     for (u32 i = 0; i < ssfx_il_slot_count && ps_ssfx_il_lights > 0.f; ++i)
     {
         const auto& S = ssfx_il_slots[i];
-        Fvector c;
-        const float reach = ssfx_il_light_fill(S.pos, S.dir, S.range, S.spot, c);
-        if (!RImplementation.ViewBase.testSphere_dirty(c, reach))
+        if (S.fade <= 0.f || S.vis < 0 || !ssfx_il_vis[S.vis].valid)
+            continue;
+        const ssfx_il_vis_map& M = ssfx_il_vis[S.vis];
+        const float reach = ssfx_il_reach(S.reach);
+        if (!RImplementation.ViewBase.testSphere_dirty(M.origin, reach))
             continue;
         Fvector cv;
-        Device.mView.transform_tiny(cv, c);
+        Device.mView.transform_tiny(cv, M.origin);
         il_lights[light_count * 2].set(cv.x, cv.y, cv.z, reach);
         il_lights[light_count * 2 + 1].set(S.col.x, S.col.y, S.col.z, S.fade);
+        il_maps[light_count] = &M;
         ++light_count;
     }
-    const Fvector4 params{res, static_cast<float>(light_count), ps_ssfx_il_lights, ps_ssfx_il_distance}; // res, light count, light strength, distance
+    // .210: a negative res divider tells ssfx_il.ps that the visibility maps are uploaded ( the shader does not read the
+    // divider; with an older exe it stays positive and the shader keeps its screen-space checks and short reach )
+    const Fvector4 params{-res, static_cast<float>(light_count), ps_ssfx_il_lights, ps_ssfx_il_distance}; // -res, light count, light strength, distance
 
     // NLC: SV_Target0 = ambient IL ( rgb ) + torch bounce ( a ), SV_Target1 = local-light / emissive bounce ( rgb )
     RenderScreenTriangle2(cmd_list, rt_ssfx_il_a, rt_ssfx_il_local_a, s_ssfx_il->E[0], [&]() {
@@ -492,6 +661,19 @@ void CRenderTarget::phase_ssfx_il(CBackend& cmd_list)
         cmd_list.set_c("ssfx_il_params2", params2);
         for (u32 i = 0; i < light_count * 2; ++i)
             cmd_list.set_ca("ssfx_il_lights", i, il_lights[i]);
+        // .210: visibility maps, 4 distances per float4, SSFX_IL_VIS_N^2 / 4 float4 per uploaded slot
+        if (light_count)
+        {
+            const ref_constant vis_c = cmd_list.get_c("ssfx_il_vis");
+            R_constant* vis_p = vis_c._get(); // null when the shader does not declare it
+            constexpr u32 per_slot = SSFX_IL_VIS_N * SSFX_IL_VIS_N / 4;
+            for (u32 i = 0; i < light_count && vis_p; ++i)
+            {
+                const float* d = il_maps[i]->dist;
+                for (u32 k = 0; k < per_slot; ++k)
+                    cmd_list.set_ca(vis_p, i * per_slot + k, Fvector4{d[k * 4], d[k * 4 + 1], d[k * 4 + 2], d[k * 4 + 3]});
+            }
+        }
     });
 
     HW.get_context(cmd_list.context_id)->CopyResource(rt_ssfx_il->pSurface, rt_ssfx_il_a->pSurface);
@@ -564,8 +746,10 @@ void CRenderTarget::ssfx_il_collect_lights(const light_Package& LP)
         const float lum = (0.3f * L->color.r + 0.59f * L->color.g + 0.11f * L->color.b) * lod;
         if (lum < 0.01f)
             return;
+        // candidate test with the untraced fill ( .210: the traced one is only made for the lights picked below ). For a
+        // spot it is a bound around the lamp; the upload tests the real fill sphere again
         Fvector c;
-        const float reach = ssfx_il_light_fill(L->position, L->direction, L->range, L->flags.type == IRender_Light::SPOT, c);
+        const float reach = ssfx_il_reach(ssfx_il_light_fill(L->position, L->direction, L->range, L->flags.type == IRender_Light::SPOT, c));
         if (!RImplementation.ViewBase.testSphere_dirty(c, reach))
             return; // .208: its fill cannot reach a visible pixel
         float score = lum * L->range / (1.f + cam_d2 / 100.f);
@@ -616,6 +800,11 @@ void CRenderTarget::ssfx_il_collect_lights(const light_Package& LP)
     ssfx_il_light_slot next[SSFX_IL_LIGHTS_MAX]{};
     u32 n = 0;
 
+    // .210: the maps of last frame's slots stay taken this frame ( a slot that fades out below keeps its map )
+    for (u32 j = 0; j < ssfx_il_slot_count; ++j)
+        if (ssfx_il_slots[j].vis >= 0)
+            ssfx_il_vis[ssfx_il_slots[j].vis].used_frame = Device.dwFrame;
+
     // Selected lights: values from this frame, fade carried over from the previous slot of the same light
     for (size_t i = 0; i < top; ++i)
     {
@@ -626,7 +815,11 @@ void CRenderTarget::ssfx_il_collect_lights(const light_Package& LP)
         S.dir = L->direction;
         S.spot = L->flags.type == IRender_Light::SPOT;
         S.range = L->range;
-        const float lod = L->flags.bShadow ? L->get_LOD() : 1.f;
+        // .210: fill from the beam's hit point ( spot ), colour x the falloff there; visibility map of this light
+        float att = 1.f;
+        S.reach = ssfx_il_light_fill_traced(L->position, L->direction, L->range, L->cone, S.spot, S.centre, att);
+        S.vis = ssfx_il_vis_acquire(L);
+        const float lod = (L->flags.bShadow ? L->get_LOD() : 1.f) * att;
         S.col.set(L->color.r * lod, L->color.g * lod, L->color.b * lod);
         S.fade = fade_step;
         for (u32 j = 0; j < ssfx_il_slot_count; ++j)
@@ -636,7 +829,10 @@ void CRenderTarget::ssfx_il_collect_lights(const light_Package& LP)
                 break;
             }
         S.fade = std::min(S.fade, 1.f);
+        if (S.vis < 0 || !ssfx_il_vis[S.vis].valid)
+            S.fade = 0.f; // .210: the fill waits for its map ( a few frames ), then fades in
     }
+    const u32 live_slots = n;
 
     // Lights that left the list fade out with their last values ( never dereferenced: they may be gone )
     for (u32 j = 0; j < ssfx_il_slot_count && n < SSFX_IL_LIGHTS_MAX; ++j)
@@ -659,6 +855,8 @@ void CRenderTarget::ssfx_il_collect_lights(const light_Package& LP)
     std::copy(std::begin(next), std::end(next), std::begin(ssfx_il_slots));
     ssfx_il_slot_count = n;
 
+    ssfx_il_vis_update(live_slots); // .210: trace this frame's share of the visibility maps
+
     if (ps_ssfx_il_lights_info)
     {
         ps_ssfx_il_lights_info = 0;
@@ -668,6 +866,10 @@ void CRenderTarget::ssfx_il_collect_lights(const light_Package& LP)
             const auto& S = ssfx_il_slots[i];
             Msg("~ [il lights] %u: %p %s pos %.1f,%.1f,%.1f range %.2f colour x LOD %.2f,%.2f,%.2f fade %.2f, %.1f m", i, S.key, S.spot ? "spot" : "point", S.pos.x, S.pos.y, S.pos.z,
                 S.range, S.col.x, S.col.y, S.col.z, S.fade, Device.vCameraPosition.distance_to(S.pos));
+            // .210: the fill itself and its visibility map
+            const bool mapped = S.vis >= 0 && ssfx_il_vis[S.vis].valid;
+            Msg("~ [il lights]    fill centre %.1f,%.1f,%.1f reach %.2f, map %s%s", S.centre.x, S.centre.y, S.centre.z, ssfx_il_reach(S.reach), mapped ? "ready" : "pending",
+                S.vis >= 0 && ssfx_il_vis[S.vis].building ? " ( tracing )" : "");
         }
     }
 }
@@ -704,6 +906,8 @@ void CRenderTarget::phase_ssfx_water(CBackend& cmd_list)
     cmd_list.set_Element(s_ssfx_water->E[0]);
     cmd_list.set_c("m_current", ssfx_m_current);
     cmd_list.set_c("m_previous", ssfx_m_previous);
+
+    cmd_list.set_c("ssfx_scene_prev_k", ssfx_scene_prev_strength(), 0.f, 0.f, 0.f);
 
     for (dxRender_Visual* V : water)
         V->Render(cmd_list, 1.f, false);
@@ -927,13 +1131,15 @@ bool CRenderTarget::phase_ssfx_ssr(CBackend& cmd_list)
     ssfx_ssr_frame = Device.dwFrame;
 
     const float w = static_cast<float>(rt_ssfx_ssr->dwWidth), h = static_cast<float>(rt_ssfx_ssr->dwHeight);
-    const Fvector4 setup{strength, ps_ssfx_ssr_blur, 0.f, 0.f};
+    // NLC .210: w = strength of surfaces under cover while it rains ( ssfx_ssr_dry; the shader had 0 there )
+    const Fvector4 setup{strength, ps_ssfx_ssr_blur, ps_ssfx_ssr_terrain ? 1.f : 0.f, ps_ssfx_ssr_dry};
 
     // Reflection + temporal accumulation ( reads rt_ssfx_ssr_hist )
     RenderScreenTriangle(cmd_list, rt_ssfx_ssr, s_ssfx_ssr->E[0], [&]() {
         cmd_list.set_c("ssr_setup", ps_ssfx_ssr_1);
         cmd_list.set_c("ssfx_ssr_2", ps_ssfx_ssr_2);
         cmd_list.set_c("ssfx_ssr_setup", setup);
+        cmd_list.set_c("ssfx_scene_prev_k", ssfx_scene_prev_strength(), 0.f, 0.f, 0.f);
         cmd_list.set_c("m_current", ssfx_m_current);
         cmd_list.set_c("m_previous", ssfx_m_previous);
     });
@@ -949,6 +1155,30 @@ bool CRenderTarget::phase_ssfx_ssr(CBackend& cmd_list)
     ssfx_ssr_composited = true;
 
     return true;
+}
+
+// NLC .209: SSR and the water prepass run before the forward pass, so they could only reflect the deferred scene.
+// The finished scene ( forward pass, haze, volumetric light, distortion; before fog scattering and bloom ) is kept for
+// the next frame, where a reflection hit looks it up through its motion vector ( ssfx_scene_prev.h ).
+void CRenderTarget::phase_ssfx_scene_prev(CBackend& cmd_list)
+{
+    if (!rt_ssfx_scene_prev || ps_ssfx_compare || ps_ssfx_ssr_forward <= 0.f)
+        return;
+
+    // NLC .210: only when a reflection pass ran this frame ( it will most likely run next frame too ); dry weather without
+    // water skips the full-resolution copy. After a pause the first frame falls back to the current scene copy
+    if (!ssfx_ssr_composited && ssfx_water_frame != Device.dwFrame)
+        return;
+
+    HW.get_context(cmd_list.context_id)->CopyResource(rt_ssfx_scene_prev->pSurface, rt_Generic_0->pSurface);
+    ssfx_scene_prev_frame = Device.dwFrame;
+}
+
+float CRenderTarget::ssfx_scene_prev_strength() const
+{
+    // the copy of the frame before this one, and a history that survived ( no resize, level change, camera cut )
+    const bool valid = rt_ssfx_scene_prev && ssfx_history_valid && ssfx_scene_prev_frame && ssfx_scene_prev_frame + 1 == Device.dwFrame;
+    return valid ? ps_ssfx_ssr_forward : 0.f;
 }
 
 void CRenderTarget::ssfx_volumetric_restore_viewport(CBackend& cmd_list) const

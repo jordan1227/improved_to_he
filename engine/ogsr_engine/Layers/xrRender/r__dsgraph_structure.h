@@ -122,10 +122,10 @@ public:
     void r_dsgraph_insert_static(dxRender_Visual* pVisual);
     void r_dsgraph_insert_dynamic(IRenderable* root, dxRender_Visual* pVisual, Fmatrix& xform, Fvector& center);
 
-    void r_dsgraph_render_graph_static(const u32 _priority, const bool skip_tree_branches = false);
+    void r_dsgraph_render_graph_static(const u32 _priority, const bool skip_tree_branches = false, const bool skip_tree_trunks = false);
     void r_dsgraph_render_graph_dynamic(u32 _priority);
 
-    void r_dsgraph_render_graph(const u32 _priority, const bool skip_tree_branches = false);
+    void r_dsgraph_render_graph(const u32 _priority, const bool skip_tree_branches = false, const bool skip_tree_trunks = false); // NLC .215: trunks
     void r_dsgraph_render_hud();
     void r_dsgraph_render_hud_scope_depth();
     void r_dsgraph_render_hud_ui();

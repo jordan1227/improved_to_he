@@ -279,6 +279,8 @@ void nlc_visible_body_set(bool active, u16 id)
 
 bool CHUDManager::SMAP_Skip(const IRenderable* renderable) { return renderable && renderable == g_nlc_puppet_renderable; }
 
+bool nlc_visible_body_active() { return g_nlc_puppet_renderable != nullptr; } // NLC .217: step_manager.cpp
+
 void CHUDManager::Render_Actor_Shadow(u32 context_id, const IRender_Light* smap_light) // added by KD
 {
     if (!psActorFlags.test(AF_ACTOR_SHADOW))

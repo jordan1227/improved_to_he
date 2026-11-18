@@ -140,6 +140,7 @@ void CCustomZone::Load(LPCSTR section)
     {
         LPCSTR haze = pSettings->line_exist(section, "nlc_haze") ? pSettings->r_string(section, "nlc_haze") : nullptr;
         m_nlc_haze_name = (haze && *haze) ? haze : "";
+        m_nlc_haze_list = m_nlc_haze_name; // NLC .218
         LPCSTR ptcl = pSettings->line_exist(section, "nlc_haze_idle_particles") ? pSettings->r_string(section, "nlc_haze_idle_particles") : nullptr;
         m_nlc_haze_ptcl = (ptcl && *ptcl) ? ptcl : ""; // must name an existing group, as idle_particles ( R_ASSERT in CreateParticles )
     }
@@ -518,11 +519,23 @@ BOOL CCustomZone::net_Spawn(CSE_Abstract* DC)
     m_nlc_haze_on = m_nlc_haze_vol_off = m_nlc_haze_ptcl_hidden = m_nlc_haze_ptcl_swapped = false;
     m_nlc_haze_ptcl_orig = m_sIdleParticles;
     m_nlc_haze_sun_next = 0;
-    if (m_nlc_haze_name.size())
+    if (m_nlc_haze_list.size())
     {
-        m_nlc_haze = nlc_haze_profile_find(m_nlc_haze_name.c_str());
-        if (m_nlc_haze >= 0 && !nlc_haze_profile_level_ok(m_nlc_haze, Level().name().c_str()))
-            m_nlc_haze = -1;
+        // NLC .216: a comma list, the first profile whose levels list allows this level ( e.g. haze_buzz underground,
+        // haze_buzz_weak elsewhere ); the registry is keyed by the chosen name
+        const xr_string list = m_nlc_haze_list.c_str();
+        const int cnt = _GetItemCount(list.c_str());
+        string256 one;
+        for (int i = 0; i < cnt && m_nlc_haze < 0; ++i)
+        {
+            _GetItem(list.c_str(), i, one);
+            const int idx = one[0] ? nlc_haze_profile_find(one) : -1;
+            if (idx >= 0 && nlc_haze_profile_level_ok(idx, Level().name().c_str()))
+            {
+                m_nlc_haze = idx;
+                m_nlc_haze_name = one;
+            }
+        }
     }
     return (TRUE);
 }

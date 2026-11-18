@@ -16,6 +16,7 @@ dxRainRender::dxRainRender()
     hGeom_Drops.create(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1, RImplementation.Vertex.Buffer(), RImplementation.Index.Buffer());
 
     SH_Splash.create("effects\\rain_splash", "fx\\fx_rain");
+    SH_Impact.create("effects\\nlc_impact_splash", "fx\\fx_rain"); // NLC .216
 
     FS.r_close(F);
 }
@@ -28,6 +29,8 @@ void dxRainRender::Copy(IRainRender& _in) { *this = *smart_cast<dxRainRender*>(&
 
 void dxRainRender::Render(CBackend& cmd_list, CEffect_Rain & owner)
 {
+    render_impacts(cmd_list); // NLC .216: also without rain ( the puddles stay )
+
     float factor = g_pGamePersistent->Environment().CurrentEnv->rain_density;
     if (factor < EPS_L)
         return;
@@ -41,9 +44,13 @@ void dxRainRender::Render(CBackend& cmd_list, CEffect_Rain & owner)
     ref_shader& _splash_SH = SH_Splash;
 
     // visual
-    float factor_visual = factor / 2.f + .5f;
+    // NLC .213b: the weather file's density ( heavy rain 2.35, light 0.2 ) sets the streaks: alpha 0.3 ~ 1.5 in the vertex
+    // colour ( / 2, effects_rain.vs / .ps ), length up to x1.3 ( was factor / 2 + 0.5 )
+    const float raw = std::clamp(g_pGamePersistent->Environment().CurrentEnv->nlc_rain_raw, 0.f, 3.f);
+    const float factor_visual = 0.5f + 0.5f * std::min(raw, 1.6f);
+    const float alpha_visual = std::clamp(0.35f + 0.65f * raw, 0.3f, 1.5f);
     const Fvector3& f_rain_color = g_pGamePersistent->Environment().CurrentEnv->rain_color;
-    const u32 u_rain_color = color_rgba_f(f_rain_color.x, f_rain_color.y, f_rain_color.z, factor_visual);
+    const u32 u_rain_color = color_rgba_f(f_rain_color.x, f_rain_color.y, f_rain_color.z, alpha_visual * 0.5f);
 
     // build source plane
     Fplane src_plane;
@@ -205,7 +212,11 @@ void dxRainRender::Calculate(CEffect_Rain& owner)
         return;
 
     const float _drop_speed = ps_ssfx_rain_1.z;
-    const size_t desired_items = iFloor(min_desired_items + (factor * (max_desired_items - min_desired_items)));
+    // NLC .213b: heavy rain ( weather density above 1 ) adds up to 60 % more drops per unit; capped below the quad index
+    // buffer ( 4096 quads )
+    const float raw = std::clamp(g_pGamePersistent->Environment().CurrentEnv->nlc_rain_raw, 0.f, 3.f);
+    const float heavy = std::max(raw - 1.f, 0.f) * 0.45f * max_desired_items;
+    const size_t desired_items = std::min<size_t>(iFloor(min_desired_items + (factor * (max_desired_items - min_desired_items)) + heavy), 3800);
 
     // born _new_ if needed
     constexpr float b_radius_wrap_sqr = _sqr(source_radius * 1.5f);
@@ -215,6 +226,19 @@ void dxRainRender::Calculate(CEffect_Rain& owner)
     {
         auto& one = owner.items.emplace_back();
         owner.Born(one, source_radius, _drop_speed);
+    }
+
+    // NLC .218: surplus drops ( the rain eased ) were neither reborn nor removed: still drawn and flying on through roofs
+    // and floors, and their stale hit fired a splash every frame. Expired ones go, down to the wanted count
+    for (size_t i = 0; i < owner.items.size() && owner.items.size() > desired_items;)
+    {
+        if (owner.items[i].dwTime_Life < Device.dwTimeGlobal)
+        {
+            owner.items[i] = owner.items.back();
+            owner.items.pop_back();
+        }
+        else
+            ++i;
     }
 
     // build source plane
@@ -248,8 +272,14 @@ void dxRainRender::Calculate(CEffect_Rain& owner)
         one.P.mad(one.D, one.fSpeed * dt);
 
         Device.Statistic->dxRainRender.Begin();
+        // NLC .216: the wrap distance at the drop's landing column ( P along D down to the eye height ), not where it
+        // flies: slanted drops are born up to ~28 m upwind ( CEffect_Rain::Prepare ) and were wrapped at once to the
+        // downwind side - no rain from the wind side, all of it and the splashes downwind
+        Fvector col = one.P;
+        if (one.D.y < -0.05f && one.P.y > vEye.y)
+            col.mad(one.P, one.D, (vEye.y - one.P.y) / one.D.y);
         Fvector wdir;
-        wdir.set(one.P.x - vEye.x, 0, one.P.z - vEye.z);
+        wdir.set(col.x - vEye.x, 0, col.z - vEye.z);
         float wlen = wdir.square_magnitude();
         if (wlen > b_radius_wrap_sqr)
         {
@@ -300,3 +330,63 @@ void dxRainRender::Calculate(CEffect_Rain& owner)
 }
 
 const Fsphere& dxRainRender::GetDropBounds() const { return DM_Drop->bv_sphere; }
+
+// NLC .216: a splash ( the rain splash mesh, growing, fading over 0.4 s ) at each fresh impact. One draw per splash: the
+// pixel shader reads the G-buffer at the impact point ( nlc_impact_origin ) and shows it only on a terrain puddle
+void dxRainRender::render_impacts(CBackend& cmd_list)
+{
+    if (ps_ssfx_impact_splash <= 0.f || ps_ssfx_compare || !SH_Impact)
+        return;
+
+    SNlcImpact ev[NLC_IMPACT_MAX];
+    const u32 n = nlc_impacts_copy(ev, NLC_IMPACT_MAX);
+    if (!n)
+        return;
+
+    constexpr float life = 0.4f;
+    constexpr float kind_size[4]{0.7f, 1.3f, 1.1f, 4.f};
+    const float now = Device.fTimeGlobal;
+    const Fsphere& bv = DM_Drop->bv_sphere;
+    bool shader_set = false;
+
+    for (u32 i = 0; i < n; ++i)
+    {
+        const float age = now - ev[i].t0;
+        if (age >= life)
+            continue;
+        const float t = age / life;
+        const u32 k = std::min(ev[i].kind, 3u);
+        const float size = kind_size[k] * std::clamp(ev[i].strength, 0.5f, 1.5f) * (0.6f + 0.8f * t) * ps_ssfx_impact_splash;
+
+        Fmatrix X, S;
+        X.rotateY(float(i) * 2.39996f + ev[i].t0 * 7.f);
+        X.translate_over(ev[i].pos);
+        S.scale(size, size, size);
+        X.mulB_43(S);
+
+        Fsphere B;
+        X.transform_tiny(B.P, bv.P);
+        B.R = bv.R * size;
+        if (!RImplementation.ViewBase.testSphere_dirty(B.P, B.R))
+            continue;
+
+        const u32 nv = DM_Drop->number_vertices, ni = DM_Drop->number_indices;
+        u32 v_offset, i_offset;
+        auto* v_ptr = (IRender_DetailModel::fvfVertexOut*)RImplementation.Vertex.Lock(nv, hGeom_Drops->vb_stride, v_offset);
+        u16* i_ptr = RImplementation.Index.Lock(ni, i_offset);
+        DM_Drop->transfer(X, v_ptr, color_rgba_f(1.f, 1.f, 1.f, 0.5f * (1.f - t)), i_ptr, 0); // alpha / 2: effects_rain.vs
+        RImplementation.Vertex.Unlock(nv, hGeom_Drops->vb_stride);
+        RImplementation.Index.Unlock(ni);
+
+        if (!shader_set)
+        {
+            cmd_list.set_xform_world(Fidentity);
+            cmd_list.set_Shader(SH_Impact);
+            shader_set = true;
+        }
+        cmd_list.set_c("ssfx_rain_setup", ps_ssfx_rain_3);
+        cmd_list.set_c("nlc_impact_origin", ev[i].pos.x, ev[i].pos.y, ev[i].pos.z, 1.f - t);
+        cmd_list.set_Geometry(hGeom_Drops);
+        cmd_list.Render(D3DPT_TRIANGLELIST, v_offset, 0, nv, i_offset, ni / 3);
+    }
+}

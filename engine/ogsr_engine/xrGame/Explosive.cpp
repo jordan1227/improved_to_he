@@ -383,6 +383,7 @@ void CExplosive::Explode()
 #endif
 
     g_pGamePersistent->GrassBendersAddExplosion(cast_game_object()->ID(), pos, {0, -99, 0}, 1.33f, ps_ssfx_int_grass_params_2.y, ps_ssfx_int_grass_params_2.x, m_fBlastRadius * 2.0f);
+    nlc_impact_add(pos, 1.f, 3, std::clamp(m_fBlastRadius / 4.f, 0.5f, 2.f)); // NLC .216: puddle / water rings and splash
 
     //	Msg("---------CExplosive Explode [%d] frame[%d]",cast_game_object()->ID(), Device.dwFrame);
     OnBeforeExplosion();

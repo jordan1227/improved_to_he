@@ -89,6 +89,12 @@ extern BOOL ps_ssfx_glass_enable; // SSS 23 glass on transparent model glass, ga
 extern BOOL ps_ssfx_ssr_enable; // SSS 23 SSR ( reprojection, gloss blur ), game restart
 extern float ps_ssfx_ssr_dry; // SSR strength on dry glossy surfaces, 0 = wet surfaces only
 extern float ps_ssfx_ssr_blur;
+// NLC .209 ( docs/REFLECTIONS_AO_DESIGN.md )
+extern float ps_ssfx_ssr_forward; // reflections read last frame's finished scene ( haze, particles ), 0 = off, live
+extern int ps_ssfx_ssr_terrain; // terrain: mirror only from puddle gloss, sky fallback needs sky access, live
+extern int ps_ssfx_ssr_quality; // 1..3 = 24 / 32 / 48 ray steps ( SSFX_SSR_QUALITY 2 / 3 / 4 ), game restart
+extern int ps_ssfx_ao_radius_fix; // AO kernel with ssfx_ao_radius as a real radius, live ( A/B )
+extern float ps_ssfx_ao_flora; // AO strength on / from grass and foliage, live
 
 // NLC: SSS 23 Build C
 extern float ps_ssfx_wind_gusts; // travelling wind gusts on grass and trees ( SSFX_WIND_GUSTS when > 0 at game start )
@@ -105,12 +111,16 @@ extern float ps_ssfx_fog_sky, ps_ssfx_fog_gate, ps_ssfx_fog_interior_density, ps
 extern int ps_ssfx_fog_gate_mode;
 // NLC: anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md )
 extern float ps_ssfx_haze_density, ps_ssfx_haze_dist;
+extern float ps_r3_rain_wind_slant, ps_r3_rain_map_radius; // NLC .211 / .212
+extern int ps_r3_rain_map_trees; // NLC .215
 extern int ps_ssfx_haze_max, ps_ssfx_haze_samples, ps_ssfx_haze_split, ps_ssfx_haze_order, ps_ssfx_haze_debug;
 extern Fvector4 ps_ssfx_haze_light;
 extern u32 ps_ssfx_haze_stat_drawn;
 extern float ps_ssfx_haze_stat_cover;
 extern Fmatrix ps_ssfx_fog_map_xform;
 extern Fvector4 ps_ssfx_fog_map_params;
+extern Fvector4 ps_ssfx_rain_slant; // NLC .217
+extern int ps_r3_rain_slant_mode; // NLC .217
 extern u32 ps_ssfx_look;
 extern int ps_ssfx_settings_version;
 extern float ps_ssfx_terrain_grass_slope;
@@ -121,6 +131,8 @@ extern float ps_ssfx_il_lights; // NLC .207: known-light fill strength
 extern int ps_ssfx_il_lights_debug, ps_ssfx_il_lights_info; // NLC .207: debug mode, one-shot log request
 extern float ps_ssfx_il_lights_reach, ps_ssfx_il_lights_thick, ps_ssfx_il_lights_floor; // NLC .208: session tuning
 extern float ps_ssfx_step_ripples;
+extern float ps_ssfx_impact_ripples, ps_ssfx_impact_splash; // NLC .216
+extern Fvector4 ps_ssfx_puddle_ripples; // NLC .216
 extern BOOL ps_ssfx_spec_aa; // specular anti-aliasing in the G-buffer ( SSFX_SPEC_AA )
 extern BOOL ps_ssfx_mblur_objects; // motion blur from the velocity buffer ( SSFX_MBLUR_OBJECTS ) // ripples around moving feet in water and puddles ( SSFX_STEP_RIPPLES when > 0 at game start ) // shadows of the weather's clouds ( SSFX_CLOUD_SHADOWS when > 0 at game start )
 

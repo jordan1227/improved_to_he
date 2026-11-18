@@ -42,11 +42,26 @@
 // default 0.25 ), the fill kept on up-facing surfaces ( the lit floor does not bounce onto the floor )
 #define G_IL_LIGHTS_ALBEDO 0.3f // assumed albedo of the ( possibly off-screen ) surfaces a known light lights
 #define G_IL_LIGHTS_ONSCREEN 1.0f // hand-over: 1 = the fill is off while its centre is visible on screen
+// 2026-11-17 stopgap ( IL_DESIGN.md 4.5 ): the fill reaches at most this far, the fruit punch reach it was tuned and
+// accepted at. A 30 m spot got the 12 m engine cap: its 7 m rays leaked through walls whose blocking part was off
+// screen and were falsely blocked by anything within 3 m in front of them, so a room lit up and down with the camera.
+// 100 = off ( the engine reach as it is ). To be replaced by a view-independent visibility test in the engine
+#define G_IL_LIGHTS_REACH_MAX 4.7f
+// NLC .210 ( IL_DESIGN.md 4.6 ): with an exe that uploads the visibility maps ( ssfx_il_params.x < 0 ) the clamp above
+// is off, each slot's fill is tested against its map ( view independent ), the depth march only refines rays shorter
+// than G_IL_LIGHTS_MARCH_FAR, and the fill is merged with the screen-space bounce by the larger of the two ( it no
+// longer switches off while the light's centre is on screen: that dimmed a room when one walked in and faced the lamp )
+#define SSFX_IL_VIS_N 16 // CRenderTarget::SSFX_IL_VIS_N
+#define G_IL_VIS_BIAS 0.15f // m, receiver may be this much ( + G_IL_VIS_SLOPE x distance ) behind the mapped surface
+#define G_IL_VIS_SLOPE 0.04f
+#define G_IL_VIS_SOFT 0.3f // m, soft edge of the map test
+#define G_IL_LIGHTS_MARCH_FAR 3.0f // m, the march fades out between this ray length and 1.5 x it
 #define SSFX_IL_LIGHTS_MAX 16 // CRenderTarget::SSFX_IL_LIGHTS_MAX ( .208: 12 -> 16 )
 
 uniform float4 ssfx_il_params; // Res divider, known-light count, known-light strength, distance
 uniform float4 ssfx_il_params2; // fill floor factor, flora intensity, known-light debug ( 1 analytic only, 2 screen-space only ), occluder thickness k
 uniform float4 ssfx_il_lights[SSFX_IL_LIGHTS_MAX * 2]; // NLC .207, view space: [0] fill centre / reach, [1] raw colour x LOD / fade
+uniform float4 ssfx_il_vis[SSFX_IL_LIGHTS_MAX * SSFX_IL_VIS_N * SSFX_IL_VIS_N / 4]; // NLC .210: per slot an octahedral map of the distance from the fill centre to the static geometry, 4 texels per float4
 
 Texture2D ssfx_il_history; // $user$ssfx_il
 Texture2D ssfx_il_local_history; // NLC: $user$ssfx_il_local
@@ -66,6 +81,14 @@ float3 ssfx_il_rescale(float3 c, float m_new)
 {
     float m = ssfx_il_max3(c);
     return c * (m_new / max(m, 0.0001f));
+}
+
+// NLC .210: octahedral map coordinates of a world direction ( unit ), 0 .. 1. Matches ssfx_il_oct_dir in the engine
+float2 ssfx_il_oct_uv(float3 d)
+{
+    d /= abs(d.x) + abs(d.y) + abs(d.z);
+    float2 e = d.z >= 0.0f ? d.xy : (1.0f - abs(d.yx)) * float2(d.x >= 0.0f ? 1.0f : -1.0f, d.y >= 0.0f ? 1.0f : -1.0f);
+    return e * 0.5f + 0.5f;
 }
 
 ssfx_il_out main(p_screen I)
@@ -195,7 +218,9 @@ ssfx_il_out main(p_screen I)
         // .207c: up-facing receivers ( floor, ground ) get little of the fill, as with a real floor bounce
         float floorness = saturate(dot(Nn, normalize(mul((float3x3)m_V, float3(0.0f, 1.0f, 0.0f)))));
         float fill_shape = lerp(1.0f, ssfx_il_params2.x, floorness * floorness);
-        bool no_handover = ssfx_il_params2.z > 0.5f;
+        bool vis_maps = ssfx_il_params.x < 0.0f; // .210 exe
+        bool no_handover = ssfx_il_params2.z > 0.5f || vis_maps;
+        float3 fill = 0;
         [loop] for (int li = 0; li < il_lights; li++)
         {
             float4 cr = ssfx_il_lights[li * 2];
@@ -203,7 +228,8 @@ ssfx_il_out main(p_screen I)
 
             float3 Cp = cr.xyz - P;
             float d2 = dot(Cp, Cp);
-            float reach2 = cr.w * cr.w;
+            float reach = vis_maps ? cr.w : min(cr.w, G_IL_LIGHTS_REACH_MAX);
+            float reach2 = reach * reach;
             [branch] if (d2 < reach2)
             {
                 float x2 = d2 / reach2;
@@ -256,9 +282,31 @@ ssfx_il_out main(p_screen I)
                     }
                 }
 
-                local += SRGBToLinear(cc.rgb) * (cc.a * G_IL_LIGHTS_ALBEDO * G_IL_LIGHTS_K * ssfx_il_params.z * g * wrap * fill_vis * (1.0f - os * G_IL_LIGHTS_ONSCREEN));
+                // .210: visibility map of this slot. The receiver is lit when it is not behind the static geometry
+                // mapped from the fill centre in its direction; one texel, jittered by half a texel ( the history and
+                // the blur average it ). The march above stays as an on-screen refinement of short rays only: on
+                // long ones it leaked off screen and was blocked by anything a few metres in front of the ray
+                [branch] if (vis_maps)
+                {
+                    float d = sqrt(d2);
+                    fill_vis = lerp(fill_vis, 1.0f, smoothstep(G_IL_LIGHTS_MARCH_FAR, G_IL_LIGHTS_MARCH_FAR * 1.5f, d));
+
+                    float3 dw = mul((float3x3)m_inv_V, -Cp) / max(d, 0.001f); // centre -> receiver, world
+                    float2 jt = frac(ao_noise.xy * 0.5f + 0.5f + li * float2(0.618f, 0.382f)) - 0.5f;
+                    int2 tx = (int2)clamp(ssfx_il_oct_uv(dw) * SSFX_IL_VIS_N + jt, 0.0f, SSFX_IL_VIS_N - 1.0f);
+                    int ti = tx.y * SSFX_IL_VIS_N + tx.x;
+                    float4 row = ssfx_il_vis[li * (SSFX_IL_VIS_N * SSFX_IL_VIS_N / 4) + (ti >> 2)];
+                    float md = row[ti & 3];
+                    fill_vis *= saturate((md + G_IL_VIS_BIAS + G_IL_VIS_SLOPE * d - d) / G_IL_VIS_SOFT);
+                }
+
+                fill += SRGBToLinear(cc.rgb) * (cc.a * G_IL_LIGHTS_ALBEDO * G_IL_LIGHTS_K * ssfx_il_params.z * g * wrap * fill_vis * (1.0f - os * G_IL_LIGHTS_ONSCREEN));
             }
         }
+
+        // .210: with the maps the fill and the screen-space bounce of the same lights are merged by the larger one
+        // ( they were matched to each other ); before, the fill was handed over by os and added
+        local = vis_maps ? max(local, fill) : local + fill;
     }
 
     local /= 1.0f + ssfx_il_max3(local) * G_IL_LOCAL_CAP;

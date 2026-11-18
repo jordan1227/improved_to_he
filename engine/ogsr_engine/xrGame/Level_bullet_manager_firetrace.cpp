@@ -223,6 +223,8 @@ void CBulletManager::FireShotmark(SBullet* bullet, const Fvector& vDir, const Fv
         Fvector* pVerts = Level().ObjectSpace.GetStaticVerts();
         CDB::TRI* pTri = Level().ObjectSpace.GetStaticTris() + R.element;
 
+        nlc_impact_add(vEnd, vNormal.y, 1, 1.f); // NLC .216: puddle / water ripples and splash
+
         if (mtl_pair && !mtl_pair->m_pCollideMarks->empty() && ShowMark)
         {
             //добавить отметку на материале

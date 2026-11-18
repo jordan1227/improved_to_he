@@ -12,6 +12,8 @@
 #include "game_object_space.h"
 #include "script_game_object.h"
 
+bool nlc_visible_body_active(); // NLC .217: HUDManager.cpp
+
 CStepManager::CStepManager() {}
 
 CStepManager::~CStepManager() {}
@@ -140,6 +142,11 @@ void CStepManager::update()
             // Играть звук
             if (is_on_ground())
             {
+                // NLC .216: a ring where the foot lands ( puddles, water ) and a small splash in puddles. .217: not the
+                // actor's own feet while the visible-body puppet ( sivol_visible_body ) walks: its feet are the ones seen
+                if (m_foot_bones[i] != BI_NONE && !(nlc_visible_body_active() && m_object == Level().CurrentViewEntity()))
+                    nlc_impact_add(get_foot_position(ELegType(i)), 1.f, 0, std::clamp(m_step_info.params.step[i].power, 0.2f, 1.f));
+
                 auto actor = smart_cast<CActor*>(m_object);
 
                 if (mtl_pair->StepSounds.empty())

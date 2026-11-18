@@ -14,6 +14,8 @@ function element_0(shader, t_base, t_second, t_detail)
 	shader:dx10texture("s_ssfx_zbuffer", "$user$zbuffer")
 	shader:dx10texture("s_ssfx_water_history", "$user$ssfx_water")
 	shader:dx10texture("s_fog_map", "$user$smap_rain") -- NLC .205b: fog fade by the view-ray gate
+	shader:dx10texture("s_ssfx_scene_prev", "$user$ssfx_scene_prev") -- NLC .209: last frame's finished scene
+	shader:dx10texture("s_prev_pos", "$user$ssfx_prev_pos") -- .209: its disocclusion test ( unbound = current scene )
 	shader:dx10sampler("smp_base")
 	shader:dx10sampler("smp_linear")
 	shader:dx10sampler("smp_nofilter")

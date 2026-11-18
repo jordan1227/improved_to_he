@@ -49,7 +49,9 @@ void CRenderTarget::draw_rain(CBackend& cmd_list, light& RainSetup)
     Fvector center_pt;
     center_pt.mad(Device.vCameraPosition, Device.vCameraDirection, fRainFar);
     Device.mFullTransform.transform(center_pt);
-    d_Z = center_pt.z;
+    // NLC .210: kept inside the far plane - rain weathers have a short far plane, the triangle beyond it was clipped and
+    // the whole wet-surface pass never drew ( r3_dynamic_wet_surfaces_far 200 )
+    d_Z = std::min(center_pt.z, 0.99999f);
 
     // Perform lighting
     {

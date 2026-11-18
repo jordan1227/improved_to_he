@@ -121,6 +121,10 @@ void CBlender_Tree::Compile(CBlender_Compile& C)
         else
         {
             C.r_Pass(tvs_s, "shadow_direct_base", FALSE);
+            // NLC .215: trunks and the bark of the big branches ( not object LODs ). With the wind-slanted rain map they
+            // cast a long dry "rain shadow" across wet ground and a shaft in the rain fog ( r3_rain_map_trees )
+            if (!oNotAnTree.value)
+                C.SH->flags.bTreeTrunk = TRUE;
         }
         C.r_dx10Texture("s_base", C.L_textures[0]);
         C.r_dx10Sampler("smp_base");

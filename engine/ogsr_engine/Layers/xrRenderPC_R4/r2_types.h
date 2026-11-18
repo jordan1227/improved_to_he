@@ -114,6 +114,8 @@
 #define r2_RT_ssfx_ssr "$user$ssfx_ssr" // SSR result ( rgb, a: strength ), after the gloss blur
 #define r2_RT_ssfx_ssr_b "$user$ssfx_ssr_b" // SSR blur temp
 #define r2_RT_ssfx_ssr_hist "$user$ssfx_ssr_hist" // SSR history ( unblurred )
+#define r2_RT_ssfx_pos_world "$user$ssfx_pos_world" // NLC .210: position buffer before the HUD and the rain pass ( world AO )
+#define r2_RT_ssfx_scene_prev "$user$ssfx_scene_prev" // NLC .209: last frame's finished scene ( before bloom ), reflection source
 #define r2_RT_ssfx_rain "$user$ssfx_rain" // NLC .85: rain refraction buffer, 1/8 res HDR scene + volumetrics
 
 constexpr const char* c_sbase = "s_base";

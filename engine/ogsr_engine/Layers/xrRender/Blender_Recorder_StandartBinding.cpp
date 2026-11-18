@@ -703,6 +703,90 @@ static class ssfx_steps final : public R_constant_setup
     }
 } ssfx_steps;
 
+// NLC .216: impact ripples ( nlc_ripples.h ): the 16 nearest events within 40 m ( .217, was 30 ) that are younger than their
+// lifetime. Per kind ( footfall, bullet, object, explosion ): ring front speed m/s, wave number 1/m, lifetime s, strength
+namespace nlc_impacts_bind
+{
+constexpr u32 count = 16;
+u32 frame{u32(-1)};
+Fvector4 pos_age[count]{}, par[count]{}, info{};
+// .218: footfall life 1.2 -> 0.8 s
+constexpr float kind_par[4][4]{{0.4f, 63.f, 0.8f, 0.6f}, {0.6f, 105.f, 1.0f, 1.f}, {0.4f, 78.f, 1.5f, 1.f}, {2.0f, 31.f, 2.5f, 1.5f}};
+
+void update()
+{
+    if (frame == Device.dwFrame)
+        return;
+    frame = Device.dwFrame;
+
+    const float strength = ps_ssfx_compare ? 0.f : ps_ssfx_impact_ripples;
+    SNlcImpact ev[NLC_IMPACT_MAX];
+    const u32 n = strength > 0.f ? nlc_impacts_copy(ev, NLC_IMPACT_MAX) : 0;
+    const float now = Device.fTimeGlobal;
+    const Fvector& cam = Device.vCameraPosition;
+
+    struct cand
+    {
+        float d;
+        u32 i;
+    };
+    cand c[NLC_IMPACT_MAX];
+    u32 m = 0;
+    for (u32 i = 0; i < n; ++i)
+    {
+        const u32 k = std::min(ev[i].kind, 3u);
+        const float d = ev[i].pos.distance_to_sqr(cam);
+        if (now - ev[i].t0 < kind_par[k][2] && d < _sqr(40.f))
+            c[m++] = {d, i};
+    }
+    std::sort(c, c + m, [](const cand& a, const cand& b) { return a.d < b.d; });
+    m = std::min(m, count);
+    for (u32 s = 0; s < m; ++s)
+    {
+        const SNlcImpact& e = ev[c[s].i];
+        const u32 k = std::min(e.kind, 3u);
+        pos_age[s].set(e.pos.x, e.pos.y, e.pos.z, now - e.t0);
+        par[s].set(e.strength * kind_par[k][3], kind_par[k][0], kind_par[k][1], kind_par[k][2]);
+    }
+    info.set(float(m), strength, 0.f, 0.f);
+}
+} // namespace nlc_impacts_bind
+
+static class ssfx_impacts final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        nlc_impacts_bind::update();
+        for (u32 s = 0; s < nlc_impacts_bind::count; ++s)
+            cmd_list.set_ca(C, s, nlc_impacts_bind::pos_age[s]);
+    }
+} ssfx_impacts;
+
+static class ssfx_impacts_p final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        nlc_impacts_bind::update();
+        for (u32 s = 0; s < nlc_impacts_bind::count; ++s)
+            cmd_list.set_ca(C, s, nlc_impacts_bind::par[s]);
+    }
+} ssfx_impacts_p;
+
+static class ssfx_impacts_n final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        nlc_impacts_bind::update();
+        cmd_list.set_c(C, nlc_impacts_bind::info);
+    }
+} ssfx_impacts_n;
+
+// NLC .216: puddle ripple A/B ( ssfx_puddle_ripples, 1 = old behaviour per component )
+static class ssfx_puddle_ripples final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_puddle_ripples); }
+} ssfx_puddle_ripples;
+
 // NLC: SSS 23 indirect light combine ( combine_1.ps ), x = intensity, y = vibrance, z = local-light bounce ( ssfx_il_local )
 static class ssfx_il_combine final : public R_constant_setup
 {
@@ -747,8 +831,14 @@ static class ssfx_fog_gate final : public R_constant_setup
 // z: map texel size in metres ( .205 )
 static class ssfx_fog_map final : public R_constant_setup
 {
-    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_fog_map_params.x, ps_ssfx_fog_map_params.y, ps_ssfx_fog_map_params.z, 0.f); }
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_fog_map_params.x, ps_ssfx_fog_map_params.y, ps_ssfx_fog_map_params.z, ps_ssfx_fog_map_params.w); } // .210: w
 } ssfx_fog_map;
+
+// NLC .217: upwind offset per metre of cover height ( r3_rain_slant_mode 0 ), w: valid
+static class ssfx_rain_slant final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_rain_slant); }
+} ssfx_rain_slant;
 
 // world -> rain map ( uv, depth )
 static class ssfx_fog_map_xf final : public R_constant_setup
@@ -1160,6 +1250,11 @@ void CBlender_Compile::SetMapping() const
     r_Constant("ssfx_look", &ssfx_look); // NLC
     r_Constant("ssfx_color_balance", &ssfx_color_balance); // NLC
     r_Constant("ssfx_steps", &ssfx_steps); // NLC
+    r_Constant("ssfx_impacts", &ssfx_impacts); // NLC .216
+    r_Constant("ssfx_rain_slant", &ssfx_rain_slant); // NLC .217
+    r_Constant("ssfx_impacts_p", &ssfx_impacts_p);
+    r_Constant("ssfx_impacts_n", &ssfx_impacts_n);
+    r_Constant("ssfx_puddle_ripples", &ssfx_puddle_ripples);
 
     r_Constant("wind_params", &binder_wind_params);
     r_Constant("wind_params_old", &binder_wind_params_old);
