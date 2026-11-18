@@ -1,6 +1,567 @@
-<!-- nlc-changelog-head: 1119e68d63deceeced8c4e243f3c9159bef8c815 -->
+<!-- nlc-changelog-head: 72c71241150d6883dc1c09eb892788c2f633f9ba -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 72c71241150d6883dc1c09eb892788c2f633f9ba -->
+## 19.11.26 01:40 МСК - Add English PDA password support
+
+Commit: [72c7124](https://github.com/jordan1227/improved_to_he/commit/72c71241150d6883dc1c09eb892788c2f633f9ba)
+
+### Description
+
+Use English password pools for NPC PDAs in English games and convert legacy Russian PDA passwords when opened. Update scrambling to handle English vowels and remove unused battery and signal texture definitions.
+
+### Game files changed
+
+- M gamedata/config/ui/ui_pda_pust_eng.xml
+- M gamedata/scripts/ui/ui_cheat_pda.script
+- A gamedata/scripts/vergas/vergas_pass_eng.script
+- M gamedata/scripts/vergas/vergas_pda.script
+- M gamedata/scripts/vergas/vergas_scrambling.script
+
+<!-- nlc-changelog-commit: 510e8c98bff7d13500e3bca7ee9855ab79c1e124 -->
+## 19.11.26 01:38 МСК - Advance rain, wet-surface, and reflection rendering
+
+Commit: [510e8c9](https://github.com/jordan1227/improved_to_he/commit/510e8c98bff7d13500e3bca7ee9855ab79c1e124)
+
+### Description
+
+Update the engine to nlc-3.589.218 with impact ripples and splashes, improved rain coverage and drop behavior, material-aware terrain wetness, and refinements to SSR, AO, indirect lighting, and anomaly haze.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/environment/anomaly_haze.ltx
+- A gamedata/config/environment/terrain_wet.ltx
+- M gamedata/config/misc/zone_buzz.ltx
+- M gamedata/config/rspec_default.ltx
+- M gamedata/config/rspec_extreme.ltx
+- M gamedata/config/rspec_high.ltx
+- M gamedata/config/rspec_low.ltx
+- M gamedata/config/rspec_minimum.ltx
+- M gamedata/scripts/ui/ui_mm_opt_shaders.script
+- M gamedata/shaders/r3/combine_1.ps
+- M gamedata/shaders/r3/deffer_terrain_high_flat.ps
+- A gamedata/shaders/r3/effects_nlc_impact_splash.s
+- M gamedata/shaders/r3/effects_rain.ps
+- A gamedata/shaders/r3/effects_rain.vs
+- A gamedata/shaders/r3/nlc_impact_splash.ps
+- A gamedata/shaders/r3/nlc_rain_notransform_2uv.vs
+- A gamedata/shaders/r3/nlc_ripples.h
+- A gamedata/shaders/r3/rain.s
+- M gamedata/shaders/r3/rain_apply_gloss.ps
+- M gamedata/shaders/r3/rain_patch_normal.ps
+- M gamedata/shaders/r3/ssfx_ao.ps
+- M gamedata/shaders/r3/ssfx_ao.s
+- M gamedata/shaders/r3/ssfx_ao_blur.ps
+- M gamedata/shaders/r3/ssfx_fog_atmo.h
+- M gamedata/shaders/r3/ssfx_haze.h
+- M gamedata/shaders/r3/ssfx_haze.ps
+- M gamedata/shaders/r3/ssfx_il.ps
+- A gamedata/shaders/r3/ssfx_scene_prev.h
+- M gamedata/shaders/r3/ssfx_ssr.ps
+- M gamedata/shaders/r3/ssfx_ssr.s
+- M gamedata/shaders/r3/ssfx_ssr_combine.ps
+- M gamedata/shaders/r3/ssfx_water.ps
+- M gamedata/shaders/r3/ssfx_water_pass.s
+- M gamedata/shaders/r3/ssfx_water_ssr.ps
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Layers/xrRender/Blender_BmmD.cpp
+- M engine/ogsr_engine/Layers/xrRender/Blender_Recorder_StandartBinding.cpp
+- M engine/ogsr_engine/Layers/xrRender/Blender_tree.cpp
+- M engine/ogsr_engine/Layers/xrRender/Shader.cpp
+- M engine/ogsr_engine/Layers/xrRender/Shader.h
+- M engine/ogsr_engine/Layers/xrRender/dxRainRender.cpp
+- M engine/ogsr_engine/Layers/xrRender/dxRainRender.h
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_render.cpp
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_structure.h
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r2_types.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_R_rain.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_R_render.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_draw_rain.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_combine.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_ssfx.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/ssfx_features.h
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/CustomZone.cpp
+- M engine/ogsr_engine/xrGame/CustomZone.h
+- M engine/ogsr_engine/xrGame/Explosive.cpp
+- M engine/ogsr_engine/xrGame/HUDManager.cpp
+- M engine/ogsr_engine/xrGame/Level_bullet_manager_firetrace.cpp
+- M engine/ogsr_engine/xrGame/physics_game.cpp
+- M engine/ogsr_engine/xrGame/step_manager.cpp
+- M engine/ogsr_engine/xr_3da/Environment.h
+- M engine/ogsr_engine/xr_3da/Environment_misc.cpp
+- M engine/ogsr_engine/xr_3da/IGame_Level.cpp
+- M engine/ogsr_engine/xr_3da/Rain.cpp
+- M engine/ogsr_engine/xr_3da/xr_ioc_cmd.cpp
+
+<!-- nlc-changelog-commit: c3effba7d1494d655f9af2e94e2a3f471790ecca -->
+## 18.11.26 14:26 МСК - Update rx_gl.script
+
+Commit: [c3effba](https://github.com/jordan1227/improved_to_he/commit/c3effba7d1494d655f9af2e94e2a3f471790ecca)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/ai_additions/rx_gl.script
+
+<!-- nlc-changelog-commit: c30105f90aacdbf91f39698ad02c410707397d74 -->
+## 16.11.26 04:06 МСК - манифест
+
+Commit: [c30105f](https://github.com/jordan1227/improved_to_he/commit/c30105f90aacdbf91f39698ad02c410707397d74)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 3cf7babc3c63408550e8889fcdf1a1ae89eba280 -->
+## 16.11.26 03:57 МСК - Add local-light bounce to indirect lighting
+
+Commit: [3cf7bab](https://github.com/jordan1227/improved_to_he/commit/3cf7babc3c63408550e8889fcdf1a1ae89eba280)
+
+### Description
+
+Add a separate indirect-light bounce for lamps, anomalies, and emissive surfaces, with analytic fill for nearby off-screen lights. Expose the new controls in the shader settings and update the engine to nlc-3.589.208.
+
+## Отражённый свет: аномалии, лампы, костры (движок nlc-3.589.206-3.589.208, 14-16.11.26)
+
+Переделан отражённый (непрямой) свет. Раньше он только чуть подкрашивал рассеянный свет неба: ночью и под землёй, где неба нет, он почти ничего не делал, цвет источников терялся, а свет от ламп и аномалий не отражался вовсе. Теперь свет ламп, аномалий и костров отражается от освещённых мест на ближние стены, ящики и NPC своим цветом, в том числе ночью и в подземельях, и не пропадает, когда источник уходит из кадра. Нужен новый exe (nlc-3.589.208) и перезапуск игры. Работает при включённом "Непрямом освещении" (вкладка "Шейдеры").
+
+1. **Отсвет ламп, аномалий и костров**
+   - Пятно, которое освещает лампа, костёр или аномалия, мягко подсвечивает всё вокруг своим цветом: холодец окрашивает стены и ящики рядом в зелёный, костёр даёт тёплый отсвет.
+   - Светящиеся поверхности (панели ламп, экраны) тоже слегка подсвечивают стены рядом.
+   - Тёмные лаборатории остаются тёмными: отсвет есть только рядом с источниками.
+2. **Отсвет вне кадра**
+   - Раньше отражённый свет работал только от того, что видно на экране: стоило отвернуться от холодца, и зелёный отсвет на стенах пропадал.
+   - Теперь движок знает ближайшие источники света (до 8) и сохраняет их отсвет на стенах в кадре, даже если сам источник за спиной. Когда источник в кадре, работает обычный экранный отсвет, переход между ними плавный.
+   - Отсвет не проходит сквозь стены в соседние комнаты и не заходит за углы, которые видно на экране.
+3. **Цвет отражённого света**
+   - Раньше яркие цвета выцветали в белый (зелёная аномалия, освещённая солнцем стена). Теперь отражённый свет сохраняет цвет: красная стена подкрашивает соседние поверхности красным.
+   - Убрано мерцание "треугольниками" рядом с аномалиями.
+4. **Зелёный холодец (zone_buzz_green)** получил свой небольшой зелёный свет (раньше он не светил совсем).
+5. **Меню, вкладка "Шейдеры", раздел "Непрямое освещение"**
+   - "Отсвет ламп и аномалий" - сила отсвета (по умолчанию 1).
+   - "Отсвет вне кадра" - сила отсвета источников вне кадра (по умолчанию 1, 0 - только то, что на экране).
+   - Всё меняется сразу. Если раньше ставили `ssfx_il_local 0.5`, верните 1 (новое значение 1 = прежние 0.5).
+6. **Исправлено**: "Отключить все эффекты" больше не оставляет работать старый отражённый свет (он съедал FPS).
+7. **Важно про дальность**: свет аномалий с тенями (холодец и др.) гаснет с расстояния ~30 м вместе с отсветом. Это не отражённый свет, а настройка "Дальность освещения" (вкладка "Видео" - "Дополнительно", `r2_slight_fade`).
+
+## Что проверять
+
+- Холодец в подземелье Агропрома: отвернуться от него, стоя в 2-4 м от стены, подождать 10 с. Зелёный отсвет на стене и ящиках должен остаться.
+- Стоять вплотную к аномалии и отвернуться: отсвет не пропадает.
+- Лаборатории с лампами на потолке: отсвет вокруг освещённого места, без странного света из-под пола; атмосфера тёмной лаборатории остаётся.
+- Ночной лагерь с несколькими кострами: повертеться на месте, отсвет не мигает и не "выскакивает".
+- С поднятым оружием рядом с аномалией: качание, прицеливание, перезарядка - никакого мерцания по контуру оружия.
+- Углы и колонны рядом с аномалией: зелёный свет не должен заметно заходить за угол.
+- FPS рядом с большим количеством источников света.
+
+Команды для сравнения (консоль):
+
+- `ssfx_il_local 0` / `1` / `2` - отсвет ламп и аномалий (0 - выкл.).
+- `ssfx_il_lights 0` / `1` - отсвет источников вне кадра.
+- `ssfx_il_lights_debug 1` - только отсвет вне кадра, `2` - только экранный, `0` - обычный режим. В режимах 1 и 2 ящики и стены рядом с холодцом должны выглядеть примерно одинаково.
+- `ssfx_il_lights_info` - список выбранных источников в лог (строки `~ [il lights]`).
+- `ssfx_il_lights_reach`, `ssfx_il_lights_thick`, `ssfx_il_lights_floor` - дальность отсвета, толщина препятствий, отсвет на полу (только на сессию). Если какое-то значение выглядит лучше - напишите его.
+
+Если что-то сломалось: `ssfx_il_local 0` и `ssfx_il_lights 0` убирают новый отсвет без перезапуска.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/misc/zone_buzz.ltx
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_shaders.script
+- M gamedata/shaders/r3/combine.s
+- M gamedata/shaders/r3/combine_1.ps
+- M gamedata/shaders/r3/ssfx_il.ps
+- M gamedata/shaders/r3/ssfx_il.s
+- M gamedata/shaders/r3/ssfx_il_blur.ps
+- M gamedata/shaders/r3/ssfx_upsample.h
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Layers/xrRender/Blender_Recorder_StandartBinding.cpp
+- M engine/ogsr_engine/Layers/xrRender/RenderTargetRenderScreenQuad.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r2_types.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_R_render.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_ssfx.cpp
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Torch.cpp
+- M engine/ogsr_engine/xr_3da/IGame_Persistent.h
+
+<!-- nlc-changelog-commit: b67a0a8f6f4330889e7bcbe1f6acc8ceeec07554 -->
+## 14.11.26 22:58 МСК - манифест
+
+Commit: [b67a0a8](https://github.com/jordan1227/improved_to_he/commit/b67a0a8f6f4330889e7bcbe1f6acc8ceeec07554)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: cc93235c81f48a9246ef6d62feb81eab66d23ed8 -->
+## 14.11.26 22:57 МСК - Add atmospheric fog and anomaly haze
+
+Commit: [cc93235](https://github.com/jordan1227/improved_to_he/commit/cc93235c81f48a9246ef6d62feb81eab66d23ed8)
+
+### Description
+
+Introduce configurable sky-aware fog and volumetric haze around gas anomalies, with shader options, profiles, and console controls. Update the engine to nlc-3.589.205 and fix actor shadow rendering with active lights and visible-body puppet collisions.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- A gamedata/config/environment/anomaly_haze.ltx
+- A gamedata/config/environment/ssfx_fog_levels.ltx
+- M gamedata/config/misc/zone_buzz.ltx
+- M gamedata/config/misc/zone_mine_acidic.ltx
+- M gamedata/config/rspec_default.ltx
+- M gamedata/config/rspec_extreme.ltx
+- M gamedata/config/rspec_high.ltx
+- M gamedata/config/rspec_low.ltx
+- M gamedata/config/rspec_maximum.ltx
+- M gamedata/config/rspec_minimum.ltx
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- A gamedata/particles/anomaly2/studen_blowout.pg
+- A gamedata/particles/anomaly2/studen_idle_bottom_haze.pg
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_shaders.script
+- M gamedata/shaders/r3/combine.s
+- M gamedata/shaders/r3/combine_1.ps
+- M gamedata/shaders/r3/combine_2_naa.ps
+- M gamedata/shaders/r3/effects_water_puddles.s
+- A gamedata/shaders/r3/screenspace_fog.h
+- M gamedata/shaders/r3/screenspace_il.h
+- A gamedata/shaders/r3/ssfx_fog_atmo.h
+- A gamedata/shaders/r3/ssfx_fog_params.h
+- M gamedata/shaders/r3/ssfx_fog_scattering.ps
+- M gamedata/shaders/r3/ssfx_fog_scattering.s
+- M gamedata/shaders/r3/ssfx_glass.ps
+- M gamedata/shaders/r3/ssfx_glass.vs
+- A gamedata/shaders/r3/ssfx_haze.h
+- A gamedata/shaders/r3/ssfx_haze.ps
+- A gamedata/shaders/r3/ssfx_haze.s
+- M gamedata/shaders/r3/ssfx_ssr.ps
+- M gamedata/shaders/r3/ssfx_ssr.s
+- M gamedata/shaders/r3/ssfx_water.ps
+- M gamedata/shaders/r3/ssfx_water_pass.s
+- M gamedata/shaders/r3/ssfx_water_ssr.ps
+- M gamedata/shaders/r3/water_puddles.ps
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Layers/xrRender/Blender_Model_EbB.cpp
+- M engine/ogsr_engine/Layers/xrRender/Blender_Recorder_StandartBinding.cpp
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_build.cpp
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_structure.h
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r2_R_lights.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_R_rain.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_combine.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_ssfx.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/render_phase_sun.h
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/CustomZone.cpp
+- M engine/ogsr_engine/xrGame/CustomZone.h
+- M engine/ogsr_engine/xrGame/HUDManager.cpp
+- M engine/ogsr_engine/xrGame/HUDManager.h
+- M engine/ogsr_engine/xrGame/Level_load.cpp
+- M engine/ogsr_engine/xrGame/Weapon.h
+- M engine/ogsr_engine/xrGame/script_game_object2.cpp
+- M engine/ogsr_engine/xr_3da/CustomHUD.h
+- M engine/ogsr_engine/xr_3da/Environment.cpp
+- M engine/ogsr_engine/xr_3da/Environment.h
+- M engine/ogsr_engine/xr_3da/Environment_misc.cpp
+- M engine/ogsr_engine/xr_3da/IGame_Level.cpp
+- M Опционально/arrival_anomaly_vfx/gamedata/config/misc/zone_buzz.ltx
+
+<!-- nlc-changelog-commit: 15defecec3e868ea82696a2f465f9123062dc2f0 -->
+## 14.11.26 12:44 МСК - манифест
+
+Commit: [15defec](https://github.com/jordan1227/improved_to_he/commit/15defecec3e868ea82696a2f465f9123062dc2f0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 891915f0255cfc848a670fb6e88f9217c895eff2 -->
+## 14.11.26 12:43 МСК - Update amk_anoms_extra.ltx
+
+Commit: [891915f](https://github.com/jordan1227/improved_to_he/commit/891915f0255cfc848a670fb6e88f9217c895eff2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/misc/amk_anoms_extra.ltx
+
+<!-- nlc-changelog-commit: b7c4f3b7df1bf5b86185140aadeeb942d24eb4b0 -->
+## 14.11.26 12:38 МСК - манифест
+
+Commit: [b7c4f3b](https://github.com/jordan1227/improved_to_he/commit/b7c4f3b7df1bf5b86185140aadeeb942d24eb4b0)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: f0b4c4986cc98e97b81f991619495704657dd4ef -->
+## 14.11.26 12:37 МСК - Expand Flytrap and anomaly systems
+
+Commit: [f0b4c49](https://github.com/jordan1227/improved_to_he/commit/f0b4c4986cc98e97b81f991619495704657dd4ef)
+
+### Description
+
+Add slowed-time effects for physics objects, jumps, HUD actions, and weapons, plus grenade proximity detonation and configurable blast impacts. Introduce extra Flytrap and Silence spawns, anomaly tide and emission handling, and related gameplay text. Also fix Aver time-factor consistency and anomaly cache handling.
+
+## Мухоловка и Тишина: доработка, частота, время в Туманной чаще (движок nlc-3.589.193-3.589.199, 13-14.11.26)
+
+Доработка аномалий из раздела "Аномалии: Мухоловка, Тишина..." ниже. Где описание расходится, верно то, что здесь. Новая частота и размеры действуют для аномалий, появившихся после выброса или в новой игре.
+
+1. **Мухоловка: предметы, гранаты, трупы**
+   - Внутри для предметов идёт своё, гораздо более медленное время: брошенная граната, болт или труп повисают и еле плывут, а на выходе получают обратно свою скорость. В центре средней Мухоловки граната ползёт около 1 м/с, запал горит около 36 секунд (в сильной - ещё вдвое дольше).
+   - Висящую гранату можно подорвать выстрелом: пуля, прошедшая рядом с ней (около 12 см), её взрывает. Касается и гранат, которые держит бюрер.
+   - Взрыв гранаты заметно отбрасывает трупы (сильнее, чем раньше, РГД-5 сильнее Ф-1). Внутри Мухоловки толчок слабее, но виден; остальное тело получает на выходе.
+2. **Мухоловка: мутанты**
+   - Замедляются все анимации, в том числе бег собак (раньше собаки иногда бежали с обычной скоростью).
+   - Прыжок внутри - это обычный прыжок в замедленном времени: та же дуга, только медленнее. Если мутант вылетел из аномалии, он приземляется нормально.
+3. **Мухоловка: игрок**
+   - Ходьба замедляется так же, как у мутантов. Прыжок - замедленный: та же высота, но дольше в воздухе.
+   - Всё, что в руках, идёт медленнее: перезарядка, доставание, прицеливание, нож, броски, темп стрельбы (и у подствольника), а также аптечки, еда, маски, фляга. Звуки этих действий и выстрелы звучат ниже. Если вошли или вышли посреди перезарядки, анимация подстраивается, и магазин встаёт на место вместе с рукой.
+   - Мышь внутри медленнее, звуки мира приглушены. Эффект на экране включается быстрее при входе.
+   - Звуки детектора тоже ниже.
+4. **Размеры Мухоловки** теперь разные: слабая - 7 м, средняя - 6,5 м, сильная - 6 м. Слабая больше, но мягче.
+5. **Тишина**: радиус 7,5 м, без "моргания" при входе, трава больше не клонится.
+6. **Частота**: Мухоловки и Тишины теперь ставятся отдельно, сверх обычных аномалий (остальных аномалий столько же, сколько было до них). Число на уровне за один выброс, Мухоловки / Тишины:
+   - Туманная чаща: 25-35 / 15-22.
+   - Иванковский райцентр: 6-16 / 20-35. Зона 'Тесла': 5-10 / 8-15. Припять: 2-6 / 4-16.
+   - Рыжий лес: 3-6 / 5-8. Радар: 2-6 / 3-8. 'Кишка' Зоны: 2-5 / 2-6. Лиманск: 1-4 / 2-8. Армейские склады: 1-4 / 2-5.
+   - Агропром, Тёмная долина: 0-4 / 2-5. Янтарь: 0-4 / 2-4. Болота: 2-4 / 2-4.
+   - Свалка: 0-3 / 1-3. Кордон: 0-2 / 1-2. Забытый хутор: 0-2 / 0-3.
+   - Бар, Росток, больница, ЧАЭС: ни той, ни другой.
+   - Мухоловка и Тишина не встают на другие аномалии и друг на друга: между краями зон всегда есть хотя бы метр.
+   - Это первые цифры. Если где-то слишком много или мало, напишите: числа легко поправить.
+7. **Время в Туманной чаще**: там время всегда идёт в 5 раз быстрее. Раньше после уроков Долговязого (затемнение с пропуском времени) и некоторых скриптовых пропусков времени оно становилось обычным до следующего перехода. Теперь нет. Батарея (аккумулятор на поясе) там садилась в 25 раз быстрее, теперь в 5, как и время. Фонарь - как раньше.
+8. **Приливы теперь предвещают выброс.** Сразу после выброса аномалии не засыпают. За 2 игровых дня до следующего засыпает примерно каждая двадцатая обычная аномалия, в последний день - примерно каждая восьмая, за 6 часов - примерно каждая шестая. Те, что начали "дышать" раньше, продолжают и дальше. Сам ритм (около 45 минут активна, 30 спит, мерцание, не просыпается, пока внутри кто-то стоит) прежний. Засыпают только случайные аномалии, сюжетные и стоящие на картах изначально - никогда. На старом сохранении приливы начнутся после первого выброса. Проверка: `fl sivol_tide.status()` показывает текущую долю и сколько часов до выброса.
+9. **Телепорты и жадинки теперь меняются с выбросом, как остальные аномалии.** На уровне всегда лежат два набора случайных аномалий: активный и тот, что включится после следующего выброса. Раньше телепорты и жадинки второго набора работали сразу (в Туманной чаще одновременно работало почти вдвое больше телепортов), а после выброса их удаляли вместе со старыми, и до следующего захода на уровень их не было вовсе. Теперь телепорты и жадинки второго набора не срабатывают (жадинка тёмная и не хватает), а после выброса включаются и остаются до следующего. Сюжетные телепорты и жадинки, а также лабиринт телепортов в Туманной чаще работают как раньше. На старом сохранении новое поведение начнётся с аномалий, созданных после обновления (после выброса и перехода на уровень).
+10. **Исправлен вылет** при попадании в Мухоловку предмета без физики (FATAL в `CCustomZone::nlc_flytrap_update`).
+
+На что смотреть: гранаты и трупы не улетают на выходе слишком быстро; мутанты не застревают в прыжке; при выходе из Мухоловки посреди перезарядки или аптечки руки не дёргаются; размер Мухоловок разный; в Туманной чаще время не становится обычным после сна или уроков.
+
+Команды и лог:
+
+- `fl sivol_flytrap.spawn("weak", 8)` - Мухоловка в 8 м впереди с радиусом своего уровня силы (`weak`, `average`, `strong`); третьим числом можно задать радиус.
+- `fl sivol_silence.spawn("average", 8, 7.5)` - Тишина.
+- `fl sivol_tide.status()` - доля приливных аномалий и сколько часов до выброса; `fl sivol_tide.near(60)` - приливные аномалии рядом.
+- `fl amk_anoms.count_status()` - аномалии и телепорты по уровням: `on` - активный набор, `off` - следующий, `del` - старый (уберётся при переходе), `static` - стоящие на карте изначально.
+- `fl bind_greedy.greedy_goto()` - переместиться к ближайшей активной жадинке; `fl bind_greedy.greedy_goto("off")` - к жадинке следующего набора (должна быть тёмной и не хватать). `fl bind_greedy.greedy_status()` - состояние загруженных жадинок.
+- В логе: `[amk_anoms] <уровень>, set on/off: generated N anomalies (T tries); extra flytrap 3/4, silence 5/5` - сколько создано при генерации уровня: обычных аномалий и дополнительных (поставлено / выпало). Наборов два: активный и тот, что включится после выброса. `~ [flytrap]`, `[flytrap_anim]`, `[flytrap_jump]`, `[blast]` - подробности по Мухоловке и взрывам.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/gameplay/encyclopedia_zone.xml
+- M gamedata/config/gameplay/info_known_objects.xml
+- M gamedata/config/gameplay/info_original.xml
+- A gamedata/config/misc/amk_anoms_extra.ltx
+- M gamedata/config/misc/dialog_manager.ltx
+- M gamedata/config/misc/vergas_pda.ltx
+- M gamedata/config/misc/zone_flytrap.ltx
+- M gamedata/config/misc/zone_silence.ltx
+- M gamedata/config/misc/zones.ltx
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/eng/stable_dialog_manager.xml
+- M gamedata/config/text/eng/string_table_enc_zone.xml
+- M gamedata/config/text/eng/string_table_pda_stalker.xml
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/config/text/rus/stable_dialog_manager.xml
+- M gamedata/config/text/rus/string_table_enc_zone.xml
+- M gamedata/config/text/rus/string_table_pda_stalker.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+- M gamedata/config/ui/ui_mm_loading_screen.xml
+- M gamedata/config/weapons/w_grenades.ltx
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/alpet/const.script
+- M gamedata/scripts/amk/amk_anoms.script
+- M gamedata/scripts/amk/amk_uniq_news_lists.script
+- M gamedata/scripts/binders/bind_bubble.script
+- M gamedata/scripts/binders/bind_greedy.script
+- M gamedata/scripts/binders/bind_mteleport.script
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/news/news_data.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/scripts/sivol/sivol_exo.script
+- M gamedata/scripts/sivol/sivol_flytrap.script
+- M gamedata/scripts/sivol/sivol_silence.script
+- M gamedata/scripts/sivol/sivol_tide.script
+- M gamedata/scripts/sleep_manager.script
+- M gamedata/scripts/vergas/vergas_flask.script
+- M gamedata/scripts/vergas/vergas_masks.script
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/ActorInput.cpp
+- M engine/ogsr_engine/xrGame/CharacterPhysicsSupport.cpp
+- M engine/ogsr_engine/xrGame/CustomZone.cpp
+- M engine/ogsr_engine/xrGame/CustomZone.h
+- M engine/ogsr_engine/xrGame/Explosive.cpp
+- M engine/ogsr_engine/xrGame/Explosive.h
+- M engine/ogsr_engine/xrGame/Grenade.cpp
+- M engine/ogsr_engine/xrGame/Grenade.h
+- M engine/ogsr_engine/xrGame/HudItem.cpp
+- M engine/ogsr_engine/xrGame/HudItem.h
+- M engine/ogsr_engine/xrGame/HudSound.cpp
+- M engine/ogsr_engine/xrGame/Level_Bullet_Manager.cpp
+- M engine/ogsr_engine/xrGame/Level_Bullet_Manager.h
+- M engine/ogsr_engine/xrGame/PhysicsShellHolder.cpp
+- M engine/ogsr_engine/xrGame/PhysicsShellHolder.h
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazinedWGrenade.cpp
+- M engine/ogsr_engine/xrGame/WeaponShotgun.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster.h
+- M engine/ogsr_engine/xrGame/ai/monsters/basemonster/base_monster_feel.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation_base.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_animation_base_update.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.cpp
+- M engine/ogsr_engine/xrGame/ai/monsters/control_jump.h
+- M engine/ogsr_engine/xrGame/ai/monsters/control_movement.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/player_hud.cpp
+- M engine/ogsr_engine/xrGame/player_hud.h
+
+<!-- nlc-changelog-commit: 1fe7fed13e4712448fe066747f289541d8a95663 -->
+## 14.11.26 10:25 МСК - Track personal goodwill before restoring
+
+Commit: [1fe7fed](https://github.com/jordan1227/improved_to_he/commit/1fe7fed13e4712448fe066747f289541d8a95663)
+
+### Description
+
+Record NPC target pairs that were successfully pacified and restore only those still-set relations, avoiding fatal clears for unset or removed pairs.
+
+### Game files changed
+
+- M gamedata/scripts/olr/olr_relations.script
+
+<!-- nlc-changelog-commit: 33e6d1a4b5f195296bd05f139556548ba9794237 -->
+## 13.11.26 07:51 МСК - манифест
+
+Commit: [33e6d1a](https://github.com/jordan1227/improved_to_he/commit/33e6d1a4b5f195296bd05f139556548ba9794237)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: b572268710327c2a1e8073608f8ef4973a7571a1 -->
+## 13.11.26 07:51 МСК - вернул сёму
+
+Commit: [b572268](https://github.com/jordan1227/improved_to_he/commit/b572268710327c2a1e8073608f8ef4973a7571a1)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/news/news_main.script
+
+<!-- nlc-changelog-commit: d28205a02ec8f91c6e9d87003e0c377559be600c -->
+## 13.11.26 07:34 МСК - манифест
+
+Commit: [d28205a](https://github.com/jordan1227/improved_to_he/commit/d28205a02ec8f91c6e9d87003e0c377559be600c)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 1119e68d63deceeced8c4e243f3c9159bef8c815 -->
 ## 13.11.26 07:33 МСК - алайф патч 2
