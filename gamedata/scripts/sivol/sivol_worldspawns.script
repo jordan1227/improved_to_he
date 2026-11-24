@@ -47,6 +47,14 @@ local misc_spots = {
     -- misc рядом с костром корыто
     { name = "misc_campfire_trough", pos = {-205.376, -19.568, -152.266}, lv = 47320, gv = 46 }
 }
+-- Neumeha's "container" quest asks the actor for one energy drink, so every new game gets one
+-- extra energy_drink at a random spot of these three, on top of the misc pool above.
+-- Positions are the spawn_map camera values (energydrinkspot1..3).
+local energy_spots = {
+    { name = "energy_spot1", pos = {-177.438, -19.536, -163.944}, lv = 72335, gv = 52 },
+    { name = "energy_spot2", pos = {-215.887, -16.768, -159.521}, lv = 37391, gv = 48 },
+    { name = "energy_spot3", pos = {-218.558, -14.225, -131.114}, lv = 33578, gv = 63 }
+}
 -- Nominal satiety: bread .30, kolbasa .40, conserva .75.
 -- Easy recipes stay at or below 1.05; hard recipes stay at or below .75.
 local food_recipes = {
@@ -131,6 +139,7 @@ local function make_plan(difficulty)
         end
         add_item(plan.items, section, spot)
     end
+    add_item(plan.items, "energy_drink", energy_spots[lua_random(1, #energy_spots)])
     return plan
 end
 
@@ -177,6 +186,60 @@ end
 function on_game_load()
     -- Existing saves have no eligibility infoportion and receive no Cordon loot.
     run_plan()
+end
+
+-- Console helper: fl sivol_worldspawns.debug_energy_spots()   (or ...debug_energy_spots(2) for one spot)
+-- Spawns a fresh energy_drink at each extra-drink spot, then logs where it ended up after 3 s, so the
+-- positions and physics can be checked in the game. Spawned drinks are real items; pick them up or ignore.
+function debug_energy_spots(spot)
+    local only = tonumber(spot)
+    for i, s in ipairs(energy_spots) do
+        if not only or only == i then
+            local obj = amk.spawn_item("energy_drink", sak.v3f(s.pos[1], s.pos[2], s.pos[3]), s.gv, s.lv)
+            if obj then
+                local id = obj.id
+                log2("[sivol_worldspawns] debug %s id=%d spawned at %.3f %.3f %.3f", s.name, id, s.pos[1], s.pos[2], s.pos[3])
+                dsh.timeout(3000, function()
+                    local o = level.object_by_id(id)
+                    if o then
+                        local p = o:position()
+                        log2("[sivol_worldspawns] debug %s id=%d now %.3f %.3f %.3f (moved %.2f m)", s.name, id, p.x, p.y, p.z,
+                            p:distance_to(sak.v3f(s.pos[1], s.pos[2], s.pos[3])))
+                    else
+                        log2("[sivol_worldspawns] debug %s id=%d is offline (actor too far)", s.name, id)
+                    end
+                end)
+            else
+                log2("[sivol_worldspawns] debug %s FAILED to spawn", s.name)
+            end
+        end
+    end
+end
+
+-- Console helper: fl sivol_worldspawns.debug_wolf_pb()   (or ...debug_wolf_pb(true) to spawn one if none exists)
+-- Reports every ground wpn_pb (server objects without a parent): position, level vertices, level name, online state.
+-- The Wolf document quest (sak.add_document_wolf) creates one at 139.288 4.093 336.435, lv 445272, gv 232.
+function debug_wolf_pb(spawn_if_missing)
+    local ref = sak.v3f(139.288, 4.093, 336.435)
+    local found = 0
+    for _, o in alife():objects() do
+        if o:section_name() == "wpn_pb" and (o.parent_id == nil or o.parent_id == 65535) then
+            found = found + 1
+            local gv = o.m_game_vertex_id
+            local map = "?"
+            if game_graph():valid_vertex_id(gv) then map = alife():level_name(game_graph():vertex(gv):level_id()) end
+            log2("[sivol_worldspawns] ground wpn_pb id=%d pos=%.2f %.2f %.2f lv=%d gv=%d level=%s online=%s dist_to_quest_spot=%.1f",
+                o.id, o.position.x, o.position.y, o.position.z, o.m_level_vertex_id, gv, map,
+                tostring(level.object_by_id(o.id) ~= nil), o.position:distance_to(ref))
+        end
+    end
+    if found == 0 then
+        log2("[sivol_worldspawns] no ground wpn_pb exists")
+        if spawn_if_missing then
+            local obj = amk.spawn_item("wpn_pb", ref, 232, 445272)
+            log2("[sivol_worldspawns] spawned wpn_pb at the quest spot: %s", tostring(obj ~= nil and obj.id or nil))
+        end
+    end
 end
 
 -- Kishka (k01_darkscape) gas station, ported from NLC HE.
