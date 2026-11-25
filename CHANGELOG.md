@@ -1,6 +1,52 @@
-<!-- nlc-changelog-head: 0a89bef951d793ee020812927fef7b5084c288bd -->
+<!-- nlc-changelog-head: 190e00ec242025c27139928ab7c8d2e3aece885d -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 190e00ec242025c27139928ab7c8d2e3aece885d -->
+## 26.11.26 00:04 МСК - Фиксы пояса и новая анимка Add belt gesture for accumulator controls
+
+Commit: [190e00e](https://github.com/jordan1227/improved_to_he/commit/190e00ec242025c27139928ab7c8d2e3aece885d)
+
+### Description
+
+Add a dedicated accumulator key binding with a left-hand belt gesture, HUD animations, and weapon sag. Integrate accumulator swapping and belt-section access, and add localized feedback for missing equipment.
+
+### Game files changed
+
+- A gamedata/anims/sivol_hud/weapon_pitch.anm
+- A gamedata/anims/sivol_hud/weapon_roll.anm
+- A gamedata/anims/sivol_hud/weapon_x.anm
+- A gamedata/anims/sivol_hud/weapon_y.anm
+- A gamedata/anims/sivol_hud/weapon_yaw.anm
+- A gamedata/anims/sivol_hud/weapon_z.anm
+- M gamedata/config/defines.ltx
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+- M gamedata/config/ui/ui_keybinding.xml
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/engine_callbacks.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- A gamedata/scripts/sivol/sivol_belt_gesture.script
+
+<!-- nlc-changelog-commit: 3780bbc6b9bf5c30dc1619775300056dffcdbcf7 -->
+## 25.11.26 22:01 МСК - манифест
+
+Commit: [3780bbc](https://github.com/jordan1227/improved_to_he/commit/3780bbc6b9bf5c30dc1619775300056dffcdbcf7)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 0a89bef951d793ee020812927fef7b5084c288bd -->
 ## 25.11.26 21:59 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
