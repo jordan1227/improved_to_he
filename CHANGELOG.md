@@ -1,6 +1,379 @@
-<!-- nlc-changelog-head: 72c71241150d6883dc1c09eb892788c2f633f9ba -->
+<!-- nlc-changelog-head: 0a89bef951d793ee020812927fef7b5084c288bd -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 0a89bef951d793ee020812927fef7b5084c288bd -->
+## 25.11.26 21:59 МСК - Merge branch 'main' of https://github.com/jordan1227/improved_to_he
+
+Commit: [0a89bef](https://github.com/jordan1227/improved_to_he/commit/0a89bef951d793ee020812927fef7b5084c288bd)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/scripts/sak/sak.script
+- M bin_x64/xrEngine.exe
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/dialogs_escape.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/config/text/eng/sak_strings.xml
+- M gamedata/config/text/eng/sak_strings_six.xml
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/sak_strings.xml
+- M gamedata/config/text/rus/sak_strings_six.xml
+- M gamedata/config/text/rus/sak_strings_six2.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/stable_task_manager.xml
+- M gamedata/config/text/rus/stable_task_manager.xml.bak_kanaly_sbyta
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/config/weapons/add_scopes.ltx
+- M gamedata/config/weapons/w_awm.ltx
+- M gamedata/config/weapons/w_g36.ltx
+- M gamedata/config/weapons/w_sv98.ltx
+- M gamedata/config/weapons/w_toz34_hunter.ltx
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/binders/bind_stalker.script
+- M gamedata/scripts/he_pda_access.script
+- M gamedata/scripts/ogsr_shaders_control.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/scripts/sivol/sivol_worldspawns.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_video_adv.script
+- M gamedata/shaders/r3/3dss_reticle.ps
+- M gamedata/shaders/r3/combine_1.ps
+- M gamedata/shaders/r3/ssfx_ao.ps
+- M gamedata/shaders/r3/ssfx_ssr_combine.ps
+
+### Other repository files changed
+
+- M manifest.txt
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Include/xrRender/RainRender.h
+- M engine/ogsr_engine/Layers/xrRender/Blender_Recorder_StandartBinding.cpp
+- M engine/ogsr_engine/Layers/xrRender/RenderTargetPhaseAA.cpp
+- M engine/ogsr_engine/Layers/xrRender/SH_Texture.h
+- M engine/ogsr_engine/Layers/xrRender/WallmarksEngine.cpp
+- M engine/ogsr_engine/Layers/xrRender/WallmarksEngine.h
+- M engine/ogsr_engine/Layers/xrRender/dxRainRender.cpp
+- M engine/ogsr_engine/Layers/xrRender/dxRainRender.h
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_build.cpp
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_structure.h
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.h
+- M engine/ogsr_engine/Layers/xrRenderDX10/dx10SH_Texture.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r2_R_lights.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_R_rain.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_R_render.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_accum_direct.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_accum_spot.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_combine.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_ssfx.cpp
+- A engine/ogsr_engine/Layers/xrRenderPC_R4/r4_scope_pip.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/render_phase_sun.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/render_phase_sun.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/xrRender_R4.vcxproj
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/xrRender_R4.vcxproj.filters
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor.cpp
+- M engine/ogsr_engine/xrGame/Weapon.cpp
+- M engine/ogsr_engine/xr_3da/Environment.h
+- M engine/ogsr_engine/xr_3da/Environment_render.cpp
+- M engine/ogsr_engine/xr_3da/Rain.cpp
+- M engine/ogsr_engine/xr_3da/Rain.h
+- M engine/ogsr_engine/xr_3da/device.h
+- M engine/ogsr_engine/xr_3da/x_ray.cpp
+- M engine/ogsr_engine/xr_3da/xr_efflensflare.cpp
+
+<!-- nlc-changelog-commit: 10f0b86e9a6552812483f50c520420149024a8e9 -->
+## 25.11.26 21:59 МСК - Bump engine to nlc-3.589.225
+
+Commit: [10f0b86](https://github.com/jordan1227/improved_to_he/commit/10f0b86e9a6552812483f50c520420149024a8e9)
+
+### Description
+
+Update the engine binary and version metadata. Set the scope picture-in-picture default to 1.0; runtime testing remains pending.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+
+<!-- nlc-changelog-commit: 4d6b221074f0f57c250228fc09a56068834a5794 -->
+## 25.11.26 21:56 МСК - Add true picture-in-picture scope rendering
+
+Commit: [4d6b221](https://github.com/jordan1227/improved_to_he/commit/4d6b221074f0f57c250228fc09a56068834a5794)
+
+### Description
+
+Render 3D scopes in a dedicated view with their own targets, lighting, and supported effects. Add lens glass profiles and video options, and update the engine build.
+
+## 3D-прицелы: "Второй вид" - чёткое изображение в линзе, характер стекла (движок nlc-3.589.219-3.589.225, 25.11.26)
+
+Изображение в 3D-прицеле теперь рисуется отдельно, со своей точки зрения и в своём разрешении, а не растягивается из обычного кадра. Даже на сильном увеличении (ПСО, СВ-98) дальние деревья, склоны и люди чёткие, а не мыльные. Нужен новый exe (nlc-3.589.225) и перезапуск игры.
+
+1. **"Второй вид" в линзе**
+   - Новая настройка "Изображение в 3D прицеле": "Второй вид" (по умолчанию) или "Увеличенный кадр" (старый способ, для слабых ПК).
+   - Работает в режимах "Линза" и "Гибрид". Режим "Линза" теперь стоит по умолчанию.
+   - FPS снижается только пока смотришь в прицел: в тестах примерно на 15-20%, в дождь до 25%.
+2. **В прицеле всё как вокруг**
+   - Тени, освещение, ночные лампы и фонари, туман и его свечение, затенение в углах.
+   - Следы от пуль и кровь на стенах и телах, марево от аномалий и костров.
+   - Дождь, лужи и отражения на мокром асфальте. Отражения можно выключить отдельной галочкой "Отражения в 3D прицеле" (в дождь это примерно 10-15% FPS).
+   - Лучи света в прицеле по умолчанию выключены (дорого), включаются в консоли: r_3dss_pip_volumetric 1.
+3. **Характер стекла**
+   - У каждого прицела своё стекло: ПСО - тёплый оттенок и заметные искажения к краю, Каштан - мягкий и широкий, ПУ на Мосинке и прицел ТОЗ - старое стекло, мягкий край и блики, западная оптика (Спектр, G28, AWM, СВ-98) - чистая.
+   - По краю линзы: лёгкое размытие, цветная кайма, подушкообразное искажение, тёмный край при сильном увеличении, блик от солнца рядом с прицелом. Точка прицеливания не смещается.
+   - Ползунок "Характер стекла 3D прицела": 0 - чистое стекло, 1 - как есть, 2 - сильнее.
+4. **Качество и меню**
+   - "Качество изображения 3D прицела" по умолчанию 1. Выше - чуть ровнее трава и кусты, но заметно дороже: по сравнению с 1 примерно на 15% меньше FPS при 1.5 и на 30% при 2.
+   - Меню 3D-прицелов стало проще: лишние строки прячутся. Например, "Увеличение разрешения в 3D прицелах" и модель DLSS видны только при "Увеличенном кадре".
+
+Что проверить
+
+- Разные прицелы (ПСО, Каштан, ПУ, СВ-98, Спектр): чёткость, нет ли растяжения, мерцания и радужных пятен.
+- Колесо зума на ПСО: изображение увеличивается от центра.
+- Дождь: лужи и отражения в прицеле, FPS с галочкой "Отражения" и без.
+- Стрельба по стене и телу через прицел: следы видны в линзе.
+- Ночь и фонари, туман, аномалии в прицеле.
+- FPS в прицеле и без него, ощущения от "Характера стекла" на 0, 1 и 2.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/config/weapons/add_scopes.ltx
+- M gamedata/config/weapons/w_awm.ltx
+- M gamedata/config/weapons/w_g36.ltx
+- M gamedata/config/weapons/w_sv98.ltx
+- M gamedata/config/weapons/w_toz34_hunter.ltx
+- M gamedata/scripts/ogsr_shaders_control.script
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_video_adv.script
+- M gamedata/shaders/r3/3dss_reticle.ps
+- M gamedata/shaders/r3/combine_1.ps
+- M gamedata/shaders/r3/ssfx_ao.ps
+- M gamedata/shaders/r3/ssfx_ssr_combine.ps
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Include/xrRender/RainRender.h
+- M engine/ogsr_engine/Layers/xrRender/Blender_Recorder_StandartBinding.cpp
+- M engine/ogsr_engine/Layers/xrRender/RenderTargetPhaseAA.cpp
+- M engine/ogsr_engine/Layers/xrRender/SH_Texture.h
+- M engine/ogsr_engine/Layers/xrRender/WallmarksEngine.cpp
+- M engine/ogsr_engine/Layers/xrRender/WallmarksEngine.h
+- M engine/ogsr_engine/Layers/xrRender/dxRainRender.cpp
+- M engine/ogsr_engine/Layers/xrRender/dxRainRender.h
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_build.cpp
+- M engine/ogsr_engine/Layers/xrRender/r__dsgraph_structure.h
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.h
+- M engine/ogsr_engine/Layers/xrRenderDX10/dx10SH_Texture.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r2_R_lights.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_R_rain.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_R_render.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_accum_direct.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_accum_spot.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_combine.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_ssfx.cpp
+- A engine/ogsr_engine/Layers/xrRenderPC_R4/r4_scope_pip.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/render_phase_sun.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/render_phase_sun.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/xrRender_R4.vcxproj
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/xrRender_R4.vcxproj.filters
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor.cpp
+- M engine/ogsr_engine/xrGame/Weapon.cpp
+- M engine/ogsr_engine/xr_3da/Environment.h
+- M engine/ogsr_engine/xr_3da/Environment_render.cpp
+- M engine/ogsr_engine/xr_3da/Rain.cpp
+- M engine/ogsr_engine/xr_3da/Rain.h
+- M engine/ogsr_engine/xr_3da/device.h
+- M engine/ogsr_engine/xr_3da/x_ray.cpp
+- M engine/ogsr_engine/xr_3da/xr_efflensflare.cpp
+
+<!-- nlc-changelog-commit: 001ca04fed30d375a387b3b1d40ddeb3e45bcb8f -->
+## 25.11.26 18:29 МСК - Polish Russian dialogue and quest text
+
+Commit: [001ca04](https://github.com/jordan1227/improved_to_he/commit/001ca04fed30d375a387b3b1d40ddeb3e45bcb8f)
+
+### Description
+
+Revise wording in Russian dialogue and task descriptions, keeping the task-manager backup in sync.
+
+### Game files changed
+
+- M gamedata/config/text/rus/sak_strings.xml
+- M gamedata/config/text/rus/sak_strings_six.xml
+- M gamedata/config/text/rus/sak_strings_six2.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/stable_task_manager.xml
+- M gamedata/config/text/rus/stable_task_manager.xml.bak_kanaly_sbyta
+
+<!-- nlc-changelog-commit: 2c7a7bed666952c097e4c4e86cda6351f03713cd -->
+## 25.11.26 17:26 МСК - Keep holders out of inventory use
+
+Commit: [2c7a7be](https://github.com/jordan1227/improved_to_he/commit/2c7a7bed666952c097e4c4e86cda6351f03713cd)
+
+### Description
+
+Hide vest, pouch, and bag holders when picked up, and prevent direct use so they can only be opened through their dedicated dialogs.
+
+### Game files changed
+
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/binders/bind_stalker.script
+
+<!-- nlc-changelog-commit: 2c999eabb5956239bf908ea36dcd4d76c582dbe5 -->
+## 25.11.26 02:51 МСК - Expand Cordon checkpoint and Neumeha content
+
+Commit: [2c999ea](https://github.com/jordan1227/improved_to_he/commit/2c999eabb5956239bf908ea36dcd4d76c582dbe5)
+
+### Description
+
+Rework the bridge checkpoint dialogue around Kuznetsov and Kovalchuk, add Neumeha's stories and energy-drink quest support, and make the attic sausage stash available independently of Wolf's document quest. Also clarify PDA module hints and add focused spawn-debug helpers.
+
+### Game files changed
+
+- M gamedata/config/gameplay/character_desc_nlc30_spawn.xml
+- M gamedata/config/gameplay/dialogs_escape.xml
+- M gamedata/config/gameplay/info_portions_nlc30.xml
+- M gamedata/config/gameplay/sak_dalogs_esc_gar.xml
+- M gamedata/config/text/eng/sak_strings.xml
+- M gamedata/config/text/eng/sak_strings_six.xml
+- M gamedata/config/text/eng/script_strings.xml
+- M gamedata/config/text/eng/stable_dialogs_nlc30.xml
+- M gamedata/config/text/rus/sak_strings_six.xml
+- M gamedata/config/text/rus/script_strings.xml
+- M gamedata/config/text/rus/stable_dialogs_nlc30.xml
+- M gamedata/scripts/he_pda_access.script
+- M gamedata/scripts/sak/sak.script
+- M gamedata/scripts/sak/sak_dialog.script
+- M gamedata/scripts/sivol/sivol_worldspawns.script
+
+<!-- nlc-changelog-commit: e6cbd8bba9b8d48e4c7a99a2b6b102bb8e7356b4 -->
+## 22.11.26 00:41 МСК - Разобрался с графом
+
+Commit: [e6cbd8b](https://github.com/jordan1227/improved_to_he/commit/e6cbd8bba9b8d48e4c7a99a2b6b102bb8e7356b4)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/game.graph
+
+<!-- nlc-changelog-commit: ab69fe36e12ccdfbf05835a608818e0a9198ea46 -->
+## 20.11.26 19:35 МСК - Ошибка локализации
+
+Commit: [ab69fe3](https://github.com/jordan1227/improved_to_he/commit/ab69fe36e12ccdfbf05835a608818e0a9198ea46)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/rus/ui_st_mm.xml
+
+<!-- nlc-changelog-commit: 98b8e29442bf8e95c7e1f86c190d2585a21f5a81 -->
+## 20.11.26 15:23 МСК - Поршень на завершение квеста
+
+Commit: [98b8e29](https://github.com/jordan1227/improved_to_he/commit/98b8e29442bf8e95c7e1f86c190d2585a21f5a81)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/gameplay/dialogs_all_npces.xml
+- M gamedata/scripts/vergas/vergas_krujka.script
+
+<!-- nlc-changelog-commit: d97ce232a0155564105f752f2ca99d9b16e57a24 -->
+## 19.11.26 01:43 МСК - манифест
+
+Commit: [d97ce23](https://github.com/jordan1227/improved_to_he/commit/d97ce232a0155564105f752f2ca99d9b16e57a24)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 66b0e1edfae9d30e1daf0e28959731c379c270b0 -->
+## 19.11.26 01:42 МСК - Remove Marsh level assets
+
+Commit: [66b0e1e](https://github.com/jordan1227/improved_to_he/commit/66b0e1edfae9d30e1daf0e28959731c379c270b0)
+
+### Description
+
+Delete the Marsh level geometry, lighting data, terrain textures, and LOD assets.
+
+### Game files changed
+
+- D gamedata/levels/marsh/build_details.dds
+- D gamedata/levels/marsh/level
+- D gamedata/levels/marsh/level.env_mod
+- D gamedata/levels/marsh/level.fog_vol
+- D gamedata/levels/marsh/level.geomx
+- D gamedata/levels/marsh/level.hom
+- D gamedata/levels/marsh/level_lods.dds
+- D gamedata/levels/marsh/level_lods_nm.dds
+- D gamedata/levels/marsh/lmap#1_1.dds
+- D gamedata/levels/marsh/lmap#1_2.dds
+- D gamedata/levels/marsh/lmap#2_1.dds
+- D gamedata/levels/marsh/lmap#2_2.dds
+- D gamedata/levels/marsh/terrain/terrain_marsh.dds
+- D gamedata/levels/marsh/terrain/terrain_marsh_lm.dds
+
+<!-- nlc-changelog-commit: 6ca3b6676f3a1b6f4902dfbd897325644f89c63e -->
+## 19.11.26 01:41 МСК - манифест
+
+Commit: [6ca3b66](https://github.com/jordan1227/improved_to_he/commit/6ca3b6676f3a1b6f4902dfbd897325644f89c63e)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 72c71241150d6883dc1c09eb892788c2f633f9ba -->
 ## 19.11.26 01:40 МСК - Add English PDA password support
