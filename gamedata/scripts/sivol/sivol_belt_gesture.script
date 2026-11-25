@@ -1,0 +1,509 @@
+-- sivol: left hand to the belt gesture (accumulator key, design 2026-11-25, round 3).
+--
+-- No hand clips. Additive blend layers (game.play_hud_anm; constant-pose .anm files,
+-- 0.1 m or 10 deg per 1.0 power; the engine fades each layer in/out over a fixed 0.4 s
+-- with a min-jerk ease) move:
+--   * the left hand (HUD part 1, he_watch\left_hand_*.anm) in its grip pose down-left
+--     out of frame and straight back onto the foregrip;
+--   * the weapon and right hand (HUD part 0, sivol_hud\weapon_*.anm) a little down and
+--     canted while the weapon is held one-handed ("weapon sag").
+-- Layers are keyed by file name, so the weapon uses its own copies of the axis files.
+-- The weapon sag is also used by the left-hand watch view (allcore_hide: sag_on/sag_off).
+--
+-- The camera gets one smooth dip (pitch, roll a little later) with a single soft nod at
+-- the swap. Only the change of the offset is written each frame (like sivol_fuzz_recoil),
+-- so mouse look keeps working and exactly what was added is taken back.
+--
+-- During the gesture: movement keys only (hud_animation_owner movement), no sprint,
+-- move speed x MOVE_PENALTY. No level.disable_input.
+--
+-- Tuning from the console (values are logged by dump):
+--   fl sivol_belt_gesture.test()                                  gesture without a swap
+--   fl sivol_belt_gesture.tune_hand(x, y, z, pitch, yaw, roll)    metres / degrees
+--   fl sivol_belt_gesture.tune_cam(pitch, roll, nod, down_ms, up_ms)   degrees / ms
+--   fl sivol_belt_gesture.tune_sag("gesture" or "watch", x, y, z, pitch, yaw, roll)
+--   fl sivol_belt_gesture.tune_shake(wobble, sway_roll, sway_pitch)   watch view, degrees
+--   fl sivol_belt_gesture.tune_hold(hold_ms)
+--   fl sivol_belt_gesture.dump()
+
+local DEBUG = false -- [belt_gesture] start/end/swap log lines; dump() logs regardless
+
+local ACCUM_SLOT = 10
+local OWNER_NAME = "belt_gesture"
+local PENALTY_NAME = "belt_gesture"
+
+local PART_WEAPON = 0
+local PART_LEFT = 1
+local LAYER_FADE_MS = 400       -- engine script_layer fade time
+local ROLL_LAG_MS = 80          -- roll follows pitch a little later
+local NOD_MS = 250
+
+local MOVE_PENALTY = 0.75
+local SWAP_SOUND = "device\\watch_end"
+
+local POS_UNIT = 0.1
+local ROT_UNIT = 10.0
+local HAND_POS_ANMS = { [[he_watch\left_hand_x.anm]], [[he_watch\left_hand_y.anm]], [[he_watch\left_hand_z.anm]] }
+local HAND_ROT_ANMS = { [[he_watch\left_hand_pitch.anm]], [[he_watch\left_hand_yaw.anm]], [[he_watch\left_hand_roll.anm]] }
+local WPN_POS_ANMS = { [[sivol_hud\weapon_x.anm]], [[sivol_hud\weapon_y.anm]], [[sivol_hud\weapon_z.anm]] }
+local WPN_ROT_ANMS = { [[sivol_hud\weapon_pitch.anm]], [[sivol_hud\weapon_yaw.anm]], [[sivol_hud\weapon_roll.anm]] }
+
+-- Tunables (fl helpers above change them for the session).
+local cfg = {
+	hand_pos = { -0.25, -0.32, -0.05 }, -- metres x, y, z (+x right)
+	hand_rot = { 0, 0, 0 },             -- degrees pitch, yaw, roll
+	hold_ms = 250,                      -- hand stays down after the swap
+	cam_pitch = 4.0,                    -- degrees, positive looks down
+	cam_roll = 2.5,                     -- degrees, sign picks the side
+	cam_nod = 0.5,                      -- degrees, one soft extra dip at the swap
+	cam_down_ms = 450,
+	cam_up_ms = 450,
+}
+
+-- Weapon sag per user (metres / degrees). In game: +x is right, negative pitch is nose UP.
+-- The gesture keeps its accepted values (the camera dip hides the nose-up). The watch has
+-- no camera move: the weapon shifts right and a little nose-down, wobbles once as the
+-- left hand lets go, then sways slowly while held one-handed (shake, driven per frame).
+local sag = {
+	gesture = { pos = { 0, -0.015, 0 }, rot = { -3, 0, 4 } },
+	watch   = { pos = { 0.015, -0.005, 0 }, rot = { 1, 0, 2 },
+		shake = { wobble = 0.8, sway_roll = 0.15, sway_pitch = 0.1 } },
+}
+local WOBBLE_HZ = 2.0
+local WOBBLE_DECAY_S = 0.18
+local SWAY_ROLL_HZ = 0.4
+local SWAY_PITCH_HZ = 0.3
+
+local DEG = math.pi / 180
+
+local cur = nil       -- running gesture state
+local next_id = 0
+local update_sig = nil
+local sag_profile = nil
+
+local function log_dbg(fmt, ...)
+	if DEBUG then log2("[belt_gesture] " .. fmt, ...) end
+end
+
+local function tip(id)
+	sak.send_tip_local(game.translate_string(id), game.translate_string("thinking_out_loud"), 1, 10, "g_g", "sak", "red")
+end
+
+local function smoother(t)
+	if t <= 0 then return 0 end
+	if t >= 1 then return 1 end
+	return t * t * t * (t * (6 * t - 15) + 10)
+end
+
+-- ---------------------------------------------------------------- HUD layers
+
+local function drive_set(pos_anms, rot_anms, part, pos, rot)
+	for i = 1, 3 do
+		local pp = pos and pos[i] / POS_UNIT or 0
+		local rp = rot and rot[i] / ROT_UNIT or 0
+		if math.abs(pp) > 1e-4 then
+			game.play_hud_anm(pos_anms[i], part, 1.0, pp, true, true)
+		else
+			game.stop_hud_anm(pos_anms[i], false)
+		end
+		if math.abs(rp) > 1e-4 then
+			game.play_hud_anm(rot_anms[i], part, 1.0, rp, true, true)
+		else
+			game.stop_hud_anm(rot_anms[i], false)
+		end
+	end
+end
+
+local function stop_set(pos_anms, rot_anms, force)
+	for i = 1, 3 do
+		game.stop_hud_anm(pos_anms[i], force == true)
+		game.stop_hud_anm(rot_anms[i], force == true)
+	end
+end
+
+local function hand_on()
+	drive_set(HAND_POS_ANMS, HAND_ROT_ANMS, PART_LEFT, cfg.hand_pos, cfg.hand_rot)
+end
+
+local function hand_off(force)
+	stop_set(HAND_POS_ANMS, HAND_ROT_ANMS, force)
+end
+
+-- Shake: the pitch/roll layer powers are rewritten every frame (no_restart keeps the
+-- layer's fade), adding one damped wobble and a slow sway on top of the static pose.
+local shake_sig = nil
+local shake_t0 = 0
+
+local function shake_unsubscribe()
+	if shake_sig then
+		ogse_signals.get_mgr():unsubscribe(shake_sig)
+		shake_sig = nil
+	end
+end
+
+local function shake_update()
+	local p = sag_profile and sag[sag_profile]
+	local sh = p and p.shake
+	if not sh then shake_unsubscribe() return end
+	local t = (time_global() - shake_t0) / 1000
+	local wobble = sh.wobble * math.exp(-t / WOBBLE_DECAY_S) * math.sin(2 * math.pi * WOBBLE_HZ * t)
+	local roll = p.rot[3] + wobble + sh.sway_roll * math.sin(2 * math.pi * SWAY_ROLL_HZ * t)
+	local pitch = p.rot[1] + sh.sway_pitch * math.sin(2 * math.pi * SWAY_PITCH_HZ * t + 1.3)
+	game.play_hud_anm(WPN_ROT_ANMS[1], PART_WEAPON, 1.0, pitch / ROT_UNIT, true, true)
+	game.play_hud_anm(WPN_ROT_ANMS[3], PART_WEAPON, 1.0, roll / ROT_UNIT, true, true)
+end
+
+-- Weapon sag; profile "gesture" or "watch". Skipped while aiming so the sight stays put.
+function sag_on(profile)
+	local p = sag[profile or "gesture"]
+	if not p or not db.actor or db.actor:zoom_mode() then return false end
+	drive_set(WPN_POS_ANMS, WPN_ROT_ANMS, PART_WEAPON, p.pos, p.rot)
+	sag_profile = profile
+	local sh = p.shake
+	if sh and (sh.wobble ~= 0 or sh.sway_roll ~= 0 or sh.sway_pitch ~= 0) then
+		shake_t0 = time_global()
+		if not shake_sig then
+			shake_sig = ogse_signals.get_mgr():subscribe({ signal = "on_update", fun = shake_update })
+		end
+	end
+	return true
+end
+
+function sag_off(force)
+	shake_unsubscribe()
+	if not sag_profile then return end
+	stop_set(WPN_POS_ANMS, WPN_ROT_ANMS, force)
+	sag_profile = nil
+end
+
+local function hands_possible()
+	return db.actor:active_item() ~= nil
+end
+
+-- ---------------------------------------------------------------- camera
+
+local function camera()
+	if not actor_camera then return nil end
+	local ok, cam = pcall(actor_camera, 0)
+	if ok then return cam end
+	return nil
+end
+
+-- Target offset (degrees) for the current phase: one smooth dip, roll a little later,
+-- one half-cosine nod at the swap. No oscillation.
+local function camera_target(st, now)
+	local p, r
+	if st.phase == "up" then
+		local tp = (now - st.t_up) / cfg.cam_up_ms
+		local tr = (now - st.t_up - ROLL_LAG_MS) / cfg.cam_up_ms
+		p = st.up_from_p * (1 - smoother(tp))
+		r = st.up_from_r * (1 - smoother(tr))
+	else
+		local tp = (now - st.t0) / cfg.cam_down_ms
+		local tr = (now - st.t0 - ROLL_LAG_MS) / cfg.cam_down_ms
+		p = cfg.cam_pitch * smoother(tp)
+		r = cfg.cam_roll * smoother(tr)
+		if st.t_swap then
+			local u = (now - st.t_swap) / NOD_MS
+			if u > 0 and u < 1 then
+				p = p + cfg.cam_nod * 0.5 * (1 - math.cos(2 * math.pi * u))
+			end
+		end
+	end
+	return p, r
+end
+
+local function apply_camera(st, p, r)
+	local cam = camera()
+	if not cam then return end
+	cam.pitch = cam.pitch + (p - st.cam_p) * DEG
+	cam.roll = cam.roll + (r - st.cam_r) * DEG
+	st.cam_p, st.cam_r = p, r
+end
+
+-- ---------------------------------------------------------------- lifecycle
+
+local function unsubscribe()
+	if update_sig then
+		ogse_signals.get_mgr():unsubscribe(update_sig)
+		update_sig = nil
+	end
+end
+
+-- sivol keeps move penalties across a load; drop ours once an actor exists again.
+local penalty_pending = false
+
+local function clear_penalty()
+	if not (sivol and sivol.remove_move_penalty) then return end
+	if db.actor then
+		sivol.remove_move_penalty(PENALTY_NAME)
+		penalty_pending = false
+	else
+		penalty_pending = true
+	end
+end
+
+-- Normal end or abort. force: hard stop (lifecycle, owner lost); the camera offset
+-- is still taken back while the same actor exists.
+local function finish(st, reason, force)
+	if not st or st.done then return end
+	st.done = true
+	if cur == st then cur = nil end
+	unsubscribe()
+	local same_actor = db.actor ~= nil and db.actor == st.actor
+	if st.hands then
+		hand_off(force)
+		sag_off(force)
+	end
+	if same_actor and (st.cam_p ~= 0 or st.cam_r ~= 0) then
+		apply_camera(st, 0, 0)
+	end
+	clear_penalty()
+	if st.sprint_blocked and sivol and sivol.remove_sprint_block then
+		sivol.remove_sprint_block(PENALTY_NAME)
+	end
+	if hud_animation_owner.valid(st.token) then
+		hud_animation_owner.release(st.token, reason)
+	end
+	log_dbg("end id=%d reason=%s", st.id, tostring(reason))
+end
+
+local function on_update()
+	local st = cur
+	if not st then unsubscribe() return end
+	if not hud_animation_owner.valid(st.token) or db.actor ~= st.actor or not st.actor:alive() then
+		finish(st, "owner lost", true)
+		return
+	end
+	local p, r = camera_target(st, time_global())
+	apply_camera(st, p, r)
+end
+
+local function begin_up(st)
+	if st.done or cur ~= st then return end
+	st.phase = "up"
+	st.t_up = time_global()
+	st.up_from_p, st.up_from_r = st.cam_p, st.cam_r
+	if st.hands then
+		hand_off(false)
+		sag_off(false)
+	end
+	local up_ms = math.max(cfg.cam_up_ms + ROLL_LAG_MS, st.hands and LAYER_FADE_MS or 0) + 20
+	dsh.timeout(up_ms, function()
+		if cur == st then finish(st, "complete") end
+	end)
+end
+
+local function begin_hidden(st)
+	if st.done or cur ~= st then return end
+	st.phase = "hidden"
+	st.t_swap = time_global()
+	local snd = xr_sound.get_safe_sound_object(SWAP_SOUND)
+	snd:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1)
+	if st.on_hidden then st.on_hidden() end
+	dsh.timeout(math.max(cfg.hold_ms, NOD_MS), function() begin_up(st) end)
+end
+
+-- Admission shared by the key and the test helper.
+local function can_start()
+	local actor = db.actor
+	if not actor or not actor:alive() then return false end
+	if cur or hud_animation_owner.busy() then return false end
+	if actor:is_talking() or level.main_input_receiver() or actor:ph_capture() then return false end
+	if level.only_movekeys_allowed() or not game.hud_motion_allowed() then return false end
+	if get_actor_obj():IsDetectorActive() then return false end
+	if actor:zoom_mode() then return false end -- refuse while aiming (CActor::IsZoomAimingMode)
+	return true
+end
+
+-- Starts the gesture; on_hidden runs once while the hand is out of frame.
+function play(on_hidden)
+	if not can_start() then return false end
+	local token = hud_animation_owner.reserve(OWNER_NAME)
+	if not token then return false end
+	if not hud_animation_owner.activate(token, "belt gesture") then
+		hud_animation_owner.release(token, "admission")
+		return false
+	end
+	hud_animation_owner.acquire_movement(token)
+
+	next_id = next_id + 1
+	local st = {
+		id = next_id,
+		token = token,
+		actor = db.actor,
+		on_hidden = on_hidden,
+		hands = hands_possible(),
+		phase = "down",
+		t0 = time_global(),
+		cam_p = 0,
+		cam_r = 0,
+	}
+	cur = st
+	hud_animation_owner.register_lifecycle_cleanup(token, function(reason)
+		finish(st, reason or "lifecycle", true)
+	end)
+	if sivol and sivol.add_sprint_block then
+		st.sprint_blocked = sivol.add_sprint_block(PENALTY_NAME)
+	end
+	if sivol and sivol.add_move_penalty then
+		sivol.add_move_penalty(PENALTY_NAME, MOVE_PENALTY)
+	end
+
+	local down_ms = cfg.cam_down_ms
+	if st.hands then
+		hand_on()
+		sag_on("gesture")
+		down_ms = math.max(down_ms, LAYER_FADE_MS + 20)
+	end
+
+	if not update_sig then
+		update_sig = ogse_signals.get_mgr():subscribe({ signal = "on_update", fun = on_update })
+	end
+	log_dbg("start id=%d hands=%s down=%d", st.id, tostring(st.hands), down_ms)
+	dsh.timeout(down_ms, function() begin_hidden(st) end)
+	return true
+end
+
+function is_active()
+	return cur ~= nil
+end
+
+-- ---------------------------------------------------------------- accumulator
+
+local function is_accum_section(s)
+	return s == "af_full_akkum" or s == "af_full_akkum_big"
+end
+
+-- Lowest charge that is not empty (drains partial accumulators first; intended).
+local function find_charged_accum()
+	local found = nil
+	db.actor:iterate_inventory(function(npc, obj)
+		if is_accum_section(obj:section()) and obj:condition() > 0 then
+			if not found or found:condition() > obj:condition() then
+				found = obj
+			end
+		end
+	end)
+	return found
+end
+
+function toggle_accum()
+	local actor = db.actor
+	if not actor or not actor:alive() then return end
+	if cur or not can_start() then return end
+	local in_slot = actor:item_in_slot(ACCUM_SLOT)
+	local equip = in_slot == nil
+	local target = in_slot
+	if equip then
+		target = find_charged_accum()
+		if not target then
+			tip("belt_gesture_no_accum")
+			return
+		end
+		if sivol_belt and sivol_belt.has_working_belt and not sivol_belt.has_working_belt() then
+			tip("belt_gesture_no_belt")
+			return
+		end
+	end
+	local target_id = target:id()
+	play(function()
+		local a = db.actor
+		local obj = level.object_by_id(target_id)
+		local parent = obj and obj:parent()
+		if not parent or parent:id() ~= a:id() then
+			log_dbg("accum %d left the inventory", target_id)
+			return
+		end
+		if equip then
+			if a:item_in_slot(ACCUM_SLOT) then return end
+			a:move_to_slot(obj)
+			dsh.timeout(150, function()
+				if not db.actor or db.actor ~= a then return end
+				local s = a:item_in_slot(ACCUM_SLOT)
+				if not s or s:id() ~= target_id then
+					log_dbg("accum %d refused by the slot", target_id)
+					tip("belt_gesture_no_belt")
+				end
+			end)
+		else
+			a:move_to_ruck(obj)
+		end
+		log_dbg("accum %d %s", target_id, equip and "equipped" or "removed")
+	end)
+end
+
+-- ---------------------------------------------------------------- tuning helpers
+
+function test()
+	return play(nil)
+end
+
+function tune_hand(x, y, z, pitch, yaw, roll)
+	cfg.hand_pos = { tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0 }
+	cfg.hand_rot = { tonumber(pitch) or 0, tonumber(yaw) or 0, tonumber(roll) or 0 }
+	dump()
+end
+
+function tune_cam(pitch, roll, nod, down_ms, up_ms)
+	cfg.cam_pitch = tonumber(pitch) or cfg.cam_pitch
+	cfg.cam_roll = tonumber(roll) or cfg.cam_roll
+	cfg.cam_nod = tonumber(nod) or cfg.cam_nod
+	cfg.cam_down_ms = math.max(100, tonumber(down_ms) or cfg.cam_down_ms)
+	cfg.cam_up_ms = math.max(100, tonumber(up_ms) or cfg.cam_up_ms)
+	dump()
+end
+
+function tune_sag(profile, x, y, z, pitch, yaw, roll)
+	local p = sag[profile or ""]
+	if not p then
+		log2("[belt_gesture] tune_sag: profile must be \"gesture\" or \"watch\"")
+		return
+	end
+	p.pos = { tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0 }
+	p.rot = { tonumber(pitch) or 0, tonumber(yaw) or 0, tonumber(roll) or 0 }
+	dump()
+end
+
+-- Watch-view weapon shake in degrees; all zeros turn it off.
+function tune_shake(wobble, sway_roll, sway_pitch)
+	local sh = sag.watch.shake
+	sh.wobble = tonumber(wobble) or sh.wobble
+	sh.sway_roll = tonumber(sway_roll) or sh.sway_roll
+	sh.sway_pitch = tonumber(sway_pitch) or sh.sway_pitch
+	dump()
+end
+
+function tune_hold(hold_ms)
+	cfg.hold_ms = tonumber(hold_ms) or cfg.hold_ms
+	dump()
+end
+
+function dump()
+	log2("[belt_gesture] hand_pos = { %.3f, %.3f, %.3f } hand_rot = { %.1f, %.1f, %.1f } hold=%d",
+		cfg.hand_pos[1], cfg.hand_pos[2], cfg.hand_pos[3], cfg.hand_rot[1], cfg.hand_rot[2], cfg.hand_rot[3], cfg.hold_ms)
+	log2("[belt_gesture] cam pitch=%.2f roll=%.2f nod=%.2f down=%d up=%d",
+		cfg.cam_pitch, cfg.cam_roll, cfg.cam_nod, cfg.cam_down_ms, cfg.cam_up_ms)
+	for name, p in pairs(sag) do
+		log2("[belt_gesture] sag %s pos = { %.3f, %.3f, %.3f } rot = { %.1f, %.1f, %.1f }",
+			name, p.pos[1], p.pos[2], p.pos[3], p.rot[1], p.rot[2], p.rot[3])
+	end
+	local sh = sag.watch.shake
+	log2("[belt_gesture] watch shake wobble=%.2f sway_roll=%.2f sway_pitch=%.2f", sh.wobble, sh.sway_roll, sh.sway_pitch)
+end
+
+local function reset()
+	if cur then finish(cur, "reset", true) end
+	unsubscribe()
+	sag_off(true)
+end
+
+local function clear_pending_penalty()
+	if penalty_pending then clear_penalty() end
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_load_before_all", fun = reset })
+	sm:subscribe({ signal = "on_stop_modules", fun = reset })
+	sm:subscribe({ signal = "on_first_update", fun = clear_pending_penalty })
+end
