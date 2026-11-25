@@ -5,6 +5,14 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.226 (2026-11-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `61BA01F646842ED45D2346BB4A8CCAA0696F72C5BC08881CABB5A508B288CD19` (archived with its PDB in `nlc_tools/builds/20261125_224628_61ba01f6`).
+- **Status:** runtime pending. Built on `nlc-3.589.225` (`docs/BELT_GESTURE_DESIGN.md`).
+- Left and right Alt now reach the script key release and hold callbacks (`Level_input.cpp`; the press always did). Tap/hold actions in `bind_stalker.script` (accumulator key, inventory, gas mask and others) work when bound to Alt. F4 stays excluded.
+- **Required game data:** none.
+
 ## nlc-3.589.225 (2026-11-25)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

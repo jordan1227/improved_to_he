@@ -505,7 +505,9 @@ void CLevel::IR_OnKeyboardRelease(int key)
     if (game && Game().OnKeyboardRelease(_curr))
         return;
 
-    if ((key != DIK_LALT) && (key != DIK_RALT) && (key != DIK_F4) && Actor())
+    // NLC: Alt keys reach the script release callback too (the press always did), so tap/hold
+    // actions in bind_stalker.script work on LAlt/RAlt. F4 stays excluded (Alt+F4).
+    if ((key != DIK_F4) && Actor())
         Actor()->callback(GameObject::eOnKeyRelease)(key, _curr);
 
     if (b_ui_exist && HUD().GetUI()->MainInputReceiver())
@@ -549,7 +551,8 @@ void CLevel::IR_OnKeyboardHold(int key)
     if (Device.Paused())
         return;
 
-    if ((key != DIK_LALT) && (key != DIK_RALT) && (key != DIK_F4) && Actor())
+    // NLC: Alt keys reach the script hold callback too (see the release callback above).
+    if ((key != DIK_F4) && Actor())
         Actor()->callback(GameObject::eOnKeyHold)(key, _curr);
 
     if (CURRENT_ENTITY())
