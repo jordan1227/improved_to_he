@@ -5,6 +5,14 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.225 (2026-11-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `A78D00283CA1C655B7AC2236C3C926995217381785D831AA3267AA5666733A02` (archived with its PDB in `nlc_tools/builds/20261125_195744_a78d0028`).
+- **Status:** runtime pending. Built on `nlc-3.589.224` (`docs/SCOPE_TRUE_PIP_DESIGN.md` 21).
+- `r_3dss_pip_ss` default 1.0 ( was 1.5 ).
+- **Required game data:** `text/eng|rus/ui_st_mm.xml` ( defaults and FPS costs in % ), `3dss_reticle.ps` and the scope profiles of .224 with the PU / TOZ tweak.
+
 ## nlc-3.589.224 (2026-11-25)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
