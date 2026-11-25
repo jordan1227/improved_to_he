@@ -37,6 +37,8 @@ Fvector ssfx_light_last_pos[ssfx_light_slots]{}; // NLC .150: world position of 
 
 float ssfx_sss_slot(const light* L)
 {
+    if (ps_r_3dss_pip_pass) // NLC: the light SSS slots are the main view's screen
+        return -1.f;
     const light* key = L->ssfx_parent ? L->ssfx_parent : L;
     return key->ssfx_sss_frame == Device.dwFrame ? static_cast<float>(key->ssfx_sss_id) : -1.f;
 }
@@ -435,6 +437,24 @@ void CRenderTarget::phase_ssfx_ao(CBackend& cmd_list)
 
     PIX_EVENT_CTX(cmd_list, ssfx_ao);
 
+    draw_ssfx_ao(cmd_list, ssfx_m_current, ssfx_m_previous, false, false);
+}
+
+// NLC B2.4: the true PiP scope view's AO ( its own history, previous position buffer and matrices; scope set swapped in )
+void CRenderTarget::phase_pip_ao(CBackend& cmd_list, const Fmatrix& m_current, const Fmatrix& m_previous)
+{
+    PIX_EVENT_CTX(cmd_list, ssfx_ao_scope);
+
+    if (!m_pip_history)
+        cmd_list.ClearRT(rt_ssfx_ao, ssfx_clear_ao);
+
+    // motion from the scope's motion vectors; camera motion where none were written ( and without the buffer )
+    draw_ssfx_ao(cmd_list, m_current, m_previous, true, !m_pip.velocity);
+}
+
+// scope: no world copy ( the scope view has no HUD ); camera_motion: history follows the camera matrices ( no velocity buffer )
+void CRenderTarget::draw_ssfx_ao(CBackend& cmd_list, const Fmatrix& m_current, const Fmatrix& m_previous, const bool scope, const bool camera_motion)
+{
     const float res = static_cast<float>(std::clamp(ps_ssfx_ao_res, 1, 4));
     const float aw = static_cast<float>(rt_ssfx_ao->dwWidth), ah = static_cast<float>(rt_ssfx_ao->dwHeight);
 
@@ -442,12 +462,13 @@ void CRenderTarget::phase_ssfx_ao(CBackend& cmd_list)
     const Fvector4 params2{1.f, ps_ssfx_ao_flora, 0.f, ps_ssfx_ao_radius_fix ? 1.f : 0.f}; // HUD int, flora int, max occlusion, radius fix
 
     RenderScreenTriangle(cmd_list, rt_ssfx_ao_a, s_ssfx_ao->E[0], [&]() {
-        cmd_list.set_c("m_current", ssfx_m_current);
-        cmd_list.set_c("m_previous", ssfx_m_previous);
+        cmd_list.set_c("m_current", m_current);
+        cmd_list.set_c("m_previous", m_previous);
         cmd_list.set_c("ssfx_ao_params", params);
         cmd_list.set_c("ssfx_ao_params2", params2);
         // NLC .210: x = the world copy of this frame exists ( samples see through the weapon, normals before the rain pass )
-        cmd_list.set_c("ssfx_ao_params3", rt_ssfx_pos_world && ssfx_pos_world_frame == Device.dwFrame ? 1.f : 0.f, 0.f, 0.f, 0.f);
+        // y = NLC B2.4: scope view ( motion from the camera matrices )
+        cmd_list.set_c("ssfx_ao_params3", !scope && rt_ssfx_pos_world && ssfx_pos_world_frame == Device.dwFrame ? 1.f : 0.f, camera_motion ? 1.f : 0.f, scope ? 1.f : 0.f, 0.f);
     });
 
     // Unblurred, accumulated AO is the history
@@ -1060,9 +1081,12 @@ bool CRenderTarget::phase_ssfx_haze(CBackend& cmd_list)
             if (a.key - b.key < 0.5f && a.rank >= 0 && b.rank >= 0 && b.rank < a.rank)
                 std::swap(a, b);
         }
-    prev_order.clear();
-    for (const Item& it : items)
-        prev_order.push_back(it.z->id);
+    if (!ps_r_3dss_pip_pass) // NLC: the scope view reads the main view's order, it does not replace it
+    {
+        prev_order.clear();
+        for (const Item& it : items)
+            prev_order.push_back(it.z->id);
+    }
 
     PIX_EVENT_CTX(cmd_list, ssfx_haze);
 
@@ -1118,17 +1142,33 @@ bool CRenderTarget::phase_ssfx_ssr(CBackend& cmd_list)
     if (!rt_ssfx_ssr || ps_ssfx_compare || !ps_r2_ls_flags_ext.test(R2FLAGEXT_SSLR))
         return false;
 
+    PIX_EVENT_CTX(cmd_list, ssfx_ssr);
+
+    ssfx_ssr_composited = draw_ssfx_ssr(cmd_list, ssfx_m_current, ssfx_m_previous, ssfx_scene_prev_strength(), ssfx_ssr_frame);
+    return true;
+}
+
+// NLC: the true PiP scope view's reflections ( its own history; no previous-scene lookup ). Scope set swapped in
+bool CRenderTarget::phase_pip_ssr(CBackend& cmd_list, const Fmatrix& m_current, const Fmatrix& m_previous)
+{
+    PIX_EVENT_CTX(cmd_list, ssfx_ssr_scope);
+
+    if (!m_pip_history)
+        m_pip_ssr_frame = 0;
+    return draw_ssfx_ssr(cmd_list, m_current, m_previous, 0.f, m_pip_ssr_frame);
+}
+
+bool CRenderTarget::draw_ssfx_ssr(CBackend& cmd_list, const Fmatrix& m_current, const Fmatrix& m_previous, const float scene_prev_k, u32& hist_frame)
+{
     // Wet surfaces always; dry glossy surfaces only with ssfx_ssr_dry
     const bool wet = !fis_zero(g_pGamePersistent->Environment().wetness_factor);
     const float strength = wet ? 1.f : ps_ssfx_ssr_dry;
     if (strength <= 0.f)
-        return true;
+        return false;
 
-    PIX_EVENT_CTX(cmd_list, ssfx_ssr);
-
-    if (ssfx_ssr_frame + 1 != Device.dwFrame)
+    if (hist_frame + 1 != Device.dwFrame)
         cmd_list.ClearRT(rt_ssfx_ssr_hist, ssfx_clear_zero); // NLC: dry spell / compare: old reflections are elsewhere
-    ssfx_ssr_frame = Device.dwFrame;
+    hist_frame = Device.dwFrame;
 
     const float w = static_cast<float>(rt_ssfx_ssr->dwWidth), h = static_cast<float>(rt_ssfx_ssr->dwHeight);
     // NLC .210: w = strength of surfaces under cover while it rains ( ssfx_ssr_dry; the shader had 0 there )
@@ -1139,9 +1179,9 @@ bool CRenderTarget::phase_ssfx_ssr(CBackend& cmd_list)
         cmd_list.set_c("ssr_setup", ps_ssfx_ssr_1);
         cmd_list.set_c("ssfx_ssr_2", ps_ssfx_ssr_2);
         cmd_list.set_c("ssfx_ssr_setup", setup);
-        cmd_list.set_c("ssfx_scene_prev_k", ssfx_scene_prev_strength(), 0.f, 0.f, 0.f);
-        cmd_list.set_c("m_current", ssfx_m_current);
-        cmd_list.set_c("m_previous", ssfx_m_previous);
+        cmd_list.set_c("ssfx_scene_prev_k", scene_prev_k, 0.f, 0.f, 0.f);
+        cmd_list.set_c("m_current", m_current);
+        cmd_list.set_c("m_previous", m_previous);
     });
 
     HW.get_context(cmd_list.context_id)->CopyResource(rt_ssfx_ssr_hist->pSurface, rt_ssfx_ssr->pSurface);
@@ -1152,7 +1192,6 @@ bool CRenderTarget::phase_ssfx_ssr(CBackend& cmd_list)
 
     // Combine: blended into the scene ( .84, was scratch + full-resolution copy )
     RenderScreenTriangle(cmd_list, rt_Generic_0, s_ssfx_ssr->E[3]);
-    ssfx_ssr_composited = true;
 
     return true;
 }

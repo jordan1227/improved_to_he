@@ -11,6 +11,7 @@ struct wm_slot;
 
 class CSkeletonWallmark;
 class CKinematics;
+class CBackend;
 struct wm_static_params; // xr_3da/Render.h
 
 class CWallmarksEngine
@@ -86,6 +87,8 @@ public:
 
     // render
     void Render();
+    void RenderScope(CBackend& cmd_list, float ssa_k); // NLC: true PiP scope view, draw only ( ssa_k: its pixel density )
+    static void SetScopeXforms(CBackend& cmd_list); // NLC: wallmark depth-shift xforms from the Device camera
 
     void Clear();
 };

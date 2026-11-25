@@ -152,6 +152,18 @@ void CTexture::surface_set(ID3DBaseTexture* surf)
     }
 }
 
+void CTexture::swap_views(CTexture& other)
+{
+    std::swap(pSurface, other.pSurface);
+    std::swap(m_pSRView, other.m_pSRView);
+    std::swap(srv_all, other.srv_all);
+    std::swap(srv_per_slice, other.srv_per_slice);
+    std::swap(desc_Width, other.desc_Width);
+    std::swap(desc_Height, other.desc_Height);
+    std::swap(curr_slice, other.curr_slice);
+    std::swap(last_slice, other.last_slice);
+}
+
 ID3DBaseTexture* CTexture::surface_get() const
 {
     //if (pSurface)

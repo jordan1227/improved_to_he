@@ -921,11 +921,41 @@ static class ssfx_torch final : public R_constant_setup
     }
 } ssfx_torch;
 
-// NLC: SSS 23 compare toggle, x = 1 when the passes are skipped ( consumers use neutral values )
+// NLC: SSS 23 compare toggle, x = 1 when the passes are skipped ( consumers use neutral values ). Also 1 while the true
+// PiP scope view records: its AO / IL / screen-space shadows / water reflections do not exist ( docs/SCOPE_TRUE_PIP_DESIGN.md 4.9 )
 static class ssfx_compare final : public R_constant_setup
 {
-    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_ssfx_compare ? 1.f : 0.f, 0.f, 0.f, 0.f); }
+    // NLC B2.4: y = the AO bypass alone ( combine_1 ): off in the scope view when its own AO ran this frame
+    void setup(CBackend& cmd_list, R_constant* C) override
+    {
+        const bool pip_ao = ps_r_3dss_pip_pass && ps_r_3dss_pip_ao_live;
+        cmd_list.set_c(C, ps_ssfx_compare || ps_r_3dss_pip_pass ? 1.f : 0.f, ps_ssfx_compare || (ps_r_3dss_pip_pass && !pip_ao) ? 1.f : 0.f, 0.f, 0.f);
+    }
 } ssfx_compare;
+
+// NLC: true PiP lens composite ( 3dss_reticle.ps ): x active, y image half-extent, z display aspect, w 1 / image size
+static class s3ds_pip final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_r_3dss_pip_params); }
+} s3ds_pip;
+
+// NLC B3: lens look and sun glare of the true PiP lens ( 3dss_reticle.ps )
+static class s3ds_look final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_r_3dss_pip_look); }
+} s3ds_look;
+static class s3ds_look2 final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_r_3dss_pip_look2); }
+} s3ds_look2;
+static class s3ds_sun final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_r_3dss_pip_sun); }
+} s3ds_sun;
+static class s3ds_look_k final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, ps_r_3dss_pip_look_scale, 0.f, 0.f, 0.f); }
+} s3ds_look_k;
 
 static class ssfx_wind_grass final : public R_constant_setup
 {
@@ -1235,6 +1265,11 @@ void CBlender_Compile::SetMapping() const
     r_Constant("ssfx_flora_variation", &ssfx_flora_variation); // NLC
     r_Constant("ssfx_il_combine", &ssfx_il_combine); // NLC
     r_Constant("ssfx_compare", &ssfx_compare); // NLC
+    r_Constant("s3ds_pip", &s3ds_pip); // NLC: true PiP lens composite
+    r_Constant("s3ds_look", &s3ds_look); // NLC: true PiP lens look ( B3 )
+    r_Constant("s3ds_look2", &s3ds_look2);
+    r_Constant("s3ds_sun", &s3ds_sun);
+    r_Constant("s3ds_look_k", &s3ds_look_k); // NLC: glass character strength
     r_Constant("ssfx_water", &ssfx_water); // NLC
     r_Constant("ssfx_extra", &ssfx_extra); // NLC
     r_Constant("ssfx_clouds", &ssfx_clouds); // NLC

@@ -174,6 +174,62 @@ private:
     render_sun r_sun;
     render_rain r_rain;
 
+    // NLC: true PiP scope view ( docs/SCOPE_TRUE_PIP_DESIGN.md, r4_scope_pip.cpp ). Second view of the world through the
+    // 3D scope: own traversal in a dsgraph context, recorded and lit in main-thread windows of Render().
+    struct ScopePip
+    {
+        bool frame_on{}; // the scope view is drawn this frame
+        bool ready{}; // its image is finished ( the lens samples it )
+        u32 ctx{CHW::INVALID_CONTEXT_ID};
+        R_dsgraph_structure* dsgraph{};
+        std::future<void> traversal;
+        bool traversal_started{};
+
+        float E{0.35f}; // image half-extent, main NDC height units ( latched per optic )
+        bool settled{}; // E re-latched during this aim
+        bool was_on{};
+        const void* lens_key{}; // lens visual of the latched E
+        u32 size{}; // image side px
+        float mag{1.f}, fov_deg{};
+        Fmatrix project{}, full{}, inv_full{};
+        CFrustum frustum;
+        float fov_k{}, ssa_k{1.f};
+        Fmatrix prev_full{}; // last scope frame's view-projection ( AO / SSR reprojection )
+        Fmatrix prev_project{}; // last scope frame's projection ( motion vectors )
+        u32 done_frame{}; // last frame the scope image was finished
+        bool prev_valid{};
+
+        // main state while a scope window is open
+        bool in{};
+        Fmatrix s_project{}, s_full{}, s_inv_full{};
+        float s_fov{}, s_aspect{};
+        CFrustum s_view;
+        Fvector3 s_jitter{};
+        Fvector2 s_jitter_full{};
+
+        // diagnostics ( r_3dss_pip_debug )
+        float ms_gbuffer{}, ms_lights{}, ms_combine{}, ms_trav{};
+        u32 log_time{}, frames{};
+        u32 lights_drawn{}, lights_culled{}; // B2.7
+        u32 fail_log_frame{};
+    } m_pip;
+
+    void pip_start(); // T0: decide, size, camera, start the traversal
+    void pip_render_gbuffer(bool bSUN); // W1
+    void pip_accum_lights(xr_vector<light*>& lights, u32 kind); // W2: 0 point, 1 spot, 2 shadowed spot ( atlas slices live )
+    void pip_combine(); // W3
+    void pip_end_frame();
+    void pip_enter();
+    void pip_leave();
+    void pip_measure_lens();
+
+public:
+    bool pip_ready() const { return m_pip.ready; }
+    bool pip_frame_on() const { return m_pip.frame_on; }
+    void pip_render_puddles(CBackend& cmd_list); // scope combine ( r4_scope_pip.cpp )
+
+private:
+
 private:
     std::future<void> particles_async_awaiter;
     std::future<void> bones_async_awaiter;
@@ -406,6 +462,15 @@ public:
 
         FATAL("Can't find free context! All contexts used!");
         return CHW::INVALID_CONTEXT_ID;
+    }
+
+    // NLC: deferred contexts not in use ( the true PiP scope view may hold one while lights allocate theirs )
+    ICF u32 free_contexts() const
+    {
+        u32 n{};
+        for (const bool used : contexts_used)
+            n += used ? 0 : 1;
+        return n;
     }
 
     ICF R_dsgraph_structure& get_context(u32 id)

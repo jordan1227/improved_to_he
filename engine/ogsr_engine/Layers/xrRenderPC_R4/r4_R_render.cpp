@@ -367,6 +367,9 @@ void CRender::Render()
 
         r_main.wait_dynamic();
 
+        // NLC: true PiP scope view: camera, targets, traversal on a worker ( r4_scope_pip.cpp )
+        pip_start();
+
         dsgraph.r_dsgraph_render_graph_dynamic(0);
     }
 
@@ -465,6 +468,9 @@ void CRender::Render()
         Target->accum_direct_blend(cmd_list);
     }
 
+    // NLC: true PiP scope view W1: sky, G-buffer, rain wetness, sun from this frame's cascades, emissive
+    pip_render_gbuffer(bSUN);
+
     {
         PIX_EVENT(DEFER_SELF_ILLUM);
         Target->phase_accumulator(cmd_list);
@@ -533,11 +539,16 @@ void CRender::Render()
         render_lights(LP_normal_copy);
     }
 
+    // NLC: true PiP scope view W3: its combine, forward and tonemap ( the lens composite in phase_combine samples it )
+    pip_combine();
+
     // Postprocess
     {
         PIX_EVENT(DEFER_COMBINE);
         Target->phase_combine(cmd_list); // calls CRender::render_forward()
     }
+
+    pip_end_frame(); // NLC
 
     Target->ssfx_end_frame(cmd_list); // NLC: position buffer -> previous frame ( SSS 23 temporal passes )
 

@@ -96,21 +96,26 @@ IC float LensLodK()
         static const shared_str key{"s3ds_param_5"};
         const float v = shader_exports.get_custom_params(key).w;
         k = (v > 1.f && v < 16.f) ? v : 1.f;
+        // NLC: with the true PiP view the scope has its own traversal ( r4_scope_pip.cpp ), the main view and its
+        // shadow passes keep their normal LOD ( docs/SCOPE_TRUE_PIP_DESIGN.md 4.1 )
+        if (ps_r_3dss_pip && Device.m_ScopePip.active && Device.m_ScopePip.frame == Device.dwFrame)
+            k = 1.f;
         frame = Device.dwFrame;
     }
     return k;
 }
 
-IC float GetDistFromCamera(const Fvector& from_position)
+// fov_k > 0: the caller's own LOD distance factor ( true PiP scope context )
+IC float GetDistFromCamera(const Fvector& from_position, const float fov_k = 0.f)
 {
     const float distance = Device.vCameraPosition.distance_to(from_position);
-    const float fov_K = BASE_FOV / Device.fFOV * LensLodK();
+    const float fov_K = fov_k > 0.f ? fov_k : BASE_FOV / Device.fFOV * LensLodK();
     const float adjusted_distane = distance / fov_K;
 
     return adjusted_distane;
 }
 
-IC bool IsValuableToRender(dxRender_Visual* pVisual, const bool sm, const bool ignore_optimize = false)
+IC bool IsValuableToRender(dxRender_Visual* pVisual, const bool sm, const bool ignore_optimize = false, const float fov_k = 0.f)
 {
     if (ignore_optimize)
         return true;
@@ -119,7 +124,7 @@ IC bool IsValuableToRender(dxRender_Visual* pVisual, const bool sm, const bool i
     {
         const float sphere_volume = pVisual->getVisData().sphere.volume();
 
-        const float adjusted_distance = GetDistFromCamera(pVisual->getVisData().sphere.P);
+        const float adjusted_distance = GetDistFromCamera(pVisual->getVisData().sphere.P, fov_k);
 
         if (sm && opt_shadow_geom) // Highest cut off for shadow map
         {
@@ -203,10 +208,11 @@ IC bool IsValuableToRender(dxRender_Visual* pVisual, const bool sm, const bool i
     return true;
 }
 
-ICF float CalcSSA(float& dist_sqr, const Fvector& C, const float R)
+// k: NLC screen-size factor of the dsgraph ( nlc_ssa_k, true PiP scope view ), 1 for every other view
+ICF float CalcSSA(float& dist_sqr, const Fvector& C, const float R, const float k = 1.f)
 {
     dist_sqr = Device.vCameraPosition.distance_to_sqr(C) + EPS;
-    return R / dist_sqr;
+    return R / dist_sqr * k;
 }
 ICF float CalcHudSSA(float& dist_sqr, const Fvector& C, dxRender_Visual* V)
 {
@@ -229,7 +235,7 @@ void R_dsgraph_structure::r_dsgraph_insert_dynamic(IRenderable* root, dxRender_V
     if (root && root->renderable_HUD())
         SSA = CalcHudSSA(dist_sqr, center, pVisual);
     else
-        SSA = CalcSSA(dist_sqr, center, pVisual->getVisData().sphere.R /*+ 0*/);
+        SSA = CalcSSA(dist_sqr, center, pVisual->getVisData().sphere.R /*+ 0*/, nlc_ssa_k);
 
     if (SSA <= r_ssaDISCARD)
         return;
@@ -345,7 +351,7 @@ void R_dsgraph_structure::r_dsgraph_insert_static(dxRender_Visual* pVisual)
     //ZoneScoped;
 
     float dist_sqr;
-    const float SSA = CalcSSA(dist_sqr, pVisual->getVisData().sphere.P, pVisual->getVisData().sphere.R /*+ 0*/);
+    const float SSA = CalcSSA(dist_sqr, pVisual->getVisData().sphere.P, pVisual->getVisData().sphere.R /*+ 0*/, nlc_ssa_k);
     if (SSA <= r_ssaDISCARD)
         return;
 
@@ -478,7 +484,7 @@ void R_dsgraph_structure::add_leafs_dynamic(IRenderable* root, dxRender_Visual* 
             Fvector Tpos;
             float dist_sqr;
             xform.transform_tiny(Tpos, pV->getVisData().sphere.P);
-            const float ssa = CalcSSA(dist_sqr, Tpos, pV->getVisData().sphere.R / 2.f); // assume dynamics never consume full sphere
+            const float ssa = CalcSSA(dist_sqr, Tpos, pV->getVisData().sphere.R / 2.f, nlc_ssa_k); // assume dynamics never consume full sphere
             if (ssa < r_ssaLOD_A)
                 _use_lod = TRUE;
         }
@@ -527,7 +533,7 @@ void R_dsgraph_structure::add_leafs_static(dxRender_Visual* pVisual)
             return;
         }
 
-        if (!pVisual->ignore_optimization && !IsValuableToRender(pVisual, phase != CRender::PHASE_NORMAL))
+        if (!pVisual->ignore_optimization && !IsValuableToRender(pVisual, phase != CRender::PHASE_NORMAL, false, nlc_fov_k))
             return;
     }
 
@@ -559,7 +565,7 @@ void R_dsgraph_structure::add_leafs_static(dxRender_Visual* pVisual)
 
         const auto pV = smart_cast<FLOD*>(pVisual);
         float D;
-        float ssa = CalcSSA(D, pV->getVisData().sphere.P, pV->getVisData().sphere.R /*+ 0*/) * pV->lod_factor;
+        float ssa = CalcSSA(D, pV->getVisData().sphere.P, pV->getVisData().sphere.R /*+ 0*/, nlc_ssa_k) * pV->lod_factor;
 
         if (ssa < r_ssaLOD_A && phase == CRender::PHASE_NORMAL)
         {
@@ -630,7 +636,7 @@ void R_dsgraph_structure::add_static(dxRender_Visual* pVisual, const CFrustum& v
             return;
         }
 
-        if (!pVisual->ignore_optimization && !IsValuableToRender(pVisual, phase != CRender::PHASE_NORMAL))
+        if (!pVisual->ignore_optimization && !IsValuableToRender(pVisual, phase != CRender::PHASE_NORMAL, false, nlc_fov_k))
             return;
     }
 
@@ -838,6 +844,8 @@ void R_dsgraph_structure::reset()
 
     main_pass = false;
     max_render_distance = -1.f;
+    nlc_fov_k = 0.f;
+    nlc_ssa_k = 1.f;
 }
 
 void R_dsgraph_structure::load(const xr_vector<CSector::level_sector_data_t>& sectors_data, const xr_vector<CPortal::level_portal_data_t>& portals_data)

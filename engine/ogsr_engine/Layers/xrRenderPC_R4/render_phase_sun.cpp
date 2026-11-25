@@ -311,6 +311,7 @@ void render_sun::render()
 
 void render_sun::flush()
 {
+    nlc_flushed = o.active;
     if (!o.active)
         return;
 
@@ -375,4 +376,16 @@ void render_sun::accumulate_cascade(u32 cascade_ind)
 
     dsgraph.cmd_list.submit(); // TODO: move into release (rename to submit?)
     RImplementation.release_context(dsgraph.context_id);
+}
+
+// NLC: true PiP scope view ( docs/SCOPE_TRUE_PIP_DESIGN.md 4.8 ). The scope camera sits at the main eye inside the main
+// frustum, so the cascades fitted this frame cover it; their maps and transforms are still valid after flush().
+void render_sun::accumulate_scope(CBackend& cmd_list)
+{
+    if (!nlc_flushed)
+        return;
+
+    RImplementation.Target->accum_direct_cascade(cmd_list, SE_SUN_NEAR, m_sun_cascades[0].cull_xform, m_sun_cascades[0].cull_xform, m_sun_cascades[0].bias);
+    RImplementation.Target->accum_direct_cascade(cmd_list, SE_SUN_MIDDLE, m_sun_cascades[1].cull_xform, m_sun_cascades[0].cull_xform, m_sun_cascades[1].bias);
+    RImplementation.Target->accum_direct_cascade(cmd_list, SE_SUN_FAR, m_sun_cascades[2].cull_xform, m_sun_cascades[1].cull_xform, m_sun_cascades[2].bias);
 }

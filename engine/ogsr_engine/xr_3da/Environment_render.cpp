@@ -40,12 +40,13 @@ void CEnvironment::RenderFlares(CBackend& cmd_list, BOOL bSun, BOOL bFlares, BOO
     eff_LensFlare->Render(cmd_list, bSun, bFlares, bGradient);
 }
 
-void CEnvironment::RenderLast(CBackend& cmd_list)
+// NLC: the rain step of this frame ( the async calculation or a synchronous one ), once: the true PiP scope view draws
+// the rain before the main forward pass ( docs/SCOPE_TRUE_PIP_DESIGN.md 15 B2.3 )
+void CEnvironment::nlc_rain_sync()
 {
-    if (nullptr == g_pGameLevel)
+    if (nlc_rain_sync_frame == Device.dwFrame)
         return;
-
-    ZoneScoped;
+    nlc_rain_sync_frame = Device.dwFrame;
 
     if (async_started)
     {
@@ -60,9 +61,33 @@ void CEnvironment::RenderLast(CBackend& cmd_list)
     {
         eff_Rain->Calculate();
     }
+}
+
+void CEnvironment::RenderLast(CBackend& cmd_list)
+{
+    if (nullptr == g_pGameLevel)
+        return;
+
+    ZoneScoped;
+
+    nlc_rain_sync();
 
     // 2
     eff_Rain->Render(cmd_list);
+    eff_Thunderbolt->Render(cmd_list);
+}
+
+// NLC: rain, splashes and thunderbolts for the true PiP scope view: drawn only, nothing steps ( the main pass does )
+void CEnvironment::RenderLastScope(CBackend& cmd_list)
+{
+    if (nullptr == g_pGameLevel)
+        return;
+
+    ZoneScoped;
+
+    nlc_rain_sync();
+
+    eff_Rain->Render(cmd_list, true);
     eff_Thunderbolt->Render(cmd_list);
 }
 

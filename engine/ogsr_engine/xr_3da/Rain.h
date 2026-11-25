@@ -108,7 +108,7 @@ public:
     CEffect_Rain();
     ~CEffect_Rain();
 
-    void Render(CBackend& cmd_list);
+    void Render(CBackend& cmd_list, bool scope = false); // NLC: scope = draw only ( true PiP scope view )
     void Calculate();
     void OnFrame();
     void InvalidateState() { state = stIdle; }

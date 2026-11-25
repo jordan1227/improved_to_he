@@ -167,7 +167,11 @@ void CRender::render_lights_shadowed(light_Package& LP)
         {
             light_tasks.reserve(R__NUM_PARALLEL_CONTEXTS);
 
-            for (size_t i{}; i < std::min<size_t>(R__NUM_PARALLEL_CONTEXTS, source.size()); i++)
+            // NLC: only the free contexts ( the true PiP scope view holds one until its combine, r4_scope_pip.cpp );
+            // fewer contexts only means more batches
+            const size_t n_tasks = std::min<size_t>(free_contexts(), source.size());
+            R_ASSERT(n_tasks > 0);
+            for (size_t i{}; i < n_tasks; i++)
             {
                 light_tasks.emplace_back().context_id = alloc_context();
             }
@@ -285,6 +289,8 @@ void CRender::render_lights_shadowed(light_Package& LP)
                 }
             }
 
+            pip_accum_lights(L_spot_s, 2); // NLC: true PiP scope view, while the atlas holds this batch
+
             L_spot_s.clear();
         }
     }
@@ -315,6 +321,7 @@ void CRender::render_lights(light_Package& LP)
                     Target->accum_point(cmd_list, p_light);
                 }
             }
+            pip_accum_lights(LP.v_point, 0); // NLC: true PiP scope view
             LP.v_point.clear();
         }
 
@@ -335,6 +342,7 @@ void CRender::render_lights(light_Package& LP)
                     Target->accum_spot(cmd_list, p_light);
                 }
             }
+            pip_accum_lights(LP.v_spot, 1); // NLC: true PiP scope view
             LP.v_spot.clear();
         }
     }

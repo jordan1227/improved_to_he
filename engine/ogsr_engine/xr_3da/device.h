@@ -262,6 +262,16 @@ public:
     bool m_AltScopeActive{};
     IC bool IsAltScopeActive() { return m_AltScopeActive; }
     void SetAltScopeActive(bool bState);
+
+    // NLC: true PiP scope view request ( docs/SCOPE_TRUE_PIP_DESIGN.md ). Written by the actor update every frame
+    // while a 3D scope is in hands, read by the renderer ( r4_scope_pip.cpp ) in the same frame.
+    struct ScopePipRequest
+    {
+        u32 frame{u32(-1)}; // dwFrame of the last write; a stale request draws nothing
+        bool active{}; // the lens image is up in lens / hybrid mode
+        float mag{1.f}; // magnification the lens shows this frame ( lens share x ADS raise ), >= 1
+        float raise{}; // ADS raise 0..1 ( the lens size is learned only when fully raised )
+    } m_ScopePip;
 };
 
 extern ENGINE_API CRenderDevice Device;

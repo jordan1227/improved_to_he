@@ -354,6 +354,7 @@ public:
     void RenderClouds(CBackend& cmd_list);
     void RenderFlares(CBackend& cmd_list, BOOL bSun, BOOL bFlares, BOOL bGradient);
     void RenderLast(CBackend& cmd_list);
+    void RenderLastScope(CBackend& cmd_list); // NLC: true PiP scope view ( draw only )
 
     bool SetWeatherFX(const shared_str& name);
     bool SetWeatherFXFromTime(const shared_str& name, const float time);
@@ -391,6 +392,9 @@ public:
 
     std::future<void> awaiter;
     bool async_started{};
+
+    void nlc_rain_sync(); // NLC: once per frame, before the first rain draw
+    u32 nlc_rain_sync_frame{u32(-1)};
 
 private:
     CEnvDescriptor* create_descriptor(shared_str const& identifier, CInifile* config);

@@ -130,7 +130,8 @@ void CRenderTarget::accum_direct_cascade(CBackend& cmd_list, u32 sub_phase, Fmat
             clamp(w_speed, 0.1f, 1.0f);
             Fvector normal;
             normal.setHP(-w_dir, 0);
-            w_shift -= 0.005f * w_speed * Device.fTimeDelta;
+            if (!ps_r_3dss_pip_pass) // NLC: the true PiP scope view repeats the cascades; the drift advances once per frame
+                w_shift -= 0.005f * w_speed * Device.fTimeDelta;
             Fvector position;
             position.set(0, 0, 0);
             m_xform.build_camera_dir(position, direction, normal);
@@ -225,7 +226,8 @@ void CRenderTarget::accum_direct_cascade(CBackend& cmd_list, u32 sub_phase, Fmat
         cmd_list.Render(D3DPT_TRIANGLELIST, Offset, 0, 8, i_offset, 16);
 
         // Igor: draw volumetric here
-        if ((ps_r_sunshafts_mode & SS_VOLUMETRIC) && sub_phase == SE_SUN_FAR)
+        // NLC: the true PiP scope view draws it only with its own volumetric targets ( r_3dss_pip_volumetric, B2.5 )
+        if ((ps_r_sunshafts_mode & SS_VOLUMETRIC) && sub_phase == SE_SUN_FAR && (!ps_r_3dss_pip_pass || m_pip_vol))
             accum_direct_volumetric(cmd_list, sub_phase, Offset, i_offset, m_shadow);
     }
 }

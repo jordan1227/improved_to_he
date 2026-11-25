@@ -6,6 +6,70 @@
 #include "../xrRender/dxEnvironmentRender.h"
 #include "ssfx_features.h"
 
+// NLC: combine_1 ( ambient, sun direction, env maps, fog ) into the bound target; shared by the main combine and the
+// true PiP scope combine ( r4_scope_pip.cpp )
+void CRenderTarget::draw_combine_1(CBackend& cmd_list)
+{
+    PIX_EVENT(combine_1);
+
+    CEnvDescriptorMixer& envdesc = *g_pGamePersistent->Environment().CurrentEnv;
+    extern float min_lumscale_amb;
+    Fvector4 ambclr = {std::max(envdesc.ambient.x * 2 * ps_r2_sun_lumscale_amb, min_lumscale_amb), std::max(envdesc.ambient.y * 2 * ps_r2_sun_lumscale_amb, min_lumscale_amb),
+                       std::max(envdesc.ambient.z * 2 * ps_r2_sun_lumscale_amb, min_lumscale_amb), 0};
+
+    Fvector4 envclr;
+
+    if (g_pGamePersistent->Environment().USED_COP_WEATHER)
+        envclr = {envdesc.hemi_color_unmodded.x * 2 + EPS, envdesc.hemi_color_unmodded.y * 2 + EPS, envdesc.hemi_color_unmodded.z * 2 + EPS, envdesc.weight};
+    else
+        envclr = {envdesc.sky_color.x * 2 + EPS, envdesc.sky_color.y * 2 + EPS, envdesc.sky_color.z * 2 + EPS, envdesc.weight};
+
+    Fvector4 fogclr = {envdesc.fog_color.x, envdesc.fog_color.y, envdesc.fog_color.z, 0};
+    envclr.x *= 2 * ps_r2_sun_lumscale_hemi;
+    envclr.y *= 2 * ps_r2_sun_lumscale_hemi;
+    envclr.z *= 2 * ps_r2_sun_lumscale_hemi;
+    Fvector4 sunclr, sundir;
+
+    // sun-params
+    {
+        light* fuckingsun = smart_cast<light*>(RImplementation.Lights.sun_adapted._get());
+        Fvector L_dir, L_clr;
+        float L_spec;
+        L_clr.set(fuckingsun->color.r, fuckingsun->color.g, fuckingsun->color.b);
+        L_spec = u_diffuse2s(L_clr);
+        Device.mView.transform_dir(L_dir, fuckingsun->direction);
+        L_dir.normalize();
+
+        sunclr.set(L_clr.x, L_clr.y, L_clr.z, L_spec);
+        sundir.set(L_dir.x, L_dir.y, L_dir.z, 0);
+    }
+
+    dxEnvDescriptorMixerRender& envdescren = *smart_cast<dxEnvDescriptorMixerRender*>(&*envdesc.m_pDescriptorMixer);
+
+    // Setup textures
+    ID3DBaseTexture* e0 = envdescren.sky_r_textures_env[0].second->surface_get();
+    ID3DBaseTexture* e1 = envdescren.sky_r_textures_env[1].second->surface_get();
+    t_envmap_0->surface_set(e0);
+    t_envmap_1->surface_set(e1);
+
+    // Draw
+    cmd_list.set_Element(s_combine->E[0]);
+    cmd_list.set_Geometry(TriangleGeom);
+
+    cmd_list.set_c("m_inv_v", Device.mInvView);
+
+    cmd_list.set_c("m_v2w", Device.mInvView);
+    cmd_list.set_c("L_ambient", ambclr);
+
+    cmd_list.set_c("Ldynamic_color", sunclr);
+    cmd_list.set_c("Ldynamic_dir", sundir);
+
+    cmd_list.set_c("env_color", envclr);
+    cmd_list.set_c("fog_color", fogclr);
+
+    cmd_list.Render(D3DPT_TRIANGLELIST, 0, 0, 3, 0, 1);
+}
+
 void CRenderTarget::phase_combine(CBackend& cmd_list)
 {
     ZoneScoped;
@@ -34,68 +98,7 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
 
     cmd_list.set_Stencil(TRUE, D3DCMP_LESSEQUAL, 0x01, 0xff, 0x00); // stencil should be >= 1
 
-    // Draw full-screen quad textured with our scene image
-    {
-        PIX_EVENT(combine_1);
-
-        // Compute params
-        CEnvDescriptorMixer& envdesc = *g_pGamePersistent->Environment().CurrentEnv;
-        extern float min_lumscale_amb;
-        Fvector4 ambclr = {std::max(envdesc.ambient.x * 2 * ps_r2_sun_lumscale_amb, min_lumscale_amb), std::max(envdesc.ambient.y * 2 * ps_r2_sun_lumscale_amb, min_lumscale_amb),
-                           std::max(envdesc.ambient.z * 2 * ps_r2_sun_lumscale_amb, min_lumscale_amb), 0};
-
-        Fvector4 envclr;
-
-        if (g_pGamePersistent->Environment().USED_COP_WEATHER)
-            envclr = {envdesc.hemi_color_unmodded.x * 2 + EPS, envdesc.hemi_color_unmodded.y * 2 + EPS, envdesc.hemi_color_unmodded.z * 2 + EPS, envdesc.weight};
-        else
-            envclr = {envdesc.sky_color.x * 2 + EPS, envdesc.sky_color.y * 2 + EPS, envdesc.sky_color.z * 2 + EPS, envdesc.weight};
-
-        Fvector4 fogclr = {envdesc.fog_color.x, envdesc.fog_color.y, envdesc.fog_color.z, 0};
-        envclr.x *= 2 * ps_r2_sun_lumscale_hemi;
-        envclr.y *= 2 * ps_r2_sun_lumscale_hemi;
-        envclr.z *= 2 * ps_r2_sun_lumscale_hemi;
-        Fvector4 sunclr, sundir;
-
-        // sun-params
-        {
-            light* fuckingsun = smart_cast<light*>(RImplementation.Lights.sun_adapted._get());
-            Fvector L_dir, L_clr;
-            float L_spec;
-            L_clr.set(fuckingsun->color.r, fuckingsun->color.g, fuckingsun->color.b);
-            L_spec = u_diffuse2s(L_clr);
-            Device.mView.transform_dir(L_dir, fuckingsun->direction);
-            L_dir.normalize();
-
-            sunclr.set(L_clr.x, L_clr.y, L_clr.z, L_spec);
-            sundir.set(L_dir.x, L_dir.y, L_dir.z, 0);
-        }
-
-        dxEnvDescriptorMixerRender& envdescren = *smart_cast<dxEnvDescriptorMixerRender*>(&*envdesc.m_pDescriptorMixer);
-
-        // Setup textures
-        ID3DBaseTexture* e0 = envdescren.sky_r_textures_env[0].second->surface_get();
-        ID3DBaseTexture* e1 = envdescren.sky_r_textures_env[1].second->surface_get();
-        t_envmap_0->surface_set(e0);
-        t_envmap_1->surface_set(e1);
-
-        // Draw
-        cmd_list.set_Element(s_combine->E[0]);
-        cmd_list.set_Geometry(TriangleGeom);
-
-        cmd_list.set_c("m_inv_v", Device.mInvView);
-
-        cmd_list.set_c("m_v2w", Device.mInvView);
-        cmd_list.set_c("L_ambient", ambclr);
-
-        cmd_list.set_c("Ldynamic_color", sunclr);
-        cmd_list.set_c("Ldynamic_dir", sundir);
-
-        cmd_list.set_c("env_color", envclr);
-        cmd_list.set_c("fog_color", fogclr);
-
-        cmd_list.Render(D3DPT_TRIANGLELIST, 0, 0, 3, 0, 1);
-    }
+    draw_combine_1(cmd_list);
 
     // Copy rt_Generic_0 to new RT
     HW.get_context(cmd_list.context_id)->CopyResource(rt_Generic_0_temp->pSurface, rt_Generic_0->pSurface);
@@ -226,7 +229,10 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
     if (need_heatvision)
         phase_heatvision(cmd_list);
 
-    const bool upscaled_3dss = Phase3DSSUpscale(cmd_list, need_3dss); // NLC: also called without the lens to warm up DLSS
+    // NLC: true PiP ( docs/SCOPE_TRUE_PIP_DESIGN.md ): the lens samples the scope view rendered this frame, so the frame
+    // crop is not upscaled ( the call only keeps the scope DLSS features warm for the magnified-frame path )
+    const bool pip_3dss = need_3dss && RImplementation.pip_ready();
+    const bool upscaled_3dss = Phase3DSSUpscale(cmd_list, need_3dss && !pip_3dss) || pip_3dss; // NLC: also called without the lens to warm up DLSS
 
     bool temporalOutput{false};
     if (ps_r_pp_aa_mode) // должно быть перед 3DSS
@@ -261,6 +267,13 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
     {
         PIX_EVENT(phase_3DSSReticle);
 
+        // NLC: true PiP: $user$generic_combine_scope shows the scope view while the lens draws ( s3ds_pip.x = 1 )
+        if (pip_3dss)
+        {
+            pip_composite_begin();
+            cmd_list.Invalidate();
+        }
+
         // The reticle is composited after temporal upscaling. Scene depth is
         // render-sized and cannot be bound with this display-sized color RT.
         u_setrt(cmd_list, rt_Postprocess_0, nullptr, nullptr, nullptr, nullptr);
@@ -271,6 +284,14 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
         cmd_list.set_ColorWriteEnable();
 
         dsgraph.r_dsgraph_render_scope_sorted(upscaled_3dss);
+
+        if (pip_3dss)
+        {
+            pip_composite_end();
+            cmd_list.Invalidate();
+            u_setrt(cmd_list, rt_Postprocess_0, nullptr, nullptr, nullptr, nullptr);
+            RImplementation.rmNormal(cmd_list);
+        }
     }
 
     // Compute blur textures

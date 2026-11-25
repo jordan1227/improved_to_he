@@ -917,6 +917,7 @@ void CActor::UpdateCL()
                 shader_exports.set_custom_params("s3ds_param_6", Fvector4{crop, fade, lens_in_hands ? 1.f : 0.f, 0.f});
                 nlc_gunplay::lens_ppe_update();
 
+                Fvector4 lens_now{1.f, 0.f, 0.f, 1.f}; // NLC: the s3ds_param_5 pushed this frame ( true PiP request below )
                 if (s_lens_exit)
                 {
                     Fvector4 l = s_exit_lens;
@@ -924,18 +925,28 @@ void CActor::UpdateCL()
                     l.x = 1.f + (s_exit_lens.x - 1.f) * keep;
                     l.w = 1.f + (s_exit_lens.w - 1.f) * keep;
                     shader_exports.set_custom_params(lens_key.c_str(), l);
+                    lens_now = l;
                 }
                 else if (pWeapon->IsZoomed() && lens_in_hands)
                 {
                     const float lod_k = Is3dssZoomed ? powf(_max(pWeapon->LensMag(), 1.f), g_3dss_lens_lod) : 1.f;
                     s_exit_lens.set(pWeapon->LensMag(), pWeapon->LensZoomPart(), 1.f, lod_k);
                     shader_exports.set_custom_params(lens_key.c_str(), s_exit_lens);
+                    lens_now = s_exit_lens;
                 }
                 else
                 {
                     s_exit_lens.set(1.f, 0.f, 0.f, 1.f);
                     shader_exports.set_custom_params(lens_key.c_str(), s_exit_lens);
                 }
+
+                // NLC: true PiP ( docs/SCOPE_TRUE_PIP_DESIGN.md ): the renderer draws the scope view while the lens image is up,
+                // at the magnification 3dss_reticle.ps shows ( lerp(1, s3ds_param_5.x, raise) ).
+                auto& pip = Device.m_ScopePip;
+                pip.frame = Device.dwFrame;
+                pip.active = Is3dssZoomed && lens_now.z > 0.5f;
+                pip.mag = 1.f + (_max(lens_now.x, 1.f) - 1.f) * clampr(rf, 0.f, 1.f);
+                pip.raise = rf;
             }
         }
     }
@@ -950,6 +961,8 @@ void CActor::UpdateCL()
             shader_exports.set_hud_params({});
             shader_exports.set_custom_params("s3ds_param_5", Fvector4{1.f, 0.f, 0.f, 1.f}); // NLC: lens mode off
             shader_exports.set_custom_params("s3ds_param_6", Fvector4{1.f, 1.f, 0.f, 0.f});
+            Device.m_ScopePip.frame = Device.dwFrame; // NLC: no true PiP view
+            Device.m_ScopePip.active = false;
         }
     }
 

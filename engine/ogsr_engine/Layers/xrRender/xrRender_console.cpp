@@ -80,6 +80,28 @@ float ps_r_dlss_3dss_scale_factor{1.0f};
 float ps_r_3dss_sharpen{0.3f}; // NLC: CAS sharpening of the 3D scope lens image
 int ps_r_3dss_crop_debug{}; // NLC: 1 = log the scope crop per ADS, 2 = also force no crop
 
+// NLC: true PiP scope view ( docs/SCOPE_TRUE_PIP_DESIGN.md, r4_scope_pip.cpp )
+u32 ps_r_3dss_pip{1}; // 0 = lens magnifies the frame ( SCOPE_PIP_DESIGN ), 1 = second view rendered for the lens ( default since B2.9 )
+constexpr xr_token pip_mode_token[]{{"st_opt_3dss_pip_frame", 0}, {"st_opt_3dss_pip_view", 1}, {}};
+float ps_r_3dss_pip_res{1.f}; // share of the lens size on screen
+float ps_r_3dss_pip_ss{1.f}; // supersample of the scope image ( .224 test: 1.0 default; 1.5 cost 15 FPS more for small gain )
+float ps_r_3dss_pip_margin{1.2f}; // image extent around the lens disc ( sway and recoil move the lens over it )
+float ps_r_3dss_pip_lod{1.f}; // 1 = LOD and small-object cull at the scope's own FOV, 0 = as the main view
+int ps_r_3dss_pip_debug{}; // 1 = log size / lens changes, 2 = also per-second timings
+bool ps_r_3dss_pip_pass{}; // set while a scope-view pass records ( not a console variable )
+Fvector4 ps_r_3dss_pip_params{}; // s3ds_pip binder: x active, y image half-extent E, z display aspect W/H, w 1 / image size
+int ps_r_3dss_pip_ao{1}; // B2.4: ambient occlusion in the scope view ( needs the SSS AO pass )
+int ps_r_3dss_pip_volumetric{}; // B2.5: volumetric sun / lamp beams in the scope view ( decision 12.4: off )
+BOOL ps_r_3dss_pip_ssr{TRUE}; // wet-surface reflections ( SSS SSR pass ) in the scope view ( menu check box )
+bool ps_r_3dss_pip_ao_live{}; // the scope AO of this frame exists ( ssfx_compare.y; not a console variable )
+// B3 lens look ( 3dss_reticle.ps, s3ds_look ): x edge softness, y distortion ( > 0 pincushion, < 0 barrel ), z glass
+// transmission, w sun glare
+Fvector4 ps_r_3dss_pip_look{0.5f, 0.2f, 0.93f, 1.f}; // .222 test: 0.2 pincushion accepted as default
+// B3 ( s3ds_look2 ): x eye-box tunnelling, y glass tint, z chromatic aberration, w warp at the rim
+Fvector4 ps_r_3dss_pip_look2{1.f, 1.f, 1.f, 0.f}; // rim warp off by default ( .222 test: not visible at 0.5 then; stronger since )
+float ps_r_3dss_pip_look_scale{1.f}; // menu "Glass character": 0 clean glass, 1 the optic's profile, 2 exaggerated
+Fvector4 ps_r_3dss_pip_sun{}; // s3ds_sun binder: xy sun in the scope image ( tc ), z glare amount, w -
+
 u32 ps_r_sunshafts_mode = SS_SS_OGSE;
 constexpr xr_token sunshafts_mode_token[]{{"st_opt_off", SS_OFF},
                                           {"volumetric", SS_VOLUMETRIC},
@@ -1147,6 +1169,20 @@ void xrRender_initconsole()
     CMD4(CCC_Float, "r_3dss_sharpen", &ps_r_3dss_sharpen, 0.f, 1.f); // NLC
     CMD4(CCC_Integer, "r_3dss_crop_debug", &ps_r_3dss_crop_debug, 0, 2); // NLC
     CMD4(CCC_Float, "r_3dss_scale_factor", &ps_r_dlss_3dss_scale_factor, 1.f, 2.f); // NLC: 2.5 -> 2.0 (memory and DLSS ratio)
+
+    // NLC: true PiP scope view ( docs/SCOPE_TRUE_PIP_DESIGN.md )
+    CMD3(CCC_Token, "r_3dss_pip", &ps_r_3dss_pip, pip_mode_token);
+    CMD4(CCC_Float, "r_3dss_pip_res", &ps_r_3dss_pip_res, 0.5f, 1.f);
+    CMD4(CCC_Float, "r_3dss_pip_ss", &ps_r_3dss_pip_ss, 1.f, 2.f);
+    CMD4(CCC_Float, "r_3dss_pip_margin", &ps_r_3dss_pip_margin, 1.f, 1.5f);
+    CMD4(CCC_Float, "r_3dss_pip_lod", &ps_r_3dss_pip_lod, 0.f, 1.f);
+    CMD4(CCC_Integer, "r_3dss_pip_debug", &ps_r_3dss_pip_debug, 0, 2);
+    CMD4(CCC_Integer, "r_3dss_pip_ao", &ps_r_3dss_pip_ao, 0, 1);
+    CMD4(CCC_Integer, "r_3dss_pip_volumetric", &ps_r_3dss_pip_volumetric, 0, 1);
+    CMD2(CCC_Bool, "r_3dss_pip_ssr", &ps_r_3dss_pip_ssr);
+    CMD4(CCC_Float, "r_3dss_pip_look_scale", &ps_r_3dss_pip_look_scale, 0.f, 2.f);
+    CMD4(CCC_Vector4, "r_3dss_pip_look", &ps_r_3dss_pip_look, (Fvector4{0.f, -0.2f, 0.5f, 0.f}), (Fvector4{1.f, 0.2f, 1.f, 2.f}));
+    CMD4(CCC_Vector4, "r_3dss_pip_look2", &ps_r_3dss_pip_look2, (Fvector4{0.f, 0.f, 0.f, 0.f}), (Fvector4{2.f, 2.f, 2.f, 1.f}));
 
     CMD4(CCC_Integer, "r__no_scale_on_fade", &ps_no_scale_on_fade, 0, 1); // Alundaio
 

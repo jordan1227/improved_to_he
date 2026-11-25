@@ -5,6 +5,60 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.224 (2026-11-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `BD39B7E5FDCA71AC8BD1C7C4E47B48F507EB44A1C0B8EBF68B15CB3B48C8784F` (archived with its PDB in `nlc_tools/builds/20261125_193326_bd39b7e5`).
+- **Status:** runtime pending. Built on `nlc-3.589.223` (`docs/SCOPE_TRUE_PIP_DESIGN.md` 19-20).
+- True PiP: per-optic lens look ( `s3ds_pip_o1/o2` custom params from `3d_pip_look` / `3d_pip_look2` keys ), strength `r_3dss_pip_look_scale` ( menu "Glass character" ); scope AO and SSR at half size or less; no scope-DLSS warm-up while the second view is selected ( created on first need in the fallback ).
+- **Required game data:** `3dss_reticle.ps`, `ogsr_shaders_control.script`, menu files, `add_scopes.ltx`, `w_sv98.ltx`, `w_awm.ltx`, `w_toz34_hunter.ltx`, `w_g36.ltx`.
+
+## nlc-3.589.223 (2026-11-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `87009B9151178278DBDC3D1F0F8E35D0D41459ED09BA9F9BF10B9DDE08339ACA` (archived with its PDB in `nlc_tools/builds/20261125_191436_87009b91`).
+- **Status:** runtime pending. Built on `nlc-3.589.222` (`docs/SCOPE_TRUE_PIP_DESIGN.md` 18).
+- `r_3dss_pip_ssr` is an on/off command ( menu check box "Reflections in the 3D scope" ); lens look defaults from the .222 test ( `r_3dss_pip_look` y 0.2, `r_3dss_pip_look2` w 0 ).
+- **Required game data:** `3dss_reticle.ps`, `ui_mm_opt.xml`, `ui_mm_opt_video_adv.script`, `ui_mm_opt_main.script`, `text/eng|rus/ui_st_mm.xml`.
+
+## nlc-3.589.222 (2026-11-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `28F2147684ED64E9F5922543EC9B03395AA883C31C9B60BA7A2642FB31C312C8` (archived with its PDB in `nlc_tools/builds/20261125_060724_28f21476`).
+- **Status:** runtime pending. Built on `nlc-3.589.221` (`docs/SCOPE_TRUE_PIP_DESIGN.md` 17).
+- True PiP scope view: wet-surface reflections ( own SSR history, `r_3dss_pip_ssr` 1 ), rain puddles, motion vectors of the scope G-buffer ( AO / SSR reprojection ); scope history reset after a skipped scope frame or a camera cut.
+- Lens look: signed distortion ( pincushion by default ), rim warp ( `r_3dss_pip_look2.w` ), chromatic aberration over the lens ( `r_3dss_pip_look2.z` ); image tc clamped.
+- **Required game data:** `3dss_reticle.ps`, `ssfx_ao.ps`, `ssfx_ssr_combine.ps` ( plus the `.221` set ).
+
+## nlc-3.589.221 (2026-11-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `6E5AFA11E48B5AA885AFA3C475FE94728C118EF98D7B257B30E6B0F396C094C1` (archived with its PDB in `nlc_tools/builds/20261125_023202_6e5afa11`).
+- **Status:** runtime pending. Built on `nlc-3.589.220`; true PiP batches 2 and 3 (`docs/SCOPE_TRUE_PIP_DESIGN.md` 16).
+- True PiP scope view: bullet holes, blood and level decals; heat haze ( distortion ); rain streaks, splashes and thunderbolts ( drawn only, the rain step is shared once per frame ); ambient occlusion with its own history ( `r_3dss_pip_ao` 1; `ssfx_compare.y` = AO bypass ); fog scattering; volumetric sun and lamp beams ( `r_3dss_pip_volumetric`, off ); lights outside the scope cone skipped.
+- Lens look of the scope image ( `r_3dss_pip_look`, `r_3dss_pip_look2` ): edge softness, mild barrel distortion about the aim point, glass transmission and tint, eye-box tunnelling with magnification, rim colour fringe, sun glare ( engine: sun position in the scope image and its visibility, `s3ds_sun` ).
+- Defaults: `r_3dss_pip` Second view, `g_3dss_lens_mode` Lens ( fresh settings only ).
+- Sun visibility of the lens flare is 0 when there is no flare or the sun is behind the camera ( was the last value ).
+- Anomaly haze draw-order memory is kept by the main view only ( the scope pass overwrote it ).
+- **Required game data:** `3dss_reticle.ps`, `ssfx_ao.ps`, `combine_1.ps`, `text/eng|rus/ui_st_mm.xml`.
+
+## nlc-3.589.220 (2026-11-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `AC94602B72657B38D69246BB7D632593990F71B9B3D56691A60FADB5DE0B80C8` (archived with its PDB in `nlc_tools/builds/20261125_014659_ac94602b`).
+- **Status:** runtime pending. Built on `nlc-3.589.219` (`docs/SCOPE_TRUE_PIP_DESIGN.md` 14).
+- True PiP: the scope G-buffer ( deferred list ) and the scope LOD imposters set the scope-size viewport. Without it the scope image used the main viewport: stretched in width, zoom anchored at the bottom-right, and sun shadows reconstructed from the wrong positions.
+
+## nlc-3.589.219 (2026-11-25)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `9404228D40213D2CD9B7EEA1F0AD0B527E1601FDCC55427584170D77023E8982` (archived with its PDB in `nlc_tools/builds/20261125_012606_9404228d`).
+- **Status:** runtime pending. Built on `nlc-3.589.218`; true PiP scope view, batch 1 (`docs/SCOPE_TRUE_PIP_DESIGN.md` 13).
+- True PiP for 3D scopes ( `r_3dss_pip` 1, lens / hybrid mode ): while the lens is up the world is drawn a second time from the main eye with a narrow square projection into a square target set sized to the lens on screen ( `r_3dss_pip_ss`, `_res`, `_margin` ), and the lens samples it instead of magnifying the frame. Own traversal in a dsgraph context ( LOD / SSA at the scope FOV, `r_3dss_pip_lod` ); the scope set is swapped in for the main targets ( `CTexture::swap_views` ) inside main-thread windows after the sun accumulation, per light batch and before the combine; sun from this frame's cascades, shadowed lights per batch; AO / IL / screen-space shadows / water reflections neutral in the scope; exposure from last frame. Not in the scope yet: volumetrics, fog scattering, wallmarks, rain drops, distortion. `r_3dss_pip_debug` 1 / 2 logs `[3DSS-PIP]`. Idea credit: smoke-0n-the-water ( stalker-dlss-fg-bodycam-pip ) and TheLostInPlace ( xray-monolith-pip ).
+- Shadowed lights allocate only the free render contexts ( was always up to 9; FATAL when another pass held one ).
+- Cloud-shadow drift advances once per frame even when the sun cascades are accumulated twice.
+- **Required game data:** `3dss_reticle.ps`, `ui_mm_opt.xml`, `ui_mm_opt_video_adv.script`, `ui_mm_opt_main.script`, `text/eng|rus/ui_st_mm.xml`.
+
 ## nlc-3.589.218 (2026-11-18)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

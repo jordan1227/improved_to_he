@@ -242,12 +242,12 @@ void CEffect_Rain::OnFrame()
     }
 }
 
-void CEffect_Rain::Render(CBackend& cmd_list)
+void CEffect_Rain::Render(CBackend& cmd_list, const bool scope)
 {
     if (!g_pGameLevel)
         return;
 
-    m_pRender->Render(cmd_list, *this);
+    m_pRender->Render(cmd_list, *this, scope);
 }
 
 void CEffect_Rain::Calculate()

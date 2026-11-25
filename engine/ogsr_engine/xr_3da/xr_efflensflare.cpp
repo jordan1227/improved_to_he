@@ -258,9 +258,11 @@ void CLensFlare::OnFrame(shared_str id)
         // Msg("%6d : [%s] -> [%s]", Device.dwFrame, state_to_string(previous_state), state_to_string(m_State));
     }
 
+    extern float ps_lens_flare_sun_blend;
     if ((m_Current == nullptr) || (LightColor.magnitude_rgb() == 0.f))
     {
         bRender = false;
+        ps_lens_flare_sun_blend = 0.f; // NLC: no stale sun visibility ( true PiP sun glare, flare binder )
         return;
     }
 
@@ -293,6 +295,7 @@ void CLensFlare::OnFrame(shared_str id)
     if (fDot <= 0.01f)
     {
         bRender = false;
+        ps_lens_flare_sun_blend = 0.f; // NLC
         return;
     }
 

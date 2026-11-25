@@ -477,4 +477,59 @@ public:
     ID3D11Texture2D* m_ImguiTex{};
     ID3D11ShaderResourceView* m_ImguiSRV{};
 
+    // NLC: true PiP scope view ( docs/SCOPE_TRUE_PIP_DESIGN.md, r4_scope_pip.cpp ). A square set of the targets the
+    // scope pass writes, swapped in for the main ones ( members and the views of their stock-named textures ) while a
+    // scope pass records, so every phase and shader works on it unchanged.
+    struct PipTargets
+    {
+        ref_rt depth, position, color, accum, generic0, generic0_temp, zbuffer, scratch;
+        // B2 ( docs/SCOPE_TRUE_PIP_DESIGN.md 15 ): optional, each only when its main target exists
+        ref_rt generic1; // distortion mask
+        ref_rt ao, ao_a, ao_b, prev_pos; // AO history / result / blur, previous scope position buffer ( r_3dss_pip_ao )
+        ref_rt fog4, fog2; // fog scattering
+        ref_rt rain; // rain refraction buffer
+        ref_rt vol_sun, generic2, generic3; // volumetrics: reduced target, or the full pair ( r_3dss_pip_volumetric )
+        ref_rt velocity; // motion vectors of the scope G-buffer ( AO / SSR history )
+        ref_rt ssr, ssr_b, ssr_hist; // reflections ( r_3dss_pip_ssr )
+        u32 size{};
+        u32 flags{}; // PIP_T_* of this set
+    };
+    enum : u32
+    {
+        PIP_T_AO = 1u << 0,
+        PIP_T_VOL = 1u << 1,
+        PIP_T_SSR = 1u << 2,
+    };
+    PipTargets m_pip;
+    bool m_pip_in{}; // the scope set is swapped in
+    bool m_pip_history{}; // the scope AO history / previous position are from the last scope frame
+    u32 m_pip_ssr_frame{}; // last frame the scope SSR ran ( its history is cleared after a gap )
+    bool m_pip_vol{}; // volumetrics in the scope view this frame ( targets exist, option on )
+    bool m_pip_vol_active{}; // the scope's volumetric targets were cleared and written this frame
+
+    u32 pip_want_flags() const; // PIP_T_* the options ask for and the main targets allow
+    bool pip_create(u32 size, u32 flags); // false: a target failed ( VRAM ), nothing kept
+    bool pip_ao() const { return m_pip_in && (m_pip.flags & PIP_T_AO) && ps_r_3dss_pip_ao && !ps_ssfx_compare; } // scope AO this pass
+    bool pip_ssr() const { return m_pip_in && (m_pip.flags & PIP_T_SSR) && ps_r_3dss_pip_ssr && !ps_ssfx_compare; } // scope SSR this pass
+    void phase_pip_ao(CBackend& cmd_list, const Fmatrix& m_current, const Fmatrix& m_previous); // scope set swapped in
+    bool phase_pip_ssr(CBackend& cmd_list, const Fmatrix& m_current, const Fmatrix& m_previous); // scope set swapped in
+    void pip_destroy();
+    void pip_swap(CBackend& cmd_list_imm, bool in);
+    void phase_pip_combine(CBackend& cmd_list, R_dsgraph_structure& scope, const Fmatrix& m_previous); // clouds .. tonemap, scope set swapped in
+    void pip_composite_begin(); // the lens samples the scope image ( $user$generic_combine_scope views )
+    void pip_composite_end();
+
+private:
+    void draw_combine_1(CBackend& cmd_list); // NLC: combine_1 full-screen pass ( main and scope combine )
+    void draw_ssfx_ao(CBackend& cmd_list, const Fmatrix& m_current, const Fmatrix& m_previous, bool scope, bool camera_motion); // NLC: main and scope AO
+    bool draw_ssfx_ssr(CBackend& cmd_list, const Fmatrix& m_current, const Fmatrix& m_previous, float scene_prev_k, u32& hist_frame); // NLC: main and scope SSR
+
+    struct PipSaved
+    {
+        u32 render_w{}, render_h{}, display_w{}, display_h{}, view_w{}, view_h{};
+        u32 accum_mark{}, light_marker{};
+        bool volumetric{};
+    } m_pip_saved;
+    u32 m_pip_accum_mark{};
+    u32 m_pip_light_marker{5};
 };

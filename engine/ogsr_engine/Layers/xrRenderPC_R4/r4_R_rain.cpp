@@ -345,6 +345,7 @@ void render_rain::flush()
     cmd_list_imm.set_xform_project(Device.mProject);
 
     // Accumulate
+    nlc_wet_applied = o.active && nlc_wet;
     if (o.active && nlc_wet) // NLC: not for a fog-only map
     {
         PIX_EVENT_CTX(cmd_list_imm, RainApply);

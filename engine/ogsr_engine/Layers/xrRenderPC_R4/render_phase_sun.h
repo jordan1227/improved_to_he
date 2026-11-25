@@ -99,6 +99,7 @@ struct render_rain : public i_render_phase
     // NLC: the top-down depth map also serves the fog sky-access gate ( docs/FOG_DESIGN.md 13 )
     bool nlc_wet{}; // wet surfaces this frame ( rain ): map + draw_rain
     bool nlc_fog{}; // fog gate this frame: map only ( smaller radius when not raining )
+    bool nlc_wet_applied{}; // draw_rain ran this frame ( the true PiP scope view repeats it )
     void nlc_fog_map_export();
 };
 
@@ -112,7 +113,9 @@ struct render_sun : public i_render_phase
     void flush() override;
 
     void accumulate_cascade(u32 cascade_ind);
+    void accumulate_scope(CBackend& cmd_list); // NLC: true PiP scope view, the kept cascades into its accumulator
 
+    bool nlc_flushed{}; // NLC: the cascades were built and accumulated this frame
     sun::cascade m_sun_cascades[R__NUM_SUN_CASCADES]{};
     light* sun{nullptr};
     bool need_to_render_sunshafts{false};

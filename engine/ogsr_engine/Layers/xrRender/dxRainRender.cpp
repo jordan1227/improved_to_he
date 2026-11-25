@@ -27,7 +27,7 @@ void dxRainRender::Copy(IRainRender& _in) { *this = *smart_cast<dxRainRender*>(&
 
 #include "../../xr_3da/iGame_persistent.h"
 
-void dxRainRender::Render(CBackend& cmd_list, CEffect_Rain & owner)
+void dxRainRender::Render(CBackend& cmd_list, CEffect_Rain & owner, const bool scope)
 {
     render_impacts(cmd_list); // NLC .216: also without rain ( the puddles stay )
 
@@ -131,7 +131,7 @@ void dxRainRender::Render(CBackend& cmd_list, CEffect_Rain & owner)
 
     if (!fis_zero(ps_ssfx_rain_3.x)) //если прозрачность 100%, то нет смысла их рендерить
     {
-        float dt = Device.fTimeDelta;
+        const float dt = scope ? 0.f : Device.fTimeDelta; // NLC: the scope view draws the splashes, the main pass steps them
         _IndexStream& _IS = RImplementation.Index;
         cmd_list.set_Shader(_splash_SH);
         cmd_list.set_c("ssfx_rain_setup", ps_ssfx_rain_3); // Alpha, Refraction
@@ -152,6 +152,11 @@ void dxRainRender::Render(CBackend& cmd_list, CEffect_Rain & owner)
             P->time -= dt;
             if (P->time < 0)
             {
+                if (scope)
+                {
+                    P = next;
+                    continue;
+                }
                 owner.p_free(P);
                 P = next;
                 continue;

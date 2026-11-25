@@ -39,6 +39,11 @@ public:
 
     const IRender_Light* smap_light{}; // NLC: spot light of the current PHASE_SMAP_LIGHTS build_subspace (CCustomHUD::Render_SMAP)
 
+    // NLC: true PiP scope view ( r4_scope_pip.cpp ): LOD distance factor ( 0 = the main view's BASE_FOV / fFOV rule ) and
+    // a screen-size factor for SSA ( the scope image's pixels per steradian against the main view's ). Reset per alloc.
+    float nlc_fov_k{};
+    float nlc_ssa_k{1.f};
+
 public:
     // Dynamic scene graph
     u32 mapNormalCount{};

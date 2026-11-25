@@ -17,6 +17,7 @@ struct wm_slot
     ref_shader shader;
     StaticWMVec static_items;
     xr_vector<intrusive_ptr<CSkeletonWallmark>> skeleton_items;
+    xr_vector<intrusive_ptr<CSkeletonWallmark>> skeleton_scope; // NLC: this frame's items, kept for the true PiP scope view
 
     wm_slot(ref_shader sh)
     {
@@ -654,6 +655,10 @@ void CWallmarksEngine::Render()
             W->used_in_render = u32(-1);
 #endif
         }
+        // NLC: the scope view ( drawn later this frame ) shows the same body marks
+        slot->skeleton_scope.clear();
+        if (RImplementation.pip_frame_on())
+            slot->skeleton_scope.swap(slot->skeleton_items);
         slot->skeleton_items.clear();
         // Flush stream
         FlushStream(cmd_list, hGeom, slot->shader, w_offset, w_verts, w_start, TRUE);
@@ -664,6 +669,88 @@ void CWallmarksEngine::Render()
     // Level-wmarks
     dsgraph.r_dsgraph_render_wmarks();
     Device.Statistic->RenderDUMP_WM.End();
+
+    cmd_list.set_xform_view(Device.mView);
+    cmd_list.set_xform_project(Device.mProject);
+}
+
+// NLC: the shifted projection / view of the wallmarks ( depth bias toward the camera )
+void CWallmarksEngine::SetScopeXforms(CBackend& cmd_list)
+{
+    Fmatrix proj = Device.mProject;
+    proj._43 -= ps_r__WallmarkSHIFT;
+    cmd_list.set_xform_world(Fidentity);
+    cmd_list.set_xform_project(proj);
+
+    Fvector mViewPos;
+    mViewPos.mad(Device.vCameraPosition, Device.vCameraDirection, ps_r__WallmarkSHIFT_V);
+    Fmatrix view;
+    view.build_camera_dir(mViewPos, Device.vCameraDirection, Device.vCameraTop);
+    cmd_list.set_xform_view(view);
+}
+
+// NLC: static and body wallmarks for the true PiP scope view ( docs/SCOPE_TRUE_PIP_DESIGN.md 15 B2.1 ), drawn on the
+// immediate context ( dynamic vertex stream ) with the scope camera in Device / ViewBase. Draw only: no fade, wash or
+// removal ( Render() of this frame did that ). Level wallmarks are drawn from the scope's own dsgraph context.
+void CWallmarksEngine::RenderScope(CBackend& cmd_list, const float ssa_k)
+{
+    ZoneScoped;
+
+    SetScopeXforms(cmd_list);
+
+    const float ssaCLIP = r_ssaDISCARD / 4 / std::max(ssa_k, 1.f); // the scope shows small marks at its magnification
+
+    lock.Enter();
+
+    for (const auto& slot : marks)
+    {
+        if (slot->static_items.empty() && slot->skeleton_scope.empty())
+            continue;
+
+        u32 w_offset;
+        FVF::LIT *w_verts, *w_start;
+        BeginStream(hGeom, w_offset, w_verts, w_start);
+        for (const static_wallmark* W : slot->static_items)
+        {
+            if (W->verts.empty() || !RImplementation.ViewBase.testSphere_dirty(W->bounds.P, W->bounds.R))
+                continue;
+            const float dst = Device.vCameraPosition.distance_to_sqr(W->bounds.P);
+            if (W->bounds.R * W->bounds.R / dst < ssaCLIP)
+                continue;
+            const u32 w_count = static_cast<u32>(w_verts - w_start);
+            if ((w_count + W->verts.size()) >= (MAX_TRIS * 3))
+            {
+                FlushStream(cmd_list, hGeom, slot->shader, w_offset, w_verts, w_start, FALSE);
+                BeginStream(hGeom, w_offset, w_verts, w_start);
+            }
+            static_wm_render(W, w_verts);
+        }
+        FlushStream(cmd_list, hGeom, slot->shader, w_offset, w_verts, w_start, FALSE);
+
+        if (slot->skeleton_scope.empty())
+            continue;
+
+        BeginStream(hGeom, w_offset, w_verts, w_start);
+        for (const auto& W : slot->skeleton_scope)
+        {
+            if (!W || !RImplementation.ViewBase.testSphere_dirty(W->m_Bounds.P, W->m_Bounds.R))
+                continue;
+            const float dst = Device.vCameraPosition.distance_to_sqr(W->m_Bounds.P);
+            if (W->m_Bounds.R * W->m_Bounds.R / dst < ssaCLIP)
+                continue;
+            const u32 w_count = static_cast<u32>(w_verts - w_start);
+            if ((w_count + W->VCount()) >= (MAX_TRIS * 3))
+            {
+                FlushStream(cmd_list, hGeom, slot->shader, w_offset, w_verts, w_start, TRUE);
+                BeginStream(hGeom, w_offset, w_verts, w_start);
+            }
+            W->Parent()->RenderWallmark(W, w_verts);
+        }
+        slot->skeleton_scope.clear();
+        FlushStream(cmd_list, hGeom, slot->shader, w_offset, w_verts, w_start, TRUE);
+    }
+
+    lock.Leave();
 
     cmd_list.set_xform_view(Device.mView);
     cmd_list.set_xform_project(Device.mProject);

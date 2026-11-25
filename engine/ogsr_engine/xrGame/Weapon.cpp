@@ -1700,7 +1700,7 @@ void CWeapon::InitAddons() {}
 
 // NLC: lens mode (docs/SCOPE_PIP_DESIGN.md). g_3dss_lens_mode: 0 full-screen zoom (original), 1 lens, 2 hybrid.
 // Only for NLC's 3D scope sections (3dss_gen_zoom_enable marks them) and the classic zoom-factor system.
-u32 g_3dss_lens_mode{};
+u32 g_3dss_lens_mode{1}; // NLC B2.9: lens by default ( with the true PiP scope view )
 float g_3dss_lens_sens{1.f}; // 1 = mouse speed matched to the lens magnification
 float g_3dss_lens_lod{0.5f}; // render LOD bias exponent of the lens magnification while looking through the lens
 float g_3dss_lens_ppe{0.5f}; // strength of the lens-open .ppe inside the lens (0 = off)

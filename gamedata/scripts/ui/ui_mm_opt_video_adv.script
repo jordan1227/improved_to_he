@@ -19,6 +19,10 @@ local adv_vid_opt_params = {
 	{ "3d_scopes",              "check", 0, hint_colors.green , "ui_mm_3d_scopes", "ui_mm_3d_scopes_desc" },
 	{ "3dss_lens_mode",         "list",  0, hint_colors.green , "ui_mm_3dss_lens_mode", "ui_mm_3dss_lens_mode_desc" },
 	{ "3dss_lens_sens",         "track", 0, hint_colors.green , "ui_mm_3dss_lens_sens", "ui_mm_3dss_lens_sens_desc" },
+	{ "3dss_pip",               "list",  0, hint_colors.red   , "ui_mm_3dss_pip", "ui_mm_3dss_pip_desc" },
+	{ "3dss_pip_ss",            "track", 0, hint_colors.yellow, "ui_mm_3dss_pip_ss", "ui_mm_3dss_pip_ss_desc" },
+	{ "3dss_pip_ssr",           "check", 0, hint_colors.yellow, "ui_mm_3dss_pip_ssr", "ui_mm_3dss_pip_ssr_desc" },
+	{ "3dss_pip_look_scale",    "track", 0, hint_colors.green , "ui_mm_3dss_pip_look_scale", "ui_mm_3dss_pip_look_scale_desc" },
 	{ "3dss_scale_factor",      "track", 0, hint_colors.yellow, "ui_mm_3dss_scale_factor", "video_settings_desc_69" },
 	{ "3dss_dlss_preset",       "list",  0, hint_colors.green , "ui_mm_3dss_dlss_preset", "ui_mm_3dss_dlss_preset_desc" },
 
@@ -87,6 +91,8 @@ function opt_video_adv:InitControls(x, y, xml, handler)
 	xml:InitFrame("frame", self)
 	self.scroll_v = xml:InitScrollView("video_adv:scroll_v", self)
 	self.upscaler_rows = {} -- sivol: DLSS/FSR3 rows, shown only for the matching AA mode
+	self.scope_rows = {} -- sivol: 3D scope rows, shown only when they apply (docs/SCOPE_TRUE_PIP_DESIGN.md 19.1)
+	self.scope_ctls = {}
 
 	-- перебираем с конца, поскольку в настройках scroll view в xml стоит параметр flip_vert="1",
 	-- который инвертирует порядок элементов, что в свою очередь сделано для того, чтобы визуально первые элементы
@@ -135,6 +141,24 @@ function opt_video_adv:InitControls(x, y, xml, handler)
 			elseif opt == "dlss_quality" or opt == "dlss_preset" or opt == "fsr3_quality" then
 				self.upscaler_rows[opt] = _st
 			end
+			if string.find(opt, "^3d") then
+				self.scope_rows[opt] = _st
+				self.scope_ctls[opt] = ctl
+			end
+		end
+	end
+
+	-- sivol: 3D scope rows follow the scope controls (values not yet applied)
+	local scope_events = {
+		{ "3d_scopes", "video_adv:check_3d_scopes", ui_events.BUTTON_CLICKED },
+		{ "3dss_lens_mode", "video_adv:list_3dss_lens_mode", ui_events.LIST_ITEM_SELECT },
+		{ "3dss_pip", "video_adv:list_3dss_pip", ui_events.LIST_ITEM_SELECT },
+	}
+	for _, e in ipairs(scope_events) do
+		local ctl = self.scope_ctls[e[1]]
+		if ctl then
+			handler:Register(ctl, e[2])
+			handler:AddCallback(e[2], e[3], function() self:UpdateScopeRows() end)
 		end
 	end
 
@@ -171,6 +195,51 @@ function opt_video_adv:UpdateUpscalerQualityRows()
 	if rows.dlss_quality then rows.dlss_quality:Show(mode == "st_opt_dlss") end
 	if rows.dlss_preset then rows.dlss_preset:Show(mode == "st_opt_dlss") end
 	if rows.fsr3_quality then rows.fsr3_quality:Show(mode == "st_opt_fsr3") end
+	self:UpdateScopeRows()
+end
+
+-- sivol: the token of a list control's shown text, or the console value
+local function list_token(ctl, tokens, cmd)
+	if ctl then
+		local shown = ctl:GetText()
+		for _, token in ipairs(tokens) do
+			if shown == game.translate_string(token) then
+				return token
+			end
+		end
+	end
+	return get_console():get_string(cmd) or ""
+end
+
+-- sivol: 3D scope rows (docs/SCOPE_TRUE_PIP_DESIGN.md 19.1): everything needs 3D scopes on; the lens rows need the lens or
+-- hybrid mode; second view rows and magnified frame rows exclude each other; the scope upscaler rows also need an AA mode
+-- that drives them (resolution boost: DLSS / FSR3 / TAA, DLSS model: DLSS / TAA)
+function opt_video_adv:UpdateScopeRows()
+	local rows, ctls = self.scope_rows or {}, self.scope_ctls or {}
+	local on = true
+	if ctls["3d_scopes"] then
+		on = ctls["3d_scopes"]:GetCheck()
+	end
+	local lens_mode = list_token(ctls["3dss_lens_mode"], { "st_opt_3dss_lens_screen", "st_opt_3dss_lens_lens", "st_opt_3dss_lens_hybrid" }, "g_3dss_lens_mode")
+	local pip = list_token(ctls["3dss_pip"], { "st_opt_3dss_pip_frame", "st_opt_3dss_pip_view" }, "r_3dss_pip")
+	local aa = self:GetSelectedAaMode()
+
+	local lens = on and lens_mode ~= "st_opt_3dss_lens_screen"
+	local view = lens and pip == "st_opt_3dss_pip_view"
+	local frame = lens and not view
+	local show = {
+		["3dss_lens_mode"] = on,
+		["3dss_lens_sens"] = lens,
+		["3dss_pip"] = lens,
+		["3dss_pip_ss"] = view,
+		["3dss_pip_ssr"] = view,
+		["3dss_pip_look_scale"] = view,
+		["3dss_scale_factor"] = frame and (aa == "st_opt_dlss" or aa == "st_opt_fsr3" or aa == "st_opt_taa"),
+		["3dss_dlss_preset"] = frame and (aa == "st_opt_dlss" or aa == "st_opt_taa"),
+	}
+	for opt, visible in pairs(show) do
+		if rows[opt] then rows[opt]:Show(visible) end
+	end
 	if self.scroll_v then
 		self.scroll_v:ForceUpdate()
 	end

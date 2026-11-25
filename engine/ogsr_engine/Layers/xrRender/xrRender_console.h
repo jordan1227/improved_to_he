@@ -15,6 +15,17 @@ extern ECORE_API u32 ps_r_fsr3_quality;
 extern float ps_r_dlss_3dss_scale_factor;
 extern int ps_r_3dss_crop_debug; // NLC
 extern float ps_r_3dss_sharpen; // NLC
+// NLC: true PiP scope view ( docs/SCOPE_TRUE_PIP_DESIGN.md )
+extern u32 ps_r_3dss_pip;
+extern float ps_r_3dss_pip_res, ps_r_3dss_pip_ss, ps_r_3dss_pip_margin, ps_r_3dss_pip_lod;
+extern int ps_r_3dss_pip_debug;
+extern bool ps_r_3dss_pip_pass; // a scope-view pass is recording
+extern Fvector4 ps_r_3dss_pip_params;
+extern int ps_r_3dss_pip_ao, ps_r_3dss_pip_volumetric;
+extern BOOL ps_r_3dss_pip_ssr;
+extern float ps_r_3dss_pip_look_scale;
+extern bool ps_r_3dss_pip_ao_live;
+extern Fvector4 ps_r_3dss_pip_look, ps_r_3dss_pip_look2, ps_r_3dss_pip_sun;
 
 enum : u32
 {

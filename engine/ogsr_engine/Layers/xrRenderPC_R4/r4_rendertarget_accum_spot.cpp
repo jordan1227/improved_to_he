@@ -146,7 +146,7 @@ void CRenderTarget::accum_spot(CBackend& cmd_list, light* L)
 
     increment_light_marker(cmd_list);
 
-    if (ps_r2_ls_flags_ext.test(R2FLAGEXT_LENS_FLARE) && L->flags.bFlare)
+    if (ps_r2_ls_flags_ext.test(R2FLAGEXT_LENS_FLARE) && L->flags.bFlare && !ps_r_3dss_pip_pass) // NLC: flares are the main view's
         render_flare(cmd_list, L);
 }
 

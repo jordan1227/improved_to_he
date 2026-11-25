@@ -82,6 +82,9 @@ void InitSettings()
     shader_exports.set_custom_params("s3ds_param_7", Fvector4{1.f, 0.f, 0.f, 0.f}); // NLC: crop used by the upscaler (renderer)
     shader_exports.set_custom_params("s3ds_param_8", Fvector4{.5f, .5f, .5f, 0.f}); // NLC: lens PPE base colour, gray
     shader_exports.set_custom_params("s3ds_param_9", Fvector4{0.f, 0.f, 0.f, 0.f}); // NLC: lens PPE add colour, blur
+    // NLC: per-optic look of the true PiP lens ( ogsr_shaders_control.script, 3d_pip_look / 3d_pip_look2; z = 0: no profile )
+    shader_exports.set_custom_params("s3ds_pip_o1", Fvector4{0.f, 0.f, 0.f, 0.f});
+    shader_exports.set_custom_params("s3ds_pip_o2", Fvector4{0.f, 0.f, 0.f, 0.f});
     //
 
     if (pSettings->section_exist("shader_params_export"))

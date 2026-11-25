@@ -9,7 +9,7 @@ public:
     virtual ~dxRainRender();
     virtual void Copy(IRainRender& _in);
 
-    virtual void Render(CBackend& cmd_list, CEffect_Rain& owner);
+    virtual void Render(CBackend& cmd_list, CEffect_Rain& owner, bool scope);
     virtual void Calculate(CEffect_Rain& owner);
 
     virtual const Fsphere& GetDropBounds() const;

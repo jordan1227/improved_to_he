@@ -1136,7 +1136,8 @@ bool CRenderTarget::Phase3DSSUpscale(CBackend& cmd_list, const bool lens_drawn)
         {
             // pass 8: any frame while lens/hybrid mode is on (not only with a scope in hands): the first creation also
             // loads NGX (~2 s with TAA), so it belongs to the first frames after loading, once per launch.
-            warm = dlss_capable && (g_3dss_lens_mode != 0 || shader_exports.get_custom_params(held_key).z > 0.5f) && !NGXWrapper.ScopeCreated();
+            // NLC: not while the true PiP scope view is selected ( the lens samples it, the scope DLSS is only its fallback )
+            warm = dlss_capable && !ps_r_3dss_pip && (g_3dss_lens_mode != 0 || shader_exports.get_custom_params(held_key).z > 0.5f) && !NGXWrapper.ScopeCreated();
             if (!warm)
                 return false;
         }

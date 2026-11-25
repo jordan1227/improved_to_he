@@ -57,6 +57,10 @@ public:
     void surface_set(ID3DBaseTexture* surf);
     ID3DBaseTexture* surface_get() const;
 
+    // NLC: exchanges surface and views with another render-target texture without creating views ( true PiP scope
+    // pass, r4_scope_pip.cpp ): shaders bound to this name read the other surface until it is swapped back.
+    void swap_views(CTexture& other);
+
     virtual u32 get_Width()
     {
         return desc_Width;

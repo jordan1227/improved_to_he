@@ -61,6 +61,22 @@ uniform float4 s3ds_param_6;
 uniform float4 s3ds_param_7;
 uniform float4 s3ds_param_8;
 uniform float4 s3ds_param_9;
+// NLC true PiP (docs/SCOPE_TRUE_PIP_DESIGN.md 4.12, engine binder): x 1 = s_prev_frame is the scope view rendered this
+// frame, y its half-extent around the aim point (main NDC height units), z display aspect W/H, w 1 / its size in px
+uniform float4 s3ds_pip;
+// NLC B3 lens look of the true PiP image (docs/SCOPE_TRUE_PIP_DESIGN.md 16-17, r_3dss_pip_look / _look2): look x edge
+// softness, y distortion (> 0 pincushion, < 0 barrel), z glass transmission, w sun glare; look2 x eye-box tunnelling,
+// y glass tint, z chromatic aberration, w warp at the rim; sun xy sun in the scope image (tc), z glare amount (engine:
+// brightness x visibility x closeness)
+uniform float4 s3ds_look;
+uniform float4 s3ds_look2;
+uniform float4 s3ds_sun;
+// NLC per-optic look ( ogsr_shaders_control.script: 3d_pip_look / 3d_pip_look2 of the weapon or scope section; o1.z
+// ( transmission ) = 0: the optic has no profile, the console values apply ) and the glass character strength
+// ( r_3dss_pip_look_scale, menu: 0 clean glass, 1 profile, 2 exaggerated )
+uniform float4 s3ds_pip_o1;
+uniform float4 s3ds_pip_o2;
+uniform float4 s3ds_look_k;
 uniform float4 mark_number;
 uniform float4 mark_color;
 // uniform float4 shader_param_8;
@@ -184,6 +200,16 @@ float3 back_image_sample(float2 lens_tc, float2 back_tc, float current_fov, floa
     }
 
     return s_prev_frame.Sample(smp_base, back_tc).rgb;
+}
+
+// NLC B3: the true PiP image with lateral chromatic aberration ( red shifted out by ca, blue in ). Every tap of the lens
+// filters ( base, edge softening, sharpening ) goes through it, so the channels stay aligned with each other: a shift
+// added to a single filtered tap turned textured ground into rainbow noise ( .224 test, PU / TOZ )
+float3 pip_sample(float2 tc, float2 ca)
+{
+    [branch] if (ca.x == 0.0 && ca.y == 0.0)
+        return s_prev_frame.Sample(smp_base, tc).rgb;
+    return float3(s_prev_frame.Sample(smp_base, tc + ca).r, s_prev_frame.Sample(smp_base, tc).g, s_prev_frame.Sample(smp_base, tc - ca).b);
 }
 
 float3 apply_nvg(float2 tc, float3 img)
@@ -397,6 +423,15 @@ float4 main(vf I) : SV_Target
     // NLC lens mode: the camera keeps (part of) the base FOV and the lens draws the rest of the scope's real
     // magnification as a linear screen-space zoom about the aim point; zoom state comes from the engine.
     const bool LENS_MODE = s3ds_param_5.z > 0.5;
+    const bool OPTIC_LOOK = s3ds_pip_o1.z > 0.01;
+    float4 LOOK = OPTIC_LOOK ? s3ds_pip_o1 : s3ds_look;
+    float4 LOOK2 = OPTIC_LOOK ? s3ds_pip_o2 : s3ds_look2;
+    {
+        const float k = max(s3ds_look_k.x, 0.0);
+        LOOK.xyw *= k; // softness, distortion, sun glare
+        LOOK.z = 1.0 - (1.0 - LOOK.z) * min(k, 1.5); // glass light loss
+        LOOK2 *= k; // tunnelling, tint, chromatic aberration, rim warp
+    }
     if (LENS_MODE)
     {
         IMAGE_SIZE = max(s3ds_param_5.x, 1.0);
@@ -606,6 +641,7 @@ float4 main(vf I) : SV_Target
     float2 scope_tc = (1.0 / zoom) * (screen_tc.xy - 0.5) + 0.5;
     V_tangent.x = V_tangent.x / screen_res.x * screen_res.y;
     scope_tc = scope_tc + V_tangent.xy * shift;
+    const float2 scope_tc_base = scope_tc; // NLC: before the Specter flip shift ( true PiP repeats it below )
 
     if (RETICLE_TYPE == RT_SPECTER)
     {
@@ -636,15 +672,61 @@ float4 main(vf I) : SV_Target
         bool blur = SETTING(SETTINGS, ST_NVG_BLUR) /*&& floor(shader_param_8.x) != 0*/ || m_hud_params.x == 0;
         // NLC: the upscaled scope target may hold only the centre 1 / s3ds_param_7.x of the frame (crop upscaling)
         float2 prev_tc = (scope_tc - 0.5) * max(s3ds_param_7.x, 1.0) + 0.5;
-        back = back_image_sample(I.tc0, prev_tc, ogse_c_screen.x, CHROMA_POWER, blur, SETTING(SETTINGS, ST_CHROMATISM));
+        float2 back_texel = screen_res.zw;
+        // NLC true PiP: the image already holds the magnification and is centred on the aim point, like the lens
+        // mode's scope_tc; map this pixel's screen position onto its square ( y down in both )
+        const bool PIP = LENS_MODE && s3ds_pip.x > 0.5;
+        // B3: position across the lens disc, 0 at its centre, 1 at the visible rim ( mark_shadow edge )
+        const float lens_r = saturate(distance(reticle_lens_tc, float2(0.5, 0.5)) * 2.0);
+        if (PIP)
+        {
+            const float2 ndc = (screen_tc - 0.5) * float2(2.0 * s3ds_pip.z, 2.0);
+            prev_tc = ndc / (2.0 * s3ds_pip.y) + 0.5;
+            // B3.2: eyepiece distortion growing toward the rim ( pincushion: the outer image is stretched ) plus a stronger
+            // warp in the outer third; scaled about the aim point, so the aim point never moves
+            // ( rim warp: up to 30 % more stretch over the outer 45 % of the radius at 1; .222 had 12 % over 35 %, unseen )
+            const float rim = smoothstep(0.55, 1.0, lens_r);
+            prev_tc = 0.5 + (prev_tc - 0.5) * max(1.0 - LOOK.y * lens_r * lens_r - 0.3 * LOOK2.w * rim * rim, 0.4);
+            // barrel settings could reach past the image ( the sampler wraps ): stay on it
+            prev_tc = clamp(prev_tc, 0.5 * s3ds_pip.w, 1.0 - 0.5 * s3ds_pip.w);
+            prev_tc.x += (scope_tc.x - scope_tc_base.x) * zoom * s3ds_pip.z / s3ds_pip.y; // Specter flip shift
+            back_texel = s3ds_pip.ww;
+        }
+        // B3: lateral chromatic aberration, none at the centre, growing toward the rim ( along the lens radius; ~2 image
+        // texels at the rim at strength 1 )
+        float2 ca = float2(0, 0);
+        if (PIP && !blur && LOOK2.z > 0.001)
+            ca = (reticle_lens_tc - 0.5) * 2.0 * back_texel * (LOOK2.z * (0.5 + 1.7 * lens_r * lens_r));
+        if (PIP && !blur && !SETTING(SETTINGS, ST_CHROMATISM))
+            back = pip_sample(prev_tc, ca);
+        else
+            back = back_image_sample(I.tc0, prev_tc, ogse_c_screen.x, CHROMA_POWER, blur, SETTING(SETTINGS, ST_CHROMATISM));
+        // B3.1: field curvature, the image softens toward the rim ( 8 taps on a ring of up to ~3 image texels )
+        if (PIP && !blur && LOOK.x > 0.001)
+        {
+            const float soft = LOOK.x * smoothstep(0.5, 1.0, lens_r);
+            if (soft > 0.01)
+            {
+                const float2 r = back_texel * (0.75 + 2.5 * soft);
+                float3 ring = pip_sample(prev_tc + float2(r.x, 0), ca);
+                ring += pip_sample(prev_tc - float2(r.x, 0), ca);
+                ring += pip_sample(prev_tc + float2(0, r.y), ca);
+                ring += pip_sample(prev_tc - float2(0, r.y), ca);
+                ring += pip_sample(prev_tc + r * 0.7071, ca);
+                ring += pip_sample(prev_tc - r * 0.7071, ca);
+                ring += pip_sample(prev_tc + float2(r.x, -r.y) * 0.7071, ca);
+                ring += pip_sample(prev_tc + float2(-r.x, r.y) * 0.7071, ca);
+                back = lerp(back, (back + ring) / 9.0, saturate(soft * 1.5));
+            }
+        }
         // NLC (pass 7): contrast-adaptive sharpening of the magnified lens image (r_3dss_sharpen -> s3ds_param_7.y)
         if (LENS_MODE && !blur && s3ds_param_7.y > 0.001)
         {
-            float2 px = screen_res.zw;
-            float3 n = s_prev_frame.Sample(smp_base, prev_tc + float2(0, -px.y)).rgb;
-            float3 s = s_prev_frame.Sample(smp_base, prev_tc + float2(0, px.y)).rgb;
-            float3 w = s_prev_frame.Sample(smp_base, prev_tc + float2(-px.x, 0)).rgb;
-            float3 e = s_prev_frame.Sample(smp_base, prev_tc + float2(px.x, 0)).rgb;
+            float2 px = back_texel;
+            float3 n = pip_sample(prev_tc + float2(0, -px.y), ca);
+            float3 s = pip_sample(prev_tc + float2(0, px.y), ca);
+            float3 w = pip_sample(prev_tc + float2(-px.x, 0), ca);
+            float3 e = pip_sample(prev_tc + float2(px.x, 0), ca);
             float3 mn = min(back, min(min(n, s), min(w, e))), mx = max(back, max(max(n, s), max(w, e)));
             float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 0.0001)));
             float3 wgt = -amp * lerp(0.125, 0.2, saturate(s3ds_param_7.y));
@@ -653,6 +735,35 @@ float4 main(vf I) : SV_Target
         if (s3ds_param_9.w > 0.001)
             back = lerp(back, blur_sample(prev_tc).rgb, saturate(s3ds_param_9.w));
         back *= LENS_COLOR;
+
+        if (PIP)
+        {
+            // B3.3: glass transmission and a faint warm tint ( coatings lose a little blue ); the lens reads slightly
+            // darker than the eye-adapted view around it, like real glass
+            back *= LOOK.z * lerp(float3(1, 1, 1), float3(1.0, 0.985, 0.94), saturate(LOOK2.y));
+
+            // B3.4: eye-box tunnelling. The exit pupil shrinks with magnification ( objective / power ): the dark band at
+            // the rim widens and follows the eye's offset more at high power
+            const float mag = max(s3ds_param_5.x, 1.0);
+            const float mag_k = saturate((mag - 1.0) / 7.0);
+            const float2 eye_off = pupil_tangent * EYE_RELIEF * (0.3 + 0.7 * mag_k);
+            const float r_eye = saturate(distance(reticle_lens_tc, float2(0.5, 0.5) + eye_off) * 2.0);
+            const float band = lerp(0.12, 0.32, mag_k);
+            back *= saturate(1.0 - LOOK2.x * lerp(0.45, 0.75, mag_k) * smoothstep(1.0 - band, 1.02, r_eye));
+
+            // B3.5: sun glare: a glow around the sun's place in the image and a veil over the lens ( contrast loss )
+            if (s3ds_sun.z > 0.001 && LOOK.w > 0.001)
+            {
+                const float g = s3ds_sun.z * LOOK.w;
+                const float d = distance(prev_tc, s3ds_sun.xy);
+                const float3 sun_c = saturate(L_sun_color.rgb / max(max(L_sun_color.r, L_sun_color.g), max(L_sun_color.b, 0.001)));
+                const float glow = 0.55 * exp(-d * d * 10.0) + 0.2 * exp(-d * 3.0);
+                const float veil = 0.18 * g;
+                const float l = dot(back, float3(0.299, 0.587, 0.114));
+                back = lerp(back, l.xxx, veil * 0.5);
+                back = back * (1.0 - veil * 0.4) + sun_c * (glow * g + veil);
+            }
+        }
     }
 
     if (IMAGE_TYPE == IT_THERMAL || IMAGE_TYPE == IT_THERMAL_COLOR)
