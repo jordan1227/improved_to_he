@@ -1909,8 +1909,11 @@ u32 player_hud::script_anim_play(u8 hand, LPCSTR hud_section, LPCSTR anm_name, b
     // Hidden hands (no clip, nothing held) are not posed while hidden (update() gates on items), so a clip from
     // that state starts clean (no mix from a stale pose: the sprint pose, or the bind pose after a load) and the
     // hands are drawn from the 3rd frame on. A clip that follows a clip with an item model keeps the item drawn.
-    const bool nlc_hands_hidden = script_anim_part == u8(-1) && !m_attached_items[0] && !m_attached_items[1];
-    const bool nlc_item_running = script_anim_part != u8(-1) && script_anim_item_model != nullptr;
+    // NLC (22): a clip stopped on this or the previous frame (stop, then play at once: watch lower, resonator hide)
+    // does not count as hidden hands; that clip mixes from the pose just left and is drawn at once (it blinked)
+    const bool nlc_just_stopped = nlc_script_stop_frame != 0 && nlc_script_stop_frame + 1 >= Device.dwFrame;
+    const bool nlc_hands_hidden = script_anim_part == u8(-1) && !m_attached_items[0] && !m_attached_items[1] && !nlc_just_stopped;
+    const bool nlc_item_running = (script_anim_part != u8(-1) && script_anim_item_model != nullptr) || (nlc_just_stopped && nlc_script_stop_item);
     if (nlc_hands_hidden)
     {
         bMixIn = false;
@@ -2155,6 +2158,8 @@ void player_hud::script_anim_stop()
 
     u8 part = script_anim_part;
     const float blend_out = script_anim_blend_out;
+    nlc_script_stop_frame = Device.dwFrame;
+    nlc_script_stop_item = script_anim_item_model != nullptr;
     script_anim_part = u8(-1);
     script_anim_item_model = nullptr;
     script_override_item = false;

@@ -453,6 +453,8 @@ public:
     // clip that hand runs; nlc_hand_frame = last frame that hand was drawn (a hand drawn again after a gap snaps)
     Fvector nlc_hand_offs[2][2]{};
     u32 nlc_hand_frame[2]{};
+    bool nlc_script_stop_item{}; // that clip had an item model
+    u32 nlc_script_stop_frame{}; // frame the last main clip was stopped (LOOT_INTERACTION_DESIGN 22)
     bool nlc_hand_drawn(u8 hand) const;
     bool nlc_hand_was_drawn(u8 hand) const;
 
