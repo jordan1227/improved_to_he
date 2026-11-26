@@ -20,6 +20,10 @@ namespace fl_hook
 {
 // backpack inventory UI: hide the first-person body and HUD hands (console: bpui)
 extern bool bp_ui;
+// NLC (LOOT_INTERACTION_DESIGN 18): what bpui hides; both off by default (consoles bpui_hands, bpui_body). The body skip
+// only removed the first-person shadow; the hands skip left the backpack floating in the open-inventory idle.
+extern bool bp_ui_hide_hands;
+extern bool bp_ui_hide_body;
 // "st_ballon_remove" line in the worn outfit's inventory menu (console: blr)
 extern bool blr_on;
 // engine kTORCH / kTORCH_MODE handling with empty hands blocked, Lua owns it (console: tlua)

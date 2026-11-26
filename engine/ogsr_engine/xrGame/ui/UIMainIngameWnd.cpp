@@ -297,6 +297,7 @@ void CUIMainIngameWnd::Draw()
         return;
 
     UIMotionIcon.SetNoise((s16)(0xffff & iFloor(m_pActor->m_snd_noise * 100.0f)));
+    m_pActor->PickupInfoRender(); // NLC: item marks while Use is held, under the HUD widgets
     CUIWindow::Draw();
     UIZoneMap->Render();
 

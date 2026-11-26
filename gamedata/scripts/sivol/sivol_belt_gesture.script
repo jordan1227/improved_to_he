@@ -388,9 +388,52 @@ local function find_charged_accum()
 	return found
 end
 
+-- Pressed during a pickup (or its weapon-out return push): the toggle waits for it instead of being refused
+-- (LOOT_INTERACTION_DESIGN 21). One request is kept, for QUEUE_MS at most.
+local QUEUE_MS = 2000
+local queued_until = nil
+local queue_sig = nil
+
+local function loot_busy()
+	return sivol_loot_anim and sivol_loot_anim.busy and sivol_loot_anim.busy() or false
+end
+
+local function queue_stop()
+	queued_until = nil
+	if queue_sig then
+		ogse_signals.get_mgr():unsubscribe(queue_sig)
+		queue_sig = nil
+	end
+end
+
+local function queue_update()
+	if not queued_until then
+		queue_stop()
+		return
+	end
+	if time_global() > queued_until or not db.actor or not db.actor:alive() then
+		log_dbg("queued toggle dropped")
+		queue_stop()
+		return
+	end
+	if loot_busy() then return end
+	queue_stop()
+	log_dbg("queued toggle runs")
+	toggle_accum()
+end
+
 function toggle_accum()
 	local actor = db.actor
 	if not actor or not actor:alive() then return end
+	if not cur and loot_busy() then
+		queued_until = time_global() + QUEUE_MS
+		if not queue_sig then
+			queue_sig = { signal = "on_update", fun = queue_update }
+			ogse_signals.get_mgr():subscribe(queue_sig)
+		end
+		log_dbg("toggle queued behind the pickup")
+		return
+	end
 	if cur or not can_start() then return end
 	local in_slot = actor:item_in_slot(ACCUM_SLOT)
 	local equip = in_slot == nil
@@ -493,6 +536,7 @@ function dump()
 end
 
 local function reset()
+	queue_stop()
 	if cur then finish(cur, "reset", true) end
 	unsubscribe()
 	sag_off(true)

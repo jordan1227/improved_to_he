@@ -5,6 +5,85 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.234 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E2D712C07A7A4BC9F058E955A522C5AAF95DB734DB93F9EE85D972115A153C8A` (archived with its PDB in `nlc_tools/builds/20261126_132442_e2d712c0`).
+- **Status:** runtime pending. Built on `nlc-3.589.233` (`docs/LOOT_INTERACTION_DESIGN.md` 21).
+- Lua: `actor:nlc_hold_slot_switch(ms)` ( 0 ends it ). While held, slot keys 1-6, next / prev slot ( mouse wheel included ) and the detector key are remembered instead of acted on; the last one replays once the hold ends or lapses.
+- **Required game data:** `sivol_loot_anim.script`, `sivol_belt_gesture.script`.
+
+## nlc-3.589.233 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F749C5F8FE4988409848ABBC233C1C616476273A3DA6A205753B6AA3D8B3A917` (archived with its PDB in `nlc_tools/builds/20261126_130917_f749c5f8`).
+- **Status:** runtime pending. Built on `nlc-3.589.232` (`docs/LOOT_INTERACTION_DESIGN.md` 20, review fixes).
+- Lua: `game.hud_motion_hand_slot(hand)` returns 0 (no clip), 1 (main slot) or 2 (free-hand slot).
+- `game.stop_hud_motion()` and `stop_hud_motion_hand(2)` end both slots ( they promoted the free clip before ); the timed clip end still promotes.
+- Empty hands: an arm that was not drawn starts a main-slot clip without mixing, even while the other arm runs a clip.
+- Attaching an item ends the free-hand slot; no promotion onto a hand that holds an item.
+- **Required game data:** `sivol_loot_anim.script` ( slot resync ).
+
+## nlc-3.589.232 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F2024EE1802EBCB355EE60E42AF9E8AFEF9365B8EC87F6279032CAEA8596D050` (archived with its PDB in `nlc_tools/builds/20261126_031816_f2024ee1`).
+- **Status:** runtime pending. Built on `nlc-3.589.231` (`docs/LOOT_INTERACTION_DESIGN.md` 18).
+- Empty hands: an arm model is drawn only while a script clip animates that arm ( the other arm showed its stale pose beside a one-hand clip: initial pose after a load, frozen sprint pose ).
+- Empty hands: each arm takes the offset of the clip it runs ( the free-hand slot reads its own section ); an arm already drawn eases to a new offset ( 80 ms ) instead of jumping.
+- The free-hand slot mixes from the arm's pose when that arm was drawn on the last frame ( sprint pose handover ).
+- The arms are posed in `update()` while any script clip runs; a clip from hidden hands settles the track clocks first ( no 66 ms skip ).
+- `bpui` no longer hides the hands or the first-person body shadow by default; consoles `bpui_hands 1` / `bpui_body 1` restore the old skips.
+- **Required game data:** `sivol_loot_anim.script` ( sprint lowering of the other arm ).
+
+## nlc-3.589.231 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `0C3DDA9F205511C4DF5C4918CFCDBF479C2416D10611E603AFEA4DC980A27E81` (archived with its PDB in `nlc_tools/builds/20261126_025343_0c3dda9f`).
+- **Status:** runtime pending. Built on `nlc-3.589.230` (`docs/LOOT_INTERACTION_DESIGN.md` 17).
+- A script clip that starts while the hands are hidden ( no clip, nothing held ) starts without mixing and the hands are drawn from its 3rd frame ( first empty-hand clip after a load showed the bind pose at the camera; after sprinting the clip blended from the stale sprint pose ). The free-hand slot starts the same way.
+- The 2-frame item-model hide only applies when no clip with an item model was running ( chained clips such as the backpack open / idle / close no longer blink ).
+- **Required game data:** none.
+
+## nlc-3.589.230 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `CADC2A1C7730ECD7358411CD32017331B5E41BD9B76E50C95EA1CF6440BF111A` (archived with its PDB in `nlc_tools/builds/20261126_023641_cadc2a1c`).
+- **Status:** runtime pending. Built on `nlc-3.589.229` (`docs/LOOT_INTERACTION_DESIGN.md` 14, 16).
+- Lua: `game.play_hud_motion_free_hand(hand, section, key, mix, speed)` plays a one-hand clip on the free hand while a one-hand clip runs on the other ( empty hands only; the free clip becomes the main one when the main clip ends first ); `game.stop_hud_motion_hand(hand)`.
+- Review fixes: eased blends are matched by model / part / motion before use and dropped when the hands model is rebuilt; the ease follows `start_k` / `stop_k` and skips reverse clips; either key bound to Use keeps the item marks on; no marks after death; `pickup_item` refuses live or fake projectiles.
+- **Required game data:** none new ( `sivol_loot_anim.script` uses the free-hand calls ).
+
+## nlc-3.589.229 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `45878F13DD6197FD627E745CBF8F2C033920D526F281BF2FCFC8D932375BDCCD` (archived with its PDB in `nlc_tools/builds/20261126_013742_45878f13`).
+- **Status:** runtime pending. Built on `nlc-3.589.228` (`docs/LOOT_INTERACTION_DESIGN.md` 13).
+- Script HUD clips: `ease_in` / `ease_out` ( share of the clip ) and `ease_speed` ( speed at the ends ) in the HUD section slow the start and end of a clip; the returned length includes the ease. Hands and item model blends are steered together; looping clips are not eased; the Flytrap rescale keeps working.
+- **Required game data:** `misc/items/anim_items/anm_other.ltx` ( ease keys ).
+
+## nlc-3.589.228 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `8AA8BF80DE2056555F25C97117865C2B7946D4055418B08A5A85EF14BAF76EBE` (archived with its PDB in `nlc_tools/builds/20261126_010050_8aa8bf80`).
+- **Status:** runtime pending. Built on `nlc-3.589.227` (`docs/LOOT_INTERACTION_DESIGN.md` 10, 12).
+- `use_ray_from_camera` ( `actor.ltx [actor]` ): the use / pickup target comes from a short camera-centred ray when an item in hand moves the crosshair ray to the barrel; the crosshair and `level.get_target_obj` keep the barrel ray.
+- Item marks: `pickup_info_name_radius` and `pickup_info_name_target_only`; names sit above the item centre.
+- Script HUD clips: `blend_in` / `blend_out` ( s ) in the HUD section set the crossfade into the clip and back to the weapon ( one-hand clips ).
+- The scripted `item_visual` model is not drawn on a clip's first 2 frames ( a gas-mask flash at the wrong place ).
+- Lua: `get_actor_obj().use_ray_from_camera`, `pickup_info_name_radius`, `pickup_info_name_target_only`.
+- **Required game data:** `creatures/actor.ltx`, `misc/items/anim_items/anm_other.ltx` ( blend keys ).
+
+## nlc-3.589.227 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `C4B31C0E8A60C68EA0B38E3D2263112FC1ACCE39CA0D28B395FDDDC89CD1C038` (archived with its PDB in `nlc_tools/builds/20261126_001432_c4b31c0e`).
+- **Status:** runtime pending. Built on `nlc-3.589.226` (`docs/LOOT_INTERACTION_DESIGN.md` pass 1, E1-E4').
+- Pickup assist from `actor.ltx [actor]`: `pickup_assist_enabled` ( false = crosshair-only pickup ), `pickup_assist_actor_radius`, `pickup_assist_ray_radius`, `pickup_assist_cone_deg`, `pickup_assist_min_radius`. Defaults equal the stock 2 m / 1 m cylinder; items behind the camera are skipped.
+- Item marks while Use is held ( `PickupInfoDraw` ): `pickup_info_mode` name / dot / both, dot texture, size near / far, colour, target colour + `pickup_info_highlight_target`, distance fade, `pickup_info_hold_ms`. Marks follow the key, not the one-shot pickup mode, and skip items the pickup would refuse ( no CanTake, RPG / fake grenade, just dropped ).
+- Lua: `get_actor_obj():pickup_item(obj)` takes an item through `SendPickUpEvent` without the before-pickup hook ( refusals logged as `! [pickup_item]` ); `get_actor_obj().pickup_assist_*` / `pickup_info_*` fields for live tuning; `open_inventory_box` also opens a dead stalker's loot window.
+- **Required game data:** `creatures/actor.ltx` ( new keys ), `textures/ui/ui_loot_dot.dds`.
+
 ## nlc-3.589.226 (2026-11-25)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

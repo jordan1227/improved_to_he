@@ -22,6 +22,9 @@ private:
     float fuzzyShowInfo;
     rq_result RQ;
     rq_results RQR;
+    // NLC: use/pickup ray from the camera centre, short (take distance). Equals RQ when the
+    // crosshair ray already starts at the camera (docs/LOOT_INTERACTION_DESIGN.md 10)
+    rq_result RQ_use;
     float m_real_dist;
 
 private:
@@ -39,4 +42,5 @@ public:
     float GetDist();
     float GetRealDist();
     CObject* GetObj();
+    rq_result& GetUseRayQuery() { return RQ_use; }
 };

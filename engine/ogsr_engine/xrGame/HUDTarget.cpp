@@ -44,6 +44,7 @@ CHUDTarget::CHUDTarget()
     hShader->create("hud\\cursor", "ui\\cursor");
 
     RQ.set(NULL, 0.f, -1);
+    RQ_use.set(NULL, 0.f, -1);
 
     Load();
     m_bShowCrosshair = false;
@@ -53,6 +54,8 @@ void CHUDTarget::net_Relcase(CObject* O)
 {
     if (RQ.O == O)
         RQ.O = NULL;
+    if (RQ_use.O == O)
+        RQ_use.O = NULL;
 
     RQR.r_clear();
 }
@@ -95,8 +98,12 @@ void CHUDTarget::CursorOnFrame()
     Fvector p1 = Device.vCameraPosition;
     Fvector dir = Device.vCameraDirection;
 
+    bool from_weapon = false;
     if (auto Wpn = smart_cast<CHudItem*>(Actor->inventory().ActiveItem()))
+    {
         Actor->g_fireParams(Wpn, p1, dir, true);
+        from_weapon = true;
+    }
 
     // Render cursor
     RQ.O = nullptr;
@@ -112,6 +119,22 @@ void CHUDTarget::CursorOnFrame()
         m_real_dist = RQ.range;
         clamp(RQ.range, NEAR_LIM, RQ.range);
     }
+
+    // NLC: the use/pickup target follows the screen centre, not the barrel-aligned crosshair
+    if (from_weapon && Actor->m_bUseRayFromCamera)
+    {
+        RQ_use.O = nullptr;
+        RQ_use.range = Actor->inventory().GetTakeDist() + 0.5f;
+        RQ_use.element = -1;
+        collide::ray_defs RDU(Device.vCameraPosition, Device.vCameraDirection, RQ_use.range, CDB::OPT_CULL, collide::rqtBoth);
+        RQR.r_clear();
+        if (Level().ObjectSpace.RayQuery(RQR, RDU, pick_trace_callback, &RQ_use, nullptr, Level().CurrentEntity()))
+            clamp(RQ_use.range, NEAR_LIM, RQ_use.range);
+        else
+            RQ_use.O = nullptr;
+    }
+    else
+        RQ_use = RQ;
 }
 
 extern ENGINE_API BOOL g_bRendering;

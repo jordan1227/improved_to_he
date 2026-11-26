@@ -693,8 +693,13 @@ void player_hud::nlc_follow_field_factor()
         nlc_scale_running_blends(m_model_2, ratio);
     if (script_anim_item_model)
         nlc_scale_running_blends(script_anim_item_model, ratio);
+    for (auto& e : script_anim_blends)
+        if (e.base_speed > 0.f)
+            e.base_speed *= ratio;
 
     const u32 now = Device.dwTimeGlobal;
+    if (script_free_part != u8(-1) && script_free_end > now)
+        script_free_end = now + iFloor(float(script_free_end - now) / ratio);
     if (script_anim_part != u8(-1) && m_bStopAtEndAnimIsRunning && script_anim_end > now)
         script_anim_end = now + iFloor(float(script_anim_end - now) / ratio);
 }
@@ -877,6 +882,8 @@ void player_hud::load(const shared_str& player_hud_sect, bool force)
     if (script_override_arms) return;
 
     const bool b_reload = m_model != nullptr || m_model_2 != nullptr;
+    script_anim_blends.clear(); // E-1: the blends belong to the models deleted below
+    script_free_part = u8(-1);
     if (m_model)
     {
         IRenderVisual* v = m_model->dcast_RenderVisual();
@@ -988,8 +995,8 @@ void player_hud::render_hud(u32 context_id, IRenderable* root)
     //if (!m_attached_items[0] && !m_attached_items[1])
     //    return;
 
-	bool b_r0 = ((m_attached_items[0] && m_attached_items[0]->need_renderable()) || script_anim_part == 0 || script_anim_part == 2);
-    bool b_r1 = ((m_attached_items[1] && m_attached_items[1]->need_renderable()) || script_anim_part == 1 || script_anim_part == 2);
+	bool b_r0 = ((m_attached_items[0] && m_attached_items[0]->need_renderable()) || script_anim_part == 0 || script_anim_part == 2 || script_free_part == 0);
+    bool b_r1 = ((m_attached_items[1] && m_attached_items[1]->need_renderable()) || script_anim_part == 1 || script_anim_part == 2 || script_free_part == 1);
 
     if (!b_r0 && !b_r1)
         return;
@@ -997,11 +1004,16 @@ void player_hud::render_hud(u32 context_id, IRenderable* root)
     bool b_has_hands =
         (m_attached_items[0] && m_attached_items[0]->m_has_separated_hands) || (m_attached_items[1] && m_attached_items[1]->m_has_separated_hands) || script_anim_item_model;
 
-    if (b_has_hands || script_anim_part != u8(-1))
+    if ((b_has_hands || script_anim_part != u8(-1)) && Device.dwFrame >= script_anim_hands_show_frame)
     {
-        ::Render->add_Visual(context_id, root, m_model->dcast_RenderVisual(), m_transform);
+        // NLC (LOOT_INTERACTION_DESIGN 18): with nothing held, an arm no clip animates is not drawn. It kept the last
+        // pose it had (the bind pose after a load, a frozen sprint pose) and showed beside a one-hand clip.
+        const bool nlc_no_items = !m_attached_items[0] && !m_attached_items[1];
+        if (!nlc_no_items || nlc_hand_drawn(0))
+            ::Render->add_Visual(context_id, root, m_model->dcast_RenderVisual(), m_transform);
 
-        ::Render->add_Visual(context_id, root, m_model_2->dcast_RenderVisual(), m_transform_2);
+        if (!nlc_no_items || nlc_hand_drawn(1))
+            ::Render->add_Visual(context_id, root, m_model_2->dcast_RenderVisual(), m_transform_2);
     }
 
     if (!script_override_item) // можно скрывать предметы в руках во время скриптовой анимаии, но выглядит кривовато
@@ -1015,7 +1027,8 @@ void player_hud::render_hud(u32 context_id, IRenderable* root)
 
     if (b_has_hands)
     {
-        if (script_anim_item_model)
+        // NLC: not on the clip's first frames, before the hands and m_item_pos follow the new clip
+        if (script_anim_item_model && Device.dwFrame >= script_anim_item_show_frame)
         {
             ::Render->add_Visual(context_id, root, script_anim_item_model->dcast_RenderVisual(), m_item_pos);
         }
@@ -1024,7 +1037,7 @@ void player_hud::render_hud(u32 context_id, IRenderable* root)
 
 void player_hud::render_script_item_only(u32 context_id, IRenderable* root)
 {
-    if (script_anim_item_model)
+    if (script_anim_item_model && Device.dwFrame >= script_anim_item_show_frame)
         ::Render->add_Visual(context_id, root, script_anim_item_model->dcast_RenderVisual(), m_item_pos);
 }
 
@@ -1114,6 +1127,39 @@ void player_hud::update(const Fmatrix& cam_trans)
     else
         trans_2 = trans;
 
+    const bool nlc_no_items = !m_attached_items[0] && !m_attached_items[1];
+    if (nlc_no_items && script_anim_part != u8(-1))
+    {
+        // NLC (LOOT_INTERACTION_DESIGN 18): empty hands, each arm takes the offset of the clip it runs (main or free slot).
+        // An arm drawn on the last frame eases to a new offset (the sprint pose's offset differs from the pickup's by
+        // ~0.24 m, and the arm jumped by that much); an arm that was not drawn takes it at once.
+        for (u8 h = 0; h < 2; ++h)
+        {
+            if (!nlc_hand_drawn(h))
+                continue;
+            const Fvector* target = script_free_part == h ? script_free_offset : script_anim_offset;
+            if (!nlc_hand_was_drawn(h))
+            {
+                nlc_hand_offs[h][0] = target[0];
+                nlc_hand_offs[h][1] = target[1];
+            }
+            else if (need_update_collision_local)
+            {
+                const float k = 1.f - std::exp(-Device.fTimeDelta / 0.08f);
+                nlc_hand_offs[h][0].lerp(nlc_hand_offs[h][0], target[0], k);
+                nlc_hand_offs[h][1].lerp(nlc_hand_offs[h][1], target[1], k);
+            }
+            if (need_update_collision_local)
+                nlc_hand_frame[h] = Device.dwFrame;
+        }
+        m1pos = nlc_hand_offs[0][0];
+        m1rot = nlc_hand_offs[0][1];
+        m2pos = nlc_hand_offs[1][0];
+        m2rot = nlc_hand_offs[1][1];
+        trans = trans_b;
+        trans_2 = trans_b;
+    }
+    else
     {
         // override hand offset for single hand animation
         if (script_anim_part == 2 || (script_anim_part && !m_attached_items[0] && !m_attached_items[1]))
@@ -1172,7 +1218,9 @@ void player_hud::update(const Fmatrix& cam_trans)
     m_transform_2.mul(trans_2, m_attach_offset_2);
 
     bool hasHands = (m_attached_items[0] && m_attached_items[0]->m_has_separated_hands) || (m_attached_items[1] && m_attached_items[1]->m_has_separated_hands);
-    if (hasHands || script_anim_item_model)
+    // NLC (LOOT_INTERACTION_DESIGN 18): also while an empty-hand clip runs, so those clips advance here every frame like
+    // clips with an item model, not only when the renderer calculates the bones
+    if (hasHands || script_anim_item_model || script_anim_part != u8(-1))
     {
         m_model->UpdateTracks();
         m_model->dcast_PKinematics()->CalculateBones_Invalidate();
@@ -1251,8 +1299,8 @@ void player_hud::update(const Fmatrix& cam_trans)
     }
 
     bool need_blend[2];
-    need_blend[0] = ((script_anim_part == 0 || script_anim_part == 2) || (m_attached_items[0] && m_attached_items[0]->m_parent_hud_item->NeedBlendAnm()));
-    need_blend[1] = ((script_anim_part == 1 || script_anim_part == 2) || (m_attached_items[1] && m_attached_items[1]->m_parent_hud_item->NeedBlendAnm()));
+    need_blend[0] = ((script_anim_part == 0 || script_anim_part == 2 || script_free_part == 0) || (m_attached_items[0] && m_attached_items[0]->m_parent_hud_item->NeedBlendAnm()));
+    need_blend[1] = ((script_anim_part == 1 || script_anim_part == 2 || script_free_part == 1) || (m_attached_items[1] && m_attached_items[1]->m_parent_hud_item->NeedBlendAnm()));
 
     for (movement_layer* anm : m_movement_layers)
     {
@@ -1331,11 +1379,17 @@ void player_hud::update(const Fmatrix& cam_trans)
         // single hand offset smoothing + syncing back to other hand animation on end
         if (script_anim_part != static_cast<u8>(-1))
         {
+            if (!script_anim_blends.empty())
+                nlc_update_script_ease();
+
             if (need_update_collision_local)
                 script_anim_offset_factor += Device.fTimeDelta * 2.5f;
 
             if (m_bStopAtEndAnimIsRunning && Device.dwTimeGlobal >= script_anim_end)
                 script_anim_stop();
+
+            if (script_free_part != u8(-1) && Device.dwTimeGlobal >= script_free_end)
+                nlc_free_hand_stop();
         }
         else if (need_update_collision_local)
             script_anim_offset_factor -= Device.fTimeDelta * 5.f;
@@ -1459,6 +1513,9 @@ void player_hud::attach_item(CHudItem* item)
 
         m_attached_items[item_idx] = pi;
         pi->m_parent_hud_item = item;
+        // NLC (LOOT_INTERACTION_DESIGN 20, review 3): the free-hand slot is for empty hands only
+        if (script_free_part != u8(-1))
+            nlc_free_hand_stop();
 
         if (item_idx == 0 && m_attached_items[1])
             m_attached_items[1]->m_parent_hud_item->CheckCompatibility(item);
@@ -1581,8 +1638,102 @@ void player_hud::OnMovementChanged(ACTOR_DEFS::EMoveCommand cmd)
     updateMovementLayerState();
 }
 
+// NLC: clip speed over its progress u (0..1): ease_k at the ends, 1 in the middle, smoothstep between
+static float nlc_ease_speed(float u, float a, float b, float k)
+{
+    float w = 1.f;
+    if (a > 0.f && u < a)
+    {
+        const float t = u / a;
+        w = t * t * (3.f - 2.f * t);
+    }
+    else if (b > 0.f && u > 1.f - b)
+    {
+        const float t = (1.f - u) / b;
+        w = t * t * (3.f - 2.f * t);
+    }
+    return k + (1.f - k) * w;
+}
+
+// how much longer the eased clip takes than the plain one: the integral of 1 / speed over the progress
+static float nlc_ease_time_factor(float a, float b, float k)
+{
+    constexpr int N = 64;
+    float sum = 0.f;
+    for (int i = 0; i < N; ++i)
+        sum += 1.f / nlc_ease_speed((float(i) + 0.5f) / float(N), a, b, k);
+    return sum / float(N);
+}
+
+// E-1 (review 2026-11-26): the pointer is matched in its model's part list before B is read; a model that
+// was rebuilt (player_hud::load) no longer equals m_model / m_model_2, and load() clears the list anyway
+bool player_hud::nlc_script_blend_alive(const nlc_script_blend& e) const
+{
+    if (!e.B || !e.model || e.part >= 4)
+        return false;
+    if (e.model != m_model && e.model != m_model_2 && e.model != script_anim_item_model)
+        return false;
+    const u32 count = e.model->LL_PartBlendsCount(e.part);
+    for (u32 i = 0; i < count; ++i)
+        if (e.model->LL_PartBlend(e.part, i) == e.B)
+            return e.B->blend_state() != CBlend::eFREE_SLOT && e.B->motionID == e.mid;
+    return false;
+}
+
+void player_hud::nlc_track_script_blend(CBlend* B)
+{
+    if (!B || B->speed <= 0.f) // reverse clips are not eased (E-4)
+        return;
+    const u16 part = B->bone_or_part;
+    if (part >= 4)
+        return;
+    IKinematicsAnimated* models[3] = {m_model, m_model_2, script_anim_item_model};
+    for (IKinematicsAnimated* m : models)
+    {
+        if (!m)
+            continue;
+        const u32 count = m->LL_PartBlendsCount(part);
+        for (u32 i = 0; i < count; ++i)
+            if (m->LL_PartBlend(part, i) == B)
+            {
+                script_anim_blends.push_back({B, B->speed, m, part, B->motionID});
+                return;
+            }
+    }
+}
+
+// steers the speed of the running clip's blends along the ease curve (docs/LOOT_INTERACTION_DESIGN.md 13)
+void player_hud::nlc_update_script_ease()
+{
+    for (auto it = script_anim_blends.begin(); it != script_anim_blends.end();)
+    {
+        if (!nlc_script_blend_alive(*it) || it->B->timeTotal <= EPS)
+        {
+            it = script_anim_blends.erase(it);
+            continue;
+        }
+        CBlend* B = it->B;
+        // E-4: progress over the played window (start_k .. stop_k), not the whole motion
+        const float t0 = script_anim_ease_start_k * B->timeTotal;
+        const float t1 = t0 + (B->timeTotal - t0) * script_anim_ease_stop_k;
+        const float u = t1 - t0 > EPS ? std::clamp((B->timeCurrent - t0) / (t1 - t0), 0.f, 1.f) : 1.f;
+        B->speed = it->base_speed * nlc_ease_speed(u, script_anim_ease_in, script_anim_ease_out, script_anim_ease_k);
+        ++it;
+    }
+}
+
+// NLC: PlayCycle with an explicit crossfade time (s); <= 0 keeps the motion's own accrue/falloff
+static CBlend* nlc_play_cycle(IKinematicsAnimated* model, u16 part, MotionID mid, BOOL mix, float blend_time)
+{
+    if (blend_time <= 0.f || !mix)
+        return model->PlayCycle(part, mid, mix);
+    const CMotionDef* d = model->LL_GetMotionDef(mid);
+    const float rate = 1.f / blend_time;
+    return model->LL_PlayCycle(part, mid, mix, rate, rate, d->Speed(), d->StopAtEnd(), nullptr, nullptr);
+}
+
 // sync anim of other part to selected part (1 = sync to left hand anim; 2 = sync to right hand anim)
-void player_hud::re_sync_anim(u8 part)
+void player_hud::re_sync_anim(u8 part, float blend_time)
 {
     u32 bc = part == 1 ? m_model_2->LL_PartBlendsCount(part) : m_model->LL_PartBlendsCount(part);
     for (u32 bidx = 0; bidx < bc; ++bidx)
@@ -1598,16 +1749,16 @@ void player_hud::re_sync_anim(u8 part)
         {
             if (pid == 0)
             {
-                CBlend* B = m_model->PlayCycle(0, M, TRUE);
+                CBlend* B = nlc_play_cycle(m_model, 0, M, TRUE, blend_time);
                 B->timeCurrent = BR->timeCurrent;
                 B->speed = BR->speed;
-                B = m_model_2->PlayCycle(0, M, TRUE);
+                B = nlc_play_cycle(m_model_2, 0, M, TRUE, blend_time);
                 B->timeCurrent = BR->timeCurrent;
                 B->speed = BR->speed;
             }
             else if (pid != part)
             {
-                CBlend* B = part == 1 ? m_model->PlayCycle(pid, M, TRUE) : m_model_2->PlayCycle(pid, M, TRUE);
+                CBlend* B = part == 1 ? nlc_play_cycle(m_model, pid, M, TRUE, blend_time) : nlc_play_cycle(m_model_2, pid, M, TRUE, blend_time);
                 B->timeCurrent = BR->timeCurrent;
                 B->speed = BR->speed;
             }
@@ -1753,6 +1904,21 @@ u32 player_hud::script_anim_play(u8 hand, LPCSTR hud_section, LPCSTR anm_name, b
     // NLC flytrap (docs/ANOMALY_DESIGN.md 22): every scripted hands motion (consumables, masks, flask, torch...) is slowed with
     // the actor's item motions; the returned duration follows (motion_length uses the speed)
     speed *= nlc_hud_speed_k(NLC_SPEED_FIELD);
+
+    // NLC (docs/LOOT_INTERACTION_DESIGN.md 17): state before this clip replaces anything.
+    // Hidden hands (no clip, nothing held) are not posed while hidden (update() gates on items), so a clip from
+    // that state starts clean (no mix from a stale pose: the sprint pose, or the bind pose after a load) and the
+    // hands are drawn from the 3rd frame on. A clip that follows a clip with an item model keeps the item drawn.
+    const bool nlc_hands_hidden = script_anim_part == u8(-1) && !m_attached_items[0] && !m_attached_items[1];
+    const bool nlc_item_running = script_anim_part != u8(-1) && script_anim_item_model != nullptr;
+    if (nlc_hands_hidden)
+    {
+        bMixIn = false;
+        // the arms were not updated while hidden: settle their track clock now, or the first update of the new clip
+        // advances it by up to 66 ms (UpdateTracks clamp) after a load or a long idle
+        m_model->UpdateTracks();
+        m_model_2->UpdateTracks();
+    }
     if (!pSettings->section_exist(hud_section))
     {
         Msg("! script motion section [%s] does not exist", hud_section);
@@ -1802,6 +1968,18 @@ u32 player_hud::script_anim_play(u8 hand, LPCSTR hud_section, LPCSTR anm_name, b
     script_anim_offset[0] = offs;
     script_anim_offset[1] = rrot;
     script_anim_part = hand;
+    script_anim_blend_in = READ_IF_EXISTS(pSettings, r_float, hud_section, "blend_in", -1.f);
+    script_anim_blend_out = READ_IF_EXISTS(pSettings, r_float, hud_section, "blend_out", -1.f);
+    script_anim_item_show_frame = nlc_item_running ? 0 : Device.dwFrame + 2;
+    script_anim_hands_show_frame = nlc_hands_hidden ? Device.dwFrame + 2 : 0;
+    script_anim_blends.clear();
+    script_anim_ease_in = std::clamp(READ_IF_EXISTS(pSettings, r_float, hud_section, "ease_in", 0.f), 0.f, 0.45f);
+    script_anim_ease_out = std::clamp(READ_IF_EXISTS(pSettings, r_float, hud_section, "ease_out", 0.f), 0.f, 0.45f);
+    script_anim_ease_k = std::clamp(READ_IF_EXISTS(pSettings, r_float, hud_section, "ease_speed", 0.5f), 0.1f, 1.f);
+    const bool nlc_ease = (script_anim_ease_in > 0.f || script_anim_ease_out > 0.f) && script_anim_ease_k < 1.f && speed > 0.f;
+    // the free-hand slot never shares a hand with the main clip
+    if (script_free_part != u8(-1) && (hand == 2 || hand == script_free_part))
+        nlc_free_hand_stop();
 
     player_hud_motion_container* pm = get_hand_motions(hud_section, script_anim_item_model);
     player_hud_motion* phm = pm->find_motion(anm_name);
@@ -1862,47 +2040,77 @@ u32 player_hud::script_anim_play(u8 hand, LPCSTR hud_section, LPCSTR anm_name, b
             R_ASSERT(B);
             B->speed *= speed;
             B->timeCurrent = CalculateMotionStartSeconds(phm->params.start_k, B->timeTotal);
+            if (nlc_ease)
+                nlc_track_script_blend(B);
         }
 
         script_anim_item_model->dcast_PKinematics()->CalculateBones_Invalidate();
     }
 
+    const float bi = script_anim_blend_in;
+    // NLC (LOOT_INTERACTION_DESIGN 20, review 2): with nothing held, an arm that was not drawn has a stale pose
+    // (re-sync, stopped or promoted free clip): its model starts without mixing even when the other arm runs a clip
+    const bool nlc_empty = !m_attached_items[0] && !m_attached_items[1];
+    const BOOL mix0 = bMixIn && (!nlc_empty || nlc_hand_was_drawn(0));
+    const BOOL mix1 = bMixIn && (!nlc_empty || nlc_hand_was_drawn(1));
     if (hand == 0) // right hand
     {
-        CBlend* B = m_model->PlayCycle(0, M.mid, bMixIn);
+        CBlend* B = nlc_play_cycle(m_model, 0, M.mid, mix0, bi);
         B->speed *= speed;
         B->timeCurrent = CalculateMotionStartSeconds(phm->params.start_k, B->timeTotal);
-        B = m_model->PlayCycle(2, M.mid, bMixIn);
+        if (nlc_ease)
+            nlc_track_script_blend(B);
+        B = nlc_play_cycle(m_model, 2, M.mid, mix0, bi);
         B->speed *= speed;
         B->timeCurrent = CalculateMotionStartSeconds(phm->params.start_k, B->timeTotal);
+        if (nlc_ease)
+            nlc_track_script_blend(B);
     }
     else if (hand == 1) // left hand
     {
-        CBlend* B = m_model_2->PlayCycle(0, M.mid, bMixIn);
+        CBlend* B = nlc_play_cycle(m_model_2, 0, M.mid, mix1, bi);
         B->speed *= speed;
         B->timeCurrent = CalculateMotionStartSeconds(phm->params.start_k, B->timeTotal);
-        B = m_model_2->PlayCycle(1, M.mid, bMixIn);
+        if (nlc_ease)
+            nlc_track_script_blend(B);
+        B = nlc_play_cycle(m_model_2, 1, M.mid, mix1, bi);
         B->speed *= speed;
         B->timeCurrent = CalculateMotionStartSeconds(phm->params.start_k, B->timeTotal);
+        if (nlc_ease)
+            nlc_track_script_blend(B);
     }
     else if (hand == 2) // both hands
     {
-        CBlend* B = m_model->PlayCycle(0, M.mid, bMixIn);
+        CBlend* B = nlc_play_cycle(m_model, 0, M.mid, mix0, bi);
         B->speed *= speed;
         B->timeCurrent = CalculateMotionStartSeconds(phm->params.start_k, B->timeTotal);
-        B = m_model_2->PlayCycle(0, M.mid, bMixIn);
+        if (nlc_ease)
+            nlc_track_script_blend(B);
+        B = nlc_play_cycle(m_model_2, 0, M.mid, mix1, bi);
         B->speed *= speed;
         B->timeCurrent = CalculateMotionStartSeconds(phm->params.start_k, B->timeTotal);
-        B = m_model->PlayCycle(2, M.mid, bMixIn);
+        if (nlc_ease)
+            nlc_track_script_blend(B);
+        B = nlc_play_cycle(m_model, 2, M.mid, mix0, bi);
         B->speed *= speed;
         B->timeCurrent = CalculateMotionStartSeconds(phm->params.start_k, B->timeTotal);
-        B = m_model_2->PlayCycle(1, M.mid, bMixIn);
+        if (nlc_ease)
+            nlc_track_script_blend(B);
+        B = nlc_play_cycle(m_model_2, 1, M.mid, mix1, bi);
         B->speed *= speed;
         B->timeCurrent = CalculateMotionStartSeconds(phm->params.start_k, B->timeTotal);
+        if (nlc_ease)
+            nlc_track_script_blend(B);
     }
 
     const CMotionDef* md;
     u32 length = motion_length(phm->params, M, md, m_model, speed);
+    script_anim_ease_start_k = phm->params.start_k;
+    script_anim_ease_stop_k = phm->params.stop_k;
+    if (length == 0) // looping clip: no ease, it would slow at every loop seam
+        script_anim_blends.clear();
+    if (nlc_ease && length > 0) // the eased clip lasts longer; scripts time their steps from this length
+        length = u32(iFloor(float(length) * nlc_ease_time_factor(script_anim_ease_in, script_anim_ease_out, script_anim_ease_k) + 0.5f));
 
     if (length > 0)
     {
@@ -1924,17 +2132,141 @@ void player_hud::script_anim_stop()
     if (script_anim_part == u8(-1))
         return;
 
+    // NLC: the other hand still runs a free-hand clip: it becomes the main clip. No re-sync: the freed hand
+    // would copy the other hand's clip. It simply stops being drawn (empty hands, nothing to return to).
+    if (script_free_part != u8(-1) && (m_attached_items[0] || m_attached_items[1]))
+        nlc_free_hand_stop(); // an item was attached meanwhile (review 3): no promotion onto its hand
+    if (script_free_part != u8(-1))
+    {
+        script_anim_part = script_free_part;
+        script_anim_end = script_free_end;
+        script_anim_blend_in = -1.f;
+        script_anim_blend_out = script_free_blend_out;
+        script_anim_offset[0] = script_free_offset[0];
+        script_anim_offset[1] = script_free_offset[1];
+        script_anim_blends.clear();
+        script_anim_item_model = nullptr;
+        script_override_item = false;
+        m_bStopAtEndAnimIsRunning = true;
+        script_free_part = u8(-1);
+        updateMovementLayerState();
+        return;
+    }
+
     u8 part = script_anim_part;
+    const float blend_out = script_anim_blend_out;
     script_anim_part = u8(-1);
     script_anim_item_model = nullptr;
     script_override_item = false;
+    script_anim_blend_in = -1.f;
+    script_anim_blend_out = -1.f;
+    script_anim_blends.clear();
 
     updateMovementLayerState();
 
     if (part != 2 && !m_attached_items[part])
-        re_sync_anim(part + 1);
+        re_sync_anim(part + 1, blend_out); // NLC: blend_out from the clip's HUD section
     else
         OnMovementChanged((ACTOR_DEFS::EMoveCommand)0);
+}
+
+void player_hud::nlc_free_hand_stop() { script_free_part = u8(-1); }
+
+// NLC (LOOT_INTERACTION_DESIGN 18): a clip (main or free slot) animates this arm
+bool player_hud::nlc_hand_drawn(u8 hand) const
+{
+    return hand < 2 && (script_anim_part == 2 || script_anim_part == hand || script_free_part == hand);
+}
+
+// this arm was drawn (empty hands, animated) on this or the previous frame
+bool player_hud::nlc_hand_was_drawn(u8 hand) const { return hand < 2 && nlc_hand_frame[hand] != 0 && nlc_hand_frame[hand] + 1 >= Device.dwFrame; }
+
+// NLC (review 4): every clip ends, the free one included (no promotion); the timed end in update() still promotes
+void player_hud::nlc_script_anim_stop_all()
+{
+    nlc_free_hand_stop();
+    script_anim_stop();
+}
+
+// NLC (review 1): 0 = no clip on that hand, 1 = main slot, 2 = free-hand slot
+u8 player_hud::nlc_hand_slot(u8 hand) const
+{
+    if (hand < 2 && script_free_part == hand)
+        return 2;
+    if (script_anim_part != u8(-1) && (script_anim_part == hand || script_anim_part == 2))
+        return 1;
+    return 0;
+}
+
+void player_hud::script_anim_stop_hand(u8 hand)
+{
+    if (hand == 2)
+    {
+        nlc_script_anim_stop_all();
+        return;
+    }
+    if (script_free_part != u8(-1) && script_free_part == hand)
+        nlc_free_hand_stop();
+    else if (script_anim_part != u8(-1) && (script_anim_part == hand || hand == 2))
+        script_anim_stop();
+}
+
+// NLC: one-hand clip on the hand the main clip leaves free (empty hands only). Returns 0 and logs when refused.
+u32 player_hud::script_anim_play_free_hand(u8 hand, LPCSTR hud_section, LPCSTR anm_name, bool bMixIn, float speed)
+{
+    if (hand > 1 || script_anim_part > 1 || script_anim_part == hand || m_attached_items[0] || m_attached_items[1])
+    {
+        Msg("! [free_hand] refused: hand %u, main clip part %u, items %d/%d", u32(hand), u32(script_anim_part), m_attached_items[0] ? 1 : 0,
+            m_attached_items[1] ? 1 : 0);
+        return 0;
+    }
+    if (!pSettings->section_exist(hud_section))
+    {
+        Msg("! [free_hand] motion section [%s] does not exist", hud_section);
+        return 0;
+    }
+    speed *= nlc_hud_speed_k(NLC_SPEED_FIELD);
+
+    player_hud_motion_container* pm = get_hand_motions(hud_section, nullptr);
+    player_hud_motion* phm = pm ? pm->find_motion(anm_name) : nullptr;
+    if (!phm)
+    {
+        Msg("! [free_hand] motion [%s] not found in section [%s]", anm_name, hud_section);
+        return 0;
+    }
+    const motion_descr& M = phm->m_animations[Random.randI(phm->m_animations.size())];
+    const float bi = READ_IF_EXISTS(pSettings, r_float, hud_section, "blend_in", -1.f);
+    // the free hand was not drawn before this clip: no mix from its stale pose (LOOT_INTERACTION_DESIGN 17). An arm still
+    // drawn on the last frame (the two-hand sprint pose a one-hand clip just replaced) mixes from that pose (18).
+    if (script_free_part != hand && !nlc_hand_was_drawn(hand))
+        bMixIn = false;
+
+    IKinematicsAnimated* model = hand == 0 ? m_model : m_model_2;
+    const u16 parts[2] = {0, u16(hand == 0 ? 2 : 1)};
+    for (const u16 pid : parts)
+    {
+        CBlend* B = nlc_play_cycle(model, pid, M.mid, bMixIn, bi);
+        B->speed *= speed;
+        B->timeCurrent = CalculateMotionStartSeconds(phm->params.start_k, B->timeTotal);
+    }
+
+    const CMotionDef* md;
+    const u32 length = motion_length(phm->params, M, md, m_model, speed);
+    if (length == 0)
+    {
+        Msg("! [free_hand] [%s] is a looping motion, not supported", anm_name);
+        return 0;
+    }
+    script_free_part = hand;
+    script_free_end = Device.dwTimeGlobal + length;
+    script_free_blend_out = READ_IF_EXISTS(pSettings, r_float, hud_section, "blend_out", -1.f);
+    {
+        const bool wide = UI()->is_widescreen();
+        const Fvector def = {0.f, 0.f, 0.f};
+        script_free_offset[0] = READ_IF_EXISTS(pSettings, r_fvector3, hud_section, wide ? "hands_position_16x9" : "hands_position", def);
+        script_free_offset[1] = READ_IF_EXISTS(pSettings, r_fvector3, hud_section, wide ? "hands_orientation_16x9" : "hands_orientation", def);
+    }
+    return length;
 }
 
 u32 player_hud::motion_length_script(LPCSTR hud_section, LPCSTR anm_name, float speed)

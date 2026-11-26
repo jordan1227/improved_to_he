@@ -66,6 +66,7 @@
 #include "location_manager.h"
 #include "PHCapture.h"
 #include "CustomDetector.h"
+#include "UIStaticItem.h"
 
 // Tip for action for object we're looking at
 constexpr const char* m_sCarCharacterUseAction = "car_character_use";
@@ -216,6 +217,8 @@ CActor::~CActor()
 
     xr_delete(m_pSleepEffector);
 
+    xr_delete(m_pPickupDot);
+
     xr_delete(m_pPhysics_support);
 
     xr_delete(m_anims);
@@ -357,6 +360,37 @@ void CActor::Load(LPCSTR section)
     character_physics_support()->movement()->SetAirControlParam(AirControlParam);
 
     m_fPickupInfoRadius = pSettings->r_float(section, "pickup_info_radius");
+
+    // NLC: pickup assist and item marks (docs/LOOT_INTERACTION_DESIGN.md 2, 5.3). Defaults keep the stock behaviour.
+    m_bPickupAssist = READ_IF_EXISTS(pSettings, r_bool, section, "pickup_assist_enabled", true);
+    m_bUseRayFromCamera = READ_IF_EXISTS(pSettings, r_bool, section, "use_ray_from_camera", false);
+    m_fPickupInfoNameRadius = READ_IF_EXISTS(pSettings, r_float, section, "pickup_info_name_radius", m_fPickupInfoRadius);
+    m_bPickupInfoNameTargetOnly = READ_IF_EXISTS(pSettings, r_bool, section, "pickup_info_name_target_only", false);
+    m_fPickupAssistActorRadius = READ_IF_EXISTS(pSettings, r_float, section, "pickup_assist_actor_radius", 2.f);
+    m_fPickupAssistRayRadius = READ_IF_EXISTS(pSettings, r_float, section, "pickup_assist_ray_radius", 1.f);
+    m_fPickupAssistConeDeg = READ_IF_EXISTS(pSettings, r_float, section, "pickup_assist_cone_deg", 0.f);
+    m_fPickupAssistMinRadius = READ_IF_EXISTS(pSettings, r_float, section, "pickup_assist_min_radius", 0.f);
+    {
+        LPCSTR mode = READ_IF_EXISTS(pSettings, r_string, section, "pickup_info_mode", "name");
+        if (!xr_strcmp(mode, "dot"))
+            m_PickupInfoMode = 1;
+        else if (!xr_strcmp(mode, "both"))
+            m_PickupInfoMode = 3;
+        else
+        {
+            if (xr_strcmp(mode, "name"))
+                Msg("! [%s] unknown pickup_info_mode [%s], using [name]", __FUNCTION__, mode);
+            m_PickupInfoMode = 2;
+        }
+    }
+    m_PickupInfoDotTexture = READ_IF_EXISTS(pSettings, r_string, section, "pickup_info_dot_texture", "ui\\ui_loot_dot");
+    m_fPickupInfoDotSize = READ_IF_EXISTS(pSettings, r_float, section, "pickup_info_dot_size", 8.f);
+    m_fPickupInfoDotSizeFar = READ_IF_EXISTS(pSettings, r_float, section, "pickup_info_dot_size_far", m_fPickupInfoDotSize);
+    m_PickupInfoColor = READ_IF_EXISTS(pSettings, r_color, section, "pickup_info_color", color_rgba(221, 221, 221, 255));
+    m_PickupInfoTargetColor = READ_IF_EXISTS(pSettings, r_color, section, "pickup_info_target_color", color_rgba(255, 200, 60, 255));
+    m_bPickupInfoHighlightTarget = READ_IF_EXISTS(pSettings, r_bool, section, "pickup_info_highlight_target", false);
+    m_fPickupInfoFadeMin = READ_IF_EXISTS(pSettings, r_float, section, "pickup_info_fade_min", 1.f);
+    m_PickupInfoHoldMs = READ_IF_EXISTS(pSettings, r_u32, section, "pickup_info_hold_ms", 0);
 
     character_physics_support()->in_Load(section);
 
@@ -789,6 +823,7 @@ static bool s_lens_ppe_pending{}; // NLC: entry blink waits for the end of the f
 
 void CActor::UpdateCL()
 {
+    nlc_slot_hold_update(); // NLC (LOOT_INTERACTION_DESIGN 21)
     if (m_feel_touch_characters > 0)
     {
         for (xr_vector<CObject*>::iterator it = feel_touch.begin(); it != feel_touch.end(); it++)
@@ -1247,7 +1282,7 @@ void CActor::shedule_Update(u32 DT)
     setVisible(!character_physics_support()->IsRemoved() && !hud_view);
 
     //что актер видит перед собой
-    collide::rq_result& RQ = HUD().GetCurrentRayQuery();
+    collide::rq_result& RQ = HUD().GetUseRayQuery(); // NLC: camera ray, see CHUDTarget::CursorOnFrame
     auto active_hud = smart_cast<CHudItem*>(inventory().ActiveItem());
     const bool can_use = !active_hud || active_hud->GetState() == CHudItem::eIdle || !Core.Features.test(xrCore::Feature::busy_actor_restrictions);
 
@@ -1333,7 +1368,8 @@ void CActor::shedule_Update(u32 DT)
 //#include "debug_renderer.h"
 void CActor::renderable_Render(u32 context_id, IRenderable* root)
 {
-    if (fl_hook::bp_ui && cam_active == eacFirstEye)
+    // NLC (LOOT_INTERACTION_DESIGN 18): in first person this model is drawn only for its shadow; bpui_body 1 restores the skip
+    if (fl_hook::bp_ui && fl_hook::bp_ui_hide_body && cam_active == eacFirstEye)
     {
         ++fl_hook::skip_body_n;
         return;
@@ -1380,7 +1416,7 @@ extern BOOL g_ShowAnimationInfo;
 void CActor::OnHUDDraw(CCustomHUD* hud, u32 context_id, IRenderable* root)
 {
     fl_hook::hudrc_apply();
-    if (fl_hook::bp_ui)
+    if (fl_hook::bp_ui && fl_hook::bp_ui_hide_hands) // NLC (18): hands stay drawn with the backpack by default (bpui_hands)
     {
         ++fl_hook::skip_hands_n;
         g_player_hud->render_script_item_only(context_id, root);

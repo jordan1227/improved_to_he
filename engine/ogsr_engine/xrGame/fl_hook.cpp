@@ -40,6 +40,8 @@ extern CInifile* reload_system_ini();
 namespace fl_hook
 {
 bool bp_ui{};
+bool bp_ui_hide_hands{};
+bool bp_ui_hide_body{};
 bool blr_on{};
 bool torch_lua{true};
 bool pda3d_hack{};
@@ -2051,6 +2053,14 @@ void register_console_commands()
     CMD2(CCC_FlHook, "scost", [](LPCSTR) { cmd_scost(); });
     CMD2(CCC_FlHook, "wbf", [](LPCSTR) { cmd_wbf(); });
     CMD2(CCC_FlHook, "bpui", &cmd_bpui);
+    CMD2(CCC_FlHook, "bpui_hands", [](LPCSTR a) {
+        arg_01(a, bp_ui_hide_hands);
+        Msg("! [fl] bpui_hands (hide hands with bpui)=%d", bp_ui_hide_hands ? 1 : 0);
+    });
+    CMD2(CCC_FlHook, "bpui_body", [](LPCSTR a) {
+        arg_01(a, bp_ui_hide_body);
+        Msg("! [fl] bpui_body (skip body + its shadow with bpui)=%d", bp_ui_hide_body ? 1 : 0);
+    });
     CMD2(CCC_FlHook, "blr", &cmd_blr);
     CMD2(CCC_FlHook, "tlua", &cmd_tlua);
     CMD2(CCC_FlHook, "stepmtl", &cmd_stepmtl);

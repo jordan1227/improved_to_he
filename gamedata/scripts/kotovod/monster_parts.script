@@ -374,6 +374,12 @@ local function cleanup_harvest(reason, interrupted)
 	if snd and snd:playing() then snd:stop() end
 	if level.present() then pcall(function() level.remove_cam_effector(8553) end) end
 	if state.took then sivol_part_claim.on_taken(state.monster_id, state.part_section, state.took) end
+	-- [HE-PORT] the cut writes the after-cut prompt when it starts; an interrupted cut leaves the part
+	-- on the corpse, so put the real prompt back (it said "nothing to take" and the part looked gone)
+	if interrupted and not state.transferred and reason ~= "net_destroy" and state.monster_id then
+		local mob = level.object_by_id(state.monster_id)
+		if mob then mob:set_tip_text(corpse_tip(mob)) end
+	end
 	if interrupted then
 		log2("[monster_parts] harvest cleanup reason=%s interrupted=true", reason)
 	else
@@ -1039,62 +1045,29 @@ function actor_look_at_point( target_point )
 end
 
 function process_additional_items( monster, additional_items )
+	-- [sivol] the search animation and its lifecycle live in sivol_loot_anim (docs/LOOT_INTERACTION_DESIGN.md 4.2):
+	-- start clip, idle for mutant_search_ms, the items move at the end clip, cancel on hit/save/level change.
 	if hud_animation_owner and hud_animation_owner.busy and hud_animation_owner.busy() then return end
-    local amnt = #additional_items
-	if amnt == 0 then return end
-	level.disable_input()
+	if #additional_items == 0 then return end
 	monster:set_tip_text( "" )
 
-	local prev_active_slot = db.actor:active_slot()
-	db.actor:activate_slot( 255 )
-	
-	dsh.wait_condition( function() return not db.actor:active_item() end, function()
-		level.add_cam_effector( "camera_effects\\hand_help.anm", 8800, false )
-
-		--local target_pos = monster:bone_position( "bip01_spine1" ) or monster:position()
-	--	local bone_name = strpos( monster:name(), "controller", 1, true ) and "bip01_pelvis" or monster:position()
-	--	local target_pos = monster:bone_position( bone_name ) or monster:position()
-		-- А по факту других же и не осматриваем, смысл? Бюрер - косячные кости
-		if strpos( monster:name(), "controller", 1, true ) then
-			local pos = monster:bone_position( "bip01_spine1" )
-			if pos then actor_look_at_point( pos ) end
+	local function set_tip( m )
+		if not m then return end
+		if m:object_count() > 0 then
+			m:set_tip_text( "knife_need" )
 		else
-			local pos = monster:bone_position( "neck" )
-			if pos then actor_look_at_point( pos ) end
+			m:set_tip_text( "nothing_to_cut_off" )
 		end
-		--local fov = db.actor:get_camera_fov()
-		--db.actor:set_camera_fov( 55 )
-		--set_dof_params( 1, 1, 1, 1 )
-		
-		local anim_duration = game.play_hud_motion( 2, "anim_body_search", "anm_show", false, 0.5 )	
-		dsh.timeout( anim_duration, function() 
-			game.play_hud_motion( 2, "anim_body_search", "anm_idle", false, 1, true )				
-		end )	
-		
-		dsh.timeout( 1800, function() 
-			game.stop_hud_motion()
-			game.play_hud_motion( 2, "anim_body_search", "anm_end", false, 1 )	
-			for _, item in ipairs( additional_items ) do
-				monster:transfer_item( item, db.actor )
-				sak.relocate_item( "in", item:section(), 1 )
-			end
+	end
 
-			-- Восстанавливаем текст в зависимости от наличия мутантских частей
-			if monster:object_count() > 0 then
-				monster:set_tip_text( "knife_need" )
-			else
-				monster:set_tip_text( "nothing_to_cut_off" )
-			end
+	if sivol_loot_anim.search_mutant( monster, additional_items, set_tip ) then return end
 
-			--db.actor:set_camera_fov( fov )
-			--set_dof_params( 0, 0, 0, 0 )
-			
-			dsh.timeout( 600, function() 
-				level.enable_input()
-				db.actor:activate_slot( prev_active_slot )			
-			end )
-		end )		
-	end )	
+	-- no animation possible (search off, another HUD owner): move the items at once
+	for _, item in ipairs( additional_items ) do
+		monster:transfer_item( item, db.actor )
+		sak.relocate_item( "in", item:section(), 1 )
+	end
+	set_tip( monster )
 end
 
 function stop_loot_already()

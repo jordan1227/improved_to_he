@@ -384,6 +384,7 @@ void CHUDManager::RenderUI()
 void CHUDManager::OnEvent(EVENT E, u64 P1, u64 P2) {}
 
 collide::rq_result& CHUDManager::GetCurrentRayQuery() { return m_pHUDTarget->RQ; }
+collide::rq_result& CHUDManager::GetUseRayQuery() { return m_pHUDTarget->GetUseRayQuery(); }
 
 void CHUDManager::SetCrosshairDisp(float dispf, float disps) { m_pHUDTarget->HUDCrosshair.SetDispersion(psHUD_Flags.test(HUD_CROSSHAIR_DYNAMIC) ? dispf : disps); }
 

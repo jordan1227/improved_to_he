@@ -47,7 +47,14 @@ u32 PlayHudMotion(u8 hand, LPCSTR hud_section, LPCSTR anm_name, bool bMixIn = tr
     return g_player_hud->script_anim_play(hand, hud_section, anm_name, bMixIn, speed, bOverride_item);
 }
 
-void StopHudMotion() { g_player_hud->script_anim_stop(); }
+void StopHudMotion() { g_player_hud->nlc_script_anim_stop_all(); } // NLC: the free-hand clip too (LOOT_INTERACTION_DESIGN 20)
+// NLC: second one-hand clip on the free hand, and a per-hand stop (docs/LOOT_INTERACTION_DESIGN.md 16)
+u32 PlayHudMotionFreeHand(u8 hand, LPCSTR hud_section, LPCSTR anm_name, bool bMixIn, float speed)
+{
+    return g_player_hud->script_anim_play_free_hand(hand, hud_section, anm_name, bMixIn, speed);
+}
+void StopHudMotionHand(u8 hand) { g_player_hud->script_anim_stop_hand(hand); }
+u8 HudMotionHandSlot(u8 hand) { return g_player_hud->nlc_hand_slot(hand); }
 
 float MotionLength(LPCSTR hud_section, LPCSTR anm_name, float speed) { return g_player_hud->motion_length_script(hud_section, anm_name, speed); }
 
@@ -131,7 +138,10 @@ void game_sv_GameState::script_register(lua_State* L)
        def("translate_string", &translate_string),
 
        def("play_hud_motion", PlayHudMotion), 
-       def("stop_hud_motion", StopHudMotion), 
+       def("stop_hud_motion", StopHudMotion),
+       def("play_hud_motion_free_hand", PlayHudMotionFreeHand),
+       def("stop_hud_motion_hand", StopHudMotionHand),
+       def("hud_motion_hand_slot", HudMotionHandSlot),
        def("get_motion_length", MotionLength),
        def("hud_motion_allowed", AllowHudMotion),
        def("play_hud_anm", PlayBlendAnm), 

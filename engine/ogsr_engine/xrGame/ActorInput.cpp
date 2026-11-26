@@ -83,6 +83,9 @@ void CActor::IR_OnKeyboardPress(int cmd)
     if (!g_Alive())
         return;
 
+    if (nlc_slot_hold_take(cmd))
+        return;
+
     if (m_holder && kUSE != cmd)
     {
         m_holder->OnKeyboardPress(cmd);
@@ -196,7 +199,10 @@ void CActor::IR_OnKeyboardPress(int cmd)
         kick_time = Device.dwTimeContinual;
     }
     break;
-    case kUSE: ActorUse(); break;
+    case kUSE:
+        OnUseKeyPress();
+        ActorUse();
+        break;
     case kDROP:
         b_DropActivated = TRUE;
         f_DropPower = 0;
@@ -246,7 +252,7 @@ void CActor::IR_OnMouseWheel(int direction)
         if (!g_block_all_except_movement)
         {
             const int watch_dik = get_action_dik(action_name_to_id("watch"));
-            if (!watch_dik || !pInput->iGetAsyncKeyState(watch_dik))
+            if ((!watch_dik || !pInput->iGetAsyncKeyState(watch_dik)) && !nlc_slot_hold_take(direction > 0 ? kNEXT_SLOT : kPREV_SLOT))
             {
                 if (direction > 0)
                     OnNextWeaponSlot();
@@ -281,7 +287,10 @@ void CActor::IR_OnKeyboardRelease(int cmd)
         //		if ((dik != DIK_LALT) && (dik != DIK_RALT) && (dik != DIK_F4) /*&& psCallbackFlags.test(CF_KEY_RELEASE)*/)
         //			this->callback(GameObject::eOnKeyRelease)(cmd);
         if (cmd == kUSE)
+        {
             PickupModeOff();
+            OnUseKeyRelease();
+        }
 
         if (m_holder)
         {
@@ -551,7 +560,7 @@ void CActor::ActorUse()
             }
         }
 
-        collide::rq_result& RQ = HUD().GetCurrentRayQuery();
+        collide::rq_result& RQ = HUD().GetUseRayQuery(); // NLC: same camera ray as the look target
         CPhysicsShellHolder* object = smart_cast<CPhysicsShellHolder*>(RQ.O);
         if (object && object->getVisible())
         {
@@ -597,6 +606,37 @@ constexpr u32 SlotsToCheck[] = {
     BOLT_SLOT, // 5
     PDA_SLOT,
 };
+
+// NLC (LOOT_INTERACTION_DESIGN 21): slot-switch hold during an empty-hand pickup
+bool CActor::nlc_slot_held() const { return m_nlc_slot_hold_until != 0 && Device.dwTimeGlobal < m_nlc_slot_hold_until; }
+
+bool CActor::nlc_slot_hold_take(int cmd)
+{
+    if (!nlc_slot_held())
+        return false;
+    const bool slot_cmd = (cmd >= kWPN_1 && cmd <= kWPN_6) || cmd == kNEXT_SLOT || cmd == kPREV_SLOT || cmd == kWPN_8;
+    if (!slot_cmd)
+        return false;
+    m_nlc_slot_pending = cmd;
+    return true;
+}
+
+void CActor::nlc_hold_slot_switch(u32 ms) { m_nlc_slot_hold_until = ms ? Device.dwTimeGlobal + ms : 0; }
+
+// once the hold has ended (released or expired): the remembered request runs, outside any script call
+void CActor::nlc_slot_hold_update()
+{
+    if (m_nlc_slot_pending < 0 || nlc_slot_held())
+        return;
+    const int cmd = m_nlc_slot_pending;
+    m_nlc_slot_pending = -1;
+    m_nlc_slot_hold_until = 0;
+    if (g_Alive() && !HUD().GetUI()->MainInputReceiver())
+    {
+        IR_OnKeyboardPress(cmd);
+        IR_OnKeyboardRelease(cmd);
+    }
+}
 
 void CActor::OnNextWeaponSlot()
 {

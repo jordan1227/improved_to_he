@@ -1,0 +1,911 @@
+-- Loot interaction animations (docs/LOOT_INTERACTION_DESIGN.md 3). Pass 2: animated item pickup.
+--
+-- The engine calls on_item_before_pickup for every pickup the player starts
+-- (external.ltx [engine_callbacks] actor_on_item_before_pickup). Returning false vetoes the
+-- instant take; this module plays a FDDA Redone hand clip and takes the item at the clip's
+-- contact frame through get_actor_obj():pickup_item (engine nlc-3.589.227, E2), which keeps
+-- the engine's own take path (callbacks, sound, stacking).
+--
+-- "chain" style (decision Q2): selection stays pixel-perfect; a press during the clip takes
+-- the item still in reach at once and restarts the reach for the new one.
+-- Hands (Q4): weapon out -> left hand, weapon stays; empty hands -> left and right alternate;
+-- detector out with a weapon -> the weapon is hidden, right hand.
+-- Aiming down sights: the sights are lowered first; ADS is blocked until the grab ends.
+-- Anything that cannot play (busy HUD owner, reload, talk) falls back to the instant take.
+--
+-- Console: fl sivol_loot_anim.set_diagnostics(true|false), fl sivol_loot_anim.reload_cfg()
+
+local HUD_SECTION = "anim_item_pickup"
+local KEY_RIGHT = "anm_take_right"
+local KEY_LEFT = "anm_take_left"
+local KEY_LEFT_WPN = "anm_take_left_wpn"
+local HAND_RIGHT = 0
+local HAND_LEFT = 1
+local OWNER_NAME = "loot_pickup"
+
+local diagnostics = false -- on: fl sivol_loot_anim.set_diagnostics(true)
+local cfg = nil
+local state = nil
+local ret = nil -- the hand push / return tween (see ret_update); it may outlive the pickup state
+local ret_back -- forward declaration: cleanup() hands a cut-short push back to the tween
+local last_empty_hand = HAND_RIGHT -- the first empty-hand grab uses the left hand
+
+local function diag(fmt, ...)
+	if diagnostics then log2("[LOOT_ANIM] " .. fmt, ...) end
+end
+
+local function read_cfg()
+	local ini = system_ini()
+	local s = "loot_interaction"
+	local has = ini:section_exist(s)
+	local function num(k, d)
+		if has and ini:line_exist(s, k) then return ini:r_float(s, k) end
+		return d
+	end
+	local function flag(k, d)
+		if has and ini:line_exist(s, k) then return ini:r_bool(s, k) end
+		return d
+	end
+	cfg = {
+		enabled = flag("pickup_anim_enabled", true),
+		speed = num("pickup_anim_speed", 1.2),
+		take_frac = math.max(0.05, math.min(0.95, num("pickup_take_frac", 0.5))),
+		hide_timeout_ms = num("pickup_hide_timeout_ms", 1500),
+		-- weapon-out grab return (2026-11-26): the hand is pushed below the screen as the clip ends,
+		-- the clip's pop back onto the grip happens out of view, then the push eases away
+		return_enabled = flag("pickup_return_enabled", true),
+		return_lead_ms = num("pickup_return_lead_ms", 250),
+		return_ms = num("pickup_return_ms", 450),
+		return_offset = {
+			num("pickup_return_offset_x", -0.05),
+			num("pickup_return_offset_y", -0.3),
+			num("pickup_return_offset_z", -0.05),
+		},
+		-- body search (pass 3)
+		search_enabled = flag("search_enabled", true),
+		search_speed = num("search_anim_speed", 1.0),
+		search_open_ms = num("search_open_ms", 700),
+		search_open_jitter_ms = num("search_open_jitter_ms", 300),
+		search_cam_ease_ms = num("search_cam_ease_ms", 350),
+		search_cancel_on_hit = flag("search_cancel_on_hit", true),
+		mutant_search_ms = num("mutant_search_ms", 1500),
+	}
+end
+
+local function config()
+	if not cfg then read_cfg() end
+	return cfg
+end
+
+local function actor_obj()
+	return get_actor_obj and get_actor_obj() or nil
+end
+
+-- Empty-hand grab: slot keys / wheel / detector key are remembered by the engine and replayed after the grab
+-- (engine nlc-3.589.234, LOOT_INTERACTION_DESIGN 21). Refreshed every update, so it lapses on its own.
+local SLOT_HOLD_MS = 300
+local function slot_hold(ms)
+	local a = actor_obj()
+	if a and a.nlc_hold_slot_switch then a:nlc_hold_slot_switch(ms) end
+end
+
+local function obj_name(id)
+	local obj = id and level.object_by_id(id)
+	return obj and obj:section() or tostring(id)
+end
+
+-- A grab record r is the pickup state itself (the first grab) or state.free (a second grab on the other
+-- hand, empty hands only, engine nlc-3.589.230). r.slot is the engine slot its clip runs in: "main"
+-- (play_hud_motion) or "free" (play_hud_motion_free_hand); nil once it has ended.
+
+-- Takes the item still waiting for that hand, if any. Validation and refusal logging are in the engine.
+local function take_rec(r, reason)
+	if not r or r.taken or not r.item_id then return end
+	r.taken = true
+	local obj = level.object_by_id(r.item_id)
+	if not obj then
+		diag("take skipped reason=%s item=%s gone", tostring(reason), tostring(r.item_id))
+		return
+	end
+	local a = actor_obj()
+	local ok = a and a:pickup_item(obj) or false
+	diag("take reason=%s hand=%s item=%s ok=%s", tostring(reason), tostring(r.hand), obj:section(), tostring(ok))
+end
+
+local function take_pending(reason)
+	if not state then return end
+	take_rec(state, reason)
+	take_rec(state.free, reason)
+end
+
+-- The engine's view of a hand: "main", "free" or nil (engine nlc-3.589.233). Lua's own timers drift from the engine's
+-- clip ends (field speed factor, Use press before the HUD update), so the pool corrects its slots from this.
+local SLOT_NAMES = { [1] = "main", [2] = "free" }
+local function engine_slot(h)
+	return SLOT_NAMES[tonumber(game.hud_motion_hand_slot(h)) or 0]
+end
+
+local function sync_slots(st)
+	if not game.hud_motion_hand_slot or not st.empty or st.phase ~= "playing" then return end
+	if not st.main_done then
+		local s = engine_slot(st.hand)
+		if s then st.slot = s end
+	end
+	if st.free then
+		local s = engine_slot(st.free.hand)
+		if s then st.free.slot = s end
+	end
+end
+
+-- slot for restarting record r: the main slot unless the other hand's clip holds it
+local function restart_slot(st, r)
+	local o = r == st and st.free or st
+	if o and o ~= r and o.slot == "main" and not (o == st and st.main_done) then return "free" end
+	return "main"
+end
+
+-- (re)starts the clip of a record in its engine slot; returns the duration (0 = refused)
+local function play_rec(r)
+	local c = config()
+	local d
+	if r.slot == "free" then
+		d = tonumber(game.play_hud_motion_free_hand(r.hand, HUD_SECTION, r.key, true, c.speed)) or 0
+	else
+		d = tonumber(game.play_hud_motion(r.hand, HUD_SECTION, r.key, true, c.speed, false)) or 0
+	end
+	if d > 0 then
+		local now = time_global()
+		r.t0 = now
+		r.take_at = now + d * c.take_frac
+		r.end_at = now + d
+		r.taken = false
+	end
+	return d
+end
+
+-- take: whether the waiting item is still taken (false on save, load, level change, death)
+local function cleanup(reason, take)
+	local st = state
+	if not st then return end
+	if take then take_pending(reason) end
+	state = nil
+	if ret and ret.phase == "push" then ret_back() end -- cut short (hit, chain, owner loss): the hand still eases back
+
+	if st.zoom_blocked then level.unblock_action(key_bindings.kWPN_ZOOM) end
+	if st.empty then slot_hold(0) end -- a slot key pressed during the grab runs now
+	-- the other arm still lowering from the sprint pose (no second grab replaced it): its clip ends with this grab
+	if st.lowering and not st.free then game.stop_hud_motion_hand(st.lowering) end
+	if st.free or st.main_done then
+		-- two-hand grab: stop only the hands still running (the engine promotes the free clip on its own)
+		if st.slot and not st.main_done then game.stop_hud_motion_hand(st.hand) end
+		if st.free and st.free.slot then game.stop_hud_motion_hand(st.free.hand) end
+	elseif st.clip_started then
+		game.stop_hud_motion()
+	end
+	if st.token then
+		hud_animation_owner.cancel(st.token, reason)
+		hud_animation_owner.release(st.token, reason)
+	end
+	diag("cleanup reason=%s elapsed_ms=%d", tostring(reason), time_global() - st.started)
+end
+
+-- take_on_fail = false at start: the hook then returns true and the engine takes the item itself
+local function play_clip(take_on_fail)
+	local st = state
+	st.slot = st.slot or "main"
+	local duration = play_rec(st)
+	st.clip_started = true
+	if duration <= 0 then
+		-- the engine already logged the missing section or motion
+		diag("clip failed hand=%d key=%s", st.hand, st.key)
+		cleanup("no clip", take_on_fail ~= false)
+		return
+	end
+	st.phase = "playing"
+	diag("clip hand=%d key=%s duration_ms=%d item=%s", st.hand, st.key, duration, obj_name(st.item_id))
+end
+
+-- A one-hand grab that replaced the empty-hand sprint pose: the other arm lowers out of view from its sprint pose
+-- (the sprint module's own lowering motion, in the free-hand slot; engine nlc-3.589.232 mixes it from an arm that was
+-- still drawn). Without it the engine stops drawing that arm at once.
+local SPRINT_SECTION = "sivol_emptyhand_sprint_hud_test"
+local function lower_other_hand(st)
+	if not game.play_hud_motion_free_hand then return end
+	local other = st.hand == HAND_LEFT and HAND_RIGHT or HAND_LEFT
+	local d = tonumber(game.play_hud_motion_free_hand(other, SPRINT_SECTION, "anm_idle", true, 1)) or 0
+	if d > 0 then st.lowering = other end
+	diag("sprint pose: other hand=%d lowers duration_ms=%d", other, d)
+end
+
+-- empty-hand sprint pose: hand it over without stopping its clip (sivol_sprint_hands.release_for_blend)
+local function take_sprint_pose()
+	return sivol_sprint_hands and sivol_sprint_hands.release_for_blend and sivol_sprint_hands.release_for_blend() or false
+end
+
+local function drop_sprint_pose(taken)
+	if taken then game.stop_hud_motion() end
+end
+
+local function why_not_start(actor)
+	if not actor or not actor:alive() then return "actor" end
+	if actor:is_talking() then return "talking" end
+	if level.main_input_receiver() then return "menu" end
+	if actor:ph_capture() then return "carrying" end
+	if bind_stalker.hud_fx_busy then return "hud_fx_busy" end
+	if hud_animation_owner.busy() then return "hud owner busy" end
+	return nil
+end
+
+-- Leaves ADS the way the zoom key would: a press in toggle mode, a release in hold mode
+-- (Weapon.cpp kWPN_ZOOM). press/release_action go to the actor directly, past block_action.
+local function leave_zoom(a)
+	if get_console():get_bool("wpn_aim_toggle") then
+		a:press_action(key_bindings.kWPN_ZOOM)
+		a:release_action(key_bindings.kWPN_ZOOM)
+	else
+		a:release_action(key_bindings.kWPN_ZOOM)
+	end
+end
+
+-- Left-hand offset layers, the same constant-pose files the belt gesture drives (sivol_belt_gesture.script):
+-- power = metres / POS_UNIT. Only one HUD owner runs at a time, so the two never drive them together.
+local HAND_POS_ANMS = { [[he_watch\left_hand_x.anm]], [[he_watch\left_hand_y.anm]], [[he_watch\left_hand_z.anm]] }
+local POS_UNIT = 0.1
+local PART_LEFT_LAYER = 1
+
+local function smoother(t)
+	t = math.max(0, math.min(1, t))
+	return t * t * t * (t * (6 * t - 15) + 10)
+end
+
+local function ret_drive(k)
+	local off = config().return_offset
+	for i = 1, 3 do
+		local pw = off[i] * k / POS_UNIT
+		if math.abs(pw) > 1e-4 then
+			game.play_hud_anm(HAND_POS_ANMS[i], PART_LEFT_LAYER, 1.0, pw, true, true)
+		else
+			game.stop_hud_anm(HAND_POS_ANMS[i], false)
+		end
+	end
+end
+
+local function ret_stop(force)
+	if not ret then return end
+	ret = nil
+	for i = 1, 3 do game.stop_hud_anm(HAND_POS_ANMS[i], force == true) end
+end
+
+-- phase "push": 0 -> 1 until the clip stops; phase "back": 1 -> 0 after it
+local function ret_update(now)
+	if not ret then return end
+	-- the way back runs after this module released its owner token: another HUD owner (belt gesture: same layer
+	-- files) takes the layers over (review 2026-11-26, LOOT_INTERACTION_DESIGN 20)
+	if ret.phase == "back" and hud_animation_owner.busy() then
+		ret_stop(false)
+		return
+	end
+	local k
+	if ret.phase == "push" then
+		k = smoother((now - ret.t0) / math.max(1, ret.ms))
+	else
+		k = ret.k0 * (1 - smoother((now - ret.t0) / math.max(1, ret.ms)))
+	end
+	ret.k = k
+	ret_drive(k)
+	if ret.phase == "back" and now - ret.t0 >= ret.ms then ret_stop(false) end
+end
+
+ret_back = function()
+	if not ret then return end
+	ret.phase = "back"
+	ret.k0 = ret.k or 1
+	ret.t0 = time_global()
+	ret.ms = config().return_ms
+end
+
+local function start(obj)
+	ret_stop(true)
+	local actor = db.actor
+	local blocked = why_not_start(actor)
+	if blocked then
+		diag("instant item=%s reason=%s", obj:section(), blocked)
+		return false
+	end
+
+	local sprint = take_sprint_pose()
+	local token = hud_animation_owner.reserve(OWNER_NAME)
+	if not token or not hud_animation_owner.activate(token, OWNER_NAME) then
+		if token then hud_animation_owner.release(token, "pickup admission") end
+		drop_sprint_pose(sprint)
+		diag("instant item=%s reason=owner refused", obj:section())
+		return false
+	end
+	local a = actor_obj()
+	local zoomed = a and a:is_zoom_aiming_mode() or false
+	-- the sprint pose (if taken) is still a running script clip; with empty hands nothing else can be busy.
+	-- A zoomed weapon is busy until its zoom-out finishes, so it waits below instead.
+	if not sprint and not zoomed and not game.hud_motion_allowed() then
+		hud_animation_owner.release(token, "hud motion not allowed")
+		diag("instant item=%s reason=hud motion not allowed (weapon busy)", obj:section())
+		return false
+	end
+
+	state = {
+		token = token,
+		actor = actor,
+		item_id = obj:id(),
+		started = time_global(),
+		taken = false,
+		clip_started = false,
+	}
+	hud_animation_owner.register_lifecycle_cleanup(token, function(reason)
+		cleanup(reason or "lifecycle", false)
+	end)
+
+	-- no ADS until the grab is over (decision 2026-11-26)
+	level.block_action(key_bindings.kWPN_ZOOM)
+	state.zoom_blocked = true
+
+	local detector = a and a:IsDetectorActive() or false
+	local held = actor:active_item()
+	if held and detector then
+		state.hand, state.key = HAND_RIGHT, KEY_RIGHT
+		state.hide_weapon = true
+		hud_animation_owner.acquire_weapon(token)
+	elseif held then
+		state.hand, state.key = HAND_LEFT, KEY_LEFT_WPN
+	elseif detector then
+		state.hand, state.key = HAND_RIGHT, KEY_RIGHT
+	elseif last_empty_hand == HAND_LEFT then
+		-- empty hands alternate grab to grab (2026-11-26); a true two-hand chain needs per-hand engine clips (doc 13)
+		state.hand, state.key = HAND_RIGHT, KEY_RIGHT
+	else
+		state.hand, state.key = HAND_LEFT, KEY_LEFT
+	end
+	if not held and not detector then
+		last_empty_hand = state.hand
+		state.empty = true -- a second press may start the other hand (two-hand chain)
+	end
+	if zoomed then leave_zoom(a) end
+
+	diag("start item=%s plan=%s held=%s detector=%s zoomed=%s hide=%s", obj:section(), state.key,
+		held and held:section() or "none", tostring(detector), tostring(zoomed), tostring(state.hide_weapon == true))
+
+	if zoomed or state.hide_weapon then
+		state.phase = "waiting"
+		state.wait_deadline = time_global() + config().hide_timeout_ms
+		return true
+	end
+	if state and state.empty then slot_hold(SLOT_HOLD_MS) end -- from the first frame, before on_update runs
+	play_clip(false)
+	if sprint and state and state.empty and state.phase == "playing" then lower_other_hand(state) end
+	return state ~= nil
+end
+
+-- waiting phase: the sights are down / the weapon is put away and the hands are free for a clip
+local function ready_to_play(st)
+	if st.hide_weapon and st.actor:active_item() then return false end
+	if st.sprint then return true end -- the running sprint pose is the clip being replaced
+	local a = actor_obj()
+	if a and a:is_zoom_aiming_mode() then return false end
+	return game.hud_motion_allowed()
+end
+
+-- =========================================================================================
+-- Body search (pass 3, docs/LOOT_INTERACTION_DESIGN.md 4.2)
+--
+-- Stalker corpse: the npc_use signal (xr_motivator use_callback) arrives before the engine
+-- opens the loot window. The corpse is made not usable for that press, so the engine skips the
+-- window; the start clip plays, the window is opened from Lua after search_open_ms
+-- (db.actor:open_inventory_box on a dead stalker, engine nlc-3.589.227 E3), the idle clip loops
+-- while it is open, and the end clip plays when it closes.
+-- Mutant with non-part items (monster_parts.process_additional_items): start, idle for
+-- mutant_search_ms, the items move to the actor at the end clip, end.
+-- Shift + Use keeps the engine behaviour (drag, no search). Boxes and stashes are not touched.
+-- =========================================================================================
+
+local SEARCH_SECTION = "anim_body_search"
+local SEARCH_OWNER = "loot_search"
+local IDLE_LEAD_MS = 60
+local SEARCH_MAX_DIST = 3 -- m from the actor; take_dist (2) plus room to step while searching
+local search = nil
+
+local function search_hand(st, kind)
+	local a = actor_obj()
+	local detector = a and a:IsDetectorActive() or false
+	local held = st.actor:active_item()
+	-- a stalker corpse opens the loot window, and the engine hides the weapon for that window
+	-- (UICarBodyWnd more_hide_weapon); the weapon is put away first, so both hands stay on the body
+	if held and kind == "stalker" then
+		st.hide_weapon = true
+		hud_animation_owner.acquire_weapon(st.token)
+		return detector and HAND_RIGHT or 2
+	end
+	if held and detector then
+		st.hide_weapon = true
+		hud_animation_owner.acquire_weapon(st.token)
+		return HAND_RIGHT
+	elseif held then
+		return HAND_LEFT -- the weapon stays in the right hand (FDDA pick_hand)
+	elseif detector then
+		return HAND_RIGHT
+	end
+	return 2 -- both hands
+end
+
+local function search_play(key)
+	local st = search
+	local duration = tonumber(game.play_hud_motion(st.hand, SEARCH_SECTION, key, true, config().search_speed, false)) or 0
+	st.clip_started = true
+	st.clip_key = key
+	if duration > 0 then
+		st.clip_end = time_global() + duration
+	elseif key == "anm_idle" then
+		st.clip_end = math.huge -- a looping motion has no length; it runs until the end clip replaces it
+	else
+		st.clip_end = time_global()
+		diag("search clip failed key=%s", key)
+	end
+	return duration
+end
+
+local function restore_usable(st)
+	if not st.made_unusable then return end
+	st.made_unusable = false
+	for _, id in ipairs(st.unusable_ids) do
+		local obj = level.object_by_id(id)
+		if obj then obj:set_nonscript_usable(true) end
+	end
+end
+
+-- reasons on which the level objects are being rebuilt: ids may be stale, nothing is touched
+local LOAD_REASONS = { ["load/reset"] = true, ["first update"] = true, ["game loaded"] = true, ["shutdown"] = true }
+
+-- this press does not open the engine window (ActorUse checks nonscript_usable after the callback)
+local function make_unusable(st, obj)
+	obj:set_nonscript_usable(false)
+	st.made_unusable = true
+	table.insert(st.unusable_ids, obj:id())
+end
+
+-- eases yaw and pitch toward the body; the player keeps the mouse afterwards
+local function search_camera_update(st, now)
+	local ease = st.cam
+	if not ease then return end
+	local cam = actor_camera(0)
+	if not cam then
+		st.cam = nil
+		return
+	end
+	local p = math.min(1, (now - ease.t0) / ease.ms)
+	local k = p * p * (3 - 2 * p)
+	cam.yaw = ease.yaw0 + ease.dyaw * k
+	cam.pitch = ease.pitch0 + ease.dpitch * k
+	if p >= 1 then st.cam = nil end
+end
+
+local function search_camera_start(st, target)
+	local ms = config().search_cam_ease_ms
+	local cam = actor_camera(0)
+	if ms <= 0 or not cam or not target then return end
+	local dir = vector():sub(target, device().cam_pos)
+	local yaw1 = -dir:getH()
+	local pitch1 = math.max(-math.rad(60), math.min(math.rad(60), -dir:getP()))
+	local dyaw = yaw1 - cam.yaw
+	dyaw = math.fmod(dyaw + math.pi, 2 * math.pi)
+	if dyaw < 0 then dyaw = dyaw + 2 * math.pi end
+	dyaw = dyaw - math.pi
+	st.cam = { t0 = time_global(), ms = ms, yaw0 = cam.yaw, pitch0 = cam.pitch, dyaw = dyaw, dpitch = pitch1 - cam.pitch }
+end
+
+local function search_cleanup(reason)
+	local st = search
+	if not st then return end
+	search = nil
+	if not LOAD_REASONS[reason] then
+		restore_usable(st)
+		-- a cancelled mutant search leaves the items on the body; put its tip back
+		if st.kind == "mutant" and not st.finished and st.on_done then
+			st.on_done(level.object_by_id(st.target_id))
+		end
+	end
+	if st.zoom_blocked then level.unblock_action(key_bindings.kWPN_ZOOM) end
+	if st.clip_started or st.sprint then game.stop_hud_motion() end -- also a sprint pose no clip replaced
+	if st.token then
+		hud_animation_owner.cancel(st.token, reason)
+		hud_animation_owner.release(st.token, reason)
+	end
+	diag("search cleanup reason=%s kind=%s elapsed_ms=%d", tostring(reason), tostring(st.kind), time_global() - st.started)
+end
+
+local function search_finish_mutant(st)
+	st.finished = true
+	local monster = level.object_by_id(st.target_id)
+	local moved = 0
+	if monster and st.actor:alive() then
+		for _, id in ipairs(st.item_ids) do
+			local item = level.object_by_id(id)
+			if item and item:parent() and item:parent():id() == monster:id() then
+				monster:transfer_item(item, db.actor)
+				sak.relocate_item("in", item:section(), 1)
+				moved = moved + 1
+			end
+		end
+	end
+	diag("search mutant items moved=%d of %d", moved, #st.item_ids)
+	if st.on_done then st.on_done(monster) end
+end
+
+local function search_start(kind, target, look_pos)
+	local actor = db.actor
+	local blocked = why_not_start(actor)
+	if blocked then
+		diag("search skipped kind=%s reason=%s", kind, blocked)
+		return false
+	end
+	local sprint = take_sprint_pose()
+	local token = hud_animation_owner.reserve(SEARCH_OWNER)
+	if not token or not hud_animation_owner.activate(token, SEARCH_OWNER) then
+		if token then hud_animation_owner.release(token, "search admission") end
+		drop_sprint_pose(sprint)
+		diag("search skipped kind=%s reason=owner refused", kind)
+		return false
+	end
+	local a = actor_obj()
+	local zoomed = a and a:is_zoom_aiming_mode() or false
+	if not sprint and not zoomed and not game.hud_motion_allowed() then
+		hud_animation_owner.release(token, "hud motion not allowed")
+		diag("search skipped kind=%s reason=hud motion not allowed (weapon busy)", kind)
+		return false
+	end
+
+	local c = config()
+	local now = time_global()
+	search = {
+		kind = kind,
+		token = token,
+		actor = actor,
+		target_id = target:id(),
+		started = now,
+		phase = "waiting",
+		clip_started = false,
+		unusable_ids = {},
+		sprint = sprint,
+		-- big mutants have their origin far from where the player stands; allow the start distance + 1 m
+		max_dist = math.max(SEARCH_MAX_DIST, target:position():distance_to(actor:position()) + 1),
+	}
+	local st = search
+	hud_animation_owner.register_lifecycle_cleanup(token, function(reason) search_cleanup(reason or "lifecycle") end)
+	-- the movement resource is only_allow_movekeys: walking stays free, fire/zoom/use wait
+	hud_animation_owner.acquire_movement(token)
+	level.block_action(key_bindings.kWPN_ZOOM)
+	st.zoom_blocked = true
+
+	st.hand = search_hand(st, kind)
+	if zoomed then leave_zoom(a) end
+	st.wait_deadline = now + c.hide_timeout_ms
+	st.look_pos = look_pos
+	-- mutants: centre at once (no window); stalkers: centre so it ends as the window opens (search_update)
+	if kind == "mutant" then search_camera_start(st, look_pos) end
+
+	if kind == "stalker" then
+		make_unusable(st, target)
+		st.search_ms = c.search_open_ms + (c.search_open_jitter_ms > 0 and math.random(0, c.search_open_jitter_ms) or 0)
+	else
+		st.search_ms = c.mutant_search_ms
+	end
+	diag("search start kind=%s target=%s hand=%d zoomed=%s hide=%s", kind, target:section(), st.hand,
+		tostring(zoomed), tostring(st.hide_weapon == true))
+	return true
+end
+
+local function search_update(now)
+	local st = search
+	if not st then return end
+	if st.actor ~= db.actor or not st.actor:alive() or not hud_animation_owner.valid(st.token) then
+		search_cleanup("actor or owner unavailable")
+		return
+	end
+	search_camera_update(st, now)
+
+	local target = level.object_by_id(st.target_id)
+	if st.phase ~= "end" and not st.opened and (not target
+		or target:position():distance_to(st.actor:position()) > st.max_dist) then
+		search_cleanup("target gone or too far")
+		return
+	end
+
+	if st.phase == "waiting" then
+		if ready_to_play(st) then
+			search_play("anm_show")
+			st.phase = "start"
+			-- the search time runs from the moment the hands reach the body, not from the key press
+			if st.kind == "stalker" then st.open_at = now + st.search_ms else st.done_at = now + st.search_ms end
+		elseif now > st.wait_deadline then
+			local kind = st.kind
+			search_cleanup("wait timeout")
+			-- the weapon would not go away in time: no animation, but the player still gets the window
+			if kind == "stalker" and target and not level.main_input_receiver() then
+				db.actor:open_inventory_box(target)
+			end
+		end
+		return
+	end
+
+	-- stalker: the camera turns to the body right before the window opens, not at the key press
+	if st.kind == "stalker" and not st.cam_started and st.open_at and now >= st.open_at - config().search_cam_ease_ms then
+		st.cam_started = true
+		search_camera_start(st, st.look_pos)
+	end
+
+	-- stalker: open the loot window once the search time is up
+	if st.kind == "stalker" and not st.opened and st.open_at and now >= st.open_at and st.phase ~= "end"
+		and not level.main_input_receiver() then
+		restore_usable(st)
+		db.actor:open_inventory_box(target)
+		st.opened = true
+		st.opened_at = now
+		hud_animation_owner.release_resource(st.token, "movement")
+		diag("search window opened after %d ms", now - st.started)
+	end
+
+	-- mutant: the items move at the end
+	if st.kind == "mutant" and st.phase ~= "end" and now >= st.done_at then
+		search_finish_mutant(st)
+		search_play("anm_end")
+		st.phase = "end"
+		return
+	end
+
+	-- stalker: the window closed (on_body_hide, or nothing on screen any more) -> end clip
+	if st.kind == "stalker" and st.opened and st.phase ~= "end"
+		and (st.window_closed or (now - st.opened_at > 500 and not level.main_input_receiver())) then
+		search_play("anm_end")
+		st.phase = "end"
+		return
+	end
+
+	-- start -> idle a little before the start clip ends: the engine would stop it at its end and
+	-- hand the arms back for a frame before the idle starts
+	if now >= st.clip_end - (st.phase == "start" and IDLE_LEAD_MS or 0) then
+		if st.phase == "end" then
+			search_cleanup("complete")
+		else
+			search_play("anm_idle") -- start -> idle, and idle loops
+			st.phase = "idle"
+		end
+	end
+end
+
+-- npc_use signal (xr_motivator use_callback): a dead stalker used by the actor
+function on_npc_use(npc, who)
+	if not npc or npc:alive() or not who or who:id() ~= 0 then return end
+	if search then
+		if npc:get_nonscript_usable() then make_unusable(search, npc) end
+		return
+	end
+	if not config().search_enabled or state then return end
+	if level.main_input_receiver() then return end -- something else already opened a window
+	if not npc:get_nonscript_usable() then return end -- a script blocked looting this body; the engine opens nothing either
+	local shift = key_state(DIK_keys.DIK_LSHIFT)
+	if shift == true or (type(shift) == "number" and shift ~= 0) then return end -- Shift + Use: the engine drags, no window
+	search_start("stalker", npc, npc:bone_position("bip01_spine1"))
+end
+
+-- monster_parts.process_additional_items: dead mutant with non-part items.
+-- on_done(monster_or_nil) runs after the items have moved (monster_parts sets the tip text there).
+-- Returns false when the search cannot play; the caller then moves the items itself.
+function search_mutant(monster, items, on_done)
+	if not config().search_enabled or search or state then return false end
+	local bone = strpos(monster:name(), "controller", 1, true) and "bip01_spine1" or "neck"
+	if not search_start("mutant", monster, monster:bone_position(bone)) then return false end
+	search.item_ids = {}
+	for _, item in ipairs(items) do table.insert(search.item_ids, item:id()) end
+	search.on_done = on_done
+	return true
+end
+
+function on_body_hide()
+	if search and search.kind == "stalker" and search.opened then search.window_closed = true end
+end
+
+-- engine_callbacks hook: true = the engine takes the item now, false = this module takes it
+function on_item_before_pickup(obj)
+	-- the Use press that starts a body search falls through to the engine pickup (the body is not
+	-- usable for that press); nothing is taken while a search runs
+	if search then
+		diag("pickup vetoed during search item=%s", obj and obj:section() or "nil")
+		return false
+	end
+	if not obj or not config().enabled then return true end
+
+	local st = state
+	if st and not hud_animation_owner.valid(st.token) then
+		cleanup("owner lost", false)
+		st = nil
+	end
+
+	if st and st.empty and st.phase == "playing" and game.play_hud_motion_free_hand then
+		sync_slots(st)
+		local id = obj:id()
+		if (not st.main_done and st.item_id == id and not st.taken) or (st.free and st.free.item_id == id and not st.free.taken) then
+			return false
+		end
+		local other = st.hand == HAND_LEFT and HAND_RIGHT or HAND_LEFT
+		local key_of = function(h) return h == HAND_LEFT and KEY_LEFT or KEY_RIGHT end
+		if st.main_done then
+			-- the first hand is back: it grabs again, in the free slot when the other clip is the engine's main
+			st.main_done = false
+			st.item_id, st.key, st.slot = id, key_of(st.hand), restart_slot(st, st)
+			if play_rec(st) > 0 then
+				diag("pool hand=%d item=%s slot=%s (first hand again)", st.hand, obj:section(), st.slot)
+				return false
+			end
+			-- refused: the chain below restarts this hand in the main slot (review 1: main_done must not stay set)
+			st.slot, st.taken = "main", true
+			if st.free then st.free.slot = "free" end
+		elseif not st.free then
+			-- the other hand starts while the first is still reaching
+			local r = { hand = other, key = key_of(other), item_id = id, slot = "free" }
+			if play_rec(r) > 0 then
+				st.free = r
+				st.lowering = nil -- the grab replaced the lowering clip in the free slot
+				diag("pool hand=%d item=%s (second hand)", other, obj:section())
+				return false
+			end
+		else
+			-- both hands busy: the older grab gives its item now and reaches again for the new one
+			local r = (st.t0 or 0) <= (st.free.t0 or 0) and st or st.free
+			take_rec(r, "pool oldest")
+			r.item_id = id
+			r.slot = restart_slot(st, r)
+			if play_rec(r) > 0 then
+				diag("pool hand=%d item=%s slot=%s (oldest restarted)", r.hand, obj:section(), r.slot)
+				return false
+			end
+		end
+		-- the engine refused the free-hand clip: fall back to the one-hand chain below
+	end
+
+	if st then
+		if st.item_id == obj:id() and not st.taken then return false end
+		-- chain: the previous item reaches the hand now, the reach restarts for the new one
+		take_pending("chain")
+		st.item_id = obj:id()
+		st.taken = false
+		if st.phase == "playing" then play_clip() end
+		diag("chain item=%s phase=%s", obj:section(), tostring(st.phase))
+		return false
+	end
+
+	return not start(obj)
+end
+
+function on_update()
+	if ret then ret_update(time_global()) end
+	if search then search_update(time_global()) end
+	local st = state
+	if not st then return end
+	if st.actor ~= db.actor or not st.actor:alive() or not hud_animation_owner.valid(st.token) then
+		cleanup("actor or owner unavailable", false)
+		return
+	end
+
+	local now = time_global()
+	if st.phase == "waiting" then
+		if ready_to_play(st) then
+			diag("ready after %d ms", now - st.started)
+			play_clip()
+		elseif now > st.wait_deadline then
+			diag("wait timeout (weapon still busy)")
+			cleanup("wait timeout", true)
+		end
+		return
+	end
+
+	if st.empty then slot_hold(SLOT_HOLD_MS) end
+	sync_slots(st)
+	-- second hand (empty hands): take at its contact, drop the record at its end
+	local fr = st.free
+	if fr then
+		if not fr.taken and now >= fr.take_at then take_rec(fr, "contact") end
+		if now >= fr.end_at then
+			take_rec(fr, "contact")
+			-- a second clip in the engine's main slot ends: the engine promotes the first hand's free clip
+			if fr.slot == "main" and not st.main_done and st.slot == "free" then st.slot = "main" end
+			st.free = nil
+			if st.main_done then
+				cleanup("complete", true)
+				return
+			end
+		end
+	end
+	if st.main_done then return end
+
+	if not st.taken and now >= st.take_at then take_rec(st, "contact") end
+	local c = config()
+	if c.return_enabled and st.key == KEY_LEFT_WPN and not ret and now >= st.end_at - c.return_lead_ms then
+		ret = { phase = "push", t0 = now, ms = math.max(1, st.end_at - now), k = 0 }
+	end
+	if now >= st.end_at then
+		if st.free then
+			-- the first hand is done; the engine promotes the second clip to its main slot
+			take_rec(st, "contact")
+			if st.slot == "main" then st.free.slot = "main" end
+			st.main_done, st.slot = true, nil
+			return
+		end
+		cleanup("complete", true)
+		ret_back()
+	end
+end
+
+-- a physical hit cuts the clip short; the item in reach is still taken.
+-- Radiation, burn, chemical and similar ticks do not, or a pickup in a hot zone would never play.
+local HIT_CUT_POWER = 0.05
+function on_actor_before_hit(obj, hit_data)
+	if not (state or search) or not hit_data then return end
+	local t = hit_data.hit_type
+	if t ~= hit.wound and t ~= hit.fire_wound and t ~= hit.strike and t ~= hit.explosion then return end
+	if (hit_data.power or 0) < HIT_CUT_POWER then return end
+	if state then cleanup("hit", true) end
+	-- a hit ends the search; an open loot window closes with it (2026-11-26)
+	if search and config().search_cancel_on_hit then
+		if search.opened and not search.window_closed and search.phase ~= "end" and level.main_input_receiver() then
+			sak.close_window()
+		end
+		search_cleanup("hit")
+	end
+end
+
+function on_first_update()
+	read_cfg()
+	cleanup("load/reset", false)
+	ret_stop(true)
+	search_cleanup("load/reset")
+end
+
+function on_before_save_game()
+	cleanup("save", false)
+	ret_stop(true)
+	search_cleanup("save")
+end
+
+function on_level_changer_action()
+	cleanup("level change", false)
+	ret_stop(true)
+	search_cleanup("level change")
+end
+
+function on_stop_modules()
+	cleanup("shutdown", false)
+	ret_stop(true)
+	search_cleanup("shutdown")
+end
+
+-- a pickup clip or its weapon-out return push is running (sivol_belt_gesture queues behind it)
+function busy()
+	return state ~= nil or ret ~= nil
+end
+
+function set_diagnostics(enabled)
+	diagnostics = enabled == true
+end
+
+function reload_cfg()
+	read_cfg()
+	log2("[LOOT_ANIM] cfg enabled=%s speed=%s take_frac=%s hide_timeout_ms=%s", tostring(cfg.enabled),
+		tostring(cfg.speed), tostring(cfg.take_frac), tostring(cfg.hide_timeout_ms))
+end
+
+function attach(sm)
+	sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
+	sm:subscribe({ signal = "on_update", fun = this.on_update })
+	sm:subscribe({ signal = "on_actor_before_hit", fun = this.on_actor_before_hit })
+	sm:subscribe({ signal = "on_before_save_game", fun = this.on_before_save_game })
+	sm:subscribe({ signal = "level_changer_action", fun = this.on_level_changer_action })
+	sm:subscribe({ signal = "on_stop_modules", fun = this.on_stop_modules })
+	sm:subscribe({ signal = "npc_use", fun = this.on_npc_use })
+	sm:subscribe({ signal = "on_body_hide", fun = this.on_body_hide })
+end

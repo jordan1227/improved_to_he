@@ -377,7 +377,7 @@ public:
     u32 motion_length(const shared_str& anim_name, const shared_str& hud_name, const CMotionDef*& md, float speed = 1.f);
 
     void OnMovementChanged(ACTOR_DEFS::EMoveCommand cmd);
-    void re_sync_anim(u8 part);
+    void re_sync_anim(u8 part, float blend_time = -1.f);
     void GetLHandBoneOffsetPosDir(const shared_str& bone_name, Fvector& dest_pos, Fvector& dest_dir, const Fvector& offset);
 
     Fvector target_thumb0rot{}, target_thumb01rot{}, target_thumb02rot{};
@@ -416,6 +416,52 @@ public:
     bool script_override_arms;
     bool script_override_item;
     IKinematicsAnimated* script_anim_item_model{};
+    // NLC: per-clip blend times from the HUD section (blend_in / blend_out, s; <= 0 = the motion's own),
+    // and the first frame the scripted item model may render (docs/LOOT_INTERACTION_DESIGN.md 10)
+    float script_anim_blend_in{-1.f};
+    float script_anim_blend_out{-1.f};
+    u32 script_anim_item_show_frame{};
+    u32 script_anim_hands_show_frame{}; // NLC: first frame the hands are drawn after a clip starts from hidden hands
+    // NLC: ease_in / ease_out (share of the clip, 0..0.45) and ease_speed (speed at the ends): the clip
+    // runs slower at its start and end. The blends of the running clip are tracked to steer their speed.
+    struct nlc_script_blend
+    {
+        CBlend* B;
+        float base_speed;
+        IKinematicsAnimated* model; // the model whose part list held B when the clip started
+        u16 part;
+        MotionID mid;
+    };
+    xr_vector<nlc_script_blend> script_anim_blends;
+    float script_anim_ease_in{};
+    float script_anim_ease_out{};
+    float script_anim_ease_k{1.f};
+    float script_anim_ease_start_k{}; // the clip window the ease runs over (start_k / stop_k)
+    float script_anim_ease_stop_k{1.f};
+    bool nlc_script_blend_alive(const nlc_script_blend& e) const;
+    void nlc_track_script_blend(CBlend* B);
+    void nlc_update_script_ease();
+
+    // NLC: a second one-hand clip on the free hand while a one-hand clip runs on the other, empty hands
+    // only (docs/LOOT_INTERACTION_DESIGN.md 13.1, 16). When the main clip ends first, this one becomes main.
+    u8 script_free_part{u8(-1)};
+    u32 script_free_end{};
+    float script_free_blend_out{-1.f};
+    Fvector script_free_offset[2]{}; // the free-hand clip's own hands_position / hands_orientation
+
+    // NLC (LOOT_INTERACTION_DESIGN 18): empty hands, per-hand offset actually applied, eased toward the offset of the
+    // clip that hand runs; nlc_hand_frame = last frame that hand was drawn (a hand drawn again after a gap snaps)
+    Fvector nlc_hand_offs[2][2]{};
+    u32 nlc_hand_frame[2]{};
+    bool nlc_hand_drawn(u8 hand) const;
+    bool nlc_hand_was_drawn(u8 hand) const;
+
+public:
+    u32 script_anim_play_free_hand(u8 hand, LPCSTR hud_section, LPCSTR anm_name, bool bMixIn, float speed);
+    void script_anim_stop_hand(u8 hand);
+    void nlc_free_hand_stop();
+    void nlc_script_anim_stop_all();
+    u8 nlc_hand_slot(u8 hand) const;
     xr_vector<script_layer*> m_script_layers;
 
     // NLC flytrap (docs/ANOMALY_DESIGN.md 25): the field factor the hands' running blends play at; rescaled once per frame

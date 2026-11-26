@@ -428,9 +428,59 @@ protected:
     void PickupModeUpdate();
     void PickupModeUpdate_COD();
 
+    // NLC: world item marks shown while Use is held (docs/LOOT_INTERACTION_DESIGN.md 5.3)
+    struct SPickupMark
+    {
+        Fvector pos;
+        float dist;
+        u16 id;
+    };
+    xr_vector<SPickupMark> m_PickupMarks;
+    class CUIStaticItem* m_pPickupDot{};
+    bool m_bUseKeyHeld{};
+    u32 m_dwUseKeyPressTime{};
+    u16 m_PickupCandidateID{u16(-1)};
+    u16 m_PickupPendingID{u16(-1)};
+    u32 m_dwPickupPendingTime{};
+    bool PickupInfoActive();
+
 public:
     void PickupModeOn();
     void PickupModeOff();
+
+    // NLC: pickup assist and item marks, read from actor.ltx [actor], writable from Lua for tuning
+    bool m_bPickupAssist{true}; // false = crosshair-only (pixel-perfect) pickup
+    bool m_bUseRayFromCamera{false}; // true: use/pickup target from the screen centre, not the barrel ray
+    float m_fPickupInfoNameRadius{3.f}; // names only within this; dots within pickup_info_radius
+    bool m_bPickupInfoNameTargetOnly{}; // name only on the item a Use press would take
+    float m_fPickupAssistActorRadius{2.f}; // item centre within this of the actor's feet
+    float m_fPickupAssistRayRadius{1.f}; // item centre within this of the view ray
+    float m_fPickupAssistConeDeg{0.f}; // > 0: also limit by angle from the view ray
+    float m_fPickupAssistMinRadius{0.f}; // floor for the cone radius
+    u32 m_PickupInfoMode{2}; // bit 1 = dot, bit 2 = name (1 dot, 2 name, 3 both)
+    shared_str m_PickupInfoDotTexture;
+    float m_fPickupInfoDotSize{8.f}; // UI pixels (1024x768 space) at the actor
+    float m_fPickupInfoDotSizeFar{5.f}; // UI pixels at pickup_info_radius
+    u32 m_PickupInfoColor{0xFFDDDDDD};
+    u32 m_PickupInfoTargetColor{0xFFFFC83C};
+    bool m_bPickupInfoHighlightTarget{};
+    float m_fPickupInfoFadeMin{1.f}; // alpha multiplier at pickup_info_radius
+    u32 m_PickupInfoHoldMs{};
+
+    void OnUseKeyPress();
+    void OnUseKeyRelease();
+    void PickupInfoRender(); // called from the main HUD window draw
+    bool ScriptPickupItem(CScriptGameObject* obj);
+
+    // NLC (LOOT_INTERACTION_DESIGN 21): while held, slot keys (1-6, next / prev slot incl. the wheel, detector) are
+    // remembered instead of acted on; the last one replays once the hold ends. Lua refreshes it every frame
+    // (actor:nlc_hold_slot_switch(ms); 0 ends it), so a script that stops calling cannot leave it on.
+    u32 m_nlc_slot_hold_until{};
+    int m_nlc_slot_pending{-1};
+    bool nlc_slot_held() const;
+    bool nlc_slot_hold_take(int cmd); // true: the request was remembered, do not act now
+    void nlc_hold_slot_switch(u32 ms);
+    void nlc_slot_hold_update();
 
     //////////////////////////////////////////////////////////////////////////
     // Motions (передвижения актрера)

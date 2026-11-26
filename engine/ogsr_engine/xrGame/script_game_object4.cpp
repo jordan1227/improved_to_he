@@ -387,10 +387,27 @@ void CScriptGameObject::SetCamFOV(float _fov) { g_fov = _fov; }
 
 #include "HudManager.h"
 #include "UIGameSP.h"
+#include "entity_alive.h"
 void CScriptGameObject::OpenInvBox(CScriptGameObject* obj)
 {
     CInventoryOwner* e = smart_cast<CInventoryOwner*>(&object());
-    IInventoryBox* trunk = smart_cast<IInventoryBox*>(&(obj->object()));
+    IInventoryBox* trunk = obj ? smart_cast<IInventoryBox*>(&(obj->object())) : nullptr;
+
+    // NLC: a dead inventory owner (stalker corpse) opens its loot window too, so a script can play
+    // the body search first and open the window after it (docs/LOOT_INTERACTION_DESIGN.md 4.2, E3)
+    if (e && obj && !trunk)
+    {
+        CInventoryOwner* other = smart_cast<CInventoryOwner*>(&(obj->object()));
+        CEntityAlive* other_alive = smart_cast<CEntityAlive*>(&(obj->object()));
+        if (other && other != e && other_alive && !other_alive->g_Alive())
+        {
+            CUIGameSP* pGameSP = smart_cast<CUIGameSP*>(HUD().GetUI()->UIGame());
+            if (pGameSP)
+                pGameSP->StartCarBody(e, other);
+            return;
+        }
+    }
+
     if (!e || !trunk)
     {
         ai().script_engine().script_log(ScriptStorage::eLuaMessageTypeError, "CInventoryOwner : cannot access class member OpenInvBox!");
