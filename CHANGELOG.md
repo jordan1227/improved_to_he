@@ -1,6 +1,343 @@
-<!-- nlc-changelog-head: 190e00ec242025c27139928ab7c8d2e3aece885d -->
+<!-- nlc-changelog-head: 1a62e99ec2f1c20bb6c847862ff604b0a240727f -->
 
 # NLC Improved changelog
+
+<!-- nlc-changelog-commit: 1a62e99ec2f1c20bb6c847862ff604b0a240727f -->
+## 27.11.26 03:59 МСК - Дождь, облака, ветер и солнце в пасмурную погоду
+
+Commit: [1a62e99](https://github.com/jordan1227/improved_to_he/commit/1a62e99ec2f1c20bb6c847862ff604b0a240727f)
+
+### Description
+
+## Дождь, облака, ветер и солнце в пасмурную погоду (движок nlc-3.589.236-3.589.241, 26-27.11.26)
+
+Переделаны дождь, облака и ветер: ветер теперь поворачивается и меняет силу, дождь наклоняется по ветру и бывает косым и почти отвесным, вдали видна стена дождя, облака плывут по ветру, а в пасмурные дни иногда пробивается солнце. Нужен новый exe (nlc-3.589.241), новые шейдеры и файлы погоды, перезапуск игры.
+
+1. **Ветер живой**
+   - Направление ветра медленно поворачивается со временем (за несколько игровых часов), а не дует всегда в одну сторону. Деревья, трава, дождь и облака следуют за ним.
+   - Сила ветра у каждой погоды своя и плавно меняется по часам: в ясную погоду ночью почти штиль, днём лёгкий ветер; в облачную умеренный; в дождь всегда есть ветер, ночью сильнее; в грозу сильный; в тумане штиль.
+   - Сила ветра ещё и "дышит": затихает и усиливается в течение нескольких минут.
+2. **Дождь**
+   - В штиль капли падают почти отвесно и параллельно, при ветре наклоняются. Мелкие капли наклоняются сильнее крупных, по земле проходят полосы порывов.
+   - Ливень то усиливается, то ослабевает.
+   - Громкость дождя зависит от силы дождя: ночной ливень громкий и без ветра.
+3. **Дождь вдали** (Шейдеры -> Дождь, три ползунка)
+   - "Дальний дождь" - полосы дождя в 20-80 м, видны на фоне тёмных деревьев.
+   - "Пелена" - дождь серит даль, цвет совпадает с туманом и небом.
+   - "Удары капель" - короткие вспышки капель на мокром асфальте, бетоне и в лужах вблизи. На земле и траве их нет.
+   - В помещениях ничего из этого нет. Цена около 1 % FPS.
+4. **Брызги капель**
+   - Меньше и короче, выглядят как вода, без свечения. Хорошо видны на мокром асфальте и в лужах, слабее на земле, почти не видны на траве.
+5. **Облака и их тени**
+   - Облака и их тени на земле плывут по ветру, скорость зависит от ветра.
+   - Тени облаков заметнее, ползунок теней облаков по умолчанию 0.7.
+   - Тени облаков не "ездят" при полёте камеры (demo_record).
+6. **Туман вдали**
+   - Дальние деревья и дома больше не светятся бледными силуэтами в пасмурную погоду (особенно было видно при малой дальности видимости). Туман уходит в настоящий цвет неба с облаками. То же для воды, луж и стекла.
+7. **Солнце в пасмурную погоду (просветы)**
+   - В облачные дни около полудня примерно половину времени сквозь облака пробиваются редкие солнечные пятна, они плывут вместе с облаками. Само солнце, блики и лучи от неба при этом не видны.
+   - В дневной дождь изредка бывает "слепой дождь" с солнечными пятнами (примерно четверть времени).
+   - Если тени облаков выключены, в такие часы остаётся обычная пасмурная погода без солнца.
+   - Для стелса учитывается средняя освещённость, а не солнце целиком.
+
+## Что проверять
+
+- Ясный день и ночь: днём трава и деревья колышутся, ночью почти неподвижны.
+- Дождь днём и ночью: дождь всегда немного наклонён, ночью сильнее; нет резких переключений с косого дождя на отвесный.
+- Дальний дождь, пелена и удары капель: видны в дождь, отключаются ползунками, нет внутри помещений.
+- Брызги: видны, но не светятся в пасмурном свете.
+- Облачный полдень: в основном пасмурно, иногда плывут солнечные пятна; нет диска солнца и бликов солнца на лужах и воде.
+- Малая дальность видимости (rs_vis_distance 0.4) в дождь: нет бледных силуэтов деревьев и домов вдали, вода вдали не светлее земли.
+- Скорость облаков выглядит естественно для ветра.
+- Сохранения загружаются без вылета.
+- FPS: в облачный полдень и в "слепой дождь" FPS как в солнечную погоду (рисуются тени от солнца).
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/environment/weathers/default_np_alpha.ltx
+- M gamedata/config/environment/weathers/default_np_alpha2.ltx
+- M gamedata/config/environment/weathers/default_np_alpha3.ltx
+- M gamedata/config/environment/weathers/default_np_clear.ltx
+- M gamedata/config/environment/weathers/default_np_clear2.ltx
+- M gamedata/config/environment/weathers/default_np_clear3.ltx
+- M gamedata/config/environment/weathers/default_np_clear4.ltx
+- M gamedata/config/environment/weathers/default_np_cloudy.ltx
+- M gamedata/config/environment/weathers/default_np_cloudy2.ltx
+- M gamedata/config/environment/weathers/default_np_cloudy2_redmoon.ltx
+- M gamedata/config/environment/weathers/default_np_cloudy3.ltx
+- M gamedata/config/environment/weathers/default_np_cloudy4.ltx
+- M gamedata/config/environment/weathers/default_np_cloudy5.ltx
+- M gamedata/config/environment/weathers/default_np_foggy.ltx
+- M gamedata/config/environment/weathers/default_np_foggy_dark.ltx
+- M gamedata/config/environment/weathers/default_np_foggy_nosun.ltx
+- M gamedata/config/environment/weathers/default_np_rain.ltx
+- M gamedata/config/environment/weathers/default_np_thunder.ltx
+- M gamedata/config/environment/weathers/default_pre_blowout.ltx
+- M gamedata/config/environment/weathers/default_swtc_dark.ltx
+- M gamedata/config/environment/weathers/default_swtc_etalon.ltx
+- M gamedata/config/text/eng/ui_st_mm.xml
+- M gamedata/config/text/rus/ui_st_mm.xml
+- M gamedata/config/ui/ui_mm_opt.xml
+- M gamedata/scripts/ui/ui_mm_opt_main.script
+- M gamedata/scripts/ui/ui_mm_opt_shaders.script
+- M gamedata/shaders/r3/accum_volumetric_sun.ps
+- M gamedata/shaders/r3/accum_volumetric_sun.s
+- A gamedata/shaders/r3/clouds.vs
+- M gamedata/shaders/r3/combine.s
+- M gamedata/shaders/r3/combine_1.ps
+- M gamedata/shaders/r3/deffer_terrain_high_flat.ps
+- A gamedata/shaders/r3/effects_rain_splash.ps
+- A gamedata/shaders/r3/effects_rain_splash.s
+- M gamedata/shaders/r3/effects_water.s
+- M gamedata/shaders/r3/effects_water_puddles.s
+- M gamedata/shaders/r3/effects_waterryaska.s
+- M gamedata/shaders/r3/effects_waterstuden.s
+- M gamedata/shaders/r3/effects_waterunderground.s
+- A gamedata/shaders/r3/nlc_rain_far.ps
+- A gamedata/shaders/r3/nlc_rain_far.s
+- A gamedata/shaders/r3/nlc_sky_bg.ps
+- A gamedata/shaders/r3/nlc_sky_bg.s
+- A gamedata/shaders/r3/nlc_sun_breaks.h
+- M gamedata/shaders/r3/screenspace_wind.h
+- M gamedata/shaders/r3/ssfx_cloud_shadows.h
+- M gamedata/shaders/r3/ssfx_fog_atmo.h
+- M gamedata/shaders/r3/ssfx_fog_sun.h
+- M gamedata/shaders/r3/ssfx_glass.ps
+- M gamedata/shaders/r3/ssfx_water.ps
+- M gamedata/shaders/r3/water_puddles.ps
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/Layers/xrRender/Blender_Model_EbB.cpp
+- M engine/ogsr_engine/Layers/xrRender/Blender_Recorder_StandartBinding.cpp
+- M engine/ogsr_engine/Layers/xrRender/LightTrack.cpp
+- M engine/ogsr_engine/Layers/xrRender/R_Backend_Runtime.cpp
+- M engine/ogsr_engine/Layers/xrRender/RenderTargetPhaseSSSS.cpp
+- M engine/ogsr_engine/Layers/xrRender/SH_Texture.h
+- M engine/ogsr_engine/Layers/xrRender/dxRainRender.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.cpp
+- M engine/ogsr_engine/Layers/xrRender/xrRender_console.h
+- M engine/ogsr_engine/Layers/xrRenderDX10/StateManager/dx10ShaderResourceStateCache.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r2_types.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget.h
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_combine.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_rendertarget_phase_ssfx.cpp
+- M engine/ogsr_engine/Layers/xrRenderPC_R4/r4_scope_pip.cpp
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Level.cpp
+- M engine/ogsr_engine/xrGame/Level_load.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.cpp
+- M engine/ogsr_engine/xrGame/WeaponMagazined.h
+- M engine/ogsr_engine/xrGame/WeaponShotgun.cpp
+- M engine/ogsr_engine/xrGame/level_script.cpp
+- M engine/ogsr_engine/xrGame/nlc_stealth.cpp
+- M engine/ogsr_engine/xrGame/object_actions.cpp
+- M engine/ogsr_engine/xrGame/object_property_evaluators.cpp
+- M engine/ogsr_engine/xr_3da/Environment.cpp
+- M engine/ogsr_engine/xr_3da/Environment.h
+- M engine/ogsr_engine/xr_3da/Environment_misc.cpp
+- M engine/ogsr_engine/xr_3da/Rain.cpp
+- M engine/ogsr_engine/xr_3da/Rain.h
+- M engine/ogsr_engine/xr_3da/xr_efflensflare.cpp
+- M engine/ogsr_engine/xr_3da/xr_ioc_cmd.cpp
+
+<!-- nlc-changelog-commit: 3247c106ee9c9f9bfd8cf751e41d894b386db5b4 -->
+## 27.11.26 01:41 МСК - Prevent HUD hands from blinking between clips
+
+Commit: [3247c10](https://github.com/jordan1227/improved_to_he/commit/3247c106ee9c9f9bfd8cf751e41d894b386db5b4)
+
+### Description
+
+Track recently stopped HUD clips so immediate follow-up animations preserve hand and item visibility. Remove redundant stop calls before watch-lowering and resonator-hide animations so they blend directly from the preceding clip.
+
+### Game files changed
+
+- M gamedata/scripts/allcore_hide.script
+- M gamedata/scripts/kotovod/dsh_drag_drop.script
+
+### Other repository files changed
+
+- M engine/ogsr_engine/xrGame/player_hud.cpp
+- M engine/ogsr_engine/xrGame/player_hud.h
+
+<!-- nlc-changelog-commit: 0532ac3cd21a1b8f23248390fd38586778bb6984 -->
+## 27.11.26 00:00 МСК - Support chambered rounds across weapons
+
+Commit: [0532ac3](https://github.com/jordan1227/improved_to_he/commit/0532ac3cd21a1b8f23248390fd38586778bb6984)
+
+### Description
+
+Enable chambered-round capacity for supported weapons, while disabling it for the Taurus revolver. Reloads can now fill the magazine plus one when a round remains chambered; weapon descriptions show the magazine and chamber counts, and loaded-weapon checks accept the extra round.
+
+### Game files changed
+
+- M gamedata/config/weapons/w_1911.ltx
+- M gamedata/config/weapons/w_abakan.ltx
+- M gamedata/config/weapons/w_ak104.ltx
+- M gamedata/config/weapons/w_ak74.ltx
+- M gamedata/config/weapons/w_apb.ltx
+- M gamedata/config/weapons/w_beretta92.ltx
+- M gamedata/config/weapons/w_bizon-2.ltx
+- M gamedata/config/weapons/w_desert_eagle.ltx
+- M gamedata/config/weapons/w_fn2000.ltx
+- M gamedata/config/weapons/w_fn_fnx.ltx
+- M gamedata/config/weapons/w_fn_scar.ltx
+- M gamedata/config/weapons/w_fort12.ltx
+- M gamedata/config/weapons/w_g36.ltx
+- M gamedata/config/weapons/w_glock17.ltx
+- M gamedata/config/weapons/w_groza.ltx
+- M gamedata/config/weapons/w_m4a1.ltx
+- M gamedata/config/weapons/w_mosin.ltx
+- M gamedata/config/weapons/w_mp133_short.ltx
+- M gamedata/config/weapons/w_mp5.ltx
+- M gamedata/config/weapons/w_pb.ltx
+- M gamedata/config/weapons/w_pm.ltx
+- M gamedata/config/weapons/w_remington870.ltx
+- M gamedata/config/weapons/w_sa58.ltx
+- M gamedata/config/weapons/w_saiga12c.ltx
+- M gamedata/config/weapons/w_sig220.ltx
+- M gamedata/config/weapons/w_sig552.ltx
+- M gamedata/config/weapons/w_sks.ltx
+- M gamedata/config/weapons/w_spas12.ltx
+- M gamedata/config/weapons/w_svd.ltx
+- M gamedata/config/weapons/w_svu.ltx
+- M gamedata/config/weapons/w_taurus.ltx
+- M gamedata/config/weapons/w_usas12.ltx
+- M gamedata/config/weapons/w_usas12_mod.ltx
+- M gamedata/config/weapons/w_usp.ltx
+- M gamedata/config/weapons/w_val.ltx
+- M gamedata/config/weapons/w_vintorez.ltx
+- M gamedata/config/weapons/w_vityaz.ltx
+- M gamedata/config/weapons/w_walther.ltx
+- M gamedata/scripts/kotovod.script
+- M gamedata/scripts/kotovod/dsh_reload.script
+- M gamedata/scripts/ui/ui_inv_descr.script
+
+<!-- nlc-changelog-commit: ce8452e5186c6d4a5f20a61f4c94b043cb420add -->
+## 26.11.26 15:34 МСК - манифест
+
+Commit: [ce8452e](https://github.com/jordan1227/improved_to_he/commit/ce8452e5186c6d4a5f20a61f4c94b043cb420add)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: 43579f18da9dead30af5e5ae6a8bf239667371b3 -->
+## 26.11.26 15:33 МСК - Add animated loot interactions and HUD support
+
+Commit: [43579f1](https://github.com/jordan1227/improved_to_he/commit/43579f18da9dead30af5e5ae6a8bf239667371b3)
+
+### Description
+
+Add configurable pickup assistance and held-Use item markers, plus animated item pickup and corpse/mutant searches. Extend the engine with camera-based use targeting, free-hand HUD clips, and slot-switch hold support.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+- M gamedata/config/creatures/actor.ltx
+- M gamedata/config/external.ltx
+- M gamedata/config/misc/he_omf_override.ltx
+- M gamedata/config/misc/items/anim_items/anm_other.ltx
+- A gamedata/meshes/anomaly_weapons/hud_hands_animation/liz_fdda_redone_item_pickup.omf
+- M gamedata/scripts/kotovod/monster_parts.script
+- M gamedata/scripts/kotovod/on_body_item_drop.script
+- M gamedata/scripts/ogse/ogse_signals_addons_list.script
+- M gamedata/scripts/sivol/sivol_belt_gesture.script
+- A gamedata/scripts/sivol/sivol_loot_anim.script
+- M gamedata/scripts/sivol/sivol_sprint_hands.script
+- A gamedata/textures/ui/ui_loot_dot.dds
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Actor.cpp
+- M engine/ogsr_engine/xrGame/Actor.h
+- M engine/ogsr_engine/xrGame/ActorInput.cpp
+- M engine/ogsr_engine/xrGame/Actor_Feel.cpp
+- M engine/ogsr_engine/xrGame/HUDManager.cpp
+- M engine/ogsr_engine/xrGame/HUDManager.h
+- M engine/ogsr_engine/xrGame/HUDTarget.cpp
+- M engine/ogsr_engine/xrGame/HUDTarget.h
+- M engine/ogsr_engine/xrGame/fl_hook.cpp
+- M engine/ogsr_engine/xrGame/fl_hook.h
+- M engine/ogsr_engine/xrGame/game_sv_base_script.cpp
+- M engine/ogsr_engine/xrGame/player_hud.cpp
+- M engine/ogsr_engine/xrGame/player_hud.h
+- M engine/ogsr_engine/xrGame/script_actor.cpp
+- M engine/ogsr_engine/xrGame/script_game_object4.cpp
+- M engine/ogsr_engine/xrGame/ui/UIMainIngameWnd.cpp
+
+<!-- nlc-changelog-commit: db78e387be3603d78160fda34e34055c575391f2 -->
+## 26.11.26 00:50 МСК - манифест
+
+Commit: [db78e38](https://github.com/jordan1227/improved_to_he/commit/db78e387be3603d78160fda34e34055c575391f2)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M manifest.txt
+
+<!-- nlc-changelog-commit: dd4a854345041dcd0d139ff47b85a43440201a0a -->
+## 26.11.26 00:49 МСК - Forward Alt key hold and release callbacks
+
+Commit: [dd4a854](https://github.com/jordan1227/improved_to_he/commit/dd4a854345041dcd0d139ff47b85a43440201a0a)
+
+### Description
+
+Allow LAlt and RAlt to reach script hold and release callbacks so Alt-bound tap/hold actions work, while keeping F4 excluded. Update the engine version and changelog for nlc-3.589.226.
+
+### Game files changed
+
+- M bin_x64/xrEngine.exe
+
+### Other repository files changed
+
+- M engine/CHANGELOG_NLC.md
+- M engine/ENGINE_VERSION.md
+- M engine/ogsr_engine/xrCore/xrCore.cpp
+- M engine/ogsr_engine/xrGame/Level_input.cpp
+
+<!-- nlc-changelog-commit: 88fa583ce0431df7849c49431dac9b1baa43afaf -->
+## 26.11.26 00:06 МСК - манифест
+
+Commit: [88fa583](https://github.com/jordan1227/improved_to_he/commit/88fa583ce0431df7849c49431dac9b1baa43afaf)
+
+### Description
+
+_(No additional description.)_
+
+### Game files changed
+
+- M gamedata/config/text/eng/ui_st_other.xml
+- M gamedata/config/text/rus/ui_st_other.xml
+
+### Other repository files changed
+
+- M CHANGELOG.md
+- M manifest.txt
 
 <!-- nlc-changelog-commit: 190e00ec242025c27139928ab7c8d2e3aece885d -->
 ## 26.11.26 00:04 МСК - Фиксы пояса и новая анимка Add belt gesture for accumulator controls
