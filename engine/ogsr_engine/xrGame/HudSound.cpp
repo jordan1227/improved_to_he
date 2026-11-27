@@ -108,10 +108,11 @@ void HUD_SOUND::PlaySound(HUD_SOUND& hud_snd, const Fvector& position, const COb
     const float nlc_k = nlc_hud_speed_k(hud_snd.m_nlc_speed_kind) * nlc_hud_speed_k(NLC_SPEED_FIELD); // field: the clip has it too (nlc_actor_motion_speed_k)
     // the actor's own sounds: the detectors pass themselves as the parent, the others the actor (H_Root)
     const bool nlc_actor = parent && Actor() && parent->H_Root() == Actor();
-    if (hud_snd.m_nlc_speed_kind != NLC_SPEED_NONE && nlc_actor && !fsimilar(nlc_k, 1.f))
+    const float item_k = hud_snd.m_nlc_item_k; // NLC: this item's draw speed ( show / hide only, 1 otherwise )
+    if (hud_snd.m_nlc_speed_kind != NLC_SPEED_NONE && nlc_actor && !(fsimilar(nlc_k, 1.f) && fsimilar(item_k, 1.f)))
     {
-        freq *= nlc_k;
-        delay /= nlc_k;
+        freq *= nlc_k * nlc_item_pitch_k(item_k);
+        delay /= nlc_k * item_k;
     }
     else if (hud_snd.m_nlc_speed_kind == NLC_SPEED_NONE && nlc_actor)
     {

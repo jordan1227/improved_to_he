@@ -638,7 +638,10 @@ u8 nlc_actor_motion_kind(const CHudItem* item, LPCSTR anm_name)
 // in the actor's hands (knife strikes, grenade and bolt throws, binoculars)
 float nlc_actor_motion_speed_k(const CHudItem* item, LPCSTR anm_name)
 {
-    float k = nlc_hud_speed_k(nlc_actor_motion_kind(item, anm_name));
+    const u8 kind = nlc_actor_motion_kind(item, anm_name);
+    float k = nlc_hud_speed_k(kind);
+    if (kind == NLC_SPEED_DRAW)
+        k *= item->nlc_draw_k(); // NLC: the weapon's own draw speed ( draw_speed_k x mass factor ), kind DRAW implies item
     if (item && item->object().H_Parent() == Actor())
         k *= nlc_hud_speed_k(NLC_SPEED_FIELD);
     return k;

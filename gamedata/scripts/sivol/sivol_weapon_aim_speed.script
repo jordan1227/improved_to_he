@@ -305,7 +305,10 @@ local function get_weapon_class(section)
     return "automatic_rifle"
 end
 
-local function build_weapon_aim_profile(item, weapon, section, flags)
+-- without_addons = true describes the bare weapon: only hardware that cannot
+-- be removed (integral sights, status-1 launchers) stays, and handling uses
+-- the mass without fitted addons. The inventory "ready" baseline uses it.
+local function build_weapon_aim_profile(item, weapon, section, flags, without_addons)
     local weapon_class = get_weapon_class(section)
     local base_target = SECTION_AIM_TIMES[section] or CLASS_AIM_TIMES[weapon_class]
         or CLASS_AIM_TIMES.automatic_rifle
@@ -315,6 +318,9 @@ local function build_weapon_aim_profile(item, weapon, section, flags)
         scope, mode = optic_override.scope, "integrated_override"
     else
         scope, mode = resolve_scope(item, weapon, section, flags)
+    end
+    if without_addons and mode ~= "integral" and mode ~= "integrated_override" then
+        scope, mode = nil, "naked"
     end
 
     local sight_class, zoom
@@ -327,9 +333,15 @@ local function build_weapon_aim_profile(item, weapon, section, flags)
     end
     local scope_multiplier = sight_class
         and SCOPE_TIME_MULTIPLIERS[sight_class] or 1.0
-    local launcher = has_launcher(item, section, flags)
+    local launcher
+    if without_addons then
+        launcher = tonumber(section_string(section, "grenade_launcher_status")) == 1
+    else
+        launcher = has_launcher(item, section, flags)
+    end
     local handling_k = 1.0
-    local handling = M.get_handling_profile and M.get_handling_profile(item, section)
+    local handling = M.get_handling_profile
+        and M.get_handling_profile(item, section, without_addons)
     if handling then
         handling_k = HANDLING_AIM_TIME_BASE - HANDLING_AIM_TIME_SLOPE * handling.handling
     end
@@ -353,10 +365,11 @@ local function build_weapon_aim_profile(item, weapon, section, flags)
 end
 
 -- Shared runtime/UI effective ADS timing, including naked weapons and UBGLs.
-function M.get_weapon_aim_profile(item, weapon, section)
+-- without_addons = true returns the bare-weapon profile (UI baseline only).
+function M.get_weapon_aim_profile(item, weapon, section, without_addons)
     if not item or not weapon or not section then return nil end
     return build_weapon_aim_profile(
-        item, weapon, section, read_addon_flags(item))
+        item, weapon, section, read_addon_flags(item), without_addons == true)
 end
 
 -- Inventory UI uses the exact same scope resolution and timing classes as the
@@ -513,7 +526,81 @@ local function prepare(item, item_id)
     return true
 end
 
+-- Draw / holster speed from mass (engine hud_draw_mass_k, nlc-3.589.242+): the
+-- same handling value scales every show / hide motion and its sound. It must be
+-- on the weapon before it is drawn, so every weapon in a slot is kept current
+-- (unlike the fields above it is never restored on a switch). The field is not
+-- saved; the poll writes it again after a load.
+local DRAW_MASS_BASE = 0.80 -- h = 0 (very heavy)
+local DRAW_MASS_SLOPE = 0.40 -- h = 1 -> 1.20; bare AK about 1.02, PKP about 0.88
+local DRAW_MASS_MIN, DRAW_MASS_MAX = 0.75, 1.25
+local DRAW_POLL_MS = 400
+local DRAW_SLOTS = { 1, 2, 4 } -- 1 pistol, 2 rifle; 4 is binoculars (skipped below) unless a firearm sits there
+local draw_written = {} -- [item id] = { sig = mass signature, k = value written }
+local next_draw_poll = 0
+local draw_slot_ids = "" -- slot contents at the last poll: a change polls at once
+
+function M.get_draw_mass_k(item, section, without_addons)
+    local profile = M.get_handling_profile(item, section, without_addons)
+    if not profile then return 1.0 end
+    local k = DRAW_MASS_BASE + DRAW_MASS_SLOPE * profile.handling
+    return math.max(DRAW_MASS_MIN, math.min(DRAW_MASS_MAX, k))
+end
+
+local function read_draw_mass_k(weapon) return weapon.hud_draw_mass_k end
+local function write_draw_mass_k(weapon, k) weapon.hud_draw_mass_k = k end
+
+local function update_draw_mass()
+    local now = time_global()
+    -- A weapon just put into a slot is written at once, not up to a poll later.
+    local slot_items = {}
+    local ids = {}
+    for i, slot in ipairs(DRAW_SLOTS) do
+        local ok_item, item = pcall(db.actor.item_in_slot, db.actor, slot)
+        slot_items[i] = ok_item and item or false
+        ids[i] = tostring(slot_items[i] and object_id(slot_items[i]) or "-")
+    end
+    local slot_key = table.concat(ids, ",")
+    if now < next_draw_poll and slot_key == draw_slot_ids then return end
+    draw_slot_ids = slot_key
+    next_draw_poll = now + DRAW_POLL_MS
+    local seen = {}
+    for i in ipairs(DRAW_SLOTS) do
+        local item = slot_items[i]
+        local ok_weapon, weapon = false, nil
+        if item and not item:is_knife() and not item:is_binoculars() then
+            ok_weapon, weapon = pcall(item.get_weapon, item)
+        end
+        if ok_weapon and weapon then
+            local id = object_id(item)
+            local ok_sig, signature = pcall(sivol_weapon.get_weapon_mass_signature, item)
+            if id and ok_sig then
+                local entry = draw_written[id]
+                -- Rewrite on a new signature, or when the engine value differs from
+                -- what was written (a new object that reused this id starts at 1).
+                local stale = not entry or entry.sig ~= signature
+                if not stale and entry.k then
+                    local ok_read, current = pcall(read_draw_mass_k, weapon)
+                    stale = ok_read and type(current) == "number" and math.abs(current - entry.k) > 0.001
+                end
+                if stale then
+                    local k = M.get_draw_mass_k(item, item:section())
+                    if pcall(write_draw_mass_k, weapon, k) then
+                        entry = { sig = signature, k = k }
+                        aim_log("[sivol_aim_speed][draw] section=%s draw_mass_k=%.3f", item:section(), k)
+                    else
+                        entry = { sig = signature } -- older exe without the field: do not retry every poll
+                    end
+                end
+                seen[id] = entry
+            end
+        end
+    end
+    draw_written = seen -- only the weapons in the slots now
+end
+
 local function on_update()
+    if ENABLED and db and db.actor and sivol_weapon then update_draw_mass() end
     if state.disabled or not ENABLED then return end
     if not db or not db.actor then
         if state.item_id and not reset_current("actor unavailable") then state.disabled = true end
@@ -539,6 +626,9 @@ local function on_update()
 end
 
 local function on_first_update()
+    draw_written = {}
+    next_draw_poll = 0
+    draw_slot_ids = ""
     state.disabled = not reset_current("load/reset")
     if not state.disabled then M.last_error = nil end
 end

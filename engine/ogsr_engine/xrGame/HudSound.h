@@ -52,4 +52,8 @@ struct HUD_SOUND
     SSnd* m_activeSnd;
     xr_vector<SSnd> sounds;
     u8 m_nlc_speed_kind{}; // NLC: NLC_SPEED_* (player_hud.h); the actor's sound follows that handling speed
+    float m_nlc_item_k{1.f}; // NLC: the playing item's own draw speed ( CHudItem::nlc_draw_k ), set per play by CHudItem::PlaySound
+    // NLC: the item's draw speed moves the sound timing in full but its pitch only within 0.8..1.2 ( a 1.4x pistol draw
+    // would sound broken otherwise ); global factors ( injury, flytrap ) keep their full pitch
+    static float nlc_item_pitch_k(float item_k) { return item_k < 0.8f ? 0.8f : (item_k > 1.2f ? 1.2f : item_k); }
 };

@@ -409,7 +409,11 @@ void CWeaponShotgun::TriStateReload()
     // NLC chamber: a gun with a round left takes one more shell. Decided before HaveCartridgeInInventory,
     // which empties the tube for any queued ammo type; a same-type refill queued by script (dsh_reload)
     // restores the count afterwards and keeps the +1, a real type change does not.
-    const bool chamber = ChamberCanHoldExtra() && (m_set_next_ammoType_on_reload == u32(-1) || m_set_next_ammoType_on_reload == m_ammoType);
+    const bool same_type = m_set_next_ammoType_on_reload == u32(-1) || m_set_next_ammoType_on_reload == m_ammoType;
+    // An empty gun with a port-load clip ( anm_add_cartridge_empty: the first shell goes straight into the chamber ) still has
+    // the whole tube free afterwards, so it takes magazine + 1 in one cycle; any ammo type, nothing is left to unload.
+    const bool port_load = iAmmoElapsed == 0 && CartridgeInTheChamberEnabled && ParentIsActor() && !IsMisfire() && AnimationExist("anm_add_cartridge_empty");
+    const bool chamber = (ChamberCanHoldExtra() && same_type) || port_load;
     if (HaveCartridgeInInventory(1) || IsMisfire())
     {
         CartridgeInTheChamber = chamber ? 1 : 0;

@@ -1626,12 +1626,13 @@ void CWeaponMagazined::ApplySilencerKoeffs()
     if (pSettings->line_exist(m_sSilencerName, "bullet_hit_power_k"))
     {
         BHPk = pSettings->r_float(m_sSilencerName, "bullet_hit_power_k");
-        clamp(BHPk, 0.0f, 1.0f);
+        // NLC: stock OGSR clamped this to 1.0, which silently dropped the suppressors' +3..5% damage (docs/WEAPON_BALANCE_REDESIGN.md 10.5)
+        clamp(BHPk, 0.0f, 10.0f);
     };
     if (pSettings->line_exist(m_sSilencerName, "bullet_speed_k"))
     {
         BSk = pSettings->r_float(m_sSilencerName, "bullet_speed_k");
-        clamp(BSk, 0.0f, 1.0f);
+        clamp(BSk, 0.0f, 10.0f); // NLC: same stock clamp removed (+1..2% bullet speed on some rifle suppressors)
     };
     if (pSettings->line_exist(m_sSilencerName, "fire_dispersion_base_k"))
     {

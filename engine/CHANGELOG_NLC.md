@@ -5,6 +5,23 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.243 (2026-11-27)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `E18A647247B24D3B2B113A3097264620AE105C3A933D64064A16F067FC36CBA3` (archived with its PDB in `nlc_tools/builds/20261127_200812_e18a6472`).
+- **Status:** runtime pending. Built on `nlc-3.589.242`.
+- `CHudItem::nlc_draw_k()` clamps `draw_speed_k * hud_draw_mass_k` to 0.3..3: both are writable from Lua, and the product divides show / hide motion and sound times ( a 0 would divide by zero ).
+
+## nlc-3.589.242 (2026-11-27)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `AF1A37A2ED200CE33651CC75D0FA2AA7E3B1ED0EC84BCFB6CAA8797EB43DD49E` (archived with its PDB in `nlc_tools/builds/20261127_183738_af1a37a2`).
+- **Status:** runtime pending. Built on `nlc-3.589.241`.
+- Suppressor `bullet_hit_power_k` / `bullet_speed_k` no longer clamped to 1.0 ( stock OGSR dropped the suppressors' +3..5 % damage, `CWeaponMagazined::ApplySilencerKoeffs` ).
+- Tri-state reloaders ( tube shotguns, also the Mosin ): an empty reload takes magazine + 1 in one cycle when the HUD has the port-load clip `anm_add_cartridge_empty` ( player only, not jammed; `CWeaponShotgun::TriStateReload` ).
+- Per-item draw speed: `draw_speed_k` ( hud section, falls back to the weapon section ) times the script field `hud_draw_mass_k` scales every show / hide motion of the actor's weapon ( `nlc_actor_motion_speed_k` ) and its sound timing; the sound pitch follows within 0.8..1.2 ( `HUD_SOUND::nlc_item_pitch_k` ). Global draw factors ( injury, Flytrap ) keep their full pitch. Lua: `CWeapon.hud_draw_speed_k`, `CWeapon.hud_draw_mass_k`.
+- **Required game data:** `sivol_weapon_aim_speed.script` writes `hud_draw_mass_k` ( mass-based draw speed ); without it draw speed is the authored one.
+
 ## nlc-3.589.241 (2026-11-27)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

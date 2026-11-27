@@ -178,6 +178,12 @@ void CHudItem::Load(LPCSTR section)
     m_nlc_move_inertia_aim_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_move_inertia_aim_k", 0.35f);
     m_nlc_crouch_kick_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_crouch_kick_k", 1.f);
     m_nlc_clip_speed_k = READ_IF_EXISTS(pSettings, r_float, section, "hud_clip_speed_k", 1.f);
+    // NLC: one show / hide speed for the whole item ( next to the per-motion anm_*_speed_k of the hud section ); unlike those
+    // it also drives the show / hide sound timing and pitch ( HUD_SOUND::PlaySound )
+    m_nlc_draw_speed_k = READ_IF_EXISTS(pSettings, r_float, section, "draw_speed_k", 1.f);
+    if (hud_sect.size() && pSettings->section_exist(hud_sect))
+        m_nlc_draw_speed_k = READ_IF_EXISTS(pSettings, r_float, hud_sect, "draw_speed_k", m_nlc_draw_speed_k);
+    clamp(m_nlc_draw_speed_k, 0.3f, 3.f);
     m_nlc_rot_inertia_pivot_z = READ_IF_EXISTS(pSettings, r_float, section, "hud_rot_inertia_pivot_z", 0.22f);
     m_nlc_rot_inertia_shift = READ_IF_EXISTS(pSettings, r_float, section, "hud_rot_inertia_shift", 0.15f);
     m_nlc_ads_damping = READ_IF_EXISTS(pSettings, r_float, section, "hud_ads_damping", 0.74f);
@@ -219,6 +225,8 @@ void CHudItem::Load(LPCSTR section)
 
 void CHudItem::PlaySound(HUD_SOUND& hud_snd, const Fvector& position, bool overlap)
 {
+    // NLC: the actor's show / hide sounds follow this item's draw speed ( timing in full, pitch clamped in HUD_SOUND::PlaySound )
+    hud_snd.m_nlc_item_k = (hud_snd.m_nlc_speed_kind == NLC_SPEED_DRAW && object().H_Parent() == Actor()) ? nlc_draw_k() : 1.f;
     HUD_SOUND::PlaySound(hud_snd, position, object().H_Root(), !!GetHUDmode(), false, overlap);
     if (hud_snd.m_nlc_speed_kind != NLC_SPEED_NONE && !overlap)
         m_nlc_motion_snd = &hud_snd; // NLC flytrap: its pitch follows a field factor change (nlc_follow_field_factor)
@@ -249,7 +257,8 @@ void CHudItem::nlc_follow_field_factor()
         m_dwMotionEndTm = now + iFloor(float(m_dwMotionEndTm - now) / ratio);
 
     if (m_nlc_motion_snd && m_nlc_motion_snd->m_activeSnd && m_nlc_motion_snd->m_activeSnd->snd._feedback())
-        m_nlc_motion_snd->m_activeSnd->snd.set_frequency(m_nlc_motion_snd->m_activeSnd->freq * nlc_hud_speed_k(m_nlc_motion_snd->m_nlc_speed_kind) * cur);
+        m_nlc_motion_snd->m_activeSnd->snd.set_frequency(m_nlc_motion_snd->m_activeSnd->freq * nlc_hud_speed_k(m_nlc_motion_snd->m_nlc_speed_kind) * cur
+                                                          * HUD_SOUND::nlc_item_pitch_k(m_nlc_motion_snd->m_nlc_item_k));
 }
 
 void CHudItem::net_Destroy() { m_dwStateTime = 0; }

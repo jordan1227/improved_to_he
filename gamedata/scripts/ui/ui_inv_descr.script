@@ -15,17 +15,11 @@ local show_item_debug_info = false
 -- between entries (costs vertical space); default keeps one entry per line.
 local lalt_help_separator = "\\n"
 
-local protection_descriptions = {
-    burn = "Снижает урон от огня и термических аномалий",
-    chemical_burn = "Защищает от едких испарений и кислотных аномалий",
-    strike = "Смягчает удары, падения и гравитационные аномалии",
-    explosion = "Гасит взрывную волну, направленные акустические удары",
-    fire_wound = "Снижает урон от пуль",
-    wound = "Защищает от колющих и режущих ранений",
-    radiation = "Замедляет накопление радиации в организме",
-    telepatic = "Ослабляет пси-воздействие аномалий и мутантов",
-    shock = "Снижает урон от электрических разрядов",
-}
+local protection_descriptions = {}
+for _, prop in ipairs({"burn", "chemical_burn", "strike", "explosion", "fire_wound",
+    "wound", "radiation", "telepatic", "shock"}) do
+    protection_descriptions[prop] = translate("ui_inv_prot_desc_" .. prop)
+end
 
 -- ui_inv_icon_ - где-то тут все иконки лежат
 
@@ -35,24 +29,6 @@ local BlockUIDescr = function(b)
 		return IsBlocked
 	else
 		IsBlocked = b
-	end
-end
-
-local function get_actual_cost(obj) -- костыль для расчета реально цеты айтема в окне торговли. не лутшее решение но в целом пойдет
-    local trade_wnd = level.get_trade_wnd()
-    if trade_wnd and trade_wnd:IsShown() then
-        local b_buying = obj:parent() and obj:parent():id() == db.actor:id()
-        local trader = level:get_second_talker()
-        if trader then
-			local cur_price = trader:calculate_item_price(obj, b_buying)
-            return string.format("%.0f", cur_price)
-        end
-    end
-	local cond, cost = obj:condition(), obj:cost()
-	if cond < 0.999 then
-		return string.format("%.0f | %.0f", cost * cond, cost)
-	else
-		return string.format("%.0f", cost)
 	end
 end
 
@@ -254,7 +230,6 @@ local function get_weapon_ready_speed(item, section, weapon, aim_profile)
     local base_section = resolve_ready_speed_base_section(section)
     local base_hud = get_string(base_section, "hud", nil)
     local current_hud = get_string(section, "hud", base_hud)
-    local gl_status = get_u32(section, "grenade_launcher_status", 0)
     local base_gl_attached, base_grenade_mode = get_ready_gl_state(item, base_section, false)
     local current_gl_attached, current_grenade_mode = get_ready_gl_state(item, section, true)
     -- The engine swaps the active and hidden magazines in grenade mode. The
@@ -270,6 +245,22 @@ local function get_weapon_ready_speed(item, section, weapon, aim_profile)
         get_ready_motion_aliases(item, section, weapon, current_gl_attached, current_grenade_mode, true))
     local current_holster = get_ready_motion_speed(current_hud,
         get_ready_motion_aliases(item, section, weapon, current_gl_attached, current_grenade_mode, false))
+    -- Whole-weapon draw speed (engine nlc-3.589.242): authored draw_speed_k of
+    -- the hud section times the mass factor (bare weapon vs as fitted).
+    local function draw_k(hud_section, without_addons)
+        local k = get_float(section, "draw_speed_k", 1)
+        if hud_section and sys_ini:section_exist(hud_section) then
+            k = get_float(hud_section, "draw_speed_k", k)
+        end
+        if sivol_weapon_aim_speed and type(sivol_weapon_aim_speed.get_draw_mass_k) == "function" then
+            local ok, mass_k = pcall(sivol_weapon_aim_speed.get_draw_mass_k, item, section, without_addons)
+            if ok and tonumber(mass_k) then k = k * mass_k end
+        end
+        return k
+    end
+    local base_draw_k, current_draw_k = draw_k(base_hud, true), draw_k(current_hud, false)
+    base_draw, base_holster = base_draw * base_draw_k, base_holster * base_draw_k
+    current_draw, current_holster = current_draw * current_draw_k, current_holster * current_draw_k
     local base_aim_time, current_aim_time = 0.25, 0.25
     local profile = aim_profile
     if type(profile) ~= "table" and weapon and sivol_weapon_aim_speed
@@ -279,12 +270,19 @@ local function get_weapon_ready_speed(item, section, weapon, aim_profile)
         if ok and type(resolved) == "table" then profile = resolved end
     end
     if type(profile) == "table" then
-        base_aim_time = tonumber(profile.base_target) or base_aim_time
-        current_aim_time = tonumber(profile.target) or base_aim_time
-        if profile.mode == "integral" or profile.mode == "integrated_override" then
-            base_aim_time = base_aim_time * (tonumber(profile.scope_multiplier) or 1)
+        current_aim_time = tonumber(profile.target) or current_aim_time
+        base_aim_time = current_aim_time
+    end
+    -- The baseline is the bare weapon from the same owner: its own mass and
+    -- built-in hardware count, fitted addons do not. Without it the arrow
+    -- would appear on every weapon (the mass term was missing from the base).
+    if weapon and sivol_weapon_aim_speed
+        and type(sivol_weapon_aim_speed.get_weapon_aim_profile) == "function" then
+        local ok_bare, bare = pcall(
+            sivol_weapon_aim_speed.get_weapon_aim_profile, item, weapon, section, true)
+        if ok_bare and type(bare) == "table" and tonumber(bare.target) then
+            base_aim_time = tonumber(bare.target)
         end
-        if gl_status == 1 then base_aim_time = current_aim_time end
     end
 
     local function composite(draw, holster, aim_time)
@@ -377,12 +375,104 @@ local function get_live_focused_item(self)
     return level.object_by_id(self.itemInFocus)
 end
 
+-- The item the panel is about: while the panel is pinned (see pin_or_release)
+-- the shown item stays, wherever the cursor is; otherwise the hovered item.
+local function get_panel_item(self)
+    if self.keypressed and self.shown_item_id and client_obj(self.shown_item_id) then
+        return level.object_by_id(self.shown_item_id)
+    end
+    return get_live_focused_item(self)
+end
+
+local function index_field(object, field) return object[field] end
+
 local function safe_weapon_field(weapon, field)
     if not weapon then return "" end
-    local ok, value = pcall(function() return weapon[field] end)
+    local ok, value = pcall(index_field, weapon, field)
     return ok and tostring(value or "") or ""
 end
 
+-- A weapon whose card shows characteristics: not a knife, not binoculars and
+-- not hidden ( forbidden_items, ui_inv_descr.hide_description ).
+local function is_stat_weapon(item, section)
+    local is_weapon = safe_item_kind(item)
+    if not is_weapon or safe_is_knife(item) then return false end
+    local ok_binoc, binoc = pcall(item.is_binoculars, item)
+    if ok_binoc and binoc then return false end
+    if not section then
+        local ok_section, value = pcall(item.section, item)
+        section = ok_section and value or nil
+    end
+    if not section then return false end
+    return not (forbidden_items[section] or get_bool(section, "ui_inv_descr.hide_description", false))
+end
+
+-- Engine condition effects ( CWeapon::GetConditionDispersionFactor, GetConditionMisfireProbability ).
+local function weapon_condition(item)
+    local ok, cond = pcall(item.condition, item)
+    cond = ok and tonumber(cond) or 1
+    return math.max(0, math.min(1, cond))
+end
+
+local function condition_dispersion_k(section, cond)
+    return 1 + get_float(section, "fire_dispersion_condition_factor", 0) * (1 - cond)
+end
+
+local function misfire_chance(section, cond)
+    if cond > 0.95 then return 0 end
+    local chance = get_float(section, "misfire_probability", 0)
+        + math.pow(1 - cond, 3) * get_float(section, "misfire_condition_k", 1)
+    return math.max(0, math.min(0.99, chance))
+end
+
+-- Magnification of a scope with scope_zoom_factor zf ( the same 90 / zf as sivol_weapon_aim_speed ).
+local function scope_magnification(zf)
+    if not zf or zf <= 0 then return nil end
+    return 90 / zf
+end
+
+local function safe_item_number(item, method_name)
+    local method = item and item[method_name]
+    if type(method) ~= "function" then return nil end
+    local ok, value = pcall(method, item)
+    return ok and tonumber(value) or nil
+end
+
+-- Rifle and launcher rounds as the player thinks of them. In grenade mode the
+-- engine swaps the two magazines and ammo types (WeaponMagazinedWGrenade), so
+-- get_ammo_in_magazine() then counts grenades and get_ammo_type() is the
+-- grenade type; the rifle type is get_underbarrel_ammo_type().
+local function get_loaded_ammo_state(item, section)
+    local _, gl_mode = get_ready_gl_state(item, section, true)
+    local rifle_count = safe_item_number(item,
+        gl_mode and "get_ammo_in_magazine2" or "get_ammo_in_magazine") or 0
+    local grenade_count = safe_item_number(item,
+        gl_mode and "get_ammo_in_magazine" or "get_ammo_in_magazine2") or 0
+    local rifle_type = safe_item_number(item,
+        gl_mode and "get_underbarrel_ammo_type" or "get_ammo_type") or 0
+    -- get_underbarrel_ammo_type exists only on CWeaponMagazinedWGrenade.
+    local grenade_type
+    if gl_mode then
+        grenade_type = safe_item_number(item, "get_ammo_type")
+    else
+        local ok_gl, is_gl = pcall(function() return item:is_weapon_gl() end)
+        if ok_gl and is_gl then
+            grenade_type = safe_item_number(item, "get_underbarrel_ammo_type")
+        end
+    end
+    return rifle_count, grenade_count, rifle_type, gl_mode, grenade_type
+end
+
+-- sivol: one in the chamber (engine CartridgeInTheChamberEnabled). A reload
+-- started with a round left fits the magazine + 1 (player only, not in GL mode).
+local function has_chamber_round(section)
+    return sys_ini:line_exist(section, "CartridgeInTheChamberEnabled")
+        and sys_ini:r_bool(section, "CartridgeInTheChamberEnabled") or false
+end
+
+-- Everything the weapon page shows that can change while the panel is open:
+-- addons, loaded counts and the loaded ammo type (unload/ammo change in the
+-- inventory) and the GL mode.
 local function get_weapon_addon_signature(item)
     local is_weapon = safe_item_kind(item)
     if not is_weapon then return nil end
@@ -391,9 +481,12 @@ local function get_weapon_addon_signature(item)
     if not ok_section or not ok_weapon then return nil end
     local status = get_u32(section, "silencer_status", 0)
     local attached = status == 2 and get_live_silencer_attached(item)
+    local rifle_count, grenade_count, rifle_type, gl_mode = get_loaded_ammo_state(item, section)
     return table.concat({tostring(section), tostring(get_weapon_addon_flags(item)),
         tostring(status), attached and "1" or "0", safe_weapon_field(weapon, "silencer_name"),
-        safe_weapon_field(weapon, "scope_name"), safe_weapon_field(weapon, "grenade_launcher_name")}, ":")
+        safe_weapon_field(weapon, "scope_name"), safe_weapon_field(weapon, "grenade_launcher_name"),
+        tostring(rifle_count), tostring(grenade_count), tostring(rifle_type),
+        gl_mode and "g" or "r"}, ":")
 end
 
 local function get_equipped_weapon_for_comparison(item, section)
@@ -420,24 +513,23 @@ local weapon_metrics_cache = {}
 local weapon_metrics_cache_keys = {}
 local WEAPON_METRICS_CACHE_MAX = 64
 
-local function weapon_metrics_cache_key(item, section, weapon)
-    local signature = get_weapon_addon_signature(item)
+local function weapon_metrics_cache_key(item, section, weapon, signature)
+    -- The signature already carries addons, loaded counts, ammo type and GL
+    -- mode. The item id keeps per-item live values (recoil fields, mass) apart;
+    -- condition ( accuracy, jam chance ) is rounded to 1%.
+    signature = signature or get_weapon_addon_signature(item)
     if not signature then return nil end
-    local misfire = get_ready_misfire(weapon) and 1 or 0
-    local gl_mode = 0
-    if ogse_wpn_utils and type(ogse_wpn_utils.get_gl_mode) == "function"
-        and type(item.is_weapon_gl) == "function"
-    then
-        -- get_gl_mode asserts on non-GL weapons; check the class first
-        local ok_gl, is_gl = pcall(item.is_weapon_gl, item)
-        if ok_gl and is_gl then
-            local ok_mode, mode = pcall(ogse_wpn_utils.get_gl_mode, item)
-            gl_mode = ok_mode and mode == true and 1 or 0
-        end
-    end
-    return table.concat({signature, "|a", tostring(get_ready_ammo_count(item, false)),
-        "|b", tostring(get_ready_ammo_count(item, true)), "|m", tostring(misfire),
-        "|g", tostring(gl_mode)})
+    local ok_id, item_id = pcall(item.id, item)
+    return table.concat({tostring(ok_id and item_id or "?"), "|", signature,
+        "|m", get_ready_misfire(weapon) and "1" or "0",
+        "|c", tostring(math.floor(weapon_condition(item) * 100 + 0.5))})
+end
+
+-- Cleared with every new description window ( a new inventory / trade / body
+-- window, e.g. after a load, when item ids can be reused ).
+local function clear_weapon_metrics_cache()
+    weapon_metrics_cache = {}
+    weapon_metrics_cache_keys = {}
 end
 
 local function store_weapon_metrics(cache_key, metrics)
@@ -453,13 +545,36 @@ local function store_weapon_metrics(cache_key, metrics)
     return metrics
 end
 
-local function get_effective_weapon_metrics(item)
+-- Ergonomics (sivol_weapon_aim_speed handling: mass, role, layout) is folded
+-- into the recoil index. Only its sway/inertia/settle share belongs here; its
+-- ADS-time effect is already part of the ready-speed figure.
+local ERGONOMICS_HANDLING_SHARE = 0.20
+
+local function fold_ergonomics(score, details, ergo_score)
+    if type(ergo_score) ~= "number" then return score, details end
+    local function mix(value)
+        value = tonumber(value)
+        if not value then return nil end
+        return math.max(1, math.min(95, math.floor(value * (1 - ERGONOMICS_HANDLING_SHARE)
+            + ergo_score * ERGONOMICS_HANDLING_SHARE + 0.5)))
+    end
+    local folded = {}
+    if type(details) == "table" then
+        for key, value in pairs(details) do folded[key] = value end
+    end
+    folded.single = mix(folded.single or score)
+    folded.automatic = mix(folded.automatic)
+    folded.ergonomics = ergo_score
+    return folded.automatic or folded.single, folded
+end
+
+local function get_effective_weapon_metrics(item, signature)
     local is_weapon = safe_item_kind(item)
     if not is_weapon then return nil end
     local ok_section, section = pcall(item.section, item)
     local ok_weapon, weapon = pcall(item.get_weapon, item)
     if not ok_section or not ok_weapon or not weapon then return nil end
-    local cache_key = weapon_metrics_cache_key(item, section, weapon)
+    local cache_key = weapon_metrics_cache_key(item, section, weapon, signature)
     if cache_key then
         local cached = weapon_metrics_cache[cache_key]
         if cached then return cached end
@@ -473,17 +588,39 @@ local function get_effective_weapon_metrics(item)
     local bullet_speed = get_float(section, "bullet_speed", 0) or 0
     metrics.bullet_speed = bullet_speed * (sil_section and get_float(sil_section, "bullet_speed_k", 1) or 1)
     metrics.rpm = get_u32(section, "rpm", 0)
-    metrics.capacity = get_u32(section, "ammo_mag_size", 0)
-    local decay = get_float(section, "condition_shot_dec", 0) or 0
-    if decay > 0 and (sil_status == 1 or sil_attached) then
-        local ok_decay, native_decay = pcall(function() return weapon.condition_shot_dec_silencer end)
-        native_decay = ok_decay and tonumber(native_decay) or nil
-        decay = native_decay and native_decay > 0 and native_decay
-            or get_float(section, "condition_shot_dec_silencer", decay)
+    -- Effective capacity: magazine, + 1 with a chambered round (see has_chamber_round).
+    local mag_size = get_u32(section, "ammo_mag_size", 0)
+    metrics.mag_size = mag_size
+    metrics.chamber = has_chamber_round(section)
+    metrics.capacity = mag_size + (metrics.chamber and 1 or 0)
+    metrics.capacity_text = metrics.chamber and string.format("%d+1", mag_size) or tostring(mag_size)
+    local base_decay = get_float(section, "condition_shot_dec", 0) or 0
+    if base_decay > 0 then
+        metrics.resource_base = math.floor(1 / base_decay)
+        local decay = base_decay
+        -- The engine switches to condition_shot_dec_silencer only for a fitted
+        -- detachable suppressor (CWeaponMagazined::GetWeaponDeterioration checks
+        -- SilencerAttachable); integrated suppressors wear at the base rate.
+        if sil_attached then
+            local ok_decay, native_decay = pcall(function() return weapon.condition_shot_dec_silencer end)
+            native_decay = ok_decay and tonumber(native_decay) or nil
+            if not native_decay or native_decay <= 0 then
+                native_decay = get_float(section, "condition_shot_dec_silencer", base_decay)
+            end
+            if native_decay and native_decay > 0 then decay = native_decay end
+        end
+        metrics.resource = math.floor(1 / decay)
     end
-    metrics.resource = decay and decay > 0 and math.floor(1 / decay) or nil
-    metrics.accuracy = get_accuracy(section, sil_section
-        and get_float(sil_section, "fire_dispersion_base_k", 1) or 1)
+    -- Accuracy of the weapon itself (ammo spread is on the ammo card): base is a
+    -- new bare gun; current adds the suppressor and wear ( the engine spreads a
+    -- worn gun by 1 + fire_dispersion_condition_factor * (1 - condition) ).
+    local cond = weapon_condition(item)
+    metrics.condition = cond
+    metrics.accuracy_base = get_accuracy(section, 1)
+    metrics.accuracy = get_accuracy(section,
+        (sil_section and get_float(sil_section, "fire_dispersion_base_k", 1) or 1)
+        * condition_dispersion_k(section, cond)) or metrics.accuracy_base
+    metrics.misfire = misfire_chance(section, cond)
     if sivol_fuzz_recoil_profiles and type(sivol_fuzz_recoil_profiles.get_handling_score) == "function" then
         local gas_k, recovery_k, attachment_k
         if sivol_fuzz_recoil and type(sivol_fuzz_recoil.get_recoil_modifier_breakdown) == "function" then
@@ -495,17 +632,28 @@ local function get_effective_weapon_metrics(item)
                     breakdown.total_attachment_stability_k
             end
         end
+        local ergo_base, ergo_now
+        if sivol_weapon_aim_speed and type(sivol_weapon_aim_speed.get_handling_profile) == "function" then
+            local ok_b, bare = pcall(sivol_weapon_aim_speed.get_handling_profile, item, section, true)
+            local ok_n, now = pcall(sivol_weapon_aim_speed.get_handling_profile, item, section)
+            ergo_base = ok_b and type(bare) == "table" and tonumber(bare.score) or nil
+            ergo_now = ok_n and type(now) == "table" and tonumber(now.score) or nil
+        end
+        -- Base: bare weapon (no attachment mass, gas 1). Current: as fitted.
+        local ok_base, base_score, base_details = pcall(
+            sivol_fuzz_recoil_profiles.get_handling_score, item, weapon)
+        if ok_base and type(base_score) == "number" then
+            metrics.handling_base, metrics.handling_base_details =
+                fold_ergonomics(base_score, base_details, ergo_base)
+        end
         local ok_score, score, details = pcall(
             sivol_fuzz_recoil_profiles.get_handling_score,
             item, weapon, gas_k, recovery_k, attachment_k)
-        if ok_score then
-            metrics.handling = score
-            metrics.handling_details = details
+        if ok_score and type(score) == "number" then
+            metrics.handling, metrics.handling_details = fold_ergonomics(score, details, ergo_now)
+        else
+            metrics.handling, metrics.handling_details = metrics.handling_base, metrics.handling_base_details
         end
-    end
-    if sivol_weapon_aim_speed and type(sivol_weapon_aim_speed.get_handling_profile) == "function" then
-        local ok_ergo, ergo = pcall(sivol_weapon_aim_speed.get_handling_profile, item, section)
-        if ok_ergo and type(ergo) == "table" then metrics.ergonomics = ergo.score end
     end
     local aim_profile
     if sivol_weapon_aim_speed and type(sivol_weapon_aim_speed.get_weapon_aim_profile) == "function" then
@@ -513,7 +661,8 @@ local function get_effective_weapon_metrics(item)
             sivol_weapon_aim_speed.get_weapon_aim_profile, item, weapon, section)
         if ok_aim and type(profile) == "table" then aim_profile = profile end
     end
-    local _, ready = get_weapon_ready_speed(item, section, weapon, aim_profile)
+    local ready_base, ready = get_weapon_ready_speed(item, section, weapon, aim_profile)
+    metrics.ready_base = ready_base * 100
     metrics.ready = ready * 100
     if aim_profile and aim_profile.scope and aim_profile.zoom then
         metrics.scope = aim_profile
@@ -525,7 +674,7 @@ local function metric_text(value, unit)
     if unit == "x" then return string.format("x%.1f", value) end
     local rounded = math.floor(value + 0.5001)
     if unit == "%" then return string.format("%d%%", rounded) end
-    if unit == "score" then return string.format("%d%%", rounded) end
+    if unit == "score" then return string.format("%d", rounded) end -- indices: plain numbers, % is for damage only
     if unit and unit ~= "" then return string.format("%d %s", rounded, unit) end
     return tostring(rounded)
 end
@@ -534,19 +683,21 @@ local function handling_values_text(score, details)
     local single = type(details) == "table" and tonumber(details.single) or score
     local automatic = type(details) == "table" and tonumber(details.automatic) or nil
     if automatic then
-        return string.format("%d%% %s | %d%% %s", single,
+        return string.format("%d %s | %d %s", single,
             translate("ui_inv_control_single_short"), automatic,
             translate("ui_inv_control_auto_short"))
     end
-    return string.format("%d%%", single)
+    return tostring(single)
 end
 
-local function append_weapon_comparison(text, current, equipped, unit, higher_is_better)
+-- equipped_label (optional) replaces the equipped value's text, e.g. "8+1".
+local function append_weapon_comparison(text, current, equipped, unit, higher_is_better, equipped_label)
     if current == nil or equipped == nil then return text end
     local current_rounded = unit == "x" and math.floor(current * 10 + 0.5001) / 10 or math.floor(current + 0.5001)
     local equipped_rounded = unit == "x" and math.floor(equipped * 10 + 0.5001) / 10 or math.floor(equipped + 0.5001)
-    text = text .. " | %c[gray]" .. translate("ui_inv_equipped_short") .. ": "
-        .. metric_text(equipped_rounded, unit) .. "%c[default]"
+    -- on its own line ( a long "base -> current | equipped" line wrapped on 4:3 )
+    text = text .. "\\n%c[gray]" .. translate("ui_inv_equipped_short") .. ": "
+        .. (equipped_label or metric_text(equipped_rounded, unit)) .. "%c[default]"
     local delta = current_rounded - equipped_rounded
     if higher_is_better ~= nil and math.abs(delta) >= (unit == "x" and 0.1 or 1) then
         local good = higher_is_better and delta > 0 or not higher_is_better and delta < 0
@@ -611,7 +762,7 @@ function CUIDescriptionWnd:__init(st, context) super()
 	self.k_icon = cell_size * kScreen / 50
 	self.itemInFocus = -1
 	self.keypressed = nil
-	self.is_trading = has_alife_info("ui_trade")
+	clear_weapon_metrics_cache()
 
 	if not subscribed then
 		subscribed = {
@@ -675,10 +826,6 @@ function CUIDescriptionWnd:__init(st, context) super()
 	self.scroll_height = self.scroll_v:GetHeight()
 	self.descr = self.xml:InitStatic("description:descr_list", nil)
 
-	if self.is_trading then
-		self.cost = self.xml:InitStatic("description:cost_wnd", self.frame)
-	end
-	
 	self.weight_icon = self.xml:InitStatic("description:weight_icon", self.frame)
 	self.weight_static = self.xml:InitStatic("description:weight_wnd", self.frame)
 	self.condition_static = self.xml:InitStatic("description:condition_wnd", self.frame)
@@ -695,24 +842,31 @@ function CUIDescriptionWnd:__init(st, context) super()
 	self.frame:Show(false)
 end
 
-function CUIDescriptionWnd:UpdateAfProp( item )
-	local obj = client_obj( item:id() )
-	if obj then 
-		local art = obj:get_artefact()
-		if art then
-			log2( "BBASBA" )
-			return update_prop( art, "radiation_restore_speed", 0.0002 )
-		end
-	end	
-end
-
 function CUIDescriptionWnd:__finalize()
 end
 
 function CUIDescriptionWnd:HideDescription()
 	if self.frame:IsShown() then self.frame:Show(false) end
+	self.keypressed = nil -- pin released with the panel
+	self.frame_rect = nil
 end
 
+-- The engine scrolls the panel with the wheel only while the cursor is over it,
+-- and a normal panel closes as soon as the cursor leaves the item. A panel that
+-- needs scrolling, or shows the LAlt help, is pinned instead: it stays while the
+-- cursor moves onto it, and closes on a right click, a click outside it, LAlt
+-- again or a click on another item.
+function CUIDescriptionWnd:IsCursorOverPanel()
+	local r = self.frame_rect
+	if not r or not self.frame:IsShown() then return false end
+	local x, y = self.owner:GetMousePosX(), self.owner:GetMousePosY()
+	return x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h
+end
+
+-- OBSOLETE: the actor on_mouse_wheel callback (CLevel::IR_OnMouseWheel) never fires while the
+-- inventory, trade or body window is open, because the dialog consumes the wheel first. The
+-- panel scrolls natively while the cursor is over it ( a scrolling panel is pinned, see
+-- IsCursorOverPanel ). Kept subscribed only as a harmless leftover.
 function CUIDescriptionWnd:OnMouseWheel(mode)
 	if not self.frame:IsShown() then return end
 	if self.frame:GetHeight() < 768 then return end
@@ -863,7 +1017,12 @@ function CUIDescriptionWnd:ShowProps( tbl )
     end
 end
 
+-- One spacing rule: every section header except the first gets a section gap above it.
 local function init_props_header(self)
+    if (self.addH or 0) > 0 then
+        local gap = self.xml:InitStatic("section_gap", self.scroll_v)
+        self.addH = self.addH + gap:GetHeight()
+    end
     local st = self.xml:InitLabel("props_header", self.scroll_v)
     st:SetWidth(self.header_width or 390)
     return st
@@ -1059,10 +1218,6 @@ function CUIDescriptionWnd:ShowPropFromIni(sect, icon, text, text_color, complex
 	self.addH = self.addH + cell_size + vert_interval
 end
 
-local function sep_string(s)
-return " \\n \\n "..s.." \n "
-end
-
 function get_add_out_desc(item)
 	local txt = ""
 	local sobj = server_obj(item:id())
@@ -1146,7 +1301,7 @@ function CUIDescriptionWnd:ShowInteractionHints(item)
     if is_outfit then
         table.insert(hints, translate("ui_inv_hint_outfit_compare"))
         table.insert(hints, translate("ui_inv_hint_outfit_protection"))
-    elseif is_weapon and not safe_is_knife(item) then
+    elseif is_weapon and is_stat_weapon(item, self.section) then
         table.insert(hints, translate("ui_inv_hint_weapon_compare"))
         table.insert(hints, translate("ui_inv_hint_weapon_characteristics"))
     elseif artifact_help_supported(item) then
@@ -1167,6 +1322,11 @@ function CUIDescriptionWnd:ShowInteractionHints(item)
     end
     if manual_ungroup_applies(item) then
         table.insert(hints, translate("st_ui_ungroup_tip"))
+    end
+
+    if self.lalt then
+        -- LAlt help view is pinned ( IsCursorOverPanel ) and kept short: only how to scroll and close it
+        hints = {translate("ui_inv_hint_pinned")}
     end
 
     if self.section == "nazar_stash_map" or self.section == "sidor_container_map" then
@@ -1203,11 +1363,12 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	self.shown_item_section = new_item_section
 	self.section = item:section()
 	self.condition = item:condition()
-	local is_weapon_item = item:is_weapon() and not item:is_knife()
+	local is_weapon_item = is_stat_weapon(item, self.section)
 	configure_description_width(self, is_weapon_item, not is_weapon_item and not item:is_outfit())
 	self.scroll_v_normal:Clear()
 	self.scroll_v_weapon:Clear()
 	local signature = get_weapon_addon_signature(item)
+	self.shown_signature = signature -- reused by ShowWeaponParams ( metrics cache key )
 	if self.weapon_addon_signature and signature ~= self.weapon_addon_signature
 		and not self.weapon_refreshing then
 		self.weapon_pending_signature = signature
@@ -1232,7 +1393,7 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 			description = string.gsub(description,str_jump,"")
 			description = string.gsub(description,str_speed,"")
 			local pos = strpos(description,"[А-ЯЁ]")
-			description = string.sub(description,pos)
+			if pos then description = string.sub(description,pos) end
 		end
 	end
 	
@@ -1258,10 +1419,10 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 		if dyn_num and not self.section:find("_capsule") then
 			inv_name = inv_name .. " [" .. dyn_num .. "]"
 		else
-			local suffix_map = { [1]="[М]", [2]="[Мм]", [3]="[Г]", [4]="[А]" }
-			local suffix = suffix_map[tonumber(last_num)] or ""
-			if suffix ~= "" then
-				inv_name = inv_name .. " " .. suffix
+			-- ранг артефакта: М / Мм / Г / А ( ui_inv_af_rank_1..4 )
+			local rank = tonumber(last_num)
+			if rank and rank >= 1 and rank <= 4 then
+				inv_name = inv_name .. " [" .. translate("ui_inv_af_rank_" .. rank) .. "]"
 			end
 		end
 		
@@ -1272,40 +1433,13 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	end
 
 
-	-- Manool: при стаке контейнеров это не имеет смысла]]
-	--[[
-	if string.find(self.section, "arc_art_box_") then
+	local box_sobj = string.find(self.section, "arc_art_box_") and self.item:get_alife_object()
+	if box_sobj then
 		local cs = get_u32(self.section, "container_slots", 0)
-		local arts = arc_ui_container_common.decode_container(self.item:id(), cs)
-		self:ShowPropFromIni(nil, nil, string.format("[%d/%d] %s: %d",
-			#arts, cs, translate("ui_inv_arc_free_slots"), (cs - #arts)), {255, 160, 255, 160}
-		)
-		for _, s in ipairs(arts) do
-			local dan, color, color_t = arc_ui_container_common.get_art_lvl_text(s.sect)
-			if dan:len() > 0 then dan = color_t..dan end
-			self:ShowPropFromIni(s.sect, CIconParams(s.sect), string.format("%s [%d%%] %s",
-				translate(g_inv_name(s.sect)), tonumber((s.cond and s.cond * 100) or 100), dan), nil, true
-			)
-		end
-
-		-- показываем неэкранированную радиацию
-		local iitem = self.item:get_inventory_item()
-		local rad = iitem and iitem.radiation_restore_speed or 0
-		if rad and rad > 0 then
-			self:ShowProps({{"radiation", string.format("%s: %%c[red]+%d %s", translate("ui_inv_outfit_radiation_protection"), math.ceil(rad * 100 / conditions["radiation_restore_speed"]), translate("ui_inv_st_ki"))}})
-		end
-	end
-	]]--
-	--]=]
-	
-	
-	if string.find(self.section, "arc_art_box_") then
-		local cs = get_u32(self.section, "container_slots", 0)
-		local sobj = self.item:get_alife_object()
 		local arts = arc_radiation.decode_custom_data(
-			sobj.custom_data, sobj:section_name()
-		)
-		
+			box_sobj.custom_data, box_sobj:section_name()
+		) or {}
+
 		local filled = 0
 		for _, a in ipairs(arts) do
 			if a.section then
@@ -1313,17 +1447,17 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 			end
 		end		
 		
-		self:ShowPropFromIni(nil, nil, string.format("Количество слотов: [%d/%d]",
+		self:ShowPropFromIni(nil, nil, string.format("%s: [%d/%d]", translate("ui_inv_container_slots"),
 			filled, cs), {255, 160, 255, 160}
 		)		
 		
 		for _, s in ipairs(arts) do
 			if s.section then 
-				local dyn = ""
-				if strpos( s.section, "_dyn", 1, true ) and not strpos( s.section, "_capsule", 1, true ) then 
-					dyn  = tonumber( string.sub( s.section, -2, -2 ) )
-				end	
-				local show_dyn = dyn ~= "" and get_dyn_color( s.section ) .. " [" .. dyn .. "]%c[default]" or ""
+				local dyn = nil
+				if strpos( s.section, "_dyn", 1, true ) and not strpos( s.section, "_capsule", 1, true ) then
+					dyn = tonumber( string.sub( s.section, -2, -2 ) )
+				end
+				local show_dyn = dyn and get_dyn_color( s.section ) .. " [" .. dyn .. "]%c[default]" or ""
 				self:ShowPropFromIni(s.section, CIconParams(s.section), string.format("%s - %d%%",
 					translate(g_inv_name(s.section)) .. show_dyn, tonumber((s.condition and s.condition * 100) or 100), nil), nil, true
 				)				
@@ -1339,9 +1473,9 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	end	
 	
  
-	if self.section == "repair_boxoutfit" then
-		local sobj = self.item:get_alife_object()
-		local rt = string.explode(",", sobj.custom_data or "", true)
+	local repair_sobj = self.section == "repair_boxoutfit" and self.item:get_alife_object()
+	if repair_sobj then
+		local rt = string.explode(",", repair_sobj.custom_data or "", true)
 		local repiout, repiweap = tonumber(rt[1] or 0), tonumber(rt[2] or 0)
 		if repiout and repiout > 0 then
 			local s = "repair_item_outfit"
@@ -1382,8 +1516,8 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 		local se_parent = sobj and sobj.parent_id or "nil"
 
 		description = description .. " \\n%c[green]" .. string.format("[%s], [%s], [%s], [%s], [%s], [%s]",
-			self.section, item:name(), item:id(), sobj.level_name, cl_parent, se_parent)
-		local cd = sobj.custom_data
+			self.section, item:name(), item:id(), sobj and sobj.level_name or "nil", cl_parent, se_parent)
+		local cd = sobj and sobj.custom_data
 		if cd and cd ~= "" then description = description .. " \\nCD: [" .. cd .. "]" end -- Manool: иногда нужно глянуть кастомдату
 	end
 
@@ -1394,12 +1528,13 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	local is_matches = (self.section == "matches") and self.item:parent()
 	if is_matches then
 		local total_matches = 0
+		local capacity = sivol_match_ignition.match_capacity()
 		is_matches:iterate_inventory(function(_, obj)
 			if obj and obj:section() == "matches" then
 				local sobj = g_sim:object(obj:id())
-				local ini = sobj:spawn_ini()
-				local cnt = ini:section_exist("use") and get_u32("use", "c", 0, ini) or 0
-				total_matches = total_matches + (5 - cnt)
+				local ini = sobj and sobj:spawn_ini()
+				local cnt = ini and ini:section_exist("use") and get_u32("use", "c", 0, ini) or 0
+				total_matches = total_matches + math.max(0, capacity - cnt)
 			end
 		end)
 		description = string.format("%%c[255,255,140,0]%s: %s\\n%%c[default]%s", translate("total_matches"), total_matches, description)
@@ -1419,14 +1554,16 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 
 	if self.section == "flask_army" then
 		local eat = item:get_eatable_item()
-		local eat_portions = eat.eat_portions_num or 0
+		local eat_portions = eat and eat.eat_portions_num or 0
 		local water_amount = 0
+		-- фляга 0.75 л; первая порция - пустая фляга, ещё 4 - вода ( vergas_flask.replace_flask_weight: ( n - 1 ) / 4 )
+		local full = 750
+		local water_portions = 4
 
 		if eat_portions > 1 then
-			water_amount = (eat_portions - 1) * 187.5  -- Учитываем, что 1 порция пустая
+			water_amount = math.min(eat_portions - 1, water_portions) * full / water_portions
 		end
 
-		local full = 750
 		local ml = game.translate_string( "ui_unit_ml" ); description = string.format("%%c[255,255,140,0]%d %s / %d %s\\n%%c[default]%s", math.floor(water_amount), ml, full, ml, description)
 	end
 	
@@ -1435,13 +1572,16 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	end			
 	
 	if self.section == "anagramm_flash" then
-		description = string.format( "%%c[255,255,140,0]Свободное место: %d%%%%\\n%%c[default]%s", math.floor( self.item:condition() * 100 ), description )
-		description = description .. "\\n \\n%c[UI_orange]Драг-дроп:\\n%c[default]%c[white]Вставьте флешку в ПДА для работы с анаграммами\\nВ окне ПДА нажмите END для подбора пароля"
+		description = string.format( "%%c[255,255,140,0]%s: %d%%\\n%%c[default]%s", translate( "ui_inv_flash_free_space" ), math.floor( self.item:condition() * 100 ), description )
+		description = description .. "\\n \\n%c[UI_orange]" .. translate( "ui_inv_flash_dragdrop" ) .. ":\\n%c[default]%c[white]"
+			.. translate( "ui_inv_flash_insert_hint" ) .. "\\n" .. translate( "ui_inv_flash_end_hint" )
 	end
 
 	if self.section == "device_pda_npc" then
 		local cond = self.item:condition()
-		inv_name = ( ( cond == 1 and "Заряженный " or cond == 0.75 and "Разряженный " ) or "Сломанный " ) .. translate( inv_name )
+		local state_key = cond > 0.99 and "ui_inv_pda_charged"
+			or math.abs(cond - 0.75) < 0.01 and "ui_inv_pda_discharged" or "ui_inv_pda_broken"
+		inv_name = translate( state_key ) .. " " .. translate( inv_name )
 
 		local data = vergas_pda.get_pda_cdata( self.item:id() )
 		if data then
@@ -1449,23 +1589,16 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 			if info and info[4] then
 				local flag = string.sub( info[4], 14, 14 )
 				local flags = {
-					["2"] = { login = info[3], pass = "неизвестен",   status = "%c[gray]недоступна"      		},
-					["3"] = { login = info[3], pass = info[2],        status = "%c[gray]изучено не до конца" 	},
-					["1"] = { login = info[3], pass = info[2],        status = "%c[white]изучено"         		},
+					["2"] = { login = info[3], pass = translate( "ui_inv_pda_pass_unknown" ), status = "%c[gray]" .. translate( "ui_inv_pda_status_unavailable" ) },
+					["3"] = { login = info[3], pass = info[2], status = "%c[gray]" .. translate( "ui_inv_pda_status_partial" ) },
+					["1"] = { login = info[3], pass = info[2], status = "%c[white]" .. translate( "ui_inv_pda_status_studied" ) },
 				}
 				local f = flags[flag]
 				if f then
-					self:ShowProps( { { nil, "Логин: %c[gray]"    .. f.login } } )
-					self:ShowProps( { { nil, "Пароль: %c[gray]"   .. f.pass  } } )
-					self:ShowProps( { { nil, "Информация: "        .. f.status } } )
+					self:ShowProps( { { nil, translate( "ui_inv_pda_login" ) .. ": %c[gray]" .. f.login } } )
+					self:ShowProps( { { nil, translate( "ui_inv_pda_password" ) .. ": %c[gray]" .. f.pass } } )
+					self:ShowProps( { { nil, translate( "ui_inv_pda_info" ) .. ": " .. f.status } } )
 					if flag == "1" then
-						--[[
-						if info[6] and info[6] ~= "0" then
-							local r = get_value( "r_treas_items", 1 )
-							local desc = game.translate_string( info[6] .. "_desc" .. r )
-							self:ShowProps( { { nil, "Тайник: %c[blue_new]" .. desc } } )
-						end
-						]]--
 						if info[6] and info[6] ~= "0" then
 							local r = get_value( "r_treas_items", 1 )
 							local tm = treasure_manager.get_treasure_manager()
@@ -1478,14 +1611,23 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 								end
 							end
 							
-							local label = #shroni == 1 and "Тайник: " or "Тайники: "
+							local label = translate( #shroni == 1 and "ui_inv_pda_stash" or "ui_inv_pda_stashes" ) .. ": "
 							for i, s in ipairs( shroni ) do
 								-- берём текст из treasure_XXXX_r как в ПДА
 								local id = vergas_lib.set_pr_from_config( "list_treasure_pda", s )
 								local desc = game.translate_string( "treasure_" .. tostring( id ) .. "_" .. r )
-								log2( "desc is %s", desc )
-								-- убираем "Схрон: \n" из начала если есть
-								desc = string.gsub( desc, "^Схрон:%s*\n?", "" )
+								-- убираем "Схрон:" ( ui_inv_pda_stash_prefix ) и перенос строки "\n" ( в тексте это два символа );
+								-- если до переноса есть название ( англ. тексты ), показываем только его, иначе текст после
+								desc = string.gsub( desc, "\n", "\\n" )
+								local prefix = translate( "ui_inv_pda_stash_prefix" ) .. ":"
+								if string.sub( desc, 1, #prefix ) == prefix then desc = string.sub( desc, #prefix + 1 ) end
+								local title, body = string.match( desc, "^(.-)\\n(.*)$" )
+								if title and string.find( title, "%S" ) then
+									desc = title
+								elseif body then
+									desc = body
+								end
+								desc = string.gsub( string.gsub( desc, "^%s+", "" ), "%s+$", "" )
 								if desc:sub(-1) == "." then desc = desc:sub(1, -2) end
 								local ti = tm and tm.treasure_info and tm.treasure_info[ s ]
 								local status = ( ti and ti.active == false and ti.done == false ) and "%c[green]V" or "%c[red]X"
@@ -1528,8 +1670,8 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 							if #all > 0 then
 								local max_show = 5
 								local text = table.concat( all, ", ", 1, math.min( max_show, #all ) )
-								if #all > max_show then text = text .. " %c[gray]и ещё " .. ( #all - max_show ) end
-								local label = #all == 1 and "Рецепт: " or "Рецепты: "
+								if #all > max_show then text = text .. " %c[gray]" .. string.format( translate( "ui_inv_pda_and_more" ), #all - max_show ) end
+								local label = translate( #all == 1 and "ui_inv_pda_recipe" or "ui_inv_pda_recipes" ) .. ": "
 								self:ShowProps( { { nil, label .. "%c[light_green]" .. text } } )
 							end
 						end		
@@ -1545,7 +1687,7 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 		self:ShowEatableParams()
 	-- weapon
 	-- elseif isWeapon(item) then
-	elseif item:is_weapon() and not (item:is_knife() or is_forbidden) then
+	elseif is_weapon_item then
 		self:ShowWeaponParams()
 	-- standalone suppressor
 	elseif item:is_silencer() and not is_forbidden then
@@ -1555,29 +1697,48 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 		--self:ShowOutfitParams() Do nothing here. ShowOutfitParams() was already called above. so LAlt description text works correctly. Sivol 
 	-- knife
 	elseif item:is_knife() then
-		local d = sys_ini:r_float(self.section, "fire_distance")
-		self:ShowProps({{"fire_distance_knife", string.format("%s: %.2f %s", translate("ui_inv_impact_distance"), d, translate("ui_inv_meters_s"))}})
+		local d = get_float(self.section, "fire_distance", 0)
+		if d > 0 then
+			self:ShowProps({{"fire_distance_knife", string.format("%s: %.2f %s", translate("ui_inv_impact_distance"), d, translate("ui_inv_meters_s"))}})
+		end
 
+		-- the same scale as a firearm's damage ( hit_power * 100 % )
 		local p1, p2 = get_float(self.section, "hit_power", 0), get_float(self.section, "hit_power_2", 0)
-		self:ShowProps({{"hit_power", string.format("%s: %.2f | %.2f", translate("ui_inv_impact_force_damage_dealt"), p1, p2)}})
+		self:ShowProps({{"hit_power", string.format("%s: %d%% | %d%%", translate("ui_inv_impact_force_damage_dealt"),
+			math.floor(p1 * 100 + 0.5), math.floor(p2 * 100 + 0.5))}})
 	-- scope
 	elseif item:is_scope() or item:is_binoculars() then
 		self:ShowScopeParams()
 	-- grenade
 	elseif item:is_grenade() and not is_forbidden then
-		local fr = sys_ini:r_float(self.section, "frags_r")
-		local br = sys_ini:r_float(self.section, "blast_r")
-		self:ShowProps({{"explosion", string.format("%s: %.1f %s", translate("ui_inv_dangerous_radius"), (fr + br) / 2, translate("ui_inv_meters_s"))}})
+		local fr = get_float(self.section, "frags_r", 0)
+		local br = get_float(self.section, "blast_r", 0)
+		if fr + br > 0 then
+			self:ShowProps({{"explosion", string.format("%s: %.1f %s", translate("ui_inv_dangerous_radius"), (fr + br) / 2, translate("ui_inv_meters_s"))}})
+		end
 	-- ammo
 	elseif item:is_ammo() and not is_forbidden then
-		local kh = sys_ini:r_float(self.section, "k_hit")
-		local bs = sys_ini:r_float(self.section, "buck_shot")
+		local kh = get_float(self.section, "k_hit", 1)
+		local bs = get_float(self.section, "buck_shot", 1)
 		if bs == 0 then bs = 1 end
-		self:ShowProps({{"explosion", string.format("%s: %.2f ", translate("ui_inv_ammo_damage"), (kh * bs))}})
+		-- a multiplier of the weapon's damage ( x1.00 = as listed on the weapon )
+		local rows = {{"explosion", string.format("%s: x%.2f", translate("ui_inv_ammo_damage"), (kh * bs))}}
+		-- кучность патрона ( k_disp: меньше - кучнее ), в точность оружия не входит
+		local k_disp = get_float(self.section, "k_disp", 1)
+		if k_disp > 0 and math.abs(k_disp - 1) > 0.001 then
+			table.insert(rows, {"ui_inv_icon_accuracy", string.format("%s: %s", translate("ui_inv_ammo_grouping"),
+				modifier_percent_text((1 / k_disp - 1) * 100, true))})
+		end
+		-- пробитие брони ( k_ap: доля брони, которую пуля не замечает; по мутантам не действует )
+		local k_ap = get_float(self.section, "k_ap", 0)
+		if k_ap > 0 then
+			table.insert(rows, {"ui_inv_icon_hit_power", string.format("%s: %d%%",
+				translate("ui_inv_ammo_armor_pierce"), math.floor(k_ap * 100 + 0.5))})
+		end
+		self:ShowProps(rows)
 	end
 
-	if item:is_weapon() and not item:is_knife()
-		and self.lalt and self.weapon_info_lines and #self.weapon_info_lines > 0 then
+	if is_weapon_item and self.lalt and self.weapon_info_lines and #self.weapon_info_lines > 0 then
 		self:ShowPropsHeader(translate("ui_inv_weapon_help_header") .. ":")
 		description = "%c[default]" .. table.concat(self.weapon_info_lines, lalt_help_separator)
 	end
@@ -1598,10 +1759,6 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	self.scroll_v:ScrollToBegin()
 	self.scrollPos = 0
 
-	-- if self.is_trading then
-		-- self.cost:SetText(string.format("%s: %s %s", translate("st_base_cost_2"), get_actual_cost(item), translate("ui_st_money_descr")))
-	-- end
-	
 	self.weight_static:SetText(string.format("%s: %.2f %s", translate("st_weigth"), item:get_weight(), translate("ui_inv_s_kg")))
 
 	if (item:is_outfit() or need_show_condition(item)) and not self.dis_cond then
@@ -1630,6 +1787,10 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	else
 		self.frame:SetHeight(768)
 		self.scroll_work = true
+		-- pinned because it scrolls: say how to close it ( the LAlt view already lists it )
+		if not self.lalt then
+			self:ShowProps({{nil, "%c[gray]" .. translate("ui_inv_hint_pinned")}})
+		end
 	end
 
 	local cr = self.owner:GetMousePosX()
@@ -1640,7 +1801,11 @@ function CUIDescriptionWnd:ShowDescription(item, update_native_header)
 	end
 
 	cr = math.clamp(cr, 0, 1024 - self.frame:GetWidth())
-	self.frame:SetWndPos(cr, math.min(self.owner:GetMousePosY(), 768 - self.frame:GetHeight()))
+	local cy = math.min(self.owner:GetMousePosY(), 768 - self.frame:GetHeight())
+	self.frame:SetWndPos(cr, cy)
+	-- pin a panel that scrolls or shows the LAlt help ( see IsCursorOverPanel )
+	self.frame_rect = {x = cr, y = cy, w = self.frame:GetWidth(), h = self.frame:GetHeight()}
+	self.keypressed = (self.lalt or self.scroll_work) and true or nil
 
 	self.frame:Show(true)
 end
@@ -1673,8 +1838,9 @@ function CUIDescriptionWnd:ShowEatableParams()
 
     local immediate = {}
     if self.section == "mixture" then
-        table.insert(immediate, {"health", translate("ui_inv_health"), format_effect_percent(-0.05, true)})
-        table.insert(immediate, {"satiety", translate("ui_inv_satiety"), format_effect_percent(-0.30, true)})
+        -- params.mixture_effect: the values sak.mixture_check applies
+        table.insert(immediate, {"health", translate("ui_inv_health"), format_effect_percent(params.mixture_effect.health, true)})
+        table.insert(immediate, {"satiety", translate("ui_inv_satiety"), format_effect_percent(params.mixture_effect.satiety, true)})
     end
     for _, t in ipairs(eatable_params) do
         local val = get_float(self.section, t.prop, 0)
@@ -1702,13 +1868,13 @@ function CUIDescriptionWnd:ShowEatableParams()
     end
 
     if self.section == "mixture" then
-        local duration = tonumber(level.get_game_difficulty()) == 0 and 35 or 25
-        self:ShowPropsHeader(string.format(translate("ui_inv_mixture_effect_duration"), duration))
+        local effect = params.mixture_effect
+        self:ShowPropsHeader(string.format(translate("ui_inv_mixture_effect_duration"), params.mixture_minutes()))
         self:ShowProps({
             {"ui_inv_icon_add_weight_compact", translate("ui_inv_mixture_carry_weight"),
-                "%c[green]+7 " .. translate("ui_inv_s_kg")},
+                string.format("%%c[green]+%d ", effect.carry_kg) .. translate("ui_inv_s_kg")},
             {"ui_inv_icon_telepatic_immunity_compact", translate("ui_inv_mixture_psy_damage_taken"),
-                "%c[red]+20%"}
+                string.format("%%c[red]+%d%%", math.round((effect.psy_damage_k - 1) * 100))}
         })
     end
 
@@ -1769,22 +1935,16 @@ function CUIDescriptionWnd:ShowEatableParams()
     end
 end
 
+-- Teleport routes of the compass; the text is ui_inv_compass_way_<route>.
 local compass_way = {
-	[ "esc_tele_mil" ] = "«Кордон - АС»",
-	[ "esc_tele_yan" ] = "«Кордон - Янтарь»",
-	[ "esc_tele_dsc" ] = "«Кордон - Кишка»",
-	[ "esc_tele_mar" ] = "«Кордон - Болота»",
-	[ "esc_tele_pri" ] = "«Кордон - Припять»",
-	[ "yan_tele_mil" ] = "«Янтарь - АС»",
-	[ "yan_tele_esc" ] = "«Янтарь - Кордон»",
-	[ "yan_tele_pri" ] = "«Янтарь - Припять»",
-	[ "mil_tele_esc" ] = "«АС - Кордон»",
-	[ "mil_tele_yan" ] = "«АС - Янтарь»",
-	[ "mil_tele_pri" ] = "«АС - Припять»"
+	esc_tele_mil = true, esc_tele_yan = true, esc_tele_dsc = true, esc_tele_mar = true,
+	esc_tele_pri = true, yan_tele_mil = true, yan_tele_esc = true, yan_tele_pri = true,
+	mil_tele_esc = true, mil_tele_yan = true, mil_tele_pri = true,
 }
 
 function get_compass_way( path )
-	return compass_way[ path ] or ""
+	if not compass_way[ path ] then return "" end
+	return translate( "ui_inv_compass_way_" .. path )
 end
 
 function CUIDescriptionWnd:GetCompassData()
@@ -1794,65 +1954,97 @@ function CUIDescriptionWnd:GetCompassData()
 		local cust = data.custom_data 
 		if cust == "" then return end
 
-		local waypoint = compass_way[ cust ]
-		if not waypoint then return end
-		self:ShowProps( { { nil, "Телепорт активирован: " .. waypoint } } )	
-	end	
-end	
+		if not compass_way[ cust ] then return end
+		self:ShowProps( { { nil, translate( "ui_inv_compass_tp_active" ) .. ": " .. get_compass_way( cust ) } } )
+	end
+end
 
 function CUIDescriptionWnd:GetRedCompassWays()
+	-- info portion -> text key ui_inv_compass_red_<suffix>
+	-- a fixed order ( pairs() would shuffle the list )
 	local tbl = {
-		[ "info_compass_tp_escape" 		] = "• Кордон - \"Бенгальский огонь\"",
-		[ "info_compass_tp_valley"		] = "• Тёмная Долина - \"Капля\"",
-		[ "info_compass_tp_yantar"		] = "• Янтарь - \"Колючка\"",
-		[ "info_compass_tp_limansk"		] = "• Лиманск - \"Слизь\"",
-		[ "info_compass_tp_military"	] = "• Арм. Склады - \"Медуза\""
+		{ "info_compass_tp_escape", "escape" },
+		{ "info_compass_tp_valley", "valley" },
+		{ "info_compass_tp_yantar", "yantar" },
+		{ "info_compass_tp_limansk", "limansk" },
+		{ "info_compass_tp_military", "military" },
 	}
-	local text = ""	
-	for k, v in pairs( tbl ) do
-		if has_alife_info( k ) then
-			text = text .. v .. "\\n"
-		end	
+	local text = ""
+	for _, way in ipairs( tbl ) do
+		if has_alife_info( way[1] ) then
+			text = text .. "• " .. translate( "ui_inv_compass_red_" .. way[2] ) .. "\\n"
+		end
 	end
 	if text == "" then return end
 	return text
 end
 
+-- Short "Урон +5%, ..." list of a fitted suppressor's modifiers for the LAlt help,
+-- the same figures as its own item card (ShowSilencerParams); wear is approximate.
+local function suppressor_effect_parts(sil_section)
+	local parts = {}
+	local function add(label_id, value, suffix)
+		if math.abs(value) >= 0.5 then
+			parts[#parts + 1] = string.format("%s %+.0f%%", translate(label_id), value) .. (suffix or "")
+		end
+	end
+	add("ui_inv_weapon_damage", (get_float(sil_section, "bullet_hit_power_k", 1) - 1) * 100)
+	add("ui_inv_bullet_speed", (get_float(sil_section, "bullet_speed_k", 1) - 1) * 100)
+	add("ui_inv_accuracy", (1 - get_float(sil_section, "fire_dispersion_base_k", 1)) * 100)
+	local recoil_k = get_float(sil_section, "cam_dispersion_k", 1)
+	if sivol_fuzz_recoil_profiles
+		and type(sivol_fuzz_recoil_profiles.get_attachment_mass_effects) == "function" then
+		local ok, effects = pcall(sivol_fuzz_recoil_profiles.get_attachment_mass_effects,
+			get_float(sil_section, "inv_weight", 0))
+		if ok and type(effects) == "table" then recoil_k = recoil_k * effects.stability_k end
+	end
+	add("ui_inv_combined_recoil", round_to_step((1 - recoil_k) * 100, 5))
+	add("ui_inv_wear_per_shot", (get_float(sil_section, "condition_shot_dec_k", 1) - 1) * 100,
+		" (" .. translate("ui_inv_approx_short") .. ")")
+	return parts
+end
+
 -- Показываем описание оружия
 function CUIDescriptionWnd:ShowWeaponParams()
 	self.weapon_info_lines = nil
-	local current_metrics = get_effective_weapon_metrics(self.item)
+	local current_metrics = get_effective_weapon_metrics(self.item, self.shown_signature)
 	local comparison_item = self.lshift
 		and get_equipped_weapon_for_comparison(self.item, self.section) or nil
 	local comparison_metrics = comparison_item
 		and get_effective_weapon_metrics(comparison_item) or nil
 
 	local clr
-	local st = init_props_header(self)
-
-	local stH = st:GetHeight() + vert_interval
-
-	st:SetText(translate("Ammo") .. ":")
-	self.addH = self.addH + stH
-	add_post_header_spacing(self)
+	-- LAlt help view: only the characteristics and their explanations ( no ammo list, no attachments )
+	local full_view = not self.lalt
+	local stH
+	if full_view then
+		local st = init_props_header(self)
+		stH = st:GetHeight() + vert_interval
+		st:SetText(translate("Ammo") .. ":")
+		self.addH = self.addH + stH
+		add_post_header_spacing(self)
+	end
 
 	-- Боеприпасы
 	local s = sys_ini:r_string(self.section, "ammo_class")
-	local current_ammo = self.item:get_ammo_type() -- получаем индекс текущего типа патронов
+	-- Счётчики и типы с учётом режима подствольника (движок меняет магазины местами)
+	local rifle_ammo, grenade_ammo, current_ammo, _, grenade_type =
+		get_loaded_ammo_state(self.item, self.section)
 	local ammo_index = 0
 
 	for a in string.gfind(s, "[%w_%-%.]+") do
-		if not forbidden_items_props[a] then
+		if full_view and not forbidden_items_props[a] then
 			clr = nil
 			local ammo_in_mag = nil
 			-- Проверяем, используется ли этот тип боеприпасов сейчас
-			if ammo_index == current_ammo and self.item:get_ammo_in_magazine() > 0 then
+			if ammo_index == current_ammo and rifle_ammo > 0 then
 				clr = {255, 160, 255, 160} -- зелёный цвет для патронов в стволе
-				ammo_in_mag = self.item:get_ammo_in_magazine()
+				ammo_in_mag = rifle_ammo
 			end
 			self:ShowPropFromIni(a, CIconParams(a), g_inv_name(a), clr, false, ammo_in_mag, -3, -5)
-			ammo_index = ammo_index + 1
 		end
+		-- индекс движка считает все типы из ammo_class, включая скрытые
+		ammo_index = ammo_index + 1
 	end
 
 	-- Гранаты
@@ -1860,22 +2052,21 @@ function CUIDescriptionWnd:ShowWeaponParams()
 	local gl = get_u32(self.section, "grenade_launcher_status", 0)
 	if gl ~= 0 then
 		s = get_string(self.section, "grenade_class")
-		local grenade_ammo = self.item:get_ammo_in_magazine2() -- заряды подствольника
+		local grenade_index = 0
 		for a in string.gfind(s, "[%w_%-%.]+") do
-			if not forbidden_items_props[a] then
+			if full_view and not forbidden_items_props[a] then
 				clr = nil
 				local grenades_in_mag = nil
-				if grenade_ammo and grenade_ammo > 0 then
-					clr = {255, 160, 255, 160} -- зелёный цвет если есть гранаты
+				if grenade_ammo > 0 and (grenade_type == nil or grenade_index == grenade_type) then
+					clr = {255, 160, 255, 160} -- зелёный цвет для заряженной гранаты
 					grenades_in_mag = grenade_ammo
 				end
 				self:ShowPropFromIni(a, CIconParams(a), g_inv_name(a), clr, false, grenades_in_mag, -3, -5)
 			end
+			grenade_index = grenade_index + 1
 		end
 	end
 	
-	local st_spacing = self.xml:InitStatic("section_gap", self.scroll_v)
-	self.addH = self.addH + st_spacing:GetHeight()
 
 	-- Навесы
 	local st2
@@ -1883,7 +2074,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 	local addon, v
 	-- Прицел
 	local n = get_u32(self.section, "scope_status", 0)
-	if n ~= 0 then
+	if full_view and n ~= 0 then
 		st2 = init_props_header(self)
 		add_post_header_spacing(self)
 
@@ -1894,8 +2085,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 			v = CIconParams(a)
 			if n == 1 then
 				v = nil
-				s = get_float(self.section, "scope_zoom_factor", 0)
-				s = device().fov / (s * 0.75)
+				s = scope_magnification(get_float(self.section, "scope_zoom_factor", 0)) or 0
 				if s > 1 then
 					text = string.format("%s x%.1f-%s", translate("ui_inv_integrated"), s, translate("ui_inv_multiple_sight"))
 				else
@@ -1916,7 +2106,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 
 	-- Глушитель
 	n = get_u32(self.section, "silencer_status", 0)
-	if n ~= 0 then
+	if full_view and n ~= 0 then
 		if st2 == nil then
 			st2 = init_props_header(self)
 			add_post_header_spacing(self)
@@ -1937,7 +2127,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 	end
 
 	-- Подствольник
-	if gl ~= 0 then
+	if full_view and gl ~= 0 then
 		if st2 == nil then
 			st2 = init_props_header(self)
 			add_post_header_spacing(self)
@@ -1957,30 +2147,24 @@ function CUIDescriptionWnd:ShowWeaponParams()
 		self:ShowPropFromIni(addon, v, text, clr, nil, nil, -3, -5)
 	end
 	if st2 then
-		-- Добавляем отступ ТОЛЬКО если были навесы
-		local st_spacing = self.xml:InitStatic("section_gap", self.scroll_v)
-		self.addH = self.addH + st_spacing:GetHeight()
-		
 		st2:SetText(translate("ui_inv_sheds") .. ":")
 		self.addH = self.addH + stH
 	end
 
-	-- Заголовок "Характеристики"
+	-- Заголовок "Характеристики" ( отступ перед ним ставит init_props_header )
 	local st3 = init_props_header(self)
 	st3:SetText(translate("ui_inv_characteristics") .. ":")
-	self.addH = self.addH + stH
+	self.addH = self.addH + st3:GetHeight() + vert_interval
 	add_post_header_spacing(self)
 
 	-- Активный съёмный глушитель и его модификаторы.
 	local sil_status = get_u32(self.section, "silencer_status", 0)
 	local sil_attached = sil_status == 2 and get_live_silencer_attached(self.item)
-	local sil_on = sil_status == 1 or sil_attached
 	local sil_section = sil_attached
 		and resolve_attached_silencer_section(self.item, self.section)
 		or nil
 	-- Некоторые характеристики
 	v = {}
-	local silencer_label = translate("ui_inv_with_silencer")
 	local damage = get_float(self.section, "hit_power", 0) or 0
 
 	if damage > 0 then
@@ -1992,7 +2176,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 				local color = effective_damage >= shown_damage and "%c[green]" or "%c[red]"
 				text = string.format("%s: %d%% -> %s%d%%",
 					translate("ui_inv_weapon_damage"), shown_damage, color, effective_damage)
-					.. "%c[default] " .. translate("ui_inv_suppressor_short")
+					.. "%c[default]"
 			end
 		end
 		text = append_weapon_comparison(text, current_metrics and current_metrics.damage,
@@ -2012,7 +2196,7 @@ function CUIDescriptionWnd:ShowWeaponParams()
 				local color = effective_speed >= shown_speed and "%c[green]" or "%c[red]"
 				text = string.format("%s: %d -> %s%d %s",
 					translate("ui_inv_bullet_speed"), shown_speed, color, effective_speed,
-					translate("ui_inv_mps")) .. "%c[default] " .. translate("ui_inv_suppressor_short")
+					translate("ui_inv_mps")) .. "%c[default]"
 			end
 		end
 		text = append_weapon_comparison(text, current_metrics and current_metrics.bullet_speed,
@@ -2028,151 +2212,90 @@ function CUIDescriptionWnd:ShowWeaponParams()
 	table.insert(v, {"ui_inv_icon_rpm", text})
 	add_weapon_characteristic_help(self, "ui_inv_rate_of_fire", "ui_inv_help_rate_of_fire")
 
-	local mag_size = get_u32(self.section, "ammo_mag_size", 0)
-	local ammo_in_magazine = tonumber(self.item:get_ammo_in_magazine()) or 0
-	-- sivol: one in the chamber ( CartridgeInTheChamberEnabled ): a loaded gun shows magazine + chambered round, "29+1 / 30"
-	local ini = system_ini()
-	local _, in_gl_mode = get_ready_gl_state(self.item, self.section, true)
-	if ammo_in_magazine > 0 and not in_gl_mode
-		and ini:line_exist(self.section, "CartridgeInTheChamberEnabled")
-		and ini:r_bool(self.section, "CartridgeInTheChamberEnabled")
-	then
-		text = string.format("%s: %d+1 / %d", translate("st_magazine_capacity"), ammo_in_magazine - 1, mag_size)
-	else
-		text = string.format("%s: %d / %d", translate("st_magazine_capacity"), ammo_in_magazine, mag_size)
-	end
-	local ammo_in_magazine2 = tonumber(self.item:get_ammo_in_magazine2()) or 0
-	if ammo_in_magazine2 > 0 then
-		text = text .. string.format(" (%d)", ammo_in_magazine2)
-	end
-	text = append_weapon_comparison(text, mag_size, comparison_metrics and comparison_metrics.capacity,
-		"", true)
-
-	table.insert(v, {"ui_inv_icon_ammo_mag_size", text})
-	add_weapon_characteristic_help(self, "st_magazine_capacity", "ui_inv_help_magazine")
-
-	local base_decay = get_float(self.section, "condition_shot_dec", 0) or 0
-	if base_decay > 0 then
-		local base_resource = math.floor(1 / base_decay)
-		text = string.format("%s: %d", translate("st_wpn_resource"), base_resource)
-		if sil_on then
-			local weapon = self.item:get_weapon()
-			local native_decay = weapon and tonumber(weapon.condition_shot_dec_silencer)
-			if not native_decay or native_decay <= 0 then
-				native_decay = get_float(self.section, "condition_shot_dec_silencer", base_decay)
-			end
-			if not native_decay or native_decay <= 0 then native_decay = base_decay end
-			local effective_resource = math.floor(1 / native_decay)
-			if effective_resource ~= base_resource then
-				local color = effective_resource >= base_resource and "%c[green]" or "%c[red]"
-				text = string.format("%s: %d -> %s%d",
-					translate("st_wpn_resource"), base_resource, color, effective_resource)
-					.. "%c[default] " .. translate("ui_inv_suppressor_short")
-			end
+	-- "Label: base -> current suffix" when a fitted addon changes the shown value.
+	local function changed_value_text(label_id, base_text, current_text, better, suffix_id)
+		if current_text == base_text then
+			return string.format("%s: %s", translate(label_id), base_text)
 		end
-		text = append_weapon_comparison(text, current_metrics and current_metrics.resource,
-		comparison_metrics and comparison_metrics.resource, "", true)
+		-- the arrow alone marks "with fitted attachments / suppressor" ( LAlt: ui_inv_help_weapon_system );
+		-- suffix_id is kept for callers but no longer printed ( the words made the lines wrap )
+		return string.format("%s: %s -> %s%s", translate(label_id), base_text,
+			better and "%c[green]" or "%c[red]", current_text) .. "%c[default]"
+	end
+
+	-- Вместимость: патронов в оружии / магазин (+1 - патрон в патроннике), в скобках - граната
+	if current_metrics then
+		local capacity_text = current_metrics.capacity_text or tostring(current_metrics.mag_size or 0)
+		text = string.format("%s: %d / %s", translate("st_magazine_capacity"), rifle_ammo, capacity_text)
+		if grenade_ammo > 0 then
+			text = text .. string.format(" (%d)", grenade_ammo)
+		end
+		text = append_weapon_comparison(text, current_metrics.capacity,
+			comparison_metrics and comparison_metrics.capacity, "", true,
+			comparison_metrics and comparison_metrics.capacity_text)
+		table.insert(v, {"ui_inv_icon_ammo_mag_size", text})
+		-- трубчатые ружья ( tri_state_reload ) берут +1 и с пустого: первый патрон идёт в патронник
+		local tri_state = string.lower(get_string(self.section, "tri_state_reload", ""))
+		local tube = tri_state == "on" or tri_state == "true" or tri_state == "1" or tri_state == "yes"
+		add_weapon_characteristic_help(self, "st_magazine_capacity",
+			not current_metrics.chamber and "ui_inv_help_magazine"
+			or tube and "ui_inv_help_magazine_tube" or "ui_inv_help_magazine_chamber")
+	end
+
+	if current_metrics and current_metrics.resource_base then
+		local base_resource = current_metrics.resource_base
+		local resource = current_metrics.resource or base_resource
+		text = changed_value_text("st_wpn_resource", tostring(base_resource), tostring(resource),
+			resource >= base_resource, "ui_inv_suppressor_short")
+		text = append_weapon_comparison(text, resource,
+			comparison_metrics and comparison_metrics.resource, "", true)
 		table.insert(v, {"ui_inv_icon_condition_shot_dec", text})
 		add_weapon_characteristic_help(self, "st_wpn_resource", "ui_inv_help_weapon_resource")
 	end
 
-	local base_accuracy = get_accuracy(self.section, 1)
+	-- Шанс осечки на выстрел ( движок: только у изношенного оружия, состояние ниже 95% )
+	local misfire = current_metrics and current_metrics.misfire or 0
+	if misfire > 0 then
+		text = string.format("%s: %%c[red]%.1f%%%%c[default]", translate("ui_inv_misfire_chance"), misfire * 100)
+		table.insert(v, {"ui_inv_icon_condition_shot_dec", text})
+		add_weapon_characteristic_help(self, "ui_inv_misfire_chance", "ui_inv_help_misfire_chance")
+	end
+
+	local base_accuracy = current_metrics and current_metrics.accuracy_base
 	if base_accuracy and base_accuracy > 0 then
-		local effective_accuracy = base_accuracy
-		if sil_section then
-			effective_accuracy = get_accuracy(self.section,
-				get_float(sil_section, "fire_dispersion_base_k", 1)) or base_accuracy
-		end
-		local shown_accuracy = math.floor(base_accuracy + 0.5001)
-		local shown_effective_accuracy = math.floor(effective_accuracy + 0.5001)
-		text = string.format("%s: %d%%", translate("ui_inv_accuracy"), shown_accuracy)
-		if sil_section and shown_effective_accuracy ~= shown_accuracy then
-			local color = effective_accuracy >= base_accuracy and "%c[green]" or "%c[red]"
-			text = string.format("%s: %d%% -> %s%d%%",
-				translate("ui_inv_accuracy"), shown_accuracy, color, shown_effective_accuracy)
-				.. "%c[default] " .. translate("ui_inv_suppressor_short")
-		end
-		text = append_weapon_comparison(text, current_metrics and current_metrics.accuracy,
-		comparison_metrics and comparison_metrics.accuracy, "%", true)
+		local accuracy = current_metrics.accuracy or base_accuracy
+		text = changed_value_text("ui_inv_accuracy", metric_text(base_accuracy, ""),
+			metric_text(accuracy, ""), accuracy >= base_accuracy, "ui_inv_suppressor_short")
+		text = append_weapon_comparison(text, accuracy,
+			comparison_metrics and comparison_metrics.accuracy, "", true)
 		table.insert(v, {"ui_inv_icon_accuracy", text})
 		add_weapon_characteristic_help(self, "ui_inv_accuracy", "ui_inv_help_accuracy")
 	end
 
-	local weapon = self.item:get_weapon()
-	local recoil_breakdown
-	if sivol_fuzz_recoil
-		and type(sivol_fuzz_recoil.get_recoil_modifier_breakdown) == "function" then
-		local ok, result = pcall(
-			sivol_fuzz_recoil.get_recoil_modifier_breakdown, self.item, self.section)
-		if ok and type(result) == "table" then recoil_breakdown = result end
+	-- Управляемость: отдача + эргономика (масса, компоновка), см. fold_ergonomics
+	if current_metrics and type(current_metrics.handling_base) == "number" then
+		local base_values = handling_values_text(current_metrics.handling_base,
+			current_metrics.handling_base_details)
+		local current_values = handling_values_text(current_metrics.handling,
+			current_metrics.handling_details)
+		text = changed_value_text("ui_inv_weapon_handling", base_values, current_values,
+			current_metrics.handling >= current_metrics.handling_base, "ui_inv_addons_short")
+		text = append_weapon_comparison(text, current_metrics.handling,
+			comparison_metrics and comparison_metrics.handling, "score", true)
+		table.insert(v, {"ui_inv_icon_otdaca", text})
+		add_weapon_characteristic_help(self, "ui_inv_weapon_handling", "ui_inv_help_weapon_control")
+		add_weapon_characteristic_help(self, "ui_inv_weapon_system", "ui_inv_help_weapon_system")
 	end
 
-	if sivol_fuzz_recoil_profiles
-		and type(sivol_fuzz_recoil_profiles.get_handling_score) == "function" then
-		local ok, handling_score, handling_details = pcall(
-			sivol_fuzz_recoil_profiles.get_handling_score, self.item, weapon)
-		if ok and type(handling_score) == "number" then
-			text = translate("ui_inv_weapon_handling") .. ": "
-				.. handling_values_text(handling_score, handling_details)
-			local has_addon_effect = recoil_breakdown
-				and ((tonumber(recoil_breakdown.total_attachment_mass) or 0) > 0.001
-					or math.abs((tonumber(recoil_breakdown.gas_k) or 1) - 1) > 0.001)
-			if has_addon_effect then
-				local ok_current, current_score, current_details = pcall(
-					sivol_fuzz_recoil_profiles.get_handling_score,
-					self.item, weapon, recoil_breakdown.gas_k,
-					recoil_breakdown.total_attachment_recovery_k,
-					recoil_breakdown.total_attachment_stability_k)
-				local base_values = handling_values_text(handling_score, handling_details)
-				local current_values = ok_current and type(current_score) == "number"
-					and handling_values_text(current_score, current_details) or base_values
-				if current_values ~= base_values then
-					local color = current_score >= handling_score
-						and "%c[green]" or "%c[red]"
-					text = translate("ui_inv_weapon_handling") .. ": " .. base_values
-						.. " -> " .. color .. current_values .. "%c[default] "
-						.. translate("ui_inv_addons_short")
-				end
-			end
-			text = append_weapon_comparison(text, current_metrics and current_metrics.handling,
-				comparison_metrics and comparison_metrics.handling, "score", true)
-			table.insert(v, {"ui_inv_icon_otdaca", text})
-			add_weapon_characteristic_help(self, "ui_inv_weapon_handling", "ui_inv_help_weapon_control")
-			add_weapon_characteristic_help(self, "ui_inv_weapon_system", "ui_inv_help_weapon_system")
-		end
-	end
-	local ready_base, ready_current, ready_has_addon = get_weapon_ready_speed(self.item, self.section, weapon)
-	local ready_base_percent = math.floor(ready_base * 100 + 0.5001)
-	local ready_current_percent = math.floor(ready_current * 100 + 0.5001)
-	text = string.format("%s: %d%%", translate("ui_inv_weapon_ready_speed"), ready_base_percent)
-	if ready_has_addon and ready_current_percent ~= ready_base_percent then
-		local color = ready_current >= ready_base and "%c[green]" or "%c[red]"
-		text = string.format("%s: %d%% -> %s%d%%",
-			translate("ui_inv_weapon_ready_speed"), ready_base_percent,
-			color, ready_current_percent) .. "%c[default] " .. translate("ui_inv_addons_short")
-	end
-	text = append_weapon_comparison(text, current_metrics and current_metrics.ready,
-		comparison_metrics and comparison_metrics.ready, "%", true)
-	table.insert(v, {"ui_inv_icon_weapon_ready_speed", text})
-	add_weapon_characteristic_help(self, "ui_inv_weapon_ready_speed", "ui_inv_help_ready_speed")
-
-	-- Handling (docs/GUNPLAY_FEEL_DESIGN.md 5): how fast the weapon moves, settles
-	-- and follows back to centre. Separate from Weapon control, which is recoil.
-	if sivol_weapon_aim_speed and type(sivol_weapon_aim_speed.get_handling_profile) == "function" then
-		local ok_base, ergo_base = pcall(sivol_weapon_aim_speed.get_handling_profile, self.item, self.section, true)
-		local ok_now, ergo_now = pcall(sivol_weapon_aim_speed.get_handling_profile, self.item, self.section)
-		if ok_base and type(ergo_base) == "table" then
-			text = string.format("%s: %d", translate("ui_inv_weapon_ergonomics"), ergo_base.score)
-			if ok_now and type(ergo_now) == "table" and ergo_now.score ~= ergo_base.score then
-				local color = ergo_now.score >= ergo_base.score and "%c[green]" or "%c[red]"
-				text = string.format("%s: %d -> %s%d", translate("ui_inv_weapon_ergonomics"),
-					ergo_base.score, color, ergo_now.score) .. "%c[default] " .. translate("ui_inv_addons_short")
-			end
-			text = append_weapon_comparison(text, current_metrics and current_metrics.ergonomics,
-				comparison_metrics and comparison_metrics.ergonomics, "", true)
-			table.insert(v, {"ui_inv_icon_weapon_ready_speed", text})
-			add_weapon_characteristic_help(self, "ui_inv_weapon_ergonomics", "ui_inv_help_weapon_ergonomics")
-		end
+	-- Готовность: голое оружие (своя масса и встроенное) -> с установленными навесами
+	if current_metrics and current_metrics.ready_base and current_metrics.ready then
+		text = changed_value_text("ui_inv_weapon_ready_speed",
+			metric_text(current_metrics.ready_base, ""), metric_text(current_metrics.ready, ""),
+			current_metrics.ready >= current_metrics.ready_base, "ui_inv_addons_short")
+		text = append_weapon_comparison(text, current_metrics.ready,
+			comparison_metrics and comparison_metrics.ready, "", true)
+		table.insert(v, {"ui_inv_icon_weapon_ready_speed", text})
+		add_weapon_characteristic_help(self, "ui_inv_weapon_ready_speed", "ui_inv_help_ready_speed")
 	end
 
 	local scope_profile = current_metrics and current_metrics.scope
@@ -2206,15 +2329,31 @@ function CUIDescriptionWnd:ShowWeaponParams()
 		table.insert(self.weapon_info_lines, "%c[UI_orange]" .. translate("ui_inv_duplet")
 			.. ":%c[gray] " .. string.format(translate("ui_inv_help_duplet"), duplet_key, translate("kb_alt_zoom")))
 	end
+	-- LAlt: глушитель на оружии ( встроенный или установленный ) и что он меняет
+	if self.lalt and (sil_status == 1 or sil_section) then
+		local help
+		if sil_status == 1 then
+			help = translate("ui_inv_help_silencer_integrated")
+		else
+			local name = translate(get_string(sil_section, "inv_name", sil_section))
+			local parts = suppressor_effect_parts(sil_section)
+			help = name .. (#parts > 0 and (": " .. table.concat(parts, ", ")) or "") .. ". "
+				.. translate("ui_inv_help_silencer_common")
+		end
+		self.weapon_info_lines = self.weapon_info_lines or {}
+		table.insert(self.weapon_info_lines, "%c[UI_orange]" .. translate("ui_inv_help_silencer")
+			.. ":%c[gray] " .. help)
+	end
 
 	self:ShowPropsWeapon(v)
 end
 
+-- Accuracy of the weapon itself: ammo spread (k_disp) is left out and shown on
+-- the ammo card instead ("Кучность"), so the figure does not change with ammo.
 function get_accuracy(section, dispersion_k)
 	local ltx = sys_ini
 	if not section or not ltx:section_exist(section)
-		or not ltx:line_exist(section, "fire_dispersion_base")
-		or not ltx:line_exist(section, "ammo_class") then
+		or not ltx:line_exist(section, "fire_dispersion_base") then
 		return nil
 	end
 
@@ -2223,16 +2362,7 @@ function get_accuracy(section, dispersion_k)
 	fire_dispersion_base = fire_dispersion_base * (dispersion_k or 1)
 
 	local disp_rate = get_float(section, "disp_rate", 1)
-	local ammo_list = ltx:r_string(section, "ammo_class")
-	local ammo_section = ammo_list and string.match(ammo_list, "^%s*([^,%s]+)")
-	if not ammo_section or not ltx:section_exist(ammo_section)
-		or not ltx:line_exist(ammo_section, "k_disp") then
-		return nil
-	end
-
-	local k_disp = ltx:r_float(ammo_section, "k_disp")
-	if not k_disp or k_disp <= 0 then return nil end
-	local fir = disp_rate + math.log10(0.9 / (fire_dispersion_base * k_disp))
+	local fir = disp_rate + math.log10(0.9 / fire_dispersion_base)
 	return ui_wpn_params.normalize(28 * fir)
 end
 
@@ -2244,7 +2374,7 @@ function CUIDescriptionWnd:ShowScopeParams()
 	local zf = get_float(self.section, "scope_zoom_factor", 0)
 	local params = {}
 	if zf > 0 then
-		table.insert(params, {"scope", string.format("x%.1f", 67.5 / (zf * 0.75))})
+		table.insert(params, {"scope", string.format("x%.1f", scope_magnification(zf))})
 	end
 	if not self.item:is_binoculars() and sivol_weapon_aim_speed
 		and type(sivol_weapon_aim_speed.get_scope_aim_profile) == "function" then
@@ -2309,17 +2439,17 @@ function CUIDescriptionWnd:ShowSilencerParams()
 				rounded_modifier_percent_text((1 - combined_recoil_k) * 100, true))
 		})
 	end
+	-- condition_shot_dec_k is display-only: the real wear is each weapon's own
+	-- condition_shot_dec_silencer, so this row is marked as approximate.
 	if wear_k ~= 1 then
 		table.insert(params, {
 			"ui_inv_icon_condition_shot_dec",
-			string.format("%s: %s", translate("ui_inv_wear_per_shot"),
-				suppressor_modifier_text((wear_k - 1) * 100, false))
+			string.format("%s: %s %%c[gray](%s)%%c[default]", translate("ui_inv_wear_per_shot"),
+				suppressor_modifier_text((wear_k - 1) * 100, false), translate("ui_inv_approx_short"))
 		})
 	end
 
 	if #params > 0 then
-		local spacer = self.xml:InitStatic("section_gap", self.scroll_v)
-		self.addH = self.addH + spacer:GetHeight()
 		self:ShowPropsHeader(translate("ui_inv_modifiers") .. ":")
 		self:ShowPropsWeapon(params)
 	end
@@ -2374,8 +2504,10 @@ function get_af_stat_rows(target, condition, custom_data)
             local eff_strength = get_effective_strength_raw(condition, sect, is_buff, t.prop)
             val = base_val * eff_strength
 
-            if val ~= 0 then
-                val = val * 100 / denom
+            val = val * 100 / denom
+            -- round first: a value that rounds to 0 gets no "+0%" row
+            local shown = t.prop == "radiation_restore_speed" and math.floor(math.abs(val) * 10 + 0.5) or math.round(val)
+            if shown ~= 0 then
                 txt = ""
 
                 if t.prop == "bleeding_restore_speed" then
@@ -2420,9 +2552,11 @@ function get_af_stat_rows(target, condition, custom_data)
                     eff_immunity = 1 + ((base_immunity - 1) * eff_strength)
                 end
 
-                val = 100 - eff_immunity * 100
-                txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%d%%", math.round(val))
-                table.insert(params, {t.tex, t.text, txt})
+                val = math.round(100 - eff_immunity * 100)
+                if val ~= 0 then
+                    txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%d%%", val)
+                    table.insert(params, {t.tex, t.text, txt})
+                end
             end
         end
     end
@@ -2453,9 +2587,9 @@ function get_af_stat_rows(target, condition, custom_data)
 
     local base_jmp = get_float(sect, "add_jump_speed", 0)
     val = base_jmp * get_effective_strength_raw(condition, sect, base_jmp > 0, "add_jump_speed")
-    if val ~= 0 then
-        val = val * 10
-        txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%.0f", val)
+    if math.round(val * 10) ~= 0 then
+        val = math.round(val * 10)
+        txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%d", val)
         table.insert(params, {"ui_inv_icon_add_jump_power_hd", translate("ui_inv_jump_height"), txt})
     end
 
@@ -2466,8 +2600,8 @@ function get_af_stat_rows(target, condition, custom_data)
         local low, high = sivol_glassbeads.get_preview(val)
         txt = string.format("%%c[green]+%d-%d%%%%c[default]", math.round(low * 100), math.round(high * 100))
         table.insert(params, {"ui_inv_icon_add_jump_power_hd", translate("ui_inv_move_speed_charged"), txt})
-    elseif val ~= 0 then
-        txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%.0f%%", val * 100)
+    elseif math.round(val * 100) ~= 0 then
+        txt = (val < 0 and "%c[red]" or "%c[green]+") .. string.format("%d%%", math.round(val * 100))
         table.insert(params, {"ui_inv_icon_add_jump_power_hd", translate("ui_inv_move_speed"), txt})
     end
 
@@ -2475,8 +2609,8 @@ function get_af_stat_rows(target, condition, custom_data)
     if base_dog_psy and base_dog_psy ~= 1 then
         local eff_strength = get_effective_strength_raw(condition, sect, base_dog_psy < 1, "add_dog_psy")
         val = 1 + (base_dog_psy - 1) * eff_strength
-        if val ~= 1 then
-            txt = (val < 1 and "%c[green]+" or "%c[red]") .. string.format("%.0f%%", (1 - val) * 100)
+        if math.round((1 - val) * 100) ~= 0 then
+            txt = (val < 1 and "%c[green]+" or "%c[red]") .. string.format("%d%%", math.round((1 - val) * 100))
             table.insert(params, {"ui_inv_icon_dog_psy_hd", translate("ui_inv_spasm_protection"), txt})
         end
     end
@@ -2655,80 +2789,6 @@ end
 
 
 -- Показываем параметры костмов
---[[
-function CUIDescriptionWnd:ShowOutfitParams()
-	local params = {}
-	local val, txt = 0, ""
-
-	-- скрытые свойства костюмов
-	for i, t in ipairs(conditions_params) do
-		-- val = sys_ini:r_float(self.section, t.prop, 0)
-		val = get_float(self.section, t.prop, 0)
-		if val ~= 0 then
-			val = val * 100 / conditions[t.prop]
-			-- txt = t.text .. " "
-			txt = ""
-			if t.prop == "bleeding_restore_speed" then
-				txt = txt .. (val > 0 and "%c[green]" or "%c[red]+")
-				val = -val
-			elseif t.prop == "radiation_restore_speed" then
-				txt = txt .. (val > 0 and "%c[red]+" or "%c[green]")
-			else
-				txt = txt .. (val > 0 and "%c[green]+" or "%c[red]")
-			end
-			txt = txt .. string.format("%d", val) .. (t.unit or "%")
-			table.insert(params, {t.tex, t.text, txt})
-		end
-	end
-
-	local immunities_sect = sys_ini:r_string(self.section, "immunities_sect")
-	for i, t in ipairs(hit_types) do
-
-		-- Manool: реальная, текущая защита костюма
-		local outfit = self.item:get_outfit()
-		local real_val = outfit[t.prop .. "_protection"] * 100 * self.condition
-
-		val = sys_ini:r_float(self.section, t.prop .. "_protection")
-		local val_imm = get_float(immunities_sect, t.prop .. "_immunity")
-		local orig_val = val * 100 -- выводим дополнительно хар-ки без учёта текущего condition.
-		val = val * 100 * self.condition
-		-- Округляем числа, ибо string.format просто убирает все числа после запятой.
-		-- local v1 = (val < 0 and "%c[red]" or val == 0 and "%c[gray]" or "%c[green]+") .. string.format("%d%%", math.round(val))
-		local v1 = (real_val < 0 and "%c[red]" or real_val == 0 and "%c[gray]" or "%c[green]+") .. string.format("%d%%", math.round(real_val))
-		local v2 = (val < 0 and "%c[red]" or val == 0 and "%c[gray]" or "%c[green]+") .. string.format("%d%%", math.round(orig_val))
-		local v3 = tonumber(string.format("%.3f", (1 - val_imm) * 100))
-		table.insert(params, {t.prop, t.text, v1, v2, v3 .. "%"})
-	end
-
-	-- Доп. вес
-	val = get_float(self.section, "additional_inventory_weight2", 0)
-	if val > 0 then
-		local v1 = string.format("%%c[green]+%.1f", self.item:get_additional_max_weight())..translate("ui_inv_s_kg")
-		local v2 = string.format("%%c[green]+%.1f", val)..translate("ui_inv_s_kg")
-		table.insert(params, {"additional_weight", translate("st_carrying"), v1, v2})
-	end
-
-	-- Доп. прыжок
-	val = get_float(self.section, "additional_jump_height", 0)
-	if val > 0 then
-		txt = string.format("%%c[green]x%.1f", val)
-		table.insert(params, {"power_loss", translate("ui_inv_jump_height"), txt})
-	end
-
-	val = get_float(self.section, "power_loss", 0)
-	if val > 0 then
-		local outfit = self.item:get_outfit()
-		local pwrl = outfit.power_loss
-		txt = (pwrl > 1 and "%c[red]" or "%c[green]") .. string.format("*%.0f%%", pwrl * 100)
-		table.insert(params, {"power", translate("ui_inv_power_loss"), txt})
-	end
-
-	if #params > 0 then
-		self:ShowProps(params)
-	end
-end
-]]--
-
 function CUIDescriptionWnd:ShowOutfitParams()
     self.protection_info_lines = nil  -- Reset per call
     local params = {}
@@ -2749,21 +2809,18 @@ function CUIDescriptionWnd:ShowOutfitParams()
     
     -- Скрытые свойства костюмов
     for i, t in ipairs(conditions_params) do
-        val = get_float(self.section, t.prop, 0)
-        if val ~= 0 then
-            val = val * 100 / conditions[t.prop]
+        local denom = conditions[t.prop] -- nil for thirst ( no actor baseline )
+        val = (denom and denom ~= 0) and get_float(self.section, t.prop, 0) * 100 / denom or 0
+        if math.round(val) ~= 0 then
             txt = ""
             comparison = nil
-            
-            -- Сравнение с надетым
+
+            -- Сравнение с надетым ( у надетого нет свойства - считаем 0 )
             if outfit_flag then
-                local aval = get_float(aoutfit:section(), t.prop, 0)
-                if aval ~= 0 then
-                    aval = aval * 100 / conditions[t.prop]
-                    if aval ~= val then
-                        local diff = val - aval
-                        comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("%d", math.abs(diff)) .. (t.unit or "%")
-                    end
+                local aval = get_float(aoutfit:section(), t.prop, 0) * 100 / denom
+                local diff = math.round(val - aval)
+                if diff ~= 0 then
+                    comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("%d", math.abs(diff)) .. (t.unit or "%")
                 end
             end
             
@@ -2775,8 +2832,8 @@ function CUIDescriptionWnd:ShowOutfitParams()
             else
                 txt = txt .. (val > 0 and "%c[green]+" or "%c[red]")
             end
-            txt = txt .. string.format("%d", val) .. (t.unit or "%")
-            
+            txt = txt .. string.format("%d", math.round(val)) .. (t.unit or "%")
+
             table.insert(params, {
                 t.tex,
                 t.text,
@@ -2788,13 +2845,11 @@ function CUIDescriptionWnd:ShowOutfitParams()
     end
     
     -- Иммунитеты
-    local immunities_sect = sys_ini:r_string(self.section, "immunities_sect")
-    
+    local worn_condition = outfit_flag and aoutfit:condition() or 1
     for i, t in ipairs(hit_types) do
         local real_val = outfit[t.prop .. "_protection"] * 100 * self.condition
         val = outfit[t.prop .. "_protection"] * 100  -- Используем get_outfit()
-        local val_imm = get_float(immunities_sect, t.prop .. "_immunity")
-        
+
         comparison = nil
         
         -- Определяем формат: 1 знак после запятой в режиме LAlt, иначе целое число
@@ -2803,9 +2858,10 @@ function CUIDescriptionWnd:ShowOutfitParams()
         
         -- Сравнение с надетым
         if outfit_flag then
-            local areal_val = aoutfit_outfit[t.prop .. "_protection"] * 100
-            if areal_val ~= real_val then
-                local diff = real_val - areal_val
+            -- both sides as worn now: protection scales with each suit's condition
+            local areal_val = aoutfit_outfit[t.prop .. "_protection"] * 100 * worn_condition
+            local diff = real_val - areal_val
+            if r_func(math.abs(diff)) ~= 0 then
                 comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format(fmt, r_func(math.abs(diff)))
             end
         end
@@ -2843,15 +2899,15 @@ function CUIDescriptionWnd:ShowOutfitParams()
         local displayed_weight = self.condition * full_weight
         
         if outfit_flag then
-            local acur_weight = aoutfit_outfit.additional_inventory_weight
-            if acur_weight and acur_weight > 0 and acur_weight ~= cur_weight then
-                local diff = cur_weight - acur_weight
-                comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("%.1f", math.abs(diff)) .. " кг"
+            local acur_weight = math.max(0, aoutfit_outfit.additional_inventory_weight or 0)
+            local diff = cur_weight - acur_weight
+            if math.abs(diff) >= 0.05 then
+                comparison = (diff > 0 and "%c[green]> " or "%c[red]< ") .. string.format("%.1f", math.abs(diff)) .. " " .. translate("ui_inv_s_kg")
             end
         end
         
-        local v1 = string.format("%%c[green]+%.1f", cur_weight) .. " кг"
-        local v2 = "%c[gray][" .. string.format("%.1f", full_weight) .. " кг]%c[default]"
+        local v1 = string.format("%%c[green]+%.1f", cur_weight) .. " " .. translate("ui_inv_s_kg")
+        local v2 = "%c[gray][" .. string.format("%.1f", full_weight) .. " " .. translate("ui_inv_s_kg") .. "]%c[default]"
         
 		table.insert(params, {
 			"ui_inv_icon_add_weight_hd",   -- было "ui_inv_icon_additional_weight"
@@ -2909,7 +2965,7 @@ function CUIDescriptionWnd:ShowOutfitParams()
 
 		table.insert(params, {
 			"ui_inv_icon_power_restore_speed_hd",  -- было "ui_inv_icon_power_loss"
-			delta < 0 and "Потеря выносливости" or "Снижение усталости",
+			translate(delta < 0 and "ui_inv_outfit_power_loss_up" or "ui_inv_outfit_power_loss_down"),
 			txt, nil, comparison
 		})
     end
@@ -2934,31 +2990,31 @@ function CUIDescriptionWnd:ShowOutfitParams()
 
             if lalt_pressed then
                 if mod.pwr_mult and mod.pwr_mult ~= 1.0 then
-                    table.insert(mask_params, { "ui_inv_icon_power_restore_speed_hd", "Эффект маски (усталость): %c[default]Стесняет дыхание", nil, nil, nil })
+                    table.insert(mask_params, { "ui_inv_icon_power_restore_speed_hd", translate("ui_inv_mask_help_power") .. ": %c[default]" .. translate("ui_inv_mask_help_power_text"), nil, nil, nil })
                 end
                 if mod.rad_add and mod.rad_add > 0 then
-                    table.insert(mask_params, { "ui_inv_icon_radiation_immunity_hd", "Эффект маски (радиация): %c[default]Фильтрует заражённый воздух, замедляя накопление радиации", nil, nil, nil })
+                    table.insert(mask_params, { "ui_inv_icon_radiation_immunity_hd", translate("ui_inv_mask_help_radiation") .. ": %c[default]" .. translate("ui_inv_mask_help_radiation_text"), nil, nil, nil })
                 end
                 if mod.psy_k and mod.psy_k < 1.0 then
-                    table.insert(mask_params, { "ui_inv_icon_telepatic_immunity_hd", "Эффект маски (телепатия): %c[default]Экранирует разум от звериной телепатии", nil, nil, nil })
+                    table.insert(mask_params, { "ui_inv_icon_telepatic_immunity_hd", translate("ui_inv_mask_help_psy") .. ": %c[default]" .. translate("ui_inv_mask_help_psy_text"), nil, nil, nil })
                 end
             else
                 if mod.pwr_mult and mod.pwr_mult ~= 1.0 then
                     local base_pwr = get_float(base_sect, "power_loss", 0)
                     local delta_pct = _G.sivol and _G.sivol.round((base_pwr * mod.pwr_mult - base_pwr) * 100) or 0
-                    table.insert(mask_params, { "ui_inv_icon_power_restore_speed_hd", "Расход выносливости (маска):", col_bad .. string.format("+%d%%", delta_pct), nil, nil })
+                    table.insert(mask_params, { "ui_inv_icon_power_restore_speed_hd", translate("ui_inv_mask_power") .. ":", col_bad .. string.format("+%d%%", delta_pct), nil, nil })
                 end
 
                 if mod.rad_add and mod.rad_add > 0 then
                     local rad_scale = _G.sivol and _G.sivol.get_mask_rad_scale(self.item) or 1.0
                     local final_rad_bonus = _G.sivol and _G.sivol.round(mod.rad_add * rad_scale * 100) or 0
-                    table.insert(mask_params, { "ui_inv_icon_radiation_immunity_hd", "Радиация (маска):", col_good .. string.format("%d%%", final_rad_bonus), nil, nil })
+                    table.insert(mask_params, { "ui_inv_icon_radiation_immunity_hd", translate("ui_inv_mask_radiation") .. ":", col_good .. string.format("%d%%", final_rad_bonus), nil, nil })
                 end
 
                 if mod.psy_k and mod.psy_k < 1.0 then
                     local scale = _G.sivol and _G.sivol.get_mask_rad_scale(self.item) or 1.0
                     local psy_prot_pct = _G.sivol and _G.sivol.round(((1.0 - mod.psy_k) * scale) * 100) or 0
-                    table.insert(mask_params, { "ui_inv_icon_telepatic_immunity_hd", "Пси-экранирование (маска):", col_psy .. string.format("%d%%", psy_prot_pct), nil, nil })
+                    table.insert(mask_params, { "ui_inv_icon_telepatic_immunity_hd", translate("ui_inv_mask_psy") .. ":", col_psy .. string.format("%d%%", psy_prot_pct), nil, nil })
                 end
             end
         end
@@ -2970,10 +3026,6 @@ function CUIDescriptionWnd:ShowOutfitParams()
     end
 
     if #mask_params > 0 then
-        if #params > 0 then
-            local mask_spacing = self.xml:InitStatic("section_gap", self.scroll_v)
-            self.addH = self.addH + mask_spacing:GetHeight()
-        end
         self:ShowPropsHeader(translate("ui_inv_mask_characteristics") .. ":")
         self:ShowPropsOutfit(mask_params)
     end
@@ -3092,16 +3144,27 @@ function CUIDescriptionWnd:OnUpdate(delta) --Если сюда передали аргументом перед
 		self:HideDescription()
 		return
 	end
-	local live_item = get_live_focused_item(self)
-	local is_weapon = safe_item_kind(live_item)
-	if self.frame:IsShown() and is_weapon then
-		local signature = get_weapon_addon_signature(live_item)
-		if signature ~= self.weapon_addon_signature and not self.weapon_pending_signature then
-			self.weapon_pending_signature = signature
-			self.weapon_refresh_at = time_global() + 100
+	-- a pinned panel whose item is gone ( eaten, sold, dropped ) closes
+	if self.keypressed and self.shown_item_id and not client_obj(self.shown_item_id) then
+		self:HideDescription()
+		return
+	end
+	local live_item = get_panel_item(self)
+	local now = time_global()
+	if self.frame:IsShown() and live_item then
+		-- addon / ammo / GL-mode changes: checked a few times a second, not every frame
+		if not self.weapon_pending_signature and now >= (self.weapon_signature_check_at or 0) then
+			self.weapon_signature_check_at = now + 150
+			if safe_item_kind(live_item) then
+				local signature = get_weapon_addon_signature(live_item)
+				if signature ~= self.weapon_addon_signature then
+					self.weapon_pending_signature = signature
+					self.weapon_refresh_at = now + 100
+				end
+			end
 		end
 		if self.weapon_pending_signature and self.weapon_refresh_at
-			and time_global() >= self.weapon_refresh_at then
+			and now >= self.weapon_refresh_at then
 			self.weapon_refreshing = true
 			self:ShowDescription(live_item)
 			self.weapon_refreshing = nil
@@ -3133,6 +3196,8 @@ function CUIDescriptionWnd:OnKeyPress(dik, bind)
 	end
 ]]--
     if dik == DIK_keys.MOUSE_1 then
+        -- a pinned panel: clicks on it ( scrollbar ) keep it open
+        if self.keypressed and self:IsCursorOverPanel() then return end
         if self.itemInFocus and (self.itemInFocus > 65535 or g_sim:object(self.itemInFocus)) then
 			self:ShowDescription( level.object_by_id( self.itemInFocus ), true )
         elseif self.itemInFocus == nil then 
@@ -3142,29 +3207,27 @@ function CUIDescriptionWnd:OnKeyPress(dik, bind)
         self:HideDescription()
         self.itemInFocus = nil
 	elseif dik == DIK_keys.DIK_LSHIFT then
-		local live_item = get_live_focused_item(self)
+		local live_item = get_panel_item(self)
 		local is_weapon, is_outfit = safe_item_kind(live_item)
-		if is_outfit or is_weapon then
+		if is_outfit or (is_weapon and is_stat_weapon(live_item)) then
 			self.lshift = (self.lshift == nil and true) or nil
 			self:HideDescription()
 			self:ShowDescription(live_item)
 		end
     elseif dik == DIK_keys.DIK_LMENU then -- LALT
-		local live_item = get_live_focused_item(self)
+		local live_item = get_panel_item(self)
 		local is_weapon, is_outfit, is_artifact = safe_item_kind(live_item)
-        if artifact_help_supported(live_item) or is_outfit or (is_weapon and not safe_is_knife(live_item)) then
+        if artifact_help_supported(live_item) or is_outfit or (is_weapon and is_stat_weapon(live_item)) then
             self.lalt = (self.lalt == nil and true) or nil
             self:HideDescription()
             self:ShowDescription(live_item)
         end
 	elseif dik == DIK_keys.DIK_T then
-		local live_item = get_live_focused_item(self)
+		local live_item = get_panel_item(self)
 		if live_item then
 			self:OutContainerArts( live_item:id() )
-		end		
---	elseif dik == DIK_keys.DIK_W then 
---		self:SetItemPrice( self.item )		
-    end	
+		end
+    end
 end
 
 function CUIDescriptionWnd:OnDrop( obj )
@@ -3172,27 +3235,6 @@ function CUIDescriptionWnd:OnDrop( obj )
 	if obj and obj:id() == self.itemInFocus then
 		self:HideDescription()
 		self.itemInFocus = nil
-	end	
-end
-
-function CUIDescriptionWnd:SetItemPrice( obj )
-	if not obj then return end
-	
-	local parent = obj:parent()
-	if not parent or parent:id() ~= 0 then return end
-	
-	local trader = level:get_second_talker()
-	if not trader then return end
-	
-	local target_money = trader:money()
-	log3( "target_money is %s", target_money )
-
-	local item = obj:get_inventory_item()
-	-- local cost = item.cost
-	local cost = get_actual_cost( obj )
-	log3( "item_cost is %s", cost )
-	if tonumber( cost ) > target_money then 
-		item.cost = target_money
 	end	
 end
 

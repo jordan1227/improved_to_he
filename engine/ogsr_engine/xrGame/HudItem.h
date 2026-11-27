@@ -301,6 +301,11 @@ public:
     float m_nlc_move_inertia_aim_k{}; // hud_move_inertia_aim_k
     float m_nlc_crouch_kick_k{}; // hud_crouch_kick_k: power of the engine-played crouch clips (nlc_gunplay.set_crouch_clips); 0 = off
     float m_nlc_clip_speed_k{}; // hud_clip_speed_k: playback speed of those clips for this item
+    float m_nlc_draw_speed_k{1.f}; // draw_speed_k (hud section): speed of every show / hide motion of this item
+    float m_nlc_draw_mass_k{1.f}; // hud_draw_mass_k: script factor from the weapon's mass with addons (sivol_weapon_aim_speed)
+    // NLC: the actor's show / hide speed of this item. Both factors are writable from Lua
+    // (hud_draw_speed_k / hud_draw_mass_k), so the product is clamped: it divides motion and sound times.
+    float nlc_draw_k() const { return std::clamp(m_nlc_draw_speed_k * m_nlc_draw_mass_k, 0.3f, 3.f); }
     float m_nlc_rot_inertia_pivot_z{}; // hud_rot_inertia_pivot_z: metres ahead of the eye the lag pivots around (stock stays planted)
     float m_nlc_rot_inertia_shift{}; // hud_rot_inertia_shift: share of the muzzle swing the whole rig follows
     float m_nlc_ads_damping{}; // hud_ads_damping: settle into the sights (lower = more overshoot)

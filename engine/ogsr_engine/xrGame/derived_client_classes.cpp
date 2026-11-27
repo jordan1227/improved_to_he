@@ -450,6 +450,8 @@ void CWeaponScript::script_register(lua_State* L)
                   .def_readwrite("hud_crouch_kick_k", &CWeapon::m_nlc_crouch_kick_k)
                   .def_readwrite("hud_lookup_k", &CWeapon::m_nlc_lookup_k)
                   .def_readwrite("hud_clip_speed_k", &CWeapon::m_nlc_clip_speed_k)
+                  .def_readwrite("hud_draw_speed_k", &CWeapon::m_nlc_draw_speed_k) // NLC: authored draw_speed_k
+                  .def_readwrite("hud_draw_mass_k", &CWeapon::m_nlc_draw_mass_k) // NLC: script mass factor of the draw speed
                   .def_readwrite("hud_rot_inertia_pivot_z", &CWeapon::m_nlc_rot_inertia_pivot_z)
                   .def_readwrite("hud_rot_inertia_shift", &CWeapon::m_nlc_rot_inertia_shift)
                   .def_readwrite("hud_ads_damping", &CWeapon::m_nlc_ads_damping)
