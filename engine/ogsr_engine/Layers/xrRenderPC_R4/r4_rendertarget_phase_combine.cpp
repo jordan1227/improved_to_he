@@ -96,6 +96,8 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
         g_pGamePersistent->Environment().RenderClouds(cmd_list);
     }
 
+    phase_nlc_sky_bg(cmd_list); // NLC .237: the sky + clouds behind the scene, for the fog colour
+
     cmd_list.set_Stencil(TRUE, D3DCMP_LESSEQUAL, 0x01, 0xff, 0x00); // stencil should be >= 1
 
     draw_combine_1(cmd_list);
@@ -167,6 +169,16 @@ void CRenderTarget::phase_combine(CBackend& cmd_list)
     // NLC anomaly haze, default order 1: after the forward pass ( the anomaly's own particles are hazed too ); the
     // forward targets are set again for the HUD UI below
     if (ps_ssfx_haze_order == 1 && phase_ssfx_haze(cmd_list))
+    {
+        u_setrt(cmd_list, rt_Generic_0, rt_heat, nullptr, nullptr, rt_Base_Depth->pZRT[cmd_list.context_id]);
+        cmd_list.set_CullMode(CULL_CCW);
+        cmd_list.set_Stencil(FALSE);
+        cmd_list.set_ColorWriteEnable();
+    }
+
+    // NLC: distant rain ( docs/RAIN_CLOUDS_DESIGN.md ), after the forward pass ( water and particles get the veil too );
+    // the forward targets are set again for the HUD UI below
+    if (phase_nlc_rain_far(cmd_list))
     {
         u_setrt(cmd_list, rt_Generic_0, rt_heat, nullptr, nullptr, rt_Base_Depth->pZRT[cmd_list.context_id]);
         cmd_list.set_CullMode(CULL_CCW);

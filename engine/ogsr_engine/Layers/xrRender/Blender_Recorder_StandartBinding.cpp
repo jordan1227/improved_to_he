@@ -160,7 +160,7 @@ static class cl_wind_params : public R_constant_setup
         if (marker != Device.dwFrame)
         {
             const CEnvDescriptor& E = *g_pGamePersistent->Environment().CurrentEnv;
-            result.set(E.wind_direction, E.wind_velocity, 0.0f, 0.0f);
+            result.set(E.wind_direction, E.wind_velocity, g_pGamePersistent->Environment().nlc_wind_dir_base, 0.0f); // NLC z: before the turn
 
             marker = Device.dwFrame;
         }
@@ -178,7 +178,7 @@ static class cl_wind_params_old : public R_constant_setup
         if (marker != Device.dwFrame)
         {
             const CEnvDescriptor& E = *g_pGamePersistent->Environment().CurrentEnv;
-            result.set(E.wind_direction_old, E.wind_velocity_old, 0.0f, 0.0f);
+            result.set(E.wind_direction_old, E.wind_velocity_old, g_pGamePersistent->Environment().nlc_wind_dir_base, 0.0f); // NLC z
 
             marker = Device.dwFrame;
         }
@@ -635,6 +635,29 @@ static class ssfx_clouds final : public R_constant_setup
         cmd_list.set_c(C, E.sky_rotation, E.clouds_color.w, ps_ssfx_cloud_shadows, ps_ssfx_compare ? 0.f : (ps_ssfx_debug_clouds ? 2.f : 1.f));
     }
 } ssfx_clouds;
+
+// NLC: cloud texture offsets ( clouds.vs, ssfx_cloud_shadows.h ), integrated from the wind ( CEnvironment::nlc_clouds_update )
+static class nlc_cloud_ofs final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, g_pGamePersistent->Environment().nlc_cloud_ofs); }
+} nlc_cloud_ofs;
+
+// NLC K4 ( docs/RAIN_CLOUDS_DESIGN.md 5.4 ): x = sun-break coverage of the current weather blend ( ssfx_cloud_shadows.h )
+static class nlc_sun_breaks final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, g_pGamePersistent->Environment().CurrentEnv->nlc_sun_breaks, 0.f, 0.f, 0.f); }
+} nlc_sun_breaks;
+
+// NLC: integrated wind drift ( CEnvironment::nlc_clouds_update ): xy = integral ( cos, sin )( wind_direction ) dt,
+// zw = the same x wind speed; replaces direction x timers.x in screenspace_wind.h and ssfx_water.ps
+static class nlc_wind_int final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, g_pGamePersistent->Environment().nlc_wind_int); }
+} nlc_wind_int;
+static class nlc_wind_int_old final : public R_constant_setup
+{
+    void setup(CBackend& cmd_list, R_constant* C) override { cmd_list.set_c(C, g_pGamePersistent->Environment().nlc_wind_int_old); }
+} nlc_wind_int_old;
 
 // NLC: footstep ripples ( ssfx_step_ripples.h ), 8 x float4: xyz feet position, w: movement 0 ~ 1 ( x strength ).
 // Slot 0 is the player ( camera ), the others the nearest moving grass benders ( NPCs, mutants ). Movement is measured
@@ -1273,6 +1296,10 @@ void CBlender_Compile::SetMapping() const
     r_Constant("ssfx_water", &ssfx_water); // NLC
     r_Constant("ssfx_extra", &ssfx_extra); // NLC
     r_Constant("ssfx_clouds", &ssfx_clouds); // NLC
+    r_Constant("nlc_cloud_ofs", &nlc_cloud_ofs); // NLC: rain and clouds
+    r_Constant("nlc_sun_breaks", &nlc_sun_breaks); // NLC K4
+    r_Constant("nlc_wind_int", &nlc_wind_int);
+    r_Constant("nlc_wind_int_old", &nlc_wind_int_old);
     r_Constant("ssfx_torch", &ssfx_torch); // NLC
     r_Constant("ssfx_extra2", &ssfx_extra2); // NLC
     r_Constant("ssfx_fog_atmo", &ssfx_fog_atmo); // NLC: fog redesign

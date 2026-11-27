@@ -122,6 +122,10 @@ void CRenderTarget::ssfx_create_targets(const u32 w, const u32 h)
     rt_ssfx_fog_2.create(r2_RT_ssfx_fog_2, std::max(1u, w / 2), std::max(1u, h / 2), DXGI_FORMAT_R16G16B16A16_FLOAT);
     s_ssfx_fog.create("ssfx_fog_scattering");
     s_ssfx_haze.create("ssfx_haze"); // NLC anomaly haze, live switch
+    s_nlc_rain_far.create("nlc_rain_far"); // NLC: distant rain, live switches
+    // NLC .237: sky + clouds behind the scene for the fog colour ( combine_1, distant rain veil ); always on, ~2.4 k pixels
+    rt_nlc_sky_bg.create(r2_RT_nlc_sky_bg, 80, 45, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    s_nlc_sky_bg.create("nlc_sky_bg");
 
     if (ps_ssfx_volumetric_res > 1)
     {
@@ -1134,6 +1138,59 @@ bool CRenderTarget::phase_ssfx_haze(CBackend& cmd_list)
 
     cmd_list.set_Scissor(nullptr);
     return true;
+}
+
+// NLC: distant rain ( docs/RAIN_CLOUDS_DESIGN.md D1 / D2 / G3 ): veil, streak layers and ground hits beyond the drops,
+// one screen triangle after the forward pass ( nlc_rain_far.ps ). Live switches ssfx_rain_far / _veil / _ground
+bool CRenderTarget::phase_nlc_rain_far(CBackend& cmd_list)
+{
+    if (!s_nlc_rain_far || ps_ssfx_compare || ps_ssfx_effects_off || ps_ssfx_is_underground || !g_pGamePersistent)
+        return false;
+    if (ps_ssfx_rain_far <= 0.f && ps_ssfx_rain_veil <= 0.f && ps_ssfx_rain_ground <= 0.f)
+        return false;
+
+    const CEnvironment& envr = g_pGamePersistent->Environment();
+    if (!envr.CurrentEnv)
+        return false;
+    const CEnvDescriptorMixer& env = *envr.CurrentEnv;
+    if (env.rain_density < EPS_L)
+        return false;
+
+    PIX_EVENT_CTX(cmd_list, nlc_rain_far);
+
+    // strength as the weather file has it ( pulsed ), faded in over rain_density 0 ~ 0.1 like the rain sound
+    const float raw = std::clamp(env.nlc_rain_raw, 0.f, 3.f) * std::clamp(env.rain_density * 10.f, 0.f, 1.f);
+    const float vel = std::clamp(env.wind_velocity * 0.001f, 0.f, 1.f);
+    const float tan_lean = std::tan(deg2rad(35.f) * vel); // Rain.h drop_max_angle, without the per-drop gust
+    const float fall = 60.f * ps_ssfx_rain_1.z * 0.7f; // mean vertical drop speed ( CEffect_Rain::Born )
+    const float time = std::fmod(Device.fTimeGlobal, 3600.f);
+
+    RenderScreenTriangle(cmd_list, rt_Generic_0, s_nlc_rain_far->E[0], [&]() {
+        cmd_list.set_c("nlc_rain_far0", raw, ps_ssfx_rain_far, ps_ssfx_rain_veil, ps_ssfx_rain_ground);
+        cmd_list.set_c("nlc_rain_far1", envr.nlc_downwind.x, envr.nlc_downwind.z, tan_lean, time);
+        cmd_list.set_c("nlc_rain_far2", fall, float(Device.dwFrame % 64), 0.f, 0.f);
+    });
+    return true;
+}
+
+// NLC .237 ( docs/RAIN_CLOUDS_DESIGN.md 4.5 ): the fog faded far geometry towards the sky cube's colour, which has no
+// clouds; under an overcast that was far brighter than the sky drawn behind the scene, so fogged trees and buildings
+// glowed pale ( most at short rs_vis_distance, where the fog is squeezed into ~130 m ). Here rt_Generic_0 holds only the
+// skybox and the clouds ( RenderSky clears and draws it before the G-buffer, RenderClouds just now; combine_1 composites
+// the geometry next ), so a blurred copy is exactly the background the fog should meet
+void CRenderTarget::phase_nlc_sky_bg(CBackend& cmd_list)
+{
+    if (!rt_nlc_sky_bg || !s_nlc_sky_bg)
+        return;
+
+    PIX_EVENT_CTX(cmd_list, nlc_sky_bg);
+
+    RenderScreenTriangle(cmd_list, rt_nlc_sky_bg, s_nlc_sky_bg->E[0]);
+
+    // back to the scene target at full size ( rmNormal reads the bound target ); the callers set the stencil next
+    u_setrt(cmd_list, rt_Generic_0, nullptr, nullptr, nullptr, rt_Base_Depth->pZRT[cmd_list.context_id]);
+    RImplementation.rmNormal(cmd_list);
+    cmd_list.set_CullMode(CULL_NONE);
 }
 
 bool CRenderTarget::phase_ssfx_ssr(CBackend& cmd_list)

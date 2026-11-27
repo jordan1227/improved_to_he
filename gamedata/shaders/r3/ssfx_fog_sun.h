@@ -11,12 +11,13 @@
 #define SSFX_FOG_SUN_H
 
 #include "ssfx_extra.h"
+#include "nlc_sun_breaks.h" // .239: no sun lobe through an overcast with sun breaks
 
 // dir_w: normalized world direction from the eye to the fogged point
 float3 ssfx_fog_color_sun(float3 dir_w)
 {
     float s = saturate(dot(L_sun_dir_w.xyz, -dir_w)); // 1 = looking into the sun ( sun_dir is the light travel direction )
-    float lobe = pow(s, 8.0f) * 0.75f + s * s * 0.25f;
+    float lobe = (pow(s, 8.0f) * 0.75f + s * s * 0.25f) * (1.0f - nlc_sun_breaks_k());
     return lerp(fog_color.rgb, max(fog_color.rgb, saturate(L_sun_color.rgb)), lobe * ssfx_extra.z);
 }
 

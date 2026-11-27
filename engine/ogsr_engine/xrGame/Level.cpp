@@ -422,6 +422,7 @@ void CLevel::OnFrame()
     {
         g_pGamePersistent->Environment().SetGameTime(GetEnvironmentGameDayTimeSec(), game->GetEnvironmentGameTimeFactor());
     }
+    g_pGamePersistent->Environment().nlc_game_time = double(GetEnvironmentGameTime()) / 1000.0; // NLC: wind turn, shower pulses
 
     m_ph_commander->update();
     m_ph_commander_scripts->update();

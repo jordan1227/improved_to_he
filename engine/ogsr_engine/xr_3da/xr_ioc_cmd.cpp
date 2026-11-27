@@ -603,6 +603,16 @@ void CCC_Register()
     extern float ps_rain_gust, ps_rain_gust_speed;
     CMD4(CCC_Float, "rain_gust", &ps_rain_gust, 0.0f, 2.0f);
     CMD4(CCC_Float, "rain_gust_speed", &ps_rain_gust_speed, 0.01f, 1.0f);
+    // NLC: rain and wind ( docs/RAIN_CLOUDS_DESIGN.md )
+    extern float ps_rain_spread, ps_rain_sheets;
+    CMD4(CCC_Float, "rain_spread", &ps_rain_spread, 0.0f, 3.0f);
+    CMD4(CCC_Float, "rain_sheets", &ps_rain_sheets, 0.0f, 2.0f);
+    CMD4(CCC_Float, "wind_turn", &ps_nlc_wind_turn, 0.0f, 1.0f);
+    CMD4(CCC_Float, "wind_gust_dir", &ps_nlc_wind_gust_dir, 0.0f, 30.0f);
+    CMD4(CCC_Float, "rain_pulse", &ps_nlc_rain_pulse, 0.0f, 2.0f);
+    CMD4(CCC_Float, "cloud_drift", &ps_nlc_cloud_drift, 0.0f, 1.0f);
+    CMD4(CCC_Float, "wind_var", &ps_nlc_wind_var, 0.0f, 1.0f); // batch C R6
+    CMD4(CCC_Float, "cloud_speed", &ps_nlc_cloud_speed, 0.0f, 3.0f); // .240: cloud drift speed
 
     // Camera
     CMD4(CCC_Float, "cam_inert", &psCamInert, 0.0f, 0.99f);

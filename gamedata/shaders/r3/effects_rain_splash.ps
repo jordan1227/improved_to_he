@@ -1,0 +1,62 @@
+/**
+ * @ Version: SCREEN SPACE SHADERS - UPDATE 17
+ * @ Description: Rain splash - PS
+ * @ Modified time: 2023-06-26 06:47
+ * @ Author: https://www.moddb.com/members/ascii1457
+ * @ Mod: https://www.moddb.com/mods/stalker-anomaly/addons/screen-space-shaders
+ * @ NLC G1 ( docs/RAIN_CLOUDS_DESIGN.md ): the splash was only a refraction of the scene behind it ( alpha 0.35 ), so on
+ *        a grey road under an overcast sky it hardly showed. The spray now also catches the sky light ( and a little of
+ *        the sun ), and its alpha follows the vertex colour: grow-and-fade over the splash life x rain strength
+ *        ( dxRainRender.cpp, alpha x 2 in effects_rain.vs ).
+ * @ NLC .237: lit as water ( faint sky reflection, no glow ) and faded by the surface hit ( wet hard ground full, earth
+ *        and grass less ); the crown is half the size and lives 0.13 s ( dxRainRender.cpp, Rain.h ).
+ */
+
+#include "screenspace_common.h"
+#include "nlc_sun_breaks.h" // .239
+
+// Pixel Struct
+struct p_Rain
+{
+    float2 Tex0 : TEXCOORD0;
+    float4 tc : TEXCOORD1;
+    float rain_a : TEXCOORD2; // NLC: fade x rain strength ( 0 ~ 1.5 )
+};
+
+float4 ssfx_rain_setup; // x: alpha, y: refraction ( ssfx_rain_3 )
+
+float4 main(p_Rain I) : SV_Target
+{
+    // Screen Space
+    float2 PosTc = I.tc.xy / I.tc.w;
+
+    // Normal Setup
+    float4 N0 = s_base.Sample(smp_base, I.Tex0);
+    N0.xy = N0.xy * 2.0f - 1.0f; // Convert to -1.0f ~ 1.0f
+
+    // Adjust "refraction" Intensity
+    N0.xy = normalize(float3(N0.xy * 0.05f * ssfx_rain_setup.y, 1.0f)).xy;
+
+    // Screen Buffer
+    float3 Screen = SSFX_get_image(saturate(PosTc + N0.xy), 0);
+
+    // NLC .237 ( 4.5 ): lit as water: the ground seen through it plus a sky reflection at a glancing-angle Fresnel
+    // ( ~15 % ); the sun adds a glint only where it shines ( L_sun_color is 0 in overcast weathers ). Was screen x 1.05 +
+    // 0.55 x sky light: on dark wet asphalt in overcast the crowns were several times brighter than the ground
+    // .237b ( test: almost invisible on asphalt in foggy midday rain with the half-size crown ): 0.16 -> 0.3 sky light,
+    // alpha x 1.6 -> x 2.2; still about half the old light and a quarter of the old area
+    float3 spray = L_hemi_color.rgb * 0.3f + L_sun_color.rgb * 0.06f * (1.0f - nlc_sun_breaks_k()); // .239: no glint under sun-break overcast
+    Screen += spray;
+
+    // .237: by the surface the drop hit ( G-buffer behind the splash ): full on hard objects, puddles and wet hard
+    // terrain, 40 % on damp earth, 15 % on grass. The gloss test is for terrain only ( terrain_wet.ltx: damp earth
+    // <= 0.3, wet asphalt 0.7, puddles 0.78+ ); objects ( roads, slabs ) keep their own lower gloss when wet
+    float4 G = s_position.Sample(smp_nofilter, PosTc);
+    float mtl = gbuf_unpack_mtl(G.w);
+    bool flora = abs(mtl - 0.15f) < 0.04f;
+    bool terrain = abs(mtl - 0.95f) < 0.04f;
+    float wet = smoothstep(0.35f, 0.6f, s_diffuse.Sample(smp_nofilter, PosTc).a);
+    float surf = flora ? 0.15f : (terrain ? lerp(0.4f, 1.0f, wet) : 1.0f);
+
+    return float4(Screen, saturate(N0.w * ssfx_rain_setup.x * 2.2f * I.rain_a * surf));
+}

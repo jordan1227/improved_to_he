@@ -209,6 +209,11 @@ protected:
     bool CartridgeInTheChamberEnabled{};
     u32 CartridgeInTheChamber{};
 
+    // NLC chamber: a reload started with a round left in the gun fits one more; player only, NPCs keep the plain magazine
+    bool ChamberCanHoldExtra() const { return CartridgeInTheChamberEnabled && ParentIsActor() && !IsGrenadeMode() && iAmmoElapsed > 0 && !IsMisfire(); }
+    void ChamberStartReload() { CartridgeInTheChamber = ChamberCanHoldExtra() ? 1 : 0; }
+    int ChamberedCapacity() const { return iMagazineSize + static_cast<int>(CartridgeInTheChamber); }
+
 private:
     string128 guns_aim_anm;
 

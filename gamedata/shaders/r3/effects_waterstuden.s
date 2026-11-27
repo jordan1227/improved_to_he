@@ -20,6 +20,7 @@ function normal                (shader, t_base, t_second, t_detail)
 	shader:dx10texture	("s_nmap",		tex_nmap)
 	shader:dx10texture	("sky_s0",		tex_sky0)
 	shader:dx10texture	("sky_s1",		tex_sky1)
+	shader:dx10texture	("s_fog_bg",		"$user$nlc_sky_bg") -- NLC .241: drawn sky + clouds, fog colour ( SSFX_FOG_BG; needs the 32-slot exe )
 	shader:dx10texture	("s_position", "$user$position")
 
 shader:dx10texture  ("s_rimage", "$user$generic_temp")

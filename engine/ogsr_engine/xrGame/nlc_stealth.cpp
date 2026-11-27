@@ -409,7 +409,8 @@ float npc_env_light()
         return light = 1.f;
     const float ambient = _max(env->ambient.x, _max(env->ambient.y, env->ambient.z));
     const float hemi = _max(env->hemi_color.x, _max(env->hemi_color.y, env->hemi_color.z));
-    const float sun = _max(env->sun_color.x, _max(env->sun_color.y, env->sun_color.z));
+    // NLC .239: a sun-break sun reaches only the gaps ( 1 - nlc_sun_breaks of the ground, docs/RAIN_CLOUDS_DESIGN.md 5.7 )
+    const float sun = _max(env->sun_color.x, _max(env->sun_color.y, env->sun_color.z)) * (1.f - env->nlc_sun_breaks);
     light = ambient + g_sky_k * p_npc_sky_vis * (p_sky_pow == 1.f ? hemi : pow(hemi, p_sky_pow)) + p_npc_sun_k * sun;
     clamp(light, 0.f, 1.f);
     return light;
@@ -2307,7 +2308,8 @@ int lua_env_light(lua_State* L)
     }
     const float ambient = _max(env->ambient.x, _max(env->ambient.y, env->ambient.z));
     const float hemi = _max(env->hemi_color.x, _max(env->hemi_color.y, env->hemi_color.z));
-    const float sun = _max(env->sun_color.x, _max(env->sun_color.y, env->sun_color.z));
+    // NLC .239: a sun-break sun reaches only the gaps ( 1 - nlc_sun_breaks of the ground, docs/RAIN_CLOUDS_DESIGN.md 5.7 )
+    const float sun = _max(env->sun_color.x, _max(env->sun_color.y, env->sun_color.z)) * (1.f - env->nlc_sun_breaks);
     lua_pushnumber(L, ambient + hemi + sun);
     lua_pushnumber(L, ambient);
     lua_pushnumber(L, hemi);

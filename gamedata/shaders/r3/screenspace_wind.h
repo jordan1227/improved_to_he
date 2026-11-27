@@ -11,6 +11,8 @@
 
 uniform float4 wind_params;
 uniform float4 wind_params_old;
+uniform float4 nlc_wind_int; // NLC: integrated wind drift, xy = integral ( cos, sin )( wind_params.x ) dt ( docs/RAIN_CLOUDS_DESIGN.md )
+uniform float4 nlc_wind_int_old;
 
 uniform float4 ssfx_wsetup_grass; // Anim Speed - Turbulence - Push - Wave
 uniform float4 ssfx_wsetup_trees; // Branches Speed - Trunk Speed - Bending - Min Wind Speed
@@ -36,8 +38,9 @@ sampler smp_linear2;
 float ssfx_wind_breeze_at(float2 pos_xz, float speed, const bool for_old_frame)
 {
     float t = timers.x;
-    float r = -(for_old_frame ? wind_params_old.x : wind_params.x) + 1.57079f;
-    float2 drift = float2(cos(r), sin(r)) * t * 4.0f;
+    // NLC: the direction now turns, so direction x time would sweep the patches; integrated drift instead ( same motion
+    // while the direction holds: ( cos, sin )( -x + pi/2 ) = ( sin x, cos x ) )
+    float2 drift = (for_old_frame ? nlc_wind_int_old.yx : nlc_wind_int.yx) * 4.0f;
     float b = s_waves.SampleLevel(smp_linear2, (pos_xz - drift) * 0.008f + 0.37f, 0).z;
     b = smoothstep(0.2f, 0.9f, b);
     float env = smoothstep(-0.2f, 0.9f, sin(t * 0.21f) * 0.6f + sin(t * 0.087f + 2.1f) * 0.4f);
@@ -67,6 +70,7 @@ float ssfx_wind_gust_at(float2 pos_xz, float speed, float sqrt_speed, const bool
 struct wind_setup
 {
     float2 direction;
+    float2 drift; // NLC: integrated direction x time ( nlc_wind_int )
     float speed;
     float sqrt_speed;
 
@@ -87,6 +91,7 @@ wind_setup ssfx_wind_setup(const bool for_old_frame = false)
     // Direction. Radians to Vector
     float r = -(for_old_frame ? wind_params_old.x : wind_params.x) + 1.57079f;
     wsetup.direction = float2(cos(r), sin(r));
+    wsetup.drift = for_old_frame ? nlc_wind_int_old.yx : nlc_wind_int.yx;
 
     // Wind Speed
     wsetup.speed = max(ssfx_wsetup_trees.w, saturate((for_old_frame ? wind_params_old.y : wind_params.y) * 0.001));
@@ -137,7 +142,7 @@ float3 ssfx_wind_grass(float3 pos, float H, wind_setup W, const bool for_old_fra
     float breeze = ssfx_wind_breeze_at(pos.xz, W.speed, for_old_frame);
     [branch] if (breeze > 0.001f)
     {
-        float3 FlowB = s_waves.SampleLevel(smp_linear2, (pos.xz - W.direction * timers.x * 4.0f) * 0.018f, 0);
+        float3 FlowB = s_waves.SampleLevel(smp_linear2, (pos.xz - W.drift * 4.0f) * 0.018f, 0);
         float2 BMotion = (FlowB.xy * 2.0f - 1.0f) * W.grass_turbulence + FlowB.z * W.direction * W.grass_push;
         Final += float3(BMotion.x, FlowB.z * W.grass_wave, BMotion.y) * breeze * 1.5f * HLimit;
     }

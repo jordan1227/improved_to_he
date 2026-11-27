@@ -504,16 +504,25 @@ void CWeaponMagazined::ReloadMagazine()
         return;
 
     //разрядить магазин, если загружаем патронами другого типа
+    bool need_unload = false;
     if (Core.Features.test(xrCore::Feature::hard_ammo_reload))
     {
         if (!m_bLockType && !m_magazine.empty())
             if ((ParentIsActor() && !unlimited_ammo()) || (!m_pAmmo || xr_strcmp(m_pAmmo->cNameSect(), *m_magazine.back().m_ammoSect)))
-                UnloadMagazine();
+                need_unload = true;
     }
     else
     {
         if (!m_bLockType && !m_magazine.empty() && (!m_pAmmo || xr_strcmp(m_pAmmo->cNameSect(), *m_magazine.back().m_ammoSect)))
-            UnloadMagazine();
+            need_unload = true;
+    }
+
+    // NLC chamber: an unload ( ammo-type change ) empties the chamber too, so the new type fills only the magazine.
+    // Keeping the old chambered round would need its type in the save ( saves hold one ammo type per weapon ).
+    if (need_unload)
+    {
+        CartridgeInTheChamber = 0;
+        UnloadMagazine();
     }
 
     VERIFY((u32)iAmmoElapsed == m_magazine.size());
@@ -1179,10 +1188,7 @@ void CWeaponMagazined::switch2_Reload()
 {
     CWeapon::FireEnd();
 
-    if (iAmmoElapsed > 0 && CartridgeInTheChamberEnabled)
-        CartridgeInTheChamber = 1;
-    else
-        CartridgeInTheChamber = 0;
+    ChamberStartReload(); // NLC chamber
 
     PlayReloadSound();
     PlayAnimReload();
@@ -1236,7 +1242,7 @@ bool CWeaponMagazined::Action(s32 cmd, u32 flags)
     case kWPN_RELOAD: {
         if (!psActorFlags.test(AF_LOCK_RELOAD) || (!ParentIsActor() || !(g_actor->get_state() & mcSprint)))
             if (flags & CMD_START)
-                if (iAmmoElapsed < iMagazineSize || (IsMisfire() && !IsGrenadeMode()))
+                if (iAmmoElapsed < iMagazineSize + (ChamberCanHoldExtra() ? 1 : 0) || (IsMisfire() && !IsGrenadeMode())) // NLC chamber: top up to magazine + 1
                     Reload();
     }
         return true;

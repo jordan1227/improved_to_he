@@ -483,6 +483,164 @@ void CEnvironment::lerp(float& current_weight)
     CurrentEnv->lerp(this, *Current[0], *Current[1], current_weight, EM, mpower);
 }
 
+// NLC: rain and wind ( docs/RAIN_CLOUDS_DESIGN.md 4 ). All weather sections share wind_direction 90, so the wind turns
+// here as a function of the absolute game time: a slow turn ( +-180 deg over ~9 game hours ) plus a drift ( +-25 deg
+// over ~50 game minutes ) and a real-time gust swing. Showers pulse the same way. Deterministic from the game time:
+// nothing to save, and a reload shows the same wind.
+ENGINE_API float ps_nlc_wind_turn{1.f};
+ENGINE_API float ps_nlc_wind_gust_dir{8.f};
+ENGINE_API float ps_nlc_rain_pulse{1.f};
+ENGINE_API float ps_nlc_cloud_drift{1.f};
+ENGINE_API float ps_nlc_wind_var{1.f}; // batch C R6 ( docs/RAIN_CLOUDS_DESIGN.md 5.3 )
+ENGINE_API float ps_nlc_cloud_speed{0.85f}; // .240: cloud drift speed multiplier ( console cloud_speed )
+ENGINE_API bool g_nlc_cloud_shadows_on{}; // batch C K4, set by the renderer with its shader options
+
+namespace
+{
+// hash -> -1 .. 1
+float nlc_hash_s(s64 i, u32 seed)
+{
+    u32 h = u32(i) * 0x9E3779B1u ^ u32(i >> 32) * 0x7FEB352Du ^ seed * 0x85EBCA77u;
+    h ^= h >> 15;
+    h *= 0x2C1B3C6Du;
+    h ^= h >> 12;
+    h *= 0x297A2D39u;
+    h ^= h >> 15;
+    return float(h & 0xFFFFFF) / float(0xFFFFFF) * 2.f - 1.f;
+}
+
+// smooth value noise in -1 .. 1, one knot per unit of t
+float nlc_vnoise(double t, u32 seed)
+{
+    const double fl = std::floor(t);
+    const s64 i = s64(fl);
+    const float f = float(t - fl);
+    const float s = f * f * (3.f - 2.f * f);
+    return nlc_hash_s(i, seed) + (nlc_hash_s(i + 1, seed) - nlc_hash_s(i, seed)) * s;
+}
+} // namespace
+
+void CEnvironment::nlc_weather_dyn(CEnvDescriptorMixer& E)
+{
+    const bool known = nlc_game_time >= 0.0;
+    const double tg = known ? nlc_game_time : 0.0;
+
+    // R6 ( 5.3 ): the strength breathes around the weather's value, lulls and freshening over ~25 and ~4 game minutes
+    // ( x 0.65 ~ 1.35 ); a calm hour ( fog ) stays calm. Before every other use of the velocity this frame
+    if (known && ps_nlc_wind_var > 0.f && !ps_ssfx_effects_off)
+    {
+        const float k = 1.f + ps_nlc_wind_var * (0.25f * nlc_vnoise(tg / (25.0 * 60.0), 71u) + 0.1f * nlc_vnoise(tg / (4.0 * 60.0), 73u));
+        E.wind_velocity = std::clamp(E.wind_velocity * k, 0.f, 1000.f);
+    }
+    const float vel = std::clamp(E.wind_velocity * 0.001f, 0.f, 1.f);
+
+    // Wind direction: the slow turn goes into wind_direction ( trees, grass, rain map, clouds ); the fast real-time gust
+    // swing only into the rain drops ( Rain.cpp ): shaders that project world positions on the direction ( puddle
+    // wavelets ) would sweep with it
+    nlc_wind_dir_base = E.wind_direction;
+    float offset = 0.f;
+    if (known && ps_nlc_wind_turn > 0.f && !ps_ssfx_effects_off)
+    {
+        offset = PI * nlc_vnoise(tg / (9.0 * 3600.0), 11u) + deg2rad(25.f) * nlc_vnoise(tg / (50.0 * 60.0), 23u);
+        offset *= ps_nlc_wind_turn;
+    }
+    nlc_wind_offset = offset;
+    E.wind_direction = angle_normalize(E.wind_direction + offset);
+
+    nlc_wind_gust_offset = 0.f;
+    if (ps_nlc_wind_gust_dir > 0.f && !ps_ssfx_effects_off)
+    {
+        const float t = Device.fTimeGlobal;
+        nlc_wind_gust_offset = deg2rad(ps_nlc_wind_gust_dir) * (0.3f + 0.7f * vel) * (0.6f * _sin(t * 0.37f + 1.3f) + 0.4f * _sin(t * 0.91f + 0.2f));
+    }
+
+    // Horizontal direction the drops drift to: the rain axis is setHP( -wind_direction, pitch - PI/2 ) ( Rain.cpp ), its
+    // horizontal part is sin( pitch ) x setHP( -wind_direction, 0 ); the drops are born upwind ( CEffect_Rain::Prepare )
+    nlc_downwind.setHP(-E.wind_direction, 0.f);
+
+    // Shower pulses ( x 0.5 ~ 1.5 around the weather's strength )
+    float pulse = 1.f;
+    if (known && ps_nlc_rain_pulse > 0.f && E.rain_density > 0.f && !ps_ssfx_effects_off)
+        pulse = 1.f + ps_nlc_rain_pulse * (0.35f * nlc_vnoise(tg / (18.0 * 60.0), 37u) + 0.15f * nlc_vnoise(tg / (4.0 * 60.0), 41u));
+    nlc_rain_pulse = pulse;
+    nlc_rain_density_base = E.rain_density;
+    E.nlc_rain_raw = std::clamp(E.nlc_rain_raw * pulse, 0.f, 3.f);
+    E.rain_density = std::clamp(E.rain_density * pulse, 0.f, 1.f);
+}
+
+// K4 ( 5.4 ): the sun of a sun-break section shines only with the cloud shadows compiled in ( they hide all but the
+// gaps; without them that section keeps its sunless overcast ). odds < 1: open only part of the time, a ~1.5 game-hour
+// noise below the odds, with soft edges ( rain: rare sun showers )
+float CEnvironment::nlc_sun_breaks_gate(const float odds) const
+{
+    if (!g_nlc_cloud_shadows_on || ps_ssfx_effects_off)
+        return 0.f;
+    if (odds >= 0.999f)
+        return 1.f;
+    if (odds <= 0.001f || nlc_game_time < 0.0)
+        return 0.f;
+    const float u = 0.5f + 0.5f * nlc_vnoise(nlc_game_time / (90.0 * 60.0), 67u);
+    const float t = std::clamp((u - (odds - 0.08f)) / 0.16f, 0.f, 1.f);
+    return 1.f - t * t * (3.f - 2.f * t);
+}
+
+// Cloud texture offsets ( clouds.vs, ssfx_cloud_shadows.h ): integrated per frame, so the drift may turn with the wind
+// without the texture jumping. The upstream speeds ( cloudconfig.h CLOUD_SPEED0 / 1 at timers.z = t / 10 ) are kept;
+// layer 1 drifts 22.5 deg off layer 0 as before. Headings follow setHP: dir( h ) = ( -sin h, cos h ) in x / z. The dome
+// is drawn with rotateY( sky_rotation ), which maps dir( h ) to dir( h - sky_rotation ), so a world heading H is the
+// dome heading H + sky_rotation. A texture offset moves the pattern the other way: offset rate = -dir( h ).
+void CEnvironment::nlc_clouds_update()
+{
+    static u32 frame = u32(-1);
+    if (frame == Device.dwFrame || !CurrentEnv)
+        return;
+    frame = Device.dwFrame;
+
+    const float dt = std::min(Device.fTimeDelta, 0.25f) * 0.1f;
+    Fvector2 d0, d1;
+    if (ps_nlc_cloud_drift > 0.f && !ps_ssfx_effects_off)
+    {
+        // upper winds veer ( clockwise from above = decreasing h ): 20 deg for the low layer, 42.5 deg for the high one
+        const float vel = std::clamp(CurrentEnv->wind_velocity * 0.001f, 0.f, 1.f);
+        // weak wind slower, strong faster. .240 ( test: the low clouds raced over a moderate ground wind once batch C gave
+        // cloudy middays ~500 ): 0.7 + 0.6 x wind -> 0.35 + 0.5 x wind, about 40 % slower at 500; x cloud_speed
+        const float k = (0.35f + 0.5f * vel) * ps_nlc_cloud_speed;
+        const float h_dome = std::atan2(-nlc_downwind.x, nlc_downwind.z) + CurrentEnv->sky_rotation;
+        const float h0 = h_dome - deg2rad(20.f), h1 = h_dome - deg2rad(42.5f);
+        d0.set(std::sin(h0) * k, -std::cos(h0) * k);
+        d1.set(std::sin(h1) * k, -std::cos(h1) * k);
+    }
+    else
+    {
+        // upstream: wd.setHP( PI/4 ) and setHP( PI/4 + PI/8 ) as x / z
+        d0.set(-_sin(PI_DIV_4), _cos(PI_DIV_4));
+        d1.set(-_sin(PI_DIV_4 + PI_DIV_8), _cos(PI_DIV_4 + PI_DIV_8));
+    }
+    // Integrated wind drift ( screenspace_wind.h breeze / grass flow, ssfx_water.ps wind layer ): by the real frame time,
+    // as timers.x advances
+    {
+        const double fdt = Device.fTimeDelta;
+        const double wd = CurrentEnv->wind_direction;
+        const double wv = std::clamp(CurrentEnv->wind_velocity * 0.001f, 0.f, 1.f);
+        nlc_wind_int_old = nlc_wind_int;
+        nlc_wind_acc[0] += std::cos(wd) * fdt;
+        nlc_wind_acc[1] += std::sin(wd) * fdt;
+        nlc_wind_acc[2] += std::cos(wd) * wv * fdt;
+        nlc_wind_acc[3] += std::sin(wd) * wv * fdt;
+        // wrapped at 2^16 s: the shaders scale it by <= 4 x 0.032 / m, a jump once in ~18 h of play
+        for (double& a : nlc_wind_acc)
+            a = std::fmod(a, 65536.0);
+        nlc_wind_int.set(float(nlc_wind_acc[0]), float(nlc_wind_acc[1]), float(nlc_wind_acc[2]), float(nlc_wind_acc[3]));
+    }
+
+    constexpr float speed0 = 2.f * 0.05f, speed1 = 2.f * 0.025f; // cloudconfig.h
+    auto wrap = [](float v) { return v - std::floor(v); };
+    nlc_cloud_ofs.x = wrap(nlc_cloud_ofs.x + d0.x * dt * speed0);
+    nlc_cloud_ofs.y = wrap(nlc_cloud_ofs.y + d0.y * dt * speed0);
+    nlc_cloud_ofs.z = wrap(nlc_cloud_ofs.z + d1.x * dt * speed1);
+    nlc_cloud_ofs.w = wrap(nlc_cloud_ofs.w + d1.y * dt * speed1);
+}
+
 // NLC: sky openness above the camera for the fog sky-access gate ( docs/FOG_DESIGN.md, render: ssfx_fog_gate.y ).
 // Static-geometry ray tests ( 50 m, like the ROS hemi of objects ) from the camera in 21 upper-hemisphere directions,
 // weighted by their height ( cosine ), 3 per frame with a ray cache each; all at once after a reset or a camera jump.
@@ -584,6 +742,7 @@ void CEnvironment::OnFrame()
 
     float current_weight;
     lerp(current_weight);
+    nlc_clouds_update(); // NLC: after the wind of this frame
 
     const bool dyn_sun = USED_COP_WEATHER ? m_dynamic_sun_movement : Core.Features.test(xrCore::Feature::dynamic_sun_movement);
 

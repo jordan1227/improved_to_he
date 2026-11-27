@@ -18,6 +18,7 @@
 #include "settings_screenspace_FOG.h"
 #include "ssfx_fog_params.h"
 #include "ssfx_extra.h"
+#include "nlc_sun_breaks.h" // .239: no sun lobe through an overcast with sun breaks
 #ifdef SSFX_GROUND_MIST
 #include "ssfx_mist.h"
 #endif
@@ -170,11 +171,42 @@ float ssfx_fog_amount_dist(float3 Pw, float hemi)
     return saturate(c.fog_d_out + c.fog_in);
 }
 
+#ifdef SSFX_FOG_BG
+// .237 ( docs/RAIN_CLOUDS_DESIGN.md 4.5 ): the sky and the clouds as drawn this frame, blurred ( $user$nlc_sky_bg,
+// 80 x 45, phase_nlc_sky_bg before combine_1 ). The sky cube has no clouds: under an overcast it was far brighter than
+// the sky behind the scene, and fogged trees and buildings glowed pale ( debug view 5 near white, the real sky dark ).
+// Looked up where the direction ( not below the horizon band ) lands on screen; the consumer binds s_fog_bg.
+// .239 ( review ): world -> view through m_inv_V ( the same matrix as the position reconstruction; m_V is the context's
+// last set_xform_view ). When that point is off the top of the screen ( looking steeply down: the top rows show the sky
+// below the horizon, without clouds ) or behind the camera, it fades to the weather fog colour ( as ssfx_fog_sky 0, which
+// matched in the test ) instead of switching to the cloudless cube with a seam
+Texture2D s_fog_bg;
+
+float3 ssfx_fog_bg_colour(float3 dir_w)
+{
+    float3 v = mul(float3(dir_w.x, max(dir_w.y, 0.03f), dir_w.z), (float3x3)m_inv_V);
+    // inverse of the view position reconstruction ( P = z x ( pos2d x zw - xy ) ), pos2d in pixels
+    float2 pos2d = (v.xy / max(v.z, 0.01f) + pos_decompression_params.xy) / pos_decompression_params.zw;
+    float2 uv0 = pos2d / screen_res.xy;
+    float on = smoothstep(0.0f, 0.2f, v.z) * (1.0f - smoothstep(0.0f, 0.15f, -uv0.y));
+    const float2 t = 1.0f / float2(80.0f, 45.0f); // r4_rendertarget_phase_ssfx.cpp rt_nlc_sky_bg
+    float2 uv = clamp(uv0, 0.5f * t, 1.0f - 0.5f * t);
+    float3 c = s_fog_bg.SampleLevel(smp_rtlinear, uv, 0).rgb * 0.4f;
+    c += 0.15f * (s_fog_bg.SampleLevel(smp_rtlinear, uv + float2(t.x, 0.0f), 0).rgb + s_fog_bg.SampleLevel(smp_rtlinear, uv - float2(t.x, 0.0f), 0).rgb +
+                  s_fog_bg.SampleLevel(smp_rtlinear, uv + float2(0.0f, t.y), 0).rgb + s_fog_bg.SampleLevel(smp_rtlinear, uv - float2(0.0f, t.y), 0).rgb);
+    return lerp(fog_color.rgb, c, on);
+}
+#endif
+
 // Sky colour in a world direction as skybox.ps draws it: the cube direction is the world direction turned by
 // -sky_rotation ( inverse of the skybox world matrix rotateY( sky_rotation ) ), tint and weight as skybox.vs.
 // Clamped to the horizon band; mip 3 smooths clouds and the sun disk when the cube has mips.
+// .237: with SSFX_FOG_BG the drawn sky + clouds instead ( above ); the cube stays for the other consumers
 float3 ssfx_fog_sky_colour(float3 dir_w)
 {
+#ifdef SSFX_FOG_BG
+    return ssfx_fog_bg_colour(dir_w);
+#endif
     float3 d = float3(dir_w.x, clamp(dir_w.y, 0.03f, 0.35f), dir_w.z);
     float s, co;
     sincos(-ssfx_fog_sky2.x, s, co);
@@ -188,7 +220,7 @@ float3 ssfx_fog_sky_colour(float3 dir_w)
 float3 ssfx_fog_sun_lobe(float3 base, float3 dir_w)
 {
     float s = saturate(dot(L_sun_dir_w.xyz, -dir_w));
-    float lobe = pow(s, 8.0f) * 0.75f + s * s * 0.25f;
+    float lobe = (pow(s, 8.0f) * 0.75f + s * s * 0.25f) * (1.0f - nlc_sun_breaks_k()); // .239: none through sun-break overcast
     return lerp(base, max(base, saturate(L_sun_color.rgb)), lobe * ssfx_extra.z);
 }
 

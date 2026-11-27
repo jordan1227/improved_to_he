@@ -10,6 +10,11 @@ void CRenderTarget::PhaseSSSS(CBackend& cmd_list)
     if (!need_to_render_sunshafts())
         return;
 
+    // NLC .239 ( docs/RAIN_CLOUDS_DESIGN.md 5.7 ): screen-space shafts have no cloud term; a sun-break sun sits behind
+    // the overcast ( the cloud-shadowed volumetric sun shows the rays through the gaps )
+    if (g_pGamePersistent->Environment().CurrentEnv->nlc_sun_breaks > 0.05f)
+        return;
+
     // Домножаем, т.к. интенсивность плоских саншафтов примерно соответствует объемным как 1 к 0.3. А конфиги погоды рассчитаны на объемные лучи же.
     const float intensity = g_pGamePersistent->Environment().CurrentEnv->m_fSunShaftsIntensity * 3.3f;
     const u32 mode = ps_r_sunshafts_mode & SS_SS_MASK;

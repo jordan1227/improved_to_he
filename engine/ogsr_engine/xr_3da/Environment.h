@@ -178,6 +178,11 @@ public:
     float bloom_sky_intensity{};
 
     float fog_sky_blend{1.f}; // NLC: weather key fog_sky_blend, x ssfx_fog_sky ( docs/FOG_DESIGN.md )
+    // NLC K4 ( docs/RAIN_CLOUDS_DESIGN.md 5.4 ): sun breaks in overcast. nlc_sun_breaks = share of the ground in cloud
+    // shadow ( 0 = none, the normal cloud shadows ); the section's sun shines only through the gaps. nlc_sun_breaks_odds
+    // = share of the time the breaks are open ( 1 = always; rain 0.25: rare sun showers ), from the game time
+    float nlc_sun_breaks{};
+    float nlc_sun_breaks_odds{1.f};
 
     //	int					lens_flare_id;
     //	int					tb_id;
@@ -298,6 +303,24 @@ public:
     float fog_base{}; // active height fog base ( world Y )
     float fog_base_level{}; // base computed or configured for the current level
     int fog_base_src{}; // source of fog_base_level: 0 none, 1 auto ( AI nodes ), 2 config [ssfx_fog_levels]
+
+    // NLC: rain and wind ( docs/RAIN_CLOUDS_DESIGN.md ). Wind direction turns and showers pulse as functions of the
+    // absolute game time, so nothing is saved; applied to the blended weather in CEnvDescriptorMixer::lerp
+    double nlc_game_time{-1.0}; // absolute game time in seconds, set by the level every frame ( < 0: none, main menu )
+    float nlc_wind_offset{}; // direction added to the weather's wind_direction this frame ( radians, slow turn only )
+    float nlc_wind_gust_offset{}; // real-time gust swing of the direction: rain drops only ( Rain.cpp Born )
+    float nlc_wind_dir_base{}; // the weathers' blended wind_direction before the turn ( puddle wavelets: wind_params.z )
+    float nlc_rain_pulse{1.f}; // shower pulse applied to the rain this frame
+    float nlc_rain_density_base{}; // rain_density before the pulse ( level.rain_factor() for scripts )
+    // integrated wind drift ( shaders that moved patterns by direction x time, which strobes once the direction turns ):
+    // xy = integral of ( cos, sin )( wind_direction ) dt, zw = the same x wind speed 0 ~ 1; old = last frame's
+    Fvector4 nlc_wind_int{}, nlc_wind_int_old{};
+    double nlc_wind_acc[4]{};
+    Fvector4 nlc_cloud_ofs{}; // cloud texture offsets ( layer 0 xy, layer 1 zw ), integrated from the wind, wrapped to 0..1
+    Fvector nlc_downwind{0.f, 0.f, 1.f}; // horizontal direction the rain drifts to ( world, unit )
+    void nlc_weather_dyn(CEnvDescriptorMixer& E); // in CEnvDescriptorMixer::lerp, after the wind and rain blend
+    float nlc_sun_breaks_gate(float odds) const; // K4: 0 .. 1, how open the sun breaks are now ( 0 without cloud shadows )
+    void nlc_clouds_update(); // once per frame
     bool fog_base_console{}; // fog_base set by the ssfx_fog_base command ( until the next level load )
     void nlc_update_fog_sky_open();
 
@@ -435,6 +458,15 @@ ENGINE_API extern float psVisDistance;
 extern ENGINE_API float ps_r_sunshafts_intensity;
 extern ENGINE_API float ps_ssfx_sunshafts;
 extern ENGINE_API BOOL ps_ssfx_effects_off; // NLC: Shaders tab master switch
+
+// NLC: rain and wind ( docs/RAIN_CLOUDS_DESIGN.md, console in xr_ioc_cmd.cpp )
+extern ENGINE_API float ps_nlc_wind_turn; // slow turn of the wind direction ( 0 = the weather file's direction )
+extern ENGINE_API float ps_nlc_wind_gust_dir; // gust swing of the direction, degrees
+extern ENGINE_API float ps_nlc_rain_pulse; // shower pulses of the rain strength ( 0 = flat )
+extern ENGINE_API float ps_nlc_cloud_drift; // clouds drift with the wind ( 0 = the old fixed directions )
+extern ENGINE_API float ps_nlc_cloud_speed; // .240: cloud drift speed multiplier ( 1 = default )
+extern ENGINE_API float ps_nlc_wind_var; // R6: the wind strength rises and falls over minutes ( 0 = the weather file's )
+extern ENGINE_API bool g_nlc_cloud_shadows_on; // K4: cloud shadows compiled in ( r4.cpp, SSFX_CLOUD_SHADOWS ); sun breaks need them
 
 // NLC anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md ): local volumetric haze around anomaly zones. Zones ( xrGame
 // CCustomZone, section key nlc_haze = <profile> ) register here from their update on the main thread; the R4 haze pass

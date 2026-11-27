@@ -180,8 +180,8 @@ void CObjectActionReload::execute()
         if (weapon->GetAmmoCurrent() == weapon->GetAmmoElapsed())
             return;
 
-        VERIFY(weapon->GetAmmoMagSize() >= weapon->GetAmmoElapsed());
-        if (weapon->GetAmmoMagSize() == weapon->GetAmmoElapsed())
+        // NLC chamber: a chambered round can put the count at magazine + 1
+        if (weapon->GetAmmoElapsed() >= weapon->GetAmmoMagSize())
             return;
     }
 

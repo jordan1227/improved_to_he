@@ -25,7 +25,7 @@ constexpr float drop_speed_max = 80.f;
 constexpr int max_particles = 1000;
 constexpr int particles_cache = 400;
 
-constexpr float particles_time = .3f;
+constexpr float particles_time = .13f; // NLC G1: splash life ( was 0.3, shrinking; .237: 0.22 -> 0.13 ); dxRainRender grows it, then fades it
 
 // refs
 class ENGINE_API IRender_DetailModel;
@@ -102,7 +102,7 @@ private:
     void Hit(Fvector& pos);
     BOOL RayPick(const Fvector& s, const Fvector& d, float& range, collide::rq_target tgt);
     void RenewItem(Item& dest, float height, BOOL bHit);
-    void Prepare(Fvector2& offset, Fvector3& axis, float Wind_Vel, float Wind_Dir);
+    void Prepare(Fvector2& offset, Fvector3& axis, float pitch, float Wind_Dir); // NLC: the drop's own pitch
 
 public:
     CEffect_Rain();

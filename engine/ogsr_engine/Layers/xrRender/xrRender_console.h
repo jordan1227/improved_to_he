@@ -115,6 +115,7 @@ extern float ps_ssfx_spec_occlusion; // specular occlusion from the SSS 23 AO
 extern int ps_ssfx_ssr_res; // SSS 23 SSR resolution divider ( 1 / 2 )
 extern float ps_ssfx_cloud_shadows;
 extern int ps_ssfx_debug_clouds;
+extern float ps_ssfx_rain_far, ps_ssfx_rain_veil, ps_ssfx_rain_ground; // NLC: distant rain pass ( phase_nlc_rain_far )
 extern float ps_ssfx_ao_direct, ps_ssfx_ground_mist;
 // NLC: fog redesign ( docs/FOG_DESIGN.md )
 extern int ps_ssfx_fog_mode, ps_ssfx_fog_split, ps_ssfx_fog_debug, ps_ssfx_fog_interior;

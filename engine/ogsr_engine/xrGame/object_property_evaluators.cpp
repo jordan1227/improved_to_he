@@ -74,7 +74,7 @@ CObjectPropertyEvaluatorFull::CObjectPropertyEvaluatorFull(CWeapon* item, CAI_St
 CObjectPropertyEvaluatorFull::_value_type CObjectPropertyEvaluatorFull::evaluate()
 {
     if (!m_ammo_type)
-        return (_value_type(m_item->GetAmmoElapsed() == m_item->GetAmmoMagSize()));
+        return (_value_type(m_item->GetAmmoElapsed() >= m_item->GetAmmoMagSize())); // NLC chamber: magazine + 1 is full too
     else
         return (_value_type(false));
 }

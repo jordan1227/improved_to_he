@@ -15,6 +15,9 @@
 #endif
 
 #include "shadow.h"
+#ifdef SSFX_CLOUD_SHADOWS
+#include "ssfx_cloud_shadows.h"
+#endif
 
 float4 sun_shafts_intensity;
 
@@ -66,13 +69,23 @@ float4 main(v2p_volume I) : SV_Target
     if (depth < 0.0001)
         res = max_density;
 
+    // NLC K2 ( docs/RAIN_CLOUDS_DESIGN.md ): cloud shadows in the air too ( shafts and haze dim and brighten in patches ).
+    // Two lookups, at the camera and at the ray's end, blended along the ray
+    float cloud_cam = 1.0f, cloud_end = 1.0f;
+#ifdef SSFX_CLOUD_SHADOWS
+    cloud_cam = ssfx_cloud_shadow(float3(0.0f, 0.0f, 0.0f));
+    cloud_end = depth > 0.0001f ? ssfx_cloud_shadow(P) : cloud_cam;
+#endif
+    if (depth < 0.0001)
+        res *= cloud_cam; // NLC K2: sky pixels too ( the sky above a shaded horizon stayed bright )
+
     [unroll(RAY_SAMPLES)] for (int i = 0; i < RAY_SAMPLES; ++i)
     {
         // Don't sample out of bounds
         if (current.x >= 0 && current.x <= 1 && current.y >= 0 && current.y <= 1)
         {
             if (depth > 0.1f)
-                res += density * sample_hw_pcf(current, float4(0.0, 0.0, 0.0, 0.0));
+                res += density * sample_hw_pcf(current, float4(0.0, 0.0, 0.0, 0.0)) * lerp(cloud_end, cloud_cam, float(i) / RAY_SAMPLES); // NLC K2
         }
 
         depth -= deltaDepth;
@@ -99,7 +112,7 @@ float4 main(v2p_volume I) : SV_Target
 #endif
 
     // Fade from "res" to "max_density" using squared fog to get a nice curve
-    float3 result = lerp(SunColor * max_density * fSturation, SunColor * res, 1.0f - fog * fog);
+    float3 result = lerp(SunColor * max_density * fSturation * (cloud_cam + cloud_end) * 0.5f, SunColor * res, 1.0f - fog * fog); // NLC K2: clouds
 
     return float4(result, 1);
 #endif // SUN_SHAFTS_QUALITY

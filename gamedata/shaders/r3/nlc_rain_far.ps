@@ -1,0 +1,205 @@
+/**
+ * @ Description: Distant rain ( docs/RAIN_CLOUDS_DESIGN.md D1 / D2 / G3 ), r4_rendertarget_phase_ssfx.cpp phase_nlc_rain_far
+ * @ NLC: 2026-11-26. The rain drops ( CEffect_Rain ) exist only within ~20 m of the camera. After the forward pass this
+ *        full-screen pass adds:
+ *        - a veil ( D2 ): extinction and sky-lit in-scatter over the rain-filled part of the view ray beyond 18 m, only
+ *          over its open-air share ( rain depth map, as the fog gate mode 2 ), stronger in heavier rain;
+ *        - streak layers ( D1 ): three cylinders around the camera ( 20 / 40 / 80 m ) with procedural streaks that fall
+ *          and lean with the wind, drawn only where the scene lies behind the layer and the layer point is open;
+ *        - ground hits ( G3 ): brief drop impacts on open, up-facing wet surfaces ( puddles, wet asphalt ) within ~25 m.
+ *        .237 ( after the first test ): veil colour and distance follow the fog ( no pale ghosts of far trees at short
+ *        view distance ), brighter streaks, ground hits only on wet surfaces and calmer.
+ *        Output rgb = added light, a = transmittance ( blend one / srcalpha: dst = rgb + dst x a ).
+ */
+
+#include "common.h"
+// .237: the fog's own colour ( ssfx_fog_sky_colour, ssfx_fog_sun_lobe ) and rain-map test ( ssfx_fog_map_open:
+// s_fog_map, ssfx_fog_map, ssfx_fog_map_xf ); binds s_fog_sky0 / s_fog_sky1 and smp_rtlinear ( nlc_rain_far.s )
+#define SSFX_FOG_BG // .237: the fog colour from the drawn sky + clouds ( s_fog_bg )
+#include "ssfx_fog_atmo.h"
+
+uniform float4 nlc_rain_far0; // x: rain strength ( weather density, pulsed, 0 ~ 3 ), y: layers, z: veil, w: ground hits
+uniform float4 nlc_rain_far1; // xy: downwind ( world x / z ), z: tan( lean ), w: time ( s )
+uniform float4 nlc_rain_far2; // x: fall speed ( m/s ), y: frame index % 64 ( jitter )
+
+// 1 = nothing above Pw ( or outside the map ), 0 = covered. Callers check the map is valid ( ssfx_fog_map.w ) first
+#define nrf_open ssfx_fog_map_open
+
+uint nrf_ihash(uint x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+// 0 .. 1
+float nrf_rand(int2 c, uint seed) { return float(nrf_ihash(uint(c.x) * 1973u + nrf_ihash(uint(c.y) + seed * 9277u)) & 0xFFFFFFu) / 16777216.0f; }
+
+float4 main(p_screen I) : SV_Target
+{
+    const float raw = nlc_rain_far0.x;
+    const float time = nlc_rain_far1.w;
+
+    // Scene point and view ray ( TAA jitter removed as gbuffer_load_position does )
+    float4 G = s_position.Sample(smp_nofilter, I.tc0);
+    float2 pos2d = I.hpos.xy - m_taa_jitter.xy * float2(0.5f, -0.5f) * pos_decompression_params2.xy;
+    float3 Pv = float3(pos2d * pos_decompression_params.zw - pos_decompression_params.xy, 1.0f);
+    bool sky = G.z <= SKY_EPS;
+    float dist = sky ? 100000.0f : G.z * length(Pv);
+    // Without the rain map ( r3_dynamic_wet_surfaces off ) nothing tells open air from a roof: no layers, no veil, and
+    // ground hits only where the surface itself sees most of the sky
+    bool map_ok = ssfx_fog_map.w > 0.5f;
+    float3 dir = normalize(mul(m_inv_V, float4(Pv, 0.0f)).xyz);
+    float pix = abs(pos_decompression_params.w); // radians per pixel ( view-space units at z = 1 )
+
+    // Light of the rain: sky light ( the drops are lit from above and scatter it )
+    float3 C_rain = L_hemi_color.rgb * 1.1f;
+    // .237: the veil fades towards the colour the fog itself uses at this pixel ( ssfx_fog_eval_core: the weather fog
+    // colour, towards the sky near the horizon with distance ). The plain fog colour differed from the sky that distant
+    // geometry blends into ( combine sky_alpha ), so at short view distances far trees showed as pale ghosts
+    float fog_d = sky ? 1.0f : saturate(dist * fog_params.w + fog_params.x);
+    float3 C_veil = fog_color.rgb;
+    [branch] if (ssfx_fog_new(I.hpos.x))
+    {
+        float kc = saturate(ssfx_fog_atmo.w * smoothstep(0.25f, 1.0f, fog_d)) * (1.0f - ssfx_fog_sky2.y);
+        [branch] if (kc > 0.001f)
+            C_veil = lerp(C_veil, ssfx_fog_sky_colour(dir), kc);
+        C_veil = ssfx_fog_sun_lobe(C_veil, dir);
+    }
+    float jitter = nrf_rand(int2(I.hpos.xy), uint(nlc_rain_far2.y) + 1u);
+    float sigma = 0.00105f * raw * nlc_rain_far0.z; // veil extinction per metre of open air
+
+    // [ VEIL ] -------------------------------------------
+    float Tv = 1.0f;
+    float3 veil = 0.0f;
+    float path = 1.0f; // open-air share of the ray within 150 m
+    [branch] if (map_ok && nlc_rain_far0.z > 0.0f && dist > 18.0f)
+    {
+        // .237: the veil ends where the weather fog does ( at most 800 m ). The sky counts as that far, and geometry that
+        // already blends into the sky ( combine sky_alpha = fog^3 ) takes the sky's veil, so the two meet without an
+        // edge at any view distance ( rs_vis_distance scales the fog; the sky was a fixed 300 m, more than the far trees
+        // at 0.4 got )
+        float d_end = clamp((1.0f - fog_params.x) / max(fog_params.w, 1e-6f), 18.0f, 800.0f);
+        float len_sky = d_end - 18.0f; // an open-air ray to the end of the fog
+        float len = len_sky;
+        [branch] if (!sky)
+        {
+            float d_vis = min(dist, d_end);
+            float d_near = min(d_vis, 150.0f);
+            path = 0.0f;
+            [unroll] for (int k = 0; k < 6; k++)
+                path += nrf_open(eye_position + dir * lerp(18.0f, d_near, (float(k) + jitter) / 6.0f));
+            path /= 6.0f;
+            len = path * max(d_near - 18.0f, 0.0f) + max(d_vis - 150.0f, 0.0f);
+            len = lerp(len, len_sky, fog_d * fog_d * fog_d);
+        }
+        Tv = exp(-sigma * len);
+        veil = C_veil * (1.0f - Tv);
+    }
+
+    // [ LAYERS ] -----------------------------------------
+    float Tl = 1.0f;
+    float3 layers = 0.0f;
+    float horiz = length(dir.xz);
+    [branch] if (map_ok && nlc_rain_far0.y > 0.0f && horiz > 0.3f)
+    {
+        float fade_v = saturate((horiz - 0.3f) * 4.0f); // looking steeply up or down: the cylinders degenerate
+        float phi = atan2(dir.x, dir.z);
+        float2 T = float2(cos(phi), -sin(phi)); // tangent of the cylinder ( x / z )
+        float shear = dot(nlc_rain_far1.xy, T) * nlc_rain_far1.z;
+        float ya = dir.y / horiz; // tangent of the elevation
+        // .237: denser and brighter ( at 0.2 opacity in sky light alone the layers were not noticed in the test ); the
+        // streaks carry at least the fog's light, so they read against dark trees and fade into a pale fog
+        float dens = saturate(0.35f + 0.35f * raw);
+        float3 C_streak = max(C_rain, C_veil * 0.8f) * 1.15f;
+
+        const float R[3] = {20.0f, 40.0f, 80.0f};
+        const float K[3] = {1.0f, 0.8f, 0.6f};
+        [unroll] for (int i = 0; i < 3; i++)
+        {
+            float t = R[i] / horiz; // along the ray to the cylinder
+            [branch] if (dist <= t)
+                continue;
+            float o = nrf_open(eye_position + dir * t);
+            o *= exp(-sigma * max(t - 18.0f, 0.0f) * path); // the veil in front of this layer
+
+            // Columns and drop spacing in fixed angles ( sized for ~67 deg vertical FOV at 1080p: 0.00122 rad per pixel ),
+            // a whole number of columns around the circle ( no seam behind the camera ), so zooming does not re-hash them
+            float scale = sqrt(20.0f / R[i]); // farther layers: more, smaller drops per angle
+            float colw = 6.2831853f / round(6.2831853f / (0.00122f * 7.0f * scale));
+            float per = 0.00122f * 140.0f * scale;
+            float xs = phi + shear * ya;
+            float ys = ya + time * nlc_rain_far2.x / R[i];
+
+            float cx = xs / colw;
+            int ci = int(floor(cx));
+            float fx = frac(cx);
+            float yy = ys / (per * (0.7f + 0.6f * nrf_rand(int2(ci, i), 2u))) + nrf_rand(int2(ci, i), 1u);
+            int n = int(floor(yy));
+            float fy = frac(yy);
+
+            float present = step(nrf_rand(int2(ci, n), 4u + uint(i)), dens);
+            float x0 = 0.3f + 0.4f * nrf_rand(int2(ci, n), 7u);
+            float hw = max(0.16f, 0.75f * pix / colw); // half width, at least ~1.5 px wide
+            float line_ = saturate(1.0f - abs(fx - x0) / hw) * min(1.0f, 0.16f / hw);
+            float along = smoothstep(0.0f, 0.06f, fy) * smoothstep(0.3f, 0.2f, fy);
+
+            float a = min(nlc_rain_far0.y * 0.5f * K[i] * saturate(raw * 0.8f) * line_ * along * present * o * fade_v, 0.9f);
+            layers += Tl * C_streak * a;
+            Tl *= 1.0f - a;
+        }
+    }
+
+    // [ GROUND HITS ] ------------------------------------
+    // .237: only on wet surfaces, by the G-buffer gloss after the rain pass: puddles 0.78 ~ 0.95, wet asphalt and
+    // concrete 0.7, wet objects; damp earth stays at 0.3 or less ( deffer_terrain_high_flat.ps, terrain_wet.ltx ), grass
+    // is skipped by its material. Fewer, fainter, slower and near only: the far "spray haze" ( a cell below 3 pixels )
+    // and the small dots before it read as shimmer on all ground
+    float3 ground = 0.0f;
+    [branch] if (nlc_rain_far0.w > 0.0f && !sky && dist > 1.2f && dist < 25.0f)
+    {
+        float3 Nw = mul(m_inv_V, float4(gbuf_unpack_normal(G.xy), 0.0f)).xyz;
+        float hemi = gbuf_unpack_hemi(G.w);
+        float mtl = gbuf_unpack_mtl(G.w);
+        bool flora = abs(mtl - 0.15f) < 0.04f;
+        // .239: the gloss wet test on terrain only, as the splashes ( mesh roads and slabs stay low-gloss when wet )
+        float wet = abs(mtl - 0.95f) < 0.04f ? smoothstep(0.35f, 0.6f, s_diffuse.Sample(smp_nofilter, I.tc0).a) : 1.0f;
+        [branch] if (!flora && wet > 0.0f && Nw.y > 0.7f && hemi > (map_ok ? 0.2f : 0.6f))
+        {
+            float3 Pw = eye_position + dir * dist;
+            float o = map_ok ? nrf_open(Pw + float3(0.0f, 0.1f, 0.0f)) : 1.0f;
+
+            const float cell = 0.1f; // m
+            float2 cp = Pw.xz / cell;
+            int2 c = int2(floor(cp));
+            float2 f = frac(cp);
+            float rate = saturate(0.3f + raw * 0.5f); // hits per second per cell
+            float tt = time * rate + nrf_rand(c, 11u);
+            int n = int(floor(tt));
+            float age = frac(tt) / rate; // s
+            float life = 0.1f;
+            float2 cpos = float2(0.2f + 0.6f * nrf_rand(c + int2(n * 7, 0), 13u), 0.2f + 0.6f * nrf_rand(c + int2(0, n * 5), 14u));
+            float present = step(nrf_rand(c + int2(n * 3, n), 12u), 0.5f);
+            float k = saturate(age / life);
+            float r = 0.12f + 0.3f * k;
+            float dot_ = saturate(1.0f - length(f - cpos) / r) * (1.0f - k) * present;
+
+            // the cell on screen: across the view it keeps its size, along the ground it is foreshortened ( geometric
+            // mean ); below 3 pixels nothing ( was a faint haze that shimmered )
+            float px = cell * sqrt(abs(dot(Nw, dir))) / max(dist * pix, 1e-5f);
+            float w_dots = saturate((px - 3.0f) / 3.0f);
+            float g = w_dots * dot_ * 0.3f;
+            ground = C_rain * g * wet * o * saturate(hemi * 3.0f) * nlc_rain_far0.w * smoothstep(1.2f, 2.0f, dist) * smoothstep(25.0f, 15.0f, dist);
+        }
+    }
+
+    // layers in front, the veil behind them, the ground hits on the surface behind the veil
+    float3 add = layers + Tl * (veil + Tv * ground);
+    float T = Tl * Tv;
+    if (T > 0.9995f && dot(add, 1.0f) < 1e-5f)
+        discard; // nothing to add: skip the blend
+    return float4(add, T);
+}

@@ -167,12 +167,19 @@ void dxRainRender::Render(CBackend& cmd_list, CEffect_Rain & owner, const bool s
                 && (fis_zero(ps_r2_no_details_radius) || Device.vCameraPosition.distance_to(P->bounds.P) > ps_r2_no_rain_radius))
             {
                 // Build matrix
-                float scale = P->time / particles_time;
-                mScale.scale(scale, scale, scale);
+                // NLC G1 ( docs/RAIN_CLOUDS_DESIGN.md ): the crown grows fast and fades ( was full size shrinking to 0 ),
+                // a little taller than wide; alpha in the vertex colour ( effects_rain_splash.ps )
+                // .237 ( 4.5 ): half the size ( peak 0.6 of the mesh, was 1.25: crowns ~30 cm tall read as toy splashes; a
+                // real crown + spray is a few cm to ~15 cm ), nearly as tall as wide, faded out early ( ( 1 - t )^2 )
+                const float t = 1.f - std::clamp(P->time / particles_time, 0.f, 1.f);
+                const float grow = 0.2f + 0.4f * _sqrt(t);
+                mScale.scale(grow, grow * 1.1f, grow);
                 mXform.mul_43(P->mXForm, mScale);
+                const float fade = (1.f - t) * (1.f - t);
+                const u32 u_splash_color = color_rgba_f(f_rain_color.x, f_rain_color.y, f_rain_color.z, std::clamp(alpha_visual * 0.5f * fade, 0.f, 1.f));
 
                 // XForm verts
-                DM_Drop->transfer(mXform, v_ptr, u_rain_color, i_ptr, pcount * DM_Drop->number_vertices);
+                DM_Drop->transfer(mXform, v_ptr, u_splash_color, i_ptr, pcount * DM_Drop->number_vertices);
                 v_ptr += DM_Drop->number_vertices;
                 i_ptr += DM_Drop->number_indices;
                 pcount++;

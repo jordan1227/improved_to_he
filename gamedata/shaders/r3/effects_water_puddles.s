@@ -15,6 +15,7 @@ function normal(shader, t_base, t_second, t_detail)
     shader:dx10texture("s_env1", "$user$sky1")
     shader:dx10texture("s_fog_sky0", "$user$sky0") -- NLC: fog colour from the sky ( ssfx_fog_atmo.h )
     shader:dx10texture("s_fog_sky1", "$user$sky1")
+    shader:dx10texture("s_fog_bg", "$user$nlc_sky_bg") -- NLC .239: drawn sky + clouds, fog colour ( SSFX_FOG_BG )
     shader:dx10texture("s_fog_map", "$user$smap_rain") -- NLC .201: view-ray sky-access gate
 
     shader:dx10texture("env_s0", "$user$env_s0")

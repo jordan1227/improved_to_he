@@ -84,6 +84,8 @@ bool CRenderTarget::pip_create(const u32 size, const u32 flags)
             make_wh(m_pip.fog2, r2_RT_ssfx_fog_2, size / 2, size / 2, DXGI_FORMAT_R16G16B16A16_FLOAT);
     if (ok && rt_ssfx_rain)
         ok = make_wh(m_pip.rain, r2_RT_ssfx_rain, size / 8, size / 8, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    if (ok && rt_nlc_sky_bg) // NLC .237: fixed size, sampled by screen uv ( any aspect )
+        ok = make_wh(m_pip.sky_bg, r2_RT_nlc_sky_bg, 80, 45, DXGI_FORMAT_R16G16B16A16_FLOAT);
     if (ok && (flags & PIP_T_AO))
     {
         // at least half size: the scope image is supersampled ( r_3dss_pip_ss ), half of it is about display density
@@ -155,6 +157,7 @@ void CRenderTarget::pip_destroy()
     m_pip.ssr.destroy();
     m_pip.ssr_b.destroy();
     m_pip.ssr_hist.destroy();
+    m_pip.sky_bg.destroy();
     m_pip.size = 0;
     m_pip.flags = 0;
     m_pip_history = false;
@@ -212,6 +215,7 @@ void CRenderTarget::pip_swap(CBackend& cmd_list_imm, const bool in)
     exchange_opt(rt_ssfx_ssr, m_pip.ssr);
     exchange_opt(rt_ssfx_ssr_b, m_pip.ssr_b);
     exchange_opt(rt_ssfx_ssr_hist, m_pip.ssr_hist);
+    exchange_opt(rt_nlc_sky_bg, m_pip.sky_bg); // NLC .237
 
     if (!in)
     {
@@ -260,6 +264,8 @@ void CRenderTarget::phase_pip_combine(CBackend& cmd_list, R_dsgraph_structure& s
     cmd_list.set_Stencil(FALSE);
 
     g_pGamePersistent->Environment().RenderClouds(cmd_list);
+
+    phase_nlc_sky_bg(cmd_list); // NLC .237: the scope view's sky + clouds ( its own target, swapped in ), fog colour
 
     cmd_list.set_Stencil(TRUE, D3DCMP_LESSEQUAL, 0x01, 0xff, 0x00); // stencil should be >= 1
     draw_combine_1(cmd_list);
@@ -336,6 +342,13 @@ void CRenderTarget::phase_pip_combine(CBackend& cmd_list, R_dsgraph_structure& s
     }
 
     if (ps_ssfx_haze_order == 1 && phase_ssfx_haze(cmd_list))
+    {
+        u_setrt(cmd_list, rt_Generic_0, nullptr, nullptr, nullptr, rt_Base_Depth->pZRT[cmd_list.context_id]);
+        RImplementation.rmNormal(cmd_list);
+    }
+
+    // NLC: distant rain of the scope view ( docs/RAIN_CLOUDS_DESIGN.md )
+    if (phase_nlc_rain_far(cmd_list))
     {
         u_setrt(cmd_list, rt_Generic_0, nullptr, nullptr, nullptr, rt_Base_Depth->pZRT[cmd_list.context_id]);
         RImplementation.rmNormal(cmd_list);

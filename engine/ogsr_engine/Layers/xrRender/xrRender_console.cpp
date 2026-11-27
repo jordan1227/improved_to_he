@@ -180,8 +180,11 @@ float ps_ssfx_bloom_hud{0.5f};
 float ps_ssfx_fog_sun{0.5f};
 float ps_ssfx_spec_occlusion{1.0f};
 int ps_ssfx_ssr_res{1};
-float ps_ssfx_cloud_shadows{1.0f};
+float ps_ssfx_cloud_shadows{0.7f}; // NLC .237: 1 -> 0.7 ( closer to the thin clouds clear weathers show )
 int ps_ssfx_debug_clouds{}; // NLC: cloud shadow debug view ( live )
+float ps_ssfx_rain_far{1.f}; // NLC D1: distant rain streak layers ( 0 = off, live )
+float ps_ssfx_rain_veil{1.f}; // NLC D2: rain veil over the distance ( 0 = off, live )
+float ps_ssfx_rain_ground{1.f}; // NLC G3: drop hits on the ground beyond the drops ( 0 = off, live )
 float ps_ssfx_ao_direct{0.3f}; // NLC .84: AO on the direct light
 u32 ps_ssfx_look{1}; // NLC .85: look preset ( img_corrections.h ), default NLC
 int ps_ssfx_settings_version{}; // NLC .89: one-time migration of changed defaults ( CRender::create )
@@ -1361,7 +1364,10 @@ void xrRender_initconsole()
     CMD4(CCC_Float, "ssfx_color_b", &ps_ssfx_color_b, 0.8f, 1.2f);
     CMD4(CCC_Float, "ssfx_sunshafts", &ps_ssfx_sunshafts, 0.f, 2.f); // NLC .85: automatic shafts at low sun
     CMD4(CCC_Float, "ssfx_ground_mist", &ps_ssfx_ground_mist, 0.f, 1.f);
-    CMD4(CCC_Integer, "ssfx_debug_clouds", &ps_ssfx_debug_clouds, 0, 1); // r = cloud opacity, g = sun up, b = weather clouds
+    CMD4(CCC_Integer, "ssfx_debug_clouds", &ps_ssfx_debug_clouds, 0, 1); // r = shadow amount, g = sun up, b = relative cloud density / 4
+    CMD4(CCC_Float, "ssfx_rain_far", &ps_ssfx_rain_far, 0.f, 2.f); // NLC: distant rain ( docs/RAIN_CLOUDS_DESIGN.md )
+    CMD4(CCC_Float, "ssfx_rain_veil", &ps_ssfx_rain_veil, 0.f, 2.f);
+    CMD4(CCC_Float, "ssfx_rain_ground", &ps_ssfx_rain_ground, 0.f, 2.f);
     CMD4(CCC_Float, "ssfx_step_ripples", &ps_ssfx_step_ripples, 0.f, 2.f); // 0 = off ( from 0: game restart )
     CMD4(CCC_Float, "ssfx_impact_ripples", &ps_ssfx_impact_ripples, 0.f, 2.f); // NLC .216
     CMD4(CCC_Float, "ssfx_impact_splash", &ps_ssfx_impact_splash, 0.f, 2.f); // NLC .216

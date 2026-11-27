@@ -110,6 +110,7 @@
 #define r2_RT_ssfx_water_waves "$user$ssfx_water_waves" // Animated wave height ( 512 x 512 )
 #define r2_RT_ssfx_fog_4 "$user$ssfx_fog_4" // Fog scattering blur, 1/4 res
 #define r2_RT_ssfx_fog_2 "$user$ssfx_fog_2" // Fog scattering blur, 1/2 res
+#define r2_RT_nlc_sky_bg "$user$nlc_sky_bg" // NLC .237: sky + clouds before combine_1, 80 x 45, the fog colour behind the scene
 #define r2_RT_ssfx_vol_sun "$user$ssfx_vol_sun" // Sun volumetric, reduced res ( replaces generic2 )
 #define r2_RT_ssfx_ssr "$user$ssfx_ssr" // SSR result ( rgb, a: strength ), after the gloss blur
 #define r2_RT_ssfx_ssr_b "$user$ssfx_ssr_b" // SSR blur temp

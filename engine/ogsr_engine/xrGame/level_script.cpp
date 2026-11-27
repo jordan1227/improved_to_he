@@ -204,7 +204,9 @@ float cover_in_direction(u32 level_vertex_id, const Fvector& direction)
     return std::min(high_cover_value, low_cover_value);
 }
 
-float rain_factor() { return g_pGamePersistent->Environment().CurrentEnv->rain_density; }
+// NLC: before the shower pulse ( docs/RAIN_CLOUDS_DESIGN.md ): script thresholds ( campfires, corpses, rain armour ) keep
+// the weather file's value
+float rain_factor() { return g_pGamePersistent->Environment().nlc_rain_density_base; }
 
 float rain_hemi()
 {

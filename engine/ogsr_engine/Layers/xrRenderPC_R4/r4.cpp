@@ -869,6 +869,7 @@ HRESULT CRender::shader_compile(LPCSTR name, DWORD const* pSrcData, UINT SrcData
     appendShaderOption(ssfx_features().gusts, "SSFX_WIND_GUSTS", "1");
     appendShaderOption(ssfx_features().fog_sun, "SSFX_FOG_SUN", "1");
     appendShaderOption(ssfx_features().cloud_shadows, "SSFX_CLOUD_SHADOWS", "1");
+    g_nlc_cloud_shadows_on = ssfx_features().cloud_shadows; // NLC K4: sun breaks need the cloud shadows ( CEnvironment::nlc_sun_breaks_gate )
     appendShaderOption(ssfx_features().step_ripples, "SSFX_STEP_RIPPLES", "1");
     appendShaderOption(ssfx_features().spec_aa, "SSFX_SPEC_AA", "1");
     appendShaderOption(ssfx_features().mblur_objects, "SSFX_MBLUR_OBJECTS", "1");

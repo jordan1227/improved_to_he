@@ -473,6 +473,9 @@ void CEnvDescriptor::load(CEnvironment& environment, CInifile& config)
     bloom_sky_intensity = config.line_exist(m_identifier.c_str(), "bloom_sky_intensity") ? config.r_float(m_identifier.c_str(), "bloom_sky_intensity") : 0.6f;
     // NLC: fog colour towards the sky, x ssfx_fog_sky ( docs/FOG_DESIGN.md ); 1 when absent
     fog_sky_blend = config.line_exist(m_identifier.c_str(), "fog_sky_blend") ? clampr(config.r_float(m_identifier.c_str(), "fog_sky_blend"), 0.f, 2.f) : 1.f;
+    // NLC K4: sun breaks in overcast ( docs/RAIN_CLOUDS_DESIGN.md 5.4 ); 0 / 1 when absent
+    nlc_sun_breaks = config.line_exist(m_identifier.c_str(), "nlc_sun_breaks") ? clampr(config.r_float(m_identifier.c_str(), "nlc_sun_breaks"), 0.f, 1.f) : 0.f;
+    nlc_sun_breaks_odds = config.line_exist(m_identifier.c_str(), "nlc_sun_breaks_odds") ? clampr(config.r_float(m_identifier.c_str(), "nlc_sun_breaks_odds"), 0.f, 1.f) : 1.f;
 
     C_CHECK(clouds_color);
     C_CHECK(sky_color);
@@ -631,7 +634,12 @@ void CEnvDescriptorMixer::lerp(CEnvironment* env, CEnvDescriptor& A, CEnvDescrip
     wind_velocity = fi * A.wind_velocity + f * B.wind_velocity;
 
     wind_direction_old = wind_direction;
-    wind_direction = fi * A.wind_direction + f * B.wind_direction;
+    // NLC: along the shorter arc ( 350 -> 10 deg swung through 180 ); then the turning wind and shower pulses
+    {
+        float d = std::remainder(B.wind_direction - A.wind_direction, PI_MUL_2);
+        wind_direction = angle_normalize(A.wind_direction + f * d);
+    }
+    env->nlc_weather_dyn(*this);
 
     if (ps_r_sunshafts_intensity > 0.f)
         m_fSunShaftsIntensity = ps_r_sunshafts_intensity;
@@ -668,6 +676,23 @@ void CEnvDescriptorMixer::lerp(CEnvironment* env, CEnvDescriptor& A, CEnvDescrip
 
     sun_color.lerp(A.sun_color, B.sun_color, f);
 
+    // NLC K4 ( docs/RAIN_CLOUDS_DESIGN.md 5.4 ): the sun of a sun-break section ( A or B ) only while the breaks are
+    // open; the other section's own sun is kept through the blend
+    nlc_sun_breaks = fi * A.nlc_sun_breaks + f * B.nlc_sun_breaks;
+    nlc_sun_breaks_odds = fi * A.nlc_sun_breaks_odds + f * B.nlc_sun_breaks_odds;
+    if (A.nlc_sun_breaks > 0.f || B.nlc_sun_breaks > 0.f)
+    {
+        const float shut = 1.f - env->nlc_sun_breaks_gate(nlc_sun_breaks_odds);
+        if (shut > 0.f)
+        {
+            const float wa = A.nlc_sun_breaks > 0.f ? fi * shut : 0.f;
+            const float wb = B.nlc_sun_breaks > 0.f ? f * shut : 0.f;
+            sun_color.x = std::max(sun_color.x - wa * A.sun_color.x - wb * B.sun_color.x, 0.f);
+            sun_color.y = std::max(sun_color.y - wa * A.sun_color.y - wb * B.sun_color.y, 0.f);
+            sun_color.z = std::max(sun_color.z - wa * A.sun_color.z - wb * B.sun_color.z, 0.f);
+        }
+    }
+
     // NLC: per second ( was per frame: soak / dry time depended on the FPS ); the defaults keep the old timing at 100 FPS
     // ( about 25 s to soak in heavy rain, about 8 min to dry ). After a level / save load the wetness starts from the
     // current weather instead of the previous session's value.
@@ -700,8 +725,14 @@ void CEnvDescriptorMixer::lerp(CEnvironment* env, CEnvDescriptor& A, CEnvDescrip
         const float elev = -sun_dir.y; // 0 = horizon, 1 = zenith
         const float low_sun = smoothstep(0.03f, 0.1f, elev) * (1.f - 0.6f * smoothstep(0.3f, 0.9f, elev)); // .85: also a high sun, weaker
         const float bright = std::clamp((sun_color.x * 0.3f + sun_color.y * 0.59f + sun_color.z * 0.11f) * 2.f, 0.f, 1.f);
-        m_fSunShaftsIntensity = std::max(m_fSunShaftsIntensity, 0.06f * ps_ssfx_sunshafts * low_sun * bright);
+        // K4: no floor for a sun-break sun ( the sky around the sun is overcast; the cloud-shadowed volumetric sun shows the rays )
+        m_fSunShaftsIntensity = std::max(m_fSunShaftsIntensity, 0.06f * ps_ssfx_sunshafts * low_sun * bright * (1.f - std::clamp(nlc_sun_breaks / 0.3f, 0.f, 1.f)));
     }
+
+    // NLC .239 ( review ): a sun-break sun gets its own shaft intensity for the cloud-shadowed volumetric sun ( the rays
+    // through the gaps; the weather files keep 0 or tiny values there ); the screen-space shafts skip it ( PhaseSSSS )
+    if (nlc_sun_breaks > 0.f && ps_r_sunshafts_intensity <= 0.f)
+        m_fSunShaftsIntensity = m_fSunShaftsIntensity + (0.1f - m_fSunShaftsIntensity) * std::clamp(nlc_sun_breaks / 0.3f, 0.f, 1.f);
 }
 
 //-----------------------------------------------------------------------------

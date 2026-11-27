@@ -12,7 +12,9 @@ public:
     enum MaxTextures
     {
         //	Actually these values are 128
-        mtMaxPixelShaderTextures = 16,
+        // NLC .241: 16 -> 32. Forward water uses t0-t15 with SSFX_WATER_PASS; the fog sky copy ( s_fog_bg ) and the
+        // rain depth map ( s_fog_map ) make 18. D3D11 allows 128 SRVs per stage; samplers stay capped at 16
+        mtMaxPixelShaderTextures = 32,
         mtMaxVertexShaderTextures = 4,
         mtMaxGeometryShaderTextures = 16,
         mtMaxHullShaderTextures = 16,

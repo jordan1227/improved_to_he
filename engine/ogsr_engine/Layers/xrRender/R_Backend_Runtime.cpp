@@ -156,7 +156,9 @@ void CBackend::set_Textures(STextureList* _T)
         if (load_id < CTexture::rstVertex)
         {
             //	Set up pixel shader resources
-            R_ASSERT(load_id < CTexture::mtMaxPixelShaderTextures);
+            // NLC .241: name the slot and texture ( the bare assert gave only the file and line )
+            ASSERT_FMT(load_id < CTexture::mtMaxPixelShaderTextures, "! Pixel shader texture slot t%u is over the limit of %u textures: [%s]", load_id,
+                       u32(CTexture::mtMaxPixelShaderTextures), load_surf ? load_surf->cName.c_str() : "null");
             // ordinary pixel surface
             if ((int)load_id > _last_ps)
                 _last_ps = load_id;

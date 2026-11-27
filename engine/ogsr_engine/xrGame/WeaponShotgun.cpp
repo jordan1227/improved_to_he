@@ -379,7 +379,7 @@ void CWeaponShotgun::OnAnimationEnd(u32 state)
     }
     case eSubstateReloadInProcess: {
         AddCartridge(1);
-        if (m_stop_triStateReload || !HaveCartridgeInInventory(1) || m_magazine.size() >= iMagazineSize)
+        if (m_stop_triStateReload || !HaveCartridgeInInventory(1) || m_magazine.size() >= (u32)ChamberedCapacity()) // NLC chamber
             m_sub_state = eSubstateReloadEnd;
 
         SwitchState(eReload);
@@ -406,8 +406,13 @@ void CWeaponShotgun::Reload()
 
 void CWeaponShotgun::TriStateReload()
 {
+    // NLC chamber: a gun with a round left takes one more shell. Decided before HaveCartridgeInInventory,
+    // which empties the tube for any queued ammo type; a same-type refill queued by script (dsh_reload)
+    // restores the count afterwards and keeps the +1, a real type change does not.
+    const bool chamber = ChamberCanHoldExtra() && (m_set_next_ammoType_on_reload == u32(-1) || m_set_next_ammoType_on_reload == m_ammoType);
     if (HaveCartridgeInInventory(1) || IsMisfire())
     {
+        CartridgeInTheChamber = chamber ? 1 : 0;
         StartCartridge = true;
         m_sub_state = is_gunslinger_weapon && !IsMisfire() ? eSubstateReloadInProcess : eSubstateReloadBegin;
         SwitchState(eReload);
@@ -545,7 +550,7 @@ u8 CWeaponShotgun::AddCartridge(u8 cnt)
         m_set_next_ammoType_on_reload = u32(-1);
     }
 
-    if (m_magazine.size() >= (u32)iMagazineSize || !HaveCartridgeInInventory(1))
+    if (m_magazine.size() >= (u32)ChamberedCapacity() || !HaveCartridgeInInventory(1)) // NLC chamber
         return cnt;
 
     VERIFY((u32)iAmmoElapsed == m_magazine.size());
@@ -554,7 +559,7 @@ u8 CWeaponShotgun::AddCartridge(u8 cnt)
         m_DefaultCartridge.Load(*m_ammoTypes[m_ammoType], u8(m_ammoType));
 
     CCartridge l_cartridge = m_DefaultCartridge;
-    while (cnt && m_magazine.size() < (u32)iMagazineSize) // && m_pAmmo->Get(l_cartridge))
+    while (cnt && m_magazine.size() < (u32)ChamberedCapacity()) // NLC chamber // && m_pAmmo->Get(l_cartridge))
     {
         if (!unlimited_ammo())
         {
@@ -615,7 +620,7 @@ void CWeaponShotgun::ReloadMagazine()
         u8 cnt = AddCartridge(1);
         while (cnt == 0)
         {
-            if (m_magazine.size() >= (u32)iMagazineSize || !HaveCartridgeInInventory(1))
+            if (m_magazine.size() >= (u32)ChamberedCapacity() || !HaveCartridgeInInventory(1)) // NLC chamber
                 break;
             cnt = AddCartridge(1);
         }

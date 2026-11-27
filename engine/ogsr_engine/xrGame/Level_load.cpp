@@ -160,6 +160,7 @@ BOOL CLevel::Load_GameSpecific_After()
         on_change_weather_callback = pSettings->r_string("engine_callbacks", "on_change_weather");
 
     g_pGamePersistent->Environment().SetGameTime(GetEnvironmentGameDayTimeSec(), game->GetEnvironmentGameTimeFactor());
+    g_pGamePersistent->Environment().nlc_game_time = double(GetEnvironmentGameTime()) / 1000.0; // NLC: no wind jump from the last save
 
     g_pGamePersistent->Environment().Invalidate();
     // NLC: no wetness carried over from another save. The weather script restores the saved weather with a forced

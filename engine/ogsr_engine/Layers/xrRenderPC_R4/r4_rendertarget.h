@@ -143,6 +143,7 @@ public:
     // Build B
     ref_rt rt_ssfx_water, rt_ssfx_water_a, rt_ssfx_water_b, rt_ssfx_water_waves;
     ref_rt rt_ssfx_fog_4, rt_ssfx_fog_2;
+    ref_rt rt_nlc_sky_bg; // NLC .237: blurred sky + clouds as drawn this frame ( ssfx_fog_atmo.h SSFX_FOG_BG )
     ref_rt rt_ssfx_vol_sun; // reduced-size volumetric target, sun + spot ( ssfx_volumetric_resolution > 1 )
     ref_rt rt_ssfx_ssr, rt_ssfx_ssr_b, rt_ssfx_ssr_hist;
     ref_rt rt_ssfx_scene_prev; // NLC .209: last frame's finished scene for SSR / water reflections ( ssfx_scene_prev.h )
@@ -364,6 +365,12 @@ public:
     void phase_ssfx_fog_scattering(CBackend& cmd_list); // HDR, after volumetrics, before bloom
     ref_shader s_ssfx_haze; // NLC anomaly haze ( docs/ANOMALY_HAZE_DESIGN.md )
     bool phase_ssfx_haze(CBackend& cmd_list); // into rt_Generic_0; true when something was drawn ( render targets changed )
+    ref_shader s_nlc_rain_far; // NLC: distant rain ( docs/RAIN_CLOUDS_DESIGN.md D1 / D2 / G3 )
+    bool phase_nlc_rain_far(CBackend& cmd_list); // into rt_Generic_0 after the forward pass; true when drawn
+    ref_shader s_nlc_sky_bg; // NLC .237: fog colour from the sky behind the scene ( docs/RAIN_CLOUDS_DESIGN.md 4.5 )
+    // after RenderClouds, before draw_combine_1 ( rt_Generic_0 holds only the sky and the clouds ): downsample into
+    // rt_nlc_sky_bg, then rt_Generic_0 + base depth bound again at full viewport
+    void phase_nlc_sky_bg(CBackend& cmd_list);
     bool phase_ssfx_ssr(CBackend& cmd_list); // SSS 23 SSR; false = use the OGSR SSR pass
     void ssfx_copy_pos_world(CBackend& cmd_list); // NLC .210: world G-buffer for the AO ( before the HUD )
     void phase_ssfx_scene_prev(CBackend& cmd_list); // NLC .209: keep the finished scene for the next frame's reflections
@@ -491,6 +498,7 @@ public:
         ref_rt vol_sun, generic2, generic3; // volumetrics: reduced target, or the full pair ( r_3dss_pip_volumetric )
         ref_rt velocity; // motion vectors of the scope G-buffer ( AO / SSR history )
         ref_rt ssr, ssr_b, ssr_hist; // reflections ( r_3dss_pip_ssr )
+        ref_rt sky_bg; // NLC .237: the scope view's own sky + clouds background ( fog colour )
         u32 size{};
         u32 flags{}; // PIP_T_* of this set
     };

@@ -16,6 +16,7 @@ function element_0(shader, t_base, t_second, t_detail)
 	shader:dx10texture("s_fog_sky0", "$user$sky0")
 	shader:dx10texture("s_fog_sky1", "$user$sky1")
 	shader:dx10texture("s_fog_map", "$user$smap_rain") -- NLC .201: view-ray sky-access gate
+	shader:dx10texture("s_fog_bg", "$user$nlc_sky_bg") -- NLC .237: drawn sky + clouds, fog colour ( SSFX_FOG_BG )
 	-- NLC: SSS 23 temporal AO / IL results ( ignored when the shader does not use them )
 	shader:dx10texture("s_ssfx_ao", "$user$ssfx_ao_a")
 	shader:dx10texture("s_ssfx_il", "$user$ssfx_il_a")

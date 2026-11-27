@@ -59,6 +59,10 @@ CPerlinNoise1D* RainPerlin;
 // then little from the wind side ). Console rain_gust / rain_gust_speed; the old look is 2 / 0.3
 float ps_rain_gust{0.3f};
 float ps_rain_gust_speed{0.15f};
+// NLC ( docs/RAIN_CLOUDS_DESIGN.md R2 / R3 ): spread of the drops around the rain axis ( x 2.5 ~ 7.5 deg ), and gust sheets
+// ( the gust phase travels downwind at ~9 m/s, so heavier, more slanted bands sweep through; 0 = one gust for all drops )
+float ps_rain_spread{1.f};
+float ps_rain_sheets{1.f};
 
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
@@ -85,20 +89,12 @@ CEffect_Rain::~CEffect_Rain()
     p_destroy();
 }
 
-void CEffect_Rain::Prepare(Fvector2& offset, Fvector3& axis, float W_Velocity, float W_Direction)
+// NLC: takes the drop's own pitch ( was the wind velocity with one gust for all drops )
+void CEffect_Rain::Prepare(Fvector2& offset, Fvector3& axis, float pitch, float W_Direction)
 {
-    // Wind gust, to add variation.
-    float Wind_Gust = RainPerlin->GetContinious(Device.fTimeGlobal * ps_rain_gust_speed) * ps_rain_gust; // NLC .215
-    // Wind velocity [ 0 ~ 1 ]
-    float Wind_Velocity = W_Velocity + Wind_Gust; // g_pGamePersistent->Environment().CurrentEnv->wind_velocity * 0.001f
-    clamp(Wind_Velocity, 0.0f, 1.0f);
-    // Wind velocity controles the angle
-    float pitch = drop_max_angle * Wind_Velocity;
     axis.setHP(W_Direction, pitch - PI_DIV_2);
-    // Get distance
-    float dist = _sin(pitch) * source_offset;
-    float C = PI_DIV_2 - pitch;
-    dist /= _sin(C);
+    // Distance upwind at which a drop born source_offset above lands at the aim point
+    const float dist = std::tan(pitch) * source_offset;
     // 0 is North
     float fixNorth = W_Direction - PI_DIV_2;
     // Set offset
@@ -106,33 +102,50 @@ void CEffect_Rain::Prepare(Fvector2& offset, Fvector3& axis, float W_Velocity, f
 }
 
 // Born
+// NLC ( docs/RAIN_CLOUDS_DESIGN.md R2 / R3 ): in calm air the drops were the most scattered ( +-15 deg x ( 1.5 - wind ) )
+// and fell at half speed. Now: one rain axis with a small spread that grows a little with the wind; the fall speed does
+// not depend on the wind ( a slanted drop flies the longer path at the same vertical speed ); slow ( small ) drops lean
+// more than fast ones; the gust is a wave travelling downwind, so slanted, heavier bands sweep through.
 void CEffect_Rain::Born(Item& dest, float radius, float speed)
 {
     ZoneScoped;
 
-    // Prepare correct angle and distance to hit the player
-    Fvector Rain_Axis = {0, -1, 0};
-    Fvector2 Rain_Offset;
-    float Wind_Direction = -g_pGamePersistent->Environment().CurrentEnv->wind_direction;
+    const CEnvironment& env = g_pGamePersistent->Environment();
+    const float Wind_Direction = -(env.CurrentEnv->wind_direction + env.nlc_wind_gust_offset); // + the gust swing ( drops only )
 
     // Wind Velocity [ From 0 ~ 1000 to 0 ~ 1 ]
-    float Wind_Velocity = g_pGamePersistent->Environment().CurrentEnv->wind_velocity * 0.001f;
+    float Wind_Velocity = env.CurrentEnv->wind_velocity * 0.001f;
     clamp(Wind_Velocity, 0.0f, 1.0f);
-    Prepare(Rain_Offset, Rain_Axis, Wind_Velocity, Wind_Direction);
+
     // Camera Position
     const Fvector& view = Device.vCameraPosition;
 
-    // Random Position
-    float r = radius * 0.5f;
-    Fvector2 RandomP = {::Random.randF(-r, r), ::Random.randF(-r, r)};
-    // Aim ahead of where the player is facing
-    Fvector FinalView = Fvector().mad(view, Device.vCameraDirection, 5.0f);
-    // Random direction. Higher angle at lower velocity
-    dest.D.random_dir(Rain_Axis, ::Random.randF(-drop_angle, drop_angle) * (1.5f - Wind_Velocity));
+    // Random landing point ahead of where the player is facing
+    const float r = radius * 0.5f;
+    const Fvector FinalView = Fvector().mad(view, Device.vCameraDirection, 5.0f);
+    const Fvector2 land{FinalView.x + ::Random.randF(-r, r), FinalView.z + ::Random.randF(-r, r)};
+
+    // Gust ( NLC .215 rain_gust / rain_gust_speed ), its phase travelling downwind ( rain_sheets )
+    const float along = land.x * env.nlc_downwind.x + land.y * env.nlc_downwind.z;
+    const float Wind_Gust = RainPerlin->GetContinious((Device.fTimeGlobal - ps_rain_sheets * along / 9.f) * ps_rain_gust_speed) * ps_rain_gust;
+    const float W = std::clamp(Wind_Velocity + Wind_Gust, 0.f, 1.f);
+
+    // Vertical fall speed ( x 0.7: between the old calm x 0.5 and windy x 1 )
+    const float fall = ::Random.randF(drop_speed_min, drop_speed_max) * speed * 0.7f;
+    const float fall_mid = (drop_speed_min + drop_speed_max) * 0.5f * speed * 0.7f;
+    const float lean_k = std::clamp(_sqrt(fall_mid / std::max(fall, 0.01f)), 0.8f, 1.25f);
+    const float pitch = std::min(drop_max_angle * W * lean_k, deg2rad(45.f));
+
+    Fvector Rain_Axis = {0, -1, 0};
+    Fvector2 Rain_Offset;
+    Prepare(Rain_Offset, Rain_Axis, pitch, Wind_Direction);
+
+    // Spread around the axis
+    dest.D.random_dir(Rain_Axis, deg2rad(2.5f + 5.f * W) * ps_rain_spread);
     // Set final destination
-    dest.P.set(Rain_Offset.x + FinalView.x + RandomP.x, source_offset + view.y, Rain_Offset.y + FinalView.z + RandomP.y);
-    // Set speed
-    dest.fSpeed = ::Random.randF(drop_speed_min, drop_speed_max) * speed * clampr(Wind_Velocity * 1.5f, 0.5f, 1.0f);
+    dest.P.set(Rain_Offset.x + land.x, source_offset + view.y, Rain_Offset.y + land.y);
+    // Set speed: the same vertical speed along the slanted path
+    dest.fSpeed = fall / std::max(-dest.D.y, 0.5f);
     // Born
 
     float height = max_distance;
@@ -181,8 +194,12 @@ void CEffect_Rain::OnFrame()
     float wind_velocity = g_pGamePersistent->Environment().CurrentEnv->wind_velocity * 0.001f;
     clamp(wind_velocity, 0.0f, 1.0f);
     wind_velocity *= (rain_density > 0.0f ? 1.0f : 0.0f); // Only when raining
-    // 50% of the volume is by rain_density and 50% wind_velocity;
-    float factor = rain_density * 0.5f + wind_velocity * 0.5f;
+    // NLC O1 ( docs/RAIN_CLOUDS_DESIGN.md ): was 50 % rain_density + 50 % wind ( heavy night rain without wind played at
+    // half volume and the loudness jumped with the weather's 0 / 1000 wind steps ). Now by the rain strength as the
+    // weather file has it ( light 0.2 -> 0.44, normal 1 -> 0.8, heavy -> 1 ), the wind adds up to 0.2
+    const float rain_raw = std::clamp(g_pGamePersistent->Environment().CurrentEnv->nlc_rain_raw, 0.f, 3.f);
+    // ( faded in over rain_density 0 ~ 0.1, so a weather blend into rain does not start at 0.35 )
+    float factor = std::clamp(0.35f + 0.45f * rain_raw + 0.2f * wind_velocity, 0.f, 1.f) * std::clamp(rain_density * 10.f, 0.f, 1.f);
     static float hemi_factor = 0.f;
 
     CObject* E = g_pGameLevel->CurrentViewEntity();
@@ -238,7 +255,7 @@ void CEffect_Rain::OnFrame()
         float hemi_k = hemi_factor;
         if (psSoundOccMode)
             hemi_k = _max(hemi_k, ::Sound->nlc_rain_indoor() * ::Sound->nlc_listener_enclosure());
-        snd_Ambient.set_volume(_max(0.1f, factor) * hemi_k);
+        snd_Ambient.set_volume(_max(0.1f * std::clamp(rain_density * 10.f, 0.f, 1.f), factor) * hemi_k); // NLC: the floor fades in too
     }
 }
 
@@ -262,8 +279,10 @@ void CEffect_Rain::Calculate()
 void CEffect_Rain::Hit(Fvector& pos)
 {
     // NLC .213b: splash chance 0.2 -> 0.3, scaled by the weather density ( heavy rain ~0.45 )
+    // NLC G2 ( docs/RAIN_CLOUDS_DESIGN.md ): 0.45 ~ 1 ( light rain 0.5, normal 0.8, heavy 1 ); the pool holds ~650 at the
+    // heavy-rain drop count and the shorter splash life
     const float raw = std::clamp(g_pGamePersistent->Environment().CurrentEnv->nlc_rain_raw, 0.f, 3.f);
-    if (::Random.randF() > 0.3f * std::clamp(0.4f + 0.6f * raw, 0.4f, 1.6f))
+    if (::Random.randF() > std::clamp(0.45f + 0.35f * raw, 0.45f, 1.f))
         return;
 
     Particle* P = p_allocate();
@@ -276,7 +295,7 @@ void CEffect_Rain::Hit(Fvector& pos)
     P->mXForm.rotateY(::Random.randF(PI_MUL_2));
     P->mXForm.translate_over(pos);
     P->mXForm.transform_tiny(P->bounds.P, bv_sphere.P);
-    P->bounds.R = bv_sphere.R;
+    P->bounds.R = bv_sphere.R * 1.6f; // NLC G1: the crown grows to x1.25 wide, x1.56 tall
 }
 
 // initialize particles pool

@@ -5,6 +5,78 @@ Newest first. The engine source lives in this repository under `engine/`, next t
 game data of the same build. The exe and its PDB are attached to the GitHub Release
 of the tag in this repository.
 
+## nlc-3.589.241 (2026-11-27)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `B42F268F80FE3F4DC41024294E578E06BC60688E513C692ED90D0DF20E7799EC` (archived with its PDB in `nlc_tools/builds/20261127_012916_b42f268f`).
+- **Status:** runtime pending. Built on `nlc-3.589.240`.
+- `cloud_speed` default 1 -> 0.85 ( user test ).
+- Pixel shader texture limit 16 -> 32 ( `CTexture::mtMaxPixelShaderTextures`, `SH_Texture.h` ); samplers stay at 16 ( `docs/TEXTURE_SLOT_LIMIT_DESIGN.md` ). Unblocks the fog sky copy on water.
+- Over-limit FATAL in `CBackend::set_Textures` names the slot and texture.
+- `dx10ShaderResourceStateCache::ResetDeviceState` resets the compute-shader views, range and update flag ( never reset before; the flag started indeterminate ).
+- **Required game data:** `ssfx_water.ps` ( `SSFX_FOG_BG` ) and the 4 `effects_water*.s` ( `s_fog_bg` ): the water fog colour from the drawn sky; they need this exe ( 17 water slots ).
+
+## nlc-3.589.240 (2026-11-27)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `F50085F27947EA56EF499F5FF84B59A4D40668F87D4F9C868A952402D8F81746` (archived with its PDB in `nlc_tools/builds/20261127_010152_f50085f2`).
+- **Status:** runtime pending. Built on `nlc-3.589.239`.
+- Cloud drift slower: rate 0.7 + 0.6 x wind -> 0.35 + 0.5 x wind ( ~40 % slower at a moderate wind ); console `cloud_speed` ( 0-3, default 1 ) multiplies it.
+- **Required game data:** none new.
+
+## nlc-3.589.239 (2026-11-27)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `843E88B6EED0F2878B07AAABF4F6D5D762B6D3E182EE6B7A18ED903C9BF1DC76` (archived with its PDB in `nlc_tools/builds/20261127_002655_843e88b6`).
+- **Status:** runtime pending. Built on `nlc-3.589.238` after a two-agent review (`docs/RAIN_CLOUDS_DESIGN.md` 5.7).
+- Sun breaks: own volumetric shaft intensity, no screen-space shafts, no sun sprite / flares / scope glare; gameplay light ( stealth, `LightTrack` ) uses the sun x ( 1 - coverage ).
+- Glass binds `$user$nlc_sky_bg` ( fog colour from the drawn sky ).
+- **Required game data:** `nlc_sun_breaks.h` ( new ), `ssfx_cloud_shadows.h`, `ssfx_fog_atmo.h`, `ssfx_fog_sun.h`, `ssfx_water.ps`, `water_puddles.ps`, `ssfx_glass.ps`, `effects_rain_splash.ps`, `nlc_rain_far.ps`, `effects_water*.s` ( 4 ), `effects_water_puddles.s`; `default_np_rain.ltx` ( odds 0.32 ).
+
+## nlc-3.589.238 (2026-11-27)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `FA7103CCE2165D0F2D07BA5B3A39DA6225D91DDA1E8F1F995E70ED640D54E9AA` (archived with its PDB in `nlc_tools/builds/20261127_000805_fa7103cc`).
+- **Status:** runtime pending. Built on `nlc-3.589.237` (`docs/RAIN_CLOUDS_DESIGN.md` 5); includes the committed HUD animation change (`player_hud.cpp/.h`).
+- Wind strength breathes x 0.65 ~ 1.35 over ~25 / ~4 game minutes ( `wind_var`, 0 = the weather file's value ).
+- Sun breaks in overcast: weather keys `nlc_sun_breaks` ( share of the ground in cloud shadow ) and `nlc_sun_breaks_odds` ( share of the time open ); constant `nlc_sun_breaks`; the section's sun only with cloud shadows compiled in ( `g_nlc_cloud_shadows_on` ), no sun-shaft floor for it.
+- **Required game data:** `ssfx_cloud_shadows.h`; weather files `config/environment/weathers/*.ltx` ( wind curves, sun breaks ).
+
+## nlc-3.589.237 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `D271812DC8C2A31638CD2C5E0FE6A754779B80EF2DEEC81324E085AC236BD464` (archived with its PDB in `nlc_tools/builds/20261126_224505_d271812d`).
+- **Status:** runtime pending. Built on `nlc-3.589.236` (`docs/RAIN_CLOUDS_DESIGN.md` 4.5).
+- Fog colour from the drawn sky: `phase_nlc_sky_bg` copies the sky + clouds ( `rt_Generic_0` after `RenderClouds`, before `draw_combine_1` ) into `$user$nlc_sky_bg` ( 80 x 45 ), main view and scope view; `ssfx_fog_atmo.h` `SSFX_FOG_BG` fades far geometry into it instead of the cloudless sky cube ( pale trees / buildings under an overcast, worst at low `rs_vis_distance` ).
+- Rain splashes half the size ( peak 0.6 of the mesh ), life 0.22 -> 0.13 s, faded out earlier.
+- `ssfx_cloud_shadows` default 1 -> 0.7.
+- **Required game data:** shaders `nlc_sky_bg.ps/.s`, `ssfx_fog_atmo.h`, `combine_1.ps`, `combine.s`, `nlc_rain_far.ps/.s`, `effects_rain_splash.ps/.s`; menu `ui_mm_opt_shaders.script`.
+
+## nlc-3.589.236 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `397F239989F10BF808E582FB5D98AE3B7D8C93A9E696161C7300FDD0730D6AEF` (archived with its PDB in `nlc_tools/builds/20261126_175054_397f2399`).
+- **Status:** runtime pending. Built on `nlc-3.589.235` (`docs/RAIN_CLOUDS_DESIGN.md` 4).
+- Includes the pending chamber source changes from `.235` ( +1 player-only, an ammo-type change empties the gun ).
+- Wind turns with the game time ( slow turn + drift, `wind_turn` ); real-time gust swing only for the rain drops ( `wind_gust_dir` ); wind direction blended along the shorter arc. Showers pulse x 0.5 ~ 1.5 ( `rain_pulse` ); `level.rain_factor()` stays unpulsed.
+- Rain drops: small spread ( `rain_spread` ), fall speed independent of the wind, per-drop lean by speed, gust sheets travelling downwind ( `rain_sheets` ); splash chance 0.45 ~ 1, splash grows and fades ( 0.22 s ); rain loudness by rain strength.
+- Clouds and cloud shadows drift with the wind ( `cloud_drift` ); constants `nlc_cloud_ofs`, `nlc_wind_int` / `_old` ( integrated wind drift ), `wind_params.z` ( base direction ).
+- Distant rain pass ( `phase_nlc_rain_far`, shader `nlc_rain_far` ) after the forward pass and in the scope view: veil, streak layers, ground hits; `ssfx_rain_far`, `ssfx_rain_veil`, `ssfx_rain_ground`.
+- **Required game data:** shaders `nlc_rain_far.ps/.s`, `clouds.vs`, `effects_rain_splash.ps`, `ssfx_cloud_shadows.h`, `accum_volumetric_sun.ps/.s`, `screenspace_wind.h`, `ssfx_water.ps`, `deffer_terrain_high_flat.ps`; menu `ui_mm_opt_shaders.script`, `ui_mm_opt_main.script`, `ui_mm_opt.xml`, `ui_st_mm.xml` ( eng / rus ).
+
+## nlc-3.589.235 (2026-11-26)
+
+- **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.
+- **exe SHA-256:** `24DDD848989EB7B255EB034CC4AEFEAB746CE3B2AD5293C6B5FE994848B7C9D1` (archived with its PDB in `nlc_tools/builds/20261126_170128_24ddd848`).
+- **Status:** runtime pending. Built on `nlc-3.589.234`.
+- One in the chamber ( `CartridgeInTheChamberEnabled` per weapon section, already in OGSR, now finished ): a reload started with a round left in the gun loads magazine + 1.
+- The reload key tops up a gun at exactly the magazine size ( 30 / 30 after a shot from 31 ); grenade mode and misfires unchanged.
+- An ammo-type change keeps the chambered round of the old type on top; the magazine takes the new type ( partial reload animation ). The kept round's type is not saved: after a save / load it counts as the new type.
+- Tube shotguns ( `tri_state_reload` ) take one more shell when reloaded with a shell left; a same-type refill queued by script keeps the +1.
+- NPC planner: a weapon at magazine size or more counts as full ( the old `==` would keep a stalker in its reload action at magazine + 1 ).
+- **Source after this build (ships with the next one):** the +1 applies only to the player's gun; NPC weapons keep the plain magazine. An ammo-type change empties the gun, chamber included, and loads a plain magazine of the new type ( the kept mixed round is dropped: its type is not saved, so a save / load converted it ); the reload plays the full animation again.
+- **Required game data:** `CartridgeInTheChamberEnabled` in 37 root weapon sections + `false` on `wpn_eagle_m1`; `kotovod.script`, `kotovod/dsh_reload.script`, `ui/ui_inv_descr.script`.
+
 ## nlc-3.589.234 (2026-11-26)
 
 - **Upstream base:** OGSR `main` `2021123` (2026-09-27), unchanged.

@@ -221,6 +221,8 @@ void CLensFlare::OnFrame(shared_str id)
     float tf = g_pGamePersistent->Environment().fTimeFactor;
     Fvector& c = g_pGamePersistent->Environment().CurrentEnv->sun_color;
     LightColor.set(c.x, c.y, c.z, 1.f);
+    // NLC .239: a sun-break sun ( docs/RAIN_CLOUDS_DESIGN.md 5.7 ) is behind the overcast: no sun sprite, flares or scope glare
+    LightColor.mul_rgb(1.f - std::clamp(g_pGamePersistent->Environment().CurrentEnv->nlc_sun_breaks / 0.3f, 0.f, 1.f));
 
     CLensFlareDescriptor* desc = !id.empty() ? g_pGamePersistent->Environment().add_flare(m_Palette, id) : nullptr;
 
